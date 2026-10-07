@@ -58,9 +58,9 @@ function loadWardrobe(): Look {
   try {
     const value = JSON.parse(localStorage.getItem(WARDROBE) ?? '{}');
     return { skin: isSkin(value.skin) ? value.skin : 'glass', auto: value.auto !== false, home: value.home === 'eyes' ? 'eyes' : 'dark',
-      homeFinish: value.homeFinish === 'original' ? 'original' : 'refined', marks: isMarkLook(value.marks) ? value.marks : 'spark',
+      homeFinish: value.homeFinish === 'original' ? 'original' : 'refined', marks: isMarkLook(value.marks) ? value.marks : 'dot',
       night: isNightLook(value.night) ? value.night : 'list' };
-  } catch { return { skin: 'glass', auto: true, home: 'dark', homeFinish: 'refined', marks: 'spark', night: 'list' }; }
+  } catch { return { skin: 'glass', auto: true, home: 'dark', homeFinish: 'refined', marks: 'dot', night: 'list' }; }
 }
 // Ghostty's title for a session is its name, sometimes behind a status mark; the board folds long names with "…".
 const bare = (text: string) => text.replace(/\s+/g, ' ').replace(/^[^\p{L}\p{N}]+/u, '').trim();

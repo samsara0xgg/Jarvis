@@ -150,7 +150,7 @@ const thoughtRows = (rows: Row[], thoughts: Think['thoughts']) => new Map(though
 }));
 const PULL = 240; // px of fresh upward scroll at the top that adds the day before
 
-export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, settingFocus = 0, jobsFocus = 0, present = null, onAnswer, unread, ctl, viewRef, onView }: {
+export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'dot', onAgents, agentsFocus = 0, settingFocus = 0, jobsFocus = 0, present = null, onAnswer, unread, ctl, viewRef, onView }: {
   open: boolean; port?: string | null; onClose: () => void; onMood: (expr: ExprId | null) => void; onHop: (height: number) => void;
   talk?: Talk; plugins?: PluginController; pluginFocus?: { plugin: string; key: string } | null;
   marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void; agentsFocus?: number; settingFocus?: number; jobsFocus?: number; present?: Present | null; onAnswer?: (id: string) => void;

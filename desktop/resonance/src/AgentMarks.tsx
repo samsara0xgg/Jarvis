@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react';
 
-// Agent status marks in the two looks Allen picked from the notice lab: 星芒, a four-point star (the 星 in her
-// name), and 像素, dot-matrix glyphs. The stars beside the notch, their panels, the home Agents row and the
+// Agent status marks in three looks: 星芒, a four-point star (the 星 in her name), and 像素, dot-matrix glyphs,
+// both from the notice lab; and 点线环, the plain one: a point waits, a line moves, a ring is done. The stars beside the notch, their panels, the home Agents row and the
 // Agents page all draw the same mark. A mark draws in world units centred on the origin (1 unit = 1 pt at the
 // notch); `px` is device pixels per unit, for the glow; `since` is seconds in this state.
-export type MarkLook = 'spark' | 'pixel';
-export const isMarkLook = (value: unknown): value is MarkLook => value === 'spark' || value === 'pixel';
+export type MarkLook = 'dot' | 'spark' | 'pixel';
+export const isMarkLook = (value: unknown): value is MarkLook => value === 'dot' || value === 'spark' || value === 'pixel';
 // work = working, pack = compacting its context, wait = needs you, done = finished and not looked at yet,
 // err = stopped on an error, seen = finished and looked at.
 export type MarkState = 'work' | 'pack' | 'wait' | 'done' | 'err' | 'seen';
@@ -49,6 +49,26 @@ function cells(ctx: CanvasRenderingContext2D, list: Cell[], c: C3, a = 1) {
 
 type Draw = (ctx: CanvasRenderingContext2D, st: MarkState, c: C3, t: number, since: number, px: number) => void;
 const DRAW: Record<MarkLook, Draw> = {
+  // Needs you: a point that breathes; working: a short line with a bright head, drifting; compacting: the line
+  // drawing in; finished: a ring, swelling once as it lands; stopped: a point that flickers; looked at: a faint ring.
+  dot: (ctx, st, c, t, since, px) => {
+    if (st === 'seen') { ctx.strokeStyle = rgba(c, .5); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(0, 0, 3, 0, TAU); ctx.stroke(); return; }
+    halo(ctx, c, px, 3);
+    if (st === 'wait' || st === 'err') {
+      ctx.globalAlpha = st === 'err' ? flick(t) : .8 + .2 * Math.sin(t * 2.6);
+      ctx.fillStyle = rgba(tint(c, .15)); ctx.beginPath(); ctx.arc(0, 0, 3.2, 0, TAU); ctx.fill();
+    } else if (st === 'work' || st === 'pack') {
+      // The head sits where the point would and the tail trails off to the left, so the count after it never reads as a minus.
+      const len = st === 'pack' ? 2 + 2.6 * (.5 + .5 * Math.cos(t * 3.9)) : 6.4, x = 1.6 + Math.sin(t * 1.4) * .4;
+      const g = ctx.createLinearGradient(x - len, 0, x, 0);
+      g.addColorStop(0, rgba(c, 0)); g.addColorStop(1, rgba(tint(c, .2)));
+      ctx.strokeStyle = g; ctx.lineWidth = 1.8; ctx.beginPath(); ctx.moveTo(x - len, 0); ctx.lineTo(x, 0); ctx.stroke();
+      ctx.fillStyle = rgba(tint(c, .5)); ctx.beginPath(); ctx.arc(x, 0, 1.7, 0, TAU); ctx.fill();
+    } else {
+      const b = since < .6 ? 1 + .45 * (1 - since / .6) : 1;
+      ctx.strokeStyle = rgba(tint(c, .15)); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(0, 0, 3.1 * b, 0, TAU); ctx.stroke();
+    }
+  },
   // Working: turns slowly with a satellite going round; compacting: shrinks to a point and spins; needs you:
   // a ring of light keeps leaving it; finished: flares once into an eight-point star; stopped: a point broken
   // off, trembling; looked at: a small still grey star.
@@ -141,4 +161,4 @@ export function AgentMark({ look, state, id = '', size = 14, still = false }: { 
 }
 
 // A mark's cell in the row beside the notch, and the room a count takes after it.
-export const CELL: Record<MarkLook, number> = { spark: 16, pixel: 17 }, COUNT_W = 9;
+export const CELL: Record<MarkLook, number> = { dot: 12, spark: 16, pixel: 17 }, COUNT_W = 9;

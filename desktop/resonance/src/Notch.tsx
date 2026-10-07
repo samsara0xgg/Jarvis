@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import { Archive, ArrowSquareOut, ArrowUUpLeft, ArrowUp, CaretLeft, CaretRight, Moon, X } from '@phosphor-icons/react';
 import { openLabel, readConversation, requestLine, sendReply, type Agent, type AgentState, type Said } from './agents';
-import { AgentMark, drawMark, dpr, seedOf, useClock, type MarkLook } from './AgentMarks';
+import { AgentMark, COLOR, drawMark, dpr, seedOf, useClock, type MarkLook } from './AgentMarks';
 import { drawMoon, drawTurnIcon, hueAt, MOON_RGB, rgba, tint } from './beacon';
 import { Markdown } from './Markdown';
 import { ended, NoticeFlightContext } from './Notices';
@@ -34,7 +34,7 @@ export type NotchNote = { key: string; id?: string; pop?: string[]; card?: React
 
 // Your turn: asking first, then stopped, then finished.
 const TURN_ORDER: AgentState[] = ['wait', 'err', 'done'];
-const PAD = 4, GCELL = 26, GCX = 6, WING_W = 112, POP_W = 360, ALL_W = 440, PAGE_W = 560, CARD_W = 440, DRAG_OUT = 30, DWELL_MS = 1500;
+const PAD = 4, GCELL = 26, GCX = 6, WING_W = 112, DOT_WING_W = 64, DOT_R = 2.6, DOT_COUNT_X = 7.5, DOT_GAP = 5, DIGIT_W = 6.1, POP_W = 360, ALL_W = 440, PAGE_W = 560, CARD_W = 440, DRAG_OUT = 30, DWELL_MS = 1500;
 const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const countPulse = (progress: number) => reduced.matches ? 1 : 1 + .45 * Math.sin(Math.PI * progress);
@@ -332,9 +332,18 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       // panel is open; the counts follow along, and the row catches up once you leave.
       if (st.drag || !st.boxes.length || !(st.open || inWing) || now < st.workLandingUntil && !st.boxes.some(b => b.key === 'work')) {
         const kinds = ([['turn', turn], ['work', work], ['done', fin], ['moon', moon]] as const).filter(([key, ts]) => ts.length || key === 'work' && now < st.workLandingUntil).map(([k]) => k);
-        let x = g.notchR + PAD + (4 - kinds.length) * GCELL / 2;
-        st.boxes = kinds.map(key => { const b = { key, x0: x, x1: x + GCELL, cx: x + GCX }; x += GCELL; return b; });
-        st.wingTarget = kinds.length ? WING_W : 0;
+        if (look === 'dot') {
+          // 点线环 matches her lobe on the notch's other side, 64 pt, and only grows when the counts need the room.
+          const widths = kinds.map(key => DOT_COUNT_X + DIGIT_W * Math.min(3, String(members(key).length).length));
+          const used = widths.reduce((sum, w) => sum + w, 0) + DOT_GAP * Math.max(0, kinds.length - 1);
+          st.wingTarget = kinds.length ? Math.max(DOT_WING_W, Math.ceil(used + 2 * PAD)) : 0;
+          let x = g.notchR + (st.wingTarget - used) / 2;
+          st.boxes = kinds.map((key, i) => { const b = { key, x0: x - DOT_GAP / 2, x1: x + widths[i] + DOT_GAP / 2, cx: x + DOT_R }; x += widths[i] + DOT_GAP; return b; });
+        } else {
+          let x = g.notchR + PAD + (4 - kinds.length) * GCELL / 2;
+          st.boxes = kinds.map(key => { const b = { key, x0: x, x1: x + GCELL, cx: x + GCX }; x += GCELL; return b; });
+          st.wingTarget = kinds.length ? WING_W : 0;
+        }
         // What the row shows, for the checks: `turn2 work4 done3 moon1`.
         const marks = st.boxes.map(b => `${b.key}${members(b.key).length}`).join(' ');
         if (root.current!.dataset.marks !== marks) root.current!.dataset.marks = marks;
@@ -438,15 +447,16 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         else if (b.key === 'done') { ctx.globalAlpha = .55; drawMark(ctx, look, ts.every(a => a.state === 'err') ? 'err' : 'done', 0, 99, d); }
         else { ctx.globalAlpha = .85; drawMoon(ctx, 99, d); }
         ctx.restore();
-        ctx.save(); ctx.font = '600 10.5px "JetBrains Mono", Menlo, monospace'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
-        ctx.fillStyle = b.key === 'turn' ? rgba(tint(hueAt(t), .45)) : 'rgba(214,222,250,.62)';
+        const dot = look === 'dot', turnRgb = dot ? COLOR.wait : hueAt(t);
+        ctx.save(); ctx.font = `600 ${dot ? 10 : 10.5}px "JetBrains Mono", Menlo, monospace`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+        ctx.fillStyle = b.key === 'turn' ? rgba(tint(turnRgb, .45)) : 'rgba(214,222,250,.62)';
         const hidden = new Set([...(note?.pop ?? []), ...st.flights.filter(f => f.to === b.key).map(f => f.id)]);
         const count = ts.filter(a => !hidden.has(a.id)).length;
         counts.push(`${b.key}${count}`);
-        ctx.translate(b.cx + 7, top / 2 + .5); ctx.scale(pulse, pulse);
+        ctx.translate(b.cx + (dot ? DOT_COUNT_X - DOT_R : 7), top / 2 + .5); ctx.scale(pulse, pulse);
         ctx.fillText(count > 99 ? '99+' : String(count), 0, 0, 16); ctx.restore();
         if (st.open && st.hot === b.key) {
-          const c = b.key === 'turn' ? hueAt(t).join(',') : b.key === 'moon' ? MOON_RGB : b.key === 'work' ? '108,156,255' : '111,224,180';
+          const c = b.key === 'turn' ? turnRgb.join(',') : b.key === 'moon' ? MOON_RGB : b.key === 'work' ? '108,156,255' : '111,224,180';
           ctx.fillStyle = `rgba(${c},.9)`; ctx.shadowColor = `rgba(${c},.9)`; ctx.shadowBlur = 6 * d;
           ctx.beginPath(); ctx.roundRect(b.cx - 5, top - 3.5, 10, 1.6, .8); ctx.fill(); ctx.shadowBlur = 0;
         }

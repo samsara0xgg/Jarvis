@@ -1,4 +1,4 @@
-import type { MarkLook } from './AgentMarks';
+import { COLOR, type MarkLook } from './AgentMarks';
 
 // The "your turn" icon beside the notch (ADR 0057), from the notch lab's icon library: its own star, in a colour no
 // session state uses. Allen picked 信标 in 幻彩; the other three icons and colours stay here for a later pick.
@@ -87,7 +87,13 @@ export function drawTurnIcon(c: CanvasRenderingContext2D, look: MarkLook, t: num
   // A new arrival makes it jump once.
   const pop = since < .5 ? 1 + .6 * (1 - since / .5) : 1;
   c.save(); c.scale(pop, pop); c.lineCap = 'round'; c.lineJoin = 'round';
-  if (look === 'pixel') {
+  // 点线环 keeps the turn in the needs-you amber: the point, and one ring leaving it while something has just arrived.
+  if (look === 'dot') {
+    const col = COLOR.wait;
+    if (!quiet) { const ph = (t / 1.6) % 1; c.strokeStyle = rgba(col, .7 * (1 - ph)); c.lineWidth = .8; c.beginPath(); c.arc(0, 0, 3.6 + ph * 4.5, 0, Math.PI * 2); c.stroke(); }
+    c.shadowColor = rgba(col, .85); c.shadowBlur = 3 * px; c.fillStyle = rgba(tint(col, .15));
+    c.beginPath(); c.arc(0, 0, 3.2, 0, Math.PI * 2); c.fill();
+  } else if (look === 'pixel') {
     if (!pix) { const cv = document.createElement('canvas'); cv.width = cv.height = 11; pix = cv.getContext('2d', { willReadFrequently: true })!; }
     pix.setTransform(1, 0, 0, 1, 0, 0); pix.clearRect(0, 0, 11, 11);
     pix.setTransform(1 / 1.85, 0, 0, 1 / 1.85, 5.5, 5.5); ICONS[icon](pix, t, 0, hue, quiet);
