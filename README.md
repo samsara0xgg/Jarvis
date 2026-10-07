@@ -7,6 +7,8 @@
 > **Status:** Jarvis is my personal assistant. I built it for my own Mac and use it every day, and I'm still expanding and refining it quickly. It isn't a product you can download and use yet; a public version for other people is planned for later.
 >
 > **In a rush?** You can see the interface on sample data with one command, no keys or setup. [Click here to try the demo.](#try-the-demo)
+>
+> **Docs:** a feature-by-feature tour, in English and Chinese, is at [samsara0xgg.github.io/Jarvis](https://samsara0xgg.github.io/Jarvis/).
 
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS">
