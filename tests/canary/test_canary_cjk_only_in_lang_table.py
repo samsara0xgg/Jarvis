@@ -53,6 +53,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     "jarvis/decision/stream_sentences.py": frozenset(
         {"_SENTENCE_ENDS", "_CLAUSE_ENDS", "_CLOSERS", "_balanced_prose"}
     ),
+    # A shut Dashboard opens only when his words ask to see something.
+    "jarvis/execution/dashboard_tool.py": frozenset({"_ASKS_TO_SEE"}),
     # The browser guard (ADR 0059) reads a page's own labels, Chinese sites included.
     "jarvis/execution/browser_guard.py": frozenset({"_MONEY", "_CARD", "_SECRET"}),
     "jarvis/execution/path_resolver.py": frozenset({"_TRAILING_NOUN_RE", "_CONNECTIVE_CHAR"}),
