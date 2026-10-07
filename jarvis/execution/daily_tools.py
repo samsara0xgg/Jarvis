@@ -111,9 +111,9 @@ _DESCRIPTIONS = {
     "get_briefing": (
         "Read a previously saved briefing by local_date and IANA timezone. The daily work "
         "report of a day is saved here automatically early the next morning, and is the "
-        "answer to 'what did I do yesterday / on <date>'. The first page opens with the "
-        "report's Summary, which is enough for a spoken answer: follow next_cursor (identical "
-        "date/timezone) only when the user asks for the details. Does not regenerate or "
+        "answer to 'what did I do yesterday / on <date>'. Returns the report's Summary; "
+        "full=true returns the whole text page by page (follow next_cursor with identical "
+        "date/timezone), only when the user asks for the details. Does not regenerate or "
         "deliver it."
     ),
 }
@@ -160,8 +160,32 @@ def _read(  # noqa: PLR0913 — request context and independent configured sourc
     if name == "read_activity":
         return daily_activity.read_activity(ctx.conn, values, timesink_path, device)
     if name == "get_briefing":
-        return daily_store.get_briefing(ctx.conn, values)
+        page = daily_store.get_briefing(ctx.conn, values)
+        return page if values.get("cursor") or values.get("full") else _summary_only(page)
     return daily_store.search_items(ctx.conn, name, values)
+
+
+def _summary_only(page: dict[str, Any]) -> dict[str, Any]:
+    """A report's first read: its Summary section, without a cursor to page on.
+
+    Live 2026-10-06: given a first page and a next_cursor, a spoken "what did I do
+    yesterday" read all six pages (20 s) whatever the description said.
+    """
+    content = str(page.get("content", ""))
+    start = content.find("## Summary")
+    end = content.find("\n## ", start + 1) if start >= 0 else -1
+    if end < 0:
+        return page
+    return {
+        **page,
+        "content": content[:end],
+        "complete": False,
+        "next_cursor": None,
+        "more": f"This is the Summary of a {page.get('total_chars')}-character report, enough "
+        "to answer what the user did that day. The whole report is the Dashboard's brief page; "
+        "call get_briefing again with full=true only when the user asks you to tell him the "
+        "details.",
+    }
 
 
 def _handler(

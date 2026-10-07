@@ -227,7 +227,12 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "request_id",
     ),
     "get_briefing": object_fields(
-        {"local_date": text_field(10), "timezone": text_field(100), "cursor": _CURSOR},
+        {
+            "local_date": text_field(10),
+            "timezone": text_field(100),
+            "cursor": _CURSOR,
+            "full": {"type": "boolean"},
+        },
         "local_date",
         "timezone",
     ),

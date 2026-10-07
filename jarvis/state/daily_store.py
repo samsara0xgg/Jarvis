@@ -351,14 +351,6 @@ def _log_identity(conn: sqlite3.Connection) -> str:
     return read_log_epoch(conn)
 
 
-_FIRST_PAGE_NOTE = (
-    "This first page holds the report's Summary: answer what the user did that day from it, "
-    "without turning the Dashboard. Yesterday's whole report is the Dashboard's brief page: "
-    "show that page when the user asks to see it, instead of reading on and writing it out; "
-    "read the next pages only when the user asks you to tell him the details."
-)
-
-
 def get_briefing(conn: sqlite3.Connection, args: dict[str, Any]) -> dict[str, Any]:
     """Read a saved version in chunks; saving does not imply delivery."""
     identity = _brief_key(args)
@@ -370,12 +362,8 @@ def get_briefing(conn: sqlite3.Connection, args: dict[str, Any]) -> dict[str, An
         raise DailyError(msg, "not_found")
     content = item.pop("content")
     chunk, end = text_chunk(content, offset)
-    # Live 2026-10-06: told only by the description, a spoken "what did I do yesterday"
-    # still paged all six pages (20 s). The result itself says the first page is enough.
-    first = {"note": _FIRST_PAGE_NOTE} if offset == 0 and end < len(content) else {}
     return {
         **item,
-        **first,
         "content": chunk,
         "offset": offset,
         "total_chars": len(content),
