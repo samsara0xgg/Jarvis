@@ -4,7 +4,7 @@ While Allen dictates, his words go to the text caret, not to Jarvis. The
 desktop asks for one session at a time; the daemon records from its own mic
 (a capture lane on the single audio ingress), hears it with local Whisper
 a stretch at a time as he pauses (ADR 0076), and one side-job model polishes
-it with 言字's (was Typlus) instructions, both as 言字 0.4.0 does (ADR 0110).
+it with 言字's (was Typlus) instructions, both as 言字 0.4.3 does (ADR 0110, 0174).
 The desktop pastes the result where the dictation started. Nothing reaches the event log or memory.db; with
 recordings kept, each dictation's audio and a note of what happened sit in the
 recordings folder under their retention (ADR 0084).
@@ -55,44 +55,50 @@ _MIN_STRETCH_BYTES = 5 * _BYTES_PER_SECOND
 # The provider pool drops a connection idle for 5 s; a pause re-opens one older than this.
 _WARM_STALE_S = 3.0
 
-# 言字 (Yana, was Typlus) refine.py SYSTEM_PROMPT (typeless-local 5fddcba), verbatim.
+# 言字 (Yana, was Typlus) refine.py SYSTEM_PROMPT (typeless-local 621fa64, 0.4.3), verbatim.
 POLISH_PROMPT = """You are the auto-editing layer of a system-wide dictation app, in the
 style of Typeless. The user speaks naturally; you return only the text that should be
 inserted, or that should replace the selected text, in the focused app.
 
-The user is a developer who speaks Chinese mixed with English terms, mostly to AI
-assistants and teammates. The raw transcript comes from a local speech recognizer:
-it mishears words, especially English names and technical terms inside Chinese
-(Cloud Code for Claude Code, Hermless for Hermes), sometimes writes Traditional
-Chinese, and on silence or noise can emit phrases nobody said (subtitle credits,
-video sign-offs, one phrase looped over and over).
+The raw transcript comes from a local speech recognizer. It mishears words, especially
+names and technical terms (Cloud Code for Claude Code, Hermless for Hermes, work day
+for Workday), and on silence or noise it can emit phrases nobody said (subtitle
+credits, video sign-offs, one phrase looped over and over).
+
+Language:
+- Write in the language the user spoke, exactly as they mixed it. Never translate
+  any part of it: words the user said in another language stay in that language.
+- Translate only when there is selected text and the transcript asks for it.
+- If the text is Chinese, always write Simplified Chinese, converting any
+  Traditional characters.
+- The recognizer's language guess may come with the transcript. When it disagrees
+  with the transcript, the transcript decides.
 
 How to edit:
 - Keep the user's own words, voice, and every point they made. Tidy, don't rewrite:
   no summarizing, no formal or "AI" phrasing, no new facts.
-- Remove verbal filler and false starts (嗯, 啊, 呃, 哦 / 好 as an opener, 就是 / 就是说
-  as filler, repeated starts, stutters), and resolve self-corrections to the final
-  wording. Collapse a phrase the recognizer looped to one occurrence.
+- Remove verbal filler, false starts, repeated starts and stutters (um, uh, you know,
+  嗯, 啊, 就是说 and the like), and resolve self-corrections to the final wording
+  (Thursday, no, Friday becomes Friday). Collapse a phrase the recognizer looped to
+  one occurrence.
 - Where the spoken sentence is tangled, reorder or split it just enough to read
-  clearly. Keep 然后, 还有, 比如说 when they connect ideas.
-- Fix mishears when the context makes the intended word clear, above all English
-  terms and names from the user vocabulary. Use a vocabulary term only in place of
-  a mishearing of it, never to translate a correct Chinese word (待办 stays 待办).
-  When a sound is close to two vocabulary terms (Typlus / Typeless), choose by
-  context, not by spelling. Leave a word alone if unsure.
+  clearly. Keep words that connect one idea to the next.
+- Fix mishears when the context makes the intended word clear, above all names and
+  terms from the user vocabulary. Use a vocabulary term only in place of a mishearing
+  of it, never to translate a correct word. When a sound is close to two vocabulary
+  terms (Typlus / Typeless), choose by context, not by spelling. Leave a word alone
+  if unsure.
 - Text before the cursor, when given, is what the user already wrote in that field.
   Use it to spell names and terms the way it does and to pick between homophones.
   Never repeat it, continue it, or answer it: output only the dictated text.
-- Chinese is always Simplified.
 
 Formatting:
-- Full-width punctuation in Chinese: ，。？！：、. Every question ends with ？,
-  including requests phrased as one (能不能…, 可以…吗, …好吗).
-- A dictation that ends on a statement ends without a final 。 when it is a single
-  sentence or a chat-style request; longer passages use 。 normally.
-- Put a space between Chinese and English words or numbers (用 Claude Code 跑一下).
-- Write English names and terms in their canonical form (Claude Code, OpenAI, GitHub,
-  API, MD).
+- Use the normal punctuation and capitalization of the language spoken. Every
+  question ends with a question mark, including requests phrased as one.
+- In Chinese, use full-width punctuation (，。？！：、), put a space between Chinese and
+  Latin words or numbers (用 Claude Code 跑一下), and end a single sentence or a
+  chat-style request without a final 。.
+- Write names and terms in their canonical form (Claude Code, OpenAI, GitHub, API, MD).
 - Split into paragraphs with a blank line between them whenever the user moves to a
   new question, request, or topic, even in a dictation of two or three sentences.
 - Use a list only when the user enumerates several items or steps.
@@ -108,6 +114,21 @@ Strict output:
 
 Examples (recognizer output, then the text to insert):
 
+<transcript>um so I wanted to follow up on the uh the candidate we talked about yesterday, I think she'd be a great fit for the the senior role. can we schedule a call for Thursday no actually Friday afternoon</transcript>
+I wanted to follow up on the candidate we talked about yesterday. I think she'd be a great fit for the senior role.
+
+Can we schedule a call for Friday afternoon?
+
+<transcript>hey can you take a look at the offer letter when you get a chance thanks</transcript>
+Hey, can you take a look at the offer letter when you get a chance? Thanks!
+
+<transcript>for onboarding we need three things first the laptop second the badge and third uh access to work day</transcript>
+For onboarding we need three things:
+
+1. The laptop
+2. The badge
+3. Access to Workday
+
 <transcript>要不测试一下吧,你手动发一下,看我的微信能不能收到。然后还有一个问题就是,如果我电脑合上了,你还这条链路还会继续运行吗?就它不像Hermless Agent它的Gateway是24小时在接的是吗</transcript>
 要不测试一下吧，你手动发一条，看我的微信能不能收到？
 
@@ -116,11 +137,6 @@ Examples (recognizer output, then the text to insert):
 <transcript>和我聊一下就是处理外部信息就比如说和Hermes和Codex还有Codex的关系应该是什么样子的。然后应该具备一些哪些功能。</transcript>
 和我聊一下处理外部信息的问题。就比如说，和 Hermes、Codex 还有 Claude Code 的关系应该是什么样子的？然后应该具备哪些功能？
 
-<transcript>还有目前的这些设置配置能不能帮我优化一些有些可能放在别的地方的帮我重新调整一下位置,统一管理一下整个项目,包括一些在外部的东西,现在依赖外部东西都把它移进来,你觉得可以吗?</transcript>
-还有目前的这些设置和配置，能不能帮我优化一下？
-
-有些配置可能放在别的地方了，帮我重新调整一下位置，统一管理一下整个项目（包括一些在外部的东西）。现在依赖外部的东西，都把它移进来，你觉得可以吗？
-
 <transcript>好,我们目前聊了以后总结下来的东西整理成一个MD文件。</transcript>
 把我们目前聊了以后总结下来的东西整理成一个 MD 文件
 
@@ -128,14 +144,9 @@ Examples (recognizer output, then the text to insert):
 可以回答一下我，就是 Claude Code 现在新送的一个 Reset，它是什么样一个规则？
 
 比如说我后天好像就要重置额度了，如果我今天晚上把额度用完 Reset 的话，我是不是很亏？
-
-<transcript>把两个是配置全开了,然后顺便帮我检查一下这次新完成的内容还有什么别的配置没开的。然后末尾的问题就开新的ADR吧。来吧,起卡吧</transcript>
-把两个事配置全开了，然后顺便帮我检查一下这次新完成的内容，还有什么别的配置没开的。
-
-然后末尾的问题就开新的 ADR 吧。来吧，起卡吧！
 """
 
-# 言字 refine.py's vocabulary block (typeless-local 5fddcba), verbatim; the terms go between.
+# 言字 refine.py's vocabulary block (typeless-local 621fa64), verbatim; the terms go between.
 VOCAB_HEADER = "\n\nUser vocabulary (high-confidence terms used frequently by this user):\n"
 VOCAB_RULE = (
     "\n\n"
@@ -265,6 +276,7 @@ def polish(  # noqa: PLR0913 — the vocabulary joins the words, their context a
     context: Mapping[str, str],
     *,
     vocab: Sequence[str] = (),
+    language: str = "",
     event_log_path: Path,
     pricing_table: Mapping[str, Any] | None,
 ) -> str:
@@ -273,9 +285,14 @@ def polish(  # noqa: PLR0913 — the vocabulary joins the words, their context a
     Its spend is recorded like every model call (``cost.recorded``, kind ``dictation``);
     the words themselves are not. ``vocab`` terms let it mend what the recognizer misheard,
     and ``context["before"]``, the field's text before the caret, how he spells them there.
+    ``language`` is the recognizer's guess (``""`` when it named none); it only steers the model
+    away from translating, the transcript still decides.
     """
+    guess = language.strip().lower()
     user = (
-        f"Raw transcript:\n<transcript>{raw.strip()}</transcript>\n\nFocused app context:\n"
+        f"Raw transcript:\n<transcript>{raw.strip()}</transcript>\n"
+        + (f"Recognizer's language guess: {guess}\n" if guess and guess != "unknown" else "")
+        + "\nFocused app context:\n"
         f"- app: {context.get('app') or 'unknown'}\n"
         f"- window: {context.get('window') or 'unknown'}\n"
         f"- selected text: {context.get('selected') or '(none)'}\n"
@@ -308,7 +325,7 @@ class Dictation:
         *,
         ingress: voice_audio.AudioIngress,
         vad: voice_audio.SileroVad,
-        transcribe: Callable[[bytes], str],
+        transcribe: Callable[[bytes], voice_asr.DictationHeard],
         client: LLMClient,
         vocab_path: Path,
         event_log_path: Path,
@@ -340,7 +357,7 @@ class Dictation:
         self._recent: deque[bytes] = deque(maxlen=PRE_ROLL_FRAMES)
         self._pcm: bytearray | None = None
         self._level = 0.0
-        self._stretches: list[Future[str]] = []
+        self._stretches: list[Future[voice_asr.DictationHeard]] = []
         self._stretch_start = 0
         self._silent = 0
         self._spoke = False
@@ -433,8 +450,12 @@ class Dictation:
             stretches.append(self._hearing.submit(self._transcribe, last))
             note["stretches"] = len(stretches)
             yield {"state": "thinking", "seconds": round(len(pcm) / _BYTES_PER_SECOND, 2)}
-            raw = _join([await asyncio.wrap_future(stretch) for stretch in stretches])
-            note.update(heard_s=round(time.monotonic() - stopped, 2), raw=raw)
+            heard = [await asyncio.wrap_future(stretch) for stretch in stretches]
+            raw = _join([part.text for part in heard])
+            # The language of the stretch with the most words: 言字 passes one guess per dictation.
+            spoken = max((part for part in heard if part.text), key=lambda p: len(p.text), default=None)
+            language = spoken.language if spoken else ""
+            note.update(heard_s=round(time.monotonic() - stopped, 2), raw=raw, language=language)
             # A lone 「好」 is a dictation too (言字 a50ba52); punctuation alone is not.
             if not any(char.isalnum() for char in raw):
                 note["outcome"] = "empty"
@@ -445,7 +466,7 @@ class Dictation:
                 text = await asyncio.to_thread(
                     functools.partial(
                         polish, self._client, raw, context,
-                        vocab=load_vocab(self._vocab_path),
+                        vocab=load_vocab(self._vocab_path), language=language,
                         event_log_path=self._event_log_path, pricing_table=self._pricing_table,
                     ),
                 )

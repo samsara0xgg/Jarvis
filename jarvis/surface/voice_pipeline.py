@@ -157,19 +157,24 @@ class VoicePipeline:
             discard(utterance_id)
 
     def transcribe(
-        self, audio_bytes: bytes, *, recognizer: voice_asr.AsrRecognizer | None = None,
-    ) -> str:
+        self,
+        audio_bytes: bytes,
+        *,
+        recognizer: voice_asr.AsrRecognizer | None = None,
+    ) -> voice_asr.DictationHeard:
         """Dictation (ADR 0076/0077): one stretch between his pauses, heard and corrected, no emit.
 
         ``recognizer`` hears it instead of the voice path's own, as 言字 does
-        (local Whisper, ADR 0110). ``""`` when nothing in it is speech; the
-        caller judges the joined stretches as a whole.
+        (local Whisper, ADR 0110).
+        No words when nothing in it is speech; the caller judges the joined stretches as a whole.
         """
         if recognizer is not None:
-            return self._normalizer.normalize(voice_asr.dictation_text(audio_bytes, recognizer))
+            heard = voice_asr.dictation_text(audio_bytes, recognizer)
+            return heard._replace(text=self._normalizer.normalize(heard.text))
         if voice_asr.too_quiet_for_speech(audio_bytes):
-            return ""
-        return self._normalizer.normalize(self.partial_text(audio_bytes))
+            return voice_asr.DictationHeard("", "")
+        text = self._normalizer.normalize(self.partial_text(audio_bytes))
+        return voice_asr.DictationHeard(text, "")
 
     def _judge(
         self,

@@ -37,7 +37,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 import numpy as np
 
@@ -1012,15 +1012,22 @@ def full_width_punctuation(text: str) -> str:
     return _HALF_WIDTH_AFTER_CJK.sub(lambda match: _FULL_WIDTH[match.group(1)], text)
 
 
-def dictation_text(audio_pcm: bytes, recognizer: AsrRecognizer) -> str:
-    """One dictation stretch heard by local Whisper as 言字 0.4.0 hears it (ADR 0110).
+class DictationHeard(NamedTuple):
+    """One stretch's words and the language Whisper heard them in (``""`` when it named none)."""
+
+    text: str
+    language: str
+
+
+def dictation_text(audio_pcm: bytes, recognizer: AsrRecognizer) -> DictationHeard:
+    """One dictation stretch heard by local Whisper as 言字 0.4.1 hears it (ADR 0110, 0174).
 
     Only a dead or muted mic is cut before the model, a short fragment heard
     as neither Chinese nor confident English is noise, and Chinese clauses get
     full-width punctuation.
     """
     if too_quiet_for_speech(audio_pcm, floor=_WHISPER_LEVEL_FLOOR):
-        return ""
+        return DictationHeard("", "")
     heard = recognizer.recognize(audio_pcm)
     text = heard.text.strip()
     language = (heard.language_detected or "").lower()
@@ -1032,8 +1039,8 @@ def dictation_text(audio_pcm: bytes, recognizer: AsrRecognizer) -> str:
         LOGGER.info(
             "dictation dropped a short %s fragment (confidence %.2f)", language, heard.confidence,
         )
-        return ""
-    return full_width_punctuation(text)
+        return DictationHeard("", language)
+    return DictationHeard(full_width_punctuation(text), language)
 
 
 class LocalWhisperRecognizer:
@@ -1493,6 +1500,7 @@ def is_empty_or_too_short(text: str, *, audio_pcm: bytes) -> bool:
 __all__ = [
     "AsrNormalizer",
     "AsrRecognizer",
+    "DictationHeard",
     "LocalWhisperRecognizer",
     "MlxWhisperRecognizer",
     "SenseVoiceRecognizer",

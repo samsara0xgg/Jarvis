@@ -147,13 +147,15 @@ def test_dictation_hears_a_stretch_as_yana_does(whisper: _Whisper) -> None:
     ears = whisper_ears(language="", terms=lambda: ["Claude Code"])
     assert ears is not None
     whisper.texts = ["用Claude Code跑一下,好吗?", "后半段"]
-    assert voice_asr.dictation_text(_speech(2.0, 0.005), ears) == "用Claude Code跑一下，好吗？"
-    assert voice_asr.dictation_text(_speech(31.0, 0.1), ears) == "后半段"
+    assert voice_asr.dictation_text(_speech(2.0, 0.005), ears) == (
+        "用Claude Code跑一下，好吗？", "zh",
+    )
+    assert voice_asr.dictation_text(_speech(31.0, 0.1), ears).text == "后半段"
     short, long = whisper.calls
     assert short["language"] is None
     assert short["initial_prompt"] == "Common terms: Claude Code."
     assert long["initial_prompt"] is None
-    assert voice_asr.dictation_text(_speech(2.0, 0.002), ears) == ""
+    assert voice_asr.dictation_text(_speech(2.0, 0.002), ears).text == ""
     assert len(whisper.calls) == 2  # the dead mic never reached the model
 
 
@@ -174,7 +176,7 @@ def test_a_short_fragment_in_another_language_is_noise(
     whisper.texts, whisper.language, whisper.logprob = [heard], language, logprob
     ears = whisper_ears(language="")
     assert ears is not None
-    assert voice_asr.dictation_text(_speech(1.0, 0.1), ears) == kept
+    assert voice_asr.dictation_text(_speech(1.0, 0.1), ears).text == kept
 
 
 def _final() -> tuple[voice_asr.WhisperFinalRecognizer, MagicMock]:

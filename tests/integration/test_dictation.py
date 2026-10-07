@@ -77,6 +77,7 @@ class _Lane:
 
 
 QUIET = bytes(1024)
+_NOTHING = voice_asr.DictationHeard("", "")
 
 
 def _tone(number: int) -> bytes:
@@ -154,7 +155,7 @@ class _Provider:
 
 def _dictation(
     tmp_path: Path,
-    ears: Callable[[bytes], str],
+    ears: Callable[[bytes], voice_asr.DictationHeard],
     provider: _Provider,
     lane: type[_Lane] = _Lane,
     recordings: Path | None = None,
@@ -228,9 +229,9 @@ def test_dictation_streams_levels_then_the_polished_words(tmp_path: Path) -> Non
     """Levels while recording, ``thinking`` after stop, then ``{text, raw}``; one at a time."""
     heard: list[bytes] = []
 
-    def ears(pcm: bytes) -> str:
+    def ears(pcm: bytes) -> voice_asr.DictationHeard:
         heard.append(pcm)
-        return RAW
+        return voice_asr.DictationHeard(RAW, "zh")
 
     provider = _Provider(POLISHED)
     dictation, ingress = _dictation(tmp_path, ears, provider)
@@ -285,7 +286,11 @@ def test_dictation_streams_levels_then_the_polished_words(tmp_path: Path) -> Non
     assert json.dumps(POLISH_PROMPT, ensure_ascii=False)[1:-1] in sent
     assert "by this user):\\nTyplus, 星核, worktree\\n" in sent
     assert "chless" not in sent
-    assert f"Raw transcript:\\n<transcript>{RAW}</transcript>" in sent
+    # The recognizer's language guess follows the transcript (言字 0.4.1).
+    assert (
+        f"Raw transcript:\\n<transcript>{RAW}</transcript>\\n"
+        "Recognizer's language guess: zh\\n\\nFocused"
+    ) in sent
     assert "- app: Ghostty\\n- window: claude\\n- selected text: (none)\\n" in sent
     # The field's text before the caret, which cannot close its own tag early.
     assert "text before the cursor:\\n<before_cursor>先看 Typlus</before_cursor>\\n" in sent
@@ -307,11 +312,12 @@ def _wait(condition: Callable[[], bool]) -> None:
 def test_a_stretch_ending_in_a_pause_is_heard_while_he_goes_on(tmp_path: Path) -> None:
     """5.4 s of talk, a 0.6 s pause, more talk: the first stretch is heard before the stop."""
     heard: list[bytes] = []
-    words = iter(["第一段。", "second part"])
+    words = iter([("第一段。", "zh"), ("second part", "en")])
 
-    def ears(pcm: bytes) -> str:
+    def ears(pcm: bytes) -> voice_asr.DictationHeard:
         heard.append(pcm)
-        return next(words) if pcm.strip(b"\0") else ""  # like the pipeline: silence is no words
+        # Like the pipeline: silence is no words.
+        return voice_asr.DictationHeard(*next(words)) if pcm.strip(b"\0") else _NOTHING
 
     provider = _Provider(POLISHED)
     dictation, ingress = _dictation(tmp_path, ears, provider, _Talk)
@@ -340,7 +346,11 @@ def test_a_stretch_ending_in_a_pause_is_heard_while_he_goes_on(tmp_path: Path) -
     assert [array("h", f)[0] for f in frames if f != QUIET] == list(range(1, 211))
     # The joined words went to the polish; the session was already warm, so no second warm-up.
     sent = json.dumps(provider.requests, ensure_ascii=False)
-    assert "Raw transcript:\\n<transcript>第一段。second part" in sent
+    # Two stretches, the English one with more words: its language is the guess.
+    assert (
+        "Raw transcript:\\n<transcript>第一段。second part</transcript>\\n"
+        "Recognizer's language guess: en\\n" in sent
+    )
     assert provider.warmed == ["gpt-5.6-terra"]
 
 
@@ -374,12 +384,12 @@ def test_the_ears_hear_a_stretch_with_whisper_and_skip_a_quiet_one() -> None:
     dead = array("h", [50, -50] * 24_000).tobytes()
     quiet = array("h", [100, -100] * 24_000).tobytes()
     spoken = quiet[: 2 * 16_000] + _tone(1) * 7 + quiet[2 * 16_000 :]
-    assert pipe.transcribe(dead, recognizer=whisper) == ""
-    assert pipe.transcribe(quiet) == ""
+    assert pipe.transcribe(dead, recognizer=whisper) == _NOTHING
+    assert pipe.transcribe(quiet) == _NOTHING
     assert calls == []
-    assert pipe.transcribe(quiet, recognizer=whisper) == "whisper的话"
-    assert pipe.transcribe(spoken, recognizer=whisper) == "whisper的话"
-    assert pipe.transcribe(spoken) == "sensevoice的话"
+    assert pipe.transcribe(quiet, recognizer=whisper) == ("whisper的话", "zh")
+    assert pipe.transcribe(spoken, recognizer=whisper) == ("whisper的话", "zh")
+    assert pipe.transcribe(spoken) == ("sensevoice的话", "")
     assert calls == ["whisper", "whisper", "sensevoice"]
 
 
@@ -387,7 +397,9 @@ def test_each_session_leaves_its_recording_and_a_note_beside_it(tmp_path: Path) 
     """ADR 0084: a finished and a cancelled session each keep their audio and a note beside it."""
     recordings = tmp_path / "audio"
     provider = _Provider(POLISHED)
-    dictation, ingress = _dictation(tmp_path, lambda _pcm: RAW, provider, recordings=recordings)
+    dictation, ingress = _dictation(
+        tmp_path, lambda _pcm: voice_asr.DictationHeard(RAW, "zh"), provider, recordings=recordings,
+    )
     _dictate(_app(dictation), {"app": "Ghostty", "window": "claude"})
 
     async def cancel() -> None:  # Esc while recording: the desktop closes the stream
@@ -417,7 +429,9 @@ def test_each_session_leaves_its_recording_and_a_note_beside_it(tmp_path: Path) 
         assert audio.stat().st_size > 0
     # Nothing is kept without a recordings folder.
     (tmp_path / "off").mkdir()
-    silent, mic = _dictation(tmp_path / "off", lambda _pcm: RAW, _Provider(POLISHED))
+    silent, mic = _dictation(
+        tmp_path / "off", lambda _pcm: voice_asr.DictationHeard(RAW, "zh"), _Provider(POLISHED),
+    )
     _dictate(_app(silent), {})
     mic.lanes[0].close()
     assert not any((tmp_path / "off").rglob("dictation-*"))
@@ -427,18 +441,21 @@ def test_dictation_without_speech_and_with_a_failing_polish(tmp_path: Path) -> N
     """No words is ``{text: ""}`` without a model call; a failing model gives the raw words."""
     provider = _Provider("unused")
     (tmp_path / "a").mkdir()
-    silent, silent_mic = _dictation(tmp_path / "a", lambda _pcm: "", provider)
+    silent, silent_mic = _dictation(tmp_path / "a", lambda _pcm: _NOTHING, provider)
     assert _dictate(_app(silent), {})[-1] == {"text": "", "raw": ""}
     assert provider.requests == []
     silent_mic.lanes[0].close()
 
     (tmp_path / "b").mkdir()
     failing = _Provider(TimeoutError("slow"))
-    broken, broken_mic = _dictation(tmp_path / "b", lambda _pcm: "原话", failing)
+    broken, broken_mic = _dictation(
+        tmp_path / "b", lambda _pcm: voice_asr.DictationHeard("原话", ""), failing,
+    )
     last = _dictate(_app(broken), {})[-1]
     broken_mic.lanes[0].close()
-    # No vocab.yaml, no vocabulary block.
+    # No vocab.yaml, no vocabulary block; SenseVoice names no language, so no guess line.
     assert "User vocabulary" not in json.dumps(failing.requests)
+    assert "Recognizer's language guess:" not in json.dumps(failing.requests)
     assert set(last) == {"error", "raw"}
     assert last["raw"] == "原话"
     assert "slow" in last["error"]
