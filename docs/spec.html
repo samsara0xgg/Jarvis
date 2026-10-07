@@ -319,7 +319,7 @@ header strong { color: var(--fg-strong); }
 <li><strong>输入。</strong>一句语音、一段文字、一张卡片的答案或一个按钮。</li>
 <li><strong>Tier 0。</strong>先对一张封闭的全句正则表（<code>config/tier0_patterns.yaml</code>）。命中就直接调那一行指定的工具，用语言表里的话回答，不调模型。每一行的工具必须是 <code>regex_router</code> 能用的，回答里不许出现「完成了」一类的词。在它之前还有一步：整句只是要助手再说一遍（「什么」「再说一遍」「没听清」，what? / pardon / say that again 这类），而之前有说出口的回答时，把最近那个回答的语音部分原样再说一遍，也不调模型。</li>
 <li><strong>Jev（ADR 0122，<code>realtime.surrogate_route</code>，出厂关）。</strong>Tier 0 没命中、而且这一项打开时，问 TypeSafe 的 Jev 一个选择题：主人要的是 Tier 0 里哪一个不需要参数的即时功能（时间、日期、剪贴板、屏幕、开始或结束挂机、念便签，或者再说一遍），还是都不是。置信度不低于 <code>min_confidence</code>（0.95）且选的不是「都不是」，就按 Tier 0 命中的同一条路径执行；其余情况（低于门槛、都不是、超过 <code>timeout_ms</code>（400）、HTTP 出错、没有 key、答案读不懂）都当作没问，交给模型。打开 <code>parallel</code>（出厂开）时，主人说的话走 <code>spoken_streaming</code> 的那一轮不等 Jev：模型的请求立刻发出，它的第一个输出要等 Jev 答了（最多 <code>timeout_ms</code>）才能出声或调工具；Jev 的选择要执行时，这个请求被悄悄停掉，改走 Tier 0。其余路径先问 Jev。每次调用记成一条 <code>route.surrogate_decided</code> 事件。</li>
-<li><strong>模型的工具循环。</strong>没命中就把请求发给模型（组成见<a href="#request">第 5 章</a>）。一轮里带工具的请求最多 <code>llm.max_tool_iterations</code> 次（不写是 5，出厂配置是 40，ADR 0060）；Allen 开口说的那一轮改用 <code>llm.max_tool_iterations_voice</code>（出厂配置是 8，不写则同上，ADR 0176）。到顶后再发一次不带工具的请求来收尾，语音轮的收尾沿用本轮的 spoken/written 回复格式。</li>
+<li><strong>模型的工具循环。</strong>没命中就把请求发给模型（组成见<a href="#request">第 5 章</a>）。一轮里带工具的请求最多 <code>llm.max_tool_iterations</code> 次（不写是 5，出厂配置是 40，ADR 0060）；Allen 开口说的那一轮改用 <code>llm.max_tool_iterations_voice</code>（出厂配置是 8，不写则同上，ADR 0178）。到顶后再发一次不带工具的请求来收尾，语音轮的收尾沿用本轮的 spoken/written 回复格式。</li>
 <li><strong>每个工具调用都先变成一个动作请求，</strong>过前置闸门，通过了才执行；闸门的每次判断和动作的每一步都记成事件。</li>
 </ol>
 

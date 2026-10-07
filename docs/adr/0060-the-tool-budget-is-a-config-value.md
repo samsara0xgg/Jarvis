@@ -1,6 +1,6 @@
 # ADR 0060 — The tool budget is a config value
 
-**Status:** Superseded-by-0176
+**Status:** Superseded-by-0178
 **Date:** 2026-09-25
 **Supersedes:** none
 

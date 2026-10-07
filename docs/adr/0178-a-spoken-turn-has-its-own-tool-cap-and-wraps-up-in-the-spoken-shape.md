@@ -1,4 +1,4 @@
-# ADR 0176 — A spoken turn has its own tool cap and wraps up in the spoken shape
+# ADR 0178 — A spoken turn has its own tool cap and wraps up in the spoken shape
 
 **Status:** Accepted
 **Date:** 2026-10-07

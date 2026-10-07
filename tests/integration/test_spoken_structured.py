@@ -346,7 +346,7 @@ def test_the_request_carries_the_schema_only_when_the_switch_is_on(
         assert result.response_plan.text == compose_envelope("我看一下。", "- 10:00 产品会")
 
 
-# ---- the tool budget of a spoken turn (ADR 0176) -----------------------------
+# ---- the tool budget of a spoken turn (ADR 0178) -----------------------------
 
 
 def test_a_spoken_turn_stops_at_the_voice_cap_and_wraps_up_in_the_spoken_shape(

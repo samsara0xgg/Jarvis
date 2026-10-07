@@ -1615,7 +1615,7 @@ _TOOL_BUDGET_ANSWER_PROMPT: Final[str] = (
     "language the user wrote in."
 )
 # A structured spoken turn asks the same of its last request in the reply's own two
-# fields (ADR 0176), so the wrap-up is a short spoken line plus a screen list, not prose.
+# fields (ADR 0178), so the wrap-up is a short spoken line plus a screen list, not prose.
 _TOOL_BUDGET_SPOKEN_PROMPT: Final[str] = (
     "[Runtime note, not the user's words] This turn has used all its tool calls; no more "
     'tools can be called. Answer now from the tool results above only. In "spoken", one or '
