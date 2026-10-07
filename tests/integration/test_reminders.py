@@ -1,4 +1,4 @@
-"""ADR 0171 — owner-set reminders: the tools, the tick that fires them, and the notice routes.
+"""ADR 0178 — owner-set reminders: the tools, the tick that fires them, and the notice routes.
 
 The real tools run through ``ToolRegistry.dispatch`` onto a real event log; the real ``Reminders``
 tick folds that log under a fake clock, and the real ``/inherent/notices`` routes serve what it

@@ -690,7 +690,7 @@ def list_memos(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
     return {"count": len(lines), "rendered": "\n".join(lines) if lines else lang.t("memo.none")}
 
 
-# --- reminders (set_reminder / list_reminders / cancel_reminder) — ADR 0171 --------
+# --- reminders (set_reminder / list_reminders / cancel_reminder) — ADR 0178 --------
 
 _REMINDER_MAX_CHARS: Final[int] = 500
 _REMINDER_PAST_GRACE: Final[timedelta] = timedelta(minutes=1)
@@ -731,7 +731,7 @@ def _reminder_when(due: datetime) -> str:
     read_only=False,
 )
 def set_reminder(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """Append one ``reminder.scheduled`` event; the daemon's tick fires it (ADR 0171)."""
+    """Append one ``reminder.scheduled`` event; the daemon's tick fires it (ADR 0178)."""
     text = str(args.get("text", "")).strip()[:_REMINDER_MAX_CHARS]
     if not text:
         msg = "set_reminder: text is empty"

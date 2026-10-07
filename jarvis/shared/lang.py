@@ -315,7 +315,7 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "tier0.note_list": {"zh": "{rendered}", "en": "{rendered}"},
     "tier0.night": {"zh": "{spoken}", "en": "{spoken}"},
     "memo.none": {"zh": "还没有备忘录。", "en": "No memos yet."},
-    # ADR 0171: owner-set reminders. The line is spoken and is the card's text; ``late`` is
+    # ADR 0178: owner-set reminders. The line is spoken and is the card's text; ``late`` is
     # appended to it when the reminder fired after its time (a restart or a sleeping Mac).
     "reminder.none": {"zh": "没有待响的提醒。", "en": "No reminders waiting."},
     "reminder.line": {"zh": "提醒：{text}", "en": "Reminder: {text}"},

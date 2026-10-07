@@ -1,4 +1,4 @@
-# ADR 0171 — Owner-set reminders are event-log state, fired by a tick with catch-up
+# ADR 0178 — Owner-set reminders are event-log state, fired by a tick with catch-up
 
 **Status:** Accepted
 **Date:** 2026-10-06

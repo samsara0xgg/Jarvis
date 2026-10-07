@@ -2549,7 +2549,7 @@ def _say_conversation_line(
 ) -> None:
     """ADR 0102: one fixed line back to 「等我一下」 or a dismissal, no model and no turn.
 
-    ``phrase`` is the exact line when the caller has built it (a reminder, ADR 0171); otherwise
+    ``phrase`` is the exact line when the caller has built it (a reminder, ADR 0178); otherwise
     one wording of ``conversation.<reason>`` in the language of ``text``.
 
     The words make no turn, so a ``surface.conversation_words`` row is the
@@ -4971,7 +4971,7 @@ def _draft_deps(runtime: JarvisRuntime, home: Home | None) -> dict[str, Any]:
 def _notice_deps(
     job_mail: JobMail | None, reminders: Reminders | None, moment: Moment | None,
 ) -> dict[str, Any]:
-    """The notice routes: job mail's (ADR 0155) plus the owner's fired reminders (ADR 0171).
+    """The notice routes: job mail's (ADR 0155) plus the owner's fired reminders (ADR 0178).
 
     A reminder card is served whatever the quiet level and the hold, ahead of the job mail's, and
     ``POST /inherent/notices/{id}`` routes a ``reminder-`` id to the reminders.
@@ -5050,7 +5050,7 @@ def _say_job_line(runtime: JarvisRuntime) -> None:
 
 
 def _say_reminder(runtime: JarvisRuntime, said: str) -> None:
-    """ADR 0171: one reminder line, said as a conversation line (no model, no turn)."""
+    """ADR 0178: one reminder line, said as a conversation line (no model, no turn)."""
     _say_conversation_line(runtime, _new_turn_id(), "reminder", "", phrase=said)
 
 
@@ -6884,7 +6884,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     name="spend_cap",
                 ))
         if runtime.reminders is not None:
-            # ADR 0171: reminders speak when unmuted and out of a conversation, at any quiet level.
+            # ADR 0178: reminders speak when unmuted and out of a conversation, at any quiet level.
             reminders = runtime.reminders
             reminders.may_speak = lambda: not controls.speech_muted and not controls.conversation
             reminders.say = functools.partial(_say_reminder, runtime)

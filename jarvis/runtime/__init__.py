@@ -639,7 +639,7 @@ class JarvisRuntime:
     job_mail: JobMail | None = None
     # ADR 0161: the situation TimeSink last recorded, read on demand. None = off.
     moment: Moment | None = None
-    # ADR 0171: the clock that fires the owner's reminders. None = hand-assembled.
+    # ADR 0178: the clock that fires the owner's reminders. None = hand-assembled.
     reminders: Reminders | None = None
     # ADR 0052: the Settings page's file. None = hand-assembled.
     settings: Settings | None = None

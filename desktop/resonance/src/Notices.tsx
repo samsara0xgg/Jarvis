@@ -44,7 +44,7 @@ export type Notice = Base & (
 export type JobItem = { id?: string; title?: string; line?: string; company?: string; role?: string; at?: string; event_at?: string | null; event_text?: string | null; mail_kind?: string; count?: number };
 export type JobNotice = JobItem & { id: string; kind: 'mail' | 'digest'; title: string; line?: string; level?: string; link?: 'jobs'; items?: JobItem[] };
 const isJob = (n: Notice): n is Notice & { kind: 'mail' | 'jobs' } => n.kind === 'mail' || n.kind === 'jobs';
-// ADR 0171: a reminder Allen set rides the job-mail notice, but no quiet level, call or away hold keeps it back, and it rings even on speakers.
+// ADR 0178: a reminder Allen set rides the job-mail notice, but no quiet level, call or away hold keeps it back, and it rings even on speakers.
 const isReminder = (n: { kind: string; job?: JobItem }) => n.kind === 'mail' && n.job?.mail_kind === 'reminder';
 // What the daemon is told about a notice: POST /inherent/notices/{id} { action: 'seen' } or { action: 'feedback', reaction }.
 const tell = (port: string | null, id: string, body: { action: 'seen' } | { action: 'feedback'; reaction: string }) => { if (port) void postRoute(port, `/inherent/notices/${encodeURIComponent(id)}`, body).catch(() => undefined); };
@@ -205,7 +205,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
       for (const n of s.queue) if (isJob(n) && !isReminder(n) && !s.seen.has(n.id)) s.jobIds.delete(n.id);
       // A card Allen brought up himself stays under a call or away hold (ADR 0163): his own click is never held back.
       const mine = !noCards(quiet) && s.queue[0]?.key === s.forced ? s.queue[0] : undefined;
-      // A reminder stays in the queue through any hold (ADR 0171).
+      // A reminder stays in the queue through any hold (ADR 0178).
       const reminders = s.queue.filter(isReminder);
       const taken = [...s.queue.filter(n => n !== mine && !isJob(n)).flatMap(n => n.kind === 'digest' ? n.items : [n]), ...s.folded], by = holdBy() ?? 'quiet', at = Date.now();
       for (const n of taken) n.held ??= { by, at };
@@ -426,7 +426,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   const ok = current ? card(current).ok : '', rating = !!current && !!card(current).rating && !card(current).rated;
   const size = current?.kind === 'pop' ? current.ids.length : 0;
   useEffect(() => {
-    // A reminder stays until Allen dismisses it (ADR 0171).
+    // A reminder stays until Allen dismisses it (ADR 0178).
     if (!current || hover || ok || rating || isReminder(current)) return;
     // A pop the pointer has been on goes 1.5 s after it leaves.
     const t = setTimeout(() => needs(current) ? fold() : next(), needs(current) ? FOLD_MS : current.kind === 'digest' || isJob(current) ? DIGEST_MS : s.touched === current.key ? 1500 : POP_MS);
