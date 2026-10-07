@@ -27,6 +27,7 @@ export type Mail = { id: string; from: string; subject: string; received: string
 export type Notice = { id: string; text: string; at: string };
 
 export type Route<T> = { data: T | null; missing: boolean; reload: () => void };
+const RETRY_MS = 10_000;
 // Polled while the panel is open. A 404 means the daemon does not serve the route; any other failure keeps what was shown.
 export function useRoute<T>(port: string | null, path: string, open: boolean, everyMs: number): Route<T> {
   const [data, setData] = useState<T | null>(null), [missing, setMissing] = useState(false);
@@ -34,12 +35,15 @@ export function useRoute<T>(port: string | null, path: string, open: boolean, ev
   useEffect(() => {
     if (!port || !open) return;
     let stop = false, timer: ReturnType<typeof setTimeout>;
+    // A read that failed (daemon restarting, a slow first upstream call) is tried again in seconds, not at the next tick.
     const load = async () => {
+      let ok = false;
       try {
         const r = await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(5000) });
+        ok = r.ok || r.status === 404;
         if (!stop) { setMissing(r.status === 404); if (r.ok) setData(await r.json() as T); else if (r.status === 404) setData(null); }
-      } catch { /* daemon away; the next tick retries */ }
-      if (!stop) timer = setTimeout(load, everyMs);
+      } catch { /* daemon away; retried below */ }
+      if (!stop) timer = setTimeout(load, ok ? everyMs : Math.min(everyMs, RETRY_MS));
     };
     void load();
     return () => { stop = true; clearTimeout(timer); };
