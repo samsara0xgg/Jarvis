@@ -532,11 +532,15 @@ export function Companion() {
   // A panel she opened or turned stays when the pointer leaves: he is talking, not pointing, and a window that moves under a
   // still pointer reads as a leave (2026-10-07). A click outside it, the island, Esc or back closes it.
   // No page: she closes it on his word.
+  // A shut panel waits until her answer starts, so the page arrives with her words rather than before them (2026-10-07).
+  const presented = useRef(0);
   useEffect(() => {
-    if (!s.present) return;
+    if (!s.present || s.present.key === presented.current) return;
+    if (s.present.page !== null && !dashboard && s.phase === 'processing') return;
+    presented.current = s.present.key;
     if (s.present.page === null) { if (!detached) fold('her word'); return; }
     openDashboard(false); pinned.current = true; herOpen.current = true;
-  }, [s.present?.key]);
+  }, [s.present?.key, s.phase]);
   // Told to step away (退下), she takes the panel she opened with her; one Allen opened stays.
   useEffect(() => { if (s.dismissals && herOpen.current && !detached) fold('her dismissal'); }, [s.dismissals]);
   // R&D log (resonance.out.log): who closed the panel, with where the pointer and the panel were.
