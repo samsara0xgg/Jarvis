@@ -331,7 +331,7 @@ export function Companion() {
   // came up under the pointer a moment ago, and not while the pointer is on the card.
   const away = useRef(() => undefined as void);
   away.current = () => { if (notice && notice.kind !== 'pop' && !notices.hovering && performance.now() - notices.openedAt > 800) notices.dismiss(); };
-  useEffect(() => window.jarvis?.onMouseDown?.(() => away.current()), []);
+  useEffect(() => window.jarvis?.onMouseDown?.(() => { away.current(); outside.current(); }), []);
   // ADR 0153: at dnd the marks beside the notch stay as they were when it began; nothing outside shows there.
   const frozen = useRef<{ agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string> } | null>(null);
   if (s.quiet !== 'dnd') frozen.current = null;
@@ -379,7 +379,7 @@ export function Companion() {
   }, []);
 
   const zoneTimer = useRef<ReturnType<typeof setTimeout>>(undefined), pending = useRef<Zone>('none'), nearTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const dashTimer = useRef<ReturnType<typeof setTimeout>>(undefined), dashEntered = useRef(false), pinned = useRef(false), dashClosedHere = useRef(false), interactive = useRef(false);
+  const dashTimer = useRef<ReturnType<typeof setTimeout>>(undefined), dashEntered = useRef(false), pinned = useRef(false), herOpen = useRef(false), dashClosedHere = useRef(false), interactive = useRef(false);
   const script = useRef<ReturnType<typeof setTimeout>[]>([]);
   const after = (ms: number, run: () => void) => { script.current.push(setTimeout(run, ms)); };
   const stopScript = () => { script.current.forEach(clearTimeout); script.current = []; };
@@ -534,12 +534,14 @@ export function Companion() {
   }, [request?.id, request?.presentation]);
   const openDashboard = (hovered: boolean) => {
     if (detached || detachedMode.current) { void window.jarvis?.dashboard?.('open'); if (!detached) return; }
-    pinned.current = false; dashEntered.current = hovered; setDashboard(true); setComposer(false); if (!detached) void window.jarvis?.focus(false);
+    pinned.current = false; herOpen.current = false; dashEntered.current = hovered; setDashboard(true); setComposer(false); if (!detached) void window.jarvis?.focus(false);
   };
   // The job summary's button: the Dashboard opens on the job ledger and the summary goes without a "dismissed".
   const openJobs = () => { openDashboard(false); pinned.current = true; if (detachedMode.current) window.jarvis?.dashboardMessage?.('dashboard', { type: 'jobs' }); else setJobsFocus(n => n + 1); notices.next(); };
   // ADR 0176: she turned the Dashboard to a page. A shut one opens (she moves it only when Allen asked to see something), and the page follows.
-  useEffect(() => { if (s.present) { openDashboard(false); pinned.current = true; } }, [s.present?.key]);
+  // A panel she opened or turned stays when the pointer leaves: he is talking, not pointing, and a window that moves under a
+  // still pointer reads as a leave (2026-10-07). A click outside it, the island, Esc or back closes it.
+  useEffect(() => { if (s.present) { openDashboard(false); pinned.current = true; herOpen.current = true; } }, [s.present?.key]);
   // R&D log (resonance.out.log): who closed the panel, with where the pointer and the panel were.
   const fold = (why: string) => {
     if (live.current.dashboard) {
@@ -550,7 +552,7 @@ export function Companion() {
   };
   const closeDashboard = (why = 'back or Esc') => { if (detached) void window.jarvis?.dashboard?.('close'); else fold(why); };
   // Clicking the island opens the Dashboard; a click on one it is already showing closes it, unless a rest opened it a moment
-  // before (that click is the same reach for it). However it opened, it folds by itself once the pointer leaves (below).
+  // before (that click is the same reach for it). Unless she opened it, it folds by itself once the pointer leaves (below).
   const toggleDashboard = () => {
     clearTimeout(dashTimer.current); dashTimer.current = undefined;
     if (live.current.dashboard && pinned.current) { fold('a click on the island'); pinned.current = false; dashClosedHere.current = true; }
@@ -585,7 +587,15 @@ export function Companion() {
     });
   }, []);
   useEffect(() => { if (!detached) window.jarvis?.dashboardVisible?.(dashboard); }, [dashboard]);
-  useEffect(() => { if (!detached) console.info(`[dashboard] ${dashboard ? 'open' : 'closed'}`); }, [dashboard]);
+  useEffect(() => { if (!detached) console.info(`[dashboard] ${dashboard ? 'open' : 'closed'}`); if (!dashboard) herOpen.current = false; }, [dashboard]);
+  // A press anywhere else on screen closes a panel she opened (the pointer leaving does not, above).
+  const outside = useRef(() => undefined as void);
+  outside.current = () => {
+    if (detached || !live.current.dashboard || !herOpen.current) return;
+    const p = cursor.current, panel = root.current?.querySelector('.companion-dashboard')?.getBoundingClientRect();
+    const over = live.current.geo.zones.dash.some(r => within(p, r)) || (!!panel && p.x >= panel.left && p.x <= panel.right && p.y >= 0 && p.y <= panel.bottom);
+    if (!over) fold('a click outside');
+  };
   useEffect(() => detached ? undefined : window.jarvis?.onDashboardDock?.(setDocking), []);
   const focusNotice = useRef(notices.focus); focusNotice.current = notices.focus;
   const dashboardMood = useCallback((expr: ExprId | null) => { if (detached) { if (detachedMode.current) window.jarvis?.dashboardMessage?.('parent', { type: 'mood', value: expr }); } else setDashMood(expr); }, []);
@@ -715,7 +725,7 @@ export function Companion() {
       if (!over) dashClosedHere.current = false;
       if (dashboard) {
         if (over || dashHeld()) { if (over) dashEntered.current = true; clearTimeout(dashTimer.current); dashTimer.current = undefined; }
-        else if (dashEntered.current && (toward || !dashTimer.current)) {
+        else if (dashEntered.current && !herOpen.current && (toward || !dashTimer.current)) {
           clearTimeout(dashTimer.current);
           dashTimer.current = setTimeout(() => { dashTimer.current = undefined; if (!dashHeld()) { fold('the pointer leaving'); pinned.current = false; } }, DASHBOARD_EXIT_MS);
         }
