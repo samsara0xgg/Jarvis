@@ -1049,9 +1049,11 @@ def test_the_media_actor_builder_runs_around_a_remote_provider_with_no_key(
     monkeypatch.setattr(voice_tts, "_open_output_stream", _open_stream(pull=False))
     pipeline = inherent_loop._build_tts_pipeline(  # noqa: SLF001
         _host(SPEECH_CONFIG, journal), broadcaster, remote=remote,
+        network_lost_dir=tmp_path / "kept",
     )
     assert isinstance(pipeline, voice_media.StreamingTTSPipeline)
     assert pipeline._provider is remote  # noqa: SLF001
+    assert pipeline._config.network_lost_cache_dir == tmp_path / "kept"  # noqa: SLF001
     assert pipeline.close()
 
     off = {"realtime": {"enabled": False}}

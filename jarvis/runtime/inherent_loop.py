@@ -2855,12 +2855,15 @@ def _build_tts_pipeline(  # noqa: C901, PLR0913, PLR0915 - rollout/degradation c
     voice: _VoiceKnobs | None = None,
     echo_canceller: voice_aec.EchoCanceller | None = None,
     remote: voice_media.StreamingTTSProvider | None = None,
+    network_lost_dir: Path | None = None,
 ) -> voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None:
     """Build the TTS subsystem when ``MINIMAX_API_KEY`` is present.
 
     ``remote`` (ADR 0172) is a voice terminal's provider, whose sessions run on the brain,
     which holds the key: the media actor is built around it, with no key here and no
-    legacy fallback, because the legacy pipeline needs the client itself.
+    legacy fallback, because the legacy pipeline needs the client itself. ``network_lost_dir``
+    is where a terminal keeps the audio of the cut-off line between runs, so a start does not
+    pay the brain for the same sentence again.
 
     ADR-0005 §5.3 — the env var is the sole credential source for the
     MiniMax WebSocket. Without it we skip the entire TTS pipeline
@@ -2976,7 +2979,10 @@ def _build_tts_pipeline(  # noqa: C901, PLR0913, PLR0915 - rollout/degradation c
                 player=player,
                 conn_factory=lambda: open_runtime_event_log(runtime.runtime_paths.event_log),
                 boot_high_water_id=_latest_id(runtime.conn),
-                config=media_config,
+                config=(
+                    media_config if media_config is None or network_lost_dir is None
+                    else dataclasses.replace(media_config, network_lost_cache_dir=network_lost_dir)
+                ),
                 broadcaster=broadcaster,
                 ducker=ducker,
                 foreground_decision_callable=make_foreground_decision_callable(

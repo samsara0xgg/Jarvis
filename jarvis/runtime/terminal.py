@@ -546,6 +546,7 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
     pipeline = _build_tts_pipeline(
         seat, broadcaster, ducker=SystemAudioDucker(), voice=_voice_knobs(speaking.config),
         echo_canceller=canceller, remote=RemoteTTSProvider(link),
+        network_lost_dir=speaking.runtime_root / "terminal",
     )
     if not isinstance(pipeline, StreamingTTSPipeline):
         LOGGER.warning("voice is on but the media actor did not start; this terminal is mute")

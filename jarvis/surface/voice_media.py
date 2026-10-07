@@ -86,6 +86,8 @@ _SPARE_SESSION_MAX_AGE_S = 60.0
 # id never reaches the Event Log's response rows, only tts.usage_observed.
 _NETWORK_LOST_RESPONSE_ID = "network-lost-line"
 _NETWORK_LOST_PREFETCH_TIMEOUT_S = 20.0
+# A kept copy of the line is trusted this long, so a changed voice shows up within a month.
+_NETWORK_LOST_KEEP_S = 30 * 24 * 3600.0
 # The rate the say fallback renders at; the player resamples it like provider PCM.
 _SAY_RATE_HZ = 24_000
 _CHANNEL_TAG_RE = re.compile(r"</?(?:voice|document)>")
@@ -275,6 +277,9 @@ class StreamingMediaConfig:
     enable_macos_say_fallback: bool = True
     speak_from_segments: bool = False
     prefetch_network_lost_line: bool = True
+    # Where the line's audio is kept between runs; ``None`` keeps it in memory only. A voice
+    # terminal sets it: the audio of a fixed line is not the owner's state (ADR 0172).
+    network_lost_cache_dir: Path | None = None
     # ADR 0165: drop the provider's silence at generation start and junctions.
     trim_silence: bool = False
     trim_threshold_db: float = -50.0
@@ -1786,6 +1791,11 @@ class StreamingTTSPipeline:
         """Own session, no player, no response rows: a failure only leaves the tones."""
         session: TTSSession | None = None
         try:
+            kept = await asyncio.to_thread(self._read_kept_network_lost_line, code)
+            if kept is not None:
+                self._network_lost_pcm[code] = kept
+                record_realtime_trace("tts_network_lost_line_cached", language=code, source="disk")
+                return
             session = self._provider.create_tts_session(
                 endpoint_index=0,
                 language=code,
@@ -1827,12 +1837,47 @@ class StreamingTTSPipeline:
                     language=code,
                     pcm_bytes=len(self._network_lost_pcm[code]),
                 )
+                await asyncio.to_thread(
+                    self._keep_network_lost_line, code, self._network_lost_pcm[code],
+                )
         except Exception:  # noqa: BLE001 - the tones remain the fallback
             LOGGER.debug("network-lost line was not synthesized", exc_info=True)
         finally:
             self._network_lost_task = None
             if session is not None:
                 await self._wait_task_bounded(asyncio.create_task(session.close()), timeout_s=0.5)
+
+    def _network_lost_file(self, code: lang.Language) -> Path | None:
+        """The kept audio of the line: named by its text and rate, so an edit starts afresh."""
+        directory = self._config.network_lost_cache_dir
+        if directory is None:
+            return None
+        key = f"{lang.t('tts.network_lost', lang=code)}|{self._config.canonical_sample_rate_hz}"
+        digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+        return directory / f"network-lost-{code}-{digest}.pcm"
+
+    def _read_kept_network_lost_line(self, code: lang.Language) -> bytes | None:
+        """The line's audio from an earlier run, or ``None`` when absent, stale or unreadable."""
+        path = self._network_lost_file(code)
+        try:
+            if path is None or time.time() - path.stat().st_mtime > _NETWORK_LOST_KEEP_S:
+                return None
+            return path.read_bytes() or None
+        except OSError:
+            return None
+
+    def _keep_network_lost_line(self, code: lang.Language, pcm: bytes) -> None:
+        """Keep the line's audio for the next run; a disk that refuses only costs a call then."""
+        path = self._network_lost_file(code)
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            partial = path.with_suffix(".tmp")
+            partial.write_bytes(pcm)
+            partial.replace(path)
+        except OSError:
+            LOGGER.debug("network-lost line was not kept on disk", exc_info=True)
 
     def _spare_fresh(self) -> bool:
         return asyncio.get_running_loop().time() - self._spare_ready_at <= _SPARE_SESSION_MAX_AGE_S

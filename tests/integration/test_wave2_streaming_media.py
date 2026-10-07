@@ -2599,6 +2599,51 @@ def test_a_break_after_a_good_answer_says_the_cached_network_lost_line_not_the_t
     assert not any("network-lost-line" in row[0] for row in rows)
 
 
+def test_a_kept_network_lost_line_is_read_from_disk_not_synthesized_again(
+    tmp_path: Path,
+) -> None:
+    """A voice terminal's second start has the line from its own disk; the brain is not asked."""
+    cache = tmp_path / "terminal"
+
+    def start(name: str) -> tuple[_FakeProvider, bytes]:
+        db_path = tmp_path / f"{name}.db"
+        conn = open_event_log(db_path)
+        provider = _FakeProvider(
+            {("R-" + name, 0): _Behavior(), ("network-lost-line", 0): _Behavior(amplitude=5_000)},
+            candidate_count=1,
+        )
+        pipeline = voice_media.StreamingTTSPipeline(
+            provider=provider,
+            player=_player(),
+            conn_factory=lambda: open_event_log(db_path),
+            boot_high_water_id=0,
+            config=replace(
+                _config(), prefetch_network_lost_line=True, network_lost_cache_dir=cache,
+            ),
+            start_player=False,
+        )
+        try:
+            first = _emit_response(
+                conn, response_id="R-" + name, group_id="G-" + name, turn_id="T-" + name,
+                text=["all good."],
+            )
+            asyncio.run(_submit_response(pipeline, first))
+            assert pipeline.wait_until_idle(timeout_s=3.0)
+            _wait_until(lambda: bool(pipeline._network_lost_pcm))  # noqa: SLF001
+            line = next(iter(pipeline._network_lost_pcm.values()))  # noqa: SLF001
+        finally:
+            assert pipeline.close()
+            conn.close()
+        return provider, line
+
+    first_provider, first_line = start("one")
+    second_provider, second_line = start("two")
+    assert ("network-lost-line", 0) in first_provider.opened
+    assert ("network-lost-line", 0) not in second_provider.opened
+    assert second_line == first_line
+    assert len(list(cache.glob("network-lost-*.pcm"))) == 1
+
+
 def test_a_say_that_cannot_render_says_the_rest_aloud(tmp_path: Path) -> None:
     """A failed render falls back to the old way, straight to the speakers."""
     db_path = tmp_path / "macos-say-aloud.db"
