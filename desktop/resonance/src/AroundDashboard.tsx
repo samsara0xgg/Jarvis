@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, type Ref, type WheelEvent } from 'react';
 import { ArrowSquareOut, ArrowUp, ArrowsClockwise, Briefcase, CaretDown, CaretLeft, CaretRight, CaretUp, ChatCircle, Check, Cloud, CloudFog, CloudLightning, CloudRain, CloudSnow, EnvelopeSimple, GearSix, GitBranch, MagnifyingGlass, ShieldCheck, SpeakerHigh, SpeakerSlash, Sun, X } from '@phosphor-icons/react';
 import { TAKES, pick, type ExprId } from './starCore';
-import { balanceParts, useUsage, type UsageWindow } from './QuotaModule';
+import { balanceTotal, useUsage, type UsageWindow } from './QuotaModule';
 import { useCodexSessions } from './CodexModule';
 import { AGENT_NAME, DEMO_AGENTS, fromClaude, fromCodex, useClaudeSessions, type Agent, type AgentState, type ShownAgent } from './agents';
 import { freshnessLine, nowLine, useWorkState, type Basis } from './WorkStateModule';
@@ -836,7 +836,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       {back(t(TITLES.usage), <button className="us-sync" aria-label={t(['Refresh', '刷新'])} disabled={quota.refreshing} onClick={() => { void quota.refresh(); tokens.refresh(); }}>
         {!quota.refreshing && synced ? t([`synced ${hm(synced)}`, `${hm(synced)} 同步`]) : t(['syncing…', '同步中…'])}<ArrowsClockwise size={11} className={quota.refreshing ? 'is-spinning' : ''}/></button>)}
       <div className="pg-body"><div className="pg-sec"><h4>{t(['Balances', '余额'])}</h4><div className="bal">
-        <div className="bal-card"><Account id="deepseek">DeepSeek</Account>{deepseek?.status === 'ok' ? balanceParts(deepseek.data.balances).map(p => <b key={p}>{p}</b>) : <b>—</b>}</div>
+        <div className="bal-card"><Account id="deepseek">DeepSeek</Account><b>{deepseek?.status === 'ok' ? balanceTotal(deepseek.data.balances) : '—'}</b></div>
         <Balance id="openai" name="OpenAI" left={openai?.status === 'ok' ? openai.data.balance_usd : undefined} since={openai?.data.balance_recorded_at} live={!!port} onSaved={balanceSaved}/>
         <div className="bal-card"><Account id="minimax">MiniMax</Account><b>{minimax?.status === 'ok' ? usd(minimax.data.balance) : '—'}</b></div>
       </div></div>

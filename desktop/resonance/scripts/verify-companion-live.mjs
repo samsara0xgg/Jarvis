@@ -543,9 +543,9 @@ try {
     check('L13 the OpenAI balance says since when, with Update; MiniMax shows its own, with nothing to type', (await balanceCard('OpenAI').locator('b').textContent()) === '≈ $23.25' && (await balanceCard('OpenAI').locator('small').textContent()) === 'since Sep 25' && (await balanceCard('OpenAI').locator('.bal-set').textContent()) === 'Update'
       && (await balanceCard('MiniMax').locator('b').textContent()) === '$15.36' && await balanceCard('MiniMax').locator('.bal-set').count() === 0);
     await page.locator('.ad .pg-body').evaluate(b => { b.scrollTop = 0; }); await page.waitForTimeout(300);
-    check('L13 balances open the page, Set in view without scrolling, and DeepSeek shows every currency, a debt as -$0.10', await page.locator('.ad .pg-body > .pg-sec').first().locator('.bal').count() === 1
+    check('L13 balances open the page, Set in view without scrolling, and DeepSeek sums its yuan and dollar rows into one dollar figure', await page.locator('.ad .pg-body > .pg-sec').first().locator('.bal').count() === 1
       && await balanceCard('OpenAI').locator('.bal-set').evaluate(el => { const r = el.getBoundingClientRect(), b = el.closest('.pg-body').getBoundingClientRect(); return r.bottom <= b.bottom && r.top >= b.top; })
-      && (await balanceCard('DeepSeek').locator('b').allTextContents()).join() === '¥19.97,-$0.10');
+      && (await balanceCard('DeepSeek').locator('b').textContent()) === '≈ $2.71');
     await panelShot('L13-usage-balances');
     await balanceCard('OpenAI').locator('.bal-set').click(); await page.waitForTimeout(300);
     const save = page.locator('.ad .bal-card.is-editing .btn-glow');

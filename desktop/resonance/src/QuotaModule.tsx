@@ -73,10 +73,15 @@ const hm = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
 const fmtTime = (ms?: number | null) => (ms ? hm(new Date(ms)) : '—');
 const fmtUsd = (n?: number) => (n === undefined ? '—' : `$${n.toFixed(2)}`);
-const SIGN: Record<string, string> = { USD: '$', CNY: '¥' };
-// ["¥19.97", "-$0.10"]: every currency, debt signed, in the order the daemon sorted them.
-export const balanceParts = (b: Record<string, number> = {}) => Object.entries(b)
-  .map(([cur, n]) => `${n <= -.005 ? '-' : ''}${SIGN[cur] ?? `${cur} `}${Math.abs(n).toFixed(2)}`);
+// ponytail: a fixed rate (DeepSeek's own CNY/USD price ratio); fetch a live one if the gap ever matters.
+const CNY_PER_USD = 7.1;
+// One account spends both rows: their sum in dollars, "≈" once a yuan row was converted, debt signed.
+export const balanceTotal = (b: Record<string, number> = {}) => {
+  const rows = Object.entries(b);
+  if (!rows.length) return '—';
+  const total = rows.reduce((sum, [cur, n]) => sum + (cur === 'CNY' ? n / CNY_PER_USD : n), 0);
+  return `${rows.some(([cur]) => cur === 'CNY') ? '≈ ' : ''}${total <= -.005 ? '-' : ''}$${Math.abs(total).toFixed(2)}`;
+};
 const fmtTokens = (n?: number) => (n === undefined ? '—' : n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(0)}K` : String(n));
 const tone = (s?: UsageService<unknown>) => (!s || s.status === 'unconfigured' ? 'muted' : s.status === 'ok' ? 'ok' : 'warn');
 const statusText = (s?: UsageService<unknown>) => (!s || s.status === 'unconfigured' ? '未配置' : s.status === 'ok' ? '正常' : '同步异常');
@@ -148,7 +153,7 @@ function Balances({ usage, provider }: { usage: Usage; provider?: 'deepseek' | '
   const { deepseek, minimax } = usage.services;
   return <>
     {provider !== 'minimax' && <><Head glyph="deepseek" name="DeepSeek" service={deepseek}/>
-    {deepseek?.status === 'ok' ? <div className="quota-big"><strong>{balanceParts(deepseek.data.balances).join(' · ') || '—'}</strong><small>官方余额</small></div> : <p className="quota-note">{deepseek?.error ?? '未配置'}</p>}
+    {deepseek?.status === 'ok' ? <div className="quota-big"><strong>{balanceTotal(deepseek.data.balances)}</strong><small>官方余额</small></div> : <p className="quota-note">{deepseek?.error ?? '未配置'}</p>}
     </>}
     {!provider && <div className="quota-divider"/>}
     {provider !== 'deepseek' && <><Head glyph="minimax" name="MiniMax" service={minimax}/>
