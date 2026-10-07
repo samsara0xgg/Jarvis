@@ -22,10 +22,10 @@ Jarvis sits next to the MacBook notch as a small glass ball with eyes. It answer
 ## What it does
 
 - **What's left today, and what you did yesterday.** Answers come from your calendar, to-dos, git history and screen activity, and each item in the daily report points back to the record it came from.
-- **Claude Code and Codex from the notch.** Each session is a star beside the notch. When one wants to run a command, a card drops down and you allow or deny it without switching windows.
+- **Claude Code and Codex from the notch.** Sessions show as marks beside the notch, grouped by whether they need you, are working, finished or parked. When a Claude Code session wants to run a command, a card drops down and you allow or deny it without switching windows.
 - **It remembers.** Each past day is kept as a short summary, and every night it rewrites what it knows about you as a new, undoable version. The Memory page shows each note with the record it came from, and lets you correct it.
 - **Mail that needs you.** A small model reads new mail, marks the letters that need a reply and the junk you can archive with one tap. The Mail page opens a letter with a one-line summary and can draft the reply.
-- **It speaks up, carefully.** When something needs you, a card comes to the notch, and every card asks in one tap whether it was worth it. You can tell it to stop popping up, or not to disturb you at all, and it saves what it held back for one summary later.
+- **It speaks up, carefully.** When something needs you, a card comes to the notch, and every card asks whether it came at the right level. You can tell it to stop popping up, or not to disturb you at all, and it saves what it held back for one summary later.
 - **Your limits.** The Usage page shows how much of your Claude and Codex plans you've used, when each limit resets, and where your tokens went by day and session.
 - **English and Chinese.** It follows whichever one you speak.
 - **Your accounts through MCP.** Gmail, Outlook, Microsoft To Do, GitHub and Notion connect as plugins, and it asks before it acts on any of them.
@@ -47,7 +47,7 @@ Jarvis sits next to the MacBook notch as a small glass ball with eyes. It answer
 
 **Interrupting it.** The first version, [jarvis-legacy](https://github.com/samsara0xgg/jarvis-legacy), had an interrupt feature. Measured later, it had never fired once. Here you can talk over Jarvis at any point. With a reSpeaker XVF3800 mic array, its own voice is removed on the board before speech recognition hears it.
 
-**Long answers.** A model's answer is written to be read, and read aloud word for word it drags. The full answer goes on screen, and Jarvis speaks a version of one to three sentences; the written part lights up as she says it. A turn that calls a tool says what it is about to do, and a slow one says so instead of going silent.
+**Long answers.** A model's answer is written to be read, and read aloud word for word it drags. The full answer goes on screen, and Jarvis speaks a version of one to three sentences, which lights up on screen as she says it. While a tool runs, the screen shows which one, and a slow turn says so instead of going silent.
 
 **Staying fast as it remembers more.** Every turn read the whole event log before calling the model, so the wait grew with the log: 0.16 s at 16k events, 1.36 s at 49k. Each turn now reads only the events since the last one. Asking OpenAI for its fast tier on spoken turns cut the first token from a median of 1.04 s to 0.68 s, and the speech provider's padding is trimmed so answers start without dead air.
 
