@@ -170,6 +170,34 @@ def test_a_structured_answer_speaks_its_spoken_part_and_keeps_written_as_the_doc
     assert "<voice></voice>" not in note
 
 
+def test_a_typed_turn_takes_the_spoken_route_in_one_request_and_is_never_played(
+    tmp_path: Path,
+) -> None:
+    """ADR 0181: the talk field's turn gets the spoken request shape and card, no rewrite."""
+    from jarvis.runtime.inherent_loop import _TTS_SILENT_CHANNELS  # noqa: PLC0415
+    from jarvis.state.event_log import emit_event  # noqa: PLC0415
+
+    with _Peer([[("final_answer", _reply(_SPOKEN, _WRITTEN))]]) as peer:
+        runtime = _structured_runtime(tmp_path, peer.url)
+        typed = emit_event(
+            runtime.conn,
+            type="surface.user_intent",
+            payload={"transcript": "今天有什么安排", "turn_id": "turn-t", "channel": "cli_stdin"},
+            correlation={"turn_id": "turn-t"},
+        )
+        result = _drive(runtime, typed)
+    assert len(peer.requests) == 1, "the answer request only: no spoken-form rewrite"
+    ((path, body),) = peer.requests
+    assert path == "/v1/responses"
+    assert body["text"] == {"format": SPOKEN_REPLY_FORMAT}
+    assert 'a JSON object with \\"spoken\\" and \\"written\\"' in json.dumps(body)
+    assert result.response_plan.text == compose_envelope(_SPOKEN, _WRITTEN)
+    (emitted,) = _payloads(runtime.conn, "surface.response_emitted")
+    assert (emitted["voice_text"], emitted["document_text"]) == (_SPOKEN, _WRITTEN)
+    # Nothing of it is played: the speaker's silent set holds its intent channel.
+    assert "cli_stdin" in _TTS_SILENT_CHANNELS
+
+
 def test_the_surface_never_speaks_the_written_part(tmp_path: Path) -> None:
     """Chunks plus the emitted voice text are all L5 can speak; written is in neither."""
     with _Peer([[("final_answer", _reply(_SPOKEN, _WRITTEN))]]) as peer:

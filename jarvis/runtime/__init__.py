@@ -95,6 +95,7 @@ from jarvis.decision.pre_route import (
     routine_risk_context,
     spoken_risk_context,
     spoken_turn,
+    typed_turn,
 )
 from jarvis.decision.response_run import (
     CancelAccepted,
@@ -2850,9 +2851,9 @@ def _start_drive_turn_response(
     ADR-0008 Step 8: with ``routine_streaming`` on, the route is decided here,
     before the run opens, and a ``casual_or_explanatory`` turn opens under
     ``routine_stream_policy`` with the streaming seam bound. With
-    ``spoken_streaming`` on, a turn Allen spoke opens as ``spoken`` under
-    ``spoken_stream_policy`` first. Every other turn (and every correction
-    run) keeps ``legacy_full_text_policy``.
+    ``spoken_streaming`` on, a turn Allen spoke or typed opens as ``spoken``
+    under ``spoken_stream_policy`` first (a typed one is never played, ADR 0181).
+    Every other turn (and every correction run) keeps ``legacy_full_text_policy``.
     """
     if not runtime.response_flags.response_run_lifecycle:
         return None
@@ -2873,7 +2874,7 @@ def _start_drive_turn_response(
     if (
         runtime.response_flags.spoken_streaming
         and correction is None
-        and spoken_turn(user_intent_event)
+        and (spoken_turn(user_intent_event) or typed_turn(user_intent_event))
         and snapshot.provider == "openai"
         and _labels_phases(snapshot.base_url)
     ):

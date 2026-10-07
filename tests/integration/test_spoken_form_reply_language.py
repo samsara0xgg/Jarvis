@@ -99,7 +99,7 @@ class _RecordingClient:
 
 
 def _spoken_form_system(
-    tmp_path: Path, reply_language: str, *, answer: str = LONG_ENGLISH
+    tmp_path: Path, reply_language: str, *, answer: str = LONG_ENGLISH, channel: str | None = None
 ) -> tuple[list[str], str]:
     """The system prompts of one turn's requests, and its final plan text."""
     llm = _RecordingClient(answer)
@@ -120,7 +120,8 @@ def _spoken_form_system(
     trigger = emit_event(
         conn,
         type="surface.user_intent",
-        payload={"transcript": TRANSCRIPT, "turn_id": "T_lang"},
+        payload={"transcript": TRANSCRIPT, "turn_id": "T_lang"}
+        | ({} if channel is None else {"channel": channel}),
         correlation={"turn_id": "T_lang"},
     )
     result = decide(trigger, ctx)
@@ -144,6 +145,21 @@ def test_reply_language_picks_the_spoken_form_prompt(
     assert systems[1] == prompt
     voice, document = split_envelope(text)[:2]
     assert (voice, document) == (SPOKEN, LONG_ENGLISH)
+
+
+def test_a_typed_turn_makes_no_spoken_form_request_and_shows_its_answer_once(
+    tmp_path: Path,
+) -> None:
+    """ADR 0181: the owner's typed turn is never spoken, so nothing rewrites its answer."""
+    (tmp_path / "typed").mkdir()
+    (tmp_path / "voice").mkdir()
+    systems, text = _spoken_form_system(tmp_path / "typed", "en", channel="cli_stdin")
+    assert len(systems) == 1
+    assert text == LONG_ENGLISH
+    # Positive control: the same answer to a turn he spoke still gets the rewrite.
+    systems, text = _spoken_form_system(tmp_path / "voice", "en", channel="inherent_ptt")
+    assert len(systems) == 2
+    assert split_envelope(text)[:2] == (SPOKEN, LONG_ENGLISH)
 
 
 def test_short_english_answer_under_en_is_spoken_as_written(tmp_path: Path) -> None:

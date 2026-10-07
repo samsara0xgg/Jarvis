@@ -191,7 +191,10 @@ def _run(  # noqa: PLR0913 - one run's trigger, channel and turn
 def test_exit_cancels_every_open_run_that_would_speak_and_leaves_the_rest(
     tmp_path: Path,
 ) -> None:
-    """Whatever their age or number; a document, a silent channel and a background run stay."""
+    """Whatever their age or number; a document, a silent channel and a background run stay.
+
+    A Live relay and a typed turn (ADR 0181) are the silent channels: nothing of them speaks.
+    """
     runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
     assert runtime.response_runs is not None
     _run(runtime, "R-voice-old", "T-old")
@@ -204,7 +207,7 @@ def test_exit_cancels_every_open_run_that_would_speak_and_leaves_the_rest(
     inherent_loop._make_cancel_voice_runs(runtime)()  # noqa: SLF001
 
     assert {run.response_id for run in runtime.response_runs.open_runs()} == {
-        "R-document", "R-live", "R-sweep",
+        "R-document", "R-live", "R-sweep", "R-typed",
     }
     cancelled = {
         (row[0], row[1])
@@ -214,7 +217,7 @@ def test_exit_cancels_every_open_run_that_would_speak_and_leaves_the_rest(
         )
     }
     assert cancelled == {
-        ("R-voice-old", "user_stop"), ("R-voice-new", "user_stop"), ("R-typed", "user_stop"),
+        ("R-voice-old", "user_stop"), ("R-voice-new", "user_stop"),
     }
     # A run of one of these turns that opens later is cancelled at its open.
     assert runtime.response_runs.turn_stopped("T-old")

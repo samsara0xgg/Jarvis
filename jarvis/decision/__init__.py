@@ -76,7 +76,7 @@ from jarvis.decision.packet import (
     read_state,
 )
 from jarvis.decision.policy import EffectivePolicy, effective_policy, surface_for
-from jarvis.decision.pre_route import SPOKEN_CHANNELS
+from jarvis.decision.pre_route import SPOKEN_CHANNELS, TYPED_CHANNEL, spoken_turn, typed_turn
 from jarvis.decision.response_run import ResponseCancelledError
 from jarvis.decision.stream_envelope import (
     EnvelopeTail,
@@ -870,10 +870,12 @@ def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None
         return None
     if channel == "gpt_live":
         return "Channel: voice (relayed by Live; the answer will be read aloud)"
-    if channel not in SPOKEN_CHANNELS:
-        return "Channel: text"
     route = ctx.routine_stream
-    if route is not None and route.context.route == "spoken" and ctx.record_sent_message is None:
+    on_spoken_route = route is not None and route.context.route == "spoken"
+    # A typed turn on the spoken route is asked for the same reply as a spoken one (ADR 0181).
+    if channel not in SPOKEN_CHANNELS and not (channel == TYPED_CHANNEL and on_spoken_route):
+        return "Channel: text"
+    if route is not None and on_spoken_route and ctx.record_sent_message is None:
         return f"Channel: voice\n{spoken_reply_note(structured=route.structured)}"
     return "Channel: voice"
 
@@ -1352,7 +1354,7 @@ def _run_instant_route(
     pending = _start_surrogate(packet, ctx, scratch.turn_id)
     if pending is None:
         return None
-    if _surrogate_runs_parallel(ctx):
+    if _surrogate_runs_parallel(packet, ctx):
         scratch.surrogate = pending
         return None
     pending.settled = True
@@ -1365,10 +1367,11 @@ class _SurrogateTookTurn(Exception):  # noqa: N818 — a signal, not an error
     """Jev chose a function while the model's request was still held back."""
 
 
-def _surrogate_runs_parallel(ctx: DecideContext) -> bool:
+def _surrogate_runs_parallel(packet: SituationPacket, ctx: DecideContext) -> bool:
     route = ctx.routine_stream
     return (
-        ctx.surrogate_route is not None
+        spoken_turn(packet.trigger_event)
+        and ctx.surrogate_route is not None
         and ctx.surrogate_route.parallel
         and route is not None
         and route.context.route == "spoken"
@@ -3289,8 +3292,9 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
 
     # ADR 0040: only the model's own answer that will be spoken gets a spoken
     # form, never a Tier 0 read-back (quoted tool output), fixed L3 text or a
-    # confirmation ask.
-    if attention == "voice_notify" and model_answer:
+    # confirmation ask. A typed turn is never spoken (ADR 0181), so its answer
+    # stays the one written text.
+    if attention == "voice_notify" and model_answer and not typed_turn(packet.trigger_event):
         plan = _with_spoken_form(plan, packet, ctx, scratch)
 
     # turn.ended. ``source_event_id`` references the gate verdict.

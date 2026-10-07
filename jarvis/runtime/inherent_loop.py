@@ -117,6 +117,7 @@ from jarvis.decision.commentary import (
 )
 from jarvis.decision.gates import ResponsePlan, pre_emit_gate
 from jarvis.decision.llm import failure_reason
+from jarvis.decision.pre_route import TYPED_CHANNEL
 from jarvis.decision.response_run import (
     ResponseCancelledError,
     ResponseCancelRequest,
@@ -319,9 +320,11 @@ _DEFAULT_PORT: int = 8006
 # different payload field — see :func:`_drop_for_silent_channel`. ADR-0016 D8:
 # while a Live session owns the speaker, the local chain must not synthesize
 # that turn at all. It is deliberately absent from the broadcaster set below,
-# because Resonance still shows the full answer.
+# because Resonance still shows the full answer. ``cli_stdin`` (a turn typed
+# into the talk field) is the same kind of label and is silent for the same
+# reason: ADR 0181, only words he spoke are answered aloud.
 _TTS_SILENT_CHANNELS: frozenset[str] = frozenset(
-    {"queue_review", "silent_log", "badge_card", "gpt_live"},
+    {"queue_review", "silent_log", "badge_card", "gpt_live", TYPED_CHANNEL},
 )
 
 # WS-broadcaster suppression set — deliberately NARROWER than the TTS

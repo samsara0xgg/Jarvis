@@ -39,6 +39,9 @@ ROUTINE_ATTENTION_CHANNEL = "voice_notify"
 SPOKEN_CHANNELS = frozenset({"inherent_ptt", "inherent_wake", "speech"})
 """Trigger channels whose words came in by voice; anything else is typed text."""
 
+TYPED_CHANNEL = "cli_stdin"
+"""The channel of words the owner typed into the talk field: answered on screen, never aloud."""
+
 _USER_TRIGGERS = frozenset({"surface.user_intent", "utterance.received"})
 # Mirrors the demonstrative task reference the F1 short-circuit refuses.
 _DEMONSTRATIVE_TASK_RE = re.compile(
@@ -133,6 +136,11 @@ def pre_route(
 def spoken_turn(trigger: Event) -> bool:
     """Whether Allen spoke this turn's words (GPT-Live relays are not his voice)."""
     return trigger.type in _USER_TRIGGERS and trigger.payload.get("channel") in SPOKEN_CHANNELS
+
+
+def typed_turn(trigger: Event) -> bool:
+    """Whether the owner typed this turn's words (ADR 0181)."""
+    return trigger.type == "surface.user_intent" and trigger.payload.get("channel") == TYPED_CHANNEL
 
 
 def spoken_risk_context(

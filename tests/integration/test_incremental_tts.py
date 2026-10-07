@@ -827,6 +827,28 @@ def test_silent_turn_is_forgotten_on_the_run_terminal() -> None:
     assert silent == set()
 
 
+def test_a_typed_turn_is_never_played_but_a_spoken_one_is() -> None:
+    """ADR 0181: the talk field's `cli_stdin` is silent like a Live relay; his voice is not."""
+    opened = Event(
+        event_uid="E-open",
+        type="surface.response_open",
+        schema_version=1,
+        ts_epoch_ms=0,
+        payload={"turn_id": "TT", "attention_channel": "voice_notify"},
+        source_event_id=None,
+        correlation={},
+    )
+    kwargs: dict[str, Any] = {
+        "turn_id": "TT",
+        "silent_turns": set(),
+        "silent_channels": inherent_loop._TTS_SILENT_CHANNELS,  # noqa: SLF001
+        "consumer": "test",
+    }
+    drop = inherent_loop._drop_for_silent_channel  # noqa: SLF001
+    assert drop(opened, intent_channel="cli_stdin", **kwargs)
+    assert not drop(opened, intent_channel="inherent_ptt", **kwargs)
+
+
 # --- L5 media owner: the response budget is per segment, not per generation ---
 
 _BUDGET_S = 1.0
