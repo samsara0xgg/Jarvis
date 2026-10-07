@@ -400,7 +400,8 @@ export function Companion() {
     after(end + 1700, () => { setVoice('speaking'); say(t(turn.reply), () => listen(false)); });
   };
   // Whatever she is saying or about to say stops: the answer on screen by its response, or the turn she is still
-  // thinking about by its turn. Where she had got to stays lit; the rest of it waits, dim.
+  // thinking about by its turn. Where she had got to stays lit; the rest of it waits, dim. Poking her does it, and so does the first
+  // thing typed into an empty field: she does not talk over your words.
   const stopTalking = () => {
     if (answering) { dispatch({ type: 'cut', at: Date.now() }); void link.current?.cancel(s.responseId).catch(() => undefined); }
     else if (s.askedAt !== null && s.waiting) void link.current?.stopTurn(s.waiting).catch(() => undefined);
@@ -877,7 +878,7 @@ export function Companion() {
       </div>}
       <TalkArea lang={companion.lang} x={out.x} y={out.y + R + 11} open={presence.open && place === 'out' && !quiet} level={talkLevel} lines={s.talk} since={talkFrom} voice={voice} hearing={hearing} partial={partial} settled={port ? s.settled : null} tool={tool} silent={s.soundMuted} buttons={companion.talkButtons}
         deep={{ look: deepLook, secs: deepSecs, thoughts }} field={composer} draft={draft} micPaused={s.micMuted} card={cardShown ? cardView : undefined}
-        onDraft={value => { setDraft(value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); }}
+        onDraft={value => { if (!draft && value) stopTalking(); setDraft(value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); }}
         onSend={send} onField={(open, empty) => { if (open) openComposer(); else { closeComposer(); if (empty && voice === 'off') presence.dismiss(); } }} onMic={backToVoice}
         onEnd={() => { closeComposer(); if (voice !== 'off') endVoice(); presence.dismiss(); }} onUp={setTalkUp} onSettle={() => { if (live.current.composer) aimAtCaret(); kickGlass.current(); }}
         boxRef={talkBox} inputRef={input}/>

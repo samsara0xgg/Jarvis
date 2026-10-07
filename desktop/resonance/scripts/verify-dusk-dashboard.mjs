@@ -206,7 +206,7 @@ try {
     await page.locator('.pg-back').click();
     await page.locator('.ad:not([data-page])').waitFor();
     await page.waitForTimeout(200);
-    const input = page.locator('.cmp input');
+    const input = page.locator('.cmp textarea');
     await input.fill('Detached dashboard acceptance');
     await page.locator('.cmp .send').click();
     assert.equal(await input.inputValue(), '', 'the detached composer must submit normally');

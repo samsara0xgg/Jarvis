@@ -10,8 +10,8 @@ const evidence = 'evidence/dashboard-handoff'; mkdirSync(evidence, { recursive: 
 const checks = [], errors = [], requests = [], blocked = [];
 let app, parent, child;
 const check = (name, pass) => { assert.ok(pass, name); checks.push(name); console.log('PASS', name); };
-const homeInput = page => page.locator('.ad .cmp input');
-const talkInput = page => page.locator('.ad .page .pg-input input');
+const homeInput = page => page.locator('.ad .cmp textarea');
+const talkInput = page => page.locator('.ad .page .pg-input textarea');
 const pageIs = (page, name) => page.waitForFunction(name => (document.querySelector('.ad')?.getAttribute('data-page') ?? '') === name, name);
 const settle = page => page.waitForTimeout(400);
 const childWindow = () => app.evaluate(({ BrowserWindow }) => {

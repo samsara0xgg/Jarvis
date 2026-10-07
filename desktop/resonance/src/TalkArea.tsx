@@ -1,6 +1,7 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement, type ReactNode, type RefObject, type WheelEvent } from 'react';
-import { ArrowUp, Keyboard, LinkSimple, Microphone, Stop } from '@phosphor-icons/react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode, type RefObject, type WheelEvent } from 'react';
+import { Keyboard, LinkSimple, Microphone, Stop } from '@phosphor-icons/react';
 import { Lk, Markdown, inline } from './Markdown';
+import { WriteField } from './WriteField';
 import { tr, type L, type Lang } from './companionSettings';
 import type { Line } from './model';
 import { GESTURE_GAP, HEARD_MS, HEIGHT, LINGER_MS, PULL_AT, WIDTH, calm, kindOf, pace, placed, pull, said as saidCount, sentences, shownOf, stretch, type Captions, type Item, type Kind, type Pull, type Voice } from './talk';
@@ -472,25 +473,6 @@ export function TalkArea(p: TalkProps) {
   }, []);
   useEffect(() => () => { stopTimers(); clearTimeout(c.pullTimer); }, []);
 
-  // The field grows with its words, to six lines, then scrolls.
-  // (Its width is still changing while the area opens, so it is fitted again whenever that changes; empty, it is one line, whatever
-  // its placeholder would take at a width it does not have yet.)
-  const fit = () => {
-    const ta = p.inputRef.current; if (!ta) return;
-    ta.style.height = 'auto';
-    const h = ta.value ? Math.max(36, Math.min(ta.scrollHeight, 136)) : 36;
-    ta.style.height = `${h}px`;
-    setFieldH(h);
-  };
-  useLayoutEffect(fit, [p.draft, row]);
-  useEffect(() => {
-    const ta = p.inputRef.current; if (!ta || row !== 'fd') return;
-    let width = ta.offsetWidth;
-    const watch = new ResizeObserver(() => { if (ta.offsetWidth !== width) { width = ta.offsetWidth; fit(); } });
-    watch.observe(ta);
-    return () => watch.disconnect();
-  }, [row]);
-
   // Sending: a copy of your words flies from the field to its place in the transcript, shrinking and dimming on the way. It is drawn in
   // the area, not in the transcript, which clips what leaves it.
   const submit = () => {
@@ -511,11 +493,11 @@ export function TalkArea(p: TalkProps) {
     const done = () => { mine.style.removeProperty('visibility'); ghost.remove(); };
     const pr = b.getBoundingClientRect(), ghost = document.createElement('span');
     ghost.className = 'tk-ghost'; ghost.textContent = f.text;
-    Object.assign(ghost.style, { left: `${f.rect.left + 14 - pr.left}px`, top: `${f.rect.top + 8 - pr.top}px`, width: `${f.rect.width - 28}px` });
+    Object.assign(ghost.style, { left: `${f.rect.left - pr.left}px`, top: `${f.rect.top + 8 - pr.top}px`, width: `${f.rect.width}px` });
     host.appendChild(ghost);
     toEnd(measure(WIDTH).h);
     const to = mine.getBoundingClientRect();
-    ghost.animate([{ translate: '0 0', scale: '1' }, { translate: `${to.left - (f.rect.left + 14)}px ${to.top - (f.rect.top + 8)}px`, scale: '.893', color: 'rgb(238 240 251 / .55)' }],
+    ghost.animate([{ translate: '0 0', scale: '1' }, { translate: `${to.left - f.rect.left}px ${to.top - (f.rect.top + 8)}px`, scale: '.893', color: 'rgb(238 240 251 / .55)' }],
       { duration: OPEN.d, easing: OPEN.e, fill: 'forwards' }).finished.then(done, done);
   };
 
@@ -564,17 +546,10 @@ export function TalkArea(p: TalkProps) {
     el.scrollTo({ top: el.scrollHeight, behavior: reduced() ? 'auto' : 'smooth' });
   };
 
-  const field = <form ref={fdEl} className="talk-fd" hidden={row !== 'fd'} onSubmit={e => { e.preventDefault(); submit(); }}>
-    <button type="button" className={`ib mic ${p.micPaused ? 'dim' : ''}`} aria-label={t(['Back to voice', '回到语音'])} title={p.micPaused ? t(['The microphone is paused while you type. Click to go back to voice', '打字时麦克风暂停，点一下回到语音']) : t(['Talk instead', '改用语音'])} onClick={p.onMic}><Microphone/></button>
-    <textarea ref={p.inputRef} className="box" rows={1} aria-label={t(['Type a message', '文字输入'])} value={p.draft} enterKeyHint="send"
-      placeholder={p.micPaused ? t(['The microphone pauses while you type', '打字时麦克风暂停']) : t(['Say something…', '和她说点什么…'])}
-      onChange={e => p.onDraft(e.target.value)}
-      onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
-        if (e.key === 'Escape') { e.preventDefault(); p.onField(false, v.items.length === 0); }
-        else if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
-      }}/>
-    <button type="submit" className={`send ${p.draft.trim() ? '' : 'off'}`} disabled={!p.draft.trim()} aria-label={t(['Send', '发送'])}><ArrowUp weight="bold"/></button>
-  </form>;
+  const field = <WriteField formRef={fdEl} inputRef={p.inputRef} className="talk-fd" hidden={row !== 'fd'} on={row === 'fd'} value={p.draft} onChange={p.onDraft}
+    onSend={submit} onEscape={() => p.onField(false, v.items.length === 0)} onFit={setFieldH}
+    label={t(['Type a message', '文字输入'])} sendLabel={t(['Send', '发送'])} placeholder={t(['Type to her…', '打字给她…'])}
+    lead={<button type="button" className={`mic ${p.micPaused ? 'dim' : ''}`} aria-label={t(['Back to voice', '回到语音'])} title={p.micPaused ? t(['The microphone is paused while you type. Click to go back to voice', '打字时麦克风暂停，点一下回到语音']) : t(['Talk instead', '改用语音'])} onClick={p.onMic}><Microphone/></button>}/>;
 
   return <div ref={box} className="talk" data-kind={v.kind} data-state={v.state} data-deep={v.deep || undefined} data-buttons={p.buttons || undefined} data-hit={open || undefined} data-glass="css" inert={!open}
     style={{ left: p.x, top: p.y }} role="region" aria-label={t(['Conversation', '对话'])}>

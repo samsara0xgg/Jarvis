@@ -1,0 +1,20 @@
+/* The box you write a message in (WriteField): the talk area's field and the Dashboard's two. No pill and no fill: the words sit straight on
+   the surface under them, one hairline above the row, the caret and the arrow in her light. --wf-x is the column the words and the hairline
+   keep to, on each side. */
+.wf { --wf-x:16px; position:relative; display:flex; align-items:flex-end; padding:0 var(--wf-x); color:var(--p-ink,#eef0fb); }
+.wf::before { content:''; position:absolute; top:0; left:var(--wf-x); right:var(--wf-x); height:1px; background:rgb(255 255 255 / .1); pointer-events:none; transition:background .18s ease; }
+.wf:focus-within::before { background:rgb(255 255 255 / .15); }
+.wf textarea { flex:1; min-width:0; min-height:36px; max-height:136px; margin:0; padding:8px 0; border:0; border-radius:0; resize:none; outline:none; background:none; box-shadow:none; overflow-y:auto;
+  scrollbar-width:thin; scrollbar-color:rgb(255 255 255 / .22) transparent; font-family:inherit; font-size:var(--text-body); line-height:20px; text-overflow:ellipsis; color:inherit; caret-color:rgb(var(--glow)); }
+.wf textarea:focus,.wf textarea:focus-visible { outline:none; box-shadow:none; }
+/* one line, whatever the language and the state: what does not fit ends in an ellipsis (the textarea's own text-overflow is what the placeholder follows) */
+.wf textarea::placeholder { color:rgb(238 240 251 / .5); opacity:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* words cut off at the top or the bottom of a long message fade out there */
+.wf textarea[data-long] { -webkit-mask-image:linear-gradient(transparent,#000 8px,#000 calc(100% - 8px),transparent); mask-image:linear-gradient(transparent,#000 8px,#000 calc(100% - 8px),transparent); }
+/* the arrow: faint with nothing to send, her light with something; its glyph ends where the words' column does */
+.wf .send { flex:none; display:grid; place-items:center; width:26px; height:26px; margin:0 -5px 5px 4px; padding:0; border-radius:50%; color:rgb(var(--glow)); transition:color .2s ease,transform .18s ease; }
+.wf .send svg { width:16px; height:16px; }
+.wf .send:disabled { color:rgb(255 255 255 / .35); opacity:1; }
+.wf .send:hover:not(:disabled) { color:color-mix(in srgb,rgb(var(--glow)) 70%,#fff); }
+.wf .send:active:not(:disabled) { transform:scale(.86); }
+@media (prefers-reduced-motion:reduce) { .wf::before,.wf .send { transition:none; } }

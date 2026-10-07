@@ -177,7 +177,8 @@ try {
   await page.waitForTimeout(400);
   await page.evaluate(() => window.__command('type'));
   await page.waitForFunction(() => document.querySelector('.talk textarea')?.checkVisibility());
-  check('03 a double left ⌥ opens the field beneath her, in the talk area', await page.locator('.talk[data-hit][data-kind=area] textarea').isVisible());
+  // (the area is still a 36 px bud as it comes out of her: the field has no width until it has widened, so it is waited for)
+  check('03 a double left ⌥ opens the field beneath her, in the talk area', await page.locator('.talk[data-hit][data-kind=area] textarea').waitFor({ state: 'visible', timeout: 3000 }).then(() => true, () => false));
   await page.keyboard.type('帮我整理今天的任务', { delay: 60 });
   await page.waitForTimeout(700);
   check('03 draft is typed into the composer', await page.locator('.talk textarea').inputValue() === '帮我整理今天的任务');
@@ -274,10 +275,10 @@ try {
   await move(600, 560);
   await move(320, 14);
   await page.locator('.companion-dashboard.is-open').waitFor();
-  await page.locator('.ad .cmp input').focus();
+  await page.locator('.ad .cmp textarea').focus();
   await move(600, 560); await page.waitForTimeout(1200);
   check('06 a field with focus in the Dashboard holds it open with the pointer away', await dashOpen() === 1);
-  await page.locator('.ad .cmp input').blur(); await move(600, 560); await dashGone();
+  await page.locator('.ad .cmp textarea').blur(); await move(600, 560); await dashGone();
   check('06 once the field lets go it folds', true);
 
   // 09: the Dashboard around her. The home's blocks in their default order; each row grows into its page
@@ -297,7 +298,7 @@ try {
   check(`09 home: For you, the brief, Today, Mail, Agents, Now, Usage and Plugins | Projects in order, no conversation before you talk (${await blocks()})`,
     await blocks() === 'foryou,brief,today,mail,agents,now,usage,tiles');
   check('09 the panel fits the window with a visible composer and scrolls its remaining blocks',
-    await panel.evaluate(e => e.getBoundingClientRect().bottom <= innerHeight) && await page.locator('.ad .cmp input').evaluate(e => e.getBoundingClientRect().bottom <= innerHeight) && await page.locator('.ad .home-list').evaluate(e => e.scrollHeight > e.clientHeight + 40));
+    await panel.evaluate(e => e.getBoundingClientRect().bottom <= innerHeight) && await page.locator('.ad .cmp textarea').evaluate(e => e.getBoundingClientRect().bottom <= innerHeight) && await page.locator('.ad .home-list').evaluate(e => e.scrollHeight > e.clientHeight + 40));
   check('09 Today has the weather, the next event and the to-dos, with no heads-up lines and no Duolingo',
     /°/.test(await page.locator('.ad .r-today .wx').textContent()) && await page.locator('.ad .r-today .ev').count() >= 1 && await page.locator('.ad .r-today .td').count() === 2
     && await page.locator('.ad .hu, .ad .duo').count() === 0);
@@ -385,14 +386,14 @@ try {
 
   await page.locator('.ad .cmp-hit').hover();
   await page.waitForTimeout(500);
-  await page.locator('.ad .cmp input').fill('Move the voice test to five');
+  await page.locator('.ad .cmp textarea').fill('Move the voice test to five');
   await page.keyboard.press('Enter');
   check('09 the bottom bar sends: her words turn to Thinking and she thinks', await face('30') === '30' && await page.locator('.ad .say').textContent() === 'Thinking…');
   await page.waitForFunction(() => document.querySelector('.ad .say')?.textContent.startsWith('Got it'), null, { timeout: 3000 });
   check('09 then she answers with her speaking face', await face('39', '39b', '39c') === '39');
   await openRow('conversation');
   await settle();
-  check('09 the new turn is in the conversation, which has its own text box', (await page.locator('.ad .tr-you p').last().textContent()) === 'Move the voice test to five' && await page.locator('.ad .pg-input input').count() === 1);
+  check('09 the new turn is in the conversation, which has its own text box', (await page.locator('.ad .tr-you p').last().textContent()) === 'Move the voice test to five' && await page.locator('.ad .pg-input textarea').count() === 1);
   await move(600, 560);
   await page.waitForFunction(() => !document.querySelector('.companion-dashboard.is-open'), null, { timeout: 3000 });
   // The shell closes in the first commit; AroundDashboard resets its page in

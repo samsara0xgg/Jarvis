@@ -213,8 +213,13 @@ try {
     check('typing mid-voice: the footer gives way to the field, with the microphone to its left', a.fieldShown && await page.locator('.talk .mic').isVisible());
     check('the microphone pauses while you type: the daemon’s own mute, and the mic button goes dim', posts.some(p => p.path === '/inherent/controls' && p.body.mic_muted === true) && await page.locator('.talk .mic.dim').count() === 1);
     check('the send button is grey while the field is empty', await page.locator('.talk .send').isDisabled() && await page.locator('.talk .send.off').count() === 1);
+    check('the field has one short line in the placeholder, whatever the state: it does not wrap or ellipsize here', await page.evaluate(() => { const t = document.querySelector('.talk textarea'); return t.placeholder === 'Type to her…' && t.getBoundingClientRect().height === 36 && t.scrollHeight <= t.clientHeight; }));
+    check('no pill: the words sit on the dusk, no fill, no border, no ring, and the hairline above the row is there', await page.evaluate(() => { const t = document.querySelector('.talk textarea'), cs = getComputedStyle(t), h = getComputedStyle(document.querySelector('.talk-fd'), '::before'); return cs.backgroundColor === 'rgba(0, 0, 0, 0)' && cs.borderTopWidth === '0px' && cs.boxShadow === 'none' && h.display !== 'none' && h.height === '1px'; }));
     await page.keyboard.type('第一行');
-    check('typing lights the send button in her colour', !(await page.locator('.talk .send').isDisabled()) && await page.evaluate(() => getComputedStyle(document.querySelector('.talk .send')).backgroundColor !== 'rgba(255, 255, 255, 0.1)'));
+    await page.waitForTimeout(350);
+    check('typing lights the send arrow in her colour', !(await page.locator('.talk .send').isDisabled()) && await page.evaluate(() => {
+      const c = getComputedStyle(document.querySelector('.talk .send')).color.match(/[\d.]+/g).slice(0, 3).map(Number), g = getComputedStyle(document.documentElement).getPropertyValue('--glow').trim().split(/\s+/).map(Number);
+      return c.every((v, i) => Math.abs(v - g[i]) <= 2); }));
     await page.keyboard.press('Shift+Enter'); await page.keyboard.type('第二行');
     await page.waitForTimeout(300);
     check('Shift+Enter is a new line and the field grows with it', (await page.locator('.talk textarea').inputValue()) === '第一行\n第二行' && await page.evaluate(() => document.querySelector('.talk textarea').getBoundingClientRect().height > 50));
@@ -1053,6 +1058,39 @@ try {
     await t.context.close();
   }
 
+  // typing stops her talking: the first thing typed into an empty field does what a poke on her does, and nothing else is changed
+  {
+    const s = await scene({ captions: 'all' });
+    const { page, emit, posts } = s;
+    const cancels = () => posts.filter(p => p.path === '/inherent/cancel-response').map(p => p.body);
+    await page.waitForTimeout(600);
+    await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
+    await emit('voice', { phase: 'listening', turn_id: 'ty0' }); await page.waitForTimeout(500);
+    await emit('voice', { phase: 'accepted', turn_id: 'ty1', text: '讲个长故事' });
+    await emit('open', { turn_id: 'ty1', response_id: 'r-ty1' });
+    await emit('append', { turn_id: 'ty1', token: '<voice>从前有一个评审，总是在日历里跳来跳去，没有人知道它为什么总排不进上午。</voice>' });
+    await emit('voice', { phase: 'playing', turn_id: 'ty1', played: 3, ahead: 20, held: false });
+    await page.waitForTimeout(900);
+    await page.locator('.talk-ft .kb').click(); await page.waitForTimeout(900);
+    check('opening the field while she speaks does not stop her', cancels().length === 0 && (await s.area()).state === 'speaking');
+    await page.keyboard.type('等'); await page.waitForTimeout(400);
+    check('the first key typed while she speaks stops what she is saying, like a poke on her', cancels().length === 1 && cancels()[0].response_id === 'r-ty1');
+    await page.keyboard.type('一下'); await page.waitForTimeout(300);
+    check('and the rest of what is typed does not stop her again', cancels().length === 1);
+    check('the microphone is still paused for the typing, as before', posts.filter(p => p.path === '/inherent/controls' && 'mic_muted' in p.body).at(-1).body.mic_muted === true);
+    await emit('done', { turn_id: 'ty1', fadeMs: 100 }); await emit('voice', { phase: 'spoken', turn_id: 'ty1', output_outcome: 'interrupted' }); await page.waitForTimeout(500);
+    // emptied and typed again with nothing being said: nothing to stop
+    await page.keyboard.press('Control+A'); await page.keyboard.press('Backspace'); await page.keyboard.type('好'); await page.waitForTimeout(300);
+    check('with nothing being said or thought about, typing stops nothing', cancels().length === 1);
+    // she is thinking about a turn: the first key typed stops that turn
+    await page.keyboard.press('Control+A'); await page.keyboard.press('Backspace'); await page.waitForTimeout(200);
+    await emit('voice', { phase: 'accepted', turn_id: 'ty2', text: '再查一个' }); await page.waitForTimeout(500);
+    await page.keyboard.type('算'); await page.waitForTimeout(400);
+    check('the first key typed while she thinks about a turn stops that turn', cancels().length === 2 && cancels()[1].turn_id === 'ty2');
+    check('no page errors (typing stops her)', s.errors.length === 0);
+    await s.context.close();
+  }
+
   // Esc on an empty field with nothing to show does not leave an empty capsule up
   {
     const s = await scene({ captions: 'all' });
@@ -1155,7 +1193,13 @@ try {
     await move(600, 650);
     await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
     await page.locator('.companion-dashboard.is-open').waitFor(); await page.waitForTimeout(900);
-    await page.locator('.ad .cmp input').first().fill('明天有什么会'); await page.keyboard.press('Enter'); await page.waitForTimeout(400);
+    const box = page.locator('.ad .cmp textarea').first();
+    await box.click(); await page.keyboard.type('第一行'); await page.keyboard.press('Shift+Enter'); await page.keyboard.type('第二行'); await page.waitForTimeout(300);
+    check('the Dashboard box: Shift+Enter is a new line, it does not send, and the box grows with it', await box.inputValue() === '第一行\n第二行' && !s.posts.some(p => p.path === '/inherent/submit')
+      && await page.evaluate(() => { const c = document.querySelector('.ad .cmp'); return c.getBoundingClientRect().height > 50 && c.hasAttribute('data-tall'); }));
+    await page.keyboard.press('Control+A'); await page.keyboard.press('Backspace'); await page.waitForTimeout(200);
+    check('emptied, the Dashboard box is one line again', await page.evaluate(() => { const c = document.querySelector('.ad .cmp'); return c.getBoundingClientRect().height === 36 && !c.hasAttribute('data-tall'); }));
+    await box.fill('明天有什么会'); await page.keyboard.press('Enter'); await page.waitForTimeout(400);
     await emit('open', { turn_id: 'typed-1', response_id: 'r-t1' }); await emit('append', { turn_id: 'typed-1', token: '<voice>明天有两个会。</voice>' }); await emit('done', { turn_id: 'typed-1', fadeMs: 100 });
     await emit('voice', { phase: 'spoken', turn_id: 'typed-1' }); await page.waitForTimeout(300);
     await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true }); await move(600, 650); await page.waitForTimeout(1200);
@@ -1173,6 +1217,32 @@ try {
     await shot('40-pulled-earlier');
     const text = await lines();
     check(`pulled up, the question typed in the Dashboard is a line of the conversation, above its answer and above the new exchange (${text.join('|')})`, text.join('|') === '明天有什么会|明天有两个会。|后天呢|后天没有会。');
+    await s.context.close();
+  }
+
+  // the Dashboard's boxes are multi-line: Shift+Enter is a new line, Enter sends all of it, the IME's Enter does nothing, and Esc only lets go
+  {
+    const s = await scene({ captions: 'all' });
+    const { page, move } = s;
+    await page.waitForTimeout(600);
+    await move(600, 650);
+    await page.locator('.companion-island-target').click({ position: { x: 155, y: 14 }, force: true });
+    await page.locator('.companion-dashboard.is-open').waitFor(); await page.waitForTimeout(900);
+    const box = page.locator('.ad .cmp textarea');
+    await box.click(); await page.keyboard.type('第一行'); await page.keyboard.press('Shift+Enter'); await page.keyboard.type('第二行');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+    check('Esc lets go of the Dashboard box and keeps what was written; the Dashboard stays', await box.inputValue() === '第一行\n第二行' && await page.evaluate(() => document.activeElement?.tagName !== 'TEXTAREA' && !!document.querySelector('.companion-dashboard.is-open')));
+    await box.click();
+    check('an Enter that ends an IME composition does not send', await page.evaluate(() => { const t = document.querySelector('.ad .cmp textarea'); const e = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, isComposing: true }); t.dispatchEvent(e); return !e.defaultPrevented; }) && !s.posts.some(p => p.path === '/inherent/submit'));
+    await page.keyboard.press('Enter'); await page.waitForTimeout(500);
+    check('Enter sends both lines as they were typed, and the box empties', s.posts.some(p => p.path === '/inherent/submit' && p.body.text === '第一行\n第二行') && await box.inputValue() === '');
+    await page.locator('.ad [data-row="conversation"]').evaluate(el => (el.matches('button') ? el : el.querySelector('button')).click());
+    await page.waitForSelector('.ad[data-page="conversation"] .pg-input'); await page.waitForTimeout(1200);
+    const talk = page.locator('.ad .pg-input textarea');
+    await talk.click(); await page.keyboard.type('甲'); await page.keyboard.press('Shift+Enter'); await page.keyboard.type('乙'); await page.waitForTimeout(300);
+    check('the Conversation page’s box is the same field: Shift+Enter is a new line there too, and nothing is sent', await talk.inputValue() === '甲\n乙' && s.posts.filter(p => p.path === '/inherent/submit').length === 1
+      && await talk.evaluate(t => t.getBoundingClientRect().height > 50));
+    check('no page errors (Dashboard boxes)', s.errors.length === 0);
     await s.context.close();
   }
 

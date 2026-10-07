@@ -181,19 +181,18 @@
 @keyframes talk-breathe { 0%,100% { transform:scale(.72); } 50% { transform:scale(1.12); } }
 @keyframes talk-bar { 0%,100% { transform:scaleY(.35); } 50% { transform:scaleY(1); } }
 
-/* ... or the field you type in: a pill that grows to six lines, with the microphone on its left (dim while it is paused) */
-.talk-fd { position:relative; z-index:2; flex:none; display:flex; align-items:flex-end; gap:8px; padding:6px 7px 7px; }
-.talk .box { flex:1; min-width:0; min-height:36px; max-height:136px; box-sizing:border-box; margin:0; padding:8px 14px; border:0; border-radius:18px; resize:none; outline:none; overflow-y:auto; scrollbar-width:thin; scrollbar-color:rgb(255 255 255 / .22) transparent;
-  background:rgb(255 255 255 / .07); box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .1); font-family:inherit; font-size:var(--text-body); line-height:20px; color:#fff; caret-color:rgb(var(--glow)); }
-.talk .box::placeholder { color:rgb(235 238 245 / .38); }
-.talk .box:focus-visible { box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .22); }
-.talk .send { flex:none; width:36px; height:36px; padding:0; border-radius:50%; display:grid; place-items:center; background:rgb(var(--glow)); color:#0b0d1a; transition:transform .18s ease,background .2s ease,color .2s ease; }
-.talk .send svg { width:16px; height:16px; }
-.talk .send.off,.talk .send:disabled { background:rgb(255 255 255 / .1); color:rgb(255 255 255 / .38); opacity:1; }
-.talk .send:active:not(:disabled) { transform:scale(.86); }
-.talk .mic { margin-bottom:3px; }
+/* ... or the field you type in (WriteField): written on the dusk under a hairline, the way back to voice at its left, dim while the microphone is paused.
+   With nothing above it there is nothing to divide it from, and no hairline. */
+.talk .talk-fd { z-index:2; flex:none; padding-block:4px; }
+.talk:has(> .talk-tr:empty) .talk-fd::before { display:none; }
+.talk .mic { flex:none; display:grid; place-items:center; width:26px; height:26px; margin:0 2px 5px -5px; padding:0; border-radius:50%; color:rgb(255 255 255 / .55); transition:transform .18s ease,color .2s ease; }
+.talk .mic svg { width:16px; height:16px; }
+.talk .mic:hover { color:rgb(255 255 255 / .9); }
+.talk .mic:active { transform:scale(.86); }
+.talk .mic.dim { color:rgb(255 255 255 / .32); }
+.talk .mic.dim:hover { color:rgb(255 255 255 / .8); }
 .tk-fly { position:absolute; inset:0; z-index:4; pointer-events:none; }
-.tk-ghost { position:absolute; margin:0; font-size:var(--text-body); line-height:20px; color:#fff; transform-origin:0 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.tk-ghost { position:absolute; margin:0; font-size:var(--text-body); line-height:20px; color:#eef0fb; transform-origin:0 0; white-space:pre-wrap; overflow-wrap:anywhere; }
 
 /* only a heard sentence and the end button: the smaller pill (the other two caption levels) */
 /* the transcript of an answer shown earlier is folded away in it, and must not give the pill its width */

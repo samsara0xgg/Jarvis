@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, type Ref, type WheelEvent } from 'react';
-import { ArrowSquareOut, ArrowUp, ArrowsClockwise, Briefcase, CaretDown, CaretLeft, CaretRight, CaretUp, ChatCircle, Check, Cloud, CloudFog, CloudLightning, CloudRain, CloudSnow, EnvelopeSimple, GearSix, GitBranch, MagnifyingGlass, ShieldCheck, SpeakerHigh, SpeakerSlash, Sun, X } from '@phosphor-icons/react';
+import { ArrowSquareOut, ArrowsClockwise, Briefcase, CaretDown, CaretLeft, CaretRight, CaretUp, ChatCircle, Check, Cloud, CloudFog, CloudLightning, CloudRain, CloudSnow, EnvelopeSimple, GearSix, GitBranch, MagnifyingGlass, ShieldCheck, SpeakerHigh, SpeakerSlash, Sun, X } from '@phosphor-icons/react';
 import { TURN_FACE, type ExprId } from './starCore';
 import { balanceTotal, useUsage, type UsageWindow } from './QuotaModule';
 import { useCodexSessions } from './CodexModule';
@@ -23,6 +23,7 @@ import { JobsPage, jobKey, jobKind, type JobApplication, type JobGroup, type Job
 import { MAIL_FILTERS, MailLetter, MailList, type MailAct, type MailFilter } from './MailPage';
 import { MEM_HOME, MemoryPage, type MemNav, type MemoryOverview } from './MemoryPage';
 import { MOTION } from './motion';
+import { WriteField } from './WriteField';
 import './dashboard-around.css';
 import './dashboard-home.css';
 
@@ -1009,7 +1010,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       </div>
       {page && <section className="page" ref={pageEl} aria-label={t(TITLES[page])}>{pages[page]()}</section>}
     </div>
-    <div className="cmp-hit" onClick={e => { const input = e.currentTarget.querySelector('input'); if (input && !(e.target as Element).closest('button,input')) focusWindow({ currentTarget: input }); }}><Ask className="cmp" text={homeDraft} setText={setHomeDraft} onAsk={ask}/></div>
+    <div className="cmp-hit" onClick={e => { const field = e.currentTarget.querySelector('textarea'); if (field && !(e.target as Element).closest('button,textarea')) focusWindow({ currentTarget: field }); }}><Ask className="cmp" text={homeDraft} setText={setHomeDraft} onAsk={ask}/></div>
     <div className={`toast ${toast ? 'is-on' : ''}`} role="status">{toast?.text}{toast?.undo && <button onClick={() => { toast.undo!(); setToast(null); }}>{t(['Undo', '撤销'])}</button>}</div>
   </div>;
 }
@@ -1025,19 +1026,13 @@ function HomeBlock({ id, pop, lang, onClose, children }: { id: BlockId; pop: boo
 // The companion window takes no key focus until you reach for a text box.
 const focusWindow = (event: { currentTarget: HTMLElement }) => { const el = event.currentTarget; void window.jarvis?.focus(true).then(() => el.focus({ preventScroll: true })); };
 
-// Typing an on-word deepens the box before you send.
+// Typing an on-word deepens the box before you send. Both of the Dashboard's boxes are this one: the home's and the Conversation page's.
 function Ask({ className, onAsk, think, text, setText }: { className: string; onAsk: (text: string) => void; think?: Think; text: string; setText: (text: string) => void }) {
-  const t = useT();
+  const t = useT(), field = useRef<HTMLTextAreaElement>(null);
   const deep = !!think && deepAfter(think, text);
-  return <form className={`${className}${deep ? ' is-deep' : ''}`} onSubmit={event => {
-    event.preventDefault();
-    if (!text.trim()) return;
-    onAsk(text.trim()); setText(''); event.currentTarget.querySelector('input')?.blur();
-  }}>
-    <input aria-label={t(['Message Jarvis', '给 Jarvis 发消息'])} placeholder={t(['Ask Jarvis…', '问问 Jarvis…'])} autoComplete="off" value={text} onChange={event => setText(event.target.value)}
-      onPointerDown={focusWindow} onKeyDown={event => { if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }}/>
-    <button className="send" aria-label={t(['Send', '发送'])} disabled={!text.trim()}><ArrowUp size={13} weight="bold"/></button>
-  </form>;
+  return <WriteField className={`${className}${deep ? ' is-deep' : ''}`} inputRef={field} value={text} onChange={setText} onPointerDown={focusWindow}
+    onSend={() => { onAsk(text.trim()); setText(''); field.current?.blur(); }}
+    label={t(['Message Jarvis', '给 Jarvis 发消息'])} placeholder={t(['Ask Jarvis…', '问问 Jarvis…'])} sendLabel={t(['Send', '发送'])}/>;
 }
 
 function Fold({ label, children }: { label: string; children: ReactNode }) {

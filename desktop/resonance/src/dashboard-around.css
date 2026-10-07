@@ -91,17 +91,21 @@
 .companion-dashboard.is-open .ad .overview > :nth-child(4) { animation-delay:90ms; }
 .companion-dashboard.is-open .ad .overview > :nth-child(5) { animation-delay:120ms; }
 
-/* A resting input is always visible and reachable without discovering a hover target. */
-.ad .cmp-hit { position:absolute; left:12px; right:12px; bottom:12px; z-index:4; height:36px; transition:opacity var(--motion-fast); }
-.ad .cmp { display:flex; align-items:center; gap:6px; width:100%; height:36px; padding:0 5px 0 12px; border-radius:var(--radius-control); background:rgb(255 255 255 / .07); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .1); transition:background var(--motion-fast),box-shadow var(--motion-fast); }
-.ad .cmp:hover, .ad .cmp:focus-within { background:rgb(255 255 255 / .09); box-shadow:inset 0 0 0 1px rgb(var(--glow) / .45); }
+/* A resting input is always visible and reachable without discovering a hover target. Its look is WriteField's (write-field.css); the home's
+   sits at the panel's foot and grows upward over the home with its words, the Conversation page's is the foot of the page. */
+.ad .cmp-hit { position:absolute; left:12px; right:12px; bottom:12px; z-index:4; min-height:36px; transition:opacity var(--motion-fast); }
+.ad .cmp { --wf-x:10px; }
 .ad[data-page] .cmp-hit { opacity:0; pointer-events:none; }
 /* With the input gone a page reaches down to the panel's edge (AroundDashboard DOCK). */
 .ad[data-page] { padding-bottom:12px; }
-.ad .cmp input, .ad .pg-input input { flex:1; min-width:0; border:0; background:none; color:var(--p-ink); font-size:var(--text-body); outline:none; }
-.ad .cmp input::placeholder, .ad .pg-input input::placeholder { color:var(--p-faint); }
-.ad .send { display:grid; place-items:center; flex:none; width:26px; height:26px; padding:0; border-radius:50%; background:rgb(var(--glow)); color:#0d1022; }
-.ad .send:disabled { background:rgb(255 255 255 / .08); color:var(--p-faint); }
+/* Once it is more than a line it lies over what is behind it: the panel's dark, thickest where the words are, fading out above and to the sides. */
+.ad :is(.cmp,.pg-input)::after { content:''; position:absolute; z-index:-1; inset:-10px -12px -10px; pointer-events:none; opacity:0; transition:opacity var(--motion-fast);
+  background:linear-gradient(transparent,rgb(9 10 24 / .97) 10px);
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent),linear-gradient(#000 calc(100% - 12px),transparent); -webkit-mask-composite:source-in;
+  mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent),linear-gradient(#000 calc(100% - 12px),transparent); mask-composite:intersect; }
+/* (the page's box sits at the foot of a scroller: its dark stays inside the scroller's own width and ends at the box's bottom) */
+.ad .pg-input::after { inset:-10px -6px 0; -webkit-mask-image:linear-gradient(90deg,transparent,#000 12px,#000 calc(100% - 12px),transparent); -webkit-mask-composite:source-over; mask-image:linear-gradient(90deg,transparent,#000 12px,#000 calc(100% - 12px),transparent); mask-composite:add; }
+.ad :is(.cmp,.pg-input)[data-tall]::after { opacity:1; }
 
 .ad .toast { position:absolute; left:50%; bottom:12px; z-index:6; display:flex; align-items:center; gap:10px; max-width:calc(100% - 24px); padding:6px 8px 6px 12px; border-radius:var(--radius-control); background:rgb(8 8 8 / .96); box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .3),0 10px 24px -10px #000; font-size:var(--text-detail); white-space:nowrap; transform:translate(-50%,8px); opacity:0; pointer-events:none; transition:opacity var(--exit-fast) var(--ease-in),transform var(--exit-medium) var(--spring-panel-exit); }
 .ad .toast.is-on { opacity:1; transform:translate(-50%,0); pointer-events:auto; transition:opacity var(--motion-fast) var(--ease-out),transform var(--motion-medium) var(--spring); }
@@ -169,13 +173,12 @@
 .ad .fold[aria-expanded=true] + .fold-body { grid-template-rows:1fr; transition-duration:var(--motion-medium); transition-timing-function:var(--ease-out); }
 .ad .fold-body > div { overflow:hidden; }
 .ad .fold-body pre { margin:6px 0 0; padding:0 0 0 10px; border-left:2px solid rgb(var(--glow) / .25); font-size:var(--text-detail); line-height:1.55; font-family:inherit; color:var(--p-muted); white-space:pre-wrap; }
-.ad .pg-input { position:sticky; bottom:0; z-index:2; margin-top:auto; display:flex; align-items:center; gap:6px; flex:none; height:34px; padding:0 4px 0 12px; border-radius:var(--radius-block); background:rgb(12 12 12 / .95); box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .3),0 -12px 18px -8px rgb(0 0 0 / .9); }
-.ad .pg-input:focus-within { box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .6),0 -12px 18px -8px rgb(0 0 0 / .9); }
-/* Think mode (ADR 0064): a sentence with an on-word in it makes the box deep, its ring included. */
-.ad .pg-input::before { content:''; position:absolute; inset:0; z-index:-1; border-radius:inherit; pointer-events:none; opacity:0; transition:opacity var(--motion-slow) ease;
-  background:radial-gradient(120% 160% at 0 50%,rgb(var(--deep) / .26),transparent 62%),linear-gradient(90deg,#05061a,#090a24); box-shadow:inset 0 0 0 .5px rgb(var(--deep) / .55); }
-.ad .pg-input.is-deep::before { opacity:1; }
-.ad .pg-input.is-deep .send:not(:disabled) { background:var(--deep-hi); }
+/* the Conversation page's box sticks to the foot of the page, its words over what scrolls under it */
+.ad .pg-input { --wf-x:0px; position:sticky; bottom:0; z-index:2; margin-top:auto; flex:none; }
+/* Think mode (ADR 0064): a sentence with an on-word in it makes the box deep: its hairline, its caret and its arrow take the deep light. */
+.ad .pg-input.is-deep::before { background:rgb(var(--deep) / .55); }
+.ad .pg-input.is-deep textarea { caret-color:var(--deep-hi); }
+.ad .pg-input.is-deep .send:not(:disabled) { color:var(--deep-hi); }
 .ad .tr-think { font-size:var(--text-detail); color:var(--deep-hi); font-variant-numeric:tabular-nums; }
 .ad .who .is-deep { font-style:normal; color:var(--deep-hi); }
 

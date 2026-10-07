@@ -449,8 +449,8 @@ try {
     await openRow('conversation'); await page.waitForTimeout(900);
     check('L8 the Conversation page shows the record as turns', await page.locator('.ad .tr').count() === 1 && (await text('.ad .tr-you p')) === rows[0].text);
     rows.push({ seq: 13, id: 'c', ts: iso(Date.now()), source: 'allen', text: 'Move the test to five' });
-    await page.locator('.ad .pg-input input').fill('Move the test to five');
-    await page.locator('.ad .pg-input input').press('Enter');
+    await page.locator('.ad .pg-input textarea').fill('Move the test to five');
+    await page.locator('.ad .pg-input textarea').press('Enter');
     await page.waitForTimeout(2600);
     check('L8 its text box submits, and the new row arrives from the record', posts.at(-1)?.path === '/inherent/submit' && posts.at(-1).body.text === 'Move the test to five' && await page.locator('.ad .tr').count() === 2);
     // As the daemon does it: the record is written first, then the answer streams as spoken segments without its line breaks.

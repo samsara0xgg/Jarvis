@@ -26,7 +26,7 @@ await page.addStyleTag({content:`html,body{height:100%}body{background:linear-gr
 await page.waitForTimeout(400);
 await page.locator('.companion-island-target').click();await page.waitForTimeout(700);
 const metrics=await page.evaluate(()=>{
- const panel=document.querySelector('.companion-dashboard'),input=document.querySelector('.ad .cmp input'),text=document.querySelector('.ad .fy-t'),ring=document.querySelector('.ad .dial');
+ const panel=document.querySelector('.companion-dashboard'),input=document.querySelector('.ad .cmp textarea'),text=document.querySelector('.ad .fy-t'),ring=document.querySelector('.ad .dial');
  return {panel:panel.getBoundingClientRect().toJSON(),corner:document.querySelector('.ad .corner').getBoundingClientRect().toJSON(),cornerButtons:[...document.querySelectorAll('.ad .corner .cb')].map(el=>el.getBoundingClientRect().toJSON()),input:input.getBoundingClientRect().toJSON(),placeholder:input.placeholder,placeholderColour:getComputedStyle(input,'::placeholder').color,opacity:getComputedStyle(input).opacity,fill:getComputedStyle(ring).getPropertyValue('--fill'),fillAnimation:getComputedStyle(ring,'::before').animationName,transition:getComputedStyle(ring).transitionDuration,textOverflows:text.scrollWidth>text.clientWidth,header:document.querySelector('.next-event').textContent,forYouBackground:getComputedStyle(document.querySelector('.ad .r-foryou')).backgroundColor};
 });
 assert.ok(Math.abs(metrics.panel.width-360)<.5);assert.ok(metrics.panel.bottom<=720);assert.ok(metrics.input.bottom<metrics.panel.bottom);assert.equal(metrics.placeholder,'Ask Jarvis…');assert.equal(metrics.opacity,'1');assert.equal(metrics.fill.trim(),'38');assert.equal(metrics.fillAnimation,'none');assert.equal(metrics.transition,'0.46s');assert.equal(metrics.textOverflows,false);assert.match(metrics.header,/Call with Mom/);
@@ -34,9 +34,9 @@ assert.ok(Math.abs(metrics.panel.top-32)<.5,'attached sheet must meet the hardwa
 assert.ok(Math.abs(metrics.corner.top-metrics.panel.top)<.5&&metrics.corner.height===28,'the next-event header must occupy the 28 pt black band');
 assert.ok(metrics.cornerButtons.every(b=>b.top>=metrics.panel.top&&b.bottom<=metrics.panel.top+28.5),'all three header controls must fit inside the black band');
 assert.notEqual(metrics.forYouBackground,'rgba(0, 0, 0, 0)','For You must retain its warm surface');
-// Upper bound for the dusk body with a white mood pool and the warm request tint.
+// The input has no pill: its placeholder is written on the dusk's foot, so the surface behind it is the dusk's darkest, with its violet corner as the upper bound.
 // Text contrast must be repaired in the foreground, without flattening the approved gradient.
-const rgb=metrics.placeholderColour.match(/[\d.]+/g).map(Number),alpha=rgb[3]??1,background=[68,65,77];
+const rgb=metrics.placeholderColour.match(/[\d.]+/g).map(Number),alpha=rgb[3]??1,background=[27,20,48];
 const luminance=colour=>colour.reduce((sum,c,i)=>{const v=c/255;return sum+(v<=.04045?v/12.92:((v+.055)/1.055)**2.4)*[.2126,.7152,.0722][i];},0);
 const contrast=(luminance(background.map((c,i)=>rgb[i]*alpha+c*(1-alpha)))+.05)/(luminance(background)+.05);
 assert.ok(contrast>=4.5,`secondary text must stay readable over dusk (${contrast.toFixed(2)}:1)`);
