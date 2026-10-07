@@ -1,4 +1,4 @@
-"""The reminder clock (ADR 0178): fires the reminders Allen set by voice, and serves their cards.
+"""The reminder clock (ADR 0179): fires the reminders Allen set by voice, and serves their cards.
 
 The state is the event log (``jarvis.state.reminders``). Once at start and then every ``TICK_S``
 the daemon folds it and fires each reminder whose time has passed, so a reminder missed while the
@@ -137,7 +137,7 @@ class Reminders:
     def notices(self) -> list[dict[str, Any]]:
         """The fired reminders Allen has not taken in, as notices the companion already draws.
 
-        Always ``card_sound``: the quiet level and a call or away hold do not apply (ADR 0178).
+        Always ``card_sound``: the quiet level and a call or away hold do not apply (ADR 0179).
         """
         since = int((self.now() - CARD_KEEP).timestamp() * 1000)
         with contextlib.closing(open_runtime_event_log(self._path)) as conn:

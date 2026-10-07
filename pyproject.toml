@@ -109,7 +109,7 @@ ignore = [
 "tests/integration/test_projects_live.py" = ["RUF001"]  # spot-checks real Chinese labels
 # Asserts on the Chinese commentary a Live session is sent (ADR 0026).
 "tests/integration/test_live_delivery.py" = ["RUF001"]
-# Asserts on the Chinese reminder lines verbatim (ADR 0178).
+# Asserts on the Chinese reminder lines verbatim (ADR 0179).
 "tests/integration/test_reminders.py" = ["RUF001"]
 # Matches the night run's Tier 0 rows against the owner's phrases as ASR writes them.
 "tests/integration/test_night_run.py" = ["RUF001"]

@@ -207,7 +207,7 @@ try {
   await shows(any, 8000);
   check('a call older than 3 h no longer holds', await cards() >= 1);
 
-  // (g) ADR 0178: a reminder rides the job-mail notice and goes through the quiet level, a call or away hold and a speaker output, with its cue.
+  // (g) ADR 0179: a reminder rides the job-mail notice and goes through the quiet level, a call or away hold and a speaker output, with its cue.
   const reminder = { id: 'reminder-1', kind: 'mail', title: 'one-on-one with the employer', line: 'In 30 minutes: one-on-one with the employer', level: 'card_sound', text: 'one-on-one with the employer', at: new Date().toISOString(), company: '', role: '', event_at: new Date(Date.now() + 30 * M).toISOString(), mail_kind: 'reminder' };
   for (const [name, setup] of [['a call', () => { hold = 'call'; }], ['away', () => { hold = 'away'; }], ['no-pop', () => { quietNow = 'no-pop'; }], ['dnd', () => { quietNow = 'dnd'; }]]) {
     reset(); setup(); priv = false; served = [reminder];

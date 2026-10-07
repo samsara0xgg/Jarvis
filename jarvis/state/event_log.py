@@ -1101,7 +1101,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
-    # Owner-set reminders (ADR 0178): the list is a fold over these four types
+    # Owner-set reminders (ADR 0179): the list is a fold over these four types
     # (`jarvis.state.reminders`); the daemon's tick emits `fired`, the card's
     # tap emits `acknowledged`.
     EventTypeSchema(

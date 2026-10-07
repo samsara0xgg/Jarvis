@@ -1,4 +1,4 @@
-"""Owner-set reminders, folded from the event log (ADR 0178).
+"""Owner-set reminders, folded from the event log (ADR 0179).
 
 There is no reminders table: a reminder is a ``reminder.scheduled`` event, and what became of
 it is whichever of ``reminder.cancelled``, ``reminder.fired`` and ``reminder.acknowledged``
