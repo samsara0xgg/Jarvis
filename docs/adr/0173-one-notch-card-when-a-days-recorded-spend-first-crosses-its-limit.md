@@ -1,6 +1,6 @@
 # ADR 0173 — One notch card when a day's recorded spend first crosses its limit
 
-**Status:** Accepted
+**Status:** Superseded-by-0185
 **Date:** 2026-10-06
 **Supersedes:** none
 

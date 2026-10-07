@@ -6,10 +6,15 @@ from contextlib import closing
 from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING
 
+from fastapi.testclient import TestClient
+
+from jarvis.runtime.inherent_loop import _alert_deps, _notice_deps
 from jarvis.runtime.spend_cap import SpendCap, SpendCapSettings
 from jarvis.shared import lang
 from jarvis.state import job_ledger
 from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.surface.inherent_output import InherentBroadcaster
+from jarvis.surface.inherent_server import InherentDeps, create_app
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -52,3 +57,25 @@ def test_one_card_per_local_day(tmp_path: Path) -> None:
     _cost(log, 1.2, tomorrow)  # a new day starts from zero and can cross again
     assert cap.check(tomorrow)
     assert len(job_ledger.alerts_for_client(db, "off", datetime.now(UTC) + timedelta(days=1))) == 2
+
+
+def test_card_is_served_with_job_mail_off(tmp_path: Path) -> None:
+    """No JobMail: the card still reaches ``GET /inherent/notices`` and is settled by ``POST``."""
+    log, db = tmp_path / "events.db", tmp_path / "memory.db"
+    with closing(open_event_log(log)):
+        pass
+    _cost(log, 1.5, NOON)
+    assert SpendCap(SpendCapSettings(daily_usd=1.0), log, db).check(NOON)
+    quiet = ["dnd"]
+    deps = _notice_deps(None, None, None, alerts=_alert_deps(db, lambda: quiet[0], None))
+    client = TestClient(create_app(InherentDeps(
+        submit_callable=lambda _text: None, broadcaster=InherentBroadcaster(), **deps,
+    )))
+    assert client.get("/inherent/notices").json()["notices"] == []  # held at dnd, still pending
+    quiet[0] = "off"
+    (card,) = client.get("/inherent/notices").json()["notices"]
+    assert card["title"] == lang.t("spend.cap.title")
+    assert card["level"] == "card"
+    seen = client.post(f"/inherent/notices/{card['id']}", json={"action": "seen"})
+    assert seen.status_code == 200
+    assert client.get("/inherent/notices").json()["notices"] == []

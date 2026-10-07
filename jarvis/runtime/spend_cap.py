@@ -1,8 +1,9 @@
-"""The daily spend limit (ADR 0173): one notch card the first time a local day's spend crosses it.
+"""The daily spend limit (ADR 0185): one notch card the first time a local day's spend crosses it.
 
 Every ``poll_s`` it sums today's ``cost.recorded`` dollars off the log's ``(type, ts)`` index and,
 past ``daily_usd``, raises one job-alert row (the channel-health card's shape, so the quiet level
-and the moment hold of ``JobMail.notices`` apply). It never stops or switches off a model.
+and the moment hold of ``served_notices`` apply, with or without job mail). It never stops or
+switches off a model.
 """
 
 from __future__ import annotations

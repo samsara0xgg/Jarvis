@@ -82,6 +82,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 
@@ -162,6 +163,7 @@ from jarvis.runtime import (
     make_turn_cancel_callable,
     save_language,
 )
+from jarvis.runtime.audio_output import current_output
 from jarvis.runtime.card_feedback import CardFeedback
 from jarvis.runtime.core_memory import CoreMemorySettings
 from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
@@ -174,6 +176,7 @@ from jarvis.runtime.dictation import (
     whisper_ears,
 )
 from jarvis.runtime.inherent_hub import start_inherent_view
+from jarvis.runtime.job_mail import served_notices, settle_notice
 from jarvis.runtime.memory_page import MemoryPage
 from jarvis.runtime.night_watch import NightWatch
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
@@ -4979,13 +4982,17 @@ def _draft_deps(runtime: JarvisRuntime, home: Home | None) -> dict[str, Any]:
 
 def _notice_deps(
     job_mail: JobMail | None, reminders: Reminders | None, moment: Moment | None,
+    alerts: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The notice routes: job mail's (ADR 0155) plus the owner's fired reminders (ADR 0179).
+
+    ``alerts`` stands in for job mail's notice routes while job mail is off (see
+    :func:`_alert_deps`), so a job-alert row that is not mail (the spend card) is still served.
 
     A reminder card is served whatever the quiet level and the hold, ahead of the job mail's, and
     ``POST /inherent/notices/{id}`` routes a ``reminder-`` id to the reminders.
     """
-    deps = _job_mail_deps(job_mail)
+    deps = _job_mail_deps(job_mail) or alerts or {}
     if reminders is None:
         return deps
     mail_read, mail_act = deps.get("notices_read"), deps.get("notice_act")
@@ -5010,6 +5017,28 @@ def _notice_deps(
             raise LookupError(msg)
 
     return {**deps, "notices_read": read, "notice_act": act}
+
+
+def _alert_deps(
+    db: Path, quiet: Callable[[], str], moment: Moment | None,
+) -> dict[str, Any]:
+    """The notice routes over the job-alert rows alone, for a daemon with job mail off (ADR 0185).
+
+    The same functions ``JobMail.notices`` and ``JobMail.act`` run, so the quiet level, the moment
+    hold and the digest rules are one pipeline.
+    """
+
+    def read() -> dict[str, Any]:
+        return served_notices(
+            db, quiet(), datetime.now(UTC), moment, current_output,
+        )
+
+    async def act(notice_id: str, action: str, reaction: str | None) -> None:
+        await asyncio.to_thread(
+            settle_notice, db, quiet(), datetime.now(UTC), notice_id, action, reaction,
+        )
+
+    return {"notices_read": functools.partial(asyncio.to_thread, read), "notice_act": act}
 
 
 def _job_mail_deps(job_mail: JobMail | None) -> dict[str, Any]:
@@ -6536,6 +6565,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         mail_home = None if runtime.mail_drafts is None else runtime.home
         if runtime.view is not None:  # ADR 0176: her ``present`` op reaches the companion
             runtime.view.push = lambda sent: broadcaster.broadcast_op_sync("present", **sent)
+        spend = SpendCapSettings.from_config(runtime.config.get("spend_cap"))
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
@@ -6598,7 +6628,13 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             mail_trash=None if mail_home is None else functools.partial(_mail_trash, mail_home),
             view_set=None if runtime.view is None else runtime.view.set,
             **_draft_deps(runtime, mail_home),
-            **_notice_deps(runtime.job_mail, runtime.reminders, runtime.moment),
+            **_notice_deps(
+                runtime.job_mail, runtime.reminders, runtime.moment,
+                alerts=(
+                    _alert_deps(runtime.memory.db_path, lambda: controls.quiet, runtime.moment)
+                    if spend is not None and runtime.memory is not None else None
+                ),
+            ),
             moment_read=(
                 None if runtime.moment is None else functools.partial(_moment_hold, runtime.moment)
             ),
@@ -6855,15 +6891,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             job_mail.may_speak = lambda: not controls.speech_muted and not controls.conversation
             job_mail.say = functools.partial(_say_job_line, runtime)
             watchers.append(asyncio.create_task(job_mail.run(), name="job_mail"))
-            # ADR 0173: its card is a job alert, served by job_mail.notices, so it needs job mail.
-            spend = SpendCapSettings.from_config(runtime.config.get("spend_cap"))
-            if spend is not None and runtime.memory is not None:
-                watchers.append(asyncio.create_task(
-                    SpendCap(
-                        spend, runtime.runtime_paths.event_log, runtime.memory.db_path,
-                    ).run(),
-                    name="spend_cap",
-                ))
+        if spend is not None and runtime.memory is not None:
+            # ADR 0185: the card is a job-alert row; _alert_deps serves it with job mail off too.
+            watchers.append(asyncio.create_task(
+                SpendCap(spend, runtime.runtime_paths.event_log, runtime.memory.db_path).run(),
+                name="spend_cap",
+            ))
         if runtime.work_state_auto and runtime.work_state and runtime.moment:
             # ADR 0180: a changed front app or site re-analyses the work state, silently.
             watchers.append(asyncio.create_task(

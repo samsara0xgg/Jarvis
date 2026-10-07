@@ -407,7 +407,7 @@ moment:
     apps_today: true
     situation: true
 
-# ADR 0173 — the daily spend limit.  The first time a local day's recorded spend passes daily_usd,
+# ADR 0185 — the daily spend limit.  The first time a local day's recorded spend passes daily_usd,
 # one notch card says so.  Counted: cost.recorded dollars, which are OpenAI calls.  Not counted:
 # MiniMax TTS (characters), Jev on OpenRouter, Tavily, Exa.  It never stops or switches off a
 # model.  Absent block or a non-positive number = no limit.  Override in ~/.jarvis/settings.yaml,

@@ -1035,7 +1035,7 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "job.health.auth": {"zh": "Gmail 需要重新登录。", "en": "Gmail needs you to sign in again."},
     "job.health.timeout": {"zh": "Gmail 没有及时回应。", "en": "Gmail did not answer in time."},
     "job.health.down": {"zh": "连不上 Gmail。", "en": "Cannot reach Gmail."},
-    # ADR 0173: the card the first time a day's recorded spend crosses its limit.
+    # ADR 0185: the card the first time a day's recorded spend crosses its limit.
     "spend.cap.title": {"zh": "今天的花费超过上限了", "en": "Today's spend is over the limit"},
     "spend.cap.line": {
         "zh": "今天已花 ${spent}，上限 ${limit}。",

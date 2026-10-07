@@ -612,61 +612,12 @@ class JobMail:
     # --- what the surface reads ----------------------------------------------------
 
     def notices(self) -> dict[str, Any]:
-        """``GET /inherent/notices``: the alerts a client may show at the quiet level now.
-
-        ``audio_private`` says whether sound may play now; while it is false every alert is served
-        as a silent card, so a disconnect between two polls cannot leak a cue.
-        """
-        private = bool(self.output()["private"])
-        # ``hold`` (ADR 0163) tells the client to hold its own cards: ``call``, ``away`` or None.
-        hold = None if self.moment is None else self.moment.client_hold()
-        if hold is not None:
-            # In a call or away: every alert stays pending, so none is shown or marked shown, and
-            # when it ends they come back as one summary (several waited) or one card.
-            return {"notices": [], "audio_private": private, "hold": hold}
-        shown = ledger.alerts_for_client(self._db, self.quiet(), self.now())
-        if not private:
-            for notice in shown:
-                for one in (notice, *notice.get("items", [])):
-                    if one["level"] in ledger.SOUNDING:
-                        one["level"] = "card"
-        return {"notices": shown, "audio_private": private, "hold": None}
+        """``GET /inherent/notices``: the alerts a client may show at the quiet level now."""
+        return served_notices(self._db, self.quiet(), self.now(), self.moment, self.output)
 
     def act(self, notice_id: str, action: str, reaction: str | None) -> None:
-        """``POST /inherent/notices/{id}``: ``seen``, or feedback (``dismissed`` is feedback too).
-
-        An unknown id is a LookupError (404), a reaction that is not one of ``right``,
-        ``dismissed`` and ``level:<name>`` a ValueError (400). A digest id stands for its alerts:
-        seen, dismissed or a reaction applies to each, logged once per alert with the summary's
-        level as the level shown (ADR 0159).
-        """
-        if action == "dismissed":
-            reaction = "dismissed"
-        if action != "seen" and not _known_reaction(reaction):
-            msg = f"not a reaction: {reaction!r}"
-            raise ValueError(msg)
-        now = self.now()
-        alerts = [ledger.get_alert(self._db, one) for one in ledger.alert_ids(notice_id)]
-        if not alerts or any(one is None for one in alerts):
-            msg = f"no such notice: {notice_id}"
-            raise LookupError(msg)
-        quiet = self.quiet()
-        # A summary is one card: it was as loud as its loudest alert (and never spoke).
-        loud = any(
-            ledger.shown_level(one["level"], quiet) in ledger.SOUNDING for one in alerts if one
-        )
-        for alert in alerts:
-            if alert is None:
-                continue
-            if action == "seen":
-                if alert["state"] == "pending":
-                    ledger.mark_alert(self._db, alert["id"], "shown", now)
-                continue
-            level = ledger.shown_level(alert["level"], quiet)
-            if notice_id.startswith("digest-"):
-                level = "card_sound" if loud else "card"
-            ledger.add_feedback(self._db, alert["id"], level, str(reaction), now)
-            ledger.mark_alert(self._db, alert["id"], "done", now)
+        """``POST /inherent/notices/{id}``: see :func:`settle_notice`."""
+        settle_notice(self._db, self.quiet(), self.now(), notice_id, action, reaction)
 
     def ledger(self) -> dict[str, Any]:
         """``GET /inherent/jobs``: the ledger by company, the applications, held-back mail, rules.
@@ -872,6 +823,68 @@ def _audit(head: triage.Head) -> dict[str, str]:
         "domain": head.domain,
         "subject": head.subject,
     }
+
+
+def served_notices(
+    db: Path, quiet: str, now: datetime, moment: Moment | None,
+    output: Callable[..., dict[str, Any]],
+) -> dict[str, Any]:
+    """The job-alert rows a client may show at ``quiet`` now (ADR 0155), with or without job mail.
+
+    ``audio_private`` says whether sound may play now; while it is false every alert is served
+    as a silent card, so a disconnect between two polls cannot leak a cue.
+    """
+    private = bool(output()["private"])
+    # ``hold`` (ADR 0163) tells the client to hold its own cards: ``call``, ``away`` or None.
+    hold = None if moment is None else moment.client_hold()
+    if hold is not None:
+        # In a call or away: every alert stays pending, so none is shown or marked shown, and
+        # when it ends they come back as one summary (several waited) or one card.
+        return {"notices": [], "audio_private": private, "hold": hold}
+    shown = ledger.alerts_for_client(db, quiet, now)
+    if not private:
+        for notice in shown:
+            for one in (notice, *notice.get("items", [])):
+                if one["level"] in ledger.SOUNDING:
+                    one["level"] = "card"
+    return {"notices": shown, "audio_private": private, "hold": None}
+
+
+def settle_notice(  # noqa: PLR0913 - the db, the clock, the quiet level and the client's three fields
+    db: Path, quiet: str, now: datetime, notice_id: str, action: str, reaction: str | None,
+) -> None:
+    """``seen``, or feedback (``dismissed`` is feedback too), on one job-alert notice.
+
+    An unknown id is a LookupError (404), a reaction that is not one of ``right``,
+    ``dismissed`` and ``level:<name>`` a ValueError (400). A digest id stands for its alerts:
+    seen, dismissed or a reaction applies to each, logged once per alert with the summary's
+    level as the level shown (ADR 0159).
+    """
+    if action == "dismissed":
+        reaction = "dismissed"
+    if action != "seen" and not _known_reaction(reaction):
+        msg = f"not a reaction: {reaction!r}"
+        raise ValueError(msg)
+    alerts = [ledger.get_alert(db, one) for one in ledger.alert_ids(notice_id)]
+    if not alerts or any(one is None for one in alerts):
+        msg = f"no such notice: {notice_id}"
+        raise LookupError(msg)
+    # A summary is one card: it was as loud as its loudest alert (and never spoke).
+    loud = any(
+        ledger.shown_level(one["level"], quiet) in ledger.SOUNDING for one in alerts if one
+    )
+    for alert in alerts:
+        if alert is None:
+            continue
+        if action == "seen":
+            if alert["state"] == "pending":
+                ledger.mark_alert(db, alert["id"], "shown", now)
+            continue
+        level = ledger.shown_level(alert["level"], quiet)
+        if notice_id.startswith("digest-"):
+            level = "card_sound" if loud else "card"
+        ledger.add_feedback(db, alert["id"], level, str(reaction), now)
+        ledger.mark_alert(db, alert["id"], "done", now)
 
 
 def _known_reaction(reaction: str | None) -> bool:

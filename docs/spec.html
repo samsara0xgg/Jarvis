@@ -528,7 +528,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <h3 id="spend">花费</h3>
 <ul>
 <li>每次调模型都记一条 <code>cost.recorded</code>，按 <code>data/pricing.json</code> 的价目表折成钱。</li>
-<li>不设硬上限：花费不会让任何模型停下（ADR 0173）。当天（本机时区）已记的美元总额第一次超过 <code>spend_cap.daily_usd</code>（默认 1.00）时，刷一次提示卡，每天最多一次；语音按字计费、Jev 有自己的日志，都不在这个总额里。按秒计费的实时语音 <code>gpt-live-1</code> 在价目表里没有价格，记不上账。</li>
+<li>不设硬上限：花费不会让任何模型停下（ADR 0185）。当天（本机时区）已记的美元总额第一次超过 <code>spend_cap.daily_usd</code>（默认 1.00）时，刷一次提示卡，每天最多一次，job mail 开不开都会出；语音按字计费、Jev 有自己的日志，都不在这个总额里。按秒计费的实时语音 <code>gpt-live-1</code> 在价目表里没有价格，记不上账。</li>
 <li>首次设置测 OpenAI key：先列一次模型（不花钱），再真的调一次对话模型，最多 200 个输出 token，发出去的提示里带着主人和助手的名字（改6）；最后只查模型列表里有没有后台要用的模型和 <code>gpt-live-1</code>。测 MiniMax key 会合成一个词的语音，测 Tavily key 会花掉一次搜索。</li>
 <li>后台每次启动都重测已存的 key：OpenAI 只列模型，不花 token；MiniMax 合成一个词，按字计费。</li>
 <li>安装版的 Agents 窗口存 Anthropic key 之前只列一次模型，不花钱。</li>
