@@ -64,6 +64,8 @@ try {
   };
   const shot = async (name, clip = { x: 0, y: 0, width: 640, height: 480 }) => { await page.waitForTimeout(900); await page.screenshot({ path: path.join(dir, `${name}.png`), clip }); };
   const note = '.notch-note.is-open';
+  // A card's snapshot is posted a moment after it shows: wait for the post itself.
+  const posted = async (re, ms = 4000) => { for (const t0 = Date.now(); Date.now() - t0 < ms; await page.waitForTimeout(50)) { const hit = posts.find(x => re.test(x.id)); if (hit) return hit; } };
   const shows = (sel = '.nc, .nt-card.pop') => page.waitForFunction(s => document.querySelector(`.notch-note.is-open ${s.split(', ').join(', .notch-note.is-open ')}`), sel, { timeout: 8000 });
   const gone = () => page.waitForFunction(() => !document.querySelector('.notch-note.is-open .nc, .notch-note.is-open .nt-card, .notch-note.is-open .ac'), null, { timeout: 5000 });
   const mine = id => posts.filter(x => x.id === id).map(x => x.body);
@@ -165,7 +167,7 @@ try {
   await shot('night-bedtime-no-row', { x: 100, y: 0, width: 440, height: 360 });
   night = { ...night, night: run('glance') };
   await page.waitForFunction(() => document.querySelector('.notch-note.is-open .nc-rate-open'), null, { timeout: 8000 });
-  const glance = posts.find(x => /^night:n1:night$/.test(x.id));
+  const glance = await posted(/^night:n1:night$/);
   check('the card when the screen wakes posts kind night once and shows the folded link', !!glance && glance.body.kind === 'night' && glance.body.level === 'card' && glance.body.facts.phase === 'glance' && await page.locator(rows).count() === 1);
   await settle();
   await page.locator(rows).click();
@@ -176,7 +178,7 @@ try {
     restored: { brightness: true, volume: true }, watch: { seen: true, blind: false, blind_since_ms: null, lists: { claude: true }, busy: 0, quiet_ms: null, sessions: [], monitor_ms: Date.now() - 5 * 60 * M, extra_ms: 0, busy_at_deadline: 0, busy_at_release: 0 }, totals: { nights: 1, extra_ms: 0, blind: 0 } };
   night = { ...night, night: null, last: last0 };
   await page.waitForFunction(() => document.querySelector('.notch-note.is-open .is-morning .nc-rate-open'), null, { timeout: 8000 });
-  const morning = posts.find(x => /^night:n1:morning$/.test(x.id));
+  const morning = await posted(/^night:n1:morning$/);
   check('the morning card posts kind morning and shows the folded link', !!morning && morning.body.kind === 'morning' && await page.locator(`${note} .is-morning .nc-rate-open`).count() === 1);
   await shot('morning-folded', { x: 100, y: 0, width: 440, height: 420 });
   await page.locator(rows).click();

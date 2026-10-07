@@ -80,7 +80,7 @@ try {
   check('refinement clicking a Dashboard that a click opened closes it until the pointer leaves', await dashOpen() === 0);
   await move(600, 560); await waitPlace('home');
   await hit.click({ button: 'right', force: true });
-  check('refinement right-click opens skin and expression controls', await page.getByRole('menuitemradio').count() === 9 && await page.getByRole('menuitem', { name: 'Preview expressions' }).count() === 1);
+  check('refinement right-click opens skin, caption, quiet and expression controls', await page.getByRole('menuitemradio').count() === 13 && await page.getByRole('menuitem', { name: 'Preview expressions' }).count() === 1);
   await page.getByRole('menuitem', { name: 'Settings…', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.ad .pg-head h3')?.textContent === 'Settings');
   check('refinement her menu opens settings directly without starting voice', await page.locator('.talk[data-hit]').count() === 0);
