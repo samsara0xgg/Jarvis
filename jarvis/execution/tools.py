@@ -3884,6 +3884,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             `read_clipboard`, `open_url`, `screen_look`, `write_file`) is then
             registered, in the same place and with the same definition, as a proxy
             that runs the call there. `None` (one machine) registers them as they are.
+            The activity tools (`query_activity`, `read_activity`, `save_*`) stay as they
+            are too, but ask the terminal for what they read of TimeSink and git.
     """
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
 
@@ -4014,7 +4016,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     )
 
     for daily_tool in build_daily_tools(
-        memory_db_path, repos=observed_repos, timesink_path=timesink_db_path
+        memory_db_path, repos=observed_repos, timesink_path=timesink_db_path, device=device_link
     ):
         registry.register(daily_tool)
     for state_tool in build_work_state_tool(work_state_refresh):

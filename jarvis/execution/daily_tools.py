@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         ToolContext,
         WorkStateRefresh,
     )
+    from jarvis.shared.device_link import DeviceLink
 
 _DESCRIPTIONS = {
     "search_records": (
@@ -144,13 +145,14 @@ def _read(  # noqa: PLR0913 — request context and independent configured sourc
     memory_path: Path | None,
     repos: tuple[str, ...],
     timesink_path: Path | None,
+    device: DeviceLink | None,
 ) -> dict[str, Any]:
     if name in _RECORD_READERS:
         return _RECORD_READERS[name](memory_path, values)
     if name == "query_activity":
-        return daily_activity.query_activity(ctx.conn, values, repos, timesink_path)
+        return daily_activity.query_activity(ctx.conn, values, repos, timesink_path, device)
     if name == "read_activity":
-        return daily_activity.read_activity(ctx.conn, values, timesink_path)
+        return daily_activity.read_activity(ctx.conn, values, timesink_path, device)
     if name == "get_briefing":
         return daily_store.get_briefing(ctx.conn, values)
     return daily_store.search_items(ctx.conn, name, values)
@@ -161,6 +163,7 @@ def _handler(
     memory_path: Path | None,
     repos: tuple[str, ...],
     timesink_path: Path | None,
+    device: DeviceLink | None,
 ) -> FlatHandler:
     def handle(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         values = dict(args)
@@ -168,10 +171,11 @@ def _handler(
             validate(values, SCHEMAS[name])
             if name in _WRITES:
                 result = daily_store.write_revision(
-                    ctx.conn, memory_path, name, values, ctx.action_id, timesink_path=timesink_path
+                    ctx.conn, memory_path, name, values, ctx.action_id,
+                    timesink_path=timesink_path, device=device,
                 )
             else:
-                result = _read(name, values, ctx, memory_path, repos, timesink_path)
+                result = _read(name, values, ctx, memory_path, repos, timesink_path, device)
         except DailyError as exc:
             raise ToolError(str(exc), code=exc.code) from exc
         # IDs, source refs and cursors must never be damaged by generic string clipping.
@@ -249,14 +253,19 @@ def build_daily_tools(
     *,
     repos: tuple[str, ...] = (),
     timesink_path: Path | None = None,
+    device: DeviceLink | None = None,
 ) -> tuple[Tool, ...]:
-    """Bind store configuration; no connections or state are created at registration."""
+    """Bind store configuration; no connections or state are created at registration.
+
+    On a brain (ADR 0170) ``device`` is its link to the terminal, which holds TimeSink and the
+    repositories: the same tools, the same schemas, their reads of those two asked of it.
+    """
     return tuple(
         Tool(
             name=name,
             description=description,
             input_schema=SCHEMAS[name],
-            handler=_handler(name, memory_path, repos, timesink_path),
+            handler=_handler(name, memory_path, repos, timesink_path, device),
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1" if name in _WRITES else "L0",
             read_only=name not in _WRITES,

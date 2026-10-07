@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from jarvis.decision.daily_report import Claim
     from jarvis.decision.llm import ChatResult
     from jarvis.execution.mcp_tools import McpServers
+    from jarvis.shared.device_link import DeviceLink
     from jarvis.state.daily_report import DayEvidence
 
     type PlanReader = Callable[[datetime, datetime], dict[str, Any]]
@@ -187,8 +188,13 @@ class DailyReportService:
         tz: tzinfo | None = None,
         codex_sessions_path: Path | None = None,
         check_budget: int = CHECK_BUDGET,
+        device: DeviceLink | None = None,
     ) -> None:
-        """Bind store locations; nothing is opened until a run."""
+        """Bind store locations; nothing is opened until a run.
+
+        ``device`` (ADR 0170: this is a brain) is the link to the terminal that holds TimeSink
+        and the repositories; the day's reads of them are asked of it.
+        """
         self._memory_path = memory_path
         self._timesink_path = timesink_path
         self._codex_sessions_path = codex_sessions_path
@@ -197,6 +203,7 @@ class DailyReportService:
         self._model = model
         self._tz = tz
         self._check_budget = check_budget
+        self._device = device
         # ponytail: one lock for all days; per-day locks only if two reports must run at once.
         self._lock = threading.Lock()
         self.plan_reader: PlanReader | None = None
@@ -274,6 +281,7 @@ class DailyReportService:
             now=moment,
             codex_sessions_path=self._codex_sessions_path,
             plan=self._plan(day, zone),
+            device=self._device,
         )
         if evidence.empty:
             return {
@@ -312,6 +320,7 @@ class DailyReportService:
             coverage=coverage,
             expected_version=version,
             action_id=action_id,
+            device=self._device,
         )
         return {
             **base,
@@ -421,6 +430,7 @@ class DailyReportService:
                 conn=conn,
                 memory_path=self._memory_path,
                 timesink_path=self._timesink_path,
+                device=self._device,
             )
             jobs.append((index, pending, *build_check_request(item, pending, originals)))
         if not jobs:
@@ -489,6 +499,7 @@ class DailyReportService:
             str(argument),
             timesink_path=self._timesink_path,
             zone=resolve_zone(evidence.zone, self._tz)[1],
+            device=self._device,
         )
 
     def _details(self, conn: sqlite3.Connection, evidence: DayEvidence, keys: list[str]) -> str:
@@ -500,6 +511,7 @@ class DailyReportService:
                 conn=conn,
                 memory_path=self._memory_path,
                 timesink_path=self._timesink_path,
+                device=self._device,
             )
             for key in keys
         )

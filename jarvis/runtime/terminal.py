@@ -19,7 +19,8 @@ import logging
 import sys
 import tempfile
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -47,11 +48,20 @@ from jarvis.runtime import (
 from jarvis.runtime.inherent_loop import _repo_observer_task, _timesink_observer_task
 from jarvis.runtime.settings import apply_settings
 from jarvis.shared import ActionRequest
+from jarvis.state import device_reads, timesink
+from jarvis.state.daily_contract import DailyError
+from jarvis.state.daily_report import git_show, local_commits
+from jarvis.state.daily_store import commit_exists
 from jarvis.state.event_log import EventLogError, emit_event, open_event_log
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.terminal_events import EventOutbox
-from jarvis.surface.terminal_link import Execute, TerminalRefusedError, run_terminal_client
-from jarvis.surface.timesink_observer import TimesinkObserver
+from jarvis.surface.terminal_link import (
+    MAX_FRAME_CHARS,
+    Execute,
+    TerminalRefusedError,
+    run_terminal_client,
+)
+from jarvis.surface.timesink_observer import TimesinkObserver, collect
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -71,16 +81,104 @@ class _ScratchPaths:
 
 
 def _declared(registry: ToolRegistry) -> frozenset[str]:
-    """The tools this machine can run: the device tools it holds that a caller may reach."""
+    """The tools this machine can run: the device tools it holds that a caller may reach.
+
+    Beside them the reads of its own TimeSink store and repositories, which are not menu tools.
+    """
     held = {tool.name for tool in registry.get_definitions() if tool.allowed_callers}
-    return frozenset(held & TERMINAL_TOOL_NAMES) | {RESOLVE_FILE}
+    return frozenset(held & TERMINAL_TOOL_NAMES) | {RESOLVE_FILE} | device_reads.DEVICE_READS
 
 
-def make_executor(registry: ToolRegistry) -> Execute:
+_MAX_READ_CHARS = MAX_FRAME_CHARS - 4096
+"""The most a read may answer: one frame, less its envelope."""
+
+
+def _when(args: Mapping[str, Any], key: str) -> datetime:
+    return datetime.fromisoformat(str(args[key]))
+
+
+def _timesink_read(fn: str, args: Mapping[str, Any], store: Path | None) -> Any:  # noqa: ANN401, PLR0911 — one reader's JSON; one return per reader.
+    """One TimeSink reader of ``jarvis.state.timesink``, run on this machine's own store."""
+    if fn in {"read_capture", "read_span"}:
+        reader = timesink.read_capture if fn == "read_capture" else timesink.read_span
+        return reader(store, str(args["reference"]))
+    if fn == "head":
+        return asdict(collect(store))
+    queries = {
+        "query_spans": timesink.query_spans,
+        "query_captures": timesink.query_captures,
+        "query_state": timesink.query_state,
+    }
+    if fn not in {"open", "capture_texts", "capture_matches", "search_captures", *queries}:
+        message = f"this terminal has no TimeSink read {fn!r}"
+        raise DailyError(message, "unknown_read")
+    with timesink.snapshot(store) as snap:
+        if fn == "open":
+            return None if snap is None else snap.identity
+        if fn == "capture_texts":
+            return {} if snap is None else timesink.capture_texts(snap, args["ids"])
+        if fn == "capture_matches":
+            return [] if snap is None else timesink.capture_matches(
+                snap, list(args["ids"]), list(args["terms"]),
+            )
+        start, end = _when(args, "start"), _when(args, "end")
+        if fn == "search_captures":
+            return timesink.search_captures(
+                snap, start, end, list(args["terms"]), limit=int(args["limit"]),
+            )
+        return queries[fn](snap, start, end, watermark=args.get("watermark"))
+
+
+def _git_read(fn: str, args: Mapping[str, Any], repos: tuple[str, ...]) -> Any:  # noqa: ANN401 — one reader's JSON.
+    """One git reader of ``jarvis.state.daily_report``, run on this machine's own repositories."""
+    if fn == "repos":
+        return list(repos)
+    if fn == "local_commits":
+        found, unreadable = local_commits(repos, _when(args, "since"), _when(args, "until"))
+        return {"found": found, "unreadable": unreadable}
+    if fn in {"show", "exists"}:
+        repo = str(args["repo"])
+        if repo not in repos:  # the brain names where to look; only a watched repository is read
+            message = f"{repo} is not a repository this device watches"
+            raise DailyError(message, "not_watched")
+        sha = str(args["sha"])
+        return git_show(repo, sha) if fn == "show" else commit_exists(repo, sha)
+    message = f"this terminal has no git read {fn!r}"
+    raise DailyError(message, "unknown_read")
+
+
+def _read_device(
+    op: str, arguments: Mapping[str, Any], store: Path | None, repos: tuple[str, ...],
+) -> dict[str, Any]:
+    """Answer a brain's read of this machine's TimeSink or git: the JSON, or the refusal."""
+    raw = arguments.get("args")
+    args = raw if isinstance(raw, dict) else {}
+    fn = str(arguments.get("fn", ""))
+    try:
+        result = (
+            _timesink_read(fn, args, store)
+            if op == device_reads.TIMESINK_READ
+            else _git_read(fn, args, repos)
+        )
+    except DailyError as exc:
+        return {"ok": False, "code": exc.code, "message": str(exc)}
+    except (KeyError, TypeError, ValueError) as exc:
+        return {"ok": False, "code": "bad_request", "message": f"{fn}: {type(exc).__name__}"}
+    output = {"result": result}
+    if len(json.dumps(output, ensure_ascii=False)) > _MAX_READ_CHARS:
+        return {"ok": False, "code": "result_too_large",
+                "message": f"{fn} has more to send than one reply holds"}
+    return {"ok": True, "output": output}
+
+
+def make_executor(
+    registry: ToolRegistry, *, timesink_store: Path | None = None, repos: tuple[str, ...] = (),
+) -> Execute:
     """The runner a terminal hands its link: one call in, ``ok`` + ``output`` or a failure out.
 
     Only declared tools run. The brain has already gated and, where it must, confirmed the
-    call; nothing here asks again.
+    call; nothing here asks again. ``timesink_store`` and ``repos`` are what this machine's
+    config says it has, which the brain's reads of them (``timesink_read``, ``git_read``) use.
     """
     declared = _declared(registry)
     definitions = {tool.name: tool for tool in registry.get_definitions()}
@@ -97,6 +195,8 @@ def make_executor(registry: ToolRegistry) -> Execute:
     ) -> dict[str, Any]:
         if tool not in declared:
             return {"ok": False, "code": "unknown_tool", "message": f"this terminal has no {tool}"}
+        if tool in device_reads.DEVICE_READS:
+            return _read_device(tool, arguments, timesink_store, repos)
         conn = open_event_log(Path(":memory:"))  # opened here: a log belongs to its thread
         try:
             if tool == RESOLVE_FILE:
@@ -217,8 +317,10 @@ def run_terminal(
             _load_full_config(config_path, runtime_root / "settings.yaml"), runtime_root,
         )
         _install_open_path(config)
-        repos = _observer_repo_paths(config) if observers else ()
-        timesink = _timesink_db_path(config) if observers else None
+        configured_repos = _observer_repo_paths(config)
+        configured_store = _timesink_db_path(config)
+        repos = configured_repos if observers else ()
+        store = configured_store if observers else None
     except (RuntimeBootstrapError, ValueError) as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")
         return 1
@@ -229,18 +331,19 @@ def run_terminal(
     LOGGER.info("this terminal runs %s", sorted(tools))
     watched = (
         _Watched(
-            repos, _observer_poll_interval_s(config), timesink, _timesink_poll_interval_s(config),
+            repos, _observer_poll_interval_s(config), store, _timesink_poll_interval_s(config),
         )
-        if repos or timesink is not None
+        if repos or store is not None
         else None
     )
     if watched is not None:
         LOGGER.info("this terminal observes %d repo(s)%s", len(repos),
-                    "" if timesink is None else " and TimeSink")
+                    "" if store is None else " and TimeSink")
     try:
-        asyncio.run(
-            _run(base_url, token, tools=tools, execute=make_executor(registry), watched=watched),
+        execute = make_executor(
+            registry, timesink_store=configured_store, repos=configured_repos,
         )
+        asyncio.run(_run(base_url, token, tools=tools, execute=execute, watched=watched))
     except TerminalRefusedError as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")
         return 1

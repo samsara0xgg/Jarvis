@@ -2366,6 +2366,9 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     _install_open_path(full_config)
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
     memory = MemorySettings.from_config(full_config.get("memory"), runtime_root=paths.root)
+    # ADR 0170: a brain's TimeSink and git are its terminal's, so what reads them asks the hub.
+    terminal_hub = TerminalHub(events=BrainEvents(conn)) if role == "brain" else None
+    device = None if terminal_hub is None else terminal_hub.call
     moment = _moment(full_config, config_path, memory.db_path)
     # ADR 0068: refuse a memory.db a newer Jarvis wrote before anything writes to it.
     open_memory_db(memory.db_path).close()
@@ -2383,6 +2386,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
         model=_work_state_preset(full_config),
         tz=_work_state_timezone(full_config),
+        device=device,
     )
     catalog = parse_catalog(full_config.get("projects"))
     projects = (
@@ -2418,6 +2422,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         model=_daily_report_preset(full_config),
         tz=_work_state_timezone(full_config),
         codex_sessions_path=_codex_sessions_path(full_config),
+        device=device,
     )
     night = (
         None
@@ -2436,7 +2441,6 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         AmbientSounds(log_path=logs_dir(paths.root) / "ambient-sounds.jsonl")
         if _ambient_sounds(full_config) else None
     )
-    terminal_hub = TerminalHub(events=BrainEvents(conn)) if role == "brain" else None
     registry = build_default_registry(
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
@@ -2460,7 +2464,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             account_cost=wave1_features.exactly_once_cost_accounting,
         ),
         screen_max_width_px=screen_max_width_px,
-        device_link=None if terminal_hub is None else terminal_hub.call,
+        device_link=device,
     )
     workers = _register_workers(registry, paths, full_config)
     plugin_connections = PluginConnections(

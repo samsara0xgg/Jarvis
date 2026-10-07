@@ -25,13 +25,15 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from jarvis.shared.lang import TEXT, t
-from jarvis.state import daily_store, timesink
+from jarvis.state import daily_store, device_reads, timesink
 from jarvis.state.daily_contract import DailyError, fingerprint
 from jarvis.state.daily_records import read_connection
 from jarvis.state.daily_store import current_items, high_water
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
+
+    from jarvis.shared.device_link import DeviceLink
 
 ALLEN_SOURCE = "allen"
 MAX_DETAILS = 10
@@ -282,25 +284,12 @@ def _span_sections(g: _Gather, items: list[dict[str, Any]]) -> None:
     )
 
 
-def _capture_texts(snap: timesink.Snapshot, ids: Iterable[int]) -> dict[int, str]:
-    """The whole OCR text of each capture: the listing item only carries a 300-char summary."""
-    wanted = list(ids)
-    if not wanted:
-        return {}
-    marks = ",".join("?" * len(wanted))
-    rows = snap.conn.execute(
-        f"SELECT id,text FROM capture WHERE id IN ({marks})",  # noqa: S608 — placeholders only.
-        wanted,
-    ).fetchall()
-    return {int(identity): _flat(text or "") for identity, text in rows}
-
-
 def _milestone(text: str) -> str | None:
     folded = text.casefold()
     return next((phrase for phrase in MILESTONES if phrase in folded), None)
 
 
-def _screen_section(g: _Gather, snap: timesink.Snapshot, items: list[dict[str, Any]]) -> None:
+def _screen_section(g: _Gather, texts: dict[int, str], items: list[dict[str, Any]]) -> None:
     """Every capture of the day, whole, in time order; only a repeat of the same screen is folded.
 
     Consecutive captures of one window whose text is near-identical are one
@@ -308,7 +297,6 @@ def _screen_section(g: _Gather, snap: timesink.Snapshot, items: list[dict[str, A
     key. A capture whose text holds a milestone phrase is listed again at the
     top, so a confirmation page seen for half a minute is read.
     """
-    texts = _capture_texts(snap, (int(_row_id(item)) for item in items))
     kept: list[dict[str, Any]] = []
     last_in_window: dict[tuple[str, str | None], dict[str, Any]] = {}
     folded = 0
@@ -317,7 +305,7 @@ def _screen_section(g: _Gather, snap: timesink.Snapshot, items: list[dict[str, A
         identity = int(_row_id(item))
         key = f"s{identity}"
         g.refs[key] = item["source_refs"][0]
-        text = texts.get(identity, "")
+        text = _flat(texts.get(identity, ""))
         row = {
             "key": key,
             "app": item["app_name"],
@@ -369,20 +357,29 @@ def _state_section(g: _Gather, state: dict[str, Any]) -> None:
     g.sections["state_events"] = rows
 
 
-def _timesink_sections(g: _Gather, snap: timesink.Snapshot | None) -> None:
+def _timesink_sections(g: _Gather, snap: timesink.Reader | None, why: str | None = None) -> None:
+    """The day's windows, screen text and state events; ``why`` is a device that was not there."""
     spans = timesink.query_spans(snap, g.start, g.end)
     captures = timesink.query_captures(snap, g.start, g.end)
     state = timesink.query_state(snap, g.start, g.end)
+    # Everything is read before anything is built: a terminal that drops mid-read leaves no part.
+    texts = (
+        {}
+        if snap is None
+        else timesink.capture_texts(snap, (int(_row_id(item)) for item in captures["items"]))
+    )
     # The store's enum says whether the source could be read; ``served`` says what it held.
     g.coverage["app"] = "unavailable" if snap is None else str(spans["coverage"]["status"])
     g.coverage["screen"] = "unavailable" if snap is None else "available"
     if snap is None:
-        g.served["app"] = g.served["screen"] = t("timesink.unreadable")
+        g.served["app"] = g.served["screen"] = (
+            t("timesink.unreadable") if why is None else t("device.unavailable", why=why)
+        )
         g.sections["windows"] = g.sections["apps"] = g.sections["screen"] = []
         g.sections["milestones"] = g.sections["state_events"] = []
         return
     _span_sections(g, spans["items"])
-    _screen_section(g, snap, captures["items"])
+    _screen_section(g, texts, captures["items"])
     _state_section(g, state)
 
 
@@ -505,14 +502,24 @@ def repositories(repos: Sequence[str]) -> dict[str, list[str]]:
     return groups
 
 
-def _local_commits(g: _Gather, repos: Sequence[str]) -> dict[str, dict[str, Any]]:
+def _local_commits(
+    g: _Gather, repos: Sequence[str], device: DeviceLink | None
+) -> dict[str, dict[str, Any]]:
     """Every commit on a local branch of a watched repository, committed inside the day.
 
     The observer only writes what it saw between polls and never backfills a
     repository it started watching that day, so the local repository is the
-    authority on what was committed; the observer contributes when it saw it.
+    authority on what was committed; the observer contributes when it saw it. On a brain the
+    repositories are the terminal's, and it runs the same walk.
     """
-    found, unreadable = local_commits(repos, g.start, g.end)
+    if device is None:
+        found, unreadable = local_commits(repos, g.start, g.end)
+    else:
+        answer = device_reads.ask(
+            device, device_reads.GIT_READ, "local_commits",
+            since=g.start.isoformat(), until=g.end.isoformat(),
+        )
+        found, unreadable = answer["found"], answer["unreadable"]
     if unreadable:
         g.limits.append(
             t(
@@ -564,7 +571,12 @@ def local_commits(
     return found, unreadable
 
 
-def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) -> None:
+def _git_sections(
+    g: _Gather, conn: sqlite3.Connection, repos: Sequence[str], device: DeviceLink | None = None
+) -> None:
+    repos, gap = device_reads.watched_repos(device, tuple(repos))
+    if gap is not None:
+        g.limits.append(t("device.unavailable", why=gap))
     rows = conn.execute(
         "SELECT event_uid,type,ts_epoch_ms,payload_json FROM events "
         "WHERE type IN (?,?) AND ts_epoch_ms>=? AND ts_epoch_ms<? ORDER BY ts_epoch_ms,id",
@@ -575,7 +587,7 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
         ),
     ).fetchall()
     observed, states = _fold_git_rows(g, rows, repos)
-    commits = _local_commits(g, repos)
+    commits = {} if gap else _local_commits(g, repos, device)
     for sha, seen in observed.items():
         # The local log is the authority on what and when; the observer adds when it was seen.
         entry = commits.setdefault(sha, {**seen, "on_main": None})
@@ -644,7 +656,11 @@ def _git_sections(g: _Gather, conn: sqlite3.Connection, repos: Sequence[str]) ->
     g.sections["repo_states"] = repo_states
     if not repos:
         g.coverage["git"] = "unavailable"
-        g.served["git"] = t("report.served.git_no_repos")
+        g.served["git"] = (
+            t("report.served.git_no_repos")
+            if gap is None
+            else t("report.served.git_device", why=gap)
+        )
 
 
 _MAIN_KEYS = {True: "report.main.on", False: "report.main.off", None: "report.main.unknown"}
@@ -928,14 +944,22 @@ def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zon
     now: datetime,
     codex_sessions_path: Path | None = None,
     plan: Mapping[str, Any] | None = None,
+    device: DeviceLink | None = None,
 ) -> DayEvidence:
-    """Read every configured source once for the whole local day, whole and keyed."""
+    """Read every configured source once for the whole local day, whole and keyed.
+
+    On a brain (``device``) TimeSink and the repositories are the terminal's; one that is not
+    there leaves their coverage ``unavailable`` and says why, as an unreadable store does.
+    """
     start, end, partial = day_window(day, zone, now)
     g = _Gather(zone=zone, start=start, end=end, day=day)
-    with timesink.snapshot(timesink_path) as snap:
-        _timesink_sections(g, snap)
+    try:
+        with timesink.snapshot(timesink_path, device) as snap:
+            _timesink_sections(g, snap)
+    except device_reads.DeviceUnavailable as exc:
+        _timesink_sections(g, None, str(exc))
     _record_section(g, memory_path)
-    _git_sections(g, conn, repos)
+    _git_sections(g, conn, repos, device)
     _agent_section(g, codex_sessions_path)
     _plan_section(g, plan)
     _knowledge_section(g, conn)
@@ -979,32 +1003,39 @@ def _snippet(text: str, terms: Sequence[str]) -> str:
 
 
 def _capture_hits(
-    evidence: DayEvidence, terms: Sequence[str], *, timesink_path: Path | None, zone: tzinfo
+    evidence: DayEvidence,
+    terms: Sequence[str],
+    *,
+    timesink_path: Path | None,
+    zone: tzinfo,
+    device: DeviceLink | None = None,
 ) -> list[tuple[str, str]]:
     """Captures of the day whose full OCR text contains every term, oldest first."""
     ids = [int(k[1:]) for k in evidence.refs if k[:1] == "s" and k[1:].isdigit()]
     if not ids:
         return []
     hits = []
-    with timesink.snapshot(timesink_path) as snap:
+    with timesink.snapshot(timesink_path, device) as snap:
         if snap is None:
             return []
-        marks = ",".join("?" * len(ids))
-        wanted = " AND ".join("instr(lower(text), ?) > 0" for _ in terms)
-        rows = snap.conn.execute(
-            f"SELECT id,at,appName,title,text FROM capture WHERE id IN ({marks}) "  # noqa: S608 — placeholders only.
-            f"AND {wanted} ORDER BY at,id",
-            (*ids, *terms),
-        ).fetchall()
-    for identity, at, app, title, text in rows:
-        when = datetime.fromisoformat(timesink.moment(at)).astimezone(zone).strftime("%H:%M")
-        line = f"{when} {app} — {title or ''}: {_snippet(str(text), terms)}"
-        hits.append((f"s{identity}", line))
+        rows = timesink.capture_matches(snap, ids, list(terms))
+    for row in rows:
+        when = datetime.fromisoformat(timesink.moment(row["at"])).astimezone(zone)
+        line = (
+            f"{when:%H:%M} {row['appName']} — {row['title'] or ''}: "
+            f"{_snippet(str(row['text']), terms)}"
+        )
+        hits.append((f"s{row['id']}", line))
     return hits
 
 
 def search_day(
-    evidence: DayEvidence, query: str, *, timesink_path: Path | None, zone: tzinfo
+    evidence: DayEvidence,
+    query: str,
+    *,
+    timesink_path: Path | None,
+    zone: tzinfo,
+    device: DeviceLink | None = None,
 ) -> str:
     """Keys whose text contains every word of the query, listed or not, with context.
 
@@ -1015,7 +1046,11 @@ def search_day(
     terms = [word.casefold() for word in query.split()]
     if not terms:
         return "Give the keywords to search for."
-    hits = _capture_hits(evidence, terms, timesink_path=timesink_path, zone=zone)
+    gap = ""
+    try:
+        hits = _capture_hits(evidence, terms, timesink_path=timesink_path, zone=zone, device=device)
+    except device_reads.DeviceUnavailable as exc:
+        hits, gap = [], f"\n{exc} The screen text was not searched."
     hits += [
         (key, _snippet(text, terms))
         for key, text in evidence.haystack.items()
@@ -1025,26 +1060,34 @@ def search_day(
         return (
             f"\"{query}\" does not appear in the day's searchable material (searched: all screen"
             " text, window titles, full conversation records, commit subjects and full Codex"
-            " sessions)."
+            " sessions)." + gap
         )
     shown = hits[:MAX_HITS]
     rest = len(hits) - len(shown)
     more = f"\n…{rest} more hits not listed; use more specific keywords." if rest else ""
     listed = "\n".join(f"[{k}] {line}" for k, line in shown)
-    return f'"{query}": {len(hits)} hits:\n{listed}{more}'
+    return f'"{query}": {len(hits)} hits:\n{listed}{more}{gap}'
 
 
-def git_show(repo: str, sha: str) -> str | None:
-    """The commit's header, message and changed files; None when the repository cannot show it."""
+def git_show(repo: str, sha: str, device: DeviceLink | None = None) -> str | None:
+    """The commit's header, message and changed files; None when the repository cannot show it.
+
+    With ``device`` (a brain) the terminal shows it from its own repository.
+    """
+    if device is not None:
+        shown: str | None = device_reads.ask(
+            device, device_reads.GIT_READ, "show", repo=repo, sha=sha
+        )
+        return shown
     return _git(repo, ("show", "--stat", "--format=%H%n%an %ci%n%n%B", sha))
 
 
-def _commit_detail(key: str, evidence: DayEvidence) -> str | None:
+def _commit_detail(key: str, evidence: DayEvidence, device: DeviceLink | None) -> str | None:
     """The commit itself, from the repository it was found in, for a commit key."""
     commit = evidence.commit_rows.get(key)
     if commit is None:
         return None
-    shown = git_show(commit["paths"].split(", ")[0], commit["sha"])
+    shown = git_show(commit["paths"].split(", ")[0], commit["sha"], device)
     return None if shown is None else f"[{key}] {commit['main']}, late={commit['late']}\n{shown}"
 
 
@@ -1081,29 +1124,30 @@ def _stored_detail(
     return None
 
 
-def read_detail(  # noqa: PLR0911 — one return per reference kind.
+def read_detail(  # noqa: PLR0911, PLR0913 — one return per reference kind; the stores.
     key: str,
     evidence: DayEvidence,
     *,
     conn: sqlite3.Connection,
     memory_path: Path | None,
     timesink_path: Path | None,
+    device: DeviceLink | None = None,
 ) -> str:
     """The whole original behind one material key; an unreadable source says so."""
     ref = evidence.refs.get(key)
     if ref is None:
         return f"[{key}] is not a key in the material"
-    shown = _commit_detail(key, evidence)
-    if shown is not None:
-        return shown
     try:
+        shown = _commit_detail(key, evidence, device)
+        if shown is not None:
+            return shown
         if ref.startswith("timesink-capture:"):
-            row = timesink.read_capture(timesink_path, ref)
+            row = timesink.read_capture(timesink_path, ref, device)
             when = f"{timesink.moment(row['at'])}..{row['endedAt']}"
             head = f"{row['appName']} — {row['title'] or ''} {when} (UTC)"
             return f"[{key}] {head}\n{_flat(row['text'] or '')}"
         if ref.startswith("timesink:"):
-            original = timesink.read_span(timesink_path, ref)
+            original = timesink.read_span(timesink_path, ref, device)
             # The stored row keeps GRDB's bare UTC text; unlabelled it reads as a local clock.
             return f"[{key}] (raw row, times in UTC) {json.dumps(original, ensure_ascii=False)}"
         if ref.startswith("codex-session:"):
@@ -1158,6 +1202,7 @@ def claim_originals(  # noqa: PLR0913 — the stores and the words that pick a s
     conn: sqlite3.Connection,
     memory_path: Path | None,
     timesink_path: Path | None,
+    device: DeviceLink | None = None,
 ) -> list[dict[str, Any]]:
     """The whole originals behind a claim's refs, typed, for the verification call.
 
@@ -1176,7 +1221,10 @@ def claim_originals(  # noqa: PLR0913 — the stores and the words that pick a s
         try:
             if key in evidence.commit_rows:
                 commit = evidence.commit_rows[key]
-                shown = git_show(commit["paths"].split(", ")[0], commit["sha"]) or commit["subject"]
+                shown = (
+                    git_show(commit["paths"].split(", ")[0], commit["sha"], device)
+                    or commit["subject"]
+                )
                 kind = "late_commit" if commit["late"] else "commit"
                 text = f"{commit['main']}\n{shown}"
             elif ref.startswith("record:"):
@@ -1184,7 +1232,7 @@ def claim_originals(  # noqa: PLR0913 — the stores and the words that pick a s
                 kind = "user_statement" if ref in evidence.stated else "jarvis_record"
                 text = shown.partition("] ")[2]
             elif ref.startswith("timesink-capture:"):
-                row = timesink.read_capture(timesink_path, ref)
+                row = timesink.read_capture(timesink_path, ref, device)
                 kind = "screen"
                 text = f"{row['appName']} — {row['title'] or ''}\n{_flat(row['text'] or '')}"
             elif ref.startswith("codex-session:"):
@@ -1213,6 +1261,7 @@ def save_report(  # noqa: PLR0913 — the two source stores, the identity, the p
     coverage: dict[str, str],
     expected_version: int,
     action_id: str,
+    device: DeviceLink | None = None,
 ) -> dict[str, Any]:
     """Append the next briefing version through the shared revision store.
 
@@ -1234,5 +1283,6 @@ def save_report(  # noqa: PLR0913 — the two source stores, the identity, the p
     if expected_version:
         args["expected_version"] = expected_version
     return daily_store.write_revision(
-        conn, memory_path, "save_briefing", args, action_id, timesink_path=timesink_path
+        conn, memory_path, "save_briefing", args, action_id, timesink_path=timesink_path,
+        device=device,
     )

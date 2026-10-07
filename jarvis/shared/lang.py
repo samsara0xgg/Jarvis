@@ -529,6 +529,10 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "TimeSink 不可读：没有应用、窗口和屏幕数据",
         "en": "TimeSink is unreadable: no app, window or screen data",
     },
+    "device.unavailable": {
+        "zh": "这台设备上的活动数据读不到：{why}",
+        "en": "The device's activity data cannot be read: {why}",
+    },
     "work.limit.state": {
         "zh": "状态事件共 {total} 条，只列出最后 {shown} 条",
         "en": "{total} state events; only the last {shown} are listed",
@@ -815,6 +819,11 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "Git 提交：没有配置被观察的仓库，只有历史记录里观察到的提交",
         "en": "Git commits: no watched repositories are configured; only commits seen in the"
         " history",
+    },
+    "report.served.git_device": {
+        "zh": "Git 提交：读不到设备上的仓库（{why}），只有历史记录里观察到的提交",
+        "en": "Git commits: the device's repositories cannot be read ({why}); only commits seen"
+        " in the history",
     },
     "report.served.plan": {
         "zh": "微软日历与待办：{events} 个日程（{day} 与次日）、{open} 条未完成待办、{done} 条当天完成，全部给出",

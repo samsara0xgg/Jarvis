@@ -26,6 +26,7 @@ from jarvis.decision.work_state import (
 )
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import new_response_id
+from jarvis.state import device_reads
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.work_state import (
@@ -41,6 +42,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.decision.llm import ChatResult
+    from jarvis.shared.device_link import DeviceLink
 
 LOGGER = logging.getLogger(__name__)
 _CALL_TIMEOUT_S = 90.0
@@ -191,8 +193,13 @@ class WorkStateService:
         analyst: Analyst | None,
         model: str,
         tz: tzinfo | None = None,
+        device: DeviceLink | None = None,
     ) -> None:
-        """Bind store locations; nothing is opened until a read or refresh."""
+        """Bind store locations; nothing is opened until a read or refresh.
+
+        ``device`` (ADR 0170: this is a brain) is the link to the terminal that holds TimeSink
+        and the repositories; the refresh's reads of them are asked of it.
+        """
         self._event_log_path = event_log_path
         self._memory_path = memory_path
         self._timesink_path = timesink_path
@@ -200,6 +207,7 @@ class WorkStateService:
         self._analyst = analyst
         self._model = model
         self._tz = tz
+        self._device = device
         self._cond = threading.Condition()
         self._running: _Run | None = None
         self._last: dict[str, Any] = {"outcome": None, "error": None}
@@ -209,6 +217,17 @@ class WorkStateService:
         """One head read happened (poll or refresh), changed or not: the "checked" clock."""
         at_ms = int(time.time() * 1000)
         self._checked = (at_ms, {**asdict(head), "observed_at_ms": at_ms})
+
+    def _note_head(self) -> None:
+        """The head read of this refresh; from the terminal on a brain, whose absence is no read."""
+        if self._device is None:
+            self.note_checked(collect(self._timesink_path))
+            return
+        try:
+            head = device_reads.ask(self._device, device_reads.TIMESINK_READ, "head")
+        except device_reads.DeviceUnavailable:
+            return  # the log's latest head, the terminal's last report, stays what the view shows
+        self.note_checked(TimesinkHead(**head))
 
     def read(self, conn: sqlite3.Connection) -> dict[str, Any]:
         """The dashboard's read model: saved record, latest data head, freshness, in-flight flag."""
@@ -307,8 +326,9 @@ class WorkStateService:
                 note=note,
                 question=question,
                 tz=self._tz,
+                device=self._device,
             )
-            self.note_checked(collect(self._timesink_path))
+            self._note_head()
             if evidence.empty:
                 return {"outcome": "no_evidence", "error": None, "state": previous}
             if (

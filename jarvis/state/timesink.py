@@ -6,13 +6,17 @@ import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, overload
 
+from jarvis.state import device_reads
 from jarvis.state.daily_contract import DailyError, fingerprint
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterable, Iterator
+    from contextlib import AbstractContextManager
     from pathlib import Path
+
+    from jarvis.shared.device_link import DeviceLink
 
 # A revision is the first 8 to 32 hex digits of the row fingerprint: full references carry
 # 32, the compact activity table carries 8 (a changed row is still caught with probability
@@ -21,6 +25,8 @@ _REF = re.compile(r"timesink:([0-9a-f]{16}):([1-9][0-9]*):([0-9a-f]{8,32})")
 _CAPTURE_REF = re.compile(r"timesink-capture:([0-9a-f]{16}):([1-9][0-9]*):([0-9a-f]{8,32})")
 _SHORT_REF = re.compile(r"([sc])([1-9][0-9]*):([0-9a-f]{8,32})")
 SHORT_REVISION_CHARS = 8
+_TEXT_BATCH = 200
+"""Capture ids per ask when the texts come from a terminal."""
 # The cited revision covers identity, text and the time basis actually reported (including
 # the interruption a legacy row is clipped to); image retention is not evidence.
 _CAPTURE_VERSION_KEYS = (
@@ -66,9 +72,47 @@ class Snapshot:
         self.identity = identity
 
 
+class RemoteSnapshot:
+    """The store of the device a brain is paired with (ADR 0170): each read asks its terminal.
+
+    The readers below take one in place of a :class:`Snapshot`; the terminal runs the same
+    function on its own snapshot and returns the result as JSON.
+    """
+
+    def __init__(self, link: DeviceLink, identity: str) -> None:
+        """Bind the brain's link and the identity the terminal gave its store."""
+        self._link = link
+        self.identity = identity
+
+    def ask(self, fn: str, /, **args: Any) -> Any:  # noqa: ANN401 — the reader's JSON.
+        """One reader's result from the terminal."""
+        return device_reads.ask(self._link, device_reads.TIMESINK_READ, fn, **args)
+
+
+type Reader = Snapshot | RemoteSnapshot
+
+
+@overload
+def snapshot(path: Path | None) -> AbstractContextManager[Snapshot | None]: ...
+
+
+@overload
+def snapshot(
+    path: Path | None, device: DeviceLink | None
+) -> AbstractContextManager[Reader | None]: ...
+
+
 @contextmanager
-def snapshot(path: Path | None) -> Iterator[Snapshot | None]:
-    """Open a WAL-aware read transaction; None when the store is missing or unreadable."""
+def snapshot(path: Path | None, device: DeviceLink | None = None) -> Iterator[Any]:
+    """Open a WAL-aware read transaction; None when the store is missing or unreadable.
+
+    With ``device`` (a brain) the store is the terminal's own: None when it has none, and
+    :class:`~jarvis.state.device_reads.DeviceUnavailable` when no terminal can be reached.
+    """
+    if device is not None:
+        identity = device_reads.ask(device, device_reads.TIMESINK_READ, "open")
+        yield None if identity is None else RemoteSnapshot(device, identity)
+        return
     if path is None:
         yield None
         return
@@ -92,8 +136,8 @@ def snapshot(path: Path | None) -> Iterator[Snapshot | None]:
         conn.close()
 
 
-def _require(snap: Snapshot | None) -> Snapshot:
-    if snap is None:
+def _require(snap: Reader | None) -> Snapshot:
+    if not isinstance(snap, Snapshot):  # None here; a terminal's store is read by its own reader
         message = "TimeSink database is missing, unreadable or incompatible"
         raise DailyError(message, "source_unavailable")
     return snap
@@ -194,13 +238,18 @@ def _item(row: dict[str, Any], identity: str, start: datetime, end: datetime) ->
 
 
 def query_spans(
-    snap: Snapshot | None,
+    snap: Reader | None,
     start: datetime,
     end: datetime,
     *,
     watermark: int | None = None,
 ) -> dict[str, Any]:
     """Spans overlapping [start, end) as half-open intervals; fingerprint mutable revisions."""
+    if isinstance(snap, RemoteSnapshot):
+        result: dict[str, Any] = snap.ask(
+            "query_spans", start=start.isoformat(), end=end.isoformat(), watermark=watermark
+        )
+        return result
     if snap is None:
         return _unavailable("TimeSink is disabled, missing, unreadable or incompatible.", watermark)
     try:
@@ -305,13 +354,18 @@ def _capture_item(
 
 
 def query_captures(
-    snap: Snapshot | None,
+    snap: Reader | None,
     start: datetime,
     end: datetime,
     *,
     watermark: int | None = None,
 ) -> dict[str, Any]:
     """Captures whose observation instants [at, ended_at] meet [start, end); same paging rules."""
+    if isinstance(snap, RemoteSnapshot):
+        result: dict[str, Any] = snap.ask(
+            "query_captures", start=start.isoformat(), end=end.isoformat(), watermark=watermark
+        )
+        return result
     reason = "TimeSink is disabled, missing, unreadable, or predates screen capture."
     if snap is None:
         return _unavailable(reason, watermark)
@@ -361,13 +415,18 @@ def _event(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def query_state(
-    snap: Snapshot | None,
+    snap: Reader | None,
     start: datetime,
     end: datetime,
     *,
     watermark: int | None = None,
 ) -> dict[str, Any]:
     """All state events inside [start, end) plus the latest of each kind group before start."""
+    if isinstance(snap, RemoteSnapshot):
+        result: dict[str, Any] = snap.ask(
+            "query_state", start=start.isoformat(), end=end.isoformat(), watermark=watermark
+        )
+        return result
     reason = "TimeSink is disabled, missing, unreadable, or predates state events."
     unavailable = {
         "events": [],
@@ -447,12 +506,19 @@ def _read_row(
     return original, snap.identity
 
 
-def read_capture(path: Path | None, reference: str) -> dict[str, Any]:
+def read_capture(
+    path: Path | None, reference: str, device: DeviceLink | None = None
+) -> dict[str, Any]:
     """Resolve exactly the cited capture revision; image_path is absolute when still kept.
 
     The result carries ``sourceRef``: the full 32-hex reference of the row as read, which
-    is what knowledge, todos and briefings should cite.
+    is what knowledge, todos and briefings should cite. With ``device`` the terminal reads it.
     """
+    if device is not None:
+        row: dict[str, Any] = device_reads.ask(
+            device, device_reads.TIMESINK_READ, "read_capture", reference=reference
+        )
+        return row
     original, identity = _read_row(path, reference, "c", _CAPTURE_SELECT, "screen capture")
     original["sourceRef"] = _capture_reference(identity, original)
     if original["imagePath"] is not None and path is not None:
@@ -464,11 +530,18 @@ def read_capture(path: Path | None, reference: str) -> dict[str, Any]:
     return original
 
 
-def read_span(path: Path | None, reference: str) -> dict[str, Any]:
+def read_span(
+    path: Path | None, reference: str, device: DeviceLink | None = None
+) -> dict[str, Any]:
     """Resolve exactly the cited row revision, never silently substitute updated data.
 
     The result carries ``sourceRef`` like :func:`read_capture`.
     """
+    if device is not None:
+        row: dict[str, Any] = device_reads.ask(
+            device, device_reads.TIMESINK_READ, "read_span", reference=reference
+        )
+        return row
     select = "SELECT id,start,end,appBundleID,appName,title,url,domain FROM span"
     original, identity = _read_row(path, reference, "s", select, "app span")
     original["sourceRef"] = _reference(identity, original)
@@ -476,7 +549,7 @@ def read_span(path: Path | None, reference: str) -> dict[str, Any]:
 
 
 def search_captures(
-    snap: Snapshot | None,
+    snap: Reader | None,
     start: datetime,
     end: datetime,
     terms: list[str],
@@ -490,6 +563,12 @@ def search_captures(
     """
     if snap is None or not terms:
         return []
+    if isinstance(snap, RemoteSnapshot):
+        found: list[dict[str, Any]] = snap.ask(
+            "search_captures",
+            start=start.isoformat(), end=end.isoformat(), terms=terms, limit=limit,
+        )
+        return found
     clauses = " OR ".join("(text LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\')" for _ in terms)
     params: list[Any] = [_sql_date(start, ceil=True), _sql_date(end, ceil=True)]
     for term in terms:
@@ -507,3 +586,40 @@ def search_captures(
     except sqlite3.Error:
         return []
     return [_capture_item(row, snap.identity, start, end) for row in rows]
+
+
+def capture_texts(snap: Reader, ids: Iterable[int]) -> dict[int, str]:
+    """The whole OCR text of each capture id; the listing items only carry a 300-char summary."""
+    wanted = list(ids)
+    if not wanted:
+        return {}
+    if isinstance(snap, RemoteSnapshot):
+        texts: dict[int, str] = {}
+        for at in range(0, len(wanted), _TEXT_BATCH):  # a reply is one frame: keep it small
+            part: dict[str, str] = snap.ask("capture_texts", ids=wanted[at : at + _TEXT_BATCH])
+            texts.update({int(identity): text for identity, text in part.items()})
+        return texts
+    marks = ",".join("?" * len(wanted))
+    rows = snap.conn.execute(
+        f"SELECT id,text FROM capture WHERE id IN ({marks})",  # noqa: S608 — placeholders only.
+        wanted,
+    ).fetchall()
+    return {int(identity): str(text or "") for identity, text in rows}
+
+
+def capture_matches(snap: Reader, ids: list[int], terms: list[str]) -> list[dict[str, Any]]:
+    """Captures among ``ids`` whose OCR text holds every term (case-insensitive), oldest first."""
+    if isinstance(snap, RemoteSnapshot):
+        found: list[dict[str, Any]] = snap.ask("capture_matches", ids=ids, terms=terms)
+        return found
+    marks = ",".join("?" * len(ids))
+    wanted = " AND ".join("instr(lower(text), ?) > 0" for _ in terms)
+    rows = snap.conn.execute(
+        f"SELECT id,at,appName,title,text FROM capture WHERE id IN ({marks}) "  # noqa: S608 — placeholders only.
+        f"AND {wanted} ORDER BY at,id",
+        (*ids, *terms),
+    ).fetchall()
+    return [
+        {"id": identity, "at": at, "appName": app, "title": title, "text": text}
+        for identity, at, app, title, text in rows
+    ]

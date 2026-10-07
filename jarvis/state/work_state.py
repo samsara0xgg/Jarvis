@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any
 
 from jarvis.shared.lang import t
-from jarvis.state import timesink
+from jarvis.state import device_reads, timesink
 from jarvis.state.daily_contract import DailyError, fingerprint
 from jarvis.state.daily_records import read_connection
 from jarvis.state.daily_store import current_items, high_water
@@ -20,6 +20,8 @@ from jarvis.state.event_log import append_event_in_transaction
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from jarvis.shared.device_link import DeviceLink
 
 EVENT_TYPE = "work_state.revised"
 STATE_ID = "work_state"
@@ -368,19 +370,27 @@ def _capture_sections(g: _Gather, captures: dict[str, Any], recent_start: dateti
 
 def _timesink_sections(  # noqa: PLR0913 — one snapshot, the three windows and the question terms.
     g: _Gather,
-    snap: timesink.Snapshot | None,
+    snap: timesink.Reader | None,
     start: datetime,
     recent_start: datetime,
     now: datetime,
     terms: list[str],
+    why: str | None = None,
 ) -> list[Any]:
+    """The TimeSink sections; ``why`` is the device that was not there to read them from."""
     spans = timesink.query_spans(snap, start, now)
     captures = timesink.query_captures(snap, start, now)
     state = timesink.query_state(snap, start, now)
+    # Everything is read before anything is built: a terminal that drops mid-read leaves no part.
+    related = timesink.search_captures(
+        snap, now - timedelta(days=RELATED_DAYS), start, terms, limit=_MAX_RELATED_SCREEN
+    )
     g.coverage["app"] = str(spans["coverage"]["status"])
     g.coverage["screen"] = str(captures["coverage"]["status"])
     if snap is None:
-        g.limits.append(t("timesink.unreadable"))
+        g.limits.append(
+            t("timesink.unreadable") if why is None else t("device.unavailable", why=why)
+        )
     _span_sections(g, spans)
     _capture_sections(g, captures, recent_start)
     all_events = [*state["at_start"], *state["events"]]
@@ -392,9 +402,6 @@ def _timesink_sections(  # noqa: PLR0913 — one snapshot, the three windows and
         if found["coverage"]["status"] == "unavailable" and snap is not None:
             g.limits.append(t(f"work.limit.{name}_unavailable"))
     g.sections["state_events"] = [{"at": _local(e["at"], g.tz), "kind": e["kind"]} for e in events]
-    related = timesink.search_captures(
-        snap, now - timedelta(days=RELATED_DAYS), start, terms, limit=_MAX_RELATED_SCREEN
-    )
     if len(related) == _MAX_RELATED_SCREEN:
         g.limits.append(t("work.limit.related_screen", shown=_MAX_RELATED_SCREEN))
     rows = []
@@ -507,8 +514,13 @@ def _folded_section(  # noqa: PLR0913 — one fold, its kind, key prefix, cap an
 
 
 def _git_section(
-    g: _Gather, conn: sqlite3.Connection, since: datetime, repos: tuple[str, ...]
+    g: _Gather,
+    conn: sqlite3.Connection,
+    since: datetime,
+    repos: tuple[str, ...],
+    device: DeviceLink | None = None,
 ) -> list[str]:
+    repos, gap = device_reads.watched_repos(device, repos)
     rows = conn.execute(
         "SELECT event_uid,type,ts_epoch_ms,payload_json FROM events "
         "WHERE type IN (?,?) AND ts_epoch_ms>=? ORDER BY ts_epoch_ms DESC,id DESC LIMIT ?",
@@ -543,7 +555,9 @@ def _git_section(
     g.sections["git"] = items
     g.coverage["git"] = "partial" if repos else "unavailable"
     if not repos:
-        g.limits.append(t("work.limit.no_repos"))
+        g.limits.append(
+            t("work.limit.no_repos") if gap is None else t("device.unavailable", why=gap)
+        )
     return [str(row[0]) for row in rows]
 
 
@@ -557,8 +571,12 @@ def gather_evidence(  # noqa: PLR0913 — the configured stores plus the request
     question: str | None = None,
     tz: tzinfo | None = None,
     now: datetime | None = None,
+    device: DeviceLink | None = None,
 ) -> Evidence:
     """Read every configured source once, bounded, keyed, and directed by the question's terms.
+
+    On a brain (``device``) TimeSink and the repositories are the terminal's; one that is not
+    there leaves their coverage ``unavailable`` and says why, as an unreadable store does.
 
     Fingerprint the bounded material and its revisions, including changing durations and
     state events. Only explicit refreshes analyse; the request clock alone never invalidates
@@ -572,13 +590,18 @@ def gather_evidence(  # noqa: PLR0913 — the configured stores plus the request
     g = _Gather(tz=tz)
     if note:
         g.refs[NOTE_KEY] = NOTE_REF
-    with timesink.snapshot(timesink_path) as snap:
-        timesink_digest = _timesink_sections(g, snap, start, recent_start, moment, terms)
+    try:
+        with timesink.snapshot(timesink_path, device) as snap:
+            timesink_digest = _timesink_sections(g, snap, start, recent_start, moment, terms)
+    except device_reads.DeviceUnavailable as exc:
+        timesink_digest = _timesink_sections(
+            g, None, start, recent_start, moment, terms, why=str(exc)
+        )
     record_ids = _record_sections(g, memory_path, moment - timedelta(hours=RECORD_HOURS), terms)
     todo_digest = _folded_section(g, conn, "todo", "t", _MAX_TODOS, terms)
     knowledge_digest = _folded_section(g, conn, "knowledge", "k", _MAX_KNOWLEDGE, terms)
     g.coverage["todos"] = g.coverage["knowledge"] = "available"
-    git_digest = _git_section(g, conn, start, repos)
+    git_digest = _git_section(g, conn, start, repos, device)
     digest = fingerprint(
         [
             timesink_digest,

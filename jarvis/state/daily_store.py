@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from jarvis.state import timesink
+from jarvis.state import device_reads, timesink
 from jarvis.state.daily_contract import (
     PAGE_BUDGET,
     SCHEMAS,
@@ -30,6 +30,8 @@ from jarvis.state.event_log import append_event_in_transaction, read_log_epoch
 
 if TYPE_CHECKING:
     import sqlite3
+
+    from jarvis.shared.device_link import DeviceLink
 
 EVENT_TYPES = ("todo.revised", "knowledge.revised", "briefing.revised")
 _OPERATIONS = {
@@ -58,10 +60,15 @@ def current_items(conn: sqlite3.Connection, kind: str, snapshot: int) -> list[di
     return sorted(items.values(), key=lambda item: item["id"])
 
 
-def commit_exists(repo: str, sha: str) -> bool:
-    """True when ``sha`` is a commit object in the repository at ``repo``."""
+def commit_exists(repo: str, sha: str, device: DeviceLink | None = None) -> bool:
+    """True when ``sha`` is a commit object in the repository at ``repo``.
+
+    With ``device`` (a brain) the repository is the terminal's, and it answers.
+    """
     if len(sha) != 40 or not all(c in "0123456789abcdef" for c in sha):  # noqa: PLR2004 — a full SHA-1.
         return False
+    if device is not None:
+        return bool(device_reads.ask(device, device_reads.GIT_READ, "exists", repo=repo, sha=sha))
     try:
         done = subprocess.run(  # noqa: S603 — fixed argv; `repo` came from a saved reference.
             ["git", "-C", repo, "cat-file", "-e", f"{sha}^{{commit}}"],  # noqa: S607
@@ -75,13 +82,35 @@ def commit_exists(repo: str, sha: str) -> bool:
     return done.returncode == 0
 
 
+_DEVICE_REFS = ("timesink", "timesink-capture", "git")
+"""The reference kinds whose original lives on the owner's device."""
+
+
+def _device_ref_exists(ref: str, timesink_path: Path | None, device: DeviceLink | None) -> bool:
+    """One TimeSink or git reference against the store or repository it names."""
+    prefix, _, identity = ref.partition(":")
+    if prefix == "timesink":
+        timesink.read_span(timesink_path, ref, device)
+        return True
+    if prefix == "timesink-capture":
+        timesink.read_capture(timesink_path, ref, device)
+        return True
+    repo, _, sha = identity.rpartition(":")
+    return bool(repo) and commit_exists(repo, sha, device)
+
+
 def check_refs(
     conn: sqlite3.Connection,
     memory_path: Path | None,
     refs: list[str],
     timesink_path: Path | None = None,
+    device: DeviceLink | None = None,
 ) -> None:
-    """Require real sources and matching external revisions, without claiming verification."""
+    """Require real sources and matching external revisions, without claiming verification.
+
+    With ``device`` (a brain) the references to the device's own originals were asked of its
+    terminal before the write began, so they are not asked again while the lock is held.
+    """
     for ref in refs:
         prefix, separator, identity = ref.partition(":")
         if not separator or not identity:
@@ -99,15 +128,8 @@ def check_refs(
                     memory.execute("SELECT 1 FROM records WHERE id=?", (identity,)).fetchone()
                     is not None
                 )
-        elif prefix == "timesink":
-            timesink.read_span(timesink_path, ref)
-            exists = True
-        elif prefix == "timesink-capture":
-            timesink.read_capture(timesink_path, ref)
-            exists = True
-        elif prefix == "git":
-            repo, _, sha = identity.rpartition(":")
-            exists = bool(repo) and commit_exists(repo, sha)
+        elif prefix in _DEVICE_REFS:
+            exists = device is not None or _device_ref_exists(ref, timesink_path, None)
         elif prefix == "codex-session":
             exists = identity.endswith(".jsonl") and Path(identity).is_file()
         if not exists:
@@ -183,16 +205,23 @@ def write_revision(  # noqa: PLR0913 — two configured source stores and one wr
     action_id: str,
     *,
     timesink_path: Path | None = None,
+    device: DeviceLink | None = None,
 ) -> dict[str, Any]:
     """Atomically deduplicate, check revision/references and append a new version."""
     if conn.in_transaction:
         msg = "Write requires an idle connection"
         raise DailyError(msg, "transaction_busy")
     validate(args, SCHEMAS[operation])
+    if device is not None:  # the terminal is asked before the write lock, never under it
+        for ref in args.get("source_refs", []):
+            if ref.partition(":")[0] in _DEVICE_REFS and not _device_ref_exists(ref, None, device):
+                msg = f"Source does not exist: {ref}"
+                raise DailyError(msg, "invalid_source")
     conn.execute("BEGIN IMMEDIATE")
     try:
         result = _write_locked(
-            conn, memory_path, operation, args, action_id, timesink_path=timesink_path
+            conn, memory_path, operation, args, action_id,
+            timesink_path=timesink_path, device=device,
         )
         conn.commit()
     except BaseException:
@@ -209,6 +238,7 @@ def _write_locked(  # noqa: PLR0913 — transaction-local half of write_revision
     action_id: str,
     *,
     timesink_path: Path | None = None,
+    device: DeviceLink | None = None,
 ) -> dict[str, Any]:
     kind = _OPERATIONS[operation]
     digest = fingerprint([operation, args])
@@ -261,7 +291,7 @@ def _write_locked(  # noqa: PLR0913 — transaction-local half of write_revision
         raise DailyError(message, "result_too_large")
     if operation != "update_todo":
         # Existing commitments cannot change sources; prior evidence may have disappeared.
-        check_refs(conn, memory_path, item["source_refs"], timesink_path)
+        check_refs(conn, memory_path, item["source_refs"], timesink_path, device)
     running = conn.execute(
         "SELECT event_uid FROM events WHERE type='action.running' "
         "AND json_extract(payload_json,'$.action_id')=? ORDER BY id DESC LIMIT 1",

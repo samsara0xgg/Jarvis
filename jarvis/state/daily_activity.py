@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from jarvis.state import timesink
+from jarvis.state import device_reads, timesink
 from jarvis.state.daily_contract import (
     ACTIVITY_PAGE_BUDGET,
     DailyError,
@@ -32,6 +32,8 @@ from jarvis.state.event_log import read_log_epoch
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Iterable
+
+    from jarvis.shared.device_link import DeviceLink
 
 _ACTIVITY_TYPES = ("repo.state_observed", "project.commit_seen")
 _GIT_ROW_REF = re.compile(r"g([0-9a-f]{32})")
@@ -139,7 +141,7 @@ def _timesink_source(  # noqa: PLR0913 — one paging pin per source, threaded f
     args: dict[str, Any],
     start: datetime,
     end: datetime,
-    snap: timesink.Snapshot | None,
+    snap: timesink.Reader | None,
     pinned: tuple[int, int],
     *,
     coverage: dict[str, Any],
@@ -315,8 +317,14 @@ def query_activity(
     args: dict[str, Any],
     repos: tuple[str, ...],
     timesink_path: Path | None = None,
+    device: DeviceLink | None = None,
 ) -> dict[str, Any]:
-    """One compact page of activity in [from,to): dictionary and totals first, then rows."""
+    """One compact page of activity in [from,to): dictionary and totals first, then rows.
+
+    On a brain (``device``) TimeSink and the watched repositories are the terminal's: with none
+    connected, app and screen sources fail with a message saying so, and Git rows already in the
+    log are listed with their coverage naming the gap.
+    """
     start, end = window(args)
     if start is None or end is None:
         msg = "from and to are required"
@@ -350,22 +358,32 @@ def query_activity(
     }
     items: list[dict[str, Any]] = []
     if "git" in requested and "app" not in args:
+        repos, gap = device_reads.watched_repos(device, repos)
         items, skipped = _git_items(conn, args, snapshot, start, end)
         enabled = bool(repos) if "project" not in args else args["project"] in repos
         coverage["git"] = {
             "status": "unknown",
-            "configured_now": enabled,
+            "configured_now": enabled if gap is None else None,
             "observations_in_window": len(items),
             "skipped_count": skipped,
             "last_observed_at_in_window": items[-1]["observed_at"] if items else None,
-            "reason": "Historical collector health is not recorded; absence is not inactivity.",
+            "reason": (
+                "Historical collector health is not recorded; absence is not inactivity."
+                if gap is None
+                else f"{gap} Observations recorded earlier are listed; commits made while it "
+                "was away are missing."
+            ),
         }
     elif "git" in requested:
         coverage["git"] = {"status": "unknown", "reason": "app filter excludes Git observations."}
-    uses_timesink = bool({"app", "screen"} & set(sources)) and timesink_path is not None
+    uses_timesink = bool({"app", "screen"} & set(sources)) and (
+        timesink_path is not None or device is not None
+    )
     store: str | None = None
     # One read transaction, so spans, captures and state events describe the same instant.
-    with timesink.snapshot(timesink_path if uses_timesink else None) as snap:
+    with timesink.snapshot(
+        timesink_path if uses_timesink else None, device if uses_timesink else None
+    ) as snap:
         store = snap.identity if snap is not None else None
         if "app" in sources:
             found, app_watermark, app_revision = _timesink_source(
@@ -452,11 +470,11 @@ def query_activity(
     return result
 
 
-def _report_source(identity: str) -> tuple[str, str]:
+def _report_source(identity: str, device: DeviceLink | None = None) -> tuple[str, str]:
     """The commit or the Codex session behind a daily-report reference, as text."""
     if identity.startswith("git:"):
         repo, _, sha = identity.partition(":")[2].rpartition(":")
-        shown = git_show(repo, sha)
+        shown = git_show(repo, sha, device)
         if shown is None:
             msg = "Saved commit does not exist"
             raise DailyError(msg, "not_found")
@@ -491,6 +509,7 @@ def read_activity(
     conn: sqlite3.Connection,
     args: dict[str, Any],
     timesink_path: Path | None = None,
+    device: DeviceLink | None = None,
 ) -> dict[str, Any]:
     """Read only a saved observation, never capture the current screen or diff.
 
@@ -501,7 +520,7 @@ def read_activity(
     identity = args["activity_id"]
     parsed = timesink.parse_reference(identity)
     if parsed is not None and parsed[0] == "c":
-        row = timesink.read_capture(timesink_path, identity)
+        row = timesink.read_capture(timesink_path, identity, device)
         text = str(row["text"] or "")
         return {
             **_paged_text(identity, text, args, identity),
@@ -521,7 +540,7 @@ def read_activity(
             "content_format": "text",
         }
     if parsed is not None:
-        row = timesink.read_span(timesink_path, identity)
+        row = timesink.read_span(timesink_path, identity, device)
         source_ref = str(row.pop("sourceRef"))
         return {
             **_paged_text(identity, encoded(row), args, identity),
@@ -534,7 +553,7 @@ def read_activity(
     if identity.startswith(("git:", "codex-session:")):
         # ADR 0025: a daily report cites commits and Codex sessions; the original behind
         # either is read from where it lives, paged like every other saved observation.
-        text, kind = _report_source(identity)
+        text, kind = _report_source(identity, device)
         return {
             **_paged_text(identity, text, args, identity),
             "source_refs": [identity],
