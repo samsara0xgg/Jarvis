@@ -105,6 +105,7 @@ _TOOL_LINES: Final = (
     ("search_records", "commentary.tool.records"),
     ("recall", "commentary.tool.records"),
     ("mcp__gmail__", "commentary.tool.mail"),
+    ("mail_inbox", "commentary.tool.mail"),
     ("mcp__microsoft__", "commentary.tool.calendar"),
 )
 """Tool name prefix -> the phrase key of what the tool does; any other tool says

@@ -126,6 +126,7 @@ from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_
 from jarvis.deployment.night_power import MacPower
 from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.job_ledger_tool import build_job_ledger_tool
+from jarvis.execution.mail_inbox_tool import build_mail_inbox_tool
 from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
 from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth, stdio_env
 from jarvis.execution.path_resolver import (
@@ -1565,6 +1566,12 @@ def _register_job_ledger(registry: ToolRegistry, job_mail: JobMail | None) -> No
         registry.register(tool)
 
 
+def _register_mail_inbox(registry: ToolRegistry, home: Home) -> None:
+    """``mail_inbox`` (ADR 0190) reads what ``GET /inherent/mail`` serves; no Gmail is its error."""
+    for tool in build_mail_inbox_tool(home.mail):
+        registry.register(tool)
+
+
 def _turn_end_asks(
     config: Mapping[str, Any], config_path: Path, log: JevLog | None = None,
 ) -> TurnEndAsks | None:
@@ -2781,6 +2788,25 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         paths.event_log,
     )
     _register_job_ledger(registry, job_mail)
+    home = Home(
+        plugin_connections,
+        resolve_zone(None, _work_state_timezone(full_config)),
+        _home_weather(full_config),
+        _mail_reply(full_config, config_path, jev_log),
+        mail_view,
+        None if mail_view is None else mail_summarizer(
+            # ADR 0148: the cheapest preset (gpt-6-luna), never Jev: a body goes here.
+            build_analyst(
+                full_config,
+                _work_state_preset(full_config),
+                pricing_path=repo_root / "data" / "pricing.json",
+                account_cost=wave1_features.exactly_once_cost_accounting,
+                kind="mail_summary",
+            ),
+            paths.event_log,
+        ),
+    )
+    _register_mail_inbox(registry, home)
     return JarvisRuntime(
         config=full_config,
         runtime_paths=paths,
@@ -2827,24 +2853,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         work_state=work_state,
         work_state_auto=_work_state_auto(full_config, config_path),
         projects=projects,
-        home=Home(
-            plugin_connections,
-            resolve_zone(None, _work_state_timezone(full_config)),
-            _home_weather(full_config),
-            _mail_reply(full_config, config_path, jev_log),
-            mail_view,
-            None if mail_view is None else mail_summarizer(
-                # ADR 0148: the cheapest preset (gpt-6-luna), never Jev: a body goes here.
-                build_analyst(
-                    full_config,
-                    _work_state_preset(full_config),
-                    pricing_path=repo_root / "data" / "pricing.json",
-                    account_cost=wave1_features.exactly_once_cost_accounting,
-                    kind="mail_summary",
-                ),
-                paths.event_log,
-            ),
-        ),
+        home=home,
         view=view,
         mail_drafts=mail_drafts,
         ambient=ambient,
