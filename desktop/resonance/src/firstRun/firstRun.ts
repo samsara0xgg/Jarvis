@@ -1190,7 +1190,7 @@ function update(dt: number) {
   // space
   letterStep();
   if (ball.mode !== 'off') {
-    core.update(vt, dt, { expr: faceNow(), look: lookAt(ball.x.value, ball.y.value), still: false, pressed: false, charge: 0 });
+    core.update(vt, dt, { expr: faceNow(), look: lookAt(ball.x.value, ball.y.value), still: false, pressed: false });
     const g = core.light.glow.map(v => Math.round(v * 255)).join(' ');
     if (g !== glowNow) { glowNow = g; document.documentElement.style.setProperty('--glow', g); }
   }

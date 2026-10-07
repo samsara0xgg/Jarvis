@@ -191,14 +191,9 @@ try {
   await page.waitForFunction(() => !document.querySelector('.talk[data-hit]'), null, { timeout: 16000 });
   check('03 the reply stays on screen, then the area folds into her', true);
 
-  // A partial wardrobe hold cancels, and a short click starts voice on release without a double-click timer.
+  // A click starts voice on release without a double-click timer, however long the press: holding her changes nothing.
   const originalSkin = await wardrobe();
   await comeOut();
-  await hit.hover(); await page.mouse.down(); await page.waitForTimeout(330);
-  check('refinement charge ring appears after 200 ms', await page.locator('.companion-canvas').getAttribute('data-charge') === 'holding');
-  await page.mouse.up(); await page.waitForTimeout(60);
-  check('refinement releasing an unfinished hold cancels without talking or changing skin',
-    await page.locator('.talk[data-hit]').count() === 0 && (await wardrobe()).skin === originalSkin.skin);
   await page.evaluate(() => {
     document.querySelector('.companion-hit').addEventListener('pointerup', () => {
       const at = performance.now();
@@ -206,14 +201,15 @@ try {
       requestAnimationFrame(observe);
     }, { once: true });
   });
-  // Poke: press and hold briefly, then release into listening.
+  // Poke: a slow press, the length that once charged a costume change, still releases into listening.
   await move(out.x, out.y);
   const box = await hit.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
-  await page.waitForTimeout(60); // a click is released inside 200 ms; a screenshot here can take longer than that
+  await page.waitForTimeout(330);
   await page.mouse.up();
   await page.locator('.talk[data-hit]').waitFor();
+  check('refinement a slow press pokes her and leaves her skin as it was', (await wardrobe()).skin === originalSkin.skin);
   await shot('02-poke', { x: 20, y: 0, width: 400, height: 210 });
   await page.waitForFunction(() => typeof window.__clickLatency === 'number');
   const clickLatency = await page.evaluate(() => window.__clickLatency);
@@ -522,16 +518,13 @@ try {
   const face0 = await page.locator('.companion-canvas').getAttribute('data-face');
   check(`08 out and idle she wears the idle face (saw ${face0})`, face0 === '02');
   await shot('08-start');
-  const held = await hit.boundingBox();
-  await page.mouse.move(held.x + held.width / 2, held.y + held.height / 2);
-  await page.mouse.down();
-  await page.waitForTimeout(800);
-  await shot('08-charged');
-  await page.mouse.up();
+  // Her costume changes from her menu.
+  await hit.click({ button: 'right', force: true });
+  await page.getByRole('menuitemradio', { name: 'Nebula' }).click();
   await page.waitForTimeout(520);
   await shot('08-flash');
   await wearsSoon('nebula');
-  check('08 holding her changes her into the next skin instead of starting voice', await page.locator('.talk[data-hit]').count() === 0 && await skinOn() === 'nebula');
+  check('08 her menu changes her into another skin without starting voice', await page.locator('.talk[data-hit]').count() === 0 && await skinOn() === 'nebula');
   await page.waitForTimeout(1400);
   await shot('08-nebula');
   // Her bright, strongly coloured pixels: the icon skin's painted sky has plenty; without it loaded she would be

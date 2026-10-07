@@ -34,7 +34,7 @@ try {
         look,handle,skin:'glass',label:'Her',onPress:()=>{},onRelease:()=>{},onCancel:()=>{},onMove:()=>{}});
     }
     window.materials=()=>SKIN_KEYS.map(skin=>{
-      const core=new Core(skin); for(let now=0;now<1200;now+=16)core.update(now,.016,{expr:'02',look:null,still:true,pressed:false,charge:0});
+      const core=new Core(skin); for(let now=0;now<1200;now+=16)core.update(now,.016,{expr:'02',look:null,still:true,pressed:false});
       const cv=document.createElement('canvas');cv.width=cv.height=160;const c=cv.getContext('2d');c.translate(80,80);
       if(!core.render(160,3))throw Error('WebGL2 unavailable');
       core.glass(c,60,160);const glassAlpha=c.getImageData(0,0,160,160).data.reduce((n,v,i)=>n+(i%4===3?v:0),0);

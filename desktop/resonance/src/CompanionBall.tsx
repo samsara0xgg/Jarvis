@@ -5,7 +5,6 @@ import { paintAway, paintRefinedHome, type HomeFinish } from './homeFinish';
 
 export const R = 26;
 // Held this long, a poke becomes a costume change instead.
-export const HOLD_MS = 650;
 const HOME_SCALE = .6;
 export type Place = 'home' | 'peek' | 'out' | 'dock';
 export type Point = { x: number; y: number };
@@ -56,7 +55,7 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
     const start = latest.current.anchors.home;
     const s = { x: spring(start.x), y: spring(start.y), scale: spring(HOME_SCALE), shine: spring(0), pivot: spring(0), dock: spring(0), fold: spring(1), join: spring(0) };
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-    let frame = 0, last = 0, d = 0, wanted: Place = 'home', shown: Place = 'home', switchAt = 0, pressedAt = -1;
+    let frame = 0, last = 0, d = 0, wanted: Place = 'home', shown: Place = 'home', switchAt = 0;
     let tick: ReturnType<typeof setTimeout> | undefined, lit = '';
     let movedAt = performance.now(), px = NaN, py = NaN;
     let away = false, awayAt = -1e9, happyUntil = 0, leftHome = true;
@@ -105,9 +104,6 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
         // Resting at home she only follows a cursor that comes near; otherwise she looks around on her own.
         if (!(atHome && !leaving && dist > 260 && !t.homeFace)) gaze = [dx / dist * k, shown === 'peek' ? Math.max(0, dy / dist * k) : dy / dist * k];
       }
-      // Holding her charges a costume change: she squashes further, shivers and her stars speed up.
-      if (!t.pressed) pressedAt = -1; else if (pressedAt < 0) pressedAt = now;
-      const charge = pressedAt < 0 ? 0 : Math.min(1, Math.max(0, (now - pressedAt - 200) / (HOLD_MS - 200)));
       // ADR 0058, dictation: she crouches and slips sideways into the notch, and the island folds after her like a
       // door; coming back it opens first and she slides out, a little too far, smiling when the words went in.
       if (!!t.away !== away) { away = !!t.away; awayAt = now; happyUntil = !away && t.happy ? now + 1100 : 0; if (away) leftHome = shown === 'home'; }
@@ -131,7 +127,7 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
       if (t.attention?.id !== attentionId) { attentionId = t.attention?.id; attentionAt = now; }
       const interest = t.attention?.point;
       const ix = interest ? interest.x - s.x.value : 0, iy = interest ? interest.y - s.y.value : 0, reach = Math.hypot(ix, iy) + 90;
-      core.update(now, dt, { expr: face, look: gaze, still: false, pressed: t.pressed, charge, deep: t.deep && face !== '10',
+      core.update(now, dt, { expr: face, look: gaze, still: false, pressed: t.pressed, deep: t.deep && face !== '10',
         vel: [s.x.velocity / R, s.y.velocity / R], mood: dozing ? { energy: .18, joy: .5 } : undefined,
         poi: interest ? { g: [ix / reach, iy / reach], at: attentionAt, why: 'notice' } : null });
 
@@ -237,15 +233,6 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
       // Her zzz and sparkles show in the island too.
       if (!hidden) { ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale); ctx.globalAlpha = a; core.orbit(ctx, R, 1); ctx.globalAlpha = seen; core.particles(ctx, R, d); ctx.restore(); }
       ctx.restore();
-      // The hold becomes visible after 200 ms and fills exactly when release changes her costume.
-      if (!hidden && charge > 0) {
-        const radius = R * scale + 5, rgb = core.light.glow.map(v => Math.round(v * 255)).join(',');
-        ctx.save(); ctx.lineWidth = 1.5; ctx.lineCap = 'round';
-        ctx.strokeStyle = `rgba(${rgb},.2)`; ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.stroke();
-        ctx.strokeStyle = `rgba(${rgb},.95)`; ctx.beginPath(); ctx.arc(x, y, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * charge); ctx.stroke();
-        ctx.restore();
-      }
-      cv.dataset.charge = charge >= 1 ? 'ready' : charge > 0 ? 'holding' : '';
       cv.dataset.homeFinish = t.homeFinish;
       cv.dataset.homeWarmth = homeLeftAt < 0 ? '' : String(clamp01(1 - (now - homeLeftAt) / 2500));
       if (cv.dataset.skin !== core.skin) cv.dataset.skin = core.skin;

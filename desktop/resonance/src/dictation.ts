@@ -458,7 +458,7 @@ function frame() {
   const c = P.info.caret, cx = c ? c.l : P.vis.x, cy = c ? (c.t + c.b) / 2 : P.vis.y;
   let look: [number, number] | null = null;
   if (c) { const dx = cx - P.vis.x, dy = cy - P.vis.y, d = Math.hypot(dx, dy) || 1; look = [dx / d * .7, dy / d * .7]; }
-  core.update(now, dt, { expr: faceFor(), look, still: false, pressed: false, charge: 0 });
+  core.update(now, dt, { expr: faceFor(), look, still: false, pressed: false });
   const b = body(now, el), glow = core.light.glow, r = R * b.scale;
   P.vis = { x: b.x, y: b.y };
   // where the words will land: a small light at the caret, and a thread to it when she is further off

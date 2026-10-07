@@ -11,7 +11,7 @@ const source = readFileSync(new URL('../src/starCore.ts', import.meta.url), 'utf
   .replace("import nebulaUrl from './assets/skins/icon-sky.jpg?inline';", "const nebulaUrl = '';");
 const { Core, MOTION_V2, LAYERS_ON } = await import(`data:text/javascript;base64,${Buffer.from(stripTypeScriptTypes(source)).toString('base64')}`);
 const make = () => new Core('glass', MOTION_V2, LAYERS_ON);
-const input = (extra = {}) => ({ expr: '02', look: null, still: false, pressed: false, charge: 0, ...extra });
+const input = (extra = {}) => ({ expr: '02', look: null, still: false, pressed: false, ...extra });
 const checks = [];
 const check = (label, pass) => { assert.ok(pass, label); checks.push(label); };
 

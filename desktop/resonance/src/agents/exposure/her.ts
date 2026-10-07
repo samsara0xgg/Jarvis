@@ -54,7 +54,7 @@ export class Her {
     step(this.shine, want, want > this.shine.value ? 1.5 : .7, 1, dt);
     step(this.sc, 1, 2.1, .45, dt);
     const a = Math.max(0, Math.min(1, this.shine.value)), k = this.sc.value;
-    core.update(now, dt, { expr: now < this.faceUntil ? this.face : 'rest', look: this.look, still: reduced.matches, pressed: this.pressed, charge: 0 });
+    core.update(now, dt, { expr: now < this.faceUntil ? this.face : 'rest', look: this.look, still: reduced.matches, pressed: this.pressed });
     const d = dpr(), N = Math.round(W * d), c = this.ctx, m = W / 2;
     if (this.cv.width !== N) this.cv.width = this.cv.height = N;
     c.setTransform(d, 0, 0, d, 0, 0); c.clearRect(0, 0, W, W);

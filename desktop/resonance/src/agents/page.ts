@@ -213,7 +213,7 @@ function herLook(): [number, number] | null {
   return [x / dist * k, y / dist * k];
 }
 function herFrame(now: number, dt: number) {
-  core.update(now, dt, { expr: now < her.faceUntil ? her.face : 'rest', look: herLook(), still: false, pressed: her.pressed, charge: 0 });
+  core.update(now, dt, { expr: now < her.faceUntil ? her.face : 'rest', look: herLook(), still: false, pressed: her.pressed });
   const d = DPR(), N = Math.round(HW * d), c = hctx, m = HW / 2;
   if (herCv.width !== N) herCv.width = herCv.height = N;
   c.setTransform(d, 0, 0, d, 0, 0); c.clearRect(0, 0, HW, HW);

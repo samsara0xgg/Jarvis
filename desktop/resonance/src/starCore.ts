@@ -482,7 +482,7 @@ function sparkle(c: CanvasRenderingContext2D, x: number, y: number, r: number, c
 // ---------- one character: update once per frame, then paint in layers ----------
 // vel: how fast her body travels, in her radii per second (v2 lets the eyes trail it).
 // hear: your voice level 0..1; say: her own voice level (none = the old made-up mouth); dim: fades her light (offline).
-export type CoreInput = { expr: ExprId; look: [number, number] | null; still: boolean; pressed: boolean; charge: number; vel?: [number, number];
+export type CoreInput = { expr: ExprId; look: [number, number] | null; still: boolean; pressed: boolean; vel?: [number, number];
   hear?: number; say?: number; mood?: Mood; poi?: Poi | null; dim?: number; deep?: boolean };
 type Particle = { k: 'z' | 'spark' | 'star'; x: number; y: number; vx: number; vy: number; age: number; life: number; s: number; r: number; c?: RGB };
 type State = { L: Eye; R: Eye; head: number; gx: number; gy: number; yaw: number; t: number; env: number; sx: number; sy: number; yOff: number; jx: number;
@@ -794,9 +794,8 @@ export class Core {
     this.changing(now);
     let yaw = 0;
     if (this.spinStart >= 0) { const k = (now - this.spinStart) / this.spinDur; if (k < 1) yaw = TAU * smooth(0, 1, k); else this.spinStart = -1; }
-    // body: holding her down squashes her further while a costume change charges up
-    const charge = input.charge;
-    moving = step(s.stretch, input.pressed ? .86 - .05 * charge : (x.tall ?? 1) * (x.sink ? .97 : 1), input.pressed ? 10 : 4.2, input.pressed ? .9 : .45, dt) || moving;
+    // body: holding her down squashes her
+    moving = step(s.stretch, input.pressed ? .86 : (x.tall ?? 1) * (x.sink ? .97 : 1), input.pressed ? 10 : 4.2, input.pressed ? .9 : .45, dt) || moving;
     moving = step(s.lift, x.sink ?? 0, 3, .8, dt) || moving;
     this.voiceK += ((x.voice ? 1 : 0) - this.voiceK) * (1 - Math.exp(-3 * dt));
     const phrase = (.5 + .5 * Math.sin(t * 1.7 - .8)) ** 2, syl = (.5 + .5 * Math.sin(t * 7.3 + 1.3 * Math.sin(t * 2.1))) ** 2;
@@ -840,10 +839,9 @@ export class Core {
     const stretch = s.stretch.value * (1 + calm * br0[0] * Math.sin(t * TAU / br0[1]) + .028 * env) * (1 + rise) * aSt * (1 + .035 * lean);
     const bounce = x.bounce && calm ? -x.bounce[0] * Math.abs(Math.sin(PI * now / x.bounce[1])) : 0;
     const bob = calm * (x.bob ?? .03) * (Lf.alive ? .55 + .75 * e : 1) * Math.sin(t * TAU / 3.3 + this.seed);
-    const trem = ((ov?.tremble ?? x.tremble ?? 0) + .012 * charge) * (reduced.matches ? 0 : 1);
+    const trem = (ov?.tremble ?? x.tremble ?? 0) * (reduced.matches ? 0 : 1);
     const jx = trem * (Math.sin(t * 57.1) + Math.sin(t * 83.7 + 1.3)) * .5 + aJx;
-    // stars spin faster while she charges
-    step(s.spinV, calm * (ov?.spin ?? x.spin ?? .22) * (Lf.mood ? .45 + .9 * e : 1) * (1 + .9 * effort) + 2.6 * charge, 1.2, 1, dt);
+    step(s.spinV, calm * (ov?.spin ?? x.spin ?? .22) * (Lf.mood ? .45 + .9 * e : 1) * (1 + .9 * effort), 1.2, 1, dt);
     this.spin += s.spinV.value * dt;
     // light
     // mood: joy warms her light, low joy or energy dims it; offline dims it further
@@ -854,7 +852,7 @@ export class Core {
     }
     if (input.dim) L = blendLight(L, LIGHT.dim, input.dim);
     const gap = mixLight(this.light, L, 1 - Math.exp(-(ov?.lightK ?? x.lightK ?? 5) * dt));
-    let bt = (ov?.bright ?? x.bright ?? 1) * L.b * (1 + .25 * env) * (1 + .3 * charge) * (1 + .25 * bump) * (Lf.mood ? .82 + .3 * e : 1) * (1 + .2 * lean);
+    let bt = (ov?.bright ?? x.bright ?? 1) * L.b * (1 + .25 * env) * (1 + .25 * bump) * (Lf.mood ? .82 + .3 * e : 1) * (1 + .2 * lean);
     if (x.flicker && calm) bt *= 1 - x.flicker * (.5 + .5 * Math.sin(t * 37) * Math.sin(t * 23.3));
     const dim = Math.abs(bt - this.bright);
     this.bright += (bt - this.bright) * (1 - Math.exp(-(ov ? 14 : 6) * dt));

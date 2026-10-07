@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { BellSlash, IconContext, Keyboard, Moon, SpeakerSlash } from '@phosphor-icons/react';
-import { CompanionBall, HOLD_MS, R, type BallHandle, type Lobe, type Place, type Point } from './CompanionBall';
+import { CompanionBall, R, type BallHandle, type Lobe, type Place, type Point } from './CompanionBall';
 import { PREVIEW, SKIN_KEYS, TAKES, isSkin, pick, type ExprId, type Skin } from './starCore';
 import { AroundDashboard, type DashboardView, type DashboardViewHandle, type Think } from './AroundDashboard';
 import { DuskDashboard, DockingDrop } from './DuskDashboard';
@@ -444,16 +444,14 @@ export function Companion() {
     else if (voice === 'speaking') listen(false);
     else { closeComposer(); endVoice(); presence.dismiss(); }
   };
-  const pressAt = useRef(0), latestPoke = useRef(poke);
+  const latestPoke = useRef(poke);
   latestPoke.current = poke;
-  const press = () => { pressing.current = true; pressAt.current = performance.now(); setPressed(true); };
-  // Release a short click immediately. Once the charge ring appears, releasing early cancels the hold.
+  const press = () => { pressing.current = true; setPressed(true); };
+  // A release pokes her, however long the press; her costume changes only from her menu.
   const release = () => {
     if (!pressing.current) return;
     pressing.current = false; setPressed(false);
-    const held = performance.now() - pressAt.current;
-    if (held >= HOLD_MS) choose(SKIN_KEYS[(SKIN_KEYS.indexOf(worn.current) + 1) % SKIN_KEYS.length]);
-    else if (held < 200) latestPoke.current();
+    latestPoke.current();
   };
   const cancel = () => { pressing.current = false; setPressed(false); };
 
