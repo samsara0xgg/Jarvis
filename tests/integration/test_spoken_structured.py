@@ -344,3 +344,31 @@ def test_the_request_carries_the_schema_only_when_the_switch_is_on(
         assert "text" not in body
         assert "<voice></voice>" in note
         assert result.response_plan.text == compose_envelope("我看一下。", "- 10:00 产品会")
+
+
+# ---- the tool budget of a spoken turn (ADR 0176) -----------------------------
+
+
+def test_a_spoken_turn_stops_at_the_voice_cap_and_wraps_up_in_the_spoken_shape(
+    tmp_path: Path,
+) -> None:
+    """The cap is the voice one, not 40; the no-tool wrap-up keeps the schema and its language."""
+    cap = 2
+    said, details = "查到两封。还有些没查完。", "- 邮件一\n- 邮件二"
+    wrap_up = _reply(said, details)
+    outputs = [[("call", "list_memos")]] * cap + [[("final_answer", wrap_up)]]
+    with _Peer(outputs) as peer:
+        runtime = _structured_runtime(tmp_path, peer.url)
+        llm = {"max_tool_iterations": 40, "max_tool_iterations_voice": cap}
+        runtime = replace(runtime, config={**runtime.config, "llm": llm})
+        result = _drive(runtime, _spoken(runtime.conn, "turn-cap", "帮我找找邮件里跟 co-op 有关的"))
+    assert len(peer.requests) == cap + 1
+    assert all(body["tools"] for _, body in peer.requests[:cap])
+    _, last = peer.requests[-1]
+    assert not last.get("tools")
+    assert last["text"] == {"format": SPOKEN_REPLY_FORMAT}
+    assert "no more tools can be called" in last["input"][-1]["content"]
+    assert '"spoken"' in last["input"][-1]["content"]
+    language = {"role": "user", "content": "[Reply language for this turn: Chinese]"}
+    assert last["input"][-2] == language
+    assert result.response_plan.text == compose_envelope(said, details)

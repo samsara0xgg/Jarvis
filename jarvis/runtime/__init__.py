@@ -939,13 +939,22 @@ def _surrogate_route(
     )
 
 
-def _max_tool_iterations(config: Mapping[str, Any]) -> int:
-    """``llm.max_tool_iterations`` (ADR 0060); unset or not a positive int keeps decide()'s 5."""
+def _max_tool_iterations(config: Mapping[str, Any], trigger: Event) -> int:
+    """``llm.max_tool_iterations`` (ADR 0060); a spoken turn reads ``max_tool_iterations_voice``.
+
+    Unset or not a positive int keeps decide()'s 5 (voice: the same bound as every other turn).
+    """
     block = config.get("llm")
-    value = block.get("max_tool_iterations") if isinstance(block, Mapping) else None
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+    if not isinstance(block, Mapping):
         return DEFAULT_MAX_TOOL_ITERATIONS
-    return value
+    keys = ("max_tool_iterations_voice", "max_tool_iterations") if spoken_turn(trigger) else (
+        "max_tool_iterations",
+    )
+    for key in keys:
+        value = block.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return DEFAULT_MAX_TOOL_ITERATIONS
 
 
 def _think_mode(llm_config: Mapping[str, Any], config_path: Path) -> ThinkMode | None:
@@ -3913,7 +3922,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # ADR-0012 §3 D4/V2 — confirmation TTL, config-overridable
             # via `confirmation.ttl_ms` so the live burn can shorten it.
             confirmation_ttl_ms=_confirmation_ttl_ms(runtime.config),
-            max_tool_iterations=_max_tool_iterations(runtime.config),
+            max_tool_iterations=_max_tool_iterations(runtime.config, user_intent_event),
             # ADR-0012 §3 D6 — answer-path grammar, threaded the same
             # way tier0_table is threaded.
             confirm_grammar_table=runtime.confirm_grammar_table,

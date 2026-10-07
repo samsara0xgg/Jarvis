@@ -319,7 +319,7 @@ header strong { color: var(--fg-strong); }
 <li><strong>输入。</strong>一句语音、一段文字、一张卡片的答案或一个按钮。</li>
 <li><strong>Tier 0。</strong>先对一张封闭的全句正则表（<code>config/tier0_patterns.yaml</code>）。命中就直接调那一行指定的工具，用语言表里的话回答，不调模型。每一行的工具必须是 <code>regex_router</code> 能用的，回答里不许出现「完成了」一类的词。在它之前还有一步：整句只是要助手再说一遍（「什么」「再说一遍」「没听清」，what? / pardon / say that again 这类），而之前有说出口的回答时，把最近那个回答的语音部分原样再说一遍，也不调模型。</li>
 <li><strong>Jev（ADR 0122，<code>realtime.surrogate_route</code>，出厂关）。</strong>Tier 0 没命中、而且这一项打开时，问 TypeSafe 的 Jev 一个选择题：主人要的是 Tier 0 里哪一个不需要参数的即时功能（时间、日期、剪贴板、屏幕、开始或结束挂机、念便签，或者再说一遍），还是都不是。置信度不低于 <code>min_confidence</code>（0.95）且选的不是「都不是」，就按 Tier 0 命中的同一条路径执行；其余情况（低于门槛、都不是、超过 <code>timeout_ms</code>（400）、HTTP 出错、没有 key、答案读不懂）都当作没问，交给模型。打开 <code>parallel</code>（出厂开）时，主人说的话走 <code>spoken_streaming</code> 的那一轮不等 Jev：模型的请求立刻发出，它的第一个输出要等 Jev 答了（最多 <code>timeout_ms</code>）才能出声或调工具；Jev 的选择要执行时，这个请求被悄悄停掉，改走 Tier 0。其余路径先问 Jev。每次调用记成一条 <code>route.surrogate_decided</code> 事件。</li>
-<li><strong>模型的工具循环。</strong>没命中就把请求发给模型（组成见<a href="#request">第 5 章</a>）。一轮里带工具的请求最多 <code>llm.max_tool_iterations</code> 次（不写是 5，出厂配置是 40，ADR 0060）；到顶后再发一次不带工具的请求来收尾。</li>
+<li><strong>模型的工具循环。</strong>没命中就把请求发给模型（组成见<a href="#request">第 5 章</a>）。一轮里带工具的请求最多 <code>llm.max_tool_iterations</code> 次（不写是 5，出厂配置是 40，ADR 0060）；Allen 开口说的那一轮改用 <code>llm.max_tool_iterations_voice</code>（出厂配置是 8，不写则同上，ADR 0176）。到顶后再发一次不带工具的请求来收尾，语音轮的收尾沿用本轮的 spoken/written 回复格式。</li>
 <li><strong>每个工具调用都先变成一个动作请求，</strong>过前置闸门，通过了才执行；闸门的每次判断和动作的每一步都记成事件。</li>
 </ol>
 
@@ -477,7 +477,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <tr><td><strong>私网上别的设备。</strong>大脑听着 tailnet 的地址</td><td>只在配置的私网地址上听，不听 0.0.0.0，也不收公网地址；非回环的请求要已配对设备的令牌，Host 头只认配置的名字；令牌一台一个、服务器只存哈希、可单独撤销（ADR 0170）</td><td>设备令牌打得开除六条凭据路由之外的全部路由，不按设备限权；用它连上 <code>/terminal/ws</code> 的人能冒充那台终端，替它回答设备调用，给模型喂假结果，还能往日志里写假的仓库、提交和 TimeSink 观察事件（只限白名单里的三种类型，每帧 64 KiB 以内，写不了确认或主人的话）；声明了语音的终端还能写假的播放行，让大脑记错主人听到了什么；链路加密全靠 Tailscale</td></tr>
 <tr><td><strong>旁边的人说话。</strong></td><td>确认卡一次只等一张，参数在卡上看得见</td><td>问出后 10 分钟内的第一句「好」就算确认，不分辨是谁说的（ADR 0090 的界限）</td></tr>
 <tr><td><strong>凭据外泄。</strong></td><td>模型的 key 在登录钥匙串里，写入时不经过进程参数</td><td>插件凭据和 MCP 登录令牌是 0600 的明文 JSON（改17）；<code>~/.jarvis/env</code> 也是明文，权限由主人自己定</td></tr>
-<tr><td><strong>账单失控。</strong>被诱导的循环或超长的历史</td><td>一轮最多 <code>llm.max_tool_iterations</code> 次带工具的请求；每次调用都记账</td><td>没有花费上限（改15）；实时语音记不上账</td></tr>
+<tr><td><strong>账单失控。</strong>被诱导的循环或超长的历史</td><td>一轮最多 <code>llm.max_tool_iterations</code>（语音轮 <code>llm.max_tool_iterations_voice</code>）次带工具的请求；每次调用都记账</td><td>没有花费上限（改15）；实时语音记不上账</td></tr>
 <tr><td><strong>装上的东西被换掉。</strong></td><td>App 签名并公证；SenseVoice 和 VAD 模型下载后核对 SHA-256</td><td>没有自动更新，修复送不到装好的人手里（包4）。本地 Whisper 的权重（<code>mlx-community</code>）由它自己的库第一次用时下载，Hue 插件由 <code>uvx</code> 从 PyPI 取 <code>huemcp==0.1.0</code>，都不核对哈希。插件没有签名，也不声明自己要什么权限。agent 宿主每小时替主人升级 Claude Code，不先问（<a href="#agent-host">第 8 章</a>）</td></tr>
 </tbody>
 </table>

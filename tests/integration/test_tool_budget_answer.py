@@ -13,6 +13,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+import pytest
+
 from jarvis.decision import (
     DecideContext,
     LifecycleLike,
@@ -23,6 +25,7 @@ from jarvis.decision import (
 from jarvis.decision.llm import ChatResult, LLMClient, ToolCall
 from jarvis.decision.stream_envelope import split_envelope
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
+from jarvis.runtime import _max_tool_iterations
 from jarvis.state.event_log import emit_event, open_event_log
 
 if TYPE_CHECKING:
@@ -181,5 +184,35 @@ def test_empty_answer_falls_back_too(tmp_path: Path) -> None:
     try:
         assert text.startswith("这一轮工具调用次数用完了")
         assert _count(conn, "cost.recorded") == BUDGET + 1
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("channel", "config", "expected"),
+    [
+        ("cli_stdin", {"max_tool_iterations": 40, "max_tool_iterations_voice": 8}, 40),
+        ("dashboard", {"max_tool_iterations": 40, "max_tool_iterations_voice": 8}, 40),
+        ("inherent_ptt", {"max_tool_iterations": 40, "max_tool_iterations_voice": 8}, 8),
+        ("speech", {"max_tool_iterations": 40, "max_tool_iterations_voice": 8}, 8),
+        ("inherent_wake", {"max_tool_iterations": 40}, 40),  # voice key unset: the same bound
+        ("inherent_ptt", {"max_tool_iterations_voice": 8}, 8),
+        ("inherent_ptt", {"max_tool_iterations": 40, "max_tool_iterations_voice": 0}, 40),
+        ("cli_stdin", {"max_tool_iterations_voice": 8}, 5),  # typed turns never read the voice key
+    ],
+)
+def test_only_a_spoken_turn_reads_the_voice_cap(
+    tmp_path: Path, channel: str, config: dict[str, int], expected: int
+) -> None:
+    """The composition root picks the bound by channel; typed turns keep the full one."""
+    conn = open_event_log(tmp_path / "events.db")
+    try:
+        trigger = emit_event(
+            conn,
+            type="surface.user_intent",
+            payload={"transcript": "x", "turn_id": "T_cap", "channel": channel},
+            correlation={"turn_id": "T_cap"},
+        )
+        assert _max_tool_iterations({"llm": config}, trigger) == expected
     finally:
         conn.close()

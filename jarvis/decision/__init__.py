@@ -1614,6 +1614,16 @@ _TOOL_BUDGET_ANSWER_PROMPT: Final[str] = (
     "could not find or confirm. Make up nothing without evidence. Answer in the "
     "language the user wrote in."
 )
+# A structured spoken turn asks the same of its last request in the reply's own two
+# fields (ADR 0176), so the wrap-up is a short spoken line plus a screen list, not prose.
+_TOOL_BUDGET_SPOKEN_PROMPT: Final[str] = (
+    "[Runtime note, not the user's words] This turn has used all its tool calls; no more "
+    'tools can be called. Answer now from the tool results above only. In "spoken", one or '
+    "two short sentences: what you established and which parts you could not find or "
+    'finish. In "written", the details (the facts with their time and source, as a list), '
+    'without repeating "spoken". Make up nothing without evidence. Answer in the language '
+    "the user wrote in."
+)
 # Spoken when that last request fails or returns nothing (``tool_budget.exhausted``
 # in the language table): no internal vocabulary, no completion words.
 
@@ -2869,7 +2879,8 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
 
     # Tool budget spent (ADR 0030): one more request, without tools, for the answer.
     LOGGER.warning("decide(): spoken loop hit max_iterations=%d", ctx.max_tool_iterations)
-    messages.append({"role": "user", "content": _TOOL_BUDGET_ANSWER_PROMPT})
+    wrap_up = _TOOL_BUDGET_SPOKEN_PROMPT if route.structured else _TOOL_BUDGET_ANSWER_PROMPT
+    messages.append({"role": "user", "content": wrap_up})
     try:
         reply = _stream_spoken_request(ctx, route, speaker, messages, None, scratch)
     except ResponseCancelledError:
