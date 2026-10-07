@@ -39,10 +39,14 @@ const detached = new URLSearchParams(location.search).has('detached');
 const spoken = (reply: string) => { const voice = /<voice>([\s\S]*?)(?:<\/voice>|$)/.exec(reply); return voice ? plain(voice[1]) : plain(reply); };
 // Prototype script: every transcript and reply below is simulated. Each poke plays the next of these (the answers carry the daemon's
 // <voice> and <document> tags): a short answer, one with a written part, and one she is asked to read out in full.
-const DEMO = [
-  { heard: '把今天的任务整理一下', reply: '好，我来整理。' },
-  { heard: '明天有什么安排', reply: '<voice>明天有三个安排，我列在下面了。最早的是十点和设计组的周会。</voice><document>## 10 月 2 日 周五\n- 10:00 设计组周会（线上）\n- 14:00 和产品组过 Startrail 发布清单\n- 16:30 牙医，Main Street</document>' },
-  { heard: '把明天的安排从头到尾念一遍', reply: '好，我按顺序念。第一件，十点和设计组开周会，线上。第二件，下午两点和产品组过 Startrail 的发布清单。第三件，四点半看牙医，诊所在 Main Street 上，记得提前十分钟出门。第四件，晚上七点和朋友吃饭，订的是那家川菜馆。第五件，睡前把后天要带的东西收拾好，别忘了充电器。' },
+const DEMO: { heard: L; reply: L }[] = [
+  { heard: ['Organize my tasks for today', '把今天的任务整理一下'], reply: ['Okay, I’ll sort them out.', '好，我来整理。'] },
+  { heard: ['What’s on tomorrow?', '明天有什么安排'], reply: [
+    '<voice>You have three things tomorrow, listed below. The first is the design team weekly at ten.</voice><document>## Friday, October 2\n- 10:00 Design team weekly (online)\n- 14:00 Go over the Startrail launch checklist with the product team\n- 16:30 Dentist, Main Street</document>',
+    '<voice>明天有三个安排，我列在下面了。最早的是十点和设计组的周会。</voice><document>## 10 月 2 日 周五\n- 10:00 设计组周会（线上）\n- 14:00 和产品组过 Startrail 发布清单\n- 16:30 牙医，Main Street</document>'] },
+  { heard: ['Read me tomorrow’s schedule from start to finish', '把明天的安排从头到尾念一遍'], reply: [
+    'Okay, in order. First, the design team weekly at ten, online. Second, at two this afternoon, the Startrail launch checklist with the product team. Third, the dentist at four thirty. The clinic is on Main Street, so leave ten minutes early. Fourth, dinner with friends at seven, at the Sichuan place you booked. Fifth, before bed, pack what you need for the day after tomorrow, and don’t forget the charger.',
+    '好，我按顺序念。第一件，十点和设计组开周会，线上。第二件，下午两点和产品组过 Startrail 的发布清单。第三件，四点半看牙医，诊所在 Main Street 上，记得提前十分钟出门。第四件，晚上七点和朋友吃饭，订的是那家川菜馆。第五件，睡前把后天要带的东西收拾好，别忘了充电器。'] },
 ];
 // Her skin, whether she changes it herself, how she looks in the island and the look of the agent marks
 // live in this companion's own profile.
@@ -51,7 +55,7 @@ const WARDROBE = 'companion-wardrobe-v1';
 const PAUSED_KEY = 'companion-mic-paused';
 const CAPTIONS: [Captions, L][] = [['all', ['Show all', '全部显示']], ['brief', ['Only what to read', '只显示要看的']], ['none', ['None', '不显示']]];
 // ADR 0153: the quiet levels her menu offers so far, and the mark each one leaves on the island.
-const QUIET: [Quiet, L][] = [['off', ['Normal', '正常']], ['quiet', ['Quiet: no sounds', '安静：不出声']], ['no-pop', ['No pop-ups: no cards either', '不弹：也不弹卡片']], ['dnd', ['Do not disturb: show nothing', '勿扰：什么都不显示']]];
+const QUIET: [Quiet, L][] = [['off', ['Normal', '正常']], ['quiet', ['Quiet: no sounds', '安静：不出声']], ['no-pop', ['No pop-ups: hide cards too', '不弹：也不弹卡片']], ['dnd', ['Do not disturb: hide everything', '勿扰：什么都不显示']]];
 const QUIET_MARK = { quiet: SpeakerSlash, 'no-pop': BellSlash, dnd: Moon } as const;
 const SKIN_NAMES: Record<Skin, L> = { glass: ['Glass', '深空玻璃'], nebula: ['Nebula', '星云'], galaxy: ['Galaxy', '银河'], frost: ['Frost', '磨砂'], aurora: ['Aurora', '极光'], codex: ['Icon', '图标同款'] };
 function loadWardrobe(): Look {
@@ -392,11 +396,11 @@ export function Companion() {
   const listen = (scripted: boolean) => {
     stopScript(); setReceiving(false); setVoice('listening'); setHearing(false); setPartial(''); setReply({ text: '' }); setTalking(false); dispatch({ type: 'cut', at: Date.now() });
     if (!scripted) return;
-    const turn = DEMO[demoAt.current++ % DEMO.length], end = 650 + turn.heard.length * 60;
+    const turn = DEMO[demoAt.current++ % DEMO.length], heard = t(turn.heard), end = 650 + heard.length * 60;
     after(650, () => setHearing(true));
-    [...turn.heard].forEach((_, i, chars) => after(650 + (i + 1) * 60, () => setPartial(chars.slice(0, i + 1).join(''))));
-    after(end + 250, () => { setHearing(false); setPartial(''); dispatch({ type: 'you', text: turn.heard, at: Date.now() }); setVoice('thinking'); receive(); });
-    after(end + 1700, () => { setVoice('speaking'); say(turn.reply, () => listen(false)); });
+    [...heard].forEach((_, i, chars) => after(650 + (i + 1) * 60, () => setPartial(chars.slice(0, i + 1).join(''))));
+    after(end + 250, () => { setHearing(false); setPartial(''); dispatch({ type: 'you', text: heard, at: Date.now() }); setVoice('thinking'); receive(); });
+    after(end + 1700, () => { setVoice('speaking'); say(t(turn.reply), () => listen(false)); });
   };
   // Whatever she is saying or about to say stops: the answer on screen by its response, or the turn she is still
   // thinking about by its turn. Where she had got to stays lit; the rest of it waits, dim.
@@ -475,7 +479,7 @@ export function Companion() {
     dispatch({ type: 'you', text, at: Date.now() });
     receive();
     if (port) { void submit(text); return; }
-    const answer = text.includes('整理') ? '好，我来整理。' : '收到，我来处理。';
+    const answer = /整理|sort|organi[sz]e/i.test(text) ? t(['Okay, I’ll sort that out.', '好，我来整理。']) : t(['Got it, I’ll take care of it.', '收到，我来处理。']);
     // In a voice conversation the demo answers like a real turn: she thinks, then speaks, then listens again.
     if (voice !== 'off') { setVoice('thinking'); after(700, () => { setVoice('speaking'); say(answer, () => listen(false)); }); return; }
     after(700, () => say(answer, () => after(1800, () => setReply({ text: '' }))));
@@ -841,10 +845,10 @@ export function Companion() {
       setMenu({ x: Math.min(geo.width - 230, Math.max(8, event.clientX)), y: Math.max(placement.topInset + 12, event.clientY) });
     }}>
       {s.quiet !== 'off' && (() => { const Mark = QUIET_MARK[s.quiet]; return <span className="companion-quiet" aria-label={t(['Quiet mode is on', '安静模式开着'])} style={{ left: geo.lobe.left + 8, top: placement.topInset / 2 - 6 }}><Mark size={12} weight="fill"/></span>; })()}
-      <button className="companion-island-target" data-hit aria-label={t(['Open Dashboard', '打开主页'])} title={t(['Click the notch to open Dashboard', '点击刘海打开主页'])}
+      <button className="companion-island-target" data-hit aria-label={t(['Open Dashboard', '打开主页'])} title={t(['Click the notch to open the Dashboard', '点击刘海打开主页'])}
         style={{ left: geo.lobe.left, width: geo.lobe.notched ? geo.wingX - geo.lobe.left : geo.lobe.right - geo.lobe.left, height: placement.topInset }}
         onClick={toggleDashboard}/>
-      {menu && <div ref={menuRef} className="companion-menu" data-hit role="menu" aria-label={t(['Her menu', '她的菜单'])} style={{ left: menu.x, top: menu.y }}
+      {menu && <div ref={menuRef} className="companion-menu" data-hit role="menu" aria-label={t(['Jarvis menu', '她的菜单'])} style={{ left: menu.x, top: menu.y }}
         onKeyDown={event => {
           const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button')], at = items.indexOf(document.activeElement as HTMLButtonElement);
           if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
@@ -863,12 +867,12 @@ export function Companion() {
         <hr/>
         {nightState && (nightRun
           ? <button role="menuitem" onClick={() => { setMenu(null); nightAct('end'); }}>{t(['End the night run', '结束挂机'])}</button>
-          : <button role="menuitem" onClick={() => { setMenu(null); nightAct('start'); }}>{t([`Off to sleep: keep running at least ${+nightState.hours.toFixed(2)} h`, `睡了，至少挂 ${+nightState.hours.toFixed(2)} 小时`])}</button>)}
+          : <button role="menuitem" onClick={() => { setMenu(null); nightAct('start'); }}>{t([`Going to sleep: keep running for at least ${+nightState.hours.toFixed(2)} h`, `睡了，至少挂 ${+nightState.hours.toFixed(2)} 小时`])}</button>)}
         <button role="menuitem" onClick={() => { setMenu(null); appear(ctl.playFaces, PREVIEW.length * 1100); }}>{t(['Preview expressions', '看一遍表情'])}</button>
         <button role="menuitem" onClick={() => { setMenu(null); openDashboard(false); pinned.current = true; if (detachedMode.current) window.jarvis?.dashboardMessage?.('dashboard', { type: 'settings' }); else setSettingsFocus(n => n + 1); }}>{t(['Settings…', '设置…'])}</button>
       </div>}
       <div className={`companion-chip ${chip ? 'is-open' : ''}`} data-hit={chip || undefined} data-glass="10" style={{ left: out.x + R + 12, top: out.y - 13 }}>
-        <button aria-label={t(['Type to her', '文字输入'])} tabIndex={chip ? 0 : -1} onClick={openComposer}><Keyboard/></button>
+        <button aria-label={t(['Type a message', '文字输入'])} tabIndex={chip ? 0 : -1} onClick={openComposer}><Keyboard/></button>
       </div>
       <TalkArea lang={companion.lang} x={out.x} y={out.y + R + 11} open={presence.open && place === 'out' && !quiet} level={talkLevel} lines={s.talk} since={talkFrom} voice={voice} hearing={hearing} partial={partial} settled={port ? s.settled : null} tool={tool} silent={s.soundMuted} buttons={companion.talkButtons}
         deep={{ look: deepLook, secs: deepSecs, thoughts }} field={composer} draft={draft} micPaused={s.micMuted} card={cardShown ? cardView : undefined}

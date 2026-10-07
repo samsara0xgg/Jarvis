@@ -1,7 +1,10 @@
 import { useEffect, useRef } from 'react';
+import type { L } from './companionSettings';
 
 export type Presence = 'standby' | 'listening' | 'thinking' | 'speaking' | 'muted';
-export const presenceLabels: Record<Presence, string> = { standby: '呼吸', listening: '聆听', thinking: '思考', speaking: '回应', muted: '静音' };
+export const presenceNames: Record<Presence, L> = { standby: ['Breathing', '呼吸'], listening: ['Listening', '聆听'], thinking: ['Thinking', '思考'], speaking: ['Speaking', '回应'], muted: ['Muted', '静音'] };
+// The motion preview lab (MotionPreview) is Chinese only and reads these.
+export const presenceLabels = Object.fromEntries(Object.entries(presenceNames).map(([key, name]) => [key, name[1]])) as Record<Presence, string>;
 // Width, amplitude, gathering, flow speed, luminance. Geometry is continuous across states.
 const poses: Record<Presence, number[]> = {
   standby: [36, 5.6, .12, .48, .58], listening: [34, 14.5, .3, .85, .85],

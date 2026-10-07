@@ -1,6 +1,7 @@
 // Live link to the Jarvis daemon over the Inherent v1 wire (ADR-0003/0005):
 // outbound-only WebSocket envelopes `{op, payload}` in, HTTP POSTs out. Audio never crosses this link; the daemon owns mic and speaker.
 import { asQuiet, type Action, type Live, type LiveState, type Quiet, type Row } from './model';
+import { currentLang, tr } from './companionSettings';
 import type { Card, Question } from './ActionCard';
 import type { NightAction, NightState } from './NightCard';
 
@@ -66,7 +67,8 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
       else if (msg.op === 'append') dispatch({ type: 'append', turnId, token: String(p.token ?? ''), at: Date.now() });
       else if (msg.op === 'done') { if (typeof p.spoken === 'string' && p.spoken) dispatch({ type: 'whole', turnId, text: p.spoken, at: Date.now() }); if (typeof p.written === 'string' && p.written) dispatch({ type: 'written', turnId, text: p.written }); setTimeout(() => dispatch({ type: 'settle', turnId }), Number(p.fadeMs ?? 5000)); }
       else if (msg.op === 'failed' || msg.op === 'cancelled') {
-        dispatch({ type: 'failed', turnId, cancelled: msg.op === 'cancelled', message: typeof p.message === 'string' ? p.message : null, at: Date.now() });
+        // A failure says why in the daemon's words; without any, the surface's own line.
+        dispatch({ type: 'failed', turnId, cancelled: msg.op === 'cancelled', message: typeof p.message === 'string' ? p.message : tr(currentLang(), ['Something went wrong and that didn’t finish. Please try again.', '这一轮出错了，没有完成。可以再说一次。']), at: Date.now() });
         if (msg.op === 'failed') setTimeout(() => dispatch({ type: 'settle', turnId }), 8000); // long enough to read why
       }
       else if (msg.op === 'voice') { const a = voicePhase[String(p.phase)]; if (a) dispatch(a); if (p.phase === 'spoken') dispatch({ type: 'spoken', turnId, at: Date.now(), outcome: typeof p.output_outcome === 'string' ? p.output_outcome : undefined }); if (p.phase === 'playing' && turnId) dispatch({ type: 'playing', turnId, played: Number(p.played ?? 0), ahead: Number(p.ahead ?? 0), held: p.held === true, at: Date.now() }); if (p.phase === 'accepted' && turnId) dispatch({ type: 'pending', turnId, at: Date.now() }); if (p.phase === 'accepted' && typeof p.text === 'string') dispatch({ type: 'heard', text: p.text, at: Date.now() }); if (p.phase === 'partial' && typeof p.text === 'string') dispatch({ type: 'partial', text: p.text, settled: typeof p.settled === 'string' && typeof p.tail === 'string' ? p.settled : undefined }); }

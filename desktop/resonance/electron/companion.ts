@@ -242,7 +242,9 @@ function companion(shown?: () => void) {
   const dashboard = setupDashboard({ parent: win, stage: () => { const d = current ?? target(); return stageRect(d, placement(d).topInset); }, preload: path.join(here, 'preload.cjs'), page: path.join(here, '../dist/index.html'), demo, port,
     mouseDown: material?.leftMouseDown ? () => material.leftMouseDown() : undefined,
     onAttach: display => { clearTimeout(moving); moving = undefined; pending = null; current = display; place(); } });
-  registerDaemonBridge(win, { lab: demo, trustedWindows: dashboard.windows });
+  // The renderer reports its interface language with her settings (below); until it does, English, the default.
+  let lang: 'en' | 'zh' = 'en';
+  registerDaemonBridge(win, { lab: demo, trustedWindows: dashboard.windows, lang: () => lang });
   const mine = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) => dashboard.senderWindow(event);
   // ADR 0058: the right ⌥ dictates at the text caret; she goes there from the notch. Live only: it needs the daemon's mic.
   const dictation = demo || !material ? null : setupDictation({ companion: win, native: material, nativePath: path.join(here, '../dist-native/material.node'), preload: path.join(here, 'preload.cjs'),
@@ -421,6 +423,7 @@ function companion(shown?: () => void) {
   // Her Settings that act in this process: the right-⌥ dictation, its language, and which screen she lives on.
   ipcMain.on('companion-settings', (event, settings: { follow?: boolean; lang?: string; dictation?: boolean }) => {
     if (!mine(event) || typeof settings !== 'object' || !settings) return;
+    if (settings.lang === 'zh' || settings.lang === 'en') lang = settings.lang;
     dictation?.language(settings.lang);
     dictation?.enabled(settings.dictation !== false);
     // Pinned to the main screen while she is on another one: she sinks here and comes up there.

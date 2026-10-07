@@ -565,8 +565,8 @@ export function TalkArea(p: TalkProps) {
   };
 
   const field = <form ref={fdEl} className="talk-fd" hidden={row !== 'fd'} onSubmit={e => { e.preventDefault(); submit(); }}>
-    <button type="button" className={`ib mic ${p.micPaused ? 'dim' : ''}`} aria-label={t(['Back to voice', '回到语音'])} title={p.micPaused ? t(['Microphone paused while you type. Back to voice', '打字时麦克风暂停，点一下回到语音']) : t(['Talk instead', '改用语音'])} onClick={p.onMic}><Microphone/></button>
-    <textarea ref={p.inputRef} className="box" rows={1} aria-label={t(['Type to her', '文字输入'])} value={p.draft} enterKeyHint="send"
+    <button type="button" className={`ib mic ${p.micPaused ? 'dim' : ''}`} aria-label={t(['Back to voice', '回到语音'])} title={p.micPaused ? t(['The microphone is paused while you type. Click to go back to voice', '打字时麦克风暂停，点一下回到语音']) : t(['Talk instead', '改用语音'])} onClick={p.onMic}><Microphone/></button>
+    <textarea ref={p.inputRef} className="box" rows={1} aria-label={t(['Type a message', '文字输入'])} value={p.draft} enterKeyHint="send"
       placeholder={p.micPaused ? t(['The microphone pauses while you type', '打字时麦克风暂停']) : t(['Say something…', '和她说点什么…'])}
       onChange={e => p.onDraft(e.target.value)}
       onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -596,7 +596,7 @@ export function TalkArea(p: TalkProps) {
       {gone && <span className="lb-old" aria-hidden="true" style={{ left: gone.left }} onAnimationEnd={() => setGone(null)}>{gone.text}</span>}
       {p.buttons && <>
         <span className="sp"/>
-        <button type="button" className="ib kb" aria-label={t(['Type to her', '文字输入'])} onClick={() => p.onField(true)}><Keyboard/></button>
+        <button type="button" className="ib kb" aria-label={t(['Type a message', '文字输入'])} onClick={() => p.onField(true)}><Keyboard/></button>
         <button type="button" className="ib st" aria-label={t(['End voice', '结束语音'])} onClick={p.onEnd}><Stop weight="fill"/></button>
       </>}
     </div>

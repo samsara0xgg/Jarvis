@@ -34,7 +34,7 @@ export function setupDictation({ companion, native, nativePath, preload, page, p
   overlay.webContents.on('will-navigate', event => event.preventDefault());
   overlay.loadFile(page);
   // `on`: Settings › General › Dictation; off, a tap starts nothing (one already running still finishes).
-  let busy = false, on = true, asked = false, skin = 'glass', lang = 'zh', origin = { x: 0, y: 0 };
+  let busy = false, on = true, asked = false, skin = 'glass', lang = 'en', origin = { x: 0, y: 0 };
   let option = { down: false, at: 0, clean: false };
   const mine = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) => event.sender === overlay.webContents;
   // Return is the app's again before its own Return is posted, and for her card's box.

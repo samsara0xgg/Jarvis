@@ -31,31 +31,33 @@ export function sendDaemonKey(target: Electron.Session) {
       callback({ requestHeaders: typeof token === 'string' && token ? { ...details.requestHeaders, Authorization: `Bearer ${token}` } : details.requestHeaders }));
   });
 }
-export function registerDaemonBridge(win: BrowserWindow, { lab = false, verification = false, trustedWindows = () => [win] }: {
-  lab?: boolean; verification?: boolean; trustedWindows?: () => BrowserWindow[];
+// `lang`: the window's interface language right now (the renderer reports it); the errors it shows are in it.
+export function registerDaemonBridge(win: BrowserWindow, { lab = false, verification = false, trustedWindows = () => [win], lang = () => 'en' }: {
+  lab?: boolean; verification?: boolean; trustedWindows?: () => BrowserWindow[]; lang?: () => 'en' | 'zh';
 } = {}) {
+  const say = (en: string, zh: string) => lang() === 'zh' ? zh : en;
   sendDaemonKey(win.webContents.session);
   const fromThisWindow = (event: Electron.IpcMainInvokeEvent) => trustedWindows().some(w => !w.isDestroyed()
     && event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame);
   // The renderer can request plugin operations but never read the daemon's
   // management credential or choose an arbitrary URL/file/process to open.
   ipcMain.handle('plugins', async (event, operation: string, data: Record<string, unknown> = {}) => {
-    if (!fromThisWindow(event)) throw new Error('无效的插件窗口');
+    if (!fromThisWindow(event)) throw new Error('无效的插件窗口'); // a window that is not ours, never one a person reads; scripts/verify-dashboard-window.mjs asserts it
     const operations = ['read', 'icon', 'open', 'connect', 'cancel', 'reopen', 'disable', 'approval'];
-    if (!operations.includes(operation) || !data || typeof data !== 'object' || Array.isArray(data)) throw new Error('无效的插件操作');
+    if (!operations.includes(operation) || !data || typeof data !== 'object' || Array.isArray(data)) throw new Error(say('That plugin action isn’t recognized.', '无效的插件操作'));
     const testPort = verification ? process.env.RESONANCE_PLUGIN_TEST_PORT : undefined;
     // The demo polls 'read' every 1.5 s; an empty list keeps the console quiet. Anything else says why it cannot run.
     if (lab && operation === 'read') return { plugins: [], request: null };
-    if (lab || (verification && (!testPort || testPort === '8006'))) throw new Error('This preview is not connected to the plugin service');
+    if (lab || (verification && (!testPort || testPort === '8006'))) throw new Error(say('This preview is not connected to the plugin service.', '此预览没有连接插件服务'));
     const port = testPort ?? process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006';
-    if (!/^\d{1,5}$/.test(port) || Number(port) > 65535) throw new Error('插件服务端口无效');
+    if (!/^\d{1,5}$/.test(port) || Number(port) > 65535) throw new Error(say('The plugin service port is invalid.', '插件服务端口无效'));
     const root = (verification ? process.env.RESONANCE_PLUGIN_TEST_ROOT : undefined) ?? process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis');
     let token: string;
     try { token = JSON.parse(await readFile(path.join(root, 'plugin-access.json'), 'utf8')).token; }
-    catch { throw new Error('插件服务尚未就绪，请确认 Jarvis 后台已更新并启动'); }
-    if (typeof token !== 'string' || !token) throw new Error('插件服务凭证无效');
+    catch { throw new Error(say('The plugin service isn’t ready. Make sure Jarvis is updated and running.', '插件服务尚未就绪，请确认 Jarvis 后台已更新并启动')); }
+    if (typeof token !== 'string' || !token) throw new Error(say('The plugin service credentials are invalid.', '插件服务凭证无效'));
     const body = JSON.stringify({ operation, data });
-    if (body.length > 32768) throw new Error('插件请求过长');
+    if (body.length > 32768) throw new Error(say('The plugin request is too long.', '插件请求过长'));
     const get = operation === 'read' || operation === 'icon';
     const route = operation === 'read' ? '' : operation === 'icon' ? `/${encodeURIComponent(String(data.plugin_id))}/icon` : '/action';
     let response: Response;
@@ -66,9 +68,9 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
         body: get ? undefined : body,
         signal: AbortSignal.timeout(15000),
       });
-    } catch { throw new Error('暂时连不上 Jarvis，请稍后重试'); }
+    } catch { throw new Error(say('Can’t reach Jarvis right now. Try again in a moment.', '暂时连不上 Jarvis，请稍后重试')); }
     const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(response.status === 401 ? '插件服务凭证已更新，请重试' : typeof result.detail === 'string' ? result.detail : '插件操作未完成，请重试');
+    if (!response.ok) throw new Error(response.status === 401 ? say('The plugin service credentials were refreshed. Try again.', '插件服务凭证已更新，请重试') : typeof result.detail === 'string' ? result.detail : say('The plugin action didn’t finish. Try again.', '插件操作未完成，请重试'));
     return result;
   });
   ipcMain.handle('open-account', async (event, service) => {

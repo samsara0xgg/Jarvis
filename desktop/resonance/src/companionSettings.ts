@@ -57,6 +57,8 @@ export function useT() { const [s] = useCompanionSettings(); return (l: L) => tr
 
 // Every hook instance in the window shares one value: a change anywhere reaches the others at once.
 let current: CompanionSettings | null = null;
+// The language right now, for words made outside a component (the wire's fallback lines).
+export const currentLang = (): Lang => (current ??= load()).lang;
 const update = (change: Partial<CompanionSettings>) => {
   current = { ...(current ??= load()), ...change };
   try { localStorage.setItem(KEY, JSON.stringify(current)); } catch { /* kept for this run only */ }
@@ -64,6 +66,8 @@ const update = (change: Partial<CompanionSettings>) => {
 };
 export function useCompanionSettings() {
   const [settings, setSettings] = useState(() => current ??= load());
+  // The page's own language follows (index.html says zh-CN): screen readers and the browser's font choice read it.
+  useEffect(() => { document.documentElement.lang = settings.lang === 'zh' ? 'zh-CN' : 'en'; }, [settings.lang]);
   useEffect(() => {
     const receive = (event: Event) => setSettings((event as CustomEvent<CompanionSettings>).detail);
     const shared = (event: StorageEvent) => { if (event.key === KEY) { current = load(); window.dispatchEvent(new CustomEvent(KEY, { detail: current })); } };

@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useReducer, useRef, useState } from 
 import { createRoot } from 'react-dom/client';
 import { IconContext, SquaresFour, Bell, X, ArrowUpRight, Copy, Check, ArrowCounterClockwise, Pause, DotsThree, GearSix, Phone, PhoneDisconnect } from '@phosphor-icons/react';
 import { initialState, reducer, examples, visible, type Phase } from './model';
+import { useT, type L } from './companionSettings';
 import './style.css';
 import { activeSurfaceTheme, surfaceThemes } from './surface-themes';
 import { PanelStack, type PanelId } from './PanelStack';
@@ -9,7 +10,7 @@ import './panel-stack.css';
 import './notch.css';
 import { useCapsuleDrag } from './useCapsuleDrag';
 import { useIslandHover } from './useIslandHover';
-import { presenceLabels, type Presence } from './VoicePresence';
+import { presenceNames, type Presence } from './VoicePresence';
 import { PreviewLab, DashboardPreview } from './DashboardPreview';
 import { LiveTranscript, TranscriptTrigger } from './LiveTranscript';
 import { PresentationCapsule } from './PresentationCapsule';
@@ -69,12 +70,13 @@ const lab = new URLSearchParams(location.search).has('lab');
 // A `port` query means Electron wants the live daemon link; without it every timer below is the simulation.
 const runtimePort = new URLSearchParams(location.search).get('port');
 const live = runtimePort !== null;
-const labels: Record<Phase, string> = { listening: '正在听取', hearing: '正在听', processing: '正在处理', speaking: '正在播报', error: '连接失败' };
+const labels: Record<Phase, L> = { listening: ['Listening', '正在听取'], hearing: ['Hearing you', '正在听'], processing: ['Working on it', '正在处理'], speaking: ['Speaking', '正在播报'], error: ['Connection failed', '连接失败'] };
 const mmss = (sec: number) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
 function Button({ label, children, className = '', ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
   return <button {...props} className={`icon-button ${className}`} aria-label={label} title={label}><span className="button-glyph" key={label}>{children}</span></button>;
 }
 function App() {
+  const t = useT();
   const [placement, setPlacement] = useState<WindowPlacement>({ docked: false, topInset: 32, surfaceWidth: 540, compactWidth: 268, notchWidth: 180 });
   useEffect(() => {
     if (!window.jarvis || lab) return;
@@ -175,9 +177,9 @@ function App() {
   useEffect(() => () => { if (followupTimer.current) clearTimeout(followupTimer.current); }, []);
   const sendFollowup = () => {
     if (!followup.trim()) return;
-    const message = followup.trim(); setFollowup(''); setFollowupMessage('模拟处理中…');
+    const message = followup.trim(); setFollowup(''); setFollowupMessage(t(['Simulating a reply…', '模拟处理中…']));
     if (followupTimer.current) clearTimeout(followupTimer.current);
-    followupTimer.current = setTimeout(() => { setFollowupMessage(`演示回复：已收到“${message}”。未发送或执行真实任务。`); followupTimer.current = null; }, 1200);
+    followupTimer.current = setTimeout(() => { setFollowupMessage(t([`Demo reply: got “${message}”. Nothing was sent or run.`, `演示回复：已收到“${message}”。未发送或执行真实任务。`])); followupTimer.current = null; }, 1200);
   };
   const [dismissing, setDismissing] = useState<string[]>([]);
   const dismissTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -306,7 +308,7 @@ function App() {
     dispatch({ type: 'send' });
     if (live) { runtime.current?.submit(text).catch(() => dispatch({ type: 'phase', phase: 'error' })); return; }
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => { dispatch({ type: 'answer' }); timer.current = null; }, 1400);
+    timer.current = setTimeout(() => { dispatch({ type: 'answer', reply: t(['Demo reply: I caught that. Once connected, you can carry on from here, save things and find the context again. Nothing was saved or run here.', '演示回复：我接住了这段表达。正式连接后，可以从这里继续交流、保存和找回上下文。此处没有保存或执行真实任务。']) }); timer.current = null; }, 1400);
   };
   const interrupt = () => { if (live) void runtime.current?.cancel(s.responseId); dispatch({ type: 'interrupt' }); };
   const retry = () => {
@@ -328,31 +330,31 @@ function App() {
     else if (s.mode === 'voice') mode('idle');
     else hide();
   };
-  const status = s.phase === 'error' ? '连接失败' : s.live.state === 'active' ? (s.live.speaking ? 'Live · 正在播报' : s.live.hearing ? 'Live · 正在听' : 'Live · 通话中') : s.micMuted && s.phase === 'listening' ? '麦克风已关闭' : labels[s.phase];
+  const status = s.phase === 'error' ? t(labels.error) : s.live.state === 'active' ? (s.live.speaking ? t(['Live · Speaking', 'Live · 正在播报']) : s.live.hearing ? t(['Live · Listening', 'Live · 正在听']) : t(['Live · In a call', 'Live · 通话中'])) : s.micMuted && s.phase === 'listening' ? t(['Microphone off', '麦克风已关闭']) : t(labels[s.phase]);
   const surfaceStyle = { ...surfaceThemes[activeSurfaceTheme], '--theme-color': themeColor, '--glass-opacity': placement.docked ? 1 : opacity, '--glass-strength': placement.docked ? 0 : glassStrength, '--notch-top': `${placement.topInset}px`, '--notch-width': `${placement.surfaceWidth}px`, '--notch-content-height': `${Math.min(472, screen.availHeight - placement.topInset - 32)}px`, '--notch-compact-width': `${placement.compactWidth}px`, '--notch-cutout': `${placement.notchWidth}px`, '--preview-scale': lab ? scale : 1 } as React.CSSProperties & Record<`--${string}`, string | number>;
   const notifications = <div className="dashboard-notification-content" onKeyDown={event => { if (event.key !== 'Escape') return; event.stopPropagation(); if (s.detail) closeDetail(); else if (replying) setReplying(null); else closePanel(); }}>
-        {<section className={`inbox is-open ${stacked ? 'is-stacked' : 'is-expanded'} ${s.detail ? 'has-detail' : ''}`} inert={!s.inbox} aria-hidden={!s.inbox} aria-label="示例通知" data-interactive onScroll={event => setNotificationScroll(event.currentTarget.scrollTop)}>
-          {s.results.length === 0 && <div className="empty glass"><Bell size={20}/><p>暂时没有待查看的事项</p><small>任务结果、待回应事项和你设定的提醒会出现在这里。</small></div>}
+        {<section className={`inbox is-open ${stacked ? 'is-stacked' : 'is-expanded'} ${s.detail ? 'has-detail' : ''}`} inert={!s.inbox} aria-hidden={!s.inbox} aria-label={t(['Sample notifications', '示例通知'])} data-interactive onScroll={event => setNotificationScroll(event.currentTarget.scrollTop)}>
+          {s.results.length === 0 && <div className="empty glass"><Bell size={20}/><p>{t(['Nothing to review right now', '暂时没有待查看的事项'])}</p><small>{t(['Task results, questions waiting on you and reminders you set show up here.', '任务结果、待回应事项和你设定的提醒会出现在这里。'])}</small></div>}
           {s.results.map((r, index) => <article key={r.id} style={{ '--card-index': index } as React.CSSProperties} className={`result glass ${s.detail && s.detail !== r.id ? 'is-detail-hidden' : ''} ${dismissing.includes(r.id) ? 'is-dismissing' : ''} ${replying === r.id ? 'is-replying' : ''}`} inert={dismissing.includes(r.id) || (stacked && index > 0) || (!!s.detail && s.detail !== r.id)} aria-hidden={(stacked && index > 0) || (!!s.detail && s.detail !== r.id)} >
-            <button className="result-main" aria-label={stacked && index === 0 ? `展开 ${s.results.length} 条通知` : undefined} onClick={() => { if (stacked) { expandInbox(); return; } dispatch({ type: 'detail', id: r.id }); setCopied(false); void window.jarvis?.focus(true); }}><span className="result-copy"><strong>{r.title}</strong><small> · 示例 · </small><span className="summary">{r.summary}</span></span></button>
-            <Button label={r.kind === 'question' ? `回复${r.title}` : `标记${r.title}已查看`} className={`result-status kind-${r.kind}`} onClick={() => { if (r.kind === 'question') { openFollowup(r.id); } else dismissResult(r.id); }}>{r.kind === 'failure' ? <X size={18}/> : r.kind === 'question' ? <CapsuleIcon name="reply" width={16} height={16}/> : <Check size={19}/>}</Button>
-            <Button label={`移除${r.title}`} className="result-dismiss" onClick={() => dismissResult(r.id)}><X size={12}/></Button>
-            <div className="result-actions"><Button label={`继续讨论${r.title}`} onClick={() => openFollowup(r.id)}><CapsuleIcon name="reply" width={16} height={16}/></Button></div>
-            {replying === r.id && <>{followupMessage ? <p className="inline-reply-message" role="status">{followupMessage}</p> : <form className="inline-reply" onSubmit={e => { e.preventDefault(); sendFollowup(); }}><textarea ref={followupInput} rows={1} aria-label={`回复${r.title}的内容`} placeholder="继续回复…" value={followup} onChange={e => setFollowup(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); sendFollowup(); } }}/><Button label="发送通知回复（模拟）" type="submit" disabled={!followup.trim()}><CapsuleIcon name="send" width={15} height={15}/></Button></form>}</>}
+            <button className="result-main" aria-label={stacked && index === 0 ? t([`Show ${s.results.length} notifications`, `展开 ${s.results.length} 条通知`]) : undefined} onClick={() => { if (stacked) { expandInbox(); return; } dispatch({ type: 'detail', id: r.id }); setCopied(false); void window.jarvis?.focus(true); }}><span className="result-copy"><strong>{t(r.title)}</strong><small>{t([' · Sample · ', ' · 示例 · '])}</small><span className="summary">{t(r.summary)}</span></span></button>
+            <Button label={r.kind === 'question' ? t([`Reply to ${r.title[0]}`, `回复${r.title[1]}`]) : t([`Mark ${r.title[0]} as read`, `标记${r.title[1]}已查看`])} className={`result-status kind-${r.kind}`} onClick={() => { if (r.kind === 'question') { openFollowup(r.id); } else dismissResult(r.id); }}>{r.kind === 'failure' ? <X size={18}/> : r.kind === 'question' ? <CapsuleIcon name="reply" width={16} height={16}/> : <Check size={19}/>}</Button>
+            <Button label={t([`Remove ${r.title[0]}`, `移除${r.title[1]}`])} className="result-dismiss" onClick={() => dismissResult(r.id)}><X size={12}/></Button>
+            <div className="result-actions"><Button label={t([`Keep talking about ${r.title[0]}`, `继续讨论${r.title[1]}`])} onClick={() => openFollowup(r.id)}><CapsuleIcon name="reply" width={16} height={16}/></Button></div>
+            {replying === r.id && <>{followupMessage ? <p className="inline-reply-message" role="status">{followupMessage}</p> : <form className="inline-reply" onSubmit={e => { e.preventDefault(); sendFollowup(); }}><textarea ref={followupInput} rows={1} aria-label={t([`Your reply to ${r.title[0]}`, `回复${r.title[1]}的内容`])} placeholder={t(['Write a reply…', '继续回复…'])} value={followup} onChange={e => setFollowup(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); sendFollowup(); } }}/><Button label={t(['Send reply (simulated)', '发送通知回复（模拟）'])} type="submit" disabled={!followup.trim()}><CapsuleIcon name="send" width={15} height={15}/></Button></form>}</>}
           </article>)}
         </section>}
-        {remainingNotifications > 0 && !detail && <button className="notification-more" onClick={() => shell.current?.querySelector('.inbox')?.scrollBy({ top:63, behavior:'smooth' })}>还有 {remainingNotifications} 条 ↓</button>}
-        {detail && <section className="detail glass" data-interactive aria-label="结果详情"><div className="section-heading"><span>{detail.title}</span><Button label="关闭结果详情" onClick={closeDetail}><X size={17}/></Button></div><div className="detail-body">{detail.body}</div><div className="detail-actions"><button onClick={() => void copy(detail.body)}>{copied ? <Check size={14}/> : <Copy size={14}/>} {copied ? '已复制' : '复制'}</button>{detail.kind === 'question' && <button onClick={() => { dispatch({ type: 'detail', id: null }); mode('text'); dispatch({ type: 'draft', value: '明天上午十点' }); }}>回复 <ArrowUpRight size={14}/></button>}</div></section>}
+        {remainingNotifications > 0 && !detail && <button className="notification-more" onClick={() => shell.current?.querySelector('.inbox')?.scrollBy({ top:63, behavior:'smooth' })}>{t([`${remainingNotifications} more ↓`, `还有 ${remainingNotifications} 条 ↓`])}</button>}
+        {detail && <section className="detail glass" data-interactive aria-label={t(['Result details', '结果详情'])}><div className="section-heading"><span>{t(detail.title)}</span><Button label={t(['Close result details', '关闭结果详情'])} onClick={closeDetail}><X size={17}/></Button></div><div className="detail-body">{t(detail.body)}</div><div className="detail-actions"><button onClick={() => void copy(t(detail.body))}>{copied ? <Check size={14}/> : <Copy size={14}/>} {copied ? t(['Copied', '已复制']) : t(['Copy', '复制'])}</button>{detail.kind === 'question' && <button onClick={() => { dispatch({ type: 'detail', id: null }); mode('text'); dispatch({ type: 'draft', value: t(['Tomorrow at 10 a.m.', '明天上午十点']) }); }}>{t(['Reply', '回复'])} <ArrowUpRight size={14}/></button>}</div></section>}
   </div>;
   return <IconContext.Provider value={{ size: 20, weight: 'regular' }}>
     <main className={lab ? `lab ${background}` : `desktop ${placement.docked ? 'notch-docked' : ''}`} style={surfaceStyle} onKeyDown={e => {
       if (e.key === 'Escape') { e.preventDefault(); if (!e.repeat) escape(); }
       if (e.key === '.' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); end(); }
     }}>
-      {lab && <header className="lab-header"><div><span>JARVIS</span><h1>Resonance</h1><p>交互原型 · 所有语音、回复与结果均为模拟</p></div><p className="lab-note">无色毛玻璃<br/>背景赋予玻璃颜色，声纹随状态舒展。</p></header>}
+      {lab && <header className="lab-header"><div><span>JARVIS</span><h1>Resonance</h1><p>{t(['Interaction prototype · all voice, replies and results are simulated', '交互原型 · 所有语音、回复与结果均为模拟'])}</p></div><p className="lab-note">{t(['Clear frosted glass', '无色毛玻璃'])}<br/>{t(['The background tints the glass; the waveform relaxes with each state.', '背景赋予玻璃颜色，声纹随状态舒展。'])}</p></header>}
       <div className="stage">
       {(!hidden || !lab) && <div ref={shell} onMouseEnter={island.enter} onMouseLeave={island.leave} data-glass={placement.docked ? '22' : undefined} data-notch-surface={placement.docked || undefined} className={`shell mode-${s.mode} ${island.open ? 'island-open' : ''} ${panel || (s.soundMuted && s.live.state === 'active') ? 'has-shared-panel' : ''}`}>
-        <div className="control-row" role="toolbar" aria-label={live ? 'Jarvis 语音控制' : 'Jarvis 语音控制 · 演示，无真实录音'} onContextMenu={e => {
+        <div className="control-row" role="toolbar" aria-label={live ? t(['Jarvis voice controls', 'Jarvis 语音控制']) : t(['Jarvis voice controls · demo, no real recording', 'Jarvis 语音控制 · 演示，无真实录音'])} onContextMenu={e => {
           if ((e.target as Element).closest('textarea')) return;
           e.preventDefault(); if (placement.docked) island.reveal(); setSettings(true); void window.jarvis?.focus(true);
         }}>
@@ -369,43 +371,43 @@ function App() {
         </div>
         <div className="notch-reveal" inert={placement.docked && !island.open} aria-hidden={placement.docked && !island.open}>
         <div className="notch-content"><div className="notch-content-inner">
-        <div className="status-line" data-interactive><span role="status" className="sr-only">{s.mode === 'idle' ? '待机' : status}{!live && <span className="demo-label"> · 演示</span>}</span>
-          {s.phase === 'speaking' && <button className="text-action" onClick={interrupt}><Pause size={12}/>停止播报</button>}
-          {live && s.live.state !== 'unavailable' && <button className={`text-action live-toggle ${s.live.state === 'active' ? 'is-active' : ''}`} disabled={liveBusy} onClick={toggleLive}>{s.live.state === 'active' ? <><PhoneDisconnect size={12}/>挂断 {liveClock}</> : s.live.state === 'connecting' ? '连接中…' : s.live.state === 'closing' ? '挂断中…' : <><Phone size={12}/>开始 Live</>}</button>}
-          <Button label="外观与窗口选项" className="options" aria-expanded={settings} onClick={() => { if (settings) closeSettings(); else { setSettings(true); void window.jarvis?.focus(true); } }}><DotsThree size={19}/></Button>
+        <div className="status-line" data-interactive><span role="status" className="sr-only">{s.mode === 'idle' ? t(['Standby', '待机']) : status}{!live && <span className="demo-label">{t([' · Demo', ' · 演示'])}</span>}</span>
+          {s.phase === 'speaking' && <button className="text-action" onClick={interrupt}><Pause size={12}/>{t(['Stop speaking', '停止播报'])}</button>}
+          {live && s.live.state !== 'unavailable' && <button className={`text-action live-toggle ${s.live.state === 'active' ? 'is-active' : ''}`} disabled={liveBusy} onClick={toggleLive}>{s.live.state === 'active' ? <><PhoneDisconnect size={12}/>{t(['Hang up', '挂断'])} {liveClock}</> : s.live.state === 'connecting' ? t(['Connecting…', '连接中…']) : s.live.state === 'closing' ? t(['Hanging up…', '挂断中…']) : <><Phone size={12}/>{t(['Start Live', '开始 Live'])}</>}</button>}
+          <Button label={t(['Appearance and window options', '外观与窗口选项'])} className="options" aria-expanded={settings} onClick={() => { if (settings) closeSettings(); else { setSettings(true); void window.jarvis?.focus(true); } }}><DotsThree size={19}/></Button>
         </div>
-        {settings && <section className="settings glass" data-glass="18" data-interactive aria-label="外观与窗口选项">
-          <div className="section-heading"><span><GearSix size={16}/>外观与提示音</span><Button label="关闭外观设置" onClick={closeSettings}><X size={16}/></Button></div>
-          {!lab && <div className="settings-actions"><button onClick={() => void window.jarvis?.dock(!placement.docked)}>{placement.docked ? '自由悬浮' : '贴到刘海'}</button>{placement.docked && <span className="notch-material-note">刘海模式使用纯黑背景</span>}</div>}
+        {settings && <section className="settings glass" data-glass="18" data-interactive aria-label={t(['Appearance and window options', '外观与窗口选项'])}>
+          <div className="section-heading"><span><GearSix size={16}/>{t(['Appearance and sounds', '外观与提示音'])}</span><Button label={t(['Close appearance settings', '关闭外观设置'])} onClick={closeSettings}><X size={16}/></Button></div>
+          {!lab && <div className="settings-actions"><button onClick={() => void window.jarvis?.dock(!placement.docked)}>{placement.docked ? t(['Float freely', '自由悬浮']) : t(['Dock to the notch', '贴到刘海'])}</button>{placement.docked && <span className="notch-material-note">{t(['Notch mode uses a solid black background', '刘海模式使用纯黑背景'])}</span>}</div>}
           <div className="presence-settings">
-            <label>声纹状态<select aria-label="声纹状态" value={presencePreview} onChange={e => setPresencePreview(e.target.value as typeof presencePreview)}><option value="auto">跟随交互</option><option value="cycle">完整体验中</option>{Object.entries(presenceLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
-            <button onClick={() => { mode('voice'); setPresencePreview('cycle'); closeSettings(); }}>体验完整动效</button>
-            <label>主题色<input aria-label="声纹主题色" type="color" value={themeColor} onChange={e => updatePreferences({ themeColor: e.target.value })}/></label>
+            <label>{t(['Waveform state', '声纹状态'])}<select aria-label={t(['Waveform state', '声纹状态'])} value={presencePreview} onChange={e => setPresencePreview(e.target.value as typeof presencePreview)}><option value="auto">{t(['Follow interaction', '跟随交互'])}</option><option value="cycle">{t(['Playing full demo', '完整体验中'])}</option>{Object.entries(presenceNames).map(([value, name]) => <option value={value} key={value}>{t(name)}</option>)}</select></label>
+            <button onClick={() => { mode('voice'); setPresencePreview('cycle'); closeSettings(); }}>{t(['Play the full animation', '体验完整动效'])}</button>
+            <label>{t(['Theme color', '主题色'])}<input aria-label={t(['Waveform theme color', '声纹主题色'])} type="color" value={themeColor} onChange={e => updatePreferences({ themeColor: e.target.value })}/></label>
           </div>
-          <label>Dashboard 风格<select aria-label="Dashboard 风格" value={preferences.dashboardStyle} onChange={e => updatePreferences({ dashboardStyle: e.target.value as 'unified' | 'cards' })}><option value="unified">统一风格</option><option value="cards">原卡片风格（备份）</option></select></label>
-          <label>额度页面布局<select aria-label="额度页面布局" value={preferences.quotaLayout} onChange={e => updatePreferences({ quotaLayout: e.target.value as 'category' | 'provider' | 'accordion' })}><option value="category">轻量标签 · 按类别</option><option value="provider">服务商切换 · 按服务商</option><option value="accordion">B2 · 紧凑折叠</option></select></label>
-          <label className="range-label">玻璃不透明度 <output>{placement.docked ? '100%' : `${Math.round(opacity * 100)}%`}</output><input aria-label="玻璃不透明度" aria-valuetext={`${Math.round(opacity * 100)}%`} disabled={placement.docked} type="range" min=".08" max=".65" step=".01" value={opacity} onChange={e => setOpacity(Number(e.target.value))}/></label>
-          <label className="range-label">毛玻璃强度 <output>{placement.docked ? '0%' : `${Math.round(glassStrength * 100)}%`}</output><input aria-label="毛玻璃强度" aria-valuetext={`${Math.round(glassStrength * 100)}%`} disabled={placement.docked} type="range" min="0" max="1" step=".01" value={glassStrength} onChange={e => updatePreferences({ glassStrength: Number(e.target.value) })}/></label>
-          <div className="feedback-setting"><span>操作提示音</span><button role="switch" aria-label="操作提示音" aria-checked={feedbackEnabled} onClick={() => { stopFeedback(); updatePreferences({ feedbackEnabled: !feedbackEnabled }); }}><span/></button></div>
-          <label className="range-label">提示音音量 <output>{Math.round(feedbackVolume * 100)}%</output><input aria-label="提示音音量" aria-valuetext={`${Math.round(feedbackVolume * 100)}%`} type="range" min="0" max="1" step=".01" value={feedbackVolume} disabled={!feedbackEnabled} onChange={e => updatePreferences({ feedbackVolume: Number(e.target.value) })}/></label>
-          <div className="settings-actions"><button onClick={openDashboard}>打开 Dashboard</button><button onClick={openPlugins}>插件</button><button onClick={() => { closeSettings(); openTranscript(); }}>完整对话记录</button><button onClick={() => updatePreferences(defaultPreferences)}>恢复默认</button><button disabled={!feedbackEnabled} onClick={() => feedback('voice-enter')}>试听提示音</button><button onClick={() => { dispatch({ type: 'example', id: 'result' }); dispatch({ type: 'example', id: 'reminder' }); dispatch({ type: 'example', id: 'question' }); setInboxExpanded(true); openDashboard(); }}>体验三条通知</button><button onClick={hide}>隐藏浮窗</button><button onClick={end}>结束语音</button></div>
-          <p>声纹使用模拟节奏，未接入录音。主题色统一用于声纹和 Dashboard，外观、额度布局与提示音设置自动保存。</p>
+          <label>{t(['Dashboard style', 'Dashboard 风格'])}<select aria-label={t(['Dashboard style', 'Dashboard 风格'])} value={preferences.dashboardStyle} onChange={e => updatePreferences({ dashboardStyle: e.target.value as 'unified' | 'cards' })}><option value="unified">{t(['Unified', '统一风格'])}</option><option value="cards">{t(['Original cards (backup)', '原卡片风格（备份）'])}</option></select></label>
+          <label>{t(['Quota page layout', '额度页面布局'])}<select aria-label={t(['Quota page layout', '额度页面布局'])} value={preferences.quotaLayout} onChange={e => updatePreferences({ quotaLayout: e.target.value as 'category' | 'provider' | 'accordion' })}><option value="category">{t(['Light tabs · by category', '轻量标签 · 按类别'])}</option><option value="provider">{t(['Provider switch · by provider', '服务商切换 · 按服务商'])}</option><option value="accordion">{t(['B2 · compact accordion', 'B2 · 紧凑折叠'])}</option></select></label>
+          <label className="range-label">{t(['Glass opacity', '玻璃不透明度'])} <output>{placement.docked ? '100%' : `${Math.round(opacity * 100)}%`}</output><input aria-label={t(['Glass opacity', '玻璃不透明度'])} aria-valuetext={`${Math.round(opacity * 100)}%`} disabled={placement.docked} type="range" min=".08" max=".65" step=".01" value={opacity} onChange={e => setOpacity(Number(e.target.value))}/></label>
+          <label className="range-label">{t(['Frosted glass strength', '毛玻璃强度'])} <output>{placement.docked ? '0%' : `${Math.round(glassStrength * 100)}%`}</output><input aria-label={t(['Frosted glass strength', '毛玻璃强度'])} aria-valuetext={`${Math.round(glassStrength * 100)}%`} disabled={placement.docked} type="range" min="0" max="1" step=".01" value={glassStrength} onChange={e => updatePreferences({ glassStrength: Number(e.target.value) })}/></label>
+          <div className="feedback-setting"><span>{t(['Interaction sounds', '操作提示音'])}</span><button role="switch" aria-label={t(['Interaction sounds', '操作提示音'])} aria-checked={feedbackEnabled} onClick={() => { stopFeedback(); updatePreferences({ feedbackEnabled: !feedbackEnabled }); }}><span/></button></div>
+          <label className="range-label">{t(['Sound volume', '提示音音量'])} <output>{Math.round(feedbackVolume * 100)}%</output><input aria-label={t(['Sound volume', '提示音音量'])} aria-valuetext={`${Math.round(feedbackVolume * 100)}%`} type="range" min="0" max="1" step=".01" value={feedbackVolume} disabled={!feedbackEnabled} onChange={e => updatePreferences({ feedbackVolume: Number(e.target.value) })}/></label>
+          <div className="settings-actions"><button onClick={openDashboard}>{t(['Open Dashboard', '打开 Dashboard'])}</button><button onClick={openPlugins}>{t(['Plugins', '插件'])}</button><button onClick={() => { closeSettings(); openTranscript(); }}>{t(['Full transcript', '完整对话记录'])}</button><button onClick={() => updatePreferences(defaultPreferences)}>{t(['Restore defaults', '恢复默认'])}</button><button disabled={!feedbackEnabled} onClick={() => feedback('voice-enter')}>{t(['Preview sound', '试听提示音'])}</button><button onClick={() => { dispatch({ type: 'example', id: 'result' }); dispatch({ type: 'example', id: 'reminder' }); dispatch({ type: 'example', id: 'question' }); setInboxExpanded(true); openDashboard(); }}>{t(['Try three notifications', '体验三条通知'])}</button><button onClick={hide}>{t(['Hide window', '隐藏浮窗'])}</button><button onClick={end}>{t(['End voice', '结束语音'])}</button></div>
+          <p>{t(['The waveform uses a simulated rhythm and is not connected to a recording. The theme color applies to both the waveform and the Dashboard. Appearance, quota layout and sound settings save automatically.', '声纹使用模拟节奏，未接入录音。主题色统一用于声纹和 Dashboard，外观、额度布局与提示音设置自动保存。'])}</p>
         </section>}
-        {s.phase === 'error' && <section className="error-panel glass" data-glass="18" data-interactive><div><strong>暂时没有连上</strong><p>{live ? 'Jarvis 服务没有响应，正在重连。' : '演示连接失败。你可以重试或继续打字。'}</p></div><Button label={live ? '立即重连' : '重试模拟连接'} onClick={retry}><ArrowCounterClockwise/></Button></section>}
+        {s.phase === 'error' && <section className="error-panel glass" data-glass="18" data-interactive><div><strong>{t(['Not connected yet', '暂时没有连上'])}</strong><p>{live ? t(['Jarvis isn’t responding. Reconnecting…', 'Jarvis 服务没有响应，正在重连。']) : t(['The demo connection failed. You can retry or keep typing.', '演示连接失败。你可以重试或继续打字。'])}</p></div><Button label={live ? t(['Reconnect now', '立即重连']) : t(['Retry simulated connection', '重试模拟连接'])} onClick={retry}><ArrowCounterClockwise/></Button></section>}
         <PanelStack open={panels} collapsed={collapsed} onCollapse={id => setCollapsed(previous => ({ ...previous, [id]: !previous[id] }))} onClose={id => id === 'dashboard' ? closePanel() : setPanelOpen(id, false)}>
           {{ composer: <div className="text-composer">
-            <textarea ref={input} aria-label="文字输入" rows={3} placeholder="说不方便说的话…" value={s.draft} onChange={e => dispatch({ type: 'draft', value: e.target.value })} onKeyDown={e => {
+            <textarea ref={input} aria-label={t(['Type a message', '文字输入'])} rows={3} placeholder={t(['Type what you can’t say out loud…', '说不方便说的话…'])} value={s.draft} onChange={e => dispatch({ type: 'draft', value: e.target.value })} onKeyDown={e => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
             }}/>
-            <div className="composer-actions"><Button label="添加附件（即将支持）" disabled><CapsuleIcon name="plus"/></Button>
-              <Button label={s.phase === 'processing' ? '正在处理' : live ? '发送' : '发送示例输入'} className="composer-send" disabled={!s.draft.trim() || s.phase === 'processing'} onClick={send}><CapsuleIcon name="send"/></Button></div>
-            {s.reply && <section className="reply glass"  data-interactive><div className="section-heading"><span>{live ? '回复' : '示例回复'}</span><Button label="复制回复" onClick={() => void copy(visible(s.reply))}>{copied ? <Check size={16}/> : <Copy size={16}/>}</Button></div><p>{visible(s.reply)}</p></section>}
+            <div className="composer-actions"><Button label={t(['Add attachment (coming soon)', '添加附件（即将支持）'])} disabled><CapsuleIcon name="plus"/></Button>
+              <Button label={s.phase === 'processing' ? t(['Working on it', '正在处理']) : live ? t(['Send', '发送']) : t(['Send sample input', '发送示例输入'])} className="composer-send" disabled={!s.draft.trim() || s.phase === 'processing'} onClick={send}><CapsuleIcon name="send"/></Button></div>
+            {s.reply && <section className="reply glass"  data-interactive><div className="section-heading"><span>{live ? t(['Reply', '回复']) : t(['Sample reply', '示例回复'])}</span><Button label={t(['Copy reply', '复制回复'])} onClick={() => void copy(visible(s.reply))}>{copied ? <Check size={16}/> : <Copy size={16}/>}</Button></div><p>{visible(s.reply)}</p></section>}
           </div>,
           transcript: <LiveTranscript embedded rows={s.rows} tail={tail} sessionId={s.live.sessionId} lines={s.subtitles} open={true} muted={s.soundMuted} active={s.live.state === 'active'} clock={liveClock} onClose={closeTranscript}/>,
           dashboard: <DashboardPreview embedded port={runtimePort} onClose={closePanel} visible={panels.dashboard && !collapsed.dashboard}
             shown={panels.dashboard && !collapsed.dashboard && (!placement.docked || island.open)}
             composer={{ value: s.draft, onChange: value => dispatch({ type: 'draft', value }), onSend: send, busy: s.phase === 'processing' }}
-            conversation={{ text: tail || visible(s.rows.filter(row => row.source !== 'allen').at(-1)?.text ?? '') || (s.phase === 'processing' ? '正在处理你的消息…' : '和 Jarvis 说点什么，最近的回复会出现在这里。'), caption: s.phase === 'processing' ? '处理中' : s.phase === 'error' ? '连接失败' : tail || s.rows.length ? '最近回复' : '暂无对话', pending: s.phase === 'processing' }}
+            conversation={{ text: tail || visible(s.rows.filter(row => row.source !== 'allen').at(-1)?.text ?? '') || (s.phase === 'processing' ? t(['Working on your message…', '正在处理你的消息…']) : t(['Say something to Jarvis and its latest reply shows up here.', '和 Jarvis 说点什么，最近的回复会出现在这里。'])), caption: s.phase === 'processing' ? t(['Working', '处理中']) : s.phase === 'error' ? t(labels.error) : tail || s.rows.length ? t(['Latest reply', '最近回复']) : t(['No conversation yet', '暂无对话']), pending: s.phase === 'processing' }}
             plugins={{ controller: plugins, presentation: pluginPresentation, open: pluginOpen, onCatalog: openPlugins, onConversation: () => { closePanel(); openTranscript(); } }}
             notifications={s.results.length || detail ? notifications : null}/>
           }}
@@ -413,9 +415,9 @@ function App() {
         {!transcriptOpen && <LiveTranscript embedded rows={s.rows} tail={tail} sessionId={s.live.sessionId} lines={s.subtitles} open={false} muted={s.soundMuted} active={s.live.state === 'active'} clock={liveClock} onClose={closeTranscript}/>}
         </div></div></div>
       </div>}
-      {hidden && lab && <button className="restore" onClick={() => setHidden(false)}>恢复胶囊</button>}
+      {hidden && lab && <button className="restore" onClick={() => setHidden(false)}>{t(['Restore capsule', '恢复胶囊'])}</button>}
       </div>
-      {lab && <aside className="lab-controls" aria-label="独立开发测试台"><div><label>模拟阶段<select aria-label="模拟阶段" value={s.phase} onChange={e => dispatch({ type: 'phase', phase: e.target.value as Phase })}>{Object.entries(labels).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</select></label><label>桌面背景<select aria-label="桌面背景" value={background} onChange={e => setBackground(e.target.value)}><option value="forest">森林</option><option value="light">浅灰</option><option value="dark">深灰</option></select></label><label>预览倍率<select aria-label="预览倍率" value={scale} onChange={e => setScale(Number(e.target.value))}><option value="1">实际尺寸</option><option value="1.6">1.6 倍</option></select></label></div><div><button onClick={() => mode('idle')}>待机</button><button onClick={() => mode('voice')}>语音</button>{examples.map(r => <button key={r.id} onClick={() => dispatch({ type: 'example', id: r.id })}>{({ result: '结果', question: '待回应', failure: '失败', reminder: '提醒' })[r.kind]}示例</button>)}<button onClick={() => { if (timer.current) clearTimeout(timer.current); dispatch({ type: 'reset' }); setHidden(false); setSettings(false); }}>重置演示</button></div></aside>}
+      {lab && <aside className="lab-controls" aria-label={t(['Standalone test bench', '独立开发测试台'])}><div><label>{t(['Simulated phase', '模拟阶段'])}<select aria-label={t(['Simulated phase', '模拟阶段'])} value={s.phase} onChange={e => dispatch({ type: 'phase', phase: e.target.value as Phase })}>{Object.entries(labels).map(([key, value]) => <option key={key} value={key}>{t(value)}</option>)}</select></label><label>{t(['Desktop background', '桌面背景'])}<select aria-label={t(['Desktop background', '桌面背景'])} value={background} onChange={e => setBackground(e.target.value)}><option value="forest">{t(['Forest', '森林'])}</option><option value="light">{t(['Light gray', '浅灰'])}</option><option value="dark">{t(['Dark gray', '深灰'])}</option></select></label><label>{t(['Preview scale', '预览倍率'])}<select aria-label={t(['Preview scale', '预览倍率'])} value={scale} onChange={e => setScale(Number(e.target.value))}><option value="1">{t(['Actual size', '实际尺寸'])}</option><option value="1.6">{t(['1.6×', '1.6 倍'])}</option></select></label></div><div><button onClick={() => mode('idle')}>{t(['Standby', '待机'])}</button><button onClick={() => mode('voice')}>{t(['Voice', '语音'])}</button>{examples.map(r => { const kind = ({ result: ['Result', '结果'], question: ['Needs reply', '待回应'], failure: ['Failure', '失败'], reminder: ['Reminder', '提醒'] } as const)[r.kind]; return <button key={r.id} onClick={() => dispatch({ type: 'example', id: r.id })}>{t([`${kind[0]} sample`, `${kind[1]}示例`])}</button>; })}<button onClick={() => { if (timer.current) clearTimeout(timer.current); dispatch({ type: 'reset' }); setHidden(false); setSettings(false); }}>{t(['Reset demo', '重置演示'])}</button></div></aside>}
     </main>
   </IconContext.Provider>;
 }

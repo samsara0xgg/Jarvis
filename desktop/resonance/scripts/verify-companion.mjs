@@ -185,7 +185,7 @@ try {
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => document.querySelector('.talk .tk-u')?.textContent === '帮我整理今天的任务');
   check('03 what you typed lands right-aligned in the transcript', await page.evaluate(() => { const u = document.querySelector('.talk .tk-u').getBoundingClientRect(), a = document.querySelector('.talk').getBoundingClientRect(); return a.right - u.right < 20; }));
-  await page.waitForFunction(() => document.querySelector('.talk .tk-h')?.textContent.includes('好，我来整理。'), null, { timeout: 5000 });
+  await page.waitForFunction(() => document.querySelector('.talk .tk-h')?.textContent.includes('Okay, I’ll sort that out.'), null, { timeout: 5000 });
   await page.waitForTimeout(500);
   await shot('03-reply', { x: 20, y: 0, width: 400, height: 260 });
   await page.waitForFunction(() => !document.querySelector('.talk[data-hit]'), null, { timeout: 16000 });
@@ -218,12 +218,12 @@ try {
   const face = (...ids) => page.waitForFunction(v => v.includes(document.querySelector('.companion-canvas')?.dataset.face), ids, { timeout: 1500 }).then(() => ids[0], () => null);
   check('04 poke starts listening with the talk area under her and her listening face', await face('35') === '35');
   // (the earlier typed turn is still in the conversation: reopened within ten minutes, the area continues it)
-  await page.waitForFunction(() => [...document.querySelectorAll('.talk .tk-u')].at(-1)?.textContent === '把今天的任务整理一下', null, { timeout: 5000 });
+  await page.waitForFunction(() => [...document.querySelectorAll('.talk .tk-u')].at(-1)?.textContent === 'Organize my tasks for today', null, { timeout: 5000 });
   await page.waitForTimeout(250);
   check('04 once the caption ends she takes the task in with her receiving face', await face('31') === '31');
   check('04 then she thinks before answering', await face('30') === '30');
   await shot('04-thinking');
-  await page.waitForFunction(() => [...document.querySelectorAll('.talk .tk-h')].at(-1)?.textContent.includes('好，我来整理。'), null, { timeout: 5000 });
+  await page.waitForFunction(() => [...document.querySelectorAll('.talk .tk-h')].at(-1)?.textContent.includes('Okay, I’ll sort them out.'), null, { timeout: 5000 });
   await page.waitForTimeout(500);
   check('05 she answers in the area beneath her, with her replying face', await page.locator('.talk[data-state=speaking]').count() === 1 && await face('39') === '39');
   await shot('05-speaking');

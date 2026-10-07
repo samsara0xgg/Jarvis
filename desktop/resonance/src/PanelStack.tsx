@@ -1,9 +1,10 @@
 import { useLayoutEffect, useRef, useState, type ReactNode, type PointerEvent as ReactPointerEvent } from 'react';
 import { CaretDown, DotsSixVertical, X } from '@phosphor-icons/react';
 import { usePanelMotion } from './usePanelMotion';
+import { useT, type L } from './companionSettings';
 
 export type PanelId = 'composer' | 'transcript' | 'dashboard';
-const titles: Record<PanelId, string> = { composer: '文字输入', transcript: '对话记录', dashboard: 'Dashboard' };
+const titles: Record<PanelId, L> = { composer: ['Message', '文字输入'], transcript: ['Transcript', '对话记录'], dashboard: ['Dashboard', 'Dashboard'] };
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const movement = { duration: 240, easing: 'cubic-bezier(.22,1,.36,1)' };
 
@@ -11,6 +12,7 @@ function Panel({ id, open, collapsed, dragging, children, onCollapse, onClose, o
   id: PanelId; open: boolean; collapsed: boolean; dragging: boolean; children: ReactNode;
   onCollapse: () => void; onClose: () => void; onDrag: (event: ReactPointerEvent) => void; onMove: (direction: number) => void;
 }) {
+  const t = useT(), name = titles[id], title = t(name);
   const root = useRef<HTMLElement>(null), content = useRef<HTMLDivElement>(null);
   const seen = useRef(false);
   if (open) seen.current = true;
@@ -20,11 +22,11 @@ function Panel({ id, open, collapsed, dragging, children, onCollapse, onClose, o
   }}>
     <div className="stack-drag-layer"><div className="stack-module-inner" ref={content}>
       <header className="stack-heading" onPointerDown={event => { if (!(event.target as Element).closest('.stack-collapse-toggle,.stack-close')) onDrag(event); }}>
-        <button className="stack-collapse-toggle" aria-label={`${collapsed ? '展开' : '折叠'}${titles[id]}`} aria-expanded={!collapsed} onClick={onCollapse}><CaretDown size={13} style={{ transform: collapsed ? 'rotate(-90deg)' : undefined }}/></button>
-        <button className="stack-title" aria-label={`拖动排序${titles[id]}`} aria-describedby="panel-drag-help" title="拖动标题排序 · Alt + ↑/↓" onKeyDown={event => {
+        <button className="stack-collapse-toggle" aria-label={t([`${collapsed ? 'Expand' : 'Collapse'} ${name[0]}`, `${collapsed ? '展开' : '折叠'}${name[1]}`])} aria-expanded={!collapsed} onClick={onCollapse}><CaretDown size={13} style={{ transform: collapsed ? 'rotate(-90deg)' : undefined }}/></button>
+        <button className="stack-title" aria-label={t([`Drag to reorder ${name[0]}`, `拖动排序${name[1]}`])} aria-describedby="panel-drag-help" title={t(['Drag the title to reorder · Alt + ↑/↓', '拖动标题排序 · Alt + ↑/↓'])} onKeyDown={event => {
           if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) { event.preventDefault(); onMove(event.key === 'ArrowUp' ? -1 : 1); }
-        }}>{titles[id]}<DotsSixVertical size={13}/></button>
-        <button className="stack-close" aria-label={`关闭${titles[id]}`} title="关闭" onClick={onClose}><X size={13}/></button>
+        }}>{title}<DotsSixVertical size={13}/></button>
+        <button className="stack-close" aria-label={t([`Close ${name[0]}`, `关闭${name[1]}`])} title={t(['Close', '关闭'])} onClick={onClose}><X size={13}/></button>
       </header>
       <div className="stack-body" inert={collapsed} aria-hidden={collapsed}>{seen.current && children}</div>
     </div></div>
@@ -36,6 +38,7 @@ export function PanelStack({ open, collapsed, onCollapse, onClose, children }: {
   open: Record<PanelId, boolean>; collapsed: Record<PanelId, boolean>;
   onCollapse: (id: PanelId) => void; onClose: (id: PanelId) => void; children: Record<PanelId, ReactNode>;
 }) {
+  const t = useT();
   const [order, setOrder] = useState<PanelId[]>(['composer', 'transcript', 'dashboard']);
   const [dragging, setDragging] = useState<PanelId | null>(null);
   const root = useRef<HTMLDivElement>(null), gesture = useRef<Gesture | null>(null);
@@ -118,7 +121,7 @@ export function PanelStack({ open, collapsed, onCollapse, onClose, children }: {
       if (g.moved) event.preventDefault();
     }} onPointerUp={() => finish()} onPointerCancel={() => finish(true)} onLostPointerCapture={() => { if (gesture.current) finish(true); }}
     onKeyDownCapture={event => { if (event.key === 'Escape' && gesture.current) { event.preventDefault(); event.stopPropagation(); finish(true); } }}>
-    <span id="panel-drag-help" className="sr-only">拖动标题调整位置；也可按 Alt 和上下方向键。拖动时按 Escape 取消。</span>
+    <span id="panel-drag-help" className="sr-only">{t(['Drag a title to reorder the panels, or press Alt with the up or down arrow. Press Escape to cancel while dragging.', '拖动标题调整位置；也可按 Alt 和上下方向键。拖动时按 Escape 取消。'])}</span>
     {order.map(id => <Panel key={id} id={id} open={open[id]} collapsed={collapsed[id]} dragging={dragging === id} onCollapse={() => onCollapse(id)} onClose={() => onClose(id)} onDrag={event => begin(id, event)} onMove={direction => { keyboardFocus.current = id; move(id, direction); }}>{children[id]}</Panel>)}
   </div>;
 }

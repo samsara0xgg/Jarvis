@@ -30,11 +30,11 @@ declare global { interface Window { dictation: {
 } } }
 
 const T = {
-  noBox: ['No text box here. I will copy what you say.', '没找到输入框，说完我先帮你复制'],
-  noAccess: ['No Accessibility access yet. I will copy what you say.', '还没有辅助功能权限，说完我先帮你复制'],
-  miss: ['Didn’t catch that. Again?', '没听清，再说一次？'],
+  noBox: ['No text box here. I’ll copy what you say.', '没找到输入框，说完我先帮你复制'],
+  noAccess: ['No Accessibility access yet. I’ll copy what you say.', '还没有辅助功能权限，说完我先帮你复制'],
+  miss: ['Didn’t catch that. Try again?', '没听清，再说一次？'],
   polish: ['Couldn’t polish it: ', '润色没成功：'],
-  rawCopied: ['The raw words are copied.', '原话已经帮你复制'],
+  rawCopied: ['Your words were copied as you said them.', '原话已经帮你复制'],
   busy: ['Still finishing the last one.', '上一段还没写完'],
   off: ['Jarvis’s voice is off, so dictation can’t listen.', 'Jarvis 的语音没开，听写用不了'],
   offline: ['Can’t reach Jarvis.', '连不上 Jarvis'],
@@ -47,7 +47,7 @@ const T = {
   openAccess: ['Open Accessibility settings', '打开辅助功能设置'],
   grantee: ['Turn on “%” in the list.', '在列表里打开“%”'],
   editArmed: ['I’ll let you edit it first.', '写好先给你改'],
-  editHint: ['Enter or tap her to paste · Shift+Enter for a new line · Esc to cancel', '回车或点她贴上 · Shift+回车换行 · Esc 取消'],
+  editHint: ['Enter or click her to paste · Shift+Enter for a new line · Esc to cancel', '回车或点她贴上 · Shift+回车换行 · Esc 取消'],
 } satisfies Record<string, [string, string]>;
 
 const TAU = Math.PI * 2, R = 15, M = 6;
