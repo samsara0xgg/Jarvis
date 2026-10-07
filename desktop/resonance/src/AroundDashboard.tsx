@@ -6,7 +6,7 @@ import { useCodexSessions } from './CodexModule';
 import { AGENT_NAME, DEMO_AGENTS, fromClaude, fromCodex, useClaudeSessions, type Agent, type AgentState, type ShownAgent } from './agents';
 import { freshnessLine, nowLine, useWorkState, type Basis } from './WorkStateModule';
 import { duration, useProjects } from './ProjectsModule';
-import { fmtReset } from './quota-time';
+import { fmtLeft, fmtReset } from './quota-time';
 import { TokenSection, useTokenUsage } from './TokenModule';
 import { plain, visible, type Present, type Row } from './model';
 import { Markdown } from './Markdown';
@@ -53,9 +53,10 @@ const dur = (ms: number) => reduced.matches ? 0 : ms;
 const usd = (n?: number) => n === undefined ? '—' : `${n <= -.005 ? '-' : ''}$${Math.abs(n).toFixed(2)}`;
 const pad = (n: number) => String(n).padStart(2, '0');
 const hm = (ms: number) => { const d = new Date(ms); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const monthDay = (lang: Lang, when: string | number) => new Date(when).toLocaleDateString(lang === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' });
 // Claude and Codex both hand out limit resets; one wording for both.
 const resetsLeft = (lang: Lang, n: number, until?: string | null) => {
-  const date = n && until ? new Date(until).toLocaleDateString(lang === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' }) : '';
+  const date = n && until ? monthDay(lang, until) : '';
   return lang === 'zh' ? `还剩 ${n} 次重置${date ? ` · ${date}前` : ''}` : `${n} reset${n === 1 ? '' : 's'} left${date ? ` · until ${date}` : ''}`;
 };
 // "Yes" wakes ARM_MS after the question, so a double click on "Use reset" cannot land on it;
@@ -78,17 +79,17 @@ type PluginState = 'on' | 'off' | 'token' | 'signin' | 'connecting';
 type DemoPlugin = { name: string; mark: string; kind: 'oauth' | 'token' | 'none'; about: string; state: PluginState; was?: PluginState; ask?: string; resumed?: string; toolCount: number; tools: string[];
   error?: string; unsupported?: string; approval?: string; can?: string[]; saved?: boolean };
 type PluginController = ReturnType<typeof usePlugins>;
-const fromPlugin = (p: Plugin, r: PluginRequest | null): DemoPlugin => {
-  const mine = r?.plugin_id === p.id ? r : null;
+const fromPlugin = (p: Plugin, r: PluginRequest | null, lang: Lang): DemoPlugin => {
+  const t = (l: L) => tr(lang, l), mine = r?.plugin_id === p.id ? r : null;
   const kind = p.auth === 'oauth' || p.auth === 'mixed' ? 'oauth' : p.credential_fields.length ? 'token' : 'none';
   const state: PluginState = p.status === 'ready' ? 'on'
     : mine?.state === 'connecting' || mine?.state === 'authorizing' || p.status === 'connecting' || p.status === 'authorizing' ? 'connecting'
     : kind === 'oauth' ? 'signin' : kind === 'token' ? 'token' : 'off';
   return { name: p.name, mark: p.name.slice(0, 1).toUpperCase(), kind, about: p.description, state, ask: mine?.purpose || undefined,
-    resumed: mine?.state === 'ready' && mine.resume_status === 'continued' ? 'Picking up the task you asked for.' : undefined,
+    resumed: mine?.state === 'ready' && mine.resume_status === 'continued' ? t(['Continuing the task you asked for.', '正在继续刚才的任务。']) : undefined,
     toolCount: p.tools.length, tools: p.tools.map(t => t.name.replace(/^mcp__[^_]+__/, '')),
-    error: mine?.state === 'error' ? mine.error ?? 'The connection didn’t go through.' : p.status === 'error' ? p.error ?? 'Connection problem.' : undefined,
-    unsupported: p.supported ? undefined : p.unavailable_reason ?? 'Not supported on this Mac.', approval: p.approval_mode, can: p.capabilities, saved: p.credentials_saved };
+    error: mine?.state === 'error' ? mine.error ?? t(['The connection didn’t go through.', '连接没成功。']) : p.status === 'error' ? p.error ?? t(['Connection problem.', '连接出了问题。']) : undefined,
+    unsupported: p.supported ? undefined : p.unavailable_reason ?? t(['Not supported on this Mac.', '这台 Mac 不支持。']), approval: p.approval_mode, can: p.capabilities, saved: p.credentials_saved };
 };
 const PLUGIN_ORDER = ['notion', 'microsoft', 'github', 'linear'];
 const DEMO_PLUGINS: Record<string, DemoPlugin> = {
@@ -105,7 +106,7 @@ const pluginStatus = (p: DemoPlugin): [string, L] => p.unsupported ? ['', ['Not 
   : p.error && p.state !== 'connecting' ? ['is-need', ['Connection problem', '连接有问题']]
   : p.state === 'connecting' ? ['is-need', p.kind === 'oauth' ? ['Waiting for sign-in…', '等你登录…'] : ['Connecting…', '连接中…']]
   : p.state === 'off' ? ['', ['Off', '关']] : p.state === 'token' ? ['is-need', ['Needs an access token', '要一个访问令牌']]
-  : ['is-need', p.ask ? ['Jarvis asked · needs sign-in', 'Jarvis 要用 · 要登录'] : ['Needs sign-in', '要登录']];
+  : ['is-need', p.ask ? ['Requested by Jarvis · needs sign-in', 'Jarvis 要用 · 要登录'] : ['Needs sign-in', '要登录']];
 
 type Turn = { you: string; at: string; jarvis?: string; jarvisAt?: string; work?: [string, string]; day?: string; mail?: string[]; thought?: number };
 const DEMO_TURNS: Turn[] = [
@@ -170,7 +171,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const [settingsCat, setSettingsCat] = useState<string | null>(null);
   const [demoPlugins, setPlugins] = useState(DEMO_PLUGINS);
   const snapshot = live?.snapshot;
-  const plugins: Record<string, DemoPlugin> = !live ? demoPlugins : Object.fromEntries((snapshot?.plugins ?? []).map(p => [p.id, fromPlugin(p, snapshot!.request)]));
+  const plugins: Record<string, DemoPlugin> = !live ? demoPlugins : Object.fromEntries((snapshot?.plugins ?? []).map(p => [p.id, fromPlugin(p, snapshot!.request, lang)]));
   const pluginIds = !live ? PLUGIN_ORDER : [...snapshot?.plugins ?? []].sort((a, b) => Number(b.status === 'ready') - Number(a.status === 'ready')
     || Number(b.supported) - Number(a.supported) || a.name.localeCompare(b.name)).map(p => p.id);
   const [query, setQuery] = useState('');
@@ -402,7 +403,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const finished = earlier.filter(s => unread?.has(s.id));
   // Every row goes up to the companion: the wing draws the live ones, the notices watch them all change.
   const shown: ShownAgent[] = agents.map(s => ({ ...s, mark: markOf(s),
-    line: s.state === 'done' ? unread?.has(s.id) ? 'Finished · not opened yet' : s.last : s.state === 'err' ? `Stopped · ${s.error}` : s.last || (s.state === 'wait' ? 'Needs you' : 'Working') }));
+    line: s.state === 'done' ? unread?.has(s.id) ? t(['Finished · not opened yet', '做完了 · 还没看']) : s.last : s.state === 'err' ? t([`Stopped · ${s.error}`, `停了 · ${s.error}`]) : s.last || (s.state === 'wait' ? t(['Needs you', '等你']) : t(['Working', '在做'])) }));
   const shownKey = JSON.stringify(shown);
   useEffect(() => onAgents?.(shown), [shownKey]);
   // The marks beside the notch were clicked: the companion opened the panel, and it lands on Agents.
@@ -510,7 +511,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const { claude, codex: codexUsage, openai, deepseek, minimax } = quota.usage?.services ?? {};
   const synced = Math.max(0, ...[claude, codexUsage, openai, deepseek, minimax].map(s => s?.observed_at_ms ?? 0));
   const codexResets = codexUsage?.status === 'ok' ? codexUsage.data.reset_credits ?? 0 : 0;
-  const balanceSaved = () => { notify('Balance saved'); void quota.refresh(); };
+  const balanceSaved = () => { notify(t(['Balance saved', '余额已保存'])); void quota.refresh(); };
   const askReset = () => {
     const id = crypto.randomUUID();
     setReset({ id, state: 'ask', armed: false });
@@ -531,7 +532,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       setReset(v => v?.id === r.id ? { ...v, state: 'error', error: cleanError(error) } : v);
     }
   };
-  const workView = work.view, state = workView?.state ?? null, fresh = freshnessLine(workView), now = nowLine(state?.now, state?.analyzed_at);
+  const workView = work.view, state = workView?.state ?? null, fresh = freshnessLine(workView, lang), now = nowLine(state?.now, state?.analyzed_at, Date.now(), lang);
   const projectsView = projects.view, activeProjects = (projectsView?.projects ?? []).filter(p => p.seconds > 0 || p.commits.count > 0);
   const topProject = (projectsView?.projects ?? []).find(p => p.seconds > 0);
   const lead = waiting[0] ?? working[0];
@@ -539,8 +540,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   // ---------- the home's blocks ----------
   const zh = lang === 'zh', d = new Date(tick);
   const timeOf = (ms: number) => new Date(ms).toLocaleTimeString(zh ? 'zh-CN' : 'en-US', zh ? { hour: '2-digit', minute: '2-digit', hour12: false } : { hour: 'numeric', minute: '2-digit' });
-  const inAbout = (ms: number) => { const m = Math.max(0, Math.round((ms - tick) / 60_000)), h = Math.floor(m / 60);
-    return m < 1 ? t(['now', '现在']) : zh ? `${h ? `${h} 小时 ` : ''}${m % 60} 分后` : `in ${h ? `${h} h ` : ''}${m % 60} m`; };
+  const inAbout = (ms: number) => {
+    const m = Math.max(0, Math.round((ms - tick) / 60_000)), h = Math.floor(m / 60), r = m % 60;
+    if (m < 1) return t(['now', '现在']);
+    const span = [h && `${h} ${zh ? '小时' : 'h'}`, (r || !h) && `${r} ${zh ? '分钟' : 'min'}`].filter(Boolean).join(' ');
+    return zh ? `${span}后` : `in ${span}`;
+  };
   const sameDay = (ms: number) => new Date(ms).toDateString() === d.toDateString();
   const localDate = d.toLocaleDateString('en-CA');
 
@@ -561,7 +566,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const events = remainingEvents.slice(0, 2), nextEvent = remainingEvents.find(e => !e.all_day) ?? remainingEvents[0];
   const due = (x: { due?: string }) => x.due ? Date.parse(x.due) : Infinity;
   const todos = [...today?.todos ?? []].sort((a, b) => due(a) - due(b)).slice(0, 3);
-  const dueLabel = (ms: number) => ms < tick ? t(['overdue', '已过期']) : sameDay(ms) ? zh ? `今天 ${timeOf(ms)}` : `due ${timeOf(ms)}` : new Date(ms).toLocaleDateString(zh ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' });
+  const dueLabel = (ms: number) => ms < tick ? t(['overdue', '已过期']) : sameDay(ms) ? zh ? `今天 ${timeOf(ms)}` : `due ${timeOf(ms)}` : monthDay(lang, ms);
   const wx = today?.weather, forecast = settings.forecast && d.getHours() < 11 && wx?.hours?.length ? wx.hours.slice(0, 4) : null;
 
   // The pop-ups, each keyed by what it shows: closing one hides that; something newer brings the block back.
@@ -648,7 +653,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       const was = briefRead;
       if (id === 'brief') setBriefRead(key);
       setDismissed(v => ({ ...v, [id]: key }));
-      notify(t(['Closed · comes back with the next one', '关掉了 · 有新的会再出现']), () => { setDismissed(({ [id]: _, ...rest }) => rest); if (id === 'brief') setBriefRead(was); });
+      notify(t(['Closed · it comes back when there’s something new', '关掉了 · 有新的会再出现']), () => { setDismissed(({ [id]: _, ...rest }) => rest); if (id === 'brief') setBriefRead(was); });
     };
     if (!el || reduced.matches) { apply(); return; }
     el.style.height = `${el.offsetHeight}px`; void el.offsetHeight; el.classList.add('is-leaving');
@@ -792,7 +797,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       {back(t(TITLES.conversation), talk ? undefined : t(['today', '今天']))}
       <div className="pg-body" onWheel={talk ? onWheel : undefined}>
       {talk && <div className={`pg-earlier${pull ? ' is-pulling' : ''}`} style={{ '--pull': pull } as CSSProperties}>
-        {more ? <><CaretUp size={10} weight="bold"/>{t(['Scroll up for', '往上滚看'])} {before ? dayLabel(lang, before) : t(['earlier', '更早的'])}</> : t(['Start of the conversation', '对话从这里开始'])}</div>}
+        {more ? <><CaretUp size={10} weight="bold"/>{t(['Scroll up for', '往上滚看'])} {before ? dayLabel(lang, before) : t(['earlier messages', '更早的'])}</> : t(['Start of the conversation', '对话从这里开始'])}</div>}
       {shownTurns.map((turn, i) => <div className="pg-sec tr" key={i} data-day={turn.day}>
         {turn.you && <div className="tr-you"><span className="who">{t(['You', '你'])} · {turn.at}</span><p>{turn.you}</p></div>}
         {(turn.jarvis || turn.mail) && <div className="tr-jarvis"><span className="who"><span className="dot"/><span>Jarvis · {turn.jarvisAt}{turn.thought ? <em className="is-deep">{t([` · thought for ${turn.thought.toFixed(1)} s`, ` · 想了 ${turn.thought.toFixed(1)} 秒`])}</em> : null}</span></span>
@@ -807,14 +812,14 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     </>,
     now: () => <>
       {back(t(TITLES.now), now && `${now.current ? t(['as of', '截至']) : t(['at', '于'])} ${now.at}`)}
-      <div className="pg-body">{workView === null ? <p className="pg-sec muted">{t(['Syncing…', '同步中…'])}</p> : !state ? <p className="pg-sec muted">{t(['No status yet. Refresh and Jarvis reads the latest activity.', '还没有状态。刷新一下，Jarvis 会读最新的动静。'])}</p> : <>
+      <div className="pg-body">{workView === null ? <p className="pg-sec muted">{t(['Syncing…', '同步中…'])}</p> : !state ? <p className="pg-sec muted">{t(['No status yet. Refresh to have Jarvis read the latest activity.', '还没有状态。刷新一下，Jarvis 会读最新的动静。'])}</p> : <>
         {state.now && now && <div className="pg-sec now-card"><span className="who"><span className="dot"/>{t(BASIS[state.now.basis])} · {now.current ? t(['as of', '截至']) : t(['at', '于'])} {now.at}</span><p>{now.claim}</p></div>}
         <div className="pg-sec"><h4>{t(['Today', '今天'])}{state.observed_until ? t([`, until ${hm(Date.parse(state.observed_until))}`, `，到 ${hm(Date.parse(state.observed_until))}`]) : ''}</h4>
           {state.activities.length ? <ol className="tl">{state.activities.map((c, i) => <li key={i} className={`is-${c.basis}`}>{c.text}{c.progress && <small>{c.progress}</small>}</li>)}</ol> : <p className="muted">{t(['Not enough data yet.', '数据还不够。'])}</p>}
           <div className="legend"><span><i className="o"/>{t(['seen', '看到的'])}</span><span><i className="s"/>{t(['you said', '你说的'])}</span><span><i className="g"/>{t(['a guess', '猜的'])}</span></div>
         </div>
-        {state.links.length > 0 && <div className="pg-sec"><h4>{t(['Linked', '相关'])}</h4>{state.links.map((l, i) => <div className="link" key={i}><span className="chip">{l.kind === 'todo' ? t(['To-do', '待办']) : t(['Discussion', '讨论'])}</span>{l.title || l.note}{l.title && <small>{l.note}</small>}</div>)}</div>}
-        {state.uncertainties.length > 0 && <div className="pg-sec"><h4>{t(['Unknown', '不确定'])}</h4>{state.uncertainties.map((u, i) => <p className="muted" key={i}>{u}</p>)}</div>}
+        {state.links.length > 0 && <div className="pg-sec"><h4>{t(['Related', '相关'])}</h4>{state.links.map((l, i) => <div className="link" key={i}><span className="chip">{l.kind === 'todo' ? t(['To-do', '待办']) : t(['Discussion', '讨论'])}</span>{l.title || l.note}{l.title && <small>{l.note}</small>}</div>)}</div>}
+        {state.uncertainties.length > 0 && <div className="pg-sec"><h4>{t(['Not sure', '不确定'])}</h4>{state.uncertainties.map((u, i) => <p className="muted" key={i}>{u}</p>)}</div>}
       </>}
       <footer className="pg-foot"><span className={fresh.stale ? 'is-warm' : ''}>{work.notice ?? fresh.text}</span>
         <button className="icon-btn" aria-label={t(['Refresh', '刷新'])} disabled={work.refreshing} onClick={work.refresh}><ArrowsClockwise size={13} className={work.refreshing ? 'is-spinning' : ''}/></button></footer></div>
@@ -841,9 +846,9 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
         <div className="bal-card"><Account id="minimax">MiniMax</Account><b>{minimax?.status === 'ok' ? usd(minimax.data.balance) : '—'}</b></div>
       </div></div>
       <div className="pg-sec"><div className="us-plan"><Account id="claude">Claude Max <em>{claude?.data.plan}</em></Account>{claude?.status === 'ok' && claude.data.reset_credits !== undefined && <span className="meta">{resetsLeft(lang, claude.data.reset_credits, claude.data.reset_ends_at)}</span>}</div>
-        {claude?.status === 'ok' ? <div className="bigrings">{(claude.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at)}/>)}</div> : <p className="muted">{claude?.error ?? t(['Not signed in to Claude Code', '没登录 Claude Code'])}</p>}</div>
+        {claude?.status === 'ok' ? <div className="bigrings">{(claude.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at, new Date(), lang)} lang={lang}/>)}</div> : <p className="muted">{claude?.error ?? t(['Not signed in to Claude Code', '没登录 Claude Code'])}</p>}</div>
       <div className="pg-sec"><div className="us-plan"><Account id="codex">Codex <em>{codexUsage?.data.plan}</em></Account>{codexUsage?.status === 'ok' && <span className="meta">{resetsLeft(lang, codexResets)}</span>}
-          {port && codexResets > 0 && !reset && <button className="us-use" onClick={askReset}>{t(['Use reset', '用一次重置'])}</button>}</div>
+          {port && codexResets > 0 && !reset && <button className="us-use" onClick={askReset}>{t(['Use a reset', '用一次重置'])}</button>}</div>
         {reset && <div className="us-confirm" role="alertdialog" aria-label={t(['Use this reset?', '用掉这次重置？'])}>
           <b>{reset.state === 'using' ? t(['Using a reset…', '正在重置…']) : t(['Use this reset?', '用掉这次重置？'])}</b>
           {reset.state === 'error' ? <p className="is-alert">{reset.error}</p>
@@ -851,7 +856,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
           <div><button className="btn btn-text" disabled={reset.state === 'using'} onClick={() => setReset(null)}>{t(['No, go back', '不用了'])}</button>
             <button className="btn btn-glow" disabled={!reset.armed || reset.state === 'using'} onClick={() => void spendReset()}>{reset.state === 'error' ? t(['Try again', '再试一次']) : t(['Yes, use reset', '确定重置'])}</button></div>
         </div>}
-        {codexUsage?.status === 'ok' ? <div className="bigrings">{(codexUsage.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at)}/>)}</div> : <p className="muted">{codexUsage?.error ?? t(['Not signed in to Codex', '没登录 Codex'])}</p>}</div>
+        {codexUsage?.status === 'ok' ? <div className="bigrings">{(codexUsage.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at, new Date(), lang)} lang={lang}/>)}</div> : <p className="muted">{codexUsage?.error ?? t(['Not signed in to Codex', '没登录 Codex'])}</p>}</div>
       <div className="pg-sec"><div className="us-plan"><Account id="openai">OpenAI <em>API</em></Account>{openai?.status === 'ok' && <span className="meta">{t(['this month', '本月'])} {usd(openai.data.month_usd)}</span>}</div>
         {openai?.status === 'ok' ? <Spend total={openai.data.today_usd ?? 0} models={openai.data.by_model ?? []}/> : <p className="muted">{openai?.error ?? t(['Needs an admin key', '缺管理密钥'])}</p>}</div>
       <TokenSection state={tokens}/></div>
@@ -877,7 +882,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       keyDrafts={accountKeyDrafts} onKeyDraft={(provider, value) => setAccountKeyDrafts(drafts => ({ ...drafts, [provider]: value }))}
       hiddenAgents={Object.keys(hidden).length} onUnhideAgents={() => { setHidden({}); notify(t(['Hidden sessions are back.', '隐藏的会话回来了。'])); }}
       onArrange={() => { setSettingsCat(null); setPage('arrange'); react('14', 1200); }} onPlugins={() => { setSettingsCat(null); setPage('plugins'); }}
-      onResetHome={() => { updateSettings(HOME_DEFAULTS); setDismissed({}); setBriefRead(''); react('10', 1400); notify(t(['The home is back to how it started.', '首页恢复默认了。'])); }}
+      onResetHome={() => { updateSettings(HOME_DEFAULTS); setDismissed({}); setBriefRead(''); react('10', 1400); notify(t(['The home is back to its defaults.', '首页恢复默认了。'])); }}
       notify={text => notify(text)} head={(title, meta) => back(title, meta)}/>,
     arrange: () => <>{back(t(['Arrange the home', '编辑首页']))}<ArrangeHome lang={lang}/></>,
     brief: () => <>
@@ -901,12 +906,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       {back(t(TITLES.projects), t(['last 7 days', '最近 7 天']))}
       <div className="pg-body">{projects.missing ? <p className="pg-sec muted">{t(['No projects set up. List them under projects in ~/.jarvis/settings.yaml.', '还没设置项目。在 ~/.jarvis/settings.yaml 的 projects 下列出来。'])}</p> : !projectsView ? <p className="pg-sec muted">{t(['Syncing…', '同步中…'])}</p> : <>
         {activeProjects.map(p => <article className="pg-sec pj" key={p.id}>
-          <div className="pj-top"><b>{p.name}</b><span>{duration(p.seconds)}{p.commits.count ? t([` · ${p.commits.count} commits`, ` · ${p.commits.count} 次提交`]) : ''}</span></div>
+          <div className="pj-top"><b>{p.name}</b><span>{duration(p.seconds, lang)}{p.commits.count ? t([` · ${p.commits.count} commit${p.commits.count === 1 ? '' : 's'}`, ` · ${p.commits.count} 次提交`]) : ''}</span></div>
           <Cols days={p.days} dates={projectsView.days}/>
-          <small>{t(['Today', '今天'])} {p.today_seconds ? duration(p.today_seconds) : t(['not touched', '没碰'])}{p.recent[0] ? ` · ${p.recent[0].app}, ${p.recent[0].label}` : ''}</small>
+          <small>{t([`Today: ${p.today_seconds ? duration(p.today_seconds, lang) : 'none'}`, `今天 ${p.today_seconds ? duration(p.today_seconds, lang) : '没碰'}`])}{p.recent[0] ? ` · ${p.recent[0].app}, ${p.recent[0].label}` : ''}</small>
         </article>)}
-        {projectsView.projects.some(p => !activeProjects.includes(p)) && <p className="pg-sec muted">{t(['Not touched this week:', '这周没碰：'])} {projectsView.projects.filter(p => !activeProjects.includes(p)).map(p => p.name).join(', ')}</p>}
-        <footer className="pg-foot"><span>{projects.notice ?? `${t(['Other', '其他'])} ${duration(projectsView.other.seconds)}${projectsView.unsorted.seconds ? ` · ${duration(projectsView.unsorted.seconds)} ${t(['not sorted', '未归类'])}` : ''}`}</span>
+        {projectsView.projects.some(p => !activeProjects.includes(p)) && <p className="pg-sec muted">{t(['Not touched this week:', '这周没碰：'])} {projectsView.projects.filter(p => !activeProjects.includes(p)).map(p => p.name).join(t([', ', '、']))}</p>}
+        <footer className="pg-foot"><span>{projects.notice ?? `${t(['Other', '其他'])} ${duration(projectsView.other.seconds, lang)}${projectsView.unsorted.seconds ? ` · ${duration(projectsView.unsorted.seconds, lang)} ${t(['unsorted', '未归类'])}` : ''}`}</span>
           {projectsView.unsorted.seconds > 0 && <button className="btn btn-ghost" disabled={projects.refreshing} onClick={() => void projects.refresh()}>{projects.refreshing ? t(['Sorting…', '归类中…']) : t(['Sort now', '现在归类'])}</button>}</footer>
       </>}</div>
     </>,
@@ -945,7 +950,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
             brief: () => brief && <button className="fill" data-row="brief" aria-label={t(['Read the morning brief', '看早报'])}
               onClick={e => { setBriefRead(brief.date); openPage('brief', e.currentTarget.parentElement); }}>
               <span className="head"><span className="label">{t(['Morning brief', '早报'])}</span>
-                <span className="meta">{brief.items ? t([`${brief.items} items`, `${brief.items} 条`]) : t(['Read', '看全文'])}<CaretRight size={10}/></span></span>
+                <span className="meta">{brief.items ? t([`${brief.items} item${brief.items === 1 ? '' : 's'}`, `${brief.items} 条`]) : t(['Read', '看全文'])}<CaretRight size={10}/></span></span>
               <span className="text">{brief.summary}</span>
             </button>,
             today: () => <>
@@ -960,9 +965,9 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
               </span>
             </>,
             mail: () => <>
-              <button className="head" data-row="mail" aria-label={t(['Open Mail', '打开邮件'])} onClick={e => openPage('mail', e.currentTarget.parentElement)}><span className="label">{t(['Mail', '邮件'])}</span><span className="meta">{t([`${mail.length} unread`, `${mail.length} 封未读`])}{mailYes.length > 0 && t([` · ${mailYes.length} need a reply`, ` · ${mailYes.length} 封要回`])}<CaretRight size={10}/></span></button>
+              <button className="head" data-row="mail" aria-label={t(['Open Mail', '打开邮件'])} onClick={e => openPage('mail', e.currentTarget.parentElement)}><span className="label">{t(['Mail', '邮件'])}</span><span className="meta">{t([`${mail.length} unread`, `${mail.length} 封未读`])}{mailYes.length > 0 && t([` · ${mailYes.length} ${mailYes.length === 1 ? 'needs' : 'need'} a reply`, ` · ${mailYes.length} 封要回`])}<CaretRight size={10}/></span></button>
               {mailRanked.slice(0, 2).map(m => <button className="ml" key={m.id} title={t(['Open', '打开'])} onClick={e => { openPage('mail', e.currentTarget.parentElement); setLetter(m); }}><EnvelopeSimple size={13}/><b>{m.from}</b><span>{m.subject}</span>{m.reply === 'yes' && <em>{t(['Reply', '要回'])}</em>}</button>)}
-              {mailJunk.length > 0 && <span className="mj"><span>{t([`${mailJunk.length} look like junk`, `${mailJunk.length} 封像垃圾邮件`])}</span><button onClick={() => void archiveJunk()}>{t(['Archive', '一键归档'])}</button></span>}
+              {mailJunk.length > 0 && <span className="mj"><span>{t([`${mailJunk.length} ${mailJunk.length === 1 ? 'looks' : 'look'} like junk`, `${mailJunk.length} 封像垃圾邮件`])}</span><button onClick={() => void archiveJunk()}>{t(['Archive', '一键归档'])}</button></span>}
             </>,
             memory: () => { const m = memoryNow, fresh = m?.new.entries.filter(e => e.kind === 'add' || e.kind === 'rewrite').length ?? 0, first = m?.new.entries[0];
               return <button className="fill" data-row="memory" aria-label={t(['Open Memory', '打开记忆'])} onClick={e => openPage('memory', e.currentTarget.parentElement)}>
@@ -976,16 +981,16 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
               </span></span>
               <span className="text one">{lead ? <><span className={`tagc ${lead.agent}`}>{AGENT_NAME[lead.agent]}</span>{lead.title}{lead.state === 'wait' && lead.last ? ` · ${lead.last.replace(/^Wants/, 'wants')}` : ''}</> : t(['Sessions show up once you start one.', '开一个会话，它就会出现在这里。'])}</span>
             </button>,
-            now: () => <button className="fill" data-row="now" aria-label={t(['Open Right now', '打开“现在”'])} onClick={e => openPage('now', e.currentTarget.parentElement)}>
+            now: () => <button className="fill" data-row="now" aria-label={t(['Open Now', '打开“现在”'])} onClick={e => openPage('now', e.currentTarget.parentElement)}>
               <span className="head"><span className="label">{t(['Now', '现在'])}</span><span className={`meta ${fresh.stale ? 'is-warm' : ''}`} title={fresh.text}>{now ? `${now.current ? t(['as of', '截至']) : t(['at', '于'])} ${now.at}` : ''}</span></span>
               <span className="text">{now ? now.claim : workView === null ? t(['Syncing…', '同步中…']) : t(['No recent activity observed', '最近没看到动静'])}</span>
             </button>,
             usage: () => <button className="fill" data-row="usage" aria-label={t(['Open Usage', '打开用量'])} onClick={e => openPage('usage', e.currentTarget.parentElement)}>
               <span className="head"><span className="label">{t(['Usage', '用量'])}</span><span className="meta">{t(['OpenAI today', 'OpenAI 今天'])} <b>{usd(openai?.data.today_usd)}</b></span></span>
               <span className="rings">
-                <UsageGroup name="Claude Max" plan={claude?.data.plan} ok={claude?.status === 'ok'} windows={(claude?.data.windows ?? []).slice(0, 3)} synced={!!quota.usage}/>
+                <UsageGroup lang={lang} name="Claude Max" plan={claude?.data.plan} ok={claude?.status === 'ok'} windows={(claude?.data.windows ?? []).slice(0, 3)} synced={!!quota.usage}/>
                 <span className="split"/>
-                <UsageGroup name="Codex" plan={codexUsage?.data.plan?.split(' ')[0]} ok={codexUsage?.status === 'ok'} windows={(codexUsage?.data.windows ?? []).slice(0, 1)} synced={!!quota.usage}/>
+                <UsageGroup lang={lang} name="Codex" plan={codexUsage?.data.plan?.split(' ')[0]} ok={codexUsage?.status === 'ok'} windows={(codexUsage?.data.windows ?? []).slice(0, 1)} synced={!!quota.usage}/>
               </span>
             </button>,
             tiles: () => <>
@@ -995,7 +1000,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
               </button>
               <button className="row tile" data-row="projects" aria-label={t(['Open Projects', '打开项目'])} onClick={e => openPage('projects', e.currentTarget)}>
                 <span className="head"><span className="label">{t(['Projects', '项目'])}</span><span className="meta">{t(['7 d', '7 天'])}</span></span>
-                <span className="pj-mini">{topProject ? <><span><b>{topProject.name}</b> {duration(topProject.seconds)}</span><Cols days={topProject.days}/></> : <span>{projects.missing ? t(['Not set up', '还没设置']) : projectsView ? t(['No time yet', '还没有时间']) : t(['Syncing…', '同步中…'])}</span>}</span>
+                <span className="pj-mini">{topProject ? <><span><b>{topProject.name}</b> {duration(topProject.seconds, lang)}</span><Cols days={topProject.days}/></> : <span>{projects.missing ? t(['Not set up', '还没设置']) : projectsView ? t(['No time yet', '还没有时间']) : t(['Syncing…', '同步中…'])}</span>}</span>
               </button>
             </>,
           }[id]()}</HomeBlock>)}
@@ -1047,18 +1052,18 @@ function Account({ id, children }: { id: string; children: ReactNode }) {
   return <button className="us-link" title={t(['Open in the browser', '在浏览器里打开'])} onClick={() => void window.jarvis?.openAccount?.(id)}>{children}<ArrowSquareOut size={11} className="us-out"/></button>;
 }
 // Short names fit under a small ring on the home page; the Usage page spells them out.
-const RING_NAME: Record<string, string> = { five_hour: '5 h', seven_day: '7 d', seven_day_fable: 'Fable', primary_window: '7 d' };
-function Ring({ w, name, sub }: { w: UsageWindow; name: string; sub: string }) {
+const RING_NAME: Record<string, L> = { five_hour: ['5 h', '5 小时'], seven_day: ['7 d', '7 天'], seven_day_fable: ['Fable', 'Fable'], primary_window: ['7 d', '7 天'] };
+function Ring({ w, name, sub, lang }: { w: UsageWindow; name: string; sub: string; lang: Lang }) {
   const pct = Math.max(0, Math.min(100, w.percent));
-  return <span className={`ring ${pct >= 90 ? 'is-critical' : pct >= 75 ? 'is-warning' : ''}`} title={`${w.label} · ${fmtReset(w.resets_at)}`}>
-    <span className="dial" style={{ '--fill': pct } as CSSProperties} role="meter" aria-label={`${w.label} used`} aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}><b>{Math.round(pct)}<small>%</small></b></span>
+  return <span className={`ring ${pct >= 90 ? 'is-critical' : pct >= 75 ? 'is-warning' : ''}`} title={`${w.label} · ${fmtReset(w.resets_at, new Date(), lang)}`}>
+    <span className="dial" style={{ '--fill': pct } as CSSProperties} role="meter" aria-label={tr(lang, [`${w.label} used`, `${w.label}已用`])} aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}><b>{Math.round(pct)}<small>%</small></b></span>
     {name}<em>{sub}</em>
   </span>;
 }
-function UsageGroup({ name, plan, ok, windows, synced }: { name: string; plan?: string; ok: boolean; windows: UsageWindow[]; synced: boolean }) {
+function UsageGroup({ lang, name, plan, ok, windows, synced }: { lang: Lang; name: string; plan?: string; ok: boolean; windows: UsageWindow[]; synced: boolean }) {
   const t = useT();
   return <span className="group"><span className="plan">{name} <em>{plan}</em></span>
-    {ok && windows.length ? <span className="ringset">{windows.map(w => <Ring key={w.key} w={w} name={RING_NAME[w.key] ?? w.label} sub={fmtReset(w.resets_at).replace('resets in ', '')}/>)}</span>
+    {ok && windows.length ? <span className="ringset">{windows.map(w => <Ring key={w.key} w={w} name={RING_NAME[w.key] ? t(RING_NAME[w.key]) : w.label} sub={fmtLeft(w.resets_at, new Date(), lang)} lang={lang}/>)}</span>
       : <span className="plan">{synced ? t(['Not set up', '还没设置']) : t(['Syncing…', '同步中…'])}</span>}
   </span>;
 }
@@ -1075,12 +1080,13 @@ function Spend({ total, models }: { total: number; models: { model: string; toda
   return <div className="spend">
     <span className="ring"><span className="dial donut"><i style={{ background: `conic-gradient(${[...stops, 'color-mix(in srgb,var(--data) 12%,transparent) 0'].join(',')})` }}/><b>{usd(total)}<small>{t(['today', '今天'])}</small></b></span></span>
     <ul>{(all ? sorted : paid).map((m, i) => <li key={m.model}><i style={{ background: tint(i) }}/>{m.model}<span>{usd(m.today_usd)}</span></li>)}
-      {free > 0 && <li><button className="more" aria-expanded={all} onClick={() => setAll(v => !v)}>{all ? 'Show less' : `${free} more at $0.00`}</button></li>}</ul>
+      {free > 0 && <li><button className="more" aria-expanded={all} onClick={() => setAll(v => !v)}>{all ? t(['Show less', '收起']) : t([`${free} more at $0.00`, `另外 ${free} 个 $0.00`])}</button></li>}</ul>
   </div>;
 }
 // OpenAI reports no balance (ADR 0065): Allen types the one on its billing page and
 // the daemon subtracts what is spent after it, so the number shown is an estimate since then.
 function Balance({ id, name, left, since, live, onSaved }: { id: 'openai'; name: string; left?: number; since?: string | null; live: boolean; onSaved: () => void }) {
+  const [{ lang }] = useCompanionSettings(), t = (l: L) => tr(lang, l);
   const [draft, setDraft] = useState<string | null>(null), [saving, setSaving] = useState(false), [error, setError] = useState('');
   const amount = Number(draft), valid = !!draft?.trim() && Number.isFinite(amount) && amount >= 0;
   const input = useCallback((el: HTMLInputElement | null) => {
@@ -1096,26 +1102,26 @@ function Balance({ id, name, left, since, live, onSaved }: { id: 'openai'; name:
     finally { setSaving(false); }
   };
   if (draft !== null) return <form className="bal-card is-editing" onSubmit={e => { e.preventDefault(); void save(); }}>
-    <span className="bal-name">{name} balance now</span>
-    <label className="bal-input">$<input ref={input} aria-label={`${name} balance`} inputMode="decimal" autoComplete="off" placeholder="0.00" value={draft}
+    <span className="bal-name">{t([`Current ${name} balance`, `${name} 当前余额`])}</span>
+    <label className="bal-input">$<input ref={input} aria-label={t([`${name} balance`, `${name} 余额`])} inputMode="decimal" autoComplete="off" placeholder="0.00" value={draft}
       onChange={e => setDraft(e.target.value.replace(/[^\d.]/g, ''))} onPointerDown={focusWindow} onKeyDown={e => { if (e.key === 'Escape') setDraft(null); }}/></label>
     {error && <p className="is-alert">{error}</p>}
-    <div><button type="button" className="btn btn-text" onClick={() => setDraft(null)}>Cancel</button><button className="btn btn-glow" disabled={!valid || saving}>{saving ? 'Saving…' : 'Save'}</button></div>
+    <div><button type="button" className="btn btn-text" onClick={() => setDraft(null)}>{t(['Cancel', '取消'])}</button><button className="btn btn-glow" disabled={!valid || saving}>{saving ? t(['Saving…', '保存中…']) : t(['Save', '保存'])}</button></div>
   </form>;
   return <div className="bal-card">
     <Account id={id}>{name}</Account>
     <b>{left === undefined ? '—' : `≈ ${usd(left)}`}</b>
-    <small>{since ? `since ${new Date(since).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : 'not set'}</small>
-    {live && <button className="bal-set" onClick={() => setDraft('')}>{since ? 'Update' : 'Set'}</button>}
+    <small>{since ? t([`since ${monthDay('en', since)}`, `${monthDay('zh', since)}起`]) : t(['not set', '未设置'])}</small>
+    {live && <button className="bal-set" onClick={() => setDraft('')}>{since ? t(['Update', '更新']) : t(['Set', '设置'])}</button>}
   </div>;
 }
 // One column per day, today last. With dates, hovering a column tells its day and hours.
 function Cols({ days, dates }: { days: number[]; dates?: string[] }) {
-  const peak = Math.max(...days, 1), t = useT();
+  const [{ lang }] = useCompanionSettings(), t = (l: L) => tr(lang, l), peak = Math.max(...days, 1);
   const day = (iso: string, i: number) => i === days.length - 1 ? t(['Today', '今天'])
     : `${new Date(`${iso}T12:00:00`).toLocaleDateString(t(['en-US', 'zh-CN']), { weekday: 'short' })} ${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}`;
-  return <span className="cols" role={dates ? 'img' : undefined} aria-hidden={!dates} aria-label={dates ? `Hours per day, today last: ${days.map(duration).join(', ')}` : undefined}>
-    {days.map((s, i) => <span key={i} style={{ '--h': s / peak * 100 } as CSSProperties}><i/>{dates?.[i] && <b className="tip">{day(dates[i], i)} · {s ? duration(s) : t(['nothing', '没有'])}</b>}</span>)}
+  return <span className="cols" role={dates ? 'img' : undefined} aria-hidden={!dates} aria-label={dates ? t([`Time per day, today last: ${days.map(s => duration(s, lang)).join(', ')}`, `每天的时间，最后一天是今天：${days.map(s => duration(s, lang)).join('，')}`]) : undefined}>
+    {days.map((s, i) => <span key={i} style={{ '--h': s / peak * 100 } as CSSProperties}><i/>{dates?.[i] && <b className="tip">{day(dates[i], i)} · {s ? duration(s, lang) : t(['nothing', '没有'])}</b>}</span>)}
   </span>;
 }
 
@@ -1143,6 +1149,8 @@ function AgentRow({ s, look, mark, open, onToggle, onOpen, onHide, actions }: { 
   </article>;
 }
 
+// What a plugin may do, as the daemon names it.
+const CAN: Record<string, L> = { Read: ['Read', '读取'], Write: ['Write', '写入'], Interactive: ['Interactive', '交互'] };
 function PluginDetail({ id, p, token, onToken, onAct }: { id: string; p: DemoPlugin; token: string; onToken: (value: string) => void; onAct: (act: string, value?: string) => void }) {
   const t = useT();
   const top = <><div className="pg-sec pl-id"><span className={`pl-ic lg mk-${id}`}><Mark id={id} mark={p.mark}/></span><h5>{p.name}</h5><p>{p.about}</p>{p.state === 'on' && <span className="pill is-new">{t(['Connected', '已连接'])}</span>}</div>
@@ -1155,7 +1163,7 @@ function PluginDetail({ id, p, token, onToken, onAct }: { id: string; p: DemoPlu
   </>;
   if (p.state === 'on') return <>{top}
     {p.resumed && <div className="pg-sec ask-card is-ok"><span>{t(['Back to your task', '接着做你的事'])}</span>{p.resumed}</div>}
-    <div className="pg-sec"><div><div className="kv"><span>{t(['Tools', '工具'])}</span><span>{p.toolCount}</span></div><div className="kv"><span>{t(['Can', '能做'])}</span><span>{p.can?.length ? p.can.join(' · ') : t(['Read · Write', '读 · 写'])}</span></div></div></div>
+    <div className="pg-sec"><div><div className="kv"><span>{t(['Tools', '工具'])}</span><span>{p.toolCount}</span></div><div className="kv"><span>{t(['Access', '权限'])}</span><span>{p.can?.length ? p.can.map(c => CAN[c] ? t(CAN[c]) : c).join(' · ') : t(['Read · Write', '读取 · 写入'])}</span></div></div></div>
     <label className="pg-sec field">{t(['Ask before acting', '动手前先问'])}<select aria-label={t(['Ask before acting', '动手前先问'])} value={p.approval ?? 'auto'} onChange={e => onAct('approval', e.target.value)}>
       {p.approval === 'configured' && <option value="configured" disabled>{t(['Each service’s own setting', '按各服务自己的设置'])}</option>}
       <option value="auto">{t(['Let Jarvis decide (default)', '让 Jarvis 决定（默认）'])}</option><option value="prompt">{t(['Ask every time', '每次都问'])}</option><option value="writes">{t(['Ask before it writes', '写入前问'])}</option><option value="approve">{t(['Don’t ask', '不用问'])}</option></select><small>{t(['A tool’s own setting wins over this.', '工具自己的设置优先。'])}</small></label>

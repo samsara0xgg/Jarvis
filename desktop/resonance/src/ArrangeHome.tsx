@@ -4,7 +4,7 @@ import { HOME_DEFAULTS, isPop, tr, useCompanionSettings, type BlockId, type L, t
 
 // The home's blocks, as the arrange page and her panel name them.
 export const BLOCK: Record<BlockId, { icon: ReactNode; name: L; when?: L }> = {
-  talk: { icon: <ChatCircle/>, name: ['Conversation', '对话'], when: ['After you talk, for 10 min', '你开口后出现，10 分钟后收起'] },
+  talk: { icon: <ChatCircle/>, name: ['Conversation', '对话'], when: ['For 10 min after you talk', '你开口后出现，10 分钟后收起'] },
   foryou: { icon: <Bell/>, name: ['For you', '找你的事'], when: ['When Jarvis needs you', 'Jarvis 有事找你时'] },
   brief: { icon: <SunHorizon/>, name: ['Morning brief', '早报'], when: ['Once each morning, the first time you open', '每天早上第一次打开时出现'] },
   today: { icon: <CalendarBlank/>, name: ['Today', '今天'] },
@@ -75,7 +75,7 @@ export function ArrangeHome({ lang }: { lang: Lang }) {
     {s.hidden.length > 0 && <div className="pg-sec"><h4>{t(['Hidden', '隐藏的'])}</h4><div className="ar-list">{s.hidden.map(id =>
       <div key={id} className="ar-row is-off" data-block={id}><span className="ar-ic">{BLOCK[id].icon}</span><span className="ar-tx"><b>{t(BLOCK[id].name)}</b><small>{t(['Hidden', '已隐藏'])}</small></span>
         <button className="ar-b is-add" aria-label={`${t(['Add back', '加回来'])} ${t(BLOCK[id].name)}`} title={t(['Add back', '加回来'])} onClick={() => update({ hidden: s.hidden.filter(x => x !== id) })}><Plus size={12} weight="bold"/></button></div>)}</div></div>}
-    <p className="pg-sec muted">{t(['Drag the dots to move a block. The ones with a switch only show up when there is something.', '拖左边的点换位置。带开关的几块只在有事时出现，关掉就不再出现。'])}</p>
+    <p className="pg-sec muted">{t(['Drag the dots to move a block. Blocks with a switch only appear when there’s something to show.', '拖左边的点换位置。带开关的几块只在有事时出现，关掉就不再出现。'])}</p>
     <div className="pg-sec"><button className="btn btn-ghost" onClick={() => update(HOME_DEFAULTS)}>{t(['Reset the home', '恢复默认首页'])}</button></div>
   </div>;
 }

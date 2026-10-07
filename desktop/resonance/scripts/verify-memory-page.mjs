@@ -196,7 +196,7 @@ try {
 
   // Days
   await page.locator('.mem-chip', { hasText: 'Days' }).click(); await settle(600);
-  check('the days list newest first, a verbatim day shows its lines', (await count('.mem-card')) === 3 && (await texts('.mem-card-top time'))[0].startsWith('10/2') && (await texts('.mem-card-s'))[1].includes('「今天测试一下麦克风。」'));
+  check('the days list newest first, a verbatim day shows its lines', (await count('.mem-card')) === 3 && (await texts('.mem-card-top time'))[0].startsWith('10/2') && (await texts('.mem-card-s'))[1].includes('“今天测试一下麦克风。”'));
   await page.locator('.mem-card-h').first().click(); await settle(800);
   check('a day opens to its three headings', (await texts('.mem-dsec h5')).join('|') === 'What we talked about|What you decided|Not finished');
   await page.locator('.mem-dfoot .mem-act').first().click(); await settle(500);

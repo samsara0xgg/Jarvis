@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import { CaretRight, Check, Cpu, Globe, House, Key, Lightbulb, LockSimple, Microphone, Planet, Robot, SlidersHorizontal, SpeakerHigh, Waveform, Bell } from '@phosphor-icons/react';
-import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
+import { tr, useCompanionSettings, useT, type L, type Lang } from './companionSettings';
 import { postRoute, useRoute } from './homeData';
 import { SKIN_KEYS, SKINS, type Skin } from './starCore';
 import type { HomeLook } from './CompanionBall';
@@ -142,45 +142,45 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
   const pct = (n: number) => `${Math.round(n * 100)}%`;
 
   const reply: [string, L][] = [['follow', ['Follow me', '跟着我']], ['zh', ['中文', '中文']], ['en', ['English', 'English']]];
-  const replyName = t(reply.find(([k]) => k === v('reply_language'))?.[1] ?? ['—', '—']);
+  const replySum = t(({ follow: ['replies in your language', '回答跟着你的语言'], zh: ['replies in Chinese', '用中文回答'], en: ['replies in English', '用英文回答'] } as Record<string, L>)[String(v('reply_language'))] ?? ['—', '—']);
   // The board's lights: a short name for the category's line, and what each does for the list.
   const lights: [string, L, L][] = [['off', ['Off', '关'], ['Off', '关']], ['breath', ['Breathe', '呼吸'], ['Breathe: one color fades in and out', '呼吸：一种颜色慢慢亮了又暗']],
     ['rainbow', ['Rainbow', '彩虹'], ['Rainbow: colors go round', '彩虹：几种颜色轮流转']], ['solid', ['Solid', '单色'], ['Solid: one color stays on', '单色：一种颜色常亮']],
     ['direction', ['Direction', '方向'], ['Direction: lights up toward the voice', '方向：朝说话的人那边亮']], ['ring', ['Ring', '环形'], ['Ring: a color for each light', '环形：每颗灯各一种颜色']]];
   const light = String(v('board_light') ?? 'off'), lit = lights.find(([k]) => k === light), lightName = t(lit?.[1] ?? ['—', '—']);
   const cats: Cat[] = [
-    { id: 'general', icon: <Globe/>, name: ['General', '通用'], sum: `${lang === 'zh' ? '中文' : 'English'} · ${t(['answers', '回答'])} ${replyName}`, items: [
+    { id: 'general', icon: <Globe/>, name: ['General', '通用'], sum: `${lang === 'zh' ? '中文' : 'English'} · ${replySum}`, items: [
       { id: 'lang', name: ['Interface language', '界面语言'], note: ['Her panel, and what Jarvis says on its own: the time, confirmations, reports', '她的面板，和 Jarvis 自己说的固定句子：报时、确认、日报'], ctl: { k: 'seg', value: lang, opts: [['en', ['English', 'English']], ['zh', ['中文', '中文']]], set: value => {
         update({ lang: value as Lang });
         if (port) postRoute(port, '/inherent/language', { language: value }).catch(() => notify(t(['Jarvis’s own phrases didn’t switch.', 'Jarvis 的固定句子没切换过去。'])));
       } } },
       { id: 'reply', name: ['Jarvis answers in', 'Jarvis 用什么语言回答'], note: ['Follow me = the language you spoke in', '跟着我 = 你用什么语言说，它就用什么回答'], ctl: { k: 'seg', value: String(v('reply_language') ?? ''), opts: reply, set: value => void save('reply_language', value) }, off },
       { id: 'asr', name: ['Speech recognition', '语音识别'], ctl: { k: 'info', text: t(['Chinese + English', '中英文自动']), tone: 'ok' } },
-      { id: 'dictation', name: ['Dictation', '听写'], note: ['Tap the right ⌥ to start and again to finish; the words go where you type', '轻点右 ⌥ 开始，再点一下结束，字贴到你打字的地方'], ctl: { k: 'switch', on: s.dictation, set: on => update({ dictation: on }) } },
-      { id: 'open-by', name: ['Open the Dashboard', '打开面板'], ctl: { k: 'seg', value: s.openBy, opts: [['both', ['Both', '都行']], ['click', ['Click notch', '点击刘海']], ['hover', ['Hover', '悬停刘海']]], set: value => update({ openBy: value as typeof s.openBy }) } },
+      { id: 'dictation', name: ['Dictation', '听写'], note: ['Tap the right ⌥ to start, tap again to finish. The text goes wherever you’re typing', '轻点右 ⌥ 开始，再点一下结束，字贴到你打字的地方'], ctl: { k: 'switch', on: s.dictation, set: on => update({ dictation: on }) } },
+      { id: 'open-by', name: ['Open the Dashboard', '打开面板'], ctl: { k: 'seg', value: s.openBy, opts: [['both', ['Both', '都行']], ['click', ['Click notch', '点击刘海']], ['hover', ['Hover notch', '悬停刘海']]], set: value => update({ openBy: value as typeof s.openBy }) } },
       { id: 'screen', name: ['Which screen she lives on', '她在哪个屏幕'], ctl: { k: 'seg', value: s.screen, opts: [['follow', ['Follow the cursor', '跟着光标']], ['main', ['Main screen', '主屏幕']]], set: value => update({ screen: value as typeof s.screen }) } },
     ] },
     { id: 'home', icon: <House/>, name: ['Home', '首页'], sum: s.hidden.length ? t([`${s.hidden.length} hidden`, `隐藏了 ${s.hidden.length} 块`]) : t(['Nothing hidden', '没有隐藏']), items: [
       { id: 'arrange', name: ['Arrange the home', '编辑首页'], note: ['Or hold any block on the home', '也可以在首页长按任意一块'], ctl: { k: 'act', label: ['Edit', '编辑'], run: onArrange } },
-      { id: 'talk', name: ['Conversation on top', '对话放在顶部'], note: ['After I talk = until 10 min after the last turn', '我开口后 = 最后一句之后 10 分钟内'], ctl: { k: 'seg', value: s.talk, opts: [['after', ['After I talk', '我开口后']], ['always', ['Always', '一直']], ['never', ['Never', '不放']]], set: value => update({ talk: value as typeof s.talk }) } },
-      { id: 'foryou', name: ['Things for you show up', '找你的事自己出现'], note: ['Sign-ins and reminders from Jarvis', 'Jarvis 要你登录、提醒你的事'], ctl: { k: 'switch', on: s.foryou, set: on => update({ foryou: on }) } },
-      { id: 'brief', name: ['Morning brief shows up', '早报自己出现'], note: ['Once each morning, the first time you open', '每天早上第一次打开时出现'], ctl: { k: 'switch', on: s.brief, set: on => update({ brief: on }) } },
-      { id: 'mail', name: ['Unread mail shows up', '未读邮件自己出现'], note: ['Only mail from people', '只算人发来的'], ctl: { k: 'switch', on: s.mail, set: on => update({ mail: on }) } },
-      { id: 'forecast', name: ['Forecast in the morning', '早上显示天气预报'], note: ['The next hours on Today, before 11 AM', '11 点前在“今天”里显示接下来几个小时'], ctl: { k: 'switch', on: s.forecast, set: on => update({ forecast: on }) } },
+      { id: 'talk', name: ['Conversation on top', '对话放在顶部'], note: ['After I talk = for 10 min after my last message', '我开口后 = 最后一句之后 10 分钟内'], ctl: { k: 'seg', value: s.talk, opts: [['after', ['After I talk', '我开口后']], ['always', ['Always', '一直']], ['never', ['Never', '不放']]], set: value => update({ talk: value as typeof s.talk }) } },
+      { id: 'foryou', name: ['Show “For you” when needed', '找你的事自己出现'], note: ['Sign-ins and reminders from Jarvis', 'Jarvis 要你登录、提醒你的事'], ctl: { k: 'switch', on: s.foryou, set: on => update({ foryou: on }) } },
+      { id: 'brief', name: ['Show the morning brief', '早报自己出现'], note: ['Once each morning, the first time you open', '每天早上第一次打开时出现'], ctl: { k: 'switch', on: s.brief, set: on => update({ brief: on }) } },
+      { id: 'mail', name: ['Show unread mail', '未读邮件自己出现'], note: ['Only mail from people', '只算人发来的'], ctl: { k: 'switch', on: s.mail, set: on => update({ mail: on }) } },
+      { id: 'forecast', name: ['Forecast in the morning', '早上显示天气预报'], note: ['The next few hours on Today, before 11 AM', '11 点前在“今天”里显示接下来几个小时'], ctl: { k: 'switch', on: s.forecast, set: on => update({ forecast: on }) } },
       { id: 'reset', name: ['Reset the home', '恢复默认首页'], ctl: { k: 'act', label: ['Reset', '恢复'], run: onResetHome } },
     ] },
-    { id: 'look', icon: <Planet/>, name: ['Her look', '她的样子'], sum: `${lang === 'zh' ? SKINS[ctl.look.skin].name : SKIN_EN[ctl.look.skin]}${ctl.look.auto ? t([' · changes by herself', ' · 自己换装']) : ''}`, items: [
+    { id: 'look', icon: <Planet/>, name: ['Her look', '她的样子'], sum: `${lang === 'zh' ? SKINS[ctl.look.skin].name : SKIN_EN[ctl.look.skin]}${ctl.look.auto ? t([' · changes on her own', ' · 自己换装']) : ''}`, items: [
       { id: 'skin', name: ['Skin', '皮肤'], ctl: { k: 'skins' } },
-      { id: 'auto', name: ['Change outfit by herself', '自己换装'], note: ['Every 6–14 min while resting', '在家时每 6–14 分钟一次'], ctl: { k: 'switch', on: ctl.look.auto, set: on => ctl.setLook({ auto: on }) } },
-      { id: 'home', name: ['In the island', '在家的样子'], ctl: { k: 'seg', value: ctl.look.home, opts: [['dark', ['Dark glass', '暗玻璃']], ['eyes', ['Just her eyes', '只有两只眼']]], set: value => ctl.setLook({ home: value as HomeLook }) } },
-      { id: 'home-finish', name: ['Notch home', '刘海里的家'], ctl: { k: 'seg', value: ctl.look.homeFinish, opts: [['original', ['Original', '原设计']], ['refined', ['Refined notch', '精修刘海']]], set: value => ctl.setLook({ homeFinish: value as HomeFinish }) } },
+      { id: 'auto', name: ['Change outfit on her own', '自己换装'], note: ['Every 6–14 min while resting', '在家时每 6–14 分钟一次'], ctl: { k: 'switch', on: ctl.look.auto, set: on => ctl.setLook({ auto: on }) } },
+      { id: 'home', name: ['Resting look', '在家的样子'], ctl: { k: 'seg', value: ctl.look.home, opts: [['dark', ['Dark glass', '暗玻璃']], ['eyes', ['Just her eyes', '只有两只眼']]], set: value => ctl.setLook({ home: value as HomeLook }) } },
+      { id: 'home-finish', name: ['Notch finish', '刘海里的家'], ctl: { k: 'seg', value: ctl.look.homeFinish, opts: [['original', ['Original', '原设计']], ['refined', ['Refined notch', '精修刘海']]], set: value => ctl.setLook({ homeFinish: value as HomeFinish }) } },
       { id: 'marks', name: ['Agent marks', '状态点'], note: ['The session marks beside the notch', '刘海旁边的会话标记'], ctl: { k: 'seg', value: ctl.look.marks, opts: [['dot', ['Dots', '点线环']], ['spark', ['Spark', '星芒']], ['pixel', ['Pixel', '像素']]], set: value => ctl.setLook({ marks: value as MarkLook }) } },
       { id: 'night', name: ['Night run cards', '挂机卡片'], note: ['Bedtime, in the night and the morning after', '睡前、半夜和早上的卡片'], ctl: { k: 'seg', value: ctl.look.night, opts: [['list', ['List', '列表']], ['trail', ['Star trail', '星轨']]], set: value => ctl.setLook({ night: value as NightLook }) } },
       { id: 'faces', name: ['Her expressions', '她的表情'], ctl: { k: 'act', label: ['Play all', '全部看一遍'], run: ctl.playFaces } },
     ] },
     { id: 'voice', icon: <Waveform/>, name: ['Voice', '语音'], daemon: true, sum: ready ? `${t(['Wake word', '唤醒'])} ${Number(v('wake_threshold') ?? 0).toFixed(2)} · ${String(v('tts_voice') ?? '—')}` : t(['Not connected yet', '还没接上']), items: [
-      { id: 'wave', name: ['Talk without the wake word', '免唤醒词对话'], note: ['Until you stop it. Only on headphones or the reSpeaker: on the Mac speakers she hears herself', '直到你停下。只在耳机或 reSpeaker 上用：Mac 自带喇叭她会听到自己'], ctl: { k: 'switch', on: ctl.handsFree, set: ctl.setHandsFree } },
-      { id: 'captions', name: ['Captions', '字幕'], note: ['What she says shows as text under her. Only what to read: her spoken lines stay off, and times, lists, links and errors show. With her voice muted, everything shows', '她念的话在她身下出字。只显示要看的：她念的话不出字，有时间、列表、链接，或出错时才出。关掉她的声音时按“全部显示”'],
+      { id: 'wave', name: ['Talk without the wake word', '免唤醒词对话'], note: ['Keeps listening until you stop it. Use it with headphones or the reSpeaker: on the Mac speakers she hears herself', '直到你停下。只在耳机或 reSpeaker 上用：Mac 自带喇叭她会听到自己'], ctl: { k: 'switch', on: ctl.handsFree, set: ctl.setHandsFree } },
+      { id: 'captions', name: ['Captions', '字幕'], note: ['What she says shows as text under her. “Only what to read” skips what she says aloud and shows times, lists, links and errors. With her voice muted, everything shows', '她念的话在她身下出字。只显示要看的：她念的话不出字，有时间、列表、链接，或出错时才出。关掉她的声音时按“全部显示”'],
         ctl: { k: 'seg', value: s.captions, opts: [['all', ['Show all', '全部显示']], ['brief', ['Only what to read', '只显示要看的']], ['none', ['None', '不显示']]], set: value => update({ captions: value as typeof s.captions }) } },
       { id: 'wake', name: ['Wake word sensitivity', '唤醒词灵敏度'], note: ['Higher means fewer false wakes', '越高越少误唤醒'], ctl: dRange('wake_threshold', .8, .99, .01), off },
       { id: 'voice', name: ['Jarvis’s voice', 'Jarvis 的声音'], ctl: dPick('tts_voice'), off },
@@ -214,7 +214,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
     { id: 'agents', icon: <Robot/>, name: ['Agents', 'Agents'], sum: `${[s.claude && 'Claude', s.codex && 'Codex'].filter(Boolean).join(' + ') || '—'} · ${t(STALE[s.stale])}`, items: [
       { id: 'claude', name: ['Claude Code sessions', 'Claude Code 会话'], ctl: { k: 'switch', on: s.claude, set: on => update({ claude: on }) } },
       { id: 'codex', name: ['Codex sessions', 'Codex 会话'], ctl: { k: 'switch', on: s.codex, set: on => update({ codex: on }) } },
-      { id: 'stale', name: ['“Needs you” moves to Earlier after', '“等你”多久后收进 Earlier'], note: ['A session left waiting stops counting as waiting', '一直没理的会话不再算作在等你'], ctl: { k: 'seg', value: s.stale, opts: [['hour', ['1 hour', '1 小时']], ['day', ['1 day', '1 天']], ['never', ['Never', '不收']]], set: value => update({ stale: value as typeof s.stale }) } },
+      { id: 'stale', name: ['Move “Needs you” to Last 24 hours after', '“等你”多久后收进“过去 24 小时”'], note: ['A session left waiting stops counting as waiting', '一直没理的会话不再算作在等你'], ctl: { k: 'seg', value: s.stale, opts: [['hour', ['1 hour', '1 小时']], ['day', ['1 day', '1 天']], ['never', ['Never', '不收']]], set: value => update({ stale: value as typeof s.stale }) } },
       { id: 'hidden', name: ['Hidden sessions', '隐藏的会话'], ctl: hiddenAgents ? { k: 'act', label: [`Show ${hiddenAgents}`, `显示 ${hiddenAgents} 个`], run: onUnhideAgents } : { k: 'info', text: t(['None', '没有']) } },
     ] },
     { id: 'privacy', icon: <LockSimple/>, name: ['Privacy & data', '隐私与数据'], daemon: true, sum: ready ? `TimeSink ${v('timesink') ? t(['on', '开']) : t(['off', '关'])}` : t(['Not connected yet', '还没接上']), items: [
@@ -345,6 +345,7 @@ function Swatches({ ctl: x, name, off, lang }: { ctl: Extract<Ctl, { k: 'colors'
 
 // Dragging sends at most every 100 ms (the caller's throttle); letting go, a preset or a typed hex sends at once.
 function ColorPick({ value, name, box, set, onClose }: { value: string; name: string; box: RefObject<HTMLDivElement | null>; set: (c: string, now?: boolean) => void; onClose: () => void }) {
+  const t = useT();
   const [hsv, setHsv] = useState(() => toHsv(value)), [typed, setTyped] = useState<string | null>(null);
   const pop = useRef<HTMLDivElement>(null);
   const pick = (next: typeof hsv, now?: boolean) => { setHsv(next); set(toHex(next), now); };
@@ -366,11 +367,11 @@ function ColorPick({ value, name, box, set, onClose }: { value: string; name: st
       onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); sv(e); }} onPointerMove={e => { if (e.buttons) sv(e); }} onPointerUp={e => sv(e, true)}>
       <i style={{ left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%`, background: toHex(hsv) }}/>
     </div>
-    <input className="st-hue" type="range" min={0} max={359} value={Math.round(hsv.h)} aria-label="Hue"
+    <input className="st-hue" type="range" min={0} max={359} value={Math.round(hsv.h)} aria-label={t(['Hue', '色相'])}
       onChange={e => pick({ ...hsv, h: Number(e.target.value) })} onPointerUp={() => set(toHex(hsv), true)} onKeyUp={() => set(toHex(hsv), true)}/>
     <div className="st-pre">
       {PRESETS.map(c => <button key={c} style={{ background: c }} aria-label={c} onClick={() => pick(toHsv(c), true)}/>)}
-      <input value={typed ?? toHex(hsv)} aria-label="Hex" spellCheck={false} maxLength={7} onPointerDown={() => void window.jarvis?.focus(true)} onBlur={() => setTyped(null)}
+      <input value={typed ?? toHex(hsv)} aria-label={t(['Hex color', '十六进制颜色'])} spellCheck={false} maxLength={7} onPointerDown={() => void window.jarvis?.focus(true)} onBlur={() => setTyped(null)}
         onChange={e => { const c = e.target.value.trim(); setTyped(c); if (/^#?[0-9a-f]{6}$/i.test(c)) pick(toHsv(`#${c.replace('#', '').toLowerCase()}`), true); }}/>
     </div>
   </div>;

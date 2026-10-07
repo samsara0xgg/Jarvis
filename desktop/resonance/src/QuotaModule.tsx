@@ -3,7 +3,7 @@ import { ArrowsClockwise, CaretDown, Info, Stack, ChartPie, Wallet } from '@phos
 import openaiLogo from './assets/brands/openai.svg';
 import claudeLogo from './assets/brands/claude.svg';
 import deepseekLogo from './assets/brands/deepseek.svg';
-import { fmtReset } from './quota-time';
+import { fmtLeft, fmtReset } from './quota-time';
 import type { QuotaLayout } from './preferences';
 import './quota-module.css';
 
@@ -112,7 +112,7 @@ function Meter({ w }: { w: UsageWindow }) {
     <span className="quota-meter-label" title={w.label}>{w.label}</span>
     <span className="quota-track" role="meter" aria-label={`${w.label}已用`} aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${pct}%` }}/></span>
     <span className="quota-meter-value">{Math.round(pct)}%</span>
-    <span className="quota-meter-reset">{fmtReset(w.resets_at).replace(/^resets in (.+)$/, '$1 后重置')}</span>
+    <span className="quota-meter-reset">{fmtReset(w.resets_at, new Date(), 'zh')}</span>
   </div>;
 }
 
@@ -192,7 +192,7 @@ function SummaryMeter({ window: w, grid = false }: { window: UsageWindow; grid?:
   const percent = Math.max(0, Math.min(100, w.percent));
   return <span className="overview-meter" title={`${w.label} · ${reset}`}>
     {grid && <span className="overview-window">{w.label}</span>}
-    <span className="overview-reset">{reset.replace('resets in ', '')}</span>
+    <span className="overview-reset">{fmtLeft(w.resets_at)}</span>
     <span className={`overview-quota ${percent >= 90 ? 'is-critical' : percent >= 75 ? 'is-warning' : ''}`} role="meter" aria-label={`${w.label} used`} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${percent}%` }}/></span>
     <span className="overview-percent">{Math.round(percent)}%</span>
   </span>;

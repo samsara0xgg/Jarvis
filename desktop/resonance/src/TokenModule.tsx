@@ -8,6 +8,8 @@ export type TokenDay = { date: string; agent: TokenAgent; cost: number; tokens: 
 export type TokenSession = { id: string; agent: TokenAgent; title: string; folder: string; date: string; cost: number; tokens: number; output: number; models: { model: string; cost: number; output: number }[] };
 export type TokenUsage = { days: TokenDay[]; sessions: TokenSession[]; at: number };
 
+// The one failure the renderer words itself; TokenSection says it in the interface language.
+const NO_APP = 'no-desktop-app';
 export function useTokenUsage(active: boolean) {
   const [data, setData] = useState<TokenUsage | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(false);
   const busy = useRef(false);
@@ -15,7 +17,7 @@ export function useTokenUsage(active: boolean) {
     if (busy.current) return;
     busy.current = true; setLoading(true);
     try {
-      if (!window.jarvis?.tokenUsage) throw new Error('Token stats need the desktop app');
+      if (!window.jarvis?.tokenUsage) throw new Error(NO_APP);
       setData(await window.jarvis.tokenUsage(refresh)); setError('');
     } catch (e) { setError(String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']*': (Error: )?/, '')); }
     finally { busy.current = false; setLoading(false); }
@@ -43,7 +45,7 @@ const sum = <T,>(rows: T[], pick: (row: T) => number) => rows.reduce((total, row
 export function TokenSection({ state }: { state: ReturnType<typeof useTokenUsage> }) {
   const [{ lang }] = useCompanionSettings(), zh = lang === 'zh', t = (l: L) => tr(lang, l);
   const [span, setSpan] = useState<number>(7), [all, setAll] = useState(false), [open, setOpen] = useState<string | null>(null);
-  const { data, error, loading } = state;
+  const { data, loading } = state, error = state.error === NO_APP ? t(['Token stats need the desktop app', 'Token 统计需要桌面版']) : state.error;
   const dates = Array.from({ length: span }, (_, i) => ymd(new Date(Date.now() - (span - 1 - i) * 86_400_000)));
   const days = data?.days.filter(d => dates.includes(d.date)) ?? [], sessions = (data?.sessions.filter(s => dates.includes(s.date)) ?? []).sort((a, b) => b.cost - a.cost);
   const cost = (agent: TokenAgent, rows = days) => sum(rows.filter(d => d.agent === agent), d => d.cost);
@@ -51,7 +53,7 @@ export function TokenSection({ state }: { state: ReturnType<typeof useTokenUsage
   const shown = all ? sessions : sessions.slice(0, TOP);
   const dayLabel = (date: string) => `${Number(date.slice(5, 7))}/${Number(date.slice(8))}`;
   return <div className="pg-sec tku">
-    <div className="tku-head"><h4>Token<span className="tku-note">{t(['at API prices', '按 API 价折算'])}</span></h4>
+    <div className="tku-head"><h4>Token<span className="tku-note">{t(['at API rates', '按 API 价折算'])}</span></h4>
       <div className="tku-seg" role="group" aria-label={t(['Range', '范围'])}>{RANGES.map(r =>
         <button key={r.days} className="mp-chip" aria-pressed={span === r.days} onClick={() => { setSpan(r.days); setAll(false); }}>{t([...r.name])}</button>)}</div></div>
     {!data ? <p className="muted">{error || (loading ? t(['Counting…', '正在统计…']) : '')}</p> : <>
@@ -70,7 +72,7 @@ export function TokenSection({ state }: { state: ReturnType<typeof useTokenUsage
           <span className="tku-share"><i style={{ width: `${total ? cost(a.id) / total * 100 : 0}%`, background: a.color }}/></span>
           <b>{usd(cost(a.id))}</b><small>{compact(sum(rows, d => d.tokens), zh)}</small></div>;
       })}</div>
-      <h4 className="tku-sub">Session</h4>
+      <h4 className="tku-sub">{t(['Sessions', '会话'])}</h4>
       {!sessions.length && <p className="muted">{t(['No sessions in this range.', '这个范围里没有会话。'])}</p>}
       <div className="tku-list">{shown.map(s => {
         const agent = AGENTS.find(a => a.id === s.agent)!, expanded = open === s.id;

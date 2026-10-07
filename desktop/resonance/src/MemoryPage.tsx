@@ -123,7 +123,7 @@ export function MemoryPage({ port, overview, nav, setNav, notify }: {
 
   const o = overview.data;
   return <div className="mem" data-lang={lang} ref={root}>
-    {!o ? <p className="pg-sec muted">{overview.missing ? t(['This Jarvis can’t show its memory yet.', '这个 Jarvis 还不能显示记忆。']) : t(['Reading what she remembers…', '正在读她记着的…'])}</p>
+    {!o ? <p className="pg-sec muted">{overview.missing ? t(['This version of Jarvis can’t show its memory yet.', '这个 Jarvis 还不能显示记忆。']) : t(['Reading what she remembers…', '正在读她记着的…'])}</p>
     : <div className="mem-view" key={key}>
       {!top ? <Main o={o} nav={nav} setNav={setNav} a={acts}/>
         : top.k === 'item' ? <ItemView key={top.id} id={top.id} morph={top.morph} onMorphed={() => setNav(n => ({ ...n, stack: n.stack.map((v, i) => i === n.stack.length - 1 && v.k === 'item' ? { k: 'item', id: v.id } : v) }))} a={acts} pop={() => setNav(n => ({ ...n, stack: n.stack.slice(0, -1) }))}/>
@@ -183,14 +183,14 @@ function Items({ o, a }: { o: MemoryOverview; a: Acts }) {
   const today = o.new.ts ? sameDay(new Date(o.new.ts), new Date()) : false;
   return <>
     {entries.length > 0 && <section className="mem-sec" aria-label={t(['Added last night', '昨晚新记的'])}>
-      <div className="mem-sh"><h4>{today ? t(['Added last night', '昨晚新记的']) : t(['Added at the last pass', '上次整理新记的'])} · {entries.length}</h4>{o.new.day && <small>{t([`from ${md(o.new.day)}`, `从 ${md(o.new.day)} 的话里`])}</small>}</div>
+      <div className="mem-sh"><h4>{today ? t(['Added last night', '昨晚新记的']) : t(['Added in the last tidy-up', '上次整理新记的'])} · {entries.length}</h4>{o.new.day && <small>{t([`from ${md(o.new.day)}`, `从 ${md(o.new.day)} 的话里`])}</small>}</div>
       <div className="mem-new">{entries.map(e => <Fold key={e.id + e.kind} gone={gone.includes(e.id + e.kind)}><article className="mem-ent" data-kind={e.kind}>
         <span className={`mem-tag is-${TAG[e.kind][0]}`}>{t(TAG[e.kind][1])}</span>
         <div className="mem-ent-b">
           {e.kind === 'stale' ? <p className="mem-ent-t is-struck">{e.text}</p>
             : <button className="mem-ent-t is-link" aria-label={`${t(['Open', '打开'])}: ${e.text}`} onClick={() => a.push({ k: 'item', id: e.id })}>{e.text}</button>}
           {e.kind === 'rewrite' && e.before && <p className="mem-was">{t(['was', '原来'])}: {e.before}</p>}
-          {e.quote ? <p className="mem-q"><b>{e.quote.who === 'user' ? t(['You said', '你说']) : t(['Jarvis said', '她说'])}</b>「{e.quote.text}」</p>
+          {e.quote ? <p className="mem-q"><b>{e.quote.who === 'user' ? t(['You said', '你说']) : t(['Jarvis said', '她说'])}</b>{lang === 'zh' ? `「${e.quote.text}」` : `“${e.quote.text}”`}</p>
             : e.kind === 'suggest_stale' ? <p className="mem-q">{t(['It looks out of date, but you set this one, so it stayed.', '夜里觉得可能过时了，但这条是你定的，没动。'])}</p> : null}
           <div className="mem-acts">
             {e.kind === 'stale' ? <>
@@ -243,7 +243,7 @@ function ItemView({ id, morph, onMorphed, a, pop }: { id: string; morph?: { from
   const move = async (section: string) => {
     setMoving(false);
     const r = await a.run<{ version: string }>('/item/edit', { id, text: it.text, section });
-    if (r) a.toast(t([`Moved to ${sectionName(lang, section)} · yours now, the night leaves it`, `挪到「${section}」了 · 夜里整理不会再动它`]), r.version);
+    if (r) a.toast(t([`Moved to ${sectionName(lang, section)} · pinned, so the nightly tidy-up won’t change it`, `挪到「${section}」了 · 夜里整理不会再动它`]), r.version);
   };
   const edits = it.edits.at(-1);
   return <Fold gone={gone}><div className="mem-item">
@@ -302,7 +302,7 @@ function EditView({ id, a, done, cancel }: { id: string; a: Acts; done: (id: str
         }}/></section>
     <section className="pg-sec mem-field"><div className="mem-sh"><h4>{t(['Which section', '放在哪栏'])}</h4></div>
       <div className="mem-secpick" role="group" aria-label={t(['Section', '栏目'])}>{SECTION_ORDER.map(s => <button key={s} className="mem-chip is-small" aria-pressed={s === where} onClick={() => setSection(s)}>{sectionName(lang, s)}</button>)}</div></section>
-    <p className="mem-lock"><PushPin size={12} weight="fill"/>{t(['Once saved it is pinned: the night won’t change it, and if it goes out of date she only reminds you.', '存了以后钉住：夜里整理不会改它，过时了也只会提醒你。'])}</p>
+    <p className="mem-lock"><PushPin size={12} weight="fill"/>{t(['Once saved, this line is pinned: the nightly tidy-up won’t change it, and if it goes stale she’ll only remind you.', '存了以后钉住：夜里整理不会改它，过时了也只会提醒你。'])}</p>
     <section className="mem-sec"><div className="mem-sh"><h4>{t(['It was', '原来是'])}</h4></div><p className="mem-was is-block">{it.text}<span> · {t(['in', '在'])} {sectionName(lang, it.section)}</span></p></section>
     <div className="mem-foot is-row"><button className="mem-act is-wide" onClick={cancel}>{t(['Cancel', '不改了'])}</button>
       <button className="mem-act is-ok is-wide" disabled={!ok} onClick={() => void save()}>{t(['Save', '存'])}<kbd>⌘↵</kbd></button></div>
@@ -398,7 +398,7 @@ function DayCard({ c, open, toggle, a }: { c: Card; open: boolean; toggle: () =>
   return <article className="mem-card" data-open={open ? '' : undefined} data-day={c.day}>
     <button className="mem-card-h" aria-expanded={open} onClick={toggle}>
       <span className="mem-card-top"><time>{dayLabel(c.day, lang)}</time><span className="mem-card-t">{word ? t([`${c.records} line${c.records > 1 ? 's' : ''}`, `${c.records} 句话`]) : headline(first)}</span><small>{k}</small></span>
-      <span className="mem-card-s">{word ? c.lines.map(l => `「${l}」`).join(' ') : c.lines.join(t(['; ', '；']))}</span>
+      <span className="mem-card-s">{word ? c.lines.map(l => lang === 'zh' ? `「${l}」` : `“${l}”`).join(' ') : c.lines.join(t(['; ', '；']))}</span>
     </button>
     <Fold open={open}>{(open || seen) && <DayBody c={c} a={a}/>}</Fold>
   </article>;
@@ -461,10 +461,10 @@ function Changes({ o, a }: { o: MemoryOverview; a: Acts }) {
 }
 
 function Cap({ o, a }: { o: MemoryOverview; a: Acts }) {
-  const { t } = a;
+  const { t, lang } = a;
   const [editing, setEditing] = useState(false), [value, setValue] = useState(String(o.max_chars));
   const n = Number(value.replace(/[,\s]/g, '')), valid = Number.isInteger(n) && n >= 1000 && n <= 20000;
-  const pct = Math.min(100, o.chars / o.max_chars * 100), fmt = (x: number) => x.toLocaleString('en-US');
+  const pct = Math.min(100, o.chars / o.max_chars * 100), fmt = (x: number) => x.toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US');
   const save = async () => {
     if (!valid) return;
     if (await a.run('/cap', { max_chars: n })) { setEditing(false); a.toast(t(['Limit saved · it applies after Jarvis restarts', '上限存好了 · Jarvis 重启后生效'])); }
@@ -477,7 +477,7 @@ function Cap({ o, a }: { o: MemoryOverview; a: Acts }) {
         <button className="mem-act is-ok" disabled={!valid} onClick={() => void save()}>{t(['Save', '存'])}</button></span>
         : <button className="mem-cap" onClick={() => { setValue(String(o.max_chars)); setEditing(true); }} aria-label={t(['Change the limit', '改上限'])}>{t(['limit', '上限'])} <b>{fmt(o.max_chars)}</b><CaretRight size={10} weight="bold"/></button>}</div>
     <div className="mem-bar" role="progressbar" aria-valuemin={0} aria-valuemax={o.max_chars} aria-valuenow={o.chars} aria-label={t(['Used of the limit', '已用字数'])}><i data-warm={pct > 90 ? '' : undefined} style={{ width: `${pct}%` }}/></div>
-    {editing && <small>{t(['1,000 to 20,000. The night’s check uses it from the next start.', '1,000 到 20,000。夜里整理从下次启动起按它来。'])}</small>}
+    {editing && <small>{t(['1,000 to 20,000. The nightly tidy-up uses it from the next start.', '1,000 到 20,000。夜里整理从下次启动起按它来。'])}</small>}
     {!editing && o.max_chars !== o.booted_max_chars && <small>{t([`Applies after a restart (now ${fmt(o.booted_max_chars)})`, `重启后生效（现在是 ${fmt(o.booted_max_chars)}）`])}</small>}
     <small>{t(['Tidied every night at 05:00 · every line has its source', '每晚 05:00 整理 · 每条都带出处'])}</small>
   </div>;

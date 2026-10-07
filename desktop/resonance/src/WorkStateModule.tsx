@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowsClockwise } from '@phosphor-icons/react';
+import { tr, useT, type L, type Lang } from './companionSettings';
 import './work-state-module.css';
 
 // ADR 0023: the 当前状态 module. The daemon owns the record (`GET /inherent/work-state`,
@@ -43,7 +44,7 @@ export const demoWorkState: WorkState = {
 export function useWorkState(port: string | null) {
   const [view, setView] = useState<WorkState | null>(port ? null : demoWorkState);
   const [refreshing, setRefreshing] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<L | null>(null), t = useT();
   const inFlight = useRef<Promise<void> | null>(null);
   const load = useCallback(async () => {
     if (!port) return;
@@ -63,15 +64,17 @@ export function useWorkState(port: string | null) {
     inFlight.current = (async () => {
       try {
         const r = await fetch(`http://127.0.0.1:${port}/inherent/work-state/refresh`, { method: 'POST' });
-        if (!r.ok) { setNotice(`未更新：服务返回 ${r.status}`); return; }
+        if (!r.ok) { setNotice([`Couldn’t update: Jarvis returned ${r.status}`, `未更新：服务返回 ${r.status}`]); return; }
         const next = await r.json() as WorkState;
         // A reply that carries an older record than the one on screen never overwrites it.
         setView(prev => (prev?.state && next.state && next.state.version < prev.state.version ? { ...next, state: prev.state } : next));
-        setNotice(next.outcome === 'failed' ? `未更新：${next.error ?? '分析失败'}` : next.outcome === 'reused' ? '没有新证据，沿用上次分析' : next.outcome === 'no_evidence' ? '没有可分析的数据，未知' : null);
-      } catch { setNotice('未更新：连不上 Jarvis'); } finally { setRefreshing(false); inFlight.current = null; }
+        setNotice(next.outcome === 'failed' ? [`Couldn’t update: ${next.error ?? 'the analysis failed'}`, `未更新：${next.error ?? '分析失败'}`]
+          : next.outcome === 'reused' ? ['Nothing new, so the last analysis still stands', '没有新证据，沿用上次分析']
+          : next.outcome === 'no_evidence' ? ['Nothing to analyze yet', '没有可分析的数据，未知'] : null);
+      } catch { setNotice(['Couldn’t update: can’t reach Jarvis', '未更新：连不上 Jarvis']); } finally { setRefreshing(false); inFlight.current = null; }
     })();
   }, [port]);
-  return { view, refresh, refreshing, notice };
+  return { view, refresh, refreshing, notice: notice && t(notice) };
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -83,25 +86,26 @@ const RECENT_MINUTES = 120;
 
 // Three clocks, kept apart on purpose: when the daemon last checked TimeSink, the newest
 // observation it found, and when the analysis ran. A successful check is not fresh data.
-export function freshnessLine(view: WorkState | null): { text: string; stale: boolean } {
+export function freshnessLine(view: WorkState | null, lang: Lang = 'en'): { text: string; stale: boolean } {
+  const t = (l: L) => tr(lang, l);
   const f = view?.freshness;
   const unavailable = view?.data?.status === 'unavailable';
   const age = ageMinutes(f?.latest_observed_at);
   const stale = unavailable || age === null || age > STALE_MINUTES;
-  const data = unavailable ? 'TimeSink unavailable' : f?.latest_observed_at ? `Seen ${hm(f.latest_observed_at)}` : 'Nothing observed yet';
-  const checked = f?.checked_at_ms ? `checked ${hm(f.checked_at_ms)}` : 'not checked';
-  const analysed = f?.analyzed_at ? `analyzed ${hm(f.analyzed_at)}` : 'not analyzed';
+  const data = unavailable ? t(['TimeSink unavailable', 'TimeSink 不可用']) : f?.latest_observed_at ? t([`Last activity ${hm(f.latest_observed_at)}`, `最近动静 ${hm(f.latest_observed_at)}`]) : t(['Nothing observed yet', '还没观察到动静']);
+  const checked = f?.checked_at_ms ? t([`checked ${hm(f.checked_at_ms)}`, `${hm(f.checked_at_ms)} 检查`]) : t(['not checked', '没检查过']);
+  const analysed = f?.analyzed_at ? t([`analyzed ${hm(f.analyzed_at)}`, `${hm(f.analyzed_at)} 分析`]) : t(['not analyzed', '没分析过']);
   return { text: `${data} · ${checked} · ${analysed}`, stale };
 }
 
 // "最近在做" is only ever shown with the instant it is true for; past the recent window it is
 // history, not the present.
-export function nowLine(now: Claim | null | undefined, analyzedAt: string | null | undefined, at = Date.now()): { text: string; current: boolean; at: string; claim: string } | null {
+export function nowLine(now: Claim | null | undefined, analyzedAt: string | null | undefined, at = Date.now(), lang: Lang = 'en'): { text: string; current: boolean; at: string; claim: string } | null {
   if (!now) return null;
   const asOf = now.as_of ?? analyzedAt ?? null;
   const age = ageMinutes(asOf, at);
   const current = age !== null && age <= RECENT_MINUTES;
-  return { text: current ? `As of ${hm(asOf)}: ${now.text}` : `At ${hm(asOf)}: ${now.text}`, current, at: hm(asOf), claim: now.text };
+  return { text: tr(lang, current ? [`As of ${hm(asOf)}: ${now.text}`, `截至 ${hm(asOf)}：${now.text}`] : [`At ${hm(asOf)}: ${now.text}`, `${hm(asOf)}：${now.text}`]), current, at: hm(asOf), claim: now.text };
 }
 
 export function WorkStateSummary({ view }: { view: WorkState | null }) {
@@ -134,7 +138,7 @@ export function WorkStateDetail({ view, onRefresh, refreshing, notice }: { view:
       {state.uncertainties.length > 0 && <section className="work-section"><h4>不确定 / 材料范围</h4><ul className="work-uncertain">{state.uncertainties.map((u, i) => <li key={i}>{u}</li>)}</ul></section>}
     </>}
     <div className="quota-foot">
-      <span className={`quota-status ${busy ? 'is-muted' : notice?.startsWith('未更新') || fresh.stale ? 'is-warn' : 'is-ok'}`}><i/>{busy ? '更新中，保留上次结果' : notice ?? (view?.outcome === 'failed' ? `未更新：${view.error ?? '分析失败'}` : view?.outcome === 'no_evidence' ? '没有可分析的新数据，保留上次结果' : fresh.text)}</span>
+      <span className={`quota-status ${busy ? 'is-muted' : /^(未更新|Couldn’t update)/.test(notice ?? '') || fresh.stale ? 'is-warn' : 'is-ok'}`}><i/>{busy ? '更新中，保留上次结果' : notice ?? (view?.outcome === 'failed' ? `未更新：${view.error ?? '分析失败'}` : view?.outcome === 'no_evidence' ? '没有可分析的新数据，保留上次结果' : fresh.text)}</span>
       <button className="quota-refresh" aria-label="刷新" title="刷新" disabled={busy} onClick={onRefresh}><ArrowsClockwise size={16} className={busy ? 'is-spinning' : ''}/></button>
     </div>
   </div>;

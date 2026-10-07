@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowsClockwise } from '@phosphor-icons/react';
+import { useT, type L, type Lang } from './companionSettings';
 import './projects-module.css';
 
 // ADR 0037: the 项目 module. The daemon owns the view (`GET /inherent/projects`, never a model
@@ -42,7 +43,7 @@ export function useProjects(port: string | null, active: boolean) {
   const [view, setView] = useState<ProjectsView | null>(port ? null : demoProjects);
   const [missing, setMissing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<L | null>(null), t = useT();
   const inFlight = useRef(false);
   const load = useCallback(async () => {
     if (!port) return;
@@ -60,11 +61,11 @@ export function useProjects(port: string | null, active: boolean) {
       const r = await fetch(`http://127.0.0.1:${port}/inherent/projects/refresh`, { method: 'POST' });
       setMissing(r.status === 404);
       if (r.status === 404) return;
-      if (!r.ok) { setNotice(`未更新：服务返回 ${r.status}`); return; }
+      if (!r.ok) { setNotice([`Couldn’t update: Jarvis returned ${r.status}`, `未更新：服务返回 ${r.status}`]); return; }
       const next = await r.json() as ProjectsView;
       setView(next);
-      setNotice(next.outcome === 'failed' ? `归类没做完：${next.error ?? '模型调用失败'}` : null);
-    } catch { setNotice('未更新：连不上 Jarvis'); } finally { setRefreshing(false); inFlight.current = false; }
+      setNotice(next.outcome === 'failed' ? [`Sorting didn’t finish: ${next.error ?? 'the model call failed'}`, `归类没做完：${next.error ?? '模型调用失败'}`] : null);
+    } catch { setNotice(['Couldn’t update: can’t reach Jarvis', '未更新：连不上 Jarvis']); } finally { setRefreshing(false); inFlight.current = false; }
   }, [port]);
   // Each time the dashboard shows it sorts what is new (ADR 0037); hidden, it stops polling.
   useEffect(() => {
@@ -74,11 +75,12 @@ export function useProjects(port: string | null, active: boolean) {
     const id = setInterval(() => void load(), 60_000);
     return () => clearInterval(id);
   }, [load, refresh, port, active]);
-  return { view, missing, refresh, refreshing, notice };
+  return { view, missing, refresh, refreshing, notice: notice && t(notice) };
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
-export const duration = (seconds: number) => seconds < 3_600 ? `${Math.max(1, Math.round(seconds / 60))} min` : `${(seconds / 3_600).toFixed(1)} h`;
+export const duration = (seconds: number, lang: Lang = 'en') => seconds < 3_600
+  ? `${Math.max(1, Math.round(seconds / 60))} ${lang === 'zh' ? '分钟' : 'min'}` : `${(seconds / 3_600).toFixed(1)} ${lang === 'zh' ? '小时' : 'h'}`;
 const clock = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 export function when(value: string | null, now = Date.now()): string {
   if (!value) return '—';

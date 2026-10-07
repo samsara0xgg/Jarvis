@@ -1,10 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, PushPin } from '@phosphor-icons/react';
+import { useT } from './companionSettings';
 
 export type DashboardInput = { value: string; onChange: (value: string) => void; onSend: () => void; busy?: boolean };
 
 // One retained surface: the spring changes its geometry, never scales the text.
 export function DashboardComposer({ value, onChange, onSend, busy = false, active }: DashboardInput & { active: boolean }) {
+  const t = useT();
   const [hovered, setHovered] = useState(false);
   const [pinned, setPinned] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -50,13 +52,13 @@ export function DashboardComposer({ value, onChange, onSend, busy = false, activ
     <div className="dashboard-composer-hit" onPointerEnter={() => setHovered(true)} onPointerLeave={() => { setHovered(false); if (!pinned) input.current?.blur(); }}
       onClick={event => { if (!(event.target as Element).closest('input,button')) togglePin(); }}>
       <div className="dashboard-composer-surface"/>
-      <button ref={trigger} className="dashboard-composer-trigger" aria-label="固定文字输入框" aria-expanded={expanded} aria-pressed={pinned}
-        tabIndex={expanded ? -1 : 0} aria-hidden={expanded} onClick={togglePin}><span className="sr-only">悬停展开，点击固定文字输入框</span></button>
+      <button ref={trigger} className="dashboard-composer-trigger" aria-label={t(['Pin the text box', '固定文字输入框'])} aria-expanded={expanded} aria-pressed={pinned}
+        tabIndex={expanded ? -1 : 0} aria-hidden={expanded} onClick={togglePin}><span className="sr-only">{t(['Hover to expand, click to pin the text box', '悬停展开，点击固定文字输入框'])}</span></button>
       <form className="dashboard-floating-form" inert={!expanded} aria-hidden={!expanded} onSubmit={event => { event.preventDefault(); if (value.trim() && !busy) onSend(); }}>
-        <input ref={input} aria-label="给 Jarvis 发消息" placeholder="Message Jarvis…" value={value} onChange={event => onChange(event.target.value)}
+        <input ref={input} aria-label={t(['Message Jarvis', '给 Jarvis 发消息'])} placeholder={t(['Message Jarvis…', '给 Jarvis 发消息…'])} value={value} onChange={event => onChange(event.target.value)}
           onClick={() => { setPinned(true); void focusInput(); }} onKeyDown={event => { if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }}/>
-        <button className="dashboard-input-pin" type="button" aria-label={pinned ? '取消固定输入框' : '固定输入框'} aria-pressed={pinned} title={pinned ? '取消固定 · 移开鼠标收起' : '固定输入框'} onClick={togglePin}><PushPin size={14} weight={pinned ? 'fill' : 'regular'}/></button>
-        <button className="dashboard-input-send" aria-label={busy ? '正在处理' : '发送消息'} disabled={!value.trim() || busy}><ArrowUp size={16}/></button>
+        <button className="dashboard-input-pin" type="button" aria-label={t(pinned ? ['Unpin the text box', '取消固定输入框'] : ['Pin the text box', '固定输入框'])} aria-pressed={pinned} title={t(pinned ? ['Unpin · it folds when the pointer leaves', '取消固定 · 移开鼠标收起'] : ['Pin the text box', '固定输入框'])} onClick={togglePin}><PushPin size={14} weight={pinned ? 'fill' : 'regular'}/></button>
+        <button className="dashboard-input-send" aria-label={t(busy ? ['Working on it', '正在处理'] : ['Send message', '发送消息'])} disabled={!value.trim() || busy}><ArrowUp size={16}/></button>
       </form>
     </div>
   </div>;
