@@ -52,7 +52,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
@@ -74,6 +74,7 @@ from jarvis.shared import (
 from jarvis.shared.action_admission import action_admission_guard
 from jarvis.shared.device_link import DeviceCallError
 from jarvis.shared.text import truncate_utf8
+from jarvis.state import reminders as reminder_state
 from jarvis.state.authorized_dispatch_outbox import (
     ConfirmationRevalidationError,
     admit_authorized_dispatch,
@@ -632,7 +633,8 @@ _MEMO_MAX_CHARS: Final[int] = 2000
         "Save a short memo to the user's memo inbox for later review. "
         "Use when the user asks to jot something down or keep a note of it. "
         "A memo never notifies the user at a time: it is not a reminder, so never "
-        "say a reminder was set when only a memo was saved."
+        "say a reminder was set when only a memo was saved. To notify the user at a "
+        "time, call set_reminder instead."
     ),
     input_schema={
         "type": "object",
@@ -686,6 +688,148 @@ def list_memos(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         stamp = datetime.fromtimestamp(event.ts_epoch_ms / 1000).astimezone()
         lines.append(f"{len(lines) + 1}. [{stamp:%m-%d %H:%M}] {event.payload.get('text', '')}")
     return {"count": len(lines), "rendered": "\n".join(lines) if lines else lang.t("memo.none")}
+
+
+# --- reminders (set_reminder / list_reminders / cancel_reminder) — ADR 0171 --------
+
+_REMINDER_MAX_CHARS: Final[int] = 500
+_REMINDER_PAST_GRACE: Final[timedelta] = timedelta(minutes=1)
+_REMINDER_HORIZON: Final[timedelta] = timedelta(days=366)
+
+
+def _reminder_when(due: datetime) -> str:
+    """The due time as the owner hears it: the spoken date, then the spoken clock."""
+    return f"{lang.spoken_date(due)} {lang.spoken_time(due)}"
+
+
+@tool(
+    description=(
+        "Set a reminder: Jarvis speaks and shows a card at the given time, at any "
+        "quiet level. This is the ONLY way to notify the user at a time; a memo, a "
+        "calendar event or a to-do never does. `at` is the absolute local time with its "
+        "UTC offset (ISO 8601, e.g. 2026-10-06T15:30:00-07:00), taken from the current "
+        "time in the state line. For a lead time (30 minutes before a 4 PM meeting) "
+        "compute the time to ring yourself (3:30 PM). Confirm to the user the due time "
+        "this tool returns, not the one you computed."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "at": {
+                "type": "string",
+                "description": "When to ring: ISO 8601 with a UTC offset, in the future.",
+            },
+            "text": {
+                "type": "string",
+                "description": "What to remind about, short, as it should be read out.",
+            },
+        },
+        "required": ["at", "text"],
+    },
+    allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+    risk_level="L1",
+    read_only=False,
+)
+def set_reminder(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """Append one ``reminder.scheduled`` event; the daemon's tick fires it (ADR 0171)."""
+    text = str(args.get("text", "")).strip()[:_REMINDER_MAX_CHARS]
+    if not text:
+        msg = "set_reminder: text is empty"
+        raise ToolError(msg, code="empty_text")
+    try:
+        due = datetime.fromisoformat(str(args.get("at", "")).strip())
+    except ValueError:
+        msg = "set_reminder: at must be an ISO 8601 time such as 2026-10-06T15:30:00-07:00"
+        raise ToolError(msg, code="invalid_time") from None
+    if due.tzinfo is None:
+        msg = "set_reminder: at has no UTC offset; give the local time with its offset"
+        raise ToolError(msg, code="missing_offset")
+    due = due.astimezone()
+    now = datetime.now().astimezone()
+    if due < now - _REMINDER_PAST_GRACE:
+        msg = f"set_reminder: {due.isoformat(timespec='seconds')} is in the past"
+        raise ToolError(msg, code="time_in_past")
+    if due > now + _REMINDER_HORIZON:
+        msg = "set_reminder: more than a year ahead"
+        raise ToolError(msg, code="too_far_ahead")
+    reminder_id = reminder_state.ID_PREFIX + uuid.uuid4().hex[:8]
+    emit_event(
+        ctx.conn,
+        type="reminder.scheduled",
+        payload={
+            "reminder_id": reminder_id,
+            "due_at_epoch_ms": int(due.timestamp() * 1000),
+            "due_at_local": due.isoformat(timespec="seconds"),
+            "text": text,
+            "action_id": ctx.action_id,
+        },
+        source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
+        correlation={"action_id": ctx.action_id},
+    )
+    return {
+        "reminder_id": reminder_id,
+        "due_at": due.isoformat(timespec="seconds"),
+        "due_spoken": _reminder_when(due),
+        "text": text,
+    }
+
+
+@tool(
+    description=(
+        "List the reminders still waiting to ring (set with set_reminder), soonest "
+        "first, with their ids. No arguments."
+    ),
+    input_schema={"type": "object", "properties": {}, "required": []},
+    allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+    risk_level="L0",
+    read_only=True,
+)
+def list_reminders(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """Fold the log into the pending reminders."""
+    waiting = reminder_state.pending(ctx.conn)
+    lines = [
+        f"{one.reminder_id}  {_reminder_when(datetime.fromisoformat(one.due_at_local))}  {one.text}"
+        for one in waiting
+    ]
+    return {
+        "count": len(waiting),
+        "reminders": [
+            {"reminder_id": one.reminder_id, "due_at": one.due_at_local, "text": one.text}
+            for one in waiting
+        ],
+        "rendered": "\n".join(lines) if lines else lang.t("reminder.none"),
+    }
+
+
+@tool(
+    description=(
+        "Cancel a reminder that has not rung yet, by the reminder_id that set_reminder "
+        "or list_reminders gave."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {"reminder_id": {"type": "string"}},
+        "required": ["reminder_id"],
+    },
+    allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+    risk_level="L1",
+    read_only=False,
+)
+def cancel_reminder(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """Append ``reminder.cancelled``; a reminder that already rang or is unknown is an error."""
+    reminder_id = str(args.get("reminder_id", "")).strip()
+    one = reminder_state.fold(ctx.conn).get(reminder_id)
+    if one is None or not one.pending:
+        msg = f"cancel_reminder: no waiting reminder {reminder_id!r}"
+        raise ToolError(msg, code="no_such_reminder")
+    emit_event(
+        ctx.conn,
+        type="reminder.cancelled",
+        payload={"reminder_id": reminder_id, "action_id": ctx.action_id},
+        source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
+        correlation={"action_id": ctx.action_id},
+    )
+    return {"reminder_id": reminder_id, "text": one.text}
 
 
 # --- ask card (ask_user) and kept facts (remember) — ADR 0066 ------------------
@@ -3943,6 +4087,9 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     register_device_tool(read_clipboard)
     registry.register(create_memo)
     registry.register(list_memos)
+    registry.register(set_reminder)
+    registry.register(list_reminders)
+    registry.register(cancel_reminder)
     registry.register(ask_user)
     registry.register(withdraw_card)
     if memory_db_path is not None:
@@ -4112,9 +4259,11 @@ __all__ = [
     "UnknownToolError",
     "VisionClient",
     "build_default_registry",
+    "cancel_reminder",
     "create_memo",
     "get_current_time",
     "list_memos",
+    "list_reminders",
     "live_action_ids",
     "make_screen_capture",
     "open_path",
@@ -4123,6 +4272,7 @@ __all__ = [
     "read_file_handler",
     "register_live_action",
     "release_turn_actions",
+    "set_reminder",
     "tool",
     "tool_error",
     "tool_result",

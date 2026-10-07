@@ -1101,6 +1101,41 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    # Owner-set reminders (ADR 0171): the list is a fold over these four types
+    # (`jarvis.state.reminders`); the daemon's tick emits `fired`, the card's
+    # tap emits `acknowledged`.
+    EventTypeSchema(
+        event_type="reminder.scheduled",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("reminder_id", "due_at_epoch_ms", "due_at_local", "text", "action_id"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="reminder.cancelled",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("reminder_id", "action_id"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="reminder.fired",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=("reminder_id", "fired_at", "late_ms", "delivered"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="reminder.acknowledged",
+        owner_layer="L5",
+        actor="user",
+        required_payload=("reminder_id",),
+        optional_payload=(),
+        schema_version=1,
+    ),
     EventTypeSchema(
         event_type="todo.revised",
         owner_layer="L4",
