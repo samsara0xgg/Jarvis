@@ -15,7 +15,7 @@ const t = zh
       title: 'Jarvis',
       tagline: '一个住在 MacBook 刘海旁的语音助手。',
       status: '个人项目，作者每天在自己的 Mac 上用。公开版以后再出。',
-      tour: '功能导览', demo: '试用 demo', design: '设计笔记', github: 'GitHub', switchLang: 'English',
+      tour: '功能导览', demo: '试用 demo', design: '设计笔记', github: 'GitHub',
       video: '演示视频即将上线',
       what: '她能做什么',
       rows: [
@@ -34,7 +34,7 @@ const t = zh
       title: 'Jarvis',
       tagline: 'A voice assistant that lives by your MacBook notch.',
       status: 'A personal project, used every day on its author’s Mac. A public version comes later.',
-      tour: 'Feature tour', demo: 'Try the demo', design: 'Design notes', github: 'GitHub', switchLang: '中文',
+      tour: 'Feature tour', demo: 'Try the demo', design: 'Design notes', github: 'GitHub',
       video: 'Demo video coming soon',
       what: 'What she does',
       rows: [
@@ -67,7 +67,13 @@ const t = zh
       <a href={`${root}/features/`}>{t.tour}</a>
       <a href={`${root}/architecture/design-notes/`}>{t.design}</a>
       <a href="https://github.com/samsara0xgg/Jarvis">{t.github}</a>
-      <a href={other} lang={zh ? 'en' : 'zh-CN'}>{t.switchLang}</a>
+      <details class="lang">
+        <summary>Language</summary>
+        <ul>
+          <li><a href={`${base}/`} lang="en" aria-current={zh ? undefined : 'page'}>English</a></li>
+          <li><a href={`${base}/zh-cn/`} lang="zh-CN" aria-current={zh ? 'page' : undefined}>简体中文</a></li>
+        </ul>
+      </details>
     </nav>
   </header>
 
@@ -111,6 +117,12 @@ const t = zh
   </main>
 
   <footer class="foot"><span>{t.by}</span><a href="https://github.com/samsara0xgg/Jarvis">github.com/samsara0xgg/Jarvis</a></footer>
+  <script>
+    // Close the Language menu on a click outside it or on Escape.
+    const menu = document.querySelector<HTMLDetailsElement>('.lang');
+    document.addEventListener('click', (e) => { if (menu && !menu.contains(e.target as Node)) menu.open = false; });
+    document.addEventListener('keydown', (e) => { if (menu && e.key === 'Escape') menu.open = false; });
+  </script>
 </body>
 </html>
 
@@ -141,6 +153,7 @@ const t = zh
       linear-gradient(122deg, transparent 71%, rgba(255, 214, 170, .05) 71.3%, transparent 71.7%);
   }
   .top, main, .foot { position: relative; z-index: 1; }
+  .top { z-index: 2; } /* the Language menu opens over the hero */
 
   .top { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;
     max-width: 1120px; margin: 0 auto; padding-block: 20px; padding-inline: 20px; }
@@ -148,6 +161,17 @@ const t = zh
   .top nav { display: flex; gap: 20px; flex-wrap: wrap; font-size: 14px; }
   .top nav a { color: var(--dim); text-decoration: none; }
   .top nav a:hover { color: var(--ink); }
+  .lang { position: relative; }
+  .lang summary { color: var(--dim); cursor: pointer; list-style: none; }
+  .lang summary::-webkit-details-marker { display: none; }
+  .lang summary::after { content: ' ▾'; font-size: 11px; }
+  .lang summary:hover, .lang[open] summary { color: var(--ink); }
+  .lang ul { position: absolute; right: 0; top: calc(100% + 10px); z-index: 2; margin: 0; padding: 6px; list-style: none;
+    min-width: 140px; background: #0b0f22; border: 1px solid #262a4d; border-radius: 8px; box-shadow: 0 12px 32px rgba(0, 0, 0, .5); }
+  .lang li a { display: block; padding: 7px 10px; border-radius: 5px; }
+  .lang li a:hover { background: rgba(157, 151, 255, .12); }
+  .lang li a[aria-current] { color: var(--ink); }
+  .lang li a[aria-current]::after { content: ' ✓'; color: var(--glow); }
 
   main { max-width: 1120px; margin: 0 auto; padding-inline: 20px; display: grid; gap: 96px; padding-block: 8px 80px; }
 
