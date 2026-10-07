@@ -129,7 +129,7 @@ try {
   await page.locator('.notch-note.is-open .nc-rate-open').click();
   await page.waitForSelector('.notch-note.is-open .nc-rate');
   const levels = await page.locator('.notch-note.is-open .nc-lv').allInnerTexts();
-  check('five level chips, the card level marked', levels.join('|') === '记下|亮一下|卡片|卡片带声|开口' && await page.locator('.notch-note.is-open .nc-lv.is-now').innerText() === '卡片');
+  check('five level chips, the card level marked', levels.join('|') === 'Log only|Glow|Card|Card + sound|Speak' && await page.locator('.notch-note.is-open .nc-lv.is-now').innerText() === 'Card');
   await shot('mail-card-feedback');
   await page.locator('.notch-note.is-open .nc-right').click();
   await gone();
@@ -144,7 +144,7 @@ try {
   check('level card_sound: the cue sounds', audioBefore === warm && await page.evaluate(() => window.__audio) > warm);
   await settle();
   await page.locator('.notch-note.is-open .nc-rate-open').click();
-  await page.locator('.notch-note.is-open .nc-lv', { hasText: '开口' }).click();
+  await page.locator('.notch-note.is-open .nc-lv', { hasText: 'Speak' }).click();
   await gone();
   check('a level chip sends level:开口', of('n-2').at(-1) === '{"action":"feedback","reaction":"level:开口"}');
 
@@ -220,15 +220,15 @@ try {
   check('the summary has the 合适吗 row, folded at first', await page.locator('.notch-note.is-open .nc-jobs .nc-rate').count() === 0 && await page.locator('.notch-note.is-open .nc-jobs .nc-rate-open').count() === 1);
   await page.locator('.notch-note.is-open .nc-rate-open').click();
   await page.waitForSelector('.notch-note.is-open .nc-jobs .nc-rate');
-  check('it offers five levels with the summary level marked', (await page.locator('.notch-note.is-open .nc-lv').allInnerTexts()).join('|') === '记下|亮一下|卡片|卡片带声|开口' && await page.locator('.notch-note.is-open .nc-lv.is-now').innerText() === '卡片带声');
+  check('it offers five levels with the summary level marked', (await page.locator('.notch-note.is-open .nc-lv').allInnerTexts()).join('|') === 'Log only|Glow|Card|Card + sound|Speak' && await page.locator('.notch-note.is-open .nc-lv.is-now').innerText() === 'Card + sound');
   await shot('digest-feedback');
-  await page.locator('.notch-note.is-open .nc-lv', { hasText: '开口' }).click();
+  await page.locator('.notch-note.is-open .nc-lv', { hasText: 'Speak' }).click();
   await gone();
   check('a level chip on the summary sends level:开口 for the summary id, and no dismissed', of('d-6').at(-1) === '{"action":"feedback","reaction":"level:开口"}' && !of('d-6').some(b => /dismissed/.test(b)));
   notices = [{ ...base, id: 'd-7', items }];
   await shows(); await settle();
   await page.locator('.notch-note.is-open .nc-rate-open').click();
-  check('a card-level summary marks 卡片', await page.locator('.notch-note.is-open .nc-lv.is-now').innerText() === '卡片');
+  check('a card-level summary marks Card', await page.locator('.notch-note.is-open .nc-lv.is-now').innerText() === 'Card');
   await page.locator('.notch-note.is-open .nc-right').click();
   await gone();
   check('对 on the summary sends feedback right for the summary id', of('d-7').at(-1) === '{"action":"feedback","reaction":"right"}' && !of('d-7').some(b => /dismissed/.test(b)));

@@ -85,9 +85,9 @@ try {
   await shot('pop-folded', { x: 100, y: 0, width: 440, height: 220 });
   await page.locator(`${note} .nc-rate-open`).click();
   await page.waitForSelector(`${note} .nt-card.pop .nc-rate`);
-  check('it opens to five levels with the shown one marked', (await page.locator(`${note} .nc-lv`).allInnerTexts()).join('|') === '记下|亮一下|卡片|卡片带声|开口' && await page.locator(`${note} .nc-lv.is-now`).innerText() === '卡片带声');
+  check('it opens to five levels with the shown one marked', (await page.locator(`${note} .nc-lv`).allInnerTexts()).join('|') === 'Log only|Glow|Card|Card + sound|Speak' && await page.locator(`${note} .nc-lv.is-now`).innerText() === 'Card + sound');
   await shot('pop-open', { x: 100, y: 0, width: 440, height: 300 });
-  await page.locator(`${note} .nc-lv`, { hasText: '亮一下' }).click();
+  await page.locator(`${note} .nc-lv`, { hasText: 'Glow' }).click();
   await gone();
   check('a level on the pop posts feedback level:亮一下 for the same id and the pop goes', last().id === pop.id && JSON.stringify(last().body) === '{"action":"feedback","reaction":"level:亮一下"}');
   check('and no dismissed follows it', !mine(pop.id).some(b => b.action === 'dismissed'));
@@ -110,7 +110,7 @@ try {
   check('a finish that asks posts kind wait with its title and agent, not its words', !!wait1 && wait1.body.kind === 'wait' && wait1.body.facts.title === 'Session w-1' && wait1.body.facts.agent === 'claude' && !/which of the two/i.test(JSON.stringify(wait1.body)));
   check('the needs-you card has the folded 合适吗 link', await page.locator(`${rows}`).count() === 1);
   await page.locator(rows).click();
-  await page.locator(`${note} .nc-lv`, { hasText: '开口' }).click();
+  await page.locator(`${note} .nc-lv`, { hasText: 'Speak' }).click();
   await page.waitForSelector(`${note} .nc-ok`);
   check('开口 posts level:开口 and the card stays with a thanks line', JSON.stringify(last().body) === '{"action":"feedback","reaction":"level:开口"}' && await page.locator(`${note} .nc`).count() === 1);
   await page.keyboard.press('Escape'); await gone();
@@ -169,7 +169,7 @@ try {
   check('the card when the screen wakes posts kind night once and shows the folded link', !!glance && glance.body.kind === 'night' && glance.body.level === 'card' && glance.body.facts.phase === 'glance' && await page.locator(rows).count() === 1);
   await settle();
   await page.locator(rows).click();
-  await page.locator(`${note} .nc-lv`, { hasText: '卡片' }).first().click();
+  await page.locator(`${note} .nc-lv`, { hasText: 'Card' }).first().click();
   await page.waitForSelector(`${note} .nc-ok`);
   check('rating it posts the level and the card stays (the run goes on)', JSON.stringify(last().body) === '{"action":"feedback","reaction":"level:卡片"}' && await page.locator(`${note} .ac`).count() === 1);
   const last0 = { id: 'n1', started_ms: Date.now() - 8 * 60 * M, until_ms: Date.now() - 6 * 60 * M, released_ms: Date.now() - 5 * 60 * M, release_reason: 'settled', ended_ms: Date.now() - M, reason: 'returned', slept_ms: null,

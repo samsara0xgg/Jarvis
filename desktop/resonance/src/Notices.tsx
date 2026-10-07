@@ -4,7 +4,7 @@ import { jobKind, jobStamp } from './JobsPage';
 import { postRoute } from './homeData';
 import { AGENT_NAME, loadMarks, openLabel, requestLine, saveMark, type Agent, type AgentRequest, type AgentState } from './agents';
 import { AgentMark, type MarkLook, type MarkState } from './AgentMarks';
-import { tr, type Lang } from './companionSettings';
+import { tr, useT, type L, type Lang } from './companionSettings';
 import { Markdown } from './Markdown';
 import { palette, play, scoreOf } from './soundKit';
 import type { ExprId } from './starCore';
@@ -57,6 +57,8 @@ export const needs = (n: Notice) => n.kind === 'req' || n.kind === 'wait';
 // ADR 0153: from `no-pop` up the island shows no card and no name pop.
 const noCards = (quiet: Quiet) => quiet === 'no-pop' || quiet === 'dnd';
 export const ended = (state: AgentState) => state === 'done' || state === 'err';
+// Where a session opens from, in the chosen language: agents.ts's `openLabel` ("Open in Ghostty"), empty when it cannot be opened from here.
+export const openTip = (a: Agent, t: (l: L) => string) => { const en = openLabel(a); return t([en, en.replace(/^Open in (.+)$/, '在 $1 中打开')]); };
 // One question's pick: an option, several options, or typed words.
 type Pick = number | number[] | string;
 // `feedback` is the plan card's "what should change" field; `rating` is whether the 合适吗 row is open, `rated` what it said once answered, `level` the level the card was shown at.
@@ -107,6 +109,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   answer: (req: AgentRequest, body: { decision: 'allow' | 'always' | 'deny'; answers?: Record<string, string>; message?: string }, id: string) => Promise<boolean>;
   mark: (id: string, change: { seen: true } | { parked: boolean; archived: boolean }) => void;
 }) {
+  const t = useT();
   const [, bump] = useReducer((x: number) => x + 1, 0);
   const [s] = useState(() => {
     const kept = loadKept();
@@ -450,9 +453,9 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
     const yes = body.decision !== 'deny';
     try {
       c.resolved = await answer(n.req, body, n.id);
-      c.ok = c.resolved ? text : 'Already answered somewhere else';
+      c.ok = c.resolved ? text : t(['Already answered somewhere else', '已经在别处回答了']);
     }
-    catch { c.error = 'Could not send your answer. Try again.'; return false; }
+    catch { c.error = t(['Could not send your answer. Try again.', '回答没发出去，请再试一次。']); return false; }
     finally { c.pending = false; bump(); }
     if (c.resolved) { react(n, 'acted'); s.over = { face: yes ? '02' : '38', until: performance.now() + 900, hop: yes }; cue(yes ? 'send' : 'close'); }
     bump();
@@ -513,8 +516,10 @@ function useEscape(root: { current: HTMLElement | null }, on: boolean, run: () =
     return () => document.removeEventListener('keydown', down, true);
   }, [key, on]);
 }
-// The five levels the 合适吗 row offers, in the daemon's words; the first two keep it to the ledger or a glow only.
-const LEVELS: [string, string][] = [['记下', 'ledger'], ['亮一下', 'glow'], ['卡片', 'card'], ['卡片带声', 'card_sound'], ['开口', 'speak']];
+// The five levels the 合适吗 row offers; the first two keep it to the ledger or a glow only. `name` is the daemon's word for the
+// level (what a reaction tells it), the pair is what the chip says.
+const LEVELS: [name: string, id: string, label: L][] = [['记下', 'ledger', ['Log only', '记下']], ['亮一下', 'glow', ['Glow', '亮一下']], ['卡片', 'card', ['Card', '卡片']],
+  ['卡片带声', 'card_sound', ['Card + sound', '卡片带声']], ['开口', 'speak', ['Speak', '开口']]];
 const when = (job: JobItem) => [job.company, job.role, jobStamp(job.at)].filter(Boolean) as string[];
 
 // The 合适吗 row of a mail card, the summary and every other proactive card (ADR 0160): folded to one word, opens to 对 and the five levels (the card's own marked), and folds after 10 s untouched.
@@ -531,9 +536,9 @@ export function RateRow({ card, level, lang, onRate, onChange }: { card: Card; l
     : !card.rating ? <button type="button" className="nc-rate-open" aria-expanded="false" onClick={() => { card.rating = true; onChange(); }}>{tr(lang, ['Right level?', '合适吗'])}</button>
     : <div className="nc-rate" onPointerMove={() => { touched.current = performance.now(); }} onFocus={() => { touched.current = performance.now(); }}>
       <span className="nc-rate-q">{tr(lang, ['Right level?', '合适吗'])}</span>
-      <button type="button" className="btn btn-warm nc-right" onClick={() => onRate('right', tr(lang, ['Noted · that level fits', '记下了 · 这个级别合适']))}>对</button>
-      <div className="nc-levels" role="group" aria-label={tr(lang, ['Or pick the level it should have', '或者选它该有的级别'])}>{LEVELS.map(([name, id]) =>
-        <button key={name} type="button" className={`nc-lv${id === level ? ' is-now' : ''}`} aria-pressed={id === level} onClick={() => onRate(`level:${name}`, tr(lang, [`Noted · ${name}`, `记下了 · ${name}`]))}>{name}</button>)}</div>
+      <button type="button" className="btn btn-warm nc-right" onClick={() => onRate('right', tr(lang, ['Noted · that level fits', '记下了 · 这个级别合适']))}>{tr(lang, ['Yes', '对'])}</button>
+      <div className="nc-levels" role="group" aria-label={tr(lang, ['Or pick the level it should have', '或者选它该有的级别'])}>{LEVELS.map(([name, id, label]) => { const word = tr(lang, label);
+        return <button key={name} type="button" className={`nc-lv${id === level ? ' is-now' : ''}`} aria-pressed={id === level} onClick={() => onRate(`level:${name}`, tr(lang, [`Noted · ${word}`, `记下了 · ${word}`]))}>{word}</button>; })}</div>
     </div>;
 }
 // The row for a card kept outside the notice queue (the night cards): it holds its own state, and tells `onRate` the reaction.
@@ -552,7 +557,7 @@ export function MailNotice({ n, card, lang, onDismiss, onRate, onChange }: {
   const reminder = job.mail_kind === 'reminder', chips = reminder ? [] : when(job), event = job.event_at ? jobStamp(job.event_at, true) : '';
   return <div ref={root} className="nc nc-mail">
     <div className="nc-bar"><span className={`nc-label ${job.mail_kind ? kindClass : 'is-other'}`}><i/>{job.mail_kind ? tr(lang, kindName) : tr(lang, ['Job mail', '求职邮件'])}</span>
-      <button type="button" className="nc-x nc-dismiss" aria-label="Dismiss" title={tr(lang, ['Dismiss', '关掉'])} onClick={onDismiss}><X size={14}/></button></div>
+      <button type="button" className="nc-x nc-dismiss" aria-label={tr(lang, ['Dismiss', '关掉'])} title={tr(lang, ['Dismiss', '关掉'])} onClick={onDismiss}><X size={14}/></button></div>
     <p className="nc-mail-t">{job.title}</p>
     {job.line && <p className="nc-what">{job.line}</p>}
     {(chips.length > 0 || event) && <div className="nc-tags">{chips.map((c, i) => <span key={i} className="tagc">{c}</span>)}{event && <span className="tagc">{tr(lang, reminder ? ['Due', '时间'] : ['Event', '日程'])} {event}</span>}</div>}
@@ -577,7 +582,7 @@ export function JobsDigestCard({ n, card, lang, onDismiss, onOpen, onRate, onCha
   useEscape(root, !card.ok, onDismiss, n.key);
   return <div ref={root} className="nc nc-digest nc-jobs">
     <div className="nc-bar"><span className="nc-label is-other"><i/>{n.job.title}</span>
-      <button type="button" className="nc-x nc-dismiss" aria-label="Dismiss" title={tr(lang, ['Dismiss', '关掉'])} onClick={onDismiss}><X size={14}/></button></div>
+      <button type="button" className="nc-x nc-dismiss" aria-label={tr(lang, ['Dismiss', '关掉'])} title={tr(lang, ['Dismiss', '关掉'])} onClick={onDismiss}><X size={14}/></button></div>
     <ul className="nc-away nc-jobrows">{items.map((m, i) => { const [cls, name] = jobKind(m.mail_kind);
       return <li key={m.id ?? i} className="nc-jobrow"><em className={`jk ${cls}`}>{tr(lang, name)}</em>
         <span className="nc-jr-who"><b>{m.company || m.title}</b> <span className="nc-jr-role">{rowTail(m, items.length, lang)}</span></span>{rowWhen(m, lang)}</li>; })}</ul>
@@ -604,6 +609,7 @@ export function NoticeCard({ n, agent, card, count, look, lang, onPark, onDismis
   n: Notice & { kind: 'req' | 'wait' }; agent?: Agent; card: Card; count: number; look: MarkLook; lang: Lang;
   onPark: () => void; onDismiss: () => void; onOpen: (agent: Agent) => void; onResolve: (text: string, body: Body) => void; onRate: (reaction: string, text: string) => void; onChange: () => void;
 }) {
+  const t = (l: L) => tr(lang, l);
   const [typed, setTyped] = useState(''), [feedback, setFeedback] = useState(''), [alwaysAllowed, setAlwaysAllowed] = useState(false);
   const allowButton = useRef<HTMLButtonElement>(null), denyButton = useRef<HTMLButtonElement>(null), root = useRef<HTMLDivElement>(null), flew = useRef(false);
   const fly = useContext(NoticeFlightContext);
@@ -659,71 +665,79 @@ export function NoticeCard({ n, agent, card, count, look, lang, onPark, onDismis
     document.addEventListener('keydown', key, true);
     return () => document.removeEventListener('keydown', key, true);
   }, [n.key, card.ok, card.review, card.pending]);
-  const who = agent ? AGENT_NAME[agent.agent] : 'It';
-  const label = n.kind === 'wait' ? 'Needs you' : n.req.tool === 'AskUserQuestion' ? `${who} asks` : n.req.tool === 'ExitPlanMode' ? 'Plan to review' : 'Needs your OK';
+  const who = agent ? AGENT_NAME[agent.agent] : t(['It', '它']), zhWho = agent ? `${who} ` : who; // Chinese: a name from Latin letters takes a space before the verb
+  const label = n.kind === 'wait' ? t(['Needs you', '要你回答']) : n.req.tool === 'AskUserQuestion' ? t([`${who} asks`, `${zhWho}在问你`])
+    : n.req.tool === 'ExitPlanMode' ? t(['Plan to review', '计划等你过目']) : t(['Needs your OK', '要你批准']);
   const bar = <div className="nc-bar">
-    <span className="nc-label is-wait"><i/>{label}{count > 1 && <em> · 1 of {count}</em>}</span>
+    <span className="nc-label is-wait"><i/>{label}{count > 1 && <em> · {t([`1 of ${count}`, `第 1 个，共 ${count} 个`])}</em>}</span>
   </div>;
-  const open = agent && openLabel(agent);
+  const open = agent && openTip(agent, t);
   const head = agent && <>
     <div className="nc-head">
       <AgentMark look={look} state="wait" id={agent.id} size={12}/>
       <div className="nc-t">
-        <div className="nc-top"><b>{agent.title}</b><span className="age">now</span></div>
+        <div className="nc-top"><b>{agent.title}</b><span className="age">{t(['now', '刚刚'])}</span></div>
         <div className="nc-tags"><span className={`tagc ${agent.agent}`}>{who}</span>{agent.project && <span className="tagc">{agent.project}</span>}
           {agent.branch && <span className="tagc">{agent.branch.replace(/^worktree-/, '')}</span>}</div>
       </div>
-      <div className="nc-actions"><button type="button" className="nc-icon nc-dismiss" aria-label="Dismiss" title="Dismiss: it stays on your list" onClick={onDismiss}><X size={14}/></button>
-        <button type="button" className="nc-icon nc-park" aria-label="Park" title="Park: out of your turn until you take it back" onClick={onPark}><Moon size={14} weight="fill"/></button>
+      <div className="nc-actions"><button type="button" className="nc-icon nc-dismiss" aria-label={t(['Dismiss', '关掉'])} title={t(['Dismiss: it stays on your list', '关掉：它还留在你的列表里'])} onClick={onDismiss}><X size={14}/></button>
+        <button type="button" className="nc-icon nc-park" aria-label={t(['Park', '先放着'])} title={t(['Park: out of your turn until you take it back', '先放着：不再轮到你，直到你拿回来'])} onClick={onPark}><Moon size={14} weight="fill"/></button>
         {open && <button type="button" className="nc-icon" aria-label={open} title={open} onClick={() => onOpen(agent)}><ArrowSquareOut size={14}/></button>}</div>
     </div>
-    {agent.you && <p className="nc-you"><b>You</b>{agent.you}</p>}
+    {agent.you && <p className="nc-you"><b>{t(['You', '你'])}</b>{agent.you}</p>}
   </>;
   if (card.ok) return <div ref={root} className="nc">{bar}{head}<p className="nc-ok"><Check size={14} weight="bold"/><span>{card.ok}</span></p></div>;
   const choice = (always: string) => {
     const request = n.kind === 'req' ? n.req : null;
     const project = agent?.project || request?.cwd.split('/').filter(Boolean).at(-1) || request?.cwd;
     const bashRule = request?.tool === 'Bash' ? always.match(/^Don't ask again for Bash\((.*)\)$/)?.[1] ?? String(request.input.command ?? '') : '';
-    return <>{always && <label className="nc-always" title={always}>
+    // The daemon words "always" in English (claude_hooks.py `_always`): a rule, edits for the session, or the bare phrase.
+    const rule = always.match(/^Don't ask again for (.+)$/)?.[1], edits = always.startsWith('Allow edits'), where = <b>{project}</b>, shown = bashRule ? <code>{bashRule}</code> : rule;
+    const permanent: ReactNode = edits ? t(['Allow edits for the rest of this session', '本次会话中允许所有编辑'])
+      : !shown ? lang === 'zh' ? <>在 {where} 中不再询问</> : <>Don't ask again in {where}</>
+        : lang === 'zh' ? <>在 {where} 中始终允许 {shown}</> : <>Always allow {shown} in {where}</>;
+    return <>{always && <label className="nc-always" title={bashRule || rule}>
       <input type="checkbox" checked={alwaysAllowed} disabled={card.pending} onChange={e => setAlwaysAllowed(e.target.checked)}/>
-      <span>{bashRule ? <>Always allow <code>{bashRule}</code></> : always.replace("Don't ask again for", 'Always allow')} in <b>{project}</b></span>
+      <span>{permanent}</span>
     </label>}<div className="nc-choice">
-      <button ref={denyButton} type="button" className="btn btn-ghost" data-deny disabled={card.pending} onClick={() => onResolve(`Denied · ${who} will try another way`, { decision: 'deny' })}>Deny</button>
-      <button ref={allowButton} type="button" className="btn btn-warm" disabled={card.pending} onClick={() => onResolve(alwaysAllowed && always ? `Allowed · ${always.replace("Don't ask", "won't ask")}` : `Allowed · ${who} continues`, { decision: alwaysAllowed && always ? 'always' : 'allow' })}>Allow <kbd>⌘⏎</kbd></button>
+      <button ref={denyButton} type="button" className="btn btn-ghost" data-deny disabled={card.pending} onClick={() => onResolve(t([`Denied · ${who} will try another way`, `已拒绝 · ${zhWho}会换个办法`]), { decision: 'deny' })}>{t(['Deny', '拒绝'])}</button>
+      <button ref={allowButton} type="button" className="btn btn-warm" disabled={card.pending} onClick={() => onResolve(alwaysAllowed && always
+        ? edits ? t(['Allowed · edits will not ask again this session', '已允许 · 本次会话的编辑不再询问']) : t([`Allowed · won't ask again${rule ? ` for ${rule}` : ''}`, `已允许 · 不再询问${rule ? ` ${rule}` : ''}`])
+        : t([`Allowed · ${who} continues`, `已允许 · ${zhWho}继续`]), { decision: alwaysAllowed && always ? 'always' : 'allow' })}>{t(['Allow', '允许'])} <kbd>⌘⏎</kbd></button>
     </div></>;
   };
   let body: ReactNode = null;
-  if (n.kind === 'wait') body = <p className="nc-what">{n.line || 'Waiting for you'}{agent && !open ? ` · answer it in ${agent.where}` : ''}</p>;
+  if (n.kind === 'wait') body = <p className="nc-what">{n.line || t(['Waiting for you', '在等你'])}{agent && !open ? t([` · answer it in ${agent.where}`, ` · 请到 ${agent.where} 里回答`]) : ''}</p>;
   else {
     const { tool, input: i, cwd, always } = n.req;
-    if (tool === 'Bash') body = <><p className="nc-what">{typeof i.description === 'string' && i.description ? i.description : 'Wants to run a command'}</p>
+    if (tool === 'Bash') body = <><p className="nc-what">{typeof i.description === 'string' && i.description ? i.description : t(['Wants to run a command', '想运行一条命令'])}</p>
       <pre className="nc-box nc-cmd"><span>{shortPath(cwd)} $</span> {String(i.command ?? '')}</pre>{choice(always)}</>;
     else if (typeof i.file_path === 'string' && ['Edit', 'Write', 'MultiEdit'].includes(tool)) {
       const d = diffLines(tool, i);
-      body = <><p className="nc-what">Wants to {tool === 'Write' ? 'write' : 'edit'} a file</p>
+      body = <><p className="nc-what">{tool === 'Write' ? t(['Wants to write a file', '想写入一个文件']) : t(['Wants to edit a file', '想修改一个文件'])}</p>
         <div className="nc-box nc-diff"><span className="nc-file">{shortPath(i.file_path)}<em><span className="a">+{d.add}</span> <span className="d">−{d.del}</span></em></span>
-          {d.shown.map(([sign, t], k) => <code key={k} className={sign === '+' ? 'add' : 'del'}>{sign === '-' ? '−' : '+'} {t}</code>)}
-          {d.more > 0 && <code>… {d.more} more lines</code>}</div>{choice(always)}</>;
+          {d.shown.map(([sign, line], k) => <code key={k} className={sign === '+' ? 'add' : 'del'}>{sign === '-' ? '−' : '+'} {line}</code>)}
+          {d.more > 0 && <code>{t([`… ${d.more} more lines`, `… 还有 ${d.more} 行`])}</code>}</div>{choice(always)}</>;
     } else if (tool === 'ExitPlanMode') {
       body = <><div className="nc-box nc-plan"><Markdown text={String(i.plan ?? '')}/></div>
-        {card.feedback && <form className="pg-input" onSubmit={e => { e.preventDefault(); if (feedback.trim()) onResolve(`Sent · ${who} keeps planning`, { decision: 'deny', message: feedback.trim() }); }}>
-          <input autoFocus placeholder="What should change?" value={feedback} onChange={e => setFeedback(e.target.value)}/>
-          <button className="send" aria-label="Send" disabled={!feedback.trim()}><ArrowUp size={13} weight="bold"/></button></form>}
-        <div className="nc-choice"><button type="button" className="btn btn-ghost" onClick={() => { card.feedback = !card.feedback; onChange(); }}>{card.feedback ? 'Cancel' : 'Keep planning'}</button>
-          <button ref={allowButton} type="button" className="btn btn-warm" disabled={card.pending} onClick={() => onResolve(`Plan approved · ${who} starts`, { decision: 'allow' })}>Approve plan <kbd>⌘⏎</kbd></button></div></>;
+        {card.feedback && <form className="pg-input" onSubmit={e => { e.preventDefault(); if (feedback.trim()) onResolve(t([`Sent · ${who} keeps planning`, `已发送 · ${zhWho}继续规划`]), { decision: 'deny', message: feedback.trim() }); }}>
+          <input autoFocus placeholder={t(['What should change?', '哪里要改？'])} value={feedback} onChange={e => setFeedback(e.target.value)}/>
+          <button className="send" aria-label={t(['Send', '发送'])} disabled={!feedback.trim()}><ArrowUp size={13} weight="bold"/></button></form>}
+        <div className="nc-choice"><button type="button" className="btn btn-ghost" onClick={() => { card.feedback = !card.feedback; onChange(); }}>{card.feedback ? t(['Cancel', '取消']) : t(['Keep planning', '继续规划'])}</button>
+          <button ref={allowButton} type="button" className="btn btn-warm" disabled={card.pending} onClick={() => onResolve(t([`Plan approved · ${who} starts`, `已批准计划 · ${zhWho}开始`]), { decision: 'allow' })}>{t(['Approve plan', '批准计划'])} <kbd>⌘⏎</kbd></button></div></>;
     } else if (tool === 'AskUserQuestion') {
       const qs = (Array.isArray(i.questions) ? i.questions : []) as Question[], q = qs[card.qi], pick = card.picks[card.qi], multi = qs.length > 1;
-      const send = () => onResolve(`Answered · ${who} continues`, { decision: 'allow', answers: Object.fromEntries(qs.map((qq, k) => [qq.question, pickText(qq, card.picks[k])])) });
+      const send = () => onResolve(t([`Answered · ${who} continues`, `已回答 · ${zhWho}继续`]), { decision: 'allow', answers: Object.fromEntries(qs.map((qq, k) => [qq.question, pickText(qq, card.picks[k])])) });
       // One question: picking answers it. Several: picking moves on, and the last step shows every answer before sending.
       const step = () => { setTyped(''); if (card.qi < qs.length - 1) card.qi++; else if (multi) card.review = true; else return send(); onChange(); };
       const choose = (value: Pick) => { card.picks[card.qi] = value; onChange(); if (!q.multiSelect) setTimeout(step, multi ? 260 : 220); };
       body = card.review
-        ? <div className="nc-qwrap"><p className="nc-what">Your answers</p>
-          <ol className="nc-review">{qs.map((qq, k) => <li key={k}><span className="qchip">{qq.header || `Q${k + 1}`}</span>{pickText(qq, card.picks[k]) || '—'}</li>)}</ol>
-          <div className="nc-choice"><button type="button" className="btn btn-ghost" onClick={() => { card.review = false; onChange(); }}>Back</button>
-            <button type="button" className="btn btn-warm" onClick={send}>Send answers</button></div></div>
+        ? <div className="nc-qwrap"><p className="nc-what">{t(['Your answers', '你的回答'])}</p>
+          <ol className="nc-review">{qs.map((qq, k) => <li key={k}><span className="qchip">{qq.header || t([`Q${k + 1}`, `问题 ${k + 1}`])}</span>{pickText(qq, card.picks[k]) || '—'}</li>)}</ol>
+          <div className="nc-choice"><button type="button" className="btn btn-ghost" onClick={() => { card.review = false; onChange(); }}>{t(['Back', '返回'])}</button>
+            <button type="button" className="btn btn-warm" onClick={send}>{t(['Send answers', '发送回答'])}</button></div></div>
         : q && <div className="nc-qwrap">
-          {multi && <div className="nc-qbar"><span className="qdots">{qs.map((_, k) => <i key={k} className={k === card.qi ? 'on' : k < card.qi ? 'done' : ''}/>)}</span><span>Question {card.qi + 1} of {qs.length}</span></div>}
+          {multi && <div className="nc-qbar"><span className="qdots">{qs.map((_, k) => <i key={k} className={k === card.qi ? 'on' : k < card.qi ? 'done' : ''}/>)}</span><span>{t([`Question ${card.qi + 1} of ${qs.length}`, `第 ${card.qi + 1} 题，共 ${qs.length} 题`])}</span></div>}
           <p className="nc-qt">{q.header && <span className="qchip">{q.header}</span>}{q.question}</p>
           <div className="nc-opts">{(q.options ?? []).map((o, k) => {
             const on = Array.isArray(pick) ? pick.includes(k) : pick === k;
@@ -732,13 +746,13 @@ export function NoticeCard({ n, agent, card, count, look, lang, onPark, onDismis
               <i>{on ? <Check size={11} weight="bold"/> : k + 1}</i><span><b>{o.label}</b>{o.description && <small>{o.description}</small>}</span></button>;
           })}</div>
           <form className="pg-input" onSubmit={e => { e.preventDefault(); if (!typed.trim()) return; card.picks[card.qi] = typed.trim(); step(); }}>
-            <input placeholder="Or type an answer…" value={typed} onChange={e => setTyped(e.target.value)}/>
-            <button className="send" aria-label="Use this answer" disabled={!typed.trim()}><ArrowUp size={13} weight="bold"/></button></form>
+            <input placeholder={t(['Or type an answer…', '或者自己写个答案…'])} value={typed} onChange={e => setTyped(e.target.value)}/>
+            <button className="send" aria-label={t(['Use this answer', '用这个答案'])} disabled={!typed.trim()}><ArrowUp size={13} weight="bold"/></button></form>
           {(multi || q.multiSelect) && <div className="nc-nav">
-            <button type="button" className="btn-text" disabled={!card.qi} onClick={() => { card.qi--; onChange(); }}>‹ Back</button>
-            <button type="button" className="btn-text" disabled={pick === undefined || (Array.isArray(pick) && !pick.length)} onClick={step}>{multi ? 'Next ›' : 'Send ›'}</button></div>}
+            <button type="button" className="btn-text" disabled={!card.qi} onClick={() => { card.qi--; onChange(); }}>{t(['‹ Back', '‹ 上一题'])}</button>
+            <button type="button" className="btn-text" disabled={pick === undefined || (Array.isArray(pick) && !pick.length)} onClick={step}>{multi ? t(['Next ›', '下一题 ›']) : t(['Send ›', '发送 ›'])}</button></div>}
         </div>;
-    } else body = <><p className="nc-what">Wants to use {tool.replace(/^mcp__([^_]+)__/, '$1 · ')}</p>
+    } else body = <><p className="nc-what">{t(['Wants to use', '想使用'])} {tool.replace(/^mcp__([^_]+)__/, '$1 · ')}</p>
       <pre className="nc-box">{JSON.stringify(i, null, 1).slice(0, 600)}</pre>{choice(always)}</>;
   }
   return <div ref={root} className="nc">{bar}{head}{body}<RateRow card={card} level={card.level ?? 'card'} lang={lang} onRate={onRate} onChange={onChange}/>{card.error && <p className="r-why" role="alert">{card.error}</p>}</div>;

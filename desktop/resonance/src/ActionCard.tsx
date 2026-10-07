@@ -95,7 +95,7 @@ export function MailCard({ text, lang }: { text: string; lang: Lang }) {
     <div className="mc-top"><b title={from}>{who}</b><time>{at}</time></div>
     {field('Subject') && <p className="mc-subject">{field('Subject')}</p>}
     <p className={`mc-body${open ? ' is-open' : ''}`}>{body}</p>
-    {body.split('\n').length > 6 || body.length > 360 ? <button type="button" className="mc-more" onClick={() => setOpen(v => !v)}>{open ? tr(lang, ['Less', '收起']) : tr(lang, ['Show all', '展开'])}</button> : null}
+    {body.split('\n').length > 6 || body.length > 360 ? <button type="button" className="mc-more" onClick={() => setOpen(v => !v)}>{open ? tr(lang, ['Show less', '收起']) : tr(lang, ['Show all', '展开'])}</button> : null}
   </div>;
 }
 
@@ -120,7 +120,7 @@ export function QuestionCard({ question, lang, onAnswer, draft, onDraft }: {
   const send = () => { if (filled) answer(values); };
   return <div className="ac" data-question={question.id}>
     <div className="ac-bar">
-      <span className="ac-label"><i/>{t(['Jarvis needs', 'Jarvis 需要'])}</span>
+      <span className="ac-label"><i/>{t(['Jarvis needs more info', 'Jarvis 需要补充信息'])}</span>
       <button type="button" className="ac-x" aria-label={t(['Dismiss', '不填了'])} onClick={() => answer(null)}><X size={10} weight="bold"/></button>
     </div>
     <p className="qc-q">{question.question}</p>

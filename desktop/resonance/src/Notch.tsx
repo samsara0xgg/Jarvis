@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import { Archive, ArrowSquareOut, ArrowUUpLeft, ArrowUp, CaretLeft, CaretRight, Moon, X } from '@phosphor-icons/react';
-import { openLabel, readConversation, requestLine, sendReply, type Agent, type AgentState, type Said } from './agents';
+import { readConversation, requestLine, sendReply, type Agent, type AgentState, type Said } from './agents';
 import { AgentMark, COLOR, drawMark, dpr, seedOf, useClock, type MarkLook } from './AgentMarks';
 import { drawMoon, drawTurnIcon, hueAt, MOON_RGB, rgba, tint } from './beacon';
 import { Markdown } from './Markdown';
-import { ended, NoticeFlightContext } from './Notices';
+import { ended, NoticeFlightContext, openTip } from './Notices';
+import { useT, type L } from './companionSettings';
 import { readStartrail } from './startrail';
 import { spring, step } from './starCore';
 import { HOVER_DWELL_MS, HOVER_EXIT_MS, HOVER_SPEED, PointerIntent } from './pointerIntent';
@@ -39,6 +40,8 @@ const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const countPulse = (progress: number) => reduced.matches ? 1 : 1 + .45 * Math.sin(Math.PI * progress);
 const working = (st: AgentState) => st === 'work' || st === 'pack';
+// The panel's words in the chosen language (the panels get them from `useT`, the canvas from `L.current.say`).
+type T = (l: L) => string;
 
 // ---------- what the panels show ----------
 // The beacon or the moon at `size` css px, for a panel's label.
@@ -57,9 +60,17 @@ function IconMark({ look, moon = false, size = 11 }: { look: MarkLook; moon?: bo
   return <span className="agent-mark" style={{ position: 'relative', display: 'inline-block', flex: 'none', width: size, height: size }}>
     <canvas ref={ref} aria-hidden="true" style={{ position: 'absolute', left: (size - box) / 2, top: (size - box) / 2, width: box, height: box }}/></span>;
 }
+// agents.ts's `ago` ("now", "3m", "2h", "1d") in words.
+const since = (age: string, t: T) => {
+  const m = /^(\d+)([mhd])$/.exec(age);
+  if (!m) return age === 'now' ? t(['just now', '刚刚']) : age;
+  return m[2] === 'm' ? t([`${m[1]}m ago`, `${m[1]} 分钟前`]) : m[2] === 'h' ? t([`${m[1]}h ago`, `${m[1]} 小时前`]) : t([`${m[1]}d ago`, `${m[1]} 天前`]);
+};
+const waitingIn = (a: Agent, t: T) => a.where === 'Background' ? t(['Waiting for you in the background', '在后台等你']) : t([`Waiting for you in ${a.where}`, `在 ${a.where} 里等你`]);
 // What a session is at, in a few words: the question it asks, what it is doing, or how it ended and when.
-const statusOf = (a: Agent) => a.state === 'wait' ? a.request ? requestLine(a.request) : `Waiting for you in ${a.where}`
-  : a.state === 'err' ? `Stopped${a.error ? ` · ${a.error}` : ''}` : a.state === 'done' ? `Done · ${a.age}` : a.state === 'pack' ? 'Compacting' : a.last || 'Working';
+const statusOf = (a: Agent, t: T) => a.state === 'wait' ? a.request ? requestLine(a.request) : waitingIn(a, t)
+  : a.state === 'err' ? `${t(['Stopped', '出错停了'])}${a.error ? ` · ${a.error}` : ''}` : a.state === 'done' ? t([`Done · ${since(a.age, t)}`, `做完了 · ${since(a.age, t)}`])
+  : a.state === 'pack' ? t(['Compacting', '在压缩']) : a.last || t(['Working', '在干活']);
 const asking = (a: Agent) => a.state === 'wait' && !!a.request;
 function Act({ tip, onClick, children }: { tip: string; onClick: () => void; children: ReactNode }) {
   return <i role="button" aria-label={tip} title={tip} onClick={e => { e.stopPropagation(); onClick(); }}>{children}</i>;
@@ -67,25 +78,25 @@ function Act({ tip, onClick, children }: { tip: string; onClick: () => void; chi
 // One session on one line: a still star, its name (bold while it needs a look), what it is at, and on hover what
 // can be done about it. A click opens the card of one that is asking, else goes to it.
 function Row({ a, kind, cur, look, act, page, index }: { a: Agent; kind: Kind; cur: boolean; look: MarkLook; act: NotchAct; page: (id: string) => void; index: number }) {
-  const open = openLabel(a), go = () => asking(a) ? act.answer(a.id) : act.jump(a);
+  const t = useT(), open = openTip(a, t), go = () => asking(a) ? act.answer(a.id) : act.jump(a);
   const acts = <>
     {!asking(a) && open && <Act tip={open} onClick={() => act.jump(a)}><ArrowSquareOut size={12}/></Act>}
-    {!asking(a) && <Act tip="What it said · reply" onClick={() => page(a.id)}><CaretRight size={12}/></Act>}
-    {kind === 'turn' && <Act tip="Park it: out of your turn, no reminders, until you take it back" onClick={() => act.park([a.id])}><Moon size={12} weight="fill"/></Act>}
-    {kind === 'turn' && a.state !== 'wait' && <Act tip="Mark as read" onClick={() => act.read([a.id])}><X size={12}/></Act>}
-    {kind === 'moon' && <Act tip="Take back to your turn" onClick={() => act.unpark([a.id])}><ArrowUUpLeft size={12}/></Act>}
-    {(kind === 'done' || kind === 'moon' && a.state !== 'wait') && <Act tip="Archive: done with it, kept to find again" onClick={() => act.archive([a.id])}><Archive size={12}/></Act>}
+    {!asking(a) && <Act tip={t(['What it said · reply', '看对话 · 回复'])} onClick={() => page(a.id)}><CaretRight size={12}/></Act>}
+    {kind === 'turn' && <Act tip={t(['Park it: out of your turn, no reminders, until you take it back', '先放着：不再轮到你，也不提醒，直到你拿回来'])} onClick={() => act.park([a.id])}><Moon size={12} weight="fill"/></Act>}
+    {kind === 'turn' && a.state !== 'wait' && <Act tip={t(['Mark as read', '标为已读'])} onClick={() => act.read([a.id])}><X size={12}/></Act>}
+    {kind === 'moon' && <Act tip={t(['Take back to your turn', '拿回来，重新轮到你'])} onClick={() => act.unpark([a.id])}><ArrowUUpLeft size={12}/></Act>}
+    {(kind === 'done' || kind === 'moon' && a.state !== 'wait') && <Act tip={t(['Archive: done with it, kept to find again', '归档：处理完了，之后还能找到'])} onClick={() => act.archive([a.id])}><Archive size={12}/></Act>}
   </>;
   return <div className={`a-row${a.state === 'wait' ? ' is-ask' : ''}${kind === 'turn' ? ' is-due' : ''}${cur ? ' is-cur' : ''}`} role="button" tabIndex={-1} data-id={a.id} style={{ animationDelay: `${Math.min(index, 4) * MOTION.stagger}ms` }}
-    title={asking(a) ? 'Open the card to answer' : open || a.title} onClick={go}>
-    <AgentMark look={look} state={a.state} id={a.id} size={12} still/><b>{a.title}</b><span className="a-st">{statusOf(a)}</span>
+    title={asking(a) ? t(['Open the card to answer', '打开卡片来回答']) : open || a.title} onClick={go}>
+    <AgentMark look={look} state={a.state} id={a.id} size={12} still/><b>{a.title}</b><span className="a-st">{statusOf(a, t)}</span>
     <span className="a-acts">{acts}</span></div>;
 }
 const Hints = ({ keys }: { keys: [string, string][] }) => <p className="k-hint">{keys.map(([k, v]) => <span key={k}><kbd>{k}</kbd>{v}</span>)}</p>;
 // `done`: a whole group was handled from its heading, so the panel folds away (unless the keys hold it).
 function Panel({ secs, hot, cur, look, act, page, done }: { secs: Sec[]; hot: string; cur: string; look: MarkLook; act: NotchAct; page: (id: string) => void; done: () => void }) {
   let rowIndex = 0;
-  const list = useRef<HTMLDivElement>(null), shownHot = useRef('');
+  const t = useT(), list = useRef<HTMLDivElement>(null), shownHot = useRef('');
   // A list taller than the panel fades at the edge with more behind it; a newly lit part, or the row the keys
   // moved to, is brought into view.
   const edges = () => { const l = list.current; if (!l) return; l.classList.toggle('more-below', l.scrollTop + l.clientHeight < l.scrollHeight - 2); l.classList.toggle('more-above', l.scrollTop > 2); };
@@ -98,15 +109,15 @@ function Panel({ secs, hot, cur, look, act, page, done }: { secs: Sec[]; hot: st
     shownHot.current = hot;
     edges();
   });
-  const tail = (s: Sec) => s.key === 'turn' ? s.ts.some(a => a.state !== 'wait') && <button type="button" onClick={() => { act.read(s.ts.filter(a => a.state !== 'wait').map(a => a.id)); done(); }}>Mark finished read</button>
-    : s.key === 'done' ? <button type="button" onClick={() => act.archive(s.ts.map(a => a.id))}>Archive all</button>
-    : s.key === 'moon' ? <button type="button" onClick={() => { act.unpark(s.ts.map(a => a.id)); done(); }}>Take all back</button> : null;
+  const tail = (s: Sec) => s.key === 'turn' ? s.ts.some(a => a.state !== 'wait') && <button type="button" onClick={() => { act.read(s.ts.filter(a => a.state !== 'wait').map(a => a.id)); done(); }}>{t(['Mark finished as read', '已完成的标为已读'])}</button>
+    : s.key === 'done' ? <button type="button" onClick={() => act.archive(s.ts.map(a => a.id))}>{t(['Archive all', '全部归档'])}</button>
+    : s.key === 'moon' ? <button type="button" onClick={() => { act.unpark(s.ts.map(a => a.id)); done(); }}>{t(['Take all back', '全部拿回来'])}</button> : null;
   return <div className="nt-card all"><div ref={list} className="a-list" onScroll={edges}>{secs.map(s =>
     <div key={s.key} className={`a-sec${s.key === hot ? ' is-hot' : ''}`} data-sec={s.key}>
       <div className={`a-h is-${s.key}`}><span>{s.key === 'moon' && <IconMark look={look} moon/>}{s.label}<em>{s.ts.length}</em></span>{tail(s)}</div>
       {s.ts.map(a => <Row key={a.id} a={a} kind={s.key} cur={a.id === cur} look={look} act={act} page={page} index={rowIndex++}/>)}
     </div>)}</div>
-    {cur && <Hints keys={[['↑↓', 'choose'], ['→', 'open'], ['⏎', 'go to it'], ['esc', 'close']]}/>}</div>;
+    {cur && <Hints keys={[['↑↓', t(['choose', '选择'])], ['→', t(['open', '打开'])], ['⏎', t(['go to it', '前往'])], ['esc', t(['close', '关闭'])]]}/>}</div>;
 }
 // One session's page: the conversation (Allen's words right, its end-of-turn answers rendered left), what it is doing
 // now, and a box whose line Jarvis types into the session. A working session takes it once it stops; a Codex one is
@@ -114,6 +125,7 @@ function Panel({ secs, hot, cur, look, act, page, done }: { secs: Sec[]; hot: st
 function Page({ a, port, look, act, draft, setDraft, back, keys }: {
   a: Agent; port: string | null; look: MarkLook; act: NotchAct; draft: string; setDraft: (text: string) => void; back: () => void; keys: boolean;
 }) {
+  const t = useT();
   const [said, setSaid] = useState<Said[] | null>(null), [mine, setMine] = useState<string[]>([]), [sending, setSending] = useState(false), [why, setWhy] = useState('');
   const list = useRef<HTMLDivElement>(null), input = useRef<HTMLInputElement>(null), bottom = useRef(true);
   const claude = a.agent === 'claude' && !!port;
@@ -139,50 +151,50 @@ function Page({ a, port, look, act, draft, setDraft, back, keys }: {
     setSending(false);
     if (fail) { setWhy(fail); setMine(m => m.filter(t => t !== text)); setDraft(text); }
   };
-  const open = openLabel(a);
-  const box = a.host ? !asking(a) && <p className="r-note">Read here only · reply to it in Startrail</p>
-    : a.agent === 'codex' ? <p className="r-note">Codex is read here only · answer it in Codex</p>
+  const open = openTip(a, t);
+  const box = a.host ? !asking(a) && <p className="r-note">{t(['Read-only here · reply in Startrail', '这里只能看 · 请到 Startrail 里回复'])}</p>
+    : a.agent === 'codex' ? <p className="r-note">{t(['Codex sessions are read-only here · answer in Codex', 'Codex 会话在这里只能看 · 请到 Codex 里回答'])}</p>
     : asking(a) ? null
-    : a.kind !== 'background' ? <p className="r-note">Answer it in its terminal</p>
+    : a.kind !== 'background' ? <p className="r-note">{t(['Answer it in its terminal', '请到它的终端里回答'])}</p>
     : <form className="pg-input c-reply" onSubmit={send}>
       <input ref={input} value={draft} onChange={e => setDraft(e.target.value)} disabled={!a.replyable || busy}
-        placeholder={sending ? 'Sending…' : working(a.state) || pending.length ? 'Still working · you can reply once it stops' : a.replyable ? 'Reply…' : 'It cannot take a reply right now'}/>
-      <button className="send" aria-label="Send" disabled={!draft.trim() || busy || !a.replyable}><ArrowUp size={13} weight="bold"/></button></form>;
+        placeholder={sending ? t(['Sending…', '发送中…']) : working(a.state) || pending.length ? t(['Still working · you can reply once it stops', '还在干活 · 它停下后才能回复']) : a.replyable ? t(['Reply…', '回复…']) : t(['It cannot take a reply right now', '它现在没法接收回复'])}/>
+      <button className="send" aria-label={t(['Send', '发送'])} disabled={!draft.trim() || busy || !a.replyable}><ArrowUp size={13} weight="bold"/></button></form>;
   return <div className="nt-card reply">
-    <div className="r-head"><button type="button" className="r-back" aria-label="Back to the list" onClick={back}><CaretLeft size={14}/></button>
-      <AgentMark look={look} state={a.state} id={a.id} size={12} still/><b>{a.title}</b><span className="a-st">{statusOf(a)}</span>
+    <div className="r-head"><button type="button" className="r-back" aria-label={t(['Back to the list', '返回列表'])} onClick={back}><CaretLeft size={14}/></button>
+      <AgentMark look={look} state={a.state} id={a.id} size={12} still/><b>{a.title}</b><span className="a-st">{statusOf(a, t)}</span>
       {open && <button type="button" className="nc-go" title={open} onClick={() => act.jump(a)}><ArrowSquareOut size={12}/></button>}</div>
     <div ref={list} className="m-list" onScroll={e => { const l = e.currentTarget; bottom.current = l.scrollTop >= l.scrollHeight - l.clientHeight - 4; }}>
-      {!base.length && !pending.length && <p className="r-none">Nothing said yet</p>}
+      {!base.length && !pending.length && <p className="r-none">{t(['No messages yet', '还没有对话'])}</p>}
       {base.map((m, k) => m.who === 'you' ? <div key={k} className="m-you">{m.text}</div> : <div key={k} className="m-it md"><Markdown text={m.text}/></div>)}
       {pending.map(t => <div key={`p:${t}`} className="m-you is-pending">{t}</div>)}
-      {working(a.state) && <div className="m-now"><AgentMark look={look} state={a.state} id={a.id} size={10}/><span>{(a.last || 'Working').replace(/[.…]+$/, '')}…</span></div>}
+      {working(a.state) && <div className="m-now"><AgentMark look={look} state={a.state} id={a.id} size={10}/><span>{(a.last || t(['Working', '在干活'])).replace(/[.…]+$/, '')}…</span></div>}
       {asking(a) && <div className="m-req"><p className="nc-what">{requestLine(a.request!)}</p>
-        <div className="nc-choice"><button type="button" className="btn btn-warm" onClick={() => act.answer(a.id)}>Answer</button></div></div>}
+        <div className="nc-choice"><button type="button" className="btn btn-warm" onClick={() => act.answer(a.id)}>{t(['Answer', '去回答'])}</button></div></div>}
     </div>
     {why && <p className="r-why">{why}</p>}
     {box}
-    {keys && <Hints keys={[['←', 'back'], ...(a.replyable && !busy ? [['⏎', 'send'] as [string, string]] : []), ['esc', 'close']]}/>}
+    {keys && <Hints keys={[['←', t(['back', '返回'])], ...(a.replyable && !busy ? [['⏎', t(['send', '发送'])] as [string, string]] : []), ['esc', t(['close', '关闭'])]]}/>}
   </div>;
 }
 // One session on a pop: its star and name. Asking opens its card; finished goes to it, ✕ marks it read.
 function PopRow({ a, look, act, tag }: { a: Agent; look: MarkLook; act: NotchAct; tag?: ReactNode }) {
-  const ask = a.state === 'wait', go = () => ask && a.request ? act.answer(a.id) : act.jump(a);
+  const t = useT(), ask = a.state === 'wait', go = () => ask && a.request ? act.answer(a.id) : act.jump(a);
   return <div className={`u-row${ask ? ' is-ask' : ''}`} role="button" tabIndex={0} data-id={a.id}
-    title={ask ? a.request ? 'Asking you · open the card to answer' : `Waiting for you in ${a.where}` : 'Go to it'}
+    title={ask ? a.request ? t(['Asking you · open the card to answer', '在问你 · 打开卡片回答']) : waitingIn(a, t) : t(['Go to it', '前往这个会话'])}
     onClick={go} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }}>
     <AgentMark look={look} state={a.state} id={a.id} size={12}/><span>{a.title}{tag}</span>
     <span className="u-acts">
-      <Act tip="Park it: out of your turn, no reminders, until you take it back" onClick={() => act.park([a.id])}><Moon size={12} weight="fill"/></Act>
-      {!ask && <Act tip="Mark as read" onClick={() => act.read([a.id])}><X size={12}/></Act>}</span>
+      <Act tip={t(['Park it: out of your turn, no reminders, until you take it back', '先放着：不再轮到你，也不提醒，直到你拿回来'])} onClick={() => act.park([a.id])}><Moon size={12} weight="fill"/></Act>
+      {!ask && <Act tip={t(['Mark as read', '标为已读'])} onClick={() => act.read([a.id])}><X size={12}/></Act>}</span>
   </div>;
 }
 function Pop({ agents, look, act, rate, onClose }: { agents: Agent[]; look: MarkLook; act: NotchAct; rate?: ReactNode; onClose: () => void }) {
-  const errs = agents.filter(a => a.state === 'err').length, all = errs === agents.length, n = agents.length;
-  const label = n === 1 ? errs ? 'Stopped' : 'Done' : all ? `${n} stopped` : errs ? `${n} need a look` : `${n} done`;
+  const t = useT(), errs = agents.filter(a => a.state === 'err').length, all = errs === agents.length, n = agents.length;
+  const label = n === 1 ? errs ? t(['Stopped', '出错停了']) : t(['Done', '做完了']) : all ? t([`${n} stopped`, `${n} 个出错停了`]) : errs ? t([`${n} need a look`, `${n} 个要看一眼`]) : t([`${n} done`, `${n} 个做完了`]);
   return <div className="nt-card pop"><div className="c-bar"><span className={`c-label is-${all ? 'err' : 'done'}`}><i/>{label}</span>
-    <button type="button" className="c-x" aria-label="Close" onClick={onClose}><X size={12}/></button></div>
-    <div className="u-list">{agents.map(a => <PopRow key={a.id} a={a} look={look} act={act} tag={a.state === 'err' && !all ? <em> stopped</em> : null}/>)}</div>{rate}</div>;
+    <button type="button" className="c-x" aria-label={t(['Close', '关闭'])} onClick={onClose}><X size={12}/></button></div>
+    <div className="u-list">{agents.map(a => <PopRow key={a.id} a={a} look={look} act={act} tag={a.state === 'err' && !all ? <em> {t(['stopped', '出错停了'])}</em> : null}/>)}</div>{rate}</div>;
 }
 
 export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, edge, act, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
@@ -191,13 +203,13 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
   port: string | null; keys: number; onKeys: (on: boolean) => void; onViewing: (id: string | null) => void;
   onJoinedChange?: (joined: boolean) => void;
 }) {
-  const out = (a: Agent) => !parked.has(a.id);
+  const t = useT(), out = (a: Agent) => !parked.has(a.id);
   const turn = agents.filter(a => out(a) && (a.state === 'wait' || ended(a.state) && unread.has(a.id))).sort((a, b) => TURN_ORDER.indexOf(a.state) - TURN_ORDER.indexOf(b.state));
   const work = agents.filter(a => out(a) && working(a.state));
   const fin = agents.filter(a => out(a) && ended(a.state) && !unread.has(a.id) && !archived.has(a.id));
   const moon = agents.filter(a => parked.has(a.id)).sort((a, b) => parked.get(b.id)! - parked.get(a.id)!);
-  const secs = ([{ key: 'turn', label: 'Your turn', ts: turn }, { key: 'work', label: 'Working', ts: work }, { key: 'done', label: 'Finished', ts: fin },
-    { key: 'moon', label: 'Parked', ts: moon }] as Sec[]).filter(s => s.ts.length);
+  const secs = ([{ key: 'turn', label: t(['Your turn', '轮到你']), ts: turn }, { key: 'work', label: t(['Working', '在干活']), ts: work }, { key: 'done', label: t(['Finished', '做完了']), ts: fin },
+    { key: 'moon', label: t(['Parked', '先放着']), ts: moon }] as Sec[]).filter(s => s.ts.length);
   const order = secs.flatMap(s => s.ts.map(a => a.id));
   const [open, setOpen] = useState(false), [hot, setHot] = useState(''), [dragging, setDragging] = useState(false);
   const [kb, setKb] = useState<Keys | null>(null), [kbCard, setKbCard] = useState(''), [drafts] = useState(() => new Map<string, string>()), [, redraw] = useState(0);
@@ -219,8 +231,8 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     bumpAt: { turn: -1e9, work: -1e9, done: -1e9, moon: -1e9 }, parkedIds: new Set<string>(),
     popOrigins: new Map<string, Point>(), intent: new PointerIntent(), resolvedNote: '', workLandingUntil: 0, joined: false,
   }).current;
-  const L = useRef({ look, turn, work, fin, moon, geo, note, quiet, edge, onNoteHover, onJoinedChange, held: false, pageW: false });
-  L.current = { look, turn, work, fin, moon, geo, note, quiet, edge, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged };
+  const L = useRef({ look, turn, work, fin, moon, geo, note, quiet, edge, onNoteHover, onJoinedChange, held: false, pageW: false, say: t });
+  L.current = { look, turn, work, fin, moon, geo, note, quiet, edge, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged, say: t };
   const members = (key: Kind) => ({ turn: L.current.turn, work: L.current.work, done: L.current.fin, moon: L.current.moon })[key];
   const setPanel = (on: boolean) => { if (on === st.open) return; st.open = on; st.dirty = true; setOpen(on); };
   const setHotKey = (key: string) => { if (key === st.hot) return; st.hot = key; setHot(key); };
@@ -427,7 +439,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     };
     // The marks, clipped to the wing as it grows; the finished mark being dragged; the puffs left where it went.
     const draw = (now: number, top: number, look: MarkLook) => {
-      const cv = fx.current!, { geo: g, turn, work, note } = L.current, d = dpr(), W = g.width, H = window.innerHeight, t = now / 1000;
+      const cv = fx.current!, { geo: g, turn, work, note, say } = L.current, d = dpr(), W = g.width, H = window.innerHeight, t = now / 1000;
       if (cv.width !== Math.round(W * d) || cv.height !== Math.round(H * d)) { cv.width = Math.round(W * d); cv.height = Math.round(H * d); }
       const ctx = cv.getContext('2d')!;
       ctx.setTransform(d, 0, 0, d, 0, 0); ctx.clearRect(0, 0, W, H);
@@ -486,7 +498,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         ctx.font = '600 9px "JetBrains Mono", Menlo, monospace'; ctx.textBaseline = 'middle'; ctx.fillStyle = 'rgba(220,226,250,.9)'; ctx.fillText(String(ts.length), 7, 1);
         ctx.globalAlpha = 1; ctx.font = '600 10.5px -apple-system, "PingFang SC", sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
         ctx.fillStyle = 'rgba(255,255,255,.95)'; ctx.shadowColor = 'rgba(0,0,0,.6)'; ctx.shadowBlur = 4 * d;
-        ctx.fillText(out ? 'Let go to archive' : 'Drag out of the menu bar', 0, 16);
+        ctx.fillText(out ? say(['Release to archive', '松手归档']) : say(['Drag down to archive', '往下拖来归档']), 0, 16);
         ctx.restore();
       }
       st.puffs = st.puffs.filter(f => now - f.at < MOTION.slow);
@@ -549,9 +561,9 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         if (st.drag) Object.assign(st.drag, q);
       }}
       onPointerUp={() => letGo(true)} onPointerCancel={() => letGo(false)}/>
-    <div ref={drop} className="notch-pane notch-drop" data-hit={open ? true : undefined} role="dialog" aria-label="Sessions">
+    <div ref={drop} className="notch-pane notch-drop" data-hit={open ? true : undefined} role="dialog" aria-label={t(['Sessions', '会话'])}>
       <div ref={dropIn} className="notch-pane-in">{open ? panel : lastPanel.current}</div></div>
-    <div ref={noteP} className="notch-pane notch-note" data-hit={note && !(kb && !kbCard) ? true : undefined} role="alertdialog" aria-label="Agent notice">
+    <div ref={noteP} className="notch-pane notch-note" data-hit={note && !(kb && !kbCard) ? true : undefined} role="alertdialog" aria-label={t(['Notification', '通知'])}>
       <div ref={noteIn} className="notch-pane-in" onWheel={e => {
         // A sideways swipe on a notice puts it away; a slow drift or a vertical scroll does not.
         if (!shownNote || Math.abs(e.deltaX) < Math.abs(e.deltaY) * 2) return;

@@ -156,17 +156,17 @@ function Dial({ w, start, end, holds, ticks, labels, big, small, title }: {
 function Bedtime({ run, laptop, look, c, act, go }: { run: NightRun; laptop: boolean; look: NightLook; c: Ctx; act: (action: NightAction) => void; go: (s: NightSession) => void }) {
   const { t, lang, now } = c, w = run.watch, until = hhmm(run.until_ms), cap = hhmm(run.cap_ms), hours = span(run.until_ms - run.started_ms, lang);
   const secs = run.dark_at_ms === null ? 0 : Math.ceil((run.dark_at_ms - now) / 1000);
-  const count = run.stay ? <p className="nc-count">{t(['The screen goes off after a quiet minute once you have answered', '你回完、一分钟不动就熄屏'])}</p>
+  const count = run.stay ? <p className="nc-count">{t(['Once you have answered, the screen goes off after a minute of no activity', '你回完、一分钟不动就熄屏'])}</p>
     : <p className="nc-count" aria-live="polite">{secs > 0 ? <><b>{secs}</b>{t([' s until the screen goes off', ' 秒后熄屏'])}</> : t(['The screen is going off', '马上熄屏'])}</p>;
-  const watching: ReactNode = !w.seen ? <Warm>{t(['No session list can be read; this time it is the deadline alone', '看不到会话列表，这次只按时间'])}</Warm>
-    : w.busy ? t([`Once all that work has stopped ${SETTLE_MIN} min, the Mac may sleep`, `在干活的都停下 ${SETTLE_MIN} 分钟，就放开防睡`])
-    : t(['Nothing is working now; work that starts in the night is watched too', '现在没有在干活的；夜里开始干活的也会盯']);
-  const floor = w.seen ? t([`At least until ${until} (${hours})`, `至少挂到 ${until}（${hours}）`]) : t([`Until ${until}, then let go`, `挂到 ${until} 就放开`]);
-  const rows: [string, ReactNode][] = [[t(['Floor', '兜底']), floor], [t(['Watching', '盯着']), watching], ...w.seen ? [[t(['Longest', '最长']), `${cap}（${t(['12 h', '12 小时'])}）`] as [string, ReactNode]] : []];
+  const watching: ReactNode = !w.seen ? <Warm>{t(['Cannot read the session list, so only the deadline applies this time', '看不到会话列表，这次只按时间'])}</Warm>
+    : w.busy ? t([`The Mac may sleep once all work has stopped for ${SETTLE_MIN} min`, `在干活的都停下 ${SETTLE_MIN} 分钟，就放开防睡`])
+    : t(['Nothing is working now; work that starts overnight is watched too', '现在没有在干活的；夜里开始干活的也会盯']);
+  const floor = w.seen ? t([`At least until ${until} (${hours})`, `至少挂到 ${until}（${hours}）`]) : t([`Until ${until}, then the Mac may sleep`, `挂到 ${until} 就放开`]);
+  const rows: [string, ReactNode][] = [[t(['Floor', '兜底']), floor], [t(['Watching', '盯着']), watching], ...w.seen ? [[t(['Longest', '最长']), t([`${cap} (12 h)`, `${cap}（12 小时）`])] as [string, ReactNode]] : []];
   const v1 = <ul className="nc-lines">
-    <li>{t(['Brightness and sound are noted first and come back when you are up', '熄屏前记下亮度和声音，起来时调回'])}</li>
-    <li>{run.wake_at_ms ? t([`Up before ${hhmm(run.wake_at_ms)} is only a look`, `${hhmm(run.wake_at_ms)} 前醒来只看一眼，不算起床`]) : t(['Coming back ends it', '回来就结束挂机'])}</li>
-    {laptop && <li>{t(['Closing the lid still sleeps the Mac', '合上盖子 Mac 仍会睡着'])}</li>}
+    <li>{t(['Brightness and sound are saved first and restored when you are up', '熄屏前记下亮度和声音，起来时调回'])}</li>
+    <li>{run.wake_at_ms ? t([`Waking before ${hhmm(run.wake_at_ms)} counts as just a look`, `${hhmm(run.wake_at_ms)} 前醒来只看一眼，不算起床`]) : t(['Coming back ends the run', '回来就结束挂机'])}</li>
+    {laptop && <li>{t(['Closing the lid will still put the Mac to sleep', '合上盖子 Mac 仍会睡着'])}</li>}
     {!run.guarded && <li className="is-warn">{t(['The Mac could not be kept awake; it may sleep as usual', '没拿到防睡，Mac 可能照常睡着'])}</li>}
   </ul>;
   const bar = <div className="ac-bar">
@@ -174,18 +174,18 @@ function Bedtime({ run, laptop, look, c, act, go }: { run: NightRun; laptop: boo
     <button type="button" className="ac-x" aria-label={t(['Cancel', '不挂了'])} onClick={() => act('end')}><X size={10} weight="bold"/></button>
   </div>;
   const foot = <div className="ac-foot"><span/><button type="button" className="ac-go" onClick={() => act('dark')}>{t(['Screen off now', '现在熄屏'])}</button></div>;
-  const due = t(['It waits until you are up if not answered', '不回它会一直等到你起来']);
+  const due = t(['If you do not answer, it waits until you are up', '不回它会一直等到你起来']);
   if (look === 'trail' && w.seen) return <div className="ac nc-night is-trail" data-night={run.id} data-look="trail">
     {bar}
     <div className="nc-dialrow">
       <Dial w={w} start={run.started_ms} end={now} holds={[[run.started_ms, run.until_ms, 'plan'], [run.until_ms, run.cap_ms, 'far']]} ticks={[[run.started_ms, 'is-ink'], [run.until_ms, 'is-night']]}
         labels={[[run.until_ms, t(['floor', '兜底']), 'nc-lab is-night']]} big={String(w.busy)} small={t(['at work', '个在干活'])}
         title={t([`Night run: ${w.busy} at work, floor until ${until}`, `挂机开始：${w.busy} 个在干活，兜底到 ${until}，最长一圈`])}/>
-      <div className="nc-side">{count}<Kv dt="3.2em" rows={[[t(['Floor', '兜底']), t([`until ${until}`, `至少到 ${until}`])], [t(['Watch', '盯着']), t([`${SETTLE_MIN} min quiet`, `停下 ${SETTLE_MIN} 分钟放开`])], [t(['Longest', '最长']), t([`one turn, ${cap}`, `转满一圈 ${cap}`])]]}/></div>
+      <div className="nc-side">{count}<Kv dt="3.2em" rows={[[t(['Floor', '兜底']), t([`until ${until}`, `至少到 ${until}`])], [t(['Watch', '盯着']), t([`${SETTLE_MIN} min quiet`, `停下 ${SETTLE_MIN} 分钟放开`])], [t(['Longest', '最长']), t([`one full turn, ${cap}`, `转满一圈 ${cap}`])]]}/></div>
     </div>
     <Legend rows={[...groups(w).busy, ...groups(w).due]} c={c} bedtime go={go}/>
     <Unseen w={w} c={c}/>
-    <p className="nc-line">{t([`Brightness and sound noted first · up before ${run.wake_at_ms ? hhmm(run.wake_at_ms) : '—'} is a look`, `熄屏前记下亮度和声音 · ${run.wake_at_ms ? hhmm(run.wake_at_ms) : '—'} 前醒来只算看一眼`])}</p>
+    <p className="nc-line">{t([`Brightness and sound saved first · waking before ${run.wake_at_ms ? hhmm(run.wake_at_ms) : '—'} is just a look`, `熄屏前记下亮度和声音 · ${run.wake_at_ms ? hhmm(run.wake_at_ms) : '—'} 前醒来只算看一眼`])}</p>
     {foot}
   </div>;
   return <div className="ac nc-night" data-night={run.id} data-look="list">
@@ -200,20 +200,20 @@ function Bedtime({ run, laptop, look, c, act, go }: { run: NightRun; laptop: boo
 function Night({ run, look, c, act, go, rate }: { run: NightRun; look: NightLook; c: Ctx; act: (action: NightAction) => void; go: (s: NightSession) => void; rate?: ReactNode }) {
   const { t, lang, now } = c, w = run.watch, until = hhmm(run.until_ms), cap = hhmm(run.cap_ms);
   const released = run.released_ms !== null, worked = w.quiet_ms !== null, lookLine = run.wake_at_ms
-    ? <p className="nc-line">{t([`Before ${hhmm(run.wake_at_ms)} the screen goes off again after a quiet minute`, `${hhmm(run.wake_at_ms)} 前看一眼，一分钟不动就再熄屏`])}</p> : null;
+    ? <p className="nc-line">{t([`Before ${hhmm(run.wake_at_ms)}, the screen goes off again after a minute of no activity`, `${hhmm(run.wake_at_ms)} 前看一眼，一分钟不动就再熄屏`])}</p> : null;
   let label: string, meta: string, line: ReactNode = null;
   if (released) {
-    label = t(['Let go', '已放开防睡']); meta = hhmm(run.released_ms!);
-    line = t(['The Mac may sleep as usual; the screen stays dark, brightness and sound come back when you are up', 'Mac 可以照常睡；屏幕继续黑着，起来时调回亮度和声音']);
+    label = t(['Released', '已放开防睡']); meta = hhmm(run.released_ms!);
+    line = t(['The Mac may sleep as usual; the screen stays dark, and brightness and sound are restored when you are up', 'Mac 可以照常睡；屏幕继续黑着，起来时调回亮度和声音']);
   } else if (!w.seen) {
     label = t(['Still running', '还在挂着']); meta = t([`floor until ${until}`, `兜底到 ${until}`]);
-    line = <Warm>{w.blind_since_ms ? t([`No session list since ${hhmm(w.blind_since_ms)}; let go at ${until}`, `${hhmm(w.blind_since_ms)} 起看不到会话，到 ${until} 就放开`]) : t([`No session list; let go at ${until}`, `看不到会话，到 ${until} 就放开`])}</Warm>;
+    line = <Warm>{w.blind_since_ms ? t([`No session list since ${hhmm(w.blind_since_ms)}; released at ${until}`, `${hhmm(w.blind_since_ms)} 起看不到会话，到 ${until} 就放开`]) : t([`No session list; released at ${until}`, `看不到会话，到 ${until} 就放开`])}</Warm>;
   } else if (w.busy) {
     label = t(['Still running', '还在挂着']); meta = now < run.until_ms ? t([`at least until ${until}`, `至少到 ${until}`]) : t([`${w.busy} at work`, `${w.busy} 个在干活`]);
-    line = t([`Let go ${SETTLE_MIN} min after ${w.busy > 1 ? 'they all stop' : 'it stops'}; ${cap} at the latest`, `${w.busy > 1 ? '都' : '它'}停下 ${SETTLE_MIN} 分钟后放开防睡，最长到 ${cap}`]);
+    line = t([`The Mac may sleep ${SETTLE_MIN} min after ${w.busy > 1 ? 'they all stop' : 'it stops'}; ${cap} at the latest`, `${w.busy > 1 ? '都' : '它'}停下 ${SETTLE_MIN} 分钟后放开防睡，最长到 ${cap}`]);
   } else if (worked && run.watch.release_ms && run.watch.release_ms > run.until_ms) {
-    label = t(['All stopped', '都停了']); meta = t([`let go at ${hhmm(run.watch.release_ms)}`, `${hhmm(run.watch.release_ms)} 放开防睡`]);
-    line = t([`The last stopped at ${hhmm(w.quiet_ms!)}; nothing by ${hhmm(run.watch.release_ms)} and the Mac may sleep`, `最后一个 ${hhmm(w.quiet_ms!)} 停下；到 ${hhmm(run.watch.release_ms)} 还没动静就放开`]);
+    label = t(['All stopped', '都停了']); meta = t([`released at ${hhmm(run.watch.release_ms)}`, `${hhmm(run.watch.release_ms)} 放开防睡`]);
+    line = t([`The last one stopped at ${hhmm(w.quiet_ms!)}; if nothing starts by ${hhmm(run.watch.release_ms)}, the Mac may sleep`, `最后一个 ${hhmm(w.quiet_ms!)} 停下；到 ${hhmm(run.watch.release_ms)} 还没动静就放开`]);
   } else {
     label = worked ? t(['All stopped', '都停了']) : t(['Still running', '还在挂着']); meta = t([`floor until ${until}`, `兜底挂到 ${until}`]);
     if (worked) line = t([`All stopped at ${hhmm(w.quiet_ms!)}; the floor holds ${span(run.until_ms - now, lang)} more`, `${hhmm(w.quiet_ms!)} 就都停了，兜底还要挂 ${span(run.until_ms - now, lang)}，到点放开`]);
@@ -236,7 +236,7 @@ function Night({ run, look, c, act, go, rate }: { run: NightRun; look: NightLook
         <Dial w={w} start={run.started_ms} end={held} holds={[[run.started_ms, held, 'both'], ...released ? [] : [[held, Math.max(held, plan), 'plan'], [Math.max(held, plan), run.cap_ms, 'far']] as Hold[]]}
           ticks={[[held, 'is-ink'], [run.until_ms, 'is-night']]} labels={[[run.until_ms, t(['floor', '兜底']), 'nc-lab is-night']]} big={String(w.busy)} small={t(['at work', '个在干活'])}
           title={t([`${hhmm(now)}: ${w.busy} at work, floor until ${until}`, `${hhmm(now)}：${w.busy} 个还在干活，兜底到 ${until}`])}/>
-        <div className="nc-side"><Kv dt="3.2em" rows={[[t(['Floor', '兜底']), t([`until ${until}`, `至少到 ${until}`])], [t(['Working', '在干活']), w.busy ? t([`${w.busy}, let go ${SETTLE_MIN} min after`, `${w.busy} 个，停下 ${SETTLE_MIN} 分钟放开`]) : meta], [t(['Longest', '最长']), cap]]}/></div>
+        <div className="nc-side"><Kv dt="3.2em" rows={[[t(['Floor', '兜底']), t([`until ${until}`, `至少到 ${until}`])], [t(['Working', '在干活']), w.busy ? t([`${w.busy}, then ${SETTLE_MIN} min quiet`, `${w.busy} 个，停下 ${SETTLE_MIN} 分钟放开`]) : meta], [t(['Longest', '最长']), cap]]}/></div>
       </div>
       <Legend rows={ringed(w).concat(w.sessions.filter(s => !ringed(w).includes(s)))} c={c} bedtime={false}/>
       {lookLine}{rate}{foot}
@@ -256,23 +256,23 @@ function Morning({ last, look, unread, c, onClose, rate }: { last: NightLast; lo
   const { t, lang } = c, w = last.watch, why = last.release_reason, until = hhmm(last.until_ms);
   const overnight = new Date(last.started_ms).toDateString() !== new Date(last.ended_ms).toDateString();
   const { brightness, volume } = last.restored;
-  const back: L = brightness && volume ? ['Brightness and sound', '亮度和声音'] : brightness ? ['Brightness', '亮度'] : volume ? ['Sound', '声音'] : ['Nothing to put back', '没有要还原的'];
+  const back: L = brightness && volume ? ['Brightness and sound', '亮度和声音'] : brightness ? ['Brightness', '亮度'] : volume ? ['Sound', '声音'] : ['Nothing to restore', '没有要还原的'];
   const held = last.released_ms ?? last.ended_ms, monitor = w.monitor_ms ?? null, extra = w.extra_ms ?? 0;
   const awake: ReactNode = last.released_ms === null ? t(['until you were up', '到你起来'])
-    : <>{`${hhmm(last.started_ms)} – ${hhmm(last.released_ms)} · `}{why === 'battery' ? <Warm>{t(['battery at 10%, let go early', '电量到 10%，提前放开'])}</Warm>
-      : why === 'cap' ? t([`${span(held - last.started_ms, lang)}, the limit`, `${span(held - last.started_ms, lang)}，到上限`]) : span(held - last.started_ms, lang)}</>;
-  const byTime: ReactNode = why === 'deadline' || why === 'blind' ? <>{until}<Tag>{t(['this one', '按这个'])}</Tag></>
+    : <>{`${hhmm(last.started_ms)} – ${hhmm(last.released_ms)} · `}{why === 'battery' ? <Warm>{t(['battery at 10%, released early', '电量到 10%，提前放开'])}</Warm>
+      : why === 'cap' ? t([`${span(held - last.started_ms, lang)}, hit the limit`, `${span(held - last.started_ms, lang)}，到上限`]) : span(held - last.started_ms, lang)}</>;
+  const byTime: ReactNode = why === 'deadline' || why === 'blind' ? <>{until}<Tag>{t(['used', '按这个'])}</Tag></>
     : <Quiet>{until}{w.busy_at_deadline ? t([` · ${w.busy_at_deadline} still at work then`, ` · 那时还有 ${w.busy_at_deadline} 个在干活`]) : ''}</Quiet>;
   const byWatch: ReactNode = !w.seen ? <Quiet>{t(['no session list could be read', '看不到会话'])}</Quiet>
-    : monitor === null ? <Warm>{why === 'cap' ? t([`never came: ${w.busy_at_release ?? 1} still at work at the limit`, `没等到：到上限时还有 ${w.busy_at_release ?? 1} 个在干活`]) : t([`never came: ${w.busy_at_release ?? 1} still at work then`, `没等到：那时还有 ${w.busy_at_release ?? 1} 个在干活`])}</Warm>
-    : why === 'settled' ? <>{hhmm(monitor)}{w.quiet_ms ? t([` · the last stopped at ${hhmm(w.quiet_ms)}`, ` · 最后一个 ${hhmm(w.quiet_ms)} 停下`]) : ''}<Tag>{t(['this one', '按这个'])}</Tag></>
+    : monitor === null ? <Warm>{why === 'cap' ? t([`never settled: ${w.busy_at_release ?? 1} still at work at the limit`, `没等到：到上限时还有 ${w.busy_at_release ?? 1} 个在干活`]) : t([`never settled: ${w.busy_at_release ?? 1} still at work then`, `没等到：那时还有 ${w.busy_at_release ?? 1} 个在干活`])}</Warm>
+    : why === 'settled' ? <>{hhmm(monitor)}{w.quiet_ms ? t([` · the last one stopped at ${hhmm(w.quiet_ms)}`, ` · 最后一个 ${hhmm(w.quiet_ms)} 停下`]) : ''}<Tag>{t(['used', '按这个'])}</Tag></>
     : <Quiet>{hhmm(monitor)}{' · '}{w.quiet_ms ? t([`all stopped at ${hhmm(w.quiet_ms)}`, `${hhmm(w.quiet_ms)} 就都停了`]) : t(['nothing was working', '没有在干活的'])}{extra > 0 ? t([`, the floor held ${span(extra, lang)} more`, `，兜底多挂 ${span(extra, lang)}`]) : ''}</Quiet>;
   const slept: ReactNode = last.slept_ms === null ? t(['awake the whole time', '一直醒着'])
-    : last.released_ms === null || last.slept_ms < last.released_ms ? <Warm>{t([`slept at ${hhmm(last.slept_ms)}, while held`, `${hhmm(last.slept_ms)} 睡着了（还在防睡时）`])}</Warm>
+    : last.released_ms === null || last.slept_ms < last.released_ms ? <Warm>{t([`slept at ${hhmm(last.slept_ms)} while it was held`, `${hhmm(last.slept_ms)} 睡着了（还在防睡时）`])}</Warm>
     : t([`slept at ${hhmm(last.slept_ms)}`, `${hhmm(last.slept_ms)} 睡着了`]);
   const agents: [string, ReactNode][] = unread > 0 ? [[t(['Agents', 'Agent']), t([`${unread} to read`, `${unread} 个待看`])]] : [];
   const x = last.totals, data = x.nights > 1 ? <p className="nc-data">{t([`Last ${x.nights} nights · the floor held ${span(x.extra_ms, lang)} more in all`, `近 ${x.nights} 晚 · 兜底共多挂 ${span(x.extra_ms, lang)}`])}
-    {x.blind ? t([` · ${x.blind} with no session list, the floor alone`, ` · 有 ${x.blind} 晚看不到会话，只靠兜底护着`]) : ''}</p> : null;
+    {x.blind ? t([` · ${x.blind} had no session list, so only the floor applied`, ` · 有 ${x.blind} 晚看不到会话，只靠兜底护着`]) : ''}</p> : null;
   const bar = (title: string) => <div className="ac-bar">
     <span className="ac-label"><i/>{title}</span>
     <span className="ac-meta">{`${hhmm(last.started_ms)} – ${hhmm(last.ended_ms)}`}</span>
@@ -289,7 +289,7 @@ function Morning({ last, look, unread, c, onClose, rate }: { last: NightLast; lo
       <div className="nc-dialrow">
         <Dial w={w} start={last.started_ms} end={held} holds={holds} ticks={[[last.until_ms, 'is-night']]} labels={labels} big={clock(held - last.started_ms)} small={t(['awake', '防睡'])}
           title={t([`Kept awake ${span(held - last.started_ms, lang)}`, `昨晚：防睡 ${span(held - last.started_ms, lang)}`])}/>
-        <div className="nc-side"><Kv dt="3.2em" rows={[[t(['Time', '按时间']), byTime], [t(['Watch', '按监控']), byWatch], [t(['Mac', 'Mac']), slept], [t(['Put back', '还原']), t(back)], ...agents]}/></div>
+        <div className="nc-side"><Kv dt="3.2em" rows={[[t(['Time', '按时间']), byTime], [t(['Watch', '按监控']), byWatch], [t(['Mac', 'Mac']), slept], [t(['Restored', '还原']), t(back)], ...agents]}/></div>
       </div>
       <Legend rows={ringed(w).concat(w.sessions.filter(s => !ringed(w).includes(s)))} c={c} bedtime={false}/>
       {data}{rate}
@@ -299,8 +299,8 @@ function Morning({ last, look, unread, c, onClose, rate }: { last: NightLast; lo
   return <div className="ac nc-night is-morning" data-night={last.id} data-look="list">
     {bar(overnight ? t(['Last night', '昨晚']) : t(['Night run', '挂机']))}
     <Kv rows={[[t(['Kept awake', '防睡']), awake], ...w.seen || w.blind ? [[t(['By time', '按时间']), byTime], [t(['By watch', '按监控']), byWatch]] as [string, ReactNode][] : [],
-      [t(['Mac', 'Mac']), slept], [t(['Put back', '还原']), t(back)], ...agents]}/>
-    <Listing w={w} c={c} bedtime={false} hints={{ busy: why === 'cap' && busy.length ? t(['Check it is not stuck', '看看是不是卡住了']) : undefined }}/>
+      [t(['Mac', 'Mac']), slept], [t(['Restored', '还原']), t(back)], ...agents]}/>
+    <Listing w={w} c={c} bedtime={false} hints={{ busy: why === 'cap' && busy.length ? t(['Check that it is not stuck', '看看是不是卡住了']) : undefined }}/>
     {data}{rate}
   </div>;
 }
