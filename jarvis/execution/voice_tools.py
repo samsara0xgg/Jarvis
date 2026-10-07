@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from jarvis.execution.tools import ToolContext
     from jarvis.state.voice_settings import VoiceSettings
 
-CONFIRM_ABOVE_PERCENT: Final[int] = 200
 # The model chooses only a direction and a size; these numbers are the program's. Volume
 # steps multiply, so each is the same loudness change at any level: about 3 dB and 6 dB.
 _VOLUME_STEPS: Final[dict[str, float]] = {
@@ -43,10 +42,6 @@ _SCHEMA: Final = {
             "description": "Keep the current volume and speed as the default from now on,"
             " also after a restart.",
         },
-        "confirmed": {
-            "type": "boolean",
-            "description": "True only when the user has just agreed to go above 200% volume.",
-        },
     },
     "required": [],
 }
@@ -58,10 +53,8 @@ _DESCRIPTION: Final = (
     " volume are not this tool. Choose a_lot only when the user says it strongly or asks again"
     " right after a change. The new voice applies from your next spoken answer, which is your"
     " reply to this request; the result carries the new values and flags (at_limit,"
-    " needs_confirmation, remembered, reset): say it in your own words. When"
-    " needs_confirmation is true nothing was changed for volume: tell the user the volume"
-    " would be that high and ask first; call again with confirmed true only after a yes."
-    " Without remember, the change ends with the conversation."
+    " remembered, reset): say it in your own words. Without remember, the change ends with"
+    " the conversation."
 )
 
 
@@ -85,22 +78,16 @@ def build_voice_tool(voice: VoiceSettings | None) -> tuple[Tool, ...]:
         volume_step = _pick(args, "volume", _VOLUME_STEPS)
         speed_step = _pick(args, "speed", _SPEED_STEPS)
         reset = args.get("reset") is True
-        confirmed = args.get("confirmed") is True
         if reset:
             voice.reset()
         percent, speed = voice.snapshot()
         before = (percent, speed)
         at_limit = False
-        needs_confirmation = False
-        would_be: int | None = None
         if volume_step is not None:
             stepped = round(percent * volume_step)
             target = min(MAX_PERCENT, max(MIN_PERCENT, stepped))
             at_limit = target != stepped or target == percent
-            if target > CONFIRM_ABOVE_PERCENT and not confirmed and target > percent:
-                needs_confirmation, would_be = True, target
-            else:
-                percent = target
+            percent = target
         if speed_step is not None:
             target_speed = round(min(MAX_SPEED, max(MIN_SPEED, speed + speed_step)), 2)
             at_limit = at_limit or target_speed != round(speed + speed_step, 2) or (
@@ -120,12 +107,9 @@ def build_voice_tool(voice: VoiceSettings | None) -> tuple[Tool, ...]:
                 ) if now != was
             ],
             "at_limit": at_limit,
-            "needs_confirmation": needs_confirmation,
             "remembered": remembered,
             "reset": reset,
         }
-        if would_be is not None:
-            result["would_be_volume_percent"] = would_be
         return result
 
     return (
@@ -141,4 +125,4 @@ def build_voice_tool(voice: VoiceSettings | None) -> tuple[Tool, ...]:
     )
 
 
-__all__ = ["CONFIRM_ABOVE_PERCENT", "build_voice_tool"]
+__all__ = ["build_voice_tool"]

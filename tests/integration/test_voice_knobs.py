@@ -1,7 +1,7 @@
 """ADR 0174: Allen sets her voice volume and speed by saying so, through the model's one tool.
 
-The tool turns the model's direction words into program-owned steps inside fixed bounds and
-asks before going above 200%; the holder keeps current and default; her MiniMax task start
+The tool turns the model's direction words into program-owned steps inside fixed bounds;
+the holder keeps current and default; her MiniMax task start
 reads the holder each time, also when a spare session was connected before the tool ran.
 """
 
@@ -79,26 +79,11 @@ def test_bounds_clamp_and_say_at_the_limit() -> None:
     assert _call(voice, speed="slower_a_bit")["at_limit"] is False
 
 
-def test_above_200_percent_asks_first_and_applies_once_confirmed() -> None:
-    """Going above 200% changes nothing until the model passes confirmed."""
-    voice = VoiceSettings()
-    voice.set_current(190, 1.0)
-    held = _call(voice, volume="louder_a_bit")
-    assert held["needs_confirmation"] is True
-    assert held["would_be_volume_percent"] == 266
-    assert held["volume_percent"] == 190
-    assert voice.snapshot() == (190, 1.0)
-    done = _call(voice, volume="louder_a_bit", confirmed=True)
-    assert done["needs_confirmation"] is False
-    assert voice.snapshot() == (266, 1.0)
-    assert _call(voice, volume="quieter_a_bit")["volume_percent"] == 186
-
-
-def test_the_ceiling_is_300_even_when_confirmed() -> None:
-    """Confirmed does not lift the 300% ceiling."""
+def test_the_ceiling_is_300() -> None:
+    """300% is the most: MiniMax's peaks reach about -2 dBFS there (measured 2026-10-06)."""
     voice = VoiceSettings()
     voice.set_current(290, 1.0)
-    result = _call(voice, volume="louder_a_lot", confirmed=True)
+    result = _call(voice, volume="louder_a_lot")
     assert result["volume_percent"] == 300
     assert result["at_limit"] is True
 

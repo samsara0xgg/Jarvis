@@ -22,7 +22,7 @@
 
 Her voice is set by one model-only tool, `set_voice`, whose arguments are
 direction words (`louder_a_bit`, `louder_a_lot`, `quieter_a_bit`, `quieter_a_lot`,
-`faster_*`, `slower_*`), `reset`, `remember` and `confirmed`; the program owns the
+`faster_*`, `slower_*`), `reset` and `remember`; the program owns the
 numbers and every TTS task start reads them from one shared holder.
 
 Its limits:
@@ -31,8 +31,9 @@ Its limits:
   same change at any level; 15 and 30 points were near the edge of hearing, 2026-10-06),
   speed 0.2 or 0.4. Bounds: volume 30 to
   300 %, speed 0.6 to 1.8, clamped, and the result says `at_limit`.
-- Above 200 % volume nothing is applied unless `confirmed` is true; the result says
-  `needs_confirmation` and the volume it would reach, and the model asks first.
+- No confirmation before a loud step (dropped 2026-10-06): 200 % is only about 6 dB
+  louder, and the 300 % ceiling is where MiniMax's peaks reach about -2 dBFS, so no step
+  can distort.
 - The holder keeps `current` and `default`. Only `default` is saved
   (`voice-settings.json`, written by `remember`, cleared by `reset`) and loaded at
   boot. `current` returns to `default` when conversation mode goes from on to off.
@@ -45,8 +46,8 @@ Its limits:
   existing repeat option ("听不清") and with music or system volume; the model tells
   them apart from the sentence and already replies in her own words.
 - **Absolute numbers in the tool** — models answered "a bit" with different steps
-  in the same conversation; fixed steps are the same every time and the 200 % rule
-  is enforced in code, not in a prompt.
+  in the same conversation; fixed steps are the same every time and the bounds
+  are enforced in code, not in a prompt.
 - **Change the player gain instead** — it would also scale audio already queued
   and the echo canceller's far end, and cannot change speed.
 - **Persist `current`** — a volume set for one loud room would greet the next
