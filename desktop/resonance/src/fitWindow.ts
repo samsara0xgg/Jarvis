@@ -72,10 +72,14 @@ export function fitWindow(root: HTMLElement, stage: () => Box, send: (size: Box)
     if (cur.w - need.w >= SAVING || cur.h - need.h >= SAVING) timer = setTimeout(() => { timer = undefined; cur = need; send(need); }, SETTLE_MS);
   };
   frame = requestAnimationFrame(tick);
+  // The stage is taller than a fitted window, so a scrollIntoView anywhere could scroll the stage's own box (or the page) and lift the whole
+  // stage under the notch (live 2026-10-07, the Memory page). The stage never scrolls.
+  const pin = () => { if (root.scrollTop || root.scrollLeft) root.scrollTo(0, 0); if (window.scrollX || window.scrollY) window.scrollTo(0, 0); };
+  root.addEventListener('scroll', pin); window.addEventListener('scroll', pin);
   return {
     reset: () => { cur = { w: Infinity, h: Infinity }; key = ''; },
     stop: () => {
-      cancelAnimationFrame(frame); clearTimeout(timer);
+      cancelAnimationFrame(frame); clearTimeout(timer); root.removeEventListener('scroll', pin); window.removeEventListener('scroll', pin);
       if (real) Object.defineProperty(window, 'innerHeight', real); else delete (window as { innerHeight?: number }).innerHeight;
     },
   };

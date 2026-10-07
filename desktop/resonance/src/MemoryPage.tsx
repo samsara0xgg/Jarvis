@@ -4,6 +4,7 @@ import { useCompanionSettings, type L, type Lang } from './companionSettings';
 import type { Route } from './homeData';
 import { MorphText } from './MorphText';
 import { MOTION } from './motion';
+import { scrollWithin } from './scrollWithin';
 import './memory-page.css';
 
 // The Dashboard's memory page (ADR 0154): what Jarvis keeps about you, where each line came from, and the means to correct it.
@@ -348,7 +349,7 @@ function Convo({ day, around, a }: { day: string; around?: string; a: Acts }) {
   }, [day, around]);
   useEffect(() => {
     const hit = around ? box.current?.querySelector<HTMLElement>(`[data-id="${around}"]`) : null;
-    hit?.scrollIntoView({ block: 'center' });
+    if (hit) scrollWithin(hit, 'center');
     hit?.animate([{ background: 'rgb(var(--glow) / .28)' }, { background: 'transparent' }], { duration: dur(1400), easing: 'ease-out' });
   }, [!!pages]);
   const page = async (dir: -1 | 1) => {

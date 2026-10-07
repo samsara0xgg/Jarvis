@@ -14,6 +14,7 @@ import { AgentMark, type MarkLook, type MarkState } from './AgentMarks';
 import { cleanError, usePluginIcon, type Plugin, type PluginRequest, type usePlugins } from './PluginPanel';
 import { HOME_DEFAULTS, isPop, tr, useCompanionSettings, useT, type BlockId, type L, type Lang } from './companionSettings';
 import { demoBrief, demoMail, demoNotices, demoToday, postRoute, useNow, useRoute, type Brief, type Mail, type Notice, type Today, type WxKind } from './homeData';
+import { scrollWithin } from './scrollWithin';
 import { ArrangeHome, BLOCK } from './ArrangeHome';
 import { BriefPage } from './BriefPage';
 import { SettingsPage, type Account, type AccountKeyDrafts, type Controls } from './SettingsPage';
@@ -774,7 +775,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     const find = () => {
       const q = CSS.escape(lit.id), el = pageEl.current?.querySelector<HTMLElement>(`[data-id="${q}"], [data-vid="${q}"]`);
       if (!el) { if (tries++ < 8) timer = setTimeout(find, 150); return; }
-      el.scrollIntoView({ block: 'nearest', behavior: reduced.matches ? 'auto' : 'smooth' });
+      scrollWithin(el, 'nearest', !reduced.matches);
       el.classList.remove('is-lit'); void el.offsetWidth; el.classList.add('is-lit');
       timer = setTimeout(() => el.classList.remove('is-lit'), 1500);
     };
@@ -1084,7 +1085,7 @@ function Balance({ id, name, left, since, live, onSaved }: { id: 'openai'; name:
   const amount = Number(draft), valid = !!draft?.trim() && Number.isFinite(amount) && amount >= 0;
   const input = useCallback((el: HTMLInputElement | null) => {
     if (!el) return;
-    el.closest('form')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    const form = el.closest('form'); if (form) scrollWithin(form, 'nearest', true);
     void window.jarvis?.focus(true).then(() => el.focus({ preventScroll: true }));
   }, []);
   const save = async () => {
