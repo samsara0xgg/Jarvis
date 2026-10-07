@@ -2842,7 +2842,7 @@ def test_the_repair_pass_corrects_a_wrong_event_time_from_the_kept_body(
         job_ledger.record_decision(
             h.db, key, "body", "job", NOW, head={"received_at": NOW.isoformat()}, body_excerpt=text
         )
-    assert repair(h.db, "ledger_only") == 2  # noqa: PLR2004 - fix and none
+    assert repair(h.db, "ledger_only") == 2  # fix and none
     assert h.sql("SELECT message_id, event_at, event_text FROM job_mail ORDER BY message_id") == [
         ("fix", "2026-10-08T13:00-07:00", "Thursday October 8th, 1:00pm - 2:00pm"),
         ("none", None, None),  # the rules read no time from the body: the quoted one goes
