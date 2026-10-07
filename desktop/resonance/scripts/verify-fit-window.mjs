@@ -58,7 +58,7 @@ try {
   await page.waitForTimeout(1200);
   s = await sent();
   let talk = await shown('.talk');
-  check('talk area up: the window holds it, shadow included', s.w >= talk.right + 40 - 8 && s.h >= talk.bottom + 64 - 8, JSON.stringify({ s, talk }));
+  check('talk area up: the window holds it, shadow included', s.w >= talk.right + 32 - 1 && s.h >= talk.bottom + 56 - 1, JSON.stringify({ s, talk }));
   check('talk area up: it opened without ever reaching past the window by more than a frame of growth', await page.evaluate(() => window.__over) < 30, String(await page.evaluate(() => window.__over)));
 
   // The Dashboard opens from the island and grows to its page.
@@ -69,6 +69,8 @@ try {
   s = await sent();
   const dash = await shown('.companion-dashboard');
   check('Dashboard open: the window holds it', s.w >= dash.right && s.h >= dash.bottom, JSON.stringify({ s, dash }));
+  const edge = await page.evaluate(() => Math.max(...['.notch-shape path', '.companion-dashboard'].map(q => document.querySelector(q).getBoundingClientRect().right)));
+  check('Dashboard open and settled: the window ends within 2 pt of the visible right edge', s.w - edge <= 2 && s.w >= edge, JSON.stringify({ s, edge }));
   check('Dashboard open: it grew without clipping beyond a frame of growth', await page.evaluate(() => window.__over) < 30, String(await page.evaluate(() => window.__over)));
   check('the page still sees the stage\'s height, not the window\'s', await page.evaluate(() => window.innerHeight) === 722 || await page.evaluate(() => window.innerHeight) === Math.min(await page.evaluate(() => screen.height), 722));
 

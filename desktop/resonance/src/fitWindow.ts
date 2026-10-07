@@ -3,21 +3,36 @@
 // top-left corner and only its right and bottom edges move, so nothing on screen ever shifts when it resizes.
 // Grow at once and ahead of the content; shrink only after the content has held still for SETTLE_MS.
 type Box = { w: number; h: number };
-// Which parts count as visible, and how far each reaches past its box (right, bottom): shadows, glow, a ball's sparks.
-// `always`: counted even when it looks hidden, so the island never needs a resize to fade in.
-const PARTS: { sel: string; r: number; b: number; always?: boolean }[] = [
-  { sel: '.companion-island-target', r: 8, b: 2, always: true },
-  { sel: '.companion-hit', r: 40, b: 40, always: true },
-  { sel: '.notch-shape path', r: 12, b: 12 },
+// Which parts count as visible. A part reaches past its box only by its own outer box-shadow, read from its computed style
+// (SVG paths and the Dashboard's flat black have none). `pad` overrides that where the drawing is on a canvas: the ball's glow and
+// sparks. `always`: counted even when it looks hidden, so the island never needs a resize to fade in.
+const PARTS: { sel: string; pad?: number; always?: boolean }[] = [
+  { sel: '.companion-island-target', always: true },
+  { sel: '.companion-hit', pad: 40, always: true },
+  { sel: '.notch-shape path' },
   // The panes' inner box is their finished size even while the pane is still growing out of the island.
-  { sel: '.notch-pane-in', r: 16, b: 24 },
-  { sel: '.talk', r: 40, b: 64 },
-  { sel: '.companion-dashboard', r: 24, b: 48 },
-  { sel: '.companion-chip', r: 8, b: 8 },
-  { sel: '.companion-menu', r: 24, b: 24 },
-  { sel: '.dashboard-docking-drop path', r: 4, b: 4 },
+  { sel: '.notch-pane-in' },
+  { sel: '.talk' },
+  { sel: '.companion-dashboard' },
+  { sel: '.companion-chip' },
+  { sel: '.companion-menu' },
+  { sel: '.dashboard-docking-drop path' },
 ];
-const AHEAD_X = 120, AHEAD_Y = 200, SETTLE_MS = 600, STEP = 8;
+const AHEAD_X = 120, AHEAD_Y = 200, SETTLE_MS = 600, SAVING = 2;
+
+// How far the outer box-shadows of `el` reach past its right and bottom edges (a shadow's blur reaches about its radius).
+function reach(el: Element) {
+  let r = 0, b = 0;
+  if (!(el instanceof HTMLElement)) return { r, b };
+  const list = getComputedStyle(el).boxShadow;
+  if (list === 'none') return { r, b };
+  for (const one of list.split(/,(?![^(]*\))/)) {
+    if (/\binset\b/.test(one)) continue;
+    const [x, y, blur = 0, spread = 0] = (one.replace(/rgba?\([^)]*\)/, '').match(/-?[\d.]+px/g) ?? []).map(parseFloat);
+    r = Math.max(r, x + blur + spread); b = Math.max(b, y + blur + spread);
+  }
+  return { r, b };
+}
 
 function measure(root: HTMLElement, full: Box): Box {
   // Dragging the finished mark out of the menu bar covers the whole stage with its catch layer; the puffs it leaves follow it.
@@ -27,9 +42,12 @@ function measure(root: HTMLElement, full: Box): Box {
     if (!part.always && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
     const r = el.getBoundingClientRect();
     if (!r.width || !r.height) continue;
-    w = Math.max(w, r.right + part.r); h = Math.max(h, r.bottom + part.b);
+    const out = part.pad === undefined ? reach(el) : { r: part.pad, b: part.pad };
+    // A pill's island has a 6 pt shoulder on its right; beside a notch that edge is under the camera.
+    const shoulder = part.sel === '.companion-island-target' && Math.abs((r.left + r.right) / 2 - full.w / 2) < 1 ? 6 : 0;
+    w = Math.max(w, r.right + out.r + shoulder); h = Math.max(h, r.bottom + out.b);
   }
-  return { w: Math.min(full.w, Math.ceil(w / STEP) * STEP), h: Math.min(full.h, Math.ceil(h / STEP) * STEP) };
+  return { w: Math.min(full.w, Math.ceil(w)), h: Math.min(full.h, Math.ceil(h)) };
 }
 
 // `stage`: the whole stage's size now. `send`: asks the main process for a window of this size.
@@ -51,7 +69,7 @@ export function fitWindow(root: HTMLElement, stage: () => Box, send: (size: Box)
     const now = `${need.w}x${need.h}`;
     if (now === key) return;
     key = now; clearTimeout(timer); timer = undefined;
-    if (cur.w - need.w >= 16 || cur.h - need.h >= 16) timer = setTimeout(() => { timer = undefined; cur = need; send(need); }, SETTLE_MS);
+    if (cur.w - need.w >= SAVING || cur.h - need.h >= SAVING) timer = setTimeout(() => { timer = undefined; cur = need; send(need); }, SETTLE_MS);
   };
   frame = requestAnimationFrame(tick);
   return {
