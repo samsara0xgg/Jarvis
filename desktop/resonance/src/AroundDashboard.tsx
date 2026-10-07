@@ -739,9 +739,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   useEffect(() => { if (port && open) return () => { void postRoute(port, '/inherent/view', { page: null }).catch(() => {}); }; }, [port, open]);
 
   // ADR 0176: she turned the Dashboard (the companion opened the panel if it was shut). A letter or a note opens; any other row lights for a moment.
-  const [lit, setLit] = useState<{ id: string; key: number } | null>(null);
+  // An ask that arrives while the panel is still shut waits for it to open, then is followed once.
+  const [lit, setLit] = useState<{ id: string; key: number } | null>(null), followed = useRef(0);
   useEffect(() => {
-    if (!present || !open || !(present.page in TITLES) || present.page === 'arrange') return;
+    if (!present || !open || present.key === followed.current) return;
+    followed.current = present.key;
+    if (!(present.page in TITLES) || present.page === 'arrange') return;
     const name = present.page as Page, id = present.itemId;
     if (!page) openPage(name);
     else if (page !== name) {
@@ -752,7 +755,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     if (name === 'mail') { const m = mail.find(x => x.id === id); if (m) setLetter(m); }
     else if (name === 'memory') setMemory({ ...MEM_HOME, stack: [{ k: 'item', id }] });
     else { if (name === 'agents') setUnfolded(id); setLit({ id, key: present.key }); }
-  }, [present?.key]);
+  }, [present?.key, open]);
   useEffect(() => {
     if (!lit) return;
     let tries = 0, timer: ReturnType<typeof setTimeout> | undefined;
