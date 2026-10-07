@@ -738,7 +738,7 @@ def extract(head: Head, body: str) -> Facts:
     return Facts(company, role_of(head.subject, body, company), text, at)
 
 
-# --- what a body says about an interview and where to go (ADR 0180) -----------------------
+# --- what a body says about an interview and where to go (ADR 0182) -----------------------
 
 _URL: Final = re.compile(r"https://[^\s<>\"'\])]+", re.IGNORECASE)
 _JOIN_HOSTS: Final[dict[str, str]] = {

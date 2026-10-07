@@ -2620,7 +2620,7 @@ The posting: https://reliablecontrols.com/careers/firmware-qa-analyst-co-op
 
 
 def test_a_body_gives_the_interview_mode_platform_place_people_and_links() -> None:
-    """ADR 0180: read from the words, left empty when the mail does not say."""
+    """ADR 0182: read from the words, left empty when the mail does not say."""
     teams = triage.mail_details(_TEAMS_MAIL)
     assert (teams["mode"], teams["platform"]) == ("online", "Teams")
     assert teams["join_url"] == (

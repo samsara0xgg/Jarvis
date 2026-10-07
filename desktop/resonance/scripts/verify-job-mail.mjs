@@ -1,6 +1,6 @@
 // Job mail (ADR 0155), the client's half, in headless Chrome against the built page and a fake daemon (route mocking): a mail card
 // from GET /inherent/notices with its seen / feedback / dismiss posts, the cue sound only for card_sound and speak, the 合适吗 row,
-// one card per id and no return after a dismiss, the digest, the Dashboard's ledger page with its confirmed delete, the applications as cards (ADR 0177, 0180) with their status pill, timeline, interview, links, Gmail buttons and Add form, the daemon's
+// one card per id and no return after a dismiss, the digest, the Dashboard's ledger page with its confirmed delete, the applications as cards (ADR 0177, 0182) with their status pill, timeline, interview, links, Gmail buttons and Add form, the daemon's
 // `audio_private` (false: no cue for a sounding mail card or an agent notice; true: the cue as before), and a 404 that keeps the app calm. Silent: no desktop window, no audio. Run after `npm run build`.
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
@@ -345,7 +345,7 @@ try {
   await page.waitForTimeout(500);
   check('without skipped the page has no held-back section, no rule line and no error', await page.locator('.ad .jp-skip').count() === 0 && await page.locator('.ad .jp-rule').count() === 0 && errors.length === 0);
 
-  // (g4) ADR 0177, 0180: with `applications` the page is a list of cards, one per job applied to.
+  // (g4) ADR 0177, 0182: with `applications` the page is a list of cards, one per job applied to.
   const soonAt = new Date(Date.now() + 2 * 86_400_000 + 3_600_000).toISOString();
   const teams = 'https://teams.microsoft.com/l/meetup-join/19%3Ameeting_abc/0';
   applications = [

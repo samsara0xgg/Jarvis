@@ -511,7 +511,7 @@ def application_id(company: str) -> str:
     return hashlib.sha1(company.casefold().encode(), usedforsecurity=False).hexdigest()[:12]
 
 
-# The fields of ``details(body)`` (ADR 0180) that describe an interview, and those that are links.
+# The fields of ``details(body)`` (ADR 0182) that describe an interview, and those that are links.
 _INTERVIEW_FIELDS: Final[tuple[str, ...]] = (
     "mode",
     "platform",
@@ -599,7 +599,7 @@ def _mail_application(
 
     The company shown is the newest mail's that names it (a merged-in ATS mail names its ATS),
     the role the longest one any mail read, the most specific. ``read`` is what ``details`` read
-    from each mail's kept body start (ADR 0180), by message id.
+    from each mail's kept body start (ADR 0182), by message id.
     """
     status = "applied"
     for m in mails:
@@ -658,7 +658,7 @@ def _applications(
     applicant-tracking system's name) joins the other company's application with the same role,
     else it stays its own. A mail-derived application has Allen's ``edit`` row of its company (the
     newest, when there are several) override its fields; a ``manual`` row is an application of its
-    own. ``details`` reads the interview and links out of a body start (ADR 0180).
+    own. ``details`` reads the interview and links out of a body start (ADR 0182).
     """
     with _db(path) as conn:
         rows = conn.execute(

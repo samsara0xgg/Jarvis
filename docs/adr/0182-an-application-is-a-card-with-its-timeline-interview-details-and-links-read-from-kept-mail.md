@@ -1,4 +1,4 @@
-# ADR 0180 — An application is a card with its timeline, interview details and links, read from kept mail
+# ADR 0182 — An application is a card with its timeline, interview details and links, read from kept mail
 
 **Status:** Accepted
 **Date:** 2026-10-06

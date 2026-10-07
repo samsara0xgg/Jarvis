@@ -4,7 +4,7 @@ import { useT, type L } from './companionSettings';
 import { postRoute } from './homeData';
 import { openLink } from './Markdown';
 
-// The Dashboard's job ledger: GET /inherent/jobs. With `applications` (ADR 0177) it is a tracker, one card per job applied to, its timeline, interview, links, mails and note opened in place (ADR 0180); without it (an older daemon) one section per company. The daemon (job_mail) keeps
+// The Dashboard's job ledger: GET /inherent/jobs. With `applications` (ADR 0177) it is a tracker, one card per job applied to, its timeline, interview, links, mails and note opened in place (ADR 0182); without it (an older daemon) one section per company. The daemon (job_mail) keeps
 // the facts, never the bodies; a deleted mail is hidden there (POST /inherent/jobs/{message_id}/delete). The kind chips
 // are shared with the notch's mail card and digest.
 export type JobMailRow = { message_id: string; thread_id?: string | null; kind: string; received_at: string; subject: string; event_at?: string | null; event_text?: string | null };
@@ -16,7 +16,7 @@ export type JobRule = { id: string; value: string };
 export type JobGroup = { company: string; role?: string; kind: string; last_at: string; next_event_at?: string | null; count: number; mails: JobMailRow[]; time_spent?: { day: string; seconds: number }[]; time_total_s?: number };
 
 // `applications` (GET /inherent/jobs, ADR 0177, absent on older daemons): one per job applied to, from the mail or added by hand. `status_auto` is false once Allen set the status himself; `source` is `mail` or `manual`. Edits: POST /inherent/jobs/applications/{id} { status?, applied_at?, note?, hidden? }; a new row: POST /inherent/jobs/applications { company, role?, applied_at?, status? }.
-// ADR 0180 (absent on a daemon before it): `timeline` is the steps its mails show, oldest first (`future` is an interview still ahead); `interview` is read from the interview mails' body starts, every field null or empty when the mail does not say; `links` are https addresses from the mails.
+// ADR 0182 (absent on a daemon before it): `timeline` is the steps its mails show, oldest first (`future` is an interview still ahead); `interview` is read from the interview mails' body starts, every field null or empty when the mail does not say; `links` are https addresses from the mails.
 export type JobStep = { kind: 'applied' | 'interview_invite' | 'interview' | 'offer' | 'rejection'; at?: string | null; future: boolean };
 export type JobInterview = { at?: string | null; mode: 'online' | 'onsite' | null; platform: string | null; join_url: string | null; location: string | null; interviewers: string[] };
 export type JobApplication = { id: string; company: string; role: string; status: string; status_auto: boolean; applied_at?: string | null; last_at?: string | null; next_event_at?: string | null; count: number; mails: JobMailRow[]; note: string; source: 'mail' | 'manual'; timeline?: JobStep[]; interview?: JobInterview | null; links?: { portal_url: string | null; posting_url: string | null } };
