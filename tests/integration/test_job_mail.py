@@ -937,6 +937,25 @@ def test_a_single_live_interview_speaks_but_a_burst_of_interviews_does_not(
         # An ATS speaks for the employer: the subject names it.
         ("Acme Careers", "myworkdayjobs.com", "Thank you for applying to Acme", "Acme"),
         ("", "greenhouse.io", "Application for Software Engineer at Acme Corp", "Acme Corp"),
+        # Allen's real mail, 2026-10-06: the ATS's own name is never the company.
+        (
+            "Greenhouse Mail",
+            "us.greenhouse-mail.io",
+            "Thank you for applying to Later - Software Development Co-op",
+            "Later",
+        ),
+        (
+            "Greenhouse",
+            "us.greenhouse-mail.io",
+            "Security code for your application to Later",
+            "Later",
+        ),
+        (
+            "ClearCompany",
+            "clearcompany.com",
+            "Sign-in link for your application at Delta Intelligent Build",
+            "Delta Intelligent Build",
+        ),
         # Organisation names stay, however many capitalised words.
         ("Reliable Controls", "reliablecontrols.com", "Hello", "Reliable Controls"),
         ("Mary Kay", "marykay.com", "Hello", "Mary Kay"),

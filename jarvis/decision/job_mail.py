@@ -485,6 +485,8 @@ _ATS: Final = frozenset(
         "myworkday",
         "myworkdayjobs",
         "greenhouse",
+        "greenhouse-mail",  # us.greenhouse-mail.io
+        "clearcompany",
         "lever",
         "icims",
         "smartrecruiters",
