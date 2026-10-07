@@ -1,5 +1,5 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode, type RefObject, type WheelEvent } from 'react';
-import { Keyboard, LinkSimple, Microphone, Stop } from '@phosphor-icons/react';
+import { Keyboard, LinkSimple, Stop } from '@phosphor-icons/react';
 import { Lk, Markdown, inline } from './Markdown';
 import { WriteField } from './WriteField';
 import { tr, type L, type Lang } from './companionSettings';
@@ -113,11 +113,11 @@ export type TalkProps = {
   buttons: boolean;
   // Think mode (ADR 0064) for this turn: the deep look, the seconds counting, and how long each deep answer took.
   deep: { look: boolean; secs: number; thoughts: { turn: string; secs: number }[] };
-  field: boolean; draft: string; micPaused: boolean;
+  field: boolean; draft: string;
   // A confirm or question card waiting on you while you talk (keyed by its id): it comes up at the end of the transcript, after her latest line, and the area stays up and grows to hold it.
   card?: ReactElement;
   onDraft: (value: string) => void; onSend: () => void; // `empty`: closing it leaves nothing to show.
-  onField: (open: boolean, empty?: boolean) => void; onMic: () => void; onEnd: () => void;
+  onField: (open: boolean, empty?: boolean) => void; onEnd: () => void;
   // `onUp`: it is up (she stays out); false from the moment it folds into her. `onSettle`: a shape change has come to rest.
   onUp: (up: boolean) => void; onSettle: () => void;
   boxRef: RefObject<HTMLDivElement | null>; inputRef: RefObject<HTMLTextAreaElement | null>;
@@ -548,8 +548,7 @@ export function TalkArea(p: TalkProps) {
 
   const field = <WriteField formRef={fdEl} inputRef={p.inputRef} className="talk-fd" hidden={row !== 'fd'} on={row === 'fd'} value={p.draft} onChange={p.onDraft}
     onSend={submit} onEscape={() => p.onField(false, v.items.length === 0)} onFit={setFieldH}
-    label={t(['Type a message', '文字输入'])} sendLabel={t(['Send', '发送'])} placeholder={t(['Type to her…', '打字给她…'])}
-    lead={<button type="button" className={`mic ${p.micPaused ? 'dim' : ''}`} aria-label={t(['Back to voice', '回到语音'])} title={p.micPaused ? t(['The microphone is paused while you type. Click to go back to voice', '打字时麦克风暂停，点一下回到语音']) : t(['Talk instead', '改用语音'])} onClick={p.onMic}><Microphone/></button>}/>;
+    label={t(['Type a message', '文字输入'])} sendLabel={t(['Send', '发送'])} placeholder={t(['Type to her…', '打字给她…'])}/>;
 
   return <div ref={box} className="talk" data-kind={v.kind} data-state={v.state} data-deep={v.deep || undefined} data-buttons={p.buttons || undefined} data-hit={open || undefined} data-glass="css" inert={!open}
     style={{ left: p.x, top: p.y }} role="region" aria-label={t(['Conversation', '对话'])}>

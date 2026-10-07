@@ -181,16 +181,10 @@
 @keyframes talk-breathe { 0%,100% { transform:scale(.72); } 50% { transform:scale(1.12); } }
 @keyframes talk-bar { 0%,100% { transform:scaleY(.35); } 50% { transform:scaleY(1); } }
 
-/* ... or the field you type in (WriteField): written on the dusk under a hairline, the way back to voice at its left, dim while the microphone is paused.
+/* ... or the field you type in (WriteField): written on the dusk under a hairline.
    With nothing above it there is nothing to divide it from, and no hairline. */
 .talk .talk-fd { z-index:2; flex:none; padding-block:4px; }
 .talk:has(> .talk-tr:empty) .talk-fd::before { display:none; }
-.talk .mic { flex:none; display:grid; place-items:center; width:26px; height:26px; margin:0 2px 5px -5px; padding:0; border-radius:50%; color:rgb(255 255 255 / .55); transition:transform .18s ease,color .2s ease; }
-.talk .mic svg { width:16px; height:16px; }
-.talk .mic:hover { color:rgb(255 255 255 / .9); }
-.talk .mic:active { transform:scale(.86); }
-.talk .mic.dim { color:rgb(255 255 255 / .32); }
-.talk .mic.dim:hover { color:rgb(255 255 255 / .8); }
 .tk-fly { position:absolute; inset:0; z-index:4; pointer-events:none; }
 .tk-ghost { position:absolute; margin:0; font-size:var(--text-body); line-height:20px; color:#eef0fb; transform-origin:0 0; white-space:pre-wrap; overflow-wrap:anywhere; }
 

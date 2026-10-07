@@ -467,12 +467,6 @@ export function Companion() {
     if (voice !== 'off' && !s.micMuted) { paused.current = true; markPaused(true); pauseMic(true); }
     void window.jarvis?.focus(true).then(() => requestAnimationFrame(aimAtCaret));
   };
-  // Back to voice: the field goes, the microphone comes back, and with no conversation going she starts listening.
-  const backToVoice = () => {
-    const was = voice;
-    closeComposer();
-    if (was === 'off') { feedback('voice-enter'); if (port) void link.current?.controls({ conversation: true }).catch(() => undefined); else listen(true); }
-  };
   const send = () => {
     const text = draft.trim();
     if (!text) return;
@@ -877,9 +871,9 @@ export function Companion() {
         <button role="menuitem" onClick={() => { setMenu(null); openDashboard(false); pinned.current = true; if (detachedMode.current) window.jarvis?.dashboardMessage?.('dashboard', { type: 'settings' }); else setSettingsFocus(n => n + 1); }}>{t(['Settings…', '设置…'])}</button>
       </div>}
       <TalkArea lang={companion.lang} x={out.x} y={out.y + R + 11} open={presence.open && place === 'out' && !quiet} level={talkLevel} lines={s.talk} since={talkFrom} voice={voice} hearing={hearing} partial={partial} settled={port ? s.settled : null} tool={tool} silent={s.soundMuted} buttons={companion.talkButtons}
-        deep={{ look: deepLook, secs: deepSecs, thoughts }} field={composer} draft={draft} micPaused={s.micMuted} card={cardShown ? cardView : undefined}
+        deep={{ look: deepLook, secs: deepSecs, thoughts }} field={composer} draft={draft} card={cardShown ? cardView : undefined}
         onDraft={value => { if (!draft && value) stopTalking(); setDraft(value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); }}
-        onSend={send} onField={(open, empty) => { if (open) openComposer(); else { closeComposer(); if (empty && voice === 'off') presence.dismiss(); } }} onMic={backToVoice}
+        onSend={send} onField={(open, empty) => { if (open) openComposer(); else { closeComposer(); if (empty && voice === 'off') presence.dismiss(); } }}
         onEnd={() => { closeComposer(); if (voice !== 'off') endVoice(); presence.dismiss(); }} onUp={setTalkUp} onSettle={() => { if (live.current.composer) aimAtCaret(); kickGlass.current(); }}
         boxRef={talkBox} inputRef={input}/>
       <DuskDashboard open={dashboard} onDetach={transferDashboard} onJoinedChange={setDashboardJoined} top={geo.panelTop} width={geo.width} left={geo.center - PANEL / 2}

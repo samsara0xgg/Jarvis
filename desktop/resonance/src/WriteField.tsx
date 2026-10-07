@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode, type Ref, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type Ref, type RefObject } from 'react';
 import { ArrowUp } from '@phosphor-icons/react';
 import './write-field.css';
 
@@ -32,10 +32,8 @@ function useGrow(ta: RefObject<HTMLTextAreaElement | null>, value: string, on: b
   }, [on]);
 }
 
-export function WriteField({ className, formRef, inputRef, hidden, on = true, lead, value, onChange, onSend, onEscape, onFit, onPointerDown, placeholder, label, sendLabel }: {
+export function WriteField({ className, formRef, inputRef, hidden, on = true, value, onChange, onSend, onEscape, onFit, onPointerDown, placeholder, label, sendLabel }: {
   className: string; formRef?: Ref<HTMLFormElement>; inputRef?: RefObject<HTMLTextAreaElement | null>; hidden?: boolean; on?: boolean;
-  // Something in the row before the words (the talk area's way back to voice).
-  lead?: ReactNode;
   value: string; onChange: (value: string) => void;
   // Enter or the arrow, with something to send. `onEscape`: Esc inside the field; without it Esc goes on up to whoever holds the field.
   onSend: () => void; onEscape?: () => void;
@@ -47,7 +45,6 @@ export function WriteField({ className, formRef, inputRef, hidden, on = true, le
   useGrow(ta, value, on, h => { setTall(h > MIN); onFit?.(h); });
   const send = () => { if (has) onSend(); };
   return <form ref={formRef} className={`wf ${className}`} hidden={hidden} data-tall={tall || undefined} onSubmit={e => { e.preventDefault(); send(); }}>
-    {lead}
     <textarea ref={ta} rows={1} aria-label={label} placeholder={placeholder} enterKeyHint="send" autoComplete="off" value={value}
       onChange={e => onChange(e.target.value)} onPointerDown={onPointerDown}
       onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {

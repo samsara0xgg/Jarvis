@@ -210,8 +210,8 @@ try {
     // typing in the middle of the conversation
     await page.locator('.talk-ft .kb').click(); await page.waitForTimeout(900);
     a = await area();
-    check('typing mid-voice: the footer gives way to the field, with the microphone to its left', a.fieldShown && await page.locator('.talk .mic').isVisible());
-    check('the microphone pauses while you type: the daemon’s own mute, and the mic button goes dim', posts.some(p => p.path === '/inherent/controls' && p.body.mic_muted === true) && await page.locator('.talk .mic.dim').count() === 1);
+    check('typing mid-voice: the footer gives way to the field, words and the arrow only (no microphone in the row)', a.fieldShown && await page.locator('.talk .talk-fd svg').count() === 1);
+    check('the microphone pauses while you type: the daemon’s own mute', posts.some(p => p.path === '/inherent/controls' && p.body.mic_muted === true));
     check('the send button is grey while the field is empty', await page.locator('.talk .send').isDisabled() && await page.locator('.talk .send.off').count() === 1);
     check('the field has one short line in the placeholder, whatever the state: it does not wrap or ellipsize here', await page.evaluate(() => { const t = document.querySelector('.talk textarea'); return t.placeholder === 'Type to her…' && t.getBoundingClientRect().height === 36 && t.scrollHeight <= t.clientHeight; }));
     check('no pill: the words sit on the dusk, no fill, no border, no ring, and the hairline above the row is there', await page.evaluate(() => { const t = document.querySelector('.talk textarea'), cs = getComputedStyle(t), h = getComputedStyle(document.querySelector('.talk-fd'), '::before'); return cs.backgroundColor === 'rgba(0, 0, 0, 0)' && cs.borderTopWidth === '0px' && cs.boxShadow === 'none' && h.display !== 'none' && h.height === '1px'; }));
