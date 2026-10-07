@@ -43,7 +43,7 @@ from jarvis.state.response_runs import append_response_started, open_response_ru
 from jarvis.state.stream_emission import committed_text_prefix
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterable, Iterator
 
     from jarvis.decision.llm_session import LLMRequestClient
     from jarvis.shared import Event
@@ -436,6 +436,8 @@ class ResponseRunRegistry:
         self._allen_quiet.set()
         # Turns the stop button hit before their run opened, as expiry times.
         self._stopped_turns: dict[str, float] = {}
+        # ADR 0074: turns a newer sentence superseded before their run opened.
+        self._superseded_turns: dict[str, float] = {}
 
     def hold_completion(self, *, held: bool) -> None:
         """Hold, or release, every run's completion while Allen is talking."""
@@ -463,6 +465,18 @@ class ResponseRunRegistry:
         """Whether the stop button hit ``turn_id`` recently enough to still bind it."""
         with self._lock:
             return self._stopped_turns.get(turn_id, 0.0) > time.monotonic()
+
+    def mark_turns_superseded(self, turn_ids: Iterable[str], *, for_s: float) -> None:
+        """Remember turns a newer sentence superseded, for runs not yet open."""
+        now = time.monotonic()
+        with self._lock:
+            self._superseded_turns = {t: u for t, u in self._superseded_turns.items() if u > now}
+            self._superseded_turns.update(dict.fromkeys(turn_ids, now + for_s))
+
+    def turn_superseded(self, turn_id: str) -> bool:
+        """Whether a newer sentence superseded ``turn_id`` recently enough to still bind it."""
+        with self._lock:
+            return self._superseded_turns.get(turn_id, 0.0) > time.monotonic()
 
     def register(self, run: ResponseRun) -> None:
         """Add ``run`` under its response id."""

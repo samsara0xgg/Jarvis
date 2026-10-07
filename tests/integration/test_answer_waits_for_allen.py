@@ -497,3 +497,33 @@ def test_a_turn_that_started_playing_is_never_dropped(tmp_path: Path) -> None:
         assert pipeline.close()
         conn.close()
 
+
+
+def test_a_sentence_accepted_before_the_earlier_run_opens_still_supersedes_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live 2026-10-02 23:22: a line 0.3 s after the one before it was swept first.
+
+    The earlier line's run opens ~0.4 s after its words, so the sweep for the
+    next line found nothing to cancel and both answers played, one 18 s behind.
+    The run must be cancelled as ``superseded`` the moment it opens.
+    """
+    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+    _script_decide(monkeypatch, _final_result())
+    assert runtime.response_runs is not None
+    intent = _emit_intent(runtime.conn, "T-first")
+    _heard(runtime.conn, "T-first")
+    make_supersede_unspoken_callable(runtime, lambda turn_ids: turn_ids)("T-next")
+    assert not runtime.response_runs.open_runs()
+    with pytest.raises(ResponseCancelledError):
+        _drive_turn_on_own_connection(
+            runtime,
+            user_intent_event=intent,
+            available_surfaces=frozenset(),
+            streaming_enabled=True,
+        )
+    cancelled = _payloads(runtime.conn, "response.cancelled")
+    assert [(row["turn_id"], row["reason"]) for row in cancelled] == [("T-first", "superseded")]
+    assert _event_count(runtime.conn, "surface.response_emitted") == 0
+    runtime.conn.close()

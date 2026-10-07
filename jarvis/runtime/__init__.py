@@ -2737,6 +2737,19 @@ def _warm_next_prefix(
     threading.Thread(target=_run, name="jarvis-prefix-warm", daemon=True).start()
 
 
+def _late_cancel_reason(registry: ResponseRunRegistry, run: ResponseRun) -> str | None:
+    """Why a run that just opened is already cancelled: a stop or a newer sentence came first."""
+    if registry.turn_stopped(run.turn_id):
+        return "user_stop"
+    if (
+        run.phase == "final"
+        and run.interrupt_policy.generation_action == "cancel"
+        and registry.turn_superseded(run.turn_id)
+    ):
+        return "superseded"
+    return None
+
+
 def _start_drive_turn_response(
     runtime: JarvisRuntime,
     *,
@@ -2825,10 +2838,10 @@ def _start_drive_turn_response(
     )
     if runtime.response_flags.independent_response_cancel and runtime.response_runs is not None:
         runtime.response_runs.register(run)
-        if runtime.response_runs.turn_stopped(turn_id):
-            # The stop button hit this turn before its run opened (the turn
-            # cancel found nothing to cancel). Checked after registering, so a
-            # stop landing at any moment either sees the run or is seen here.
+        # Checked after registering, so a stop (or a sweep, ADR 0074) landing at
+        # any moment either sees the run or is seen here.
+        late_cancel = _late_cancel_reason(runtime.response_runs, run)
+        if late_cancel is not None:
             request_response_cancel(
                 runtime.response_runs,
                 terminalizer,
@@ -2836,7 +2849,7 @@ def _start_drive_turn_response(
                     request_id="CREQ" + uuid.uuid4().hex,
                     response_id=run.response_id,
                     scope="generation",
-                    reason="user_stop",
+                    reason=late_cancel,
                 ),
             )
     if context is None:
@@ -3077,6 +3090,9 @@ def make_supersede_unspoken_callable(
     that still waits is rejected with rule ``superseded`` (ADR 0074), so the
     new turn asks afresh.
 
+    A turn whose run has not opened yet (a line accepted under 0.5 s before
+    this one) is remembered and cancelled the same way as its run registers.
+
     With ``slow_results`` on, a turn that already dispatched an action is
     skipped: it is working on a lookup, not half of a split sentence, and the
     new question gets its own answer while the lookup's follows. Live test
@@ -3097,8 +3113,7 @@ def make_supersede_unspoken_callable(
             and run.turn_id != turn_id
             and run.interrupt_policy.generation_action == "cancel"
         ]
-        if not runs:
-            return
+        any_open = bool(runs)
         since_ms = int((time.time() - _SUPERSEDE_WINDOW_S) * 1000)
         with contextlib.closing(
             open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
@@ -3126,10 +3141,31 @@ def make_supersede_unspoken_callable(
                     )
                 }
                 runs = [run for run in runs if run.turn_id not in working]
+            # A line accepted within ~0.5 s of the one before it is swept before
+            # that line's run opens (its request is built after its words): mark
+            # every recent turn with no run yet, and `register` cancels it on open.
+            registry.mark_turns_superseded(
+                recent - {turn_id}
+                - {run.turn_id for run in registry.open_runs()}
+                - {
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT json_extract(correlation_json, '$.turn_id') FROM events "
+                        "WHERE ts_epoch_ms >= ? AND type IN "
+                        "('turn.ended', 'turn.failed', 'response.cancelled')",
+                        (since_ms,),
+                    )
+                },
+                for_s=_SUPERSEDE_WINDOW_S,
+            )
             # ponytail: a run that passed the completion hold just before Allen
             # started talking can complete between this drop and its cancel; its
             # queued audio is then lost while its row stays. A millisecond window.
-            dropped = drop_unspoken(frozenset(run.turn_id for run in runs) & recent)
+            dropped = (
+                drop_unspoken(frozenset(run.turn_id for run in runs) & recent)
+                if any_open
+                else frozenset()
+            )
             for run in runs:
                 if run.turn_id not in dropped:
                     continue
