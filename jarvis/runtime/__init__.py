@@ -195,6 +195,7 @@ from jarvis.shared.realtime_trace import (
     configure_realtime_trace_jsonl,
     record_realtime_trace,
 )
+from jarvis.state import device_reads
 from jarvis.state.authorized_dispatch_outbox import (
     ConfirmationRevalidationError,
     answer_confirmation_once,
@@ -1664,8 +1665,14 @@ def _codex_sessions_path(config: Mapping[str, Any]) -> Path | None:
     return root if root.is_dir() else None
 
 
+def _reads_connected(hub: TerminalHub) -> bool:
+    """Whether a connected terminal declared the TimeSink and git reads (ADR 0170)."""
+    return any(tools >= device_reads.DEVICE_READS for _, tools in hub.connected())
+
+
 def _daily_schedule(
     service: DailyReportService, event_log: Path, config: Mapping[str, Any],
+    hub: TerminalHub | None = None,
 ) -> DailySchedule | None:
     """``daily_report.at`` — when the daemon writes yesterday's report (ADR 0101); unset: off."""
     block = config.get("daily_report")
@@ -1678,7 +1685,10 @@ def _daily_schedule(
         LOGGER.warning("daily_report.at %r is not HH:MM; no daily report is written", raw)
         return None
     zone = resolve_zone(None, _work_state_timezone(config))[1]
-    return DailySchedule(service, event_log_path=event_log, at=at, zone=zone)
+    return DailySchedule(
+        service, event_log_path=event_log, at=at, zone=zone,
+        device_ready=None if hub is None else partial(_reads_connected, hub),
+    )
 
 
 def _work_state_tool_refresh(
@@ -2761,7 +2771,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
         night=night,
         voice_settings=voice_settings,
-        daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config),
+        daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config, terminal_hub),
     )
 
 

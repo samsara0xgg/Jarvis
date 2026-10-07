@@ -177,6 +177,9 @@ class DayEvidence:
     served: dict[str, str] = field(default_factory=dict)
     """Per source, what the material holds: nothing recorded, unreadable, whole, or which part
     fell back to index lines and how much text that withheld."""
+    device_gap: bool = False
+    """A brain could not reach its terminal for TimeSink or git (ADR 0170): the day may be
+    read again when the terminal is back, which a store that is simply absent never is."""
 
     @property
     def empty(self) -> bool:
@@ -212,6 +215,7 @@ class _Gather:
     haystack: dict[str, str] = field(default_factory=dict)
     commit_rows: dict[str, dict[str, Any]] = field(default_factory=dict)
     latest: datetime | None = None
+    device_gap: bool = False
 
     def clock(self, value: str) -> str:
         return datetime.fromisoformat(value).astimezone(self.zone).strftime("%H:%M")
@@ -576,6 +580,7 @@ def _git_sections(
 ) -> None:
     repos, gap = device_reads.watched_repos(device, tuple(repos))
     if gap is not None:
+        g.device_gap = True
         g.limits.append(t("device.unavailable", why=gap))
     rows = conn.execute(
         "SELECT event_uid,type,ts_epoch_ms,payload_json FROM events "
@@ -957,6 +962,7 @@ def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zon
         with timesink.snapshot(timesink_path, device) as snap:
             _timesink_sections(g, snap)
     except device_reads.DeviceUnavailable as exc:
+        g.device_gap = True
         _timesink_sections(g, None, str(exc))
     _record_section(g, memory_path)
     _git_sections(g, conn, repos, device)
@@ -986,6 +992,7 @@ def gather_day(  # noqa: PLR0913 — the configured stores plus the day, its zon
         haystack=g.haystack,
         commit_rows=g.commit_rows,
         served=g.served,
+        device_gap=g.device_gap,
     )
 
 

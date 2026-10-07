@@ -18,6 +18,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -292,6 +293,7 @@ class DailyReportService:
                 "coverage": evidence.coverage,
                 "served": evidence.served,
                 "limits": evidence.limits,
+                "device_gap": evidence.device_gap,
                 "error": None,
             }
         if self._reporter is None:
@@ -334,6 +336,7 @@ class DailyReportService:
             "source_refs_saved": len(refs),
             "evidence_counts": evidence.counts,
             "limits": evidence.limits,
+            "device_gap": evidence.device_gap,
             "summary": summary_of(content),
             "model_calls": drafted + checks + summarised,
             "checks": checks,
@@ -518,9 +521,16 @@ class DailyReportService:
 
 
 class DailySchedule:
-    """ADR 0101: the daemon writes the day before's report once a day; a turn only reads it."""
+    """ADR 0101: the daemon writes the day before's report once a day; a turn only reads it.
 
-    def __init__(
+    On a brain (ADR 0170) the day's TimeSink and git are the terminal's. A day written while the
+    terminal could not be reached keeps its coverage marked unavailable, and is written once
+    more as soon as a terminal that can read them is connected (at most ``CATCH_UPS`` times).
+    """
+
+    CATCH_UPS = 2
+
+    def __init__(  # noqa: PLR0913 — the service, the hour, its zone and the brain's seam.
         self,
         service: DailyReportService,
         *,
@@ -528,14 +538,22 @@ class DailySchedule:
         at: time,
         zone: tzinfo,
         poll_s: float = 60.0,
+        device_ready: Callable[[], bool] | None = None,
     ) -> None:
-        """Bind the service and the local hour; nothing runs until :meth:`run`."""
+        """Bind the service and the local hour; nothing runs until :meth:`run`.
+
+        ``device_ready`` (a brain only) says whether a terminal that reads TimeSink and git is
+        connected right now.
+        """
         self._service = service
         self._event_log_path = event_log_path
         self._at = at
         self._zone = zone
         self._poll_s = poll_s
+        self._device_ready = device_ready
         self._last: date | None = None
+        self._gap: date | None = None
+        self._catch_ups = 0
 
     def due(self, now: datetime) -> date | None:
         """Yesterday, once ``at`` has passed today and yesterday was not tried yet."""
@@ -543,23 +561,45 @@ class DailySchedule:
         day = local.date() - timedelta(days=1)
         return None if local.time() < self._at or day == self._last else day
 
-    def write(self, day: date, *, now: datetime | None = None) -> dict[str, Any]:
-        """One attempt per day: a saved report is reused, a failure waits for the next day."""
-        self._last = day
+    def catch_up(self) -> date | None:
+        """The day last written without its terminal, once one is connected to write it again."""
+        if self._gap is None or self._device_ready is None or self._catch_ups >= self.CATCH_UPS:
+            return None
+        return self._gap if self._device_ready() else None
+
+    def write(
+        self, day: date, *, now: datetime | None = None, catch_up: bool = False,
+    ) -> dict[str, Any]:
+        """One attempt per day: a saved report is reused, a failure waits for the next day.
+
+        A catch-up writes the day again over the version made without the device.
+        """
+        if not catch_up:
+            self._last = day
         with closing(open_runtime_event_log(self._event_log_path)) as conn:
-            return self._service.run(
-                conn, local_date=day.isoformat(), action_id=f"daily-report-{day}", now=now,
+            result = self._service.run(
+                conn, local_date=day.isoformat(), regenerate=catch_up, now=now,
+                action_id=f"daily-report-{day}" + ("-catch-up" if catch_up else ""),
             )
+        if result.get("device_gap"):
+            self._gap = day
+            self._catch_ups = self._catch_ups + 1 if catch_up else 0
+        elif self._gap == day:
+            self._gap = None
+        return result
 
     async def run(self) -> None:
         """Check every ``poll_s``; a Mac asleep at ``at`` writes on its first check after waking."""
         while True:
             await asyncio.sleep(self._poll_s)
             day = self.due(datetime.now(UTC))
+            catching = day is None
+            if day is None:
+                day = self.catch_up()
             if day is None:
                 continue
             try:
-                result = await asyncio.to_thread(self.write, day)
+                result = await asyncio.to_thread(partial(self.write, day, catch_up=catching))
             except Exception:
                 LOGGER.exception("daily_report: scheduled run for %s failed", day)
                 continue

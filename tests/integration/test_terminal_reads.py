@@ -19,6 +19,7 @@ import sqlite3
 import threading
 from contextlib import closing
 from datetime import UTC, datetime
+from datetime import time as dtime
 from typing import TYPE_CHECKING, Any, Self
 
 import pytest
@@ -26,10 +27,11 @@ import uvicorn
 
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import build_default_registry, make_screen_capture
-from jarvis.runtime import bootstrap_runtime_app
-from jarvis.runtime.daily_report import DailyReportService
+from jarvis.runtime import _reads_connected, bootstrap_runtime_app
+from jarvis.runtime.daily_report import DailyReportService, DailySchedule
 from jarvis.runtime.terminal import _declared, _observe, _Watched, make_executor
 from jarvis.runtime.work_state import WorkStateService
+from jarvis.shared.device_link import DeviceCallError
 from jarvis.state import device_reads, timesink
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_report import (
@@ -556,6 +558,76 @@ def test_the_daily_report_on_a_brain_cites_the_terminals_data_and_records_the_ga
     assert partial["coverage"]["records"] == "available"
 
 
+def test_a_day_written_while_the_terminal_was_away_is_written_again_when_it_connects(
+    tmp_path: Path, source: sqlite3.Connection,
+) -> None:
+    """The schedule's attempt at its hour is not its last.
+
+    A day whose coverage was marked unavailable is written again once a terminal that reads
+    TimeSink and git is there, and then left alone.
+    """
+    repo, _ = _fixtures(tmp_path, source)
+    store = tmp_path / "timesink.sqlite"
+    token = pair_device(tmp_path, "macbook")
+    log = bootstrap_runtime(tmp_path / "brain-root").event_log
+    with _Brain(tmp_path, log) as brain:
+        svc = _Service(tmp_path / "svc", device=brain.hub.call, store=None, repos=())
+        schedule = DailySchedule(
+            svc.service, event_log_path=tmp_path / "svc" / "events.db", at=dtime(5), zone=TZ,
+            device_ready=functools.partial(_reads_connected, brain.hub),
+        )
+        assert schedule.catch_up() is None  # nothing was written yet
+
+        first = schedule.write(DAY, now=NOW)  # the hour comes, no terminal, no evidence at all
+        assert (first["outcome"], first["device_gap"]) == ("no_evidence", True)
+        assert schedule.catch_up() is None, "no terminal to ask yet"
+
+        _record(svc.memory, "rec-1", "明天继续写日报工具。")
+        svc.reporter.report = _one_item("日报工具", "completed", ["r1"])
+        partial = schedule.write(DAY, now=NOW, catch_up=True)  # still no terminal
+        assert (partial["outcome"], partial["device_gap"]) == ("generated", True)
+        assert partial["coverage"]["app"] == "unavailable"
+        assert schedule.catch_up() is None
+
+        with _Terminal(brain.url, token, store=store, repos=(str(repo),)):
+            _wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
+            assert schedule.catch_up() == DAY
+            svc.reporter.report = _one_item("日报工具", "completed", ["r1", "s1", "a1"])
+            done = schedule.write(DAY, now=NOW, catch_up=True)
+            assert (done["outcome"], done["device_gap"]) == ("generated", False)
+            assert done["version"] == partial["version"] + 1
+            assert done["coverage"]["app"] != "unavailable"
+            assert done["evidence_counts"]["windows"] == 2
+            assert schedule.catch_up() is None, "the day is whole: nothing more to catch up"
+
+        assert schedule.due(datetime(2026, 9, 20, 12, 1, tzinfo=UTC)) is None  # no second attempt
+
+
+def test_a_catch_up_gives_up_after_its_few_tries_and_a_one_machine_schedule_has_none(
+    tmp_path: Path,
+) -> None:
+    """A terminal that stays unreadable is not asked for more model calls without end."""
+    svc = _Service(tmp_path / "svc", device=lambda *_: (_ for _ in ()).throw(
+        DeviceCallError("gone", code="device_timeout"),
+    ), store=None, repos=())
+    _record(svc.memory, "rec-1", "明天继续写日报工具。")
+    svc.reporter.report = _one_item("日报工具", "completed", ["r1"])
+    schedule = DailySchedule(
+        svc.service, event_log_path=tmp_path / "svc" / "events.db", at=dtime(5), zone=TZ,
+        device_ready=lambda: True,
+    )
+    assert schedule.write(DAY, now=NOW)["device_gap"] is True
+    for _ in range(DailySchedule.CATCH_UPS):
+        assert schedule.catch_up() == DAY
+        assert schedule.write(DAY, now=NOW, catch_up=True)["device_gap"] is True
+    assert schedule.catch_up() is None
+
+    alone = DailySchedule(svc.service, event_log_path=tmp_path / "svc" / "events.db",
+                          at=dtime(5), zone=TZ)
+    alone.write(DAY, now=NOW)
+    assert alone.catch_up() is None
+
+
 # --- the work state ------------------------------------------------------------------------
 
 
@@ -663,8 +735,10 @@ def test_one_machine_wires_no_device_into_its_readers_and_a_brain_wires_its_hub(
         assert brain.daily_schedule is not None
         assert one.work_state._device is None  # noqa: SLF001
         assert one.daily_schedule._service._device is None  # noqa: SLF001
+        assert one.daily_schedule._device_ready is None  # noqa: SLF001
         assert brain.work_state._device == brain.terminal_hub.call  # noqa: SLF001
         assert brain.daily_schedule._service._device == brain.terminal_hub.call  # noqa: SLF001
+        assert brain.daily_schedule._device_ready is not None  # noqa: SLF001
     finally:
         one.conn.close()
         brain.conn.close()
