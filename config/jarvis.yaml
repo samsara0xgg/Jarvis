@@ -63,11 +63,6 @@ llm:
       max_tokens: 16384
       context_length: 1050000
       reasoning_effort: none
-      # 2026-10-05：默认缓存闲 5-10 分钟就丢，隔一阵后的第一句冷读 1.3 万 token，
-      # 多等 1-1.5 秒。改成保留 24h，固定 key 让请求落到同一份缓存。
-      extra_body:
-        prompt_cache_key: jarvis-conversation
-        prompt_cache_retention: 24h
     # 深想一轮用的（上面的 llm.think）。思考和工具同开只能走 /v1/responses。
     luna-think:
       model: gpt-6-luna
