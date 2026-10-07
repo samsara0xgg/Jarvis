@@ -4,7 +4,7 @@ While Allen dictates, his words go to the text caret, not to Jarvis. The
 desktop asks for one session at a time; the daemon records from its own mic
 (a capture lane on the single audio ingress), hears it with local Whisper
 a stretch at a time as he pauses (ADR 0076), and one side-job model polishes
-it with 言字's (was Typlus) instructions, both as 言字 0.4.3 does (ADR 0110, 0174).
+it with 言字's (was Typlus) instructions, both as 言字 0.4.3 does (ADR 0110, 0175).
 The desktop pastes the result where the dictation started. Nothing reaches the event log or memory.db; with
 recordings kept, each dictation's audio and a note of what happened sit in the
 recordings folder under their retention (ADR 0084).
@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-# ADR 0174: a clip under 4 s heard in any other language is heard again as the likelier of these.
+# ADR 0175: a clip under 4 s heard in any other language is heard again as the likelier of these.
 # ponytail: fixed {zh, en}; read the Mac's languages as 言字 languages.py does if he dictates a third language
 DICTATION_LANGUAGES = frozenset({"zh", "en"})
 # 言字's limit: fifteen minutes, then the session finishes on its own.

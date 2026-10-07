@@ -1,4 +1,4 @@
-# ADR 0174 — Dictation Follows 言字 0.4.3
+# ADR 0175 — Dictation Follows 言字 0.4.3
 
 **Status:** Accepted
 **Date:** 2026-10-06

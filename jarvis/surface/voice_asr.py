@@ -1066,7 +1066,7 @@ def dictation_text(
     *,
     rehear_among: Collection[str] = (),
 ) -> DictationHeard:
-    """One dictation stretch heard by local Whisper as 言字 0.4.1 hears it (ADR 0110, 0174).
+    """One dictation stretch heard by local Whisper as 言字 0.4.1 hears it (ADR 0110, 0175).
 
     Only a dead or muted mic is cut before the model, a short fragment heard
     as neither Chinese nor confident English is noise, and Chinese clauses get

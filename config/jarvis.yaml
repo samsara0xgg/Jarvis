@@ -1166,7 +1166,7 @@ dictation:
   vocab_path: ~/.typlus/vocab.yaml   # 言字's word list, read on every dictation; absent = none
   # What local Whisper hears (ADR 0110): "" lets it tell each stretch's language, as
   # 言字 ships, and hear a clip under 4 s outside zh/en again as the likelier of the two
-  # (ADR 0174); zh or en skips both (~0.5 s faster) but garbles the other language.
+  # (ADR 0175); zh or en skips both (~0.5 s faster) but garbles the other language.
   language: ""
 
 # The night run (ADR 0093): "我要睡觉了，让它继续跑" keeps the Mac awake this long,
