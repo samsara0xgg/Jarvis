@@ -111,7 +111,8 @@ _LONG_RUN_RE: re.Pattern[str] = re.compile(
 #
 # The daemon binds one address; the CLI is a thin client over the same
 # wire the inherent-swift app speaks.
-_DAEMON_URL = "http://127.0.0.1:8006"
+_DAEMON_PORT = 8006
+_DAEMON_URL = f"http://127.0.0.1:{_DAEMON_PORT}"
 
 # Contract table (D2). Connection-refused means "lock acquired, uvicorn
 # not yet bound" — `acquire_exclusive` runs before bind with the voice
@@ -993,7 +994,22 @@ def _main_terminal(argv: list[str]) -> int:
             "speaker can stay on; only the microphone has one owner."
         ),
     )
+    parser.add_argument(
+        "--serve-ui",
+        action="store_true",
+        help=(
+            "Serve this device's UI, the desktop companion's interface, on 127.0.0.1 "
+            "(ADR 0183): what is the brain's goes to the brain under this device's token, "
+            "what is this machine's is answered here. Refuses to start while a daemon holds "
+            "the port."
+        ),
+    )
+    parser.add_argument(
+        "--port", type=int, default=None, help="With --serve-ui, the port (default 8006).",
+    )
     args = parser.parse_args(argv)
+    if args.port is not None and not args.serve_ui:
+        parser.error("--port only applies with --serve-ui")
     root = _resolve_runtime_root(args.runtime_root)
     try:
         base_url = _brain_base_url(args.brain)
@@ -1005,6 +1021,7 @@ def _main_terminal(argv: list[str]) -> int:
     return run_terminal(
         base_url, token, runtime_root=root, config_path=args.config,
         observers=not args.no_observers, voice=args.voice,
+        serve_ui=(args.port or _DAEMON_PORT) if args.serve_ui else None,
     )
 
 

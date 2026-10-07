@@ -17,23 +17,33 @@ same capture session as a daemon's (wake, VAD, local ASR, barge-in) runs here wh
 machine's own config turns ``realtime.single_audio_ingress`` on; each callback that touches
 brain state is a call over the link, and a final utterance goes to the brain as one
 ``utterance.received``. A microphone that cannot be opened leaves a speaking-only terminal.
+
+With ``--serve-ui`` it also listens on 127.0.0.1 and serves this device's UI, the companion's
+interface, forwarding what is the brain's to the brain (ADR 0183). That is the one thing here
+that listens; the link itself is still outbound only.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import functools
 import json
 import logging
 import os
+import socket
 import sys
 import tempfile
 import uuid
-from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from collections.abc import Generator, Mapping
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import uvicorn
+
+from jarvis.deployment.launchd import spawned_by_agent
 from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.tools import (
@@ -46,6 +56,8 @@ from jarvis.execution.tools import (
 from jarvis.runtime import (
     _DEFAULT_CONFIG_FILENAME,
     RuntimeBootstrapError,
+    _audio_devices,
+    _default_audio_device,
     _install_open_path,
     _load_full_config,
     _locate_repo_root,
@@ -65,6 +77,7 @@ from jarvis.runtime.inherent_loop import (
     _build_voice_pipeline,
     _ListenPorts,
     _repo_observer_task,
+    _restart_soon,
     _single_ingress_activation,
     _spawn_single_ingress_session,
     _timesink_observer_task,
@@ -72,7 +85,7 @@ from jarvis.runtime.inherent_loop import (
     _voice_knobs,
     _voice_models_preflight,
 )
-from jarvis.runtime.settings import apply_settings
+from jarvis.runtime.settings import DEVICE_KEYS, Settings, apply_settings
 from jarvis.shared import ActionRequest
 from jarvis.shared.realtime_trace import configure_realtime_trace_jsonl
 from jarvis.state import device_reads, timesink
@@ -81,6 +94,7 @@ from jarvis.state.daily_report import git_show, local_commits
 from jarvis.state.daily_store import commit_exists
 from jarvis.state.event_log import EventLogError, emit_event, open_event_log
 from jarvis.state.memory_db import MemorySettings
+from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.terminal_events import EventOutbox
@@ -97,12 +111,15 @@ from jarvis.surface.terminal_speaker import (
     VoiceLink,
     forward_playback,
 )
+from jarvis.surface.terminal_ui import Brain, Device, UiBroadcaster, create_ui_app
 from jarvis.surface.timesink_observer import TimesinkObserver, collect
+from jarvis.surface.voice_controls import VoiceControls
 from jarvis.surface.voice_ducking import SystemAudioDucker
 from jarvis.surface.voice_media import StreamingTTSPipeline
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Callable
 
     from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
     from jarvis.surface import voice_aec, voice_session
@@ -353,13 +370,16 @@ class _Speaking:
     config: Mapping[str, Any]
     runtime_root: Path
     config_dir: Path | None = None  # where relative model paths in the config resolve from
+    broadcaster: InherentBroadcaster | None = None  # the companion's sockets, with ``--serve-ui``
+    controls: VoiceControls | None = None  # this device's mic and speech switches, likewise
 
 
 class _QuietBroadcaster(InherentBroadcaster):
     """The broadcaster of a terminal, which has no surface of its own yet.
 
     The session's partial captions, listening and transcribing faces and capability changes are
-    logged at debug and dropped: the surface that shows them connects to the brain, not here.
+    logged at debug and dropped: without ``--serve-ui`` no surface connects here. With it,
+    :class:`~jarvis.surface.terminal_ui.UiBroadcaster` takes its place.
     """
 
     def broadcast_voice_sync(self, phase: str, *, turn_id: str, **payload: object) -> None:
@@ -432,7 +452,7 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
     """
     journal = Journal(speaking.runtime_root / JOURNAL)
     link = VoiceLink(journal)
-    broadcaster = _QuietBroadcaster()
+    broadcaster = speaking.broadcaster or _QuietBroadcaster()
     broadcaster.attach_loop(asyncio.get_running_loop())
     seat = _Seat(
         speaking.config,
@@ -457,6 +477,11 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
     if not isinstance(pipeline, StreamingTTSPipeline):
         LOGGER.warning("voice is on but the media actor did not start; this terminal is mute")
         return _Speech()
+    if speaking.controls is not None:
+        # ADR-0015 D2, as a daemon binds it: speech mute is the player's output gain.
+        speaking.controls.on_speech_muted = lambda muted: pipeline.set_output_gain(
+            0.0 if muted else 1.0,
+        )
     watcher = _tts_watcher(conn=journal.conn, pipeline=pipeline, broadcaster=broadcaster)
     return _Speech(
         link, pipeline,
@@ -514,7 +539,7 @@ async def _start_listening(speaking: _Speaking, speech: _Speech) -> _Listening |
         return _spawn_single_ingress_session(
             runtime=seat, pipeline=recognizer_pipeline, broadcaster=broadcaster,
             silero_path=silero_path, tts=pipeline, voice=_voice_knobs(config),
-            mic_muted=lambda: False,  # mute is a switch of the surface on this device (step 6)
+            mic_muted=lambda: False if speaking.controls is None else speaking.controls.mic_muted,
             conversation=controls.conversation, set_conversation=controls.set_conversation,
             set_quiet=controls.set_quiet, echo_canceller=speech.canceller, ports=ports,
         )
@@ -562,16 +587,113 @@ async def _stop_speech(speech: _Speech) -> None:
         await asyncio.to_thread(speech.pipeline.close, wait_timeout_s=_SPEECH_CLOSE_S)
 
 
+@dataclass(frozen=True)
+class _Ui:
+    """``--serve-ui``: the loopback socket this terminal listens on, and what answers behind it."""
+
+    sock: socket.socket
+    config: Mapping[str, Any]
+    runtime_root: Path
+
+
+@dataclass(frozen=True)
+class _DeviceSettings:
+    """This machine's microphone and speaker choices, as the Settings page keeps them."""
+
+    settings: Settings
+    keys: frozenset[str] = DEVICE_KEYS
+
+    def read(self) -> dict[str, Any]:
+        return self.settings.read()
+
+    def update(self, changes: Mapping[str, Any]) -> dict[str, Any]:
+        return self.settings.update(changes)
+
+
+def bind_ui(port: int) -> socket.socket:
+    """Listen on 127.0.0.1:``port``, or say why this terminal cannot serve the UI.
+
+    A port that answers is held: a daemon runs there, and only one of the two may serve this
+    device's UI (ADR 0183). Connecting first also catches a daemon bound to every address,
+    which a bind to this one alone would not refuse on every platform.
+
+    Raises:
+        OSError: the port is held.
+    """
+    with socket.socket() as probe:
+        probe.settimeout(1.0)
+        if probe.connect_ex(("127.0.0.1", port)) == 0:
+            raise OSError(_HELD.format(port=port))
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError:
+        sock.close()
+        raise OSError(_HELD.format(port=port)) from None
+    sock.listen(128)
+    return sock
+
+
+_HELD = (
+    "127.0.0.1:{port} is held by another process, probably this machine's Jarvis daemon. A "
+    "terminal serves this device's UI only where no daemon does: stop the daemon, or pick "
+    "another port with --port."
+)
+
+
+class _UiServer(uvicorn.Server):
+    """uvicorn inside the terminal's loop; Ctrl-C and SIGTERM stay the terminal's own."""
+
+    @contextlib.contextmanager
+    def capture_signals(self) -> Generator[None]:
+        yield
+
+
+def _ui_device(
+    ui: _Ui, speaking: _Speaking | None, speech: Callable[[], _Speech],
+) -> Device:
+    """What this machine answers itself behind the UI (ADR 0183)."""
+    return Device(
+        controls=None if speaking is None else speaking.controls,
+        settings=(
+            None if speaking is None
+            else _DeviceSettings(
+                Settings(ui.runtime_root, ui.config, _audio_devices, _default_audio_device),
+            )
+        ),
+        restart=_restart_soon if spawned_by_agent() else None,
+        speaks=lambda: speech().pipeline is not None,
+    )
+
+
 async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
     base_url: str, token: str, *, tools: frozenset[str], execute: Execute,
-    watched: _Watched | None, speaking: _Speaking | None = None,
+    watched: _Watched | None, speaking: _Speaking | None = None, ui: _Ui | None = None,
 ) -> None:
-    """The link, and beside it the observers and the voice when there is anything to run."""
+    """The link, and beside it the observers, the voice and the UI when there is anything to run."""
     outbox = EventOutbox() if watched is not None or speaking is not None else None
     observing = None if outbox is None or watched is None else asyncio.create_task(
         _observe(outbox, watched),
     )
     speech = _Speech()
+    serving: asyncio.Task[None] | None = None
+    server: _UiServer | None = None
+    brain: Brain | None = None
+    if ui is not None:
+        broadcaster = UiBroadcaster()
+        if speaking is not None:
+            speaking = replace(speaking, broadcaster=broadcaster, controls=VoiceControls())
+        brain = Brain(base_url, token)
+        app = create_ui_app(
+            brain,
+            authorize=functools.partial(local_key_matches, local_key(ui.runtime_root)),
+            broadcaster=broadcaster,
+            device=_ui_device(ui, speaking, lambda: speech),
+        )
+        server = _UiServer(uvicorn.Config(app, log_level="warning", lifespan="off"))
+        serving = asyncio.create_task(server.serve(sockets=[ui.sock]))
+        LOGGER.info("this terminal serves the UI on 127.0.0.1:%d", ui.sock.getsockname()[1])
     if speaking is not None and outbox is not None:
         try:
             speech = _start_speech(speaking, outbox)
@@ -589,6 +711,11 @@ async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
             observing.cancel()
             await asyncio.wait({observing})
         await _stop_speech(speech)
+        if server is not None and serving is not None:
+            server.should_exit = True
+            await asyncio.wait({serving})
+        if brain is not None:
+            await brain.close()
 
 
 def _configure_realtime_trace(runtime_root: Path) -> None:
@@ -619,13 +746,16 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     config_path: Path | None = None,
     observers: bool = True,
     voice: bool = False,
+    serve_ui: int | None = None,
 ) -> int:
     """Hold this device's link to the brain until interrupted; the exit code of the command.
 
     Reads only this machine's own config (the shipped YAML and the runtime root's
     ``settings.yaml``); it opens no database, no env file and no key. With ``observers`` the
     repos and TimeSink that config turns on are observed here and reported to the brain.
-    With ``voice`` this terminal also plays the brain's spoken answers (ADR 0172).
+    With ``voice`` this terminal also plays the brain's spoken answers (ADR 0172). With
+    ``serve_ui`` (a port) it also serves this device's UI on 127.0.0.1 (ADR 0183); a port that
+    is held ends the command before anything else starts.
     """
     if config_path is None:
         config_path = _locate_repo_root(Path(__file__).parent) / _DEFAULT_CONFIG_FILENAME
@@ -641,6 +771,13 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     except (RuntimeBootstrapError, ValueError) as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")
         return 1
+    ui = None
+    if serve_ui is not None:
+        try:
+            ui = _Ui(bind_ui(serve_ui), config, runtime_root)
+        except OSError as exc:
+            sys.stderr.write(f"jarvis terminal: {exc}\n")
+            return 1
     _vision_preset, max_width_px = _screen_tools_config(config)
     registry = build_default_registry(obsidian_vault_root=_obsidian_vault_root(config))
     registry.register(make_screen_capture(max_width_px))
@@ -665,6 +802,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
         asyncio.run(_run(
             base_url, token, tools=tools, execute=execute, watched=watched,
             speaking=_Speaking(config, runtime_root, config_path.parent) if voice else None,
+            ui=ui,
         ))
     except TerminalRefusedError as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")

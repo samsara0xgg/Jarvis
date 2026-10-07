@@ -1715,6 +1715,23 @@ class DictationRequest(BaseModel):
     before: str = Field(default="", max_length=1000)
 
 
+def dictation_stream(dictation: DictationRoutes, req: DictationRequest) -> StreamingResponse:
+    """Record now; stream ``{level}`` lines, ``{state: thinking}``, then the result (ADR 0058).
+
+    A session already running is a 409. A terminal's dictation (ADR 0183) answers the same way.
+    """
+    try:
+        lines = dictation.begin(req.model_dump())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)[:200]) from None
+
+    async def body() -> AsyncIterator[bytes]:
+        async for line in lines:
+            yield (json.dumps(line, ensure_ascii=False) + "\n").encode()
+
+    return StreamingResponse(body(), media_type="application/x-ndjson")
+
+
 def _register_dictation_routes(app: FastAPI, deps: InherentDeps) -> None:
     """ADR 0058: one dictation at a time, streamed as NDJSON until its result."""
     if deps.dictation is None:
@@ -1724,16 +1741,7 @@ def _register_dictation_routes(app: FastAPI, deps: InherentDeps) -> None:
     @app.post("/inherent/dictation")
     async def dictate(req: DictationRequest) -> StreamingResponse:
         """Record now; stream ``{level}`` lines, ``{state: thinking}``, then the result."""
-        try:
-            lines = dictation.begin(req.model_dump())
-        except RuntimeError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)[:200]) from None
-
-        async def body() -> AsyncIterator[bytes]:
-            async for line in lines:
-                yield (json.dumps(line, ensure_ascii=False) + "\n").encode()
-
-        return StreamingResponse(body(), media_type="application/x-ndjson")
+        return dictation_stream(dictation, req)
 
     @app.post("/inherent/dictation/stop", status_code=200)
     async def dictate_stop() -> dict[str, bool]:
@@ -2378,13 +2386,18 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
 
 
 __all__ = [
+    "ControlsRequest",
+    "DictationRequest",
+    "DictationRoutes",
     "InherentDeps",
     "InherentV2Deps",
     "InputSubmissionOutcome",
     "MemoryRoutes",
+    "SettingsRequest",
     "SubmitRequest",
     "V2ClientHandle",
     "V2Session",
     "create_app",
+    "dictation_stream",
     "require_local_key",
 ]

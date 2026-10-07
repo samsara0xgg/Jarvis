@@ -85,6 +85,8 @@ _DEFAULTS: dict[str, Any] = {
     "reply_language": "follow", "tts_volume": 1.0, "core_memory_max_chars": 4000, **_BOARD_DEFAULTS,
 }
 _DEVICES = {"output_device": "output", "input_device": "input"}
+# The keys a terminal that serves the UI answers itself: its own microphone and speaker (ADR 0183).
+DEVICE_KEYS = frozenset(_DEVICES)
 _RANGES = {
     "wake_threshold": (0.80, 0.99),
     "tts_volume": (0.3, 1.0),
