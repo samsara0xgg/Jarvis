@@ -24,7 +24,12 @@ import numpy as np
 import pytest
 
 from jarvis.runtime import inherent_loop
-from jarvis.runtime.dictation import COMMAND_PROMPT, load_user_terms, whisper_ears
+from jarvis.runtime.dictation import (
+    COMMAND_PROMPT,
+    DICTATION_LANGUAGES,
+    load_user_terms,
+    whisper_ears,
+)
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_asr, voice_pipeline
 
@@ -45,13 +50,16 @@ class _Whisper:
         self.release.set()
         self.language = "zh"
         self.logprob = -0.1
+        self.heard_languages: list[str] = []  # the language each call was heard in
 
     def transcribe(self, _audio: np.ndarray, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
         self.calls.append(kwargs)
         self.started.set()
         self.release.wait(5)
         text = self.texts.pop(0) if self.texts else ""
-        return {"text": text, "language": self.language, "segments": [
+        language = kwargs.get("language") or self.language  # a forced language is the one heard
+        self.heard_languages.append(language)
+        return {"text": text, "language": language, "segments": [
             {"avg_logprob": self.logprob, "no_speech_prob": 0.0},
         ]}
 
@@ -177,6 +185,62 @@ def test_a_short_fragment_in_another_language_is_noise(
     ears = whisper_ears(language="")
     assert ears is not None
     assert voice_asr.dictation_text(_speech(1.0, 0.1), ears).text == kept
+
+
+@pytest.mark.parametrize(
+    ("seconds", "first", "probs", "rehears", "second_language", "second_prompt"),
+    [
+        # A short clip heard as Korean: the likelier of zh and en, however likely Korean was.
+        (1.0, "ko", {"ko": 0.6, "en": 0.3, "zh": 0.1}, True, "en", None),
+        (1.0, "ko", {"ko": 0.6, "en": 0.1, "zh": 0.3}, True, "zh", _SIMPLIFIED),
+        # Not short, already Chinese or English: heard once, as it was.
+        (5.0, "ko", {"ko": 0.6, "en": 0.3, "zh": 0.1}, False, None, None),
+        (1.0, "zh", {"zh": 0.6, "en": 0.3}, False, None, None),
+        (1.0, "en", {"en": 0.6, "zh": 0.3}, False, None, None),
+    ],
+)
+def test_a_short_clip_heard_in_another_language_is_heard_again_as_zh_or_en(  # noqa: PLR0913
+    whisper: _Whisper, monkeypatch: pytest.MonkeyPatch, seconds: float, first: str,
+    probs: dict[str, float], *, rehears: bool,
+    second_language: str | None, second_prompt: str | None,
+) -> None:
+    """言字 0.4.1: under 4 s and outside {zh, en}, the most probable of them is forced and heard."""
+    asked: list[bytes] = []
+
+    def language_probs(_self: object, pcm: bytes) -> dict[str, float]:
+        asked.append(pcm)
+        return probs
+
+    monkeypatch.setattr(voice_asr.MlxWhisperRecognizer, "language_probs", language_probs)
+    whisper.language, whisper.texts = first, ["안녕하세요 여러분 반갑습니다", "你好啊，各位"]
+    ears = whisper_ears(language="")
+    assert ears is not None
+    heard = voice_asr.dictation_text(_speech(seconds, 0.1), ears, rehear_among=DICTATION_LANGUAGES)
+    assert len(asked) == len(whisper.calls) - 1 == int(rehears)
+    if rehears:
+        assert whisper.heard_languages == [first, second_language]
+        assert whisper.calls[1]["initial_prompt"] == second_prompt
+        assert heard == ("你好啊，各位", second_language)
+    else:
+        assert heard.language == first
+
+
+def test_rehearing_is_off_without_a_set_and_the_short_fragment_gate_follows_it(
+    whisper: _Whisper, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``dictation.language`` set means no set to hear again among; the gate judges the redo."""
+    monkeypatch.setattr(
+        voice_asr.MlxWhisperRecognizer, "language_probs", lambda _self, _pcm: {"en": 0.9},
+    )
+    ears = whisper_ears(language="")
+    assert ears is not None
+    whisper.language, whisper.logprob, whisper.texts = "ko", -2.0, ["ねえ", "ねえ", "you"]
+    assert voice_asr.dictation_text(_speech(1.0, 0.1), ears).text == ""
+    assert len(whisper.calls) == 1  # no set: the Korean fragment is noise as before
+    assert voice_asr.dictation_text(
+        _speech(1.0, 0.1), ears, rehear_among=DICTATION_LANGUAGES,
+    ) == ("", "en")  # heard again as English, but not confidently
+    assert len(whisper.calls) == 3
 
 
 def _final() -> tuple[voice_asr.WhisperFinalRecognizer, MagicMock]:

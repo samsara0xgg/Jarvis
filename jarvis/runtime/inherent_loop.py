@@ -161,6 +161,7 @@ from jarvis.runtime.core_memory import CoreMemorySettings
 from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
 from jarvis.runtime.dictation import (
     COMMAND_PROMPT,
+    DICTATION_LANGUAGES,
     Dictation,
     load_user_terms,
     polish_client,
@@ -6133,8 +6134,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 LOGGER.exception("dictation off: its polish preset is not configured")
             else:
                 vocab_path = Path(str(dictation_config.get("vocab_path", "")))
+                dictation_language = str(dictation_config.get("language") or "")
                 whisper = whisper_ears(
-                    language=str(dictation_config.get("language") or ""),
+                    language=dictation_language,
                     terms=functools.partial(load_user_terms, vocab_path),
                 )
                 if whisper is not None:  # its ~1.6 GB loads now, not inside his first tap
@@ -6148,7 +6150,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     transcribe=(
                         voice_pipe.transcribe
                         if whisper is None
-                        else functools.partial(voice_pipe.transcribe, recognizer=whisper)
+                        else functools.partial(
+                            voice_pipe.transcribe,
+                            recognizer=whisper,
+                            rehear_among=() if dictation_language else DICTATION_LANGUAGES,
+                        )
                     ),
                     client=client,
                     vocab_path=vocab_path,
