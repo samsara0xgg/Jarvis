@@ -86,6 +86,7 @@ _QUIET_TOOLS: Final = (
     "create_memo",
     "remember",
     "withdraw_card",
+    "show_on_dashboard",
     "mcp__hue__",
 )
 """Tools (a name, or a ``mcp__hue__`` prefix) whose answer follows at once or

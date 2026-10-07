@@ -1,4 +1,4 @@
-"""ADR 0147: what the Dashboard has open, and the reply draft under an open letter.
+"""ADR 0174, 0148: what the Dashboard shows, and the reply draft under an open letter.
 
 Both are in memory only: a restart forgets them; the event log keeps what Jarvis wrote as
 the ``write_mail_draft`` rows.
@@ -7,23 +7,56 @@ the ``write_mail_draft`` rows.
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Final, Literal, NamedTuple
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
-FOCUS_STALE_S: Final = 60.0
-"""The page re-posts its focus every 20 s while the item is open; older than this is closed."""
+VIEW_STALE_S: Final = 60.0
+"""The shell re-posts its view every 20 s while the panel is open; older than this is closed."""
+VIEW_ROWS: Final = 10
+VIEW_LINE_PREFIX: Final = "Dashboard: "
+VIEW_LINE_CHARS: Final = 1200
+"""The view line is the second live-context line allowed past 200 characters (ADR 0174)."""
 DRAFT_CHARS: Final = 8000
 _DRAFTS_KEPT: Final = 20
 DRAFT_LINE_PREFIX: Final = "Draft reply under it"
 _DRAFT_LINE_BODY_CHARS: Final = 2000
 DRAFT_LINE_CHARS: Final = len(DRAFT_LINE_PREFIX) + _DRAFT_LINE_BODY_CHARS + 60
-"""The draft line is the one live-context line allowed past 200 characters."""
-_SUBJECT_CHARS: Final = 80
-_SENDER_CHARS: Final = 60
+"""The draft line is the one live-context line allowed past 200 characters (ADR 0148)."""
+_TITLE_CHARS: Final = 80
+_ID_CHARS: Final = 64
+_WORD_CHARS: Final = 24
 
-FocusKind = Literal["mail", "agent", "brief"]
+PAGES: Final = (
+    "conversation", "now", "agents", "usage", "plugins", "projects", "settings", "brief",
+    "mail", "memory", "jobs",
+)
+"""The pages ``show_on_dashboard`` can turn to: ``Page`` in AroundDashboard.tsx, less the
+home arranger."""
+_PAGE_NAMES: Final = {
+    "home": "home screen", "conversation": "Conversation page", "now": "Right now page",
+    "agents": "Agents page", "usage": "Usage page", "plugins": "Plugins page",
+    "projects": "Projects page", "settings": "Settings page", "arrange": "Arrange page",
+    "brief": "Morning brief page", "mail": "Mail page", "memory": "Memory page",
+    "jobs": "Job mail page",
+}
+
+
+class Item(NamedTuple):
+    """One thing on screen: a letter, a note, a session, a row (kind "row" in a list)."""
+
+    kind: str
+    id: str
+    title: str
+
+
+class _View(NamedTuple):
+    page: str
+    tab: str
+    item: Item | None
+    rows: tuple[Item, ...]
+    at: float
 
 
 class Draft(NamedTuple):
@@ -35,68 +68,125 @@ class Draft(NamedTuple):
     by: str
 
 
-class _Focus(NamedTuple):
-    kind: FocusKind
-    id: str
-    title: str
-    sender: str
-    at: float
-
-
 def _one_line(text: str, limit: int) -> str:
-    """Titles come from mail and sessions: one line, no quote marks, capped."""
+    """Titles come from mail, notes and sessions: one line, no quote marks, capped."""
     return " ".join(text.split()).replace('"', "'")[:limit]
 
 
-class FocusState:
-    """The one item Allen has open on the Dashboard, or none."""
+def _clean(kind: str, ident: str, title: str) -> Item:
+    return Item(
+        _one_line(kind, _WORD_CHARS), _one_line(ident, _ID_CHARS), _one_line(title, _TITLE_CHARS),
+    )
+
+
+class ViewState:
+    """What the Dashboard shows now (page, tab, open item, up to ten rows), or nothing.
+
+    The one thing the shell reports (ADR 0174); the mail page's open letter is the open item
+    of kind ``mail`` (ADR 0148). ``push`` is how a ``present`` op reaches the companion; the
+    daemon sets it once its WebSocket broadcaster exists.
+    """
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
-        """Start with nothing open; ``clock`` reads monotonic seconds."""
+        """Start with nothing on screen; ``clock`` reads monotonic seconds."""
         self._clock = clock
-        self._now: _Focus | None = None
+        self._now: _View | None = None
+        self.push: Callable[[dict[str, str | None]], None] | None = None
 
     def set(
-        self, kind: FocusKind | None, ident: str = "", title: str = "", sender: str = "",
+        self,
+        page: str | None,
+        tab: str = "",
+        item: tuple[str, str, str] | None = None,
+        rows: Sequence[tuple[str, str]] = (),
     ) -> None:
-        """Open an item (or refresh the same one); ``kind`` None closes."""
-        self._now = None if kind is None else _Focus(kind, ident, title, sender, self._clock())
+        """Replace the view (or refresh it); ``page`` None means the panel is closed.
 
-    def _fresh(self) -> _Focus | None:
+        ``item`` is ``(kind, id, title)``, ``rows`` are ``(id, title)`` in screen order; titles
+        are cut to one line of 80 characters and only ten rows are kept.
+        """
+        if page is None:
+            self._now = None
+            return
+        self._now = _View(
+            _one_line(page, _WORD_CHARS),
+            _one_line(tab, _WORD_CHARS),
+            None if item is None else _clean(*item),
+            tuple(_clean("row", ident, title) for ident, title in rows[:VIEW_ROWS]),
+            self._clock(),
+        )
+
+    def _fresh(self) -> _View | None:
         now = self._now
-        return now if now is not None and self._clock() - now.at <= FOCUS_STALE_S else None
+        return now if now is not None and self._clock() - now.at <= VIEW_STALE_S else None
 
     def mail_id(self) -> str | None:
-        """The Gmail id of the open letter, or None."""
+        """The Gmail id of the letter open on the Mail page, or None."""
         now = self._fresh()
-        return now.id if now is not None and now.kind == "mail" else None
+        item = None if now is None else now.item
+        return item.id if item is not None and item.kind == "mail" else None
 
-    def line(self) -> str | None:
-        """The state-block line (a ``live_context`` producer): titles only, never a body."""
+    def knows(self, item_id: str) -> Item | None:
+        """The open item or row of the current view with this id, or None."""
         now = self._fresh()
         if now is None:
             return None
-        if now.kind == "mail":
-            sender = _one_line(now.sender, _SENDER_CHARS)
-            return (
-                f'Dashboard: Allen has this letter open: "{_one_line(now.title, _SUBJECT_CHARS)}"'
-                f"{f' from {sender}' if sender else ''} (Gmail id {_one_line(now.id, 64)})."
-                ' Words like "this email" mean it.'
-            )
-        if now.kind == "agent":
-            return (
-                f"Dashboard: Allen has an agent session open: "
-                f"{_one_line(now.title, _SUBJECT_CHARS)} ({_one_line(now.id, 64)})."
-            )
-        return "Dashboard: Allen has the morning brief open."
+        return next(
+            (one for one in (now.item, *now.rows) if one is not None and one.id == item_id), None,
+        )
+
+    def present(self, page: str, item_id: str | None) -> dict[str, str | None]:
+        """Ask the companion to turn to ``page``, and to ``item_id`` when the view carries it.
+
+        An id the current view does not carry opens the page alone. Returns what was sent;
+        ValueError for an unknown page or when no Dashboard link is attached.
+        """
+        if page not in PAGES:
+            msg = f"unknown page {page!r}"
+            raise ValueError(msg)
+        if self.push is None:
+            msg = "the Dashboard is not connected"
+            raise ValueError(msg)
+        known = self.knows(item_id) if item_id else None
+        sent: dict[str, str | None] = {
+            "page": page,
+            "item_id": None if known is None else known.id,
+            "kind": None if known is None else known.kind,
+        }
+        self.push(sent)
+        return sent
+
+    def line(self) -> str | None:
+        """The state-block line (a ``live_context`` producer): titles and ids, never a body."""
+        now = self._fresh()
+        if now is None:
+            return None
+        head = f"{VIEW_LINE_PREFIX}Allen is on the {_PAGE_NAMES.get(now.page, now.page + ' page')}"
+        if now.tab:
+            head += f" (tab {now.tab})"
+        item = now.item
+        if item is not None:
+            head += f' with "{item.title}" open ({item.kind} {item.id})'
+        head += "."
+        if item is not None and item.kind == "mail":
+            head += ' Words like "this email" mean it.'
+        text = head
+        if now.rows:
+            text += " On screen:"
+        for number, row in enumerate(now.rows, 1):
+            piece = f' {number}. "{row.title}" ({row.id})'
+            if len(text) + len(piece) > VIEW_LINE_CHARS:
+                break
+            text += piece
+        return text
 
 
 class MailDrafts:
     """Reply drafts by letter id: Jarvis writes the whole body each time, Allen edits by hand."""
 
-    def __init__(self, focus: FocusState) -> None:
-        """Jarvis writes only under the letter ``focus`` has open."""
-        self._focus = focus
+    def __init__(self, view: ViewState) -> None:
+        """Jarvis writes only under the letter ``view`` has open."""
+        self._view = view
         self._drafts: dict[str, Draft] = {}
         self._revision = 0
 
@@ -110,7 +200,7 @@ class MailDrafts:
 
     def write(self, letter_id: str, text: str) -> int:
         """Jarvis replaces the body under the open letter; the revision. ValueError if refused."""
-        if self._focus.mail_id() != letter_id:
+        if self._view.mail_id() != letter_id:
             msg = "that letter is not open on the Dashboard"
             raise ValueError(msg)
         text = text.strip()
@@ -135,7 +225,7 @@ class MailDrafts:
 
     def line(self) -> str | None:
         """The state-block line (a ``live_context`` producer): the open letter's draft so far."""
-        letter_id = self._focus.mail_id()
+        letter_id = self._view.mail_id()
         draft = None if letter_id is None else self._drafts.get(letter_id)
         if draft is None or not draft.body.strip():
             return None

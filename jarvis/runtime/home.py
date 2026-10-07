@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
     from jarvis.decision.mail_reply import MailReply
     from jarvis.execution.mcp_tools import McpServers
-    from jarvis.runtime.dashboard import FocusState
+    from jarvis.runtime.dashboard import ViewState
     from jarvis.runtime.plugin_connections import PluginConnections
     from jarvis.runtime.work_state import LLMAnalyst
 
@@ -173,14 +173,14 @@ class Home:
         zone: tuple[str, tzinfo],
         weather_at: Mapping[str, Any] | None,
         mail_reply: MailReply | None = None,
-        focus: FocusState | None = None,
+        view: ViewState | None = None,
         summarizer: Callable[[str, str], str] | None = None,
     ) -> None:
         """Bind the live connections, the local zone (name, zone) and the forecast's place.
 
         ``weather_at`` holds ``latitude`` and ``longitude``; None leaves the weather out.
         ``mail_reply`` marks letters that need a reply (ADR 0123); None leaves them all unmarked.
-        ``focus`` switches the Dashboard's mail page on (ADR 0147): its open letter may be read,
+        ``view`` switches the Dashboard's mail page on (ADR 0147): its open letter may be read,
         archived and trashed, not only the junk offered. ``summarizer`` writes a letter's one-line
         summary (ADR 0148); None leaves :meth:`summary` a 404.
         """
@@ -188,7 +188,7 @@ class Home:
         self._zone_name, self._zone = zone
         self._weather_at = weather_at
         self._mail_reply = mail_reply
-        self._focus = focus
+        self._view = view
         self._summarizer = summarizer
         self._summaries: dict[str, str] = {}
         # Gmail ids: what the last mail() listed, what it offered as junk, what Allen archived,
@@ -297,9 +297,9 @@ class Home:
 
     def _actionable(self) -> frozenset[str]:
         """The ids a tap may change: the junk offered; with the mail page on, any listed or open."""
-        if self._focus is None:
+        if self._view is None:
             return self._junk
-        return self._listed.union(filter(None, [self._focus.mail_id()]))
+        return self._listed.union(filter(None, [self._view.mail_id()]))
 
     def _modify(
         self, ids: list[str], labels: Mapping[str, list[str]], *, allowed: AbstractSet[str],
@@ -320,7 +320,7 @@ class Home:
         """
         allowed: AbstractSet[str]
         if undo:
-            allowed = self._archived | (self._actionable() if self._focus else frozenset())
+            allowed = self._archived | (self._actionable() if self._view else frozenset())
         else:
             allowed = self._actionable()
         labels = {"addLabelIds" if undo else "removeLabelIds": [_INBOX]}

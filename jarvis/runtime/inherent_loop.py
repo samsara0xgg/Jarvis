@@ -6324,7 +6324,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # ADR 0019: one Codex board, filled by the hooks' route and read by the night run.
         codex_board: dict[str, CodexSession] = {}
         # ADR 0147: the Dashboard's mail page exists only with ``dashboard.mail.enabled``.
-        mail_home = None if runtime.focus is None else runtime.home
+        mail_home = None if runtime.mail_drafts is None else runtime.home
+        if runtime.view is not None:  # ADR 0174: her ``present`` op reaches the companion
+            runtime.view.push = lambda sent: broadcaster.broadcast_op_sync("present", **sent)
         deps = InherentDeps(
             submit_callable=submit_callable,
             broadcaster=broadcaster,
@@ -6385,7 +6387,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             ),
             mail_mark_read=None if mail_home is None else functools.partial(_mail_read, mail_home),
             mail_trash=None if mail_home is None else functools.partial(_mail_trash, mail_home),
-            focus_set=None if runtime.focus is None else runtime.focus.set,
+            view_set=None if runtime.view is None else runtime.view.set,
             **_draft_deps(runtime, mail_home),
             **_job_mail_deps(runtime.job_mail),
             moment_read=(

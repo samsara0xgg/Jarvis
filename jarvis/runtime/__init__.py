@@ -121,6 +121,7 @@ from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.deployment.launchd import logs_dir
 from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
 from jarvis.deployment.night_power import MacPower
+from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.job_ledger_tool import build_job_ledger_tool
 from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
 from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth, stdio_env
@@ -156,8 +157,11 @@ from jarvis.runtime.daily_report import (
 from jarvis.runtime.dashboard import (
     DRAFT_LINE_CHARS,
     DRAFT_LINE_PREFIX,
-    FocusState,
+    PAGES,
+    VIEW_LINE_CHARS,
+    VIEW_LINE_PREFIX,
     MailDrafts,
+    ViewState,
 )
 from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.runtime.home import Home, mail_body, mail_summarizer
@@ -611,9 +615,10 @@ class JarvisRuntime:
     projects: ProjectsService | None = None
     # ADR 0051: the companion home's Today, mail and brief reads. None = hand-assembled.
     home: Home | None = None
-    # ADR 0147: the Dashboard's mail page (``dashboard.mail.enabled``): what is open on screen
-    # and the reply drafts. None = off.
-    focus: FocusState | None = None
+    # ADR 0174: what the Dashboard shows (``dashboard.view.enabled``). None = off.
+    view: ViewState | None = None
+    # ADR 0147: the Dashboard's mail page's reply drafts (``dashboard.mail.enabled``, which
+    # needs the view: a draft goes under the letter the view has open). None = off.
     mail_drafts: MailDrafts | None = None
     # ADR 0148: one line each for the state block, in order; None skips a producer.
     live_context: tuple[Callable[[], str | None], ...] = ()
@@ -1256,11 +1261,21 @@ def _home_weather(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return place if isinstance(place, Mapping) else None
 
 
+def _dashboard_switch(config: Mapping[str, Any], name: str) -> bool:
+    """``dashboard.<name>.enabled``: off unless true."""
+    block = config.get("dashboard")
+    switch = block.get(name) if isinstance(block, Mapping) else None
+    return isinstance(switch, Mapping) and switch.get("enabled") is True
+
+
 def _dashboard_mail(config: Mapping[str, Any]) -> bool:
     """``dashboard.mail.enabled`` (ADR 0147): the Dashboard's mail page; off unless true."""
-    block = config.get("dashboard")
-    mail = block.get("mail") if isinstance(block, Mapping) else None
-    return isinstance(mail, Mapping) and mail.get("enabled") is True
+    return _dashboard_switch(config, "mail")
+
+
+def _dashboard_view(config: Mapping[str, Any]) -> bool:
+    """``dashboard.view.enabled`` (ADR 0174): the shell reports its view; off unless true."""
+    return _dashboard_switch(config, "view")
 
 
 def _ambient_sounds(config: Mapping[str, Any]) -> bool:
@@ -1271,6 +1286,27 @@ def _ambient_sounds(config: Mapping[str, Any]) -> bool:
         msg = "realtime.ambient_sounds must be true or false"
         raise TypeError(msg)
     return value
+
+
+def _dashboard_state(
+    config: Mapping[str, Any],
+) -> tuple[ViewState | None, ViewState | None, MailDrafts | None]:
+    """The Dashboard's view, the view the mail page reads, and the mail drafts (None = off).
+
+    The mail page needs the view (ADR 0174: its open letter is the view's open item); with
+    ``dashboard.mail.enabled`` alone it stays off.
+    """
+    view = ViewState() if _dashboard_view(config) else None
+    if view is None and _dashboard_mail(config):
+        LOGGER.warning("dashboard.mail.enabled needs dashboard.view.enabled: the mail page is off")
+    mail_view = view if _dashboard_mail(config) else None
+    return view, mail_view, None if mail_view is None else MailDrafts(mail_view)
+
+
+def _register_dashboard_tool(registry: ToolRegistry, view: ViewState | None) -> None:
+    """``show_on_dashboard`` (ADR 0174), registered only with ``dashboard.view.enabled``."""
+    for tool in build_dashboard_tool(PAGES, None if view is None else view.present):
+        registry.register(tool)
 
 
 _LIVE_LINE_CHARS: Final = 200
@@ -1286,8 +1322,12 @@ def _live_lines(producers: tuple[Callable[[], str | None], ...]) -> tuple[str, .
             LOGGER.exception("live context: a producer failed, skipped")
             continue
         if line:
-            # The open letter's draft is the one line that may run long.
-            limit = DRAFT_LINE_CHARS if line.startswith(DRAFT_LINE_PREFIX) else _LIVE_LINE_CHARS
+            # The open letter's draft and the Dashboard's view are the lines that may run long.
+            limit = (
+                DRAFT_LINE_CHARS if line.startswith(DRAFT_LINE_PREFIX)
+                else VIEW_LINE_CHARS if line.startswith(VIEW_LINE_PREFIX)
+                else _LIVE_LINE_CHARS
+            )
             lines.append(line[:limit])
     return tuple(lines)
 
@@ -2452,8 +2492,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         )
     )
     voice_settings = VoiceSettings(paths.root / "voice-settings.json")
-    focus = FocusState() if _dashboard_mail(full_config) else None
-    mail_drafts = None if focus is None else MailDrafts(focus)
+    view, mail_view, mail_drafts = _dashboard_state(full_config)
     voice_cues = VoiceCues()
     ambient = (
         AmbientSounds(log_path=logs_dir(paths.root) / "ambient-sounds.jsonl")
@@ -2486,6 +2525,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         device_link=device,
     )
     workers = _register_workers(registry, paths, full_config)
+    _register_dashboard_tool(registry, view)
     plugin_connections = PluginConnections(
         repo_root=repo_root, runtime_root=paths.root, event_log=paths.event_log,
         registry=registry, config=full_config,
@@ -2646,8 +2686,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             resolve_zone(None, _work_state_timezone(full_config)),
             _home_weather(full_config),
             _mail_reply(full_config, config_path, jev_log),
-            focus,
-            None if focus is None else mail_summarizer(
+            mail_view,
+            None if mail_view is None else mail_summarizer(
                 # ADR 0148: the cheapest preset (gpt-6-luna), never Jev: a body goes here.
                 build_analyst(
                     full_config,
@@ -2659,11 +2699,12 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
                 paths.event_log,
             ),
         ),
-        focus=focus,
+        view=view,
         mail_drafts=mail_drafts,
         ambient=ambient,
         live_context=(
-            *(() if focus is None or mail_drafts is None else (focus.line, mail_drafts.line)),
+            *(() if view is None else (view.line,)),
+            *(() if mail_drafts is None else (mail_drafts.line,)),
             voice_cues.line,
             *(() if ambient is None else (ambient.line,)),
         ),

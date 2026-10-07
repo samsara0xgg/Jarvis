@@ -106,7 +106,7 @@ def _client(
             mail_summary=_empty_for,
             mail_mark_read=_tap_mail,
             mail_trash=_tap_mail,
-            focus_set=lambda *_: None,
+            view_set=lambda *_: None,
             mail_draft_read=_empty_for,
             mail_draft_save=_save_draft,
             mail_draft_send=_send_draft,

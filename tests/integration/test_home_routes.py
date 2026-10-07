@@ -32,7 +32,7 @@ from fastapi.testclient import TestClient
 from jarvis.decision.mail_reply import MailReply
 from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.execution.tools import ToolError
-from jarvis.runtime.dashboard import FocusState, MailDrafts
+from jarvis.runtime.dashboard import MailDrafts, ViewState
 from jarvis.runtime.home import Home
 from jarvis.state.daily_report import save_report
 from jarvis.state.event_log import open_event_log
@@ -189,7 +189,7 @@ def _flag(call: Any, name: str) -> Any:  # noqa: ANN401 — a route's (ids, flag
 
 
 def _client(
-    home: Home, conn: sqlite3.Connection | None = None, focus: FocusState | None = None,
+    home: Home, conn: sqlite3.Connection | None = None, view: ViewState | None = None,
 ) -> TestClient:
     """The routes wired the way the daemon wires them (runtime/inherent_loop.py)."""
 
@@ -208,11 +208,11 @@ def _client(
         mail_archive=archive,
         brief_read=None if conn is None else functools.partial(home.brief, conn),
         # ADR 0148: the mail page's routes, wired as inherent_loop wires them.
-        **({} if focus is None else {
+        **({} if view is None else {
             "mail_letter": functools.partial(asyncio.to_thread, home.letter),
             "mail_mark_read": _flag(home.mark_read, "unread"),
             "mail_trash": _flag(home.trash, "undo"),
-            "focus_set": focus.set,
+            "view_set": view.set,
         }),
     )))
 
@@ -721,12 +721,12 @@ def test_a_failed_mail_call_names_its_error_and_an_unwritable_dataset_changes_no
 def test_the_open_letter_is_read_whole_marked_read_archived_and_trashed() -> None:
     """ADR 0148: GET letter caches by id; taps act only on listed or open ids, each with an undo."""
     gmail = _Gmail()
-    focus = FocusState()
+    view = ViewState()
     home = Home(
         _Connections(_Microsoft(), gmail),  # type: ignore[arg-type]
-        (ZONE, ZoneInfo(ZONE)), None, None, focus,
+        (ZONE, ZoneInfo(ZONE)), None, None, view,
     )
-    client = _client(home, focus=focus)
+    client = _client(home, view=view)
     listed, unlisted = "199a1c0d4101", "199a1c0d9999"
 
     got = client.get(f"/inherent/mail/{listed}")
@@ -763,17 +763,18 @@ def test_the_open_letter_is_read_whole_marked_read_archived_and_trashed() -> Non
     ]
     # An id the list never showed is refused until it is the open letter.
     assert client.post("/inherent/mail/trash", json={"ids": [unlisted]}).status_code == 400
-    assert client.post("/inherent/focus", json={"kind": "mail", "id": unlisted}).status_code == 200
+    opened = {"page": "mail", "item": {"kind": "mail", "id": unlisted, "title": "Sam — Lunch"}}
+    assert client.post("/inherent/view", json=opened).status_code == 200
     assert client.post("/inherent/mail/trash", json={"ids": [unlisted]}).status_code == 200
     assert all("DELETE" not in json.dumps(args) for _, args in gmail.calls)
 
 
 def test_with_the_mail_page_off_its_routes_are_404_and_archive_stays_junk_only() -> None:
-    """No FocusState: the page's routes are not registered; a listed non-junk letter is a 400."""
+    """No ViewState: the page's routes are not registered; a listed non-junk letter is a 400."""
     client = _client(_home(_Microsoft(), _Gmail()))
     client.get("/inherent/mail")
     assert client.get("/inherent/mail/199a1c0d4101").status_code == 404
-    for route in ("read", "unread", "trash", "untrash", "../focus"):
+    for route in ("read", "unread", "trash", "untrash", "../view"):
         reply = client.post(f"/inherent/mail/{route}", json={"ids": ["199a1c0d4101"]})
         assert reply.status_code == 404
     assert client.post("/inherent/mail/archive", json={"ids": ["199a1c0d4101"]}).status_code == 400
@@ -789,15 +790,15 @@ def test_the_page_text_keeps_links_as_urls_and_the_models_record_does_not() -> N
     assert len(mail_body("x" * 5000, links=True)) == 4001
 
 
-def _drafts_client(gmail: _Gmail | None = None) -> tuple[TestClient, FocusState, MailDrafts]:
+def _drafts_client(gmail: _Gmail | None = None) -> tuple[TestClient, ViewState, MailDrafts]:
     """The mail page's draft routes wired over the real stores, as inherent_loop wires them."""
     from jarvis.runtime.inherent_loop import _draft_view, _save_draft  # noqa: PLC0415
 
-    focus = FocusState()
-    drafts = MailDrafts(focus)
+    view = ViewState()
+    drafts = MailDrafts(view)
     home = Home(
         _Connections(_Microsoft(), gmail or _Gmail()),  # type: ignore[arg-type]
-        (ZONE, ZoneInfo(ZONE)), None, None, focus,
+        (ZONE, ZoneInfo(ZONE)), None, None, view,
     )
 
     async def read(letter_id: str) -> dict[str, Any]:
@@ -811,17 +812,17 @@ def _drafts_client(gmail: _Gmail | None = None) -> tuple[TestClient, FocusState,
 
     app = create_app(InherentDeps(
         submit_callable=lambda _text: None, broadcaster=InherentBroadcaster(),
-        focus_set=focus.set, mail_draft_read=read, mail_draft_save=save, mail_draft_discard=discard,
+        view_set=view.set, mail_draft_read=read, mail_draft_save=save, mail_draft_discard=discard,
     ))
-    return TestClient(app), focus, drafts
+    return TestClient(app), view, drafts
 
 
 def test_the_draft_is_jarvis_then_allens_edit_with_a_revision_each_and_can_be_discarded() -> None:
     """ADR 0148: GET {draft: null} first; Jarvis's body, then his hand edit, bump the revision."""
-    client, focus, drafts = _drafts_client()
+    client, view, drafts = _drafts_client()
     letter = "199a1c0d4101"
     assert client.get(f"/inherent/mail/{letter}/draft").json() == {"draft": None}
-    focus.set("mail", letter, "Office hours move to Thursday", "Prof. Lee")
+    view.set("mail", item=("mail", letter, "Prof. Lee — Office hours move to Thursday"))
     first = drafts.write(letter, "Thanks, Thursday works.")
     assert client.get(f"/inherent/mail/{letter}/draft").json() == {"draft": {
         "revision": first, "to": "lee@uvic.ca", "subject": "Re: Office hours move to Thursday",

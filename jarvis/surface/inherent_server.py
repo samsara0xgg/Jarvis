@@ -616,15 +616,18 @@ class InherentDeps:
     mail_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     # ADR 0124: archive junk letters (ids, archive) or put them back (archive False).
     mail_archive: Callable[[list[str], bool], Awaitable[None]] | None = None
-    # ADR 0147, the Dashboard's mail page: one letter whole, its read and trash taps, what is
-    # open on screen (kind, id, title, sender; kind None closes), and the reply draft under
-    # the open letter. ``None`` leaves a route unregistered (404).
+    # ADR 0147, the Dashboard's mail page: one letter whole, its read and trash taps and the
+    # reply draft under the open letter. ``None`` leaves a route unregistered (404).
     mail_letter: Callable[[str], Awaitable[dict[str, Any]]] | None = None
     mail_summary: Callable[[str], Awaitable[dict[str, Any]]] | None = None
     mail_mark_read: Callable[[list[str], bool], Awaitable[None]] | None = None
     mail_trash: Callable[[list[str], bool], Awaitable[None]] | None = None
-    focus_set: (
-        Callable[[Literal["mail", "agent", "brief"] | None, str, str, str], None] | None
+    # ADR 0174, ``dashboard.view.enabled``: what the Dashboard shows (page, tab, open item
+    # ``(kind, id, title)``, rows ``(id, title)``; page None closes). ``None`` = 404.
+    view_set: (
+        Callable[
+            [str | None, str, tuple[str, str, str] | None, list[tuple[str, str]]], None,
+        ] | None
     ) = None
     mail_draft_read: Callable[[str], Awaitable[dict[str, Any]]] | None = None
     mail_draft_save: Callable[[str, str, str], Awaitable[dict[str, Any]]] | None = None
@@ -1254,14 +1257,26 @@ class MemoryDayEditRequest(BaseModel):
     sections: dict[str, list[str]]
 
 
-class FocusRequest(BaseModel):
-    """Body of ``POST /inherent/focus`` (ADR 0147): what the Dashboard has open."""
+class ViewRow(BaseModel):
+    """One row on the Dashboard's screen: its id and one line of title."""
 
-    kind: Literal["mail", "agent", "brief"] | None = None
-    id: str = Field(default="", max_length=200)
-    thread_id: str = Field(default="", max_length=200)
-    sender: str = Field(default="", max_length=500)
-    subject: str = Field(default="", max_length=500)
+    id: str = Field(min_length=1, max_length=200)
+    title: str = Field(default="", max_length=500)
+
+
+class ViewItem(ViewRow):
+    """The item open on the Dashboard: a ``mail``, ``memory``, ``agent`` or ``plugin``."""
+
+    kind: str = Field(min_length=1, max_length=24)
+
+
+class ViewRequest(BaseModel):
+    """Body of ``POST /inherent/view`` (ADR 0174): what the Dashboard shows; page null = closed."""
+
+    page: str | None = Field(default=None, max_length=24)
+    tab: str = Field(default="", max_length=24)
+    item: ViewItem | None = None
+    rows: list[ViewRow] = Field(default_factory=list, max_length=50)
 
 
 async def _home_call[T](call: Awaitable[T]) -> T:
@@ -1443,7 +1458,7 @@ def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C90
 
 
 def _register_mail_page_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C901 — one closed route table.
-    """ADR 0147: the Dashboard's mail page: a letter whole, read and trash, focus, the draft."""
+    """ADR 0147: the Dashboard's mail page: a letter whole, read and trash, the draft."""
     if deps.mail_letter is not None:
         mail_letter = deps.mail_letter
 
@@ -1490,13 +1505,14 @@ def _register_mail_page_routes(app: FastAPI, deps: InherentDeps) -> None:  # noq
             await _home_call(mail_trash(req.ids, False))  # noqa: FBT003 — the route's body.
             return {"ok": True}
 
-    if deps.focus_set is not None:
-        focus_set = deps.focus_set
+    if deps.view_set is not None:
+        view_set = deps.view_set
 
-        @app.post("/inherent/focus", status_code=200)
-        async def focus(req: FocusRequest) -> dict[str, bool]:
-            """What the Dashboard has open; repeated every 20 s, a null kind closes (ADR 0147)."""
-            focus_set(req.kind, req.id, req.subject, req.sender)
+        @app.post("/inherent/view", status_code=200)
+        async def view(req: ViewRequest) -> dict[str, bool]:
+            """What the Dashboard shows; repeated every 20 s, a null page closes (ADR 0174)."""
+            item = None if req.item is None else (req.item.kind, req.item.id, req.item.title)
+            view_set(req.page, req.tab, item, [(row.id, row.title) for row in req.rows])
             return {"ok": True}
 
     if deps.mail_draft_read is not None:
