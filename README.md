@@ -47,15 +47,14 @@ Jarvis sits next to the MacBook notch as a small glass ball with eyes. It answer
 
 ## Design notes
 
-**Interrupting it.** The first version, [jarvis-legacy](https://github.com/samsara0xgg/jarvis-legacy), had an interrupt feature. Measured later, it had never fired once. Here you can talk over Jarvis at any point. With a reSpeaker XVF3800 mic array, its own voice is removed on the board before speech recognition hears it.
+Four engineering stories, each with what was measured and the option that lost, are told in full on the [design notes page](https://samsara0xgg.github.io/Jarvis/architecture/design-notes/):
 
-**Long answers.** A model's answer is written to be read, and read aloud word for word it drags. The full answer goes on screen, and Jarvis speaks a version of one to three sentences, which lights up on screen as she says it. While a tool runs, the screen shows which one, and a slow turn says so instead of going silent.
+- **Interrupting it.** You can talk over Jarvis at any point. With a reSpeaker XVF3800 mic array, its own voice is removed on the board before speech recognition hears it.
+- **Long answers.** The full answer goes on screen, and Jarvis speaks a version of one to three sentences.
+- **Staying fast as it remembers more.** The wait before each model request grew with the event log, from 0.16 s at 16k events to 1.36 s at 48.6k. Each turn now reads only the events since the last one.
+- **Pops in the audio.** They came from the speech provider's volume limiter, not from streaming, and went away with the volume left at its default.
 
-**Staying fast as it remembers more.** Every turn read the whole event log before calling the model, so the wait grew with the log: 0.16 s at 16k events, 1.36 s at 49k. Each turn now reads only the events since the last one. Asking OpenAI for its fast tier on spoken turns cut the first token from a median of 1.04 s to 0.68 s, and the speech provider's padding is trimmed so answers start without dead air.
-
-**Pops in the audio.** Faint clicks in replies looked like a streaming bug. They came from the speech provider's volume limiter, and went away with the volume left at its default.
-
-**Keeping the code in shape.** The daemon is split into six layers, and only `runtime/` may connect them; `lint-imports` fails if anything else does. Each decision that moves a boundary gets a short record in [docs/adr](docs/adr), over 160 so far.
+The daemon is split into six layers, and only `runtime/` may connect them; `lint-imports` fails if anything else does. Each decision that moves a boundary gets a short record in [docs/adr](docs/adr), over 170 so far.
 
 ## How it's built
 
