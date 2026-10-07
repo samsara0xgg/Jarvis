@@ -50,9 +50,10 @@ _DESCRIPTIONS = {
         "past day in the range (written each night; today has none), then one line per record "
         "(time, speaker, text; long answers are cut and name the record id for read_records). "
         "from/to: bare date (local midnight) or ISO time with offset; to defaults to one day "
-        "after from. Use it for 'what did we talk about on <date>' / 'what did I do "
-        "yesterday' instead of paging search_records; follow next_cursor with identical "
-        "arguments until null."
+        "after from. Use it for 'what did we talk about on <date>' instead of paging "
+        "search_records; what the user did on a past day is that day's work report "
+        "(daily_work_report), which also covers apps, Git and calendar. Follow next_cursor "
+        "with identical arguments until null."
     ),
     "read_records": (
         "Read exact original conversation text by record_ids from search_records. Returns "
@@ -110,8 +111,9 @@ _DESCRIPTIONS = {
     "get_briefing": (
         "Read a previously saved briefing by local_date and IANA timezone. Follow next_cursor "
         "with identical date/timezone for all content. Does not regenerate or deliver it. "
-        "The daily work report of a day is saved here automatically early the next morning; "
-        "nothing writes one on request."
+        "The daily work report of a day is saved here automatically early the next morning. "
+        "daily_work_report returns a saved report's summary in one call; read here only for "
+        "its full text."
     ),
 }
 _RECORD_READERS = {
