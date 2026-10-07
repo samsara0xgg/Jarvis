@@ -33,7 +33,7 @@ from jarvis.runtime.terminal import _observe, _Watched
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.plugin_settings import local_key, local_key_matches
-from jarvis.surface import terminal_events, terminal_link
+from jarvis.surface import terminal_events, terminal_link, usage_observer
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.repo_observer import RepoObserver
@@ -45,6 +45,7 @@ from jarvis.surface.terminal_events import (
 )
 from jarvis.surface.terminal_link import TerminalHub, run_terminal_client
 from jarvis.surface.timesink_observer import TimesinkObserver
+from jarvis.surface.usage_observer import DEVICE_SERVICES, UsageObserver
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -200,7 +201,7 @@ def test_an_event_frame_is_appended_once_under_the_terminals_name(tmp_path: Path
         (frame(event_type="confirmation.accepted",
                payload={"confirmation_id": "c", "utterance_raw": "yes", "grammar_rule_id": "g"}),
          "event_type_not_allowed"),
-        (frame(event_type="usage.state_observed"), "event_type_not_allowed"),
+        (frame(event_type="mac.sleeping"), "event_type_not_allowed"),
         (frame(event_type="not.a.type"), "event_type_not_allowed"),
         (frame(event_type=None), "event_type_not_allowed"),
         (frame(payload={**OK_PAYLOAD, "pad": "x" * MAX_EVENT_CHARS}), "event_too_large"),
@@ -441,8 +442,13 @@ def test_the_timesink_observer_emits_through_the_outbox_what_it_appends_on_one_m
     ]
 
 
-def test_the_allowlist_is_what_the_moved_observers_produce(tmp_path: Path) -> None:
+def test_the_allowlist_is_what_the_moved_observers_produce(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Every type the observers emit here is allowed, and nothing else is."""
+    # No login on this machine: the usage observer reports "unconfigured", with no network.
+    monkeypatch.setattr(usage_observer, "_read_claude_credentials", lambda: None)
+    monkeypatch.setattr(usage_observer, "_codex_headers", lambda: None)
 
     async def scenario() -> set[str]:
         repo = _make_repo(tmp_path / "repo")
@@ -459,14 +465,20 @@ def test_the_allowlist_is_what_the_moved_observers_produce(tmp_path: Path) -> No
             open_event_log(tmp_path / "b.db"), tmp_path / "ts.sqlite", emit_event=outbox.emit_event,
         )
         timesink.emit(timesink.collect())
+        usage = UsageObserver(
+            open_event_log(tmp_path / "c.db"), services=DEVICE_SERVICES,
+            emit_event=outbox.emit_event,
+        )
+        usage.emit(usage.collect())
         store.close()
         return {f["event_type"] for f in _sent(outbox)}
 
     produced = asyncio.run(scenario())
     assert produced == set(OBSERVER_EVENT_TYPES)
-    assert {"repo.state_observed", "project.commit_seen", "timesink.state_observed"} == set(
-        OBSERVER_EVENT_TYPES,
-    )
+    assert {
+        "repo.state_observed", "project.commit_seen", "timesink.state_observed",
+        "usage.state_observed",
+    } == set(OBSERVER_EVENT_TYPES)
 
 
 def test_the_outbox_refuses_a_type_no_observer_produces_and_keeps_a_bounded_buffer() -> None:

@@ -348,7 +348,6 @@ _BRAIN_OVERRIDES: Final[dict[str, Any]] = {
     "observer": {
         "repos": [],
         "timesink": {"enabled": False},
-        "usage": {"enabled": False},
     },
     "realtime": {"ambient_sounds": False, "gpt_live": {"enabled": False}},
     "daily_report": {"codex_sessions": False},

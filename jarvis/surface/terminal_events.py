@@ -13,7 +13,8 @@ A frame may also carry ``"schema_version"``, ``"source_event_id"`` and ``"correl
 playback rows of a voice terminal (ADR 0172) keep their own ids and the links between them.
 
 and the brain's ``ready`` frame carries ``"baseline"``: the latest ``repo.state_observed`` per
-repo and the latest ``timesink.state_observed``, which is what the observers fold their
+repo, the latest ``timesink.state_observed`` and the latest ``usage.state_observed`` per
+service, which is what the observers fold their
 change-baselines from (ADR-0009 D5). The brain is where that state lives, so a terminal
 that restarts picks up from what the brain last heard.
 
@@ -34,7 +35,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import Event
 from jarvis.state.event_log import EventLogError, EventTypeRegistry, emit_event
-from jarvis.surface import repo_observer, timesink_observer
+from jarvis.surface import repo_observer, timesink_observer, usage_observer
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -46,6 +47,7 @@ OBSERVER_EVENT_TYPES: Final = frozenset(
         repo_observer.STATE_EVENT_TYPE,
         repo_observer.COMMIT_EVENT_TYPE,
         timesink_observer.EVENT_TYPE,
+        usage_observer.EVENT_TYPE,
     },
 )
 """Every type a terminal may write: what the observers that run there produce, and nothing
@@ -93,6 +95,11 @@ _LATEST_REPO_STATES_SQL: Final = (
     "SELECT MAX(id) FROM events WHERE type = ? GROUP BY json_extract(payload_json, '$.repo_path')"
     ") ORDER BY id LIMIT ?"
 )
+_LATEST_USAGE_SQL: Final = (
+    "SELECT type, payload_json FROM events WHERE id IN ("
+    "SELECT MAX(id) FROM events WHERE type = ? GROUP BY json_extract(payload_json, '$.service')"
+    ") ORDER BY id LIMIT ?"
+)
 _LATEST_TYPE_SQL: Final = (
     "SELECT type, payload_json FROM events WHERE type = ? ORDER BY id DESC LIMIT 1"
 )
@@ -115,6 +122,9 @@ class BrainEvents:
             _LATEST_REPO_STATES_SQL, (repo_observer.STATE_EVENT_TYPE, _MAX_BASELINE_ROWS),
         ).fetchall()
         rows += self._conn.execute(_LATEST_TYPE_SQL, (timesink_observer.EVENT_TYPE,)).fetchall()
+        rows += self._conn.execute(
+            _LATEST_USAGE_SQL, (usage_observer.EVENT_TYPE, len(usage_observer.SERVICES)),
+        ).fetchall()
         return [{"event_type": kind, "payload": json.loads(payload)} for kind, payload in rows]
 
     def record_utterance(self, device: str, args: Mapping[str, Any]) -> str:

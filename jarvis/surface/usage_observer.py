@@ -64,6 +64,11 @@ LOGGER = logging.getLogger("jarvis.surface.usage_observer")
 OBSERVER_ACTOR: Final[str] = "observer"
 EVENT_TYPE: Final[str] = "usage.state_observed"
 SERVICES: Final[tuple[str, ...]] = ("claude", "codex", "openai", "deepseek", "minimax")
+# ADR 0170: the two read a login on the owner's machine (Claude Code's and Codex's own); a
+# terminal observes them and pushes the events. The rest need provider keys, which stay where
+# the keys are, on the brain.
+DEVICE_SERVICES: Final[tuple[str, ...]] = ("claude", "codex")
+KEYED_SERVICES: Final[tuple[str, ...]] = ("openai", "deepseek", "minimax")
 BALANCE_EVENT_TYPE: Final[str] = "usage.balance_recorded"
 # The services with no balance API, whose balance Allen records by hand.
 BALANCE_SERVICES: Final[tuple[str, ...]] = ("openai",)
@@ -716,10 +721,24 @@ class UsageObserver:
     :meth:`emit` runs on the connection's owning thread and appends events.
     """
 
-    def __init__(self, event_log: sqlite3.Connection, config: UsageConfig | None = None) -> None:
-        """Bind the observer to a log connection and its poller settings."""
+    def __init__(
+        self,
+        event_log: sqlite3.Connection,
+        config: UsageConfig | None = None,
+        *,
+        services: tuple[str, ...] = SERVICES,
+        emit_event: Callable[..., Event] = emit_event,
+    ) -> None:
+        """Bind the observer to a log connection and its poller settings.
+
+        ``services`` are the ones this process collects; ``emit_event`` is where a changed
+        snapshot goes: the log itself, or (ADR 0170) a terminal's link to the brain's log, with
+        ``event_log`` then only seeding the baselines.
+        """
         self._event_log = event_log
         self._config = config or UsageConfig()
+        self._services = services
+        self._emit_event = emit_event
         self._baselines: dict[str, UsageSnapshot] = {}
         self._balances: dict[str, RecordedBalance] = {}
 
@@ -765,6 +784,8 @@ class UsageObserver:
         )
         snapshots: list[UsageSnapshot] = []
         for service, collector in collectors:
+            if service not in self._services:
+                continue
             try:
                 snapshot = collector(timeout_s=timeout_s)
             except Exception as exc:  # noqa: BLE001 - the docstring's promise.
@@ -781,7 +802,7 @@ class UsageObserver:
             if snapshot.same_state(self._baselines.get(snapshot.service)):
                 continue
             emitted.append(
-                emit_event(
+                self._emit_event(
                     self._event_log,
                     type="usage.state_observed",  # literal: the registry canaries scan it.
                     payload={
@@ -805,7 +826,9 @@ class UsageObserver:
 __all__ = [
     "BALANCE_EVENT_TYPE",
     "BALANCE_SERVICES",
+    "DEVICE_SERVICES",
     "EVENT_TYPE",
+    "KEYED_SERVICES",
     "OBSERVER_ACTOR",
     "SERVICES",
     "RecordedBalance",

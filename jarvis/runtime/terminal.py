@@ -85,6 +85,8 @@ from jarvis.runtime.inherent_loop import (
     _spawn_single_ingress_session,
     _timesink_observer_task,
     _tts_watcher,
+    _usage_observer_task,
+    _usage_poll_interval_s,
     _voice_knobs,
     _voice_models_preflight,
 )
@@ -123,6 +125,7 @@ from jarvis.surface.terminal_speaker import (
 )
 from jarvis.surface.terminal_ui import Brain, Device, UiBroadcaster, create_ui_app
 from jarvis.surface.timesink_observer import TimesinkObserver, collect
+from jarvis.surface.usage_observer import DEVICE_SERVICES, UsageObserver
 from jarvis.surface.voice_controls import VoiceControls
 from jarvis.surface.voice_ducking import SystemAudioDucker
 from jarvis.surface.voice_media import StreamingTTSPipeline
@@ -373,6 +376,8 @@ class _Watched:
     repo_interval_s: float
     timesink: Path | None
     timesink_interval_s: float
+    usage_interval_s: float | None = None
+    """Seconds between polls of the Claude Code and Codex logins; ``None``: not observed."""
 
 
 async def _observe(outbox: EventOutbox, watched: _Watched) -> None:
@@ -401,6 +406,14 @@ async def _observe(outbox: EventOutbox, watched: _Watched) -> None:
             timesink.recover_baseline()
             tasks.append(asyncio.create_task(
                 _timesink_observer_task(timesink, interval_s=watched.timesink_interval_s),
+            ))
+        if watched.usage_interval_s is not None:
+            usage = UsageObserver(
+                scratch, services=DEVICE_SERVICES, emit_event=outbox.emit_event,
+            )
+            usage.recover_baselines()
+            tasks.append(asyncio.create_task(
+                _usage_observer_task(usage, interval_s=watched.usage_interval_s),
             ))
         await asyncio.gather(*tasks)
     except asyncio.CancelledError:
@@ -877,6 +890,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
         configured_store = _timesink_db_path(config)
         repos = configured_repos if observers else ()
         store = configured_store if observers else None
+        usage_interval_s = _usage_poll_interval_s(config) if observers else None
     except (RuntimeBootstrapError, ValueError) as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")
         return 1
@@ -895,13 +909,15 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     watched = (
         _Watched(
             repos, _observer_poll_interval_s(config), store, _timesink_poll_interval_s(config),
+            usage_interval_s,
         )
-        if repos or store is not None
+        if repos or store is not None or usage_interval_s is not None
         else None
     )
     if watched is not None:
-        LOGGER.info("this terminal observes %d repo(s)%s", len(repos),
-                    "" if store is None else " and TimeSink")
+        LOGGER.info("this terminal observes %d repo(s)%s%s", len(repos),
+                    "" if store is None else " and TimeSink",
+                    "" if usage_interval_s is None else " and Claude Code / Codex usage")
     try:
         execute = make_executor(
             registry, timesink_store=configured_store, repos=configured_repos,

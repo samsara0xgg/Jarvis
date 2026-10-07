@@ -279,6 +279,8 @@ from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.timesink_observer import TimesinkHead, TimesinkObserver
 from jarvis.surface.usage_observer import (
+    KEYED_SERVICES,
+    SERVICES,
     UsageObserver,
     latest_usage,
     redeem_codex_reset,
@@ -4831,13 +4833,25 @@ def _usage_observer_block(config: Mapping[str, Any]) -> Mapping[str, Any] | None
     return usage
 
 
+def _usage_poll_interval_s(config: Mapping[str, Any]) -> float | None:
+    """The seconds between usage polls when ``observer.usage`` is on; ``None`` when it is off."""
+    usage = _usage_observer_block(config)
+    if usage is None:
+        return None
+    return _positive_float(usage.get("poll_interval_s"), _FALLBACK_USAGE_POLL_INTERVAL_S)
+
+
 def _make_usage_observer(runtime: JarvisRuntime) -> UsageObserver | None:
     """Build the observer with baselines recovered on the loop thread."""
     usage = _usage_observer_block(runtime.config)
     if usage is None:
         LOGGER.info("usage_observer: observer.usage disabled; observer not started.")
         return None
-    observer = UsageObserver(runtime.conn)
+    # A brain has no Claude Code or Codex login of its own: a terminal reports those two.
+    observer = UsageObserver(
+        runtime.conn,
+        services=KEYED_SERVICES if runtime.role == "brain" else SERVICES,
+    )
     baselines = observer.recover_baselines()
     LOGGER.info("usage_observer: %d baseline(s) recovered from the event log", len(baselines))
     return observer
@@ -4880,10 +4894,9 @@ def _start_usage_observer(
     observer: UsageObserver | None, config: Mapping[str, Any]
 ) -> list[asyncio.Task[None]]:
     """Start the periodic task for an observer :func:`_make_usage_observer` built."""
-    usage = _usage_observer_block(config)
-    if observer is None or usage is None:
+    interval_s = _usage_poll_interval_s(config)
+    if observer is None or interval_s is None:
         return []
-    interval_s = _positive_float(usage.get("poll_interval_s"), _FALLBACK_USAGE_POLL_INTERVAL_S)
     return [
         asyncio.create_task(
             _usage_observer_task(observer, interval_s=interval_s),
