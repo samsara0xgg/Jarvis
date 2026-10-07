@@ -613,6 +613,9 @@ class JarvisRuntime:
     # ADR 0023: the one current-work-state refresh workflow, shared by the
     # `refresh_work_state` tool and the Resonance dashboard routes.
     work_state: WorkStateService | None = None
+    # ADR 0180: re-analyse in the background when Allen changes what he is doing
+    # (``work_state.auto``, off by default: it sends screen material unasked).
+    work_state_auto: bool = False
     # ADR 0037: the project view and its sorting job. None = no `projects` list.
     projects: ProjectsService | None = None
     # ADR 0051: the companion home's Today, mail and brief reads. None = hand-assembled.
@@ -1243,6 +1246,16 @@ def _work_state_timezone(config: Mapping[str, Any]) -> tzinfo | None:
     except ZoneInfoNotFoundError as exc:
         message = f"work_state.timezone must be an IANA zone name: {raw!r}"
         raise ValueError(message) from exc
+
+
+def _work_state_auto(config: Mapping[str, Any], config_path: Path) -> bool:
+    """``work_state.auto`` (ADR 0180) — background re-analysis on change; a non-bool stops boot."""
+    block = config.get("work_state")
+    raw = block.get("auto", False) if isinstance(block, Mapping) else False
+    if not isinstance(raw, bool):
+        msg = f"runtime: {config_path} work_state.auto must be true or false"
+        raise RuntimeBootstrapError(msg)
+    return raw
 
 
 def _audio_devices(kind: str) -> list[str]:
@@ -2698,6 +2711,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         tool_cues=tool_cues,
         think_mode=think_mode,
         work_state=work_state,
+        work_state_auto=_work_state_auto(full_config, config_path),
         projects=projects,
         home=Home(
             plugin_connections,

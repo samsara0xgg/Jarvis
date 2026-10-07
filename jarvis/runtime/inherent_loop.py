@@ -181,6 +181,7 @@ from jarvis.runtime.setup import Setup
 from jarvis.runtime.spend_cap import SpendCap, SpendCapSettings
 from jarvis.runtime.tool_status import EVENT_TYPES as _TOOL_STATUS_EVENT_TYPES
 from jarvis.runtime.tool_status import ToolStatus
+from jarvis.runtime.work_state import auto_refresh
 from jarvis.shared import Event, lang
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import (
@@ -6883,6 +6884,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     ).run(),
                     name="spend_cap",
                 ))
+        if runtime.work_state_auto and runtime.work_state and runtime.moment:
+            # ADR 0180: a changed front app or site re-analyses the work state, silently.
+            watchers.append(asyncio.create_task(
+                auto_refresh(runtime.work_state, runtime.moment), name="work_state_auto",
+            ))
         if runtime.reminders is not None:
             # ADR 0179: reminders speak when unmuted and out of a conversation, at any quiet level.
             reminders = runtime.reminders

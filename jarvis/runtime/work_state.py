@@ -7,6 +7,7 @@ only receive callables built here.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import sqlite3
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.decision.llm import ChatResult
+    from jarvis.runtime.moment import Moment
     from jarvis.shared.device_link import DeviceLink
 
 LOGGER = logging.getLogger(__name__)
@@ -358,3 +360,46 @@ class WorkStateService:
             error = f"{type(exc).__name__}: {exc}"[:300]
             return {"outcome": "failed", "error": error, "state": previous}
         return {"outcome": "analyzed", "error": None, "state": saved}
+
+
+AutoRun = tuple[tuple[Any, Any], float]
+"""The (front app, site) and the clock reading of the last background run."""
+
+
+def auto_due(
+    key: tuple[Any, Any], last: AutoRun | None, now: float, max_age_s: float
+) -> bool:
+    """Run on a changed (front app, site), or when the last background run is ``max_age_s`` old."""
+    return last is None or key != last[0] or now - last[1] >= max_age_s
+
+
+async def auto_check(
+    service: WorkStateService,
+    moment: Moment,
+    last: AutoRun | None,
+    now: float,
+    max_age_s: float,
+) -> AutoRun | None:
+    """One check: refresh if Allen is at the desk and ``auto_due``; return the new last run."""
+    facts = moment.facts()
+    if facts.get("read") != "ok" or facts.get("presence") != "active":
+        return last
+    key = (facts.get("front_app"), facts.get("site_domain"))
+    if not auto_due(key, last, now, max_age_s):
+        return last
+    view = await asyncio.to_thread(service.refresh_in_own_connection, trigger="auto")
+    LOGGER.info("work_state: auto refresh in %s: %s", key, view["outcome"])
+    return key, now
+
+
+async def auto_refresh(
+    service: WorkStateService, moment: Moment, *, check_s: float = 300.0, max_age_s: float = 1800.0
+) -> None:
+    """ADR 0180: every ``check_s`` seconds, re-analyse if he changed what he is doing."""
+    last: AutoRun | None = None
+    while True:
+        try:
+            last = await auto_check(service, moment, last, time.monotonic(), max_age_s)
+        except Exception:
+            LOGGER.exception("work_state: auto refresh check failed")
+        await asyncio.sleep(check_s)

@@ -22,7 +22,7 @@ from jarvis.decision.llm import ChatResult, ToolCall
 from jarvis.decision.work_state import REPORT_TOOL_NAME, build_request, parse_report
 from jarvis.execution.tools import build_default_registry
 from jarvis.runtime.inherent_loop import _poll_timesink_once
-from jarvis.runtime.work_state import WorkStateService
+from jarvis.runtime.work_state import WorkStateService, auto_check
 from jarvis.state import daily_store
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.event_log import iter_events_of_types, open_event_log
@@ -673,3 +673,55 @@ def test_now_uses_the_cited_capture_time(rig: Rig, source: sqlite3.Connection) -
     evidence = rig.evidence()
     report = {**_REPORT, "now": {"text": "未知来源", "basis": "observed", "refs": ["a1"]}}
     assert compose_state(report, evidence, question=None, model="test")["now"] is None
+
+
+class _Moment:
+    """A moment whose facts the test sets; ``auto_check`` only calls ``facts()``."""
+
+    def __init__(self, **facts: str) -> None:
+        self.facts_now = {
+            "read": "ok", "presence": "active", "front_app": "Chrome", "site_domain": "a.example",
+            **facts,
+        }
+
+    def facts(self) -> dict[str, Any]:
+        return self.facts_now
+
+
+def _auto(rig: Rig, moment: _Moment, last: Any, now: float) -> Any:  # noqa: ANN401 — the last-run token.
+    return asyncio.run(auto_check(rig.service, moment, last, now, 1800.0))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "facts",
+    [{"presence": "idle"}, {"presence": "locked"}, {"presence": "unknown"}, {"read": "unknown"}],
+)
+def test_auto_refresh_never_runs_while_away_or_unknown(rig: Rig, facts: dict[str, str]) -> None:
+    """ADR 0180: only a readable moment with Allen present can start a background run."""
+    assert _auto(rig, _Moment(**facts), None, 0.0) is None
+    assert rig.analyst.calls == 0
+    assert rig.events("work_state.revised") == []
+
+
+def test_auto_refresh_runs_on_change_or_after_30_minutes(
+    rig: Rig, source: sqlite3.Connection
+) -> None:
+    """ADR 0180: the first check runs with trigger auto; the same app and site waits 30 minutes."""
+    moment = _Moment()
+    last = _auto(rig, moment, None, 0.0)
+    assert last is not None
+    assert [e["trigger"] for e in rig.events("work_state.revised")] == ["auto"]
+
+    add_capture(source, _stamp(-3), _stamp(-1), text="new window content")
+    assert _auto(rig, moment, last, 1799.0) == last
+    assert rig.analyst.calls == 1, "same app and site inside 30 minutes: no run"
+
+    moment.facts_now["site_domain"] = "b.example"
+    changed = _auto(rig, moment, last, 300.0)
+    assert changed == (("Chrome", "b.example"), 300.0)
+    assert rig.analyst.calls == 2
+
+    add_capture(source, _stamp(-1), _stamp(0), text="even newer content")
+    assert _auto(rig, moment, changed, 300.0 + 1800.0) == (("Chrome", "b.example"), 2100.0)
+    assert rig.analyst.calls == 3
+    assert [e["trigger"] for e in rig.events("work_state.revised")] == ["auto"] * 3
