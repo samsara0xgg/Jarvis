@@ -41,7 +41,9 @@ const LIGHT = {
   alert: light('#ffeceb', '#ff4d4d', ['#7a0c14', '#c21e22', '#40081a'], '#ff3b3b', 1.2),
   think: light('#f8f4ff', '#bb94ff', ['#3a1f86', '#7a3ac0', '#23307a'], '#b98cff', 1.1),
   listen: light('#f2fbff', '#8fe3ff', ['#0f4a6e', '#1f7aa0', '#2a3a8a'], '#8fe3ff', 1.05),
-  speak: light('#f2fff9', '#6fe0b4', ['#0e5044', '#1f8a70', '#1f3a78'], '#6fe0b4', 1.1),
+  // Her voice is moon white; the mint below belongs to a finished session, so the two never read alike.
+  speak: light('#ffffff', '#e8eeff', ['#46527e', '#8090c4', '#56689e'], '#e2e9ff', 1.2),
+  done: light('#f2fff9', '#6fe0b4', ['#0e5044', '#1f8a70', '#1f3a78'], '#6fe0b4', 1.1),
   work: light('#f2f6ff', '#6c9cff', ['#12307e', '#2a5ad0', '#1a2a6a'], '#6c9cff', 1.15),
   memory: light('#fbf6ff', '#e0b4ff', ['#4a2a6a', '#8a4a8a', '#2a3a7a'], '#e6b8ff', .95),
   deny: light('#e8dcdc', '#c86a6a', ['#3a1418', '#5a1e24', '#221a3a'], '#b85a5a', .7),
@@ -152,8 +154,8 @@ export const EXPRESSIONS: Record<ExprId, Expr> = {
   ask: { name: '等你', eyes: { len: .52, w: .21, tilt: 14 }, light: 'warm', gaze: 'still', gx: 0, gy: .32, sway: [3, 3.2], blink: [2400, 6000], spin: .35, breathe: [.012, 2.8], enter: ['hop'] },
   // Think mode: looking far up and holding it, blinking slowly; no stars circle her.
   deep: { name: '深想', eyes: { sep: .27, y: -.02, len: .3, w: .17, tilt: 0, cut: .16 }, light: 'deep', gaze: 'still', gx: .38, gy: -.52, blink: [4200, 8000], blinkSlow: true, spin: .35, breathe: [.014, 5] },
-  fin: { name: '做完了', eyes: SMILE, light: 'speak', spin: .5, enter: ['hop', 'burst'], seq: { frames: [
-    { at: 0, light: 'gold', bright: 1.4, spin: 3 }, { at: 1400, light: 'speak', bright: 1, spin: .5 },
+  fin: { name: '做完了', eyes: SMILE, light: 'done', spin: .5, enter: ['hop', 'burst'], seq: { frames: [
+    { at: 0, light: 'gold', bright: 1.4, spin: 3 }, { at: 1400, light: 'done', bright: 1, spin: .5 },
   ], end: 1500 } },
 };
 // The twelve work states first, then five feelings: what Settings plays with "Play all".
