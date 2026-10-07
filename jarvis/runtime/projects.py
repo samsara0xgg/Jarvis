@@ -21,7 +21,8 @@ from jarvis.decision.projects import (
     build_request,
     parse_assignments,
 )
-from jarvis.state import timesink
+from jarvis.state import device_reads, timesink
+from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.projects import (
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.decision.llm import ChatResult
+    from jarvis.shared.device_link import DeviceLink
     from jarvis.state.projects import Project, Window
 
 LOGGER = logging.getLogger(__name__)
@@ -78,8 +80,13 @@ class ProjectsService:
         model: str,
         tz: tzinfo | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        device: DeviceLink | None = None,
     ) -> None:
-        """Bind store locations; nothing is opened until a read or refresh."""
+        """Bind store locations; nothing is opened until a read or refresh.
+
+        ``device`` (ADR 0170: this is a brain) is the link to the terminal that holds TimeSink
+        and the repositories; the window and the commits are asked of it.
+        """
         self._event_log_path = event_log_path
         self._timesink_path = timesink_path
         self._projects = tuple(projects)
@@ -88,19 +95,23 @@ class ProjectsService:
         self._model = model
         self._zone = resolve_zone(None, tz)[1]
         self._clock = clock
+        self._device = device
         self._cond = threading.Condition()
         self._running: _Run | None = None
         self._last: dict[str, Any] = {"outcome": None, "error": None}
 
-    def _window(self) -> Window | None:
-        with timesink.snapshot(self._timesink_path) as snap:
-            if snap is None:
-                return None
-            try:
-                return gather(snap, self._zone, self._clock())
-            except (sqlite3.Error, ValueError) as exc:
-                LOGGER.warning("projects: TimeSink read failed: %s", exc)
-                return None
+    def _window(self) -> tuple[Window | None, str | None]:
+        """The week's activities, or None and why when a terminal cannot be reached."""
+        try:
+            with timesink.snapshot(self._timesink_path, self._device) as snap:
+                if snap is None:
+                    return None, None
+                return gather(snap, self._zone, self._clock()), None
+        except device_reads.DeviceUnavailable as exc:
+            return None, str(exc)
+        except (sqlite3.Error, ValueError, KeyError, TypeError, DailyError) as exc:
+            LOGGER.warning("projects: TimeSink read failed: %s", exc)
+            return None, None
 
     def read(self) -> dict[str, Any]:
         """``GET /inherent/projects``: the derived view plus the last run's outcome."""
@@ -110,8 +121,10 @@ class ProjectsService:
         finally:
             with contextlib.suppress(sqlite3.Error):
                 conn.close()
+        window, note = self._window()
         view = compose_view(
-            self._window(), answered, sorted_at, self._projects, self._zone, self._clock()
+            window, answered, sorted_at, self._projects, self._zone, self._clock(),
+            self._device, note,
         )
         return {**view, "refreshing": self._running is not None, **self._last}
 
@@ -139,9 +152,9 @@ class ProjectsService:
         return {**self.read(), **final, **({} if owner else {"joined": True})}
 
     def _sort(self, trigger: str) -> dict[str, Any]:
-        window = self._window()
+        window, note = self._window()
         if window is None or not window.activities:
-            return {"outcome": "no_evidence", "error": None}
+            return {"outcome": "no_evidence", "error": note}
         conn = open_runtime_event_log(self._event_log_path)
         saved = 0
         try:

@@ -180,7 +180,7 @@ from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event, lang, llm_io_log
 from jarvis.shared.action_admission import bind_action_admission
-from jarvis.shared.device_link import DeviceCallError
+from jarvis.shared.device_link import DeviceCallError, DeviceLink
 from jarvis.shared.lang import language_name
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import (
@@ -1394,11 +1394,13 @@ def _mail_reply(
     )
 
 
-def _moment(config: Mapping[str, Any], config_path: Path, db_path: Path) -> Moment | None:
+def _moment(
+    config: Mapping[str, Any], config_path: Path, db_path: Path, device: DeviceLink | None = None,
+) -> Moment | None:
     """``moment`` (ADR 0161): off unless enabled; bad values stop boot.
 
     It reads TimeSink only through ``observer.timesink``: with that off every fact is unknown
-    and nothing is held.
+    and nothing is held. On a brain (``device``) it is the terminal's TimeSink that is read.
     """
     block = config.get("moment")
     if not isinstance(block, Mapping):
@@ -1419,13 +1421,13 @@ def _moment(config: Mapping[str, Any], config_path: Path, db_path: Path) -> Mome
         raise RuntimeBootstrapError(msg)
     if not block["enabled"]:
         return None
-    return Moment(MomentSettings(dict(fields)), _timesink_db_path(config), db_path)
+    return Moment(MomentSettings(dict(fields)), _timesink_db_path(config), db_path, device)
 
 
 def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
     config: Mapping[str, Any], config_path: Path, log: JevLog | None,
     connections: PluginConnections, db_path: Path,
-    moment: Moment | None = None,
+    moment: Moment | None = None, device: DeviceLink | None = None,
 ) -> JobMail | None:
     """``job_mail`` (ADR 0155): off unless enabled; bad values stop boot."""
     block = config.get("job_mail")
@@ -1485,7 +1487,7 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
     route = SurrogateRoute(model=model.strip(), min_confidence=1.0, timeout_ms=timeout, log=log)
     return JobMail(
         settings, route, connections, db_path, rule_judge_v1,
-        moment=moment, timesink_path=_timesink_db_path(config),
+        moment=moment, timesink_path=_timesink_db_path(config), device=device,
     )
 
 
@@ -2458,7 +2460,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     # ADR 0170: a brain's TimeSink and git are its terminal's, so what reads them asks the hub.
     terminal_hub = TerminalHub(events=BrainEvents(conn)) if role == "brain" else None
     device = None if terminal_hub is None else terminal_hub.call
-    moment = _moment(full_config, config_path, memory.db_path)
+    moment = _moment(full_config, config_path, memory.db_path, device)
     # ADR 0068: refuse a memory.db a newer Jarvis wrote before anything writes to it.
     open_memory_db(memory.db_path).close()
     session = SessionSettings.from_config(full_config.get("session"))
@@ -2494,6 +2496,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             ),
             model=_work_state_preset(full_config),
             tz=_work_state_timezone(full_config),
+            device=device,
         )
     )
     daily_report = DailyReportService(
@@ -2665,7 +2668,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
 
     jev_log = _jev_log(full_config, paths.root)
     job_mail = _job_mail(
-        full_config, config_path, jev_log, plugin_connections, memory.db_path, moment,
+        full_config, config_path, jev_log, plugin_connections, memory.db_path, moment, device,
     )
     _register_job_ledger(registry, job_mail)
     return JarvisRuntime(

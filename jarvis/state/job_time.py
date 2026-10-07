@@ -17,10 +17,13 @@ from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit
 
-from jarvis.state import timesink
+from jarvis.state import device_reads, timesink
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
+    from pathlib import Path
+
+    from jarvis.shared.device_link import DeviceLink
 
 # Applicant-tracking hosts: any span on them is job-site time.
 ATS_DOMAINS: Final[tuple[str, ...]] = (
@@ -79,6 +82,23 @@ def base_domain(host: str) -> str:
         keep = 3 if parts[-2] in _SECOND_LEVEL and len(parts[-1]) == 2 else 2  # noqa: PLR2004
         parts = parts[-keep:]
     return ".".join(parts)
+
+
+def known_to_wire(known: Iterable[Company]) -> list[list[Any]]:
+    """The ledger companies as JSON, for a brain's ask of its terminal (ADR 0170)."""
+    return [[company.name, sorted(company.domains)] for company in known]
+
+
+def known_from_wire(raw: object) -> list[Company]:
+    """What :func:`known_to_wire` made, on the terminal; ``ValueError`` for another shape."""
+    try:
+        return [
+            Company(str(name), frozenset(map(str, domains)))
+            for name, domains in (raw if isinstance(raw, list) else [])
+        ]
+    except (TypeError, ValueError):
+        message = "known companies are a list of [name, [domains]]"
+        raise ValueError(message) from None
 
 
 def companies(sites: Iterable[tuple[str, str]]) -> list[Company]:
@@ -204,6 +224,28 @@ def job_time(
                 days_of = by_company.setdefault(name.casefold(), {})
                 days_of[day] = days_of.get(day, 0) + seconds
     return {"by_company": by_company, "other_s": other}
+
+
+def job_time_on(
+    path: Path | None,
+    device: DeviceLink | None,
+    known: Iterable[Company],
+    now: datetime,
+    days: int = WINDOW_DAYS,
+) -> dict[str, Any] | None:
+    """:func:`job_time` over the store at ``path``, or over the terminal's own on a brain.
+
+    Raises:
+        device_reads.DeviceUnavailable: ``device`` is given and no terminal can be reached.
+    """
+    if device is not None:
+        found: dict[str, Any] | None = device_reads.ask(
+            device, device_reads.TIMESINK_READ, "job_time",
+            known=known_to_wire(known), now=now.isoformat(), days=days,
+        )
+        return found
+    with timesink.snapshot(path) as snap:
+        return job_time(snap, known, now, days)
 
 
 def spent_view(found: Mapping[str, Any] | None, company: str) -> dict[str, Any]:

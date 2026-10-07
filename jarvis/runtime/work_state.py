@@ -381,7 +381,7 @@ async def auto_check(
     max_age_s: float,
 ) -> AutoRun | None:
     """One check: refresh if Allen is at the desk and ``auto_due``; return the new last run."""
-    facts = moment.facts()
+    facts = await asyncio.to_thread(moment.facts)  # a brain asks its terminal: off the loop
     if facts.get("read") != "ok" or facts.get("presence") != "active":
         return last
     key = (facts.get("front_app"), facts.get("site_domain"))

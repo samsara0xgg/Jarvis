@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from jarvis.shared.device_link import DeviceLink
+
 LOGGER = logging.getLogger(__name__)
 
 CACHE_S: Final[float] = 5.0
@@ -36,10 +38,21 @@ class MomentSettings:
 class Moment:
     """Reads the situation from TimeSink at the time it is asked; never a background poll."""
 
-    def __init__(self, settings: MomentSettings, timesink_path: Path | None, db_path: Path) -> None:
-        """``timesink_path`` is None while ``observer.timesink`` is off; ``db_path``: memory.db."""
+    def __init__(
+        self,
+        settings: MomentSettings,
+        timesink_path: Path | None,
+        db_path: Path,
+        device: DeviceLink | None = None,
+    ) -> None:
+        """``timesink_path`` is None while ``observer.timesink`` is off; ``db_path``: memory.db.
+
+        ``device`` (ADR 0170: this is a brain) is the link to the terminal whose TimeSink it
+        is; the facts are read there, and must be asked for off the event loop.
+        """
         self._settings = settings
         self._path = timesink_path
+        self._device = device
         self._db = db_path
         self._cached: tuple[datetime, dict[str, Any]] | None = None
         self.now: Callable[[], datetime] = lambda: datetime.now(UTC)
@@ -53,7 +66,7 @@ class Moment:
             return self._cached[1]
         try:
             known = job_time.companies(job_ledger.company_sites(self._db))
-            found = timesink_moment.moment_facts(self._path, now, known)
+            found = timesink_moment.moment_facts(self._path, now, known, self._device)
         except Exception:
             LOGGER.exception("moment: reading the situation failed; treated as unknown")
             found = timesink_moment.moment_facts(None, now)

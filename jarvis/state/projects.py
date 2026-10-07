@@ -16,7 +16,7 @@ from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from jarvis.state import timesink
+from jarvis.state import device_reads, timesink
 from jarvis.state.daily_contract import fingerprint
 from jarvis.state.daily_report import local_commits
 from jarvis.state.event_log import emit_event
@@ -24,6 +24,8 @@ from jarvis.state.event_log import emit_event
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Iterable, Mapping, Sequence
+
+    from jarvis.shared.device_link import DeviceLink
 
 EVENT_TYPE = "project.activity_classified"
 NONE = "none"
@@ -131,8 +133,55 @@ def empty_window(zone: tzinfo, now: datetime) -> Window:
     return Window(days, start, end, {})
 
 
-def gather(snap: timesink.Snapshot, zone: tzinfo, now: datetime) -> Window:
-    """Sum each span per activity and per local day (span overlap, split at midnight)."""
+def window_to_wire(window: Window) -> dict[str, Any]:
+    """A window as JSON: what a terminal answers a brain's ``project_window`` with (ADR 0170)."""
+    return {
+        "days": [day.isoformat() for day in window.days],
+        "start": window.start.isoformat(),
+        "end": window.end.isoformat(),
+        "activities": [
+            {
+                "key": a.key, "app": a.app, "domain": a.domain, "label": a.label,
+                "seconds": a.seconds, "days": a.days,
+                "last_seen": None if a.last_seen is None else a.last_seen.isoformat(),
+            }
+            for a in window.activities.values()
+        ],
+    }
+
+
+def window_from_wire(raw: Mapping[str, Any]) -> Window:
+    """What :func:`window_to_wire` made; ``KeyError``, ``TypeError`` or ``ValueError`` if not."""
+    activities = {
+        str(a["key"]): Activity(
+            key=str(a["key"]), app=str(a["app"]),
+            domain=None if a["domain"] is None else str(a["domain"]), label=str(a["label"]),
+            seconds=float(a["seconds"]),
+            days={str(day): float(seconds) for day, seconds in a["days"].items()},
+            last_seen=None if a["last_seen"] is None else datetime.fromisoformat(a["last_seen"]),
+        )
+        for a in raw["activities"]
+    }
+    return Window(
+        [date.fromisoformat(day) for day in raw["days"]],
+        datetime.fromisoformat(raw["start"]), datetime.fromisoformat(raw["end"]), activities,
+    )
+
+
+def zone_name(zone: tzinfo) -> str:
+    """The IANA name of ``zone`` for a terminal to resolve; UTC for a zone that has none."""
+    return str(getattr(zone, "key", None) or "UTC")
+
+
+def gather(snap: timesink.Reader, zone: tzinfo, now: datetime) -> Window:
+    """Sum each span per activity and per local day (span overlap, split at midnight).
+
+    Over a terminal's store (a brain) the terminal sums its own spans and sends the window.
+    """
+    if isinstance(snap, timesink.RemoteSnapshot):
+        return window_from_wire(
+            snap.ask("project_window", zone=zone_name(zone), now=now.isoformat()),
+        )
     window = empty_window(zone, now)
     start, end, found = window.start, window.end, window.activities
     for row in timesink.span_rows(snap, start, end):
@@ -236,11 +285,18 @@ def _local(value: datetime | None, zone: tzinfo) -> str | None:
 
 
 def _commits(
-    project: Project, window: Window, zone: tzinfo
+    project: Project, window: Window, zone: tzinfo, device: DeviceLink | None,
 ) -> tuple[dict[str, Any], list[str]]:
     if not project.repos:
         return {"count": 0, "items": []}, []
-    found, unreadable = local_commits(project.repos, window.start, window.end)
+    if device is None:
+        found, unreadable = local_commits(project.repos, window.start, window.end)
+    else:  # the terminal walks the repositories its own config gives this project
+        answer = device_reads.ask(
+            device, device_reads.GIT_READ, "project_commits",
+            project=project.id, since=window.start.isoformat(), until=window.end.isoformat(),
+        )
+        found, unreadable = answer["found"], answer["unreadable"]
     newest = sorted(found.values(), key=lambda c: -c["committed_ms"])
     items = [
         {
@@ -276,8 +332,14 @@ def compose_view(  # noqa: PLR0913 — the window, its answers, the catalog and 
     projects: Sequence[Project],
     zone: tzinfo,
     now: datetime,
+    device: DeviceLink | None = None,
+    note: str | None = None,
 ) -> dict[str, Any]:
-    """The dashboard's read model; ``window`` is None when TimeSink could not be read."""
+    """The dashboard's read model; ``window`` is None when TimeSink could not be read.
+
+    On a brain (``device``) the commits are the terminal's; ``note`` is why its TimeSink could
+    not be read when that is the terminal not being there, and says so in the view.
+    """
     timesink_coverage = "unavailable" if window is None else "available"
     if window is None:
         window = empty_window(zone, now)
@@ -295,7 +357,11 @@ def compose_view(  # noqa: PLR0913 — the window, its answers, the catalog and 
     for project in projects:
         bucket = buckets[project.id]
         totals = bucket.totals(day_keys)
-        commits, missing = _commits(project, window, zone)
+        try:
+            commits, missing = _commits(project, window, zone, device)
+        except device_reads.DeviceUnavailable as exc:
+            note = note or str(exc)
+            commits, missing = {"count": 0, "items": []}, [project.name]
         unreadable.extend(missing)
         seen = [a.last_seen for a in bucket.members if a.last_seen is not None]
         rows.append(
@@ -333,4 +399,5 @@ def compose_view(  # noqa: PLR0913 — the window, its answers, the catalog and 
         },
         "latest_observed_at": _local(latest, zone),
         "sorted_at": _local(sorted_at, zone),
+        **({} if note is None else {"note": note}),
     }

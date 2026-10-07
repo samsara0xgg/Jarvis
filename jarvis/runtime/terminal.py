@@ -40,6 +40,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 import uvicorn
 
@@ -89,13 +90,14 @@ from jarvis.runtime.inherent_loop import (
 from jarvis.runtime.settings import DEVICE_KEYS, Settings, apply_settings
 from jarvis.shared import ActionRequest
 from jarvis.shared.realtime_trace import configure_realtime_trace_jsonl
-from jarvis.state import device_reads, timesink
+from jarvis.state import device_reads, job_time, timesink, timesink_moment
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_report import git_show, local_commits
 from jarvis.state.daily_store import commit_exists
 from jarvis.state.event_log import EventLogError, emit_event, open_event_log
 from jarvis.state.memory_db import MemorySettings
 from jarvis.state.plugin_settings import local_key, local_key_matches
+from jarvis.state.projects import Project, gather, parse_catalog, window_to_wire
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.terminal_events import EventOutbox
@@ -161,8 +163,26 @@ def _when(args: Mapping[str, Any], key: str) -> datetime:
     return datetime.fromisoformat(str(args[key]))
 
 
+def _derived_read(fn: str, args: Mapping[str, Any], store: Path | None) -> Any:  # noqa: ANN401 — one reader's JSON.
+    """The reads that are a whole view of the day, not a query: each runs here, whole."""
+    if fn == "moment_facts":
+        known = job_time.known_from_wire(args["known"])
+        return timesink_moment.moment_facts(store, _when(args, "now"), known)
+    with timesink.snapshot(store) as snap:
+        if fn == "job_time":
+            known = job_time.known_from_wire(args["known"])
+            return job_time.job_time(snap, known, _when(args, "now"), int(args["days"]))
+        if snap is None:
+            message = "TimeSink is not readable on this machine"
+            raise DailyError(message, "source_unavailable")
+        zone = ZoneInfo(str(args["zone"]))
+        return window_to_wire(gather(snap, zone, _when(args, "now")))
+
+
 def _timesink_read(fn: str, args: Mapping[str, Any], store: Path | None) -> Any:  # noqa: ANN401, PLR0911 — one reader's JSON; one return per reader.
-    """One TimeSink reader of ``jarvis.state.timesink``, run on this machine's own store."""
+    """One TimeSink reader of ``jarvis.state``, run on this machine's own store."""
+    if fn in {"moment_facts", "job_time", "project_window"}:
+        return _derived_read(fn, args, store)
     if fn in {"read_capture", "read_span"}:
         reader = timesink.read_capture if fn == "read_capture" else timesink.read_span
         return reader(store, str(args["reference"]))
@@ -193,12 +213,22 @@ def _timesink_read(fn: str, args: Mapping[str, Any], store: Path | None) -> Any:
         return queries[fn](snap, start, end, watermark=args.get("watermark"))
 
 
-def _git_read(fn: str, args: Mapping[str, Any], repos: tuple[str, ...]) -> Any:  # noqa: ANN401 — one reader's JSON.
+def _git_read(
+    fn: str, args: Mapping[str, Any], repos: tuple[str, ...], projects: tuple[Project, ...] = (),
+) -> Any:  # noqa: ANN401 — one reader's JSON.
     """One git reader of ``jarvis.state.daily_report``, run on this machine's own repositories."""
     if fn == "repos":
         return list(repos)
     if fn == "local_commits":
         found, unreadable = local_commits(repos, _when(args, "since"), _when(args, "until"))
+        return {"found": found, "unreadable": unreadable}
+    if fn == "project_commits":
+        # The brain names a project, never a path: the repositories are this machine's own config.
+        project = next((p for p in projects if p.id == str(args["project"])), None)
+        if project is None:
+            message = f"{args['project']} is not a project this device knows"
+            raise DailyError(message, "not_watched")
+        found, unreadable = local_commits(project.repos, _when(args, "since"), _when(args, "until"))
         return {"found": found, "unreadable": unreadable}
     if fn in {"show", "exists"}:
         repo = str(args["repo"])
@@ -213,6 +243,7 @@ def _git_read(fn: str, args: Mapping[str, Any], repos: tuple[str, ...]) -> Any: 
 
 def _read_device(
     op: str, arguments: Mapping[str, Any], store: Path | None, repos: tuple[str, ...],
+    projects: tuple[Project, ...] = (),
 ) -> dict[str, Any]:
     """Answer a brain's read of this machine's TimeSink or git: the JSON, or the refusal."""
     raw = arguments.get("args")
@@ -222,7 +253,7 @@ def _read_device(
         result = (
             _timesink_read(fn, args, store)
             if op == device_reads.TIMESINK_READ
-            else _git_read(fn, args, repos)
+            else _git_read(fn, args, repos, projects)
         )
     except DailyError as exc:
         return {"ok": False, "code": exc.code, "message": str(exc)}
@@ -237,12 +268,14 @@ def _read_device(
 
 def make_executor(
     registry: ToolRegistry, *, timesink_store: Path | None = None, repos: tuple[str, ...] = (),
+    projects: tuple[Project, ...] = (),
 ) -> Execute:
     """The runner a terminal hands its link: one call in, ``ok`` + ``output`` or a failure out.
 
     Only declared tools run. The brain has already gated and, where it must, confirmed the
     call; nothing here asks again. ``timesink_store`` and ``repos`` are what this machine's
-    config says it has, which the brain's reads of them (``timesink_read``, ``git_read``) use.
+    config says it has, which the brain's reads of them (``timesink_read``, ``git_read``) use;
+    ``projects`` is its own ``projects`` catalog, whose repositories the brain's dashboard reads.
     """
     declared = _declared(registry)
     definitions = {tool.name: tool for tool in registry.get_definitions()}
@@ -260,7 +293,7 @@ def make_executor(
         if tool not in declared:
             return {"ok": False, "code": "unknown_tool", "message": f"this terminal has no {tool}"}
         if tool in device_reads.DEVICE_READS:
-            return _read_device(tool, arguments, timesink_store, repos)
+            return _read_device(tool, arguments, timesink_store, repos, projects)
         conn = open_event_log(Path(":memory:"))  # opened here: a log belongs to its thread
         try:
             if tool == RESOLVE_FILE:
@@ -771,6 +804,15 @@ def _configure_realtime_trace(runtime_root: Path) -> None:
         LOGGER.info("realtime trace: %s", path)
 
 
+def _own_projects(config: Mapping[str, Any]) -> tuple[Project, ...]:
+    """This machine's ``projects`` catalog; a malformed one is the brain's to refuse at boot."""
+    try:
+        return parse_catalog(config.get("projects"))
+    except ValueError:
+        LOGGER.warning("this machine's projects catalog is malformed; the brain gets no commits")
+        return ()
+
+
 def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     base_url: str,
     token: str,
@@ -829,6 +871,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     try:
         execute = make_executor(
             registry, timesink_store=configured_store, repos=configured_repos,
+            projects=_own_projects(config),
         )
         if voice:
             _configure_realtime_trace(runtime_root)

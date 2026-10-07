@@ -27,8 +27,8 @@ from jarvis.execution.tools import ToolError
 from jarvis.runtime import audio_output
 from jarvis.runtime.home import MAIL_SERVER, _gmail, _letter, mail_body
 from jarvis.shared import lang
+from jarvis.state import device_reads, job_time
 from jarvis.state import job_ledger as ledger
-from jarvis.state import job_time, timesink
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from jarvis.execution.mcp_tools import McpServers
     from jarvis.runtime.moment import Moment
     from jarvis.runtime.plugin_connections import PluginConnections
+    from jarvis.shared.device_link import DeviceLink
 
 LOGGER = logging.getLogger(__name__)
 
@@ -117,15 +118,18 @@ class JobMail:
         *,
         moment: Moment | None = None,
         timesink_path: Path | None = None,
+        device: DeviceLink | None = None,
     ) -> None:
         """``route`` carries Jev's model and timeout; ``db_path`` is memory.db.
 
         ``judge`` decides how loudly each typed letter reaches Allen (ADR 0155). ``moment``
         holds alerts while Allen is in a call or away and is stored with each decision;
-        ``timesink_path`` is where the ledger's time column is read (ADR 0161).
+        ``timesink_path`` is where the ledger's time column is read (ADR 0161), or, on a brain,
+        ``device`` is the link to the terminal whose TimeSink it is (ADR 0170).
         """
         self.moment = moment
         self.timesink_path = timesink_path
+        self.device = device
         self._settings = settings
         self._judge = judge
         self._connections = connections
@@ -671,16 +675,19 @@ class JobMail:
         """
         now = self.now()
         groups = ledger.list_ledger(self._db, now)
-        with timesink.snapshot(self.timesink_path) as snap:
-            found = job_time.job_time(
-                snap, job_time.companies(ledger.company_sites(self._db)), now
-            )
+        known = job_time.companies(ledger.company_sites(self._db))
+        note = None
+        try:
+            found = job_time.job_time_on(self.timesink_path, self.device, known, now)
+        except device_reads.DeviceUnavailable as exc:
+            found, note = None, str(exc)  # the time column is not empty: the device is not there
         return {
             "ledger": [{**g, **job_time.spent_view(found, g["company"])} for g in groups],
             "applications": ledger.list_applications(
                 self._db, now, triage.is_ats_company, triage.mail_details
             ),
             "job_site_other_s": 0 if found is None else round(found["other_s"]),
+            **({} if note is None else {"time_note": note}),
             "skipped": ledger.list_skipped(self._db),
             "rules": [
                 {"id": "linkedin_alerts", "value": self._settings.linkedin_alerts},

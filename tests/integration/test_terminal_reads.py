@@ -73,6 +73,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
+    from jarvis.state.projects import Project
+
 __all__ = ["source"]
 
 FROM, TO = "2026-09-19T07:00:00-07:00", "2026-09-20T07:00:00-07:00"
@@ -132,7 +134,7 @@ def _brain_log(path: Path) -> sqlite3.Connection:
 class _Terminal:
     """A terminal's link as ``run_terminal`` builds it: the real executor over its own files."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — the link, the device's files and what watches them.
         self,
         url: str,
         token: str,
@@ -140,12 +142,14 @@ class _Terminal:
         store: Path | None,
         repos: tuple[str, ...],
         watched: _Watched | None = None,
+        projects: tuple[Project, ...] = (),
     ) -> None:
         registry = build_default_registry(obsidian_vault_root=None)
         registry.register(make_screen_capture(800))
         self._args = (
             url, token, _declared(registry),
-            make_executor(registry, timesink_store=store, repos=repos), watched,
+            make_executor(registry, timesink_store=store, repos=repos, projects=projects),
+            watched,
         )
         self.loop = asyncio.new_event_loop()
         self.task: asyncio.Task[None] | None = None

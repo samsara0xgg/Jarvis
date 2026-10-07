@@ -19,11 +19,13 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit
 
-from jarvis.state import job_time, timesink
+from jarvis.state import device_reads, job_time, timesink
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
+
+    from jarvis.shared.device_link import DeviceLink
 
 UNKNOWN: Final[str] = "unknown"
 # The newest span is "now" only if it ended this recently; older with no reason is unknown.
@@ -166,12 +168,26 @@ def _today(
 
 
 def moment_facts(
-    path: Path | None, now: datetime, known: Iterable[job_time.Company] = ()
+    path: Path | None,
+    now: datetime,
+    known: Iterable[job_time.Company] = (),
+    device: DeviceLink | None = None,
 ) -> dict[str, Any]:
     """The facts of this instant, each possibly ``unknown``; read-only, never a title or URL.
 
-    ``known`` are the ledger companies, so career pages count as job-site time today.
+    ``known`` are the ledger companies, so career pages count as job-site time today. On a
+    brain (``device``) the terminal runs this very function on its own store; one that is not
+    there makes every fact ``unknown`` and says so in ``read``.
     """
+    if device is not None:
+        try:
+            facts: dict[str, Any] = device_reads.ask(
+                device, device_reads.TIMESINK_READ, "moment_facts",
+                now=now.isoformat(), known=job_time.known_to_wire(known),
+            )
+        except device_reads.DeviceUnavailable as exc:
+            return _unknown(exc.code, None)
+        return facts
     with timesink.snapshot(path) as snap:
         if snap is None:
             return _unknown("unreadable", None)
