@@ -58,6 +58,8 @@ _LEVEL_PREFIX: Final[str] = "level:"
 LINKEDIN_ALERTS: Final[tuple[str, ...]] = ("ledger_only", "card_sound")
 # The judge name logged for a header held back by a local rule rather than by Jev.
 _RULE_JUDGE: Final[str] = "local-rule/social-v1"
+# The same, for a header whose sender domain is in ``exclude_domains`` (ADR 0171).
+_EXCLUDE_JUDGE: Final[str] = "local-rule/exclude-v1"
 # How much of each scanned mail's plain-text body the local decision snapshot keeps (ADR 0162).
 SNAPSHOT_BODY_CHARS: Final[int] = 3000
 
@@ -77,6 +79,8 @@ class JobMailSettings:
     speak_gap_s: float
     # LinkedIn job-alert digests: ``ledger_only`` (no card, no sound) or ``card_sound``.
     linkedin_alerts: str
+    # Sender domains kept out of job mail: held back before Jev is asked, rows hidden (ADR 0171).
+    exclude_domains: tuple[str, ...]
 
 
 def gmail_read(servers: McpServers, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -155,7 +159,8 @@ class JobMail:
     def repair(self) -> int:
         """Run the repair pass over the ledger; a failure is logged and never stops the poller."""
         try:
-            changed = repair(self._db, self._settings.linkedin_alerts)
+            settings = self._settings
+            changed = repair(self._db, settings.linkedin_alerts, settings.exclude_domains)
         except Exception:
             LOGGER.exception("job mail: the ledger repair failed; the poller goes on")
             return 0
@@ -203,9 +208,10 @@ class JobMail:
 
         for message_id in verdicts:  # a header that could not be read: only the failure is known
             snap(message_id, "header", "error")
-        skips = self._jev.skips(heads)
+        left = self._keep_out(heads, verdicts, snap)  # what Jev may be asked about
+        skips = self._jev.skips(left)
         letters: list[tuple[triage.Head, str]] = []
-        for head in heads:
+        for head in left:
             skip = skips[head.message_id]
             if skip is None:
                 verdicts[head.message_id] = "error"
@@ -256,6 +262,22 @@ class JobMail:
             self._jev.spent_usd,
         )
         return len(verdicts)
+
+    def _keep_out(
+        self, heads: list[triage.Head], verdicts: dict[str, str], snap: _Snapper
+    ) -> list[triage.Head]:
+        """Hold back the heads of ``exclude_domains`` by a local rule; return the others (ADR 0171).
+
+        No Jev call is spent on them; their bodies are already read and kept like any scan's.
+        """
+        left = []
+        for head in heads:
+            if triage.is_excluded(head.domain, self._settings.exclude_domains):
+                snap(head.message_id, "rule", "not_job", head, judge=_EXCLUDE_JUDGE)
+                verdicts[head.message_id] = "not_job"
+            else:
+                left.append(head)
+        return left
 
     def _record_rest(
         self,
@@ -567,7 +589,14 @@ class JobMail:
             "ledger": [{**g, **job_time.spent_view(found, g["company"])} for g in groups],
             "job_site_other_s": 0 if found is None else round(found["other_s"]),
             "skipped": ledger.list_skipped(self._db),
-            "rules": [{"id": "linkedin_alerts", "value": self._settings.linkedin_alerts}],
+            "rules": [
+                {"id": "linkedin_alerts", "value": self._settings.linkedin_alerts},
+                *(
+                    [{"id": "exclude_domains", "value": ", ".join(self._settings.exclude_domains)}]
+                    if self._settings.exclude_domains
+                    else []
+                ),
+            ],
         }
 
     def flag(self, message_id: str, reaction: str) -> None:
@@ -612,7 +641,7 @@ class JobMail:
             raise LookupError(msg)
 
 
-def repair(db: Path, linkedin_alerts: str) -> int:
+def repair(db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = ()) -> int:
     """Recompute what the current rules read from each ledger row's stored header (ADR 0158).
 
     Idempotent and offline: only the stored sender name, domain and subject and the body start
@@ -621,7 +650,8 @@ def repair(db: Path, linkedin_alerts: str) -> int:
     longer read from it, is cleared; a role the subject does not hold was read from the body and
     stays. LinkedIn social mail is hidden and shown as held back, an account notice becomes kind
     ``other``, and the pending alerts of a mail that is now ledger only, ``other`` or hidden end
-    as done. A mail Allen flagged is never touched by the routing rules.
+    as done. A row whose domain is in ``exclude_domains`` is hidden the same way (ADR 0171). A mail
+    Allen flagged is never touched by the routing rules.
     """
     changed = 0
     for row in ledger.mail_rows(db):
@@ -643,8 +673,9 @@ def repair(db: Path, linkedin_alerts: str) -> int:
         )
         if not ledger.is_flagged(db, message_id):
             quiet = False  # whether its pending alerts must go
-            if not row["deleted"] and triage.is_social(domain, subject):
-                _hold_back(db, row)
+            kept_out = triage.is_excluded(domain, exclude_domains)
+            if not row["deleted"] and (kept_out or triage.is_social(domain, subject)):
+                _hold_back(db, row, _EXCLUDE_JUDGE if kept_out else _RULE_JUDGE)
                 fixes["deleted"], quiet = 1, True
             elif row["kind"] == "job_other" and triage.is_account_notice(subject):
                 fixes["kind"], quiet = triage.ACCOUNT_KIND, True
@@ -662,7 +693,7 @@ def repair(db: Path, linkedin_alerts: str) -> int:
     return changed
 
 
-def _hold_back(db: Path, row: Mapping[str, Any]) -> None:
+def _hold_back(db: Path, row: Mapping[str, Any], judge: str) -> None:
     """Show a ledger row in the held-back list: a ``not_job`` verdict and the rule's decision."""
     now = datetime.now(UTC)
     head = {
@@ -673,7 +704,7 @@ def _hold_back(db: Path, row: Mapping[str, Any]) -> None:
     }
     ledger.record_seen(db, row["message_id"], "not_job", now, audit=head)
     ledger.record_decision(
-        db, row["message_id"], "rule", "not_job", now, head=head, judge=_RULE_JUDGE
+        db, row["message_id"], "rule", "not_job", now, head=head, judge=judge
     )
 
 

@@ -53,6 +53,7 @@ SETTINGS = JobMailSettings(
     speak=True,
     speak_gap_s=600,
     linkedin_alerts="card_sound",  # the older behaviour; ledger_only has its own tests
+    exclude_domains=(),  # nothing kept out; the exclusion has its own tests
 )
 AIRPODS = {"name": "AirPods Pro", "transport": "coreaudio_device_type_bluetooth", "private": True}
 SPEAKERS = {
@@ -1229,6 +1230,67 @@ def test_the_repair_pass_hides_noise_drops_its_alerts_and_respects_a_flag(
     }
 
 
+def test_excluded_domains_never_reach_jev_the_ledger_or_an_alert(tmp_path: Path, jev: _Jev) -> None:
+    """Mail from an excluded domain is held back by a local rule before Jev, the rest lands."""
+    inmail = LINKEDIN[5]
+    h = _harness(tmp_path, jev, [inmail, MAILS[1]], exclude_domains=("linkedin.com",))
+    h.job.poll_once()
+
+    assert [one["state"].split("Subject: ", 1)[1].split("\n", 1)[0] for one in jev.requests] == [
+        "Interview invitation: Software Developer Co-op"
+    ] * 2  # the header and body questions of the one letter that was not excluded
+    assert h.sql("SELECT message_id FROM job_mail") == [("m-interview",)]
+    assert h.sql("SELECT message_id FROM job_alert") == [("m-interview",)]
+    assert h.sql("SELECT verdict FROM job_seen WHERE message_id = 'm-inmail'") == [("not_job",)]
+    decision = "SELECT stage, verdict, judge FROM job_decision WHERE message_id = 'm-inmail'"
+    assert h.sql(decision) == [("rule", "not_job", "local-rule/exclude-v1")]
+    # Its body is still read and kept locally, like any scanned mail (ADR 0162).
+    assert h.gmail.full_read_count("m-inmail") == 1
+    status = "SELECT body_status FROM job_decision WHERE message_id = 'm-inmail'"
+    assert h.sql(status) == [("read",)]
+    jobs = h.client.get("/inherent/jobs").json()
+    assert [one["message_id"] for one in jobs["skipped"]] == ["m-inmail"]
+    assert jobs["rules"][-1] == {"id": "exclude_domains", "value": "linkedin.com"}
+
+
+def test_the_repair_pass_hides_an_existing_excluded_row_and_respects_a_flag(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """A visible row of an excluded domain is hidden, its alerts done; a flagged one stays."""
+    h = _harness(tmp_path, jev, [])
+    for key in ("old1", "old2"):
+        mail = {
+            "message_id": key,
+            "received_at": NOW.isoformat(),
+            "sender_name": "Jane Recruiter",
+            "sender_domain": "mail.linkedin.com",
+            "subject": "Interview for the Software Developer Co-op",
+            "kind": "interview",
+            "company": "LinkedIn",
+            "role": "",
+        }
+        job_ledger.upsert_mail(h.db, mail, NOW)
+        job_ledger.record_seen(h.db, key, "job", NOW, p_job=0.9)
+        job_ledger.create_alert(h.db, key, "speak", "t", "l", NOW)
+    job_ledger.add_flag(h.db, "old2", NOW)
+
+    repair(h.db, "ledger_only")  # nothing excluded: nothing is hidden
+    assert h.sql("SELECT deleted FROM job_mail") == [(0,), (0,)]
+    assert repair(h.db, "ledger_only", ("linkedin.com",)) > 0
+    assert h.sql("SELECT message_id, deleted FROM job_mail ORDER BY message_id") == [
+        ("old1", 1),
+        ("old2", 0),
+    ]
+    assert h.sql("SELECT message_id FROM job_alert WHERE state = 'pending'") == [("old2",)]
+    assert h.sql("SELECT stage, verdict, judge FROM job_decision WHERE message_id = 'old1'") == [
+        ("rule", "not_job", "local-rule/exclude-v1")
+    ]
+    assert [one["message_id"] for one in h.client.get("/inherent/jobs").json()["skipped"]] == [
+        "old1"
+    ]
+    assert repair(h.db, "ledger_only", ("linkedin.com",)) == 0  # idempotent
+
+
 def test_flagging_a_hidden_social_mail_brings_it_back_to_the_ledger(
     tmp_path: Path, jev: _Jev
 ) -> None:
@@ -1449,6 +1511,7 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
         "speak": True,
         "speak_gap_s": 600,
         "linkedin_alerts": "ledger_only",
+        "exclude_domains": ["linkedin.com"],
     }.items() <= block.items()
     config_path, db = tmp_path / "jarvis.yaml", tmp_path / "memory.db"
     connections: Any = _Connections(None)
@@ -1456,7 +1519,12 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
     assert _job_mail(shipped, config_path, None, connections, db) is None  # no watcher is built
     assert _job_mail({}, config_path, None, connections, db) is None
     on = {"job_mail": {**block, "enabled": True}}
-    assert isinstance(_job_mail(on, config_path, None, connections, db), JobMail)
+    built = _job_mail(on, config_path, None, connections, db)
+    assert isinstance(built, JobMail)
+    spaced = {"job_mail": {**on["job_mail"], "exclude_domains": [" LinkedIn.com "]}}
+    built = _job_mail(spaced, config_path, None, connections, db)
+    assert built is not None
+    assert built._settings.exclude_domains == ("linkedin.com",)  # noqa: SLF001
     for key, value in (
         ("poll_s", 0),
         ("backfill_days", "14"),
@@ -1467,6 +1535,8 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
         ("timeout_ms", 0),
         ("speak", "yes"),
         ("linkedin_alerts", "sometimes"),
+        ("exclude_domains", "linkedin.com"),
+        ("exclude_domains", [" "]),
         ("max_calls_per_day", None),
     ):
         bad = {"job_mail": {**block, "enabled": True, key: value}}

@@ -1385,6 +1385,12 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
     if block.get("linkedin_alerts") not in LINKEDIN_ALERTS:
         msg = f"runtime: {config_path} job_mail.linkedin_alerts must be one of {LINKEDIN_ALERTS}"
         raise RuntimeBootstrapError(msg)
+    excluded = block.get("exclude_domains")
+    if not isinstance(excluded, list) or not all(
+        isinstance(one, str) and one.strip() for one in excluded
+    ):
+        msg = f"runtime: {config_path} job_mail.exclude_domains must be a list of domain names"
+        raise RuntimeBootstrapError(msg)
     settings = JobMailSettings(
         poll_s=float(number("poll_s", low=1)),
         backfill_days=number("backfill_days", low=1, high=60, whole=True),
@@ -1396,6 +1402,7 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
         speak=block["speak"],
         speak_gap_s=float(number("speak_gap_s", low=0)),
         linkedin_alerts=block["linkedin_alerts"],
+        exclude_domains=tuple(one.strip().lower() for one in excluded),
     )
     timeout = number("timeout_ms", low=1, whole=True)
     # min_confidence is the choice question's bar; these questions read probabilities instead.

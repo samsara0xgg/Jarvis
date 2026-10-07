@@ -9,7 +9,7 @@ import { postRoute } from './homeData';
 export type JobMailRow = { message_id: string; kind: string; received_at: string; subject: string; event_at?: string | null; event_text?: string | null };
 // `skipped` (GET /inherent/jobs, up to 50, newest first, absent on older daemons): mail the triage held back as not job, whatever its job-likelihood.
 export type Skipped = { message_id: string; received_at: string; sender_name?: string; sender_domain?: string; subject: string; p_job?: number };
-// `rules` (GET /inherent/jobs, absent on older daemons): the standing alert rules the daemon is running, shown as one line each; `linkedin_alerts` is `ledger_only` or `card_sound`.
+// `rules` (GET /inherent/jobs, absent on older daemons): the standing alert rules the daemon is running, shown as one line each; `linkedin_alerts` is `ledger_only` or `card_sound`; `exclude_domains` is the sender domains kept out of job mail, comma-separated.
 export type JobRule = { id: string; value: string };
 // `time_spent` / `time_total_s` (GET /inherent/jobs, ADR 0161, absent on older daemons): seconds per local day on that company's job pages over the last 14 days, from TimeSink; `job_site_other_s` (top level) is job-site time that names no company.
 export type JobGroup = { company: string; role?: string; kind: string; last_at: string; next_event_at?: string | null; count: number; mails: JobMailRow[]; time_spent?: { day: string; seconds: number }[]; time_total_s?: number };
@@ -51,9 +51,10 @@ export function JobsPage({ port, ledger, skipped, rules = [], otherS = 0, onChan
     try { await postRoute(port, `/inherent/jobs/${encodeURIComponent(id)}/delete`, {}); onChanged(); }
     catch { setGone(v => v.filter(x => x !== id)); setFailed(true); }
   };
-  const linkedin = rules.find(r => r.id === 'linkedin_alerts')?.value;
+  const linkedin = rules.find(r => r.id === 'linkedin_alerts')?.value, excluded = rules.find(r => r.id === 'exclude_domains')?.value;
   return <div className="jp">
     {linkedin && <p className="pg-sec muted jp-rule" data-rule="linkedin_alerts">{linkedin === 'ledger_only' ? t(['LinkedIn job alerts: ledger only, no alert', 'LinkedIn 职位提醒：只进账本，不提醒']) : t(['LinkedIn job alerts: a card with sound', 'LinkedIn 职位提醒：出卡片带提示音'])}</p>}
+    {excluded && <p className="pg-sec muted jp-rule" data-rule="exclude_domains">{t([`Not counted: mail from ${excluded}`, `不计入：来自 ${excluded} 的邮件`])}</p>}
     {otherS > 0 && <p className="pg-sec muted jp-other" data-other>{t(['Other job sites', '其他求职网站'])} {t(['spent', '花了'])} {t(spentText(otherS))}</p>}
     {failed && <p className="pg-sec muted is-warm" role="alert">{t(['That didn’t go through. Try again.', '没成功，请再试一次。'])}</p>}
     {!groups.length && <p className="pg-sec muted">{t(['No job mail yet. Jarvis adds it here as it comes in.', '还没有求职邮件，收到了会记在这里。'])}</p>}

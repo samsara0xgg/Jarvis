@@ -367,6 +367,9 @@ job_mail:
   # only go in the ledger, and the ledger page shows this rule.  card_sound exists only for a
   # later decision of his; do not change the default.
   linkedin_alerts: ledger_only
+  # 2026-10-06 (Allen): LinkedIn mail is kept out of the job-mail feature (no Jev call, no ledger
+  # row, no alert; existing rows are hidden, never deleted); [] turns it off.
+  exclude_domains: [linkedin.com]
 
 # ADR 0161 — the moment.  When an alert is decided, delivered or shown, Jarvis reads TimeSink's
 # saved spans (read-only, nothing copied, no model) to see what Allen is doing.  In a call or

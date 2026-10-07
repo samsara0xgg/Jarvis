@@ -322,6 +322,11 @@ def _is_linkedin(domain: str) -> bool:
     return domain == _LINKEDIN or domain.endswith("." + _LINKEDIN)
 
 
+def is_excluded(domain: str, excluded: tuple[str, ...]) -> bool:
+    """Whether a sender domain is one the owner keeps out of job mail (``exclude_domains``)."""
+    return any(domain == one or domain.endswith("." + one) for one in excluded)
+
+
 def is_social(domain: str, subject: str) -> bool:
     """LinkedIn's social news and profile-activity notices ("X recently posted"): not job mail."""
     return _is_linkedin(domain) and _SOCIAL.search(subject) is not None
