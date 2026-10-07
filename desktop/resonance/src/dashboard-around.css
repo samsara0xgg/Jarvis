@@ -414,7 +414,7 @@
 .ad .mp-sent { padding:2px 0; }
 .ad .mp-draft .btn:disabled { opacity:.45; }
 
-/* The job ledger page (JobsPage.tsx): one section per company, its mails opened in place. */
+/* The job ledger page (JobsPage.tsx): a card per application (a section per company on an older daemon), its mails opened in place. */
 .ad .jp { display:flex; flex-direction:column; gap:4px; }
 .ad .jp-g { gap:2px; padding:8px 6px; border-radius:var(--radius-control); }
 .ad .jp-g + .jp-g { border-top:.5px solid var(--p-line); }
@@ -430,7 +430,7 @@
 .ad .jp-days { margin:2px 0 0; padding-left:18px; font-size:var(--text-label); color:var(--p-faint); font-variant-numeric:tabular-nums; }
 .ad .jp-other { font-size:var(--text-label); font-variant-numeric:tabular-nums; }
 .ad .jp-mails { list-style:none; margin:4px 0 0; padding:0 0 0 18px; display:flex; flex-direction:column; gap:2px; }
-.ad .jp-mails li { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:0 8px; padding:5px 0; font-size:var(--text-detail); color:var(--p-muted); }
+.ad .jp-mails li { display:grid; grid-template-columns:minmax(0,1fr) auto auto auto; align-items:center; gap:0 8px; padding:5px 0; font-size:var(--text-detail); color:var(--p-muted); }
 .ad .jp-sub { display:flex; align-items:center; gap:7px; min-width:0; }
 .ad .jp-sub > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ad .jp-mails time { font-size:var(--text-label); color:var(--p-faint); font-variant-numeric:tabular-nums; white-space:nowrap; }
@@ -446,25 +446,44 @@
 .ad .jp-sk-meta small { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:inherit; }
 .ad .jp-sk-meta .btn-text { flex:none; white-space:nowrap; }
 .ad .jp-sk-meta time { flex:none; margin-left:auto; font-variant-numeric:tabular-nums; }
-/* The tracker (ADR 0177): one table row per application; its mails and note open under it. */
+/* The tracker (ADR 0177, 0180): one card per application; its timeline, interview, links, mails and note open under it. */
 .ad .jp-bar { display:flex; flex-direction:row; justify-content:flex-end; padding:2px 6px; }
 .ad .jp-form { display:flex; flex-direction:row; flex-wrap:wrap; align-items:center; gap:6px; padding:6px; }
 .ad .jp-form input, .ad .jp-form select { height:28px; padding:0 8px; min-width:0; border:0; border-radius:var(--radius-control); background:rgb(255 255 255 / .06); color:var(--p-ink); font-size:var(--text-detail); box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .2); }
 .ad .jp-form input[data-f="company"], .ad .jp-form input[data-f="role"] { flex:1 1 120px; }
-.ad .jp-scroll { overflow-x:auto; }
-.ad .jp-t { width:100%; min-width:600px; table-layout:fixed; border-collapse:collapse; font-size:var(--text-detail); color:var(--p-muted); font-variant-numeric:tabular-nums; }
-.ad .jp-t th { padding:4px 4px; vertical-align:bottom; text-align:left; font-size:var(--text-label); font-weight:500; color:var(--p-faint); }
-.ad .jp-t td { padding:6px 4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border-top:.5px solid var(--p-line); }
-.ad .jp-t th:nth-child(1) { width:20%; } .ad .jp-t th:nth-child(2) { width:19%; } .ad .jp-t th:nth-child(3) { width:18%; } .ad .jp-t th:nth-child(4) { width:8%; } .ad .jp-t th:nth-child(5), .ad .jp-t th:nth-child(6) { width:14%; } .ad .jp-t th:nth-child(7) { width:7%; }
-.ad .jp-t td:nth-child(-n+2) { white-space:normal; overflow-wrap:anywhere; }
-.ad .jp-t td:first-child .jp-top { width:auto; max-width:100%; }
-.ad .jp-t td:first-child b { min-width:0; font-weight:600; color:var(--p-ink); }
-.ad .jp-st select { max-width:100%; padding:0; border:0; background:transparent; font-size:inherit; color:var(--jk,var(--p-muted)); }
-.ad .jp-st select.is-applied { --jk:#aab3d6; } .ad .jp-st select.is-interviewing { --jk:#8fb4ff; } .ad .jp-st select.is-offer { --jk:#6fe0b4; } .ad .jp-st select.is-rejected { --jk:#ff9a8a; } .ad .jp-st select.is-no_reply { --jk:var(--p-faint); }
+.ad .jc-list { display:flex; flex-direction:column; }
+.ad .jc { display:flex; flex-direction:column; gap:2px; padding:9px 6px; font-size:var(--text-detail); color:var(--p-muted); }
+.ad .jc + .jc { border-top:.5px solid var(--p-line); }
+.ad .jc-head { display:flex; align-items:center; gap:8px; }
+.ad .jc-head .jp-top { flex:1; min-width:0; width:auto; }
+.ad .jc-head .jp-top b { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:var(--text-body); font-weight:600; }
+.ad .jc-st { display:inline-flex; align-items:center; gap:3px; flex:none; }
+.ad .jc-pill { position:relative; display:inline-flex; align-items:center; gap:4px; padding:1px 7px 1px 9px; border-radius:var(--radius-tag); font-size:var(--text-label); line-height:16px; white-space:nowrap; color:var(--jk,var(--p-ink)); background:color-mix(in srgb,var(--jk,var(--p-ink)) 15%,transparent); }
+.ad .jc-pill select { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; font-size:var(--text-body); }
+.ad .jc-pill:focus-within { outline:2px solid rgb(var(--glow) / .8); outline-offset:1px; }
+.ad .jc-pill.is-applied { --jk:var(--p-ink); } .ad .jc-pill.is-interviewing { --jk:#8fb4ff; } .ad .jc-pill.is-offer { --jk:#6fe0b4; } .ad .jc-pill.is-rejected, .ad .jc-pill.is-no_reply { --jk:var(--p-faint); }
+.ad .jc-pill.is-applied { background:rgb(255 255 255 / .08); }
+.ad .jc-line { padding-left:18px; font-size:var(--text-label); color:var(--p-faint); font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 .ad .jp-hand { margin-left:3px; vertical-align:middle; color:var(--p-faint); opacity:.6; }
-.ad .jp-t tr.jp-x td { padding:0 4px 8px 18px; overflow:visible; white-space:normal; border-top:0; }
-.ad .jp-note { width:100%; margin-top:6px; padding:5px 8px; resize:vertical; border:0; border-radius:var(--radius-control); background:rgb(255 255 255 / .06); color:var(--p-ink); font:inherit; font-size:var(--text-detail); box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .2); }
-.ad .jp-hide { margin-top:4px; }
+.ad .jc-x { display:flex; flex-direction:column; gap:8px; padding:8px 0 0 18px; }
+.ad .jc-row { display:grid; grid-template-columns:56px minmax(0,1fr); gap:0 8px; align-items:baseline; }
+.ad .jc-row > b { font-size:var(--text-label); font-weight:500; color:var(--p-faint); }
+.ad .jc-row p { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; color:var(--p-ink); }
+.ad .jc-row .btn-text { padding:2px 8px 2px 0; }
+.ad .jc-row .jc-people { margin-top:2px; font-size:var(--text-label); color:var(--p-muted); }
+.ad .jc-join { padding:1px 9px; border-radius:var(--radius-tag); background:rgb(var(--glow) / .14); color:#dfe6ff; font-size:var(--text-label); }
+.ad .jc-join:hover { background:rgb(var(--glow) / .24); }
+.ad .jc-tl { display:flex; flex-wrap:wrap; gap:3px 0; margin:0; padding:0; list-style:none; font-variant-numeric:tabular-nums; }
+.ad .jc-tl li { display:flex; align-items:center; gap:5px; color:var(--p-ink); white-space:nowrap; }
+.ad .jc-tl li:not(:last-child) { flex:1 1 auto; }
+.ad .jc-tl li:not(:last-child)::after { content:''; flex:1 1 8px; min-width:8px; height:1px; margin:0 5px; background:var(--p-line); }
+.ad .jc-tl i { flex:none; width:7px; height:7px; border-radius:50%; background:rgb(var(--glow)); }
+.ad .jc-tl .is-future i { background:transparent; box-shadow:inset 0 0 0 1.5px rgb(var(--glow)); }
+.ad .jc-tl .is-future, .ad .jc-tl small { color:var(--p-muted); font-size:inherit; }
+.ad .jc-cap { font-size:var(--text-label); font-weight:500; color:var(--p-faint); }
+.ad .jc-x .jp-mails { margin-top:2px; padding-left:0; }
+.ad .jp-note { width:100%; padding:5px 8px; resize:vertical; border:0; border-radius:var(--radius-control); background:rgb(255 255 255 / .06); color:var(--p-ink); font:inherit; font-size:var(--text-detail); box-shadow:inset 0 0 0 .5px rgb(var(--glow) / .2); }
+.ad .jp-hide { align-self:flex-start; padding-left:0; }
 
 /* Usage › Token: one total, a day-by-day stack, a row per software, then the costliest sessions. */
 .ad .tku { gap:10px; }

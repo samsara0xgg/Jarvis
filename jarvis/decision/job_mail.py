@@ -19,6 +19,7 @@ from concurrent.futures import Future, wait
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Final
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from jarvis.decision.attention import ContextPack
@@ -735,6 +736,155 @@ def extract(head: Head, body: str) -> Facts:
     text, at = event_of(body, received)
     company = company_of(head.name, head.domain, head.subject, body)
     return Facts(company, role_of(head.subject, body, company), text, at)
+
+
+# --- what a body says about an interview and where to go (ADR 0180) -----------------------
+
+_URL: Final = re.compile(r"https://[^\s<>\"'\])]+", re.IGNORECASE)
+_JOIN_HOSTS: Final[dict[str, str]] = {
+    "zoom.us": "Zoom",
+    "teams.microsoft.com": "Teams",
+    "teams.live.com": "Teams",
+    "meet.google.com": "Google Meet",
+    "webex.com": "Webex",
+}
+# A platform named in words, no link: only names that mean nothing else ("Teams" alone is a team).
+_PLATFORM_WORDS: Final = re.compile(
+    r"\b(zoom|microsoft\s+teams|google\s+meet|webex)\b", re.IGNORECASE
+)
+_PLATFORM_OF_WORD: Final[dict[str, str]] = {
+    "zoom": "Zoom",
+    "microsoft teams": "Teams",
+    "google meet": "Google Meet",
+    "webex": "Webex",
+}
+_ONLINE_WORDS: Final = re.compile(r"\b(?:virtual|video|online)\b", re.IGNORECASE)
+_ONSITE_WORDS: Final = re.compile(
+    r"\bin[- ]person\b|\bon-?site\b|\b(?:at|to)\s+(?:our|the)\s+(?:[\w-]+\s+){0,2}office\b",
+    re.IGNORECASE,
+)
+_STREET: Final = (
+    r"(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Way|Lane|Ln|Court|Ct|Place|Pl)"
+)
+_ADDRESS: Final = re.compile(
+    rf"\b\d{{1,6}}[ \t]+(?:[A-Z0-9][\w.'-]*[ \t]+){{0,4}}{_STREET}\b\.?"
+    r"(?:,[ \t]*[\w .#-]{2,40}){0,3}",
+)
+_LABELLED: Final = re.compile(
+    r"^[ \t>*-]*(?:location|address|venue|where)[ \t]*:[ \t]*(.+)$", re.IGNORECASE | re.MULTILINE
+)
+_INTERVIEWERS: Final = re.compile(
+    r"\b(?:interviewers?(?:\(s\))?|panel|interview[ \t]+panel)[ \t]*:[ \t]*([^\n]+)", re.IGNORECASE
+)
+_NAME: Final = r"[A-Z][\w'\u2019-]*\.?(?:[ \t]+[A-Z][\w'\u2019-]*\.?){1,2}"
+_WITH_NAME: Final = re.compile(rf"(?i:\bwith)[ \t]+({_NAME})")
+# A capitalised word that ends a name: a day, month, platform or the next clause's word.
+_NOT_NAME: Final = frozenset(
+    {
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+        "january", "february", "march", "april", "may", "june", "july", "august",
+        "september", "october", "november", "december",
+        "zoom", "teams", "meet", "webex", "google", "microsoft", "interview", "meeting",
+        "call", "chat", "session", "team", "on", "at", "from", "for", "to", "about", "via",
+    }
+)  # fmt: skip
+_MAX_INTERVIEWERS: Final[int] = 4
+_PORTAL_LABELS: Final = frozenset({a.replace("-", "") for a in _ATS} | {"njoyn"})
+_PORTAL_PATH: Final = re.compile(
+    r"sign-?in|log-?in|status|candidate|applicant|user-?home|account|portal|my-?applications?",
+    re.IGNORECASE,
+)
+_POSTING_PATH: Final = re.compile(
+    r"(?:^|[/_.-])(?:jobs?|careers?|postings?|requisitions?)(?:$|[/_.-])", re.IGNORECASE
+)
+
+
+def _https_urls(body: str) -> list[tuple[str, str, str]]:
+    """(url, lowercase host, path and query) of every https address in a body, in order."""
+    found = []
+    for raw in _URL.findall(body):
+        url = raw.rstrip(".,;:!?")
+        parts = urlsplit(url)
+        if parts.hostname:
+            found.append((url, parts.hostname.lower(), f"{parts.path}?{parts.query}".lower()))
+    return found
+
+
+def _on_host(host: str, domain: str) -> bool:
+    return host == domain or host.endswith("." + domain)
+
+
+def _person_names(text: str) -> list[str]:
+    """The persons in a clause: each ``Name Name`` (cut at a day, platform or clause word)."""
+    names = []
+    for part in re.split(r"[,;&]|\band\b", text):
+        words: list[str] = []
+        for raw in part.strip(" .").split():
+            word = raw.strip(".,;:")
+            if word.lower() in _NOT_NAME or not _PERSON_WORD.fullmatch(word):
+                break
+            words.append(word)
+        name = " ".join(words)
+        if name and _is_person(name, "") and name not in names:
+            names.append(name)
+    return names
+
+
+def mail_details(body: str) -> dict[str, Any]:
+    """What a mail body says about its interview and links, read locally; never a guess.
+
+    ``mode`` is online (a join link on a known platform, a platform named, or virtual/video/online
+    on an interview sentence) or onsite (in person, on-site, an office, or a street address under
+    a Location label or in such a sentence), None when it says neither or both. ``interviewers``
+    are only names the mail introduces with ``Interviewer(s):``, ``Panel:`` or ``with`` on an
+    interview sentence, each passing ``_is_person``. ``portal_url`` is an https page on an
+    applicant-tracking domain whose path reads as sign-in or status; ``posting_url`` is the first
+    https address whose path names a job, career, posting or requisition.
+    """
+    urls = _https_urls(body)
+    join = next(((u, h) for u, h, _ in urls for d in _JOIN_HOSTS if _on_host(h, d)), None)
+    platform = next((p for d, p in _JOIN_HOSTS.items() if join and _on_host(join[1], d)), None)
+    prose = re.sub(r"https?://\S+", " ", body)  # a host in a link is not a word in the sentence
+    sentences = [re.sub(r"[ \t]+", " ", s).strip() for s in _SENTENCE_SPLIT.split(prose)]
+    about = [s for s in sentences if s and _EVENT_WORDS.search(s)]
+    if platform is None and (named := _PLATFORM_WORDS.search(" ".join(about))):
+        platform = _PLATFORM_OF_WORD[re.sub(r"\s+", " ", named[1].lower())]
+    online = platform is not None or any(_ONLINE_WORDS.search(s) for s in about)
+    location = next(
+        (m[1].strip()[:120] for m in _LABELLED.finditer(body) if _ADDRESS.search(m[1])), ""
+    )
+    if not location:
+        location = next(
+            (a[0] for s in sentences if _ONSITE_WORDS.search(s) and (a := _ADDRESS.search(s))), ""
+        )
+    onsite = bool(location) or any(_ONSITE_WORDS.search(s) for s in sentences)
+    mode = "online" if online and not onsite else "onsite" if onsite and not online else None
+    if join:
+        mode = "online"
+    names: list[str] = []
+    for found in _INTERVIEWERS.finditer(body):
+        names += [n for n in _person_names(found[1]) if n not in names]
+    for sentence in about:
+        for found in _WITH_NAME.finditer(sentence):
+            names += [n for n in _person_names(found[1]) if n not in names]
+    portal = next(
+        (
+            u
+            for u, h, p in urls
+            if _owner_label(h) in _PORTAL_LABELS and _PORTAL_PATH.search(f"{h}{p}")
+        ),
+        None,
+    )
+    posting = next((u for u, _, p in urls if u != portal and _POSTING_PATH.search(p)), None)
+    return {
+        "mode": mode,
+        "platform": platform,
+        "join_url": join[0] if join else None,
+        "location": location.rstrip(".") if mode == "onsite" else None,
+        "interviewers": names[:_MAX_INTERVIEWERS],
+        "portal_url": portal,
+        "posting_url": posting,
+    }
 
 
 # --- what the judge sees and what the card says ----------------------------------------

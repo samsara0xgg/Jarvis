@@ -2422,6 +2422,7 @@ def test_applications_group_by_company_and_the_status_follows_the_mail(
     assert [m["message_id"] for m in acme["mails"]] == ["a3", "a2", "a1"]  # newest first
     assert set(acme["mails"][0]) == {
         "message_id",
+        "thread_id",
         "kind",
         "received_at",
         "subject",
@@ -2604,3 +2605,116 @@ def test_allens_own_rows_and_edits_go_through_the_routes(tmp_path: Path, jev: _J
     assert post(url, json={"hidden": True}).status_code == 200
     assert post(edit, json={"hidden": True}).status_code == 200
     assert set(_apps(h)) == {("Epsilon", "")}
+
+
+_TEAMS_MAIL = """Hi Allen,
+
+We would like to invite you to a virtual interview with Jill Crowe on Thursday, October 9
+at 2:00 PM.
+Join Microsoft Teams: https://teams.microsoft.com/l/meetup-join/19%3Ameeting_abc/0?context=x.
+"""
+_PORTAL_MAIL = """Thanks for applying. Check your status any time:
+https://reliable.wd3.myworkdayjobs.com/en-US/careers/userHome
+The posting: https://reliablecontrols.com/careers/firmware-qa-analyst-co-op
+"""
+
+
+def test_a_body_gives_the_interview_mode_platform_place_people_and_links() -> None:
+    """ADR 0180: read from the words, left empty when the mail does not say."""
+    teams = triage.mail_details(_TEAMS_MAIL)
+    assert (teams["mode"], teams["platform"]) == ("online", "Teams")
+    assert teams["join_url"] == (
+        "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_abc/0?context=x"
+    )
+    assert teams["interviewers"] == ["Jill Crowe"]
+    assert teams["location"] is None
+
+    onsite = triage.mail_details(
+        "Your interview is in person.\nLocation: 120 Government Street, Victoria, BC\n"
+        "Interviewers: Jill Crowe, Sam Lee and Pat Kim (hiring manager)"
+    )
+    assert (onsite["mode"], onsite["join_url"]) == ("onsite", None)
+    assert onsite["location"] == "120 Government Street, Victoria, BC"
+    assert onsite["interviewers"] == ["Jill Crowe", "Sam Lee", "Pat Kim"]
+    # A street in a footer is not where the interview is.
+    footer = triage.mail_details("Thanks for applying.\nReliable Controls, 120 Government Street")
+    assert (footer["mode"], footer["location"]) == (None, None)
+
+    # No names read, none made up: a team, an organisation, a platform and a day are not people.
+    for text in (
+        "We would like to schedule a virtual interview with our hiring team.",
+        "Your interview with Reliable Controls is set.",
+        "Your interview with Jill on Thursday.",
+    ):
+        assert triage.mail_details(text)["interviewers"] == []
+    assert triage.mail_details("Interview with Jill Crowe Thursday at 2pm.")["interviewers"] == [
+        "Jill Crowe"
+    ]
+
+    links = triage.mail_details(_PORTAL_MAIL)
+    assert links["portal_url"] == "https://reliable.wd3.myworkdayjobs.com/en-US/careers/userHome"
+    assert links["posting_url"] == "https://reliablecontrols.com/careers/firmware-qa-analyst-co-op"
+    posting_only = triage.mail_details(
+        "See https://boards.greenhouse.io/acme/jobs/123 or https://jobs.lever.co/acme/abc"
+    )
+    assert posting_only["portal_url"] is None
+    assert posting_only["posting_url"] == "https://boards.greenhouse.io/acme/jobs/123"
+
+    # Only https counts, and a host that merely starts like a platform is not it.
+    plain = triage.mail_details(
+        "Join http://zoom.us/j/1 or https://zoom.us@evil.example/j/2 or http://x.example/careers/a"
+    )
+    assert (plain["join_url"], plain["posting_url"], plain["portal_url"]) == (None, None, None)
+    assert plain["mode"] is None
+
+
+def test_an_application_carries_its_timeline_interview_and_links(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """The route gives each application its steps, interview and links from the kept bodies."""
+    h = _harness(tmp_path, jev, [])
+    rc = "Reliable Controls"
+    soon = (NOW + timedelta(days=2)).isoformat()
+    _stored(h, "r1", rc, "Firmware QA", "receipt", timedelta(days=9))
+    _stored(h, "r2", rc, "Firmware QA", "interview", timedelta(days=5), event_at=soon)
+    _stored(h, "r3", rc, "Firmware QA", "job_other", timedelta(days=1))
+    for key, body in (("r1", _PORTAL_MAIL), ("r2", _TEAMS_MAIL), ("r3", "nothing here")):
+        job_ledger.record_decision(
+            h.db, key, "body", "job", NOW, head={"received_at": NOW.isoformat()}, body_excerpt=body
+        )
+    _stored(h, "z1", "Zed", "", "rejection", timedelta(days=4), event_at=soon)
+
+    apps = _apps(h)
+    one = apps[(rc, "Firmware QA")]
+    assert [(s["kind"], s["future"]) for s in one["timeline"]] == [
+        ("applied", False),
+        ("interview_invite", False),
+        ("interview", True),
+    ]
+    assert one["timeline"][0]["at"] == (NOW - timedelta(days=9)).isoformat()
+    assert one["timeline"][2]["at"] == soon
+    assert one["interview"] == {
+        "at": soon,
+        "mode": "online",
+        "platform": "Teams",
+        "join_url": "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_abc/0?context=x",
+        "location": None,
+        "interviewers": ["Jill Crowe"],
+    }
+    assert one["links"] == {
+        "portal_url": "https://reliable.wd3.myworkdayjobs.com/en-US/careers/userHome",
+        "posting_url": "https://reliablecontrols.com/careers/firmware-qa-analyst-co-op",
+    }
+    # A rejected application shows no interview still ahead, and no invitation means no details.
+    zed = apps[("Zed", "")]
+    assert [s["kind"] for s in zed["timeline"]] == ["applied", "rejection"]
+    assert zed["interview"] is None
+    assert zed["links"] == {"portal_url": None, "posting_url": None}
+
+    # A row he added by hand has only the day he applied.
+    h.client.post(
+        "/inherent/jobs/applications", json={"company": "Hand", "applied_at": "2026-09-12"}
+    )
+    hand = _apps(h)[("Hand", "")]
+    assert hand["timeline"] == [{"kind": "applied", "at": "2026-09-12", "future": False}]
+    assert hand["interview"] is None

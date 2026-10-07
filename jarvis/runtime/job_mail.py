@@ -618,7 +618,9 @@ class JobMail:
             )
         return {
             "ledger": [{**g, **job_time.spent_view(found, g["company"])} for g in groups],
-            "applications": ledger.list_applications(self._db, now, triage.is_ats_company),
+            "applications": ledger.list_applications(
+                self._db, now, triage.is_ats_company, triage.mail_details
+            ),
             "job_site_other_s": 0 if found is None else round(found["other_s"]),
             "skipped": ledger.list_skipped(self._db),
             "rules": [

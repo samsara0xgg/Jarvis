@@ -1,6 +1,6 @@
 // Job mail (ADR 0155), the client's half, in headless Chrome against the built page and a fake daemon (route mocking): a mail card
 // from GET /inherent/notices with its seen / feedback / dismiss posts, the cue sound only for card_sound and speak, the 合适吗 row,
-// one card per id and no return after a dismiss, the digest, the Dashboard's ledger page with its confirmed delete, the applications table (ADR 0177) with its status select and Add form, the daemon's
+// one card per id and no return after a dismiss, the digest, the Dashboard's ledger page with its confirmed delete, the applications as cards (ADR 0177, 0180) with their status pill, timeline, interview, links, Gmail buttons and Add form, the daemon's
 // `audio_private` (false: no cue for a sounding mail card or an agent notice; true: the cue as before), and a 404 that keeps the app calm. Silent: no desktop window, no audio. Run after `npm run build`.
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
@@ -46,7 +46,7 @@ try {
       { message_id: 'g-4', kind: 'offer', received_at: at(60 * 5), subject: 'Offer letter: SWE Co-op', event_at: null, event_text: null }] },
   ];
   await page.addInitScript(() => {
-    window.__audio = 0; window.__cues = 0;
+    window.__audio = 0; window.__cues = 0; window.__opened = [];
     const Real = window.AudioContext;
     const resume = Real.prototype.resume;
     Real.prototype.resume = function (...a) { window.__cues++; return resume.apply(this, a); };
@@ -56,7 +56,7 @@ try {
       onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionSettings: () => {},
       onCursor: callback => { window.__cursor = callback; return () => {}; }, onCommand: () => () => {},
       passthrough: () => {}, focus: async () => {}, material: () => {}, codexTitles: async () => ({}),
-      watchGhostty: () => {}, onGhostty: () => () => {}, onMouseDown: cb => { window.__down = cb; return () => {}; }, onClaudeFront: cb => { window.__front = cb; return () => {}; }, plugins: async () => ({}),
+      watchGhostty: () => {}, openUrl: async url => { window.__opened.push(['url', url]); return true; }, openMail: async id => { window.__opened.push(['mail', id]); return true; }, onGhostty: () => () => {}, onMouseDown: cb => { window.__down = cb; return () => {}; }, onClaudeFront: cb => { window.__front = cb; return () => {}; }, plugins: async () => ({}),
     };
     window.__sockets = [];
     window.WebSocket = class { constructor() { window.__sockets.push(this); setTimeout(() => this.onopen?.(), 0); } send() {} close() {} };
@@ -90,6 +90,8 @@ try {
     await page.waitForTimeout(800);
   };
   const shot = async (name, clip = { x: 0, y: 0, width: 640, height: 480 }) => { await page.waitForTimeout(900); await page.screenshot({ path: path.join(dir, `${name}.png`), clip }); };
+  // The Dashboard page scrolls in 466 px; the evidence shots lift that so a whole list shows.
+  const tall = () => page.addStyleTag({ content: '.ad .view{height:920px!important}' });
   const card = () => page.locator('.notch-note.is-open .nc').count();
   const shows = () => page.waitForFunction(() => document.querySelector('.notch-note.is-open .nc'), null, { timeout: 8000 });
   const gone = () => page.waitForFunction(() => !document.querySelector('.notch-note.is-open .nc'), null, { timeout: 4000 });
@@ -343,32 +345,64 @@ try {
   await page.waitForTimeout(500);
   check('without skipped the page has no held-back section, no rule line and no error', await page.locator('.ad .jp-skip').count() === 0 && await page.locator('.ad .jp-rule').count() === 0 && errors.length === 0);
 
-  // (g4) ADR 0177: with `applications` the page is one table, a row per job applied to.
+  // (g4) ADR 0177, 0180: with `applications` the page is a list of cards, one per job applied to.
+  const soonAt = new Date(Date.now() + 2 * 86_400_000 + 3_600_000).toISOString();
+  const teams = 'https://teams.microsoft.com/l/meetup-join/19%3Ameeting_abc/0';
   applications = [
-    { id: 'app-1', company: 'Northwind', role: 'Backend Co-op', status: 'interviewing', status_auto: true, applied_at: '2026-09-12', last_at: at(3), next_event_at: new Date(Date.now() + 86_400_000).toISOString(), count: 2, note: '', source: 'mail', mails: [
-      { message_id: 'h-1', kind: 'interview', received_at: at(3), subject: 'Interview slots for next week', event_at: null, event_text: null },
-      { message_id: 'h-2', kind: 'receipt', received_at: at(60 * 24 * 3), subject: 'We received your application', event_at: null, event_text: null }] },
-    { id: 'app-2', company: 'Orbit Labs', role: 'SWE Co-op', status: 'no_reply', status_auto: false, applied_at: '2026-09-10', last_at: at(60 * 24 * 30), next_event_at: null, count: 0, note: 'via a friend', source: 'manual', mails: [] }];
+    { id: 'app-1', company: 'Reliable Controls', role: 'Firmware QA Analyst Co-op', status: 'interviewing', status_auto: true, applied_at: '2026-09-28', last_at: at(3), next_event_at: soonAt, count: 2, note: '', source: 'mail',
+      timeline: [{ kind: 'applied', at: at(60 * 24 * 8), future: false }, { kind: 'interview_invite', at: at(60 * 24 * 3), future: false }, { kind: 'interview', at: soonAt, future: true }],
+      interview: { at: soonAt, mode: 'online', platform: 'Teams', join_url: teams, location: null, interviewers: ['Jill Crowe'] },
+      links: { portal_url: 'https://reliable.wd3.myworkdayjobs.com/en-US/careers/userHome', posting_url: 'https://reliablecontrols.com/careers/firmware-qa-analyst-co-op' },
+      mails: [
+      { message_id: 'h-1', thread_id: 'th-1', kind: 'interview', received_at: at(3), subject: 'Interview slots for next week', event_at: null, event_text: null },
+      { message_id: 'h-2', thread_id: null, kind: 'receipt', received_at: at(60 * 24 * 3), subject: 'We received your application', event_at: null, event_text: null }] },
+    { id: 'app-4', company: 'Cambio Earth', role: 'Software Engineering Co-op', status: 'applied', status_auto: true, applied_at: '2026-10-02', last_at: at(60 * 24 * 4), next_event_at: null, count: 1, note: '', source: 'mail',
+      timeline: [{ kind: 'applied', at: at(60 * 24 * 4), future: false }], interview: null, links: { portal_url: null, posting_url: null }, mails: [
+      { message_id: 'h-4', thread_id: 'th-4', kind: 'receipt', received_at: at(60 * 24 * 4), subject: 'Your application was sent to Cambio Earth', event_at: null, event_text: null }] },
+    { id: 'app-2', company: 'Orbit Labs', role: 'SWE Co-op', status: 'no_reply', status_auto: false, applied_at: '2026-09-10', last_at: at(60 * 24 * 30), next_event_at: null, count: 0, note: 'via a friend', source: 'manual', mails: [],
+      timeline: [{ kind: 'applied', at: '2026-09-10', future: false }], interview: null, links: { portal_url: null, posting_url: null } },
+    { id: 'app-3', company: 'Acme Robotics', role: 'ML Intern', status: 'rejected', status_auto: true, applied_at: '2026-09-14', last_at: at(60 * 24 * 6), next_event_at: null, count: 1, note: '', source: 'mail',
+      timeline: [{ kind: 'applied', at: at(60 * 24 * 12), future: false }, { kind: 'rejection', at: at(60 * 24 * 6), future: false }], interview: null, links: { portal_url: null, posting_url: null }, mails: [
+      { message_id: 'h-3', thread_id: 'th-3', kind: 'rejection', received_at: at(60 * 24 * 6), subject: 'Your application to Acme Robotics', event_at: null, event_text: null }] }];
   await open();
   await page.locator('.companion-island-target').click();
   await page.waitForSelector('.ad .cb[data-row="jobs"]', { timeout: 8000 });
   await page.locator('.ad .cb[data-row="jobs"]').click();
-  await page.waitForSelector('.ad .jp-t', { timeout: 5000 });
-  const northwind = await page.locator('.ad .jp-r[data-company="Northwind"]').innerText();
-  check('the page is a table with a row per application, with company, role, date and mail count', await page.locator('.ad .jp-r').count() === 2 && await page.locator('.ad .jp-g').count() === 0 && /Northwind/.test(northwind) && /Backend Co-op/.test(northwind) && /9\/12/.test(northwind) && /2$/.test(northwind.trim()));
-  check('the status select shows the status and a faint mark only where he set it', await page.locator('.ad .jp-r[data-company="Northwind"] select[data-act="status"]').inputValue() === 'interviewing' && await page.locator('.ad .jp-r[data-company="Northwind"] [data-hand]').count() === 0 && await page.locator('.ad .jp-r[data-company="Orbit Labs"] [data-hand]').count() === 1);
-  check('the status is worded: 面试中 or Interviewing, 没回音 or No reply', /Interviewing|面试中/.test(northwind) && /No reply|没回音/.test(await page.locator('.ad .jp-r[data-company="Orbit Labs"]').innerText()));
-  await shot('applications', { x: 0, y: 0, width: 640, height: 480 });
-  await page.locator('.ad .jp-r[data-company="Northwind"] select[data-act="status"]').selectOption('offer');
-  await page.waitForFunction(() => document.querySelector('.ad .jp-r[data-company="Northwind"] select')?.value === 'offer', null, { timeout: 3000 });
-  check('changing the select posts the edit route with the status', JSON.stringify(appEdits) === '[{"id":"app-1","body":{"status":"offer"}}]');
-  await page.locator('.ad .jp-r[data-company="Northwind"] .jp-top').click();
-  await page.waitForSelector('.ad .jp-x li');
-  check('a row opens to its mails and a note', await page.locator('.ad .jp-x li').count() === 2 && await page.locator('.ad .jp-x [data-act="note"]').count() === 1);
-  await page.locator('.ad .jp-x [data-act="note"]').fill('phone screen booked');
-  await page.locator('.ad .jp-x [data-act="note"]').blur();
+  await page.waitForSelector('.ad .jc', { timeout: 5000 });
+  const reliable = await page.locator('.ad .jc[data-company="Reliable Controls"]').innerText();
+  check('the page is a list of cards, one per application, with company, role line and applied day', await page.locator('.ad .jc').count() === 4 && await page.locator('.ad .jp-t').count() === 0 && await page.locator('.ad .jp-g').count() === 0 && /Reliable Controls/.test(reliable) && /Firmware QA Analyst Co-op/.test(reliable) && /9\/28 投递|Applied 9\/28/.test(reliable));
+  check('the vid hook rides on every card', await page.locator('.ad .jc[data-vid="Reliable Controls|Firmware QA Analyst Co-op"]').count() === 1 && await page.locator('.ad .jc[data-vid]').count() === 4);
+  check('the status is a pill, coloured by status, worded 面试中 or Interviewing', await page.locator('.ad .jc[data-company="Reliable Controls"] .jc-pill.is-interviewing').count() === 1 && /Interviewing|面试中/.test(await page.locator('.ad .jc[data-company="Reliable Controls"] .jc-pill').innerText()) && await page.locator('.ad .jc[data-company="Acme Robotics"] .jc-pill.is-rejected').count() === 1 && await page.locator('.ad .jc[data-company="Orbit Labs"] .jc-pill.is-no_reply').count() === 1);
+  check('the pill is the status picker, and a faint mark shows only where he set it', await page.locator('.ad .jc[data-company="Reliable Controls"] select[data-act="status"]').inputValue() === 'interviewing' && await page.locator('.ad .jc[data-company="Reliable Controls"] [data-hand]').count() === 0 && await page.locator('.ad .jc[data-company="Orbit Labs"] [data-hand]').count() === 1);
+  check('an interviewing card names its interview time on its second line', /面试 \d+\/\d+ \d\d:\d\d|Interview \d+\/\d+ \d\d:\d\d/.test(await page.locator('.ad .jc[data-company="Reliable Controls"] [data-line]').innerText()));
+  check('a no_reply card says how many days of silence', /已 30 天没回音|No reply for 30 days/.test(await page.locator('.ad .jc[data-company="Orbit Labs"] [data-line]').innerText()));
+  check('a collapsed card shows no timeline, interview or mails', await page.locator('.ad .jc-x').count() === 0);
+  await tall(); await shot('applications', { x: 0, y: 0, width: 640, height: 640 });
+  await page.locator('.ad .jc[data-company="Reliable Controls"] select[data-act="status"]').selectOption('offer');
+  await page.waitForFunction(() => document.querySelector('.ad .jc[data-company="Reliable Controls"] select')?.value === 'offer', null, { timeout: 3000 });
+  check('changing the pill posts the edit route with the status', JSON.stringify(appEdits) === '[{"id":"app-1","body":{"status":"offer"}}]');
+  await page.locator('.ad .jc[data-company="Reliable Controls"] .jp-top').click();
+  await page.waitForSelector('.ad .jc-x li');
+  const steps = page.locator('.ad .jc-x [data-row="timeline"] li');
+  check('an open card shows its timeline, the interview ahead hollow with the days left', await steps.count() === 3 && await page.locator('.ad .jc-x [data-row="timeline"] .is-future').count() === 1 && /(in 2 days|还有 2 天)/.test(await page.locator('.ad .jc-x [data-step="interview"]').innerText()) && await page.locator('.ad .jc-x [data-step="interview_invite"]').count() === 1);
+  const interview = await page.locator('.ad .jc-x [data-row="interview"]').innerText();
+  check('the interview row has the time, mode and platform, the interviewer and a join button', /\d+\/\d+ .+ \d\d:\d\d/.test(interview) && /(Online|线上) · Teams/.test(interview) && /Jill Crowe/.test(interview) && await page.locator('.ad .jc-x [data-act="join"]').count() === 1);
+  check('there are links to the application status and the posting', await page.locator('.ad .jc-x [data-row="links"] button').count() === 2);
+  check('the mails are listed with a Gmail button each', await page.locator('.ad .jc-x [data-row="mails"] li').count() === 2 && await page.locator('.ad .jc-x li [data-act="gmail"]').count() === 2 && await page.locator('.ad .jc-x [data-act="note"]').count() === 1);
+  await tall(); await shot('applications-open', { x: 0, y: 0, width: 640, height: 1000 });
+  await page.locator('.ad .jc-x [data-act="join"]').click();
+  await page.locator('.ad .jc-x [data-act="portal"]').click();
+  await page.locator('.ad .jc-x [data-act="posting"]').click();
+  await page.locator('.ad .jc-x li[data-id="h-1"] [data-act="gmail"]').click();
+  await page.locator('.ad .jc-x li[data-id="h-2"] [data-act="gmail"]').click();
+  check('Join, Status and Posting open their https address; Gmail opens the thread, else the message', JSON.stringify(await page.evaluate(() => window.__opened)) === JSON.stringify([['url', teams], ['url', 'https://reliable.wd3.myworkdayjobs.com/en-US/careers/userHome'], ['url', 'https://reliablecontrols.com/careers/firmware-qa-analyst-co-op'], ['mail', 'th-1'], ['mail', 'h-2']]));
+  await page.locator('.ad .jc-x [data-act="note"]').fill('phone screen booked');
+  await page.locator('.ad .jc-x [data-act="note"]').blur();
   await page.waitForTimeout(300);
   check('leaving the note posts it', JSON.stringify(appEdits[1]) === '{"id":"app-1","body":{"note":"phone screen booked"}}');
+  await page.locator('.ad .jc[data-company="Orbit Labs"] .jp-top').click();
+  await page.waitForSelector('.ad .jc[data-company="Orbit Labs"] .jc-x');
+  check('a hand-added card opens to its one step and no interview, links or mails', await page.locator('.ad .jc[data-company="Orbit Labs"] [data-row="timeline"] li').count() === 1 && await page.locator('.ad .jc[data-company="Orbit Labs"] [data-row="interview"], .ad .jc[data-company="Orbit Labs"] [data-row="links"], .ad .jc[data-company="Orbit Labs"] [data-row="mails"]').count() === 0);
   await page.locator('.ad [data-act="add"]').click();
   await page.locator('.ad .jp-form [data-f="company"]').fill('Helix');
   await page.locator('.ad .jp-form [data-f="role"]').fill('Backend Intern');
