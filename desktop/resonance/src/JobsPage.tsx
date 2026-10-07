@@ -19,7 +19,9 @@ export type JobGroup = { company: string; role?: string; kind: string; last_at: 
 // ADR 0182 (absent on a daemon before it): `timeline` is the steps its mails show, oldest first (`future` is an interview still ahead; `message_id` the mail the step came from, null for a manual applied date); `interview` is read from the interview mails' body starts, every field null or empty when the mail does not say; `links` are https addresses from the mails.
 export type JobStep = { kind: 'applied' | 'interview_invite' | 'interview' | 'offer' | 'rejection'; at?: string | null; future: boolean; message_id?: string | null };
 export type JobInterview = { at?: string | null; mode: 'online' | 'onsite' | null; platform: string | null; join_url: string | null; location: string | null; interviewers: string[] };
-export type JobApplication = { id: string; company: string; role: string; status: string; status_auto: boolean; applied_at?: string | null; last_at?: string | null; next_event_at?: string | null; count: number; mails: JobMailRow[]; note: string; source: 'mail' | 'manual'; timeline?: JobStep[]; interview?: JobInterview | null; links?: { portal_url: string | null; posting_url: string | null } };
+// ADR 0186 (absent on a daemon before it, null when nothing is armed): what Jarvis set for the interview ahead; `at` is that time, `cancelled` is Allen's undo of it.
+export type JobReminders = { at: string; evening: boolean; before: boolean; evening_at: string; before_min: number; outlook: boolean; cancelled: boolean };
+export type JobApplication = { id: string; company: string; role: string; status: string; status_auto: boolean; applied_at?: string | null; last_at?: string | null; next_event_at?: string | null; count: number; mails: JobMailRow[]; note: string; source: 'mail' | 'manual'; timeline?: JobStep[]; interview?: JobInterview | null; links?: { portal_url: string | null; posting_url: string | null }; reminders?: JobReminders | null };
 
 const STATUSES: Record<string, L> = { applied: ['Applied', '已投'], interviewing: ['Interviewing', '面试中'], offer: ['Offer', 'Offer'], rejected: ['Rejected', '拒了'], no_reply: ['No reply', '没回音'] };
 // "2026-09-12" is a day, not a moment: read it as written, so a western time zone does not step it back.
@@ -87,6 +89,17 @@ export function JobsPage({ port, ledger, applications, skipped, rules = [], othe
     try { await postRoute(port, '/inherent/jobs/applications', { company: form.company.trim(), role: form.role.trim(), ...(form.applied_at ? { applied_at: form.applied_at } : {}), status: form.status }); setAdding(false); setForm({ company: '', role: '', applied_at: '', status: 'applied' }); onChanged(); }
     catch { setFailed(true); }
   };
+  // POST /inherent/jobs/applications/{id}/cancel-reminders: both reminders cancelled, the Outlook event deleted, not armed again for that time.
+  const cancelReminders = async (id: string) => {
+    setFailed(false);
+    try { await postRoute(port, `/inherent/jobs/applications/${encodeURIComponent(id)}/cancel-reminders`, {}); onChanged(); }
+    catch { setFailed(true); }
+  };
+  const remindersOf = (r: JobReminders) => {
+    if (r.cancelled) return t(['Reminders cancelled for this time', '这次面试的提醒已取消']);
+    const set = [r.evening && t([`evening before ${r.evening_at}`, `前一晚 ${r.evening_at}`]), r.before && t([`${r.before_min} min before`, `开始前 ${r.before_min} 分钟`])].filter(Boolean).join(t([', ', '、']));
+    return [set && t([`Reminders set: ${set}`, `已设提醒：${set}`]), r.outlook && t(['written to Outlook calendar', '已写入 Outlook 日历'])].filter(Boolean).join(' · ');
+  };
   const rows = (applications ?? []).map(a => ({ ...a, mails: a.mails.filter(m => !gone.includes(m.message_id)) })).filter(a => a.source === 'manual' || a.mails.length);
   const gmail = (m: JobMailRow) => void window.jarvis?.openMail?.(m.thread_id || m.message_id);
   const mailItem = (m: JobMailRow) => { const [mc, mn] = jobKind(m.kind);
@@ -146,7 +159,8 @@ export function JobsPage({ port, ledger, applications, skipped, rules = [], othe
               return <li key={i} className={st.future ? 'is-future' : ''} data-step={st.kind}><i/><span>{dayStamp(st.at)} {t(STEPS[st.kind])}{st.future && st.at && <small> {t([`(${en})`, `（${zh}）`])}</small>}</span></li>; })}</ol></div>}
             {iv && <div className="jc-row" data-row="interview"><b>{t(['Interview', '面试'])}</b><div>
               <p>{whenOf(iv)}{iv.join_url && <button className="jc-join" data-act="join" onClick={() => openLink(iv.join_url!)}>{t(['Join meeting', '加入会议'])}</button>}</p>
-              {iv.interviewers.length > 0 && <p className="jc-people" data-interviewers>{t(['Interviewer', '面试官'])} {iv.interviewers.join(', ')}</p>}</div></div>}
+              {iv.interviewers.length > 0 && <p className="jc-people" data-interviewers>{t(['Interviewer', '面试官'])} {iv.interviewers.join(', ')}</p>}
+              {a.reminders && remindersOf(a.reminders) && <p className="jc-people" data-reminders>{remindersOf(a.reminders)}{!a.reminders.cancelled && <button className="btn-text" data-act="cancel-reminders" onClick={() => void cancelReminders(a.id)}>{t(['Cancel reminders', '取消提醒'])}</button>}</p>}</div></div>}
             {shortcuts && <div className="jc-row" data-row="links"><b>{t(['Links', '链接'])}</b><div>
               {links?.portal_url && <button className="btn-text" data-act="portal" onClick={() => openLink(links.portal_url!)}>{t(['Application status', '查申请进度'])}</button>}
               {links?.posting_url && <button className="btn-text" data-act="posting" onClick={() => openLink(links.posting_url!)}>{t(['Job posting', '职位原帖'])}</button>}</div></div>}

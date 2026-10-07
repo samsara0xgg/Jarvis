@@ -29,7 +29,7 @@ try {
   let otherS;
   // ADR 0177: the tracker's rows (absent on older daemons, which keep the per-company view above) and what the page posted to its two routes.
   let applications;
-  const appEdits = [], appAdds = [];
+  const appEdits = [], appAdds = [], cancels = [];
   // ADR 0176: what the page told the daemon is on screen (POST /inherent/view).
   const views = [];
   const lastJobsView = () => views.filter(v => v.page === 'jobs').at(-1);
@@ -75,6 +75,7 @@ try {
     else if (p.startsWith('/inherent/notices/') && method === 'POST') { posts.push({ id: decodeURIComponent(p.split('/').pop()), body: JSON.parse(route.request().postData() || '{}') }); return json({ ok: true }); }
     else if (p === '/inherent/jobs' && method === 'GET' && featureOn) return json({ ...(skipped ? { ledger, skipped, rules } : { ledger }), ...(applications ? { applications } : {}), ...(otherS === undefined ? {} : { job_site_other_s: otherS }) });
     else if (p === '/inherent/jobs/applications' && method === 'POST') { appAdds.push(JSON.parse(route.request().postData() || '{}')); return json({ ok: true, id: 'hand-1' }); }
+    else if (/^\/inherent\/jobs\/applications\/[^/]+\/cancel-reminders$/.test(p) && method === 'POST') { const id = decodeURIComponent(p.split('/')[4]); cancels.push(id); const a = (applications ?? []).find(x => x.id === id); if (a?.reminders) a.reminders.cancelled = true; return json({ ok: true }); }
     else if (/^\/inherent\/jobs\/applications\/[^/]+$/.test(p) && method === 'POST') { appEdits.push({ id: decodeURIComponent(p.split('/').pop()), body: JSON.parse(route.request().postData() || '{}') }); return json({ ok: true }); }
     else if (/^\/inherent\/jobs\/[^/]+\/flag$/.test(p) && method === 'POST') {
       if (flagStatus === 404) return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
@@ -356,6 +357,7 @@ try {
     { id: 'app-1', company: 'Reliable Controls', role: 'Firmware QA Analyst Co-op', status: 'interviewing', status_auto: true, applied_at: '2026-09-28', last_at: at(3), next_event_at: soonAt, count: 2, note: '', source: 'mail',
       timeline: [{ kind: 'applied', at: at(60 * 24 * 8), future: false }, { kind: 'interview_invite', at: at(60 * 24 * 3), future: false }, { kind: 'interview', at: soonAt, future: true }],
       interview: { at: soonAt, mode: 'online', platform: 'Teams', join_url: teams, location: null, interviewers: ['Jill Crowe'] },
+      reminders: { at: soonAt, evening: true, before: true, evening_at: '20:00', before_min: 30, outlook: true, cancelled: false },
       links: { portal_url: 'https://reliable.wd3.myworkdayjobs.com/en-US/careers/userHome', posting_url: 'https://reliablecontrols.com/careers/firmware-qa-analyst-co-op' },
       mails: [
       { message_id: 'h-1', thread_id: 'th-1', kind: 'interview', received_at: at(3), subject: 'Interview slots for next week', event_at: null, event_text: null },
@@ -400,6 +402,12 @@ try {
   const unfolded = lastJobsView();
   check('unfolded, the card is the open item and its mails are the rows in screen order, as a kind label and the subject', JSON.stringify(unfolded?.item) === JSON.stringify({ kind: 'job', id: 'Reliable Controls|Firmware QA Analyst Co-op', title: 'Reliable Controls — Firmware QA Analyst Co-op' }) && JSON.stringify(unfolded.rows) === JSON.stringify([{ id: 'h-1', title: 'Interview Interview slots for next week' }, { id: 'h-2', title: 'Received We received your application' }]));
   await tall(); await shot('applications-open', { x: 0, y: 0, width: 640, height: 1000 });
+  // ADR 0186: the muted line of what Jarvis set for the interview, and the one button that undoes it.
+  const armed = await page.locator('.ad .jc-x [data-reminders]').innerText();
+  check('the interview row says which reminders are set and that Outlook has it, with a cancel button', /已设提醒：前一晚 20:00、开始前 30 分钟 · 已写入 Outlook 日历|Reminders set: evening before 20:00, 30 min before · written to Outlook calendar/.test(armed) && /取消提醒|Cancel reminders/.test(armed) && await page.locator('.ad .jc-x [data-act="cancel-reminders"]').count() === 1);
+  await page.locator('.ad .jc-x [data-act="cancel-reminders"]').click();
+  await page.waitForFunction(() => /已取消|cancelled/.test(document.querySelector('.ad .jc-x [data-reminders]')?.textContent ?? ''), null, { timeout: 3000 });
+  check('cancel posts the application id, and the line says so with no button left', JSON.stringify(cancels) === '["app-1"]' && await page.locator('.ad .jc-x [data-act="cancel-reminders"]').count() === 0);
   await page.locator('.ad .jc-x [data-act="join"]').click();
   await page.locator('.ad .jc-x [data-act="portal"]').click();
   await page.locator('.ad .jc-x [data-act="posting"]').click();

@@ -383,6 +383,16 @@ job_mail:
   # 2026-10-06 (Allen): LinkedIn mail is kept out of the job-mail feature (no Jev call, no ledger
   # row, no alert; existing rows are hidden, never deleted); [] turns it off.
   exclude_domains: [linkedin.com]
+  # 2026-10-06 (Allen): when job mail yields an interview time Jarvis sets two reminders on its own
+  # (evening_at the evening before, before_min before the start) and, with outlook on, writes the
+  # interview into his Outlook calendar (the microsoft server) with an alert before_min before, so
+  # his iPhone's Calendar alerts him with the Mac closed.  ADR 0186: the Outlook part is a
+  # stopgap until the Pi brain pushes reminders to the phone.  enabled: false turns all of it off.
+  interview_reminders:
+    enabled: true
+    evening_at: "20:00"
+    before_min: 30
+    outlook: true
 
 # ADR 0161 — the moment.  When an alert is decided, delivered or shown, Jarvis reads TimeSink's
 # saved spans (read-only, nothing copied, no model) to see what Allen is doing.  In a call or

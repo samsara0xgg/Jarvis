@@ -169,6 +169,7 @@ from jarvis.runtime.dashboard import (
 )
 from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.runtime.home import Home, mail_body, mail_summarizer
+from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.runtime.night_run import NightRun, night_settings
@@ -1453,6 +1454,7 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
     config: Mapping[str, Any], config_path: Path, log: JevLog | None,
     connections: PluginConnections, db_path: Path,
     moment: Moment | None = None, device: DeviceLink | None = None,
+    event_log: Path | None = None,
 ) -> JobMail | None:
     """``job_mail`` (ADR 0155): off unless enabled; bad values stop boot."""
     block = config.get("job_mail")
@@ -1494,6 +1496,7 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
         msg = f"runtime: {config_path} job_mail.backfill_since must be a date (YYYY-MM-DD) or null"
         raise RuntimeBootstrapError(msg)
     settings = JobMailSettings(
+        interview_reminders=_interview_reminders(block.get("interview_reminders"), config_path),
         poll_s=float(number("poll_s", low=1)),
         backfill_days=number("backfill_days", low=1, high=60, whole=True),
         max_messages_per_cycle=number("max_messages_per_cycle", low=1, high=100, whole=True),
@@ -1512,8 +1515,34 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
     route = SurrogateRoute(model=model.strip(), min_confidence=1.0, timeout_ms=timeout, log=log)
     return JobMail(
         settings, route, connections, db_path, rule_judge_v1,
-        moment=moment, timesink_path=_timesink_db_path(config), device=device,
+        moment=moment, timesink_path=_timesink_db_path(config), device=device, event_log=event_log,
     )
+
+
+def _interview_reminders(block: object, config_path: Path) -> InterviewSettings | None:
+    """``job_mail.interview_reminders`` (ADR 0186): None while off; bad values stop boot."""
+    where = f"runtime: {config_path} job_mail.interview_reminders"
+    if not isinstance(block, Mapping) or not isinstance(block.get("enabled"), bool):
+        msg = f"{where}.enabled must be true or false"
+        raise RuntimeBootstrapError(msg)
+    if not block["enabled"]:
+        return None
+    raw = block.get("evening_at")
+    try:
+        evening = clock.fromisoformat(raw) if isinstance(raw, str) else None
+    except ValueError:
+        evening = None
+    if evening is None or evening.tzinfo:
+        msg = f'{where}.evening_at must be a local time such as "20:00"'
+        raise RuntimeBootstrapError(msg)
+    minutes = block.get("before_min")
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 1440:  # noqa: PLR2004 - a day
+        msg = f"{where}.before_min must be a whole number of minutes from 1 to 1440"
+        raise RuntimeBootstrapError(msg)
+    if not isinstance(block.get("outlook"), bool):
+        msg = f"{where}.outlook must be true or false"
+        raise RuntimeBootstrapError(msg)
+    return InterviewSettings(evening, minutes, block["outlook"])
 
 
 def _register_job_ledger(registry: ToolRegistry, job_mail: JobMail | None) -> None:
@@ -2732,6 +2761,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     jev_log = _jev_log(full_config, paths.root)
     job_mail = _job_mail(
         full_config, config_path, jev_log, plugin_connections, memory.db_path, moment, device,
+        paths.event_log,
     )
     _register_job_ledger(registry, job_mail)
     return JarvisRuntime(

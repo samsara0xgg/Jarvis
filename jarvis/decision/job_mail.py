@@ -12,6 +12,7 @@ Layer rules: stdlib + L3 siblings + ``jarvis.shared``; no wiring.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import re
 import threading
@@ -778,6 +779,22 @@ def event_of(
             continue
         return sentence[:_EVENT_CHARS], _moment(sentence, received)
     return None, None
+
+
+_RANGE_JOIN: Final = re.compile(r"\s*(?:-|\u2013|\u2014|to|until)\s*", re.IGNORECASE)
+
+
+def event_minutes(sentence: str) -> int | None:
+    """How long the event runs when its sentence gives a range (``1:00pm - 2:00pm``), else None."""
+    for pattern in (_TIME_AMPM, _TIME_24):
+        found = list(pattern.finditer(sentence))
+        for first, second in itertools.pairwise(found):
+            if _RANGE_JOIN.fullmatch(sentence[first.end() : second.start()]):
+                start, end = _clock_of(first[0]), _clock_of(second[0])
+                if start and end:
+                    span = ((end[0] - start[0]) * 60 + end[1] - start[1]) % (24 * 60)
+                    return span if 0 < span <= 12 * 60 else None
+    return None
 
 
 def extract(head: Head, body: str) -> Facts:

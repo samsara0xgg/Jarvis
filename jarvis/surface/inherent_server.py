@@ -654,6 +654,9 @@ class InherentDeps:
     # (the fields given); a ValueError is 400, an unknown id a LookupError (404).
     application_add: Callable[[dict[str, Any]], Awaitable[str]] | None = None
     application_edit: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
+    # ADR 0186: Allen's undo of an interview's reminders and Outlook event, by application id; an
+    # application with none armed is a LookupError (404).
+    application_cancel_reminders: Callable[[str], Awaitable[None]] | None = None
     brief_read: Callable[[], dict[str, Any] | None] | None = None
     # ADR 0125: does a finished agent turn's ending ask Allen something? ``asks`` waits for Jev
     # (off the loop thread); ``peek`` never waits, for the terminal sessions' board. None = off.
@@ -1479,6 +1482,15 @@ def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C90
         ) -> dict[str, bool]:
             """Change an application's status, date, note or hidden; a bad status is a 400."""
             await _home_call(application_edit(app_id, req.model_dump(exclude_unset=True)))
+            return {"ok": True}
+
+    if deps.application_cancel_reminders is not None:
+        application_cancel_reminders = deps.application_cancel_reminders
+
+        @app.post("/inherent/jobs/applications/{app_id}/cancel-reminders", status_code=200)
+        async def application_cancel_reminders_route(app_id: str) -> dict[str, bool]:
+            """Cancel an interview's two reminders and delete its Outlook event."""
+            await _home_call(application_cancel_reminders(app_id))
             return {"ok": True}
 
     if deps.job_delete is not None:

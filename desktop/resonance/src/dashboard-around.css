@@ -473,6 +473,7 @@
 .ad .jc-row .jc-people { margin-top:2px; font-size:var(--text-label); color:var(--p-muted); }
 .ad .jc-join { padding:1px 9px; border-radius:var(--radius-tag); background:rgb(var(--glow) / .14); color:#dfe6ff; font-size:var(--text-label); }
 .ad .jc-join:hover { background:rgb(var(--glow) / .24); }
+.ad .jc-row .jc-people .btn-text { margin-left:8px; }
 .ad .jc-tl { display:flex; flex-wrap:wrap; gap:3px 0; margin:0; padding:0; list-style:none; font-variant-numeric:tabular-nums; }
 .ad .jc-tl li { display:flex; align-items:center; gap:5px; color:var(--p-ink); white-space:nowrap; }
 .ad .jc-tl li:not(:last-child) { flex:1 1 auto; }

@@ -26,6 +26,7 @@ from jarvis.decision.surrogate_route import KEY_ENV
 from jarvis.execution.tools import ToolError
 from jarvis.runtime import audio_output
 from jarvis.runtime.home import MAIL_SERVER, _gmail, _letter, mail_body
+from jarvis.runtime.interview_reminders import InterviewReminders, InterviewSettings
 from jarvis.shared import lang
 from jarvis.state import device_reads, job_time
 from jarvis.state import job_ledger as ledger
@@ -95,6 +96,8 @@ class JobMailSettings:
     exclude_domains: tuple[str, ...]
     # A fixed first day of mail to read, instead of the last ``backfill_days`` (ADR 0177).
     backfill_since: date | None = None
+    # Reminders and an Outlook event for each interview time found (ADR 0186); None = off.
+    interview_reminders: InterviewSettings | None = None
 
 
 def gmail_read(servers: McpServers, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -119,13 +122,15 @@ class JobMail:
         moment: Moment | None = None,
         timesink_path: Path | None = None,
         device: DeviceLink | None = None,
+        event_log: Path | None = None,
     ) -> None:
         """``route`` carries Jev's model and timeout; ``db_path`` is memory.db.
 
         ``judge`` decides how loudly each typed letter reaches Allen (ADR 0155). ``moment``
         holds alerts while Allen is in a call or away and is stored with each decision;
         ``timesink_path`` is where the ledger's time column is read (ADR 0161), or, on a brain,
-        ``device`` is the link to the terminal whose TimeSink it is (ADR 0170).
+        ``device`` is the link to the terminal whose TimeSink it is (ADR 0170). ``event_log`` is
+        the log interview reminders are written to (ADR 0186); with none they are off.
         """
         self.moment = moment
         self.timesink_path = timesink_path
@@ -145,6 +150,12 @@ class JobMail:
         self._last_spoke: float | None = None
         self._warned: set[str] = set()
         self.now: Callable[[], datetime] = lambda: datetime.now(UTC)
+        self.interviews: InterviewReminders | None = None
+        if settings.interview_reminders is not None and event_log is not None:
+            self.interviews = InterviewReminders(
+                settings.interview_reminders, db_path, event_log, connections
+            )
+            self.interviews.now = lambda: self.now()  # noqa: PLW0108 - a test swaps self.now later
         self._failures = 0
         self._last_ok = self.now()
         # Wired by the daemon: the quiet level now, whether speaking is allowed (speech not
@@ -164,11 +175,13 @@ class JobMail:
         try:
             await asyncio.to_thread(self.repair)
             await asyncio.to_thread(self.reread)
+            await asyncio.to_thread(self.remind)
             while True:
                 try:
                     await asyncio.to_thread(self.poll_once)
                 except Exception:
                     LOGGER.exception("job mail: cycle failed; trying again next time")
+                await asyncio.to_thread(self.remind)
                 await asyncio.sleep(self._settings.poll_s)
         except asyncio.CancelledError:
             LOGGER.info("job mail cancelled")
@@ -229,6 +242,30 @@ class JobMail:
         if kept:
             LOGGER.info("job mail: read again the bodies of %d old mails", kept)
         return kept
+
+    def remind(self) -> None:
+        """Arm the reminders and the Outlook event of every interview time (ADR 0186).
+
+        Runs at start and after each cycle, from the ledger alone (no Gmail); a failure is logged
+        and never stops the poller.
+        """
+        if self.interviews is None:
+            return
+        try:
+            self.interviews.reconcile(
+                ledger.list_applications(
+                    self._db, self.now(), triage.is_ats_company, triage.mail_details
+                )
+            )
+        except Exception:
+            LOGGER.exception("job mail: the interview reminders pass failed; the poller goes on")
+
+    def cancel_reminders(self, app_id: str) -> None:
+        """``POST /inherent/jobs/applications/{id}/cancel-reminders``; unarmed is a LookupError."""
+        if self.interviews is None:
+            msg = "interview reminders are off"
+            raise LookupError(msg)
+        self.interviews.cancel(app_id)
 
     def _fill_event(self, row: Mapping[str, Any], body: str) -> None:
         """Give a ledger row with no event time the one its body names, if any."""
@@ -632,11 +669,17 @@ class JobMail:
             found = job_time.job_time_on(self.timesink_path, self.device, known, now)
         except device_reads.DeviceUnavailable as exc:
             found, note = None, str(exc)  # the time column is not empty: the device is not there
+        interviews = self.interviews
+        armed = ledger.interview_rows(self._db) if interviews is not None else {}
+        applications = ledger.list_applications(
+            self._db, now, triage.is_ats_company, triage.mail_details
+        )
+        for app in applications:  # what was armed for the interview ahead (ADR 0186)
+            row = armed.get(app["id"])
+            app["reminders"] = None if row is None or interviews is None else interviews.view(row)
         return {
             "ledger": [{**g, **job_time.spent_view(found, g["company"])} for g in groups],
-            "applications": ledger.list_applications(
-                self._db, now, triage.is_ats_company, triage.mail_details
-            ),
+            "applications": applications,
             "job_site_other_s": 0 if found is None else round(found["other_s"]),
             **({} if note is None else {"time_note": note}),
             "skipped": ledger.list_skipped(self._db),

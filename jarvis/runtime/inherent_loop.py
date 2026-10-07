@@ -5080,6 +5080,9 @@ def _job_mail_deps(job_mail: JobMail | None) -> dict[str, Any]:
     async def application_edit(app_id: str, fields: dict[str, Any]) -> None:
         await asyncio.to_thread(job_mail.edit_application, app_id, fields)
 
+    async def application_cancel_reminders(app_id: str) -> None:
+        await asyncio.to_thread(job_mail.cancel_reminders, app_id)
+
     return {
         "notices_read": functools.partial(asyncio.to_thread, job_mail.notices),
         "notice_act": act,
@@ -5088,6 +5091,7 @@ def _job_mail_deps(job_mail: JobMail | None) -> dict[str, Any]:
         "job_flag": flag,
         "application_add": application_add,
         "application_edit": application_edit,
+        "application_cancel_reminders": application_cancel_reminders,
     }
 
 

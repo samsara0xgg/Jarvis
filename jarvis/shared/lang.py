@@ -992,6 +992,33 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "job.title.rejection": {"zh": "申请结果 · {company}", "en": "Application update · {company}"},
     "job.title.receipt": {"zh": "申请已收到 · {company}", "en": "Application received · {company}"},
     "job.title.job_other": {"zh": "求职邮件 · {company}", "en": "Job mail · {company}"},
+    # ADR 0186: the two interview reminders and the Outlook event written for an interview time.
+    "job.rem.evening": {
+        "zh": "明天{time} {company} 面试{where}。",
+        "en": "Tomorrow at {time}: interview with {company}{where}.",
+    },
+    "job.rem.before": {
+        "zh": "{n} 分钟后 {company} 面试{where}。",
+        "en": "In {n} minutes: interview with {company}{where}.",
+    },
+    "job.rem.online": {"zh": "，线上{platform}", "en": ", online{platform}"},
+    "job.rem.onsite": {"zh": "，现场{place}", "en": ", in person{place}"},
+    "job.rem.link": {
+        "zh": "，{platform}链接在 Jobs 页",
+        "en": ", the {platform}link is on the Jobs page",
+    },
+    "job.cal.subject": {"zh": "面试：{company}", "en": "Interview: {company}"},
+    "job.cal.subject_role": {
+        "zh": "面试：{company} — {role}",
+        "en": "Interview: {company} — {role}",
+    },
+    "job.cal.platform": {"zh": "平台：{platform}", "en": "Platform: {platform}"},
+    "job.cal.link": {"zh": "链接：{url}", "en": "Link: {url}"},
+    "job.cal.place": {"zh": "地点：{place}", "en": "Location: {place}"},
+    "job.cal.note": {
+        "zh": "由 Jarvis 根据面试邮件添加。",
+        "en": "Added by Jarvis from the interview email.",
+    },
     "job.part.role": {"zh": "（{role}）", "en": " ({role})"},
     "job.part.when": {"zh": "，{when}", "en": ", {when}"},
     "job.line.offer": {"zh": "{company}发来 offer{role}{when}。", "en": "{company} sent an offer{role}{when}."},

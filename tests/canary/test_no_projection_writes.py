@@ -85,6 +85,7 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
             "job_decision",
             "attention_log",
             "notice_feedback",
+            "job_interview_reminder",  # ADR 0186: what was armed for each interview time
         },
     ),
 }
@@ -104,7 +105,7 @@ _L2_OPERATIONAL_UPDATES: dict[str, frozenset[str]] = {
     # decision's delivery and feedback are filled in as they happen; an application row is edited
     # by Allen (ADR 0177).
     "jarvis/state/job_ledger.py": frozenset(
-        {"job_mail", "job_alert", "attention_log", "job_application"}
+        {"job_mail", "job_alert", "attention_log", "job_application", "job_interview_reminder"}
     ),
 }
 
