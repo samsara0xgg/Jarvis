@@ -629,7 +629,9 @@ _MEMO_MAX_CHARS: Final[int] = 2000
 @tool(
     description=(
         "Save a short memo to the user's memo inbox for later review. "
-        "Use when the user asks to jot something down or keep a note of it."
+        "Use when the user asks to jot something down or keep a note of it. "
+        "A memo never notifies the user at a time: it is not a reminder, so never "
+        "say a reminder was set when only a memo was saved."
     ),
     input_schema={
         "type": "object",
