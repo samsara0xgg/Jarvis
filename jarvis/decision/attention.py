@@ -19,8 +19,9 @@ from typing import TYPE_CHECKING, Any, Final
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
-# ledger: keep it, tell no one; then a card; a card with a sound; speak a line.
-LEVELS: Final[tuple[str, ...]] = ("ledger", "card", "card_sound", "speak")
+# ledger: keep it, tell no one; glow: one lit point on the notch wing, no card and no sound; then
+# a card; a card with a sound; speak a line.
+LEVELS: Final[tuple[str, ...]] = ("ledger", "glow", "card", "card_sound", "speak")
 # A letter read later than this after it arrived is kept, not announced.
 STALE_AFTER_H: Final[float] = 48.0
 

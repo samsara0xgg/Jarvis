@@ -3,7 +3,8 @@
 Every ``poll_s`` it lists recent mail through the shared ``gmail`` MCP client, asks Jev about the
 letters it has not seen (header first, then the body of what is left), writes the typed facts to
 the ledger and raises an alert by the rule: a receipt is ledger only, a rejection a card, other
-job mail a card with sound, an interview or offer a card and one fixed spoken line. The only
+job mail a card with sound, an interview or offer a card and one fixed spoken line. A judge may
+also say ``glow`` (ADR 0187): one lit point on the notch wing, no card, no sound, no line. The only
 Gmail tools used are ``gmail_search`` and ``gmail_get``: nothing is ever modified, labelled,
 trashed or sent from here. What a client shows of the alerts is held by the quiet level.
 """
@@ -57,7 +58,7 @@ _SEARCH_LIMIT: Final[int] = 100
 _MAX_PAGES: Final[int] = 30
 _IGNORED_AFTER: Final[timedelta] = timedelta(minutes=30)
 _REACTIONS: Final[frozenset[str]] = frozenset({"right", "dismissed"})
-_ALERT_LEVELS: Final[frozenset[str]] = frozenset({"card", "card_sound", "speak"})
+_ALERT_LEVELS: Final[frozenset[str]] = frozenset(ledger.LEVELS)
 # The channel is called down after this many failed cycles in a row, or this long without a good
 # one, and says so at most once per ``_HEALTH_EVERY``.
 _HEALTH_FAILURES: Final[int] = 3
@@ -541,9 +542,12 @@ class JobMail:
                 level, silenced = "card", True
         title, line = triage.alert_text(typed.kind, typed.facts)
         alert_id = ledger.create_alert(self._db, head.message_id, level, title, line, now)
-        if quiet != "off":
+        # A glow is a mark, not a card: only dnd holds it, and the moment hold never does.
+        glow = level == ledger.GLOW
+        held = quiet == "dnd" if glow else quiet != "off"
+        if held:
             ledger.note_delivery(self._db, head.message_id, "held", now)
-        if reason := self._moment_hold():
+        if not glow and (reason := self._moment_hold()):
             ledger.note_delivery(self._db, head.message_id, f"held_{reason}", now)
         if silenced:
             ledger.note_delivery(self._db, head.message_id, "silenced", now)
@@ -878,23 +882,23 @@ def served_notices(
 ) -> dict[str, Any]:
     """The job-alert rows a client may show at ``quiet`` now (ADR 0155), with or without job mail.
 
-    ``audio_private`` says whether sound may play now; while it is false every alert is served
-    as a silent card, so a disconnect between two polls cannot leak a cue.
+    ``audio_private`` says whether sound may play now; while it is false every alert that would
+    sound is served as a silent card, so a disconnect between two polls cannot leak a cue. A glow
+    never sounds and is served as it is.
     """
     private = bool(output()["private"])
     # ``hold`` (ADR 0163) tells the client to hold its own cards: ``call``, ``away`` or None.
     hold = None if moment is None else moment.client_hold()
-    if hold is not None:
-        # In a call or away: every alert stays pending, so none is shown or marked shown, and
-        # when it ends they come back as one summary (several waited) or one card.
-        return {"notices": [], "audio_private": private, "hold": hold}
-    shown = ledger.alerts_for_client(db, quiet, now)
+    # In a call or away every card stays pending, so none is shown or marked shown, and when it
+    # ends they come back as one summary (several waited) or one card. A glow is a mark, not a
+    # card, and is served through the hold (ADR 0187).
+    shown = ledger.alerts_for_client(db, quiet, now, marks_only=hold is not None)
     if not private:
         for notice in shown:
             for one in (notice, *notice.get("items", [])):
                 if one["level"] in ledger.SOUNDING:
                     one["level"] = "card"
-    return {"notices": shown, "audio_private": private, "hold": None}
+    return {"notices": shown, "audio_private": private, "hold": hold}
 
 
 def settle_notice(  # noqa: PLR0913 - the db, the clock, the quiet level and the client's three fields

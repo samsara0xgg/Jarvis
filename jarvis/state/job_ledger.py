@@ -29,7 +29,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 KINDS: Final[tuple[str, ...]] = ("offer", "interview", "rejection", "receipt", "job_other", "other")
-LEVELS: Final[tuple[str, ...]] = ("card", "card_sound", "speak")
+GLOW: Final[str] = "glow"
+LEVELS: Final[tuple[str, ...]] = (GLOW, "card", "card_sound", "speak")
 MAX_ERROR_TRIES: Final[int] = 3
 # The audit list of held-back mail shows this many, newest first, whatever Jev's probability.
 AUDIT_LIMIT: Final[int] = 50
@@ -995,7 +996,10 @@ def expire_shown(path: Path, now: datetime, after: timedelta) -> int:
 
 
 def shown_level(level: str, quiet: str) -> str:
-    """The level the client is given at this quiet level: quiet takes the sound off."""
+    """The level the client is given at this quiet level: quiet takes the sound off.
+
+    A glow has no sound to take off and stays a glow at every level.
+    """
     return "card" if quiet == "quiet" and level in SOUNDING else level
 
 
@@ -1016,11 +1020,12 @@ def _notice(row: sqlite3.Row, quiet: str) -> dict[str, Any]:
 
 
 def recent_alerts(path: Path, now: datetime) -> int:
-    """How many mail alerts were made within ``BURST_WINDOW`` before ``now``."""
+    """How many mail alerts were made within ``BURST_WINDOW`` before ``now``; a glow is no card."""
     with _db(path) as conn:
         (count,) = conn.execute(
-            "SELECT count(*) FROM job_alert WHERE message_id != ? AND created_at >= ?",
-            (HEALTH_ID, _stamp(now - BURST_WINDOW)),
+            "SELECT count(*) FROM job_alert WHERE message_id != ? AND level != ?"
+            " AND created_at >= ?",
+            (HEALTH_ID, GLOW, _stamp(now - BURST_WINDOW)),
         ).fetchone()
     return int(count)
 
@@ -1115,16 +1120,21 @@ def _summary(rows: list[sqlite3.Row], quiet: str) -> dict[str, Any]:
     }
 
 
-def alerts_for_client(path: Path, quiet: str, now: datetime) -> list[dict[str, Any]]:
+def alerts_for_client(
+    path: Path, quiet: str, now: datetime, *, marks_only: bool = False
+) -> list[dict[str, Any]]:
     """The pending alerts a client may show at this quiet level (ADR 0153, 0158), as notices.
 
-    ``no-pop`` and ``dnd`` return nothing and leave every alert pending. ``quiet`` returns the
-    cards with the sound taken off. Mail alerts are one summary notice when two or more waited
-    or three came within ``BURST_WINDOW`` (the summary never speaks and links to the ledger; its
-    rows are one per company and thread, ADR 0159); other alerts are their own notices. Alerts
-    older than seven days, and those of a mail Allen deleted, are not returned.
+    ``dnd`` returns nothing and leaves every alert pending. ``no-pop`` returns only the glows, and
+    so does ``marks_only`` (the moment hold, ADR 0163): a glow is a mark, not a card, so only
+    ``dnd`` keeps it back, and the cards it leaves pending come back when the hold ends. ``quiet``
+    returns the cards with the sound taken off. Card mail alerts are one summary notice when two
+    or more waited or three came within ``BURST_WINDOW`` (the summary never speaks and links to
+    the ledger; its rows are one per company and thread, ADR 0159); a glow is never in a summary,
+    and other alerts are their own notices. Alerts older than seven days, and those of a mail
+    Allen deleted, are not returned.
     """
-    if quiet in ("no-pop", "dnd"):
+    if quiet == "dnd":
         return []
     with _db(path) as conn:
         rows = conn.execute(
@@ -1136,7 +1146,9 @@ def alerts_for_client(path: Path, quiet: str, now: datetime) -> list[dict[str, A
             " ORDER BY a.created_at, a.id",
             (_stamp(now - ALERT_KEEP),),
         ).fetchall()
-    mails = [row for row in rows if row["kind"] != "health"]
+    if marks_only or quiet == "no-pop":
+        rows = [row for row in rows if row["level"] == GLOW]
+    mails = [row for row in rows if row["kind"] != "health" and row["level"] != GLOW]
     merged = _summarised(mails, now)
     ids = {row["id"] for row in merged}
     notices = [_notice(row, quiet) for row in rows if row["id"] not in ids]

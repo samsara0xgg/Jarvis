@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from fastapi.testclient import TestClient
 
+from jarvis.decision import attention
 from jarvis.decision.attention import ContextPack, replay, rule_judge_v1
 from jarvis.runtime.card_feedback import KINDS, CardFeedback
 from jarvis.runtime.inherent_loop import _card_act
@@ -136,6 +137,16 @@ def test_a_shown_card_is_stored_once_and_its_reaction_is_one_row(tmp_path: Path,
         "acted",
         "dismissed",
     ]
+
+
+def test_every_level_a_judge_can_say_is_a_level_a_card_is_rated_at(tmp_path: Path) -> None:
+    """ADR 0187 made glow a level job mail delivers: a card shown at it is stored like any."""
+    assert set(attention.LEVELS) <= set(attention.CARD_LEVELS)
+    h = _Harness(tmp_path)
+    for level in attention.LEVELS:
+        assert h.post(f"lvl-{level}", action="seen", kind="pop", level=level, facts={}) == 200
+    stored = {row["level"] for row in job_ledger.list_attention(h.db, "card:pop")}
+    assert stored == set(attention.LEVELS)
 
 
 def test_unknown_cards_are_404_and_bad_posts_are_400(tmp_path: Path) -> None:

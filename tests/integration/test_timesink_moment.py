@@ -28,7 +28,13 @@ from jarvis.state import job_ledger, job_time, timesink_moment
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
-from tests.integration.test_job_mail import _Harness, _harness, _Jev
+from tests.integration.test_job_mail import (
+    _Harness,
+    _harness,
+    _Jev,
+    _only,
+    glow_for_rejections,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -471,6 +477,54 @@ def test_away_holds_until_he_returns(tmp_path: Path, jev: _Jev, store: FakeTimeS
     store.span(90, 3, CHROME, "Google Chrome", domain="a.example")
     h.job.moment = _moment_for(store, h.db)  # a fresh read: he is back
     assert h.notices()
+
+
+@pytest.mark.parametrize("state", ["call", "away"])
+def test_a_glow_goes_through_the_hold_and_only_dnd_keeps_it_back(
+    tmp_path: Path, jev: _Jev, state: str
+) -> None:
+    """ADR 0187: a glow is a mark, served beside ``hold`` while the cards wait; dnd holds both."""
+    h = _job_harness(
+        tmp_path,
+        jev,
+        _hold_store(tmp_path, state),
+        mails=_only("m-reject", "m-offer"),
+        judge=glow_for_rejections,
+    )
+    h.job.poll_once()
+    assert h.spoken == 0
+
+    def poll() -> dict[str, Any]:
+        reply = h.client.get("/inherent/notices")
+        assert reply.status_code == 200
+        return dict(reply.json())
+
+    for quiet in ("off", "quiet", "no-pop"):
+        h.quiet = quiet
+        held = poll()
+        assert held["hold"] == state
+        assert [(n["mail_kind"], n["level"]) for n in held["notices"]] == [("rejection", "glow")]
+    h.quiet = "dnd"
+    assert poll()["notices"] == []
+    assert poll()["hold"] == state
+
+    # Nothing was marked shown by being served, and the log says only the card was held.
+    assert {s for (s,) in h.sql("SELECT state FROM job_alert")} == {"pending"}
+    rows = {r["event_id"]: set(r["delivery"]) for r in job_ledger.list_attention(h.db, "job_mail")}
+    assert rows["m-reject"] == set()
+    assert any(note.startswith("held_") for note in rows["m-offer"])
+
+    # dnd lifts but the hold goes on: the glow is back, still a glow, and seen ends it.
+    h.quiet = "off"
+    (notice,) = poll()["notices"]
+    assert notice["level"] == "glow"
+    seen = h.client.post(f"/inherent/notices/{notice['id']}", json={"action": "seen"})
+    assert seen.status_code == 200
+    assert poll()["notices"] == []
+    assert dict(h.sql("SELECT message_id, state FROM job_alert")) == {
+        "m-reject": "shown",
+        "m-offer": "pending",
+    }
 
 
 @pytest.mark.parametrize("broken", ["missing", "stale", "off"])

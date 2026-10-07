@@ -26,7 +26,14 @@ import yaml
 from fastapi.testclient import TestClient
 
 from jarvis.decision import job_mail as triage
-from jarvis.decision.attention import ContextPack, Judgement, replay, rule_judge_v1
+from jarvis.decision.attention import (
+    CARD_LEVELS,
+    LEVELS,
+    ContextPack,
+    Judgement,
+    replay,
+    rule_judge_v1,
+)
 from jarvis.decision.surrogate_route import SurrogateRoute
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ToolError
@@ -2236,6 +2243,195 @@ def test_a_disconnect_between_polls_downgrades_what_the_route_serves(
     health.device = dict(SPEAKERS)
     reply = health.client.get("/inherent/notices").json()
     assert [n["level"] for n in reply["notices"]] == ["card"]
+
+
+# --- ADR 0187: glow, the lightest level that reaches Allen -------------------------------------
+# No rule judges glow yet, so these drive it with a judge that does: the judge is the one seam.
+
+
+def glow_for_rejections(pack: ContextPack) -> Judgement:
+    """The rule table, except that a fresh rejection is a glow."""
+    judged = rule_judge_v1(pack)
+    if pack.facts.get("kind") == "rejection" and judged.level == "card":
+        return Judgement("glow", "test: a rejection is a glow", "glow_test", "0")
+    return judged
+
+
+def _always_glow(pack: ContextPack) -> Judgement:
+    return Judgement("glow", f"test: {pack.facts['kind']} is a glow", "glow_test", "0")
+
+
+def _only(*ids: str) -> list[dict[str, Any]]:
+    return [m for m in MAILS if m["id"] in ids]
+
+
+def test_the_level_lists_agree_on_glow() -> None:
+    """Glow sits between ledger and card in every list that names the levels."""
+    assert LEVELS == ("ledger", "glow", "card", "card_sound", "speak")
+    assert tuple(level for level in LEVELS if level != "ledger") == job_ledger.LEVELS
+    assert set(LEVELS) <= set(CARD_LEVELS)  # whatever a judge says, Allen may rate
+    assert len(lang.JOB_LEVEL_NAMES) == len(LEVELS)  # 记下, 亮一下, 卡片, 卡片带声, 开口
+
+
+def test_a_glow_judgement_is_an_alert_served_as_a_glow(tmp_path: Path, jev: _Jev) -> None:
+    """A glow is logged as judged, makes a pending alert (not ledger_only) and nothing else."""
+    h = _harness(tmp_path, jev, _only("m-reject"), judge=glow_for_rejections)
+    h.job.poll_once()
+
+    assert h.sql("SELECT message_id, level, state FROM job_alert") == [
+        ("m-reject", "glow", "pending")
+    ]
+    (row,) = job_ledger.list_attention(h.db, "job_mail")
+    assert (row["level"], row["judge_id"], row["reason"]) == (
+        "glow",
+        "glow_test",
+        "test: a rejection is a glow",
+    )
+    assert row["delivery"] == {}  # not ledger_only, not held, no device noted, nothing said
+    (notice,) = h.notices()
+    assert (notice["kind"], notice["level"], notice["mail_kind"], notice["company"]) == (
+        "mail",
+        "glow",
+        "rejection",
+        "Orbital",
+    )
+    assert notice["text"] == f"{notice['title']} {notice['line']}"
+    assert h.spoken == 0
+
+
+@pytest.mark.parametrize("device", [AIRPODS, SPEAKERS], ids=["private", "speakers"])
+def test_a_glow_never_sounds_never_speaks_and_is_never_folded(
+    tmp_path: Path, jev: _Jev, device: dict[str, Any]
+) -> None:
+    """Every letter a glow, on any output with no speak gap: no line, no cue, no summary."""
+    h = _harness(tmp_path, jev, judge=_always_glow, speak_gap_s=0)
+    h.device = dict(device)
+    h.job.poll_once()
+
+    assert {level for (level,) in h.sql("SELECT level FROM job_alert")} == {"glow"}
+    assert len(h.sql("SELECT id FROM job_alert")) == 7
+    assert h.spoken == 0
+    assert sum(spoken for (spoken,) in h.sql("SELECT spoken FROM job_alert")) == 0
+    for row in job_ledger.list_attention(h.db, "job_mail"):
+        assert row["delivery"] == {}, row["event_id"]  # no device noted, no line suppressed
+
+    # Seven alerts made together, then all of them waiting: still seven glows, never a digest.
+    for waited in (timedelta(0), timedelta(minutes=10)):
+        h.age_alerts(waited)
+        reply = h.client.get("/inherent/notices").json()
+        assert reply["audio_private"] is device["private"]
+        assert [(n["kind"], n["level"]) for n in reply["notices"]] == [("mail", "glow")] * 7
+
+
+def test_a_glow_is_not_counted_by_the_speak_burst_rule(tmp_path: Path, jev: _Jev) -> None:
+    """Three glows, then an interview: it is the first card alert in the window, so it speaks."""
+    rejects = [
+        _mail(
+            f"rj{i}",
+            "Orbital Careers <jobs@orbital.example>",
+            "Update on your application",
+            "We will not be moving forward with your application.",
+        )
+        for i in range(3)
+    ]
+    h = _harness(
+        tmp_path, jev, [*rejects, *_only("m-interview")], judge=glow_for_rejections, speak_gap_s=0
+    )
+    h.job.poll_once()
+
+    assert [level for (level,) in h.sql("SELECT level FROM job_alert ORDER BY rowid")] == [
+        "glow",
+        "glow",
+        "glow",
+        "speak",
+    ]
+    assert job_ledger.recent_alerts(h.db, h.job.now()) == 1
+    assert h.spoken == 1
+    # And the one card is its own notice, not a summary of the four.
+    assert sorted((n["kind"], n["level"]) for n in h.notices()) == [("mail", "glow")] * 3 + [
+        ("mail", "speak")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("quiet", "served"),
+    [
+        ("off", ["glow", "speak"]),
+        ("quiet", ["card", "glow"]),  # quiet takes the sound off the card, the glow had none
+        ("no-pop", ["glow"]),  # a mark, not a card: the card waits
+        ("dnd", []),
+    ],
+)
+def test_a_glow_is_a_mark_so_only_dnd_holds_it(
+    tmp_path: Path, jev: _Jev, quiet: str, served: list[str]
+) -> None:
+    """A glow and an interview card made at off: what each quiet level serves, as what level."""
+    h = _harness(tmp_path, jev, _only("m-reject", "m-interview"), judge=glow_for_rejections)
+    h.job.poll_once()
+    h.quiet = quiet
+    assert sorted(n["level"] for n in h.notices()) == served
+    assert {state for (state,) in h.sql("SELECT state FROM job_alert")} == {"pending"}
+
+
+def test_a_glow_made_under_dnd_waits_and_comes_back_as_a_glow(tmp_path: Path, jev: _Jev) -> None:
+    """Only dnd notes a glow as held; once dnd lifts it is served, long waited, still a glow."""
+    h = _harness(tmp_path, jev, _only("m-reject"), judge=glow_for_rejections)
+    h.quiet = "dnd"
+    h.job.poll_once()
+    (row,) = job_ledger.list_attention(h.db, "job_mail")
+    assert set(row["delivery"]) == {"held"}
+    assert h.notices() == []
+
+    h.age_alerts(timedelta(minutes=10))
+    for quiet in ("no-pop", "quiet", "off"):
+        h.quiet = quiet
+        assert [(n["kind"], n["level"]) for n in h.notices()] == [("mail", "glow")]
+
+    # No-pop holds a card but not a glow: the card says held, the glow does not.
+    for judge, held in ((glow_for_rejections, set()), (rule_judge_v1, {"held"})):
+        other = _harness(tmp_path / judge.__name__, jev, _only("m-reject"), judge=judge)
+        other.quiet = "no-pop"
+        other.job.poll_once()
+        (made,) = job_ledger.list_attention(other.db, "job_mail")
+        assert set(made["delivery"]) == held
+
+
+def test_a_glow_stays_served_until_it_is_seen_or_dismissed(tmp_path: Path, jev: _Jev) -> None:
+    """Polling does not end a glow; seen and dismissed do, as for a card, and ignored follows."""
+    h = _harness(tmp_path, jev, _only("m-reject"), judge=glow_for_rejections)
+    h.job.poll_once()
+    for _ in range(3):
+        assert [n["level"] for n in h.notices()] == ["glow"]
+    (notice,) = h.notices()
+    seen = h.client.post(f"/inherent/notices/{notice['id']}", json={"action": "seen"})
+    assert seen.status_code == 200
+    assert h.notices() == []
+    assert h.sql("SELECT state FROM job_alert") == [("shown",)]
+    # Shown and left alone for 30 minutes: the daemon writes "ignored", at the level it was.
+    h.sql(
+        "UPDATE job_alert SET shown_at = ?",
+        (NOW - timedelta(minutes=31)).isoformat(timespec="seconds"),
+    )
+    h.job.poll_once()
+    assert h.sql("SELECT state FROM job_alert") == [("done",)]
+    assert h.sql("SELECT reaction, level_shown FROM job_feedback") == [("ignored", "glow")]
+
+    for action, body in (
+        ("dismissed", {"action": "dismissed"}),
+        ("right", {"action": "feedback", "reaction": "right"}),
+        ("level", {"action": "feedback", "reaction": f"level:{lang.JOB_LEVEL_NAMES[1]}"}),
+    ):
+        gone = _harness(tmp_path / action, jev, _only("m-reject"), judge=glow_for_rejections)
+        gone.job.poll_once()
+        (shown,) = gone.notices()
+        assert gone.client.post(f"/inherent/notices/{shown['id']}", json=body).status_code == 200
+        assert gone.notices() == []
+        assert gone.sql("SELECT state FROM job_alert") == [("done",)]
+        assert gone.sql("SELECT level_shown, reaction FROM job_feedback") == [
+            ("glow", body.get("reaction", "dismissed"))
+        ]
+        (logged,) = job_ledger.list_attention(gone.db, "job_mail")
+        assert [f["level_shown"] for f in logged["feedback"]] == ["glow"]
 
 
 def test_profile_activity_mail_is_held_back_unread_and_job_mail_is_not(
