@@ -160,10 +160,7 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
         ctx.save(); ctx.globalAlpha = a;
         ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale); core.orbit(ctx, R, -1); ctx.restore();
         ctx.save(); pose(ctx, x, y);
-        // A soft shadow while she floats; a contact shadow once she sits on the Dashboard.
-        const g = ctx.createRadialGradient(0, .28 * R, 0, 0, .28 * R, 1.15 * R);
-        g.addColorStop(0, `rgba(0,0,0,${.45 * (1 - s.dock.value)})`); g.addColorStop(.6, `rgba(0,0,0,${.3 * (1 - s.dock.value)})`); g.addColorStop(1, 'rgba(0,0,0,0)');
-        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, .28 * R, 1.15 * R, 0, 2 * Math.PI); ctx.fill();
+        // No shadow while she floats, so nothing dark hangs under her; a contact shadow once she sits on the Dashboard.
         if (contact > .01) {
           ctx.save(); ctx.translate(0, .98 * R); ctx.scale(1, .18);
           const c = ctx.createRadialGradient(0, 0, 0, 0, 0, .8 * R);
