@@ -819,11 +819,15 @@ class HybridFinalRecognizer:
         whisper_zh: MlxWhisperRecognizer,
         whisper_en: MlxWhisperRecognizer,
         whisper_command: MlxWhisperRecognizer | None = None,
+        english_only: bool = False,
     ) -> None:
         """The Whispers share one model; ``realtime.final_asr_terms`` is theirs.
 
         ``whisper_command`` is the Chinese one with the command prompt; ``None`` never hears twice.
+        ``english_only`` (``realtime.final_asr_language: en``): every utterance, short ones too,
+        is heard by the English Whisper whatever language SenseVoice names, and is English.
         """
+        self._english_only = english_only
         self._sensevoice = sensevoice
         self._whisper_zh = whisper_zh
         self._whisper_en = whisper_en
@@ -980,10 +984,12 @@ class HybridFinalRecognizer:
 
     def _hear_once(self, audio_pcm: bytes, speech_s: float) -> TranscriptionResult:
         heard = self._sensevoice.recognize(audio_pcm)
+        if self._english_only:
+            heard = replace(heard, language_detected="en")
         whisper = self._by_language.get(heard.language_detected or "")
         if (
             whisper is None
-            or speech_s < _HYBRID_MIN_SPEECH_S
+            or (speech_s < _HYBRID_MIN_SPEECH_S and not self._english_only)
             or len(audio_pcm) < _WHISPER_MIN_BYTES
             or too_quiet_for_speech(audio_pcm, floor=_WHISPER_LEVEL_FLOOR)
         ):

@@ -2643,12 +2643,18 @@ def _final_recognizer(
         if whisper_zh is None or whisper_en is None:
             LOGGER.warning("realtime.final_asr: hybrid needs mlx-whisper; hearing with SenseVoice")
             return sensevoice
-        LOGGER.info("voice turns of 1 s or more hear with Whisper; SenseVoice keeps the rest")
+        # 2026-10-07 English demo: "Show me" under 1 s came out of SenseVoice as "小米".
+        english = realtime.get("final_asr_language") == "en"
+        LOGGER.info(
+            "voice turns hear with Whisper (%s); SenseVoice keeps the rest",
+            "English only" if english else "1 s or more",
+        )
         return voice_asr.HybridFinalRecognizer(
             sensevoice=sensevoice,
             whisper_zh=whisper_zh,
             whisper_en=whisper_en,
-            whisper_command=whisper_ears(language="zh", prompt=COMMAND_PROMPT),
+            whisper_command=None if english else whisper_ears(language="zh", prompt=COMMAND_PROMPT),
+            english_only=english,
         )
     if choice != "whisper":
         return sensevoice
