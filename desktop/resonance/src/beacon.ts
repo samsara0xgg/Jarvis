@@ -80,6 +80,7 @@ const ICONS: Record<TurnIcon, (c: CanvasRenderingContext2D, t: number, glow: num
   },
 };
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+export const DOT_RING_S = 1.2;
 // The pixel look: the same icon drawn at 11 px, its alpha snapped, then blown up without smoothing.
 let pix: CanvasRenderingContext2D | null = null;
 export function drawTurnIcon(c: CanvasRenderingContext2D, look: MarkLook, t: number, since: number, px: number, quiet = false, icon = TURN_ICON, hue = TURN_HUE) {
@@ -87,10 +88,11 @@ export function drawTurnIcon(c: CanvasRenderingContext2D, look: MarkLook, t: num
   // A new arrival makes it jump once.
   const pop = since < .5 ? 1 + .6 * (1 - since / .5) : 1;
   c.save(); c.scale(pop, pop); c.lineCap = 'round'; c.lineJoin = 'round';
-  // 点线环 keeps the turn in the needs-you amber: the point, and one ring leaving it while something has just arrived.
+  // 点线环 keeps the turn in the needs-you amber: the point, which sends out two rings as something arrives and then
+  // stays still.
   if (look === 'dot') {
     const col = COLOR.wait;
-    if (!quiet) { const ph = (t / 1.6) % 1; c.strokeStyle = rgba(col, .7 * (1 - ph)); c.lineWidth = .8; c.beginPath(); c.arc(0, 0, 3.6 + ph * 4.5, 0, Math.PI * 2); c.stroke(); }
+    if (!quiet && since < 2 * DOT_RING_S) { const ph = (since % DOT_RING_S) / DOT_RING_S; c.strokeStyle = rgba(col, .7 * (1 - ph)); c.lineWidth = .8; c.beginPath(); c.arc(0, 0, 3.6 + ph * 4.5, 0, Math.PI * 2); c.stroke(); }
     c.shadowColor = rgba(col, .85); c.shadowBlur = 3 * px; c.fillStyle = rgba(tint(col, .15));
     c.beginPath(); c.arc(0, 0, 3.2, 0, Math.PI * 2); c.fill();
   } else if (look === 'pixel') {

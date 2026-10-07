@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type Reac
 import { Archive, ArrowSquareOut, ArrowUUpLeft, ArrowUp, CaretLeft, CaretRight, Moon, X } from '@phosphor-icons/react';
 import { readConversation, requestLine, sendReply, type Agent, type AgentState, type Said } from './agents';
 import { AgentMark, COLOR, drawMark, dpr, seedOf, useClock, type MarkLook } from './AgentMarks';
-import { drawMoon, drawTurnIcon, hueAt, MOON_RGB, rgba, tint } from './beacon';
+import { DOT_RING_S, drawMoon, drawTurnIcon, hueAt, MOON_RGB, rgba, tint } from './beacon';
 import { Markdown } from './Markdown';
 import { ended, NoticeFlightContext, openTip } from './Notices';
 import { useT, type L } from './companionSettings';
@@ -35,11 +35,13 @@ export type NotchNote = { key: string; id?: string; pop?: string[]; card?: React
 
 // Your turn: asking first, then stopped, then finished.
 const TURN_ORDER: AgentState[] = ['wait', 'err', 'done'];
-const PAD = 4, GCELL = 26, GCX = 6, WING_W = 112, DOT_WING_W = 64, DOT_R = 2.6, DOT_COUNT_X = 7.5, DOT_GAP = 5, DIGIT_W = 6.1, POP_W = 360, ALL_W = 440, PAGE_W = 560, CARD_W = 440, DRAG_OUT = 30, DWELL_MS = 1500;
+const PAD = 4, DONE_FADE_MS = 10 * 60_000, GCELL = 26, GCX = 6, WING_W = 112, DOT_WING_W = 64, DOT_R = 2.6, DOT_COUNT_X = 7.5, DOT_GAP = 5, DIGIT_W = 6.1, POP_W = 360, ALL_W = 440, PAGE_W = 560, CARD_W = 440, DRAG_OUT = 30, DWELL_MS = 1500;
 const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const countPulse = (progress: number) => reduced.matches ? 1 : 1 + .45 * Math.sin(Math.PI * progress);
 const working = (st: AgentState) => st === 'work' || st === 'pack';
+// The mark the turn wears in 点线环: its first member's, the turn being sorted most urgent first.
+const turnLead = (look: MarkLook, turn: Agent[]): 'wait' | 'err' | 'done' => look === 'dot' && turn[0] && turn[0].state !== 'wait' ? turn[0].state === 'err' ? 'err' : 'done' : 'wait';
 // The panel's words in the chosen language (the panels get them from `useT`, the canvas from `L.current.say`).
 type T = (l: L) => string;
 
@@ -454,12 +456,18 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         if (!ts.length && !(b.key === 'work' && now < st.workLandingUntil)) continue;
         const pulse = countPulse(clamp((now - st.bumpAt[b.key]) / MOTION.medium));
         ctx.save(); ctx.translate(b.cx, top / 2); ctx.scale(.8, .8);
-        if (b.key === 'turn') drawTurnIcon(ctx, look, t, (now - st.turnAt) / 1000, d, now - st.turnAt > 4000);
+        // 点线环 shows the turn as its most urgent member: the amber point that needs you, the red one that stopped and
+        // never blinks, or, when all of them finished, the done ring, which fades once 10 min pass without a look.
+        const lead = turnLead(look, members('turn'));
+        if (b.key === 'turn' && lead !== 'wait') {
+          if (lead === 'done' && ts.every(a => Date.now() - (a.at ?? Date.now()) > DONE_FADE_MS)) ctx.globalAlpha = .55;
+          drawMark(ctx, look, lead, 0, (now - st.turnAt) / 1000, d);
+        } else if (b.key === 'turn') drawTurnIcon(ctx, look, t, (now - st.turnAt) / 1000, d, now - st.turnAt > 4000);
         else if (b.key === 'work') drawMark(ctx, look, ts.length && ts.every(a => a.state === 'pack') ? 'pack' : 'work', t + seedOf('work'), (now - st.workAt) / 1000, d);
         else if (b.key === 'done') { ctx.globalAlpha = .55; drawMark(ctx, look, ts.every(a => a.state === 'err') ? 'err' : 'done', 0, 99, d); }
         else { ctx.globalAlpha = .85; drawMoon(ctx, 99, d); }
         ctx.restore();
-        const dot = look === 'dot', turnRgb = dot ? COLOR.wait : hueAt(t);
+        const dot = look === 'dot', turnRgb = dot ? COLOR[turnLead(look, members('turn'))] : hueAt(t);
         ctx.save(); ctx.font = `600 ${dot ? 10 : 10.5}px "JetBrains Mono", Menlo, monospace`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
         ctx.fillStyle = b.key === 'turn' ? rgba(tint(turnRgb, .45)) : 'rgba(214,222,250,.62)';
         const hidden = new Set([...(note?.pop ?? []), ...st.flights.filter(f => f.to === b.key).map(f => f.id)]);
@@ -487,7 +495,8 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       });
       root.current!.dataset.counts = counts.join(' ');
       root.current!.dataset.flights = String(st.flights.length);
-      root.current!.dataset.rings = st.boxes.some(b => b.key === 'turn') && now - st.turnAt <= 4000 ? '1' : '';
+      const ringing = look === 'dot' ? turnLead(look, turn) === 'wait' && now - st.turnAt < 2000 * DOT_RING_S : now - st.turnAt <= 4000;
+      root.current!.dataset.rings = st.boxes.some(b => b.key === 'turn') && ringing ? '1' : '';
       const dr = st.drag;
       if (dr) {
         const out = dr.y > top + DRAG_OUT, ts = members('done');
