@@ -144,6 +144,20 @@ def test_record_search_takes_dates_any_word_and_speaker(daily: DailyHarness) -> 
     assert [r["id"] for r in mine] == ["reply"]
 
 
+def test_a_named_earlier_answer_is_found_and_read_back_whole(daily: DailyHarness) -> None:
+    """"讲故事那段再说一遍": the model finds her own old answer and reads its exact words."""
+    story = "从前,有个小镇每到夜里就会起雾。镇上有位年轻的钟表匠,叫林。" * 6
+    append_record(daily.memory, record_id="story", source="jarvis", text=story)
+    append_record(daily.memory, record_id="rain", source="jarvis", text="今天有雨,带伞。")
+    append_record(daily.memory, record_id="ask", source="allen", text="给我讲个故事")
+    hit = daily.call("search_records", {"keyword": "钟表匠", "speaker": "assistant"})["records"]
+    assert [r["id"] for r in hit] == ["story"]
+    original = daily.call("read_records", {"record_ids": ["story"]})["records"][0]
+    assert original["text"] == story
+    described = next(t.description for t in daily.tools if t.name == "search_records")
+    assert "say an earlier answer of yours again" in described
+
+
 def test_keyword_search_ranks_rare_words_first_and_reports_unmatched(
     daily: DailyHarness,
 ) -> None:

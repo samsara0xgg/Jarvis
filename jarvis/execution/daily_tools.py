@@ -40,7 +40,10 @@ _DESCRIPTIONS = {
         "only yours. Otherwise newest first; "
         "order=oldest starts from the earliest (the first thing said in a period). Returns "
         "identified excerpts, not full text, and total (all matches). Follow next_cursor with "
-        "identical arguments for every page; read_records retrieves originals."
+        "identical arguments for every page; read_records retrieves originals. To say an "
+        "earlier answer of yours again (a passage the user names, not just the last one), "
+        "find it with speaker=assistant and words from it, then speak its original text "
+        "whole and unchanged."
     ),
     "recall": (
         "What was said in a day or range [from,to), in time order: first the summary of each "

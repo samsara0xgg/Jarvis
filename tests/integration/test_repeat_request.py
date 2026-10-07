@@ -94,7 +94,16 @@ def test_asking_to_hear_it_again_repeats_the_last_spoken_answer(tmp_path: Path, 
 
 @pytest.mark.parametrize(
     "heard",
-    ["什么是量子计算？", "啊", "再说一遍你的名字", "What time is the meeting?"],  # noqa: RUF001
+    [
+        "什么是量子计算？",  # noqa: RUF001
+        "啊",
+        "再说一遍你的名字",
+        "What time is the meeting?",
+        # A passage is named: the instant path would say the wrong (last) answer.
+        "讲故事那段再说一遍",
+        "刚才说天气那句再说一遍",
+        "Repeat what you said about the interview.",
+    ],
 )
 def test_anything_more_than_the_request_goes_to_the_model(tmp_path: Path, heard: str) -> None:
     """A question that only starts like a repair request is a question."""
