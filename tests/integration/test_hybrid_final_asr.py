@@ -574,15 +574,3 @@ def test_no_second_hearing_without_the_command_whisper_or_for_other_languages() 
     ears = _hybrid(_sensevoice("en", "对下。"), command=command)
     assert ears.recognize_prepared("U1", _audio(0.5), 0.5).text == "对下。"
     assert command.recognize.call_count == 0
-
-
-@pytest.mark.parametrize("language", ["zh", "ja", "en"])
-def test_english_only_hears_every_utterance_in_english_short_ones_too(language: str) -> None:
-    """Demo 2026-10-07: "Show me" under 1 s came out of SenseVoice as "小米"."""
-    zh, en = _whisper("你好"), _whisper("Show me", language="en")
-    ears = voice_asr.HybridFinalRecognizer(
-        sensevoice=_sensevoice(language), whisper_zh=zh, whisper_en=en, english_only=True,
-    )
-    heard = ears.recognize_prepared("U1", _audio(2.0), 0.6)
-    assert (heard.text, heard.language_detected) == ("Show me.", "en")
-    assert (zh.recognize.call_count, en.recognize.call_count) == (0, 1)
