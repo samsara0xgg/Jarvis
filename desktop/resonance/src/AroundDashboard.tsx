@@ -568,6 +568,9 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const mailRoute = useRoute<{ unread: Mail[] }>(port, '/inherent/mail', open, 5 * 60_000);
   const memoryRoute = useRoute<MemoryOverview>(port, '/inherent/memory', open, 60_000);
   const memoryNow = Array.isArray(memoryRoute.data?.sections) ? memoryRoute.data : null; // an answer of another shape counts as no memory page
+  // A fact she was told to remember shows when her answer lands, not at the next minute's poll.
+  const lastRow = talk?.rows.at(-1)?.seq, seenRow = useRef(lastRow);
+  useEffect(() => { if (lastRow === seenRow.current) return; seenRow.current = lastRow; if (open) memoryRoute.reload(); }, [lastRow, open]);
   const noticeRoute = useRoute<{ notices: Notice[] }>(port, '/inherent/notices', open, 60_000);
   // The job ledger (job mail, ADR 0155): its icon is in the corner only once the daemon serves the route (a 404 means the feature is off).
   const jobsRoute = useRoute<{ ledger: JobGroup[]; skipped?: Skipped[]; rules?: JobRule[]; job_site_other_s?: number }>(port, '/inherent/jobs', open, 30_000), ledger = Array.isArray(jobsRoute.data?.ledger) ? jobsRoute.data.ledger : null;
