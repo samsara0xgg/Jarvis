@@ -83,7 +83,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 
 import uvicorn
 
@@ -99,8 +99,9 @@ if TYPE_CHECKING:
     from jarvis.runtime.moment import Moment
     from jarvis.runtime.settings import Settings
     from jarvis.runtime.work_state import WorkStateService
-    from jarvis.shared.realtime import PresentationIntent
+    from jarvis.shared.realtime import PresentationIntent, Wave1FeatureFlags, Wave4ResponseFlags
     from jarvis.state.committed_event_bus import CommittedEventBus
+    from jarvis.state.voice_settings import VoiceSettings
     from jarvis.surface.codex_sessions import CodexSession
 
 from jarvis.decision import request_confirmation
@@ -234,6 +235,7 @@ from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.state.turn_overlap import any_turn_in_flight
 from jarvis.surface import (
     respeaker_board,
+    terminal_voice,
     voice_aec,
     voice_artifact_store,
     voice_asr,
@@ -2722,15 +2724,96 @@ def _native_streaming_player(
     return player
 
 
-def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
-    runtime: JarvisRuntime,
+def _tts_volume_kwargs(realtime: Mapping[str, Any]) -> dict[str, Any]:
+    """MiniMax `voice_setting.vol` from ``realtime.tts_volume``.
+
+    Absent or null keeps the MiniMaxWSClient signature default, the single place the
+    calibrated value lives. Deliberately unvalidated like `output_device`, but with a wider
+    blast radius: it is read before the builder's own try, so a non-numeric value raises out
+    of `_build_tts_pipeline` and the caller drops voice input with it, where a bad
+    `output_device` only degrades TTS to text-only.
+    """
+    tts_volume = realtime.get("tts_volume")
+    return {} if tts_volume is None else {"volume": tts_volume}
+
+
+def _minimax_client(  # noqa: PLR0913 - the one place the client's knobs are applied
+    knobs: _VoiceKnobs,
+    api_key: str,
+    volume_kwargs: Mapping[str, Any],
+    *,
+    sample_rate_out: int,
+    recorder: voice_artifact_store.TtsRecorder | None,
+    voice_settings: VoiceSettings | None,
+) -> voice_tts.MiniMaxWSClient:
+    """The MiniMax client the daemon synthesizes with: the one place its knobs are applied."""
+    return voice_tts.MiniMaxWSClient(
+        api_key=api_key,
+        voice=knobs.tts_voice,
+        model=knobs.tts_model,
+        primary_endpoint=knobs.tts_primary_endpoint,
+        fallback_endpoint=knobs.tts_fallback_endpoint,
+        sample_rate_in=knobs.tts_sample_rate_in_hz,
+        sample_rate_out=sample_rate_out,
+        connect_timeout_s=knobs.tts_connect_timeout_s,
+        task_start_timeout_s=knobs.tts_task_start_timeout_s,
+        first_chunk_timeout_s=knobs.tts_first_chunk_timeout_s,
+        between_chunk_timeout_s=knobs.tts_between_chunk_timeout_s,
+        total_timeout_s=knobs.tts_total_timeout_s,
+        session_close_timeout_s=knobs.tts_session_close_timeout_s,
+        recorder=recorder,
+        voice_settings=voice_settings,
+        **volume_kwargs,
+    )
+
+
+class _EventLogPath(Protocol):
+    @property
+    def event_log(self) -> Path: ...
+
+
+class SpeakerHost(Protocol):
+    """What the speaking half of voice reads from its host: a daemon's runtime, or a terminal's.
+
+    A voice terminal (ADR 0172) has no :class:`JarvisRuntime`; it passes the same few values.
+    """
+
+    @property
+    def config(self) -> Mapping[str, Any]: ...
+
+    @property
+    def wave1_features(self) -> Wave1FeatureFlags: ...
+
+    @property
+    def response_flags(self) -> Wave4ResponseFlags: ...
+
+    @property
+    def runtime_paths(self) -> _EventLogPath: ...
+
+    @property
+    def conn(self) -> sqlite3.Connection: ...
+
+    @property
+    def memory(self) -> MemorySettings | None: ...
+
+    @property
+    def voice_settings(self) -> VoiceSettings | None: ...
+
+
+def _build_tts_pipeline(  # noqa: C901, PLR0913, PLR0915 - rollout/degradation capability boundary
+    runtime: SpeakerHost,
     broadcaster: InherentBroadcaster,
     *,
     ducker: voice_ducking.SystemAudioDucker | None = None,
     voice: _VoiceKnobs | None = None,
     echo_canceller: voice_aec.EchoCanceller | None = None,
+    remote: voice_media.StreamingTTSProvider | None = None,
 ) -> voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None:
     """Build the TTS subsystem when ``MINIMAX_API_KEY`` is present.
+
+    ``remote`` (ADR 0172) is a voice terminal's provider, whose sessions run on the brain,
+    which holds the key: the media actor is built around it, with no key here and no
+    legacy fallback, because the legacy pipeline needs the client itself.
 
     ADR-0005 §5.3 — the env var is the sole credential source for the
     MiniMax WebSocket. Without it we skip the entire TTS pipeline
@@ -2744,22 +2827,15 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     wake capture refuses to mute while provider I/O or playback owns it.
     """
     knobs = _VoiceKnobs() if voice is None else voice
-    api_key = os.environ.get("MINIMAX_API_KEY")
-    if not api_key:
+    api_key = "" if remote is not None else os.environ.get("MINIMAX_API_KEY")
+    if remote is None and not api_key:
         LOGGER.warning(
             "MINIMAX_API_KEY unset; skipping TTS subsystem (text path only).",
         )
         return None
     realtime_raw = runtime.config.get("realtime")
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
-    # MiniMax `voice_setting.vol`.  Absent or null keeps the MiniMaxWSClient
-    # signature default, the single place the calibrated value lives.
-    # Deliberately unvalidated like `output_device` below, but with a wider
-    # blast radius: this is read before the builder's own try, so a non-numeric
-    # value raises out of `_build_tts_pipeline` and the caller drops voice input
-    # with it, where a bad `output_device` only degrades TTS to text-only.
-    tts_volume = realtime.get("tts_volume")
-    volume_kwargs: dict[str, Any] = {} if tts_volume is None else {"volume": tts_volume}
+    volume_kwargs = _tts_volume_kwargs(realtime)
     # Passed straight through to sd.OutputStream, which maps a name to a device
     # index itself. Absent from CoreAudio's list: the system default (ADR 0054).
     output_device = _output_or_default(realtime.get("output_device"))
@@ -2798,38 +2874,29 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     # ADR 0120: with the diagnostics switch on, her audio is kept beside the recordings.
     recorder = (
         voice_artifact_store.TtsRecorder(runtime.memory.audio_dir)
-        if diagnostics_flag(runtime.config, "record_tts_audio") and runtime.memory is not None
+        if remote is None
+        and diagnostics_flag(runtime.config, "record_tts_audio")
+        and runtime.memory is not None
         else None
     )
 
     def _new_provider() -> voice_tts.MiniMaxWSClient:
-        return voice_tts.MiniMaxWSClient(
-            api_key=api_key,
-            voice=knobs.tts_voice,
-            model=knobs.tts_model,
-            primary_endpoint=knobs.tts_primary_endpoint,
-            fallback_endpoint=knobs.tts_fallback_endpoint,
-            sample_rate_in=knobs.tts_sample_rate_in_hz,
-            sample_rate_out=output_sample_rate_hz,
-            connect_timeout_s=knobs.tts_connect_timeout_s,
-            task_start_timeout_s=knobs.tts_task_start_timeout_s,
-            first_chunk_timeout_s=knobs.tts_first_chunk_timeout_s,
-            between_chunk_timeout_s=knobs.tts_between_chunk_timeout_s,
-            total_timeout_s=knobs.tts_total_timeout_s,
-            session_close_timeout_s=knobs.tts_session_close_timeout_s,
-            recorder=recorder,
+        return _minimax_client(
+            knobs, api_key or "", volume_kwargs,
+            sample_rate_out=output_sample_rate_hz, recorder=recorder,
             voice_settings=runtime.voice_settings,
-            **volume_kwargs,
         )
 
-    provider = _new_provider()
+    provider = None if remote is not None else _new_provider()
+    streaming_provider = remote or provider
     streaming_capable = (
         runtime.wave1_features.transactional_event_append
         and runtime.wave1_features.lifecycle_terminal_cas
-        and provider.streaming_candidate_count > 0
+        and streaming_provider is not None
+        and streaming_provider.streaming_candidate_count > 0
         and media_config is not None
     )
-    if streaming_requested and streaming_capable:
+    if streaming_requested and streaming_capable and streaming_provider is not None:
         player = (
             _native_streaming_player(
                 echo_canceller=echo_canceller,
@@ -2858,7 +2925,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
         )
         try:
             return voice_media.StreamingTTSPipeline(
-                provider=provider,
+                provider=streaming_provider,
                 player=player,
                 conn_factory=lambda: open_runtime_event_log(runtime.runtime_paths.event_log),
                 boot_high_water_id=_latest_id(runtime.conn),
@@ -2895,6 +2962,13 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             provider = _new_provider()
         if isinstance(player, voice_native_out.NativeAudioStreamPlayer):
             player.stop()  # the legacy player below owns the speaker now
+    if remote is not None or provider is None:
+        LOGGER.warning(
+            "this terminal cannot run streaming speech (realtime.enabled, "
+            "realtime.streaming_output or the event log features are off, or startup "
+            "failed); it will not speak.",
+        )
+        return None
     if streaming_requested and media_config is not None and not streaming_capable:
         LOGGER.warning(
             "realtime.streaming_output capability/config validation failed; "
@@ -2922,6 +2996,83 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
     except Exception as exc:  # noqa: BLE001 - final voice degradation boundary
         LOGGER.warning("legacy TTS startup failed (%r); downgraded to text-only.", exc)
         return None
+
+
+class _SpokenCursor:
+    """One voice terminal's place in the log: the answer rows after it that are meant to be spoken.
+
+    A turn on a silent channel is dropped here, as :func:`_tts_watcher` drops it for the local
+    speaker, so a terminal never hears what this daemon would not.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, after: int) -> None:
+        self._conn = conn
+        self._after = after
+        self._silent: set[str] = set()
+
+    def poll(self) -> terminal_voice.RowBatch:
+        rows = _fetch_events_after(
+            self._conn, after_id=self._after, event_types=terminal_voice.RESPONSE_ROW_TYPES,
+        )
+        spoken: list[tuple[int, Event]] = []
+        for row_id, event in rows:
+            self._after = max(self._after, row_id)
+            turn_id = str(event.payload.get("turn_id", ""))
+            if not _drop_for_silent_channel(
+                event,
+                turn_id=turn_id,
+                silent_turns=self._silent,
+                silent_channels=_TTS_SILENT_CHANNELS,
+                consumer="terminal_speech",
+                intent_channel=(
+                    _turn_intent_channel(self._conn, turn_id)
+                    if event.type == "surface.response_open"
+                    else None
+                ),
+            ):
+                spoken.append((row_id, event))
+        return self._after, spoken
+
+
+class _SpokenRows:
+    """The brain's answer rows, for :class:`terminal_voice.BrainVoice` (ADR 0172)."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def high_water(self) -> int:
+        return _latest_id(self._conn)
+
+    def cursor(self, after: int) -> _SpokenCursor:
+        return _SpokenCursor(self._conn, after)
+
+
+def _build_brain_voice(
+    runtime: JarvisRuntime, knobs: _VoiceKnobs,
+) -> terminal_voice.BrainVoice | None:
+    """What lets a brain speak to a voice terminal: the key, and the answer's rows (ADR 0172).
+
+    ``None`` without ``MINIMAX_API_KEY``: as on one machine, no key is no speech, and the
+    terminal is told so when it connects.
+    """
+    api_key = os.environ.get("MINIMAX_API_KEY")
+    if not api_key:
+        LOGGER.warning("MINIMAX_API_KEY unset; a voice terminal will not be spoken to.")
+        return None
+    realtime_raw = runtime.config.get("realtime")
+    realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
+    recorder = (
+        voice_artifact_store.TtsRecorder(runtime.memory.audio_dir)
+        if diagnostics_flag(runtime.config, "record_tts_audio") and runtime.memory is not None
+        else None
+    )
+    client = _minimax_client(
+        knobs, api_key, _tts_volume_kwargs(realtime),
+        sample_rate_out=voice_media.StreamingMediaConfig().canonical_sample_rate_hz,
+        recorder=recorder,
+        voice_settings=runtime.voice_settings,
+    )
+    return terminal_voice.BrainVoice(client, _SpokenRows(runtime.conn))
 
 
 def _build_voice_pipeline_callable(
@@ -5746,6 +5897,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
 
         controls.on_speech_muted = _apply_speech_mute
         voice_knobs = _voice_knobs(runtime.config)
+        if runtime.terminal_hub is not None:
+            runtime.terminal_hub.voice = _build_brain_voice(runtime, voice_knobs)
         sensevoice_dir = runtime.sensevoice_dir
         silero_path = runtime.silero_vad_path
         model_fetch = models.Progress()

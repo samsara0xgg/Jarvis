@@ -9,6 +9,9 @@ device name. Two more frames ride the ``/terminal/ws`` link of :mod:`jarvis.surf
     brain -> terminal   {"type": "ack", "event_uid": "<32 hex>", "ok": true}
     brain -> terminal   {"type": "ack", "event_uid": "<32 hex>", "ok": false, "code": "..."}
 
+A frame may also carry ``"schema_version"``, ``"source_event_id"`` and ``"correlation"``: the
+playback rows of a voice terminal (ADR 0172) keep their own ids and the links between them.
+
 and the brain's ``ready`` frame carries ``"baseline"``: the latest ``repo.state_observed`` per
 repo and the latest ``timesink.state_observed``, which is what the observers fold their
 change-baselines from (ADR-0009 D5). The brain is where that state lives, so a terminal
@@ -48,6 +51,24 @@ OBSERVER_EVENT_TYPES: Final = frozenset(
 """Every type a terminal may write: what the observers that run there produce, and nothing
 else. No confirmation, no utterance, no tool result."""
 
+PLAYBACK_EVENT_TYPES: Final = frozenset(
+    {
+        "surface.playback_started",
+        "surface.playback_segment_prepared",
+        "surface.playback_alignment",
+        "surface.playback_checkpoint",
+        "surface.playback_completed",
+        "surface.playback_interrupted",
+        "surface.playback_failed",
+        "surface.playback_lane_isolated",
+        "surface.speech_dropped",
+        "tts.usage_observed",
+    },
+)
+"""What the media actor of a voice terminal (ADR 0172) writes, and the brain folds: the heard
+prefix and the captions, and the provider's character count. Only a terminal that declared
+voice may send them, each under the id the media actor gave it."""
+
 MAX_EVENT_CHARS: Final = 64 * 1024
 """One event frame's cap; the biggest observer payload is a few hundred bytes."""
 MAX_PENDING: Final = 1000
@@ -86,8 +107,12 @@ class BrainEvents:
         rows += self._conn.execute(_LATEST_TYPE_SQL, (timesink_observer.EVENT_TYPE,)).fetchall()
         return [{"event_type": kind, "payload": json.loads(payload)} for kind, payload in rows]
 
-    def record(self, device: str, frame: Mapping[str, Any], size: int) -> dict[str, Any] | None:
+    def record(
+        self, device: str, frame: Mapping[str, Any], size: int, *, voice: bool = False,
+    ) -> dict[str, Any] | None:
         """Validate and append one ``event`` frame from ``device``; the ``ack`` to send back.
+
+        ``voice``: the device declared that it speaks, so it may also send playback rows.
 
         A refused event is acknowledged with its code and never retried; a duplicate (a
         terminal resending what it was not told arrived) is acknowledged as done. A database
@@ -97,7 +122,7 @@ class BrainEvents:
         uid = frame.get("event_uid")
         if not isinstance(uid, str) or _EVENT_UID.fullmatch(uid) is None:
             return _ack(None, "bad_event")
-        code = _refusal(frame, size)
+        code = _refusal(frame, size, voice=voice)
         if code is not None:
             return _ack(uid, code)
         event_type, payload, ts = frame["event_type"], frame["payload"], frame["ts_epoch_ms"]
@@ -114,6 +139,9 @@ class BrainEvents:
                 ts_epoch_ms=ts,
                 event_uid=uid,
                 ingestion_node=device,
+                schema_version=frame.get("schema_version"),
+                source_event_id=frame.get("source_event_id"),
+                correlation=frame.get("correlation"),
             )
         except EventLogError:
             return _ack(uid, "bad_event")
@@ -123,18 +151,33 @@ class BrainEvents:
         return _ack(uid, None)
 
 
-def _refusal(frame: Mapping[str, Any], size: int) -> str | None:
+def _well_formed(frame: Mapping[str, Any]) -> bool:
+    """Whether an event frame's fields have the shapes ``emit_event`` is given."""
+    ts, version = frame.get("ts_epoch_ms"), frame.get("schema_version")
+    source, correlation = frame.get("source_event_id"), frame.get("correlation")
+    return (
+        isinstance(frame.get("payload"), dict)
+        and type(ts) is int
+        and (version is None or type(version) is int)
+        and (source is None or isinstance(source, str))
+        and (
+            correlation is None
+            or (
+                isinstance(correlation, dict)
+                and all(isinstance(k, str) and isinstance(v, str) for k, v in correlation.items())
+            )
+        )
+    )
+
+
+def _refusal(frame: Mapping[str, Any], size: int, *, voice: bool) -> str | None:
     """Why an event frame is refused for good, or ``None``."""
-    ts = frame.get("ts_epoch_ms")
     if size > MAX_EVENT_CHARS:
         return "event_too_large"
-    if frame.get("event_type") not in OBSERVER_EVENT_TYPES:
+    kind = frame.get("event_type")
+    if kind not in OBSERVER_EVENT_TYPES and not (voice and kind in PLAYBACK_EVENT_TYPES):
         return "event_type_not_allowed"
-    if not isinstance(frame.get("payload"), dict):
-        return "bad_event"
-    if isinstance(ts, bool) or not isinstance(ts, int):
-        return "bad_event"
-    return None
+    return None if _well_formed(frame) else "bad_event"
 
 
 def _ack(uid: str | None, code: str | None) -> dict[str, Any]:
@@ -193,6 +236,11 @@ class EventOutbox:
         if len(text) > MAX_EVENT_CHARS:
             msg = f"a {type} event of {len(text)} characters is over the {MAX_EVENT_CHARS} cap"
             raise ValueError(msg)
+        self._queue(uid, text)
+        return Event(uid, type, schema.schema_version, ts, dict(payload), None, None)
+
+    def _queue(self, uid: str, text: str) -> None:
+        """Hold ``text`` until the brain acknowledges ``uid``, dropping the oldest when full."""
         if len(self._pending) >= self._max_pending:
             del self._pending[next(iter(self._pending))]
             self.dropped += 1
@@ -200,7 +248,33 @@ class EventOutbox:
                            self.dropped)
         self._pending[uid] = text
         self._wake.set()
-        return Event(uid, type, schema.schema_version, ts, dict(payload), None, None)
+
+    def forward(self, event: Event) -> None:
+        """Queue a playback row the media actor wrote, under its own id (ADR 0172).
+
+        Raises:
+            ValueError: the type is not a playback row, or the frame is too big.
+        """
+        if event.type not in PLAYBACK_EVENT_TYPES:
+            msg = f"{event.type!r} is not a row a voice terminal may send"
+            raise ValueError(msg)
+        text = json.dumps(
+            {
+                "type": "event",
+                "event_uid": event.event_uid,
+                "event_type": event.type,
+                "schema_version": event.schema_version,
+                "ts_epoch_ms": event.ts_epoch_ms,
+                "payload": dict(event.payload),
+                "source_event_id": event.source_event_id,
+                "correlation": None if event.correlation is None else dict(event.correlation),
+            },
+            ensure_ascii=False,
+        )
+        if len(text) > MAX_EVENT_CHARS:
+            msg = f"a {event.type} row of {len(text)} characters is over the {MAX_EVENT_CHARS} cap"
+            raise ValueError(msg)
+        self._queue(event.event_uid, text)
 
     def ready(self, frame: Mapping[str, Any]) -> None:
         """The brain's ``ready``: its baseline rows, taken once; later connects keep their own."""

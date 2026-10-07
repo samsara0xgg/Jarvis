@@ -9,6 +9,11 @@ It also runs the observers that only read this machine's files and apps (the rep
 ``observer.repos`` and TimeSink): the same observer code the daemon runs, with its events sent
 to the brain's log instead of a log here. The usage observer needs provider keys and the Claude
 sessions page is a live read, so those stay with the brain (ADR 0170).
+
+With ``--voice`` it also speaks (ADR 0172): the brain streams the answer's rows into a scratch
+journal here, the same media actor as on one machine plays them, its provider sessions run on
+the brain, and the playback rows it writes go back to the brain as events. Listening is not
+part of this yet.
 """
 
 from __future__ import annotations
@@ -44,8 +49,16 @@ from jarvis.runtime import (
     _screen_tools_config,
     _timesink_db_path,
     _timesink_poll_interval_s,
+    _wave1_feature_flags,
+    _wave4_response_flags,
 )
-from jarvis.runtime.inherent_loop import _repo_observer_task, _timesink_observer_task
+from jarvis.runtime.inherent_loop import (
+    _build_tts_pipeline,
+    _repo_observer_task,
+    _timesink_observer_task,
+    _tts_watcher,
+    _voice_knobs,
+)
 from jarvis.runtime.settings import apply_settings
 from jarvis.shared import ActionRequest
 from jarvis.state import device_reads, timesink
@@ -53,6 +66,7 @@ from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_report import git_show, local_commits
 from jarvis.state.daily_store import commit_exists
 from jarvis.state.event_log import EventLogError, emit_event, open_event_log
+from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.terminal_events import EventOutbox
 from jarvis.surface.terminal_link import (
@@ -61,10 +75,21 @@ from jarvis.surface.terminal_link import (
     TerminalRefusedError,
     run_terminal_client,
 )
+from jarvis.surface.terminal_speaker import (
+    Journal,
+    RemoteTTSProvider,
+    VoiceLink,
+    forward_playback,
+)
 from jarvis.surface.timesink_observer import TimesinkObserver, collect
+from jarvis.surface.voice_ducking import SystemAudioDucker
+from jarvis.surface.voice_media import StreamingTTSPipeline
 
 if TYPE_CHECKING:
+    import sqlite3
     from collections.abc import Mapping
+
+    from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
 
 LOGGER = logging.getLogger("jarvis.runtime.terminal")
 
@@ -279,36 +304,125 @@ async def _observe(outbox: EventOutbox, watched: _Watched) -> None:
         LOGGER.exception("terminal: the observers stopped")
 
 
-async def _run(
-    base_url: str, token: str, *, tools: frozenset[str], execute: Execute,
-    watched: _Watched | None,
+JOURNAL = Path("terminal") / "voice-journal.db"
+"""Where a voice terminal's scratch journal lives, under its runtime root."""
+_SPEECH_CLOSE_S = 5.0
+
+
+@dataclass(frozen=True)
+class _JournalPath:
+    event_log: Path
+
+
+@dataclass(frozen=True)
+class _Seat:
+    """What the speaking half of voice reads from its host; a terminal's is its journal."""
+
+    config: Mapping[str, Any]
+    wave1_features: Wave1FeatureFlags
+    response_flags: Wave4ResponseFlags
+    runtime_paths: _JournalPath
+    conn: sqlite3.Connection
+    memory: None = None
+    voice_settings: None = None
+
+
+@dataclass(frozen=True)
+class _Speaking:
+    """A terminal that was asked to speak: the config its media actor is built from."""
+
+    config: Mapping[str, Any]
+    runtime_root: Path
+
+
+def _start_speech(
+    speaking: _Speaking, outbox: EventOutbox,
+) -> tuple[VoiceLink | None, StreamingTTSPipeline | None, list[asyncio.Task[None]]]:
+    """Build the media actor over a fresh journal, and the tasks that feed and report it.
+
+    No link when the actor did not start: a mute terminal must not tell the brain it speaks.
+
+    Runs on the loop that carries the link: the journal belongs to that thread, and the
+    actor's own log connection is opened on its thread by the pipeline.
+    """
+    journal = Journal(speaking.runtime_root / JOURNAL)
+    link = VoiceLink(journal)
+    broadcaster = InherentBroadcaster()
+    broadcaster.attach_loop(asyncio.get_running_loop())
+    seat = _Seat(
+        speaking.config,
+        _wave1_feature_flags(speaking.config),
+        _wave4_response_flags(speaking.config),
+        _JournalPath(journal.path),
+        journal.conn,
+    )
+    pipeline = _build_tts_pipeline(
+        seat, broadcaster, ducker=SystemAudioDucker(), voice=_voice_knobs(speaking.config),
+        remote=RemoteTTSProvider(link),
+    )
+    if not isinstance(pipeline, StreamingTTSPipeline):
+        LOGGER.warning("voice is on but the media actor did not start; this terminal is mute")
+        return None, None, []
+    watcher = _tts_watcher(conn=journal.conn, pipeline=pipeline, broadcaster=broadcaster)
+    return link, pipeline, [
+        asyncio.create_task(watcher),
+        asyncio.create_task(forward_playback(journal.path, outbox)),
+    ]
+
+
+async def _stop_speech(
+    pipeline: StreamingTTSPipeline | None, tasks: list[asyncio.Task[None]],
 ) -> None:
-    """The link, and beside it the observers when there is anything to observe."""
-    outbox = None if watched is None else EventOutbox()
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.wait(tasks)
+    if pipeline is not None:
+        await asyncio.to_thread(pipeline.close, wait_timeout_s=_SPEECH_CLOSE_S)
+
+
+async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
+    base_url: str, token: str, *, tools: frozenset[str], execute: Execute,
+    watched: _Watched | None, speaking: _Speaking | None = None,
+) -> None:
+    """The link, and beside it the observers and the voice when there is anything to run."""
+    outbox = EventOutbox() if watched is not None or speaking is not None else None
     observing = None if outbox is None or watched is None else asyncio.create_task(
         _observe(outbox, watched),
     )
+    link = pipeline = None
+    speech_tasks: list[asyncio.Task[None]] = []
+    if speaking is not None and outbox is not None:
+        try:
+            link, pipeline, speech_tasks = _start_speech(speaking, outbox)
+        except Exception:
+            LOGGER.exception("voice could not start; this terminal runs without it")
     try:
-        await run_terminal_client(base_url, token, tools=tools, execute=execute, events=outbox)
+        await run_terminal_client(
+            base_url, token, tools=tools, execute=execute, events=outbox, voice=link,
+        )
     finally:
         if observing is not None:
             observing.cancel()
             await asyncio.wait({observing})
+        await _stop_speech(pipeline, speech_tasks)
 
 
-def run_terminal(
+def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     base_url: str,
     token: str,
     *,
     runtime_root: Path,
     config_path: Path | None = None,
     observers: bool = True,
+    voice: bool = False,
 ) -> int:
     """Hold this device's link to the brain until interrupted; the exit code of the command.
 
     Reads only this machine's own config (the shipped YAML and the runtime root's
     ``settings.yaml``); it opens no database, no env file and no key. With ``observers`` the
     repos and TimeSink that config turns on are observed here and reported to the brain.
+    With ``voice`` this terminal also plays the brain's spoken answers (ADR 0172).
     """
     if config_path is None:
         config_path = _locate_repo_root(Path(__file__).parent) / _DEFAULT_CONFIG_FILENAME
@@ -343,7 +457,10 @@ def run_terminal(
         execute = make_executor(
             registry, timesink_store=configured_store, repos=configured_repos,
         )
-        asyncio.run(_run(base_url, token, tools=tools, execute=execute, watched=watched))
+        asyncio.run(_run(
+            base_url, token, tools=tools, execute=execute, watched=watched,
+            speaking=_Speaking(config, runtime_root) if voice else None,
+        ))
     except TerminalRefusedError as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")
         return 1

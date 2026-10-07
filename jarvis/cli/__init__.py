@@ -983,6 +983,14 @@ def _main_terminal(argv: list[str]) -> int:
         action="store_true",
         help="Do not observe this machine's repos and TimeSink for the brain.",
     )
+    parser.add_argument(
+        "--voice",
+        action="store_true",
+        help=(
+            "Also speak the brain's answers on this machine's speaker (ADR 0172). Its own "
+            "daemon's speaker can stay on; only the microphone has one owner."
+        ),
+    )
     args = parser.parse_args(argv)
     root = _resolve_runtime_root(args.runtime_root)
     try:
@@ -994,7 +1002,7 @@ def _main_terminal(argv: list[str]) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     return run_terminal(
         base_url, token, runtime_root=root, config_path=args.config,
-        observers=not args.no_observers,
+        observers=not args.no_observers, voice=args.voice,
     )
 
 
