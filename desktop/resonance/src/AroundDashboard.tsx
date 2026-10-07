@@ -8,7 +8,7 @@ import { freshnessLine, nowLine, useWorkState, type Basis } from './WorkStateMod
 import { duration, useProjects } from './ProjectsModule';
 import { fmtReset } from './quota-time';
 import { TokenSection, useTokenUsage } from './TokenModule';
-import { plain, visible, type Row } from './model';
+import { plain, visible, type Present, type Row } from './model';
 import { Markdown } from './Markdown';
 import { AgentMark, type MarkLook, type MarkState } from './AgentMarks';
 import { cleanError, usePluginIcon, type Plugin, type PluginRequest, type usePlugins } from './PluginPanel';
@@ -18,8 +18,8 @@ import { ArrangeHome, BLOCK } from './ArrangeHome';
 import { BriefPage } from './BriefPage';
 import { SettingsPage, type Account, type AccountKeyDrafts, type Controls } from './SettingsPage';
 import { ActionCard, MailCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
-import { JobsPage, type JobGroup, type JobRule, type Skipped } from './JobsPage';
-import { MailLetter, MailList, type MailAct, type MailFilter } from './MailPage';
+import { JobsPage, jobKey, type JobGroup, type JobRule, type Skipped } from './JobsPage';
+import { MAIL_FILTERS, MailLetter, MailList, type MailAct, type MailFilter } from './MailPage';
 import { MEM_HOME, MemoryPage, type MemNav, type MemoryOverview } from './MemoryPage';
 import { MOTION } from './motion';
 import './dashboard-around.css';
@@ -149,10 +149,10 @@ const thoughtRows = (rows: Row[], thoughts: Think['thoughts']) => new Map(though
 }));
 const PULL = 240; // px of fresh upward scroll at the top that adds the day before
 
-export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, settingFocus = 0, jobsFocus = 0, onAnswer, unread, ctl, viewRef, onView }: {
+export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'spark', onAgents, agentsFocus = 0, settingFocus = 0, jobsFocus = 0, present = null, onAnswer, unread, ctl, viewRef, onView }: {
   open: boolean; port?: string | null; onClose: () => void; onMood: (expr: ExprId | null) => void; onHop: (height: number) => void;
   talk?: Talk; plugins?: PluginController; pluginFocus?: { plugin: string; key: string } | null;
-  marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void; agentsFocus?: number; settingFocus?: number; jobsFocus?: number; onAnswer?: (id: string) => void;
+  marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void; agentsFocus?: number; settingFocus?: number; jobsFocus?: number; present?: Present | null; onAnswer?: (id: string) => void;
   unread?: ReadonlySet<string>; ctl: Controls; viewRef?: Ref<DashboardViewHandle>; onView?: (value: DashboardView) => void;
 }) {
   const [settings, updateSettings] = useCompanionSettings(), lang = settings.lang;
@@ -704,6 +704,68 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     ({ name, ok: !x || x.status === 'ok', text: !x ? t(['Syncing…', '同步中…']) : x.status === 'ok' ? ok : x.error ?? t(['Not connected', '没连上']) });
   const signedIn = t(['Signed in', '已登录']), connected = t(['Connected', '已连接']);
   const accounts: Account[] = [svc('Claude', claude, signedIn), svc('Codex', codexUsage, signedIn), svc('OpenAI', openai, connected), svc('DeepSeek', deepseek, connected), svc('MiniMax', minimax, connected)];
+
+  // ADR 0174: what is on screen, told to the daemon: the page, its tab, the open item and the rows in screen order (ten at most, one line each).
+  // Only titles go; a letter's body or a note's detail is read through the tool that owns it. Every change, and every 20 s while the panel is open.
+  const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim().slice(0, 80);
+  const mailTitle = (m: Mail) => oneLine(`${m.from} — ${m.subject}`);
+  const viewReport = () => {
+    const memTop = memory.stack.at(-1), notes = (memoryNow?.sections ?? []).flatMap(x => x.items);
+    let item: { kind: string; id: string; title: string } | null = null, rows: { id: string; title: string }[] = [];
+    if (page === 'mail') {
+      if (letter) item = { kind: 'mail', id: letter.id, title: mailTitle(letter) };
+      else rows = mailRanked.filter(MAIL_FILTERS.find(f => f[0] === mailFilter)![2]).map(m => ({ id: m.id, title: mailTitle(m) }));
+    } else if (page === 'agents') {
+      rows = [...waiting, ...stopped, ...working, ...earlier].map(s => ({ id: s.id, title: s.title }));
+      const unfoldedAgent = agents.find(s => s.id === unfolded);
+      if (unfoldedAgent) item = { kind: 'agent', id: unfoldedAgent.id, title: unfoldedAgent.title };
+    } else if (page === 'memory') {
+      if (memTop?.k === 'item' || memTop?.k === 'edit') item = { kind: 'memory', id: memTop.id, title: notes.find(n => n.id === memTop.id)?.text ?? '' };
+      else if (!memTop && memory.tab === 'items' && !memory.query) rows = notes.map(n => ({ id: n.id, title: n.text }));
+    } else if (page === 'jobs') rows = (ledger ?? []).filter(g => g.mails.length).map(g => ({ id: jobKey(g), title: g.role ? `${g.company} — ${g.role}` : g.company }));
+    const tab = page === 'mail' ? mailFilter : page === 'memory' ? memory.tab : page === 'settings' ? settingsCat ?? '' : '';
+    return { page: page ?? 'home', tab, item: item && { ...item, title: oneLine(item.title) }, rows: rows.slice(0, 10).map(r => ({ id: r.id, title: oneLine(r.title) })) };
+  };
+  const report = open && port ? JSON.stringify(viewReport()) : null, latestReport = useRef(report);
+  latestReport.current = report;
+  useEffect(() => {
+    if (!port || report === null) return;
+    const tell = () => { if (latestReport.current) void postRoute(port, '/inherent/view', JSON.parse(latestReport.current)).catch(() => {}); };
+    tell();
+    const every = setInterval(tell, 20_000);
+    return () => clearInterval(every);
+  }, [port, report]);
+  // Closing the panel (or this window) tells the daemon nothing is on screen. A failure changes nothing: the daemon forgets after 60 s.
+  useEffect(() => { if (port && open) return () => { void postRoute(port, '/inherent/view', { page: null }).catch(() => {}); }; }, [port, open]);
+
+  // ADR 0174: she turned the Dashboard (the companion opened the panel if it was shut). A letter or a note opens; any other row lights for a moment.
+  const [lit, setLit] = useState<{ id: string; key: number } | null>(null);
+  useEffect(() => {
+    if (!present || !open || !(present.page in TITLES) || present.page === 'arrange') return;
+    const name = present.page as Page, id = present.itemId;
+    if (!page) openPage(name);
+    else if (page !== name) {
+      origin.current = null; setPage(name); setPlugin(null); setLetter(null); setMemory(MEM_HOME); setSettingsCat(null);
+      if (name === 'jobs') jobsRoute.reload(); else if (name === 'projects') void projects.refresh();
+    }
+    if (!id) return;
+    if (name === 'mail') { const m = mail.find(x => x.id === id); if (m) setLetter(m); }
+    else if (name === 'memory') setMemory({ ...MEM_HOME, stack: [{ k: 'item', id }] });
+    else { if (name === 'agents') setUnfolded(id); setLit({ id, key: present.key }); }
+  }, [present?.key]);
+  useEffect(() => {
+    if (!lit) return;
+    let tries = 0, timer: ReturnType<typeof setTimeout> | undefined;
+    const find = () => {
+      const q = CSS.escape(lit.id), el = pageEl.current?.querySelector<HTMLElement>(`[data-id="${q}"], [data-vid="${q}"]`);
+      if (!el) { if (tries++ < 8) timer = setTimeout(find, 150); return; }
+      el.scrollIntoView({ block: 'nearest', behavior: reduced.matches ? 'auto' : 'smooth' });
+      el.classList.remove('is-lit'); void el.offsetWidth; el.classList.add('is-lit');
+      timer = setTimeout(() => el.classList.remove('is-lit'), 1500);
+    };
+    find();
+    return () => clearTimeout(timer);
+  }, [lit?.key]);
 
   const back = (title: string, meta?: ReactNode) => <header className="pg-head">
     <button className="pg-back" aria-label={t(['Back', '返回'])} onClick={goUp}><CaretLeft size={14} weight="bold"/></button>

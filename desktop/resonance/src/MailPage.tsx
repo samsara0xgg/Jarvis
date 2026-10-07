@@ -1,13 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Archive, ArrowSquareOut, ArrowUpRight, EnvelopeOpen, Trash } from '@phosphor-icons/react';
 import { useT, type L } from './companionSettings';
-import { demoMailText, postRoute, type Mail } from './homeData';
+import { demoMailText, type Mail } from './homeData';
 import { Lk, short } from './Markdown';
 import { MorphText } from './MorphText';
 import { useMailDraft } from './useMailDraft';
 
 // The Dashboard's Mail page: every unread letter, and one letter opened in place with its body, its three actions and Jarvis's reply draft.
-// The list arrives ranked (the home's order); the page only filters it. A letter that opens tells the daemon, so "reply to this" means this one.
+// The list arrives ranked (the home's order); the page only filters it. The Dashboard's view report names the open letter, so "reply to this" means this one.
 export type MailFilter = 'all' | 'yes' | 'job';
 export const MAIL_FILTERS: [MailFilter, L, (m: Mail) => boolean][] = [
   ['all', ['All', '全部'], () => true], ['yes', ['Reply', '要回'], m => m.reply === 'yes'], ['job', ['Job search', '找工作'], m => m.category === 'job_search'],
@@ -102,18 +102,6 @@ export function MailLetter({ port, letter, onAct }: { port: string | null; lette
     return () => { stop = true; };
   }, [port, letter.id]);
   const body = detail && detail !== 'failed' ? detail : null, thread = body?.thread_id ?? letter.thread_id, address = body?.address ?? letter.address;
-
-  // The daemon learns which letter is open (it forgets after 60 s, so it is said again every 20 s) and when none is. Failures change nothing here.
-  const said = useRef({ id: letter.id, thread, sender: letter.from, subject: letter.subject });
-  said.current = { id: letter.id, thread, sender: letter.from, subject: letter.subject };
-  useEffect(() => {
-    if (!port) return;
-    const tell = () => { const s = said.current; void postRoute(port, '/inherent/focus', { kind: 'mail', id: s.id, thread_id: s.thread, sender: s.sender, subject: s.subject }).catch(() => {}); };
-    tell();
-    const every = setInterval(tell, 20_000);
-    return () => clearInterval(every);
-  }, [port, letter.id, thread]);
-  useEffect(() => () => { if (port) void postRoute(port, '/inherent/focus', { kind: null }).catch(() => {}); }, [port, letter.id]);
 
   const d = useMailDraft(port, letter, thread);
   return <div className="mp-det">

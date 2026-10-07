@@ -482,3 +482,8 @@
 .ad .tku-det em { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; font-style:normal; }
 .ad .tku-more { align-self:flex-start; padding:0; font-size:var(--text-detail); color:var(--p-faint); }
 .ad .tku-more:hover { color:var(--p-ink); }
+
+/* ADR 0174: the row she turned the page to glows for a moment (the class is put on and taken off in AroundDashboard.tsx). */
+@keyframes row-lit { from { box-shadow:0 0 0 2px rgb(var(--glow) / .8),0 0 18px rgb(var(--glow) / .5); } to { box-shadow:0 0 0 2px rgb(var(--glow) / 0),0 0 18px rgb(var(--glow) / 0); } }
+.pg-body .is-lit { animation:row-lit 1.5s ease-out; }
+@media (prefers-reduced-motion:reduce) { .pg-body .is-lit { animation:none; outline:2px solid rgb(var(--glow) / .6); } }

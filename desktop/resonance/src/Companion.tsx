@@ -528,6 +528,8 @@ export function Companion() {
   };
   // The job summary's button: the Dashboard opens on the job ledger and the summary goes without a "dismissed".
   const openJobs = () => { openDashboard(false); pinned.current = true; if (detachedMode.current) window.jarvis?.dashboardMessage?.('dashboard', { type: 'jobs' }); else setJobsFocus(n => n + 1); notices.next(); };
+  // ADR 0174: she turned the Dashboard to a page. A shut one opens (she moves it only when Allen asked to see something), and the page follows.
+  useEffect(() => { if (s.present) { openDashboard(false); pinned.current = true; } }, [s.present?.key]);
   const closeDashboard = () => { if (detached) void window.jarvis?.dashboard?.('close'); else setDashboard(false); };
   // Clicking the island opens the Dashboard; a click on one it is already showing closes it, unless a rest opened it a moment
   // before (that click is the same reach for it). However it opened, it folds by itself once the pointer leaves (below).
@@ -798,7 +800,7 @@ export function Companion() {
         void notices.resolve(notice, text, body).then(ok => { if (ok && body.decision !== 'deny') ball.current?.hop(.14); });
       }}/> };
   const dashboardContent = <AroundDashboard open={dashboard} port={port} onClose={closeDashboard} viewRef={dashboardView} onView={value => { if (detached && detachedMode.current) window.jarvis?.dashboardMessage?.('parent', { type: 'view', value }); }}
-          onMood={dashboardMood} settingFocus={settingsFocus} jobsFocus={jobsFocus} onHop={height => ball.current?.hop(height)}
+          onMood={dashboardMood} settingFocus={settingsFocus} jobsFocus={jobsFocus} present={s.present} onHop={height => ball.current?.hop(height)}
           talk={port ? { rows: s.rows, tail, busy: voice === 'thinking', offline: s.phase === 'error', floor, submit: ask, older, card, decide: decideCard, question, answer: answerQuestion,
             think: { on: deep, secs: deepSecs, words, thoughts } } : undefined}
           plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}

@@ -35,6 +35,9 @@ export const spentText = (seconds: number): L => {
 };
 const dayLabel = (day: string) => { const [, m, d] = day.split('-'); return `${Number(m)}/${Number(d)}`; };
 
+// A company's row has no id of its own; the view report and her page-turning name it by company and role.
+export const jobKey = (g: { company: string; role?: string }) => `${g.company}|${g.role ?? ''}`;
+
 export function JobsPage({ port, ledger, skipped, rules = [], otherS = 0, onChanged }: { port: string; ledger: JobGroup[]; skipped: Skipped[]; rules?: JobRule[]; otherS?: number; onChanged: () => void }) {
   const t = useT(), [open, setOpen] = useState(''), [confirm, setConfirm] = useState(''), [gone, setGone] = useState<string[]>([]), [failed, setFailed] = useState(false);
   // POST /inherent/jobs/{id}/flag { reaction: 'should_alert' } says a held-back mail was job mail after all; a 404 means the daemon has no such route, and the buttons go.
@@ -59,7 +62,7 @@ export function JobsPage({ port, ledger, skipped, rules = [], otherS = 0, onChan
     {failed && <p className="pg-sec muted is-warm" role="alert">{t(['That didn’t go through. Try again.', '没成功，请再试一次。'])}</p>}
     {!groups.length && <p className="pg-sec muted">{t(['No job mail yet. Jarvis adds it here as it comes in.', '还没有求职邮件，收到了会记在这里。'])}</p>}
     {groups.map((g, i) => { const key = `${g.company}|${g.role ?? ''}|${i}`, [cls, name] = jobKind(g.kind), on = open === key;
-      return <section className="pg-sec jp-g" key={key} data-company={g.company}>
+      return <section className="pg-sec jp-g" key={key} data-company={g.company} data-vid={jobKey(g)}>
         <button className="jp-top" aria-expanded={on} onClick={() => setOpen(on ? '' : key)}>
           <CaretRight size={10} weight="bold" className="jp-caret"/>
           <span className="jp-name"><b>{g.company}</b>{g.role && <small>{g.role}</small>}</span>

@@ -107,7 +107,7 @@ try {
   const until = (fn, arg, timeout = 6000) => page.waitForFunction(fn, arg, { timeout }).then(() => true, () => false);
   const count = sel => page.locator(sel).count();
   const texts = sel => page.locator(sel).allTextContents();
-  const lastFocus = () => sent('/inherent/focus').at(-1)?.body;
+  const lastView = () => sent('/inherent/view').at(-1)?.body;
   const goBack = async () => { await page.locator('.pg-back').click(); await page.waitForTimeout(450); };
   await page.goto(`http://127.0.0.1:${port}/__mail`);
   await page.locator('.ad [data-block="mail"] .ml').first().waitFor();
@@ -155,7 +155,7 @@ try {
   check('a URL in the body is a link that opens through the shell, without its trailing period', await count('.mp-text a.lk') === 1
     && (await page.locator('.mp-text a.lk').click(), await page.evaluate(() => window.__opened.join())) === 'https://courses.example/csc370/a3');
   check('opening a letter does not mark it read', sent('/inherent/mail/read').length === 0);
-  check('opening it tells the daemon which letter is open', JSON.stringify(sent('/inherent/focus')[0]?.body) === JSON.stringify({ kind: 'mail', id: 'm1', thread_id: 't1', sender: 'Prof. Lee', subject: 'Office hours moved' }));
+  check('opening it tells the daemon which letter is open', JSON.stringify(sent('/inherent/view').find(v => v.body.item)?.body.item) === JSON.stringify({ kind: 'mail', id: 'm1', title: 'Prof. Lee — Office hours moved' }));
   check('no drafts on the daemon (404): no draft area', await count('.mp-draft') === 0);
   await page.locator('[data-act="draft"]').click(); await page.waitForTimeout(1500);
   check('让 Jarvis 起草回复 posts the typed turn, and with no draft route the area stays away', sent('/inherent/submit').at(-1)?.body.text === '给这封邮件起草一封回复' && await count('.mp-draft') === 0);
@@ -200,14 +200,14 @@ try {
   check('确认发送 posts accept with { subject, body } edits', accept?.confirmation_id === 'c2' && accept.decision === 'accept' && accept.edits.subject === 'Re: Office hours moved' && accept.edits.body === 'Final words.');
   check('after accept the draft is gone and 已发送 shows', await count('.mp-draft') === 0 && await page.locator('.mp-sent').textContent() === 'Sent.');
   await goBack();
-  check('Back from the letter tells the daemon nothing is open', lastFocus()?.kind === null && await count('.mp-list') === 1);
+  check('Back from the letter tells the daemon nothing is open, and the list as rows', lastView()?.page === 'mail' && lastView().item === null && lastView().rows.length > 0 && await count('.mp-list') === 1);
 
   // Cancel and discard on another letter; the draft there is Jarvis's from before the letter was opened.
   daemon.drafts.m2 = { revision: 1, to: 'mom@home.example', subject: 'Re: Still on for tonight?', body: 'Yes, see you at seven.', by: 'jarvis' };
   await page.locator('.mp-row[data-id="m2"]').click(); await page.waitForTimeout(800);
   await page.locator('.mp-draft').waitFor({ timeout: 4000 });
   check('a draft already on the daemon shows when its letter opens, and it is that letter’s', await page.locator('.mp-subj').inputValue() === 'Re: Still on for tonight?' && await body() === 'Yes, see you at seven.');
-  check('the focus carries the second letter', lastFocus()?.id === 'm2' && lastFocus().thread_id === 't2');
+  check('the view carries the second letter', lastView()?.item?.id === 'm2');
   check('HTML mail reads clean: invisible padding gone, lone picture links counted not shown, `words (url)` is the words and a small arrow link',
     await page.locator('.mp-text').first().textContent() === 'Dinner tonight?\n\nExplore now\n\nMom' && await count('.mp-text a.lk .mp-go') === 1
     && (await page.locator('.mp-pics').textContent()).startsWith('2 pictures'));
