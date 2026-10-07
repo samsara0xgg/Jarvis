@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, type Ref, type WheelEvent } from 'react';
 import { ArrowSquareOut, ArrowUp, ArrowsClockwise, Briefcase, CaretDown, CaretLeft, CaretRight, CaretUp, ChatCircle, Check, Cloud, CloudFog, CloudLightning, CloudRain, CloudSnow, EnvelopeSimple, GearSix, GitBranch, MagnifyingGlass, ShieldCheck, SpeakerHigh, SpeakerSlash, Sun, X } from '@phosphor-icons/react';
-import { TAKES, pick, type ExprId } from './starCore';
+import { TURN_FACE, type ExprId } from './starCore';
 import { balanceTotal, useUsage, type UsageWindow } from './QuotaModule';
 import { useCodexSessions } from './CodexModule';
 import { AGENT_NAME, DEMO_AGENTS, fromClaude, fromCodex, useClaudeSessions, type Agent, type AgentState, type ShownAgent } from './agents';
@@ -272,7 +272,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     if (page || closing.current) return;
     origin.current = el ?? home.current?.querySelector<HTMLElement>(`[data-row="${name}"]`) ?? null;
     setPage(name); setPlugin(null); setLetter(null); setMemory(MEM_HOME); setSettingsCat(null);
-    if (name === 'conversation') { setDays(1); react(pick(TAKES.reply), 2600); }
+    if (name === 'conversation') { setDays(1); react(TURN_FACE.reply, 2600); }
     else if (name === 'now') react('37', 2400);
     else if (name === 'projects') { react('40', 1500); void projects.refresh(); }
     else if (name === 'settings') react('30', 1400);
@@ -332,7 +332,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const ask = (text: string) => {
     if (talk) { talk.submit(text); return; }
     setTurns(value => [...value, { you: text, at: 'now' }]); setDemoTalkAt(Date.now());
-    const reply = pick(TAKES.reply);
+    const reply = TURN_FACE.reply;
     setSaid({ text: 'Thinking…', caption: 'Thinking', busy: true }); react('30', 1300, reply);
     later(1300, () => {
       setSaid({ text: ANSWER, caption: 'Jarvis · just now', busy: false }); react(reply, 2400);

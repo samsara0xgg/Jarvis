@@ -160,9 +160,8 @@ export const EXPRESSIONS: Record<ExprId, Expr> = {
 };
 // The twelve work states first, then five feelings: what Settings plays with "Play all".
 export const PREVIEW: ExprId[] = ['30', '31', '31b', '31c', '31d', '32', '33', '34', '35', '35b', '36', '37', '38', '39', '39b', '39c', '40', '41', '10', '14', '13', '00', '21'];
-// The takes she picks from at random each time.
-export const TAKES = { listen: ['35', '35b'], receive: ['31', '31b', '31c', '31d'], reply: ['39', '39b', '39c'] } satisfies Record<string, ExprId[]>;
-export const pick = (ids: ExprId[]) => ids[Math.floor(Math.random() * ids.length)];
+// One face for each moment of a turn, the same every time, so she reads as one character; the other takes stay in Preview.
+export const TURN_FACE = { listen: '35', receive: '31', reply: '39' } as const satisfies Record<string, ExprId>;
 const FACES = new Set<ExprId>(['home', 'rest', 'doze', 'glance', 'peek']);
 // Motion v2. Faces she falls asleep into, and how far apart two faces are (1 = too far to morph, hide it behind a blink).
 const SLEEPY = new Set<ExprId>(['home', 'doze', '00']);

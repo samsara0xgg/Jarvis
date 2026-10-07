@@ -3,7 +3,7 @@
 // finds her in three hops, a flight that speeds up to light speed, a flash, and she is there. Then she moves into
 // the notch and walks you through setup; what you pick is saved through the daemon, and 进入 hands over to the
 // companion. The UI cues are the 星核 kit (fifths) in the bright drop, all through the entrance's master.
-import { Core, spring, step, TAKES, pick, type ExprId } from '../starCore';
+import { Core, TURN_FACE, spring, step, type ExprId } from '../starCore';
 import { NOTE, play, scoreOf, SCALE, type Cue, type Note } from '../soundKit';
 import { UI_PAL, bellSoft, tick as strike } from './voices';
 import notionLogo from './logos/notion.png';
@@ -811,10 +811,10 @@ function letterStep() {
 function layoutIntro() { const [, cy] = center(); intro.style.top = `${cy + R0() + 46}px`; }
 
 // ---------- setup pages ----------
-let stepN = 0, line = '', lineAt = 0, lineTake: ExprId = '39', shown = -1;
+let stepN = 0, line = '', lineAt = 0, shown = -1;
 const CPS = () => S.lang === 'zh' ? 34 : 22;
 const speaking = () => phase === 'setup' && vt - lineAt < line.length * CPS();
-function setLine(text: string) { line = text; lineAt = vt; shown = -1; lineTake = pick(TAKES.reply); }
+function setLine(text: string) { line = text; lineAt = vt; shown = -1; }
 function drawLine() {
   const say = pin.querySelector<HTMLElement>('.say');
   if (!say) return;
@@ -1035,7 +1035,7 @@ async function ask(k: Perm) {
   cue('open', .7); lookForce = [0, .95];
   const s = await bridge.permission(k, true, [S.asst, tx().ping]).catch(() => 'later' as PermState);
   lookForce = null; S.perms[k] = s || 'later'; refresh();
-  if (S.perms[k] === 'later') cue('off', .7); else { moment(pick(TAKES.receive), 900); cue('on', .9); }
+  if (S.perms[k] === 'later') cue('off', .7); else { moment(TURN_FACE.receive, 900); cue('on', .9); }
 }
 
 // ---------- connections: Notion signs in through the browser like the plugin panel; web search takes a Tavily key ----------
@@ -1205,7 +1205,7 @@ let glowNow = '';
 function faceNow(): ExprId {
   if (over && vt < over.until) return over.f;
   if (phase === 'setup') {
-    if (speaking() || (stepN === 5 && clip && !clip.paused)) return lineTake;
+    if (speaking() || (stepN === 5 && clip && !clip.paused)) return TURN_FACE.reply;
     if (stepN === 4 && S.keyState === 'testing') return '36';
     if (stepN === 5 && S.mmState === 'testing') return '36';
     if (stepN === 7 && Object.values(S.conns).includes('busy')) return '40';

@@ -216,16 +216,16 @@ try {
   check(`refinement click starts listening within 100 ms of release (${clickLatency.toFixed(1)} ms)`, clickLatency < 100);
   // Her face follows on the next animation frame.
   const face = (...ids) => page.waitForFunction(v => v.includes(document.querySelector('.companion-canvas')?.dataset.face), ids, { timeout: 1500 }).then(() => ids[0], () => null);
-  check('04 poke starts listening with the talk area under her and one of her two listening faces', await face('35', '35b') === '35');
+  check('04 poke starts listening with the talk area under her and her listening face', await face('35') === '35');
   // (the earlier typed turn is still in the conversation: reopened within ten minutes, the area continues it)
   await page.waitForFunction(() => [...document.querySelectorAll('.talk .tk-u')].at(-1)?.textContent === '把今天的任务整理一下', null, { timeout: 5000 });
   await page.waitForTimeout(250);
-  check('04 once the caption ends she takes the task in, one of four takes', await face('31', '31b', '31c', '31d') === '31');
+  check('04 once the caption ends she takes the task in with her receiving face', await face('31') === '31');
   check('04 then she thinks before answering', await face('30') === '30');
   await shot('04-thinking');
   await page.waitForFunction(() => [...document.querySelectorAll('.talk .tk-h')].at(-1)?.textContent.includes('好，我来整理。'), null, { timeout: 5000 });
   await page.waitForTimeout(500);
-  check('05 she answers in the area beneath her, with her replying face', await page.locator('.talk[data-state=speaking]').count() === 1 && await face('39', '39b', '39c') === '39');
+  check('05 she answers in the area beneath her, with her replying face', await page.locator('.talk[data-state=speaking]').count() === 1 && await face('39') === '39');
   await shot('05-speaking');
   await hit.click({ force: true });
   await page.waitForTimeout(600);

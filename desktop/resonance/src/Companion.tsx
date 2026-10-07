@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { BellSlash, IconContext, Keyboard, Moon, SpeakerSlash } from '@phosphor-icons/react';
 import { CompanionBall, R, type BallHandle, type Lobe, type Place, type Point } from './CompanionBall';
-import { PREVIEW, SKIN_KEYS, TAKES, isSkin, pick, type ExprId, type Skin } from './starCore';
+import { PREVIEW, SKIN_KEYS, TURN_FACE, isSkin, type ExprId, type Skin } from './starCore';
 import { AroundDashboard, type DashboardView, type DashboardViewHandle, type Think } from './AroundDashboard';
 import { DuskDashboard, DockingDrop } from './DuskDashboard';
 import { playFeedback, stopFeedback, warmFeedback, type FeedbackCue } from './feedback';
@@ -348,11 +348,6 @@ export function Companion() {
   // A notice hangs from the notch and she watches it from home.
   const place: Place = moving || dashboard ? 'home' : carded || nightShown ? 'home' : notice ? notices.peek ? 'peek' : 'home' : busy || zone === 'ball' || outing || menu ? 'out' : zone === 'lobe' || notices.peek ? 'peek' : 'home';
   // A finished text reply stays up briefly: that is her "done" face.
-  const listenFace = useRef<ExprId>('35'), receiveFace = useRef<ExprId>('31'), replyFace = useRef<ExprId>('39');
-  // Live turns pick her takes as they begin; the scripted demo picks its own in listen() and say().
-  const lastVoice = useRef(voice);
-  if (port && voice !== lastVoice.current) { if (voice === 'listening') listenFace.current = pick(TAKES.listen); else if (voice === 'speaking') replyFace.current = pick(TAKES.reply); }
-  lastVoice.current = voice;
   // A notice sets her face: waiting on you, pleased it is done, a jolt on an error; after you answer, a moment of
   // pleasure or refusal.
   const moment = performance.now();
@@ -361,7 +356,7 @@ export function Companion() {
     : notice.kind === 'digest' || notice.kind === 'jobs' ? 'fin' : notice.kind === 'mail' ? notices.card?.ok ? '02' : 'fin' : notice.kind === 'pop' ? stopped ? moment - notices.openedAt < 1700 ? '34' : '02' : 'fin' : notices.card?.ok ? '02' : 'ask';
   useEffect(() => { if (!stopped) return; const t = setTimeout(notices.bump, 1750); return () => clearTimeout(t); }, [notice?.key]);
   // A deep turn keeps her deep face while it is thought about and while its answer is said (ADR 0108).
-  const expr: ExprId = preview ?? noticeFace ?? (receiving ? receiveFace.current : inFlight ? listenFace.current : deepLook ? 'deep' : voice === 'listening' ? listenFace.current : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? replyFace.current : (dashboard || remoteOpen) && dashMood ? dashMood : reply.text ? port && s.failed ? '38' : '33' : '02');
+  const expr: ExprId = preview ?? noticeFace ?? (receiving ? TURN_FACE.receive : inFlight ? TURN_FACE.listen : deepLook ? 'deep' : voice === 'listening' ? TURN_FACE.listen : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? TURN_FACE.reply : (dashboard || remoteOpen) && dashMood ? dashMood : reply.text ? port && s.failed ? '38' : '33' : '02');
   // With voice on and no buttons in the talk area, the chip is how you type to her.
   const chip = place === 'out' && zone === 'ball' && !composer && (!busy || !companion.talkButtons && voice !== 'off');
   // During a notice she looks down at it from the island.
@@ -387,17 +382,14 @@ export function Companion() {
   // The demo's answer lands whole, like the daemon's; the area lights it as she says it, and she is done after about as long as that takes.
   const demoTurn = useRef(0), demoAt = useRef(0);
   const say = (text: string, done: () => void) => {
-    replyFace.current = pick(TAKES.reply);
     const turn = `demo-${++demoTurn.current}`, spokenWords = split(text).spoken;
     setReply({ text: plain(text) }); setTalking(true);
     dispatch({ type: 'her', turn, text, at: Date.now() });
     after((pace(spokenWords).at(-1) ?? 0) * 1000 + 450, () => { dispatch({ type: 'said', turn, at: Date.now() }); setTalking(false); done(); });
   };
   // She takes the task in for a moment before she thinks or answers.
-  const receive = () => { receiveFace.current = pick(TAKES.receive); setReceiving(true); after(700, () => setReceiving(false)); };
+  const receive = () => { setReceiving(true); after(700, () => setReceiving(false)); };
   const listen = (scripted: boolean) => {
-    // Each turn she picks one of her takes for listening, receiving and replying.
-    listenFace.current = pick(TAKES.listen);
     stopScript(); setReceiving(false); setVoice('listening'); setHearing(false); setPartial(''); setReply({ text: '' }); setTalking(false); dispatch({ type: 'cut', at: Date.now() });
     if (!scripted) return;
     const turn = DEMO[demoAt.current++ % DEMO.length], end = 650 + turn.heard.length * 60;

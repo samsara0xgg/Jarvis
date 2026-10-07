@@ -11,7 +11,7 @@ import { attachAll, chipsHTML, dropped, fileTag, modesHTML, mountInput, slashHTM
 import { asksYou, waitOf } from './queue';
 import { mountSee } from './see';
 import { palette, play, scoreOf } from '../soundKit';
-import { Core, TAKES, pick, type ExprId } from '../starCore';
+import { Core, TURN_FACE, type ExprId } from '../starCore';
 import { mountExposure } from './exposure';
 import { mountStopped } from './exposure/waiting';
 import { mountMessages } from './messages';
@@ -913,7 +913,7 @@ async function send() {
     app.sending = false;
     if (!r) { draw('comp'); return; }
     unattach(app.files); app.files = []; clearTa();
-    cue('send'); herSay(pick(TAKES.receive), 1300, String(r.id)); core.hop(performance.now(), .12);
+    cue('send'); herSay(TURN_FACE.receive, 1300, String(r.id)); core.hop(performance.now(), .12);
     store.set('agents.project', app.newProject);
     app.items.set(String(r.id), app.items.get(String(r.id)) ?? []);
     open(String(r.id));
@@ -929,7 +929,7 @@ async function send() {
   const files = app.files; unattach(files); app.files = []; app.menu = ''; app.picks = []; clearTa();
   if (features.some(f => f.send?.(s, text, files))) return;
   cue('send', s.st === 'work' ? .55 : .8);
-  if (s.st !== 'work') herSay(pick(TAKES.receive), 1100);
+  if (s.st !== 'work') herSay(TURN_FACE.receive, 1100);
   if (await tryCall(`/sessions/${s.id}/send`, { text, files })) attention.sent();
 }
 const clearTa = () => { ta.value = ''; ta.style.height = ''; draw('comp'); };
