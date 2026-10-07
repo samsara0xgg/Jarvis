@@ -168,7 +168,7 @@ from jarvis.runtime.dashboard import (
     ViewState,
 )
 from jarvis.runtime.decision_state import DecisionStateCache
-from jarvis.runtime.home import Home, mail_body, mail_summarizer
+from jarvis.runtime.home import Home, mail_body, mail_summarizer, weather_lookup
 from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
 from jarvis.runtime.moment import Moment, MomentSettings
@@ -2633,6 +2633,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         work_state_refresh=_work_state_tool_refresh(work_state, daily_report),
         night=night,
         voice_settings=voice_settings,
+        weather_lookup=weather_lookup(_home_weather(full_config)),
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,

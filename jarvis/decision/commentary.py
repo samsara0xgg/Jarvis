@@ -83,6 +83,7 @@ _QUIET_TOOLS: Final = (
     "start_night_run",
     "end_night_run",
     "set_voice",
+    "weather",
     "create_memo",
     "set_reminder",
     "list_reminders",

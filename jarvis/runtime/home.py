@@ -14,7 +14,7 @@ import logging
 import re
 import urllib.request
 from contextlib import closing
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from email.utils import parseaddr, parsedate_to_datetime
 from typing import TYPE_CHECKING, Any, Final
 
@@ -43,6 +43,7 @@ LOGGER = logging.getLogger(__name__)
 _OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
 _WEATHER_TIMEOUT_S = 4.0
 _FORECAST_STEP_H = 3
+_REPORT_HOURS = 12
 # WMO weather codes, as Open-Meteo documents them, folded into the home's six icons.
 _WMO = (
     ((0, 1), "sun"),
@@ -51,6 +52,16 @@ _WMO = (
     ((71, 72, 73, 74, 75, 76, 77, 85, 86), "snow"),
     ((95, 96, 97, 98, 99), "storm"),
 )
+_WMO_WORDS = {
+    0: "clear", 1: "mainly clear", 2: "partly cloudy", 3: "overcast", 45: "fog", 48: "freezing fog",
+    51: "light drizzle", 53: "drizzle", 55: "heavy drizzle", 56: "freezing drizzle",
+    57: "heavy freezing drizzle", 61: "light rain", 63: "rain", 65: "heavy rain",
+    66: "freezing rain", 67: "heavy freezing rain", 71: "light snow", 73: "snow",
+    75: "heavy snow", 77: "snow grains", 80: "light showers", 81: "showers", 82: "heavy showers",
+    85: "light snow showers", 86: "heavy snow showers", 95: "thunderstorm",
+    96: "thunderstorm with hail", 99: "thunderstorm with heavy hail",
+}
+"""WMO weather codes as Open-Meteo documents them, in the words the model says aloud."""
 _ID_SEP = "|"
 """A to-do's id is ``<list id>|<task id>``; Graph ids are base64 and never hold a bar."""
 MAIL_SERVER = "gmail"
@@ -134,21 +145,39 @@ def mail_summarizer(
     return summarize
 
 
+def _words(code: int) -> str:
+    return _WMO_WORDS.get(code, "unknown")
+
+
 def _kind(code: int) -> str:
     return next((kind for codes, kind in _WMO if code in codes), "rain")
 
 
-def weather(latitude: float, longitude: float) -> dict[str, Any]:
-    """Now, today's high and a 3-hourly forecast from the current hour; raises when unreachable."""
+def _forecast(latitude: float, longitude: float) -> dict[str, Any]:
+    """Open-Meteo's two-day forecast for the place, in its local time; raises when unreachable."""
     query = (
         f"latitude={latitude}&longitude={longitude}&timezone=auto&timeformat=unixtime"
         "&forecast_days=2&current=temperature_2m,weather_code"
-        "&hourly=temperature_2m,weather_code&daily=temperature_2m_max"
+        "&hourly=temperature_2m,weather_code,precipitation_probability"
+        "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code"
     )
     with urllib.request.urlopen(f"{_OPEN_METEO}?{query}", timeout=_WEATHER_TIMEOUT_S) as reply:  # noqa: S310 — a fixed https URL.
-        body = json.load(reply)
+        body: dict[str, Any] = json.load(reply)
+    return body
+
+
+def _first_hour(body: Mapping[str, Any]) -> int:
+    """Index of the hourly row the current reading falls in."""
+    return next(
+        i for i, at in enumerate(body["hourly"]["time"]) if at + 3600 > body["current"]["time"]
+    )
+
+
+def weather(latitude: float, longitude: float) -> dict[str, Any]:
+    """Now, today's high and a 3-hourly forecast from the current hour; raises when unreachable."""
+    body = _forecast(latitude, longitude)
     current, hourly = body["current"], body["hourly"]
-    first = next(i for i, at in enumerate(hourly["time"]) if at + 3600 > current["time"])
+    first = _first_hour(body)
     hours = [
         {
             "at": datetime.fromtimestamp(hourly["time"][i], UTC).isoformat(),
@@ -162,6 +191,50 @@ def weather(latitude: float, longitude: float) -> dict[str, Any]:
         "high_c": body["daily"]["temperature_2m_max"][0],
         "hours": hours,
     }
+
+
+def weather_report(latitude: float, longitude: float, place: str) -> dict[str, Any]:
+    """What the model's ``weather`` tool answers with (ADR 0188): plain words, local times."""
+    body = _forecast(latitude, longitude)
+    current, hourly, daily = body["current"], body["hourly"], body["daily"]
+    zone = timezone(timedelta(seconds=body["utc_offset_seconds"]))
+    first = _first_hour(body)
+    return {
+        "place": place,
+        "now": {"temp_c": current["temperature_2m"], "condition": _words(current["weather_code"])},
+        **{
+            name: {
+                "date": datetime.fromtimestamp(daily["time"][day], zone).date().isoformat(),
+                "high_c": daily["temperature_2m_max"][day],
+                "low_c": daily["temperature_2m_min"][day],
+                "rain_chance_pct": daily["precipitation_probability_max"][day],
+                "condition": _words(daily["weather_code"][day]),
+            }
+            for day, name in enumerate(("today", "tomorrow"))
+        },
+        "next_hours": [
+            {
+                "at": datetime.fromtimestamp(hourly["time"][i], zone).strftime("%Y-%m-%d %H:%M"),
+                "temp_c": hourly["temperature_2m"][i],
+                "condition": _words(
+                    current["weather_code"] if i == first else hourly["weather_code"][i]
+                ),
+                "rain_chance_pct": hourly["precipitation_probability"][i],
+            }
+            for i in range(first, min(first + _REPORT_HOURS, len(hourly["time"])))
+        ],
+    }
+
+
+def weather_lookup(place: Mapping[str, Any] | None) -> Callable[[], dict[str, Any]] | None:
+    """The model's weather read for ``home.weather`` (``latitude``, ``longitude``, ``name``).
+
+    ``name`` is optional; None when the home has no location, which leaves the tool unregistered.
+    """
+    if place is None:
+        return None
+    name = str(place.get("name") or "home")
+    return lambda: weather_report(float(place["latitude"]), float(place["longitude"]), name)
 
 
 class Home:

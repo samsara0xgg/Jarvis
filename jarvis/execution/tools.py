@@ -3969,6 +3969,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     voice_settings: VoiceSettings | None = None,
     mail_drafts: DraftStore | None = None,
     device_link: DeviceLink | None = None,
+    weather_lookup: Callable[[], Mapping[str, Any]] | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -4036,6 +4037,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             that runs the call there. `None` (one machine) registers them as they are.
             The activity tools (`query_activity`, `read_activity`, `save_*`) stay as they
             are too, but ask the terminal for what they read of TimeSink and git.
+        weather_lookup: ADR 0188 — the home's weather read (`home.weather`);
+            `None` (no location configured) leaves `weather` off the menu.
     """
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
 
@@ -4179,8 +4182,12 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     from jarvis.execution.mail_draft_tool import build_mail_draft_tool  # noqa: PLC0415
     from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.voice_tools import build_voice_tool  # noqa: PLC0415 — same cycle.
+    from jarvis.execution.weather_tool import build_weather_tool  # noqa: PLC0415 — same cycle.
 
-    for conversation_tool in (*build_night_tools(night), *build_voice_tool(voice_settings)):
+    for conversation_tool in (
+        *build_night_tools(night), *build_voice_tool(voice_settings),
+        *build_weather_tool(weather_lookup),
+    ):
         registry.register(conversation_tool)
     for draft_tool in build_mail_draft_tool(mail_drafts):
         registry.register(draft_tool)
