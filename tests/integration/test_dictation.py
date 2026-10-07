@@ -30,7 +30,13 @@ import numpy as np
 import yaml
 from fastapi.testclient import TestClient
 
-from jarvis.runtime.dictation import POLISH_PROMPT, PRE_ROLL_FRAMES, Dictation, polish_client
+from jarvis.runtime.dictation import (
+    POLISH_PROMPT,
+    PRE_ROLL_FRAMES,
+    Dictation,
+    LocalPolish,
+    polish_client,
+)
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_asr, voice_audio, voice_pipeline
@@ -172,10 +178,10 @@ def _dictation(
             ingress=ingress,  # type: ignore[arg-type]
             vad=voice_audio.SileroVad(mode="record"),
             transcribe=ears,
-            client=client,
-            vocab_path=tmp_path / "vocab.yaml",
-            event_log_path=tmp_path / "events.db",
-            pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+            polisher=LocalPolish(
+                client, vocab_path=tmp_path / "vocab.yaml", event_log_path=tmp_path / "events.db",
+                pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+            ),
             recordings=recordings,
         )
     return dictation, ingress

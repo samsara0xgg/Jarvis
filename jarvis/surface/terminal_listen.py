@@ -31,6 +31,10 @@ cancel_runs (none)                             ``{}``
 controls (none)                                ``{"conversation": bool, "quiet": str}``
 conversation on, reason                        ``{}``: set conversation mode
 quiet    level                                 ``{}``
+polish   raw, context, language, vocab         ``{"text": str}``: dictation's words polished
+         (the words, where they will land,     by the brain's model, which this terminal has
+         the recognizer's guess, the word      no key for (ADR 0183)
+         list kept on the terminal)
 hold     held                                  (tell) the run-hold half of hold-output
 note     turn_id, verdict, text, over_her,     (tell) the word judge's note
          conversation
@@ -65,7 +69,7 @@ from jarvis.state.quiet_mode import LEVELS as QUIET_LEVELS
 from jarvis.surface.terminal_speaker import BrainCallError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
 
     from jarvis.surface.terminal_events import BrainEvents
     from jarvis.surface.terminal_link import Execute, TerminalHub, _Link
@@ -81,7 +85,7 @@ COMMAND_TIMEOUT_S: Final = 3.0
 ASKS: Final = frozenset(
     {
         "utterance", "words", "working", "recent", "interrupt", "supersede", "cancel_runs",
-        "controls", "conversation", "quiet",
+        "controls", "conversation", "quiet", "polish",
     },
 )
 TELLS: Final = frozenset({"hold", "note", "begin", "say"})
@@ -93,10 +97,16 @@ WORKING_TIMEOUT_S: Final = 1.0
 RECENT_TIMEOUT_S: Final = 1.0
 INTERRUPT_TIMEOUT_S: Final = 3.0
 RUNS_TIMEOUT_S: Final = 5.0
+POLISH_TIMEOUT_S: Final = 45.0
+"""The polish's own client gives up at 30 s and tries once more."""
 CONTROLS_TIMEOUT_S: Final = 2.0
 CONTROLS_POLL_S: Final = 1.0
 _MAX_TEXT_CHARS: Final = 20_000
 _MAX_ROUTED: Final = 256
+_CONTEXT_CHARS: Final = {"app": 200, "window": 500, "selected": 20_000, "before": 1000}
+"""Where the words will land, with the limits of ``POST /inherent/dictation``'s body."""
+_MAX_VOCAB_TERMS: Final = 2000
+_MAX_VOCAB_TERM_CHARS: Final = 200
 _ID_CHARS: Final = 64
 
 
@@ -148,6 +158,7 @@ class ListenHooks:
     set_conversation: Callable[[bool, str], None] | None = None
     set_quiet: Callable[[str], None] | None = None
     controls: Callable[[], Mapping[str, Any]] | None = None
+    polish: Callable[[str, Mapping[str, str], str, Sequence[str]], str] | None = None
 
 
 @dataclass(eq=False)
@@ -177,7 +188,7 @@ class BrainListening:
             "words": self._words, "working": self._working, "recent": self._recent,
             "interrupt": self._interrupt, "supersede": self._supersede,
             "cancel_runs": self._cancel_runs, "controls": self._controls,
-            "conversation": self._conversation, "quiet": self._quiet,
+            "conversation": self._conversation, "quiet": self._quiet, "polish": self._polish,
             "hold": self._hold, "note": self._note, "begin": self._begin, "say": self._say,
         }
 
@@ -319,6 +330,24 @@ class BrainListening:
         if self.hooks.set_quiet is not None:
             self.hooks.set_quiet(level)
         return {}
+
+    def _polish(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        hook = self.hooks.polish
+        if hook is None:
+            msg = "this brain does not polish dictation"
+            raise _Refused(msg, "not_supported")
+        raw_context = args.get("context")
+        given = raw_context if isinstance(raw_context, dict) else {}
+        context = {key: _text(given | {key: given.get(key, "")}, key, limit)
+                   for key, limit in _CONTEXT_CHARS.items()}
+        terms = args.get("vocab")
+        if not isinstance(terms, list) or len(terms) > _MAX_VOCAB_TERMS or not all(
+            isinstance(term, str) and len(term) <= _MAX_VOCAB_TERM_CHARS for term in terms
+        ):
+            msg = "vocab must be a list of short words"
+            raise _Refused(msg)
+        language = _text(args, "language", _ID_CHARS)
+        return {"text": hook(_text(args, "raw"), context, language, terms)}
 
     # -- the tells ---------------------------------------------------------------------
 
@@ -562,6 +591,42 @@ class LinkedTurn:
             uid, "utterance.received", 1, int(time.time() * 1000), dict(payload), None,
             dict(correlation),
         )
+
+
+class RemotePolish:
+    """Dictation's polish for a terminal, which has no model key: the brain's model does it.
+
+    The words, where they will land and the word list kept on this machine go over the link
+    (the list is read per call, so an edit counts from the next dictation); the brain answers
+    with the polished text and records the spend (ADR 0183).
+    """
+
+    def __init__(self, link: VoiceLink, vocab: Callable[[], Sequence[str]]) -> None:
+        """Ask the brain over ``link``; ``vocab`` reads this machine's word list."""
+        self._link = link
+        self._vocab = vocab
+
+    def warm(self) -> None:
+        """Nothing to open here: the brain's own client holds the connection."""
+
+    def __call__(self, raw: str, context: Mapping[str, str], language: str) -> str:
+        """The polished text.
+
+        Raises:
+            BrainCallError: the brain is not reachable, does not polish, or did not answer in
+                time; dictation shows the raw words with that reason.
+        """
+        value = self._link.ask(
+            "polish",
+            {"raw": raw, "context": dict(context), "language": language,
+             "vocab": list(self._vocab())},
+            timeout_s=POLISH_TIMEOUT_S,
+        )
+        text = value.get("text") if isinstance(value, dict) else None
+        if not isinstance(text, str):
+            msg = "the brain's answer to a polish names no text"
+            raise BrainCallError(msg)
+        return text
 
 
 class LinkedControls:

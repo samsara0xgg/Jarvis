@@ -52,6 +52,8 @@ Its limits:
   and leaves conversation, quiet and live to the brain. The voice preview is
   not one: the brain holds the speech key, and the companion plays the audio
   it is sent.
+  Dictation records and recognises here; its polish is a model call, so the
+  terminal asks the brain for it over the link, where the key is.
 - **The push socket is merged.** The UI gets the brain's ops and the
   terminal's own `voice` ops on one socket, and the local ops carry no network
   delay.

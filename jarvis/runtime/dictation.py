@@ -27,7 +27,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import yaml
 
@@ -320,6 +320,107 @@ def polish(  # noqa: PLR0913 — the vocabulary joins the words, their context a
     return text
 
 
+class Polisher(Protocol):
+    """What turns the heard words into the text to paste.
+
+    A daemon polishes with its own model call (:class:`LocalPolish`); a terminal holds no model
+    key and asks its brain over the link (ADR 0183).
+    """
+
+    def warm(self) -> None:
+        """Open the connection the polish will use; may block."""
+        ...
+
+    def __call__(self, raw: str, context: Mapping[str, str], language: str) -> str:
+        """The polished text, or ``raw`` when the model gives none; raises when it cannot be asked."""
+        ...
+
+
+class LocalPolish:
+    """The polish as a daemon, or a brain answering a terminal, runs it: one model call here."""
+
+    def __init__(
+        self, client: LLMClient, *, vocab_path: Path, event_log_path: Path,
+        pricing_table: Mapping[str, Any] | None,
+    ) -> None:
+        """Polish with ``client``; the vocabulary is read per call, the spend goes to the log."""
+        self._client = client
+        self.vocab_path = vocab_path
+        self._event_log_path = event_log_path
+        self._pricing_table = pricing_table
+
+    def warm(self) -> None:
+        """Open the client's connection ahead of the stop."""
+        self._client.warm()
+
+    def __call__(
+        self, raw: str, context: Mapping[str, str], language: str,
+        vocab: Sequence[str] | None = None,
+    ) -> str:
+        """See :func:`polish`. ``vocab`` is the caller's word list; none reads this machine's."""
+        return polish(
+            self._client, raw, context, vocab=load_vocab(self.vocab_path) if vocab is None else vocab,
+            language=language, event_log_path=self._event_log_path,
+            pricing_table=self._pricing_table,
+        )
+
+
+def local_polisher(
+    config: Mapping[str, Any], event_log_path: Path, pricing_table: Mapping[str, Any] | None,
+) -> LocalPolish | None:
+    """The polish ``dictation.polish_preset`` names, or ``None`` (logged) when it is not set up."""
+    dictation_config = config.get("dictation") or {}
+    try:
+        client = polish_client(
+            config.get("llm") or {}, str(dictation_config.get("polish_preset", "")),
+        )
+    except ValueError:
+        LOGGER.exception("dictation off: its polish preset is not configured")
+        return None
+    return LocalPolish(
+        client, vocab_path=Path(str(dictation_config.get("vocab_path", ""))),
+        event_log_path=event_log_path, pricing_table=pricing_table,
+    )
+
+
+def build_dictation(  # noqa: PLR0913 — keyword-only, one per thing it hears with.
+    *, config: Mapping[str, Any], ingress: voice_audio.AudioIngress, silero_path: Path,
+    transcribe: Callable[..., voice_asr.DictationHeard], polisher: Polisher,
+    vocab_path: Path, recordings: Path | None,
+) -> Dictation:
+    """ADR 0058: dictation over a live microphone, as a daemon and a terminal both build it.
+
+    ``transcribe`` is the voice pipeline's; with mlx-whisper installed the words are heard by
+    Whisper instead, through the same call (ADR 0077). ``recordings`` is where its audio and
+    notes go, or ``None``.
+    """
+    dictation_config = config.get("dictation") or {}
+    language = str(dictation_config.get("language") or "")
+    whisper = whisper_ears(
+        language=language, terms=functools.partial(load_user_terms, vocab_path),
+    )
+    if whisper is not None:  # its ~1.6 GB loads now, not inside his first tap
+        threading.Thread(
+            target=whisper.prewarm, name="jarvis-dictation-whisper", daemon=True,
+        ).start()
+    LOGGER.info("dictation hears with %s", "Whisper" if whisper else "SenseVoice")
+    return Dictation(
+        ingress=ingress,
+        vad=voice_audio.SileroVad(mode="record", model_path=silero_path),
+        transcribe=(
+            transcribe
+            if whisper is None
+            else functools.partial(
+                transcribe, recognizer=whisper,
+                rehear_among=() if language else DICTATION_LANGUAGES,
+            )
+        ),
+        polisher=polisher,
+        recordings=recordings,
+        warm_ears=whisper.warm if whisper is not None else None,
+    )
+
+
 class Dictation:
     """One dictation at a time: record until stopped, then hear and polish."""
 
@@ -329,14 +430,11 @@ class Dictation:
         ingress: voice_audio.AudioIngress,
         vad: voice_audio.SileroVad,
         transcribe: Callable[[bytes], voice_asr.DictationHeard],
-        client: LLMClient,
-        vocab_path: Path,
-        event_log_path: Path,
-        pricing_table: Mapping[str, Any] | None,
+        polisher: Polisher,
         recordings: Path | None,
         warm_ears: Callable[[], None] | None = None,
     ) -> None:
-        """Hold the live mic, a pause detector, the voice path's ears, the polish and its ledger.
+        """Hold the live mic, a pause detector, the voice path's ears and the polish.
 
         The capture lane stays subscribed for the daemon's life: while idle it
         keeps the last ``PRE_ROLL_FRAMES``, and a session starts from those.
@@ -350,10 +448,7 @@ class Dictation:
         vad.prepare_utterance()  # loads its model now, not inside his first tap
         self._transcribe = transcribe
         self._hearing = ThreadPoolExecutor(1, thread_name_prefix="jarvis-dictation-hear")
-        self._client = client
-        self._vocab_path = vocab_path
-        self._event_log_path = event_log_path
-        self._pricing_table = pricing_table
+        self._polisher = polisher
         self._stop = threading.Event()
         self.active = False
         self._lock = threading.Lock()
@@ -400,7 +495,7 @@ class Dictation:
     def _warm(self) -> None:
         """Open the polish call's connection in the background, so the stop skips the handshake."""
         self._warmed_at = time.monotonic()
-        warm = threading.Thread(target=self._client.warm, name="jarvis-dictation-warm", daemon=True)
+        warm = threading.Thread(target=self._polisher.warm, name="jarvis-dictation-warm", daemon=True)
         warm.start()
 
     def begin(self, context: Mapping[str, str]) -> AsyncIterator[dict[str, Any]]:
@@ -466,13 +561,7 @@ class Dictation:
                 return
             polishing = time.monotonic()
             try:
-                text = await asyncio.to_thread(
-                    functools.partial(
-                        polish, self._client, raw, context,
-                        vocab=load_vocab(self._vocab_path), language=language,
-                        event_log_path=self._event_log_path, pricing_table=self._pricing_table,
-                    ),
-                )
+                text = await asyncio.to_thread(self._polisher, raw, context, language)
             except Exception as exc:  # noqa: BLE001 — the model or the network failing is shown with the raw words.
                 LOGGER.warning("dictation polish failed: %s: %s", type(exc).__name__, exc)
                 note.update(outcome="error", error=f"{type(exc).__name__}: {exc}"[:200])

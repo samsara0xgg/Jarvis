@@ -24,6 +24,7 @@ the speech provider, the recognizer, the microphone):
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import sqlite3
@@ -36,6 +37,7 @@ import numpy as np
 import pytest
 
 from jarvis.runtime import terminal as terminal_module
+from jarvis.runtime.dictation import load_vocab
 from jarvis.shared.realtime_trace import configure_realtime_trace_jsonl, reset_realtime_trace
 from jarvis.state.device_tokens import pair_device
 from jarvis.state.event_log import iter_events, open_event_log
@@ -54,6 +56,7 @@ from jarvis.surface.terminal_listen import (
     LinkedControls,
     LinkedTurn,
     ListenHooks,
+    RemotePolish,
     with_voice_commands,
 )
 from jarvis.surface.terminal_speaker import BrainCallError, Journal, VoiceLink
@@ -301,6 +304,55 @@ def test_conversation_mode_follows_the_brain_both_ways(tmp_path: Path) -> None:
     assert left == [True]
 
 
+def test_a_terminals_polish_is_asked_of_the_brain_with_its_words_and_its_own_vocabulary(
+    tmp_path: Path,
+) -> None:
+    """The word list is read from this machine on every call; the brain's answer is the text."""
+    vocab = tmp_path / "vocab.yaml"
+    vocab.write_text("user:\n- Typlus\nauto:\n- 星核\n", encoding="utf-8")
+    context = {"app": "Ghostty", "window": "claude", "selected": "", "before": "先看"}
+
+    def brain(frame: dict[str, Any]) -> dict[str, Any] | None:
+        assert frame["op"] == "polish"
+        return _ok({"text": "POLISHED " + frame["args"]["raw"]})
+
+    bench = _Bench(tmp_path, brain)
+    try:
+        polish = RemotePolish(bench.link, functools.partial(load_vocab, vocab))
+        polish.warm()  # nothing to open: the brain's own client holds the connection
+        assert polish("嗯 把 typlus 改了", context, "zh") == "POLISHED 嗯 把 typlus 改了"
+        vocab.write_text("user:\n- NewTerm\n", encoding="utf-8")
+        polish("again", context, "en")
+    finally:
+        bench.close()
+    assert [frame["args"] for frame in bench.frames] == [
+        {"raw": "嗯 把 typlus 改了", "context": context, "language": "zh",
+         "vocab": ["Typlus", "星核"]},
+        {"raw": "again", "context": context, "language": "en", "vocab": ["NewTerm"]},
+    ]
+
+
+@pytest.mark.parametrize("brain_is", ["silent", "refusing", "gone", "textless"])
+def test_a_polish_the_brain_cannot_give_raises_so_dictation_shows_the_raw_words(
+    tmp_path: Path, brain_is: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dictation turns that error into `{error, raw}`; this is only that it raises, and why."""
+    monkeypatch.setattr(terminal_listen, "POLISH_TIMEOUT_S", 0.2)
+    refuse: dict[str, Any] = {"ok": False, "code": "not_supported", "message": "no polish here"}
+    answers: dict[str, Any] = {
+        "refusing": lambda _frame: refuse, "textless": lambda _frame: _ok({"other": 1}),
+    }
+    bench = _Bench(tmp_path, answers.get(brain_is))
+    try:
+        if brain_is == "gone":
+            bench.link.down()
+        polish = RemotePolish(bench.link, list)
+        with pytest.raises(BrainCallError):
+            polish("raw", {"app": "", "window": "", "selected": "", "before": ""}, "zh")
+    finally:
+        bench.close()
+
+
 # --- the brain's end of /terminal/ws ----------------------------------------------------------
 
 
@@ -419,6 +471,51 @@ def test_the_brain_refuses_what_is_not_a_well_formed_ask_and_the_link_lives_on(
     ]
     assert alive == {"type": "reply", "id": "2" * 32, "ok": True, "value": {"working": False}}
     assert _utterances(log) == []
+
+
+def test_the_brain_polishes_a_terminals_dictation_or_says_it_does_not(tmp_path: Path) -> None:
+    """The hook gets the words, where they land, the language and the terminal's word list."""
+    from contextlib import ExitStack  # noqa: PLC0415
+
+    seen: list[tuple[str, dict[str, str], str, list[str]]] = []
+
+    def polish(raw: str, context: Any, language: str, vocab: Any) -> str:  # noqa: ANN401
+        seen.append((raw, dict(context), language, list(vocab)))
+        return "Done."
+
+    client, _hub, _log = _listening_client(tmp_path, polish=polish)
+    good: dict[str, Any] = {
+        "raw": "um done", "context": {"app": "Ghostty"}, "language": "en", "vocab": ["Typlus"],
+    }
+    refused: list[dict[str, Any]] = [
+        {**good, "vocab": "Typlus"},
+        {**good, "vocab": ["x" * 201]},
+        {**good, "vocab": ["w"] * 2001},
+        {**good, "context": {"before": "b" * 1001}},
+        {**good, "raw": 3},
+        {**good, "language": "x" * 100},
+    ]
+    with ExitStack() as stack:
+        ws = _connect(client, tmp_path, "macbook", stack)
+        _ask(ws, "polish", good, "a" * 32)
+        answered = ws.receive_json()
+        replies = []
+        for index, args in enumerate(refused):
+            _ask(ws, "polish", args, f"{index:032d}")
+            replies.append(ws.receive_json())
+    assert answered == {"type": "reply", "id": "a" * 32, "ok": True, "value": {"text": "Done."}}
+    assert seen == [(
+        "um done", {"app": "Ghostty", "window": "", "selected": "", "before": ""}, "en",
+        ["Typlus"],
+    )]
+    assert [(reply["ok"], reply["code"]) for reply in replies] == [(False, "bad_args")] * 6
+
+    (tmp_path / "bare").mkdir()
+    bare, _hub, _log = _listening_client(tmp_path / "bare")
+    with ExitStack() as stack:
+        ws = _connect(bare, tmp_path / "bare", "macbook", stack)
+        _ask(ws, "polish", good, "b" * 32)
+        assert ws.receive_json()["code"] == "not_supported"
 
 
 def test_a_brain_that_does_not_listen_says_so_and_a_tell_to_it_is_dropped(tmp_path: Path) -> None:

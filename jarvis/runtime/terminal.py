@@ -71,6 +71,7 @@ from jarvis.runtime import (
     _wave1_feature_flags,
     _wave4_response_flags,
 )
+from jarvis.runtime.dictation import Dictation, build_dictation, load_vocab
 from jarvis.runtime.inherent_loop import (
     _build_echo_canceller,
     _build_tts_pipeline,
@@ -104,7 +105,12 @@ from jarvis.surface.terminal_link import (
     TerminalRefusedError,
     run_terminal_client,
 )
-from jarvis.surface.terminal_listen import LinkedControls, LinkedTurn, with_voice_commands
+from jarvis.surface.terminal_listen import (
+    LinkedControls,
+    LinkedTurn,
+    RemotePolish,
+    with_voice_commands,
+)
 from jarvis.surface.terminal_speaker import (
     Journal,
     RemoteTTSProvider,
@@ -431,6 +437,7 @@ class _Listening:
 
     session: voice_session.DuplexVoiceSession
     controls: LinkedControls
+    dictation: Dictation | None = None  # recording on this microphone, for the UI's dictation
 
 
 def _listening_requested(config: Mapping[str, Any]) -> bool:
@@ -531,21 +538,37 @@ async def _start_listening(speaking: _Speaking, speech: _Speech) -> _Listening |
     )
     broadcaster = speech.broadcaster
 
-    def build() -> tuple[voice_session.DuplexVoiceSession | None, bool]:
+    def build() -> tuple[voice_session.DuplexVoiceSession | None, bool, Dictation | None]:
         recognizer_pipeline = _build_voice_pipeline(
             seat, broadcaster=broadcaster, sensevoice_dir=sensevoice_dir,
             emit=turn.emit_utterance,
         )
-        return _spawn_single_ingress_session(
+        session, attempted = _spawn_single_ingress_session(
             runtime=seat, pipeline=recognizer_pipeline, broadcaster=broadcaster,
             silero_path=silero_path, tts=pipeline, voice=_voice_knobs(config),
             mic_muted=lambda: False if speaking.controls is None else speaking.controls.mic_muted,
             conversation=controls.conversation, set_conversation=controls.set_conversation,
             set_quiet=controls.set_quiet, echo_canceller=speech.canceller, ports=ports,
         )
+        if session is None:
+            return None, attempted, None
+        # ADR 0183: dictation records on this microphone and hears with this machine's
+        # recognizer; its polish, which needs a model key, is the brain's.
+        vocab_path = Path(str((config.get("dictation") or {}).get("vocab_path", "")))
+        dictation = build_dictation(
+            config=config, ingress=session.ingress, silero_path=silero_path,
+            transcribe=recognizer_pipeline.transcribe,
+            polisher=RemotePolish(link, functools.partial(load_vocab, vocab_path)),
+            vocab_path=vocab_path,
+            recordings=(
+                seat.memory.audio_dir
+                if seat.memory is not None and seat.memory.retain_audio else None
+            ),
+        )
+        return session, attempted, dictation
 
     try:
-        session, attempted = await asyncio.to_thread(build)
+        session, attempted, dictation = await asyncio.to_thread(build)
     except Exception:
         LOGGER.exception("the capture session could not be built; this terminal speaks only")
         return None
@@ -560,7 +583,7 @@ async def _start_listening(speaking: _Speaking, speech: _Speech) -> _Listening |
     controls.on_surface_exit = session.dismiss
     controls.start()
     LOGGER.info("this terminal listens: wake, VAD and ASR run here; utterances go to the brain")
-    return _Listening(session, controls)
+    return _Listening(session, controls, dictation)
 
 
 async def _stop_listening(task: asyncio.Task[_Listening | None] | None) -> None:
@@ -650,6 +673,15 @@ class _UiServer(uvicorn.Server):
         yield
 
 
+def _dictation_of(speech: _Speech) -> Dictation | None:
+    """The recording session, once the capture session is up; ``None`` before and without one."""
+    task = speech.listening
+    if task is None or not task.done() or task.cancelled() or task.exception() is not None:
+        return None
+    listening = task.result()
+    return None if listening is None else listening.dictation
+
+
 def _ui_device(
     ui: _Ui, speaking: _Speaking | None, speech: Callable[[], _Speech],
 ) -> Device:
@@ -663,6 +695,7 @@ def _ui_device(
             )
         ),
         restart=_restart_soon if spawned_by_agent() else None,
+        dictation=None if speaking is None else lambda: _dictation_of(speech()),
         speaks=lambda: speech().pipeline is not None,
     )
 

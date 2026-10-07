@@ -167,10 +167,10 @@ from jarvis.runtime.core_memory import CoreMemorySettings
 from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
 from jarvis.runtime.dictation import (
     COMMAND_PROMPT,
-    DICTATION_LANGUAGES,
     Dictation,
+    build_dictation,
     load_user_terms,
-    polish_client,
+    local_polisher,
     whisper_ears,
 )
 from jarvis.runtime.inherent_hub import start_inherent_view
@@ -3169,6 +3169,11 @@ def _build_brain_listening(
         set_conversation=set_conversation,
         set_quiet=set_quiet,
         controls=controls.update,
+        # ADR 0183: a terminal's dictation is polished here, with the key only the brain has.
+        polish=local_polisher(
+            runtime.config, runtime.runtime_paths.event_log,
+            load_pricing_table(repo_root() / "data" / "pricing.json"),
+        ),
     )
     return listening
 
@@ -6509,48 +6514,20 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # ADR 0058: dictation hears through the live mic and the voice path's ears.
         ingress = duplex_voice_session.ingress if duplex_voice_session is not None else None
         if ingress is not None and voice_pipe is not None:
-            dictation_config = runtime.config.get("dictation") or {}
-            try:
-                client = polish_client(
-                    runtime.config.get("llm") or {},
-                    str(dictation_config.get("polish_preset", "")),
-                )
-            except ValueError:
-                LOGGER.exception("dictation off: its polish preset is not configured")
-            else:
-                vocab_path = Path(str(dictation_config.get("vocab_path", "")))
-                dictation_language = str(dictation_config.get("language") or "")
-                whisper = whisper_ears(
-                    language=dictation_language,
-                    terms=functools.partial(load_user_terms, vocab_path),
-                )
-                if whisper is not None:  # its ~1.6 GB loads now, not inside his first tap
-                    threading.Thread(
-                        target=whisper.prewarm, name="jarvis-dictation-whisper", daemon=True,
-                    ).start()
-                LOGGER.info("dictation hears with %s", "Whisper" if whisper else "SenseVoice")
-                dictation = Dictation(
-                    ingress=ingress,
-                    vad=voice_audio.SileroVad(mode="record", model_path=silero_path),
-                    transcribe=(
-                        voice_pipe.transcribe
-                        if whisper is None
-                        else functools.partial(
-                            voice_pipe.transcribe,
-                            recognizer=whisper,
-                            rehear_among=() if dictation_language else DICTATION_LANGUAGES,
-                        )
-                    ),
-                    client=client,
-                    vocab_path=vocab_path,
-                    event_log_path=runtime.runtime_paths.event_log,
-                    pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+            polisher = local_polisher(
+                runtime.config, runtime.runtime_paths.event_log,
+                load_pricing_table(repo_root() / "data" / "pricing.json"),
+            )
+            if polisher is not None:
+                dictation = build_dictation(
+                    config=runtime.config, ingress=ingress, silero_path=silero_path,
+                    transcribe=voice_pipe.transcribe, polisher=polisher,
+                    vocab_path=polisher.vocab_path,
                     recordings=(
                         runtime.memory.audio_dir
                         if runtime.memory is not None and runtime.memory.retain_audio
                         else None
                     ),
-                    warm_ears=whisper.warm if whisper is not None else None,
                 )
 
         # ADR 0019: one Codex board, filled by the hooks' route and read by the night run.

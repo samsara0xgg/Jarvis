@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self, cast
 
 import httpx
+import numpy as np
 import pytest
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -44,11 +45,12 @@ from jarvis.state.device_tokens import (
 )
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.plugin_settings import local_key, local_key_matches
-from jarvis.surface import voice_tts
+from jarvis.surface import voice_backend, voice_tts
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.terminal_events import BrainEvents
 from jarvis.surface.terminal_link import TerminalHub
+from jarvis.surface.terminal_listen import BrainListening, ListenHooks
 from jarvis.surface.terminal_ui import (
     DEVICE_ROUTES,
     NOT_SERVED,
@@ -60,6 +62,7 @@ from jarvis.surface.terminal_ui import (
 )
 from jarvis.surface.terminal_voice import BrainVoice
 from jarvis.surface.voice_controls import VoiceControls
+from tests.integration.test_terminal_listen import LISTEN_CONFIG, _heard
 from tests.integration.test_terminal_voice import (
     SPEECH_CONFIG,
     _AsRemote,
@@ -69,6 +72,7 @@ from tests.integration.test_terminal_voice import (
     _open_stream,
     _wait_for,
 )
+from tests.integration.test_voice_file_replay import _write_wav
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -746,12 +750,15 @@ class _Setup:
 class _RealBrain:
     """A real brain app: its routes, its admission, its broadcaster, a speech provider."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, hooks: ListenHooks | None = None) -> None:
         self.log = root / "events.db"
         conn = _brain_log(self.log)
         self.broadcaster = InherentBroadcaster()
         self.provider = _FakeProvider()
         self.hub = TerminalHub(events=BrainEvents(conn))
+        if hooks is not None:
+            self.hub.listening = BrainListening(self.hub, self.hub.events)  # type: ignore[arg-type]
+            self.hub.listening.hooks = hooks
         from jarvis.runtime import inherent_loop  # noqa: PLC0415
 
         self.hub.voice = BrainVoice(
@@ -780,11 +787,15 @@ class _RealBrain:
 class _Terminal:
     """The real wiring of ``terminal --voice --serve-ui``, on its own thread and loop."""
 
-    def __init__(self, url: str, token: str, root: Path, port: int) -> None:
+    def __init__(
+        self, url: str, token: str, root: Path, port: int,
+        config: dict[str, Any] = SPEECH_CONFIG,
+    ) -> None:
         self.loop = asyncio.new_event_loop()
         self.task: asyncio.Task[None] | None = None
         self.error: BaseException | None = None
         self.port = port
+        self.config = config
         self._args = (url, token, root)
         self.thread = threading.Thread(target=self._run, daemon=True)
 
@@ -794,8 +805,8 @@ class _Terminal:
             self.task = asyncio.create_task(_run(
                 url, token, tools=frozenset({"read_clipboard"}),
                 execute=lambda *_: {"ok": True, "output": {}}, watched=None,
-                speaking=_Speaking(SPEECH_CONFIG, root),
-                ui=_Ui(bind_ui(self.port), SPEECH_CONFIG, root),
+                speaking=_Speaking(self.config, root),
+                ui=_Ui(bind_ui(self.port), self.config, root),
             ))
             with contextlib.suppress(asyncio.CancelledError):
                 try:
@@ -899,6 +910,75 @@ def test_a_companion_adopts_a_terminal_and_hears_the_brain_and_the_terminals_own
     assert Counter(ops)[("tool", None)] == 1
     with sqlite3.connect(tmp_path / "events.db") as raw:
         assert raw.execute("SELECT count(*) FROM events").fetchone()[0] > 0
+
+
+def test_dictation_records_on_the_terminal_and_the_brain_polishes_the_words(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The companion's dictation through a real terminal: local capture, the brain's polish.
+
+    A replayed WAV is the microphone and a fake recognizer the ears, as for the listening
+    tests. The polish is a fake on the brain's hook, which must receive the words, where they
+    land, and the word list kept on the terminal; the NDJSON the companion reads is a daemon's.
+    """
+    wav = _write_wav(
+        tmp_path / "say.wav",
+        np.concatenate([np.zeros(8_000, dtype="<i2"), np.full(16_000 * 14, 10_000, dtype="<i2")]),
+    )
+    _heard(monkeypatch, lambda: voice_backend.FileReplayBackend(wav))
+    token = pair_device(tmp_path, "macbook")
+    root = tmp_path / "terminal-root"
+    root.mkdir()
+    vocab = root / "vocab.yaml"
+    vocab.write_text("user:\n- Typlus\nauto:\n- 星核\n", encoding="utf-8")
+    config = {**LISTEN_CONFIG, "dictation": {"vocab_path": str(vocab)}}
+    asked: list[tuple[str, dict[str, str], str, list[str]]] = []
+
+    def polish(raw: str, context: Any, language: str, terms: Any) -> str:  # noqa: ANN401
+        asked.append((raw, dict(context), language, list(terms)))
+        return f"POLISHED[{raw}]"
+
+    port = _free_port()
+    local = {"Authorization": f"Bearer {local_key(root)}"}
+    context = {"app": "Ghostty", "window": "claude", "selected": "", "before": "先看"}
+    with (
+        _RealBrain(tmp_path, ListenHooks(polish=polish)) as brain,
+        _Terminal(brain.server.url, token, root, port, config),
+    ):
+        _wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
+        deadline = time.monotonic() + 60
+        while True:  # 404 until the capture session is up: the companion reads it as "voice is off"
+            response = httpx.stream(
+                "POST", f"{LOCAL}:{port}/inherent/dictation", json=context, headers=local,
+                timeout=30,
+            )
+            opened = response.__enter__()
+            if opened.status_code != httpx.codes.NOT_FOUND:
+                break
+            response.__exit__(None, None, None)
+            assert time.monotonic() < deadline, "dictation never came up on the terminal"
+            time.sleep(0.2)
+        try:
+            assert opened.status_code == httpx.codes.OK
+            assert opened.headers["content-type"] == "application/x-ndjson"
+            lines = opened.iter_lines()
+            assert "level" in json.loads(next(lines))
+            time.sleep(1.5)  # speaking into the microphone
+            second = httpx.post(f"{LOCAL}:{port}/inherent/dictation", json=context, headers=local)
+            assert second.status_code == httpx.codes.CONFLICT  # one at a time
+            stopped = httpx.post(f"{LOCAL}:{port}/inherent/dictation/stop", headers=local)
+            assert stopped.json() == {"ok": True}
+            rest = [json.loads(line) for line in lines]
+        finally:
+            response.__exit__(None, None, None)
+    result = rest[-1]
+    assert result == {"text": f"POLISHED[{result['raw']}]", "raw": result["raw"]}
+    assert result["raw"]
+    assert {k: v for k, v in rest[-2].items() if k == "state"} == {"state": "thinking"}
+    [(raw, where, _language, terms)] = asked
+    assert raw == result["raw"]
+    assert where == context
+    assert terms == ["Typlus", "星核"]  # this machine's list, which the brain does not have
 
 
 def _wait_closed(port: int) -> bool:
