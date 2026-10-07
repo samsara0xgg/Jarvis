@@ -476,6 +476,9 @@ _ZONES: Final[dict[str, str]] = {
 }
 _ZONE_RE: Final = re.compile(r"\b(" + "|".join(_ZONES) + r")\b")
 _SENTENCE_SPLIT: Final = re.compile(r"(?<=[.!?])\s+|\n+")
+# A quoted mail's header block (From/To/Cc/Subject/Sent/Date lines) holds the old mail's time.
+_HEADER_LINE: Final = re.compile(r"^[ \t*]*(from|to|cc|subject|sent|date)[ \t*]*:", re.IGNORECASE)
+_FIELD_LINE: Final = re.compile(r"^[ \t*-]*(date|when|time)[ \t*]*:[ \t]*(.+)$", re.IGNORECASE)
 _EVENT_CHARS: Final[int] = 200
 _PLAUSIBLE_ROLE_CHARS: Final[int] = 80
 
@@ -707,6 +710,39 @@ def _moment(sentence: str, received: datetime) -> str | None:
     return moment.astimezone().isoformat(timespec="minutes")  # a bare time is Allen's own clock
 
 
+def _own_lines(body: str) -> list[str]:
+    """The lines of a body that are the sender's own.
+
+    No ``>`` quote, no ``Sent:`` line, and no ``Date:`` line inside a header block (beside a
+    From, To, Cc or Subject line). A lone ``Date:`` in an invitation stays.
+    """
+    lines = body.splitlines()
+    kept = []
+    for i, line in enumerate(lines):
+        label = _HEADER_LINE.match(line)
+        if line.lstrip().startswith(">") or (label and label[1].lower() == "sent"):
+            continue
+        if label and label[1].lower() == "date":
+            near = (lines[j] for j in (i - 1, i + 1) if 0 <= j < len(lines))
+            if any((m := _HEADER_LINE.match(n)) and m[1].lower() != "date" for n in near):
+                continue
+        kept.append(line)
+    return kept
+
+
+def _labelled_event(lines: list[str], received: datetime) -> tuple[str | None, str | None]:
+    """A ``Date:`` or ``When:`` line with its clock, on the line or on a ``Time:`` line."""
+    fields = [(m[1].lower(), m[2].strip()) for ln in lines if (m := _FIELD_LINE.match(ln))]
+    time_line = next((v for k, v in fields if k == "time"), "")
+    for label, value in fields:
+        if label == "time" or _day_of(value, received) is None:
+            continue
+        sentence = value if _clock_of(value) else f"{value}, {time_line}"
+        if (at := _moment(sentence, received)) is not None:
+            return sentence[:_EVENT_CHARS], at
+    return None, None
+
+
 def event_of(
     body: str, received: datetime, *, dated: bool = False
 ) -> tuple[str | None, str | None]:
@@ -715,8 +751,17 @@ def event_of(
     The time is None unless that sentence holds a clear date and time. With ``dated`` (the mail is
     already known to be an interview), a line that is only a clear date and time also counts, as
     in a Teams invitation whose "Thursday, October 8, 2026 2:00 PM (PDT)" has no event word.
+    ``Date:``/``When:`` and ``Time:`` lines ("Date: Thursday October 8th", "Time: 1:00pm - 2:00pm")
+    are read first, for an interview mail or a body that names an event. Quoted mail (``>`` lines,
+    ``Sent:`` lines, a quoted header block) is never read.
     """
-    for raw in _SENTENCE_SPLIT.split(body):
+    lines = _own_lines(body)
+    own = "\n".join(lines)
+    if dated or _EVENT_WORDS.search(own):
+        found = _labelled_event(lines, received)
+        if found[1]:
+            return found
+    for raw in _SENTENCE_SPLIT.split(own):
         sentence = re.sub(r"\s+", " ", raw).strip()
         if not sentence:
             continue
@@ -799,6 +844,12 @@ _NOT_NAME: Final = frozenset(
         "call", "chat", "session", "team", "on", "at", "from", "for", "to", "about", "via",
     }
 )  # fmt: skip
+# A panel item that names a job ("Firmware Manager"), not a person.
+_JOB_TITLE: Final = re.compile(
+    r"\b(?:manager|analyst|engineer|developer|director|lead|recruiter|coordinator|specialist|"
+    r"intern|co-?op|qa)\b",
+    re.IGNORECASE,
+)
 _MAX_INTERVIEWERS: Final[int] = 4
 _PORTAL_LABELS: Final = frozenset({a.replace("-", "") for a in _ATS} | {"njoyn"})
 _PORTAL_PATH: Final = re.compile(
@@ -836,7 +887,7 @@ def _person_names(text: str) -> list[str]:
                 break
             words.append(word)
         name = " ".join(words)
-        if name and _is_person(name, "") and name not in names:
+        if name and _is_person(name, "") and not _JOB_TITLE.search(name) and name not in names:
             names.append(name)
     return names
 

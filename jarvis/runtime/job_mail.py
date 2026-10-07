@@ -760,7 +760,8 @@ def repair(db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = ()
     ``other``, and the pending alerts of a mail that is now ledger only, ``other`` or hidden end
     as done. A row whose domain is in ``exclude_domains`` is hidden the same way (ADR 0171), except
     a LinkedIn "your application was sent to X" row (ADR 0177). A mail Allen flagged is never
-    touched by the routing rules.
+    touched by the routing rules. An interview or offer row's event time is read again from its
+    kept body and replaced when the body names one.
     """
     changed = 0
     for row in ledger.mail_rows(db):
@@ -780,6 +781,8 @@ def repair(db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = ()
                 if value != (row[field] or "")
             }
         )
+        if row["kind"] in _REREAD_KINDS and body and _fix_event(db, row, body):
+            changed += 1
         if not ledger.is_flagged(db, message_id):
             quiet = False  # whether its pending alerts must go
             kept_out = triage.is_excluded(
@@ -802,6 +805,19 @@ def repair(db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = ()
             ledger.update_mail(db, message_id, fixes)
             changed += 1
     return changed
+
+
+def _fix_event(db: Path, row: Mapping[str, Any], body: str) -> bool:
+    """Replace an interview or offer row's event time with the one its kept body names, if any."""
+    try:
+        received = datetime.fromisoformat(row["received_at"])
+    except (TypeError, ValueError):
+        return False
+    sentence, at = triage.event_of(body, received, dated=True)
+    if not at or (at, sentence) == (row["event_at"], row["event_text"]):
+        return False
+    ledger.set_event(db, row["message_id"], at, sentence)
+    return True
 
 
 def _hold_back(db: Path, row: Mapping[str, Any], judge: str) -> None:

@@ -403,7 +403,7 @@ def mail_rows(path: Path) -> list[dict[str, Any]]:
     with _db(path) as conn:
         rows = conn.execute(
             "SELECT message_id, received_at, sender_name, sender_domain, subject, kind, company,"
-            " role, deleted FROM job_mail ORDER BY received_at, message_id",
+            " role, deleted, event_at, event_text FROM job_mail ORDER BY received_at, message_id",
         ).fetchall()
     return [dict(row) for row in rows]
 

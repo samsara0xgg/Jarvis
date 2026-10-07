@@ -13,6 +13,7 @@ import contextlib
 import json
 import sqlite3
 import threading
+import time
 from datetime import UTC, date, datetime, timedelta
 from email.utils import format_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2750,6 +2751,105 @@ def test_event_of_reads_a_bare_teams_time_line_only_for_a_known_interview() -> N
     assert at == "2026-10-08T14:00-07:00"
     # A line with a date but no clock is not a time, even for a known interview.
     assert triage.event_of("Sometime in October 8, 2026.", received, dated=True) == (None, None)
+
+
+_RC_INVITE = """Thank you again for applying for the Firmware QA Analyst Co-op position \
+at Reliable Controls.
+We would like to invite you to an interview.
+
+Date: Thursday October 8th
+Time: 1:00pm - 2:00pm
+Interview Panel: Myself, Matthew Clarkson; Firmware Manager, Logen De Bruyne; Firmware QA Analyst
+Please reply to confirm that you\u2019ve received this invitation and that the proposed time \
+works for you.
+"""
+_RC_REPLY = """Confirmed, thank you.
+
+From: Jill Crowe <jill@reliablecontrols.com>
+Sent: Friday, October 2, 2026 4:45 PM
+To: Allen Shi <allen@example.com>
+Subject: Re: Invitation to Interview
+
+From: Jill Crowe <jill@reliablecontrols.com>
+Date: Friday, October 2, 2026 4:45 PM
+Subject: Invitation to Interview
+> Sent: Friday, October 2, 2026 4:45 PM
+"""
+_RC_RECEIVED = datetime(2026, 10, 2, 9, 0, tzinfo=ZoneInfo("America/Vancouver"))
+
+
+@pytest.fixture
+def vancouver(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """A bare time is the machine's clock: pin it to Allen's."""
+    monkeypatch.setenv("TZ", "America/Vancouver")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.mark.usefixtures("vancouver")
+def test_event_of_reads_the_date_and_time_lines_and_never_a_quoted_header() -> None:
+    """A labelled Date and Time is the interview; a quoted Sent header or quote line is not."""
+    for dated in (False, True):
+        sentence, at = triage.event_of(_RC_INVITE, _RC_RECEIVED, dated=dated)
+        assert at == "2026-10-08T13:00-07:00"
+        assert sentence == "Thursday October 8th, 1:00pm - 2:00pm"
+    assert triage.event_of("When: Oct 8 at 13:00 PDT\nCall me.", _RC_RECEIVED, dated=True)[1] == (
+        "2026-10-08T13:00-07:00"
+    )
+    # A mail that is no interview and names no event takes no Date and Time lines.
+    assert triage.event_of("Date: October 8\nTime: 1pm", _RC_RECEIVED) == (None, None)
+    # The old mail's header gives no event in either mode; the reply holds nothing else.
+    for dated in (False, True):
+        assert triage.event_of(_RC_REPLY, _RC_RECEIVED, dated=dated) == (None, None)
+    both = _RC_REPLY + _RC_INVITE.split("\n\n", 1)[1]
+    assert triage.event_of(both, _RC_RECEIVED, dated=True)[1] == "2026-10-08T13:00-07:00"
+
+
+def test_interviewers_of_a_panel_line_are_persons_not_titles() -> None:
+    """Myself is the sender (not known here, so left out); a role item is dropped."""
+    people = triage.mail_details(_RC_INVITE)["interviewers"]
+    assert people == ["Matthew Clarkson", "Logen De Bruyne"]
+
+
+@pytest.mark.usefixtures("vancouver")
+def test_the_repair_pass_corrects_a_wrong_event_time_from_the_kept_body(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """An interview row's event is read again from its body: replaced when the body names one."""
+    h = _harness(tmp_path, jev, [])
+    wrong = "2026-10-02T16:45-07:00"
+    for key, kind in (("fix", "interview"), ("none", "interview"), ("other", "rejection")):
+        job_ledger.upsert_mail(
+            h.db,
+            {
+                "message_id": key,
+                "received_at": _RC_RECEIVED.isoformat(),
+                "sender_name": "Jill Crowe",
+                "sender_domain": "reliablecontrols.com",
+                "subject": "Invitation to Interview",
+                "kind": kind,
+                "company": "Reliable Controls",
+                "role": "Firmware QA Analyst Co-op",
+                "event_at": wrong,
+            },
+            NOW,
+        )
+        job_ledger.set_event(h.db, key, wrong, "Sent: Friday, October 2, 2026 4:45 PM")
+    body = {"fix": _RC_INVITE, "none": "See you soon.", "other": _RC_INVITE}
+    for key, text in body.items():
+        job_ledger.record_decision(
+            h.db, key, "body", "job", NOW, head={"received_at": NOW.isoformat()}, body_excerpt=text
+        )
+    assert repair(h.db, "ledger_only") == 1
+    assert h.sql("SELECT message_id, event_at, event_text FROM job_mail ORDER BY message_id") == [
+        ("fix", "2026-10-08T13:00-07:00", "Thursday October 8th, 1:00pm - 2:00pm"),
+        ("none", wrong, "Sent: Friday, October 2, 2026 4:45 PM"),  # no time in the body: kept
+        ("other", wrong, "Sent: Friday, October 2, 2026 4:45 PM"),  # not interview or offer
+    ]
+    assert repair(h.db, "ledger_only") == 0
+    assert h.gmail.calls == []
 
 
 def _bodyless(h: _Harness, key: str, kind: str, **fields: Any) -> None:  # noqa: ANN401
