@@ -618,7 +618,7 @@ class JobMail:
             )
         return {
             "ledger": [{**g, **job_time.spent_view(found, g["company"])} for g in groups],
-            "applications": ledger.list_applications(self._db, now),
+            "applications": ledger.list_applications(self._db, now, triage.is_ats_company),
             "job_site_other_s": 0 if found is None else round(found["other_s"]),
             "skipped": ledger.list_skipped(self._db),
             "rules": [
@@ -637,7 +637,7 @@ class JobMail:
 
     def edit_application(self, app_id: str, fields: Mapping[str, Any]) -> None:
         """``POST /inherent/jobs/applications/{id}``: his edit; an unknown id is a LookupError."""
-        ledger.edit_application(self._db, self.now(), app_id, fields)
+        ledger.edit_application(self._db, self.now(), app_id, fields, triage.is_ats_company)
 
     def flag(self, message_id: str, reaction: str) -> None:
         """``POST /inherent/jobs/{id}/flag``: Allen says a held-back mail was job mail after all.
@@ -701,10 +701,10 @@ def repair(db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = ()
         fixes: dict[str, str | int] = {}
         body = ledger.body_excerpt(db, message_id)  # kept locally since ADR 0162; '' before it
         company = triage.company_of(name, domain, subject, body)
-        role = triage.role_of(subject, body)
+        role = triage.role_of(subject, body, company)
         old = (row["role"] or "").casefold()
         if not role and old not in subject.casefold() and old not in triage.GENERIC_ROLES:
-            role = row["role"] or ""
+            role = triage.clean_role(row["role"] or "", company)
         fixes.update(
             {
                 field: value

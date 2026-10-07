@@ -629,12 +629,27 @@ def company_of(name: str, domain: str, subject: str = "", body: str = "") -> str
     return _label_name(label) if label else _UNKNOWN_COMPANY
 
 
-def role_of(subject: str, body: str) -> str:
+_ROLE_LEAD: Final = re.compile(r"^(?:our|the)\s+", re.IGNORECASE)
+_ROLE_TAIL: Final = re.compile(r"\s+-\s+Applications$", re.IGNORECASE)
+
+
+def clean_role(role: str, company: str) -> str:
+    """A role without a leading "our "/"the " or a trailing " - Applications"; '' if the company."""
+    role = _ROLE_TAIL.sub("", _ROLE_LEAD.sub("", role)).strip(" -|:.,")
+    return "" if role.casefold() == company.casefold() else role
+
+
+def is_ats_company(company: str) -> bool:
+    """Whether a company is only an applicant-tracking system's name ("Bamboohr")."""
+    return re.sub(r"[\s-]", "", company).casefold() in {a.replace("-", "") for a in _ATS}
+
+
+def role_of(subject: str, body: str, company: str = "") -> str:
     """The position a letter names, from its subject first, else its body; '' when none reads."""
     for text in (subject.strip(), body):
         for pattern in _ROLE_PATTERNS:
             for found in pattern.finditer(text):
-                role = re.sub(r"\s+", " ", found.group(1)).strip(" -|:.,")
+                role = clean_role(re.sub(r"\s+", " ", found.group(1)).strip(" -|:.,"), company)
                 if (
                     3 <= len(role) <= _PLAUSIBLE_ROLE_CHARS  # noqa: PLR2004 - too short or long is noise
                     and role.casefold() not in GENERIC_ROLES
@@ -718,12 +733,8 @@ def extract(head: Head, body: str) -> Facts:
     except ValueError:
         received = datetime.now(UTC)
     text, at = event_of(body, received)
-    return Facts(
-        company_of(head.name, head.domain, head.subject, body),
-        role_of(head.subject, body),
-        text,
-        at,
-    )
+    company = company_of(head.name, head.domain, head.subject, body)
+    return Facts(company, role_of(head.subject, body, company), text, at)
 
 
 # --- what the judge sees and what the card says ----------------------------------------

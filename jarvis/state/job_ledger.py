@@ -25,7 +25,7 @@ from jarvis.shared import lang
 from jarvis.state.memory_db import open_memory_db
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
     from pathlib import Path
 
 KINDS: Final[tuple[str, ...]] = ("offer", "interview", "rejection", "receipt", "job_other", "other")
@@ -504,16 +504,19 @@ def list_ledger(path: Path, now: datetime) -> list[dict[str, Any]]:
 # --- applications (ADR 0177) ---------------------------------------------------------
 
 
-def application_id(company: str, role: str) -> str:
-    """The stable id of a mail-derived application: a hash of its company and role."""
-    key = f"{company.casefold()}\n{role.casefold()}"
-    return hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:12]
+def application_id(company: str) -> str:
+    """The stable id of a mail-derived application: a hash of its company, case-folded."""
+    return hashlib.sha1(company.casefold().encode(), usedforsecurity=False).hexdigest()[:12]
 
 
 def _mail_application(
-    app_id: str, mails: list[sqlite3.Row], edit: sqlite3.Row | None, now: datetime
+    company: str, mails: list[sqlite3.Row], edit: sqlite3.Row | None, now: datetime
 ) -> dict[str, Any]:
-    """One application out of its mails (oldest first) and Allen's edit row, if he made one."""
+    """One application out of its mails (oldest first) and Allen's edit row, if he made one.
+
+    The company shown is the newest mail's that names it (a merged-in ATS mail names its ATS),
+    the role the longest one any mail read, the most specific.
+    """
     status = "applied"
     for m in mails:
         status = _KIND_STATUS.get(m["kind"], status)
@@ -534,9 +537,13 @@ def _mail_application(
         applied_at = edit["applied_at"] or applied_at
         note, hidden = edit["note"] or "", bool(edit["hidden"])
     return {
-        "id": app_id,
-        "company": newest["company"] or "",
-        "role": next((m["role"] for m in reversed(mails) if m["role"]), ""),
+        "id": application_id(company),
+        "company": next(
+            m["company"] or ""
+            for m in reversed(mails)
+            if (m["company"] or "").casefold() == company
+        ),
+        "role": max((m["role"] for m in reversed(mails) if m["role"]), key=len, default=""),
         "status": status,
         "status_auto": auto,
         "applied_at": applied_at,
@@ -550,13 +557,16 @@ def _mail_application(
     }
 
 
-def _applications(path: Path, now: datetime) -> list[dict[str, Any]]:
+def _applications(
+    path: Path, now: datetime, is_ats: Callable[[str], bool] = lambda _: False
+) -> list[dict[str, Any]]:
     """Every application, hidden ones too: the visible ledger mails grouped, plus Allen's rows.
 
-    Mails group by company; each distinct role is an application, and a mail with no role joins
-    the company's one roled application (any other count: the company's role-less one). The key
-    of an application is its company and role, case-folded; an ``edit`` row of that key overrides
-    its fields, a ``manual`` row is an application of its own.
+    One application per company, case-folded. A mail whose company ``is_ats`` (only an
+    applicant-tracking system's name) joins the other company's application with the same role,
+    else it stays its own. A mail-derived application has Allen's ``edit`` row of its company (the
+    newest, when there are several) override its fields; a ``manual`` row is an application of its
+    own.
     """
     with _db(path) as conn:
         rows = conn.execute(
@@ -564,21 +574,31 @@ def _applications(path: Path, now: datetime) -> list[dict[str, Any]]:
             " FROM job_mail WHERE deleted = 0",
         ).fetchall()
         mine = conn.execute("SELECT * FROM job_application").fetchall()
-    edits = {row["id"]: row for row in mine if row["source"] == "edit"}
-    rows.sort(key=lambda m: (_moment(m["received_at"]) or _EPOCH, m["message_id"]))
+    edits: dict[str, sqlite3.Row] = {}
+    for row in sorted(
+        (r for r in mine if r["source"] == "edit"), key=lambda r: r["updated_at"] or ""
+    ):
+        edits[(row["company"] or "").casefold()] = row  # the newest edit of a company is last
     by_company: dict[str, list[sqlite3.Row]] = {}
     for m in rows:
         by_company.setdefault((m["company"] or "").casefold(), []).append(m)
+    roles = {
+        k: {r for g in group if (r := (g["role"] or "").casefold())}
+        for k, group in by_company.items()
+        if k and not is_ats(k)
+    }
+    for key in [k for k in by_company if k and is_ats(k)]:
+        for m in by_company[key][:]:
+            role = (m["role"] or "").casefold()
+            home = next((k for k, held in roles.items() if role and role in held), None)
+            if home:
+                by_company[key].remove(m)
+                by_company[home].append(m)
     found = []
-    for mails in by_company.values():
-        roles = {r for m in mails if (r := (m["role"] or "").casefold())}
-        home = next(iter(roles)) if len(roles) == 1 else ""
-        apps: dict[str, list[sqlite3.Row]] = {}
-        for m in mails:
-            apps.setdefault((m["role"] or "").casefold() or home, []).append(m)
-        for role, group in apps.items():
-            app_id = application_id(group[0]["company"] or "", role)
-            found.append(_mail_application(app_id, group, edits.get(app_id), now))
+    for company, mails in by_company.items():
+        if mails:
+            mails.sort(key=lambda m: (_moment(m["received_at"]) or _EPOCH, m["message_id"]))
+            found.append(_mail_application(company, mails, edits.get(company), now))
     found.extend(
         {
             "id": row["id"],
@@ -601,12 +621,14 @@ def _applications(path: Path, now: datetime) -> list[dict[str, Any]]:
     return found
 
 
-def list_applications(path: Path, now: datetime) -> list[dict[str, Any]]:
+def list_applications(
+    path: Path, now: datetime, is_ats: Callable[[str], bool] = lambda _: False
+) -> list[dict[str, Any]]:
     """The tracker's rows (ADR 0177): offers and interviews first, then applied, no reply, rejected.
 
     Newest activity first within a status. Hidden applications are left out.
     """
-    shown = [app for app in _applications(path, now) if not app.pop("hidden")]
+    shown = [app for app in _applications(path, now, is_ats) if not app.pop("hidden")]
     return sorted(
         shown,
         key=lambda a: (
@@ -667,7 +689,13 @@ def add_application(  # noqa: PLR0913 - the row's fields
 _APPLICATION_EDITABLE: Final[tuple[str, ...]] = ("status", "applied_at", "note", "hidden")
 
 
-def edit_application(path: Path, now: datetime, app_id: str, fields: Mapping[str, Any]) -> None:
+def edit_application(
+    path: Path,
+    now: datetime,
+    app_id: str,
+    fields: Mapping[str, Any],
+    is_ats: Callable[[str], bool] = lambda _: False,
+) -> None:
     """Change ``status``, ``applied_at``, ``note`` or ``hidden`` of an application.
 
     A mail-derived application gets an ``edit`` row (keyed by its id) on its first edit. On an
@@ -680,7 +708,7 @@ def edit_application(path: Path, now: datetime, app_id: str, fields: Mapping[str
         row = conn.execute("SELECT source FROM job_application WHERE id = ?", (app_id,)).fetchone()
     base = None
     if row is None:
-        base = next((a for a in _applications(path, now) if a["id"] == app_id), None)
+        base = next((a for a in _applications(path, now, is_ats) if a["id"] == app_id), None)
         if base is None:
             msg = f"no such application: {app_id}"
             raise LookupError(msg)

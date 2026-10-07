@@ -36,16 +36,19 @@ Its limits:
   sent to X" is not excluded (the poller and the repair pass of ADR 0158 treat it as
   normal mail), and its company is X, not "LinkedIn". All other linkedin.com mail stays
   excluded.
-- **Grouping.** Visible mails group by company, case-folded; each distinct non-empty
-  role is an application. A mail with no role joins the company's application when it
-  has exactly one roled application, else it forms the company's role-less one. The key
-  is (company, role) case-folded, and its hash is the application's id.
+- **Grouping.** Visible mails group by company, case-folded: one application per
+  company, however many roles its mails name. Its role is the longest role any of them
+  read, and the hash of the case-folded company is its id. A mail whose company is only an
+  applicant-tracking system's name (the fallback when no employer reads, such as
+  "Bamboohr") joins the other company's application with the same role, else it stays its
+  own. A role equal to the company, a leading "our " or "the ", and a trailing
+  " - Applications" are not part of a role.
 - **Status.** Walking the mails oldest to newest from `applied`: receipt gives `applied`,
   interview `interviewing`, offer `offer`, rejection `rejected`; other kinds change
   nothing. An `applied` application whose newest mail is over 21 days old is `no_reply`.
   The statuses are exactly those five.
 - **Allen's rows.** The `job_application` table holds `manual` rows (an application with
-  no mail) and `edit` rows (overrides of a mail-derived application, same key: status,
+  no mail) and `edit` rows (overrides of a mail-derived application of the same company: status,
   applied date, note, hidden). An edit's status stands until a mail of kind receipt,
   interview, offer or rejection arrives after he set it. On an edit row `updated_at` is
   when he last set the status, so a note edit does not renew it.
@@ -75,5 +78,6 @@ Its limits:
 - LinkedIn mail scanned before this change was either hidden (rows) or marked seen as
   not job mail; an Easy Apply confirmation among them is not brought back and needs
   Allen's flag.
-- Grouping is by the roles the local regexes read: a role read two ways for one job is
-  two applications, and Allen's only repair is to hide one.
+- Two postings at one company are one application, and a company the local rules read two
+  ways (or an ATS name no role ties to an employer) is two; Allen's only repair is to hide
+  one.

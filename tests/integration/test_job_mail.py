@@ -1048,6 +1048,28 @@ def test_a_possessive_and_the_role_word_after_it_are_not_the_company(
 
 
 @pytest.mark.parametrize(
+    ("subject", "body", "company", "role"),
+    [
+        # Allen's real mail, 2026-10-06: the company's name is no role; "our", "- Applications" go.
+        ("Security code for your application to Later", "", "Later", ""),
+        ("Thank you for applying at Planview", "", "Planview", ""),
+        (
+            "Thank you for applying to Rivian and Volkswagen Group T...",
+            "Thank you for applying to our Software Engineering Intern - Applications role.",
+            "RV Tech",
+            "Software Engineering Intern",
+        ),
+        ("Update", "Please review the the QA Engineer position details.", "Acme", "QA Engineer"),
+    ],
+)
+def test_the_role_is_never_the_company_and_loses_our_the_and_applications(
+    subject: str, body: str, company: str, role: str
+) -> None:
+    """A role equal to the company is dropped; a leading our/the and a trailing suffix go."""
+    assert triage.role_of(subject, body, company) == role
+
+
+@pytest.mark.parametrize(
     ("subject", "body", "role"),
     [
         ("Cambio Earth - Update", CAMBIO_BODY, "QA & Test Automation Developer Co-op"),
@@ -2371,10 +2393,10 @@ def _apps(h: _Harness) -> dict[tuple[str, str], dict[str, Any]]:
     return {(one["company"], one["role"]): one for one in reply["applications"]}
 
 
-def test_applications_group_by_company_and_role_and_the_status_follows_the_mail(
+def test_applications_group_by_company_and_the_status_follows_the_mail(
     tmp_path: Path, jev: _Jev
 ) -> None:
-    """Receipt, then interview is interviewing; a role-less mail joins the one roled application."""
+    """Receipt, then interview is interviewing; one company is one application, whatever role."""
     h = _harness(tmp_path, jev, [])
     soon = (NOW + timedelta(days=2)).isoformat()
     _stored(h, "a1", "Acme", "QA Co-op", "receipt", timedelta(days=10))
@@ -2382,11 +2404,11 @@ def test_applications_group_by_company_and_role_and_the_status_follows_the_mail(
     _stored(h, "a3", "ACME", "", "job_other", timedelta(days=4))  # no role: joins QA Co-op
     _stored(h, "b1", "Beta", "", "receipt", timedelta(days=22))  # silent for over 21 days
     _stored(h, "c1", "Gamma", "Dev", "receipt", timedelta(days=2))
-    _stored(h, "c2", "Gamma", "Ops", "receipt", timedelta(days=2))
-    _stored(h, "c3", "Gamma", "", "rejection", timedelta(days=1))  # two roles: its own row
+    _stored(h, "c2", "Gamma", "Platform Dev", "receipt", timedelta(days=2))  # the longest role
     _stored(h, "d1", "Delta", "", "receipt", timedelta(days=3))
     _stored(h, "d2", "Delta", "", "offer", timedelta(days=2))
     _stored(h, "d3", "Delta", "", "receipt", timedelta(days=1))  # a later receipt: applied again
+    _stored(h, "c3", "Gamma", "", "rejection", timedelta(days=1))
     h.client.post("/inherent/jobs/c3/delete")  # a deleted mail is not counted
     _stored(h, "e1", "Epsilon", "", "receipt", timedelta(days=1))
 
@@ -2407,26 +2429,119 @@ def test_applications_group_by_company_and_role_and_the_status_follows_the_mail(
         "event_text",
     }
     assert apps[("Beta", "")]["status"] == "no_reply"
-    assert {k: v["status"] for k, v in apps.items() if k[0] == "Gamma"} == {
-        ("Gamma", "Dev"): "applied",
-        ("Gamma", "Ops"): "applied",
-    }  # the deleted rejection left no role-less application behind
+    gamma = apps[("Gamma", "Platform Dev")]  # three roles read are one row; the deleted mail is out
+    assert (gamma["status"], gamma["count"]) == ("applied", 2)
     assert apps[("Delta", "")]["status"] == "applied"
     assert [one["status"] for one in h.client.get("/inherent/jobs").json()["applications"]] == [
         "interviewing",
         "applied",
         "applied",
         "applied",
-        "applied",
         "no_reply",
     ]
 
-    # With the rejection kept, two roles leave the role-less mail a row of its own.
     _stored(h, "c4", "Gamma", "", "rejection", timedelta(days=1))
     apps = _apps(h)
-    assert apps[("Gamma", "")]["status"] == "rejected"
-    assert apps[("Gamma", "Dev")]["status"] == "applied"
+    assert apps[("Gamma", "Platform Dev")]["status"] == "rejected"
     assert list(apps.values())[-1]["status"] == "rejected"  # rejected sorts last
+
+
+def test_the_repair_pass_clears_a_role_that_is_the_company_and_cleans_a_kept_one(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """Later/Later and Planview/Planview lose the role; a kept role is cleaned as read."""
+    h = _harness(tmp_path, jev, [])
+    for key, name, domain, subject, company, role in (
+        (
+            "a",
+            "Greenhouse",
+            "us.greenhouse-mail.io",
+            "Security code for your application to Later",
+            "Later",
+            "Later",
+        ),
+        (
+            "b",
+            "Planview",
+            "talent.icims.com",
+            "Thank you for applying at Planview",
+            "Planview",
+            "Planview",
+        ),
+        (
+            "c",
+            "RV Tech",
+            "rivianvw.tech",
+            "Thank you for applying",
+            "RV Tech",
+            "our Software Engineering Intern - Applications",
+        ),
+    ):
+        mail = {
+            "message_id": key,
+            "received_at": NOW.isoformat(),
+            "sender_name": name,
+            "sender_domain": domain,
+            "subject": subject,
+            "kind": "receipt",
+            "company": company,
+            "role": role,
+        }
+        job_ledger.upsert_mail(h.db, mail, NOW)
+    assert repair(h.db, "ledger_only") > 0
+    assert h.sql("SELECT message_id, company, role FROM job_mail ORDER BY message_id") == [
+        ("a", "Later", ""),
+        ("b", "Planview", ""),
+        ("c", "RV Tech", "Software Engineering Intern"),
+    ]
+    assert repair(h.db, "ledger_only") == 0
+
+
+def test_reliable_controls_mails_are_one_application_and_an_ats_name_joins_by_role(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """Allen's real rows: five mails, four role spellings, one application; Bamboohr merges in."""
+    h = _harness(tmp_path, jev, [])
+    rc, role = "Reliable Controls", "Firmware QA Analyst Co-op"
+    _stored(h, "r1", rc, role, "interview", timedelta(days=5))
+    _stored(h, "r2", rc, "Firmware QA Co-op", "interview", timedelta(days=4))
+    _stored(h, "r3", rc, "", "interview", timedelta(days=3))
+    _stored(h, "r4", rc, "", "interview", timedelta(days=2))
+    _stored(h, "t1", "Bamboohr", role, "job_other", timedelta(days=1))  # the ATS label, same role
+    _stored(h, "l1", "Later", "Software Development Co-op", "receipt", timedelta(days=1))
+    _stored(h, "l2", "Greenhouse", "Software Development Co-op", "job_other", timedelta(days=1))
+    _stored(h, "x1", "Bamboohr", "Another Role", "job_other", timedelta(days=1))  # no match
+
+    apps = _apps(h)
+    one = apps[(rc, role)]
+    assert (one["status"], one["count"]) == ("interviewing", 5)
+    assert (one["company"], one["last_at"]) == (rc, (NOW - timedelta(days=1)).isoformat())
+    assert apps[("Later", "Software Development Co-op")]["count"] == 2
+    assert apps[("Bamboohr", "Another Role")]["count"] == 1
+    assert len(apps) == 3
+
+    # An edit row written when the application was keyed by company and role still applies.
+    h.sql(
+        "INSERT INTO job_application (id, company, role, source, note, hidden, created_at,"
+        " updated_at) VALUES (?, ?, ?, 'edit', ?, 0, ?, ?)",
+        "old-id-1",
+        rc,
+        "Firmware QA Co-op",
+        "older",
+        "2026-10-01T00:00:00+00:00",
+        "2026-10-01T00:00:00+00:00",
+    )
+    h.sql(
+        "INSERT INTO job_application (id, company, role, source, note, hidden, created_at,"
+        " updated_at) VALUES (?, ?, ?, 'edit', ?, 0, ?, ?)",
+        "old-id-2",
+        rc.upper(),
+        role,
+        "newest",
+        "2026-10-02T00:00:00+00:00",
+        "2026-10-02T00:00:00+00:00",
+    )
+    assert _apps(h)[(rc, role)]["note"] == "newest"
 
 
 def test_allens_own_rows_and_edits_go_through_the_routes(tmp_path: Path, jev: _Jev) -> None:
