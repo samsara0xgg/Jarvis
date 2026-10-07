@@ -1,4 +1,4 @@
-"""ADR 0174 — the Dashboard's reported view, its line, its route and her page-turning tool."""
+"""ADR 0176 — the Dashboard's reported view, its line, its route and her page-turning tool."""
 
 from __future__ import annotations
 

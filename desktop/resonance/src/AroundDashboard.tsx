@@ -705,7 +705,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const signedIn = t(['Signed in', '已登录']), connected = t(['Connected', '已连接']);
   const accounts: Account[] = [svc('Claude', claude, signedIn), svc('Codex', codexUsage, signedIn), svc('OpenAI', openai, connected), svc('DeepSeek', deepseek, connected), svc('MiniMax', minimax, connected)];
 
-  // ADR 0174: what is on screen, told to the daemon: the page, its tab, the open item and the rows in screen order (ten at most, one line each).
+  // ADR 0176: what is on screen, told to the daemon: the page, its tab, the open item and the rows in screen order (ten at most, one line each).
   // Only titles go; a letter's body or a note's detail is read through the tool that owns it. Every change, and every 20 s while the panel is open.
   const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim().slice(0, 80);
   const mailTitle = (m: Mail) => oneLine(`${m.from} — ${m.subject}`);
@@ -738,7 +738,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   // Closing the panel (or this window) tells the daemon nothing is on screen. A failure changes nothing: the daemon forgets after 60 s.
   useEffect(() => { if (port && open) return () => { void postRoute(port, '/inherent/view', { page: null }).catch(() => {}); }; }, [port, open]);
 
-  // ADR 0174: she turned the Dashboard (the companion opened the panel if it was shut). A letter or a note opens; any other row lights for a moment.
+  // ADR 0176: she turned the Dashboard (the companion opened the panel if it was shut). A letter or a note opens; any other row lights for a moment.
   const [lit, setLit] = useState<{ id: string; key: number } | null>(null);
   useEffect(() => {
     if (!present || !open || !(present.page in TITLES) || present.page === 'arrange') return;

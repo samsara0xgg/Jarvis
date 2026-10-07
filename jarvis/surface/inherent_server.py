@@ -622,7 +622,7 @@ class InherentDeps:
     mail_summary: Callable[[str], Awaitable[dict[str, Any]]] | None = None
     mail_mark_read: Callable[[list[str], bool], Awaitable[None]] | None = None
     mail_trash: Callable[[list[str], bool], Awaitable[None]] | None = None
-    # ADR 0174, ``dashboard.view.enabled``: what the Dashboard shows (page, tab, open item
+    # ADR 0176, ``dashboard.view.enabled``: what the Dashboard shows (page, tab, open item
     # ``(kind, id, title)``, rows ``(id, title)``; page None closes). ``None`` = 404.
     view_set: (
         Callable[
@@ -1271,7 +1271,7 @@ class ViewItem(ViewRow):
 
 
 class ViewRequest(BaseModel):
-    """Body of ``POST /inherent/view`` (ADR 0174): what the Dashboard shows; page null = closed."""
+    """Body of ``POST /inherent/view`` (ADR 0176): what the Dashboard shows; page null = closed."""
 
     page: str | None = Field(default=None, max_length=24)
     tab: str = Field(default="", max_length=24)
@@ -1510,7 +1510,7 @@ def _register_mail_page_routes(app: FastAPI, deps: InherentDeps) -> None:  # noq
 
         @app.post("/inherent/view", status_code=200)
         async def view(req: ViewRequest) -> dict[str, bool]:
-            """What the Dashboard shows; repeated every 20 s, a null page closes (ADR 0174)."""
+            """What the Dashboard shows; repeated every 20 s, a null page closes (ADR 0176)."""
             item = None if req.item is None else (req.item.kind, req.item.id, req.item.title)
             view_set(req.page, req.tab, item, [(row.id, row.title) for row in req.rows])
             return {"ok": True}

@@ -410,7 +410,7 @@ spend_cap:
 dashboard:
   mail:
     enabled: false
-  # ADR 0174.  On: the Dashboard tells the daemon which page, tab, open item and (up to ten)
+  # ADR 0176.  On: the Dashboard tells the daemon which page, tab, open item and (up to ten)
   # rows are on screen, one Dashboard line carries them to the model, and show_on_dashboard
   # lets her turn its pages.  The mail page needs this too (its open letter comes from it),
   # so it is on here: off breaks a mail page that is on.  Off: POST /inherent/view answers

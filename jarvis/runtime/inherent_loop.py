@@ -6325,7 +6325,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         codex_board: dict[str, CodexSession] = {}
         # ADR 0147: the Dashboard's mail page exists only with ``dashboard.mail.enabled``.
         mail_home = None if runtime.mail_drafts is None else runtime.home
-        if runtime.view is not None:  # ADR 0174: her ``present`` op reaches the companion
+        if runtime.view is not None:  # ADR 0176: her ``present`` op reaches the companion
             runtime.view.push = lambda sent: broadcaster.broadcast_op_sync("present", **sent)
         deps = InherentDeps(
             submit_callable=submit_callable,

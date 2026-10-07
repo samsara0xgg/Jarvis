@@ -615,7 +615,7 @@ class JarvisRuntime:
     projects: ProjectsService | None = None
     # ADR 0051: the companion home's Today, mail and brief reads. None = hand-assembled.
     home: Home | None = None
-    # ADR 0174: what the Dashboard shows (``dashboard.view.enabled``). None = off.
+    # ADR 0176: what the Dashboard shows (``dashboard.view.enabled``). None = off.
     view: ViewState | None = None
     # ADR 0147: the Dashboard's mail page's reply drafts (``dashboard.mail.enabled``, which
     # needs the view: a draft goes under the letter the view has open). None = off.
@@ -1274,7 +1274,7 @@ def _dashboard_mail(config: Mapping[str, Any]) -> bool:
 
 
 def _dashboard_view(config: Mapping[str, Any]) -> bool:
-    """``dashboard.view.enabled`` (ADR 0174): the shell reports its view."""
+    """``dashboard.view.enabled`` (ADR 0176): the shell reports its view."""
     return _dashboard_switch(config, "view")
 
 
@@ -1293,7 +1293,7 @@ def _dashboard_state(
 ) -> tuple[ViewState | None, ViewState | None, MailDrafts | None]:
     """The Dashboard's view, the view the mail page reads, and the mail drafts (None = off).
 
-    The mail page needs the view (ADR 0174: its open letter is the view's open item); with
+    The mail page needs the view (ADR 0176: its open letter is the view's open item); with
     ``dashboard.mail.enabled`` alone it stays off.
     """
     view = ViewState() if _dashboard_view(config) else None
@@ -1304,7 +1304,7 @@ def _dashboard_state(
 
 
 def _register_dashboard_tool(registry: ToolRegistry, view: ViewState | None) -> None:
-    """``show_on_dashboard`` (ADR 0174), registered only with ``dashboard.view.enabled``."""
+    """``show_on_dashboard`` (ADR 0176), registered only with ``dashboard.view.enabled``."""
     for tool in build_dashboard_tool(PAGES, None if view is None else view.present):
         registry.register(tool)
 

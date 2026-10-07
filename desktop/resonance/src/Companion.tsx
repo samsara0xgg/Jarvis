@@ -528,7 +528,7 @@ export function Companion() {
   };
   // The job summary's button: the Dashboard opens on the job ledger and the summary goes without a "dismissed".
   const openJobs = () => { openDashboard(false); pinned.current = true; if (detachedMode.current) window.jarvis?.dashboardMessage?.('dashboard', { type: 'jobs' }); else setJobsFocus(n => n + 1); notices.next(); };
-  // ADR 0174: she turned the Dashboard to a page. A shut one opens (she moves it only when Allen asked to see something), and the page follows.
+  // ADR 0176: she turned the Dashboard to a page. A shut one opens (she moves it only when Allen asked to see something), and the page follows.
   useEffect(() => { if (s.present) { openDashboard(false); pinned.current = true; } }, [s.present?.key]);
   const closeDashboard = () => { if (detached) void window.jarvis?.dashboard?.('close'); else setDashboard(false); };
   // Clicking the island opens the Dashboard; a click on one it is already showing closes it, unless a rest opened it a moment

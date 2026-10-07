@@ -1,4 +1,4 @@
-"""ADR 0174, 0148: what the Dashboard shows, and the reply draft under an open letter.
+"""ADR 0176, 0148: what the Dashboard shows, and the reply draft under an open letter.
 
 Both are in memory only: a restart forgets them; the event log keeps what Jarvis wrote as
 the ``write_mail_draft`` rows.
@@ -17,7 +17,7 @@ VIEW_STALE_S: Final = 60.0
 VIEW_ROWS: Final = 10
 VIEW_LINE_PREFIX: Final = "Dashboard: "
 VIEW_LINE_CHARS: Final = 1200
-"""The view line is the second live-context line allowed past 200 characters (ADR 0174)."""
+"""The view line is the second live-context line allowed past 200 characters (ADR 0176)."""
 DRAFT_CHARS: Final = 8000
 _DRAFTS_KEPT: Final = 20
 DRAFT_LINE_PREFIX: Final = "Draft reply under it"
@@ -82,7 +82,7 @@ def _clean(kind: str, ident: str, title: str) -> Item:
 class ViewState:
     """What the Dashboard shows now (page, tab, open item, up to ten rows), or nothing.
 
-    The one thing the shell reports (ADR 0174); the mail page's open letter is the open item
+    The one thing the shell reports (ADR 0176); the mail page's open letter is the open item
     of kind ``mail`` (ADR 0148). ``push`` is how a ``present`` op reaches the companion; the
     daemon sets it once its WebSocket broadcaster exists.
     """
