@@ -1165,9 +1165,20 @@ def _main_mcp_login(argv: list[str]) -> int:
     parser.add_argument(
         "--runtime-root", type=Path, default=None, help="Override JARVIS_RUNTIME_ROOT."
     )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help=(
+            "Print the authorization URL and open nothing (the default on a machine with "
+            "no desktop). Open it on a machine that forwards 127.0.0.1:8789 here."
+        ),
+    )
     args = parser.parse_args(argv)
     try:
-        return mcp_login(args.server, config_path=args.config, runtime_root=args.runtime_root)
+        return mcp_login(
+            args.server, config_path=args.config, runtime_root=args.runtime_root,
+            open_browser=not args.no_browser,
+        )
     except (RuntimeBootstrapError, OSError, ValueError) as exc:
         sys.stderr.write(f"jarvis mcp-login: {exc}\n")
         return 1

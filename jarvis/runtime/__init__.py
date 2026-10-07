@@ -2301,10 +2301,29 @@ def _wire_plan_reader(service: DailyReportService, connections: PluginConnection
         )
 
 
+def _has_no_browser() -> bool:
+    """True on Linux with no display, where ``webbrowser`` would start lynx or w3m here."""
+    return sys.platform != "darwin" and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    )
+
+
+def _print_only(_url: str) -> None:
+    """The login's URL is already on stderr; open nothing."""
+
+
 def mcp_login(
-    server: str, *, config_path: Path | None = None, runtime_root: Path | None = None
+    server: str,
+    *,
+    config_path: Path | None = None,
+    runtime_root: Path | None = None,
+    open_browser: bool = True,
 ) -> int:
     """ADR 0032: log one `auth: oauth` server in through the browser; the daemon reuses the token.
+
+    ``open_browser`` False, or a machine with no desktop (a brain on a Raspberry Pi), prints the
+    authorization URL and opens nothing: open it in a browser on another machine that reaches this
+    one's callback port through ``ssh -L``. The token is still stored here (ADR 0170).
 
     A local server that keeps its own login names its login command in
     ``login_args`` (ADR 0055); that command runs here, in the terminal, with the
@@ -2338,7 +2357,17 @@ def mcp_login(
     if not is_oauth(spec):
         sys.stderr.write(f"mcp-login: {server} does not log in with OAuth; nothing to do\n")
         return 2
-    mcp_servers = _mcp_servers(block, paths, open_url=webbrowser.open)
+    opener: Callable[[str], object] = webbrowser.open
+    if not open_browser or _has_no_browser():
+        opener = _print_only
+        port = int(block.get("oauth_callback_port", DEFAULT_OAUTH_CALLBACK_PORT))
+        sys.stderr.write(
+            f"mcp-login: no browser is opened here. Open the URL below in a browser that reaches "
+            f"this machine's 127.0.0.1:{port}, e.g. from a Mac: "
+            f"ssh -L {port}:127.0.0.1:{port} <user>@<this host>\n"
+        )
+
+    mcp_servers = _mcp_servers(block, paths, open_url=opener)
     try:
         tools = mcp_servers.connect({server: spec})
     finally:

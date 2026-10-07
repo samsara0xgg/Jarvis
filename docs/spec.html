@@ -244,7 +244,7 @@ header strong { color: var(--fg-strong); }
 <li>agent 宿主的每个请求都要带它自己的钥匙：<code>agents/host-key</code> 里的 32 个随机字节，只有主人能读，宿主和伴侣谁先用到谁生成（ADR 0095）。后台的令牌也还能打开它，留给这次改动之前的伴侣。它回 <code>Access-Control-Allow-Origin: *</code>，不查 Host 头。</li>
 <li><code>scripts/claude_hook.py</code> 把令牌发给 127.0.0.1:8006 上正在听的进程，再把对方的回答交给 Claude Code，当作权限决定。</li>
 <li>安装版的 App 启动时也先带着令牌问 8006：对方答得上来，就当它是自己的后台，不再另起一个。</li>
-<li>主人在终端登录远程 MCP 服务（<code>python -m jarvis mcp-login</code>）时，这个命令在 127.0.0.1:8789 上临时听浏览器的回调，登录完就关；授权走 PKCE。</li>
+<li>主人在终端登录远程 MCP 服务（<code>python -m jarvis mcp-login</code>）时，这个命令在 127.0.0.1:8789 上临时听浏览器的回调，登录完就关；授权走 PKCE，回调只绑 127.0.0.1，并校验 state。机器上没有桌面（Linux 没有 <code>DISPLAY</code>）或加了 <code>--no-browser</code> 时，命令只打印授权网址，不打开任何浏览器。没有浏览器的大脑（树莓派）这样登录（ADR 0170）：在 Mac 上 <code>ssh -L 8789:127.0.0.1:8789 allen@jarvis</code>，在大脑上跑 <code>python -m jarvis mcp-login &lt;服务名&gt;</code>，把打印出的网址贴进 Mac 的浏览器；授权后浏览器跳回的 127.0.0.1:8789 经隧道到大脑上的那个命令，令牌写在大脑的 <code>mcp/</code>，Mac 的磁盘上没有。Gmail 不走这条：它的登录命令是 Google 那个本机服务自己的 <code>headless-login.js</code>（<code>login_args</code>，ADR 0055），本来就是打印网址、把授权后页面上的 JSON 粘回终端，所以在大脑上跑 <code>mcp-login gmail</code>、在 Mac 的浏览器里授权、把 JSON 粘回 ssh 终端即可，令牌加密存在大脑上它自己的目录；这个服务要先装在大脑上（<code>~/Projects/external/gemini-workspace</code>，需要 node）。</li>
 <li><code>keeper.sock</code> 和 <code>codex.sock</code> 不认证，靠运行目录（keeper.sock 挪进临时目录时是那个文件夹）的 0700 挡住别的账户（<a href="#other-openings">第 6 章</a>）。</li>
 </ul>
 <div class="gap"><span class="tag gap">未满足</span>本机端口对这台 Mac 上的每个账户都开放，另一个账户的进程可以先占住 8006，收下 hook 和安装版 App 交过来的令牌，并替主人回答 Claude Code 的权限请求。ADR 0090 要求本机接口搬进运行目录里（0700）的 unix socket，像 <code>codex.sock</code> 那样。安装版和开发版现在共用 <code>~/.jarvis</code> 和 8006（改18）。</div>

@@ -7,6 +7,7 @@ reuses and refreshes the stored token and never opens a browser).
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import socket
@@ -15,11 +16,13 @@ import sys
 import threading
 import time
 import urllib.request
+import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from jarvis.execution.mcp_oauth import _Listener
 from jarvis.execution.mcp_tools import McpServers
 from jarvis.execution.tool_search import build_tool_search
 from jarvis.execution.tools import Tool
@@ -340,6 +343,54 @@ def test_oauth_login_then_the_daemon_reuses_and_refreshes(tmp_path: Path, oauth_
     assert refreshed["tokens"]["access_token"] == "at-2"  # noqa: S105
     assert refreshed["expires_at"] > time.time()
     assert len(opened) == 1
+
+
+def test_mcp_login_without_a_browser_prints_the_url_and_finishes_through_the_loopback(
+    tmp_path: Path, oauth_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0170: on a brain with no desktop the URL is printed and nothing is opened.
+
+    The redirect lands on 127.0.0.1 only (an ``ssh -L`` from the browser's machine arrives
+    there), and the token is stored on this machine.
+    """
+    port = _free_port()
+    config = tmp_path / "config" / "jarvis.yaml"
+    config.parent.mkdir()
+    entry = {"svc": {"url": oauth_url, "auth": "oauth"}}
+    mcp = {"servers": entry, "oauth_callback_port": port}
+    config.write_text(json.dumps({"tools": {"mcp": mcp}}))
+    printed = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", printed)
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda url, *_a, **_k: opened.append(url))
+
+    def other_machines_browser() -> None:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            urls = [w for w in printed.getvalue().split() if "/authorize" in w]
+            if urls:
+                urllib.request.urlopen(urls[0], timeout=10).read()  # noqa: S310 — loopback test server.
+                return
+            time.sleep(0.1)
+
+    browser = threading.Thread(target=other_machines_browser, daemon=True)
+    browser.start()
+    runtime_root = tmp_path / "runtime"
+    assert mcp_login("svc", config_path=config, runtime_root=runtime_root, open_browser=False) == 0
+    browser.join(timeout=10)
+    assert opened == []
+    assert f"http://127.0.0.1:{port}/callback" in printed.getvalue()
+    assert f"ssh -L {port}:127.0.0.1:{port}" in printed.getvalue()
+    assert (runtime_root / "mcp" / "svc.json").is_file()
+
+
+def test_the_callback_listener_binds_loopback_only() -> None:
+    """The one port a login opens is not reachable from the network."""
+    listener = _Listener(_free_port())
+    try:
+        assert listener.server_address[0] == "127.0.0.1"
+    finally:
+        listener.server_close()
 
 
 def test_browser_guard_leaves_payment_and_sign_in_to_allen(

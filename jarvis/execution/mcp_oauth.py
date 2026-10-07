@@ -171,7 +171,10 @@ class BrowserLogin:
         threading.Thread(
             target=self._listener.serve_forever, kwargs={"poll_interval": 0.25}, daemon=True
         ).start()
-        sys.stderr.write(f"Open this URL to log in (a browser should open by itself):\n{url}\n")
+        sys.stderr.write(
+            f"Open this URL in a browser to log in; it sends the browser back to "
+            f"http://127.0.0.1:{self._port}/callback on this machine:\n{url}\n"
+        )
         self._open_url(url)
 
     async def callback(self) -> AuthorizationCodeResult:
