@@ -109,7 +109,7 @@ contextBridge.exposeInMainWorld('dictation', {
   onFinish: listen('dictation-finish'),
   onCancel: listen('dictation-cancel'),
   onCursor: listen('dictation-cursor'),
-  paste: (text: string) => ipcRenderer.send('dictation-paste', text),
+  paste: (text: string, send: boolean) => ipcRenderer.send('dictation-paste', text, send),
   target: (): Promise<string> => ipcRenderer.invoke('dictation-target'),
   copy: (text: string) => ipcRenderer.send('dictation-copy', text),
   home: (happy: boolean) => ipcRenderer.send('dictation-home', happy),

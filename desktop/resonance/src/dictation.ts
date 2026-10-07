@@ -15,10 +15,10 @@ export type DictationStart = {
 };
 declare global { interface Window { dictation: {
   onStart: (cb: (start: DictationStart) => void) => void;
-  onFinish: (cb: () => void) => void;
+  onFinish: (cb: (send?: boolean) => void) => void;
   onCancel: (cb: () => void) => void;
   onCursor: (cb: (point: Pt) => void) => void;
-  paste: (text: string) => void;
+  paste: (text: string, send: boolean) => void;
   target: () => Promise<string>;
   copy: (text: string) => void;
   home: (happy: boolean) => void;
@@ -113,6 +113,8 @@ const P = {
   vis: { x: 0, y: 0 }, cursor: { x: -1e4, y: -1e4 }, over: false, downAt: -1,
   // A tap on her once she is listening: the words come back in a box to fix before they go in.
   edit: false,
+  // Return finished it (ADR 0174): once the words are pasted, Return goes to the app too.
+  send: false,
 };
 // Beats, in ms.
 const APPEAR = 340, PLUNGE = 250, SHAKE = 260;
@@ -170,7 +172,7 @@ function start(s: DictationStart) {
   lang = s.lang; top = s.top; P.trusted = s.trusted; P.grantee = s.grantee; P.port = s.port; P.session++;
   P.info = { kind: s.caret ? 'caret' : s.element ? 'element' : 'none', caret: s.caret, element: s.element };
   const at = place(P.info, s.lineRight, s.pointer);
-  Object.assign(P, { x: at.x, y: at.y, vis: at, state: 'appear', t0: now, lvl: 0, target: 0, hole: null, downAt: -1, edit: false });
+  Object.assign(P, { x: at.x, y: at.y, vis: at, state: 'appear', t0: now, lvl: 0, target: 0, hole: null, downAt: -1, edit: false, send: false });
   holes = [];
   // the hole at her feet opens while she is still slipping into the notch
   dig(at.x, at.y + R, now + 90, now + 260);
@@ -236,7 +238,8 @@ function goHome(now: number, happy = false) {
   shut(P.hole, now); P.state = 'gone'; P.t0 = now; hideBubble();
   window.dictation.home(happy);
 }
-function land(now: number) { window.dictation.paste(text); goHome(now, true); }
+// Not when the words were fixed in the box first: that is a message he looked at, not one he sent by voice.
+function land(now: number) { window.dictation.paste(text, P.send && !P.edit); goHome(now, true); }
 
 // ---------- bubbles ----------
 let bubbleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -486,9 +489,9 @@ function frame() {
 window.dictation.onStart(start);
 // The right ⌥ again: it finishes a listening dictation, pastes the box being fixed, and while her last card or
 // message is still up it clears that and starts the next one. While she thinks or dives it waits.
-window.dictation.onFinish(() => {
+window.dictation.onFinish(send => {
   const now = performance.now();
-  if (active()) finish(now);
+  if (active()) { P.send = send === true; finish(now); }
   else if (P.state === 'edit') submit(now);
   else if (['card', 'miss', 'error', 'dissolve', 'cancel', 'gone'].includes(P.state)) { hideBubble(); window.dictation.again(); }
 });

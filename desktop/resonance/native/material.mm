@@ -360,6 +360,18 @@ static napi_value paste(napi_env env, napi_callback_info info) {
   if (source) CFRelease(source);
   napi_value result; napi_get_boolean(env, AXIsProcessTrusted(), &result); return result;
 }
+// A plain Return into the app in front, no modifiers: 言字 0.4.3's Enter to send, after the paste.
+static napi_value pressReturn(napi_env env, napi_callback_info info) {
+  CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+  for (bool down : (bool[]){ true, false }) {
+    CGEventRef event = CGEventCreateKeyboardEvent(source, 36, down); // 36: Return
+    CGEventSetFlags(event, (CGEventFlags)0);
+    CGEventPost(kCGHIDEventTap, event);
+    CFRelease(event);
+  }
+  if (source) CFRelease(source);
+  return nullptr;
+}
 static napi_value init(napi_env env, napi_value exports) {
   napi_value fn; napi_create_function(env, "update", NAPI_AUTO_LENGTH, update, nullptr, &fn);
   napi_set_named_property(env, exports, "update", fn);
@@ -375,6 +387,7 @@ static napi_value init(napi_env env, napi_value exports) {
   napi_create_function(env, "pasteTarget", NAPI_AUTO_LENGTH, pasteTarget, nullptr, &fn); napi_set_named_property(env, exports, "pasteTarget", fn);
   napi_create_function(env, "accessibility", NAPI_AUTO_LENGTH, accessibility, nullptr, &fn); napi_set_named_property(env, exports, "accessibility", fn);
   napi_create_function(env, "paste", NAPI_AUTO_LENGTH, paste, nullptr, &fn); napi_set_named_property(env, exports, "paste", fn);
+  napi_create_function(env, "pressReturn", NAPI_AUTO_LENGTH, pressReturn, nullptr, &fn); napi_set_named_property(env, exports, "pressReturn", fn);
   return exports;
 }
 NAPI_MODULE(NODE_GYP_MODULE_NAME, init)

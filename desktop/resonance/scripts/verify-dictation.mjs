@@ -27,7 +27,7 @@ try {
     window.__on = on;
     window.dictation = {
       onStart: cb => { on.start = cb; }, onFinish: cb => { on.finish = cb; }, onCancel: cb => { on.cancel = cb; }, onCursor: cb => { on.cursor = cb; },
-      paste: text => window.__log.push(['paste', text]), copy: text => window.__log.push(['copy', text]),
+      paste: (text, send) => window.__log.push(['paste', text, send]), copy: text => window.__log.push(['copy', text]),
       target: async () => window.__target ?? 'ok',
       home: happy => window.__log.push(['home', happy]), done: () => window.__log.push(['done']),
       passthrough: () => {}, focus: value => window.__log.push(['focus', value]), open: page => window.__log.push(['open', page]), again: () => window.__log.push(['again']),
@@ -102,7 +102,31 @@ try {
   await push({ text: SPOKEN, raw: SPOKEN });
   await page.waitForTimeout(600);
   const direct = await log();
-  check('03 finishing with the right ⌥ pastes the words with no box', direct.some(([k, v]) => k === 'paste' && v === SPOKEN) && !direct.some(([k]) => k === 'focus'));
+  check('03 finishing with the right ⌥ pastes the words with no box', direct.some(([k, v, send]) => k === 'paste' && v === SPOKEN && send === false) && !direct.some(([k]) => k === 'focus'));
+  await page.waitForTimeout(700);
+  await log();
+
+  // ADR 0174: Return while she listens finishes it the same way and asks for a Return after the paste; fixing the
+  // words in the box first (tapping her while she thinks) takes the send back.
+  await start();
+  await page.evaluate(() => window.__on.finish(true));
+  await push({ state: 'thinking', seconds: 2 });
+  await push({ text: SPOKEN, raw: SPOKEN });
+  await page.waitForTimeout(600);
+  check('09 Return while she listens pastes the words and asks for the send',
+    (await log()).some(([k, v, send]) => k === 'paste' && v === SPOKEN && send === true));
+  await page.waitForTimeout(700);
+  await log();
+  await start();
+  await page.evaluate(() => window.__on.finish(true));
+  await tapHer();
+  await push({ state: 'thinking', seconds: 2 });
+  await push({ text: SPOKEN, raw: SPOKEN });
+  await box.waitFor();
+  await box.press('Enter');
+  await page.waitForTimeout(600);
+  check('09 words fixed in the box are pasted without the send',
+    (await log()).some(([k, v, send]) => k === 'paste' && v === SPOKEN && send === false));
   await page.waitForTimeout(700);
   await log();
 

@@ -2,16 +2,18 @@ import { app, BrowserWindow, clipboard, globalShortcut, ipcMain, screen } from '
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 // ADR 0058: dictation, Jarvis's small typing tool. A clean tap of the right ⌥ starts it and another finishes it;
-// Esc cancels. She leaves the notch for the text caret: a window over the caret's screen draws her there
+// Esc cancels; Return, while it listens, finishes it and sends the message once the words are in (ADR 0174). She leaves the notch for the text caret: a window over the caret's screen draws her there
 // (src/dictation.ts), the daemon records, hears and polishes, and the words are pasted where the caret is.
 // Typlus keeps F5 and the right ⌘, so both tools can run side by side.
 type Box = { x: number; y: number; width: number; height: number };
 type Caret = { app: string; trusted: boolean; window?: string; selected?: string; before?: string; caret?: Box; lineRight?: number; element?: Box };
-type Native = { rightOption(): { down: boolean; others: boolean; keyIdle: number }; caret(): Caret; accessibility(prompt: boolean): boolean; paste(): boolean;
+type Native = { rightOption(): { down: boolean; others: boolean; keyIdle: number }; caret(): Caret; accessibility(prompt: boolean): boolean; paste(): boolean; pressReturn(): void;
   pasteTarget(): 'ok' | 'blind' | 'elsewhere' | 'lost';
   setFrame(handle: Buffer, bounds: Box): unknown };
 // A tap is shorter than this, alone, and no key goes down while it is held.
 const TAP_S = .5;
+// 言字 SEND_SETTLE_S: the app reads the pasteboard a moment after the ⌘V; Return waits for it.
+const SEND_SETTLE_S = .1;
 
 // Under its LaunchAgent macOS counts Accessibility against the launcher, node: that is the row to turn on.
 const AGENT = process.env.XPC_SERVICE_NAME === 'com.allen.jarvis.resonance';
@@ -35,7 +37,9 @@ export function setupDictation({ companion, native, nativePath, preload, page, p
   let busy = false, on = true, asked = false, skin = 'glass', lang = 'zh', origin = { x: 0, y: 0 };
   let option = { down: false, at: 0, clean: false };
   const mine = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) => event.sender === overlay.webContents;
-  const cancel = () => overlay.webContents.send('dictation-cancel');
+  // Return is the app's again before its own Return is posted, and for her card's box.
+  const releaseReturn = () => globalShortcut.unregister('Return');
+  const cancel = () => { releaseReturn(); overlay.webContents.send('dictation-cancel'); };
 
   // A grant made while she runs counts only in a fresh process; this one keeps the answer it started with. Once the
   // Accessibility pane is opened, a child asks every 2 s for five minutes, and when the switch is on she restarts
@@ -72,15 +76,18 @@ export function setupDictation({ companion, native, nativePath, preload, page, p
     });
     companion.webContents.send('dictation', 'out');
     if (!globalShortcut.isRegistered('Escape')) globalShortcut.register('Escape', cancel);
+    // ADR 0174, as 言字 0.4.3: Return swallowed while it listens finishes the dictation and sends it.
+    if (!globalShortcut.isRegistered('Return')) globalShortcut.register('Return', () => { releaseReturn(); overlay.webContents.send('dictation-finish', true); });
     busy = true;
   }
-  const tap = () => { if (busy) overlay.webContents.send('dictation-finish'); else if (on) start(); };
+  const tap = () => { if (busy) { releaseReturn(); overlay.webContents.send('dictation-finish'); } else if (on) start(); };
 
-  ipcMain.on('dictation-paste', (event, text) => {
+  ipcMain.on('dictation-paste', (event, text, send) => {
     if (!mine(event) || typeof text !== 'string') return;
     // Left on the pasteboard afterwards, as Typlus does, to paste again elsewhere.
     clipboard.writeText(text);
-    native.paste();
+    // Finished with Return: once the words are in, the same key goes to the app so the message is sent.
+    if (native.paste() && send === true) setTimeout(() => native.pressReturn(), SEND_SETTLE_S * 1000);
   });
   // ADR 0110: just before she dives, whether the words can still go where the dictation started.
   ipcMain.handle('dictation-target', event => mine(event) ? native.pasteTarget() : 'lost');
@@ -88,7 +95,7 @@ export function setupDictation({ companion, native, nativePath, preload, page, p
   ipcMain.on('dictation-home', (event, happy) => { if (mine(event)) companion.webContents.send('dictation', happy === true ? 'happy' : 'home'); });
   ipcMain.on('dictation-done', event => {
     if (!mine(event)) return;
-    globalShortcut.unregister('Escape');
+    globalShortcut.unregister('Escape'); releaseReturn();
     overlay.setIgnoreMouseEvents(true, { forward: true });
     overlay.hide();
     busy = false;
@@ -107,7 +114,7 @@ export function setupDictation({ companion, native, nativePath, preload, page, p
   // she pastes into before the ⌘V, which lands after her dive.
   ipcMain.on('dictation-focus', (event, on) => {
     if (!mine(event) || typeof on !== 'boolean') return;
-    if (on) { globalShortcut.unregister('Escape'); overlay.setFocusable(true); overlay.focus(); overlay.webContents.focus(); return; }
+    if (on) { globalShortcut.unregister('Escape'); releaseReturn(); overlay.setFocusable(true); overlay.focus(); overlay.webContents.focus(); return; }
     overlay.setFocusable(false); overlay.hide(); overlay.showInactive();
   });
   ipcMain.on('companion-skin', (event, value) => { if (event.sender === companion.webContents && typeof value === 'string') skin = value; });
@@ -127,6 +134,6 @@ export function setupDictation({ companion, native, nativePath, preload, page, p
     },
     language(value: string | undefined) { if (value === 'zh' || value === 'en') lang = value; },
     enabled(value: boolean) { on = value; },
-    close() { globalShortcut.unregister('Escape'); if (!overlay.isDestroyed()) overlay.destroy(); },
+    close() { globalShortcut.unregister('Escape'); releaseReturn(); if (!overlay.isDestroyed()) overlay.destroy(); },
   };
 }
