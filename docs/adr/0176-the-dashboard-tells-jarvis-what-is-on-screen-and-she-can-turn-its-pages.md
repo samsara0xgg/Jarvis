@@ -1,6 +1,6 @@
 # ADR 0176 — The Dashboard Tells Jarvis What Is on Screen and She Can Turn Its Pages
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-07
 **Supersedes:** none
 
