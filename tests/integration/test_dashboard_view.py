@@ -178,14 +178,18 @@ def test_show_on_dashboard_pushes_present_with_an_id_only_the_current_view_carri
     view.push = sent.append
     tool = _tool(view)
     view.set("mail", item=("mail", LETTER, "Sam — Lunch"), rows=[("b2", "Shop — Sale")])
-    assert _show(tool, page="mail", item_id="b2") == {
+    done = _show(tool, page="mail", item_id="b2")
+    assert {k: done[k] for k in ("shown", "item", "opened_page_only")} == {
         "shown": "mail", "item": "b2", "opened_page_only": False,
     }
+    assert "Do not call show_on_dashboard again" in done["note"]
     assert _show(tool, page="mail", item_id=LETTER)["item"] == LETTER
-    assert _show(tool, page="memory", item_id="unseen") == {
+    unseen = _show(tool, page="memory", item_id="unseen")
+    assert {k: unseen[k] for k in ("shown", "item", "opened_page_only")} == {
         "shown": "memory", "item": None, "opened_page_only": True,
     }
-    assert _show(tool, page="jobs") == {"shown": "jobs", "item": None, "opened_page_only": True}
+    assert "Do not retry with other ids" in unseen["note"]
+    assert _show(tool, page="jobs")["opened_page_only"] is True
     assert sent == [
         {"page": "mail", "item_id": "b2", "kind": "row"},
         {"page": "mail", "item_id": LETTER, "kind": "mail"},

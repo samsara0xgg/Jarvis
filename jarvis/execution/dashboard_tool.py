@@ -20,6 +20,16 @@ _DESCRIPTION: Final = (
     "claim the page shows something you have not read."
 )
 
+_DONE: Final = (
+    "The Dashboard has turned. Do not call show_on_dashboard again for this request; its "
+    "rows reach you in the Dashboard line of the next turn."
+)
+_UNKNOWN_ITEM: Final = (
+    "That id is not on the Dashboard now, so only the page opened. Do not retry with other "
+    "ids: its rows reach you in the Dashboard line of the next turn; until then ask Allen "
+    "which one he means."
+)
+
 
 def build_dashboard_tool(
     pages: Sequence[str],
@@ -52,11 +62,16 @@ def build_dashboard_tool(
         except ValueError as exc:
             msg = f"show_on_dashboard: {exc}"
             raise ToolError(msg, code="invalid_argument") from exc
-        return {
+        shown: dict[str, Any] = {
             "shown": sent.get("page"),
             "item": sent.get("item_id"),
             "opened_page_only": sent.get("item_id") is None,
         }
+        if item_id and sent.get("item_id") is None:
+            shown["note"] = _UNKNOWN_ITEM
+        else:
+            shown["note"] = _DONE
+        return shown
 
     return (
         Tool(
