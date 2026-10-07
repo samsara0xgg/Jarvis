@@ -69,7 +69,7 @@ _RULE_JUDGE: Final[str] = "local-rule/social-v1"
 _EXCLUDE_JUDGE: Final[str] = "local-rule/exclude-v1"
 # How much of each scanned mail's plain-text body the local decision snapshot keeps (ADR 0162).
 SNAPSHOT_BODY_CHARS: Final[int] = 3000
-# The one-off re-read at start (ADR 0183): which mail, how many per start, who is named as judge.
+# The one-off re-read at start (ADR 0184): which mail, how many per start, who is named as judge.
 _REREAD_KINDS: Final[tuple[str, ...]] = ("interview", "offer")
 _REREAD_CAP: Final[int] = 20
 _REREAD_JUDGE: Final[str] = "local-reread/body-v1"
@@ -183,7 +183,7 @@ class JobMail:
         return changed
 
     def reread(self) -> int:
-        """Read again the body of interview and offer mail settled before it was kept (ADR 0183).
+        """Read again the body of interview and offer mail settled before it was kept (ADR 0184).
 
         At most ``_REREAD_CAP`` mails per start, newest first, by ``gmail_get`` alone; a failure is
         logged and skipped, never stops the poller. Each body start is kept as a ``reread`` row,

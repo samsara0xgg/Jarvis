@@ -420,7 +420,7 @@ def body_excerpt(path: Path, message_id: str) -> str:
 
 
 def bodyless_mails(path: Path, kinds: Sequence[str], limit: int) -> list[dict[str, Any]]:
-    """The newest visible mails of these kinds with no kept body, at most ``limit`` (ADR 0183)."""
+    """The newest visible mails of these kinds with no kept body, at most ``limit`` (ADR 0184)."""
     with _db(path) as conn:
         rows = conn.execute(
             "SELECT message_id, received_at, sender_name, sender_domain, subject, event_at,"
@@ -435,7 +435,7 @@ def bodyless_mails(path: Path, kinds: Sequence[str], limit: int) -> list[dict[st
 
 
 def set_event(path: Path, message_id: str, event_at: str | None, event_text: str | None) -> None:
-    """Write the event time and sentence read from a mail's body again (ADR 0183)."""
+    """Write the event time and sentence read from a mail's body again (ADR 0184)."""
     with _db(path) as conn:
         conn.execute(
             "UPDATE job_mail SET event_at = ?, event_text = ? WHERE message_id = ?",

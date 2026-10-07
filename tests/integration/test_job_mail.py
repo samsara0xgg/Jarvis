@@ -2759,7 +2759,7 @@ def _bodyless(h: _Harness, key: str, kind: str, **fields: Any) -> None:  # noqa:
 def test_old_interview_mail_without_a_kept_body_is_read_again_once(
     tmp_path: Path, jev: _Jev
 ) -> None:
-    """ADR 0183: one gmail_get, the body kept as a reread row, the time filled, never twice."""
+    """ADR 0184: one gmail_get, the body kept as a reread row, the time filled, never twice."""
     mails = [
         _mail(key, "Jill <jill@rc.example>", f"Interview {key}", _TEAMS_INVITE)
         for key in ("rc", "kept", "offer", "reject", "gone")
