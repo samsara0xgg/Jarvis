@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import collections
 import contextlib
 import json
 import logging
@@ -87,6 +88,7 @@ _MAX_ERROR_CHARS: Final = 500
 _DISCARD_TIMEOUT_S: Final = 2.0
 _MAX_IDLE_CLOSE_S: Final = 600.0
 _MAX_QUEUE: Final = 256
+_MAX_ROUTED_TURNS: Final = 256
 
 type RowBatch = tuple[int, list[tuple[int, Event]]]
 """``(highest id seen, [(id, event) to send])``: ids seen but not sent were not spoken."""
@@ -247,6 +249,7 @@ class BrainVoice:
         self._rows = rows
         self._poll_s = poll_interval_s
         self._peers: list[Peer] = []  # oldest connection first
+        self._turns: collections.OrderedDict[str, Peer] = collections.OrderedDict()
 
     def attach(
         self, name: str, send_text: Callable[[str], Awaitable[None]], resume_after: int | None,
@@ -276,14 +279,28 @@ class BrainVoice:
         for sid in list(peer.sessions):
             await self._discard(peer, sid)
 
-    def target_for(self, event: Event) -> Peer | None:
-        """The terminal that speaks ``event``'s turn: the voice terminal connected last.
+    def route(self, turn_id: str, peer: Peer) -> None:
+        """``peer`` heard the utterance that opened ``turn_id``: its answer is spoken there."""
+        self._turns[turn_id] = peer
+        self._turns.move_to_end(turn_id)
+        while len(self._turns) > _MAX_ROUTED_TURNS:
+            self._turns.popitem(last=False)
 
-        Step 5b makes it the terminal whose utterance opened the turn, found from ``event``'s
-        turn, and falls back to this.
+    def peer_for_turn(self, turn_id: str) -> Peer | None:
+        """The terminal that speaks ``turn_id``.
+
+        The one that heard it while it is still connected, else the voice terminal connected
+        last (a turn that began as text).
         """
-        del event
+        peer = self._turns.get(turn_id)
+        if peer is not None and peer in self._peers:
+            return peer
         return self._peers[-1] if self._peers else None
+
+    def target_for(self, event: Event) -> Peer | None:
+        """The terminal that speaks ``event``'s turn (see :meth:`peer_for_turn`)."""
+        turn_id = event.payload.get("turn_id")
+        return self.peer_for_turn(turn_id if isinstance(turn_id, str) else "")
 
     # -- rows --------------------------------------------------------------------------
 

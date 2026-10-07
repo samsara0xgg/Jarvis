@@ -6,11 +6,11 @@ The Day-2 CLI emits ``surface.user_intent`` per spec §3.4.1 trigger taxonomy.
 must use ``surface.user_intent`` instead so the CLI/voice swap stays clean.
 
 This canary AST-scans every ``.py`` file under ``jarvis/`` and asserts
-that the only file calling ``emit_event(..., type="utterance.received", ...)``
-is the ADR-0005 voice pipeline. The string literal can still appear in
-other contexts — e.g. the registry definition in ``event_log.py`` keeping
-the event type registered — so the scan is narrowly scoped to ``emit_event``
-callsites with a ``type=`` keyword.
+that the only files calling ``emit_event(..., type="utterance.received", ...)``
+are the ADR-0005 voice pipeline and the brain's end of a voice terminal (ADR 0172).
+The string literal can still appear in other contexts — e.g. the registry definition in
+``event_log.py`` keeping the event type registered — so the scan is narrowly scoped to
+``emit_event`` callsites with a ``type=`` keyword.
 
 Scope note: uses :func:`iter_jarvis_py_files` (not ``iter_all_py_files``)
 because the canary guards production emit sites, not test fixtures.
@@ -25,8 +25,10 @@ from tests.canary._helpers import iter_jarvis_py_files, parse, relative_to_repo
 
 # ADR-0005 §4.2: the voice pipeline is the canonical emit site for
 # ``utterance.received``. Adding new emit sites requires a separate ADR.
+# ADR 0172: a voice terminal's pipeline sends its utterance to the brain, whose
+# ``BrainEvents.record_utterance`` writes it, once, under the terminal's device name.
 _VOICE_EMIT_ALLOWLIST: frozenset[str] = frozenset(
-    {"jarvis/surface/voice_pipeline.py"},
+    {"jarvis/surface/voice_pipeline.py", "jarvis/surface/terminal_events.py"},
 )
 
 

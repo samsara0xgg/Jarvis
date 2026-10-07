@@ -102,7 +102,10 @@ if TYPE_CHECKING:
     from jarvis.shared.realtime import PresentationIntent, Wave1FeatureFlags, Wave4ResponseFlags
     from jarvis.state.committed_event_bus import CommittedEventBus
     from jarvis.state.voice_settings import VoiceSettings
+    from jarvis.surface.ambient_sounds import AmbientSounds
     from jarvis.surface.codex_sessions import CodexSession
+    from jarvis.surface.terminal_link import TerminalHub
+    from jarvis.surface.voice_cues import VoiceCues
 
 from jarvis.decision import request_confirmation
 from jarvis.decision.commentary import (
@@ -236,6 +239,7 @@ from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.state.turn_overlap import any_turn_in_flight
 from jarvis.surface import (
     respeaker_board,
+    terminal_listen,
     terminal_voice,
     voice_aec,
     voice_artifact_store,
@@ -2603,7 +2607,7 @@ def _say_conversation_line(runtime: JarvisRuntime, turn_id: str, reason: str, te
 
 
 def _final_recognizer(
-    runtime: JarvisRuntime, sensevoice: voice_asr.SenseVoiceRecognizer,
+    runtime: _ConfigHost, sensevoice: voice_asr.SenseVoiceRecognizer,
 ) -> voice_asr.AsrRecognizer:
     """``realtime.final_asr``: SenseVoice, Whisper as 言文 hears (proposal), or both (ADR 0132)."""
     realtime = runtime.config.get("realtime")
@@ -2639,11 +2643,32 @@ def _final_recognizer(
     return voice_asr.WhisperFinalRecognizer(whisper=whisper, partials=sensevoice)
 
 
+class _ConfigHost(Protocol):
+    """A host of which the voice builders read only the loaded config."""
+
+    @property
+    def config(self) -> Mapping[str, Any]: ...
+
+
+class _PipelineHost(_ConfigHost, Protocol):
+    """What the voice pipeline's builder reads from its host: a runtime's, or a terminal's."""
+
+    @property
+    def runtime_paths(self) -> _EventLogPath: ...
+
+    @property
+    def memory(self) -> MemorySettings | None: ...
+
+    @property
+    def voice_cues(self) -> VoiceCues | None: ...
+
+
 def _build_voice_pipeline(
-    runtime: JarvisRuntime,
+    runtime: _PipelineHost,
     *,
     broadcaster: InherentBroadcaster,
     sensevoice_dir: Path,
+    emit: Callable[[Mapping[str, object], Mapping[str, str]], Event] | None = None,
 ) -> voice_pipeline.VoicePipeline:
     """Construct the L5 :class:`VoicePipeline` with a fresh-conn factory.
 
@@ -2652,6 +2677,9 @@ def _build_voice_pipeline(
     SQLite connection per call (``check_same_thread`` invariant). The
     L3 normalizer ships empty-population by default; config-driven
     aliases / corrections land in a follow-up.
+
+    A voice terminal (ADR 0172) has no log of its own to commit to: it passes ``emit``, which
+    sends the utterance to the brain, and the audio it keeps stays on its own disk.
     """
     recognizer = _final_recognizer(
         runtime, voice_asr.SenseVoiceRecognizer(model_dir=sensevoice_dir),
@@ -2665,7 +2693,8 @@ def _build_voice_pipeline(
     memory = runtime.memory
     artifacts_dir = memory.audio_dir if memory is not None and memory.retain_audio else None
     return voice_pipeline.VoicePipeline(
-        conn_factory=lambda: open_runtime_event_log(db_path),
+        conn_factory=None if emit is not None else lambda: open_runtime_event_log(db_path),
+        emit=emit,
         recognizer=recognizer,
         normalizer=normalizer,
         broadcaster=broadcaster,
@@ -2674,7 +2703,7 @@ def _build_voice_pipeline(
     )
 
 
-def _build_echo_canceller(runtime: JarvisRuntime) -> voice_aec.EchoCanceller | None:
+def _build_echo_canceller(runtime: _ConfigHost) -> voice_aec.EchoCanceller | None:
     """One canceller for the streaming player and the mic ingress.
 
     ``echo_cancellation`` is ``auto`` (the default: on for any microphone but the
@@ -3074,6 +3103,60 @@ def _build_brain_voice(
         voice_settings=runtime.voice_settings,
     )
     return terminal_voice.BrainVoice(client, _SpokenRows(runtime.conn))
+
+
+def _build_brain_listening(
+    runtime: JarvisRuntime,
+    hub: TerminalHub,
+    *,
+    controls: voice_controls.VoiceControls,
+    set_conversation: Callable[[bool, str], None],
+    set_quiet: Callable[[str], None],
+) -> terminal_listen.BrainListening | None:
+    """What lets a brain take a voice terminal's listening: its words, its holds, its turns.
+
+    The brain's half of each capture-session callback is the one a daemon runs for its own
+    session (:func:`_local_listen_ports`); only supersede and relate differ, since the audio
+    they drop or stop is on the terminal that heard the line (ADR 0172). ``None`` without
+    the brain's log, where an utterance has nowhere to go.
+    """
+    if hub.events is None:
+        return None
+    listening = terminal_listen.BrainListening(hub, hub.events)
+    mine = _local_listen_ports(runtime, None)
+    registry = runtime.response_runs
+    if runtime.oneshot is not None and registry is not None:
+        # ADR 0139: a correction stops the answer that is audible, on the terminal that heard it.
+        runtime.oneshot.relate = make_relation_supersede_callable(
+            runtime, listening.drop_unspoken, lambda: listening.stop_output("correction"),
+        )
+
+    def _hold_runs(held: bool) -> None:  # noqa: FBT001 - the capture side's one bit
+        if mine.hold_runs is not None:
+            mine.hold_runs(held)
+        if held and mine.warm is not None:
+            mine.warm()  # his words will end in a request; have its connection open by then
+
+    listening.hooks = terminal_listen.ListenHooks(
+        ask_words=mine.ask_words,
+        note_words=mine.note_words,
+        begin_line=mine.begin_line,
+        answer_words=mine.answer_words,
+        turn_working=mine.turn_working,
+        recent_speech=mine.recent_speech,
+        hold_runs=_hold_runs,
+        interrupt=mine.interrupt,
+        supersede=(
+            make_supersede_unspoken_callable(runtime, listening.drop_unspoken)
+            if registry is not None
+            else None
+        ),
+        cancel_runs=mine.cancel_voice_runs,
+        set_conversation=set_conversation,
+        set_quiet=set_quiet,
+        controls=controls.update,
+    )
+    return listening
 
 
 def _build_voice_pipeline_callable(
@@ -3789,8 +3872,142 @@ class _VoicePowerCoordinator:
         return pending is None or not pending.is_alive()
 
 
-def _single_ingress_activation(  # noqa: PLR0911 - each fail-closed prerequisite has a named result
+class _IngressHost(_ConfigHost, Protocol):
+    """What the capture session's activation reads from its host."""
+
+    @property
+    def wave1_features(self) -> Wave1FeatureFlags: ...
+
+
+class _RuntimeRoot(Protocol):
+    @property
+    def root(self) -> Path: ...
+
+
+class ListeningHost(_IngressHost, Protocol):
+    """What the capture session is built from: a daemon's runtime, or a voice terminal's seat."""
+
+    @property
+    def runtime_paths(self) -> _RuntimeRoot: ...
+
+
+@dataclasses.dataclass(frozen=True)
+class _ListenPorts:
+    """What the capture session reaches in the turn's state, and how (ADR 0172).
+
+    On one machine every port is a direct call into the runtime (:func:`_local_listen_ports`).
+    On a voice terminal each is a call over the brain link, or absent. The local halves of
+    hold-output, stop-speaking and the like (the player, the input model) stay in
+    :func:`_spawn_single_ingress_session`, which runs wherever the microphone is.
+    """
+
+    answer_words: Callable[[str, str, str], None] | None = None
+    turn_working: Callable[[], bool] | None = None
+    recent_speech: Callable[[], str] | None = None
+    ask_words: Callable[[str, str, str, bool, bool], str | None] | None = None
+    note_words: Callable[[str, str, str, bool, bool], None] | None = None
+    begin_line: Callable[[str, str, str, bool, bool], None] | None = None
+    interrupt: Callable[[str], str] | None = None
+    """Cancel the answer still being written (the generation half of stop-speaking)."""
+    hold_runs: Callable[[bool], None] | None = None
+    """The run-hold half of hold-output."""
+    warm: Callable[[], None] | None = None
+    """Open the model connection a request is about to need."""
+    supersede_unspoken: Callable[[str], None] | None = None
+    cancel_voice_runs: Callable[[], None] | None = None
+    cues: VoiceCues | None = None
+    ambient: AmbientSounds | None = None
+
+
+def _local_listen_ports(
     runtime: JarvisRuntime,
+    streaming: voice_media.StreamingTTSPipeline | None,
+) -> _ListenPorts:
+    """The ports of a daemon that holds the turn itself: direct calls into ``runtime``."""
+    oneshot = runtime.oneshot
+    if oneshot is not None and streaming is not None and runtime.response_runs is not None:
+        # ADR 0139: a supplement or correction of the line before it acts on that turn.
+        oneshot.relate = make_relation_supersede_callable(
+            runtime,
+            streaming.drop_unspoken,
+            lambda: streaming.stop_foreground_output(None, reason="correction"),
+        )
+    registry = runtime.response_runs
+
+    def _hold_runs(held: bool) -> None:  # noqa: FBT001 - the capture side's one bit
+        # ADR 0053: while Allen's words are coming in, no run completes.
+        if registry is not None:
+            registry.hold_completion(held=held)
+
+    def _turn_working() -> bool:
+        # ADR 0102: conversation mode's quiet clock does not run while a turn works.
+        # Runs on the session's capture worker, never the audio callback; the
+        # deadline bounds the open so a locked log cannot stall capture.
+        try:
+            conn = open_runtime_event_log(
+                runtime.runtime_paths.event_log, deadline=time.monotonic() + 0.25,
+            )
+        except sqlite3.Error:
+            return False
+        try:
+            return any_turn_in_flight(
+                conn, since_ms=int(time.time() * 1000) - _TURN_WORKING_WINDOW_MS,
+            )
+        except sqlite3.Error:
+            return False
+        finally:
+            conn.close()
+
+    def _recent_speech() -> str:
+        # What she said in the last minute, to tell her own voice in the mic
+        # from Allen's words over her. Same worker and open as _turn_working.
+        conn = open_runtime_event_log(
+            runtime.runtime_paths.event_log, deadline=time.monotonic() + 0.25,
+        )
+        try:
+            rows = conn.execute(
+                "SELECT coalesce(json_extract(payload_json, '$.voice_text'), "
+                "json_extract(payload_json, '$.text')) FROM events "
+                "WHERE type IN ('surface.response_chunk', 'surface.response_emitted') "
+                "AND ts_epoch_ms >= ? ORDER BY id",
+                (int(time.time() * 1000) - _RECENT_SPEECH_WINDOW_MS,),
+            )
+            return " ".join(text for (text,) in rows if text)
+        finally:
+            conn.close()
+
+    return _ListenPorts(
+        answer_words=lambda turn_id, reason, text: threading.Thread(
+            target=_say_conversation_line,
+            args=(runtime, turn_id, reason, text),
+            name="conversation-line",
+            daemon=True,
+        ).start(),
+        turn_working=_turn_working,
+        recent_speech=_recent_speech,
+        ask_words=(
+            oneshot.ask
+            if oneshot is not None and oneshot.words_enabled
+            else runtime.voice_words.ask if runtime.voice_words is not None else None
+        ),
+        note_words=runtime.voice_words.note if runtime.voice_words is not None else None,
+        begin_line=oneshot.begin if oneshot is not None else None,
+        interrupt=make_barge_in_interrupt_callable(runtime),
+        hold_runs=_hold_runs,
+        warm=lambda: runtime.llm_client.warm_stream(),  # noqa: PLW0108 — looked up per call.
+        supersede_unspoken=(
+            make_supersede_unspoken_callable(runtime, streaming.drop_unspoken)
+            if streaming is not None and registry is not None
+            else None
+        ),
+        cancel_voice_runs=_make_cancel_voice_runs(runtime) if registry is not None else None,
+        cues=runtime.voice_cues,
+        ambient=runtime.ambient,
+    )
+
+
+def _single_ingress_activation(  # noqa: PLR0911 - each fail-closed prerequisite has a named result
+    runtime: _IngressHost,
     *,
     tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
 ) -> _SingleIngressActivation:
@@ -3860,7 +4077,7 @@ def _single_ingress_activation(  # noqa: PLR0911 - each fail-closed prerequisite
 
 def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - each pre/post-device downgrade has distinct ownership semantics
     *,
-    runtime: JarvisRuntime,
+    runtime: ListeningHost,
     pipeline: voice_pipeline.VoicePipeline,
     broadcaster: InherentBroadcaster,
     silero_path: Path,
@@ -3871,6 +4088,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     set_conversation: Callable[[bool, str], None] | None = None,
     set_quiet: Callable[[str], None] | None = None,
     echo_canceller: voice_aec.EchoCanceller | None = None,
+    ports: _ListenPorts | None = None,
 ) -> tuple[voice_session.DuplexVoiceSession | None, bool]:
     """Start Wave 3 or return whether a device-open attempt was made.
 
@@ -3878,6 +4096,10 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     startup failed: a timed-out foreign PortAudio open may still own the
     default microphone.  ``attempted=False`` means no input owner was touched,
     so a failed prerequisite/config validation may explicitly use legacy wake.
+
+    ``ports`` is how the session reaches the turn: by default direct calls into ``runtime``,
+    which must then be a daemon's :class:`JarvisRuntime`; a voice terminal (ADR 0172) passes
+    its calls over the brain link.
     """
     knobs = _VoiceKnobs() if voice is None else voice
     activation = _single_ingress_activation(runtime, tts=tts)
@@ -3977,7 +4199,12 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             model_path=silero_path,
             profiles=knobs.vad_profiles,
         )
-        barge_in_interrupt = make_barge_in_interrupt_callable(runtime)
+        streaming = tts if isinstance(tts, voice_media.StreamingTTSPipeline) else None
+        listen = (
+            _local_listen_ports(cast("JarvisRuntime", runtime), streaming)
+            if ports is None
+            else ports
+        )
 
         def _stop_speaking() -> None:
             # ADR 0041: Allen talked over Jarvis in conversation mode. Stop
@@ -3988,7 +4215,10 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
                 if isinstance(tts, voice_media.StreamingTTSPipeline)
                 else "no_streaming_player"
             )
-            generation = barge_in_interrupt("conversation_speech")
+            generation = (
+                listen.interrupt("conversation_speech") if listen.interrupt is not None
+                else "no_open_run"
+            )
             LOGGER.info(
                 "conversation barge-in: playback=%s generation=%s", playback, generation,
             )
@@ -3996,78 +4226,23 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
                 # One second on, so the recording also holds what followed the onset.
                 threading.Timer(1.0, _dump_echo_history, args=(echo_canceller,)).start()
 
-        streaming = tts if isinstance(tts, voice_media.StreamingTTSPipeline) else None
-
         def _hold_output(held: bool) -> None:  # noqa: FBT001 - the capture side's one bit
             # ADR 0053: while Allen's words are coming in, no run completes and
             # no queued answer starts playing.
-            if runtime.response_runs is not None:
-                runtime.response_runs.hold_completion(held=held)
+            if listen.hold_runs is not None:
+                listen.hold_runs(held)
             if streaming is not None:
                 streaming.hold_output(held=held)
             if held:
                 # His words will end in a request; have its connection open by then.
-                runtime.llm_client.warm_stream()
+                if listen.warm is not None:
+                    listen.warm()
                 pipeline.warm_input_model()
-
-        supersede_unspoken = (
-            make_supersede_unspoken_callable(runtime, streaming.drop_unspoken)
-            if streaming is not None and runtime.response_runs is not None
-            else None
-        )
-        cancel_voice_runs = (
-            _make_cancel_voice_runs(runtime) if runtime.response_runs is not None else None
-        )
-        oneshot = runtime.oneshot
-        if oneshot is not None and streaming is not None and runtime.response_runs is not None:
-            # ADR 0139: a supplement or correction of the line before it acts on that turn.
-            oneshot.relate = make_relation_supersede_callable(
-                runtime,
-                streaming.drop_unspoken,
-                lambda: streaming.stop_foreground_output(None, reason="correction"),
-            )
 
         def _dump_echo_history(canceller: voice_aec.EchoCanceller) -> None:
             path = canceller.dump(runtime.runtime_paths.root / "aec-diagnostics")
             if path is not None:
                 LOGGER.info("echo diagnostics written: %s", path)
-
-        def _turn_working() -> bool:
-            # ADR 0102: conversation mode's quiet clock does not run while a turn works.
-            # Runs on the session's capture worker, never the audio callback; the
-            # deadline bounds the open so a locked log cannot stall capture.
-            try:
-                conn = open_runtime_event_log(
-                    runtime.runtime_paths.event_log, deadline=time.monotonic() + 0.25,
-                )
-            except sqlite3.Error:
-                return False
-            try:
-                return any_turn_in_flight(
-                    conn, since_ms=int(time.time() * 1000) - _TURN_WORKING_WINDOW_MS,
-                )
-            except sqlite3.Error:
-                return False
-            finally:
-                conn.close()
-
-        def _recent_speech() -> str:
-            # What she said in the last minute, to tell her own voice in the mic
-            # from Allen's words over her. Same worker and open as _turn_working.
-            conn = open_runtime_event_log(
-                runtime.runtime_paths.event_log, deadline=time.monotonic() + 0.25,
-            )
-            try:
-                rows = conn.execute(
-                    "SELECT coalesce(json_extract(payload_json, '$.voice_text'), "
-                    "json_extract(payload_json, '$.text')) FROM events "
-                    "WHERE type IN ('surface.response_chunk', 'surface.response_emitted') "
-                    "AND ts_epoch_ms >= ? ORDER BY id",
-                    (int(time.time() * 1000) - _RECENT_SPEECH_WINDOW_MS,),
-                )
-                return " ".join(text for (text,) in rows if text)
-            finally:
-                conn.close()
 
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
@@ -4082,29 +4257,20 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             conversation=conversation,
             set_conversation=set_conversation,
             set_quiet=set_quiet,
-            answer_words=lambda turn_id, reason, text: threading.Thread(
-                target=_say_conversation_line,
-                args=(runtime, turn_id, reason, text),
-                name="conversation-line",
-                daemon=True,
-            ).start(),
-            turn_working=_turn_working,
-            recent_speech=_recent_speech,
-            ask_words=(
-                oneshot.ask
-                if oneshot is not None and oneshot.words_enabled
-                else runtime.voice_words.ask if runtime.voice_words is not None else None
-            ),
-            note_words=runtime.voice_words.note if runtime.voice_words is not None else None,
-            cues=runtime.voice_cues,
-            begin_line=oneshot.begin if oneshot is not None else None,
+            answer_words=listen.answer_words,
+            turn_working=listen.turn_working,
+            recent_speech=listen.recent_speech,
+            ask_words=listen.ask_words,
+            note_words=listen.note_words,
+            cues=listen.cues,
+            begin_line=listen.begin_line,
             stop_speaking=_stop_speaking,
             hold_output=_hold_output,
-            supersede_unspoken=supersede_unspoken,
-            cancel_voice_runs=cancel_voice_runs,
+            supersede_unspoken=listen.supersede_unspoken,
+            cancel_voice_runs=listen.cancel_voice_runs,
             yield_speaking=streaming.set_yield_gain if streaming is not None else None,
             pause_speaking=streaming.pause_speaking if streaming is not None else None,
-            ambient=runtime.ambient,
+            ambient=listen.ambient,
         )
     except Exception:
         LOGGER.exception(
@@ -5908,6 +6074,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         voice_knobs = _voice_knobs(runtime.config)
         if runtime.terminal_hub is not None:
             runtime.terminal_hub.voice = _build_brain_voice(runtime, voice_knobs)
+            runtime.terminal_hub.listening = _build_brain_listening(
+                runtime, runtime.terminal_hub,
+                controls=controls, set_conversation=_set_conversation, set_quiet=_set_quiet,
+            )
         sensevoice_dir = runtime.sensevoice_dir
         silero_path = runtime.silero_vad_path
         model_fetch = models.Progress()

@@ -101,7 +101,7 @@ def test_echo_cancellation_config_auto_true_false() -> None:
     def built(*, setting: object) -> EchoCanceller | None:
         ingress = {} if setting is None else {"echo_cancellation": setting}
         runtime = SimpleNamespace(config={"realtime": {"single_audio_ingress": ingress}})
-        return _build_echo_canceller(runtime)  # type: ignore[arg-type]
+        return _build_echo_canceller(runtime)
 
     frame = np.full(512, 1000, dtype="<i2").tobytes()
     for setting, respeaker_passes in ((None, True), ("auto", True), (True, False)):

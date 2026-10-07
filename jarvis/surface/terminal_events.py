@@ -69,6 +69,16 @@ PLAYBACK_EVENT_TYPES: Final = frozenset(
 prefix and the captions, and the provider's character count. Only a terminal that declared
 voice may send them, each under the id the media actor gave it."""
 
+UTTERANCE_CHANNEL: Final = "inherent_wake"
+"""The one channel a terminal's capture session commits an utterance on."""
+_MAX_TRANSCRIPT_CHARS: Final = 20_000
+_ID: Final = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_UTTERANCE_TEXT_FIELDS: Final = {
+    "language": 32, "language_detected": 64, "emotion": 64, "audio_artifact_ref": 1024,
+    "session_id": 64, "endpoint_reason": 64,
+}
+_UTTERANCE_UID_NAMESPACE: Final = uuid.UUID("5f0c6a4e-0b1d-4f6e-9a57-6a1b2f0c1d00")
+
 MAX_EVENT_CHARS: Final = 64 * 1024
 """One event frame's cap; the biggest observer payload is a few hundred bytes."""
 MAX_PENDING: Final = 1000
@@ -106,6 +116,61 @@ class BrainEvents:
         ).fetchall()
         rows += self._conn.execute(_LATEST_TYPE_SQL, (timesink_observer.EVENT_TYPE,)).fetchall()
         return [{"event_type": kind, "payload": json.loads(payload)} for kind, payload in rows]
+
+    def record_utterance(self, device: str, args: Mapping[str, Any]) -> str:
+        """Append the ``utterance.received`` a voice terminal heard, once; its event uid.
+
+        The uid is derived from ``device`` and the utterance's own id, so a terminal that
+        sends the same utterance again (it never saw the answer) gets the first one's uid and
+        nothing is written twice. The payload is rebuilt from the fields the voice pipeline
+        writes; nothing else a terminal sends is kept. ``audio_artifact_ref`` is a path on
+        the terminal's own disk: the audio itself never leaves it.
+
+        Raises:
+            ValueError: a field is missing or has the wrong shape.
+            sqlite3.Error: the log could not be written; the utterance is not recorded.
+        """
+        transcript, turn_id, utterance_id = (
+            args.get("transcript"), args.get("turn_id"), args.get("utterance_id"),
+        )
+        confidence = args.get("confidence")
+        if (
+            not isinstance(transcript, str) or not 0 < len(transcript) <= _MAX_TRANSCRIPT_CHARS
+            or not isinstance(turn_id, str) or _ID.fullmatch(turn_id) is None
+            or not isinstance(utterance_id, str) or _ID.fullmatch(utterance_id) is None
+            or args.get("channel") != UTTERANCE_CHANNEL
+            or not (
+                confidence is None
+                or (isinstance(confidence, int | float) and not isinstance(confidence, bool))
+            )
+        ):
+            msg = "not an utterance this brain accepts"
+            raise ValueError(msg)
+        payload: dict[str, Any] = {
+            "transcript": transcript, "turn_id": turn_id, "channel": UTTERANCE_CHANNEL,
+        }
+        if confidence is not None:
+            payload["confidence"] = confidence
+        for key, limit in _UTTERANCE_TEXT_FIELDS.items():
+            value = args.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, str) or len(value) > limit:
+                msg = f"utterance field {key} is not text of at most {limit} characters"
+                raise ValueError(msg)
+            payload[key] = value
+        payload["utterance_id"] = utterance_id
+        uid = uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"{device}\0{utterance_id}").hex
+        if self._conn.execute("SELECT 1 FROM events WHERE event_uid = ?", (uid,)).fetchone():
+            return uid
+        try:
+            emit_event(
+                self._conn, type="utterance.received", payload=payload,
+                correlation={"turn_id": turn_id}, event_uid=uid, ingestion_node=device,
+            )
+        except EventLogError as exc:
+            raise ValueError(str(exc)) from exc
+        return uid
 
     def record(
         self, device: str, frame: Mapping[str, Any], size: int, *, voice: bool = False,

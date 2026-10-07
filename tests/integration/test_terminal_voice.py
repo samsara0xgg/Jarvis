@@ -677,7 +677,7 @@ def test_a_first_connection_hears_only_what_is_said_after_it(tmp_path: Path) -> 
     with client.websocket_connect(TERMINAL_WS, headers=_bearer(token)) as ws:
         ws.send_text(_hello(voice=True, rows_after=None))
         assert ws.receive_json() == {"type": "ready", "device": "macbook", "voice": True,
-                                     "baseline": []}
+                                     "listen": False, "baseline": []}
         new = _answer(log, "NEW", "Fresh answer.")
         rows = _rows(ws, 3)
     assert [row["event_uid"] for row in rows] == new
@@ -1163,11 +1163,14 @@ class _Brain:
 class _Terminal:
     """`python -m jarvis terminal --voice` on its own thread and loop: the real wiring."""
 
-    def __init__(self, url: str, token: str, root: Path) -> None:
+    def __init__(
+        self, url: str, token: str, root: Path, config: dict[str, Any] | None = None,
+    ) -> None:
         self.loop = asyncio.new_event_loop()
         self.task: asyncio.Task[None] | None = None
         self.error: BaseException | None = None
         self._args = (url, token, root)
+        self._config = SPEECH_CONFIG if config is None else config
         self.thread = threading.Thread(target=self._run, daemon=True)
 
     def _run(self) -> None:
@@ -1176,7 +1179,7 @@ class _Terminal:
             self.task = asyncio.create_task(_run(
                 url, token, tools=frozenset({"read_clipboard"}),
                 execute=lambda *_: {"ok": True, "output": {}}, watched=None,
-                speaking=_Speaking(SPEECH_CONFIG, root),
+                speaking=_Speaking(self._config, root),
             ))
             with contextlib.suppress(asyncio.CancelledError):
                 try:

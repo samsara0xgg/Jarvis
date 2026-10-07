@@ -10,10 +10,13 @@ It also runs the observers that only read this machine's files and apps (the rep
 to the brain's log instead of a log here. The usage observer needs provider keys and the Claude
 sessions page is a live read, so those stay with the brain (ADR 0170).
 
-With ``--voice`` it also speaks (ADR 0172): the brain streams the answer's rows into a scratch
-journal here, the same media actor as on one machine plays them, its provider sessions run on
-the brain, and the playback rows it writes go back to the brain as events. Listening is not
-part of this yet.
+With ``--voice`` it also speaks and listens (ADR 0172): the brain streams the answer's rows into
+a scratch journal here, the same media actor as on one machine plays them, its provider
+sessions run on the brain, and the playback rows it writes go back to the brain as events. The
+same capture session as a daemon's (wake, VAD, local ASR, barge-in) runs here when this
+machine's own config turns ``realtime.single_audio_ingress`` on; each callback that touches
+brain state is a call over the link, and a final utterance goes to the brain as one
+``utterance.received``. A microphone that cannot be opened leaves a speaking-only terminal.
 """
 
 from __future__ import annotations
@@ -21,14 +24,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 import tempfile
 import uuid
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.tools import (
     TERMINAL_TOOL_NAMES,
@@ -46,6 +52,7 @@ from jarvis.runtime import (
     _observer_poll_interval_s,
     _observer_repo_paths,
     _obsidian_vault_root,
+    _realtime_model_path,
     _screen_tools_config,
     _timesink_db_path,
     _timesink_poll_interval_s,
@@ -53,19 +60,27 @@ from jarvis.runtime import (
     _wave4_response_flags,
 )
 from jarvis.runtime.inherent_loop import (
+    _build_echo_canceller,
     _build_tts_pipeline,
+    _build_voice_pipeline,
+    _ListenPorts,
     _repo_observer_task,
+    _single_ingress_activation,
+    _spawn_single_ingress_session,
     _timesink_observer_task,
     _tts_watcher,
     _voice_knobs,
+    _voice_models_preflight,
 )
 from jarvis.runtime.settings import apply_settings
 from jarvis.shared import ActionRequest
+from jarvis.shared.realtime_trace import configure_realtime_trace_jsonl
 from jarvis.state import device_reads, timesink
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_report import git_show, local_commits
 from jarvis.state.daily_store import commit_exists
 from jarvis.state.event_log import EventLogError, emit_event, open_event_log
+from jarvis.state.memory_db import MemorySettings
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.terminal_events import EventOutbox
@@ -75,6 +90,7 @@ from jarvis.surface.terminal_link import (
     TerminalRefusedError,
     run_terminal_client,
 )
+from jarvis.surface.terminal_listen import LinkedControls, LinkedTurn, with_voice_commands
 from jarvis.surface.terminal_speaker import (
     Journal,
     RemoteTTSProvider,
@@ -87,9 +103,9 @@ from jarvis.surface.voice_media import StreamingTTSPipeline
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Mapping
 
     from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
+    from jarvis.surface import voice_aec, voice_session
 
 LOGGER = logging.getLogger("jarvis.runtime.terminal")
 
@@ -307,24 +323,27 @@ async def _observe(outbox: EventOutbox, watched: _Watched) -> None:
 JOURNAL = Path("terminal") / "voice-journal.db"
 """Where a voice terminal's scratch journal lives, under its runtime root."""
 _SPEECH_CLOSE_S = 5.0
+_LISTEN_CLOSE_S = 15.0
 
 
 @dataclass(frozen=True)
-class _JournalPath:
-    event_log: Path
+class _SeatPaths:
+    event_log: Path  # the journal: the only log a terminal has
+    root: Path
 
 
 @dataclass(frozen=True)
 class _Seat:
-    """What the speaking half of voice reads from its host; a terminal's is its journal."""
+    """What the voice builders read from their host; a terminal's is its journal and config."""
 
     config: Mapping[str, Any]
     wave1_features: Wave1FeatureFlags
     response_flags: Wave4ResponseFlags
-    runtime_paths: _JournalPath
+    runtime_paths: _SeatPaths
     conn: sqlite3.Connection
-    memory: None = None
+    memory: MemorySettings | None = None
     voice_settings: None = None
+    voice_cues: None = None
 
 
 @dataclass(frozen=True)
@@ -333,52 +352,214 @@ class _Speaking:
 
     config: Mapping[str, Any]
     runtime_root: Path
+    config_dir: Path | None = None  # where relative model paths in the config resolve from
 
 
-def _start_speech(
-    speaking: _Speaking, outbox: EventOutbox,
-) -> tuple[VoiceLink | None, StreamingTTSPipeline | None, list[asyncio.Task[None]]]:
+class _QuietBroadcaster(InherentBroadcaster):
+    """The broadcaster of a terminal, which has no surface of its own yet.
+
+    The session's partial captions, listening and transcribing faces and capability changes are
+    logged at debug and dropped: the surface that shows them connects to the brain, not here.
+    """
+
+    def broadcast_voice_sync(self, phase: str, *, turn_id: str, **payload: object) -> None:
+        """Drop one voice phase."""
+        LOGGER.debug("voice phase %s turn=%s %s", phase, turn_id, sorted(payload))
+
+    def broadcast_voice_capability_sync(  # noqa: PLR0913 - explicit wire schema
+        self,
+        *,
+        version: int,
+        state: str,
+        stream_epoch: int | None,
+        reason: str,
+        wake_available: bool,
+        local_capture_available: bool,
+        ptt_upload_available: bool,
+        text_available: bool,
+        route_kind: str = "unknown",
+        allowed_barge_mode: str = "ptt",
+    ) -> None:
+        """Drop one capability snapshot."""
+        del (
+            stream_epoch, wake_available, local_capture_available, ptt_upload_available,
+            text_available, route_kind, allowed_barge_mode,
+        )
+        LOGGER.debug("voice capability v%s %s (%s)", version, state, reason)
+
+    def broadcast_op_sync(self, op: str, **payload: object) -> None:
+        """Drop one op."""
+        LOGGER.debug("op %s %s", op, sorted(payload))
+
+
+@dataclass
+class _Speech:
+    """What a terminal that was asked to speak holds; empty when it is mute."""
+
+    link: VoiceLink | None = None
+    pipeline: StreamingTTSPipeline | None = None
+    tasks: list[asyncio.Task[None]] = field(default_factory=list)
+    seat: _Seat | None = None
+    broadcaster: InherentBroadcaster | None = None
+    canceller: voice_aec.EchoCanceller | None = None
+    listening: asyncio.Task[_Listening | None] | None = None
+
+
+@dataclass
+class _Listening:
+    """A running capture session, and what keeps it and the brain in step."""
+
+    session: voice_session.DuplexVoiceSession
+    controls: LinkedControls
+
+
+def _listening_requested(config: Mapping[str, Any]) -> bool:
+    """Whether this machine's own config turns the capture session on."""
+    realtime = config.get("realtime")
+    ingress = realtime.get("single_audio_ingress") if isinstance(realtime, Mapping) else None
+    return isinstance(ingress, Mapping) and ingress.get("enabled") is True
+
+
+def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
     """Build the media actor over a fresh journal, and the tasks that feed and report it.
 
     No link when the actor did not start: a mute terminal must not tell the brain it speaks.
+    When the config asks for listening, the echo canceller is built first and handed to the
+    player as the far end of its reference: it can only cancel what the player plays.
 
     Runs on the loop that carries the link: the journal belongs to that thread, and the
     actor's own log connection is opened on its thread by the pipeline.
     """
     journal = Journal(speaking.runtime_root / JOURNAL)
     link = VoiceLink(journal)
-    broadcaster = InherentBroadcaster()
+    broadcaster = _QuietBroadcaster()
     broadcaster.attach_loop(asyncio.get_running_loop())
     seat = _Seat(
         speaking.config,
         _wave1_feature_flags(speaking.config),
         _wave4_response_flags(speaking.config),
-        _JournalPath(journal.path),
+        _SeatPaths(journal.path, speaking.runtime_root),
         journal.conn,
+        MemorySettings.from_config(
+            speaking.config.get("memory"), runtime_root=speaking.runtime_root,
+        ),
     )
+    canceller = None
+    if _listening_requested(speaking.config):
+        try:
+            canceller = _build_echo_canceller(seat)
+        except Exception:
+            LOGGER.exception("echo cancellation could not start; this terminal listens without it")
     pipeline = _build_tts_pipeline(
         seat, broadcaster, ducker=SystemAudioDucker(), voice=_voice_knobs(speaking.config),
-        remote=RemoteTTSProvider(link),
+        echo_canceller=canceller, remote=RemoteTTSProvider(link),
     )
     if not isinstance(pipeline, StreamingTTSPipeline):
         LOGGER.warning("voice is on but the media actor did not start; this terminal is mute")
-        return None, None, []
+        return _Speech()
     watcher = _tts_watcher(conn=journal.conn, pipeline=pipeline, broadcaster=broadcaster)
-    return link, pipeline, [
-        asyncio.create_task(watcher),
-        asyncio.create_task(forward_playback(journal.path, outbox)),
-    ]
+    return _Speech(
+        link, pipeline,
+        [asyncio.create_task(watcher), asyncio.create_task(forward_playback(journal.path, outbox))],
+        seat, broadcaster, canceller,
+    )
 
 
-async def _stop_speech(
-    pipeline: StreamingTTSPipeline | None, tasks: list[asyncio.Task[None]],
-) -> None:
-    for task in tasks:
+async def _start_listening(speaking: _Speaking, speech: _Speech) -> _Listening | None:
+    """Run the capture session of this terminal, or say why this terminal only speaks.
+
+    One attempt, no retry: a microphone another process holds stays held, and trying again in
+    a loop would only fight it. The words the owner says reach the brain as utterances and
+    every callback that touches brain state is a call over the link (ADR 0172). Models load
+    and the device opens on a worker thread, so the link comes up meanwhile.
+    """
+    link, pipeline, seat = speech.link, speech.pipeline, speech.seat
+    if link is None or pipeline is None or seat is None or speech.broadcaster is None:
+        return None
+    config = speaking.config
+    if not _single_ingress_activation(seat, tts=pipeline).requested:
+        LOGGER.info("listening is off in this terminal's config "
+                    "(realtime.single_audio_ingress.enabled); it speaks only")
+        return None
+    config_dir = speaking.config_dir or speaking.runtime_root
+    sensevoice_dir = _realtime_model_path(
+        config, key="sensevoice_dir", config_dir=config_dir,
+        fallback=default_sensevoice_dir(speaking.runtime_root),
+    )
+    silero_path = _realtime_model_path(
+        config, key="silero_vad_path", config_dir=config_dir,
+        fallback=default_silero_vad_path(speaking.runtime_root),
+    )
+    models_ok, missing = _voice_models_preflight(
+        sensevoice_dir=sensevoice_dir, silero_path=silero_path,
+    )
+    if not models_ok:
+        LOGGER.error("voice models are missing, so this terminal speaks but does not listen: %s",
+                     "; ".join(missing))
+        return None
+    turn, controls = LinkedTurn(link), LinkedControls(link)
+    ports = _ListenPorts(
+        answer_words=turn.answer_words, turn_working=turn.turn_working,
+        recent_speech=turn.recent_speech, ask_words=turn.ask_words, note_words=turn.note_words,
+        begin_line=turn.begin_line, interrupt=turn.interrupt, hold_runs=turn.hold_runs,
+        supersede_unspoken=turn.supersede, cancel_voice_runs=turn.cancel_runs,
+    )
+    broadcaster = speech.broadcaster
+
+    def build() -> tuple[voice_session.DuplexVoiceSession | None, bool]:
+        recognizer_pipeline = _build_voice_pipeline(
+            seat, broadcaster=broadcaster, sensevoice_dir=sensevoice_dir,
+            emit=turn.emit_utterance,
+        )
+        return _spawn_single_ingress_session(
+            runtime=seat, pipeline=recognizer_pipeline, broadcaster=broadcaster,
+            silero_path=silero_path, tts=pipeline, voice=_voice_knobs(config),
+            mic_muted=lambda: False,  # mute is a switch of the surface on this device (step 6)
+            conversation=controls.conversation, set_conversation=controls.set_conversation,
+            set_quiet=controls.set_quiet, echo_canceller=speech.canceller, ports=ports,
+        )
+
+    try:
+        session, attempted = await asyncio.to_thread(build)
+    except Exception:
+        LOGGER.exception("the capture session could not be built; this terminal speaks only")
+        return None
+    if session is None:
+        LOGGER.error(
+            "the microphone could not be %s, so this terminal speaks but does not listen. If "
+            "another process holds it (the Mac's own jarvis daemon), stop that one and restart "
+            "this terminal; it does not try again by itself.",
+            "opened" if attempted else "prepared (see the warning above)",
+        )
+        return None
+    controls.on_surface_exit = session.dismiss
+    controls.start()
+    LOGGER.info("this terminal listens: wake, VAD and ASR run here; utterances go to the brain")
+    return _Listening(session, controls)
+
+
+async def _stop_listening(task: asyncio.Task[_Listening | None] | None) -> None:
+    """End the capture session: the microphone first, then the brain's switches."""
+    if task is None:
+        return
+    await asyncio.wait({task}, timeout=_LISTEN_CLOSE_S)
+    if not task.done() or task.cancelled() or task.exception() is not None:
+        return
+    listening = task.result()
+    if listening is None:
+        return
+    await asyncio.to_thread(listening.controls.stop)
+    await asyncio.to_thread(listening.session.close)
+
+
+async def _stop_speech(speech: _Speech) -> None:
+    await _stop_listening(speech.listening)
+    for task in speech.tasks:
         task.cancel()
-    if tasks:
-        await asyncio.wait(tasks)
-    if pipeline is not None:
-        await asyncio.to_thread(pipeline.close, wait_timeout_s=_SPEECH_CLOSE_S)
+    if speech.tasks:
+        await asyncio.wait(speech.tasks)
+    if speech.pipeline is not None:
+        await asyncio.to_thread(speech.pipeline.close, wait_timeout_s=_SPEECH_CLOSE_S)
 
 
 async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
@@ -390,22 +571,44 @@ async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
     observing = None if outbox is None or watched is None else asyncio.create_task(
         _observe(outbox, watched),
     )
-    link = pipeline = None
-    speech_tasks: list[asyncio.Task[None]] = []
+    speech = _Speech()
     if speaking is not None and outbox is not None:
         try:
-            link, pipeline, speech_tasks = _start_speech(speaking, outbox)
+            speech = _start_speech(speaking, outbox)
         except Exception:
             LOGGER.exception("voice could not start; this terminal runs without it")
+    if speaking is not None and speech.pipeline is not None:
+        execute = with_voice_commands(execute, speech.pipeline)
+        speech.listening = asyncio.create_task(_start_listening(speaking, speech))
     try:
         await run_terminal_client(
-            base_url, token, tools=tools, execute=execute, events=outbox, voice=link,
+            base_url, token, tools=tools, execute=execute, events=outbox, voice=speech.link,
         )
     finally:
         if observing is not None:
             observing.cancel()
             await asyncio.wait({observing})
-        await _stop_speech(pipeline, speech_tasks)
+        await _stop_speech(speech)
+
+
+def _configure_realtime_trace(runtime_root: Path) -> None:
+    """``JARVIS_REALTIME_TRACE_JSONL`` as the daemon reads it: the latency trace of this process.
+
+    A relative path lands under the runtime root. The terminal's trace holds the same points a
+    daemon's does (endpoint, ASR, first audible callback) on this machine's own clock.
+    """
+    raw = os.environ.get("JARVIS_REALTIME_TRACE_JSONL")
+    if not raw:
+        return
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = runtime_root / path
+    try:
+        configure_realtime_trace_jsonl(path)
+    except OSError as exc:
+        LOGGER.warning("cannot open the realtime trace %s: %s", path, exc)
+    else:
+        LOGGER.info("realtime trace: %s", path)
 
 
 def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
@@ -457,9 +660,11 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
         execute = make_executor(
             registry, timesink_store=configured_store, repos=configured_repos,
         )
+        if voice:
+            _configure_realtime_trace(runtime_root)
         asyncio.run(_run(
             base_url, token, tools=tools, execute=execute, watched=watched,
-            speaking=_Speaking(config, runtime_root) if voice else None,
+            speaking=_Speaking(config, runtime_root, config_path.parent) if voice else None,
         ))
     except TerminalRefusedError as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")

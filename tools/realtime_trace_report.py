@@ -8,6 +8,14 @@ Usage after a controlled run::
 Pass ``--baseline`` to compute like-for-like duration deltas. The report sorts
 by monotonic timestamp because concurrent exporters may enqueue adjacent rows
 in a different file order.
+
+``speech_end_to_first_audible_ms`` is the number a split deployment is judged by (ADR 0172):
+from the owner's last voiced audio to the first output callback of the turn's answer. It is
+read from ONE process's trace, the one that holds the microphone and the speaker: a daemon's
+on one machine (``all``), a voice terminal's with a brain. Both write ``endpoint_candidate``
+(its turn id), ``vad_endpoint_candidate`` (the silence that preceded it) and
+``audio_output_first_nonzero_callback`` (its response id); the answer's response id is tied to
+the turn by ``response_started`` on a daemon and by ``terminal_response_open`` on a terminal.
 """
 
 from __future__ import annotations
@@ -169,6 +177,7 @@ def summarize_trace(
         for label, start, end in _DURATIONS
         if start in times and end in times and times[end] >= times[start]
     }
+    durations_ms.update(_first_audible_ms(rows, selected_turn))
     endpoint_row = next(
         (row for row in selected if row.name == "endpoint_candidate"),
         None,
@@ -242,6 +251,57 @@ def summarize_trace(
             "armed microphone energy is an acoustic proxy, not a direct DAC timestamp",
         ],
     }
+
+
+def _first_audible_ms(rows: tuple[TraceRow, ...], turn: str | None) -> dict[str, float]:
+    """The endpoint-to-audible durations of ``turn``'s first audible answer, when all are traced."""
+    if turn is None:
+        return {}
+    candidate = next(
+        (r for r in rows if r.name == "endpoint_candidate" and r.attributes.get("turn_id") == turn),
+        None,
+    )
+    if candidate is None:
+        return {}
+    answers = {
+        r.attributes["response_id"]
+        for r in rows
+        if r.attributes.get("turn_id") == turn
+        and isinstance(r.attributes.get("response_id"), str)
+        and r.name in {"response_started", "terminal_response_open"}
+    }
+    audible = next(
+        (
+            r for r in rows
+            if r.name == "audio_output_first_nonzero_callback"
+            and r.attributes.get("response_id") in answers
+            and r.monotonic_ns >= candidate.monotonic_ns
+        ),
+        None,
+    )
+    if audible is None:
+        return {}
+    found = {
+        "endpoint_candidate_to_first_audible_ms": round(
+            (audible.monotonic_ns - candidate.monotonic_ns) / 1_000_000, 3,
+        ),
+    }
+    vad = next(
+        (
+            r for r in reversed(rows)
+            if r.name == "vad_endpoint_candidate" and r.monotonic_ns <= candidate.monotonic_ns
+        ),
+        None,
+    )
+    silence = None if vad is None else vad.attributes.get("consecutive_silence_audio_ms")
+    if vad is not None and isinstance(silence, (int, float)):
+        # The VAD calls the endpoint once that much silence has gone by: his last voiced
+        # audio was that long before the call.
+        speech_end_ns = vad.monotonic_ns - int(float(silence) * 1_000_000)
+        found["speech_end_to_first_audible_ms"] = round(
+            (audible.monotonic_ns - speech_end_ns) / 1_000_000, 3,
+        )
+    return found
 
 
 def compare_reports(

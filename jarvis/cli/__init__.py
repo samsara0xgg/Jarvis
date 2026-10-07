@@ -987,8 +987,10 @@ def _main_terminal(argv: list[str]) -> int:
         "--voice",
         action="store_true",
         help=(
-            "Also speak the brain's answers on this machine's speaker (ADR 0172). Its own "
-            "daemon's speaker can stay on; only the microphone has one owner."
+            "Also speak the brain's answers on this machine's speaker and, when this "
+            "machine's config turns realtime.single_audio_ingress on, listen on its "
+            "microphone and send what it hears to the brain (ADR 0172). Its own daemon's "
+            "speaker can stay on; only the microphone has one owner."
         ),
     )
     args = parser.parse_args(argv)

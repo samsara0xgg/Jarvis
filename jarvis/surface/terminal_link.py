@@ -13,6 +13,8 @@ tools it can run, and then answers calls. Every frame is one JSON text message::
     terminal -> brain   {"type": "event", ...}   an observer's event, see terminal_events
     brain -> terminal   {"type": "ack", ...}
     both ways           {"type": "row" | "tts", ...}   a voice terminal's speech, see terminal_voice
+    terminal -> brain   {"type": "ask", ...}    a voice terminal's listening, see terminal_listen
+    brain -> terminal   {"type": "reply", ...}  its answer
 
 Results are data: the brain reads ``output`` as a JSON object and nothing in it is run. This
 module holds the brain's side (:class:`TerminalHub`, :func:`serve_terminal`) and the terminal's
@@ -43,6 +45,7 @@ if TYPE_CHECKING:
     from fastapi import WebSocket
 
     from jarvis.surface.terminal_events import BrainEvents, EventOutbox
+    from jarvis.surface.terminal_listen import BrainListening, LinkState
     from jarvis.surface.terminal_speaker import VoiceLink
     from jarvis.surface.terminal_voice import BrainVoice, Peer
 
@@ -79,6 +82,7 @@ class _Link:
     )
     voice: bool = False  # the terminal declared it speaks (ADR 0172)
     speech: Peer | None = None  # its place in the brain's BrainVoice, once ready
+    listen: LinkState | None = None  # what BrainListening keeps for it, once it asks
 
 
 class TerminalHub:
@@ -96,6 +100,8 @@ class TerminalHub:
         self.events = events
         self.voice: BrainVoice | None = None
         """What speaks to a voice terminal (ADR 0172); set once the brain can synthesize."""
+        self.listening: BrainListening | None = None
+        """What answers a voice terminal's capture session (ADR 0172); set by the runtime."""
         self._lock = threading.Lock()
         self._links: list[_Link] = []  # oldest connection first
         self._last_name: dict[str, str] = {}
@@ -163,15 +169,31 @@ class TerminalHub:
             DeviceCallError: no such terminal, no answer in time, the terminal went away
                 mid-call, or the terminal reported a failure (its own code and message).
         """
-        deadline = time.monotonic() + self._call_timeout_s
         with self._lock:
             link = next((item for item in reversed(self._links) if tool in item.tools), None)
-            if link is None:
-                label = self._last_name.get(tool, "the terminal")
-                msg = f"{label} is not connected right now, so {tool} cannot run"
-                raise DeviceCallError(msg, code="device_not_connected")
-            call_id = uuid.uuid4().hex
-            future: concurrent.futures.Future[dict[str, Any]] = concurrent.futures.Future()
+            label = self._last_name.get(tool, "the terminal")
+        if link is None:
+            msg = f"{label} is not connected right now, so {tool} cannot run"
+            raise DeviceCallError(msg, code="device_not_connected")
+        return self.call_on(link, tool, arguments, target_entity_ref, self._call_timeout_s)
+
+    def call_on(
+        self, link: _Link, tool: str, arguments: Mapping[str, Any],
+        target_entity_ref: str | None = None, timeout_s: float | None = None,
+    ) -> dict[str, Any]:
+        """Run ``tool`` on this terminal, whether or not it declared it.
+
+        The brain's own commands to a voice terminal (ADR 0172) are not menu tools. Same errors
+        as :meth:`call`.
+        """
+        timeout = self._call_timeout_s if timeout_s is None else timeout_s
+        deadline = time.monotonic() + timeout
+        call_id = uuid.uuid4().hex
+        future: concurrent.futures.Future[dict[str, Any]] = concurrent.futures.Future()
+        with self._lock:
+            if link not in self._links:
+                msg = f"{link.name} disconnected before it could run {tool}"
+                raise DeviceCallError(msg, code="device_disconnected")
             link.pending[call_id] = (tool, future)
         frame = json.dumps(
             {
@@ -187,11 +209,21 @@ class TerminalHub:
             self._send(link, frame, deadline)
             return future.result(timeout=max(0.0, deadline - time.monotonic()))
         except concurrent.futures.TimeoutError:
-            msg = f"{link.name} did not answer {tool} within {self._call_timeout_s:g} s"
+            msg = f"{link.name} did not answer {tool} within {timeout:g} s"
             raise DeviceCallError(msg, code="device_timeout") from None
         finally:
             with self._lock:
                 link.pending.pop(call_id, None)
+
+    def is_connected(self, link: _Link) -> bool:
+        """Whether ``link`` is still a connected terminal."""
+        with self._lock:
+            return link in self._links
+
+    def voice_link_of(self, peer: Peer) -> _Link | None:
+        """The connected terminal whose speech is ``peer``."""
+        with self._lock:
+            return next((item for item in self._links if item.speech is peer), None)
 
     @staticmethod
     def _send(link: _Link, frame: str, deadline: float) -> None:
@@ -275,6 +307,8 @@ async def serve_terminal(hub: TerminalHub, ws: WebSocket, name: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        if hub.listening is not None:
+            await hub.listening.detach(link)
         await _end_speech(hub, link, streaming)
         hub.detach(link)
 
@@ -290,6 +324,7 @@ async def _greet(
         ready["baseline"] = hub.events.baseline()
     if hello.voice:
         ready["voice"] = hub.voice is not None
+        ready["listen"] = hub.listening is not None
     await ws.send_text(json.dumps(ready, ensure_ascii=False))
     if link.speech is None or hub.voice is None:
         return None
@@ -312,7 +347,8 @@ async def _on_frame(
 ) -> None:
     """A terminal's ``result`` goes to the call waiting for it; its ``event`` to the log.
 
-    A voice terminal's ``tts`` request goes to its provider session (ADR 0172).
+    A voice terminal's ``tts`` request goes to its provider session, and its ``ask`` to
+    :class:`~jarvis.surface.terminal_listen.BrainListening` (ADR 0172).
     """
     if frame.get("type") == "result":
         hub.deliver(link, frame)
@@ -327,6 +363,14 @@ async def _on_frame(
                 "error": {"name": "Refused", "message": "this brain has no speech provider"},
             }
             await ws.send_text(json.dumps(refusal))
+    elif frame.get("type") == "ask" and link.voice:
+        if hub.listening is not None:
+            hub.listening.on_frame(link, frame)
+        elif isinstance(frame.get("id"), str):
+            await ws.send_text(json.dumps({
+                "type": "reply", "id": frame["id"], "ok": False, "code": "not_listening",
+                "message": "this brain does not take a terminal's listening",
+            }))
 
 
 async def _record_event(
@@ -375,7 +419,7 @@ async def _serve_calls(
 ) -> None:
     """Answer calls and take acks until the socket closes; a call in flight is dropped with it.
 
-    A voice terminal also takes the brain's rows and provider frames (ADR 0172).
+    A voice terminal also takes the brain's rows, provider frames and replies (ADR 0172).
     """
     running: set[asyncio.Task[None]] = set()
     try:
@@ -391,7 +435,7 @@ async def _serve_calls(
             elif events is not None and isinstance(frame, dict) and frame.get("type") == "ack":
                 events.ack(frame)
             elif voice is not None and isinstance(frame, dict) and frame.get("type") in {
-                "row", "tts",
+                "row", "tts", "reply",
             }:
                 voice.on_frame(frame)
     finally:

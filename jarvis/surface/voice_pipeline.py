@@ -24,7 +24,7 @@ from jarvis.surface import voice_artifact_store, voice_asr
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable, Collection
+    from collections.abc import Callable, Collection, Mapping
     from pathlib import Path
 
     from jarvis.shared import Event
@@ -88,15 +88,25 @@ class VoicePipeline:
     def __init__(  # noqa: PLR0913 — 6 keyword-only deps form the L5 composition boundary.
         self,
         *,
-        conn_factory: Callable[[], sqlite3.Connection],
+        conn_factory: Callable[[], sqlite3.Connection] | None = None,
         recognizer: voice_asr.AsrRecognizer,
         normalizer: voice_asr.AsrNormalizer,
         broadcaster: _BroadcasterProtocol | None,
         artifacts_dir: Path | None,
         sample_rate_hz: int = 16000,
         cues: VoiceCues | None = None,
+        emit: Callable[[Mapping[str, object], Mapping[str, str]], Event] | None = None,
     ) -> None:
-        """Wire together one VoicePipeline; see class docstring for semantics."""
+        """Wire together one VoicePipeline; see class docstring for semantics.
+
+        The utterance is committed to the log ``conn_factory`` opens, or, on a voice terminal
+        (ADR 0172), handed to ``emit(payload, correlation)``, which returns the committed
+        event. Exactly one of the two is given.
+        """
+        if (conn_factory is None) == (emit is None):
+            msg = "a VoicePipeline commits to a log or hands the utterance on, not both or neither"
+            raise ValueError(msg)
+        self._emit = emit
         self._conn_factory = conn_factory
         self._recognizer = recognizer
         self._normalizer = normalizer
@@ -358,13 +368,17 @@ class VoicePipeline:
             if endpoint_reason is not None:
                 payload["endpoint_reason"] = endpoint_reason
 
-            with contextlib.closing(self._conn_factory()) as worker_conn:
-                ev = emit_event(
-                    worker_conn,
-                    type="utterance.received",
-                    payload=payload,
-                    correlation={"turn_id": turn_id},
-                )
+            if self._emit is not None:  # a voice terminal sends it to the brain (ADR 0172)
+                ev = self._emit(payload, {"turn_id": turn_id})
+            else:
+                assert self._conn_factory is not None  # noqa: S101 — the constructor ensures it.
+                with contextlib.closing(self._conn_factory()) as worker_conn:
+                    ev = emit_event(
+                        worker_conn,
+                        type="utterance.received",
+                        payload=payload,
+                        correlation={"turn_id": turn_id},
+                    )
             record_realtime_trace(
                 "utterance_committed",
                 turn_id=turn_id,

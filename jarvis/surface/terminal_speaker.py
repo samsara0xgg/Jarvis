@@ -11,28 +11,31 @@ describes on the wire:
   call to the brain, which holds the key.
 
 What the media actor writes into the journal about playback goes back to the brain as events
-(:func:`forward_playback`).
+(:func:`forward_playback`). The capture session's calls into the brain's state ride the same
+link as ``ask`` frames (:meth:`VoiceLink.ask`, :meth:`VoiceLink.tell`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import json
 import logging
 import sqlite3
 import threading
+import time
 import uuid
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import Event
+from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.event_log import EventLogError, emit_event, open_event_log, open_runtime_event_log
 from jarvis.surface.terminal_events import PLAYBACK_EVENT_TYPES
 from jarvis.surface.terminal_voice import HEX_ID, RESPONSE_ROW_TYPES, decode_event
 from jarvis.surface.voice_tts import TTSResponseSegment, TTSSessionClosedError
 
 if TYPE_CHECKING:
-    import concurrent.futures
     from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
     from pathlib import Path
 
@@ -57,6 +60,10 @@ _PLAYBACK_ROWS_SQL: Final = (
 
 class RemoteTTSError(RuntimeError):
     """The brain could not run a provider call: unreachable, refused, or the provider failed."""
+
+
+class BrainCallError(RuntimeError):
+    """The brain did not answer a call of the capture session: unreachable, too slow, or refused."""
 
 
 class Journal:
@@ -94,6 +101,14 @@ class Journal:
         except EventLogError:
             LOGGER.warning("terminal voice: the brain sent a %s row the journal refuses", kind)
             return False
+        if kind == "surface.response_open":
+            # The join between a turn (heard here) and the answer's first audible sample, for
+            # reading the end-of-speech latency from this terminal's own trace alone.
+            record_realtime_trace(
+                "terminal_response_open",
+                turn_id=str(payload.get("turn_id", "")),
+                response_id=str(payload.get("response_id", "")),
+            )
         return True
 
 
@@ -114,6 +129,7 @@ class VoiceLink:
         self._last_row: int | None = None
         self._closed = False
         self._brain_speaks = False
+        self._asks: dict[str, concurrent.futures.Future[Any]] = {}
 
     @property
     def last_row(self) -> int | None:
@@ -134,6 +150,9 @@ class VoiceLink:
         speaks = ready.get("voice") is True
         if not speaks:
             LOGGER.warning("the brain has no speech provider: this terminal will not be spoken to")
+        if ready.get("listen") is not True:
+            LOGGER.warning("the brain does not take a terminal's listening: no utterance of "
+                           "this terminal will be answered")
         with self._lock:
             self._send, self._loop, self._brain_speaks = send, loop, speaks
 
@@ -142,11 +161,18 @@ class VoiceLink:
         with self._lock:
             self._send, self._loop = None, None
             sessions, self._sessions = list(self._sessions.values()), {}
+            asks, self._asks = list(self._asks.values()), {}
         for session in sessions:
             session.link_lost()
+        for pending in asks:
+            if not pending.done():
+                pending.set_exception(BrainCallError("the brain link dropped"))
 
     def on_frame(self, frame: Mapping[str, Any]) -> None:
-        """One ``row`` or ``tts`` frame from the brain."""
+        """One ``row``, ``tts`` or ``reply`` frame from the brain."""
+        if frame.get("type") == "reply":
+            self._on_reply(frame)
+            return
         if frame.get("type") == "row":
             row_id = frame.get("id")
             if type(row_id) is int and self._journal.append(frame):
@@ -157,6 +183,65 @@ class VoiceLink:
             session = self._sessions.get(sid) if isinstance(sid, str) else None
         if session is not None:
             session.receive(frame)
+
+    def _on_reply(self, frame: Mapping[str, Any]) -> None:
+        with self._lock:
+            pending = self._asks.pop(str(frame.get("id")), None)
+        if pending is None or pending.done():
+            return
+        if frame.get("ok") is True:
+            pending.set_result(frame.get("value"))
+        else:
+            pending.set_exception(
+                BrainCallError(f"{frame.get('code', 'refused')}: {frame.get('message', '')}"),
+            )
+
+    # -- the capture session's side ----------------------------------------------------
+
+    def ask(self, op: str, args: Mapping[str, Any], *, timeout_s: float) -> Any:  # noqa: ANN401 — the brain's JSON.
+        """Ask the brain to run ``op`` and wait for its answer; call from a worker thread.
+
+        Raises:
+            BrainCallError: no brain is connected, it did not answer within ``timeout_s``, the
+                link dropped meanwhile, or it refused. The caller picks its own fallback.
+        """
+        try:
+            on_link_loop = asyncio.get_running_loop() is self._loop
+        except RuntimeError:
+            on_link_loop = False
+        if on_link_loop:
+            msg = "a call to the brain must not run on the loop that carries the link"
+            raise BrainCallError(msg)
+        deadline = time.monotonic() + timeout_s
+        rid = uuid.uuid4().hex
+        answer: concurrent.futures.Future[Any] = concurrent.futures.Future()
+        with self._lock:
+            if self._send is None or self._closed:
+                msg = f"the brain is not reachable, so {op} cannot be asked"
+                raise BrainCallError(msg)
+            self._asks[rid] = answer
+        try:
+            sent = self._submit({"type": "ask", "id": rid, "op": op, "args": dict(args)})
+            sent.result(timeout=max(0.0, deadline - time.monotonic()))
+            return answer.result(timeout=max(0.0, deadline - time.monotonic()))
+        except BrainCallError:
+            raise
+        except TimeoutError:
+            msg = f"the brain did not answer {op} within {timeout_s:g} s"
+            raise BrainCallError(msg) from None
+        except (RemoteTTSError, OSError, RuntimeError) as exc:
+            msg = f"the brain link dropped while {op} was being asked"
+            raise BrainCallError(msg) from exc
+        finally:
+            with self._lock:
+                self._asks.pop(rid, None)
+
+    def tell(self, op: str, args: Mapping[str, Any]) -> None:
+        """Have the brain run ``op`` without waiting, in the order told.
+
+        Dropped, and not retried, while the brain is unreachable.
+        """
+        self.post({"type": "ask", "op": op, "args": dict(args)})
 
     # -- the provider sessions' side ---------------------------------------------------
 
