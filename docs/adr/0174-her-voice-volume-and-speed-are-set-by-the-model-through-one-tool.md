@@ -27,7 +27,9 @@ numbers and every TTS task start reads them from one shared holder.
 
 Its limits:
 
-- Steps: volume 15 or 30 percentage points, speed 0.2 or 0.4. Bounds: volume 30 to
+- Steps: volume ×1.4 or ×2 louder, ×0.7 or ×0.5 quieter (about 3 dB and 6 dB, the
+  same change at any level; 15 and 30 points were near the edge of hearing, 2026-10-06),
+  speed 0.2 or 0.4. Bounds: volume 30 to
   300 %, speed 0.6 to 1.8, clamped, and the result says `at_limit`.
 - Above 200 % volume nothing is applied unless `confirmed` is true; the result says
   `needs_confirmation` and the volume it would reach, and the model asks first.

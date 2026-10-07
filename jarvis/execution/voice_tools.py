@@ -20,9 +20,10 @@ if TYPE_CHECKING:
     from jarvis.state.voice_settings import VoiceSettings
 
 CONFIRM_ABOVE_PERCENT: Final[int] = 200
-# The model chooses only a direction and a size; these numbers are the program's.
-_VOLUME_STEPS: Final[dict[str, int]] = {
-    "louder_a_bit": 15, "louder_a_lot": 30, "quieter_a_bit": -15, "quieter_a_lot": -30,
+# The model chooses only a direction and a size; these numbers are the program's. Volume
+# steps multiply, so each is the same loudness change at any level: about 3 dB and 6 dB.
+_VOLUME_STEPS: Final[dict[str, float]] = {
+    "louder_a_bit": 1.4, "louder_a_lot": 2.0, "quieter_a_bit": 0.7, "quieter_a_lot": 0.5,
 }
 _SPEED_STEPS: Final[dict[str, float]] = {
     "faster_a_bit": 0.2, "faster_a_lot": 0.4, "slower_a_bit": -0.2, "slower_a_lot": -0.4,
@@ -93,8 +94,9 @@ def build_voice_tool(voice: VoiceSettings | None) -> tuple[Tool, ...]:
         needs_confirmation = False
         would_be: int | None = None
         if volume_step is not None:
-            target = min(MAX_PERCENT, max(MIN_PERCENT, percent + volume_step))
-            at_limit = target != percent + volume_step or target == percent
+            stepped = round(percent * volume_step)
+            target = min(MAX_PERCENT, max(MIN_PERCENT, stepped))
+            at_limit = target != stepped or target == percent
             if target > CONFIRM_ABOVE_PERCENT and not confirmed and target > percent:
                 needs_confirmation, would_be = True, target
             else:

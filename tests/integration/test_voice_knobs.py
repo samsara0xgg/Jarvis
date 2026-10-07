@@ -41,7 +41,7 @@ def test_the_tool_is_on_the_models_menu_up_front_and_only_the_models() -> None:
 
 @pytest.mark.parametrize(
     ("word", "volume"),
-    [("louder_a_bit", 115), ("louder_a_lot", 130), ("quieter_a_bit", 85), ("quieter_a_lot", 70)],
+    [("louder_a_bit", 140), ("louder_a_lot", 200), ("quieter_a_bit", 70), ("quieter_a_lot", 50)],
 )
 def test_a_volume_word_is_one_program_step(word: str, volume: int) -> None:
     """The model names a direction and size; the program owns the number."""
@@ -85,13 +85,13 @@ def test_above_200_percent_asks_first_and_applies_once_confirmed() -> None:
     voice.set_current(190, 1.0)
     held = _call(voice, volume="louder_a_bit")
     assert held["needs_confirmation"] is True
-    assert held["would_be_volume_percent"] == 205
+    assert held["would_be_volume_percent"] == 266
     assert held["volume_percent"] == 190
     assert voice.snapshot() == (190, 1.0)
     done = _call(voice, volume="louder_a_bit", confirmed=True)
     assert done["needs_confirmation"] is False
-    assert voice.snapshot() == (205, 1.0)
-    assert _call(voice, volume="quieter_a_bit")["volume_percent"] == 190
+    assert voice.snapshot() == (266, 1.0)
+    assert _call(voice, volume="quieter_a_bit")["volume_percent"] == 186
 
 
 def test_the_ceiling_is_300_even_when_confirmed() -> None:
@@ -114,8 +114,8 @@ def test_remember_keeps_the_default_across_a_restart_and_reset_forgets_it(tmp_pa
     path = tmp_path / "voice-settings.json"
     voice = VoiceSettings(path)
     _call(voice, volume="louder_a_bit", speed="slower_a_bit", remember=True)
-    assert _call(voice, volume="louder_a_bit")["remembered"] is False  # 130, not kept
-    assert VoiceSettings(path).snapshot() == (115, 0.8)
+    assert _call(voice, volume="louder_a_bit")["remembered"] is False  # 196, not kept
+    assert VoiceSettings(path).snapshot() == (140, 0.8)
     reset = _call(voice, reset=True)
     assert (reset["volume_percent"], reset["speed"], reset["reset"]) == (100, 1.0, True)
     assert VoiceSettings(path).snapshot() == (100, 1.0)
@@ -135,17 +135,17 @@ def test_the_end_of_a_conversation_returns_current_to_the_default(tmp_path: Path
     """Conversation going on to off puts the current voice back to the default, once."""
     voice = VoiceSettings(tmp_path / "voice-settings.json")
     _call(voice, volume="louder_a_bit", remember=True)
-    _call(voice, volume="louder_a_lot", speed="faster_a_bit")
+    _call(voice, volume="quieter_a_lot", speed="faster_a_bit")
     controls = VoiceControls()
     controls.on_conversation_end = voice.end_conversation
     controls.update(conversation=True)
     controls.update(conversation=True)
-    assert voice.snapshot() == (145, 1.2)
+    assert voice.snapshot() == (70, 1.2)
     controls.update(conversation=False)
-    assert voice.snapshot() == (115, 1.0)
+    assert voice.snapshot() == (140, 1.0)
     _call(voice, speed="faster_a_bit")
     controls.update(conversation=False)  # already off: no end, nothing returns
-    assert voice.snapshot() == (115, 1.2)
+    assert voice.snapshot() == (140, 1.2)
 
 
 def _client(voice: VoiceSettings | None, volume: int = 1) -> voice_tts.MiniMaxWSClient:
