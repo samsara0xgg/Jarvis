@@ -3128,6 +3128,7 @@ def make_supersede_unspoken_callable(
                     (since_ms,),
                 )
             }
+            working: set[str] = set()
             if runtime.response_flags.slow_results:
                 # The action names its turn in `correlation_json` (L4 stamps it
                 # from the ActionRequest), so this is a durable read, and it is
@@ -3145,7 +3146,7 @@ def make_supersede_unspoken_callable(
             # that line's run opens (its request is built after its words): mark
             # every recent turn with no run yet, and `register` cancels it on open.
             registry.mark_turns_superseded(
-                recent - {turn_id}
+                recent - {turn_id} - working
                 - {run.turn_id for run in registry.open_runs()}
                 - {
                     str(row[0])
