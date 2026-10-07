@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -282,3 +285,33 @@ def test_close_folds_the_dashboard_and_home_turns_to_its_home_screen() -> None:
         {"page": None, "item_id": None, "kind": None},
         {"page": "home", "item_id": None, "kind": None},
     ]
+
+
+def test_a_shut_dashboard_opens_only_when_his_words_ask_to_see() -> None:
+    """Live 2026-10-07: 'what did I do yesterday' opened the shut brief page; 'show me' may."""
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE events (event_uid TEXT, type TEXT, payload_json TEXT)")
+
+    def turn(n: int, words: str) -> ToolContext:
+        rows = [
+            (f"u{n}", "utterance.received", {"transcript": words}),
+            (f"s{n}", "turn.started", {"turn_id": f"T{n}", "trigger": f"u{n}"}),
+            (f"p{n}", "action.proposed", {"turn_id": f"T{n}", "action_id": f"A{n}"}),
+        ]
+        conn.executemany(
+            "INSERT INTO events VALUES (?, ?, ?)", [(u, t, json.dumps(p)) for u, t, p in rows]
+        )
+        return cast("ToolContext", SimpleNamespace(conn=conn, action_id=f"A{n}"))
+
+    view = ViewState()
+    sent: list[dict[str, str | None]] = []
+    view.push = sent.append
+    tool = _tool(view)
+    with pytest.raises(ToolError, match="did not ask"):
+        tool.handler({"page": "brief"}, turn(1, "What did I get done yesterday?"))
+    assert sent == []
+    tool.handler({"page": "brief"}, turn(2, "Show me."))
+    view.set("brief")  # open: it follows the conversation without being asked
+    tool.handler({"page": "jobs"}, turn(3, "And my applications?"))
+    tool.handler({"page": CLOSE}, turn(4, "That's all."))
+    assert [s["page"] for s in sent] == ["brief", "jobs", None]

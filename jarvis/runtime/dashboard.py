@@ -150,17 +150,24 @@ class ViewState:
             None,
         )
 
-    def present(self, page: str, item_id: str | None) -> dict[str, str | None]:
+    def present(
+        self, page: str, item_id: str | None, *, asked: bool = True
+    ) -> dict[str, str | None]:
         """Ask the companion to turn to ``page``, and to ``item_id`` when the view carries it.
 
-        An id the current view does not carry opens the page alone. Returns what was sent;
-        ValueError for an unknown page or when no Dashboard link is attached.
+        An id the current view does not carry opens the page alone. ``asked`` is whether
+        Allen's words asked to see something: without it a shut Dashboard stays shut. Returns
+        what was sent; ValueError for an unknown page, a shut Dashboard he did not ask for, or
+        when no Dashboard link is attached.
         """
         if page not in PAGES and page != CLOSE:
             msg = f"unknown page {page!r}"
             raise ValueError(msg)
         if self.push is None:
             msg = "the Dashboard is not connected"
+            raise ValueError(msg)
+        if not asked and page != CLOSE and self._fresh() is None:
+            msg = "the Dashboard is shut and Allen did not ask to see anything; answer without it"
             raise ValueError(msg)
         if page == CLOSE:
             closed: dict[str, str | None] = {"page": None, "item_id": None, "kind": None}

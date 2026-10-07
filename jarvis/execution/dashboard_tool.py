@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution.tools import Tool, ToolContext, ToolError
@@ -34,14 +35,39 @@ _UNKNOWN_ITEM: Final = (
 )
 
 
+# Live 2026-10-07: asked "what did I get done yesterday", she opened the shut Dashboard on
+# the brief page every time, whatever the description said. A shut one opens only when his
+# words ask to see something.
+_ASKS_TO_SEE: Final = re.compile(
+    r"\b(show|open|see|display|pull up|bring up|put|look|dashboard|screen)\b"
+    r"|打开|看看|看一下|给我看|显示|调出|放到|屏幕|面板",
+    re.IGNORECASE,
+)
+_TURN_WORDS: Final = """
+    SELECT json_extract(t.payload_json, '$.transcript') FROM events a
+    JOIN events s ON s.type = 'turn.started'
+        AND json_extract(s.payload_json, '$.turn_id') = json_extract(a.payload_json, '$.turn_id')
+    JOIN events t ON t.event_uid = json_extract(s.payload_json, '$.trigger')
+    WHERE a.type = 'action.proposed' AND json_extract(a.payload_json, '$.action_id') = ?
+"""
+
+
+def _asks_to_see(ctx: ToolContext) -> bool:
+    """Whether this turn's words ask to see something; True when they cannot be read."""
+    row = None if ctx is None else ctx.conn.execute(_TURN_WORDS, (ctx.action_id,)).fetchone()
+    words = row[0] if row else None
+    return not isinstance(words, str) or bool(_ASKS_TO_SEE.search(words))
+
+
 def build_dashboard_tool(
     pages: Sequence[str],
-    present: Callable[[str, str | None], Mapping[str, Any]] | None,
+    present: Callable[..., Mapping[str, Any]] | None,
 ) -> tuple[Tool, ...]:
     """``show_on_dashboard`` bound to the runtime's presenter; none when the view is off.
 
-    ``present(page, item_id)`` raises ValueError for a page it does not know or when no
-    Dashboard is connected, and answers what it sent otherwise.
+    ``present(page, item_id, asked=...)`` raises ValueError for a page it does not know, a
+    shut Dashboard nobody asked for, or when no Dashboard is connected, and answers what it
+    sent otherwise.
     """
     if present is None:
         return ()
@@ -58,10 +84,14 @@ def build_dashboard_tool(
         "additionalProperties": False,
     }
 
-    def show(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+    def show(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         item_id = args.get("item_id")
         try:
-            sent = present(str(args.get("page", "")), str(item_id) if item_id else None)
+            sent = present(
+                str(args.get("page", "")),
+                str(item_id) if item_id else None,
+                asked=_asks_to_see(ctx),
+            )
         except ValueError as exc:
             msg = f"show_on_dashboard: {exc}"
             raise ToolError(msg, code="invalid_argument") from exc
