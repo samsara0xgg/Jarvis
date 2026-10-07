@@ -623,10 +623,10 @@ class InherentDeps:
     mail_mark_read: Callable[[list[str], bool], Awaitable[None]] | None = None
     mail_trash: Callable[[list[str], bool], Awaitable[None]] | None = None
     # ADR 0176, ``dashboard.view.enabled``: what the Dashboard shows (page, tab, open item
-    # ``(kind, id, title)``, rows ``(id, title)``; page None closes). ``None`` = 404.
+    # ``(kind, id, title)``, rows ``(id, title, mail_id)``; page None closes). ``None`` = 404.
     view_set: (
         Callable[
-            [str | None, str, tuple[str, str, str] | None, list[tuple[str, str]]], None,
+            [str | None, str, tuple[str, str, str] | None, list[tuple[str, str, str]]], None,
         ] | None
     ) = None
     mail_draft_read: Callable[[str], Awaitable[dict[str, Any]]] | None = None
@@ -1266,10 +1266,11 @@ class ViewRow(BaseModel):
 
     id: str = Field(min_length=1, max_length=200)
     title: str = Field(default="", max_length=500)
+    mail_id: str = Field(default="", max_length=200)  # a Jobs row's newest mail (Gmail id)
 
 
 class ViewItem(ViewRow):
-    """The item open on the Dashboard: a ``mail``, ``memory``, ``agent`` or ``plugin``."""
+    """The item open on the Dashboard: a ``mail``, ``memory``, ``agent``, ``plugin`` or ``job``."""
 
     kind: str = Field(min_length=1, max_length=24)
 
@@ -1554,7 +1555,8 @@ def _register_mail_page_routes(app: FastAPI, deps: InherentDeps) -> None:  # noq
         async def view(req: ViewRequest) -> dict[str, bool]:
             """What the Dashboard shows; repeated every 20 s, a null page closes (ADR 0176)."""
             item = None if req.item is None else (req.item.kind, req.item.id, req.item.title)
-            view_set(req.page, req.tab, item, [(row.id, row.title) for row in req.rows])
+            rows = [(row.id, row.title, row.mail_id) for row in req.rows]
+            view_set(req.page, req.tab, item, rows)
             return {"ok": True}
 
     if deps.mail_draft_read is not None:

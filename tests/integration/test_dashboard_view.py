@@ -52,6 +52,30 @@ def test_the_line_names_page_open_item_and_numbered_rows_by_title_and_id() -> No
     assert view.line() == "Dashboard: Allen is on the home screen."
 
 
+def test_a_jobs_row_carries_its_newest_mail_id_in_the_line_and_opens_by_it() -> None:
+    """ADR 0176: the Jobs page's rows name a gmail_get-able id; the id opens the page on it."""
+    view = ViewState()
+    sent: list[dict[str, str | None]] = []
+    view.push = sent.append
+    view.set(
+        "jobs",
+        rows=[("Reliable|QA", "Reliable Controls — QA", "1a0fed45"), ("Zed|", "Zed")],
+    )
+    assert view.line() == (
+        "Dashboard: Allen is on the Job mail page. On screen:"
+        ' 1. "Reliable Controls — QA" (Reliable|QA, mail 1a0fed45) 2. "Zed" (Zed|)'
+    )
+    assert view.present("jobs", "1a0fed45") == {
+        "page": "jobs", "item_id": "1a0fed45", "kind": "row",
+    }
+    assert view.present("jobs", "nope")["item_id"] is None
+    # A card open: the job is the item, its mails the rows.
+    view.set("jobs", item=("job", "Zed|", "Zed"), rows=[("m9", "Interview Invite to chat")])
+    line = view.line() or ""
+    assert 'with "Zed" open (job Zed|)' in line
+    assert '1. "Interview Invite to chat" (m9)' in line
+
+
 def test_titles_are_one_line_of_80_characters_and_ten_rows_and_1200_characters() -> None:
     """Third-party text is flattened, cut and never grows the line past its cap."""
     view = ViewState()
@@ -127,7 +151,7 @@ def test_the_route_sets_replaces_and_closes_the_view() -> None:
     body = {
         "page": "mail", "tab": "all",
         "item": {"kind": "mail", "id": LETTER, "title": "Sam — Lunch"},
-        "rows": [{"id": f"r{n}", "title": "t" * 200} for n in range(30)],
+        "rows": [{"id": f"r{n}", "title": "t" * 200, "mail_id": "1a0fed45"} for n in range(30)],
     }
     assert client.post("/inherent/view", json=body).status_code == 200
     assert view.mail_id() == LETTER
@@ -135,6 +159,7 @@ def test_the_route_sets_replaces_and_closes_the_view() -> None:
     assert line is not None
     assert "10. " in line
     assert "11. " not in line
+    assert "(r0, mail 1a0fed45)" in line
     assert client.post("/inherent/view", json={"page": "usage"}).status_code == 200
     assert view.mail_id() is None
     assert view.line() == "Dashboard: Allen is on the Usage page."

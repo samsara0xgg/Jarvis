@@ -18,7 +18,7 @@ import { ArrangeHome, BLOCK } from './ArrangeHome';
 import { BriefPage } from './BriefPage';
 import { SettingsPage, type Account, type AccountKeyDrafts, type Controls } from './SettingsPage';
 import { ActionCard, MailCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
-import { JobsPage, jobKey, type JobApplication, type JobGroup, type JobRule, type Skipped } from './JobsPage';
+import { JobsPage, jobKey, jobKind, type JobApplication, type JobGroup, type JobRule, type Skipped } from './JobsPage';
 import { MAIL_FILTERS, MailLetter, MailList, type MailAct, type MailFilter } from './MailPage';
 import { MEM_HOME, MemoryPage, type MemNav, type MemoryOverview } from './MemoryPage';
 import { MOTION } from './motion';
@@ -573,7 +573,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   useEffect(() => { if (lastRow === seenRow.current) return; seenRow.current = lastRow; if (open) memoryRoute.reload(); }, [lastRow, open]);
   const noticeRoute = useRoute<{ notices: Notice[] }>(port, '/inherent/notices', open, 60_000);
   // The job ledger (job mail, ADR 0155): its icon is in the corner only once the daemon serves the route (a 404 means the feature is off).
-  const jobsRoute = useRoute<{ ledger: JobGroup[]; applications?: JobApplication[]; skipped?: Skipped[]; rules?: JobRule[]; job_site_other_s?: number }>(port, '/inherent/jobs', open, 30_000), ledger = Array.isArray(jobsRoute.data?.ledger) ? jobsRoute.data.ledger : null;
+  const jobsRoute = useRoute<{ ledger: JobGroup[]; applications?: JobApplication[]; skipped?: Skipped[]; rules?: JobRule[]; job_site_other_s?: number }>(port, '/inherent/jobs', open, 30_000), ledger = Array.isArray(jobsRoute.data?.ledger) ? jobsRoute.data.ledger : null; const jobApps = Array.isArray(jobsRoute.data?.applications) ? jobsRoute.data.applications : null;
   // A first boot fetches the speech models (~240 MB) before she can hear or speak; the corner shows how far, polled until they are in.
   const [voiceIn, setVoiceIn] = useState(false);
   const models = useRoute<{ voice_models?: { state: 'ready' | 'downloading' | 'failed'; done: number; total: number } }>(port, '/inherent/setup', open && !voiceIn, 3000).data?.voice_models;
@@ -711,7 +711,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const mailTitle = (m: Mail) => oneLine(`${m.from} — ${m.subject}`);
   const viewReport = () => {
     const memTop = memory.stack.at(-1), notes = (memoryNow?.sections ?? []).flatMap(x => x.items);
-    let item: { kind: string; id: string; title: string } | null = null, rows: { id: string; title: string }[] = [];
+    let item: { kind: string; id: string; title: string } | null = null, rows: { id: string; title: string; mail_id?: string }[] = [];
     if (page === 'mail') {
       if (letter) item = { kind: 'mail', id: letter.id, title: mailTitle(letter) };
       else rows = mailRanked.filter(MAIL_FILTERS.find(f => f[0] === mailFilter)![2]).map(m => ({ id: m.id, title: mailTitle(m) }));
@@ -722,9 +722,14 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     } else if (page === 'memory') {
       if (memTop?.k === 'item' || memTop?.k === 'edit') item = { kind: 'memory', id: memTop.id, title: notes.find(n => n.id === memTop.id)?.text ?? '' };
       else if (!memTop && memory.tab === 'items' && !memory.query) rows = notes.map(n => ({ id: n.id, title: n.text }));
-    } else if (page === 'jobs') rows = (Array.isArray(jobsRoute.data?.applications) ? jobsRoute.data.applications : (ledger ?? []).filter(g => g.mails.length)).map(g => ({ id: jobKey(g), title: g.role ? `${g.company} — ${g.role}` : g.company }));
+    } else if (page === 'jobs') {
+      // A job card is the open item once unfolded, its mails the rows (the mail ids she opens with gmail_get); folded, each row carries its newest mail's id.
+      const card = jobApps?.find(a => a.id === unfolded), jobTitle = (g: { company: string; role?: string }) => g.role ? `${g.company} — ${g.role}` : g.company;
+      if (card) { item = { kind: 'job', id: jobKey(card), title: jobTitle(card) }; rows = card.mails.map(m => ({ id: m.message_id, title: `${jobKind(m.kind)[1][0]} ${m.subject}` })); }
+      else rows = (jobApps ?? (ledger ?? []).filter(g => g.mails.length)).map(g => ({ id: jobKey(g), title: jobTitle(g), ...('source' in g && g.mails[0] ? { mail_id: g.mails[0].message_id } : {}) }));
+    }
     const tab = page === 'mail' ? mailFilter : page === 'memory' ? memory.tab : page === 'settings' ? settingsCat ?? '' : '';
-    return { page: page ?? 'home', tab, item: item && { ...item, title: oneLine(item.title) }, rows: rows.slice(0, 10).map(r => ({ id: r.id, title: oneLine(r.title) })) };
+    return { page: page ?? 'home', tab, item: item && { ...item, title: oneLine(item.title) }, rows: rows.slice(0, 10).map(r => ({ ...r, title: oneLine(r.title) })) };
   };
   const report = open && port ? JSON.stringify(viewReport()) : null, latestReport = useRef(report);
   latestReport.current = report;
@@ -754,7 +759,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     if (!id) return;
     if (name === 'mail') { const m = mail.find(x => x.id === id); if (m) setLetter(m); }
     else if (name === 'memory') setMemory({ ...MEM_HOME, stack: [{ k: 'item', id }] });
-    else { if (name === 'agents') setUnfolded(id); setLit({ id, key: present.key }); }
+    else {
+      if (name === 'agents') setUnfolded(id);
+      // A job id (its key or one of its mails') unfolds its card, so the mail is on screen to light.
+      if (name === 'jobs') { const a = jobApps?.find(x => x.id === id || jobKey(x) === id || x.mails.some(m => m.message_id === id)); if (a) setUnfolded(a.id); }
+      setLit({ id, key: present.key });
+    }
   }, [present?.key, open]);
   useEffect(() => {
     if (!lit) return;
@@ -878,7 +888,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     </>,
     jobs: () => <>
       {back(t(TITLES.jobs), ledger && (Array.isArray(jobsRoute.data?.applications) ? t([`${jobsRoute.data.applications.length} application${jobsRoute.data.applications.length === 1 ? '' : 's'}`, `${jobsRoute.data.applications.length} 条投递`]) : t([`${ledger.length} compan${ledger.length === 1 ? 'y' : 'ies'}`, `${ledger.length} 家公司`])))}
-      <div className="pg-body">{port && <JobsPage port={port} ledger={ledger ?? []} applications={Array.isArray(jobsRoute.data?.applications) ? jobsRoute.data.applications : undefined} skipped={Array.isArray(jobsRoute.data?.skipped) ? jobsRoute.data.skipped : []} rules={Array.isArray(jobsRoute.data?.rules) ? jobsRoute.data.rules : []} otherS={jobsRoute.data?.job_site_other_s ?? 0} onChanged={jobsRoute.reload}/>}</div>
+      <div className="pg-body">{port && <JobsPage port={port} ledger={ledger ?? []} applications={Array.isArray(jobsRoute.data?.applications) ? jobsRoute.data.applications : undefined} skipped={Array.isArray(jobsRoute.data?.skipped) ? jobsRoute.data.skipped : []} rules={Array.isArray(jobsRoute.data?.rules) ? jobsRoute.data.rules : []} otherS={jobsRoute.data?.job_site_other_s ?? 0} onChanged={jobsRoute.reload} open={unfolded ?? ''} onOpen={id => setUnfolded(id || null)}/>}</div>
     </>,
     memory: () => <>
       {back(t(TITLES.memory), memoryNow && t([`${memoryNow.items} kept`, `记着 ${memoryNow.items} 条`]))}

@@ -555,12 +555,19 @@ _NO_LINKS: Final[dict[str, None]] = dict.fromkeys(_LINK_FIELDS)
 def _interview_step(
     mails: Sequence[sqlite3.Row], upcoming: str | None, status: str
 ) -> dict[str, Any] | None:
-    """The interview itself: the next event ahead (not once rejected), else the newest past one."""
+    """The interview itself: the next event ahead (not once rejected), else the newest past one.
+
+    ``message_id`` is the mail whose ``event_at`` it is.
+    """
     if upcoming and status != "rejected":
-        return {"kind": "interview", "at": upcoming, "future": True}
-    held = [m["event_at"] for m in mails if m["kind"] == "interview" and _moment(m["event_at"])]
-    at = max(held, key=lambda text: _moment(text) or _EPOCH, default=None)
-    return {"kind": "interview", "at": at, "future": False} if at else None
+        at, future = upcoming, True
+    else:
+        held = [m["event_at"] for m in mails if m["kind"] == "interview" and _moment(m["event_at"])]
+        at, future = max(held, key=lambda text: _moment(text) or _EPOCH, default=None), False
+    if not at:
+        return None
+    mail = next(m for m in reversed(mails) if m["event_at"] == at)
+    return {"kind": "interview", "at": at, "future": future, "message_id": mail["message_id"]}
 
 
 def _timeline(
@@ -569,16 +576,31 @@ def _timeline(
     """Applied, then each interview invitation, offer and rejection by date, and the interview.
 
     Mails in a row of the same kind are one step at the first one's date: an invitation, his
-    reply and their confirmation are one "invited", not three.
+    reply and their confirmation are one "invited", not three. Each step's ``message_id`` is
+    the mail it came from (None for a manual applied date).
     """
     later = [
-        {"kind": _STEP_KINDS[m["kind"]], "at": m["received_at"], "future": False}
+        {
+            "kind": _STEP_KINDS[m["kind"]],
+            "at": m["received_at"],
+            "future": False,
+            "message_id": m["message_id"],
+        }
         for m in mails
         if m["kind"] in _STEP_KINDS
     ]
     later += [step] if step else []
     later.sort(key=lambda one: _moment(one["at"]) or _EPOCH)
-    steps = [{"kind": "applied", "at": applied_at, "future": False}]
+    # Allen's own applied date is no mail's; the mail one is the oldest mail.
+    first = mails[0] if mails and applied_at == mails[0]["received_at"] else None
+    steps = [
+        {
+            "kind": "applied",
+            "at": applied_at,
+            "future": False,
+            "message_id": first["message_id"] if first else None,
+        }
+    ]
     for one in later:
         if one["kind"] != steps[-1]["kind"]:
             steps.append(one)
@@ -747,7 +769,14 @@ def _applications(
             "next_event_at": None,
             "count": 0,
             "mails": [],
-            "timeline": [{"kind": "applied", "at": row["applied_at"], "future": False}],
+            "timeline": [
+                {
+                    "kind": "applied",
+                    "at": row["applied_at"],
+                    "future": False,
+                    "message_id": None,
+                }
+            ],
             "interview": None,
             "links": dict(_NO_LINKS),
             "note": row["note"] or "",

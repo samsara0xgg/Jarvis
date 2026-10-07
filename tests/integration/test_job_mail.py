@@ -2704,6 +2704,8 @@ def test_an_application_carries_its_timeline_interview_and_links(
     ]
     assert one["timeline"][0]["at"] == (NOW - timedelta(days=9)).isoformat()
     assert one["timeline"][2]["at"] == soon
+    # Each step names the mail it came from; the interview is the mail whose event_at it is.
+    assert [s["message_id"] for s in one["timeline"]] == ["r1", "r2", "r2"]
     assert one["interview"] == {
         "at": soon,
         "mode": "online",
@@ -2719,6 +2721,7 @@ def test_an_application_carries_its_timeline_interview_and_links(
     # A rejected application shows no interview still ahead, and no invitation means no details.
     zed = apps[("Zed", "")]
     assert [s["kind"] for s in zed["timeline"]] == ["applied", "rejection"]
+    assert [s["message_id"] for s in zed["timeline"]] == ["z1", "z1"]
     assert zed["interview"] is None
     assert zed["links"] == {"portal_url": None, "posting_url": None}
 
@@ -2727,7 +2730,9 @@ def test_an_application_carries_its_timeline_interview_and_links(
         "/inherent/jobs/applications", json={"company": "Hand", "applied_at": "2026-09-12"}
     )
     hand = _apps(h)[("Hand", "")]
-    assert hand["timeline"] == [{"kind": "applied", "at": "2026-09-12", "future": False}]
+    assert hand["timeline"] == [
+        {"kind": "applied", "at": "2026-09-12", "future": False, "message_id": None}
+    ]
     assert hand["interview"] is None
 
 

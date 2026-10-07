@@ -16,8 +16,8 @@ export type JobRule = { id: string; value: string };
 export type JobGroup = { company: string; role?: string; kind: string; last_at: string; next_event_at?: string | null; count: number; mails: JobMailRow[]; time_spent?: { day: string; seconds: number }[]; time_total_s?: number };
 
 // `applications` (GET /inherent/jobs, ADR 0177, absent on older daemons): one per job applied to, from the mail or added by hand. `status_auto` is false once Allen set the status himself; `source` is `mail` or `manual`. Edits: POST /inherent/jobs/applications/{id} { status?, applied_at?, note?, hidden? }; a new row: POST /inherent/jobs/applications { company, role?, applied_at?, status? }.
-// ADR 0182 (absent on a daemon before it): `timeline` is the steps its mails show, oldest first (`future` is an interview still ahead); `interview` is read from the interview mails' body starts, every field null or empty when the mail does not say; `links` are https addresses from the mails.
-export type JobStep = { kind: 'applied' | 'interview_invite' | 'interview' | 'offer' | 'rejection'; at?: string | null; future: boolean };
+// ADR 0182 (absent on a daemon before it): `timeline` is the steps its mails show, oldest first (`future` is an interview still ahead; `message_id` the mail the step came from, null for a manual applied date); `interview` is read from the interview mails' body starts, every field null or empty when the mail does not say; `links` are https addresses from the mails.
+export type JobStep = { kind: 'applied' | 'interview_invite' | 'interview' | 'offer' | 'rejection'; at?: string | null; future: boolean; message_id?: string | null };
 export type JobInterview = { at?: string | null; mode: 'online' | 'onsite' | null; platform: string | null; join_url: string | null; location: string | null; interviewers: string[] };
 export type JobApplication = { id: string; company: string; role: string; status: string; status_auto: boolean; applied_at?: string | null; last_at?: string | null; next_event_at?: string | null; count: number; mails: JobMailRow[]; note: string; source: 'mail' | 'manual'; timeline?: JobStep[]; interview?: JobInterview | null; links?: { portal_url: string | null; posting_url: string | null } };
 
@@ -58,8 +58,8 @@ const dayLabel = (day: string) => { const [, m, d] = day.split('-'); return `${N
 // A company's row has no id of its own; the view report and her page-turning name it by company and role.
 export const jobKey = (g: { company: string; role?: string }) => `${g.company}|${g.role ?? ''}`;
 
-export function JobsPage({ port, ledger, applications, skipped, rules = [], otherS = 0, onChanged }: { port: string; ledger: JobGroup[]; applications?: JobApplication[]; skipped: Skipped[]; rules?: JobRule[]; otherS?: number; onChanged: () => void }) {
-  const t = useT(), [open, setOpen] = useState(''), [confirm, setConfirm] = useState(''), [gone, setGone] = useState<string[]>([]), [failed, setFailed] = useState(false);
+export function JobsPage({ port, ledger, applications, skipped, rules = [], otherS = 0, onChanged, open, onOpen }: { port: string; ledger: JobGroup[]; applications?: JobApplication[]; skipped: Skipped[]; rules?: JobRule[]; otherS?: number; onChanged: () => void; open: string; onOpen: (id: string) => void }) {
+  const t = useT(), setOpen = onOpen, [confirm, setConfirm] = useState(''), [gone, setGone] = useState<string[]>([]), [failed, setFailed] = useState(false);
   // POST /inherent/jobs/{id}/flag { reaction: 'should_alert' } says a held-back mail was job mail after all; a 404 means the daemon has no such route, and the buttons go.
   const [skipOpen, setSkipOpen] = useState(false), [flagged, setFlagged] = useState<string[]>([]), [noFlag, setNoFlag] = useState(false);
   const held = skipped.filter(m => !flagged.includes(m.message_id));

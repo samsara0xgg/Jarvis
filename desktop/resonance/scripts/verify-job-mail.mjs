@@ -30,6 +30,9 @@ try {
   // ADR 0177: the tracker's rows (absent on older daemons, which keep the per-company view above) and what the page posted to its two routes.
   let applications;
   const appEdits = [], appAdds = [];
+  // ADR 0176: what the page told the daemon is on screen (POST /inherent/view).
+  const views = [];
+  const lastJobsView = () => views.filter(v => v.page === 'jobs').at(-1);
   // ADR 0158: the daemon's standing alert rules, sent with the ledger (absent on older daemons, like `skipped`).
   const rules = [{ id: 'linkedin_alerts', value: 'ledger_only' }];
   page.on('pageerror', error => errors.push(error.message));
@@ -64,6 +67,7 @@ try {
   await page.route(`${daemon}/**`, route => {
     const url = new URL(route.request().url()), method = route.request().method(), p = url.pathname;
     const json = value => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
+    if (p === '/inherent/view') { views.push(JSON.parse(route.request().postData() || '{}')); return json({ ok: true }); }
     if (p === '/inherent/controls') return json({ mic_muted: false, speech_muted: false, conversation: false, quiet: 'off' });
     if (p === '/inherent/claude-sessions') return json({ sessions: board, error: null });
     if (p === '/inherent/agent-marks') return json({ marks: {} });
@@ -377,6 +381,9 @@ try {
   check('an interviewing card names its interview time on its second line', /面试 \d+\/\d+ \d\d:\d\d|Interview \d+\/\d+ \d\d:\d\d/.test(await page.locator('.ad .jc[data-company="Reliable Controls"] [data-line]').innerText()));
   check('a no_reply card says how many days of silence', /已 30 天没回音|No reply for 30 days/.test(await page.locator('.ad .jc[data-company="Orbit Labs"] [data-line]').innerText()));
   check('a collapsed card shows no timeline, interview or mails', await page.locator('.ad .jc-x').count() === 0);
+  await page.waitForTimeout(300);
+  const folded = lastJobsView();
+  check('folded, the view report keeps each row\'s jobKey id and adds its newest mail id (none for a hand-added card)', folded?.item === null && folded.rows[0].id === 'Reliable Controls|Firmware QA Analyst Co-op' && folded.rows[0].mail_id === 'h-1' && folded.rows.find(r => r.id.startsWith('Cambio Earth')).mail_id === 'h-4' && !('mail_id' in folded.rows.find(r => r.id.startsWith('Orbit Labs'))));
   await tall(); await shot('applications', { x: 0, y: 0, width: 640, height: 640 });
   await page.locator('.ad .jc[data-company="Reliable Controls"] select[data-act="status"]').selectOption('offer');
   await page.waitForFunction(() => document.querySelector('.ad .jc[data-company="Reliable Controls"] select')?.value === 'offer', null, { timeout: 3000 });
@@ -389,6 +396,9 @@ try {
   check('the interview row has the time, mode and platform, the interviewer and a join button', /\d+\/\d+ .+ \d\d:\d\d/.test(interview) && /(Online|线上) · Teams/.test(interview) && /Jill Crowe/.test(interview) && await page.locator('.ad .jc-x [data-act="join"]').count() === 1);
   check('there are links to the application status and the posting', await page.locator('.ad .jc-x [data-row="links"] button').count() === 2);
   check('the mails are listed with a Gmail button each', await page.locator('.ad .jc-x [data-row="mails"] li').count() === 2 && await page.locator('.ad .jc-x li [data-act="gmail"]').count() === 2 && await page.locator('.ad .jc-x [data-act="note"]').count() === 1);
+  await page.waitForTimeout(300);
+  const unfolded = lastJobsView();
+  check('unfolded, the card is the open item and its mails are the rows in screen order, as a kind label and the subject', JSON.stringify(unfolded?.item) === JSON.stringify({ kind: 'job', id: 'Reliable Controls|Firmware QA Analyst Co-op', title: 'Reliable Controls — Firmware QA Analyst Co-op' }) && JSON.stringify(unfolded.rows) === JSON.stringify([{ id: 'h-1', title: 'Interview Interview slots for next week' }, { id: 'h-2', title: 'Received We received your application' }]));
   await tall(); await shot('applications-open', { x: 0, y: 0, width: 640, height: 1000 });
   await page.locator('.ad .jc-x [data-act="join"]').click();
   await page.locator('.ad .jc-x [data-act="portal"]').click();
@@ -411,6 +421,10 @@ try {
   await page.locator('.ad .jp-form [data-act="save"]').click();
   await page.waitForFunction(() => !document.querySelector('.ad .jp-form'), null, { timeout: 3000 });
   check('Add posts the manual route with company, role, date and status, and the form closes', JSON.stringify(appAdds) === '[{"company":"Helix","role":"Backend Intern","applied_at":"2026-09-20","status":"rejected"}]');
+  // ADR 0176: she names a mail id of a folded card; the card unfolds and the mail's line is lit.
+  await page.evaluate(() => window.__sockets.at(-1).onmessage({ data: JSON.stringify({ op: 'present', payload: { page: 'jobs', item_id: 'h-2', kind: 'row' } }) }));
+  await page.waitForSelector('.ad .jc[data-company="Reliable Controls"] li[data-id="h-2"].is-lit', { timeout: 3000 });
+  check('show_on_dashboard with a job mail id unfolds that card and lights the mail', await page.locator('.ad .jc-x').count() === 1 && await page.locator('.ad .jc[data-company="Orbit Labs"] .jc-x').count() === 0);
   applications = undefined;
 
   // (g3) ADR 0155: the daemon's `audio_private`. False: a sounding mail card and an agent notice come with no cue. True: the cue as before.

@@ -44,11 +44,15 @@ _PAGE_NAMES: Final = {
 
 
 class Item(NamedTuple):
-    """One thing on screen: a letter, a note, a session, a row (kind "row" in a list)."""
+    """One thing on screen: a letter, a note, a session, a row (kind "row" in a list).
+
+    ``mail_id`` is the Gmail id of the mail behind a Jobs-page row ("" for everything else).
+    """
 
     kind: str
     id: str
     title: str
+    mail_id: str = ""
 
 
 class _View(NamedTuple):
@@ -73,9 +77,12 @@ def _one_line(text: str, limit: int) -> str:
     return " ".join(text.split()).replace('"', "'")[:limit]
 
 
-def _clean(kind: str, ident: str, title: str) -> Item:
+def _clean(kind: str, ident: str, title: str, mail_id: str = "") -> Item:
     return Item(
-        _one_line(kind, _WORD_CHARS), _one_line(ident, _ID_CHARS), _one_line(title, _TITLE_CHARS),
+        _one_line(kind, _WORD_CHARS),
+        _one_line(ident, _ID_CHARS),
+        _one_line(title, _TITLE_CHARS),
+        _one_line(mail_id, _ID_CHARS),
     )
 
 
@@ -98,12 +105,13 @@ class ViewState:
         page: str | None,
         tab: str = "",
         item: tuple[str, str, str] | None = None,
-        rows: Sequence[tuple[str, str]] = (),
+        rows: Sequence[tuple[str, ...]] = (),
     ) -> None:
         """Replace the view (or refresh it); ``page`` None means the panel is closed.
 
-        ``item`` is ``(kind, id, title)``, ``rows`` are ``(id, title)`` in screen order; titles
-        are cut to one line of 80 characters and only ten rows are kept.
+        ``item`` is ``(kind, id, title)``, ``rows`` are ``(id, title)`` or
+        ``(id, title, mail_id)`` in screen order; titles are cut to one line of 80 characters
+        and only ten rows are kept.
         """
         if page is None:
             self._now = None
@@ -112,7 +120,7 @@ class ViewState:
             _one_line(page, _WORD_CHARS),
             _one_line(tab, _WORD_CHARS),
             None if item is None else _clean(*item),
-            tuple(_clean("row", ident, title) for ident, title in rows[:VIEW_ROWS]),
+            tuple(_clean("row", *row) for row in rows[:VIEW_ROWS]),
             self._clock(),
         )
 
@@ -127,12 +135,17 @@ class ViewState:
         return item.id if item is not None and item.kind == "mail" else None
 
     def knows(self, item_id: str) -> Item | None:
-        """The open item or row of the current view with this id, or None."""
+        """The open item or row of the current view with this id or mail id, or None."""
         now = self._fresh()
         if now is None:
             return None
         return next(
-            (one for one in (now.item, *now.rows) if one is not None and one.id == item_id), None,
+            (
+                one
+                for one in (now.item, *now.rows)
+                if one is not None and item_id in (one.id, one.mail_id)
+            ),
+            None,
         )
 
     def present(self, page: str, item_id: str | None) -> dict[str, str | None]:
@@ -150,7 +163,7 @@ class ViewState:
         known = self.knows(item_id) if item_id else None
         sent: dict[str, str | None] = {
             "page": page,
-            "item_id": None if known is None else known.id,
+            "item_id": item_id if known else None,
             "kind": None if known is None else known.kind,
         }
         self.push(sent)
@@ -174,7 +187,8 @@ class ViewState:
         if now.rows:
             text += " On screen:"
         for number, row in enumerate(now.rows, 1):
-            piece = f' {number}. "{row.title}" ({row.id})'
+            mail = f", mail {row.mail_id}" if row.mail_id else ""
+            piece = f' {number}. "{row.title}" ({row.id}{mail})'
             if len(text) + len(piece) > VIEW_LINE_CHARS:
                 break
             text += piece
