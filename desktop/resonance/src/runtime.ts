@@ -75,7 +75,7 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
       // ADR 0176: she asked the Dashboard to turn to a page, and to an item on it when the view carried that id.
       else if (msg.op === 'present' && typeof p.page === 'string') dispatch({ type: 'present', page: p.page, itemId: typeof p.item_id === 'string' ? p.item_id : null, kind: typeof p.kind === 'string' ? p.kind : null });
       // ADR 0102: the wake word, a dismissal or quiet flips conversation mode from the daemon's side.
-      else if (msg.op === 'controls') dispatch({ type: 'controls', micMuted: p.mic_muted === true, soundMuted: p.speech_muted === true, conversation: p.conversation === true, quiet: asQuiet(p.quiet) });
+      else if (msg.op === 'controls') dispatch({ type: 'controls', micMuted: p.mic_muted === true, soundMuted: p.speech_muted === true, conversation: p.conversation === true, quiet: asQuiet(p.quiet), dismissed: p.reason === 'dismissed' });
       else if (msg.op === 'subtitle') dispatch({ type: 'subtitle', sessionId: String(p.session_id ?? ''), role: p.role === 'user' ? 'user' : 'assistant', delta: String(p.delta ?? ''), startMs: Number(p.start_ms ?? 0), endMs: Number(p.end_ms ?? 0) });
     };
     ws.onclose = () => {

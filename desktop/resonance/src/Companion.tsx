@@ -542,6 +542,8 @@ export function Companion() {
   // A panel she opened or turned stays when the pointer leaves: he is talking, not pointing, and a window that moves under a
   // still pointer reads as a leave (2026-10-07). A click outside it, the island, Esc or back closes it.
   useEffect(() => { if (s.present) { openDashboard(false); pinned.current = true; herOpen.current = true; } }, [s.present?.key]);
+  // Told to step away (退下), she takes the Dashboard with her, whoever opened it.
+  useEffect(() => { if (s.dismissals) closeDashboard('her dismissal'); }, [s.dismissals]);
   // R&D log (resonance.out.log): who closed the panel, with where the pointer and the panel were.
   const fold = (why: string) => {
     if (live.current.dashboard) {

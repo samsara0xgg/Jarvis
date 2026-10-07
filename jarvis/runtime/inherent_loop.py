@@ -6128,7 +6128,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             """ADR 0102: voice flips conversation mode; the surface hears it as a controls push."""
             state = controls.update(conversation=on)
             LOGGER.info("controls: conversation=%s (%s)", on, reason)
-            broadcaster.broadcast_op_sync("controls", **state)
+            broadcaster.broadcast_op_sync("controls", **state, reason=reason)
 
         voice_input_owners = _VoiceInputOwners(
             duplex_session=None,
