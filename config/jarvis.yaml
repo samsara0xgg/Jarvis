@@ -694,6 +694,9 @@ realtime:
   # and en), writes the rest.  It starts when Allen has been quiet 192 ms, so
   # its words are ready by the 768 ms endpoint.  Needs mlx-whisper like whisper.
   final_asr: sensevoice
+  # "" lets SenseVoice tell each utterance's language (zh, yue, en ...), and the hybrid's
+  # Whisper follows it; "en" or "zh" pins both, so the other language is heard badly.
+  final_asr_language: ""
   # ADR 0150.  Hybrid's Chinese and English Whisper passes hear this short word
   # list ("Common terms: a, b.").  Keep it to a dozen or so words: the 61-term
   # Typlus vocabulary made the replay worse.

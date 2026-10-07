@@ -2700,9 +2700,13 @@ def _build_voice_pipeline(
     A voice terminal (ADR 0172) has no log of its own to commit to: it passes ``emit``, which
     sends the utterance to the brain, and the audio it keeps stays on its own disk.
     """
-    recognizer = _final_recognizer(
-        runtime, voice_asr.SenseVoiceRecognizer(model_dir=sensevoice_dir),
+    # realtime.final_asr_language pins SenseVoice's language, and with it the hybrid's Whisper.
+    realtime = runtime.config.get("realtime")
+    pinned = realtime.get("final_asr_language") if isinstance(realtime, Mapping) else None
+    sensevoice = voice_asr.SenseVoiceRecognizer(
+        model_dir=sensevoice_dir, language=str(pinned or "") or None,
     )
+    recognizer = _final_recognizer(runtime, sensevoice)
     normalizer = voice_asr.AsrNormalizer(
         corrections=[],
         aliases={},
