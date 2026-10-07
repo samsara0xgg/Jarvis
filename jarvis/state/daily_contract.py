@@ -231,7 +231,6 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "local_date": text_field(10),
             "timezone": text_field(100),
             "cursor": _CURSOR,
-            "full": {"type": "boolean"},
         },
         "local_date",
         "timezone",
