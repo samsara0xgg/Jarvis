@@ -319,7 +319,7 @@ export function Companion() {
   // Unknown output counts as not private until the first poll answers (a 404 there means the feature is off).
   const audioPrivate = useRef<boolean | undefined>(port && !detached ? false : undefined);
   const notices = useNotices({ port, poll: !detached, agents, moment: momentHold, onMoment: setMomentHold, quiet: s.quiet, inClaude, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing, agentsFront, audio: audioPrivate,
-    cue: (name, gain) => { const on = preferences.feedbackEnabled && !s.soundMuted && s.quiet === 'off' && audioPrivate.current !== false; if (on) noticeCue(name, preferences.feedbackVolume, gain); return on; },
+    cue: (name, gain, always) => { const on = preferences.feedbackEnabled && !s.soundMuted && (always || s.quiet === 'off' && audioPrivate.current !== false); if (on) noticeCue(name, preferences.feedbackVolume, gain); return on; },
     answer: (req, body, id) => agents.find(a => a.id === id)?.host ? answerStartrail(id, req, body) : port ? answerRequest(port, req.id, body) : Promise.resolve(true), mark: markStartrail });
   const notice = notices.current;
   // A press anywhere else on screen puts a card away (the window is click-through, so main reports it); not one that

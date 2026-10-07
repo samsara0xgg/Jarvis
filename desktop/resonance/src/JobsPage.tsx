@@ -27,6 +27,7 @@ const dayStamp = (v?: string | null) => {
 const KINDS: Record<string, [string, L]> = {
   offer: ['is-offer', ['Offer', 'Offer']], interview: ['is-interview', ['Interview', '面试']], rejection: ['is-rejection', ['Rejection', '拒信']],
   receipt: ['is-receipt', ['Received', '已收到']], job_other: ['is-other', ['Other', '其他']], other: ['is-other', ['Account', '账号通知']],
+  reminder: ['is-interview', ['Reminder', '提醒']],
 };
 export const jobKind = (kind?: string) => KINDS[kind ?? ''] ?? KINDS.job_other;
 const pad = (n: number) => String(n).padStart(2, '0');

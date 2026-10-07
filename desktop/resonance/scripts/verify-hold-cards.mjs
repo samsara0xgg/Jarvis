@@ -27,7 +27,7 @@ try {
   const errors = [], posts = [], answers = [];
   // `hold`: what the fake daemon says (undefined leaves the field out, as an older daemon does). `mode`: where it says it (`notices`,
   // or `moment` with job mail off: notices are a 404). `down`: the daemon does not answer.
-  let hold = undefined, mode = 'notices', down = false, board = [], night = { night: null, last: null, hours: 2, laptop: true };
+  let hold = undefined, mode = 'notices', down = false, served = [], priv = true, quietNow = 'off', acked = [], board = [], night = { night: null, last: null, hours: 2, laptop: true };
   page.on('pageerror', error => errors.push(error.message));
   const session = (id, phase, extra = {}) => ({ agent: 'claude', session_id: id, kind: 'interactive', phase, title: `Session ${id}`, project: 'jarvis', branch: 'main', cwd: '/x', where: 'Ghostty', prompt: 'go', activity: 'Wants to run npm test', last_message: 'Needs your decision', started_ms: Date.now() - 60_000, updated_ms: Date.now(), request: null, from_project: false, compacting: false, error: '', ...extra });
   const working = id => session(id, 'working');
@@ -53,13 +53,14 @@ try {
     const json = value => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
     const absent = () => route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
     if (down) return route.abort();
-    if (p === '/inherent/notices' && method === 'GET') return mode === 'notices' ? json({ notices: [], audio_private: true, ...(hold === undefined ? {} : { hold }) }) : absent();
+    if (p === '/inherent/notices' && method === 'GET') return mode === 'notices' ? json({ notices: served, audio_private: priv, ...(hold === undefined ? {} : { hold }) }) : absent();
     if (p === '/inherent/moment' && method === 'GET') return mode === 'moment' ? json(hold === undefined ? {} : { hold }) : absent();
-    if (p === '/inherent/controls') return json({ mic_muted: false, speech_muted: false, conversation: false, quiet: 'off' });
+    if (p === '/inherent/controls') return json({ mic_muted: false, speech_muted: false, conversation: false, quiet: quietNow });
     if (p === '/inherent/claude-sessions') return json({ sessions: board, error: null });
     if (p === '/inherent/agent-marks') return json({ marks: {} });
     if (p === '/inherent/night') return json(night);
     if ((p === '/inherent/confirmation' || p === '/inherent/clarification') && method === 'GET') return json({ card: null });
+    if (p.startsWith('/inherent/notices/') && method === 'POST') { acked.push(decodeURIComponent(p.slice('/inherent/notices/'.length))); return json({ ok: true }); }
     if (p.startsWith('/inherent/cards/') && method === 'POST') { posts.push({ id: decodeURIComponent(p.slice('/inherent/cards/'.length)), body: JSON.parse(route.request().postData() || '{}') }); return json({ ok: true }); }
     if (p.startsWith('/inherent/claude-requests/') && method === 'POST') { answers.push(decodeURIComponent(p.split('/').pop())); return json({ ok: true }); }
     return absent();
@@ -76,7 +77,7 @@ try {
   const mine = re => posts.filter(x => re.test(x.id));
   const settle = async () => { await page.mouse.move(5, 600); await page.waitForTimeout(700); };
   const arrive = async (...rows) => { board = rows.map(r => working(r.session_id)); await page.waitForTimeout(1800); board = rows; };
-  const reset = () => { posts.length = 0; answers.length = 0; board = []; night = { night: null, last: null, hours: 2, laptop: true }; hold = undefined; mode = 'notices'; down = false; };
+  const reset = () => { posts.length = 0; answers.length = 0; board = []; night = { night: null, last: null, hours: 2, laptop: true }; hold = undefined; mode = 'notices'; down = false; served = []; priv = true; quietNow = 'off'; acked.length = 0; };
   const run = (phase, extra = {}) => ({ id: 'n1', phase, started_ms: Date.now() - 3 * 60 * M, until_ms: Date.now() + 60 * M, cap_ms: Date.now() + 9 * 60 * M, wake_at_ms: null, dark_at_ms: null, stay: false, released_ms: null, guarded: true,
     watch: { seen: true, blind: false, blind_since_ms: null, lists: { claude: true }, busy: 0, quiet_ms: null, sessions: [] }, ...extra });
   const last0 = () => ({ id: 'n1', started_ms: Date.now() - 8 * 60 * M, until_ms: Date.now() - 6 * 60 * M, released_ms: Date.now() - 5 * 60 * M, release_reason: 'settled', ended_ms: Date.now() - M, reason: 'returned', slept_ms: null,
@@ -205,6 +206,24 @@ try {
   await page.clock.fastForward('03:00:30');
   await shows(any, 8000);
   check('a call older than 3 h no longer holds', await cards() >= 1);
+
+  // (g) ADR 0171: a reminder rides the job-mail notice and goes through the quiet level, a call or away hold and a speaker output, with its cue.
+  const reminder = { id: 'reminder-1', kind: 'mail', title: 'one-on-one with the employer', line: 'In 30 minutes: one-on-one with the employer', level: 'card_sound', text: 'one-on-one with the employer', at: new Date().toISOString(), company: '', role: '', event_at: new Date(Date.now() + 30 * M).toISOString(), mail_kind: 'reminder' };
+  for (const [name, setup] of [['a call', () => { hold = 'call'; }], ['away', () => { hold = 'away'; }], ['no-pop', () => { quietNow = 'no-pop'; }], ['dnd', () => { quietNow = 'dnd'; }]]) {
+    reset(); setup(); priv = false; served = [reminder];
+    await open();
+    await shows(`${note} .nc-mail`, 8000);
+    check(`${name}: the reminder shows`, await cards() === 1);
+    check(`${name}: it is labelled Reminder or 提醒, with the line, and has no 合适吗 row`, /reminder|提醒/i.test(await page.locator(`${note} .nc-label`).innerText()) && /In 30 minutes/.test(await page.locator(`${note} .nc-mail`).innerText()) && await page.locator(`${note} .nc-rate-open, ${note} .nc-rate`).count() === 0);
+    check(`${name}: its cue sounds although the output is not private`, await cues() > 0);
+    check(`${name}: the daemon is told it was seen`, acked.includes('reminder-1'));
+  }
+  // A reminder that arrives under a hold, behind a held finish, still shows; the finish waits for the end of the hold.
+  reset(); hold = 'call'; priv = true; served = [reminder];
+  await open();
+  await arrive(done('r-1'));
+  await page.waitForTimeout(2500);
+  check('a call: the reminder shows while the finish stays held', await page.locator(`${note} .nc-mail`).count() === 1 && await page.locator(`${note} .nt-card.pop`).count() === 0);
 
   check('no page errors', errors.length === 0);
   if (errors.length) console.log(errors);

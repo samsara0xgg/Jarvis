@@ -44,6 +44,8 @@ export type Notice = Base & (
 export type JobItem = { id?: string; title?: string; line?: string; company?: string; role?: string; at?: string; event_at?: string | null; event_text?: string | null; mail_kind?: string; count?: number };
 export type JobNotice = JobItem & { id: string; kind: 'mail' | 'digest'; title: string; line?: string; level?: string; link?: 'jobs'; items?: JobItem[] };
 const isJob = (n: Notice): n is Notice & { kind: 'mail' | 'jobs' } => n.kind === 'mail' || n.kind === 'jobs';
+// ADR 0171: a reminder Allen set rides the job-mail notice, but no quiet level, call or away hold keeps it back, and it rings even on speakers.
+const isReminder = (n: { kind: string; job?: JobItem }) => n.kind === 'mail' && n.job?.mail_kind === 'reminder';
 // What the daemon is told about a notice: POST /inherent/notices/{id} { action: 'seen' } or { action: 'feedback', reaction }.
 const tell = (port: string | null, id: string, body: { action: 'seen' } | { action: 'feedback'; reaction: string }) => { if (port) void postRoute(port, `/inherent/notices/${encodeURIComponent(id)}`, body).catch(() => undefined); };
 type Arrival = Notice extends infer N ? N extends Notice ? Omit<N, 'key' | 'at' | 'cid' | 'held'> : never : never;
@@ -101,7 +103,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   // ADR 0163: the daemon's word (`hold` of GET /inherent/notices, or of /inherent/moment while job mail is off), as the poll reports it through `onMoment`.
   moment: MomentHold; onMoment: (hold: MomentHold) => void; quiet: Quiet; inClaude: boolean; watched: string | null; viewing: string | null; agentsFront: boolean;
   // The daemon's last word on whether sound may play (`audio_private` of GET /inherent/notices); undefined while it has said nothing.
-  audio: { current: boolean | undefined }; cue: (name: Tone | 'send' | 'close', gain?: number) => boolean;
+  audio: { current: boolean | undefined }; cue: (name: Tone | 'send' | 'close', gain?: number, always?: boolean) => boolean;
   answer: (req: AgentRequest, body: { decision: 'allow' | 'always' | 'deny'; answers?: Record<string, string>; message?: string }, id: string) => Promise<boolean>;
   mark: (id: string, change: { seen: true } | { parked: boolean; archived: boolean }) => void;
 }) {
@@ -159,12 +161,13 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   // Job mail at level card is silent.
   // It says whether the cue was allowed to sound (the quiet level, her switches and the output), which is the level a card was shown at.
   const sound = (n: Notice, gain = 1) => {
-    if (live.current.moment) return false;
+    const reminder = isReminder(n);
+    if (live.current.moment && !reminder) return false;
     if (isJob(n) && n.job.level !== 'card_sound' && n.job.level !== 'speak') return false;
     const now = performance.now();
     if (now - s.soundAt <= TOGETHER_MS) return false;
     s.soundAt = now;
-    return cue(toneOf(n), gain);
+    return cue(toneOf(n), gain, reminder);
   };
   // ADR 0160: what the daemon is told of a card that is not job mail: a title, counts and a tool name, never what an agent wrote.
   const factsOf = (n: Notice) => {
@@ -199,12 +202,14 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   useEffect(() => {
     if (holding) {
       // A digest on the island goes back to the items it listed. Job mail is the daemon's to bring back (its own digest): one not yet shown is forgotten here, so it comes again.
-      for (const n of s.queue) if (isJob(n) && !s.seen.has(n.id)) s.jobIds.delete(n.id);
+      for (const n of s.queue) if (isJob(n) && !isReminder(n) && !s.seen.has(n.id)) s.jobIds.delete(n.id);
       // A card Allen brought up himself stays under a call or away hold (ADR 0163): his own click is never held back.
       const mine = !noCards(quiet) && s.queue[0]?.key === s.forced ? s.queue[0] : undefined;
+      // A reminder stays in the queue through any hold (ADR 0171).
+      const reminders = s.queue.filter(isReminder);
       const taken = [...s.queue.filter(n => n !== mine && !isJob(n)).flatMap(n => n.kind === 'digest' ? n.items : [n]), ...s.folded], by = holdBy() ?? 'quiet', at = Date.now();
       for (const n of taken) n.held ??= { by, at };
-      s.held = [...taken, ...s.held]; s.queue = mine ? [mine] : []; s.folded = []; if (!mine) s.forced = ''; bump();
+      s.held = [...taken, ...s.held]; s.queue = mine ? [mine, ...reminders] : reminders; s.folded = []; if (!mine) s.forced = ''; bump();
     } else if (s.held.length) {
       const rank = (n: Notice) => needs(n) ? 0 : toneOf(n) === 'error' ? 1 : 2, at = performance.now();
       // One entry per session, the most important of what it did; two or more of them make one digest, one is just shown.
@@ -225,7 +230,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   const arrive = (a: Arrival) => {
     // Job mail waits in the queue like any card (`hold`, in Claude); at no-pop and dnd it is not taken in, the daemon keeps it.
     if (a.kind === 'mail' || a.kind === 'jobs') {
-      if (holdBy() || s.jobIds.has(a.id)) return;
+      if (holdBy() && !isReminder(a) || s.jobIds.has(a.id)) return;
       s.jobIds.add(a.id); const now = performance.now();
       s.queue.push({ ...a, key: `${a.kind}:${a.id}:${now}`, at: now } as Notice);
       return;
@@ -374,7 +379,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
     if (watched && s.unread.has(watched)) read([watched]); else { save(); bump(); }
   }, [key, watched, viewing]);
 
-  const current = (hold || inClaude || !!moment) && s.queue[0]?.key !== s.forced ? undefined : s.queue[0];
+  const current = (hold || inClaude || !!moment && !(s.queue[0] && isReminder(s.queue[0]))) && s.queue[0]?.key !== s.forced ? undefined : s.queue[0];
   // A notice coming up: her sound (once per 1.5 s), and the clock for her error face.
   if ((current?.key ?? '') !== s.shown) {
     s.shown = current?.key ?? '';
@@ -543,14 +548,14 @@ export function MailNotice({ n, card, lang, onDismiss, onRate, onChange }: {
   const root = useRef<HTMLDivElement>(null), { job } = n;
   const level = job.level === 'speak' || job.level === 'card_sound' ? job.level : 'card', [kindClass, kindName] = jobKind(job.mail_kind);
   useEscape(root, !card.ok, onDismiss, n.key);
-  const chips = when(job), event = job.event_at ? jobStamp(job.event_at, true) : '';
+  const reminder = job.mail_kind === 'reminder', chips = reminder ? [] : when(job), event = job.event_at ? jobStamp(job.event_at, true) : '';
   return <div ref={root} className="nc nc-mail">
     <div className="nc-bar"><span className={`nc-label ${job.mail_kind ? kindClass : 'is-other'}`}><i/>{job.mail_kind ? tr(lang, kindName) : tr(lang, ['Job mail', '求职邮件'])}</span>
       <button type="button" className="nc-x nc-dismiss" aria-label="Dismiss" title={tr(lang, ['Dismiss', '关掉'])} onClick={onDismiss}><X size={14}/></button></div>
     <p className="nc-mail-t">{job.title}</p>
     {job.line && <p className="nc-what">{job.line}</p>}
-    {(chips.length > 0 || event) && <div className="nc-tags">{chips.map((c, i) => <span key={i} className="tagc">{c}</span>)}{event && <span className="tagc">{tr(lang, ['Event', '日程'])} {event}</span>}</div>}
-    <RateRow card={card} level={level} lang={lang} onRate={onRate} onChange={onChange}/>
+    {(chips.length > 0 || event) && <div className="nc-tags">{chips.map((c, i) => <span key={i} className="tagc">{c}</span>)}{event && <span className="tagc">{tr(lang, reminder ? ['Due', '时间'] : ['Event', '日程'])} {event}</span>}</div>}
+    {!reminder && <RateRow card={card} level={level} lang={lang} onRate={onRate} onChange={onChange}/>}
   </div>;
 }
 
