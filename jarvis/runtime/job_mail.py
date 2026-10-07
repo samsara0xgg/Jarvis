@@ -759,13 +759,17 @@ def repair(db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = ()
 
 
 def _fix_event(db: Path, row: Mapping[str, Any], body: str) -> bool:
-    """Replace an interview or offer row's event time with the one its kept body names, if any."""
+    """Set an interview or offer row's event to what its kept body names under today's rules.
+
+    The body is the only source of an event, so a time the rules no longer read from it (a quoted
+    "Sent:" header, say) is cleared, not kept.
+    """
     try:
         received = datetime.fromisoformat(row["received_at"])
     except (TypeError, ValueError):
         return False
     sentence, at = triage.event_of(body, received, dated=True)
-    if not at or (at, sentence) == (row["event_at"], row["event_text"]):
+    if (at, sentence) == (row["event_at"], row["event_text"]):
         return False
     ledger.set_event(db, row["message_id"], at, sentence)
     return True

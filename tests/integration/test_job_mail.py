@@ -2817,7 +2817,7 @@ def test_interviewers_of_a_panel_line_are_persons_not_titles() -> None:
 def test_the_repair_pass_corrects_a_wrong_event_time_from_the_kept_body(
     tmp_path: Path, jev: _Jev
 ) -> None:
-    """An interview row's event is read again from its body: replaced when the body names one."""
+    """An interview row's event is read again from its body: replaced, or cleared if none."""
     h = _harness(tmp_path, jev, [])
     wrong = "2026-10-02T16:45-07:00"
     for key, kind in (("fix", "interview"), ("none", "interview"), ("other", "rejection")):
@@ -2842,10 +2842,10 @@ def test_the_repair_pass_corrects_a_wrong_event_time_from_the_kept_body(
         job_ledger.record_decision(
             h.db, key, "body", "job", NOW, head={"received_at": NOW.isoformat()}, body_excerpt=text
         )
-    assert repair(h.db, "ledger_only") == 1
+    assert repair(h.db, "ledger_only") == 2  # noqa: PLR2004 - fix and none
     assert h.sql("SELECT message_id, event_at, event_text FROM job_mail ORDER BY message_id") == [
         ("fix", "2026-10-08T13:00-07:00", "Thursday October 8th, 1:00pm - 2:00pm"),
-        ("none", wrong, "Sent: Friday, October 2, 2026 4:45 PM"),  # no time in the body: kept
+        ("none", None, None),  # the rules read no time from the body: the quoted one goes
         ("other", wrong, "Sent: Friday, October 2, 2026 4:45 PM"),  # not interview or offer
     ]
     assert repair(h.db, "ledger_only") == 0
