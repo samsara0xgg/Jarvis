@@ -1290,6 +1290,20 @@ def _home_weather(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return place if isinstance(place, Mapping) else None
 
 
+def _transit_places(config: Mapping[str, Any]) -> dict[str, str]:
+    """``transit.home`` and ``transit.school`` (an address or ``lat,lng``) for the `transit` tool.
+
+    An unset ``home`` falls back to the ``home.weather`` latitude and longitude (ADR 0189).
+    """
+    block = config.get("transit")
+    saved = block if isinstance(block, Mapping) else {}
+    places = {k: v for k in ("home", "school") if (v := str(saved.get(k) or "").strip())}
+    weather = _home_weather(config)
+    if "home" not in places and weather is not None:
+        places["home"] = f"{weather['latitude']},{weather['longitude']}"
+    return places
+
+
 def _dashboard_switch(config: Mapping[str, Any], name: str) -> bool:
     """``dashboard.<name>.enabled``: off unless true."""
     block = config.get("dashboard")
@@ -2634,6 +2648,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         night=night,
         voice_settings=voice_settings,
         weather_lookup=weather_lookup(_home_weather(full_config)),
+        transit_api_key=os.environ.get("GOOGLE_MAPS_API_KEY", "").strip(),
+        transit_places=_transit_places(full_config),
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,

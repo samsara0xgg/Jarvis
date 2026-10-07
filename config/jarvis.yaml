@@ -317,6 +317,12 @@ core_memory:
       important items rather than go over.
     - Return {"changes": []} when nothing lasting happened that day.
 
+# ADR 0189 — the model's `transit` tool (bus times from Google Routes) is on the menu when
+# GOOGLE_MAPS_API_KEY is set in the runtime env file.  The saved places are this user's own:
+# write them in settings.yaml, each an address or "lat,lng", for example
+# transit: {home: "<street address or lat,lng>", school: "<street address or lat,lng>"}.
+# An unset home falls back to the home.weather latitude and longitude; school has no fallback.
+
 # ADR 0051 — 小球首页：日程和待办直接读 Microsoft，邮件读 Gmail（~/.jarvis/env 里的
 # GMAIL_ADDRESS + GMAIL_APP_PASSWORD），都不经过模型；天气来自 Open-Meteo（不用 key），
 # 按 weather 的经纬度，每个用户在自己的 settings.yaml 里写，例如

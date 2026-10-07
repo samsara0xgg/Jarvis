@@ -84,6 +84,7 @@ _QUIET_TOOLS: Final = (
     "end_night_run",
     "set_voice",
     "weather",
+    "transit",
     "create_memo",
     "set_reminder",
     "list_reminders",

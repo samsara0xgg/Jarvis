@@ -1,0 +1,301 @@
+{
+ "routes": [
+  {
+   "legs": [
+    {
+     "steps": [
+      {
+       "distanceMeters": 468,
+       "staticDuration": "360s",
+       "travelMode": "WALK"
+      },
+      {
+       "distanceMeters": 9000,
+       "staticDuration": "1500s",
+       "travelMode": "TRANSIT",
+       "transitDetails": {
+        "stopDetails": {
+         "arrivalStop": {
+          "name": "Douglas at Fort"
+         },
+         "arrivalTime": "2026-10-07T00:41:00Z",
+         "departureStop": {
+          "name": "Shelbourne at McKenzie"
+         },
+         "departureTime": "2026-10-07T00:12:00Z"
+        },
+        "localizedValues": {
+         "arrivalTime": {
+          "time": {
+           "text": "17:41"
+          },
+          "timeZone": "America/Vancouver"
+         },
+         "departureTime": {
+          "time": {
+           "text": "17:12"
+          },
+          "timeZone": "America/Vancouver"
+         }
+        },
+        "headsign": "Downtown",
+        "transitLine": {
+         "name": "UVic/Downtown",
+         "nameShort": "26",
+         "agencies": [
+          {
+           "name": "BC Transit"
+          }
+         ],
+         "vehicle": {
+          "type": "BUS"
+         }
+        },
+        "stopCount": 20
+       }
+      },
+      {
+       "distanceMeters": 546,
+       "staticDuration": "420s",
+       "travelMode": "WALK"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "legs": [
+    {
+     "steps": [
+      {
+       "distanceMeters": 312,
+       "staticDuration": "240s",
+       "travelMode": "WALK"
+      },
+      {
+       "distanceMeters": 9000,
+       "staticDuration": "1500s",
+       "travelMode": "TRANSIT",
+       "transitDetails": {
+        "stopDetails": {
+         "arrivalStop": {
+          "name": "Hillside Centre"
+         },
+         "arrivalTime": "2026-10-07T00:35:00Z",
+         "departureStop": {
+          "name": "Shelbourne at Cedar Hill X"
+         },
+         "departureTime": "2026-10-07T00:20:00Z"
+        },
+        "localizedValues": {
+         "arrivalTime": {
+          "time": {
+           "text": "17:35"
+          },
+          "timeZone": "America/Vancouver"
+         },
+         "departureTime": {
+          "time": {
+           "text": "17:20"
+          },
+          "timeZone": "America/Vancouver"
+         }
+        },
+        "headsign": "Downtown",
+        "transitLine": {
+         "name": "Majestic/Downtown",
+         "nameShort": "28",
+         "agencies": [
+          {
+           "name": "BC Transit"
+          }
+         ],
+         "vehicle": {
+          "type": "BUS"
+         }
+        },
+        "stopCount": 20
+       }
+      },
+      {
+       "distanceMeters": 9000,
+       "staticDuration": "1500s",
+       "travelMode": "TRANSIT",
+       "transitDetails": {
+        "stopDetails": {
+         "arrivalStop": {
+          "name": "Douglas at View"
+         },
+         "arrivalTime": "2026-10-07T00:58:00Z",
+         "departureStop": {
+          "name": "Hillside Centre"
+         },
+         "departureTime": "2026-10-07T00:40:00Z"
+        },
+        "localizedValues": {
+         "arrivalTime": {
+          "time": {
+           "text": "17:58"
+          },
+          "timeZone": "America/Vancouver"
+         },
+         "departureTime": {
+          "time": {
+           "text": "17:40"
+          },
+          "timeZone": "America/Vancouver"
+         }
+        },
+        "headsign": "Downtown",
+        "transitLine": {
+         "name": "Royal Oak/Downtown",
+         "nameShort": "6",
+         "agencies": [
+          {
+           "name": "BC Transit"
+          }
+         ],
+         "vehicle": {
+          "type": "BUS"
+         }
+        },
+        "stopCount": 20
+       }
+      },
+      {
+       "distanceMeters": 390,
+       "staticDuration": "300s",
+       "travelMode": "WALK"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "legs": [
+    {
+     "steps": [
+      {
+       "distanceMeters": 780,
+       "staticDuration": "600s",
+       "travelMode": "WALK"
+      },
+      {
+       "distanceMeters": 9000,
+       "staticDuration": "1500s",
+       "travelMode": "TRANSIT",
+       "transitDetails": {
+        "stopDetails": {
+         "arrivalStop": {
+          "name": "Douglas at Fort"
+         },
+         "arrivalTime": "2026-10-07T01:05:00Z",
+         "departureStop": {
+          "name": "Gordon Head at Ferndale"
+         },
+         "departureTime": "2026-10-07T00:35:00Z"
+        },
+        "localizedValues": {
+         "arrivalTime": {
+          "time": {
+           "text": "18:05"
+          },
+          "timeZone": "America/Vancouver"
+         },
+         "departureTime": {
+          "time": {
+           "text": "17:35"
+          },
+          "timeZone": "America/Vancouver"
+         }
+        },
+        "headsign": "Downtown",
+        "transitLine": {
+         "name": "Gordon Head/Downtown",
+         "nameShort": "27",
+         "agencies": [
+          {
+           "name": "BC Transit"
+          }
+         ],
+         "vehicle": {
+          "type": "BUS"
+         }
+        },
+        "stopCount": 20
+       }
+      },
+      {
+       "distanceMeters": 234,
+       "staticDuration": "180s",
+       "travelMode": "WALK"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "legs": [
+    {
+     "steps": [
+      {
+       "distanceMeters": 390,
+       "staticDuration": "300s",
+       "travelMode": "WALK"
+      },
+      {
+       "distanceMeters": 9000,
+       "staticDuration": "1500s",
+       "travelMode": "TRANSIT",
+       "transitDetails": {
+        "stopDetails": {
+         "arrivalStop": {
+          "name": "Douglas at Fort"
+         },
+         "arrivalTime": "2026-10-07T01:11:00Z",
+         "departureStop": {
+          "name": "Shelbourne at McKenzie"
+         },
+         "departureTime": "2026-10-07T00:42:00Z"
+        },
+        "localizedValues": {
+         "arrivalTime": {
+          "time": {
+           "text": "18:11"
+          },
+          "timeZone": "America/Vancouver"
+         },
+         "departureTime": {
+          "time": {
+           "text": "17:42"
+          },
+          "timeZone": "America/Vancouver"
+         }
+        },
+        "headsign": "Downtown",
+        "transitLine": {
+         "name": "UVic/Downtown",
+         "nameShort": "26",
+         "agencies": [
+          {
+           "name": "BC Transit"
+          }
+         ],
+         "vehicle": {
+          "type": "BUS"
+         }
+        },
+        "stopCount": 20
+       }
+      },
+      {
+       "distanceMeters": 546,
+       "staticDuration": "420s",
+       "travelMode": "WALK"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

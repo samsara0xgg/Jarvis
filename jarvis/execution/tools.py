@@ -3970,6 +3970,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     mail_drafts: DraftStore | None = None,
     device_link: DeviceLink | None = None,
     weather_lookup: Callable[[], Mapping[str, Any]] | None = None,
+    transit_api_key: str | None = None,
+    transit_places: Mapping[str, str] | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -4039,6 +4041,9 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             are too, but ask the terminal for what they read of TimeSink and git.
         weather_lookup: ADR 0188 — the home's weather read (`home.weather`);
             `None` (no location configured) leaves `weather` off the menu.
+        transit_api_key: ADR 0189 — the Google Routes key (`GOOGLE_MAPS_API_KEY`, resolved
+            by the runtime); empty or `None` leaves `transit` off the menu.
+        transit_places: the saved `home` and `school` for `transit` (an address or `lat,lng`).
     """
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
 
@@ -4181,12 +4186,14 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         registry.register(report_tool)
     from jarvis.execution.mail_draft_tool import build_mail_draft_tool  # noqa: PLC0415
     from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
+    from jarvis.execution.transit_tool import build_transit_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.voice_tools import build_voice_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.weather_tool import build_weather_tool  # noqa: PLC0415 — same cycle.
 
     for conversation_tool in (
         *build_night_tools(night), *build_voice_tool(voice_settings),
         *build_weather_tool(weather_lookup),
+        *build_transit_tool(transit_api_key, transit_places or {}),
     ):
         registry.register(conversation_tool)
     for draft_tool in build_mail_draft_tool(mail_drafts):
