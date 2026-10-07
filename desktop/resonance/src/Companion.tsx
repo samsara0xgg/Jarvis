@@ -550,8 +550,7 @@ export function Companion() {
   };
   const closeDashboard = (why = 'back or Esc') => { if (detached) void window.jarvis?.dashboard?.('close'); else fold(why); };
   // Clicking the island opens the Dashboard; a click on one it is already showing closes it, unless a rest opened it a moment
-  // before (that click is the same reach for it). One a hover opened folds by itself once the pointer leaves (below); one a click
-  // or Jarvis opened (pinned) stays until the island, back or Esc closes it.
+  // before (that click is the same reach for it). However it opened, it folds by itself once the pointer leaves (below).
   const toggleDashboard = () => {
     clearTimeout(dashTimer.current); dashTimer.current = undefined;
     if (live.current.dashboard && pinned.current) { fold('a click on the island'); pinned.current = false; dashClosedHere.current = true; }
@@ -716,7 +715,7 @@ export function Companion() {
       if (!over) dashClosedHere.current = false;
       if (dashboard) {
         if (over || dashHeld()) { if (over) dashEntered.current = true; clearTimeout(dashTimer.current); dashTimer.current = undefined; }
-        else if (dashEntered.current && !pinned.current && (toward || !dashTimer.current)) {
+        else if (dashEntered.current && (toward || !dashTimer.current)) {
           clearTimeout(dashTimer.current);
           dashTimer.current = setTimeout(() => { dashTimer.current = undefined; if (!dashHeld()) { fold('the pointer leaving'); pinned.current = false; } }, DASHBOARD_EXIT_MS);
         }
