@@ -2294,7 +2294,12 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
 
     # ADR 0046: Allen's own Claude Code sessions, read from Claude Code's own state;
     # ADR 0049: with the prompts Jarvis holds for them and their compacting / stopped marks.
-    claude_board = ClaudeSessions(deps.turn_end_peek, deps.turn_end_answered)
+    # ADR 0170: on a brain (``terminals``) the session files are the terminal's, so the board, a
+    # conversation and a reply are asked of it, and the brain's own files are never read.
+    claude_board = ClaudeSessions(
+        deps.turn_end_peek, deps.turn_end_answered,
+        None if deps.terminals is None else deps.terminals.call,
+    )
     claude_hooks = ClaudeHooks(
         lambda: deps.controls.quiet if deps.controls is not None else "off",
     )
@@ -2315,6 +2320,8 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
             return await asyncio.to_thread(claude_board.conversation, session_id)
         except LookupError:
             raise HTTPException(status_code=404, detail="no such session") from None
+        except OSError as exc:  # the terminal is not there, or reads no Claude Code files
+            raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
 
     @app.post("/inherent/claude-sessions/{session_id}/reply", status_code=200)
     async def claude_reply(session_id: str, body: dict[str, Any]) -> dict[str, bool]:

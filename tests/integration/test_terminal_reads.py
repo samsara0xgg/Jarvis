@@ -76,6 +76,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.state.projects import Project
+    from jarvis.surface.claude_sessions import ClaudeSessions
 
 __all__ = ["source"]
 
@@ -90,7 +91,10 @@ QUERY = {"from": FROM, "to": TO, "sources": ["app", "screen"]}
 class _Brain:
     """A real uvicorn server carrying a hub on ``/terminal/ws``, over a real event log."""
 
-    def __init__(self, root: Path, log: Path) -> None:
+    def __init__(
+        self, root: Path, log: Path,
+        deps: Callable[[TerminalHub], dict[str, Any]] | None = None,
+    ) -> None:
         self.hub = TerminalHub(events=BrainEvents(_brain_log(log)))
         app = create_app(
             InherentDeps(
@@ -98,6 +102,7 @@ class _Brain:
                 broadcaster=InherentBroadcaster(),
                 terminals=self.hub,
                 device_name=functools.partial(device_name_for_token, root),
+                **({} if deps is None else deps(self.hub)),
             ),
         )
         require_local_key(
@@ -145,12 +150,15 @@ class _Terminal:
         repos: tuple[str, ...],
         watched: _Watched | None = None,
         projects: tuple[Project, ...] = (),
+        claude: ClaudeSessions | None = None,
     ) -> None:
         registry = build_default_registry(obsidian_vault_root=None)
         registry.register(make_screen_capture(800))
         self._args = (
             url, token, _declared(registry),
-            make_executor(registry, timesink_store=store, repos=repos, projects=projects),
+            make_executor(
+                registry, timesink_store=store, repos=repos, projects=projects, claude=claude,
+            ),
             watched,
         )
         self.loop = asyncio.new_event_loop()

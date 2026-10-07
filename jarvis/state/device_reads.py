@@ -24,6 +24,11 @@ TIMESINK_READ: Final = "timesink_read"
 GIT_READ: Final = "git_read"
 DEVICE_READS: Final = frozenset({TIMESINK_READ, GIT_READ})
 """The operations a terminal declares for this: not menu tools, the model never sees them."""
+CLAUDE_READ: Final = "claude_read"
+"""The Agents page's reads of Claude Code's own state on the device (ADR 0046): its session
+board, one session's conversation, and the reply typed into an idle background session. Declared
+beside :data:`DEVICE_READS`, answered only where that machine's own config allows reading."""
+TERMINAL_READS: Final = DEVICE_READS | {CLAUDE_READ}
 
 NOT_CONNECTED: Final = (
     "Activity on the owner's device (app and screen data, git commits) is unavailable: the "

@@ -510,13 +510,13 @@ def _terminal_registry(tmp_path: Path, *, vault: bool = False) -> ToolRegistry:
 
 
 def test_a_terminal_declares_the_device_tools_it_can_run(tmp_path: Path) -> None:
-    """The six it may run, the file-name resolver and the two activity reads (ADR 0170 step 4c).
+    """The six it may run, the file-name resolver and the three device reads (ADR 0170).
 
     Never write_file or a menu tool.
     """
     assert _declared(_terminal_registry(tmp_path)) == {
         "open_path", "read_file", "read_clipboard", "open_url", "screen_capture", "resolve_file",
-        "timesink_read", "git_read",
+        "timesink_read", "git_read", "claude_read",
     }
     assert "search_notes" in _declared(_terminal_registry(tmp_path, vault=True))
 

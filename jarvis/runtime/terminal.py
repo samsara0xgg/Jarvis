@@ -77,6 +77,7 @@ from jarvis.runtime.inherent_loop import (
     _build_echo_canceller,
     _build_tts_pipeline,
     _build_voice_pipeline,
+    _claude_sessions_read,
     _ListenPorts,
     _repo_observer_task,
     _restart_soon,
@@ -98,6 +99,7 @@ from jarvis.state.event_log import EventLogError, emit_event, open_event_log
 from jarvis.state.memory_db import MemorySettings
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.projects import Project, gather, parse_catalog, window_to_wire
+from jarvis.surface.claude_sessions import ClaudeSessions
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.terminal_events import EventOutbox
@@ -149,10 +151,11 @@ class _ScratchPaths:
 def _declared(registry: ToolRegistry) -> frozenset[str]:
     """The tools this machine can run: the device tools it holds that a caller may reach.
 
-    Beside them the reads of its own TimeSink store and repositories, which are not menu tools.
+    Beside them the reads of its own TimeSink store, repositories and Claude Code sessions, which
+    are not menu tools.
     """
     held = {tool.name for tool in registry.get_definitions() if tool.allowed_callers}
-    return frozenset(held & TERMINAL_TOOL_NAMES) | {RESOLVE_FILE} | device_reads.DEVICE_READS
+    return frozenset(held & TERMINAL_TOOL_NAMES) | {RESOLVE_FILE} | device_reads.TERMINAL_READS
 
 
 _MAX_READ_CHARS = MAX_FRAME_CHARS - 4096
@@ -241,20 +244,48 @@ def _git_read(
     raise DailyError(message, "unknown_read")
 
 
-def _read_device(
+def _claude_read(
+    fn: str, args: Mapping[str, Any], claude: ClaudeSessions | None,
+) -> Any:  # noqa: ANN401 — one read's JSON.
+    """One read of the Agents page, or its reply, run on this machine's own Claude Code state."""
+    if claude is None:
+        message = (
+            "reading Claude Code's files is off on this device (observer.claude_sessions.enabled)"
+        )
+        raise DailyError(message, "disabled")
+    try:
+        if fn == "board":
+            return claude.raw()
+        if fn == "conversation":
+            return claude.conversation(str(args["session_id"]))
+        if fn == "reply":
+            claude.reply(str(args["session_id"]), str(args["text"]))
+            return None
+    except LookupError as exc:
+        message = f"no such session: {exc}"
+        raise DailyError(message, "not_found") from exc
+    except (OSError, RuntimeError) as exc:
+        message = str(exc)[:200] or type(exc).__name__
+        raise DailyError(message, "failed") from exc
+    message = f"this terminal has no Claude Code read {fn!r}"
+    raise DailyError(message, "unknown_read")
+
+
+def _read_device(  # noqa: PLR0913 — what this machine has, for the brain's reads of it.
     op: str, arguments: Mapping[str, Any], store: Path | None, repos: tuple[str, ...],
-    projects: tuple[Project, ...] = (),
+    projects: tuple[Project, ...] = (), claude: ClaudeSessions | None = None,
 ) -> dict[str, Any]:
-    """Answer a brain's read of this machine's TimeSink or git: the JSON, or the refusal."""
+    """Answer a brain's read of this machine's TimeSink, git or Claude Code: JSON or the refusal."""
     raw = arguments.get("args")
     args = raw if isinstance(raw, dict) else {}
     fn = str(arguments.get("fn", ""))
     try:
-        result = (
-            _timesink_read(fn, args, store)
-            if op == device_reads.TIMESINK_READ
-            else _git_read(fn, args, repos, projects)
-        )
+        if op == device_reads.TIMESINK_READ:
+            result = _timesink_read(fn, args, store)
+        elif op == device_reads.CLAUDE_READ:
+            result = _claude_read(fn, args, claude)
+        else:
+            result = _git_read(fn, args, repos, projects)
     except DailyError as exc:
         return {"ok": False, "code": exc.code, "message": str(exc)}
     except (KeyError, TypeError, ValueError) as exc:
@@ -268,14 +299,16 @@ def _read_device(
 
 def make_executor(
     registry: ToolRegistry, *, timesink_store: Path | None = None, repos: tuple[str, ...] = (),
-    projects: tuple[Project, ...] = (),
+    projects: tuple[Project, ...] = (), claude: ClaudeSessions | None = None,
 ) -> Execute:
     """The runner a terminal hands its link: one call in, ``ok`` + ``output`` or a failure out.
 
     Only declared tools run. The brain has already gated and, where it must, confirmed the
     call; nothing here asks again. ``timesink_store`` and ``repos`` are what this machine's
     config says it has, which the brain's reads of them (``timesink_read``, ``git_read``) use;
-    ``projects`` is its own ``projects`` catalog, whose repositories the brain's dashboard reads.
+    ``projects`` is its own ``projects`` catalog, whose repositories the brain's dashboard reads;
+    ``claude`` is its Claude Code sessions, or ``None`` when its config does not allow reading
+    them.
     """
     declared = _declared(registry)
     definitions = {tool.name: tool for tool in registry.get_definitions()}
@@ -292,8 +325,8 @@ def make_executor(
     ) -> dict[str, Any]:
         if tool not in declared:
             return {"ok": False, "code": "unknown_tool", "message": f"this terminal has no {tool}"}
-        if tool in device_reads.DEVICE_READS:
-            return _read_device(tool, arguments, timesink_store, repos, projects)
+        if tool in device_reads.TERMINAL_READS:
+            return _read_device(tool, arguments, timesink_store, repos, projects, claude)
         conn = open_event_log(Path(":memory:"))  # opened here: a log belongs to its thread
         try:
             if tool == RESOLVE_FILE:
@@ -872,6 +905,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
         execute = make_executor(
             registry, timesink_store=configured_store, repos=configured_repos,
             projects=_own_projects(config),
+            claude=ClaudeSessions() if _claude_sessions_read(config) else None,
         )
         if voice:
             _configure_realtime_trace(runtime_root)

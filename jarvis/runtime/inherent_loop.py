@@ -6686,7 +6686,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 functools.partial(_erase_data, runtime.runtime_paths.root)
                 if spawned_by_agent() else None
             ),
-            claude_sessions_read=_claude_sessions_read(runtime.config),
+            # A brain has no sessions of its own: with no terminal able to connect, none to show.
+            claude_sessions_read=_claude_sessions_read(runtime.config)
+            and (runtime.role != "brain" or bool(runtime.listen_addresses)),
             agent_marks_path=runtime.runtime_paths.root / "agent-marks.json",
             plugin_read=runtime.plugin_connections.read if runtime.plugin_connections else None,
             plugin_action=runtime.plugin_connections.action if runtime.plugin_connections else None,
