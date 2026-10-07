@@ -542,7 +542,11 @@ def _interview_step(
 def _timeline(
     applied_at: str | None, mails: Sequence[sqlite3.Row], step: dict[str, Any] | None
 ) -> list[dict[str, Any]]:
-    """Applied, then each interview invitation, offer and rejection by date, and the interview."""
+    """Applied, then each interview invitation, offer and rejection by date, and the interview.
+
+    Mails in a row of the same kind are one step at the first one's date: an invitation, his
+    reply and their confirmation are one "invited", not three.
+    """
     later = [
         {"kind": _STEP_KINDS[m["kind"]], "at": m["received_at"], "future": False}
         for m in mails
@@ -550,7 +554,11 @@ def _timeline(
     ]
     later += [step] if step else []
     later.sort(key=lambda one: _moment(one["at"]) or _EPOCH)
-    return [{"kind": "applied", "at": applied_at, "future": False}, *later]
+    steps = [{"kind": "applied", "at": applied_at, "future": False}]
+    for one in later:
+        if one["kind"] != steps[-1]["kind"]:
+            steps.append(one)
+    return steps
 
 
 def _interview(

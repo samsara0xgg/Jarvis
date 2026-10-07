@@ -748,13 +748,16 @@ _JOIN_HOSTS: Final[dict[str, str]] = {
     "meet.google.com": "Google Meet",
     "webex.com": "Webex",
 }
-# A platform named in words, no link: only names that mean nothing else ("Teams" alone is a team).
+# A platform named in words, no link: only names that mean nothing else ("Teams" alone is a team,
+# "Teams meeting" / "Teams call" / "Teams invitation" is the platform).
 _PLATFORM_WORDS: Final = re.compile(
-    r"\b(zoom|microsoft\s+teams|google\s+meet|webex)\b", re.IGNORECASE
+    r"\b(zoom|microsoft\s+teams|teams(?=\s+(?:meeting|call|invit))|google\s+meet|webex)\b",
+    re.IGNORECASE,
 )
 _PLATFORM_OF_WORD: Final[dict[str, str]] = {
     "zoom": "Zoom",
     "microsoft teams": "Teams",
+    "teams": "Teams",
     "google meet": "Google Meet",
     "webex": "Webex",
 }

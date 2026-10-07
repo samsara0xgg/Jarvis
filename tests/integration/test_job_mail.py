@@ -2647,6 +2647,13 @@ def test_a_body_gives_the_interview_mode_platform_place_people_and_links() -> No
         "Your interview with Jill on Thursday.",
     ):
         assert triage.mail_details(text)["interviewers"] == []
+    # Allen's real confirmation mail, 2026-10-06: "Teams meeting" names the platform.
+    confirmed = triage.mail_details(
+        "Thank you for confirming receipt of the Teams meeting invitation!\n"
+        "We are looking forward to chatting with you on Thursday"
+    )
+    assert confirmed["platform"] == "Teams"
+    assert triage.mail_details("Our teams will review it.")["platform"] is None
     assert triage.mail_details("Interview with Jill Crowe Thursday at 2pm.")["interviewers"] == [
         "Jill Crowe"
     ]
@@ -2678,6 +2685,9 @@ def test_an_application_carries_its_timeline_interview_and_links(
     _stored(h, "r1", rc, "Firmware QA", "receipt", timedelta(days=9))
     _stored(h, "r2", rc, "Firmware QA", "interview", timedelta(days=5), event_at=soon)
     _stored(h, "r3", rc, "Firmware QA", "job_other", timedelta(days=1))
+    # His reply and their confirmation in the invitation thread are not more invitations.
+    _stored(h, "r4", rc, "Firmware QA", "interview", timedelta(days=4))
+    _stored(h, "r5", rc, "Firmware QA", "interview", timedelta(days=3))
     for key, body in (("r1", _PORTAL_MAIL), ("r2", _TEAMS_MAIL), ("r3", "nothing here")):
         job_ledger.record_decision(
             h.db, key, "body", "job", NOW, head={"received_at": NOW.isoformat()}, body_excerpt=body
