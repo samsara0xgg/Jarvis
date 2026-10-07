@@ -118,8 +118,13 @@ TOOL_GROUPS: Final[dict[str, str]] = {
         " important in the inbox, a receipt or order email."
     ),
     "web_search": (
-        "Look something up on the web or get live facts: weather, news, scores, prices, current"
-        " events, a website, a recent release."
+        "Look something up on the web or get live facts: the weather in a city the user names,"
+        " news, scores, prices, current events, a website, a recent release."
+    ),
+    # ADR 0188: the home weather is one quick tool read; no line is said for it.
+    "home_weather": (
+        "The weather here, with no city named: now, today, tonight or tomorrow, rain,"
+        " temperature outside, whether to take an umbrella."
     ),
     "records_notes": (
         "Search what the user said or did in earlier conversations, saved records, notes,"

@@ -16,9 +16,10 @@ _DESCRIPTION: Final = (
     "Current, today's and tomorrow's weather at the user's home area (Victoria / Saanich),"
     " plus the next 12 hours: temperature, conditions, high/low and chance of rain. Use it"
     " for any question about the weather now, today, tonight or tomorrow, also when the user"
-    " just says 'weather' or names Victoria or Saanich. For another city, a date beyond"
-    " tomorrow, or anything the result does not hold, use web_search. If it returns an"
-    " error, fall back to web_search."
+    " just says 'weather' or names Victoria or Saanich. It holds only today and tomorrow:"
+    " for the weekend, later days or another city, use web_search instead. Never state"
+    " another place's weather from this result or from an earlier answer about home;"
+    " search first. If it returns an error, fall back to web_search."
 )
 
 
