@@ -22,7 +22,10 @@ import { skyline, type IslandRect as Rect } from './islandShape';
 // A glow (ADR 0187) is one more amber point in the turn group: it counts there and arrives like anything new, and its rows
 // follow the sessions on the list: a click opens its place, the ✕ clears it. It is a mark, so only dnd keeps it back.
 type Point = { x: number; y: number };
-type Kind = 'turn' | 'work' | 'done' | 'moon';
+export type Kind = 'turn' | 'work' | 'done' | 'moon';
+// While the Dashboard hangs below, the wing opens nothing of its own: the pointer on a mark tells the Dashboard which group,
+// and a press sends it to that group.
+export type NotchAside = { hover: (key: Kind | null) => void; open: (key: Kind) => void };
 type Box = { key: Kind; x0: number; x1: number; cx: number };
 type Sec = { key: Kind; label: string; ts: Agent[]; gs?: Glow[] };
 type Keys = { view: 'list' | 'page'; id: string; i: number; at: number };
@@ -212,9 +215,9 @@ function Pop({ agents, look, act, rate, onClose }: { agents: Agent[]; look: Mark
     <div className="u-list">{agents.map(a => <PopRow key={a.id} a={a} look={look} act={act} tag={a.state === 'err' && !all ? <em> {t(['stopped', '出错停了'])}</em> : null}/>)}</div>{rate}</div>;
 }
 
-export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, edge, act, glow, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
+export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, edge, aside, act, glow, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
   look: MarkLook; agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; geo: NotchGeo;
-  cursor: RefObject<Point>; note: NotchNote | null; quiet: boolean; edge: number | null; act: NotchAct; glow?: NotchGlow; onNoteHover: (on: boolean) => void;
+  cursor: RefObject<Point>; note: NotchNote | null; quiet: boolean; edge: number | null; aside?: NotchAside; act: NotchAct; glow?: NotchGlow; onNoteHover: (on: boolean) => void;
   port: string | null; keys: number; onKeys: (on: boolean) => void; onViewing: (id: string | null) => void;
   onJoinedChange?: (joined: boolean) => void;
 }) {
@@ -245,10 +248,10 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     // Sessions on their way into the moon, from where the pointer was, and when the last one landed.
     flights: [] as { id: string; to: Kind; st: AgentState; x: number; y: number; at: number }[],
     bumpAt: { turn: -1e9, work: -1e9, done: -1e9, moon: -1e9 }, parkedIds: new Set<string>(),
-    popOrigins: new Map<string, Point>(), intent: new PointerIntent(), resolvedNote: '', workLandingUntil: 0, joined: false,
+    popOrigins: new Map<string, Point>(), intent: new PointerIntent(), resolvedNote: '', workLandingUntil: 0, joined: false, asideKey: null as Kind | null,
   }).current;
-  const L = useRef({ look, turn, work, fin, moon, glows, geo, note, quiet, edge, onNoteHover, onJoinedChange, held: false, pageW: false, say: t });
-  L.current = { look, turn, work, fin, moon, glows, geo, note, quiet, edge, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged, say: t };
+  const L = useRef({ look, turn, work, fin, moon, glows, geo, note, quiet, edge, aside, onNoteHover, onJoinedChange, held: false, pageW: false, say: t });
+  L.current = { look, turn, work, fin, moon, glows, geo, note, quiet, edge, aside, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged, say: t };
   const members = (key: Kind) => ({ turn: L.current.turn, work: L.current.work, done: L.current.fin, moon: L.current.moon })[key];
   // What a group's mark counts: its sessions, and for the turn its glows too.
   const size = (key: Kind) => members(key).length + (key === 'turn' ? L.current.glows.length : 0);
@@ -386,6 +389,8 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         const approaching = st.open && st.intent.headingTo({ left: s.dx.value, right: s.dx.value + s.dw.value, top, bottom: s.dd.value });
         const want = held || (!note && !quiet && (inWing || inDrop || approaching));
         if (!held && slot) setHotKey(slot.key);
+        const ak = L.current.aside && slot ? slot.key : null;
+        if (ak !== st.asideKey) { st.asideKey = ak; L.current.aside?.hover(ak); }
         if (want && (inWing || inDrop || approaching)) st.lastIn = now;
         if (want !== st.want) { st.want = want; st.wantAt = now; }
         if (want && !st.open && (held || now - st.wantAt >= HOVER_DWELL_MS && speed < HOVER_SPEED)) setPanel(true);
@@ -493,7 +498,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         counts.push(`${b.key}${count}`);
         ctx.translate(b.cx + (dot ? DOT_COUNT_X - DOT_R : 7), top / 2 + .5); ctx.scale(pulse, pulse);
         ctx.fillText(count > 99 ? '99+' : String(count), 0, 0, 16); ctx.restore();
-        if (st.open && st.hot === b.key) {
+        if ((st.open || st.asideKey) && st.hot === b.key) {
           const c = b.key === 'turn' ? turnRgb.join(',') : b.key === 'moon' ? MOON_RGB : b.key === 'work' ? '108,156,255' : '111,224,180';
           ctx.fillStyle = `rgba(${c},.9)`; ctx.shadowColor = `rgba(${c},.9)`; ctx.shadowBlur = 6 * d;
           ctx.beginPath(); ctx.roundRect(b.cx - 5, top - 3.5, 10, 1.6, .8); ctx.fill(); ctx.shadowBlur = 0;
@@ -576,6 +581,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     <div ref={hit} className="notch-hit" data-hit aria-hidden="true"
       onPointerDown={e => {
         const b = st.boxes.find(x => e.clientX >= x.x0 && e.clientX < x.x1);
+        if (L.current.aside) { if (b) L.current.aside.open(b.key); return; }
         if (b) setHotKey(b.key);
         st.lastIn = performance.now(); setPanel(true);
         if (note) kbOpen();

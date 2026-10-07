@@ -11,6 +11,7 @@ import { TokenSection, useTokenUsage } from './TokenModule';
 import { plain, visible, type Present, type Row } from './model';
 import { Markdown } from './Markdown';
 import { AgentMark, type MarkLook, type MarkState } from './AgentMarks';
+import type { Kind as MarkGroup } from './Notch';
 import { cleanError, usePluginIcon, type Plugin, type PluginRequest, type usePlugins } from './PluginPanel';
 import { HOME_DEFAULTS, isPop, tr, useCompanionSettings, useT, type BlockId, type L, type Lang } from './companionSettings';
 import { demoBrief, demoMail, demoNotices, demoToday, postRoute, useNow, useRoute, type Brief, type Mail, type Notice, type Today, type WxKind } from './homeData';
@@ -152,10 +153,12 @@ const thoughtRows = (rows: Row[], thoughts: Think['thoughts']) => new Map(though
 }));
 const PULL = 240; // px of fresh upward scroll at the top that adds the day before
 
-export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'dot', onAgents, agentsFocus = 0, settingFocus = 0, jobsFocus = 0, present = null, onAnswer, unread, ctl, viewRef, onView }: {
+export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'dot', onAgents, agentsFocus = null, marksHover = null, settingFocus = 0, jobsFocus = 0, present = null, onAnswer, unread, ctl, viewRef, onView }: {
   open: boolean; port?: string | null; onClose: () => void; onMood: (expr: ExprId | null) => void; onHop: (height: number) => void;
   talk?: Talk; plugins?: PluginController; pluginFocus?: { plugin: string; key: string } | null;
-  marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void; agentsFocus?: number; settingFocus?: number; jobsFocus?: number; present?: Present | null; onAnswer?: (id: string) => void;
+  marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void;
+  // A mark beside the notch: pressed (the page turns to Agents and lights its group), or under the pointer (that group glows where it shows).
+  agentsFocus?: { group: MarkGroup; key: number } | null; marksHover?: MarkGroup | null; settingFocus?: number; jobsFocus?: number; present?: Present | null; onAnswer?: (id: string) => void;
   unread?: ReadonlySet<string>; ctl: Controls; viewRef?: Ref<DashboardViewHandle>; onView?: (value: DashboardView) => void;
 }) {
   const [settings, updateSettings] = useCompanionSettings(), lang = settings.lang;
@@ -407,11 +410,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     line: s.state === 'done' ? unread?.has(s.id) ? t(['Finished · not opened yet', '做完了 · 还没看']) : s.last : s.state === 'err' ? t([`Stopped · ${s.error}`, `停了 · ${s.error}`]) : s.last || (s.state === 'wait' ? t(['Needs you', '等你']) : t(['Working', '在做'])) }));
   const shownKey = JSON.stringify(shown);
   useEffect(() => onAgents?.(shown), [shownKey]);
-  // The marks beside the notch were clicked: the companion opened the panel, and it lands on Agents.
+  // A mark beside the notch was pressed: the panel turns to Agents and lights that group's sessions (the moon's are not listed here).
   useEffect(() => {
     if (!agentsFocus || !open) return;
     if (!page) openPage('agents'); else if (page !== 'agents') setPage('agents');
-  }, [agentsFocus]);
+    if (agentsFocus.group !== 'moon') setLit({ id: `group:${agentsFocus.group}`, key: agentsFocus.key });
+  }, [agentsFocus?.key]);
   useEffect(() => {
     if (!settingFocus || !open) return;
     if (!page) openPage('settings'); else if (page !== 'settings') setPage('settings');
@@ -436,6 +440,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     notify(t(['Hidden from this list.', '已从列表隐藏。']), () => setHidden(({ [s.id]: _, ...rest }) => rest));
   };
   // Claude sessions have no jump yet; their cards leave the button out rather than offer one that cannot work.
+  // Which notch mark a section of the Agents page answers to: lit by a press there, glowing while the pointer is on it.
+  const groupOf = (group: MarkGroup) => ({ 'data-vid': `group:${group}`, 'data-echo': marksHover === group ? true : undefined });
   const agentRow = (s: Agent, actions?: ReactNode) => <AgentRow key={s.id} s={s} look={marks} mark={markOf(s)} open={unfolded === s.id} onToggle={() => setUnfolded(v => v === s.id ? null : s.id)}
     onOpen={!port || s.agent === 'codex' ? () => void openAgent(s) : undefined} onHide={() => hide(s)} actions={actions}/>;
   const openAgent = async (s: Agent) => {
@@ -828,13 +834,13 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     agents: () => <>
       {back(t(TITLES.agents), t([`${waiting.length + working.length} live`, `${waiting.length + working.length} 个在跑`]))}
       <div className="pg-body">{!agents.length && <p className="pg-sec muted">{t(['Sessions show up once you start one.', '开一个会话，它就会出现在这里。'])}</p>}
-      {waiting.length > 0 && <div className="pg-sec"><h4 className="is-warm"><span className="dot"/>{t(['Needs you', '等你'])}</h4>{waiting.map(s => agentRow(s,
+      {waiting.length > 0 && <div className="pg-sec" {...groupOf('turn')}><h4 className="is-warm"><span className="dot"/>{t(['Needs you', '等你'])}</h4>{waiting.map(s => agentRow(s,
         !port ? <><button className="btn btn-glow" onClick={() => { move(s, { state: 'work', last: 'Approved · running it now…' }); react('33', 1900); }}>{t(['Approve', '批准'])}</button>
           <button className="btn btn-ghost" onClick={() => move(s, { state: 'done', last: 'You denied it. It stopped there.', age: 'now' })}>{t(['Deny', '拒绝'])}</button></>
           : s.request && <button className="btn btn-glow" onClick={() => onAnswer?.(s.id)}>{t(['Answer', '回答'])}</button>))}</div>}
-      {stopped.length > 0 && <div className="pg-sec"><h4 className="is-alert">{t(['Stopped', '停了'])} · {stopped.length}</h4>{stopped.map(s => agentRow(s))}</div>}
-      {working.length > 0 && <div className="pg-sec"><h4>{t(['Working', '在做'])} · {working.length}</h4>{working.map(s => agentRow(s))}</div>}
-      {earlier.length > 0 && <div className="pg-sec"><h4>{port ? t(['Last 24 hours', '过去 24 小时']) : t(['Earlier today', '今天早些时候'])} · {earlier.length}</h4>{earlier.map(s => agentRow(s))}</div>}
+      {stopped.length > 0 && <div className="pg-sec" {...groupOf('turn')}><h4 className="is-alert">{t(['Stopped', '停了'])} · {stopped.length}</h4>{stopped.map(s => agentRow(s))}</div>}
+      {working.length > 0 && <div className="pg-sec" {...groupOf('work')}><h4>{t(['Working', '在做'])} · {working.length}</h4>{working.map(s => agentRow(s))}</div>}
+      {earlier.length > 0 && <div className="pg-sec" {...groupOf('done')}><h4>{port ? t(['Last 24 hours', '过去 24 小时']) : t(['Earlier today', '今天早些时候'])} · {earlier.length}</h4>{earlier.map(s => agentRow(s))}</div>}
       {agents.length > 0 && <p className="pg-sec muted">{t(['Click a session to see what it’s doing.', '点一个会话，看它在做什么。'])}</p>}
       {port && window.jarvis?.openAgents && <div className="pg-sec"><button className="btn btn-ghost" onClick={() => window.jarvis?.openAgents?.()}>{t(['Open the Agents window', '打开 Agents 窗口'])}</button></div>}</div>
     </>,
@@ -975,7 +981,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
                 <span className="head"><span className="label">{t(['Memory', '记忆'])}</span><span className="meta">{m && t([`${m.items} kept`, `记着 ${m.items} 条`])}{fresh > 0 && t([` · ${fresh} new`, ` · ${fresh} 条新的`])}<CaretRight size={10}/></span></span>
                 <span className="text one">{first ? first.text : t(['Nothing new last night.', '昨晚没有新记的。'])}</span>
               </button>; },
-            agents: () => <button className="fill" data-row="agents" aria-label={t(['Open Agents', '打开 Agents'])} onClick={e => openPage('agents', e.currentTarget.parentElement)}>
+            agents: () => <button className="fill" data-row="agents" data-echo={marksHover && marksHover !== 'moon' ? true : undefined} aria-label={t(['Open Agents', '打开 Agents'])} onClick={e => openPage('agents', e.currentTarget.parentElement)}>
               <span className="head"><span className="label">Agents</span><span className="head-r">
                 <span className="orbs">{[...waiting, ...stopped, ...finished, ...working].slice(0, 5).map(s => <AgentMark key={s.id} id={s.id} look={marks} state={markOf(s)} size={12}/>)}</span>
                 {(waiting.length > 0 || working.length > 0) && <span className={`pill ${waiting.length ? 'is-waiting' : ''}`}>{waiting.length ? zh ? `${waiting.length} 个等你` : `${waiting.length} ${waiting.length > 1 ? 'need' : 'needs'} you` : zh ? `${working.length} 个在做` : `${working.length} working`}</span>}

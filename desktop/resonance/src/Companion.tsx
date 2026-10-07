@@ -16,7 +16,7 @@ import { answerRequest, type Agent, type ShownAgent } from './agents';
 import { answerStartrail, markStartrail, useStartrail } from './startrail';
 import { CardRate, DigestCard, JobsDigestCard, MailNotice, NoticeCard, RateRow, cardTell, ended, noticeCue, useNotices, type Glow, type MomentHold } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
-import { Notch, type NotchNote } from './Notch';
+import { Notch, type Kind as MarkGroup, type NotchNote } from './Notch';
 import { fitWindow } from './fitWindow';
 import { NightCard, isNightLook, markNightSeen, morningOf, seenNight, type NightAction, type NightSession, type NightState } from './NightCard';
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
@@ -264,6 +264,8 @@ export function Companion() {
   // A skin change brings her out of the island for a moment.
   const [outing, setOuting] = useState(false);
   const [menu, setMenu] = useState<Point | null>(null), [settingsFocus, setSettingsFocus] = useState(0), [jobsFocus, setJobsFocus] = useState(0);
+  // The pointer on a mark beside the notch while the Dashboard is open, and the group a press there sent it to.
+  const [markHover, setMarkHover] = useState<MarkGroup | null>(null), [agentsFocus, setAgentsFocus] = useState<{ group: MarkGroup; key: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [preview, setPreview] = useState<ExprId | null>(null);
   // The page open in the Dashboard sets her face while nothing else is going on.
@@ -831,7 +833,7 @@ export function Companion() {
         void notices.resolve(notice, text, body).then(ok => { if (ok && body.decision !== 'deny') ball.current?.hop(.14); });
       }}/> };
   const dashboardContent = <AroundDashboard open={dashboard} port={port} onClose={closeDashboard} viewRef={dashboardView} onView={value => { if (detached && detachedMode.current) window.jarvis?.dashboardMessage?.('parent', { type: 'view', value }); }}
-          onMood={dashboardMood} settingFocus={settingsFocus} jobsFocus={jobsFocus} present={s.present} onHop={height => ball.current?.hop(height)}
+          onMood={dashboardMood} settingFocus={settingsFocus} jobsFocus={jobsFocus} agentsFocus={agentsFocus} marksHover={dashboard ? markHover : null} present={s.present} onHop={height => ball.current?.hop(height)}
           talk={port ? { rows: s.rows, tail, busy: voice === 'thinking', offline: s.phase === 'error', floor, submit: ask, older, card, decide: decideCard, question, answer: answerQuestion,
             think: { on: deep, secs: deepSecs, words, thoughts } } : undefined}
           plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}
@@ -885,7 +887,7 @@ export function Companion() {
         {dashboardContent}
       </DuskDashboard>
       <DockingDrop near={docking} width={geo.width} top={placement.topInset} center={geo.center}/>
-      <Notch look={wardrobe.marks} agents={frozen.current?.agents ?? (agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents)} unread={frozen.current?.unread ?? notices.unread} parked={frozen.current?.parked ?? notices.parked} archived={frozen.current?.archived ?? notices.archived} cursor={cursor} quiet={agentsFront || dashboard || moving} edge={dashboardJoined ? geo.center + PANEL / 2 : null}
+      <Notch look={wardrobe.marks} agents={frozen.current?.agents ?? (agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents)} unread={frozen.current?.unread ?? notices.unread} parked={frozen.current?.parked ?? notices.parked} archived={frozen.current?.archived ?? notices.archived} cursor={cursor} quiet={agentsFront || dashboard || moving} aside={dashboard ? { hover: setMarkHover, open: group => setAgentsFocus({ group, key: Date.now() }) } : undefined} edge={dashboardJoined ? geo.center + PANEL / 2 : null}
         glow={{ items: frozen.current?.glows ?? notices.glows, open: g => { showJobs(); notices.leaveGlow(g.id, true); }, clear: g => notices.leaveGlow(g.id, false) }} onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
         act={{ jump, answer: notices.focus, read: ids => { notices.acted(ids); notices.read(ids); }, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
         port={port} keys={keysPress} onViewing={setViewing} onJoinedChange={setNotchJoined} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>

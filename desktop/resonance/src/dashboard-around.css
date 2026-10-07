@@ -529,3 +529,7 @@
 @keyframes row-lit { from { box-shadow:0 0 0 2px rgb(var(--glow) / .8),0 0 18px rgb(var(--glow) / .5); } to { box-shadow:0 0 0 2px rgb(var(--glow) / 0),0 0 18px rgb(var(--glow) / 0); } }
 .pg-body .is-lit { animation:row-lit 1.5s ease-out; }
 @media (prefers-reduced-motion:reduce) { .pg-body .is-lit { animation:none; outline:2px solid rgb(var(--glow) / .6); } }
+/* The mark under the pointer beside the notch: its group glows where the Dashboard shows it (the Agents block, or its section of the page). */
+.ad .pg-sec { transition:background var(--motion-fast),box-shadow var(--motion-fast); border-radius:6px; }
+.ad .pg-sec[data-echo] { background:rgb(var(--glow) / .07); box-shadow:0 0 0 6px rgb(var(--glow) / .07); }
+.ad .fill[data-echo] { background:rgb(var(--glow) / .09); }
