@@ -1,0 +1,208 @@
+---
+// The homepage: a night sky with her, as on docs/assets/poster.png. Always dark, outside Starlight's chrome.
+import '@fontsource/outfit/300.css';
+import '@fontsource/outfit/500.css';
+
+interface Props { lang: 'en' | 'zh-cn' }
+const { lang } = Astro.props;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const zh = lang === 'zh-cn';
+const root = zh ? `${base}/zh-cn` : base;
+const other = zh ? `${base}/` : `${base}/zh-cn/`;
+
+const t = zh
+  ? {
+      title: 'Jarvis',
+      tagline: '一个住在 MacBook 刘海旁的语音助手。',
+      status: '个人项目，作者每天在自己的 Mac 上用。公开版以后再出。',
+      tour: '功能导览', demo: '试用 demo', design: '设计笔记', github: 'GitHub', switchLang: 'English',
+      video: '演示视频即将上线',
+      what: '她能做什么',
+      rows: [
+        ['和她说话', '喊一声或点她一下就开始。想插嘴随时插，长回答写在屏幕上，她只说要点。', 'talking'],
+        ['在刘海里管 Claude Code', '编程代理需要你决定时，刘海里落下一张卡片，不用切窗口就能允许或拒绝。', 'agents'],
+        ['她记得你', '每天留一份短摘要，每晚把她对你的了解整理成一个可以撤销的新版本，每条都能追到出处。', 'memory'],
+      ],
+      more: '还有',
+      chips: [['今天和昨天', 'today'], ['邮件', 'mail'], ['主动提醒', 'proactive'], ['用量', 'usage'], ['插件', 'plugins'], ['认识她', 'meet-her']],
+      how: '怎么做的',
+      howText: '一个 Python 后台加一个 Electron 桌面端，后台分六层，只有 runtime 能跨层。每个改动边界的决定都有一篇决策记录。',
+      overview: '系统总览', notes: '四篇设计笔记',
+      by: 'by Allen Shi',
+    }
+  : {
+      title: 'Jarvis',
+      tagline: 'A voice assistant that lives by your MacBook notch.',
+      status: 'A personal project, used every day on its author’s Mac. A public version comes later.',
+      tour: 'Feature tour', demo: 'Try the demo', design: 'Design notes', github: 'GitHub', switchLang: '中文',
+      video: 'Demo video coming soon',
+      what: 'What she does',
+      rows: [
+        ['Talk to her', 'Say her name or tap her. Talk over her whenever you like; long answers go on screen while she says the short version.', 'talking'],
+        ['Claude Code from the notch', 'When a coding agent needs a decision, a card drops from the notch and you allow or deny it without switching windows.', 'agents'],
+        ['She remembers', 'Each day is kept as a short summary, and every night what she knows about you becomes a new, undoable version you can trace and correct.', 'memory'],
+      ],
+      more: 'Also',
+      chips: [['Today and yesterday', 'today'], ['Mail', 'mail'], ['Speaking up', 'proactive'], ['Usage', 'usage'], ['Plugins', 'plugins'], ['Meet her', 'meet-her']],
+      how: 'How it’s built',
+      howText: 'A Python daemon and an Electron companion. The daemon is split into six layers, and only runtime may connect them. Every decision that moves a boundary has a written record.',
+      overview: 'System overview', notes: 'Four design notes',
+      by: 'by Allen Shi',
+    };
+---
+<html lang={zh ? 'zh-CN' : 'en'}>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jarvis</title>
+  <meta name="description" content={t.tagline} />
+  <link rel="icon" href={`${base}/favicon.svg`} type="image/svg+xml" />
+  <link rel="alternate" hreflang={zh ? 'en' : 'zh-CN'} href={other} />
+</head>
+<body>
+  <div class="sky" aria-hidden="true"></div>
+  <header class="top">
+    <a class="mark" href={`${root}/`}>Jarvis</a>
+    <nav>
+      <a href={`${root}/features/`}>{t.tour}</a>
+      <a href={`${root}/architecture/design-notes/`}>{t.design}</a>
+      <a href="https://github.com/samsara0xgg/Jarvis">{t.github}</a>
+      <a href={other} lang={zh ? 'en' : 'zh-CN'}>{t.switchLang}</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <img class="her" src={`${base}/home/her.webp`} width="1000" height="887" alt={zh ? '她：一颗带着两只发光眼睛的玻璃球' : 'Her: a glass ball with two glowing eyes'} />
+      <div class="words">
+        <h1>{t.title}</h1>
+        <p class="tagline">{t.tagline}</p>
+        <p class="status">{t.status}</p>
+        <div class="actions">
+          <a class="btn primary" href={`${root}/features/`}>{t.tour}</a>
+          <a class="btn" href={`${root}/features/try-the-demo/`}>{t.demo}</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="video rise" aria-label={t.video}><span>{t.video}</span></section>
+
+    <section class="what">
+      <h2 class="rise">{t.what}</h2>
+      <ol class="rows">
+        {t.rows.map(([name, text, slug]) => (
+          <li class="rise">
+            <span class="dot" aria-hidden="true"></span>
+            <div>
+              <a href={`${root}/features/${slug}/`}><h3>{name}</h3></a>
+              <p>{text}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
+      <p class="chips rise"><span>{t.more}</span>{t.chips.map(([name, slug]) => <a href={`${root}/features/${slug}/`}>{name}</a>)}</p>
+    </section>
+
+    <section class="how rise">
+      <h2>{t.how}</h2>
+      <p>{t.howText}</p>
+      <p class="links"><a href={`${root}/architecture/`}>{t.overview} →</a><a href={`${root}/architecture/design-notes/`}>{t.notes} →</a></p>
+    </section>
+  </main>
+
+  <footer class="foot"><span>{t.by}</span><a href="https://github.com/samsara0xgg/Jarvis">github.com/samsara0xgg/Jarvis</a></footer>
+</body>
+</html>
+
+<style is:global>
+  /* Night sky, always dark: the poster's navy, her violet glow, starlight text. */
+  :root {
+    --night: #04060e; --night-2: #0a0e22; --ink: #eceefe; --dim: #a7acd6; --faint: #6f74a3;
+    --glow: #9d97ff; --line: rgba(157, 151, 255, .22);
+    --display: 'Outfit', -apple-system, 'PingFang SC', system-ui, sans-serif;
+    --body: -apple-system, 'PingFang SC', 'Segoe UI', system-ui, sans-serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--night); }
+  body { margin: 0; min-height: 100vh; background: radial-gradient(90% 60% at 25% 12%, #0b1028, var(--night) 70%); color: var(--ink); font: 16px/1.65 var(--body); }
+  a { color: inherit; }
+  a:focus-visible { outline: 2px solid var(--glow); outline-offset: 3px; border-radius: 4px; }
+
+  .sky { position: fixed; inset: 0; pointer-events: none; z-index: 0; opacity: .9;
+    background-image:
+      radial-gradient(1px 1px at 7% 22%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 18% 64%, #cfd4ff 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 31% 12%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 44% 78%, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 57% 31%, #cfd4ff 50%, transparent 51%), radial-gradient(1.5px 1.5px at 69% 9%, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 76% 52%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 88% 24%, #cfd4ff 50%, transparent 51%),
+      radial-gradient(1px 1px at 93% 71%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 63% 88%, #cfd4ff 50%, transparent 51%),
+      radial-gradient(1px 1px at 26% 40%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 82% 93%, #fff 50%, transparent 51%),
+      linear-gradient(118deg, transparent 47%, rgba(157, 151, 255, .07) 47.4%, transparent 48%),
+      linear-gradient(122deg, transparent 71%, rgba(255, 214, 170, .05) 71.3%, transparent 71.7%);
+  }
+  .top, main, .foot { position: relative; z-index: 1; }
+
+  .top { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;
+    max-width: 1120px; margin: 0 auto; padding-block: 20px; padding-inline: 20px; }
+  .mark { font: 500 20px/1 var(--display); letter-spacing: .02em; text-decoration: none; }
+  .top nav { display: flex; gap: 20px; flex-wrap: wrap; font-size: 14px; }
+  .top nav a { color: var(--dim); text-decoration: none; }
+  .top nav a:hover { color: var(--ink); }
+
+  main { max-width: 1120px; margin: 0 auto; padding-inline: 20px; display: grid; gap: 96px; padding-block: 8px 80px; }
+
+  .hero { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); align-items: center; gap: 8px; margin-left: -20px; }
+  .her { width: 100%; height: auto; display: block;
+    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 10%, #000 84%, transparent 100%), linear-gradient(to bottom, transparent 0, #000 14%, #000 78%, transparent 100%);
+    -webkit-mask-composite: source-in;
+    
+            mask-image: linear-gradient(to right, transparent 0, #000 10%, #000 84%, transparent 100%), linear-gradient(to bottom, transparent 0, #000 14%, #000 78%, transparent 100%);
+            mask-composite: intersect; }
+  .words { display: grid; gap: 14px; justify-items: start; }
+  h1 { margin: 0; font: 300 clamp(56px, 9vw, 112px)/1 var(--display); letter-spacing: .01em;
+    background: linear-gradient(180deg, #fff 30%, #c9c6ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .tagline { margin: 0; font-size: clamp(18px, 2.2vw, 22px); color: var(--ink); max-width: 30ch; text-wrap: balance; }
+  .status { margin: 0; font-size: 14px; color: var(--faint); max-width: 42ch; }
+  .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 6px; }
+  .btn { padding: 10px 18px; border-radius: 999px; border: 1px solid var(--line); text-decoration: none; font-size: 15px; color: var(--ink); }
+  .btn:hover { border-color: var(--glow); }
+  .btn.primary { background: var(--glow); border-color: var(--glow); color: var(--night); font-weight: 600; box-shadow: 0 0 28px rgba(157, 151, 255, .45); }
+
+  .video { aspect-ratio: 16 / 9; width: 100%; max-width: 760px; justify-self: center; border: 1px solid var(--line); border-radius: 16px; display: grid; place-items: center;
+    background: rgba(10, 14, 34, .6); color: var(--faint); font-size: 15px; letter-spacing: .04em; }
+
+  h2 { margin: 0 0 28px; font: 300 clamp(30px, 4vw, 40px)/1.2 var(--display); text-wrap: balance; }
+  .rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 40px; }
+  .rows li { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 18px; align-items: start; }
+  .dot { width: 9px; height: 9px; margin-top: 12px; border-radius: 50%; background: var(--glow); box-shadow: 0 0 12px 2px var(--glow); }
+  .rows h3 { margin: 0 0 6px; font: 500 24px/1.3 var(--display); }
+  .rows a { text-decoration: none; }
+  .rows a:hover h3 { color: var(--glow); }
+  .rows p { margin: 0; color: var(--dim); max-width: 60ch; }
+  .chips { margin: 40px 0 0; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; color: var(--faint); font-size: 14px; }
+  .chips a { padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px; color: var(--dim); text-decoration: none; }
+  .chips a:hover { color: var(--ink); border-color: var(--glow); }
+
+  .how p { margin: 0; color: var(--dim); max-width: 62ch; }
+  .how .links { margin-top: 16px; display: flex; gap: 24px; flex-wrap: wrap; }
+  .how .links a { color: var(--glow); text-decoration: none; }
+
+  .foot { max-width: 1120px; margin: 0 auto; padding-block: 28px 40px; padding-inline: 20px; border-top: 1px solid var(--line);
+    display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; color: var(--faint); font-size: 13px; }
+  .foot a { text-decoration: none; }
+
+  /* Features rise into place as they scroll in; where scroll timelines are missing they simply sit there. */
+  @supports (animation-timeline: view()) {
+    @media (prefers-reduced-motion: no-preference) {
+      .rise { animation: rise linear both; animation-timeline: view(); animation-range: entry 0% entry 60%; }
+    }
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: none; } }
+
+  @media (max-width: 760px) {
+    main { gap: 64px; }
+    .hero { grid-template-columns: 1fr; margin-left: 0; }
+    .her { max-width: 420px; margin: 0 auto; }
+    .words { justify-items: center; text-align: center; }
+  }
+</style>

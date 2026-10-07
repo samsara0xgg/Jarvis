@@ -24,7 +24,7 @@ export default defineConfig({
       },
       customCss: ['./src/styles/custom.css'],
       sidebar: [
-        { slug: 'index', label: 'Overview', translations: t('概览') },
+        { link: '/', label: 'Home', translations: t('首页') },
         {
           label: 'Feature tour',
           translations: t('功能导览'),
