@@ -14,7 +14,7 @@ import { usePlugins } from './PluginPanel';
 import { isMarkLook } from './AgentMarks';
 import { answerRequest, type Agent, type ShownAgent } from './agents';
 import { answerStartrail, markStartrail, useStartrail } from './startrail';
-import { CardRate, DigestCard, JobsDigestCard, MailNotice, NoticeCard, RateRow, cardTell, ended, noticeCue, useNotices, type MomentHold } from './Notices';
+import { CardRate, DigestCard, JobsDigestCard, MailNotice, NoticeCard, RateRow, cardTell, ended, noticeCue, useNotices, type Glow, type MomentHold } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { Notch, type NotchNote } from './Notch';
 import { fitWindow } from './fitWindow';
@@ -335,10 +335,10 @@ export function Companion() {
   const away = useRef(() => undefined as void);
   away.current = () => { if (notice && notice.kind !== 'pop' && !notices.hovering && performance.now() - notices.openedAt > 800) notices.dismiss(); };
   useEffect(() => window.jarvis?.onMouseDown?.(() => { away.current(); outside.current(); }), []);
-  // ADR 0153: at dnd the marks beside the notch stay as they were when it began; nothing outside shows there.
-  const frozen = useRef<{ agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string> } | null>(null);
+  // ADR 0153: at dnd the marks beside the notch stay as they were when it began; nothing outside shows there. A glow is one of them (ADR 0187).
+  const frozen = useRef<{ agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; glows: Glow[] } | null>(null);
   if (s.quiet !== 'dnd') frozen.current = null;
-  else frozen.current ??= { agents: agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents, unread: new Set(notices.unread), parked: new Map(notices.parked), archived: new Set(notices.archived) };
+  else frozen.current ??= { agents: agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents, unread: new Set(notices.unread), parked: new Map(notices.parked), archived: new Set(notices.archived), glows: notices.glows };
   // Going to a session reads it: Startrail's window on it, its Codex thread, or its Ghostty terminal (a new tab attaches
   // a background one).
   const jump = (a: Agent) => {
@@ -530,8 +530,9 @@ export function Companion() {
     if (detached || detachedMode.current) { void window.jarvis?.dashboard?.('open'); if (!detached) return; }
     pinned.current = false; herOpen.current = false; dashEntered.current = hovered; setDashboard(true); setComposer(false); if (!detached) void window.jarvis?.focus(false);
   };
-  // The job summary's button: the Dashboard opens on the job ledger and the summary goes without a "dismissed".
-  const openJobs = () => { openDashboard(false); pinned.current = true; if (detachedMode.current) window.jarvis?.dashboardMessage?.('dashboard', { type: 'jobs' }); else setJobsFocus(n => n + 1); notices.next(); };
+  // The job summary's button: the Dashboard opens on the job ledger and the summary goes without a "dismissed". A glow's row on the wing's list goes to the same page.
+  const showJobs = () => { openDashboard(false); pinned.current = true; if (detachedMode.current) window.jarvis?.dashboardMessage?.('dashboard', { type: 'jobs' }); else setJobsFocus(n => n + 1); };
+  const openJobs = () => { showJobs(); notices.next(); };
   // ADR 0176: she turned the Dashboard to a page. A shut one opens (she moves it only when Allen asked to see something), and the page follows.
   // A panel she opened or turned stays when the pointer leaves: he is talking, not pointing, and a window that moves under a
   // still pointer reads as a leave (2026-10-07). A click outside it, the island, Esc or back closes it.
@@ -886,7 +887,7 @@ export function Companion() {
       </DuskDashboard>
       <DockingDrop near={docking} width={geo.width} top={placement.topInset} center={geo.center}/>
       <Notch look={wardrobe.marks} agents={frozen.current?.agents ?? (agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents)} unread={frozen.current?.unread ?? notices.unread} parked={frozen.current?.parked ?? notices.parked} archived={frozen.current?.archived ?? notices.archived} cursor={cursor} quiet={agentsFront || dashboard || moving} edge={dashboardJoined ? geo.center + PANEL / 2 : null}
-        onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
+        glow={{ items: frozen.current?.glows ?? notices.glows, open: g => { showJobs(); notices.leaveGlow(g.id, true); }, clear: g => notices.leaveGlow(g.id, false) }} onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
         act={{ jump, answer: notices.focus, read: ids => { notices.acted(ids); notices.read(ids); }, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
         port={port} keys={keysPress} onViewing={setViewing} onJoinedChange={setNotchJoined} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}

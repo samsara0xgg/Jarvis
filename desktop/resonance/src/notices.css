@@ -73,6 +73,14 @@
 .notch .a-acts { position:absolute; right:4px; top:50%; display:flex; gap:2px; padding-left:22px; transform:translateY(-50%); opacity:0; pointer-events:none;
   background:linear-gradient(90deg,rgb(18 18 18 / 0),rgb(18 18 18) 20px); transition:opacity var(--motion-fast); }
 .notch .a-row:hover .a-acts { opacity:1; pointer-events:auto; }
+/* a glow on the turn list (ADR 0187): the point and title with how long ago on one line, its one sentence under the title */
+.notch .a-row.is-glow { grid-template-columns:12px minmax(0,1fr) auto; align-items:start; padding-block:5px; }
+.notch .a-row.is-glow > .agent-mark { grid-area:1 / 1; margin-top:3px; }
+.notch .a-row.is-glow b { grid-area:1 / 2; }
+.notch .a-ago { grid-area:1 / 3; font-size:var(--text-label); line-height:18px; color:var(--p-faint); white-space:nowrap; }
+.notch .a-row.is-glow .a-acts { top:3px; transform:none; padding-left:0; background:none; }
+.notch .a-row.is-glow:hover .a-ago { opacity:0; }
+.notch .a-row.is-glow .a-st { grid-area:2 / 2 / auto / 4; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; white-space:normal; text-align:left; line-height:16px; }
 .notch .a-acts i,.notch .u-acts i { display:grid; place-items:center; width:22px; height:22px; border-radius:var(--radius-tag); font-style:normal; color:var(--p-muted); }
 .notch .a-acts i:hover,.notch .u-acts i:hover { background:rgb(255 255 255 / .12); color:var(--p-ink); }
 /* the keys: the row they are on, the hints, and one session's page with its conversation and reply box */

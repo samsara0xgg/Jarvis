@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import { Archive, ArrowSquareOut, ArrowUUpLeft, ArrowUp, CaretLeft, CaretRight, Moon, X } from '@phosphor-icons/react';
-import { readConversation, requestLine, sendReply, type Agent, type AgentState, type Said } from './agents';
+import { ago, readConversation, requestLine, sendReply, type Agent, type AgentState, type Said } from './agents';
 import { AgentMark, COLOR, drawMark, dpr, seedOf, useClock, type MarkLook } from './AgentMarks';
 import { DOT_RING_S, drawMoon, drawTurnIcon, hueAt, MOON_RGB, rgba, tint } from './beacon';
 import { Markdown } from './Markdown';
-import { ended, NoticeFlightContext, openTip } from './Notices';
+import { ended, NoticeFlightContext, openTip, type Glow } from './Notices';
 import { useT, type L } from './companionSettings';
 import { readStartrail } from './startrail';
 import { spring, step } from './starCore';
@@ -19,16 +19,20 @@ import { skyline, type IslandRect as Rect } from './islandShape';
 // panel and holds it for the keys: ↑↓ pick a session, → opens its card (asking) or its page (the conversation,
 // with a box that types a reply into the session), ⏎ goes to it, Esc closes. A finished session is archived from
 // the panel or by dragging the finished mark down out of the menu bar; anything on your turn can be parked.
+// A glow (ADR 0187) is one more amber point in the turn group: it counts there and arrives like anything new, and its rows
+// follow the sessions on the list: a click opens its place, the ✕ clears it. It is a mark, so only dnd keeps it back.
 type Point = { x: number; y: number };
 type Kind = 'turn' | 'work' | 'done' | 'moon';
 type Box = { key: Kind; x0: number; x1: number; cx: number };
-type Sec = { key: Kind; label: string; ts: Agent[] };
+type Sec = { key: Kind; label: string; ts: Agent[]; gs?: Glow[] };
 type Keys = { view: 'list' | 'page'; id: string; i: number; at: number };
 export type NotchGeo = { width: number; top: number; notchR: number; lobeL: number };
 export type NotchAct = {
   jump: (a: Agent) => void; answer: (id: string) => void; read: (ids: string[]) => void; back: () => void;
   archive: (ids: string[]) => void; park: (ids: string[]) => void; unpark: (ids: string[]) => void;
 };
+// The glows on the wing, and what a click on one and its ✕ do.
+export type NotchGlow = { items: Glow[]; open: (g: Glow) => void; clear: (g: Glow) => void };
 // A pop names sessions; a card is a needs-you card the companion builds, for session `id` when it has one.
 // A pop carries its 合适吗 row in `rate` (ADR 0160).
 export type NotchNote = { key: string; id?: string; pop?: string[]; card?: ReactNode; rate?: ReactNode; onClose: () => void };
@@ -40,8 +44,8 @@ const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const countPulse = (progress: number) => reduced.matches ? 1 : 1 + .45 * Math.sin(Math.PI * progress);
 const working = (st: AgentState) => st === 'work' || st === 'pack';
-// The mark the turn wears in 点线环: its first member's, the turn being sorted most urgent first.
-const turnLead = (look: MarkLook, turn: Agent[]): 'wait' | 'err' | 'done' => look === 'dot' && turn[0] && turn[0].state !== 'wait' ? turn[0].state === 'err' ? 'err' : 'done' : 'wait';
+// The mark the turn wears in 点线环: its first member's, the turn being sorted most urgent first; a glow makes it the amber point.
+const turnLead = (look: MarkLook, turn: Agent[], glows = 0): 'wait' | 'err' | 'done' => look === 'dot' && !glows && turn[0] && turn[0].state !== 'wait' ? turn[0].state === 'err' ? 'err' : 'done' : 'wait';
 // The panel's words in the chosen language (the panels get them from `useT`, the canvas from `L.current.say`).
 type T = (l: L) => string;
 
@@ -94,9 +98,17 @@ function Row({ a, kind, cur, look, act, page, index }: { a: Agent; kind: Kind; c
     <AgentMark look={look} state={a.state} id={a.id} size={12} still/><b>{a.title}</b><span className="a-st">{statusOf(a, t)}</span>
     <span className="a-acts">{acts}</span></div>;
 }
+// One glow on the turn list: an amber point, its title, its one line and how long ago. A click opens its place and counts it seen; ✕ clears it.
+function GlowRow({ g, look, glow, index }: { g: Glow; look: MarkLook; glow: NotchGlow; index: number }) {
+  const t = useT(), age = g.at === undefined ? '' : since(ago(g.at), t);
+  return <div className="a-row is-due is-glow" role="button" tabIndex={-1} data-glow={g.id} style={{ animationDelay: `${Math.min(index, 4) * MOTION.stagger}ms` }}
+    title={g.line || g.title} onClick={() => glow.open(g)}>
+    <AgentMark look={look} state="wait" id={g.id} size={12} still/><b>{g.title}</b><span className="a-st">{g.line}</span><time className="a-ago">{age}</time>
+    <span className="a-acts"><Act tip={t(['Clear', '清掉'])} onClick={() => glow.clear(g)}><X size={12}/></Act></span></div>;
+}
 const Hints = ({ keys }: { keys: [string, string][] }) => <p className="k-hint">{keys.map(([k, v]) => <span key={k}><kbd>{k}</kbd>{v}</span>)}</p>;
 // `done`: a whole group was handled from its heading, so the panel folds away (unless the keys hold it).
-function Panel({ secs, hot, cur, look, act, page, done }: { secs: Sec[]; hot: string; cur: string; look: MarkLook; act: NotchAct; page: (id: string) => void; done: () => void }) {
+function Panel({ secs, hot, cur, look, act, glow, page, done }: { secs: Sec[]; hot: string; cur: string; look: MarkLook; act: NotchAct; glow?: NotchGlow; page: (id: string) => void; done: () => void }) {
   let rowIndex = 0;
   const t = useT(), list = useRef<HTMLDivElement>(null), shownHot = useRef('');
   // A list taller than the panel fades at the edge with more behind it; a newly lit part, or the row the keys
@@ -116,8 +128,9 @@ function Panel({ secs, hot, cur, look, act, page, done }: { secs: Sec[]; hot: st
     : s.key === 'moon' ? <button type="button" onClick={() => { act.unpark(s.ts.map(a => a.id)); done(); }}>{t(['Take all back', '全部拿回来'])}</button> : null;
   return <div className="nt-card all"><div ref={list} className="a-list" onScroll={edges}>{secs.map(s =>
     <div key={s.key} className={`a-sec${s.key === hot ? ' is-hot' : ''}`} data-sec={s.key}>
-      <div className={`a-h is-${s.key}`}><span>{s.key === 'moon' && <IconMark look={look} moon/>}{s.label}<em>{s.ts.length}</em></span>{tail(s)}</div>
+      <div className={`a-h is-${s.key}`}><span>{s.key === 'moon' && <IconMark look={look} moon/>}{s.label}<em>{s.ts.length + (s.gs?.length ?? 0)}</em></span>{tail(s)}</div>
       {s.ts.map(a => <Row key={a.id} a={a} kind={s.key} cur={a.id === cur} look={look} act={act} page={page} index={rowIndex++}/>)}
+      {glow && s.gs?.map(g => <GlowRow key={g.id} g={g} look={look} glow={glow} index={rowIndex++}/>)}
     </div>)}</div>
     {cur && <Hints keys={[['↑↓', t(['choose', '选择'])], ['→', t(['open', '打开'])], ['⏎', t(['go to it', '前往'])], ['esc', t(['close', '关闭'])]]}/>}</div>;
 }
@@ -199,9 +212,9 @@ function Pop({ agents, look, act, rate, onClose }: { agents: Agent[]; look: Mark
     <div className="u-list">{agents.map(a => <PopRow key={a.id} a={a} look={look} act={act} tag={a.state === 'err' && !all ? <em> {t(['stopped', '出错停了'])}</em> : null}/>)}</div>{rate}</div>;
 }
 
-export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, edge, act, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
+export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, edge, act, glow, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
   look: MarkLook; agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; geo: NotchGeo;
-  cursor: RefObject<Point>; note: NotchNote | null; quiet: boolean; edge: number | null; act: NotchAct; onNoteHover: (on: boolean) => void;
+  cursor: RefObject<Point>; note: NotchNote | null; quiet: boolean; edge: number | null; act: NotchAct; glow?: NotchGlow; onNoteHover: (on: boolean) => void;
   port: string | null; keys: number; onKeys: (on: boolean) => void; onViewing: (id: string | null) => void;
   onJoinedChange?: (joined: boolean) => void;
 }) {
@@ -210,8 +223,9 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
   const work = agents.filter(a => out(a) && working(a.state));
   const fin = agents.filter(a => out(a) && ended(a.state) && !unread.has(a.id) && !archived.has(a.id));
   const moon = agents.filter(a => parked.has(a.id)).sort((a, b) => parked.get(b.id)! - parked.get(a.id)!);
-  const secs = ([{ key: 'turn', label: t(['Your turn', '轮到你']), ts: turn }, { key: 'work', label: t(['Working', '在干活']), ts: work }, { key: 'done', label: t(['Finished', '做完了']), ts: fin },
-    { key: 'moon', label: t(['Parked', '先放着']), ts: moon }] as Sec[]).filter(s => s.ts.length);
+  const glows = glow?.items ?? [];
+  const secs = ([{ key: 'turn', label: t(['Your turn', '轮到你']), ts: turn, gs: glows }, { key: 'work', label: t(['Working', '在干活']), ts: work }, { key: 'done', label: t(['Finished', '做完了']), ts: fin },
+    { key: 'moon', label: t(['Parked', '先放着']), ts: moon }] as Sec[]).filter(s => s.ts.length || s.gs?.length);
   const order = secs.flatMap(s => s.ts.map(a => a.id));
   const [open, setOpen] = useState(false), [hot, setHot] = useState(''), [dragging, setDragging] = useState(false);
   const [kb, setKb] = useState<Keys | null>(null), [kbCard, setKbCard] = useState(''), [drafts] = useState(() => new Map<string, string>()), [, redraw] = useState(0);
@@ -233,9 +247,11 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     bumpAt: { turn: -1e9, work: -1e9, done: -1e9, moon: -1e9 }, parkedIds: new Set<string>(),
     popOrigins: new Map<string, Point>(), intent: new PointerIntent(), resolvedNote: '', workLandingUntil: 0, joined: false,
   }).current;
-  const L = useRef({ look, turn, work, fin, moon, geo, note, quiet, edge, onNoteHover, onJoinedChange, held: false, pageW: false, say: t });
-  L.current = { look, turn, work, fin, moon, geo, note, quiet, edge, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged, say: t };
+  const L = useRef({ look, turn, work, fin, moon, glows, geo, note, quiet, edge, onNoteHover, onJoinedChange, held: false, pageW: false, say: t });
+  L.current = { look, turn, work, fin, moon, glows, geo, note, quiet, edge, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged, say: t };
   const members = (key: Kind) => ({ turn: L.current.turn, work: L.current.work, done: L.current.fin, moon: L.current.moon })[key];
+  // What a group's mark counts: its sessions, and for the turn its glows too.
+  const size = (key: Kind) => members(key).length + (key === 'turn' ? L.current.glows.length : 0);
   const setPanel = (on: boolean) => { if (on === st.open) return; st.open = on; st.dirty = true; setOpen(on); };
   const setHotKey = (key: string) => { if (key === st.hot) return; st.hot = key; setHot(key); };
   const returnApproval = (id: string, point: Point) => {
@@ -337,7 +353,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     const span = (w: number) => { const ww = Math.min(w, L.current.geo.width - 16); return { l: (L.current.geo.width - ww) / 2, w: ww }; };
     // The marks and the panes, laid out and drawn. True while something is still moving.
     const frame = (now: number, dt: number) => {
-      const { look, turn, work, fin, moon, geo: g, note, quiet, onNoteHover, held, pageW } = L.current, s = st.s, top = g.top;
+      const { look, geo: g, note, quiet, onNoteHover, held, pageW } = L.current, s = st.s, top = g.top;
       const firm = reduced.matches, go = (sp: typeof s.ww, goal: number, hz: number, damp: number) => step(sp, goal, hz, firm ? 1 : damp, dt);
       const p = cursor.current, ww = Math.max(0, s.ww.value);
       const speed = st.intent.sample(p, now);
@@ -345,10 +361,10 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       // One mark per group, so the row is at most four marks. Nothing moves while the pointer is on the row or the
       // panel is open; the counts follow along, and the row catches up once you leave.
       if (st.drag || !st.boxes.length || !(st.open || inWing) || now < st.workLandingUntil && !st.boxes.some(b => b.key === 'work')) {
-        const kinds = ([['turn', turn], ['work', work], ['done', fin], ['moon', moon]] as const).filter(([key, ts]) => ts.length || key === 'work' && now < st.workLandingUntil).map(([k]) => k);
+        const kinds = (['turn', 'work', 'done', 'moon'] as const).filter(key => size(key) || key === 'work' && now < st.workLandingUntil);
         if (look === 'dot') {
           // 点线环 matches her lobe on the notch's other side, 64 pt, and only grows when the counts need the room.
-          const widths = kinds.map(key => DOT_COUNT_X + DIGIT_W * Math.min(3, String(members(key).length).length));
+          const widths = kinds.map(key => DOT_COUNT_X + DIGIT_W * Math.min(3, String(size(key)).length));
           const used = widths.reduce((sum, w) => sum + w, 0) + DOT_GAP * Math.max(0, kinds.length - 1);
           st.wingTarget = kinds.length ? Math.max(DOT_WING_W, Math.ceil(used + 2 * PAD)) : 0;
           let x = g.notchR + (st.wingTarget - used) / 2;
@@ -359,7 +375,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
           st.wingTarget = kinds.length ? WING_W : 0;
         }
         // What the row shows, for the checks: `turn2 work4 done3 moon1`.
-        const marks = st.boxes.map(b => `${b.key}${members(b.key).length}`).join(' ');
+        const marks = st.boxes.map(b => `${b.key}${size(b.key)}`).join(' ');
         if (root.current!.dataset.marks !== marks) root.current!.dataset.marks = marks;
       }
       // A slow 140 ms dwell signals intent. The exit grace bridges the growing
@@ -374,7 +390,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         if (want !== st.want) { st.want = want; st.wantAt = now; }
         if (want && !st.open && (held || now - st.wantAt >= HOVER_DWELL_MS && speed < HOVER_SPEED)) setPanel(true);
         else if (!want && st.open && (note || quiet || now - st.lastIn > HOVER_EXIT_MS)) setPanel(false);
-        if (st.open && !held && !st.boxes.some(b => members(b.key).length)) setPanel(false);
+        if (st.open && !held && !st.boxes.some(b => size(b.key))) setPanel(false);
       }
       // The page opens with the marks already out, not grown in from nothing.
       if (!st.opened) { st.opened = true; s.ww.value = wingGoal(); }
@@ -441,24 +457,25 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     };
     // The marks, clipped to the wing as it grows; the finished mark being dragged; the puffs left where it went.
     const draw = (now: number, top: number, look: MarkLook) => {
-      const cv = fx.current!, { geo: g, turn, work, note, say } = L.current, d = dpr(), W = g.width, H = window.innerHeight, t = now / 1000;
+      const cv = fx.current!, { geo: g, turn, work, glows, note, say } = L.current, d = dpr(), W = g.width, H = window.innerHeight, t = now / 1000;
       if (cv.width !== Math.round(W * d) || cv.height !== Math.round(H * d)) { cv.width = Math.round(W * d); cv.height = Math.round(H * d); }
       const ctx = cv.getContext('2d')!;
       ctx.setTransform(d, 0, 0, d, 0, 0); ctx.clearRect(0, 0, W, H);
-      // News makes its mark jump once; the beacon rings for 4 s after each arrival.
-      if (turn.some(a => !st.turnIds.has(a.id))) st.turnAt = now;
+      // News makes its mark jump once; the beacon rings for 4 s after each arrival. A new glow is news to the turn mark too.
+      const turnIds = [...turn.map(a => a.id), ...glows.map(x => `glow:${x.id}`)];
+      if (turnIds.some(id => !st.turnIds.has(id))) st.turnAt = now;
       if (work.length > st.workN) st.workAt = now;
-      st.turnIds = new Set(turn.map(a => a.id)); st.workN = work.length;
+      st.turnIds = new Set(turnIds); st.workN = work.length;
       ctx.save(); ctx.beginPath(); ctx.rect(g.notchR, 0, Math.max(0, st.s.ww.value), top); ctx.clip();
       const counts: string[] = [];
       for (const b of st.boxes) {
         const ts = members(b.key);
-        if (!ts.length && !(b.key === 'work' && now < st.workLandingUntil)) continue;
+        if (!size(b.key) && !(b.key === 'work' && now < st.workLandingUntil)) continue;
         const pulse = countPulse(clamp((now - st.bumpAt[b.key]) / MOTION.medium));
         ctx.save(); ctx.translate(b.cx, top / 2); ctx.scale(.8, .8);
         // 点线环 shows the turn as its most urgent member: the amber point that needs you, the red one that stopped and
         // never blinks, or, when all of them finished, the done ring, which fades once 10 min pass without a look.
-        const lead = turnLead(look, members('turn'));
+        const lead = turnLead(look, turn, glows.length);
         if (b.key === 'turn' && lead !== 'wait') {
           if (lead === 'done' && ts.every(a => Date.now() - (a.at ?? Date.now()) > DONE_FADE_MS)) ctx.globalAlpha = .55;
           drawMark(ctx, look, lead, 0, (now - st.turnAt) / 1000, d);
@@ -467,11 +484,11 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         else if (b.key === 'done') { ctx.globalAlpha = .55; drawMark(ctx, look, ts.every(a => a.state === 'err') ? 'err' : 'done', 0, 99, d); }
         else { ctx.globalAlpha = .85; drawMoon(ctx, 99, d); }
         ctx.restore();
-        const dot = look === 'dot', turnRgb = dot ? COLOR[turnLead(look, members('turn'))] : hueAt(t);
+        const dot = look === 'dot', turnRgb = dot ? COLOR[lead] : hueAt(t);
         ctx.save(); ctx.font = `600 ${dot ? 10 : 10.5}px "JetBrains Mono", Menlo, monospace`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
         ctx.fillStyle = b.key === 'turn' ? rgba(tint(turnRgb, .45)) : 'rgba(214,222,250,.62)';
         const hidden = new Set([...(note?.pop ?? []), ...st.flights.filter(f => f.to === b.key).map(f => f.id)]);
-        const count = ts.filter(a => !hidden.has(a.id)).length;
+        const count = ts.filter(a => !hidden.has(a.id)).length + (b.key === 'turn' ? glows.length : 0);
         counts.push(`${b.key}${count}`);
         ctx.translate(b.cx + (dot ? DOT_COUNT_X - DOT_R : 7), top / 2 + .5); ctx.scale(pulse, pulse);
         ctx.fillText(count > 99 ? '99+' : String(count), 0, 0, 16); ctx.restore();
@@ -495,7 +512,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       });
       root.current!.dataset.counts = counts.join(' ');
       root.current!.dataset.flights = String(st.flights.length);
-      const ringing = look === 'dot' ? turnLead(look, turn) === 'wait' && now - st.turnAt < 2000 * DOT_RING_S : now - st.turnAt <= 4000;
+      const ringing = look === 'dot' ? turnLead(look, turn, glows.length) === 'wait' && now - st.turnAt < 2000 * DOT_RING_S : now - st.turnAt <= 4000;
       root.current!.dataset.rings = st.boxes.some(b => b.key === 'turn') && ringing ? '1' : '';
       const dr = st.drag;
       if (dr) {
@@ -542,7 +559,8 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
   const panel = paged
     ? <Page key={paged.id} a={paged} port={port} look={look} act={A} draft={drafts.get(paged.id) ?? ''} keys={!!kb}
       setDraft={text => { drafts.set(paged.id, text); redraw(n => n + 1); }} back={() => setKb({ ...kb!, view: 'list' })}/>
-    : secs.length ? <Panel secs={secs} hot={kb ? kbHot : hot} cur={cur} look={look} act={A} page={id => kbOpen(id, 'page')} done={() => { if (!kb) setPanel(false); }}/> : null;
+    : secs.length ? <Panel secs={secs} hot={kb ? kbHot : hot} cur={cur} look={look} act={A} glow={glow && { ...glow, open: g => { if (kb) kbClose(); setPanel(false); glow.open(g); } }}
+      page={id => kbOpen(id, 'page')} done={() => { if (!kb) setPanel(false); }}/> : null;
   const popAgents = note?.pop?.map(id => agents.find(a => a.id === id)).filter((a): a is Agent => !!a) ?? [];
   const lastPopAgents = useRef<Agent[]>([]);
   if (note?.pop) lastPopAgents.current = popAgents;

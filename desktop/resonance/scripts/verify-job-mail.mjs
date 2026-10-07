@@ -1,7 +1,9 @@
 // Job mail (ADR 0155), the client's half, in headless Chrome against the built page and a fake daemon (route mocking): a mail card
 // from GET /inherent/notices with its seen / feedback / dismiss posts, the cue sound only for card_sound and speak, the 合适吗 row,
 // one card per id and no return after a dismiss, the digest, the Dashboard's ledger page with its confirmed delete, the applications as cards (ADR 0177, 0182) with their status pill, timeline, interview, links, Gmail buttons and Add form, the daemon's
-// `audio_private` (false: no cue for a sounding mail card or an agent notice; true: the cue as before), and a 404 that keeps the app calm. Silent: no desktop window, no audio. Run after `npm run build`.
+// `audio_private` (false: no cue for a sounding mail card or an agent notice; true: the cue as before), a glow (ADR 0187: one amber point in the
+// wing's turn group, no card and no cue, listed under Your turn, cleared by its ✕ or by opening the job list, shown through no-pop and a call and
+// frozen at dnd), and a 404 that keeps the app calm. Silent: no desktop window, no audio. Run after `npm run build`.
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
@@ -22,7 +24,7 @@ try {
   for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${web}/`); break; } catch { await wait(100); } }
   const page = await (await browser.newContext({ viewport: { width: 640, height: 900 }, deviceScaleFactor: 2 })).newPage();
   const errors = [], posts = [], deletes = [];
-  let featureOn = false, noticeGets = 0, notices = [], flagStatus = 200, skipped, audioPrivate, board = [];
+  let featureOn = false, noticeGets = 0, notices = [], flagStatus = 200, skipped, audioPrivate, board = [], quietLevel = 'off', holdWord;
   const flags = [];
   // ADR 0161: seconds per local day on a company's job pages, and job-site time that names no company (both absent on older daemons).
   const day = back => { const d = new Date(Date.now() - back * 86_400_000); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
@@ -63,15 +65,16 @@ try {
     };
     window.__sockets = [];
     window.WebSocket = class { constructor() { window.__sockets.push(this); setTimeout(() => this.onopen?.(), 0); } send() {} close() {} };
+    window.__emit = (op, payload) => window.__sockets.at(-1).onmessage({ data: JSON.stringify({ op, payload }) });
   });
   await page.route(`${daemon}/**`, route => {
     const url = new URL(route.request().url()), method = route.request().method(), p = url.pathname;
     const json = value => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
     if (p === '/inherent/view') { views.push(JSON.parse(route.request().postData() || '{}')); return json({ ok: true }); }
-    if (p === '/inherent/controls') return json({ mic_muted: false, speech_muted: false, conversation: false, quiet: 'off' });
+    if (p === '/inherent/controls') return json({ mic_muted: false, speech_muted: false, conversation: false, quiet: quietLevel });
     if (p === '/inherent/claude-sessions') return json({ sessions: board, error: null });
     if (p === '/inherent/agent-marks') return json({ marks: {} });
-    if (p === '/inherent/notices' && method === 'GET') { noticeGets++; if (featureOn) return json(audioPrivate === undefined ? { notices } : { notices, audio_private: audioPrivate }); }
+    if (p === '/inherent/notices' && method === 'GET') { noticeGets++; if (featureOn) return json({ notices, ...(audioPrivate === undefined ? {} : { audio_private: audioPrivate }), ...(holdWord === undefined ? {} : { hold: holdWord }) }); }
     else if (p.startsWith('/inherent/notices/') && method === 'POST') { posts.push({ id: decodeURIComponent(p.split('/').pop()), body: JSON.parse(route.request().postData() || '{}') }); return json({ ok: true }); }
     else if (p === '/inherent/jobs' && method === 'GET' && featureOn) return json({ ...(skipped ? { ledger, skipped, rules } : { ledger }), ...(applications ? { applications } : {}), ...(otherS === undefined ? {} : { job_site_other_s: otherS }) });
     else if (p === '/inherent/jobs/applications' && method === 'POST') { appAdds.push(JSON.parse(route.request().postData() || '{}')); return json({ ok: true, id: 'hand-1' }); }
@@ -462,6 +465,136 @@ try {
   board = [session('a-3', 'needs_input')];
   await shows(); await page.waitForTimeout(500);
   check('no audio_private field: the old gate, the cue sounds', await cues() > 0);
+
+  // (g4) ADR 0187: a glow is one more amber point in the wing's turn group: no card, no cue, never told `seen` on arrival (the daemon serves it
+  // until it is). Its row follows the sessions under Your turn; a click opens the job list and tells `seen`, the ✕ tells `dismissed`. It shows
+  // at quiet, no-pop and through a call; dnd freezes the wing as it was, a glow included.
+  const glow = (id, company, extra = {}) => mail(id, 'glow', { title: `Application update · ${company}`, line: `${company} replied to your application (ML Intern): not this time.`, mail_kind: 'rejection', company, role: 'ML Intern', at: at(7), ...extra });
+  const marks = () => page.locator('.notch').getAttribute('data-marks');
+  const counts = () => page.locator('.notch').getAttribute('data-counts');
+  const rings = () => page.locator('.notch').getAttribute('data-rings');
+  const markIs = (want, ms = 8000) => page.waitForFunction(w => document.querySelector('.notch')?.dataset.marks === w, want, { timeout: ms });
+  const emitQuiet = level => page.evaluate(q => window.__emit('controls', { mic_muted: false, speech_muted: false, conversation: false, quiet: q }), level);
+  const toWing = async () => { await page.mouse.move(447, 14); await page.evaluate(() => window.__cursor({ x: 447, y: 14 })); };
+  // The pointer on a row, for the page's mouse and for the island's own pointer report (it reads the second).
+  const onRow = async row => { await row.hover(); const b = await row.boundingBox(); await page.evaluate(([x, y]) => window.__cursor({ x, y }), [b.x + b.width / 2, b.y + b.height / 2]); };
+  const away = async () => { await page.mouse.move(5, 600); await page.evaluate(() => window.__cursor({ x: -1e4, y: -1e4 })); await page.waitForTimeout(900); };
+  const drop = page.locator('.notch-drop.is-open');
+  // The colour the turn mark is drawn in: the strongest pixel beside its centre (amber is red over blue, the finished ring is green over red).
+  const turnColour = () => page.evaluate(() => {
+    const cv = document.querySelector('.notch-fx'), r = cv.getBoundingClientRect(), k = cv.width / r.width, cx = 437.7 + 2.6, d = cv.getContext('2d').getImageData(Math.round((cx - 4 - r.left) * k), Math.round(12 * k), Math.round(8 * k), Math.round(8 * k)).data;
+    let best = [0, 0, 0, 0];
+    for (let i = 0; i < d.length; i += 4) if (d[i + 3] > best[3]) best = [d[i], d[i + 1], d[i + 2], d[i + 3]];
+    return best;
+  });
+  featureOn = true; audioPrivate = true; board = []; quietLevel = 'off'; holdWord = undefined;
+  notices = [glow('g-a', 'Acme Robotics')];
+  await open(); await page.waitForTimeout(500);
+  await markIs('turn1');
+  check('a glow alone makes the turn mark: data-marks turn1, counted in data-counts', await marks() === 'turn1' && await counts() === 'turn1');
+  check('the new glow jumps and rings once, as any arrival does', await rings() === '1');
+  check('a glow raises no card and no cue', await card() === 0 && await page.locator('.notch-note.is-open').count() === 0 && await cues() === 0);
+  const amber = await turnColour();
+  check(`in 点线环 the mark is the amber point (${amber.join(',')})`, amber[3] > 0 && amber[0] > 200 && amber[2] < 190 && amber[0] > amber[1]);
+  await page.waitForTimeout(3200);
+  check('then it rests: the rings stop, the point stays', await rings() === '' && await marks() === 'turn1');
+  check('arrival tells the daemon nothing: it serves a glow until it is seen', of('g-a').length === 0);
+  await page.waitForTimeout(5500);
+  check('another poll does not repeat the arrival or send anything', await rings() === '' && of('g-a').length === 0 && await card() === 0);
+  await shot('glow-wing', { x: 400, y: 0, width: 120, height: 34 });
+  // Resting on the wing opens the list, and it stays open: only a glow is in it.
+  await toWing(); await drop.waitFor({ timeout: 4000 });
+  await page.waitForTimeout(1800);
+  const heads = await drop.locator('.a-h > span').allTextContents(), grow = drop.locator('.a-row.is-glow');
+  check(`the list opens on a glow alone and stays open (${heads.join('|')})`, await drop.count() === 1 && heads.join('|') === 'Your turn1' && await grow.count() === 1);
+  const gtext = (await grow.innerText()).replace(/\s+/g, ' ');
+  check(`its row: the title, its one line and how long ago (${gtext})`, /Application update · Acme Robotics/.test(gtext) && /replied to your application \(ML Intern\): not this time\./.test(gtext) && /^[78]m ago$/.test(await grow.locator('.a-ago').innerText()));
+  await shot('glow-panel', { x: 100, y: 0, width: 440, height: 160 });
+  await onRow(grow);
+  check('the ✕ is a Clear button on the row', await grow.locator('[role="button"][aria-label="Clear"]').count() === 1 && await grow.locator('[aria-label="Clear"]').getAttribute('title') === 'Clear');
+  await grow.locator('[aria-label="Clear"]').click();
+  await markIs('', 4000);
+  check('the ✕ tells the daemon dismissed, once, and the mark goes', JSON.stringify(of('g-a')) === JSON.stringify(['{"action":"feedback","reaction":"dismissed"}']) && await marks() === '');
+  await away();
+  await page.waitForTimeout(6000);
+  check('though the daemon still lists it, it does not come back', await marks() === '' && of('g-a').length === 1);
+  // Opening a row goes where the summary's button goes (the Dashboard on the job list), tells `seen`, and the glow goes.
+  notices = [glow('g-b', 'Orbit Labs')];
+  await markIs('turn1');
+  await toWing(); await drop.waitFor({ timeout: 4000 });
+  await onRow(drop.locator('.a-row.is-glow'));
+  await drop.locator('.a-row.is-glow').click();
+  await page.waitForSelector('.ad .jp', { timeout: 5000 });
+  check('a click on the row opens the Dashboard on the job list', await page.locator('.ad .jp').count() === 1);
+  check('and tells the daemon seen, not dismissed', JSON.stringify(of('g-b')) === JSON.stringify(['{"action":"seen"}']));
+  await markIs('', 4000);
+  check('the glow went with it', await marks() === '' && await card() === 0);
+  // After a restart the daemon still serves what was not seen: the mark is back, with no card and no cue, and nothing posted.
+  notices = [glow('g-c', 'Helix')];
+  await open(); await markIs('turn1');
+  check('a restart brings a glow that was never seen back', await marks() === 'turn1' && await card() === 0 && await cues() === 0 && of('g-c').length === 0);
+  // Two glows, one waiting session: the turn counts all three; sessions first, then glows newest first.
+  notices = [glow('g-c', 'Helix', { at: at(40) }), glow('g-d', 'Northwind', { at: at(2) })];
+  board = [session('t-1', 'needs_input')];
+  await open(); await markIs('turn3', 10_000);
+  check('sessions and glows count together in the turn mark', await marks() === 'turn3' && await counts() === 'turn3');
+  await toWing(); await drop.waitFor({ timeout: 4000 }); await page.waitForTimeout(500);
+  const rows = await drop.locator('.a-sec[data-sec="turn"] .a-row').evaluateAll(els => els.map(e => ({ glow: e.classList.contains('is-glow'), text: e.querySelector('b').textContent })));
+  check(`Your turn lists the session first, then the glows (${rows.map(r => r.text).join(' | ')})`, rows.length === 3 && !rows[0].glow && rows[1].glow && rows[2].glow && /Northwind/.test(rows[1].text) && /Helix/.test(rows[2].text));
+  await page.screenshot({ path: path.join(dir, 'glow-panel-three.png'), clip: { x: 100, y: 0, width: 440, height: 200 } });
+  await away();
+  // In the dot look a glow makes the amber point the lead even when the first member of the turn is a finished session.
+  notices = []; board = [session('t-2', 'working')];
+  await open(); await page.waitForTimeout(1800);
+  board = [session('t-2', 'done')];
+  await markIs('turn1', 10_000); await page.waitForTimeout(2800);
+  const ring = await turnColour();
+  check(`a finished session alone leads the turn mark in its own colour (${ring.join(',')})`, ring[3] > 0 && ring[1] > ring[0]);
+  notices = [glow('g-b', 'Orbit Labs')];
+  await markIs('turn2', 10_000); await page.waitForTimeout(500);
+  const lead = await turnColour();
+  check(`with a glow among them the lead is the amber point (${lead.join(',')})`, lead[3] > 0 && lead[0] > lead[1]);
+  board = []; notices = [];
+  // The holds: a glow is a mark, not a card. Quiet and no-pop keep cards back, never the mark; so does a call.
+  for (const level of ['quiet', 'no-pop']) {
+    // At no-pop the daemon's mail card is held back as ever; the glow beside it is not.
+    quietLevel = level; notices = level === 'quiet' ? [glow('g-a', 'Acme Robotics')] : [glow('g-a', 'Acme Robotics'), mail('np-1', 'card')];
+    await open(); await page.waitForSelector('.companion-quiet', { timeout: 4000 }); await markIs('turn1');
+    await page.waitForTimeout(level === 'quiet' ? 300 : 2500);
+    check(`quiet level ${level}: the glow shows${level === 'quiet' ? '' : ' while the card is held'}, no cue`, await marks() === 'turn1' && await card() === 0 && await cues() === 0);
+  }
+  quietLevel = 'off'; holdWord = 'call'; notices = [glow('g-a', 'Acme Robotics'), mail('hold-1', 'card')];
+  await open(); await markIs('turn1');
+  await page.waitForTimeout(2500);
+  check('a call hold: the glow shows while the card waits', await marks() === 'turn1' && await card() === 0 && await cues() === 0);
+  holdWord = undefined;
+  await page.waitForFunction(() => document.querySelector('.notch-note.is-open .nc'), null, { timeout: 14_000 });
+  check('the call ends: the held card comes up, the glow was there all along', await card() === 1 && await marks() === 'turn1');
+  await page.keyboard.press('Escape'); await gone();
+  holdWord = 'away'; notices = [glow('g-a', 'Acme Robotics')];
+  await open(); await markIs('turn1');
+  check('an away hold: the glow shows too', await marks() === 'turn1' && await card() === 0);
+  holdWord = undefined;
+  // dnd freezes the wing as it was: a glow that comes after it began is not drawn; one that was there stays, and nothing more joins it.
+  notices = []; quietLevel = 'dnd';
+  await open(); await page.waitForSelector('.companion-quiet', { timeout: 4000 });
+  notices = [glow('g-a', 'Acme Robotics')];
+  await page.waitForTimeout(6500);
+  check('dnd: a glow that comes in leaves no mark', await marks() === '' && await card() === 0 && await cues() === 0);
+  await emitQuiet('off');
+  await markIs('turn1', 8000);
+  check('dnd ends: the glow was waiting and the mark comes up', await marks() === 'turn1');
+  await emitQuiet('dnd');
+  await page.waitForTimeout(600);
+  notices = [glow('g-a', 'Acme Robotics'), glow('g-c', 'Helix')];
+  await page.waitForTimeout(6500);
+  check('dnd freezes the mark as it was: the second glow is not counted yet', await marks() === 'turn1' && await counts() === 'turn1');
+  await emitQuiet('off');
+  await markIs('turn2', 8000);
+  check('and when dnd ends the count catches up', await counts() === 'turn2');
+  quietLevel = 'off'; holdWord = undefined; notices = [];
+  await open(); await page.waitForTimeout(800);
+  check('glow: no page errors', errors.length === 0);
 
   // (h) the route gone (404): no ledger icon, no card, no error.
   featureOn = false; notices = []; ledger = [];

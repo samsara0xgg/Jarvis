@@ -43,6 +43,9 @@ export type Notice = Base & (
 // The daemon's notice as it arrives; it has already applied the quiet level. `level`: card (silent), card_sound or speak (both with her cue).
 export type JobItem = { id?: string; title?: string; line?: string; company?: string; role?: string; at?: string; event_at?: string | null; event_text?: string | null; mail_kind?: string; count?: number };
 export type JobNotice = JobItem & { id: string; kind: 'mail' | 'digest'; title: string; line?: string; level?: string; link?: 'jobs'; items?: JobItem[] };
+// ADR 0187: a glow is a job-mail alert at level `glow`, the lightest one that reaches Allen. It is one more amber point in the wing's turn
+// group, never a card and never a cue, so it skips the queue, the quiet level and the moment hold (only the wing's dnd freeze keeps it back).
+export type Glow = { id: string; title: string; line: string; at?: number };
 const isJob = (n: Notice): n is Notice & { kind: 'mail' | 'jobs' } => n.kind === 'mail' || n.kind === 'jobs';
 // ADR 0179: a reminder Allen set rides the job-mail notice, but no quiet level, call or away hold keeps it back, and it rings even on speakers.
 const isReminder = (n: { kind: string; job?: JobItem }) => n.kind === 'mail' && n.job?.mail_kind === 'reminder';
@@ -119,6 +122,8 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
       soundAt: -1e9, shown: '', openedAt: 0, peek: false, touched: '', forced: '',
       // Job mail: the notice ids taken in (one card each, never again) and those already told `seen`.
       jobIds: new Set<string>(), seen: new Set<string>(),
+      // Glows (ADR 0187): the glow rows of the latest poll, and the ids cleared here that the daemon may still serve for a poll or two.
+      glows: [] as Glow[], glowGone: new Set<string>(),
       // Other cards (ADR 0160): the ids told `seen` to the daemon, and the reactions already told, as `cid|reaction`.
       snapped: new Set<string>(), reacted: new Set<string>(),
       // Sessions changed here before the daemon's marks arrived: their marks stay as she set them.
@@ -262,8 +267,15 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
     const i = s.queue.findIndex((m, j) => j > 0 && !needs(m));
     if (i < 0) s.queue.push(n); else s.queue.splice(i, 0, n);
   };
+  // Glows (ADR 0187): the glow rows of the latest poll are the whole list, so one still pending after a restart is back on the wing. An id
+  // cleared here stays out until the daemon stops serving it (its POST may not have landed yet, or may have failed).
+  const takeGlows = (rows: JobNotice[]) => {
+    const served = new Set(rows.map(n => n.id));
+    for (const id of s.glowGone) if (!served.has(id)) s.glowGone.delete(id);
+    s.glows = rows.map(n => ({ id: n.id, title: n.title, line: n.line ?? '', at: Date.parse(n.at ?? '') || undefined })).sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+  };
   // GET /inherent/notices every 5 s while this window is up: the daemon's job mail and digest become cards, and its `hold` (ADR 0163)
-  // holds the rest. Its other notices are the Dashboard's. A 404 means job mail is off: the poll goes on at GET /inherent/moment for the
+  // holds the rest. Its glow rows (ADR 0187) are marks on the wing. Its other notices are the Dashboard's. A 404 means job mail is off: the poll goes on at GET /inherent/moment for the
   // hold alone, and stops without a word on a second 404 (moment off too). A missing field (an older daemon) is no hold; an unanswered
   // poll keeps the last word for HOLD_MISSES ticks, then none; a call is believed for CALL_HOLD_CAP_MS at most.
   useEffect(() => {
@@ -282,13 +294,15 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
       try {
         let r = await get();
         if (r.status === 404 && route === '/inherent/notices') { audio.current = undefined; route = '/inherent/moment'; r = await get(); }
-        if (r.status === 404) { word(null); return; }
+        if (r.status === 404) { word(null); takeGlows([]); bump(); return; }
         if (!r.ok) { if (route === '/inherent/notices') audio.current = false; miss(); }
         if (r.ok && !stop) {
           const { notices, audio_private, hold } = await r.json() as { notices?: JobNotice[]; audio_private?: boolean; hold?: unknown };
           if (route === '/inherent/notices') audio.current = typeof audio_private === 'boolean' ? audio_private : undefined;
           word(hold);
-          for (const n of Array.isArray(notices) ? notices : []) if ((n.kind === 'mail' || n.kind === 'digest') && typeof n.id === 'string' && typeof n.title === 'string') arrive({ kind: n.kind === 'mail' ? 'mail' : 'jobs', id: n.id, job: n });
+          const rows = (Array.isArray(notices) ? notices : []).filter(n => typeof n.id === 'string' && typeof n.title === 'string');
+          takeGlows(rows.filter(n => n.level === 'glow'));
+          for (const n of rows) if ((n.kind === 'mail' || n.kind === 'digest') && n.level !== 'glow') arrive({ kind: n.kind === 'mail' ? 'mail' : 'jobs', id: n.id, job: n });
           bump();
         }
       } catch { if (route === '/inherent/notices') audio.current = false; miss(); /* daemon away: nothing new may sound; the next tick retries */ }
@@ -297,6 +311,12 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
     void load();
     return () => { stop = true; clearTimeout(timer); };
   }, [port, poll]);
+  // A glow leaves the wing at once, and the daemon is told so it stops serving it: opening its place is `seen`, the ✕ is `dismissed` (ADR 0187).
+  const leaveGlow = (id: string, opened: boolean) => {
+    s.glowGone.add(id);
+    tell(port, id, opened ? { action: 'seen' } : { action: 'feedback', reaction: 'dismissed' });
+    bump();
+  };
   // Their names leave any pop; `cards` takes their needs-you cards away too.
   const drop = (ids: string[], cards = false) => {
     for (const n of s.queue) if (n.kind === 'pop') n.ids = n.ids.filter(id => !ids.includes(id));
@@ -475,7 +495,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   };
   return { current, count: s.queue.filter(needs).length, peek: s.peek, openedAt: s.openedAt, over: s.over, card: current ? card(current) : null,
     unread: s.unread as ReadonlySet<string>, archived: s.archived as ReadonlySet<string>, parked: s.parked as ReadonlyMap<string, number>,
-    read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, rate, acted, focus, bump };
+    glows: s.glows.filter(g => !s.glowGone.has(g.id)), leaveGlow, read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, rate, acted, focus, bump };
 }
 
 // ---------- what waited ----------
