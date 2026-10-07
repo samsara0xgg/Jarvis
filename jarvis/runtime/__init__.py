@@ -40,6 +40,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -1337,6 +1338,30 @@ def _register_dashboard_tool(registry: ToolRegistry, view: ViewState | None) -> 
 
 
 _LIVE_LINE_CHARS: Final = 200
+
+
+def _where_line(hub: TerminalHub | None) -> Callable[[], str | None]:
+    """The state-block line that says which machine she runs on, and which terminals are on.
+
+    A fact, with no instruction: on a brain the host's name and the terminals connected right
+    now, each with what it does; on ``all`` the Mac itself.
+    """
+    host = socket.gethostname()
+
+    def describe(name: str, speaks: bool, listens: bool) -> str:  # noqa: FBT001
+        does = [word for word, on in (("speaks", speaks), ("listens", listens)) if on]
+        return f"{name} ({', '.join(does) or 'runs device tools only'})"
+
+    def line() -> str | None:
+        if hub is None:
+            return "Where you run: on this " + ("Mac." if sys.platform == "darwin" else "machine.")
+        terminals = "; ".join(describe(*row) for row in hub.roster()) or "none"
+        return (
+            f"Where you run: on the brain host {host}. Allen's devices are terminals connected "
+            f"to it; connected now: {terminals}."
+        )
+
+    return line
 
 
 def _live_lines(producers: tuple[Callable[[], str | None], ...]) -> tuple[str, ...]:
@@ -2779,6 +2804,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         live_context=(
             *(() if view is None else (view.line,)),
             *(() if mail_drafts is None else (mail_drafts.line,)),
+            _where_line(terminal_hub),
             voice_cues.line,
             *(() if ambient is None else (ambient.line,)),
         ),

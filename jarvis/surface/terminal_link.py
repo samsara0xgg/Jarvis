@@ -160,6 +160,11 @@ class TerminalHub:
         with self._lock:
             return [(link.name, link.tools) for link in self._links]
 
+    def roster(self) -> list[tuple[str, bool, bool]]:
+        """Each connected terminal as ``(name, speaks, listens)``, oldest first."""
+        with self._lock:
+            return [(link.name, link.voice, link.listen is not None) for link in self._links]
+
     def call(
         self, tool: str, arguments: Mapping[str, Any], target_entity_ref: str | None,
     ) -> dict[str, Any]:
