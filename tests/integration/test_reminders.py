@@ -105,7 +105,7 @@ def world(tmp_path: Path) -> Iterator[_World]:
 
 
 def test_set_list_fire_once_with_card_and_one_spoken_line(world: _World) -> None:
-    """Set -> pending -> not yet due -> due fires once, a card with sound and one line."""
+    """Set -> pending -> not yet due -> due fires once, one line and a silent card."""
     made = world.set(30)
     assert made["reminder_id"].startswith("reminder-")
     assert made["due_at"] == (world.start + timedelta(minutes=30)).astimezone().isoformat(
@@ -130,7 +130,7 @@ def test_set_list_fire_once_with_card_and_one_spoken_line(world: _World) -> None
     (card,) = client.get("/inherent/notices").json()["notices"]
     assert (card["id"], card["level"], card["title"]) == (
         made["reminder_id"],
-        "card_sound",
+        "card",
         "和 employer 一对一",
     )
 
@@ -243,22 +243,25 @@ def test_quiet_and_hold_do_not_stop_the_card_and_a_call_stops_only_the_voice(
     assert body["hold"] == "call"
 
 
-def test_speech_only_on_private_output_and_when_allowed(world: _World) -> None:
-    """Speakers, a mute or a live conversation make the reminder a card with sound."""
+def test_spoken_on_speakers_too_and_a_card_with_sound_when_not_allowed(world: _World) -> None:
+    """Speakers still speak; a mute or a live conversation make the reminder a card with sound."""
     world.device = dict(SPEAKERS)
     world.set(1, "on speakers")
     world.clock = world.start + timedelta(minutes=2)
     world.reminders.tick()
-    assert not world.said
-    assert world.fired()[0]["delivered"] == "card_sound"
+    assert world.said == ["Reminder: on speakers"]
+    assert world.fired()[0]["delivered"] == "speak"
 
-    world.device = dict(PRIVATE)
     world.reminders.may_speak = lambda: False  # muted, or a conversation is live
     world.set(1, "while muted")
     world.clock += timedelta(minutes=2)
     world.reminders.tick()
-    assert not world.said
+    assert len(world.said) == 1
     assert world.fired()[1]["delivered"] == "card_sound"
+    levels = {
+        n["title"]: n["level"] for n in world.app().get("/inherent/notices").json()["notices"]
+    }
+    assert levels == {"on speakers": "card", "while muted": "card_sound"}
 
 
 def test_the_tools_are_the_llms_only_and_set_reminder_is_the_clock() -> None:

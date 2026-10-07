@@ -5,10 +5,11 @@ the daemon folds it and fires each reminder whose time has passed, so a reminder
 daemon was down or the Mac asleep rings at the next tick and says how late it is. Every reminder
 rings exactly once: ``reminder.fired`` is written before anything is shown or said.
 
-A reminder ignores the quiet level and the away hold. It is a card with sound that
-``GET /inherent/notices`` serves until Allen takes it in, and one spoken line when Allen is not on
-a call, speech is on, no conversation is live and the output is private; a reminder more than
-``SPEAK_UNTIL`` late is a card only. It is never merged into a job-mail digest.
+A reminder ignores the quiet level, the away hold and whether the output is private (Allen asked
+for it). It is a card that ``GET /inherent/notices`` serves until Allen takes it in. She says one
+line when Allen is not on a call, speech is on and no conversation is live, and then the card is
+silent: her voice is the alert. When she cannot speak, or the reminder is more than
+``SPEAK_UNTIL`` late, the card carries the cue instead. It is never merged into a job-mail digest.
 """
 
 from __future__ import annotations
@@ -70,7 +71,7 @@ class Reminders:
         # conversation) and the one function that says a line. Until then she never speaks.
         self.may_speak: Callable[[], bool] = lambda: False
         self.say: Callable[[str], None] | None = None
-        # Where sound would come out now; speech happens only on private output.
+        # Where sound would come out now; only for the notices' ``audio_private`` without job mail.
         self.output: Callable[..., dict[str, Any]] = audio_output.current_output
 
     async def run(self) -> None:
@@ -120,24 +121,20 @@ class Reminders:
         return len(due)
 
     def _speakable(self, late_ms: int) -> bool:
-        """Speak when not too late, off a call, unmuted, no live conversation, output private."""
+        """Speak when not too late, off a call, unmuted and no live conversation, on any output."""
         if self.say is None or timedelta(milliseconds=late_ms) > SPEAK_UNTIL:
             return False
         if self.moment is not None and self.moment.hold() == "call":
             return False
-        if not self.may_speak():
-            return False
-        device = self.output(fresh=True)
-        if not device["private"]:
-            LOGGER.warning("reminders: not spoken, output %r is not private", device["name"])
-        return bool(device["private"])
+        return self.may_speak()
 
     # --- what the surface reads ----------------------------------------------------
 
     def notices(self) -> list[dict[str, Any]]:
         """The fired reminders Allen has not taken in, as notices the companion already draws.
 
-        Always ``card_sound``: the quiet level and a call or away hold do not apply (ADR 0179).
+        A spoken reminder is a silent ``card``, one she could not say is ``card_sound``; the quiet
+        level and a call or away hold do not apply (ADR 0179).
         """
         since = int((self.now() - CARD_KEEP).timestamp() * 1000)
         with contextlib.closing(open_runtime_event_log(self._path)) as conn:
@@ -152,7 +149,7 @@ class Reminders:
                 "kind": "mail",
                 "title": one.text,
                 "line": line(one.text, one.late_ms),
-                "level": "card_sound",
+                "level": "card" if one.delivered == "speak" else "card_sound",
                 "text": one.text,
                 "at": datetime.fromtimestamp((one.fired_at_ms or 0) / 1000, UTC).isoformat(),
                 "company": "",

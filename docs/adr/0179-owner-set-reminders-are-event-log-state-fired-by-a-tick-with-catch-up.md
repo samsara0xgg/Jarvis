@@ -27,10 +27,12 @@ every 15 seconds and fires each pending reminder whose time has passed, so one
 missed while the daemon was down or the Mac asleep rings at the next tick and
 says how late it is; `reminder.fired` is written before anything is shown or
 said, so a reminder rings exactly once. It ignores the quiet level and the away
-hold: a card with sound is served through `GET /inherent/notices` until Allen
-takes it in, with one spoken line unless he is on a call, speech is off, a
-conversation is live or the output is not private; one more than 12 hours late
-is a card only. It is never merged into a job-mail digest. `create_memo` stays a
+hold, and speaks on any output, speakers included (Allen asked for it). A card
+is served through `GET /inherent/notices` until Allen takes it in. She says one
+line unless he is on a call, speech is off or a conversation is live, and then
+the card is silent: her voice is the alert, and Allen does not want a chime on
+top of it (2026-10-06). When she cannot speak, or the reminder is more than 12
+hours late, the card carries the cue instead. It is never merged into a job-mail digest. `create_memo` stays a
 memo and its description points to `set_reminder` for a time.
 
 ## Alternatives rejected
@@ -50,7 +52,5 @@ memo and its description points to `set_reminder` for a time.
 Polling means a ring is up to 15 seconds late. A `seen` post does not take a reminder in, only a
 dismissal does, and the companion keeps the card on the island until he dismisses it, so one that
 came up while he was away is still there when he is back, and after a companion restart. The companion draws a reminder as
-it draws a job-mail notice and holds notices itself at `no-pop`, `dnd` and during
-a call or away hold, so those tiers show the card only once the companion stops
-holding; the daemon side serves it at every tier. A brain with no private audio
-output (a Linux host) never speaks a reminder, only serves the card.
+it draws a job-mail notice, labelled 提醒 and without the rating row, and lets it
+through its own holds at `no-pop`, `dnd`, a call and away.
