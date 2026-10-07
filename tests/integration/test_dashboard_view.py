@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.tools import ToolContext, ToolError
 from jarvis.runtime import _dashboard_view, _live_lines
-from jarvis.runtime.dashboard import PAGES, VIEW_LINE_CHARS, VIEW_STALE_S, ViewState
+from jarvis.runtime.dashboard import CLOSE, PAGES, VIEW_LINE_CHARS, VIEW_STALE_S, ViewState
 from jarvis.shared import CallerPrincipal
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
@@ -170,7 +170,7 @@ def test_the_route_sets_replaces_and_closes_the_view() -> None:
 
 
 def _tool(view: ViewState | None) -> Any:  # noqa: ANN401
-    tools = build_dashboard_tool(PAGES, None if view is None else view.present)
+    tools = build_dashboard_tool((*PAGES, CLOSE), None if view is None else view.present)
     return next(iter(tools), None)
 
 
@@ -187,8 +187,8 @@ def test_show_on_dashboard_is_l0_read_only_for_the_model_and_absent_with_the_vie
     assert tool.read_only
     assert tool.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
     assert tool.input_schema["properties"]["page"]["enum"] == [
-        "conversation", "now", "agents", "usage", "plugins", "projects", "settings", "brief",
-        "mail", "memory", "jobs",
+        "home", "conversation", "now", "agents", "usage", "plugins", "projects", "settings",
+        "brief", "mail", "memory", "jobs", "close",
     ]
     assert "arrange" not in PAGES
     assert tool.input_schema["required"] == ["page"]
@@ -265,4 +265,20 @@ def test_the_present_op_reaches_a_connected_companion_as_the_wire_says() -> None
     frames = asyncio.run(run())
     assert [(f["op"], f["payload"]) for f in frames] == [
         ("present", {"page": "mail", "item_id": "b2", "kind": "row"}),
+    ]
+
+
+def test_close_folds_the_dashboard_and_home_turns_to_its_home_screen() -> None:
+    """``close`` pushes no page; ``home`` is a page like the others."""
+    view = ViewState()
+    sent: list[dict[str, str | None]] = []
+    view.push = sent.append
+    tool = _tool(view)
+    view.set("mail", rows=[("b2", "Shop — Sale")])
+    closed = _show(tool, page="close", item_id="b2")
+    assert closed["shown"] is None
+    assert _show(tool, page="home")["shown"] == "home"
+    assert sent == [
+        {"page": None, "item_id": None, "kind": None},
+        {"page": "home", "item_id": None, "kind": None},
     ]

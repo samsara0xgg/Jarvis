@@ -17,7 +17,9 @@ _DESCRIPTION: Final = (
     "it uninvited. item_id is an id from the Dashboard line of the state block (the open item "
     'or a numbered row; "the second one" means row 2); any other id opens the page alone. '
     "This only moves the screen: read what a page holds with the tool that owns it, and never "
-    "claim the page shows something you have not read."
+    "claim the page shows something you have not read. "
+    'Page "home" is its home screen; page "close" folds the Dashboard away, for when Allen '
+    "asks to close it."
 )
 
 _DONE: Final = (

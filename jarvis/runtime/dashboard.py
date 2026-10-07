@@ -29,9 +29,11 @@ _ID_CHARS: Final = 64
 _WORD_CHARS: Final = 24
 
 PAGES: Final = (
-    "conversation", "now", "agents", "usage", "plugins", "projects", "settings", "brief",
+    "home", "conversation", "now", "agents", "usage", "plugins", "projects", "settings", "brief",
     "mail", "memory", "jobs",
 )
+# Not a page: she folds the Dashboard away when Allen asks to close it.
+CLOSE: Final = "close"
 """The pages ``show_on_dashboard`` can turn to: ``Page`` in AroundDashboard.tsx, less the
 home arranger."""
 _PAGE_NAMES: Final = {
@@ -154,12 +156,16 @@ class ViewState:
         An id the current view does not carry opens the page alone. Returns what was sent;
         ValueError for an unknown page or when no Dashboard link is attached.
         """
-        if page not in PAGES:
+        if page not in PAGES and page != CLOSE:
             msg = f"unknown page {page!r}"
             raise ValueError(msg)
         if self.push is None:
             msg = "the Dashboard is not connected"
             raise ValueError(msg)
+        if page == CLOSE:
+            closed: dict[str, str | None] = {"page": None, "item_id": None, "kind": None}
+            self.push(closed)
+            return closed
         known = self.knows(item_id) if item_id else None
         sent: dict[str, str | None] = {
             "page": page,

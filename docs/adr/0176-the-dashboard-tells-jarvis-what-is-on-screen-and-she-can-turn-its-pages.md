@@ -45,7 +45,14 @@ move it:
   briefly lights the item. It may name only a page that exists and an item id the current
   view or this turn's tool results carry; anything else opens the page alone. The prompt
   lets her move an open panel to follow the conversation, and open a closed one only when
-  Allen asks to see something.
+  Allen asks to see something. Page `home` is the home screen; `close` folds the panel
+  (`present` with no page).
+- **Stay and go.** A panel she opened or turned does not fold when the pointer leaves: a
+  window moving under a still pointer reads as a leave, and he is talking, not pointing. A
+  click outside it, the notch, Esc or back closes it. When a spoken dismissal ends the
+  conversation, the `controls` push carries reason `dismissed`, and a panel she opened
+  folds with her; a panel Allen opened stays. The conversation timing out on
+  silence closes nothing, since he may be reading what she opened.
 
 ## Alternatives rejected
 

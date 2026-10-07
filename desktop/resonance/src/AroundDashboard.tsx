@@ -749,6 +749,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   useEffect(() => {
     if (!present || !open || present.key === followed.current) return;
     followed.current = present.key;
+    if (present.page === null) return;
+    if (present.page === 'home') { if (page) closePage(); return; }
     if (!(present.page in TITLES) || present.page === 'arrange') return;
     const name = present.page as Page, id = present.itemId;
     if (!page) openPage(name);

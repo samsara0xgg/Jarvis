@@ -158,6 +158,7 @@ from jarvis.runtime.daily_report import (
     past_day_answer,
 )
 from jarvis.runtime.dashboard import (
+    CLOSE,
     DRAFT_LINE_CHARS,
     DRAFT_LINE_PREFIX,
     PAGES,
@@ -1332,7 +1333,7 @@ def _dashboard_state(
 
 def _register_dashboard_tool(registry: ToolRegistry, view: ViewState | None) -> None:
     """``show_on_dashboard`` (ADR 0176), registered only with ``dashboard.view.enabled``."""
-    for tool in build_dashboard_tool(PAGES, None if view is None else view.present):
+    for tool in build_dashboard_tool((*PAGES, CLOSE), None if view is None else view.present):
         registry.register(tool)
 
 
