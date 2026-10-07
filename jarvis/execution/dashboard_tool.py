@@ -13,8 +13,9 @@ if TYPE_CHECKING:
 _DESCRIPTION: Final = (
     "Turn Allen's Dashboard to a page, and optionally to one item on it (a letter, a note, a "
     "session, a job row). Use it to move a Dashboard that is already open so it follows the "
-    "conversation, and to open a closed one only when Allen asks to see something; never open "
-    "it uninvited. item_id is an id from the Dashboard line of the state block (the open item "
+    "conversation, and to open a closed one only when Allen asks to see something (show me, "
+    "let me see, open it); a question is answered in words, not by opening it. item_id is an "
+    "id from the Dashboard line of the state block (the open item "
     'or a numbered row; "the second one" means row 2); any other id opens the page alone. '
     "This only moves the screen: read what a page holds with the tool that owns it, and never "
     "claim the page shows something you have not read. "

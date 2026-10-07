@@ -111,8 +111,8 @@ _DESCRIPTIONS = {
     "get_briefing": (
         "Read a previously saved briefing by local_date and IANA timezone. The daily work "
         "report of a day is saved here automatically early the next morning, and is the "
-        "answer to 'what did I do yesterday / on <date>'. Returns the report's Summary; the "
-        "whole report is the Dashboard's brief page. Does not regenerate or deliver it."
+        "answer to 'what did I do yesterday / on <date>'. Returns the report's Summary, which "
+        "answers it in words. Does not regenerate or deliver it."
     ),
 }
 _RECORD_READERS = {
@@ -180,8 +180,8 @@ def _summary_only(page: dict[str, Any]) -> dict[str, Any]:
         "complete": False,
         "next_cursor": None,
         "more": f"This is the Summary of a {page.get('total_chars')}-character report, enough "
-        "to answer what the user did that day. The whole report is the Dashboard's brief page: "
-        "show it there when the user wants more.",
+        "to answer what the user did that day. If he then asks to see the rest, the whole "
+        "report is the Dashboard's brief page.",
     }
 
 
