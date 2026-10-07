@@ -311,7 +311,8 @@ def test_a_shut_dashboard_opens_only_when_his_words_ask_to_see() -> None:
         tool.handler({"page": "brief"}, turn(1, "What did I get done yesterday?"))
     assert sent == []
     tool.handler({"page": "brief"}, turn(2, "Show me."))
+    tool.handler({"page": "brief"}, turn(5, "小how me。"))  # misheard, still a short command
     view.set("brief")  # open: it follows the conversation without being asked
     tool.handler({"page": "jobs"}, turn(3, "And my applications?"))
     tool.handler({"page": CLOSE}, turn(4, "That's all."))
-    assert [s["page"] for s in sent] == ["brief", "jobs", None]
+    assert [s["page"] for s in sent] == ["brief", "brief", "jobs", None]

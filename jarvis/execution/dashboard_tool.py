@@ -52,11 +52,19 @@ _TURN_WORDS: Final = """
 """
 
 
+# A few words alone are a command about the screen, however they were heard: "Show me." came
+# through as "小how me" and "小米" (live 2026-10-07). Letters and digits only, any script.
+_SHORT_COMMAND_CHARS: Final = 8
+
+
 def _asks_to_see(ctx: ToolContext) -> bool:
     """Whether this turn's words ask to see something; True when they cannot be read."""
     row = None if ctx is None else ctx.conn.execute(_TURN_WORDS, (ctx.action_id,)).fetchone()
     words = row[0] if row else None
-    return not isinstance(words, str) or bool(_ASKS_TO_SEE.search(words))
+    if not isinstance(words, str):
+        return True
+    short = len(re.sub(r"[\W_]", "", words)) <= _SHORT_COMMAND_CHARS
+    return short or bool(_ASKS_TO_SEE.search(words))
 
 
 def build_dashboard_tool(
