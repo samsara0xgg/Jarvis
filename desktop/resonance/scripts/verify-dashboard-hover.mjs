@@ -49,7 +49,6 @@ try {
   // Passing under the island, slowly or resting, does not bring her out.
   await glide({ x: 100, y: 60 }, { x: 196, y: 60 }, 300); await page.waitForTimeout(900);
   check('a rest just under the island leaves her home', await place() === 'home' && !await open());
-  check('… and puts no keyboard chip beside her', await page.locator('.companion-chip.is-open').count() === 0);
   await glide({ x: 196, y: 60 }, { x: 520, y: 60 }, 200); await page.waitForTimeout(400);
   check('sliding along under the menu bar does not either', await place() === 'home' && !await open());
   await shot('01-passed-under');

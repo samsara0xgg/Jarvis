@@ -476,7 +476,7 @@ try {
       const s = await scene({ captions: 'brief' });
       const { page, emit, move, skew, shot, settled } = s;
       await page.waitForTimeout(600);
-      if (fieldFirst) { await comeOut(s); await page.locator('.companion-chip button').click(); await page.waitForTimeout(900); } // (the typing field keeps the area up)
+      if (fieldFirst) { await page.evaluate(() => window.__command('type')); await page.waitForTimeout(900); } // (the typing field keeps the area up)
       await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
       await emit('voice', { phase: 'listening', turn_id: 'tp0' });
       await watch(page);
@@ -937,15 +937,17 @@ try {
     const { page, emit, move, area, posts } = s;
     await page.waitForTimeout(800);
     await move(out.x, out.y); await page.waitForTimeout(700);
-    check('no buttons: hovering under the island with voice off leaves her home, no chip', await page.locator('.companion-chip.is-open').count() === 0 && await page.locator('.companion-hit').getAttribute('data-place') === 'home');
+    check('no buttons: hovering under the island with voice off leaves her home', await page.locator('.companion-hit').getAttribute('data-place') === 'home');
     await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
     await emit('voice', { phase: 'listening', turn_id: 'ch1' }); await page.waitForTimeout(500);
     await move(out.x, out.y); await page.waitForTimeout(700);
-    check('no buttons: with voice on the keyboard chip by her is there', await page.locator('.companion-chip.is-open').count() === 1);
-    await page.locator('.companion-chip button').click(); await page.waitForTimeout(900);
+    check('no keyboard chip by her any more', await page.locator('.companion-chip').count() === 0);
+    await page.evaluate(() => window.__command('type')); await page.waitForTimeout(900);
     const a = await area();
-    check('no buttons: the chip opens the typing field and pauses the microphone', a.fieldShown && posts.some(p => p.path === '/inherent/controls' && p.body.mic_muted === true));
-    check('no page errors (chip with voice on)', s.errors.length === 0);
+    check('no buttons: a double left ⌥ opens the typing field and pauses the microphone', a.fieldShown && posts.some(p => p.path === '/inherent/controls' && p.body.mic_muted === true));
+    await page.evaluate(() => window.__command('type')); await page.waitForTimeout(900);
+    check('a second double left ⌥ puts the field away and gives the microphone back', !(await area()).fieldShown && posts.some(p => p.path === '/inherent/controls' && p.body.mic_muted === false));
+    check('no page errors (typing key with voice on)', s.errors.length === 0);
     await s.context.close();
   }
 
@@ -1056,9 +1058,8 @@ try {
     const s = await scene({ captions: 'all' });
     const { page, move, area, folded } = s;
     await page.waitForTimeout(600);
-    await comeOut(s);
-    await page.locator('.companion-chip button').click(); await page.waitForTimeout(900);
-    check('the keyboard opens the field with nothing to show yet', (await area()).fieldShown);
+    await page.evaluate(() => window.__command('type')); await page.waitForTimeout(900);
+    check('a double left ⌥ brings her out with the field and nothing to show yet', (await area()).fieldShown);
     await page.keyboard.press('Escape');
     await folded(2500);
     check('Esc on the empty field folds it at once, not 8 s later', !(await area()).up);

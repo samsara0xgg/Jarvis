@@ -13,16 +13,6 @@
 .companion-hit { position:absolute; left:0; top:0; z-index:5; padding:0; border-radius:50%; background:transparent; transform-origin:50% 50%; cursor:pointer; }
 .companion-hit:focus-visible { outline:1.5px solid rgb(255 255 255 / .55); outline-offset:0; }
 
-.companion-chip {
-  position:absolute; z-index:3; width:32px; height:26px; border-radius:var(--radius-control); background:var(--glass); box-shadow:var(--edge),0 6px 16px -8px #000a;
-  opacity:0; transform:translateX(-6px) scale(.84); transform-origin:0 50%; pointer-events:none;
-  transition:opacity var(--exit-fast) var(--ease-in),transform var(--exit-slow) var(--spring-panel-exit);
-}
-/* The delay is hover intent: passing over her does not flash the chip. */
-.companion-chip.is-open { opacity:1; transform:none; pointer-events:auto; transition:opacity var(--motion-fast) ease var(--motion-fast),transform var(--motion-slow) var(--spring) var(--motion-fast); }
-.companion-chip button { width:100%; height:100%; display:grid; place-items:center; padding:0; border-radius:inherit; color:#d9dce2; }
-.companion-chip button:hover { color:#fff; background:rgb(255 255 255 / .07); }
-
 /* Her light as "r g b", written by the ball whenever it changes. Think mode's colour is fixed: her deep light's glow. */
 :root { --glow:157 180 255; --deep:154 134 255; --deep-hi:color-mix(in srgb,rgb(var(--deep)) 55%,#fff); }
 /* The backdrop joins the island. Her colour starts below a 28 pt black band,
@@ -52,7 +42,7 @@
 .companion-dashboard:has(.ad[data-deep]) { --dusk-glow:var(--deep); }
 
 @media(prefers-reduced-motion:reduce) {
-  .companion-chip,.companion-chip.is-open,.companion-dashboard,.companion-dashboard.is-open { transition-property:opacity,visibility; }
+  .companion-dashboard,.companion-dashboard.is-open { transition-property:opacity,visibility; }
   .companion-island { transition:none; }
 }
 
@@ -64,6 +54,7 @@
 .companion-menu button:hover,.companion-menu button:focus-visible { background:rgb(var(--glow) / .14); outline:none; }
 .companion-menu button[aria-checked=true] { color:rgb(var(--glow)); background:rgb(var(--glow) / .08); }
 .companion-quiet { position:absolute; z-index:6; display:grid; place-items:center; width:12px; height:12px; color:rgb(var(--glow) / .75); pointer-events:none; }
+.companion-menu-key { float:right; font:500 11px "JetBrains Mono", Menlo, monospace; color:rgb(238 240 251 / .45); }
 .companion-menu hr { border:0; border-top:1px solid rgb(196 204 238 / .15); margin:6px 0; }
 .companion-menu-label { padding:4px 10px 2px; font-size:var(--text-label); letter-spacing:.02em; color:var(--p-faint); }
 .companion ::selection { background:rgb(var(--glow) / .3); color:#fff; }

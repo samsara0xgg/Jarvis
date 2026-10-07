@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { BellSlash, IconContext, Keyboard, Moon, SpeakerSlash } from '@phosphor-icons/react';
+import { BellSlash, IconContext, Moon, SpeakerSlash } from '@phosphor-icons/react';
 import { CompanionBall, R, type BallHandle, type Lobe, type Place, type Point } from './CompanionBall';
 import { PREVIEW, SKIN_KEYS, TURN_FACE, isSkin, type ExprId, type Skin } from './starCore';
 import { AroundDashboard, type DashboardView, type DashboardViewHandle, type Think } from './AroundDashboard';
@@ -85,7 +85,6 @@ function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
   return { width, lobe, anchors, out, center, panelTop, wingX, zones: {
     lobe: notchWidth ? { x: lobe.left, y: 0, w: notchLeft - lobe.left, h: topInset } : { x: center - 36, y: 0, w: 72, h: topInset },
     ball: { x: x - R - 12, y: topInset, w: 2 * R + 24, h: out.y + R + 12 - topInset },
-    chip: { x: x + R + 4, y: out.y - 18, w: 44, h: 36 },
     // A rest on the notch opens the Dashboard, or on the pill's two ends; on her it is only a peek, so a click on her stays hers (voice).
     dash: notchWidth ? [{ x: notchLeft, y: 0, w: notchWidth, h: topInset + 4 }]
       : [{ x: lobe.left, y: 0, w: 30, h: topInset + 4 }, { x: center + 36, y: 0, w: 30, h: topInset + 4 }],
@@ -361,14 +360,12 @@ export function Companion() {
   useEffect(() => { if (!stopped) return; const t = setTimeout(notices.bump, 1750); return () => clearTimeout(t); }, [notice?.key]);
   // A deep turn keeps her deep face while it is thought about and while its answer is said (ADR 0108).
   const expr: ExprId = preview ?? noticeFace ?? (receiving ? TURN_FACE.receive : inFlight ? TURN_FACE.listen : deepLook ? 'deep' : voice === 'listening' ? TURN_FACE.listen : voice === 'thinking' ? '30' : voice === 'speaking' || talking ? TURN_FACE.reply : (dashboard || remoteOpen) && dashMood ? dashMood : reply.text ? port && s.failed ? '38' : '33' : '02');
-  // With voice on and no buttons in the talk area, the chip is how you type to her.
-  const chip = place === 'out' && zone === 'ball' && !composer && (!busy || !companion.talkButtons && voice !== 'off');
   // During a notice she looks down at it from the island.
   const noticeLook = carded || nightShown ? { x: geo.center, y: placement.topInset + 90 } : notice ? { x: notice.kind === 'pop' ? geo.wingX + 80 : geo.center, y: placement.topInset + 90 } : null;
-  const live = useRef({ geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu, stowed: false });
+  const live = useRef({ geo, dashboard, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu, stowed: false });
   // Stowed: on a screen without a notch, with nothing going on and the pointer away, all of her is hidden and takes no clicks.
   const stowed = !detached && !geo.lobe.notched && !near && place === 'home' && !dashboard && !menu && !notice && !nightShown && !carded && !moving;
-  live.current = { geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu, stowed };
+  live.current = { geo, dashboard, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu, stowed };
   const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 });
   const input = useRef<HTMLTextAreaElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
   useEffect(() => {
@@ -442,6 +439,9 @@ export function Companion() {
   };
   const latestPoke = useRef(poke);
   latestPoke.current = poke;
+  const typeKey = () => { if (!composer) openComposer(); else { closeComposer(); if (!draft.trim() && voice === 'off') presence.dismiss(); } };
+  const latestType = useRef(typeKey);
+  latestType.current = typeKey;
   const press = () => { pressing.current = true; setPressed(true); };
   // A release pokes her, however long the press; her costume changes only from her menu.
   const release = () => {
@@ -667,8 +667,9 @@ export function Companion() {
   useEffect(() => window.jarvis?.onCommand(command => {
     if (command === 'dashboard-detach') document.querySelector<HTMLElement>('.companion-dashboard')?.dispatchEvent(new Event('dashboard-detach'));
     if (command === 'agent-keys' && !detached) { fold('⌥Tab'); closeComposer(); setKeysPress(n => n + 1); }
-    // Double left ⌘ (electron/companion.ts): the same poke as a click on her.
+    // Double left ⌘ (electron/companion.ts): the same poke as a click on her. Double left ⌥: the field to type to her, or away again.
     if (command === 'poke' && !detached) latestPoke.current();
+    if (command === 'type' && !detached) { fold('⌥⌥'); latestType.current(); }
   }), []);
   useEffect(() => window.jarvis?.onDisplayLeave(() => {
     closeComposer(); setMenu(null); fold('moving to another screen'); clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); dashTimer.current = undefined; pending.current = 'none'; setZone('none'); setMoving(true);
@@ -698,7 +699,7 @@ export function Companion() {
     const intent = new PointerIntent();
     const slow = () => intent.sample(cursor.current, performance.now()) < HOVER_SPEED;
     const receive = (point: Point) => {
-      const { geo, dashboard, chip, composer } = live.current, z = geo.zones;
+      const { geo, dashboard, composer } = live.current, z = geo.zones;
       cursor.current = point;
       intent.sample(point, performance.now());
       if (!composer) look.current = live.current.noticeLook ?? point;
@@ -710,7 +711,7 @@ export function Companion() {
       }
       refreshHit();
       // Passing under the island does not bring her out: the ball zone only keeps her out while she is already out for something else.
-      const next: Zone = live.current.place === 'out' && (within(point, z.ball) || (chip && within(point, z.chip))) ? 'ball' : within(point, z.lobe) ? 'lobe' : 'none';
+      const next: Zone = live.current.place === 'out' && within(point, z.ball) ? 'ball' : within(point, z.lobe) ? 'lobe' : 'none';
       if (next !== pending.current) {
         pending.current = next; clearTimeout(zoneTimer.current);
         const reveal = () => {
@@ -750,7 +751,7 @@ export function Companion() {
     document.addEventListener('pointerdown', dismiss); document.addEventListener('keydown', escape, true);
     return () => { document.removeEventListener('pointerdown', dismiss); document.removeEventListener('keydown', escape, true); void window.jarvis?.focus(false); };
   }, [menu]);
-  useEffect(refreshHit, [place, chip, composer, dashboard, menu, voice, reply.text, talkUp, notice?.key, card?.id, nightKey, stowed]);
+  useEffect(refreshHit, [place, composer, dashboard, menu, voice, reply.text, talkUp, notice?.key, card?.id, nightKey, stowed]);
 
   // Native frosted glass behind every visible panel, following its transitions.
   const kickGlass = useRef(() => {});
@@ -779,7 +780,7 @@ export function Companion() {
     kick();
     return () => { cancelAnimationFrame(frame); observer.disconnect(); el.removeEventListener('transitionrun', kick); };
   }, []);
-  useEffect(() => kickGlass.current(), [place, chip, composer, dashboard, voice, reply.text, talkUp, notice?.key, card?.id, nightKey]);
+  useEffect(() => kickGlass.current(), [place, composer, dashboard, voice, reply.text, talkUp, notice?.key, card?.id, nightKey]);
 
   // What Settings in the panel reads and changes here: the daemon's switches, her look, her cues.
   const control = (patch: { mic_muted?: boolean; speech_muted?: boolean; conversation?: boolean }) => void link.current?.controls(patch).catch(() => undefined);
@@ -857,6 +858,8 @@ export function Companion() {
             items[next]?.focus();
           }
         }}>
+        <button role="menuitem" onClick={() => { setMenu(null); openComposer(); }}>{t(['Type a message', '打字'])}<kbd className="companion-menu-key">⌥⌥</kbd></button>
+        <hr/>
         {SKIN_KEYS.map(skin => <button key={skin} role="menuitemradio" aria-checked={wardrobe.skin === skin} onClick={() => { choose(skin); setMenu(null); }}>{t(SKIN_NAMES[skin])}</button>)}
         <hr/>
         <div className="companion-menu-label" role="presentation">{t(['Captions', '字幕'])}</div>
@@ -871,9 +874,6 @@ export function Companion() {
         <button role="menuitem" onClick={() => { setMenu(null); appear(ctl.playFaces, PREVIEW.length * 1100); }}>{t(['Preview expressions', '看一遍表情'])}</button>
         <button role="menuitem" onClick={() => { setMenu(null); openDashboard(false); pinned.current = true; if (detachedMode.current) window.jarvis?.dashboardMessage?.('dashboard', { type: 'settings' }); else setSettingsFocus(n => n + 1); }}>{t(['Settings…', '设置…'])}</button>
       </div>}
-      <div className={`companion-chip ${chip ? 'is-open' : ''}`} data-hit={chip || undefined} data-glass="10" style={{ left: out.x + R + 12, top: out.y - 13 }}>
-        <button aria-label={t(['Type a message', '文字输入'])} tabIndex={chip ? 0 : -1} onClick={openComposer}><Keyboard/></button>
-      </div>
       <TalkArea lang={companion.lang} x={out.x} y={out.y + R + 11} open={presence.open && place === 'out' && !quiet} level={talkLevel} lines={s.talk} since={talkFrom} voice={voice} hearing={hearing} partial={partial} settled={port ? s.settled : null} tool={tool} silent={s.soundMuted} buttons={companion.talkButtons}
         deep={{ look: deepLook, secs: deepSecs, thoughts }} field={composer} draft={draft} micPaused={s.micMuted} card={cardShown ? cardView : undefined}
         onDraft={value => { setDraft(value); ball.current?.nudge(); requestAnimationFrame(aimAtCaret); }}

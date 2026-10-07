@@ -279,29 +279,33 @@ function companion(shown?: () => void) {
     win.setIgnoreMouseEvents(on || pass, { forward: true });
     if (on) win.webContents.send('cursor', { x: -1e4, y: -1e4 });
   };
-  // A double tap of the left ⌘ alone pokes her, like a click on her: talk, interrupt, or end. Each tap is under 0.3 s with no other
-  // key or modifier, and the second starts within 0.4 s of the first; it never hides her (the ⌘ tuck above is undone at once).
+  // A double tap of the left ⌘ alone pokes her, like a click on her: talk, interrupt, or end; one of the left ⌥ alone opens the
+  // field to type to her. Each tap is under 0.3 s with no other key or modifier, and the second starts within 0.4 s of the first;
+  // it never hides her (the ⌘ tuck above is undone at once).
   let pressed = false;
-  let lcmd = { down: false, at: 0, clean: false }, lastTap = 0;
-  const leftCommand = () => {
-    const key = material?.leftCommand?.() as { down: boolean; others: boolean; keyIdle: number } | undefined;
-    if (!key) return;
-    if (key.down && !lcmd.down) lcmd = { down: true, at: Date.now(), clean: !key.others };
-    else if (key.down && key.others) lcmd.clean = false;
-    else if (!key.down && lcmd.down) {
-      const held = (Date.now() - lcmd.at) / 1000;
-      lcmd.down = false;
-      if (!lcmd.clean || held >= .3 || key.keyIdle < held - .02) { lastTap = 0; return; }
-      if (lastTap && lcmd.at - lastTap < 400) {
-        lastTap = 0; clearTimeout(untuck); if (tucked) tuck(false);
-        if (!win.isDestroyed()) win.webContents.send('command', 'poke');
-      } else lastTap = Date.now();
-    }
+  const doubleTap = (read: () => { down: boolean; others: boolean; keyIdle: number } | undefined, command: string) => {
+    let tap = { down: false, at: 0, clean: false }, lastTap = 0;
+    return () => {
+      const key = read();
+      if (!key) return;
+      if (key.down && !tap.down) tap = { down: true, at: Date.now(), clean: !key.others };
+      else if (key.down && key.others) tap.clean = false;
+      else if (!key.down && tap.down) {
+        const held = (Date.now() - tap.at) / 1000;
+        tap.down = false;
+        if (!tap.clean || held >= .3 || key.keyIdle < held - .02) { lastTap = 0; return; }
+        if (lastTap && tap.at - lastTap < 400) {
+          lastTap = 0; clearTimeout(untuck); if (tucked) tuck(false);
+          if (!win.isDestroyed()) win.webContents.send('command', command);
+        } else lastTap = Date.now();
+      }
+    };
   };
+  const leftCommand = doubleTap(() => material?.leftCommand?.(), 'poke'), leftOption = doubleTap(() => material?.leftOption?.(), 'type');
   const cursor = setInterval(() => {
     const point = screen.getCursorScreenPoint();
     dictation?.tick(point);
-    leftCommand();
+    leftCommand(); leftOption();
     // A press anywhere on screen (the window is click-through): the card he is not on is dismissed by it.
     const press = !!material?.leftMouseDown?.();
     if (press && !pressed && !win.isDestroyed()) win.webContents.send('mouse-down');

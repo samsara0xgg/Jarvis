@@ -206,11 +206,6 @@ try {
     return Math.abs(await fromBottom() - before) <= 50;
   };
   const out = { x: 195.5, y: 72 };
-  // Hovering under the island does not bring her out; her menu does, and Esc leaves the pointer under her to keep her there.
-  const comeOut = async () => {
-    await hit.click({ button: 'right', force: true }); await waitPlace('out');
-    await move(out.x, out.y); await page.waitForTimeout(400); await page.keyboard.press('Escape'); await waitPlace('out');
-  };
   await page.waitForTimeout(800);
 
   if (real) {
@@ -418,9 +413,7 @@ try {
     // Typed text from her own box goes to the daemon.
     await move(out.x, out.y); await page.waitForTimeout(400);
     check('L7 hovering under the island leaves her home', await hit.getAttribute('data-place') === 'home');
-    await comeOut();
-    await move(out.x + 26 + 12 + 16, out.y);
-    await page.locator('.companion-chip button').click();
+    await page.evaluate(() => window.__command('type'));
     await page.waitForFunction(() => document.activeElement?.matches('.talk textarea'));
     await page.keyboard.type('帮我看看日程', { delay: 30 });
     await page.keyboard.press('Enter');

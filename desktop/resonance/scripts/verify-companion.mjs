@@ -150,8 +150,8 @@ try {
   await move(600, 560); await waitPlace('home');
   await move(out.x, out.y - 6);
   await page.waitForTimeout(700);
-  check('02 hovering under the island leaves her home: no ball, no chip, clicks pass through',
-    await place() === 'home' && await page.locator('.companion-chip.is-open').count() === 0 && await page.evaluate(() => window.__state.passthrough === true));
+  check('02 hovering under the island leaves her home: no ball, clicks pass through',
+    await place() === 'home' && await page.evaluate(() => window.__state.passthrough === true));
   // Every frame of the way out (her menu brings her): her centre and the alpha of a point on her body, right of her eyes.
   await page.evaluate(() => { const log = window.__drip = [], c = document.querySelector('.companion-canvas'), g = c.getContext('2d'), h = document.querySelector('.companion-hit'), t0 = performance.now();
     const k = c.width / c.getBoundingClientRect().width;
@@ -165,18 +165,19 @@ try {
   check(`02 she leaves the island as a black drop and lights up into glass once clear of it (${JSON.stringify(clear)} → ${drip.at(-1)[1]})`,
     !!clear && clear[1] < 128 && drip.at(-1)[1] > 240);
   check('02 her menu brings her out under the island and the window takes clicks', await page.evaluate(() => window.__state.passthrough === false) && await page.getByRole('menu').count() === 1);
+  check('02 her menu starts with typing to her and its key, ⌥⌥', /^(Type a message|打字)\s*⌥⌥$/.test(await page.getByRole('menuitem').first().innerText()));
   await move(out.x, out.y); await page.waitForTimeout(400);
   await page.keyboard.press('Escape'); await waitPlace('out');
-  check('02 closing the menu with the pointer under her keeps her out, and the keyboard chip appears beside her', await page.locator('.companion-chip.is-open').count() === 1);
-  await shot('02-out-chip');
+  check('02 closing the menu with the pointer under her keeps her out, with no keyboard chip beside her', await place() === 'out' && await page.locator('.companion-chip').count() === 0);
+  await shot('02-out');
   await move(460, 400);
   await page.waitForTimeout(80);
   check('02 empty space passes clicks through', await page.evaluate(() => window.__state.passthrough === true));
   await move(out.x, out.y);
   await page.waitForTimeout(400);
-  await move(out.x + 26 + 12 + 16, out.y);
-  await page.locator('.companion-chip button').click();
-  check('03 the field opens beneath her, in the talk area', await page.locator('.talk[data-hit][data-kind=area] textarea').isVisible());
+  await page.evaluate(() => window.__command('type'));
+  await page.waitForFunction(() => document.querySelector('.talk textarea')?.checkVisibility());
+  check('03 a double left ⌥ opens the field beneath her, in the talk area', await page.locator('.talk[data-hit][data-kind=area] textarea').isVisible());
   await page.keyboard.type('帮我整理今天的任务', { delay: 60 });
   await page.waitForTimeout(700);
   check('03 draft is typed into the composer', await page.locator('.talk textarea').inputValue() === '帮我整理今天的任务');
