@@ -352,10 +352,10 @@ def _log_identity(conn: sqlite3.Connection) -> str:
 
 
 _FIRST_PAGE_NOTE = (
-    "This first page holds the report's Summary: answer what the user did that day from it. "
-    "Yesterday's whole report is the Dashboard's brief page, so for the rest show that page "
-    "instead of reading on and writing it out; read the next pages only when the user asks "
-    "you to tell him the details."
+    "This first page holds the report's Summary: answer what the user did that day from it, "
+    "without turning the Dashboard. Yesterday's whole report is the Dashboard's brief page: "
+    "show that page when the user asks to see it, instead of reading on and writing it out; "
+    "read the next pages only when the user asks you to tell him the details."
 )
 
 
