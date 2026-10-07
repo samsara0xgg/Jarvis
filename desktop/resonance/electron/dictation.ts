@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, globalShortcut, ipcMain, screen } from '
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 // ADR 0058: dictation, Jarvis's small typing tool. A clean tap of the right ⌥ starts it and another finishes it;
-// Esc cancels; Return, while it listens, finishes it and sends the message once the words are in (ADR 0174). She leaves the notch for the text caret: a window over the caret's screen draws her there
+// Esc cancels; Return, while it listens, finishes it and sends the message once the words are in (ADR 0175). She leaves the notch for the text caret: a window over the caret's screen draws her there
 // (src/dictation.ts), the daemon records, hears and polishes, and the words are pasted where the caret is.
 // Typlus keeps F5 and the right ⌘, so both tools can run side by side.
 type Box = { x: number; y: number; width: number; height: number };
@@ -76,7 +76,7 @@ export function setupDictation({ companion, native, nativePath, preload, page, p
     });
     companion.webContents.send('dictation', 'out');
     if (!globalShortcut.isRegistered('Escape')) globalShortcut.register('Escape', cancel);
-    // ADR 0174, as 言字 0.4.3: Return swallowed while it listens finishes the dictation and sends it.
+    // ADR 0175, as 言字 0.4.3: Return swallowed while it listens finishes the dictation and sends it.
     if (!globalShortcut.isRegistered('Return')) globalShortcut.register('Return', () => { releaseReturn(); overlay.webContents.send('dictation-finish', true); });
     busy = true;
   }

@@ -166,7 +166,7 @@ class VoicePipeline:
         """Dictation (ADR 0076/0077): one stretch between his pauses, heard and corrected, no emit.
 
         ``recognizer`` hears it instead of the voice path's own, as 言字 does
-        (local Whisper, ADR 0110); ``rehear_among`` lets it hear a short clip again (ADR 0174).
+        (local Whisper, ADR 0110); ``rehear_among`` lets it hear a short clip again (ADR 0175).
         No words when nothing in it is speech; the caller judges the joined stretches as a whole.
         """
         if recognizer is not None:

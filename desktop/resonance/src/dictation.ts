@@ -113,7 +113,7 @@ const P = {
   vis: { x: 0, y: 0 }, cursor: { x: -1e4, y: -1e4 }, over: false, downAt: -1,
   // A tap on her once she is listening: the words come back in a box to fix before they go in.
   edit: false,
-  // Return finished it (ADR 0174): once the words are pasted, Return goes to the app too.
+  // Return finished it (ADR 0175): once the words are pasted, Return goes to the app too.
   send: false,
 };
 // Beats, in ms.
