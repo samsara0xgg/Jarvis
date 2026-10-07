@@ -881,7 +881,7 @@ export function Companion() {
         {dashboardContent}
       </DuskDashboard>
       <DockingDrop near={docking} width={geo.width} top={placement.topInset} center={geo.center}/>
-      <Notch look={wardrobe.marks} agents={frozen.current?.agents ?? (agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents)} unread={frozen.current?.unread ?? notices.unread} parked={frozen.current?.parked ?? notices.parked} archived={frozen.current?.archived ?? notices.archived} cursor={cursor} quiet={agentsFront || dashboard || moving}
+      <Notch look={wardrobe.marks} agents={frozen.current?.agents ?? (agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents)} unread={frozen.current?.unread ?? notices.unread} parked={frozen.current?.parked ?? notices.parked} archived={frozen.current?.archived ?? notices.archived} cursor={cursor} quiet={agentsFront || dashboard || moving} edge={dashboardJoined ? geo.center + PANEL / 2 : null}
         onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
         act={{ jump, answer: notices.focus, read: ids => { notices.acted(ids); notices.read(ids); }, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
         port={port} keys={keysPress} onViewing={setViewing} onJoinedChange={setNotchJoined} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>

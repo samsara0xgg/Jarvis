@@ -185,9 +185,9 @@ function Pop({ agents, look, act, rate, onClose }: { agents: Agent[]; look: Mark
     <div className="u-list">{agents.map(a => <PopRow key={a.id} a={a} look={look} act={act} tag={a.state === 'err' && !all ? <em> stopped</em> : null}/>)}</div>{rate}</div>;
 }
 
-export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, act, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
+export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, edge, act, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
   look: MarkLook; agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; geo: NotchGeo;
-  cursor: RefObject<Point>; note: NotchNote | null; quiet: boolean; act: NotchAct; onNoteHover: (on: boolean) => void;
+  cursor: RefObject<Point>; note: NotchNote | null; quiet: boolean; edge: number | null; act: NotchAct; onNoteHover: (on: boolean) => void;
   port: string | null; keys: number; onKeys: (on: boolean) => void; onViewing: (id: string | null) => void;
   onJoinedChange?: (joined: boolean) => void;
 }) {
@@ -219,8 +219,8 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     bumpAt: { turn: -1e9, work: -1e9, done: -1e9, moon: -1e9 }, parkedIds: new Set<string>(),
     popOrigins: new Map<string, Point>(), intent: new PointerIntent(), resolvedNote: '', workLandingUntil: 0, joined: false,
   }).current;
-  const L = useRef({ look, turn, work, fin, moon, geo, note, quiet, onNoteHover, onJoinedChange, held: false, pageW: false });
-  L.current = { look, turn, work, fin, moon, geo, note, quiet, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged };
+  const L = useRef({ look, turn, work, fin, moon, geo, note, quiet, edge, onNoteHover, onJoinedChange, held: false, pageW: false });
+  L.current = { look, turn, work, fin, moon, geo, note, quiet, edge, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged };
   const members = (key: Kind) => ({ turn: L.current.turn, work: L.current.work, done: L.current.fin, moon: L.current.moon })[key];
   const setPanel = (on: boolean) => { if (on === st.open) return; st.open = on; st.dirty = true; setOpen(on); };
   const setHotKey = (key: string) => { if (key === st.hot) return; st.hot = key; setHot(key); };
@@ -314,8 +314,11 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
 
   useEffect(() => {
     let raf = 0, timer: ReturnType<typeof setTimeout> | undefined, last = 0;
+    // The wing never reaches past `edge` (the Dashboard's side while it hangs below): one that would folds into
+    // the notch, and the panel's Agents row shows the same marks.
+    const wingGoal = () => { const e = L.current.edge; return e !== null && L.current.geo.notchR + st.wingTarget > e ? 0 : st.wingTarget; };
     // Her lobe to the last mark. Closed it may lean right when the marks outgrow her side.
-    const island = () => { const g = L.current.geo; return { l: g.lobeL, w: g.notchR + Math.max(0, st.wingTarget) - g.lobeL }; };
+    const island = () => { const g = L.current.geo; return { l: g.lobeL, w: g.notchR + Math.max(0, wingGoal()) - g.lobeL }; };
     // Three widths share the notch's centre; the skyline joins their shoulders to the wing.
     const span = (w: number) => { const ww = Math.min(w, L.current.geo.width - 16); return { l: (L.current.geo.width - ww) / 2, w: ww }; };
     // The marks and the panes, laid out and drawn. True while something is still moving.
@@ -351,8 +354,8 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         if (st.open && !held && !st.boxes.some(b => members(b.key).length)) setPanel(false);
       }
       // The page opens with the marks already out, not grown in from nothing.
-      if (!st.opened) { st.opened = true; s.ww.value = st.wingTarget; }
-      let moving = go(s.ww, st.wingTarget, SPRINGS.control.frequency, SPRINGS.control.damping);
+      if (!st.opened) { st.opened = true; s.ww.value = wingGoal(); }
+      let moving = go(s.ww, wingGoal(), SPRINGS.control.frequency, SPRINGS.control.damping);
       const dIn = dropIn.current!, nIn = noteIn.current!;
       if (st.dirty) {
         st.dirty = false;
