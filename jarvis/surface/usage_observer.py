@@ -206,7 +206,11 @@ def _refresh_claude_login() -> None:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "CLAUDE"))}
     with contextlib.suppress(OSError, subprocess.SubprocessError):
         subprocess.run(  # noqa: S603
-            [claude, "-p", "/usage"], capture_output=True, check=False, timeout=60, env=env,
+            [claude, "-p", "/usage"],
+            capture_output=True,
+            check=False,
+            timeout=60,
+            env=env,
             cwd=Path.home(),
         )
 
@@ -616,15 +620,16 @@ def collect_deepseek(*, timeout_s: float) -> UsageSnapshot:
         # A 200 with no balance row is missing data, not a zero balance: an "ok"
         # 0.0 would look like a spent account and rewrite the baseline.
         return _error("deepseek", "no balance_infos in response")
-    info = infos[0]
+    # One row per currency (a CNY top-up sits beside the USD one), in no fixed order:
+    # keep them all, keyed by currency, so the card neither hides one nor flips.
+    balances = {
+        str(info.get("currency") or "USD"): float(info.get("total_balance") or 0)
+        for info in sorted(infos, key=lambda info: str(info.get("currency") or "USD"))
+    }
     return UsageSnapshot(
         "deepseek",
         "ok",
-        {
-            "balance": float(info.get("total_balance") or 0),
-            "currency": str(info.get("currency") or "USD"),
-            "is_available": bool(body.get("is_available")),
-        },
+        {"balances": balances, "is_available": bool(body.get("is_available"))},
     )
 
 

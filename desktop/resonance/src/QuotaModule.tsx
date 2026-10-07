@@ -22,7 +22,8 @@ export type KeyRow = { key_id: string; name: string; today_tokens: number; month
 // ADR 0050: OpenAI reports no balance; with one recorded on the Usage page, balance_usd = it minus the spend since.
 export type OpenAIData = { today_usd: number; month_usd: number; by_model: SpendRow[]; by_key: KeyRow[];
   balance_usd?: number; balance_recorded_usd?: number; balance_recorded_at?: string | null };
-export type DeepSeekData = { balance: number; currency: string };
+// One balance per currency DeepSeek holds (a CNY top-up sits beside the USD one).
+export type DeepSeekData = { balances: Record<string, number> };
 export type MiniMaxData = { balance: number };
 export type Usage = { services: {
   claude?: UsageService<ClaudeData>; codex?: UsageService<CodexData>; openai?: UsageService<OpenAIData>;
@@ -42,7 +43,7 @@ export const demoUsage: Usage = { services: {
   openai: { status: 'ok', observed_at_ms: demoAt, data: { today_usd: 0.84, month_usd: 12.6,
     by_model: [{ model: 'gpt-live-1', today_usd: 0.61, month_usd: 9.2 }, { model: 'gpt-5.4-mini', today_usd: 0.23, month_usd: 3.4 }],
     by_key: [{ key_id: 'k1', name: 'jarvis', today_tokens: 98_000, month_tokens: 1_240_000 }, { key_id: 'k2', name: 'typeless', today_tokens: 12_000, month_tokens: 310_000 }] } },
-  deepseek: { status: 'ok', observed_at_ms: demoAt, data: { balance: 8.46, currency: 'USD' } },
+  deepseek: { status: 'ok', observed_at_ms: demoAt, data: { balances: { USD: 8.46 } } },
   minimax: { status: 'ok', observed_at_ms: demoAt - 120_000, data: { balance: 15.36 } },
 } };
 
@@ -72,6 +73,10 @@ const hm = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
 const fmtTime = (ms?: number | null) => (ms ? hm(new Date(ms)) : '—');
 const fmtUsd = (n?: number) => (n === undefined ? '—' : `$${n.toFixed(2)}`);
+const SIGN: Record<string, string> = { USD: '$', CNY: '¥' };
+// ["¥19.97", "-$0.10"]: every currency, debt signed, in the order the daemon sorted them.
+export const balanceParts = (b: Record<string, number> = {}) => Object.entries(b)
+  .map(([cur, n]) => `${n <= -.005 ? '-' : ''}${SIGN[cur] ?? `${cur} `}${Math.abs(n).toFixed(2)}`);
 const fmtTokens = (n?: number) => (n === undefined ? '—' : n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(0)}K` : String(n));
 const tone = (s?: UsageService<unknown>) => (!s || s.status === 'unconfigured' ? 'muted' : s.status === 'ok' ? 'ok' : 'warn');
 const statusText = (s?: UsageService<unknown>) => (!s || s.status === 'unconfigured' ? '未配置' : s.status === 'ok' ? '正常' : '同步异常');
@@ -143,7 +148,7 @@ function Balances({ usage, provider }: { usage: Usage; provider?: 'deepseek' | '
   const { deepseek, minimax } = usage.services;
   return <>
     {provider !== 'minimax' && <><Head glyph="deepseek" name="DeepSeek" service={deepseek}/>
-    {deepseek?.status === 'ok' ? <div className="quota-big"><strong>{fmtUsd(deepseek.data.balance)}</strong><small>官方余额</small></div> : <p className="quota-note">{deepseek?.error ?? '未配置'}</p>}
+    {deepseek?.status === 'ok' ? <div className="quota-big"><strong>{balanceParts(deepseek.data.balances).join(' · ') || '—'}</strong><small>官方余额</small></div> : <p className="quota-note">{deepseek?.error ?? '未配置'}</p>}
     </>}
     {!provider && <div className="quota-divider"/>}
     {provider !== 'deepseek' && <><Head glyph="minimax" name="MiniMax" service={minimax}/>
