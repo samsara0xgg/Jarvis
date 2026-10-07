@@ -121,6 +121,7 @@ from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.deployment.launchd import logs_dir
 from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
 from jarvis.deployment.night_power import MacPower
+from jarvis.execution.job_ledger_tool import build_job_ledger_tool
 from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
 from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth, stdio_env
 from jarvis.execution.path_resolver import (
@@ -1416,6 +1417,12 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
     )
 
 
+def _register_job_ledger(registry: ToolRegistry, job_mail: JobMail | None) -> None:
+    """The ``job_ledger`` tool reads what ``GET /inherent/jobs`` serves; absent while it is off."""
+    for tool in build_job_ledger_tool(None if job_mail is None else job_mail.ledger):
+        registry.register(tool)
+
+
 def _turn_end_asks(
     config: Mapping[str, Any], config_path: Path, log: JevLog | None = None,
 ) -> TurnEndAsks | None:
@@ -2585,6 +2592,10 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     )
 
     jev_log = _jev_log(full_config, paths.root)
+    job_mail = _job_mail(
+        full_config, config_path, jev_log, plugin_connections, memory.db_path, moment,
+    )
+    _register_job_ledger(registry, job_mail)
     return JarvisRuntime(
         config=full_config,
         runtime_paths=paths,
@@ -2658,9 +2669,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
         voice_cues=voice_cues,
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
-        job_mail=_job_mail(
-            full_config, config_path, jev_log, plugin_connections, memory.db_path, moment,
-        ),
+        job_mail=job_mail,
         moment=moment,
         voice_words=_voice_words(full_config, config_path, jev_log),
         oneshot=_jev_oneshot(
