@@ -770,7 +770,7 @@ def test_a_past_day_question_to_refresh_work_state_gets_the_saved_report(rig: Ri
     pointed = past_day_answer(rig.service, conn, "What did I do the day before yesterday?", now=NOW)
     assert pointed is not None
     assert pointed["outcome"] == "past_day"
-    assert "daily_work_report" in pointed["note"]
+    assert "get_briefing" in pointed["note"]
     last_week = past_day_answer(rig.service, conn, "上周我都在忙什么", now=NOW)
     assert last_week is not None
     assert last_week["outcome"] == "past_day"

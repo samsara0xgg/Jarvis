@@ -51,8 +51,8 @@ _DESCRIPTIONS = {
         "(time, speaker, text; long answers are cut and name the record id for read_records). "
         "from/to: bare date (local midnight) or ISO time with offset; to defaults to one day "
         "after from. Use it for 'what did we talk about on <date>' instead of paging "
-        "search_records; what the user did on a past day is that day's work report "
-        "(daily_work_report), which also covers apps, Git and calendar. Follow next_cursor "
+        "search_records; what the user did on a past day is that day's saved work report "
+        "(get_briefing), which also covers apps, Git and calendar. Follow next_cursor "
         "with identical arguments until null."
     ),
     "read_records": (
@@ -109,11 +109,12 @@ _DESCRIPTIONS = {
         "expected_version to revise an existing date. Reuse request_id for exact retries."
     ),
     "get_briefing": (
-        "Read a previously saved briefing by local_date and IANA timezone. Follow next_cursor "
-        "with identical date/timezone for all content. Does not regenerate or deliver it. "
-        "The daily work report of a day is saved here automatically early the next morning. "
-        "daily_work_report returns a saved report's summary in one call; read here only for "
-        "its full text."
+        "Read a previously saved briefing by local_date and IANA timezone. The daily work "
+        "report of a day is saved here automatically early the next morning, and is the "
+        "answer to 'what did I do yesterday / on <date>'. The first page opens with the "
+        "report's Summary, which is enough for a spoken answer: follow next_cursor (identical "
+        "date/timezone) only when the user asks for the details. Does not regenerate or "
+        "deliver it."
     ),
 }
 _RECORD_READERS = {
@@ -130,8 +131,8 @@ _WRITES = frozenset({"save_knowledge", "save_briefing"})
 _WORK_STATE_DESCRIPTION = (
     "Investigate and update the user's persisted current work state. Call this when they ask "
     "what they are doing now, what they did today so far, or how something discussed earlier is "
-    "progressing; not for yesterday or another past day (daily_work_report, which reuses the "
-    "saved report). It reads the latest TimeSink app/window/screen data, recent conversation "
+    "progressing; not for yesterday or another past day (get_briefing reads that day's saved "
+    "report). It reads the latest TimeSink app/window/screen data, recent conversation "
     "records, knowledge and Git observations, runs one analysis and saves the "
     "result; outcome=reused means nothing new was observed and the saved state still holds, "
     "no_evidence means there is no data, failed keeps the previous state. Pass the user's "

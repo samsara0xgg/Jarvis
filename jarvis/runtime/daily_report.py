@@ -609,7 +609,7 @@ class DailySchedule:
 # "What did I do yesterday" kept reaching refresh_work_state, whatever its description said
 # (2026-10-01: 11.5 s of analysing today, answered with today's state). A question naming a past
 # day is the saved report's: yesterday's is returned at once, another past day is pointed at
-# daily_work_report.
+# get_briefing.
 _PAST_DAY = re.compile(
     r"前天|上周|上个?星期|上个?礼拜|上个?月|\d+\s*天前"
     r"|day before yesterday|last (?:week|month)|\d+\s*days? ago",
@@ -641,8 +641,8 @@ def past_day_answer(
         "outcome": "past_day",
         "error": None,
         "state": None,
-        "note": "Call daily_work_report with that day's local_date: it reuses a saved report "
-        "at once. " + _NOT_NOW,
+        "note": "Call get_briefing with that day's local_date: its first page is the saved "
+        "report's summary. " + _NOT_NOW,
     }
 
 
