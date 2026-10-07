@@ -69,6 +69,7 @@ class CannedAnalyst:
         self.fail = False
         self.report = report or _REPORT
         self.materials: list[str] = []
+        self.tiers: list[str | None] = []
         self.started = threading.Event()
         self.release = threading.Event()
         self.release.set()
@@ -78,11 +79,17 @@ class CannedAnalyst:
         return self.materials[-1] if self.materials else ""
 
     def analyze(
-        self, conn: sqlite3.Connection, *, system: str, messages: list[dict[str, Any]]
+        self,
+        conn: sqlite3.Connection,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        service_tier: str | None = None,
     ) -> ChatResult:
         """Mimic a forced tool call."""
         del conn, system
         self.calls += 1
+        self.tiers.append(service_tier)
         self.materials.append(str(messages[0]["content"]))
         self.started.set()
         self.release.wait(timeout=5)
@@ -472,6 +479,7 @@ def test_http_routes_share_the_service(rig: Rig) -> None:
         assert client.get("/inherent/work-state").json()["state"]["version"] == 1
         assert rig.analyst.calls == 1
     assert rig.events("work_state.revised")[-1]["trigger"] == "dashboard"
+    assert rig.analyst.tiers == [None], "a refresh Allen waits on stays on the default tier"
 
 
 def test_head_poll_emits_only_on_change(tmp_path: Path, source: sqlite3.Connection) -> None:
@@ -725,3 +733,4 @@ def test_auto_refresh_runs_on_change_or_after_30_minutes(
     assert _auto(rig, moment, changed, 300.0 + 1800.0) == (("Chrome", "b.example"), 2100.0)
     assert rig.analyst.calls == 3
     assert [e["trigger"] for e in rig.events("work_state.revised")] == ["auto"] * 3
+    assert rig.analyst.tiers == ["flex"] * 3, "background runs ask OpenAI's flex tier"

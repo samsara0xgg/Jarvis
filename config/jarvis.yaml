@@ -94,6 +94,16 @@ llm:
       api: responses
       max_tokens: 16384
       reasoning_effort: medium
+    # 同 gpt6-luna，走 flex：纯后台（日摘要、核心记忆、对话压缩）没人在等，半价。
+    gpt6-luna-flex:
+      model: gpt-6-luna
+      base_url: "https://api.openai.com/v1"
+      api_key_env: OPENAI_API_KEY
+      api: responses
+      max_tokens: 16384
+      reasoning_effort: medium
+      extra_body:
+        service_tier: flex
     # 日报。flex 是半价的慢速档（不急的活用），OpenAI 忙时回 429、不收费；
     # 一份日报约 24 万 token 输入，标准档一份约 0.9 美元，flex 约一半。
     gpt6-sol:
@@ -222,7 +232,7 @@ daily_report:
 # 超过 max_chars 或引用不存在的 record_id 就丢掉，下次再试。
 day_summary:
   at: "05:00"
-  preset: gpt6-luna
+  preset: gpt6-luna-flex
   max_chars: 3000
   prompt: |
     You are writing the summary of one day of conversation between the user and
@@ -263,7 +273,7 @@ day_summary:
 # （op: dropped），Jev 调用失败按检查不过处理，整天不写、照常重试。不写 review_min_confidence = 不审。
 # review_model、review_timeout_ms 可选，缺省 typesafe/jev-1.13、10000。
 core_memory:
-  preset: gpt6-luna
+  preset: gpt6-luna-flex
   max_chars: 4000
   max_stale: 5
   review_min_confidence: 0.9
@@ -1220,7 +1230,7 @@ session:
   compact_at_context_ratio: 0.4   # verbatim history estimated over this share of the
                                   # decision preset's context_length is eligible
   verbatim_window_days: 7         # records younger than this survive a compaction verbatim
-  compact_preset: gpt6-luna       # the summariser; rare and off the latency path
+  compact_preset: gpt6-luna-flex  # the summariser; rare and off the latency path
   summary_max_chars: 20000        # a longer summary is rejected and nothing is stored; the prompt
                                   # asks for 9000, the rest is the margin the model overshoots by
                                   # (live 2026-09-14: deep wrote 4.5k-6.2k chars for 38k of history;

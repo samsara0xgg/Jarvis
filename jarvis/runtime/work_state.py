@@ -56,7 +56,12 @@ class Analyst(Protocol):
     """One bounded analysis request; tests substitute a canned reply."""
 
     def analyze(
-        self, conn: sqlite3.Connection, *, system: str, messages: list[dict[str, Any]]
+        self,
+        conn: sqlite3.Connection,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        service_tier: str | None = None,
     ) -> ChatResult:
         """Send the request through the given log connection's cost accounting."""
         ...
@@ -85,7 +90,7 @@ class LLMAnalyst:
         self._account_cost = account_cost
         self._kind = kind
 
-    def analyze(
+    def analyze(  # noqa: PLR0913 — one call's request plus its catalog, choice and tier.
         self,
         conn: sqlite3.Connection,
         *,
@@ -93,11 +98,13 @@ class LLMAnalyst:
         messages: list[dict[str, Any]],
         tools: Sequence[dict[str, Any]] | None = None,
         tool_choice: str = "required",
+        service_tier: str | None = None,
     ) -> ChatResult:
         """One call over the given catalog; the model has nothing outside it to call.
 
         ``required`` forces a tool call; a thinking preset (DeepSeek rejects
         ``required`` with thinking on) needs ``auto`` and an instruction to call.
+        ``service_tier`` is this call's OpenAI tier (``flex`` for background work).
         """
         catalog = [REPORT_TOOL] if tools is None else list(tools)
         client = self._factory.create(self._snapshot, response_id=new_response_id())
@@ -106,7 +113,11 @@ class LLMAnalyst:
         )
         if cost_recorder is None:
             return client.chat(
-                messages=messages, system=system, tools=catalog, tool_choice=tool_choice
+                messages=messages,
+                system=system,
+                tools=catalog,
+                tool_choice=tool_choice,
+                service_tier=service_tier,
             )
         return cost_recorder.chat(
             client,
@@ -116,6 +127,7 @@ class LLMAnalyst:
             tool_choice=tool_choice,
             kind=self._kind,
             turn_id=None,
+            service_tier=service_tier,
         )
 
 
@@ -343,7 +355,13 @@ class WorkStateService:
                 error = "analysis model is not configured"
                 return {"outcome": "failed", "error": error, "state": previous}
             system, messages = build_request(evidence, question=question, previous=previous)
-            report = parse_report(self._analyst.analyze(conn, system=system, messages=messages))
+            reply = self._analyst.analyze(
+                conn,
+                system=system,
+                messages=messages,
+                service_tier="flex" if trigger == "auto" else None,  # ADR 0180: nobody waits
+            )
+            report = parse_report(reply)
             item = compose_state(report, evidence, question=question, model=self._model)
             saved = save_state(
                 conn,
