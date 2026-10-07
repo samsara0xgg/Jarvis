@@ -768,6 +768,18 @@ class _Scratch:
     # The language this turn's fixed lines are written in: his words' (or the pinned
     # reply language); None keeps the system language (no words, e.g. a card button).
     lang: Language | None = None
+    # History reads already answered this turn, as (tool, arguments); a repeat is not run again.
+    history_reads: set[tuple[str, str]] = field(default_factory=set)
+
+
+# Reads of saved history: within one turn the same arguments give the same result, so a
+# repeat is answered from the earlier one (live 2026-10-06: recall twice, identical).
+_HISTORY_READS: Final[frozenset[str]] = frozenset(
+    {"recall", "search_records", "read_records", "get_briefing", "search_knowledge"}
+)
+_REPEATED_READ: Final[str] = json.dumps(
+    {"note": "You already made this exact call this turn; its result is above. Use it."}
+)
 
 
 _STATUS_HEADER: Final[str] = "[Current state | from the program, not the user's words]"
@@ -1990,13 +2002,17 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
 
     # 1. Tool definition lookup.
     tool_def = _find_tool_def(ctx.tool_registry, name)
-    if tool_def is None:
-        # Unknown tool from LLM. Inject a tool-result message saying so
-        # and let the loop continue (the LLM should adapt).
+    read_key = (name, json.dumps(arguments, sort_keys=True)) if name in _HISTORY_READS else None
+    repeated = read_key in scratch.history_reads
+    if tool_def is None or repeated:
+        # Unknown tool from LLM, or a history read it already made: inject a
+        # tool-result message saying so and let the loop continue (the LLM should adapt).
         messages.append(
             _tool_result_message(
                 call_id=call_id,
-                content=json.dumps({"error": f"unknown tool: {name}"}),
+                content=_REPEATED_READ
+                if repeated
+                else json.dumps({"error": f"unknown tool: {name}"}),
             )
         )
         return "continue"
@@ -2199,6 +2215,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
     loaded = primary_slot.payload.get("loaded_tools") if primary_slot.error is None else None
     if isinstance(loaded, list):
         scratch.loaded_tools.update(str(n) for n in loaded)
+    scratch.history_reads.update([read_key] if read_key and primary_slot.error is None else [])
 
     # 7. Append the tool result back into the messages list so the LLM
     #    can see it on the next iteration.
