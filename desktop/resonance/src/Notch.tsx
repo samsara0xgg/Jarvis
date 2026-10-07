@@ -458,7 +458,8 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     // The marks, clipped to the wing as it grows; the finished mark being dragged; the puffs left where it went.
     const draw = (now: number, top: number, look: MarkLook) => {
       const cv = fx.current!, { geo: g, turn, work, glows, note, say } = L.current, d = dpr(), W = g.width, H = window.innerHeight, t = now / 1000;
-      if (cv.width !== Math.round(W * d) || cv.height !== Math.round(H * d)) { cv.width = Math.round(W * d); cv.height = Math.round(H * d); }
+      // H is the stage's height (fitWindow), not the fitted window's: the canvas is that tall on the page too, or a short window squeezes the marks into its top.
+      if (cv.width !== Math.round(W * d) || cv.height !== Math.round(H * d)) { cv.width = Math.round(W * d); cv.height = Math.round(H * d); cv.style.height = `${H}px`; }
       const ctx = cv.getContext('2d')!;
       ctx.setTransform(d, 0, 0, d, 0, 0); ctx.clearRect(0, 0, W, H);
       // News makes its mark jump once; the beacon rings for 4 s after each arrival. A new glow is news to the turn mark too.
@@ -571,7 +572,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
   const shownNote = note ?? lastNote.current;
   return <div ref={root} className="notch">
     <svg className="notch-shape" aria-hidden="true"><path ref={shape}/></svg>
-    <canvas ref={fx} className="notch-fx" data-look={look} aria-hidden="true" style={{ width: geo.width, height: '100%' }}/>
+    <canvas ref={fx} className="notch-fx" data-look={look} aria-hidden="true" style={{ width: geo.width }}/>
     <div ref={hit} className="notch-hit" data-hit aria-hidden="true"
       onPointerDown={e => {
         const b = st.boxes.find(x => e.clientX >= x.x0 && e.clientX < x.x1);
