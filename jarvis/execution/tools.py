@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     from jarvis.execution.night_tools import NightControl
     from jarvis.shared import Event
     from jarvis.shared.device_link import DeviceLink
+    from jarvis.state.voice_settings import VoiceSettings
 
 
 LOGGER = logging.getLogger(__name__)
@@ -3821,6 +3822,7 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     work_state_refresh: WorkStateRefresh | None = None,
     daily_report_run: DailyReportRun | None = None,
     night: NightControl | None = None,
+    voice_settings: VoiceSettings | None = None,
     mail_drafts: DraftStore | None = None,
     device_link: DeviceLink | None = None,
 ) -> ToolRegistry:
@@ -3876,6 +3878,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
             workflow; `None` leaves `daily_work_report` off the menu.
         night: ADR 0093 — the runtime's night run; `None` leaves
             `start_night_run` / `end_night_run` off the menu.
+        voice_settings: ADR 0174 — her voice volume and speed; `None` leaves
+            `set_voice` off the menu.
         mail_drafts: ADR 0147 — the Dashboard's reply drafts; `None` leaves
             `write_mail_draft` off the menu.
         memory_db_path: `memory.db_path` — registers `search_records`
@@ -4027,9 +4031,10 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         registry.register(report_tool)
     from jarvis.execution.mail_draft_tool import build_mail_draft_tool  # noqa: PLC0415
     from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
+    from jarvis.execution.voice_tools import build_voice_tool  # noqa: PLC0415 — same cycle.
 
-    for night_tool in build_night_tools(night):
-        registry.register(night_tool)
+    for conversation_tool in (*build_night_tools(night), *build_voice_tool(voice_settings)):
+        registry.register(conversation_tool)
     for draft_tool in build_mail_draft_tool(mail_drafts):
         registry.register(draft_tool)
     return registry

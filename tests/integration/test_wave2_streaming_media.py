@@ -3297,6 +3297,7 @@ def test_streaming_rollout_default_on_and_production_builder_gate(  # noqa: PLR0
             lifecycle_terminal_cas=True,
         ),
         runtime_paths=SimpleNamespace(event_log=db_path),
+        voice_settings=None,
         conn=conn,
     )
     monkeypatch.setenv("MINIMAX_API_KEY", "integration-placeholder")
@@ -3444,6 +3445,7 @@ def test_production_builder_falls_back_only_after_typed_closed_startup(
             lifecycle_terminal_cas=True,
         ),
         runtime_paths=SimpleNamespace(event_log=db_path),
+        voice_settings=None,
         conn=conn,
     )
     monkeypatch.setenv("MINIMAX_API_KEY", "integration-placeholder")
@@ -3707,6 +3709,7 @@ def test_realtime_output_device_reaches_both_builder_player_sites(
             lifecycle_terminal_cas=True,
         ),
         runtime_paths=SimpleNamespace(event_log=db_path),
+        voice_settings=None,
         conn=conn,
     )
     monkeypatch.setenv("MINIMAX_API_KEY", "integration-placeholder")
@@ -3769,6 +3772,7 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
             lifecycle_terminal_cas=True,
         ),
         runtime_paths=SimpleNamespace(event_log=db_path),
+        voice_settings=None,
         conn=conn,
     )
     monkeypatch.setenv("MINIMAX_API_KEY", "integration-placeholder")

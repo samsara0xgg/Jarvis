@@ -2818,6 +2818,7 @@ def _build_tts_pipeline(  # noqa: C901 - rollout/degradation capability boundary
             total_timeout_s=knobs.tts_total_timeout_s,
             session_close_timeout_s=knobs.tts_session_close_timeout_s,
             recorder=recorder,
+            voice_settings=runtime.voice_settings,
             **volume_kwargs,
         )
 
@@ -5696,6 +5697,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             broadcaster.broadcast_op_sync("controls", **controls.update())
 
         controls.on_quiet = _keep_quiet
+        if runtime.voice_settings is not None:
+            # ADR 0174: a volume or speed said in a conversation ends with it.
+            controls.on_conversation_end = runtime.voice_settings.end_conversation
 
         def _set_quiet(level: str) -> None:
             controls.update(quiet=level)

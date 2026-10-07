@@ -32,6 +32,8 @@ class VoiceControls:
     quiet: str = "off"
     # ``(level) -> None``, bound by the runtime to the saved file and the controls push.
     on_quiet: Callable[[str], None] | None = None
+    # ``() -> None``, bound by the runtime; called when conversation goes from on to off (ADR 0174).
+    on_conversation_end: Callable[[], None] | None = None
     # ``(muted) -> None``, bound by the runtime to the TTS player's gain.
     on_speech_muted: Callable[[bool], None] | None = None
     # ``(muted) -> None``, bound by the runtime to the GPT-Live sender gate.
@@ -63,7 +65,10 @@ class VoiceControls:
             if self.on_speech_muted is not None:
                 self.on_speech_muted(speech_muted)
         if conversation is not None:
+            ended = self.conversation and not conversation
             self.conversation = conversation
+            if ended and self.on_conversation_end is not None:
+                self.on_conversation_end()
         if quiet is not None and quiet != self.quiet:
             self.quiet = quiet
             if self.on_quiet is not None:

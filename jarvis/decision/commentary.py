@@ -82,6 +82,7 @@ _QUIET_TOOLS: Final = (
     "ask_user",
     "start_night_run",
     "end_night_run",
+    "set_voice",
     "create_memo",
     "remember",
     "withdraw_card",

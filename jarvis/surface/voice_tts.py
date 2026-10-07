@@ -3,7 +3,8 @@
 ADR-0005 §4.2 / §5.3 / §10 (F6-F7 fallback chain).
 
 Layer rules: imports only stdlib, third-party (`websockets`, `sounddevice`,
-`numpy`), `jarvis.shared`, and `jarvis.state.event_log`. Does NOT name
+`numpy`), `jarvis.shared`, `jarvis.state.event_log`, and the type of
+`jarvis.state.voice_settings`. Does NOT name
 `jarvis.decision`, `jarvis.execution`, `jarvis.deployment`,
 `jarvis.runtime`, or `jarvis.cli`.
 
@@ -34,6 +35,7 @@ import numpy as np
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
 
+    from jarvis.state.voice_settings import VoiceSettings
     from jarvis.surface import voice_ducking
     from jarvis.surface.voice_artifact_store import TtsRecorder
 
@@ -43,6 +45,7 @@ from jarvis.shared.realtime_trace import (
     realtime_trace_context,
     record_realtime_trace,
 )
+from jarvis.state.voice_settings import FACTORY_PERCENT, FACTORY_SPEED
 from jarvis.surface.voice_ledger import (
     AcceptedSamples,
     AudibilityClass,
@@ -2035,6 +2038,27 @@ async def _ws_connect(url: str, *, additional_headers: dict[str, str]) -> Any:  
     )
 
 
+_MINIMAX_MAX_VOL: Final[float] = 10.0
+
+
+def _voice_setting(
+    voice: str, base_volume: int, settings: VoiceSettings | None,
+) -> tuple[dict[str, Any], tuple[int, float]]:
+    """The MiniMax ``voice_setting`` and the (percent, speed) it carries (ADR 0174).
+
+    Read at each task start, so an answer synthesized after ``set_voice`` ran uses the new
+    voice. ``vol`` is the configured base volume times the percent; at 100% it is the
+    configured value untouched.
+    """
+    percent, speed = (
+        settings.snapshot() if settings is not None else (FACTORY_PERCENT, FACTORY_SPEED)
+    )
+    volume = base_volume
+    if percent != FACTORY_PERCENT:
+        volume = min(_MINIMAX_MAX_VOL, base_volume * percent / FACTORY_PERCENT)
+    return {"voice_id": voice, "speed": speed, "vol": volume, "pitch": 0}, (percent, speed)
+
+
 def _base_to_ws_url(base_url: str) -> str:
     """Rewrite ``https://host`` → ``wss://host/ws/v1/t2a_v2`` (legacy convention)."""
     cleaned = base_url.rstrip("/")
@@ -2096,9 +2120,11 @@ class MiniMaxWSClient:
         total_timeout_s: float = DEFAULT_TTS_TOTAL_TIMEOUT_S,
         session_close_timeout_s: float = DEFAULT_TTS_SESSION_CLOSE_TIMEOUT_S,
         recorder: TtsRecorder | None = None,
+        voice_settings: VoiceSettings | None = None,
     ) -> None:
         """Configure endpoints, voice, audio shape and deadlines; does not connect yet."""
         self._recorder = recorder
+        self._voice_settings = voice_settings
         self._api_key = api_key
         self._voice = voice
         self._primary_endpoint = primary_endpoint
@@ -2157,6 +2183,7 @@ class MiniMaxWSClient:
             command_queue_capacity=command_queue_capacity,
             audio_queue_capacity=audio_queue_capacity,
             recorder=self._recorder,
+            voice_settings=self._voice_settings,
         )
 
     async def synthesize(self, text: str) -> bytes:
@@ -2298,12 +2325,7 @@ class MiniMaxWSClient:
             "event": "task_start",
             "model": self._model,
             "language_boost": _LANGUAGE_BOOST[lang.text_language(text)],
-            "voice_setting": {
-                "voice_id": self._voice,
-                "speed": 1.0,
-                "vol": self._volume,
-                "pitch": 0,
-            },
+            "voice_setting": _voice_setting(self._voice, self._volume, self._voice_settings)[0],
             "audio_setting": {
                 "format": "pcm",
                 "sample_rate": self._sr_in,
@@ -2439,8 +2461,11 @@ class MiniMaxTTSSession:
         command_queue_capacity: int,
         audio_queue_capacity: int,
         recorder: TtsRecorder | None = None,
+        voice_settings: VoiceSettings | None = None,
     ) -> None:
         self._recorder = recorder
+        self._voice_settings = voice_settings
+        self._started_with: tuple[int, float] | None = None  # the voice its task_start carried
         self._heard: list[bytes] = []  # ADR 0120: this segment's provider PCM, when recording
         self._api_key = api_key
         self._endpoint = endpoint
@@ -2497,6 +2522,14 @@ class MiniMaxTTSSession:
             prewarmed=self._conn is not None,
             measurement_semantics="before_provider_transport_connect",
         )
+        if self._conn is not None and self._started_with != _voice_setting(
+            self._voice, self._volume, self._voice_settings,
+        )[1]:
+            # ADR 0174: a spare connected while Allen was talking carries the voice of
+            # that moment; the answer to "louder" must not take it.
+            stale, self._conn = self._conn, None
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(stale.close(), timeout=self._CLOSE_TIMEOUT_S)
         if self._conn is None:
             await self.connect()
         self._opened = True
@@ -2549,18 +2582,16 @@ class MiniMaxTTSSession:
             if hello_status != 0:
                 msg = f"MiniMax session hello rejected: {hello.get('base_resp')}"
                 raise _MiniMaxProtocolError(msg)  # noqa: TRY301 - handshake cleanup below
+            voice_setting, self._started_with = _voice_setting(
+                self._voice, self._volume, self._voice_settings,
+            )
             task_start = {
                 "event": "task_start",
                 "model": self._model,
                 "language_boost": _LANGUAGE_BOOST[self._language],
                 "subtitle_enable": True,
                 "subtitle_type": "word_streaming",
-                "voice_setting": {
-                    "voice_id": self._voice,
-                    "speed": 1.0,
-                    "vol": self._volume,
-                    "pitch": 0,
-                },
+                "voice_setting": voice_setting,
                 "audio_setting": {
                     "format": "pcm",
                     "sample_rate": self._sample_rate_hz,

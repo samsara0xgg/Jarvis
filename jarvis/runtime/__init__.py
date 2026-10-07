@@ -211,6 +211,7 @@ from jarvis.state.projects import parse_catalog
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
 from jarvis.state.turn_overlap import any_turn_in_flight, turn_activity_since
+from jarvis.state.voice_settings import VoiceSettings
 from jarvis.surface.ambient_sounds import AmbientSounds
 from jarvis.surface.cli import (
     PreEmitTokenError,
@@ -634,6 +635,8 @@ class JarvisRuntime:
     settings: Settings | None = None
     # ADR 0093: the night run; the daemon ticks it. None = hand-assembled.
     night: NightRun | None = None
+    # ADR 0174: her voice volume and speed; the TTS provider reads it, `set_voice` writes it.
+    voice_settings: VoiceSettings | None = None
     # ADR 0101: the day before's report, written once a day. None = `daily_report.at` unset.
     daily_schedule: DailySchedule | None = None
     # ADR 0170: ``brain`` runs headless and starts nothing device-bound.
@@ -2441,6 +2444,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             zone=resolve_zone(None, _work_state_timezone(full_config))[1],
         )
     )
+    voice_settings = VoiceSettings(paths.root / "voice-settings.json")
     focus = FocusState() if _dashboard_mail(full_config) else None
     mail_drafts = None if focus is None else MailDrafts(focus)
     voice_cues = VoiceCues()
@@ -2455,6 +2459,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         timesink_db_path=_timesink_db_path(full_config),
         work_state_refresh=_work_state_tool_refresh(work_state, daily_report),
         night=night,
+        voice_settings=voice_settings,
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
@@ -2668,6 +2673,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             _no_default_audio_device if role == "brain" else _default_audio_device,
         ),
         night=night,
+        voice_settings=voice_settings,
         daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config),
     )
 
