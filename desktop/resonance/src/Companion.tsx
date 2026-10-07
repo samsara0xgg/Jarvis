@@ -530,12 +530,20 @@ export function Companion() {
   const openJobs = () => { openDashboard(false); pinned.current = true; if (detachedMode.current) window.jarvis?.dashboardMessage?.('dashboard', { type: 'jobs' }); else setJobsFocus(n => n + 1); notices.next(); };
   // ADR 0176: she turned the Dashboard to a page. A shut one opens (she moves it only when Allen asked to see something), and the page follows.
   useEffect(() => { if (s.present) { openDashboard(false); pinned.current = true; } }, [s.present?.key]);
-  const closeDashboard = () => { if (detached) void window.jarvis?.dashboard?.('close'); else setDashboard(false); };
+  // R&D log (resonance.out.log): who closed the panel, with where the pointer and the panel were.
+  const fold = (why: string) => {
+    if (live.current.dashboard) {
+      const p = cursor.current, r = root.current?.querySelector('.companion-dashboard')?.getBoundingClientRect();
+      console.info(`[dashboard] closed by ${why}; pointer ${Math.round(p.x)},${Math.round(p.y)}; panel ${r ? `${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)}` : 'none'}; entered ${dashEntered.current}, pinned ${pinned.current}`);
+    }
+    setDashboard(false);
+  };
+  const closeDashboard = (why = 'back or Esc') => { if (detached) void window.jarvis?.dashboard?.('close'); else fold(why); };
   // Clicking the island opens the Dashboard; a click on one it is already showing closes it, unless a rest opened it a moment
   // before (that click is the same reach for it). However it opened, it folds by itself once the pointer leaves (below).
   const toggleDashboard = () => {
     clearTimeout(dashTimer.current); dashTimer.current = undefined;
-    if (live.current.dashboard && pinned.current) { setDashboard(false); pinned.current = false; dashClosedHere.current = true; }
+    if (live.current.dashboard && pinned.current) { fold('a click on the island'); pinned.current = false; dashClosedHere.current = true; }
     else { if (!live.current.dashboard) openDashboard(false); pinned.current = true; dashEntered.current = true; }
   };
   // What keeps the Dashboard up with the pointer away: typing in it, her menu, or a press that began in it (a drag).
@@ -561,12 +569,13 @@ export function Companion() {
       if (detached) setDashboard(value.detached && value.open !== false);
       else {
         setRemoteOpen(value.detached && !!value.open);
-        if (value.detached) { setDashboard(false); clearTimeout(dashTimer.current); dashTimer.current = undefined; }
+        if (value.detached) { fold('detaching'); clearTimeout(dashTimer.current); dashTimer.current = undefined; }
         else if (value.open) { pinned.current = true; setDashboard(true); }
       }
     });
   }, []);
   useEffect(() => { if (!detached) window.jarvis?.dashboardVisible?.(dashboard); }, [dashboard]);
+  useEffect(() => { if (!detached) console.info(`[dashboard] ${dashboard ? 'open' : 'closed'}`); }, [dashboard]);
   useEffect(() => detached ? undefined : window.jarvis?.onDashboardDock?.(setDocking), []);
   const focusNotice = useRef(notices.focus); focusNotice.current = notices.focus;
   const dashboardMood = useCallback((expr: ExprId | null) => { if (detached) { if (detachedMode.current) window.jarvis?.dashboardMessage?.('parent', { type: 'mood', value: expr }); } else setDashMood(expr); }, []);
@@ -583,7 +592,7 @@ export function Companion() {
         if (detached) dashboardView.current?.restore(value); else remoteView.current = value;
       } else if (detached && message.type === 'settings') setSettingsFocus(n => n + 1);
       else if (detached && message.type === 'jobs') setJobsFocus(n => n + 1);
-      else if (!detached && message.type === 'notice' && typeof message.id === 'string') { setDashboard(false); focusNotice.current(message.id); }
+      else if (!detached && message.type === 'notice' && typeof message.id === 'string') { fold('an answer in the detached window'); focusNotice.current(message.id); }
       else if (detached && message.type === 'glow' && typeof message.value === 'string' && /^\d{1,3} \d{1,3} \d{1,3}$/.test(message.value) && message.value.split(' ').every(v => Number(v) <= 255)) document.documentElement.style.setProperty('--glow', message.value);
       else if (!detached && message.type === 'ready') sendGlow();
       else if (!detached && message.type === 'faces') appear(() => { stopScript(); PREVIEW.forEach((id, i) => after(i * 1100, () => setPreview(id))); after(PREVIEW.length * 1100, () => setPreview(null)); }, PREVIEW.length * 1100);
@@ -636,12 +645,12 @@ export function Companion() {
   // ⌥Tab, from the main process.
   useEffect(() => window.jarvis?.onCommand(command => {
     if (command === 'dashboard-detach') document.querySelector<HTMLElement>('.companion-dashboard')?.dispatchEvent(new Event('dashboard-detach'));
-    if (command === 'agent-keys' && !detached) { setDashboard(false); closeComposer(); setKeysPress(n => n + 1); }
+    if (command === 'agent-keys' && !detached) { fold('⌥Tab'); closeComposer(); setKeysPress(n => n + 1); }
     // Double left ⌘ (electron/companion.ts): the same poke as a click on her.
     if (command === 'poke' && !detached) latestPoke.current();
   }), []);
   useEffect(() => window.jarvis?.onDisplayLeave(() => {
-    closeComposer(); setMenu(null); setDashboard(false); clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); dashTimer.current = undefined; pending.current = 'none'; setZone('none'); setMoving(true);
+    closeComposer(); setMenu(null); fold('moving to another screen'); clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); dashTimer.current = undefined; pending.current = 'none'; setZone('none'); setMoving(true);
     // Long enough to look up, fly home and merge before the window leaves this screen.
     setTimeout(() => window.jarvis?.displayReady(), 520);
   }), []);
@@ -698,7 +707,7 @@ export function Companion() {
         if (over || dashHeld()) { if (over) dashEntered.current = true; clearTimeout(dashTimer.current); dashTimer.current = undefined; }
         else if (dashEntered.current && (toward || !dashTimer.current)) {
           clearTimeout(dashTimer.current);
-          dashTimer.current = setTimeout(() => { dashTimer.current = undefined; if (!dashHeld()) { setDashboard(false); pinned.current = false; } }, DASHBOARD_EXIT_MS);
+          dashTimer.current = setTimeout(() => { dashTimer.current = undefined; if (!dashHeld()) { fold('the pointer leaving'); pinned.current = false; } }, DASHBOARD_EXIT_MS);
         }
       } else if (over && geo.lobe.notched && !dashTimer.current && !dashClosedHere.current && live.current.openBy !== 'click') {
         const reveal = () => {
@@ -804,7 +813,7 @@ export function Companion() {
           talk={port ? { rows: s.rows, tail, busy: voice === 'thinking', offline: s.phase === 'error', floor, submit: ask, older, card, decide: decideCard, question, answer: answerQuestion,
             think: { on: deep, secs: deepSecs, words, thoughts } } : undefined}
           plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}
-          onAnswer={id => { if (detached) window.jarvis?.dashboardMessage?.('parent', { type: 'notice', id }); else notices.focus(id); closeDashboard(); }} ctl={ctl}/>;
+          onAnswer={id => { if (detached) window.jarvis?.dashboardMessage?.('parent', { type: 'notice', id }); else notices.focus(id); closeDashboard('an answer'); }} ctl={ctl}/>;
   if (detached) return <IconContext.Provider value={{ size: 16, weight: 'regular' }}>
     <main ref={root} className="companion companion-detached"><DuskDashboard open={dashboard} top={0} width={360} left={0} islandLeft={0} islandRight={360} lightX={40} detached>{dashboardContent}</DuskDashboard></main>
   </IconContext.Provider>;
