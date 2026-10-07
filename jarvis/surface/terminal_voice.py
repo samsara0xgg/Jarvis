@@ -276,8 +276,10 @@ class BrainVoice:
             task.cancel()
         if peer.tasks:
             await asyncio.wait(peer.tasks)
-        for sid in list(peer.sessions):
+        held = list(peer.sessions)
+        for sid in held:
             await self._discard(peer, sid)
+        LOGGER.info("aborted %d tts session(s) for %s", len(held), peer.name)
 
     def route(self, turn_id: str, peer: Peer) -> None:
         """``peer`` heard the utterance that opened ``turn_id``: its answer is spoken there."""

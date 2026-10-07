@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import functools
 import json
+import logging
 import socket
 import sqlite3
 import threading
@@ -397,9 +398,10 @@ def test_the_brain_ending_the_stream_ends_the_reader_and_a_failure_reaches_it(
 
 
 def test_a_dropped_link_fails_everything_in_flight_and_the_brain_aborts_that_terminals_sessions(
-    tmp_path: Path,
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A reader and a later call fail at once; the brain closes this terminal's sessions only."""
+    caplog.set_level(logging.INFO, logger="jarvis.surface.terminal_voice")
 
     async def scenario(wire: _Wire) -> list[_FakeSession]:
         other = _Wire(tmp_path, wire.provider, name="other", voice=wire.voice)
@@ -416,6 +418,7 @@ def test_a_dropped_link_fails_everything_in_flight_and_the_brain_aborts_that_ter
             await mine.send(_segment())
         await wire.voice.detach(wire.peer)  # what serve_terminal does when the socket ends
         assert [s.closed for s in wire.provider.sessions] == [False, True]
+        assert f"aborted 1 tts session(s) for {wire.peer.name}" in caplog.messages
         assert list(other.peer.sessions)
         await theirs.send(_segment(response="R9"))  # the other terminal's session still works
         assert await _drain(theirs, 1)
