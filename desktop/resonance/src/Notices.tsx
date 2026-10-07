@@ -426,7 +426,8 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   const ok = current ? card(current).ok : '', rating = !!current && !!card(current).rating && !card(current).rated;
   const size = current?.kind === 'pop' ? current.ids.length : 0;
   useEffect(() => {
-    if (!current || hover || ok || rating) return;
+    // A reminder stays until Allen dismisses it (ADR 0171).
+    if (!current || hover || ok || rating || isReminder(current)) return;
     // A pop the pointer has been on goes 1.5 s after it leaves.
     const t = setTimeout(() => needs(current) ? fold() : next(), needs(current) ? FOLD_MS : current.kind === 'digest' || isJob(current) ? DIGEST_MS : s.touched === current.key ? 1500 : POP_MS);
     return () => clearTimeout(t);

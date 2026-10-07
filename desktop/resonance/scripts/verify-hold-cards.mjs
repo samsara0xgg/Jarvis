@@ -60,7 +60,7 @@ try {
     if (p === '/inherent/agent-marks') return json({ marks: {} });
     if (p === '/inherent/night') return json(night);
     if ((p === '/inherent/confirmation' || p === '/inherent/clarification') && method === 'GET') return json({ card: null });
-    if (p.startsWith('/inherent/notices/') && method === 'POST') { acked.push(decodeURIComponent(p.slice('/inherent/notices/'.length))); return json({ ok: true }); }
+    if (p.startsWith('/inherent/notices/') && method === 'POST') { acked.push(`${decodeURIComponent(p.slice('/inherent/notices/'.length))}:${JSON.parse(route.request().postData() || '{}').action}`); return json({ ok: true }); }
     if (p.startsWith('/inherent/cards/') && method === 'POST') { posts.push({ id: decodeURIComponent(p.slice('/inherent/cards/'.length)), body: JSON.parse(route.request().postData() || '{}') }); return json({ ok: true }); }
     if (p.startsWith('/inherent/claude-requests/') && method === 'POST') { answers.push(decodeURIComponent(p.split('/').pop())); return json({ ok: true }); }
     return absent();
@@ -216,7 +216,7 @@ try {
     check(`${name}: the reminder shows`, await cards() === 1);
     check(`${name}: it is labelled Reminder or 提醒, with the line, and has no 合适吗 row`, /reminder|提醒/i.test(await page.locator(`${note} .nc-label`).innerText()) && /In 30 minutes/.test(await page.locator(`${note} .nc-mail`).innerText()) && await page.locator(`${note} .nc-rate-open, ${note} .nc-rate`).count() === 0);
     check(`${name}: its cue sounds although the output is not private`, await cues() > 0);
-    check(`${name}: the daemon is told it was seen`, acked.includes('reminder-1'));
+    check(`${name}: the daemon is told it was seen`, acked.includes('reminder-1:seen'));
   }
   // A reminder that arrives under a hold, behind a held finish, still shows; the finish waits for the end of the hold.
   reset(); hold = 'call'; priv = true; served = [reminder];
@@ -224,6 +224,13 @@ try {
   await arrive(done('r-1'));
   await page.waitForTimeout(2500);
   check('a call: the reminder shows while the finish stays held', await page.locator(`${note} .nc-mail`).count() === 1 && await page.locator(`${note} .nt-card.pop`).count() === 0);
+  // Nobody there: the card does not fold after the usual 30 s, and only a dismissal tells the daemon it was taken in.
+  await settle();
+  await page.waitForTimeout(32_000);
+  check('the reminder is still on the island after 32 s untouched', await page.locator(`${note} .nc-mail`).count() === 1 && !acked.some(x => /:feedback$/.test(x)));
+  await page.locator(`${note} .nc-dismiss`).click();
+  await page.waitForTimeout(600);
+  check('dismissing it puts it away and tells the daemon', await page.locator(`${note} .nc-mail`).count() === 0 && acked.includes('reminder-1:feedback'));
 
   check('no page errors', errors.length === 0);
   if (errors.length) console.log(errors);

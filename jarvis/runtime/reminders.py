@@ -163,10 +163,11 @@ class Reminders:
             for one in sorted(fired, key=lambda r: r.fired_at_ms or 0)
         ]
 
-    def acknowledge(self, notice_id: str) -> None:
-        """``POST /inherent/notices/{id}``: Allen took it in; an unknown id is a LookupError.
+    def acknowledge(self, notice_id: str, action: str) -> None:
+        """``POST /inherent/notices/{id}``: an unknown id is a LookupError.
 
-        Seen, dismissed and a reaction all take the card in: a reminder has no level to rate.
+        ``seen`` only says the card came up, so a reminder nobody dismissed is served again after a
+        companion restart; dismissed and a reaction take it in (a reminder has no level to rate).
         """
         with contextlib.closing(
             open_runtime_event_log(self._path, deadline=time.monotonic() + 1.0)
@@ -175,5 +176,5 @@ class Reminders:
             if one is None or one.fired_at_ms is None:
                 msg = f"no such notice: {notice_id}"
                 raise LookupError(msg)
-            if not one.acknowledged:
+            if action != "seen" and not one.acknowledged:
                 emit_event(conn, type="reminder.acknowledged", payload={"reminder_id": notice_id})

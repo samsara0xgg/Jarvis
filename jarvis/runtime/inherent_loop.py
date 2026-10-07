@@ -4993,7 +4993,7 @@ def _notice_deps(
 
     async def act(notice_id: str, action: str, reaction: str | None) -> None:
         if notice_id.startswith(ID_PREFIX):
-            await asyncio.to_thread(reminders.acknowledge, notice_id)
+            await asyncio.to_thread(reminders.acknowledge, notice_id, action)
         elif mail_act is not None:
             await mail_act(notice_id, action, reaction)
         else:

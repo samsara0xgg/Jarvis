@@ -47,7 +47,9 @@ memo and its description points to `set_reminder` for a time.
 
 ## Consequences
 
-Polling means a ring is up to 15 seconds late. The companion draws a reminder as
+Polling means a ring is up to 15 seconds late. A `seen` post does not take a reminder in, only a
+dismissal does, and the companion keeps the card on the island until he dismisses it, so one that
+came up while he was away is still there when he is back, and after a companion restart. The companion draws a reminder as
 it draws a job-mail notice and holds notices itself at `no-pop`, `dnd` and during
 a call or away hold, so those tiers show the card only once the companion stops
 holding; the daemon side serves it at every tier. A brain with no private audio

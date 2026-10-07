@@ -143,6 +143,11 @@ def test_set_list_fire_once_with_card_and_one_spoken_line(world: _World) -> None
     assert (
         client.post(f"/inherent/notices/{card['id']}", json={"action": "seen"}).status_code == 200
     )
+    assert [c["id"] for c in client.get("/inherent/notices").json()["notices"]] == [card["id"]]
+    assert (
+        client.post(f"/inherent/notices/{card['id']}", json={"action": "dismissed"}).status_code
+        == 200
+    )
     assert client.get("/inherent/notices").json()["notices"] == []
     assert (
         client.post("/inherent/notices/reminder-nope", json={"action": "seen"}).status_code == 404
