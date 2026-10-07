@@ -707,14 +707,22 @@ def _moment(sentence: str, received: datetime) -> str | None:
     return moment.astimezone().isoformat(timespec="minutes")  # a bare time is Allen's own clock
 
 
-def event_of(body: str, received: datetime) -> tuple[str | None, str | None]:
+def event_of(
+    body: str, received: datetime, *, dated: bool = False
+) -> tuple[str | None, str | None]:
     """(sentence, ISO time) of the first sentence on an interview or meeting with a date or time.
 
-    The time is None unless that sentence holds a clear date and time.
+    The time is None unless that sentence holds a clear date and time. With ``dated`` (the mail is
+    already known to be an interview), a line that is only a clear date and time also counts, as
+    in a Teams invitation whose "Thursday, October 8, 2026 2:00 PM (PDT)" has no event word.
     """
     for raw in _SENTENCE_SPLIT.split(body):
         sentence = re.sub(r"\s+", " ", raw).strip()
-        if not sentence or _EVENT_WORDS.search(sentence) is None:
+        if not sentence:
+            continue
+        if _EVENT_WORDS.search(sentence) is None and not (
+            dated and _moment(sentence, received) is not None
+        ):
             continue
         if not (
             _DATE_WORDS.search(sentence)

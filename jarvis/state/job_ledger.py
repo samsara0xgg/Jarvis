@@ -419,6 +419,30 @@ def body_excerpt(path: Path, message_id: str) -> str:
     return row["body_excerpt"] if row else ""
 
 
+def bodyless_mails(path: Path, kinds: Sequence[str], limit: int) -> list[dict[str, Any]]:
+    """The newest visible mails of these kinds with no kept body, at most ``limit`` (ADR 0183)."""
+    with _db(path) as conn:
+        rows = conn.execute(
+            "SELECT message_id, received_at, sender_name, sender_domain, subject, event_at,"
+            " event_text FROM job_mail m"
+            " WHERE deleted = 0 AND kind IN (SELECT value FROM json_each(?))"
+            " AND NOT EXISTS (SELECT 1 FROM job_decision d"
+            " WHERE d.message_id = m.message_id AND d.body_excerpt IS NOT NULL)"
+            " ORDER BY received_at DESC, message_id LIMIT ?",
+            (json.dumps(list(kinds)), limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def set_event(path: Path, message_id: str, event_at: str | None, event_text: str | None) -> None:
+    """Write the event time and sentence read from a mail's body again (ADR 0183)."""
+    with _db(path) as conn:
+        conn.execute(
+            "UPDATE job_mail SET event_at = ?, event_text = ? WHERE message_id = ?",
+            (event_at, event_text, message_id),
+        )
+
+
 def update_mail(path: Path, message_id: str, fields: Mapping[str, str | int]) -> None:
     """Change the typed facts of one ledger row (``company``, ``role``, ``kind``, ``deleted``)."""
     names = [name for name in fields if name in _EDITABLE]

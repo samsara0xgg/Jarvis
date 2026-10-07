@@ -2728,3 +2728,127 @@ def test_an_application_carries_its_timeline_interview_and_links(
     hand = _apps(h)[("Hand", "")]
     assert hand["timeline"] == [{"kind": "applied", "at": "2026-09-12", "future": False}]
     assert hand["interview"] is None
+
+
+_TEAMS_INVITE = """Hi Yilun,
+
+You are invited to a Microsoft Teams meeting.
+
+Thursday, October 8, 2026 2:00 PM (PDT)
+
+Microsoft Teams meeting
+Join: https://teams.microsoft.com/l/meetup-join/19%3Ameeting_abc/0?context=x
+"""
+
+
+def test_event_of_reads_a_bare_teams_time_line_only_for_a_known_interview() -> None:
+    """A Teams invitation's time line has no event word: it counts when the mail is an interview."""
+    received = NOW - timedelta(days=4)
+    assert triage.event_of(_TEAMS_INVITE, received) == (None, None)
+    sentence, at = triage.event_of(_TEAMS_INVITE, received, dated=True)
+    assert sentence == "Thursday, October 8, 2026 2:00 PM (PDT)"
+    assert at == "2026-10-08T14:00-07:00"
+    # A line with a date but no clock is not a time, even for a known interview.
+    assert triage.event_of("Sometime in October 8, 2026.", received, dated=True) == (None, None)
+
+
+def _bodyless(h: _Harness, key: str, kind: str, **fields: Any) -> None:  # noqa: ANN401
+    _stored(h, f"m-{key}", "Reliable Controls", "Firmware QA", kind, timedelta(days=4), **fields)
+
+
+def test_old_interview_mail_without_a_kept_body_is_read_again_once(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """ADR 0183: one gmail_get, the body kept as a reread row, the time filled, never twice."""
+    mails = [
+        _mail(key, "Jill <jill@rc.example>", f"Interview {key}", _TEAMS_INVITE)
+        for key in ("rc", "kept", "offer", "reject", "gone")
+    ]
+    h = _harness(tmp_path, jev, mails)
+    _bodyless(h, "rc", "interview")
+    _bodyless(h, "kept", "interview")
+    job_ledger.record_decision(
+        h.db, "m-kept", "body", "job", NOW, head={"received_at": NOW.isoformat()}, body_excerpt="x"
+    )
+    _bodyless(h, "offer", "offer", event_at="2026-11-01T10:00:00+00:00")  # has a time already
+    _bodyless(h, "reject", "rejection")  # not interview or offer
+    _bodyless(h, "gone", "interview")
+    job_ledger.update_mail(h.db, "m-gone", {"deleted": 1})  # hidden: not read
+
+    assert h.job.reread() == 2
+    assert h.gmail.full_reads() == {"m-rc", "m-offer"}
+    assert h.gmail.tools() == {"gmail_get"}
+    rows = h.sql("SELECT message_id, stage, verdict, judge, body_status FROM job_decision")
+    assert sorted(r for r in rows if r[0] != "m-kept") == [
+        ("m-offer", "reread", "job", "local-reread/body-v1", "read"),
+        ("m-rc", "reread", "job", "local-reread/body-v1", "read"),
+    ]
+    assert job_ledger.body_excerpt(h.db, "m-rc").startswith("Hi Yilun")
+    event = "SELECT event_at, event_text FROM job_mail WHERE message_id = ?"
+    assert h.sql(event, "m-rc") == [
+        ("2026-10-08T14:00-07:00", "Thursday, October 8, 2026 2:00 PM (PDT)")
+    ]
+    assert h.sql(event, "m-offer") == [("2026-11-01T10:00:00+00:00", None)]  # never overwritten
+    # A reread row is no verdict: nothing is held back, alerted or listed because of it.
+    assert h.sql("SELECT count(*) FROM job_seen") == [(0,)]
+    assert h.sql("SELECT count(*) FROM job_alert") == [(0,)]
+    assert h.client.get("/inherent/jobs").json()["skipped"] == []
+
+    one = _apps(h)[("Reliable Controls", "Firmware QA")]["interview"]
+    assert one is not None
+    assert (one["platform"], one["mode"]) == ("Teams", "online")
+    assert one["join_url"].startswith("https://teams.microsoft.com/l/meetup-join/")
+
+    before = len(h.gmail.calls)
+    assert h.job.reread() == 0  # every one has a kept body now
+    assert len(h.gmail.calls) == before
+
+
+def test_a_failed_or_impossible_reread_is_skipped_and_the_poller_goes_on(
+    tmp_path: Path, jev: _Jev
+) -> None:
+    """A Gmail failure on one mail is logged and the next is read; no Gmail means no reads."""
+    mails = [_mail(k, "Jill <jill@rc.example>", "Interview", _TEAMS_INVITE) for k in ("bad", "ok")]
+    h = _harness(tmp_path, jev, mails)
+    _bodyless(h, "bad", "interview")
+    _bodyless(h, "ok", "interview")
+    h.gmail.full_failures = {"m-bad"}
+
+    assert h.job.reread() == 1
+    assert h.sql("SELECT message_id FROM job_decision") == [("m-ok",)]
+    assert h.job.reread() == 0  # the failed one is tried again at the next start, nothing else
+    assert h.gmail.full_read_count("m-bad") == 2
+    assert h.gmail.full_read_count("m-ok") == 1
+
+    h.job._connections = _Connections(None)  # type: ignore[assignment]  # noqa: SLF001
+    assert h.job.reread() == 0
+
+
+def test_the_loop_reads_old_bodies_after_the_repair_and_a_start_reads_at_most_twenty(
+    tmp_path: Path, jev: _Jev, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run loop calls the re-read once at start; the cap keeps a start small."""
+    monkeypatch.delenv("OPENROUTER_API_KEY")  # the polls do nothing: only the re-read reads
+    keys = [f"{i:02d}" for i in range(23)]
+    h = _harness(
+        tmp_path,
+        jev,
+        [_mail(k, "Jill <jill@rc.example>", "Interview", _TEAMS_INVITE) for k in keys],
+        poll_s=0.05,
+    )
+    for key in keys:
+        _bodyless(h, key, "interview")
+
+    async def run() -> None:
+        task = asyncio.create_task(h.job.run())
+        for _ in range(100):
+            if len(h.gmail.full_reads()) >= 20:
+                break
+            await asyncio.sleep(0.05)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert len(h.gmail.full_reads()) == 20
+    assert h.sql("SELECT count(*) FROM job_decision WHERE stage = 'reread'") == [(20,)]

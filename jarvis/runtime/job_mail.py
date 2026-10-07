@@ -69,6 +69,10 @@ _RULE_JUDGE: Final[str] = "local-rule/social-v1"
 _EXCLUDE_JUDGE: Final[str] = "local-rule/exclude-v1"
 # How much of each scanned mail's plain-text body the local decision snapshot keeps (ADR 0162).
 SNAPSHOT_BODY_CHARS: Final[int] = 3000
+# The one-off re-read at start (ADR 0183): which mail, how many per start, who is named as judge.
+_REREAD_KINDS: Final[tuple[str, ...]] = ("interview", "offer")
+_REREAD_CAP: Final[int] = 20
+_REREAD_JUDGE: Final[str] = "local-reread/body-v1"
 
 
 @dataclass(frozen=True)
@@ -155,6 +159,7 @@ class JobMail:
         LOGGER.info("job mail started (every %.0f s)", self._settings.poll_s)
         try:
             await asyncio.to_thread(self.repair)
+            await asyncio.to_thread(self.reread)
             while True:
                 try:
                     await asyncio.to_thread(self.poll_once)
@@ -176,6 +181,60 @@ class JobMail:
         if changed:
             LOGGER.info("job mail: repaired %d ledger rows", changed)
         return changed
+
+    def reread(self) -> int:
+        """Read again the body of interview and offer mail settled before it was kept (ADR 0183).
+
+        At most ``_REREAD_CAP`` mails per start, newest first, by ``gmail_get`` alone; a failure is
+        logged and skipped, never stops the poller. Each body start is kept as a ``reread`` row,
+        and a mail with no event time gets the one its body names. Returns how many were kept.
+        """
+        try:
+            rows = ledger.bodyless_mails(self._db, _REREAD_KINDS, _REREAD_CAP)
+            if not rows:
+                return 0
+            servers = self._connections.client_for(MAIL_SERVER)
+        except Exception:
+            LOGGER.exception("job mail: the re-read of old bodies could not start")
+            return 0
+        kept, now = 0, self.now()
+        for row in rows:
+            message_id = row["message_id"]
+            text = self._read_body(servers, message_id)
+            if text is None:
+                continue
+            try:
+                ledger.record_decision(
+                    self._db,
+                    message_id,
+                    "reread",
+                    "job",
+                    now,
+                    head={k: row[k] or "" for k in ("received_at", "subject")}
+                    | {"name": row["sender_name"] or "", "domain": row["sender_domain"] or ""},
+                    judge=_REREAD_JUDGE,
+                    body_excerpt=text[:SNAPSHOT_BODY_CHARS],
+                    body_status="read",
+                )
+                if not row["event_at"]:
+                    self._fill_event(row, text)
+            except Exception:
+                LOGGER.exception("job mail: cannot keep the re-read body of %s", message_id)
+                continue
+            kept += 1
+        if kept:
+            LOGGER.info("job mail: read again the bodies of %d old mails", kept)
+        return kept
+
+    def _fill_event(self, row: Mapping[str, Any], body: str) -> None:
+        """Give a ledger row with no event time the one its body names, if any."""
+        try:
+            received = datetime.fromisoformat(row["received_at"])
+        except (TypeError, ValueError):
+            received = self.now()
+        sentence, at = triage.event_of(body, received, dated=True)
+        if at or sentence:
+            ledger.set_event(self._db, row["message_id"], at, sentence or row["event_text"])
 
     def poll_once(self) -> int:
         """One cycle, on the calling thread; returns how many letters it settled."""
