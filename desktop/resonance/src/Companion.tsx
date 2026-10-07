@@ -17,6 +17,7 @@ import { answerStartrail, markStartrail, useStartrail } from './startrail';
 import { CardRate, DigestCard, JobsDigestCard, MailNotice, NoticeCard, RateRow, cardTell, ended, noticeCue, useNotices, type MomentHold } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { Notch, type NotchNote } from './Notch';
+import { fitWindow } from './fitWindow';
 import { NightCard, isNightLook, markNightSeen, morningOf, seenNight, type NightAction, type NightSession, type NightState } from './NightCard';
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
 import { useNow, useRoute } from './homeData';
@@ -93,13 +94,17 @@ export function Companion() {
   // Moving to another screen: she sinks into this island, then the window moves and she comes up in the new one.
   const [moving, setMoving] = useState(false);
   const shownDisplay = useRef<number | undefined>(undefined), arriving = useRef(false);
+  // The window shrinks to what is shown (src/fitWindow.ts); a new placement puts the whole stage back, so it fits again.
+  // The stage's height is electron/companion.ts's: the notch's top inset plus 690, never more than the screen.
+  const fit = useRef<ReturnType<typeof fitWindow> | null>(null), stage = useRef({ w: 640, h: 700 });
   useEffect(() => {
     if (!window.jarvis) return;
     const receive = (value: Placement | null) => {
       if (!value) return;
       if (shownDisplay.current !== undefined && value.displayId !== shownDisplay.current) arriving.current = true;
       shownDisplay.current = value.displayId;
-      setPlacement(value); setMoving(false);
+      stage.current = { w: value.surfaceWidth, h: Math.min(screen.height, Math.ceil(value.topInset) + 690) };
+      fit.current?.reset(); setPlacement(value); setMoving(false);
     };
     void window.jarvis.placement().then(receive);
     return window.jarvis.onPlacement(receive);
@@ -367,6 +372,11 @@ export function Companion() {
   live.current = { geo, dashboard, chip, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu, stowed };
   const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 });
   const input = useRef<HTMLTextAreaElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
+  useEffect(() => {
+    if (detached || !window.jarvis?.fit) return;
+    const f = fit.current = fitWindow(root.current!, () => stage.current, size => window.jarvis?.fit?.(size.w, size.h));
+    return () => { f.stop(); fit.current = null; };
+  }, []);
 
   const zoneTimer = useRef<ReturnType<typeof setTimeout>>(undefined), pending = useRef<Zone>('none'), nearTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const dashTimer = useRef<ReturnType<typeof setTimeout>>(undefined), dashEntered = useRef(false), pinned = useRef(false), dashClosedHere = useRef(false), interactive = useRef(false);

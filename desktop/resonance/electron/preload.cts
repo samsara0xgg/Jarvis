@@ -88,6 +88,8 @@ contextBridge.exposeInMainWorld('jarvis', {
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => ipcRenderer.send('drag', { phase, point }),
   passthrough: (enabled: boolean) => ipcRenderer.send('passthrough', enabled),
   material: (rects: unknown[], strength: number) => ipcRenderer.send('material', { rects, strength }),
+  // The companion window's size: what the page shows (src/fitWindow.ts).
+  fit: (width: number, height: number) => ipcRenderer.send('window-fit', { width, height }),
   // ADR 0058: out at the caret for dictation ('out'), back home ('home', or 'happy' when the words went in); and
   // the skin she wears, for that trip.
   onDictation: (callback: (trip: string) => void) => {

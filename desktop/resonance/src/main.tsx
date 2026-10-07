@@ -60,6 +60,7 @@ declare global { interface Window { jarvis?: {
   dashboardDrag?: (phase: 'start' | 'move' | 'end') => void;
   dashboardSize?: (height: number) => void;
   dashboardVisible?: (visible: boolean) => void;
+  fit?: (width: number, height: number) => void;
   onDashboardDock?: (cb: (near: boolean) => void) => () => void;
   dashboardMessage?: (target: 'parent' | 'dashboard', payload: Record<string, unknown>) => void;
   onDashboardMessage?: (cb: (payload: Record<string, unknown>) => void) => () => void;

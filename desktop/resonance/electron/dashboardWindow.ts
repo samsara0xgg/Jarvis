@@ -6,8 +6,8 @@ import path from 'node:path';
 // docking; only these two local main frames can operate it or the shared daemon bridge.
 type Sender = Electron.IpcMainEvent | Electron.IpcMainInvokeEvent;
 const WIDTH = 360, SHORTCUT = 'CommandOrControl+Shift+Down';
-export function setupDashboard({ parent, preload, page, demo, port, mouseDown, onAttach }: {
-  parent: BrowserWindow; preload: string; page: string; demo: boolean; port: string; mouseDown?: () => boolean; onAttach: (display: Electron.Display) => void;
+export function setupDashboard({ parent, stage, preload, page, demo, port, mouseDown, onAttach }: {
+  parent: BrowserWindow; stage?: () => Electron.Rectangle; preload: string; page: string; demo: boolean; port: string; mouseDown?: () => boolean; onAttach: (display: Electron.Display) => void;
 }) {
   const file = path.join(app.getPath('userData'), 'dashboard.json');
   let child: BrowserWindow | null = null, loading: Promise<BrowserWindow> | null = null;
@@ -113,7 +113,7 @@ export function setupDashboard({ parent, preload, page, demo, port, mouseDown, o
     if (child && !child.isDestroyed() && !loading) return Promise.resolve(child);
     if (loading) return loading;
     loading = (async () => {
-      const p = parent.getBounds(), initial = saved ?? { x: p.x + (p.width - WIDTH) / 2, y: p.y + 72, width: WIDTH, height: 520 };
+      const p = stage?.() ?? parent.getBounds(), initial = saved ?? { x: p.x + (p.width - WIDTH) / 2, y: p.y + 72, width: WIDTH, height: 520 };
       const bounds = clamp({ ...initial, ...(typeof height === 'number' && Number.isFinite(height) ? { height } : {}) });
       const w = child = new BrowserWindow({ ...bounds, title: 'Jarvis Dashboard', frame: false, transparent: true, backgroundColor: '#00000000',
         hasShadow: false, show: false, resizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true, roundedCorners: false,

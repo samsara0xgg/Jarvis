@@ -92,11 +92,32 @@ const GHOSTTY_JUMP = `on run argv
   end tell
 end run`;
 function frame(): Electron.Rectangle { return material?.getFrame(win.getNativeWindowHandle()) ?? win.getBounds(); }
+// The stage the page is laid out on, centred on the display's top edge. The window is its top-left corner and shrinks to what the
+// page shows (src/fitWindow.ts): only the right and bottom edges move, so nothing on screen shifts. `fit` is the size the page
+// last asked for; null is the whole stage, which every placement starts from. `glassRects` are the page's native-glass rects.
+let fit: { width: number; height: number } | null = null, glassRects: unknown[] = [], applied = '';
+function stageRect(display: Electron.Display, topInset: number): Electron.Rectangle {
+  return { x: Math.round(display.bounds.x + (display.bounds.width - WIDTH) / 2), y: display.bounds.y, width: WIDTH, height: Math.min(display.bounds.height, Math.ceil(topInset) + 690) };
+}
+function shape(display: Electron.Display) {
+  const stage = stageRect(display, placement(display).topInset);
+  return { ...stage, width: fit ? Math.min(stage.width, fit.width) : stage.width, height: fit ? Math.min(stage.height, fit.height) : stage.height };
+}
+function reframe(display: Electron.Display) {
+  const bounds = shape(display), key = JSON.stringify(bounds);
+  if (key === applied) return;
+  applied = key;
+  // A borderless panel may cover the menu bar only through AppKit, like the notch dock.
+  if (material) {
+    material.setFrame(win.getNativeWindowHandle(), bounds);
+    // The glass views sit from the window's bottom edge: lay them out again for the new height, in the same turn.
+    material.update(win.getNativeWindowHandle(), glassRects, 1);
+  } else win.setBounds(bounds);
+}
 function place() {
   const display = current = target(), value = placement(display);
-  const bounds = { x: Math.round(display.bounds.x + (display.bounds.width - WIDTH) / 2), y: display.bounds.y, width: WIDTH, height: Math.min(display.bounds.height, Math.ceil(value.topInset) + 690) };
-  // A borderless panel may cover the menu bar only through AppKit, like the notch dock.
-  if (material) material.setFrame(win.getNativeWindowHandle(), bounds); else win.setBounds(bounds);
+  fit = null;
+  reframe(display);
   win.webContents.send('placement', value);
 }
 function keepOnTop() {
@@ -218,7 +239,7 @@ function companion(shown?: () => void) {
   win.webContents.on('will-navigate', event => event.preventDefault());
   // The page's own R&D lines reach the log: when and why the Dashboard closed.
   win.webContents.on('console-message', event => { if (event.message.startsWith('[dashboard]')) console.log(`${new Date().toISOString()} ${event.message}`); });
-  const dashboard = setupDashboard({ parent: win, preload: path.join(here, 'preload.cjs'), page: path.join(here, '../dist/index.html'), demo, port,
+  const dashboard = setupDashboard({ parent: win, stage: () => { const d = current ?? target(); return stageRect(d, placement(d).topInset); }, preload: path.join(here, 'preload.cjs'), page: path.join(here, '../dist/index.html'), demo, port,
     mouseDown: material?.leftMouseDown ? () => material.leftMouseDown() : undefined,
     onAttach: display => { clearTimeout(moving); moving = undefined; pending = null; current = display; place(); } });
   registerDaemonBridge(win, { lab: demo, trustedWindows: dashboard.windows });
@@ -346,11 +367,16 @@ function companion(shown?: () => void) {
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
     keepOnTop();
   });
+  ipcMain.on('window-fit', (event, size) => {
+    if (mine(event) !== win || !Number.isFinite(size?.width) || !Number.isFinite(size?.height)) return;
+    fit = { width: Math.max(120, Math.round(size.width)), height: Math.max(40, Math.round(size.height)) };
+    reframe(current ?? target());
+  });
   ipcMain.on('material', (event, payload) => {
     const sender = mine(event);
     if (!sender || !material || !Array.isArray(payload?.rects)) return;
     const rects = payload.rects.slice(0, 16).filter((r: Record<string, number>) => r && ['x', 'y', 'width', 'height', 'radius', 'opacity'].every(k => Number.isFinite(r[k])) && r.width > 0 && r.height > 0);
-    if (sender === win) glass = rects.length;
+    if (sender === win) { glass = rects.length; glassRects = rects; }
     material.update(sender.getNativeWindowHandle(), rects, 1);
   });
   // ADR 0057: which Claude session Allen is looking at. One long-lived script reads Ghostty's front terminal
