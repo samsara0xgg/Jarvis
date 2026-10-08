@@ -52,7 +52,8 @@ export function useUsage(port: string | null) {
   const [refreshing, setRefreshing] = useState(false);
   const load = useCallback(async () => {
     if (!port) return;
-    try { const r = await fetch(`http://127.0.0.1:${port}/inherent/usage`); if (r.ok) setUsage(await r.json() as Usage); } catch { /* daemon away; keep the last answer */ }
+    // 404: the daemon has no usage observer (observer.usage is off), so no service is set up; that is an answer, not a wait.
+    try { const r = await fetch(`http://127.0.0.1:${port}/inherent/usage`); if (r.ok) setUsage(await r.json() as Usage); else if (r.status === 404) setUsage({ services: {} }); } catch { /* daemon away; keep the last answer */ }
   }, [port]);
   useEffect(() => {
     void load();

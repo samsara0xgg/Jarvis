@@ -846,7 +846,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     </>,
     usage: () => <>
       {back(t(TITLES.usage), <button className="us-sync" aria-label={t(['Refresh', '刷新'])} disabled={quota.refreshing} onClick={() => { void quota.refresh(); tokens.refresh(); }}>
-        {!quota.refreshing && synced ? t([`synced ${hm(synced)}`, `${hm(synced)} 同步`]) : t(['syncing…', '同步中…'])}<ArrowsClockwise size={11} className={quota.refreshing ? 'is-spinning' : ''}/></button>)}
+        {!quota.refreshing && synced ? t([`synced ${hm(synced)}`, `${hm(synced)} 同步`]) : quota.usage && !quota.refreshing ? t(['not set up', '还没设置']) : t(['syncing…', '同步中…'])}<ArrowsClockwise size={11} className={quota.refreshing ? 'is-spinning' : ''}/></button>)}
       <div className="pg-body"><div className="pg-sec"><h4>{t(['Balances', '余额'])}</h4><div className="bal">
         <div className="bal-card"><Account id="deepseek">DeepSeek</Account><b>{deepseek?.status === 'ok' ? balanceTotal(deepseek.data.balances) : '—'}</b></div>
         <Balance id="openai" name="OpenAI" left={openai?.status === 'ok' ? openai.data.balance_usd : undefined} since={openai?.data.balance_recorded_at} live={!!port} onSaved={balanceSaved}/>
