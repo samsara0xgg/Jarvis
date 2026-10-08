@@ -17,6 +17,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+import time
 from contextlib import closing
 from datetime import UTC, datetime
 from datetime import time as dtime
@@ -688,6 +689,56 @@ def test_the_work_states_head_check_comes_from_the_terminal_and_never_fails_with
     _disconnect(rig)
     service._note_head()  # noqa: SLF001
     assert service._checked is before  # noqa: SLF001
+
+
+def _rounds(spans: list[tuple[float, float]]) -> int:
+    """The longest chain of calls where each began after the one before it was answered."""
+    depth: list[int] = []
+    ordered = sorted(spans)
+    for start, _ in ordered:
+        before = (d for d, (_, end) in zip(depth, ordered, strict=False) if end <= start)
+        depth.append(1 + max(before, default=0))
+    return max(depth, default=0)
+
+
+def test_a_brains_work_state_refresh_reads_the_terminal_in_two_rounds_not_seven(
+    tmp_path: Path, rig: _Rig,
+) -> None:
+    """One refresh asks the terminal for the same reads, but the independent ones overlap.
+
+    Each read waits one link round trip (80 ms through a relay), so a refresh that asks
+    them in series waits seven of them; asked together only the snapshot ``open`` that the
+    queries follow stands alone.
+    """
+    spans: list[tuple[float, float]] = []
+    asked: list[tuple[str, str]] = []
+
+    def slow_link(op: str, arguments: Any, target: str | None) -> dict[str, Any]:  # noqa: ANN401
+        start = time.monotonic()
+        time.sleep(0.05)  # the link's round trip
+        try:
+            return rig.device(op, arguments, target)
+        finally:
+            spans.append((start, time.monotonic()))
+            asked.append((op, arguments["fn"]))
+
+    memory = tmp_path / "memory.db"
+    with closing(open_memory_db(memory)):
+        pass
+    service = WorkStateService(
+        event_log_path=tmp_path / "ws.db", memory_path=memory, timesink_path=None, repos=(),
+        analyst=None, model="canned", tz=TZ, device=slow_link,
+    )
+    conn = open_event_log(tmp_path / "ws.db")
+    view = service.refresh(conn, question="deploy fox", note="n")
+    conn.close()
+    assert view["outcome"] == "failed"  # no analyst: the reads are all that ran
+    assert sorted(asked) == sorted([
+        ("timesink_read", "open"), ("timesink_read", "query_spans"),
+        ("timesink_read", "query_captures"), ("timesink_read", "query_state"),
+        ("timesink_read", "search_captures"), ("git_read", "repos"), ("timesink_read", "head"),
+    ])
+    assert _rounds(spans) == 2
 
 
 # --- role all, and the terminal's own limits -----------------------------------------------

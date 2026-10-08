@@ -12,7 +12,7 @@ from jarvis.state import device_reads
 from jarvis.state.daily_contract import DailyError, fingerprint
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator
+    from collections.abc import Callable, Iterable, Iterator, Sequence
     from contextlib import AbstractContextManager
     from pathlib import Path
 
@@ -291,6 +291,17 @@ def query_spans(
             "not attention or task completion.",
         },
     }
+
+
+def read_together(snap: Reader | None, jobs: Sequence[Callable[[], Any]]) -> list[Any]:
+    """The results of reads that do not depend on each other, in order.
+
+    The terminal's store answers them at once; a local snapshot is one connection and answers
+    them in turn.
+    """
+    if isinstance(snap, RemoteSnapshot):
+        return device_reads.together(jobs)
+    return [job() for job in jobs]
 
 
 def span_rows(snap: Snapshot, start: datetime, end: datetime) -> list[dict[str, Any]]:

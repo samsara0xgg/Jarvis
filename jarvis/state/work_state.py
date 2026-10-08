@@ -378,12 +378,18 @@ def _timesink_sections(  # noqa: PLR0913 — one snapshot, the three windows and
     why: str | None = None,
 ) -> list[Any]:
     """The TimeSink sections; ``why`` is the device that was not there to read them from."""
-    spans = timesink.query_spans(snap, start, now)
-    captures = timesink.query_captures(snap, start, now)
-    state = timesink.query_state(snap, start, now)
     # Everything is read before anything is built: a terminal that drops mid-read leaves no part.
-    related = timesink.search_captures(
-        snap, now - timedelta(days=RELATED_DAYS), start, terms, limit=_MAX_RELATED_SCREEN
+    # The four reads do not depend on each other, so the terminal gets them together.
+    spans, captures, state, related = timesink.read_together(
+        snap,
+        [
+            lambda: timesink.query_spans(snap, start, now),
+            lambda: timesink.query_captures(snap, start, now),
+            lambda: timesink.query_state(snap, start, now),
+            lambda: timesink.search_captures(
+                snap, now - timedelta(days=RELATED_DAYS), start, terms, limit=_MAX_RELATED_SCREEN
+            ),
+        ],
     )
     g.coverage["app"] = str(spans["coverage"]["status"])
     g.coverage["screen"] = str(captures["coverage"]["status"])
@@ -517,10 +523,9 @@ def _git_section(
     g: _Gather,
     conn: sqlite3.Connection,
     since: datetime,
-    repos: tuple[str, ...],
-    device: DeviceLink | None = None,
+    watched: tuple[tuple[str, ...], str | None],
 ) -> list[str]:
-    repos, gap = device_reads.watched_repos(device, repos)
+    repos, gap = watched
     rows = conn.execute(
         "SELECT event_uid,type,ts_epoch_ms,payload_json FROM events "
         "WHERE type IN (?,?) AND ts_epoch_ms>=? ORDER BY ts_epoch_ms DESC,id DESC LIMIT ?",
@@ -590,6 +595,11 @@ def gather_evidence(  # noqa: PLR0913 — the configured stores plus the request
     g = _Gather(tz=tz)
     if note:
         g.refs[NOTE_KEY] = NOTE_REF
+    # The terminal's repository list is asked while its TimeSink store is read.
+    watched = (
+        (lambda: (repos, None)) if device is None
+        else device_reads.ahead(lambda: device_reads.watched_repos(device, repos))
+    )
     try:
         with timesink.snapshot(timesink_path, device) as snap:
             timesink_digest = _timesink_sections(g, snap, start, recent_start, moment, terms)
@@ -601,7 +611,7 @@ def gather_evidence(  # noqa: PLR0913 — the configured stores plus the request
     todo_digest = _folded_section(g, conn, "todo", "t", _MAX_TODOS, terms)
     knowledge_digest = _folded_section(g, conn, "knowledge", "k", _MAX_KNOWLEDGE, terms)
     g.coverage["todos"] = g.coverage["knowledge"] = "available"
-    git_digest = _git_section(g, conn, start, repos, device)
+    git_digest = _git_section(g, conn, start, watched())
     digest = fingerprint(
         [
             timesink_digest,

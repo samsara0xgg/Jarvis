@@ -12,12 +12,16 @@ Layer rules: state may import shared; the link is the :class:`DeviceLink` seam.
 
 from __future__ import annotations
 
+import concurrent.futures
+import threading
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared.device_link import DeviceCallError
 from jarvis.state.daily_contract import DailyError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
     from jarvis.shared.device_link import DeviceLink
 
 TIMESINK_READ: Final = "timesink_read"
@@ -76,3 +80,41 @@ def ask(link: DeviceLink, op: str, fn: str, /, **args: Any) -> Any:  # noqa: ANN
             raise DeviceUnavailable(message, exc.code) from exc
         raise DailyError(str(exc), exc.code) from exc
     return payload.get("result")
+
+
+def ahead[T](job: Callable[[], T]) -> Callable[[], T]:
+    """Start ``job`` now, on its own thread; calling what comes back waits for its outcome.
+
+    A read that does not depend on another is started before that one, so the link's round
+    trips overlap instead of queueing: the terminal answers calls as they come, each on its own
+    worker.
+    """
+    outcome: concurrent.futures.Future[T] = concurrent.futures.Future()
+
+    def run() -> None:
+        try:
+            outcome.set_result(job())
+        except BaseException as exc:  # noqa: BLE001 — handed to whoever waits.
+            outcome.set_exception(exc)
+
+    threading.Thread(target=run, daemon=True).start()
+    return outcome.result
+
+
+def together(jobs: Sequence[Callable[[], Any]]) -> list[Any]:
+    """Run reads that do not depend on each other at once; their results, in order.
+
+    Every job has finished when this returns or raises, so a terminal that drops mid-read
+    leaves no read running; the first failure, in order, is the one raised.
+    """
+    waits = [ahead(job) for job in jobs]
+    results: list[Any] = []
+    failure: Exception | None = None
+    for wait in waits:
+        try:
+            results.append(wait())
+        except Exception as exc:  # noqa: BLE001 — held until the others are in.
+            failure = failure or exc
+    if failure is not None:
+        raise failure
+    return results

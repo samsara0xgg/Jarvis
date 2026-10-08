@@ -332,6 +332,7 @@ class WorkStateService:
         previous = None
         try:
             previous = current_state(conn)
+            head = None if self._device is None else device_reads.ahead(self._note_head)
             evidence = gather_evidence(
                 conn,
                 memory_path=self._memory_path,
@@ -342,7 +343,10 @@ class WorkStateService:
                 tz=self._tz,
                 device=self._device,
             )
-            self._note_head()
+            if head is None:
+                self._note_head()
+            else:
+                head()  # asked of the terminal while the evidence was gathered
             if evidence.empty:
                 return {"outcome": "no_evidence", "error": None, "state": previous}
             if (
