@@ -1587,7 +1587,9 @@ async def _tool_status_watcher(
     One cursor over the action and turn-end rows, anchored like
     :func:`_response_watcher`. Whenever the line to show changes, one
     ``{"op": "tool", "payload": {"turn_id", "label"}}`` envelope goes out; an
-    empty label clears it. The label is fixed text from the language table.
+    empty label clears it, and goes out only once that turn is over (the line
+    stays between two tools, so the surface never flickers). The label is fixed
+    text from the language table.
     """
     after_id = _latest_id(runtime.conn)
     status = ToolStatus()
@@ -1602,7 +1604,12 @@ async def _tool_status_watcher(
                     after_id = max(after_id, row_id)
                     status.feed(ev, time.monotonic())
                 shown = status.shown(time.monotonic())
-                turn_id, label = (shown.turn_id, lang.t(shown.key)) if shown else (sent[0], "")
+                if shown:
+                    turn_id, label = shown.turn_id, lang.t(shown.key)
+                elif status.over(sent[0]):
+                    turn_id, label = sent[0], ""  # the clear goes out once the turn is over
+                else:
+                    turn_id, label = sent  # between two tools the line stays
                 if (turn_id, label) != sent:
                     sent = (turn_id, label)
                     if broadcaster.has_clients:

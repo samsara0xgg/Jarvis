@@ -134,7 +134,8 @@ export function reducer(s: State, a: Action): State {
     case 'pending': return { ...s, waiting: a.turnId, askedAt: a.turnId === s.turnId ? null : a.at };
     // Nothing is spoken for it, so it leaves at its settle (runtime.ts) like an answer whose speech is over. A cancelled
     // answer on screen goes whoever asked for it: it was stopped, or dropped for the words after it (ADR 0074).
-    case 'failed': { const shown = a.turnId === s.turnId, gone = { reply: '', played: true, responseId: null }, dropped = s.talk.filter(l => l.id !== `her:${a.turnId}`);
+    case 'failed': { if (s.tool?.turnId === a.turnId) s = { ...s, tool: null };
+      const shown = a.turnId === s.turnId, gone = { reply: '', played: true, responseId: null }, dropped = s.talk.filter(l => l.id !== `her:${a.turnId}`);
       if (a.turnId !== s.waiting) return shown && a.cancelled ? { ...s, ...gone, talk: dropped } : s;
       const t = { ...s, askedAt: null, tool: null, phase: s.phase === 'processing' ? 'listening' as const : s.phase };
       if (a.cancelled) return shown ? { ...t, ...gone, talk: dropped } : t;
@@ -146,10 +147,11 @@ export function reducer(s: State, a: Action): State {
     case 'controls': { const next = { ...s, micMuted: a.micMuted, soundMuted: a.soundMuted, conversation: a.conversation, quiet: a.quiet, dismissals: s.dismissals + (a.dismissed ? 1 : 0) };
       return !a.conversation && s.inFlight ? reducer(next, { type: 'phase', phase: 'listening' }) : next; }
     // What has been heard so far of the words still coming in (ADR 0111); one that arrives after they were accepted is late.
-    // The tool this turn is waiting on, as the daemon's fixed line. Until the turn's answer opens, a tool's line stays until the next one takes
-    // its place (the daemon's clearing between two tools is not shown); once it has opened, an empty label clears it. It also goes when the
-    // answer opens (above), or when the turn ends without one.
-    case 'tool': return { ...s, tool: a.label ? { turnId: a.turnId, label: a.label } : s.tool?.turnId === a.turnId && s.turnId !== a.turnId ? s.tool : null };
+    // The tool this turn is waiting on, as the daemon's fixed line. A tool's line stays until the next one takes its place: the daemon sends an
+    // empty label only once the turn is over (inherent_loop.py `_tool_status_watcher`), never between two tools. An empty label clears the
+    // line of its turn whether or not that turn ever opened an answer (a turn can end with none). It also goes when the answer opens (above),
+    // or when the turn fails or is cancelled (`failed`).
+    case 'tool': return { ...s, tool: a.label ? { turnId: a.turnId, label: a.label } : s.tool?.turnId === a.turnId ? null : s.tool };
     case 'partial': return s.inFlight ? { ...s, partial: a.text, settled: a.settled ?? null } : s;
     // What was written while your words came in answers the words before them: it goes above yours, and shows with them (talk.ts shownOf).
     case 'heard': { const before = a.text.trim() ? ended(s.talk, a.at) : s.talk, talk = s.inFlight ? unheld({ ...s, talk: before }, s.reply, !!a.text.trim()) : before;

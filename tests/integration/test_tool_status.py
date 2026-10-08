@@ -160,3 +160,32 @@ def test_the_watcher_sends_the_line_on_running_and_clears_it_on_the_result(tmp_p
         ("tool", {"turn_id": "T1", "label": "Searching the web..."}),
         ("tool", {"turn_id": "T1", "label": ""}),
     ]
+
+
+def test_the_watcher_keeps_the_line_between_two_tools_and_clears_it_when_the_turn_ends(
+    tmp_path: Path,
+) -> None:
+    """A tool's result alone sends no clear (no flicker); the turn's end does."""
+    conn = open_event_log(tmp_path / "events.db")
+    wire = _Wire()
+
+    def propose(action_id: str, tool: str) -> Any:  # noqa: ANN401 - a step
+        return lambda: _row(
+            conn, "action.proposed", action_id=action_id, tool_name=tool,
+            caller_principal="x", risk_level="low",
+        )
+
+    asyncio.run(_watch(conn, wire, [
+        propose("A1", "web_search"),
+        lambda: _row(conn, "action.running", action_id="A1"),
+        lambda: _row(conn, "action.result_observed", action_id="A1", semantics="x"),
+        propose("A2", "web_fetch"),
+        lambda: _row(conn, "action.running", action_id="A2"),
+        lambda: _row(conn, "action.result_observed", action_id="A2", semantics="x"),
+        lambda: _row(conn, "turn.ended", turn_id="T1"),
+    ]))
+    assert wire.sent == [
+        ("tool", {"turn_id": "T1", "label": "Searching the web..."}),
+        ("tool", {"turn_id": "T1", "label": "Reading the page..."}),
+        ("tool", {"turn_id": "T1", "label": ""}),
+    ]

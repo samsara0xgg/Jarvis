@@ -10,6 +10,7 @@ other tool shows the generic line only if it is still running after
 from __future__ import annotations
 
 import re
+from collections import deque
 from typing import TYPE_CHECKING, Final, NamedTuple
 
 from jarvis.shared.lang import SLOW_TOOLS
@@ -68,6 +69,7 @@ class ToolStatus:
         """Start with no tool known and none running."""
         self._names: dict[str, str] = {}
         self._live: dict[str, _Live] = {}
+        self._over: deque[str] = deque(maxlen=64)
 
     def feed(self, event: Event, now: float) -> None:
         """Fold one action or turn-end row; ``now`` is a monotonic clock reading."""
@@ -84,6 +86,11 @@ class ToolStatus:
             self._names.pop(action_id, None)
         else:
             self._live = {a: x for a, x in self._live.items() if x.turn_id != turn_id}
+            self._over.append(turn_id)
+
+    def over(self, turn_id: str) -> bool:
+        """Whether the turn has ended (or failed, or been cancelled) since it was last fed."""
+        return turn_id in self._over
 
     def shown(self, now: float) -> Shown | None:
         """The latest-started running tool whose time to show has come, if any."""
