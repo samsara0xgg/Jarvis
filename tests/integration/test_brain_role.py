@@ -69,7 +69,7 @@ def test_the_default_role_is_all_and_the_brain_runs_no_device_tool_itself(
 
         assert brain.role == "brain"
         held = {t.name for t in brain.tool_registry.get_definitions()}
-        assert not held & NIGHT_TOOLS
+        assert held >= NIGHT_TOOLS  # proxies: the run is the terminal's (ADR 0192)
         assert brain.terminal_hub is not None
         assert DEVICE_TOOLS - {"search_notes"} <= held  # no vault named: no search_notes
         assert {"create_memo", "remember", "web_fetch", "ask_user"} <= _menu(brain)

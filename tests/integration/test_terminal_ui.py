@@ -23,6 +23,7 @@ import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
 
 import httpx
@@ -36,6 +37,8 @@ from websockets.exceptions import InvalidStatus, WebSocketException
 from websockets.sync.client import connect as ws_connect
 
 from jarvis.cli import main
+from jarvis.deployment.night_power import MacPower
+from jarvis.runtime.night_run import NightRun, NightSettings
 from jarvis.runtime.settings import DEVICE_KEYS, Settings
 from jarvis.runtime.terminal import _DeviceSettings, _run, _Speaking, _Ui, bind_ui
 from jarvis.state.device_tokens import (
@@ -76,7 +79,6 @@ from tests.integration.test_voice_file_replay import _write_wav
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
-    from pathlib import Path
 
 DEVICE_TOKEN = "device-token-for-the-tests"  # noqa: S105 — a fixture, not a secret
 LOCAL = "http://127.0.0.1"
@@ -432,7 +434,7 @@ def test_the_table_is_exactly_the_routes_this_terminal_answers_itself() -> None:
     """Whatever the app registers beside its forwarder and its socket is in the table, and back."""
     app = create_ui_app(
         Brain(LOCAL, DEVICE_TOKEN), authorize=lambda _h: True, broadcaster=UiBroadcaster(),
-        device=Device(),
+        device=Device(night=NightRun(Path("unused"), NightSettings(), MacPower())),
     )
     own = {
         (method, route.path)

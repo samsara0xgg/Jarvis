@@ -3349,7 +3349,10 @@ def _make_screen_look(
 
 
 TERMINAL_TOOL_NAMES: Final[frozenset[str]] = frozenset(
-    {"open_path", "search_notes", "read_file", "read_clipboard", "open_url", "screen_capture"},
+    {
+        "open_path", "search_notes", "read_file", "read_clipboard", "open_url", "screen_capture",
+        "start_night_run", "end_night_run",
+    },
 )
 """ADR 0170: the tools a terminal can run for its brain.
 
@@ -3948,7 +3951,7 @@ def _device_proxy(original: ToolDefinition | Tool, link: DeviceLink) -> ToolDefi
     return replace(original, handler=handler)
 
 
-def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
+def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
     *,
     obsidian_vault_root: Path | None = DEFAULT_OBSIDIAN_VAULT_ROOT,
     web_search_max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS,
@@ -4024,7 +4027,8 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
         daily_report_run: ADR 0024 — the runtime's daily work report
             workflow; `None` leaves `daily_work_report` off the menu.
         night: ADR 0093 — the runtime's night run; `None` leaves
-            `start_night_run` / `end_night_run` off the menu.
+            `start_night_run` / `end_night_run` off the menu; with a `device_link` they are
+            registered as proxies to the terminal, whose run they drive.
         voice_settings: ADR 0174 — her voice volume and speed; `None` leaves
             `set_voice` off the menu.
         mail_drafts: ADR 0147 — the Dashboard's reply drafts; `None` leaves
@@ -4190,8 +4194,10 @@ def build_default_registry(  # noqa: PLR0913 — every kwarg is a distinct D7 co
     from jarvis.execution.voice_tools import build_voice_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.weather_tool import build_weather_tool  # noqa: PLC0415 — same cycle.
 
+    for night_tool in build_night_tools(night, remote=device_link is not None):
+        register_device_tool(night_tool)  # a brain's run is its terminal's
     for conversation_tool in (
-        *build_night_tools(night), *build_voice_tool(voice_settings),
+        *build_voice_tool(voice_settings),
         *build_weather_tool(weather_lookup),
         *build_transit_tool(transit_api_key, transit_places or {}),
     ):

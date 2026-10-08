@@ -411,8 +411,8 @@ def _for_role(config: dict[str, Any], role: Role) -> dict[str, Any]:
 def _on_menu(table: Tier0Table, registry: ToolRegistry, role: Role) -> Tier0Table:
     """The Tier 0 rows the registry can serve.
 
-    A brain does not hold the night-run tools; a row naming one would fail the boot's
-    cross-check, so it is dropped (ADR 0170).
+    A brain holds only the tools its role builds; a row naming another would fail the boot's
+    cross-check, so it is dropped (ADR 0170). The night-run tools are held, as proxies.
     """
     if role != "brain":
         return table

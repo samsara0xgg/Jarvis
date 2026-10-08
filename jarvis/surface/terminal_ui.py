@@ -39,6 +39,7 @@ from jarvis.surface.inherent_server import (
     DictationRoutes,
     SettingsRequest,
     dictation_stream,
+    register_night_routes,
     require_local_key,
 )
 from jarvis.surface.terminal_link import MAX_FRAME_CHARS, TERMINAL_PATH
@@ -46,6 +47,7 @@ from jarvis.surface.terminal_link import MAX_FRAME_CHARS, TERMINAL_PATH
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
 
+    from jarvis.surface.inherent_server import NightRoutes
     from jarvis.surface.voice_controls import VoiceControls
 
 LOGGER = logging.getLogger("jarvis.surface.terminal_ui")
@@ -76,6 +78,11 @@ DEVICE_ROUTES: Final[Mapping[tuple[str, str], str]] = {
         "merged: those two choices are saved here and applied at this terminal's restart; the "
         "rest of the changes go to the brain"
     ),
+    ("GET", "/inherent/night"): (
+        "answered: the night run of this Mac, which the terminal holds awake and dark; the "
+        "brain has none, so forwarded it is a 404"
+    ),
+    ("POST", "/inherent/night"): "answered: starts, darkens, stays or ends that run",
     ("POST", "/inherent/controls"): (
         "merged: the mic and speech switches act on this machine's microphone and speaker; "
         "the whole request also goes to the brain, which holds conversation, quiet and live"
@@ -138,6 +145,8 @@ class Device:
     """The recording session, or ``None`` while there is none (not built yet, or no microphone)."""
     speaks: Callable[[], bool] = lambda: False
     """Whether this machine's own media actor plays the brain's answers."""
+    night: NightRoutes | None = None
+    """This Mac's night run; ``None`` leaves ``/inherent/night`` a 404, as on a brain."""
 
 
 @dataclass
@@ -386,6 +395,8 @@ def _register_device_routes(app: FastAPI, brain: Brain, device: Device) -> None:
     @app.get("/api/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    register_night_routes(app, device.night)
 
     @app.post("/inherent/restart", status_code=202)
     async def restart() -> dict[str, bool]:

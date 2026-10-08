@@ -32,6 +32,7 @@ from starlette.websockets import WebSocketDisconnect
 from websockets.asyncio.server import serve
 
 from jarvis.cli import main
+from jarvis.deployment.night_power import MacPower
 from jarvis.execution import tools as tools_module
 from jarvis.execution.tools import (
     ActionLifecycle,
@@ -40,6 +41,7 @@ from jarvis.execution.tools import (
     make_screen_capture,
 )
 from jarvis.runtime import _make_entity_resolver
+from jarvis.runtime.night_run import NightRun, NightSettings
 from jarvis.runtime.terminal import _declared, make_executor
 from jarvis.shared import ActionRequest, CallerPrincipal, RawResult
 from jarvis.shared.device_link import DeviceCallError
@@ -75,7 +77,7 @@ DEVICE = {"open_path", "search_notes", "read_file", "read_clipboard", "open_url"
 
 
 # `screen_look` is not a proxy: it takes the screenshot from the terminal and describes it here.
-PROXIED = DEVICE - {"screen_look"}
+PROXIED = DEVICE - {"screen_look"} | {"start_night_run", "end_night_run"}
 
 
 # --- helpers ---------------------------------------------------------------
@@ -171,7 +173,8 @@ def test_the_brains_device_tools_are_proxies_with_the_one_machine_definitions(
     tmp_path: Path,
 ) -> None:
     """Same names, order, descriptions, schemas, risk and flags; only the handler is another."""
-    own = build_default_registry(obsidian_vault_root=tmp_path / "vault")
+    night = NightRun(tmp_path / "night.db", NightSettings(), MacPower())
+    own = build_default_registry(obsidian_vault_root=tmp_path / "vault", night=night)
     brain = _brain_registry(TerminalHub(), tmp_path)
     mine, theirs = own.get_definitions(), brain.get_definitions()
     assert [t.name for t in theirs] == [t.name for t in mine]

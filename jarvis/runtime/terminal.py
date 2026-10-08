@@ -1,9 +1,12 @@
 """ADR 0170: ``python -m jarvis terminal`` — a device's end of a brain's device-bound tools.
 
-A terminal is a small client, not a daemon: no port, no event log of its own, no model key. It
-connects outward to the brain, declares the tools this machine can run, and runs the calls the
+A terminal is a small client, not a daemon: no port, no event log of the owner's, no model key.
+It connects outward to the brain, declares the tools this machine can run, and runs the calls the
 brain sends with the very handlers the one-machine daemon uses. Each call gets a throwaway
 in-memory log (the handlers write their own observation to one), which is dropped with it.
+
+It holds this Mac's night run (ADR 0192): the brain has no Mac to keep awake, so the run, its
+``night.*`` events and the start and end tools the brain's model calls all live here.
 
 It also runs the observers that only read this machine's files and apps (the repos in
 ``observer.repos`` and TimeSink): the same observer code the daemon runs, with its events sent
@@ -46,6 +49,7 @@ import uvicorn
 
 from jarvis.deployment.launchd import spawned_by_terminal_agent
 from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
+from jarvis.deployment.night_power import MacPower
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.tools import (
     TERMINAL_TOOL_NAMES,
@@ -71,9 +75,11 @@ from jarvis.runtime import (
     _timesink_poll_interval_s,
     _wave1_feature_flags,
     _wave4_response_flags,
+    _work_state_timezone,
 )
 from jarvis.runtime.dictation import Dictation, build_dictation, load_vocab
 from jarvis.runtime.inherent_loop import (
+    _agents_port,
     _build_echo_canceller,
     _build_tts_pipeline,
     _build_voice_pipeline,
@@ -90,12 +96,14 @@ from jarvis.runtime.inherent_loop import (
     _voice_knobs,
     _voice_models_preflight,
 )
+from jarvis.runtime.night_run import NightRun, night_settings
+from jarvis.runtime.night_watch import NightWatch
 from jarvis.runtime.settings import DEVICE_KEYS, Settings, apply_settings
 from jarvis.shared import ActionRequest
 from jarvis.shared.realtime_trace import configure_realtime_trace_jsonl
 from jarvis.state import device_reads, job_time, timesink, timesink_moment
 from jarvis.state.daily_contract import DailyError
-from jarvis.state.daily_report import git_show, local_commits
+from jarvis.state.daily_report import git_show, local_commits, resolve_zone
 from jarvis.state.daily_store import commit_exists
 from jarvis.state.event_log import EventLogError, emit_event, open_event_log
 from jarvis.state.memory_db import MemorySettings
@@ -424,6 +432,8 @@ async def _observe(outbox: EventOutbox, watched: _Watched) -> None:
 
 JOURNAL = Path("terminal") / "voice-journal.db"
 """Where a voice terminal's scratch journal lives, under its runtime root."""
+NIGHT_LOG = Path("terminal") / "night-events.db"
+"""Where this Mac's night run writes its ``night.*`` events, under the runtime root."""
 _SPEECH_CLOSE_S = 5.0
 _LISTEN_CLOSE_S = 15.0
 
@@ -508,6 +518,8 @@ class _Speech:
     broadcaster: InherentBroadcaster | None = None
     canceller: voice_aec.EchoCanceller | None = None
     listening: asyncio.Task[_Listening | None] | None = None
+    ducker: SystemAudioDucker | None = None
+    """The one that mutes the system while a line plays; the night run waits for it."""
 
 
 @dataclass
@@ -556,8 +568,9 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
             canceller = _build_echo_canceller(seat)
         except Exception:
             LOGGER.exception("echo cancellation could not start; this terminal listens without it")
+    ducker = SystemAudioDucker()
     pipeline = _build_tts_pipeline(
-        seat, broadcaster, ducker=SystemAudioDucker(), voice=_voice_knobs(speaking.config),
+        seat, broadcaster, ducker=ducker, voice=_voice_knobs(speaking.config),
         echo_canceller=canceller, remote=RemoteTTSProvider(link),
         network_lost_dir=speaking.runtime_root / "terminal",
     )
@@ -573,7 +586,7 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
     return _Speech(
         link, pipeline,
         [asyncio.create_task(watcher), asyncio.create_task(forward_playback(journal.path, outbox))],
-        seat, broadcaster, canceller,
+        seat, broadcaster, canceller, ducker=ducker,
     )
 
 
@@ -762,8 +775,17 @@ def _dictation_of(speech: _Speech) -> Dictation | None:
     return None if listening is None else listening.dictation
 
 
+def _start_night(night: NightRun | None, speech: _Speech) -> asyncio.Task[None] | None:
+    """Tick this Mac's night run; it mutes after the goodnight line, never under a playing one."""
+    if night is None:
+        return None
+    night.busy = lambda: (d := speech.ducker) is not None and (d.active or d.outputting)
+    return asyncio.create_task(night.run(), name="night_run")
+
+
 def _ui_device(
     ui: _Ui, speaking: _Speaking | None, speech: Callable[[], _Speech],
+    night: NightRun | None = None,
 ) -> Device:
     """What this machine answers itself behind the UI (ADR 0183)."""
     return Device(
@@ -777,12 +799,14 @@ def _ui_device(
         restart=_restart_soon if spawned_by_terminal_agent() else None,
         dictation=None if speaking is None else lambda: _dictation_of(speech()),
         speaks=lambda: speech().pipeline is not None,
+        night=night,
     )
 
 
 async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
     base_url: str, token: str, *, tools: frozenset[str], execute: Execute,
     watched: _Watched | None, speaking: _Speaking | None = None, ui: _Ui | None = None,
+    night: NightRun | None = None,
 ) -> None:
     """The link, and beside it the observers, the voice and the UI when there is anything to run."""
     outbox = EventOutbox() if watched is not None or speaking is not None else None
@@ -802,7 +826,7 @@ async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
             brain,
             authorize=functools.partial(local_key_matches, local_key(ui.runtime_root)),
             broadcaster=broadcaster,
-            device=_ui_device(ui, speaking, lambda: speech),
+            device=_ui_device(ui, speaking, lambda: speech, night),
         )
         server = _UiServer(uvicorn.Config(app, log_level="warning", lifespan="off"))
         serving = asyncio.create_task(server.serve(sockets=[ui.sock]))
@@ -815,11 +839,15 @@ async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
     if speaking is not None and speech.pipeline is not None:
         execute = with_voice_commands(execute, speech.pipeline)
         speech.listening = asyncio.create_task(_start_listening(speaking, speech))
+    nights = _start_night(night, speech)
     try:
         await run_terminal_client(
             base_url, token, tools=tools, execute=execute, events=outbox, voice=speech.link,
         )
     finally:
+        if nights is not None:
+            nights.cancel()
+            await asyncio.wait({nights})
         if observing is not None:
             observing.cancel()
             await asyncio.wait({observing})
@@ -902,7 +930,25 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
             sys.stderr.write(f"jarvis terminal: {exc}\n")
             return 1
     _vision_preset, max_width_px = _screen_tools_config(config)
-    registry = build_default_registry(obsidian_vault_root=_obsidian_vault_root(config))
+    claude = ClaudeSessions() if _claude_sessions_read(config) else None
+    # ADR 0192: this Mac's night run, held here because a brain has no Mac to keep awake. Its
+    # events are the one log a terminal keeps; it recovers an open run from them at start.
+    night_log = runtime_root / NIGHT_LOG
+    night_log.parent.mkdir(parents=True, exist_ok=True)
+    open_event_log(night_log).close()
+    night = NightRun(
+        night_log, night_settings(config), MacPower(),
+        zone=resolve_zone(None, _work_state_timezone(config))[1],
+    )
+    # It holds the Mac past the deadline while a session it can see still works. Codex's board
+    # is filled by hooks into the brain, so none is read here.
+    night.watch = NightWatch(
+        port=_agents_port(), key=functools.partial(local_key, runtime_root), claude=claude,
+        codex={},
+    )
+    registry = build_default_registry(
+        obsidian_vault_root=_obsidian_vault_root(config), night=night,
+    )
     registry.register(make_screen_capture(max_width_px))
     tools = _declared(registry)
     LOGGER.info("this terminal runs %s", sorted(tools))
@@ -922,14 +968,14 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
         execute = make_executor(
             registry, timesink_store=configured_store, repos=configured_repos,
             projects=_own_projects(config),
-            claude=ClaudeSessions() if _claude_sessions_read(config) else None,
+            claude=claude,
         )
         if voice:
             _configure_realtime_trace(runtime_root)
         asyncio.run(_run(
             base_url, token, tools=tools, execute=execute, watched=watched,
             speaking=_Speaking(config, runtime_root, config_path.parent) if voice else None,
-            ui=ui,
+            ui=ui, night=night,
         ))
     except TerminalRefusedError as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")

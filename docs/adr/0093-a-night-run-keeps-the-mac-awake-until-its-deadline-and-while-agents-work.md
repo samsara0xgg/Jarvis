@@ -1,6 +1,6 @@
 # ADR 0093 — A night run keeps the Mac awake until its deadline and while agents work
 
-**Status:** Accepted
+**Status:** Superseded-by-0192
 **Date:** 2026-09-29
 **Supersedes:** none
 

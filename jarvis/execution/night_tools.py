@@ -90,13 +90,35 @@ def _hours(value: object) -> float | None:
     return hours
 
 
-def build_night_tools(night: NightControl | None) -> tuple[Tool, ...]:
-    """``start_night_run`` and ``end_night_run`` bound to the runtime's run; none when unwired."""
-    if night is None:
+class _Elsewhere:
+    """A brain's run is its terminal's: the tools are proxied there, so this is never called."""
+
+    def start(
+        self, *, hours: float | None, until: time | None, source: str, action_id: str | None,  # noqa: ARG002 — the Protocol's signature.
+    ) -> dict[str, Any]:
+        raise ToolError(_ELSEWHERE, code="device_not_connected")
+
+    def end(self, *, action_id: str | None) -> dict[str, Any]:  # noqa: ARG002 — likewise.
+        raise ToolError(_ELSEWHERE, code="device_not_connected")
+
+
+_ELSEWHERE: Final = "the night run is held by the owner's device, which is not connected"
+
+
+def build_night_tools(
+    night: NightControl | None, *, remote: bool = False,
+) -> tuple[Tool, ...]:
+    """``start_night_run`` and ``end_night_run`` bound to the runtime's run; none when unwired.
+
+    ``remote`` (a brain, ADR 0170) builds them without a run: the registry proxies their
+    handlers to the terminal, whose run they drive.
+    """
+    if night is None and not remote:
         return ()
+    run: NightControl = _Elsewhere() if night is None else night
 
     def start(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        return night.start(
+        return run.start(
             hours=_hours(args.get("hours")),
             until=_clock(args.get("until")),
             source="conversation",
@@ -104,7 +126,7 @@ def build_night_tools(night: NightControl | None) -> tuple[Tool, ...]:
         )
 
     def end(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        return night.end(action_id=ctx.action_id)
+        return run.end(action_id=ctx.action_id)
 
     callers = frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM})
     return (

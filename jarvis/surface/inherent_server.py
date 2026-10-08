@@ -1770,11 +1770,11 @@ class NightRequest(BaseModel):
     hours: float | None = Field(default=None, ge=0.25, le=12)
 
 
-def _register_night_routes(app: FastAPI, deps: InherentDeps) -> None:
-    """ADR 0093: the night run as the companion reads and drives it."""
-    if deps.night is None:
+def register_night_routes(app: FastAPI, run: NightRoutes | None) -> None:
+    """ADR 0093: the night run as the companion reads and drives it; none without a run."""
+    if run is None:
         return
-    night = deps.night
+    night = run
 
     @app.get("/inherent/night")
     async def night_read() -> dict[str, Any]:
@@ -2287,7 +2287,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
     _register_data_routes(app, deps)
     _register_setup_routes(app, deps)
     _register_dictation_routes(app, deps)
-    _register_night_routes(app, deps)
+    register_night_routes(app, deps.night)
 
     # ADR 0019 step 4: Allen's own Codex sessions, fed by scripts/codex_hook_log.py.
     codex_board = deps.codex_board
@@ -2414,11 +2414,13 @@ __all__ = [
     "InherentV2Deps",
     "InputSubmissionOutcome",
     "MemoryRoutes",
+    "NightRoutes",
     "SettingsRequest",
     "SubmitRequest",
     "V2ClientHandle",
     "V2Session",
     "create_app",
     "dictation_stream",
+    "register_night_routes",
     "require_local_key",
 ]
