@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowSquareOut, ArrowsClockwise, CaretLeft, CaretRight, Check, GithubLogo, Key, MagnifyingGlass, Plugs, ShieldCheck, X } from '@phosphor-icons/react';
+import { poll } from './poll';
 import './plugin-panel.css';
 
 export type Plugin = {
@@ -22,19 +23,20 @@ export function usePlugins() {
   const [busy, setBusy] = useState(false);
   const sequence = useRef(0), applied = useRef(0), mutation = useRef(false);
   const alive = useRef(true);
+  const failed = useRef(false); // the last read failed: the poll slows down (the plugin service may refuse it for good)
   const load = useCallback(async () => {
     if (!window.jarvis?.plugins || mutation.current) return;
     const seq = ++sequence.current;
     try {
       const next = await window.jarvis.plugins('read') as PluginSnapshot;
+      failed.current = false;
       if (alive.current && seq > applied.current) { applied.current = seq; setSnapshot(next); setError(null); }
-    } catch (e) { if (alive.current && seq > applied.current) { applied.current = seq; setError(cleanError(e)); } }
+    } catch (e) { failed.current = true; if (alive.current && seq > applied.current) { applied.current = seq; setError(cleanError(e)); } }
   }, []);
   useEffect(() => {
-    alive.current = true; let stopped = false; let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => { await load(); if (!stopped) timer = setTimeout(poll, 1500); };
-    void poll();
-    return () => { stopped = true; alive.current = false; clearTimeout(timer); };
+    alive.current = true;
+    const stop = poll(async () => { await load(); return failed.current; });
+    return () => { alive.current = false; stop(); };
   }, [load]);
   const action = useCallback(async (operation: string, data: Record<string, unknown> = {}) => {
     if (!window.jarvis?.plugins || mutation.current) return false;

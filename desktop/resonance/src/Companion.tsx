@@ -23,6 +23,7 @@ import { tr, useCompanionSettings, type L, type Lang } from './companionSettings
 import { useNow, useRoute } from './homeData';
 import type { Controls as DashControls, Look } from './SettingsPage';
 import { DASHBOARD_DWELL_MS, DASHBOARD_EXIT_MS, HOVER_DWELL_MS, HOVER_EXIT_MS, HOVER_SPEED, PointerIntent } from './pointerIntent';
+import { poll, refusal } from './poll';
 import './design-tokens.css';
 import './companion.css';
 
@@ -154,17 +155,21 @@ export function Companion() {
   useEffect(() => {
     if (!port) return;
     let stop = false;
-    const load = async () => { try {
-      const [next, asked, dusk] = await Promise.all([link.current?.card(), link.current?.question(), link.current?.night().catch(() => undefined)]);
-      if (stop) return;
+    const stopCards = poll(async () => { try {
+      const [next, asked] = await Promise.all([link.current?.card(), link.current?.question()]);
+      if (stop) return false;
       const fresh = <T extends { id: string }>(c: T | null | undefined) => c && !answered.current.has(c.id) ? c : null;
       setCard(current => current?.id === fresh(next)?.id ? current : fresh(next));
       setQuestion(current => current?.id === fresh(asked)?.id ? current : fresh(asked));
-      if (dusk) setNightState(current => JSON.stringify(current) === JSON.stringify(dusk) ? current : dusk);
-    } catch { /* daemon away; the next tick retries */ } };
-    void load();
-    const id = setInterval(() => void load(), 1500);
-    return () => { stop = true; clearInterval(id); };
+      return false;
+    } catch (e) { return refusal(e); /* daemon away: the next tick retries; refused (401, 404): it slows down */ } });
+    // The night run on its own pace: a brain whose terminal holds none refuses it for good, and the cards must not wait for that.
+    const stopNight = poll(async () => { try {
+      const dusk = await link.current?.night();
+      if (!stop && dusk) setNightState(current => JSON.stringify(current) === JSON.stringify(dusk) ? current : dusk);
+      return false;
+    } catch (e) { return refusal(e); } });
+    return () => { stop = true; stopCards(); stopNight(); };
   }, []);
   const decideCard: Decide = (decision, edits) => {
     if (!card) return;
