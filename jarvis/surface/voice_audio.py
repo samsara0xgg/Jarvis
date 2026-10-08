@@ -1269,6 +1269,7 @@ class AudioIngress:
         self._device_profile: voice_backend.DeviceProfileSnapshot | None = None
         self._last_profile_key: voice_backend.DeviceProfileKey | None = None
         self._last_output_route: voice_backend.OutputRoute | None = None
+        self._speaker: str | None = None  # the player's picked speaker, for the canceller
         self._output_route_misses = self._device_uid_misses = self._late_recovery_attempts = 0
         self._capability_publish_lock, self._capability_lock = threading.Lock(), threading.RLock()
         self._capability_version = 0
@@ -1583,6 +1584,11 @@ class AudioIngress:
             if self._config.route_observer_enabled and result.profile is not None
             else None
         )
+        # ADR 0191: the canceller asks where she plays: the picked speaker, else the default.
+        aec_output = self._speaker
+        if aec_output is None and self._echo_canceller is not None and result.profile is not None:
+            route = output_route or self._backend.current_output_route()
+            aec_output = None if route is None else route.name
         with self._control_lock:
             commit_allowed = self._control_allows_running(control_generation)
             if commit_allowed:
@@ -1591,6 +1597,7 @@ class AudioIngress:
                 if self._echo_canceller is not None:
                     self._echo_canceller.set_input_device(
                         result.profile.device_name if result.profile is not None else "",
+                        aec_output,
                     )
                 self._active_timeline = timeline
                 self._active_epoch = epoch
@@ -2574,6 +2581,10 @@ class AudioIngress:
         """Choose the microphone the next epoch opens (ADR 0054); ``None`` follows the default."""
         if isinstance(self._backend, voice_backend.SoundDeviceDuplexBackend):
             self._backend.set_device(device)
+
+    def set_output_device(self, device: str | None) -> None:
+        """Name the speaker the player plays on (ADR 0191); ``None`` is the system default."""
+        self._speaker = device
 
     @property
     def device_profile(self) -> voice_backend.DeviceProfileSnapshot | None:

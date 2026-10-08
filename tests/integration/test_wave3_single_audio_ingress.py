@@ -1285,6 +1285,59 @@ def test_echo_cancellation_follows_the_microphone_each_open_without_a_player_reb
     assert ingress.close().definitively_closed
 
 
+def test_respeaker_is_cancelled_when_she_plays_on_another_speaker(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ADR 0191: the board only cancels what it plays, so the speaker decides with the mic."""
+    from jarvis.surface.voice_aec import EchoCanceller  # noqa: PLC0415
+
+    class _RoutedBackend(_FakeBackend):
+        route_name = "MacBook Pro Speakers"
+
+        def current_output_route(self) -> voice_backend.OutputRoute | None:
+            return voice_backend.OutputRoute(
+                uid=self.route_name, name=self.route_name, transport_type="bltn",
+                data_source=None, sample_rate_hz=48000,
+            )
+
+    canceller = EchoCanceller()
+    backend = _RoutedBackend()
+    backend.device_uid = "reSpeaker XVF3800 4-Mic Array"
+    ingress = _ingress(backend, echo_canceller=canceller)
+    capture = ingress.subscribe(
+        name="aec-capture", purpose=voice_audio.SubscriberPurpose.CAPTURE,
+    )
+
+    def heard() -> np.ndarray:
+        epoch = ingress.stream_epoch
+        assert epoch is not None
+        for _ in range(3):  # past the canceller's 10 ms lead
+            backend.emit(epoch=epoch, value=1000)
+        return np.frombuffer(_read_frames(capture, 3)[-1].pcm16_mono, dtype="<i2")
+
+    def reopen() -> None:
+        assert ingress.stop_for_sleep() is not None
+        assert ingress.resume_after_wake() is not None
+
+    with caplog.at_level("INFO", logger="jarvis.surface.voice_aec"):
+        assert ingress.start().started
+        assert not np.all(heard() == 1000)  # default output is the laptop: cancelled
+        backend.route_name = "reSpeaker XVF3800 4-Mic Array"
+        reopen()
+        assert np.all(heard() == 1000)  # she plays on the board: untouched
+        ingress.set_output_device("MacBook Pro Speakers")  # the picked speaker wins
+        reopen()
+        assert not np.all(heard() == 1000)
+    respeaker = "'reSpeaker XVF3800 4-Mic Array'"
+    assert [r.getMessage() for r in caplog.records] == [
+        f"echo cancellation on on microphone {respeaker} playing on 'MacBook Pro Speakers'",
+        "echo cancellation off (the microphone does its own) on microphone "
+        f"{respeaker} playing on {respeaker}",
+        f"echo cancellation on on microphone {respeaker} playing on 'MacBook Pro Speakers'",
+    ]
+    assert ingress.close().definitively_closed
+
+
 def test_device_fault_close_race_revokes_reopen_before_shutdown() -> None:
     """A close racing fault teardown cannot open a replacement epoch."""
 

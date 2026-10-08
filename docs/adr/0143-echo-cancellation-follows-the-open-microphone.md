@@ -1,6 +1,6 @@
 # ADR 0143 — Echo cancellation follows the open microphone
 
-**Status:** Accepted
+**Status:** Superseded-by-0191
 **Date:** 2026-10-03
 **Supersedes:** none
 

@@ -13,9 +13,10 @@ callback and only writes a preallocated ring; every WebRTC call runs on the
 ingress worker inside :meth:`EchoCanceller.clean`.
 
 The canceller always exists and the player always taps into it; each mic open
-tells it which microphone it got (:meth:`EchoCanceller.set_input_device`). The
-reSpeaker's board cancels its own echo, so that mic passes through untouched;
-any other microphone is cancelled here.
+tells it which microphone it got and where Jarvis plays
+(:meth:`EchoCanceller.set_input_device`). The reSpeaker's board cancels the echo of what it
+plays itself, so that mic passes through untouched while the default output is the board too
+(or unknown); any other pair is cancelled here (ADR 0191).
 
 Diagnostics (``history_s > 0``): the last few seconds of mic-before, what
 Jarvis played, and mic-after are kept in lockstep 10 ms chunks, and
@@ -75,12 +76,19 @@ class EchoCanceller:
         self._history_lock = threading.Lock()
         self._restart()
 
-    def set_input_device(self, name: str) -> None:
-        """A microphone just opened: pass it through if it cancels its own echo, else cancel."""
-        self._bypass = self._follow_device and _SELF_CANCELLING_MIC in name.lower()
+    def set_input_device(self, name: str, output: str | None = None) -> None:
+        """A microphone just opened: pass it through if it cancels its own echo, else cancel.
+
+        The reSpeaker's reference is its own USB output: over another speaker (``output``, the
+        default output's name) its mix still carries her voice, so it is cancelled here. An
+        unknown output keeps the name test alone.
+        """
+        board_plays = output is None or _SELF_CANCELLING_MIC in output.lower()
+        self._bypass = self._follow_device and _SELF_CANCELLING_MIC in name.lower() and board_plays
         LOGGER.info(
-            "echo cancellation %s on microphone %r",
+            "echo cancellation %s on microphone %r%s",
             "off (the microphone does its own)" if self._bypass else "on", name,
+            "" if output is None else f" playing on {output!r}",
         )
 
     def add_playback(self, block: np.ndarray, sample_rate_hz: int) -> None:

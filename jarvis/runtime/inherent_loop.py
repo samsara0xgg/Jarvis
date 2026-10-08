@@ -3816,6 +3816,7 @@ class _VoicePowerCoordinator:
                 voice_backend.reinitialize_portaudio()
                 player.set_device(output_device)
                 ingress.set_input_device(input_device)
+                ingress.set_output_device(output_device)
             else:
                 return self._reopen_locked(input_device, output_device)
         finally:
@@ -3849,6 +3850,7 @@ class _VoicePowerCoordinator:
             player.set_device(output_device)
             started = player.start()
             ingress.set_input_device(input_device)
+            ingress.set_output_device(output_device)
             resumed = ingress.resume_after_wake(
                 deadline=time.monotonic() + self._TOTAL_TRANSITION_BOUND_S,
             )
@@ -4201,6 +4203,9 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             config=ingress_config,
             capability_sink=_capability_changed,
             echo_canceller=echo_canceller,
+        )
+        ingress.set_output_device(
+            _output_or_default((runtime.config.get("realtime") or {}).get("output_device")),
         )
         vad = voice_audio.SileroVad(
             mode="record",
