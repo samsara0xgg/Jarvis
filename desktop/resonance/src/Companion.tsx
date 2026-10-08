@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { BellSlash, IconContext, Moon, SpeakerSlash } from '@phosphor-icons/react';
+import { BellSlash, IconContext, MicrophoneSlash, Moon, SpeakerSlash } from '@phosphor-icons/react';
 import { CompanionBall, R, type BallHandle, type Lobe, type Place, type Point } from './CompanionBall';
 import { PREVIEW, SKIN_KEYS, TURN_FACE, isSkin, type ExprId, type Skin } from './starCore';
 import { AroundDashboard, type DashboardView, type DashboardViewHandle, type Think } from './AroundDashboard';
@@ -447,6 +447,8 @@ export function Companion() {
   };
   const latestPoke = useRef(poke);
   latestPoke.current = poke;
+  // ⌥M (electron/companion.ts) flips the microphone; set once ctl exists below.
+  const latestMic = useRef(() => {});
   const typeKey = () => { if (!composer) openComposer(); else { closeComposer(); if (!draft.trim() && voice === 'off') presence.dismiss(); } };
   const latestType = useRef(typeKey);
   latestType.current = typeKey;
@@ -677,6 +679,7 @@ export function Companion() {
     // Double left ⌘ (electron/companion.ts): the same poke as a click on her. Double left ⌥: the field to type to her, or away again.
     if (command === 'poke' && !detached) latestPoke.current();
     if (command === 'type' && !detached) { fold('⌥⌥'); latestType.current(); }
+    if (command === 'mic' && !detached) latestMic.current();
   }), []);
   useEffect(() => window.jarvis?.onDisplayLeave(() => {
     closeComposer(); setMenu(null); fold('moving to another screen'); clearTimeout(zoneTimer.current); clearTimeout(dashTimer.current); dashTimer.current = undefined; pending.current = 'none'; setZone('none'); setMoving(true);
@@ -817,6 +820,7 @@ export function Companion() {
     cues: { on: preferences.feedbackEnabled, volume: preferences.feedbackVolume },
     setCues: change => setPreferences({ ...change.on !== undefined && { feedbackEnabled: change.on }, ...change.volume !== undefined && { feedbackVolume: change.volume } }),
   };
+  latestMic.current = () => ctl.setMic(!s.micMuted);
 
   const { out } = geo;
   const cardView = card ? <ActionCard key={card.id} card={card} lang={companion.lang} onDecide={decideCard}/>
@@ -856,6 +860,7 @@ export function Companion() {
       <button className="companion-island-target" data-hit aria-label={t(['Open Dashboard', '打开主页'])} title={t(['Click the notch to open the Dashboard', '点击刘海打开主页'])}
         style={{ left: geo.lobe.left, width: geo.lobe.notched ? geo.wingX - geo.lobe.left : geo.lobe.right - geo.lobe.left, height: placement.topInset }}
         onClick={toggleDashboard}/>
+      {s.micMuted && <span className="companion-quiet companion-mic-off" aria-label={t(['Microphone off', '麦克风已关闭'])} style={{ left: geo.lobe.left + (s.quiet !== 'off' ? 26 : 8), top: placement.topInset / 2 - 6 }}><MicrophoneSlash size={12} weight="fill"/></span>}
       {menu && <div ref={menuRef} className="companion-menu" data-hit role="menu" aria-label={t(['Jarvis menu', '她的菜单'])} style={{ left: menu.x, top: menu.y }}
         onKeyDown={event => {
           const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button')], at = items.indexOf(document.activeElement as HTMLButtonElement);

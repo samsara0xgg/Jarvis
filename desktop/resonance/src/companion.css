@@ -54,6 +54,11 @@
 .companion-menu button:hover,.companion-menu button:focus-visible { background:rgb(var(--glow) / .14); outline:none; }
 .companion-menu button[aria-checked=true] { color:rgb(var(--glow)); background:rgb(var(--glow) / .08); }
 .companion-quiet { position:absolute; z-index:6; display:grid; place-items:center; width:12px; height:12px; color:rgb(var(--glow) / .75); pointer-events:none; }
+/* ⌥M: the mic-off mark fades in with one soft pulse, then breathes slowly while muted. */
+.companion-mic-off { color:rgb(255 120 110 / .9); animation:mic-off-in .45s ease-out, mic-off-breathe 2.4s ease-in-out .45s infinite; }
+@keyframes mic-off-in { from { opacity:0; transform:scale(.4); } 60% { opacity:1; transform:scale(1.25); } to { transform:scale(1); } }
+@keyframes mic-off-breathe { 50% { opacity:.55; } }
+@media (prefers-reduced-motion: reduce) { .companion-mic-off { animation:none; } }
 .companion-menu-key { float:right; font:500 11px "JetBrains Mono", Menlo, monospace; color:rgb(238 240 251 / .45); }
 .companion-menu hr { border:0; border-top:1px solid rgb(196 204 238 / .15); margin:6px 0; }
 .companion-menu-label { padding:4px 10px 2px; font-size:var(--text-label); letter-spacing:.02em; color:var(--p-faint); }

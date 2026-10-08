@@ -424,6 +424,9 @@ function companion(shown?: () => void) {
   // Spec §15.3: ⌥Tab opens the island's list of agent sessions for the keys, and closes it again.
   if (!demo && !globalShortcut.register('Alt+Tab', () => { if (!agentsWindow?.next()) win.webContents.send('command', 'agent-keys'); })) console.warn('Shortcut unavailable: Alt+Tab');
   app.on('will-quit', () => globalShortcut.unregister('Alt+Tab'));
+  // ⌥M mutes or unmutes the microphone; a conversation stays open while muted (ADR-0015).
+  if (!globalShortcut.register('Alt+M', () => win.webContents.send('command', 'mic'))) console.warn('Shortcut unavailable: Alt+M');
+  app.on('will-quit', () => globalShortcut.unregister('Alt+M'));
   // Her Settings that act in this process: the right-⌥ dictation, its language, and which screen she lives on.
   ipcMain.on('companion-settings', (event, settings: { follow?: boolean; lang?: string; dictation?: boolean }) => {
     if (!mine(event) || typeof settings !== 'object' || !settings) return;
