@@ -519,6 +519,7 @@ class CanonicalAudioFrame:
     sample_cursor: int
     sample_rate_hz: int
     frame_count: int
+    # PortAudio ADC time of the frame's first sample, when the backend has one.
     adc_time_s: float | None
     captured_monotonic_ns: int
     discontinuity_before: bool
@@ -986,7 +987,7 @@ class AudioIngressCanonicalizer:
         self._next_output_source_position = 0.0
         self._previous_source_sample: float | None = None
         self._pending_discontinuity = False
-        self._last_adc_time_s: float | None = None
+        self._pending_adc_time_s: float | None = None  # of the first sample in _pending
         self._last_monotonic_ns = 0
 
     def reset(self, *, stream_epoch: int, discontinuity: bool) -> None:
@@ -1000,7 +1001,7 @@ class AudioIngressCanonicalizer:
         self._next_output_source_position = 0.0
         self._previous_source_sample = None
         self._pending_discontinuity = discontinuity
-        self._last_adc_time_s = None
+        self._pending_adc_time_s = None
         self._last_monotonic_ns = 0
 
     def feed(self, native: _OwnedPcmFrame) -> tuple[CanonicalAudioFrame, ...]:
@@ -1024,8 +1025,13 @@ class AudioIngressCanonicalizer:
             self._pending_wake.clear()
         elif len(self._pending_wake) == len(self._pending):
             self._pending_wake.extend(np.ascontiguousarray(wake, dtype="<i2").tobytes())
+        # Anchored on every block's own ADC time, so what the framer carries over never drifts.
+        self._pending_adc_time_s = (
+            None
+            if native.adc_time_s is None
+            else native.adc_time_s - len(self._pending) / 2 / self._sample_rate_hz
+        )
         self._pending.extend(canonical.tobytes())
-        self._last_adc_time_s = native.adc_time_s
         self._last_monotonic_ns = native.captured_monotonic_ns
         frames: list[CanonicalAudioFrame] = []
         frame_bytes = self._frame_samples * 2
@@ -1043,7 +1049,7 @@ class AudioIngressCanonicalizer:
                     sample_cursor=self._canonical_cursor,
                     sample_rate_hz=self._sample_rate_hz,
                     frame_count=self._frame_samples,
-                    adc_time_s=self._last_adc_time_s,
+                    adc_time_s=self._pending_adc_time_s,
                     captured_monotonic_ns=self._last_monotonic_ns,
                     discontinuity_before=self._pending_discontinuity,
                     pcm16_mono=payload,
@@ -1053,6 +1059,8 @@ class AudioIngressCanonicalizer:
             self._pending_discontinuity = False
             self._canonical_sequence += 1
             self._canonical_cursor += self._frame_samples
+            if self._pending_adc_time_s is not None:
+                self._pending_adc_time_s += self._frame_samples / self._sample_rate_hz
         return tuple(frames)
 
     def _split_channels(
@@ -1956,6 +1964,7 @@ class AudioIngress:
                 frame.pcm16_mono,
                 stream_epoch=frame.stream_epoch,
                 discontinuity=frame.discontinuity_before,
+                adc_time_s=frame.adc_time_s,
             ),
         )
 

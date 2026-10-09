@@ -4262,7 +4262,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
         def _dump_echo_history(canceller: voice_aec.EchoCanceller) -> None:
             path = canceller.dump(runtime.runtime_paths.root / "aec-diagnostics")
             if path is not None:
-                LOGGER.info("echo diagnostics written: %s", path)
+                LOGGER.info("echo diagnostics written: %s (%s)", path, canceller.summary())
 
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
