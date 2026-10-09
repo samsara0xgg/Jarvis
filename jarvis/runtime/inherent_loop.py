@@ -196,7 +196,7 @@ from jarvis.shared.realtime import (
 )
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state import quiet_mode
-from jarvis.state.device_tokens import device_name_for_token, device_token_matches
+from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
 from jarvis.state.event_log import (
     emit_event,
     get_event,
@@ -267,6 +267,7 @@ from jarvis.surface import (
 from jarvis.surface.claude_sessions import ClaudeSessions
 from jarvis.surface.cli import SurfaceState, emit_surface_user_intent, record_pre_emit_token
 from jarvis.surface.cli_render import render_response
+from jarvis.surface.device_pairing import DevicePairing, brain_urls
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_protocol import RuntimeCapabilities
 from jarvis.surface.inherent_server import (
@@ -6729,6 +6730,13 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 if runtime.listen_addresses
                 else None
             ),
+            # ADR 0196: routes on every daemon, but only a brain that listens can mint a code.
+            pairing=DevicePairing(
+                root=runtime.runtime_paths.root,
+                codes=PairingCodes(runtime.runtime_paths.root),
+                listens=bool(runtime.listen_addresses),
+                brain_urls=brain_urls(runtime.listen_addresses, runtime.listen_hosts, port),
+            ),
             v2=InherentV2Deps(
                 token_matches=functools.partial(inherent_v2_token_matches, v2_token),
                 device_token_matches=(
@@ -6773,6 +6781,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 if runtime.listen_addresses
                 else None
             ),
+            open_claim=bool(runtime.listen_addresses),
         )
 
         config = uvicorn.Config(

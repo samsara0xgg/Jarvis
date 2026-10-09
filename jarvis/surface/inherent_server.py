@@ -102,6 +102,7 @@ from jarvis.surface.codex_sessions import (
     prune_codex_sessions,
     settle_codex_sessions,
 )
+from jarvis.surface.device_pairing import CLAIM_PATH, DevicePairing, register_pairing_routes
 from jarvis.surface.inherent_protocol import (
     HELLO_TIMEOUT_S,
     INITIAL_MAX_FRAMES_PER_S,
@@ -564,6 +565,8 @@ class InherentDeps:
     # ``/terminal/ws`` exists only with both, i.e. only where device tokens are wired.
     terminals: TerminalHub | None = None
     device_name: Callable[[str], str | None] | None = None
+    # ADR 0196: the four device-pairing routes. ``None`` leaves them unregistered (404).
+    pairing: DevicePairing | None = None
     # ADR-0018: the quota dashboard's read model and its on-demand poll.
     # ``usage_read`` runs a small SQLite fold on the loop thread; ``usage_refresh``
     # awaits one full poll (network off-thread, emit on-thread) and returns
@@ -976,6 +979,8 @@ class _LocalKeyMiddleware:
     With ``device_token_matches`` (ADR 0170), a peer that is not on loopback
     cannot read the key, so it must carry a paired device's token on every
     route but the liveness probe. A peer on loopback is checked as before.
+    With ``open_claim`` (ADR 0196), ``POST`` to the claim path is open to any
+    peer, loopback or not: a device that has no token yet trades its code there.
     """
 
     def __init__(
@@ -983,13 +988,23 @@ class _LocalKeyMiddleware:
         app: ASGIApp,
         authorize: Callable[[str | None], bool],
         device_token_matches: Callable[[str], bool] | None = None,
+        *,
+        open_claim: bool = False,
     ) -> None:
         self.app = app
         self.authorize = authorize
         self.device_token_matches = device_token_matches
+        self.open_claim = open_claim
 
     def _allowed(self, scope: Scope) -> bool:
         if scope["path"] == _HEALTH_PATH:
+            return True
+        if (
+            self.open_claim
+            and scope["type"] == "http"
+            and scope["method"] == "POST"
+            and scope["path"] == CLAIM_PATH
+        ):
             return True
         header = Headers(scope=scope).get("authorization")
         if self.device_token_matches is not None and not _is_loopback_peer(
@@ -1017,6 +1032,7 @@ def require_local_key(
     *,
     extra_hosts: Sequence[str] = (),
     device_token_matches: Callable[[str], bool] | None = None,
+    open_claim: bool = False,
 ) -> None:
     """Serve only requests addressed to this machine that carry the local key.
 
@@ -1025,11 +1041,15 @@ def require_local_key(
     reads its headers. ``extra_hosts`` are the further names a brain answers to
     on its private addresses, and ``device_token_matches`` is what a peer on
     one of those addresses must present (ADR 0170); both default to nothing.
+    ``open_claim`` lets any peer ``POST`` the pairing claim route without a
+    token (ADR 0196), the only route besides the liveness probe that needs none;
+    the app has to register it (``InherentDeps.pairing``).
     """
     app.add_middleware(
         _LocalKeyMiddleware,
         authorize=authorize,
         device_token_matches=device_token_matches,
+        open_claim=open_claim,
     )
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[*_LOCAL_HOSTS, *extra_hosts])
 
@@ -2288,6 +2308,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
     _register_setup_routes(app, deps)
     _register_dictation_routes(app, deps)
     register_night_routes(app, deps.night)
+    register_pairing_routes(app, deps.pairing)
 
     # ADR 0019 step 4: Allen's own Codex sessions, fed by scripts/codex_hook_log.py.
     codex_board = deps.codex_board
