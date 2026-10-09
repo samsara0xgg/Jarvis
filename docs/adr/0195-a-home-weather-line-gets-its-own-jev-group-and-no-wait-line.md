@@ -1,4 +1,4 @@
-# ADR 0189 — A home weather line gets its own Jev group, and no wait line
+# ADR 0195 — A home weather line gets its own Jev group, and no wait line
 
 **Status:** Accepted
 **Date:** 2026-10-06
