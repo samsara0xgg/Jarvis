@@ -49,7 +49,7 @@ import time
 import uuid
 import webbrowser
 from collections.abc import Mapping  # runtime use: isinstance in the config readers.
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime
 from datetime import time as clock
 from functools import partial
@@ -234,6 +234,7 @@ from jarvis.surface.cli import (
     record_pre_emit_token,
 )
 from jarvis.surface.cli_render import render_response
+from jarvis.surface.mac_location import read_mac_location
 from jarvis.surface.stream_emission import emit_permitted_segment
 from jarvis.surface.terminal_events import BrainEvents
 from jarvis.surface.terminal_link import TerminalHub
@@ -1289,6 +1290,13 @@ def _home_weather(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
     block = config.get("home")
     place = block.get("weather") if isinstance(block, Mapping) else None
     return place if isinstance(place, Mapping) else None
+
+
+def _here_location(role: str) -> Callable[[], dict[str, Any]] | None:
+    """This Mac's location read on demand (ADR 0194); none off macOS or on a headless brain."""
+    if sys.platform != "darwin" or role == "brain":
+        return None
+    return lambda: asdict(read_mac_location())
 
 
 def _transit_places(config: Mapping[str, Any]) -> dict[str, str]:
@@ -2657,6 +2665,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         weather_lookup=weather_lookup(_home_weather(full_config)),
         transit_api_key=os.environ.get("GOOGLE_MAPS_API_KEY", "").strip(),
         transit_places=_transit_places(full_config),
+        here_location=_here_location(role),
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,

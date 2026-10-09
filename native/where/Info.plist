@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>jarvis-where</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.allen.jarvis.where</string>
+	<key>CFBundleName</key>
+	<string>Jarvis Location</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSLocationUsageDescription</key>
+	<string>Jarvis uses your Mac's location to plan bus trips from where you are.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Jarvis uses your Mac's location to plan bus trips from where you are.</string>
+</dict>
+</plist>

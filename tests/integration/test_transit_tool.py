@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
+import sys
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -15,8 +17,12 @@ import pytest
 from jarvis.decision.commentary import _dispatch_key
 from jarvis.execution import transit_tool
 from jarvis.execution.tools import ToolError, build_default_registry
-from jarvis.runtime import _transit_places
+from jarvis.runtime import _here_location, _transit_places
 from jarvis.shared import CallerPrincipal
+from jarvis.surface import mac_location
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # Built by hand from Google's documented computeRoutes TRANSIT response (not a recording):
 # Saanich to downtown Victoria on 2026-10-07, four routes, the fourth to be cut.
@@ -52,11 +58,25 @@ def _serve(
     return seen
 
 
-def _call(args: dict[str, Any], places: dict[str, str] | None = None) -> dict[str, Any]:
+FIX = {"lat": 48.46, "lng": -123.31, "accuracy_m": 40.4, "place": "Ring Rd, Saanich"}
+
+
+def _fix(**changes: object) -> Callable[[], dict[str, Any]]:
+    return lambda: {**FIX, **changes}
+
+
+def _call(
+    args: dict[str, Any],
+    places: dict[str, str] | None = None,
+    here: Callable[[], dict[str, Any]] | None = None,
+    tool: str = "transit",
+) -> dict[str, Any]:
     registry = build_default_registry(
-        transit_api_key=FAKE_KEY, transit_places=PLACES if places is None else places
+        transit_api_key=FAKE_KEY,
+        transit_places=PLACES if places is None else places,
+        here_location=here,
     )
-    (definition,) = (d for d in registry.get_definitions() if d.name == "transit")
+    (definition,) = (d for d in registry.get_definitions() if d.name == tool)
     return dict(definition.handler(args, None))  # type: ignore[arg-type,call-arg,misc]
 
 
@@ -190,3 +210,127 @@ def test_places_come_from_the_transit_section_and_home_falls_back_to_the_weather
     both = {**weather, "transit": {"home": " 1 Example St ", "school": "UVic"}}
     assert _transit_places(both) == {"home": "1 Example St", "school": "UVic"}
     assert _transit_places({"transit": None}) == {}
+
+
+def test_here_is_the_macs_location_as_a_lat_lng_waypoint_and_is_said_with_its_accuracy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """'here': the fix goes to Google as latLng; from says this Mac, the place and the metres."""
+    seen = _serve(monkeypatch)
+    out = _call({"origin": "Here", "destination": "home"}, here=_fix())
+    assert json.loads(seen[0][0].data)["origin"] == {
+        "location": {"latLng": {"latitude": 48.46, "longitude": -123.31}}
+    }
+    assert out["from"] == "here (this Mac, Ring Rd, Saanich, ±40 m)"
+    assert out["to"] == "home"
+    out = _call({"origin": "school", "destination": "here"}, here=_fix(place=None))
+    assert out["to"] == "here (this Mac, ±40 m)"
+
+
+def test_here_without_a_reading_is_a_tool_error_that_says_to_ask_and_sends_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Denied, timed out, or no reader at all: the Mac's location could not be read; ask him."""
+    seen = _serve(monkeypatch)
+
+    def denied() -> dict[str, Any]:
+        reason = "location access is denied"
+        raise mac_location.LocationUnavailable(reason)
+
+    for reader in (denied, None):
+        with pytest.raises(ToolError, match=r"Mac's location could not be read.*ask the user") as e:
+            _call({"origin": "here", "destination": "home"}, here=reader)
+        assert e.value.code == "location_unavailable"
+    assert seen == []
+
+
+def test_the_description_makes_here_the_default_origin() -> None:
+    """The model is told an unstated origin is 'here'."""
+    registry = build_default_registry(transit_api_key=FAKE_KEY, transit_places=PLACES)
+    (definition,) = (d for d in registry.get_definitions() if d.name == "transit")
+    assert "origin is 'here'" in definition.description
+    assert "this Mac" in definition.description
+
+
+def test_where_am_i_reads_the_mac_with_or_without_a_place_and_is_a_quiet_read_only_tool() -> None:
+    """No arguments, L1, no confirmation, no wait line; absent without a reader, key not needed."""
+    names = {d.name for d in build_default_registry().get_definitions()}
+    assert "where_am_i" not in names
+    assert _call({}, here=_fix(), tool="where_am_i") == {
+        "place": "Ring Rd, Saanich",
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 40.4,
+        "source": "this Mac",
+    }
+    assert _call({}, here=_fix(place=None), tool="where_am_i")["place"] is None
+    registry = build_default_registry(here_location=_fix())
+    (definition,) = (d for d in registry.get_definitions() if d.name == "where_am_i")
+    assert definition.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
+    assert definition.read_only
+    assert not definition.requires_confirmation
+    assert not definition.deferred
+    assert "transit" in definition.description
+    assert _dispatch_key("where_am_i") is None
+    with pytest.raises(ToolError, match="ask the user where he is"):
+        _call({}, here=dict, tool="where_am_i")
+
+
+def test_the_helper_output_parses_with_and_without_a_place_and_each_failure_has_a_reason() -> None:
+    """The one JSON line: a fix (place optional), or denied / a CoreLocation error / junk."""
+    full = '{"lat":48.46,"lng":-123.31,"accuracy_m":40,"age_s":1,"place":"Ring Rd, Saanich"}'
+    assert mac_location.parse_helper_output(full) == mac_location.MacLocation(
+        48.46, -123.31, 40.0, "Ring Rd, Saanich"
+    )
+    bare = '{"lat":48.46,"lng":-123.31,"accuracy_m":40,"age_s":1}'
+    assert mac_location.parse_helper_output(bare).place is None
+    for text, reason in (
+        ('{"error":"denied"}', "denied"),
+        ('{"error":"timeout"}', "timeout"),
+        ("", "no usable answer"),
+        ('{"lat":1}', "no usable answer"),
+    ):
+        with pytest.raises(mac_location.LocationUnavailable, match=reason):
+            mac_location.parse_helper_output(text)
+
+
+def test_the_reader_opens_the_app_with_a_temp_file_and_reads_what_it_wrote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Run open -W -n <app> --args <file>; a fake app writes it; a timeout has its own reason."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    app = Path("/nonexistent/JarvisWhere.app")
+    monkeypatch.setattr(mac_location, "ensure_where_app", lambda: app)
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **kwargs: float) -> subprocess.CompletedProcess[bytes]:
+        calls.append(argv)
+        assert kwargs["timeout"] == 12.0
+        Path(argv[-1]).write_text(json.dumps({**FIX, "age_s": 2}))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    got = mac_location.read_mac_location()
+    assert got == mac_location.MacLocation(48.46, -123.31, 40.4, "Ring Rd, Saanich")
+    assert calls[0][:5] == ["/usr/bin/open", "-W", "-n", str(app), "--args"]
+
+    def hang(argv: list[str], **_kwargs: float) -> None:
+        raise subprocess.TimeoutExpired(argv, 12.0)
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    with pytest.raises(mac_location.LocationUnavailable, match="timed out"):
+        mac_location.read_mac_location()
+    monkeypatch.setattr(sys, "platform", "linux")
+    with pytest.raises(mac_location.LocationUnavailable, match="cannot read its location"):
+        mac_location.read_mac_location()
+
+
+def test_the_runtime_offers_the_reader_only_on_a_mac_that_is_not_a_headless_brain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a Mac with role all: a reader; Linux or a brain: none, so no `here` and no where_am_i."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert _here_location("all") is not None
+    assert _here_location("brain") is None
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert _here_location("all") is None

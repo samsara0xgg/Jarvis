@@ -9,11 +9,12 @@ from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
+from jarvis.execution.location_tool import read_here
 from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from jarvis.execution.tools import ToolContext
 
@@ -39,7 +40,9 @@ _DESCRIPTION: Final = (
     " when to leave, the walk to the first stop, each bus (route number, direction, board"
     " stop, departure time, alight stop), arrival time and total minutes, for up to 3"
     " options. Use it for any question about the bus, transit, 'when's the next bus', 'how"
-    " do I get to X by bus' or 'when should I leave'. Pass the word 'home' for the user's own"
+    " do I get to X by bus' or 'when should I leave'. When he does not say where he starts"
+    " ('when's my bus home'), the origin is 'here': his location, read from this Mac, which"
+    " he carries. Pass the word 'home' for the user's own"
     " home ('my bus home', going home, in any language) and the word 'school' for the campus"
     " (going to school or class, leaving class or school, 'from campus', in any language);"
     " leaving school to go home is origin 'school', destination"
@@ -49,15 +52,29 @@ _DESCRIPTION: Final = (
 )
 
 
-def _waypoint(place: str, saved: Mapping[str, str]) -> dict[str, Any]:
+def _here(reader: Callable[[], Mapping[str, Any]] | None) -> tuple[dict[str, Any], str]:
+    """The Mac's location as a waypoint, and how to say it in the result."""
+    fix = read_here(reader)
+    near = f"{fix['place']}, " if fix["place"] else ""
+    label = f"here (this Mac, {near}±{round(fix['accuracy_m'])} m)"
+    latlng = {"latitude": fix["lat"], "longitude": fix["lng"]}
+    return {"location": {"latLng": latlng}}, label
+
+
+def _waypoint(
+    place: str, saved: Mapping[str, str], reader: Callable[[], Mapping[str, Any]] | None
+) -> tuple[dict[str, Any], str]:
     word = place.strip().lower()
+    if word == "here":
+        return _here(reader)
     text = saved.get(word, "") if word in ("home", "school") else place.strip()
     if not text:
         msg = f"the {word} address isn't saved yet"
         raise ToolError(msg, code="not_configured")
     if match := _LAT_LNG.match(text):
-        return {"location": {"latLng": {"latitude": float(match[1]), "longitude": float(match[2])}}}
-    return {"address": text}
+        latlng = {"latitude": float(match[1]), "longitude": float(match[2])}
+        return {"location": {"latLng": latlng}}, place.strip()
+    return {"address": text}, place.strip()
 
 
 def _departure(depart_at: str) -> str:
@@ -134,11 +151,16 @@ def _compute(api_key: str, body: Mapping[str, Any]) -> dict[str, Any]:
     return answer
 
 
-def build_transit_tool(api_key: str | None, places: Mapping[str, str]) -> tuple[Tool, ...]:
+def build_transit_tool(
+    api_key: str | None,
+    places: Mapping[str, str],
+    here: Callable[[], Mapping[str, Any]] | None = None,
+) -> tuple[Tool, ...]:
     """``transit`` over Google Routes; none without a key.
 
     ``places`` maps ``home`` and ``school`` to an address or ``lat,lng``; a missing one makes
-    that word a tool error rather than a guess.
+    that word a tool error rather than a guess. ``here`` reads this Mac's location when asked
+    (ADR 0194); its failure is a tool error telling the model to ask where the user is.
     """
     if not api_key:
         return ()
@@ -148,9 +170,11 @@ def build_transit_tool(api_key: str | None, places: Mapping[str, str]) -> tuple[
         if not origin.strip() or not destination.strip():
             msg = "origin and destination are both required"
             raise ToolError(msg, code="invalid_argument")
+        start, start_label = _waypoint(origin, places, here)
+        end, end_label = _waypoint(destination, places, here)
         body: dict[str, Any] = {
-            "origin": _waypoint(origin, places),
-            "destination": _waypoint(destination, places),
+            "origin": start,
+            "destination": end,
             "travelMode": "TRANSIT",
             "computeAlternativeRoutes": True,
         }
@@ -165,7 +189,7 @@ def build_transit_tool(api_key: str | None, places: Mapping[str, str]) -> tuple[
         if not options:
             msg = "no transit route found for that trip at that time"
             raise ToolError(msg, code="not_found")
-        return {"from": origin.strip(), "to": destination.strip(), "options": options}
+        return {"from": start_label, "to": end_label, "options": options}
 
     return (
         Tool(
@@ -174,10 +198,13 @@ def build_transit_tool(api_key: str | None, places: Mapping[str, str]) -> tuple[
             input_schema={
                 "type": "object",
                 "properties": {
-                    "origin": {"type": "string", "description": "'home', 'school', or a place"},
+                    "origin": {
+                        "type": "string",
+                        "description": "'here', 'home', 'school', or a place",
+                    },
                     "destination": {
                         "type": "string",
-                        "description": "'home', 'school', or a place",
+                        "description": "'here', 'home', 'school', or a place",
                     },
                     "depart_at": {"type": "string", "description": "local time today, HH:MM"},
                 },

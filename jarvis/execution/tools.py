@@ -3975,6 +3975,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     weather_lookup: Callable[[], Mapping[str, Any]] | None = None,
     transit_api_key: str | None = None,
     transit_places: Mapping[str, str] | None = None,
+    here_location: Callable[[], Mapping[str, Any]] | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -4048,6 +4049,9 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         transit_api_key: ADR 0189 — the Google Routes key (`GOOGLE_MAPS_API_KEY`, resolved
             by the runtime); empty or `None` leaves `transit` off the menu.
         transit_places: the saved `home` and `school` for `transit` (an address or `lat,lng`).
+        here_location: ADR 0194 — one fresh read of this Mac's location (`lat`, `lng`,
+            `accuracy_m`, optional `place`); gives `transit` its `here` and registers
+            `where_am_i`. `None` leaves both off.
     """
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
 
@@ -4188,6 +4192,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         registry.register(state_tool)
     for report_tool in build_daily_report_tool(daily_report_run):
         registry.register(report_tool)
+    from jarvis.execution.location_tool import build_where_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.mail_draft_tool import build_mail_draft_tool  # noqa: PLC0415
     from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.transit_tool import build_transit_tool  # noqa: PLC0415 — same cycle.
@@ -4199,7 +4204,8 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     for conversation_tool in (
         *build_voice_tool(voice_settings),
         *build_weather_tool(weather_lookup),
-        *build_transit_tool(transit_api_key, transit_places or {}),
+        *build_transit_tool(transit_api_key, transit_places or {}, here_location),
+        *build_where_tool(here_location),
     ):
         registry.register(conversation_tool)
     for draft_tool in build_mail_draft_tool(mail_drafts):

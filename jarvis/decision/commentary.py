@@ -85,6 +85,7 @@ _QUIET_TOOLS: Final = (
     "set_voice",
     "weather",
     "transit",
+    "where_am_i",
     "create_memo",
     "set_reminder",
     "list_reminders",

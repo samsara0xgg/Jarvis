@@ -46,3 +46,4 @@ AGENTS.md
 /hardware/
 native/voice_out/.build/
 native/ambient_sounds/.build/
+native/where/.build/
