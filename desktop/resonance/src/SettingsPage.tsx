@@ -25,7 +25,7 @@ export type Account = { name: string; ok: boolean; text: string };
 // defaults: what "System default" is right now for each device setting (null: unknown).
 type Daemon = { values: Record<string, unknown>; options?: Record<string, string[]>; defaults?: Record<string, string | null>; restart_pending?: boolean };
 const DEMO: Daemon = {
-  values: { reply_language: 'follow', wake_threshold: .95, tts_voice: 'Warm Bestie', tts_volume: 1, output_device: 'System default', input_device: 'System default',
+  values: { reply_language: 'follow', final_asr_language: '', wake_threshold: .95, tts_voice: 'Warm Bestie', tts_volume: 1, output_device: 'System default', input_device: 'System default',
     gpt_live: true, timesink: true, keep_audio: true, repos: ['jarvis', 'typlus', 'timesink', 'guard-mode', 'drum-machine-pro', 'simple-wiki'],
     model_conversation: 'gpt-5.6-luna', model_background: 'GPT-6 luna', model_report: 'GPT-6 sol · flex',
     board_light: 'direction', board_brightness: .4, board_speed: 8, board_color: '#002040', board_direction_colors: ['#002040', '#00c066'],
@@ -155,7 +155,8 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
         if (port) postRoute(port, '/inherent/language', { language: value }).catch(() => notify(t(['Jarvis’s own phrases didn’t switch.', 'Jarvis 的固定句子没切换过去。'])));
       } } },
       { id: 'reply', name: ['Jarvis answers in', 'Jarvis 用什么语言回答'], note: ['Follow me = the language you spoke in', '跟着我 = 你用什么语言说，它就用什么回答'], ctl: { k: 'seg', value: String(v('reply_language') ?? ''), opts: reply, set: value => void save('reply_language', value) }, off },
-      { id: 'asr', name: ['Speech recognition', '语音识别'], ctl: { k: 'info', text: t(['Chinese + English', '中英文自动']), tone: 'ok' } },
+      { id: 'asr', name: ['Speech recognition', '语音识别'], note: ['Auto = it hears which language each sentence is in. Pick one if it keeps mishearing', '自动 = 每句话自己判断是哪种语言；老听错就固定一种'],
+        ctl: { k: 'seg', value: String(v('final_asr_language') ?? ''), opts: [['', ['Auto', '自动']], ['zh', ['中文', '中文']], ['en', ['English', 'English']]], set: value => void save('final_asr_language', value) }, off },
       { id: 'dictation', name: ['Dictation', '听写'], note: ['Tap the right ⌥ to start, tap again to finish. The text goes wherever you’re typing', '轻点右 ⌥ 开始，再点一下结束，字贴到你打字的地方'], ctl: { k: 'switch', on: s.dictation, set: on => update({ dictation: on }) } },
       { id: 'open-by', name: ['Open the Dashboard', '打开面板'], ctl: { k: 'seg', value: s.openBy, opts: [['both', ['Both', '都行']], ['click', ['Click notch', '点击刘海']], ['hover', ['Hover notch', '悬停刘海']]], set: value => update({ openBy: value as typeof s.openBy }) } },
       { id: 'screen', name: ['Which screen she lives on', '她在哪个屏幕'], ctl: { k: 'seg', value: s.screen, opts: [['follow', ['Follow the cursor', '跟着光标']], ['main', ['Main screen', '主屏幕']]], set: value => update({ screen: value as typeof s.screen }) } },

@@ -78,7 +78,8 @@ def test_the_page_reads_what_jarvis_booted_with(tmp_path: Path) -> None:
     """GET: current values in the page's words, the choices, nothing waiting for a restart."""
     body = _client(tmp_path).get("/inherent/settings").json()
     assert body["values"] == {
-        "reply_language": "follow", "wake_threshold": 0.95, "tts_voice": "暖心闺蜜",
+        "reply_language": "follow", "final_asr_language": "", "wake_threshold": 0.95,
+        "tts_voice": "暖心闺蜜",
         "tts_volume": 1.0, "output_device": "System default", "input_device": "System default",
         "gpt_live": True, "timesink": True, "keep_audio": True,
         "audio_days": 30, "screenshot_days": 7,
@@ -147,9 +148,23 @@ def test_a_value_the_page_cannot_hold_is_refused(tmp_path: Path) -> None:
         {"tts_voice": "Nobody"},
         {"audio_days": 45},
         {"screenshot_days": 7.0},
+        {"final_asr_language": "fr"},
     ):
         assert client.post("/inherent/settings", json={"changes": changes}).status_code == 400
     assert not (tmp_path / "settings.json").exists()
+
+
+def test_the_recognition_language_pick_beats_a_written_pin(tmp_path: Path) -> None:
+    """Auto, 中文 and English are ``""``, ``zh`` and ``en``; the page's pick beats settings.yaml."""
+    yaml_pinned = {**YAML, "realtime": {**YAML["realtime"], "final_asr_language": "en"}}
+    assert apply_settings(yaml_pinned, tmp_path)["realtime"]["final_asr_language"] == "en"
+    (tmp_path / "settings.json").write_text(json.dumps({"final_asr_language": ""}))
+    assert apply_settings(yaml_pinned, tmp_path)["realtime"]["final_asr_language"] == ""
+    client = _client(tmp_path)
+    body = client.post("/inherent/settings", json={"changes": {"final_asr_language": "zh"}}).json()
+    assert body["values"]["final_asr_language"] == "zh"
+    assert body["restart_pending"] is True
+    assert apply_settings(YAML, tmp_path)["realtime"]["final_asr_language"] == "zh"
 
 
 def test_an_old_saved_mac_aec_is_ignored(tmp_path: Path) -> None:

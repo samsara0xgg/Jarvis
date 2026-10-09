@@ -58,6 +58,8 @@ SETUP_VOICES: dict[str, tuple[str, ...]] = {
 # Each key the page may change and the config value it sets.
 PATHS: dict[str, tuple[str, ...]] = {
     "reply_language": ("reply_language",),
+    # "" lets SenseVoice tell each utterance's language; "zh" or "en" pins it and Whisper.
+    "final_asr_language": ("realtime", "final_asr_language"),
     "wake_threshold": ("realtime", "wake_threshold"),
     "tts_voice": ("realtime", "tts_voice"),
     "tts_volume": ("realtime", "playback_volume"),
@@ -82,7 +84,8 @@ _BOARD_DEFAULTS: dict[str, Any] = {
     "board_headphone": 8, "board_lineout": 8,
 }
 _DEFAULTS: dict[str, Any] = {
-    "reply_language": "follow", "tts_volume": 1.0, "core_memory_max_chars": 4000, **_BOARD_DEFAULTS,
+    "reply_language": "follow", "final_asr_language": "", "tts_volume": 1.0,
+    "core_memory_max_chars": 4000, **_BOARD_DEFAULTS,
 }
 _DEVICES = {"output_device": "output", "input_device": "input"}
 # The keys a terminal that serves the UI answers itself: its own microphone and speaker (ADR 0183).
@@ -134,7 +137,8 @@ def _valid(key: str, value: object) -> bool:
     if key == "tts_voice":
         return value in VOICES
     return _valid_board(key, value) if key in _BOARD_DEFAULTS else (
-        key == "reply_language" and value in ("follow", "zh", "en")
+        (key == "reply_language" and value in ("follow", "zh", "en"))
+        or (key == "final_asr_language" and value in ("", "zh", "en"))
     )
 
 
