@@ -3053,6 +3053,20 @@ def test_event_of_reads_the_date_and_time_lines_and_never_a_quoted_header() -> N
     assert triage.event_of(both, _RC_RECEIVED, dated=True)[1] == "2026-10-08T13:00-07:00"
 
 
+def test_a_range_with_one_am_pm_starts_at_its_start() -> None:
+    """``1:00 - 2:00pm`` is 1 PM, not 2 PM; ``11 - 1pm`` is 11 AM."""
+    for sentence, at in (
+        ("Would 1:00 - 2:00pm on Tuesday October 13th work for you?", "2026-10-13T13:00-07:00"),
+        ("Interview 11 - 1pm Tuesday October 13th", "2026-10-13T11:00-07:00"),
+        ("Interview 10:30 to 11:30am Tuesday October 13th", "2026-10-13T10:30-07:00"),
+        ("Interview 1:00pm - 2:00pm Tuesday October 13th", "2026-10-13T13:00-07:00"),
+        ("Interview at 2pm Tuesday October 13th", "2026-10-13T14:00-07:00"),
+    ):
+        assert triage.event_of(sentence, _RC_RECEIVED, dated=True)[1] == at, sentence
+    labelled = "Date: Tuesday October 13th\nTime: 1:00 - 2:00pm"
+    assert triage.event_of(labelled, _RC_RECEIVED, dated=True)[1] == "2026-10-13T13:00-07:00"
+
+
 def test_interviewers_of_a_panel_line_are_persons_not_titles() -> None:
     """Myself is the sender (not known here, so left out); a role item is dropped."""
     people = triage.mail_details(_RC_INVITE)["interviewers"]

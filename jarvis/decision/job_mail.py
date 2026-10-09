@@ -455,6 +455,12 @@ _TIME_AMPM: Final = re.compile(
     r"\b(?P<h>\d{1,2})(?::(?P<m>\d\d))?\s*(?P<ap>[ap])\.?m\b\.?", re.IGNORECASE
 )
 _TIME_24: Final = re.compile(r"\b(?P<h>[01]?\d|2[0-3]):(?P<m>[0-5]\d)\b")
+# A range whose am/pm is said once, at its end ("1:00 - 2:00pm"): the start takes that am/pm.
+_RANGE_SHARED_AMPM: Final = re.compile(
+    r"\b(?P<h>\d{1,2})(?::(?P<m>\d\d))?\s*(?:-|\u2013|\u2014|to)\s*"
+    r"(?P<h2>\d{1,2})(?::\d\d)?\s*(?P<ap>[ap])\.?m\b",
+    re.IGNORECASE,
+)
 _ZONES: Final[dict[str, str]] = {
     "PST": "America/Vancouver",
     "PDT": "America/Vancouver",
@@ -682,7 +688,16 @@ def _day_of(sentence: str, received: datetime) -> date | None:
 
 
 def _clock_of(sentence: str) -> tuple[int, int] | None:
-    """(hour, minute) of a time in a sentence (``2:00 PM``, ``2pm``, ``14:00``)."""
+    """(hour, minute) of a time in a sentence (``2:00 PM``, ``2pm``, ``14:00``).
+
+    A range is its start: in ``1:00 - 2:00pm`` the start is 1 PM, and in ``11 - 1pm`` 11 AM.
+    """
+    shared = _RANGE_SHARED_AMPM.search(sentence)
+    if shared is not None and int(shared["h"]) <= 12 and int(shared["h2"]) <= 12:  # noqa: PLR2004 - a 12-hour clock
+        pm = shared["ap"].lower() == "p"
+        if int(shared["h"]) % 12 > int(shared["h2"]) % 12:  # starts before noon, ends after
+            pm = not pm
+        return int(shared["h"]) % 12 + (12 if pm else 0), int(shared["m"] or 0)
     spoken = _TIME_AMPM.search(sentence)
     if spoken is not None:
         return int(spoken["h"]) % 12 + (12 if spoken["ap"].lower() == "p" else 0), int(
