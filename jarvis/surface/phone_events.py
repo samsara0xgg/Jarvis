@@ -24,6 +24,7 @@ import math
 from typing import TYPE_CHECKING, Final
 
 from jarvis.state.event_log import EventTypeRegistry
+from jarvis.state.phone_location import LOCATION_EVENT, VISIT_EVENT
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -32,8 +33,6 @@ if TYPE_CHECKING:
 
 PHONE_EVENTS_PATH: Final = "/inherent/device/events"
 
-VISIT_EVENT: Final = "phone.visit_observed"
-LOCATION_EVENT: Final = "phone.location_observed"
 MOTION_EVENT: Final = "phone.motion_observed"
 HEALTH_EVENT: Final = "phone.health_observed"
 STATE_EVENT: Final = "phone.state_observed"

@@ -3976,6 +3976,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     transit_api_key: str | None = None,
     transit_places: Mapping[str, str] | None = None,
     here_location: Callable[[], Mapping[str, Any]] | None = None,
+    here_from_phone: bool = False,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -4052,6 +4053,8 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         here_location: ADR 0194 — one fresh read of this Mac's location (`lat`, `lng`,
             `accuracy_m`, optional `place`); gives `transit` its `here` and registers
             `where_am_i`. `None` leaves both off.
+        here_from_phone: ADR 0198 — `here_location` is a brain's read of the phone's last
+            report (it also returns `age_s`, `source` and `device`), and both tools say so.
     """
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
 
@@ -4204,8 +4207,10 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     for conversation_tool in (
         *build_voice_tool(voice_settings),
         *build_weather_tool(weather_lookup),
-        *build_transit_tool(transit_api_key, transit_places or {}, here_location),
-        *build_where_tool(here_location),
+        *build_transit_tool(
+            transit_api_key, transit_places or {}, here_location, phone=here_from_phone,
+        ),
+        *build_where_tool(here_location, phone=here_from_phone),
     ):
         registry.register(conversation_tool)
     for draft_tool in build_mail_draft_tool(mail_drafts):

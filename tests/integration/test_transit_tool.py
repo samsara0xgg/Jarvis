@@ -325,12 +325,14 @@ def test_the_reader_opens_the_app_with_a_temp_file_and_reads_what_it_wrote(
         mac_location.read_mac_location()
 
 
-def test_the_runtime_offers_the_reader_only_on_a_mac_that_is_not_a_headless_brain(
-    monkeypatch: pytest.MonkeyPatch,
+def test_the_runtime_offers_this_macs_reader_only_on_a_mac_and_a_brain_reads_its_phone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """On a Mac with role all: a reader; Linux or a brain: none, so no `here` and no where_am_i."""
+    """Role all on a Mac: a reader; on Linux: none. A brain: the phone's reader on any machine."""
+    log = tmp_path / "events.db"
     monkeypatch.setattr(sys, "platform", "darwin")
-    assert _here_location("all") is not None
-    assert _here_location("brain") is None
+    assert _here_location("all", log) is not None
+    assert _here_location("brain", log) is not None
     monkeypatch.setattr(sys, "platform", "linux")
-    assert _here_location("all") is None
+    assert _here_location("all", log) is None
+    assert _here_location("brain", log) is not None  # ADR 0198: its phone, not a Mac

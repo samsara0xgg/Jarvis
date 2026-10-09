@@ -9,7 +9,7 @@ from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
-from jarvis.execution.location_tool import read_here
+from jarvis.execution.location_tool import PHONE_REPORT_RULE, phone_report, read_here
 from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
 
@@ -35,38 +35,54 @@ _FIELD_MASK: Final = ",".join(
 )
 _LAT_LNG = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 
-_DESCRIPTION: Final = (
-    "Bus and transit times from one place to another, from now or from a clock time today:"
-    " when to leave, the walk to the first stop, each bus (route number, direction, board"
-    " stop, departure time, alight stop), arrival time and total minutes, for up to 3"
-    " options. Use it for any question about the bus, transit, 'when's the next bus', 'how"
-    " do I get to X by bus' or 'when should I leave'. When he does not say where he starts"
-    " ('when's my bus home'), the origin is 'here': his location, read from this Mac, which"
-    " he carries. Pass the word 'home' for the user's own"
-    " home ('my bus home', going home, in any language) and the word 'school' for the campus"
-    " (going to school or class, leaving class or school, 'from campus', in any language);"
-    " leaving school to go home is origin 'school', destination"
-    " 'home'. Otherwise pass the place as an address or name, e.g. 'Mayfair Mall'. depart_at"
-    " is a local time today as HH:MM; leave it out for now. If it returns an error, say so"
-    " and do not guess times."
+_MAC_HERE: Final = "his location, read from this Mac, which he carries."
+_PHONE_HERE: Final = (
+    "his location from his phone's last report, with its age and accuracy in the result."
+    " " + PHONE_REPORT_RULE
 )
 
 
-def _here(reader: Callable[[], Mapping[str, Any]] | None) -> tuple[dict[str, Any], str]:
-    """The Mac's location as a waypoint, and how to say it in the result."""
-    fix = read_here(reader)
+def _description(*, phone: bool) -> str:
+    """The tool's description; ``phone``: on a brain, ``here`` is the phone's last report."""
+    return (
+        "Bus and transit times from one place to another, from now or from a clock time today:"
+        " when to leave, the walk to the first stop, each bus (route number, direction, board"
+        " stop, departure time, alight stop), arrival time and total minutes, for up to 3"
+        " options. Use it for any question about the bus, transit, 'when's the next bus', 'how"
+        " do I get to X by bus' or 'when should I leave'. When he does not say where he starts"
+        f" ('when's my bus home'), the origin is 'here': {_PHONE_HERE if phone else _MAC_HERE}"
+        " Pass the word 'home' for the user's own"
+        " home ('my bus home', going home, in any language) and the word 'school' for the campus"
+        " (going to school or class, leaving class or school, 'from campus', in any language);"
+        " leaving school to go home is origin 'school', destination"
+        " 'home'. Otherwise pass the place as an address or name, e.g. 'Mayfair Mall'. depart_at"
+        " is a local time today as HH:MM; leave it out for now. If it returns an error, say so"
+        " and do not guess times."
+    )
+
+
+def _here(
+    reader: Callable[[], Mapping[str, Any]] | None, *, phone: bool,
+) -> tuple[dict[str, Any], str]:
+    """The user's location as a waypoint, and how to say it in the result."""
+    fix = read_here(reader, phone=phone)
     near = f"{fix['place']}, " if fix["place"] else ""
-    label = f"here (this Mac, {near}±{round(fix['accuracy_m'])} m)"
+    where = phone_report(fix) if phone else "this Mac"
+    label = f"here ({where}, {near}±{round(fix['accuracy_m'])} m)"
     latlng = {"latitude": fix["lat"], "longitude": fix["lng"]}
     return {"location": {"latLng": latlng}}, label
 
 
 def _waypoint(
-    place: str, saved: Mapping[str, str], reader: Callable[[], Mapping[str, Any]] | None
+    place: str,
+    saved: Mapping[str, str],
+    reader: Callable[[], Mapping[str, Any]] | None,
+    *,
+    phone: bool,
 ) -> tuple[dict[str, Any], str]:
     word = place.strip().lower()
     if word == "here":
-        return _here(reader)
+        return _here(reader, phone=phone)
     text = saved.get(word, "") if word in ("home", "school") else place.strip()
     if not text:
         msg = f"the {word} address isn't saved yet"
@@ -155,12 +171,16 @@ def build_transit_tool(
     api_key: str | None,
     places: Mapping[str, str],
     here: Callable[[], Mapping[str, Any]] | None = None,
+    *,
+    phone: bool = False,
 ) -> tuple[Tool, ...]:
     """``transit`` over Google Routes; none without a key.
 
     ``places`` maps ``home`` and ``school`` to an address or ``lat,lng``; a missing one makes
     that word a tool error rather than a guess. ``here`` reads this Mac's location when asked
-    (ADR 0194); its failure is a tool error telling the model to ask where the user is.
+    (ADR 0194), or with ``phone`` the phone's last report (ADR 0198), which the description and
+    the result then say, with its age; its failure is a tool error telling the model to ask
+    where the user is.
     """
     if not api_key:
         return ()
@@ -170,8 +190,8 @@ def build_transit_tool(
         if not origin.strip() or not destination.strip():
             msg = "origin and destination are both required"
             raise ToolError(msg, code="invalid_argument")
-        start, start_label = _waypoint(origin, places, here)
-        end, end_label = _waypoint(destination, places, here)
+        start, start_label = _waypoint(origin, places, here, phone=phone)
+        end, end_label = _waypoint(destination, places, here, phone=phone)
         body: dict[str, Any] = {
             "origin": start,
             "destination": end,
@@ -194,7 +214,7 @@ def build_transit_tool(
     return (
         Tool(
             name="transit",
-            description=_DESCRIPTION,
+            description=_description(phone=phone),
             input_schema={
                 "type": "object",
                 "properties": {

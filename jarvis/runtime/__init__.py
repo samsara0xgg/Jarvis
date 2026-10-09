@@ -220,6 +220,7 @@ from jarvis.state.memory_db import (
     record_sent,
     render_context,
 )
+from jarvis.state.phone_location import read_phone_here
 from jarvis.state.projects import parse_catalog
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
@@ -1292,9 +1293,25 @@ def _home_weather(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return place if isinstance(place, Mapping) else None
 
 
-def _here_location(role: str) -> Callable[[], dict[str, Any]] | None:
-    """This Mac's location read on demand (ADR 0194); none off macOS or on a headless brain."""
-    if sys.platform != "darwin" or role == "brain":
+def _phone_here(event_log_path: Path) -> dict[str, Any]:
+    """The phone's last location report, read from the log at each call (ADR 0198).
+
+    Opens its own connection: a tool runs on a worker thread, and the runtime's connection
+    belongs to the loop's.
+    """
+    with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
+        return read_phone_here(conn)
+
+
+def _here_location(role: str, event_log_path: Path) -> Callable[[], dict[str, Any]] | None:
+    """Where the user is, for `transit` and `where_am_i`.
+
+    A brain has no Mac to read, so it reads the phone's last report from its log (ADR 0198);
+    otherwise this Mac's location read on demand (ADR 0194), none off macOS.
+    """
+    if role == "brain":
+        return partial(_phone_here, event_log_path)
+    if sys.platform != "darwin":
         return None
     return lambda: asdict(read_mac_location())
 
@@ -2665,7 +2682,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         weather_lookup=weather_lookup(_home_weather(full_config)),
         transit_api_key=os.environ.get("GOOGLE_MAPS_API_KEY", "").strip(),
         transit_places=_transit_places(full_config),
-        here_location=_here_location(role),
+        here_location=_here_location(role, paths.event_log),
+        here_from_phone=role == "brain",
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
