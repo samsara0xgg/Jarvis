@@ -20,6 +20,10 @@ that restarts picks up from what the brain last heard.
 
 This module holds both ends: :class:`BrainEvents` (validate, dedupe and append on the brain)
 and :class:`EventOutbox` (what an observer on a terminal emits into, and what the link sends).
+:class:`BrainEvents` takes the set of types it accepts as a parameter: a terminal's link passes
+the observers' (and, for a voice terminal, the playback rows), a phone's batch over HTTP
+(ADR 0197, :mod:`jarvis.surface.phone_events`) passes the phone's own, and neither accepts the
+other's.
 """
 
 from __future__ import annotations
@@ -35,10 +39,10 @@ from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import Event
 from jarvis.state.event_log import EventLogError, EventTypeRegistry, emit_event
-from jarvis.surface import repo_observer, timesink_observer, usage_observer
+from jarvis.surface import phone_events, repo_observer, timesink_observer, usage_observer
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Collection, Mapping, Sequence
 
 LOGGER = logging.getLogger("jarvis.surface.terminal_events")
 
@@ -70,6 +74,8 @@ PLAYBACK_EVENT_TYPES: Final = frozenset(
 """What the media actor of a voice terminal (ADR 0172) writes, and the brain folds: the heard
 prefix and the captions, and the provider's character count. Only a terminal that declared
 voice may send them, each under the id the media actor gave it."""
+VOICE_TERMINAL_EVENT_TYPES: Final = OBSERVER_EVENT_TYPES | PLAYBACK_EVENT_TYPES
+"""What a terminal that declared voice may write: the observers' events and the playback rows."""
 
 UTTERANCE_CHANNEL: Final = "inherent_wake"
 """The one channel a terminal's capture session commits an utterance on."""
@@ -183,25 +189,26 @@ class BrainEvents:
         return uid
 
     def record(
-        self, device: str, frame: Mapping[str, Any], size: int, *, voice: bool = False,
+        self, device: str, frame: Mapping[str, Any], size: int, allowed: Collection[str],
     ) -> dict[str, Any] | None:
         """Validate and append one ``event`` frame from ``device``; the ``ack`` to send back.
 
-        ``voice``: the device declared that it speaks, so it may also send playback rows.
+        ``allowed`` is the set of event types this sender may write: a type outside it is
+        refused. A phone's types are also held to the strict payload check of
+        :func:`jarvis.surface.phone_events.payload_valid`.
 
         A refused event is acknowledged with its code and never retried; a duplicate (a
-        terminal resending what it was not told arrived) is acknowledged as done. A database
-        error gets no answer (``None``), so the terminal keeps the event and sends it again
-        the next time it connects.
+        sender resending what it was not told arrived) is acknowledged as done. A database
+        error gets no answer (``None``), so the sender keeps the event and sends it again.
         """
         uid = frame.get("event_uid")
         if not isinstance(uid, str) or _EVENT_UID.fullmatch(uid) is None:
             return _ack(None, "bad_event")
-        code = _refusal(frame, size, voice=voice)
+        now_ms = int(time.time() * 1000)
+        code = _refusal(frame, size, allowed, now_ms)
         if code is not None:
             return _ack(uid, code)
         event_type, payload, ts = frame["event_type"], frame["payload"], frame["ts_epoch_ms"]
-        now_ms = int(time.time() * 1000)
         if not now_ms - _PAST_S * 1000 <= ts <= now_ms + _FUTURE_S * 1000:
             ts = now_ms  # a clock that far off is not trusted to place the event in the day
         try:
@@ -225,6 +232,27 @@ class BrainEvents:
             return None
         return _ack(uid, None)
 
+    def record_phone_batch(self, device: str, frames: Sequence[object]) -> list[dict[str, Any]]:
+        """Append a phone's batch of frames (ADR 0197); one ``ack`` per frame, in order.
+
+        Each frame goes through :meth:`record` with only the phone's types allowed, so it is
+        deduplicated by its ``event_uid``, has its time clamped and is appended under
+        ``device`` exactly as a terminal's event is. A frame that is not an object, or carries
+        a key an event frame does not, is ``bad_event``. A database error is ``retry`` for that
+        frame alone, the one code the phone answers by keeping the frame and sending it again.
+        """
+        acks: list[dict[str, Any]] = []
+        for frame in frames:
+            if not isinstance(frame, dict) or not phone_events.frame_shaped(frame):
+                uid = frame.get("event_uid") if isinstance(frame, dict) else None
+                valid = isinstance(uid, str) and _EVENT_UID.fullmatch(uid) is not None
+                acks.append(_ack(uid if valid else None, "bad_event"))
+                continue
+            size = len(json.dumps(frame, ensure_ascii=False, separators=(",", ":")))
+            ack = self.record(device, frame, size, phone_events.PHONE_EVENT_TYPES)
+            acks.append(_ack(frame["event_uid"], "retry") if ack is None else ack)
+        return acks
+
 
 def _well_formed(frame: Mapping[str, Any]) -> bool:
     """Whether an event frame's fields have the shapes ``emit_event`` is given."""
@@ -245,14 +273,26 @@ def _well_formed(frame: Mapping[str, Any]) -> bool:
     )
 
 
-def _refusal(frame: Mapping[str, Any], size: int, *, voice: bool) -> str | None:
-    """Why an event frame is refused for good, or ``None``."""
+def _refusal(
+    frame: Mapping[str, Any], size: int, allowed: Collection[str], now_ms: int,
+) -> str | None:
+    """Why an event frame is refused for good, or ``None``.
+
+    A phone's event must also carry exactly the payload its type defines, judged against the
+    brain's clock ``now_ms`` (:func:`jarvis.surface.phone_events.payload_valid`).
+    """
     if size > MAX_EVENT_CHARS:
         return "event_too_large"
     kind = frame.get("event_type")
-    if kind not in OBSERVER_EVENT_TYPES and not (voice and kind in PLAYBACK_EVENT_TYPES):
+    if not isinstance(kind, str) or kind not in allowed:
         return "event_type_not_allowed"
-    return None if _well_formed(frame) else "bad_event"
+    if not _well_formed(frame):
+        return "bad_event"
+    if kind in phone_events.PHONE_EVENT_TYPES and not phone_events.payload_valid(
+        kind, frame["payload"], now_ms,
+    ):
+        return "bad_event"
+    return None
 
 
 def _ack(uid: str | None, code: str | None) -> dict[str, Any]:

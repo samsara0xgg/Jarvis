@@ -119,6 +119,7 @@ from jarvis.surface.inherent_protocol import (
     SubmitV2Response,
     hello_is_supported,
 )
+from jarvis.surface.phone_events import MAX_BATCH_BYTES, MAX_BATCH_FRAMES, PHONE_EVENTS_PATH
 from jarvis.surface.terminal_link import TERMINAL_PATH, TerminalHub, serve_terminal
 from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmptyError
 
@@ -562,7 +563,8 @@ class InherentDeps:
     live: LiveVoice | None = None
     # ADR 0170: the brain's terminals. ``terminals`` holds the connected ones and
     # ``device_name`` maps a device token to the paired name it belongs to; the route
-    # ``/terminal/ws`` exists only with both, i.e. only where device tokens are wired.
+    # ``/terminal/ws`` exists only with both, i.e. only where device tokens are wired; so does
+    # ``POST /inherent/device/events`` (ADR 0197), which also needs the hub's ``events``.
     terminals: TerminalHub | None = None
     device_name: Callable[[str], str | None] | None = None
     # ADR 0196: the four device-pairing routes. ``None`` leaves them unregistered (404).
@@ -1819,6 +1821,19 @@ def register_night_routes(app: FastAPI, run: NightRoutes | None) -> None:
         return await asyncio.to_thread(night.snapshot)
 
 
+async def _capped_body(request: Request, limit: int) -> bytes:
+    """The request body, or a 413 as soon as it is over ``limit`` bytes (none of it kept)."""
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > limit:
+        raise HTTPException(status_code=413, detail="body too large")
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > limit:
+            raise HTTPException(status_code=413, detail="body too large")
+    return bytes(body)
+
+
 _MAX_SETUP_BODY_BYTES = 4096
 
 
@@ -2096,6 +2111,35 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
                 await ws.close(code=1008)
                 return
             await serve_terminal(terminals, ws, name)
+
+        if terminals.events is not None:
+            brain_events = terminals.events
+
+            @app.post(PHONE_EVENTS_PATH)
+            async def post_phone_events(request: Request) -> dict[str, Any]:
+                """ADR 0197: a paired phone's batch of sensed events, each appended once.
+
+                Only a paired device's own token opens it; the local key is refused here as it
+                is on ``/terminal/ws``. ``async`` on purpose: the append runs on the loop
+                thread that owns the runtime's log connection, as the socket's does, and a
+                plain ``def`` would run it on a worker thread the connection is closed to.
+                """
+                token = _v2_presented_token(request.headers.get("authorization"))
+                name = None if token is None else device_name(token)
+                if name is None:
+                    raise HTTPException(
+                        status_code=403, detail="a paired device's token is required",
+                    )
+                try:
+                    body = json.loads(await _capped_body(request, MAX_BATCH_BYTES))
+                except (ValueError, RecursionError):
+                    body = None
+                frames = body.get("events") if isinstance(body, dict) else None
+                if not isinstance(frames, list):
+                    raise HTTPException(status_code=400, detail='send {"events": [...]}')
+                if len(frames) > MAX_BATCH_FRAMES:
+                    raise HTTPException(status_code=413, detail="too many events in one batch")
+                return {"acks": brain_events.record_phone_batch(name, frames)}
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:

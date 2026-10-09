@@ -35,6 +35,7 @@ import ast
 
 import pytest
 
+from jarvis.surface.phone_events import PHONE_EVENT_TYPES
 from tests.canary._helpers import iter_jarvis_py_files, parse, relative_to_repo, repo_root
 
 # Observer modules and the observation types each may emit: the repo pair
@@ -49,9 +50,11 @@ _OBSERVER_MODULES: dict[str, frozenset[str]] = {
 }
 
 # ``tts.usage_observed`` is emitted by the media owner, not an observer
-# module, but it is an observation too and must never wake a watcher.
+# module, but it is an observation too and must never wake a watcher. The
+# phone's five types (ADR 0197) are observations that arrive over HTTP:
+# storing a signal decides nothing.
 _OBSERVER_EVENT_TYPES: frozenset[str] = frozenset({"tts.usage_observed"}).union(
-    *_OBSERVER_MODULES.values()
+    *_OBSERVER_MODULES.values(), PHONE_EVENT_TYPES
 )
 
 _TRIGGER_TUPLE_SUFFIX = "_TRIGGER_TYPES"

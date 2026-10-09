@@ -982,6 +982,53 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("truncated", "skipped_count"),
         schema_version=1,
     ),
+    # --- ADR 0197 phone signals: what a paired phone senses, sent in batches over HTTP ---
+    #
+    # Observations like the repo ones above (L5, `observer`), written only through
+    # `POST /inherent/device/events` under the phone's device name; the field enums and
+    # ranges are checked there (`jarvis.surface.phone_events`), not here. The fix time of a
+    # `phone.location_observed` is the event's own `ts_epoch_ms`. None joins a trigger tuple:
+    # storing a signal decides nothing (ADR 0197).
+    EventTypeSchema(
+        event_type="phone.visit_observed",
+        owner_layer="L5",
+        actor="observer",
+        required_payload=("lat", "lng", "accuracy_m", "arrived_at_ms"),
+        optional_payload=("departed_at_ms", "place"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="phone.location_observed",
+        owner_layer="L5",
+        actor="observer",
+        required_payload=("lat", "lng", "accuracy_m"),
+        optional_payload=("place", "speed_mps"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="phone.motion_observed",
+        owner_layer="L5",
+        actor="observer",
+        required_payload=("activity", "confidence", "started_at_ms"),
+        optional_payload=("ended_at_ms",),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="phone.health_observed",
+        owner_layer="L5",
+        actor="observer",
+        required_payload=("metric", "start_ms", "end_ms", "value"),
+        optional_payload=("detail",),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="phone.state_observed",
+        owner_layer="L5",
+        actor="observer",
+        required_payload=("signal", "value"),
+        optional_payload=("detail",),
+        schema_version=1,
+    ),
     # --- ADR-0012 Confirmation Flow extensions (§3 D3) ---
     #
     # owner_layer=L3 for the two confirmation.* below per D5/D6: both

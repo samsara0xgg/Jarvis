@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Final
 from fastapi import WebSocketDisconnect
 
 from jarvis.shared.device_link import DeviceCallError
+from jarvis.surface.terminal_events import OBSERVER_EVENT_TYPES, VOICE_TERMINAL_EVENT_TYPES
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Mapping
@@ -389,7 +390,8 @@ async def _record_event(
             "code": "events_not_accepted",
         }
     else:
-        ack = hub.events.record(link.name, frame, size, voice=link.voice)
+        allowed = VOICE_TERMINAL_EVENT_TYPES if link.voice else OBSERVER_EVENT_TYPES
+        ack = hub.events.record(link.name, frame, size, allowed)
     if ack is not None:
         await ws.send_text(json.dumps(ack))
 
