@@ -42,13 +42,14 @@ class _Rig:
     ) -> None:
         self.capture = tmp_path / "rendered.f32"
         self.tapped: list[np.ndarray] = []
+        self.stamps: list[int] = []  # presentation_ns of each tapped block
         self.frame_types: set[int] = set()
         self.player = NativeAudioStreamPlayer(
             sample_rate_hz=RATE,
             ring_seconds=ring_seconds,
             generation_safe=True,
             estimated_output_latency_s=0.0,
-            playback_tap=(lambda block, _rate: self.tapped.append(block.copy())) if tap else None,
+            playback_tap=self._tap if tap else None,
             extra_args=("--null-device", "--null-capture", str(self.capture)),
         )
         on_frame = self.player._on_frame  # noqa: SLF001
@@ -67,6 +68,10 @@ class _Rig:
             return drained
 
         self.player._callback_reports.drain = recording_drain  # type: ignore[method-assign]  # noqa: SLF001
+
+    def _tap(self, block: np.ndarray, _rate: int, presentation_ns: int) -> None:
+        self.tapped.append(block.copy())
+        self.stamps.append(presentation_ns)
 
     def rendered(self) -> np.ndarray:
         return np.fromfile(self.capture, dtype=np.float32)
@@ -384,6 +389,14 @@ def test_the_playback_tap_gets_every_rendered_block_silence_included(tap_rig: _R
     assert np.array_equal(tap, rendered[: len(tap)])  # in order, nothing missing or doubled
     assert len(rendered) - len(tap) < RATE // 10  # only the stop-time tail is unseen
     assert made.player.rendered_dropped_samples == 0
+    # Every block carries the host time its first sample is heard: one callback per frame,
+    # so consecutive stamps are one block apart (the null device paces by sleep: a few ms of
+    # jitter), and the clock is the daemon's own.
+    stamps = np.diff(np.array(made.stamps, dtype=np.int64))
+    block_ns = len(made.tapped[0]) * 1_000_000_000 // RATE
+    assert np.all(stamps > 0)
+    assert abs(float(np.median(stamps)) - block_ns) < block_ns * 0.1
+    assert abs(made.stamps[-1] - time.monotonic_ns()) < 2_000_000_000
     lit = np.flatnonzero(tap != 0.0)
     assert lit[0] > 0  # silence before the tone
     assert lit[-1] < len(tap) - 1000  # and after it
@@ -411,7 +424,7 @@ def test_a_stalled_tap_drops_blocks_and_never_stalls_the_render_thread(tmp_path:
     release = threading.Event()
     stalled = made.tapped.append
 
-    def stalling_tap(block: np.ndarray, _rate: int) -> None:
+    def stalling_tap(block: np.ndarray, _rate: int, _at: int) -> None:
         stalled(block.copy())
         release.wait(5)
 

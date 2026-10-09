@@ -179,7 +179,7 @@ def test_voice_volume_scales_what_the_device_plays() -> None:
     heard: list[np.ndarray] = []
     player = voice_tts.AudioStreamPlayer(
         sample_rate_hz=48000, lazy_open=True, volume=0.5,
-        playback_tap=lambda block, _rate: heard.append(block.copy()),
+        playback_tap=lambda block, _rate, _at: heard.append(block.copy()),
     )
     player.write(np.full(1024, 0.8, dtype=np.float32).tobytes())
     out = np.zeros((1024, 1), dtype=np.float32)

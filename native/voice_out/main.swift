@@ -23,11 +23,15 @@
 //                       u32 tail_ramp_samples, u64 played_samples
 //     0x84 DISCARD_ACK  u64 seq (first callback after that boundary was applied; every report for
 //                       the discarded samples precedes it)
-//     0x85 RENDERED     u64 dropped_samples (cumulative), f32[] samples. Only with --rendered: the
-//                       final mono block handed to the device, silence included, in order. It is the
-//                       echo canceller's far end (the Python player's playback tap). The render
-//                       thread copies each block into a preallocated ring; a block that does not fit
-//                       (the daemon stopped reading) is dropped whole and counted, never waited for.
+//     0x85 RENDERED     u64 dropped_samples (cumulative), i64 presentation_ns, f32[] samples. Only
+//                       with --rendered: one frame per render callback, the final mono block handed
+//                       to the device, silence included, in order. presentation_ns is when its first
+//                       sample leaves the speaker (CLOCK_UPTIME_RAW: the callback's host time plus the
+//                       device latency, the instant the REPORT's presentation delay points at). It is
+//                       the echo canceller's far end (the Python player's playback tap), which pairs
+//                       it with the microphone by that time. The render thread copies each block and
+//                       its stamp into preallocated rings; a block that does not fit (the daemon
+//                       stopped reading) is dropped whole and counted, never waited for.
 //
 // Options: --rate N --ring-samples N (a power of two) --buffer-frames N
 //          --device NAME
@@ -45,7 +49,7 @@ let kHeardGainFloor = 0.15
 let kMaxFrames = 4096
 let kOutRingCapacity = 4096
 let kRenderedRingCapacity = 1 << 16  // samples: ~1.4 s at 48 kHz
-let kMaxRenderedFrameSamples = 32768
+let kRenderedBlockCapacity = 1 << 10  // blocks in flight; a power of two
 let kMaxPcmBytes = 17 + 4 * 65536
 
 func fail(_ message: String, code: Int32) -> Never {
@@ -56,6 +60,12 @@ func fail(_ message: String, code: Int32) -> Never {
 @inline(__always)
 func uptimeNs() -> Int64 {
     Int64(truncatingIfNeeded: clock_gettime_nsec_np(CLOCK_UPTIME_RAW))
+}
+
+struct RenderedBlock {
+    var start = 0  // index of its first sample in the rendered ring
+    var frames = 0
+    var presentationNs: Int64 = 0
 }
 
 struct OutRecord {
@@ -140,8 +150,11 @@ final class Engine: @unchecked Sendable {
 
     // Render -> stdout rendered-audio ring (--rendered only; nil otherwise).
     let renderedRing: UnsafeMutablePointer<Float>?
+    let renderedBlocks: UnsafeMutablePointer<RenderedBlock>
     let renderedW = Atomic<Int>(0)
     let renderedR = Atomic<Int>(0)
+    let renderedBlockW = Atomic<Int>(0)
+    let renderedBlockR = Atomic<Int>(0)
     let renderedDropped = Atomic<UInt64>(0)
 
     let shuttingDown = Atomic<Bool>(false)
@@ -165,6 +178,8 @@ final class Engine: @unchecked Sendable {
         rs.initialize(to: RenderState(gainConsumed: packGain(target: 1.0, ramp: 0, seq: 0)))
         outRing = .allocate(capacity: kOutRingCapacity)
         outRing.initialize(repeating: OutRecord(), count: kOutRingCapacity)
+        renderedBlocks = .allocate(capacity: kRenderedBlockCapacity)
+        renderedBlocks.initialize(repeating: RenderedBlock(), count: kRenderedBlockCapacity)
         if rendered {
             let ring = UnsafeMutablePointer<Float>.allocate(capacity: kRenderedRingCapacity)
             ring.initialize(repeating: 0, count: kRenderedRingCapacity)
@@ -187,15 +202,21 @@ final class Engine: @unchecked Sendable {
         return true
     }
 
-    /// Copy the block just rendered for the stdout thread; a full ring drops the whole block.
-    func pushRendered(_ ring: UnsafeMutablePointer<Float>, _ out: UnsafeMutablePointer<Float>, _ frames: Int) {
+    /// Copy the block just rendered, with its stamp, for the stdout thread; a full ring drops the whole block.
+    func pushRendered(_ ring: UnsafeMutablePointer<Float>, _ out: UnsafeMutablePointer<Float>,
+                      _ frames: Int, _ presentationNs: Int64) {
         let w = renderedW.load(ordering: .relaxed)
-        if w + frames - renderedR.load(ordering: .acquiring) > kRenderedRingCapacity {
+        let bw = renderedBlockW.load(ordering: .relaxed)
+        if w + frames - renderedR.load(ordering: .acquiring) > kRenderedRingCapacity
+            || bw - renderedBlockR.load(ordering: .acquiring) >= kRenderedBlockCapacity {
             renderedDropped.wrappingAdd(UInt64(frames), ordering: .relaxed)
             return
         }
         for i in 0..<frames { ring[(w + i) & (kRenderedRingCapacity - 1)] = out[i] }
-        renderedW.store(w + frames, ordering: .releasing)
+        renderedBlocks[bw & (kRenderedBlockCapacity - 1)] =
+            RenderedBlock(start: w, frames: frames, presentationNs: presentationNs)
+        renderedW.store(w + frames, ordering: .relaxed)
+        renderedBlockW.store(bw + 1, ordering: .releasing)
     }
 
     @inline(__always)
@@ -277,9 +298,10 @@ final class Engine: @unchecked Sendable {
         if tail < frames { for i in tail..<frames { out[i] = 0 } }
     }
 
-    func render(_ out: UnsafeMutablePointer<Float>, frames: Int, delayNs: Int64) {
+    /// ``presentationNs``: when the block's first sample leaves the speaker, on the uptime clock.
+    func render(_ out: UnsafeMutablePointer<Float>, frames: Int, delayNs: Int64, presentationNs: Int64) {
         renderBody(out, frames, delayNs)
-        if let ring = renderedRing { pushRendered(ring, out, frames) }
+        if let ring = renderedRing { pushRendered(ring, out, frames, presentationNs) }
         let s = rs
         if s.pointee.appliedDiscardSeq != s.pointee.ackedDiscardSeq {
             var ack = OutRecord()
@@ -558,17 +580,24 @@ func runStdoutWriter(_ engine: Engine) {
         engine.outR.store(r, ordering: .releasing)
         if let ring = engine.renderedRing {
             // Little-endian host: the in-memory floats are the wire floats.
-            var rr = engine.renderedR.load(ordering: .relaxed)
-            let rw = engine.renderedW.load(ordering: .acquiring)
-            while rr < rw {
-                let n = min(rw - rr, kMaxRenderedFrameSamples, kRenderedRingCapacity - (rr & (kRenderedRingCapacity - 1)))
+            // One frame per render callback, so a frame never spans two stamps; a block that
+            // wraps the ring goes out in two pieces inside its frame.
+            var br = engine.renderedBlockR.load(ordering: .relaxed)
+            let bw = engine.renderedBlockW.load(ordering: .acquiring)
+            while br < bw {
+                let block = engine.renderedBlocks[br & (kRenderedBlockCapacity - 1)]
+                let at = block.start & (kRenderedRingCapacity - 1)
+                let head = min(block.frames, kRenderedRingCapacity - at)
                 buffer.frame(type: 0x85) { b in
                     b.put(engine.renderedDropped.load(ordering: .relaxed))
-                    b.put(UnsafeBufferPointer(start: ring + (rr & (kRenderedRingCapacity - 1)), count: n))
+                    b.put(block.presentationNs)
+                    b.put(UnsafeBufferPointer(start: ring + at, count: head))
+                    b.put(UnsafeBufferPointer(start: ring, count: block.frames - head))
                 }
-                rr += n
+                br += 1
+                engine.renderedR.store(block.start + block.frames, ordering: .releasing)
             }
-            engine.renderedR.store(rr, ordering: .releasing)
+            engine.renderedBlockR.store(br, ordering: .releasing)
         }
         if reported || uptimeNs() - lastStatus >= 20_000_000 { status() }
         if !buffer.bytes.isEmpty {
@@ -587,7 +616,8 @@ func runNullDevice(_ engine: Engine, capture: String?) {
     let period = Int64(frames) * 1_000_000_000 / Int64(engine.sampleRate)
     var next = uptimeNs()
     while true {
-        engine.render(out, frames: frames, delayNs: engine.deviceLatencyNs)
+        let latency = engine.deviceLatencyNs
+        engine.render(out, frames: frames, delayNs: latency, presentationNs: uptimeNs() + latency)
         if captureFd >= 0 { _ = write(captureFd, out, frames * 4) }
         next += period
         let wait = next - uptimeNs()
@@ -720,7 +750,10 @@ func startAudioUnit(_ engine: Engine, device: AudioObjectID) {
         guard let first = list[0].mData?.assumingMemoryBound(to: Float.self) else { return noErr }
         let now = uptimeNs()
         let hostNs = Int64(truncatingIfNeeded: AudioConvertHostTimeToNanos(timestamp.pointee.mHostTime))
-        engine.render(first, frames: Int(inFrames), delayNs: max(0, hostNs - now) + engine.deviceLatencyNs)
+        let latency = engine.deviceLatencyNs
+        // The stamp is the device's own time, not the scheduler's: exact spacing from block to block.
+        engine.render(first, frames: Int(inFrames), delayNs: max(0, hostNs - now) + latency,
+                      presentationNs: hostNs + latency)
         if list.count > 1 {
             for c in 1..<min(list.count, 8) {
                 if let dst = list[c].mData { memcpy(dst, first, Int(inFrames) * 4) }

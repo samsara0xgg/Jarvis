@@ -91,7 +91,9 @@ class EchoCanceller:
             "" if output is None else f" playing on {output!r}",
         )
 
-    def add_playback(self, block: np.ndarray, sample_rate_hz: int) -> None:
+    def add_playback(
+        self, block: np.ndarray, sample_rate_hz: int, _presentation_ns: int = 0,
+    ) -> None:
         """Output callback: queue the float32 block the device is about to play."""
         if self._bypass:
             return

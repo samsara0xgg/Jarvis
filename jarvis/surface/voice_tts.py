@@ -673,15 +673,16 @@ class AudioStreamPlayer:
         generation_safe: bool = False,
         callback_max_frames: int = 4096,
         estimated_output_latency_s: float = 0.12,
-        playback_tap: Callable[[np.ndarray, int], None] | None = None,
+        playback_tap: Callable[[np.ndarray, int, int], None] | None = None,
         volume: float = 1.0,
     ) -> None:
         """Construct an idle player; does not open the OutputStream by default.
 
-        ``playback_tap`` sees every block handed to the device, with the sample
-        rate, on the output callback (the echo canceller's far end). ``volume``
-        scales every written sample before the ring, so the tap and the device
-        hear the same level.
+        ``playback_tap`` sees every block handed to the device, on the output
+        callback (the echo canceller's far end): the block, its sample rate and
+        the ``time.monotonic_ns`` time its first sample leaves the speaker.
+        ``volume`` scales every written sample before the ring, so the tap and
+        the device hear the same level.
         """
         if channels != 1:
             msg = "only mono supported for now"
@@ -1695,7 +1696,13 @@ class AudioStreamPlayer:
         self._callback(outdata, frames, time_info, status)
         tap = self._playback_tap
         if tap is not None:
-            tap(outdata[:frames, 0] if outdata.ndim > 1 else outdata[:frames], self._sample_rate_hz)
+            # PortAudio's stream time is the host's monotonic clock, in seconds.
+            dac_s = getattr(time_info, "outputBufferDacTime", 0.0)
+            tap(
+                outdata[:frames, 0] if outdata.ndim > 1 else outdata[:frames],
+                self._sample_rate_hz,
+                round(dac_s * 1e9) if dac_s > 0 else time.monotonic_ns(),
+            )
 
     def _callback(  # noqa: C901, PLR0911, PLR0912, PLR0915 - realtime path stays inline
         self,

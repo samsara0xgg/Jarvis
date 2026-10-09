@@ -67,7 +67,7 @@ _AUDIBILITY: tuple[AudibilityClass, ...] = ("normal", "attenuated", "muted", "un
 _REPORT_FMT = struct.Struct("<qqqBqqB")
 _STATUS_FMT = struct.Struct("<qdQQQIQ")
 _READY_FMT = struct.Struct("<IIqq")
-_RENDERED_HEAD = struct.Struct("<Q")
+_RENDERED_HEAD = struct.Struct("<Qq")  # dropped samples, presentation_ns
 
 
 def ensure_helper_binary(
@@ -275,12 +275,16 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
 
     def _on_rendered(self, body: memoryview) -> None:
         """Hand one rendered block to the playback tap; a broken tap never ends her voice."""
-        (self.rendered_dropped_samples,) = _RENDERED_HEAD.unpack_from(body)
+        self.rendered_dropped_samples, presentation_ns = _RENDERED_HEAD.unpack_from(body)
         tap = self._playback_tap
         if tap is None:
             return
         try:
-            tap(np.frombuffer(body[_RENDERED_HEAD.size :], dtype="<f4"), self._sample_rate_hz)
+            tap(
+                np.frombuffer(body[_RENDERED_HEAD.size :], dtype="<f4"),
+                self._sample_rate_hz,
+                presentation_ns,
+            )
         except Exception:  # the far end must not kill the helper stream
             if not self._tap_failed:
                 self._tap_failed = True

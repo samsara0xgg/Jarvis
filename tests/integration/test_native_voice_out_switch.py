@@ -35,7 +35,7 @@ def test_an_echo_canceller_no_longer_forces_the_python_player() -> None:
     from jarvis.runtime import inherent_loop  # noqa: PLC0415
 
     calls: list[int] = []
-    canceller = SimpleNamespace(add_playback=lambda _block, rate: calls.append(rate))
+    canceller = SimpleNamespace(add_playback=lambda _block, rate, _at: calls.append(rate))
     player = inherent_loop._native_streaming_player(  # noqa: SLF001
         echo_canceller=canceller,  # type: ignore[arg-type]
         device=None,
