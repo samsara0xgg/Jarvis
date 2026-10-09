@@ -89,11 +89,13 @@ spawns and talks to over stdin and stdout, behind
 > With `--rendered` the helper copies the final block its render function hands
 > the device (after gain, declick, tail ramp and hold silence; silence included,
 > every callback) into a preallocated 65536-sample ring, and the stdout thread
-> sends it as `RENDERED` (0x85: `u64` cumulative dropped samples, `f32[]`).
+> sends it as `RENDERED` (0x85: `u64` cumulative dropped samples, `i64`
+> presentation time, `f32[]`; one frame per callback).
 > `NativeAudioStreamPlayer` passes each one to its `playback_tap`, the same
 > `EchoCanceller.add_playback` the Python callback feeds, at the same level
-> (`volume` is applied before the ring). AEC3 estimates the delay itself, so
-> only order and continuity matter, and the pipe preserves both.
+> (`volume` is applied before the ring). The presentation time is the host
+> time the block's first sample leaves the speaker; the canceller pairs the
+> far end with the mic by it (ADR 0193), not by arrival.
 >
 > - **Realtime cost**: the render thread does one bounded copy per block, no
 >   allocation, no lock. Without the tap Python omits `--rendered`: the ring is
