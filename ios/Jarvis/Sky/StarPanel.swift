@@ -1,23 +1,30 @@
 import SwiftUI
 
-// The rows of the talk under the dial: his words in a bubble on the right, hers plain on the left. One style at every height of the panel,
-// so what he is reading does not change size or place when more is shown above it.
+// The talk panel under the dial. Its bottom edge is fixed above the composer; its top edge has two places: the reading zone (星盘为主, the talk on show over the sky)
+// and under the top row (对话为主, the whole conversation over a dimmed dial). Both heights show the same rows in the same styles, so opening only reveals more above
+// the line he is reading: that line does not move.
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
+private let amber = Color(red: 1, green: 217 / 255, blue: 176 / 255)
+private let navy = Color(red: 8 / 255, green: 10 / 255, blue: 24 / 255)
+private let panelSpring = Animation.spring(response: 0.42, dampingFraction: 0.9)
 
+// MARK: rows
+
+/// one row of the talk: his words in a bubble on the right, hers plain on the left
 struct TalkRowView: View {
-    let turn: LiveTurn
+    let row: TalkRow
 
     var body: some View {
-        if turn.his { bubble } else { her }
+        if row.his { bubble } else { her }
     }
 
     private var bubble: some View {
         VStack(alignment: .trailing, spacing: 8) {
-            if !turn.pics.isEmpty { SentItemsRow(items: turn.pics) }
-            if !turn.text.isEmpty {
-                Text(turn.text).font(.system(size: 16)).foregroundStyle(ink.opacity(0.86))
+            if !row.pics.isEmpty { SentItemsRow(items: row.pics) }
+            if !row.text.isEmpty {
+                Text(row.text).font(.system(size: 16)).foregroundStyle(ink.opacity(0.86))
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .background(RoundedRectangle(cornerRadius: 18).fill(Color.white.opacity(0.08)))
                     .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.06), lineWidth: 0.5))
@@ -28,22 +35,22 @@ struct TalkRowView: View {
     }
 
     private var her: some View {
-        words.font(.system(size: turn.leadIn ? 15 : 18)).lineSpacing(turn.leadIn ? 3 : 5)
+        words.font(.system(size: row.leadIn ? 15 : 18)).lineSpacing(row.leadIn ? 3 : 5)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// her words with each character at its own brightness while she says them: runs of one brightness are one piece of text
     private var words: Text {
-        let base = turn.leadIn ? muted : ink.opacity(0.92)
-        guard turn.alphas.count == turn.text.count, turn.alphas.contains(where: { $0 < 1 }) else { return Text(turn.text).foregroundStyle(base) }
+        let base = row.leadIn ? muted : ink.opacity(0.92)
+        guard row.alphas.count == row.text.count, row.alphas.contains(where: { $0 < 1 }) else { return Text(row.text).foregroundStyle(base) }
         var out = AttributedString()
-        let chars = Array(turn.text)
+        let chars = Array(row.text)
         var i = 0
         while i < chars.count {
             var j = i
-            while j < chars.count && turn.alphas[j] == turn.alphas[i] { j += 1 }
+            while j < chars.count && row.alphas[j] == row.alphas[i] { j += 1 }
             var run = AttributedString(String(chars[i..<j]))
-            run.foregroundColor = Color.white.opacity(turn.alphas[i])
+            run.foregroundColor = Color.white.opacity(row.alphas[i])
             out += run
             i = j
         }
@@ -51,30 +58,174 @@ struct TalkRowView: View {
     }
 }
 
-/// The talk on show under the dial: the turns so far, the newest at the bottom, following the words as they come until he scrolls away.
-struct LiveTalk: View {
-    let ui: StarUI
-    let touch: (Bool) -> Void
+// MARK: dragging the panel's top edge
+
+/// A finger on the grabber or the header: the top edge follows it (`pull`, design y), and lets go open or shut by how far and how fast it went.
+func panelDrag(_ engine: StarEngine, _ pull: Binding<Double?>, opens: Bool, tap: Bool) -> some Gesture {
+    let home = StarEngine.panelHome, top = StarEngine.panelOpen
+    return DragGesture(minimumDistance: 0, coordinateSpace: .named("design"))
+        .onChanged { v in
+            let dy = v.location.y - v.startLocation.y
+            if abs(dy) > 7 { pull.wrappedValue = clamp((opens ? home : top) + dy, top, home) }
+        }
+        .onEnded { v in
+            let dy = v.location.y - v.startLocation.y, vel = v.velocity.height, moved = pull.wrappedValue != nil
+            pull.wrappedValue = nil
+            if moved { if opens ? (dy < -60 || vel < -500) : (dy > 80 || vel > 500) { opens ? engine.openPanel() : engine.closePanel() } }
+            else if tap { opens ? engine.openPanel() : engine.closePanel() }
+        }
+}
+
+/// where the panel's top edge is: held by a finger, or at one of its two places
+func panelTop(_ ui: StarUI, _ pull: Double?) -> Double { pull ?? (ui.panelOpen ? StarEngine.panelOpen : StarEngine.panelHome) }
+/// 0 at the reading zone, 1 fully open
+func panelOpenness(_ top: Double) -> Double { clamp((StarEngine.panelHome - top) / (StarEngine.panelHome - StarEngine.panelOpen), 0, 1) }
+
+// MARK: the panel
+
+struct TalkPanel: View {
+    let engine: StarEngine
+    @Bindable var ui: StarUI
+    @Binding var pull: Double?
+    @State private var pinContent = 0.0
 
     var body: some View {
+        let top = panelTop(ui, pull), p = panelOpenness(top), held = pull != nil
+        let bottom = 836 - ui.attach.rise - ui.kbLift
+        let pinH = ui.typing ? 0 : min(pinContent, 0.4 * (bottom - StarEngine.panelOpen))      // while he types the keyboard leaves little room: what waits is under the header again after he sends
+        let streamTop = top + (90 + pinH) * p
+        let shown = ui.talking || ui.panelOpen || held
+        ZStack(alignment: .topLeading) {
+            background.frame(width: W, height: H - top + 60).offset(y: top).opacity(p)
+            topPart(p: p, held: held, pinH: pinH).frame(width: W, height: 90 + pinH, alignment: .top).offset(y: top)
+            stream(top: streamTop, bottom: bottom, open: held ? p : ui.panelOpen ? 1 : 0)
+            measure
+        }
+        .frame(width: W, height: H, alignment: .topLeading)
+        .animation(held ? nil : panelSpring, value: top)
+        .opacity(shown ? 1 : 0).allowsHitTesting(shown)
+        .animation(.easeOut(duration: ui.talking || ui.panelOpen ? 0.25 : 0.35), value: shown)
+    }
+
+    private var background: some View {
+        UnevenRoundedRectangle(topLeadingRadius: 28, topTrailingRadius: 28).fill(.ultraThinMaterial)
+            .overlay(UnevenRoundedRectangle(topLeadingRadius: 28, topTrailingRadius: 28).fill(navy.opacity(0.72)))
+            .overlay(alignment: .top) { UnevenRoundedRectangle(topLeadingRadius: 28, topTrailingRadius: 28).stroke(Color.white.opacity(0.1), lineWidth: 0.5) }
+            .shadow(color: .black.opacity(0.4), radius: 25, y: -9)
+            .contentShape(Rectangle())
+    }
+
+    // MARK: grabber, header, pinned
+
+    private func topPart(p: Double, held: Bool, pinH: Double) -> some View {
+        VStack(spacing: 0) {
+            Capsule().fill(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.28)).frame(width: 36, height: 5)
+                .frame(maxWidth: .infinity).frame(height: 38).contentShape(Rectangle())
+                .gesture(panelDrag(engine, $pull, opens: false, tap: true))
+            header.frame(height: 52).contentShape(Rectangle()).gesture(panelDrag(engine, $pull, opens: false, tap: true))
+            pinnedList(pinH)
+        }
+        .opacity(held ? p : ui.panelOpen ? 1 : 0)
+        .animation(.easeOut(duration: 0.2).delay(ui.panelOpen ? 0.1 : 0), value: ui.panelOpen)
+        .allowsHitTesting(ui.panelOpen)
+    }
+
+    /// the day's little ring (where he is in the day), the time, and the next thing or what waits
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(decorative: engine.miniSprite(0, label: false).img, scale: engine.sprites.px).frame(width: 40, height: 46).padding(.leading, 28).padding(.trailing, -4)
+            VStack(alignment: .leading, spacing: 2) {
+                TimelineView(.everyMinute) { _ in Text(clock(engine.nowT())).font(AT.mono(15)).foregroundStyle(ink) }
+                Text(ui.headLine).font(.system(size: 13)).foregroundStyle(ui.headWaits ? amber : muted).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.down").font(.system(size: 14, weight: .semibold)).foregroundStyle(muted).padding(.trailing, 30)
+        }
+    }
+
+    private func pinnedList(_ height: Double) -> some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(ui.liveTurns) { t in
-                    TalkRowView(turn: t).transition(.opacity.combined(with: .offset(y: 6)))
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(ui.pinned) { g in
+                    let folds = g.rows.count > 2, folded = folds && !ui.unfolded.contains(g.id)
+                    Button { if folds { if folded { ui.unfolded.insert(g.id) } else { ui.unfolded.remove(g.id) } } } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(g.name).font(.system(size: 13, weight: .semibold)).tracking(0.5).foregroundStyle(g.id == "等你的" ? amber : muted)
+                            Text("\(g.rows.count)").font(AT.mono(11.5)).foregroundStyle(SetColor.faint)
+                            Spacer(minLength: 0)
+                        }.padding(.top, 8).padding(.bottom, 6).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                    ForEach(folded ? Array(g.rows.prefix(1)) : g.rows) { r in RowView(row: r, engine: engine) }
+                    if folded {
+                        Button { ui.unfolded.insert(g.id) } label: {
+                            Text("还有 \(g.rows.count - 1) 件 ›").font(.system(size: 13)).foregroundStyle(muted).frame(maxWidth: .infinity, alignment: .leading).frame(height: 36)
+                        }.buttonStyle(.plain)
+                    }
                 }
             }
-            .padding(.horizontal, 32)
+            .padding(.horizontal, 30)
+            .onGeometryChange(for: Double.self) { Double($0.size.height) } action: { pinContent = $0 }
         }
-        .defaultScrollAnchor(.bottom)
-        .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in touch(true) }.onEnded { _ in touch(false) })
+        .frame(height: height)
+    }
+
+    // MARK: the stream
+
+    private func stream(top: Double, bottom: Double, open: Double) -> some View {
+        let days = TalkStream.compose(ui.convDays, live: ui.liveTurns, cal: Cal.cur.cal, now: Date())
+        return ScrollViewReader { proxy in
+            ScrollView(showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 14, pinnedViews: [.sectionHeaders]) {
+                    ForEach(days) { day in
+                        Section {
+                            ForEach(day.rows) { r in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    if let s = r.stamp { Text(s).font(AT.mono(11)).foregroundStyle(muted).frame(maxWidth: .infinity, alignment: r.his ? .trailing : .leading) }
+                                    TalkRowView(row: r)
+                                }
+                                .opacity(r.current ? 1 : open)
+                                .id(r.id)
+                                .transition(.opacity.combined(with: .offset(y: 6)))
+                                .contextMenu { Button("拷贝", systemImage: "doc.on.doc") { UIPasteboard.general.string = r.text } }
+                            }
+                        } header: {
+                            Text(day.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(muted)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6).padding(.horizontal, 32)
+                                .background(navy.opacity(0.96)).padding(.horizontal, -32)
+                                .opacity(open)
+                        }
+                    }
+                }
+                .padding(.horizontal, 32)
+                .animation(.easeOut(duration: 0.25), value: ui.panelOpen)
+            }
+            .defaultScrollAnchor(.bottom)
+            .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.holdLinger(true) }.onEnded { _ in engine.holdLinger(false) })
+            .onChange(of: ui.scrollTo) { _, id in
+                guard let id else { return }
+                proxy.scrollTo(id, anchor: .top); ui.scrollTo = nil
+            }
+            // a lazy stack's height is an estimate until its rows are seen: opening lands on the real bottom
+            .onChange(of: ui.panelOpen) { _, on in
+                guard on, let last = days.last?.rows.last?.id else { return }
+                DispatchQueue.main.async { proxy.scrollTo(last, anchor: .bottom) }
+            }
+        }
         .mask(VStack(spacing: 0) {
-            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: 24)
+            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: 24 * (1 - open))
             Color.black
         })
-        .frame(width: W, height: 296)
-        .opacity(ui.talking ? 1 : 0)
-        .allowsHitTesting(ui.talking)
-        .animation(.easeOut(duration: ui.talking ? 0.25 : 0.35), value: ui.talking)
-        .offset(y: 540)
+        .frame(width: W, height: max(0, bottom - top))
+        .offset(y: top)
+    }
+
+    /// Until the panel has opened by itself once, a copy of the talk's rows (unseen) tells whether they are taller than the place under the dial.
+    @ViewBuilder private var measure: some View {
+        if ui.talking && !ui.panelOpen && !engine.autoOpenSpent {
+            VStack(alignment: .leading, spacing: 14) { ForEach(ui.liveTurns) { TalkRowView(row: TalkStream.row($0)) } }
+                .padding(.horizontal, 32).frame(width: W, alignment: .topLeading).fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: Double.self) { Double($0.size.height) } action: { engine.measureLive($0) }
+                .hidden().allowsHitTesting(false)
+        }
     }
 }

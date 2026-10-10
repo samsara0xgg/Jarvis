@@ -18,8 +18,8 @@ extension StarEngine {
             let id = talkId
             Task { @MainActor in if let s = await Conversation.shared.latestSeq(), id == talkId { talkBase = max(talkBase, s) } }
         }
+        autoOpenSpent = false
         ui.talking = true
-        setDrawer(false, quiet: true)
         wake()
     }
 
@@ -60,6 +60,8 @@ extension StarEngine {
         if let s = speaking { setTurn(speakId, alphas: s.alphas(now)) }
         if ui.talking && talk == nil && voiceState == .idle && !lingerHold && now > lingerUntil { ui.talking = false; rowKey = "" }
         put(\.topTime, clock(F))
+        updateStream()
+        if ui.panelOpen { updatePanel() }
     }
 
     /// The voice session's words as rows: his as he says them (then his line), hers as they come. A new utterance of the same session is new rows.
@@ -82,3 +84,103 @@ extension StarEngine {
         }
     }
 }
+
+// MARK: the panel's second height: the whole conversation, over the dial
+
+extension StarEngine {
+    static let panelHome = 540.0, panelOpen = 104.0
+
+    func openPanel(auto: Bool = false, quiet: Bool = false) {
+        wake()
+        if auto { autoOpenSpent = true }
+        guard !ui.panelOpen else { return }
+        if !quiet { sound(.open, 0.7) }
+        ui.panelOpen = true; panelSince = nowMs()
+        if BrainLink.shared.hasToken { Task { @MainActor in await Conversation.shared.refresh() } }
+        updatePanel(force: true)
+    }
+    func closePanel(quiet: Bool = false) {
+        guard ui.panelOpen else { return }
+        wake()
+        if ui.talking { autoOpenSpent = true }      // he closed it during this talk: it does not open itself again
+        if !quiet { sound(.close, 0.7) }
+        ui.panelOpen = false; panelSince = nowMs()
+    }
+    /// the live rows are taller than the talk's place under the dial: the panel opens by itself, once per talk
+    func measureLive(_ h: Double) {
+        if ui.talking && !ui.panelOpen && !autoOpenSpent && h > 280 { openPanel(auto: true) }
+    }
+    /// the app came back after a long time away: the star chart as it was first opened, on now
+    func comeBack() { setLevel(0); goBack() }
+
+    /// The conversation by day, rebuilt only when it, the talk's start or whether a talk is on show changed; and the live rows go once the conversation has them.
+    func updateStream() {
+        let seen = (Conversation.shared.version, ui.talking, talkBase)
+        if seen == streamSeen { return }
+        streamSeen = seen
+        let rows = Conversation.shared.rows
+        if TalkStream.handedOver(rows, base: talkBase, talking: ui.talking) { ui.liveTurns = [] }
+        let days = TalkStream.convDays(TalkStream.shown(rows, base: talkBase, talking: ui.talking), pics: MainActor.assumeIsolated { SentPics.byRow }, cal: Cal.cur.cal, now: Date())
+        if days != ui.convDays { ui.convDays = days }
+    }
+
+    /// What is pinned over the stream (what waits on him, what she is doing) and the header's line, a few times a second while the panel is open.
+    func updatePanel(force: Bool = false) {
+        let now = nowMs()
+        if !force && now - panelAt < 500 { return }
+        panelAt = now
+        let nT = nowT(), today = floorDay(nT), ev = EV.filter { $0.born <= now }
+        let waits = ev.filter { $0.st == .wait }.sorted { $0.t < $1.t }
+        let works = ev.filter { $0.st == .work && floorDay($0.t) == today }.sorted { $0.t < $1.t }
+        let key = (waits + works).map { "\($0.id)\($0.st.rawValue)\($0.t)\($0.t > Trev ? "a" : "")" }.joined(separator: ",") + "|" + (openId ?? "") + "|\(epoch)"
+        if key != panelKey {
+            panelKey = key
+            ui.pinned = [("等你的", waits), ("她在做", works)].compactMap { name, list in list.isEmpty ? nil : PinGroup(id: name, name: name, rows: list.map(rowModel)) }
+        }
+        let next = ev.filter { $0.st == .next && $0.t > nT }.min(by: { $0.t < $1.t })
+        put(\.headLine, !waits.isEmpty ? "等你 \(waits.count) 件"
+            : next.map { "接下来 \(floorDay($0.t) == today ? "" : dayWord(floorDay($0.t)) + " ")\(clock($0.t)) \($0.title)" } ?? "接下来没有安排")
+        put(\.headWaits, !waits.isEmpty)
+    }
+}
+
+#if DEBUG
+extension StarEngine {
+    /// `-scene open|typing|rest`: the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
+    func runTalkScene(_ name: String) {
+        switch name {
+        case "rest": setLevel(0)
+        case "open":
+            setLevel(0)
+            EV.removeAll { $0.st == .wait && !["thanks", "mia"].contains($0.id) }      // two things wait on him
+            let cal = Cal.cur.cal, now = Date(), day = { (back: Int, h: Int, m: Int) -> String in
+                let d = cal.date(byAdding: .day, value: -back, to: now)!
+                let c = cal.date(bySettingHour: h, minute: m, second: 0, of: d)!
+                return TalkStream.dayId(c, cal) + "T" + TalkStream.clock(c, cal) + ":00"
+            }
+            let doc = "<voice>好，我把这周的安排列在下面了。</voice><document>## 本周安排\n- 周五 10:00 周会\n- 周六 09:00 爬山，我会提前看天气\n- 周日 21:00 整理这一周的记忆\n\n先做这三件：\n1. 把首页的最后两张图做完\n2. 再投两份简历\n3. 给 Mia 回电话\n\n| 日期 | 事项 | 时间 | 地点 |\n|---|---|---|---|\n| 周五 | 周会 | 10:00 | 线上 |\n| 周六 | 爬山 | 09:00 | 西山步道 |\n| 周日 | 整理记忆 | 21:00 | 在家 |\n\n```swift\nlet next = plan.first(where: { !$0.done })\n```</document>"
+            let rows: [(Bool, String, String)] = [
+                (true, day(1, 18, 12), "明天几点出门？"),
+                (false, day(1, 18, 12), "<voice>九点二十。坐 32 路，路上三十二分钟，可能下雨，带伞。</voice>"),
+                (true, day(1, 18, 14), "那后天呢"),
+                (false, day(1, 18, 14), "后天上午十点你约了牙医，九点钟出门。"),
+                (true, day(0, 9, 5), "帮我整理一下这周的安排"),
+                (false, day(0, 9, 6), "<voice>我先看一下日历。</voice>"),
+                (false, day(0, 9, 6), doc),
+            ]
+            MainActor.assumeIsolated {
+                Conversation.shared.debugSet(rows.enumerated().map { ConversationRow(seq: $0.offset + 1, source: $0.element.0 ? "allen" : "jarvis", ts: $0.element.1, text: $0.element.2) })
+            }
+            openPanel(quiet: true)
+        case "typing":
+            setLevel(0)
+            beginTalk(); lingerHold = true
+            addTurn(his: true, "我下周二想约牙医，帮我看看哪个时间合适")
+            addTurn(his: false, "周二上午十点和下午三点都空着。你想约哪一个？")
+            ui.typing = true; ui.chipsOn = false; ui.kbLift = 336
+            openPanel(quiet: true)
+        default: break
+        }
+    }
+}
+#endif

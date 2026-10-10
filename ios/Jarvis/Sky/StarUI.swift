@@ -18,7 +18,7 @@ struct RowModel: Identifiable, Equatable {
     var expand: Expand?
 }
 struct ChipModel: Identifiable, Equatable { var id: String { text }; var kd: Kd; var text: String }
-struct DrawerGroup: Identifiable, Equatable { var id: String; var name: String; var rows: [RowModel] }
+struct PinGroup: Identifiable, Equatable { var id: String; var name: String; var rows: [RowModel] }
 enum MicState { case mic, on, send }
 
 /// A picture or file he sent with his words: the picture's small copy, or the file's name. Shown with his line so he can see what went.
@@ -28,29 +28,11 @@ struct SentItem: Identifiable, Equatable {
     var title: String
 }
 
-/// What he sent with a turn, kept by the number of his row in the conversation so the drawer can show it under his line (until the app is closed).
+/// What he sent with a turn, kept by the number of his row in the conversation so the panel can show it with his line (until the app is closed).
 @MainActor enum SentPics {
     static var byRow: [Int: [SentItem]] = [:]
     static var pending: [SentItem] = []
     nonisolated static func items(_ items: [AttachItem]) -> [SentItem] { items.map { SentItem(image: $0.kind == .photo ? $0.thumbnail : nil, title: $0.kind == .photo ? "" : $0.title) } }
-}
-
-/// One line of the conversation in the drawer: his or hers, with the time it was said.
-struct ConvLine: Identifiable, Equatable {
-    let id: Int                         // the row's number in the conversation
-    let his: Bool
-    let text: String
-    let when: String
-
-    /// the rows newest first as lines of the drawer; `today` is `YYYY-MM-DD`, and only a line of another day says its date
-    static func lines(_ rows: [ConversationRow], today: String) -> [ConvLine] {
-        rows.reversed().compactMap { r in
-            let text = r.isHis ? r.text.trimmingCharacters(in: .whitespacesAndNewlines) : AnswerText.visible(r.text)
-            if text.isEmpty { return nil }
-            let day = String(r.ts.prefix(10)), clock = r.ts.count >= 16 ? String(r.ts.dropFirst(11).prefix(5)) : ""
-            return ConvLine(id: r.seq, his: r.isHis, text: text, when: (day == today || day.isEmpty ? "" : String(day.dropFirst(5)) + " ") + clock)
-        }
-    }
 }
 
 /// One row of the talk on show under the dial: his words or hers, as they are said. `alphas` brightens her words one character at a time while they are being said (empty: all lit).
@@ -87,10 +69,14 @@ final class StarUI {
     var rowsCalm = true
     var detFast = false                 // the dial turns fast: the cards under it dim and hold still
     var rowsKey = 0                     // bumps when the list is rebuilt
-    // the drawer of today's cards
-    var drawerOpen = false
-    var drawerGroups: [DrawerGroup] = []
-    var history: [ConvLine] = []        // the conversation under them, when paired
+    // the talk panel's second height: the whole conversation, with what waits on him and what she is doing pinned over it
+    var panelOpen = false
+    var pinned: [PinGroup] = []
+    var unfolded: Set<String> = []      // pinned groups of more than two that he opened
+    var headLine = ""                   // the panel header's line: the next item, or what waits
+    var headWaits = false
+    var convDays: [TalkDay] = []        // the conversation of record, by day (Brain/TalkStream)
+    var scrollTo: String?               // a row of the stream the panel is asked to show
     // talking
     var talking = false                 // a talk is on show: while it lasts and for a while after her last word
     var liveTurns: [LiveTurn] = []

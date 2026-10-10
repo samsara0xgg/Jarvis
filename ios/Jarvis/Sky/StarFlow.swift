@@ -106,7 +106,7 @@ extension StarEngine {
         if l <= 0 && was > 0 { seek(d == today ? nowT() : Double(d) * DAY + 720, true) }
         if l == 1 && was <= 0 { seek(Double(d) * DAY + 720, true) }
         if l != was { sound(l > was ? .open : .close, 1) }
-        openId = nil; rowKey = ""; setDrawer(false, quiet: true)
+        openId = nil; rowKey = ""; closePanel(quiet: true)
     }
 
     // MARK: touch: one finger turns the sky, two pinch between day, week and month
@@ -362,28 +362,6 @@ extension StarEngine {
         }
     }
 
-    // MARK: the drawer: every card of today
-
-    func setDrawer(_ on: Bool, quiet: Bool = false) {
-        wake()
-        if on != drawer && !quiet { sound(on ? .open : .close, 0.7) }
-        if on && !drawer { drKey = ""; if BrainLink.shared.hasToken { Task { @MainActor in await Conversation.shared.refresh() } } }
-        drawer = on; ui.drawerOpen = on; drawerSince = nowMs()
-        if on { updateDrawer() }
-    }
-    func updateDrawer() {
-        let today = floorDay(nowT()), now = nowMs(), ev = EV.filter { $0.born <= now && floorDay($0.t) == today }
-        let key = ev.map { "\($0.id)\($0.st.rawValue)\($0.t)\($0.t > Trev ? "a" : "")" }.joined(separator: ",") + "|" + (openId ?? "") + "|c\(Conversation.shared.version)"
-        if key == drKey { return }
-        drKey = key
-        put(\.history, Cal.cur.real ? ConvLine.lines(Conversation.shared.rows, today: Cal.cur.iso(today)) : [])
-        let groups: [(String, St)] = [("等你的", .wait), ("她在做", .work), ("接下来", .next), ("今天走过的", .done)]
-        ui.drawerGroups = groups.compactMap { name, s in
-            let list = ev.filter { $0.st == s }.sorted { s == .done ? $0.t > $1.t : $0.t < $1.t }
-            return list.isEmpty ? nil : DrawerGroup(id: name, name: name, rows: list.map(rowModel))
-        }
-    }
-
     // MARK: talking to her
 
     func talkFlow(_ ok: Ok, _ sc: Talk, _ held: Gate?, _ typed: Bool, pics: [SentItem] = []) async throws {
@@ -559,8 +537,7 @@ extension StarEngine {
         stepTalk(now)
         let ms: MicState = !ui.text.trimmingCharacters(in: .whitespaces).isEmpty ? .send : talk != nil ? .on : .mic
         put(\.mic, ms)
-        put(\.chipsOn, ui.typing && ui.text.isEmpty)
-        if ui.drawerOpen { updateDrawer() }
+        put(\.chipsOn, ui.typing && ui.text.isEmpty && !ui.panelOpen)       // the open panel has her last words there
     }
     private func sgn(_ x: Double) -> Int { x > 0 ? 1 : x < 0 ? -1 : 0 }
 }
@@ -588,16 +565,16 @@ extension StarEngine {
         case "一个月": setLevel(2)
         case "确认": setLevel(0); if let e = byId("thanks") { openId = e.id; rowKey = ""; seek(e.t) }
         case "设置": ui.settingsOpen = true
-        case "抽屉": setDrawer(true)
-        // paired, with cards waiting: `看看:claude` opens that kind's card under the dial, `抽屉:claude` in the drawer (kinds: confirmation, clarification, notice, plugin, claude)
+        case "抽屉": openPanel()
+        // paired, with cards waiting: `看看:claude` opens that kind's card under the dial, `抽屉:claude` with the panel open (kinds: confirmation, clarification, notice, plugin, claude)
         case _ where name.hasPrefix("看看:") || name.hasPrefix("抽屉:"):
             let kind = String(name.dropFirst(3))
             guard let e = EV.first(where: { $0.card?.kind.rawValue == kind }) else { return }
-            setLevel(0); openId = e.id; rowKey = ""; drKey = ""; seek(e.t)
-            if name.hasPrefix("抽屉") { setDrawer(true) }
+            setLevel(0); openId = e.id; rowKey = ""; panelKey = ""; seek(e.t)
+            if name.hasPrefix("抽屉") { openPanel() }
         case "放大镜": lensTh = -0.6; lensGoal = 1
         case "打字": ui.typing = true; ui.chipsOn = true
-        default: break
+        default: runTalkScene(name)
         }
     }
 }

@@ -572,10 +572,12 @@ extension StarEngine {
 
     // MARK: the month: a grid of daily star maps
 
-    func miniSprite(_ d: Int) -> Sprite {
-        let key = "\(d)"
+    /// A day's little map. `label: false` is the ring alone, the header of the talk panel's: it carries now, so it is drawn again every five minutes.
+    func miniSprite(_ d: Int, label: Bool = true) -> Sprite {
+        let key = label ? "\(d)" : "n\(d)|\(Int(nowT() / 5))"
         if let s = spr.minis[key] { return s }
-        let w = ceil(GW), h = 62.0, cx = w / 2, cy = MR + 3
+        if !label { for k in spr.minis.keys where k.hasPrefix("n") { spr.minis[k] = nil } }
+        let w = ceil(GW), h = label ? 62.0 : 2 * (MR + 3), cx = w / 2, cy = MR + 3
         let today = d == 0, future = d > 0
         let a: (Double) -> Double = { tm in Double.pi / 2 + (tm - 720) * TAU / DAY }
         let nT = nowT()
@@ -619,6 +621,7 @@ extension StarEngine {
                 c.setBlendMode(.plusLighter); self.spr.glow(c, .warm, cx + MR * cos(an), cy + MR * sin(an), 5, 0.9); c.setBlendMode(.normal)
             }
             let (_, dn) = dateOf(d), wkend = isWeekend(d)
+            if !label { return }
             if today {
                 c.setFillColor(CGColor(srgbRed: 238 / 255, green: 241 / 255, blue: 1, alpha: 1))
                 c.addPath(CGPath(roundedRect: CGRect(x: cx - 11, y: h - 15, width: 22, height: 14), cornerWidth: 7, cornerHeight: 7, transform: nil)); c.fillPath()

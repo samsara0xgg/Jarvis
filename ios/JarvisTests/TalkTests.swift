@@ -1,7 +1,7 @@
 import XCTest
 @testable import Jarvis
 
-/// The conversation as `GET /inherent/conversation` serves it (jarvis/state/memory_db.py `conversation_rows`), and what the drawer makes of it.
+/// The conversation as `GET /inherent/conversation` serves it (jarvis/state/memory_db.py `conversation_rows`), and and what the talk panel lists of it.
 final class TalkTests: XCTestCase {
     private let json = #"{"since": "", "rows": [{"seq": 7, "id": "a", "ts": "2026-10-09T23:50:01", "source": "allen", "text": "我明天几点出门？"}, {"seq": 8, "id": "b", "ts": "2026-10-09T23:50:04", "source": "jarvis", "text": "<voice>我查查。</voice>"}, {"seq": 9, "id": "c", "ts": "2026-10-08T09:20:00", "source": "jarvis", "text": "<voice>九点二十。</voice><document>## 明天\n- 09:20 出门</document>"}, {"seq": 10}]}"#
 
@@ -18,13 +18,52 @@ final class TalkTests: XCTestCase {
         XCTAssertFalse(AnswerText.isLeadIn("好，我来整理。"), "an untagged answer is the answer")
     }
 
-    func testTheDrawerShowsTheNewestFirstWithoutMarkupAndDatesOnlyOtherDays() throws {
-        let lines = ConvLine.lines(try XCTUnwrap(ConversationRow.parse(Data(json.utf8))), today: "2026-10-09")
-        XCTAssertEqual(lines.map(\.id), [9, 8, 7])
-        XCTAssertEqual(lines.map(\.text), ["## 明天\n- 09:20 出门", "我查查。", "我明天几点出门？"])
-        XCTAssertEqual(lines.map(\.when), ["10-08 09:20", "23:50", "23:50"])
-        XCTAssertEqual(lines.map(\.his), [false, false, true])
+    /// the rows in the order the conversation keeps them: by number, which is by time
+    private let ordered = #"{"rows": [{"seq": 7, "ts": "2026-10-08T09:20:00", "source": "jarvis", "text": "<voice>九点二十。</voice><document>## 明天\n- 09:20 出门</document>"}, {"seq": 8, "ts": "2026-10-09T23:50:01", "source": "allen", "text": "我明天几点出门？"}, {"seq": 9, "ts": "2026-10-09T23:50:04", "source": "jarvis", "text": "<voice>我查查。</voice>"}]}"#
+
+    func testTheStreamListsTheConversationByDayWithTheTimeAfterALongGap() throws {
+        let rows = try XCTUnwrap(ConversationRow.parse(Data(ordered.utf8)))
+        let days = TalkStream.convDays(rows, pics: [:], cal: cal, now: date("2026-10-09T23:55:00"))
+        XCTAssertEqual(days.map(\.id), ["2026-10-08", "2026-10-09"])
+        XCTAssertEqual(days.map(\.title), ["昨天", "今天"])
+        XCTAssertEqual(days[0].rows.map(\.text), ["## 明天\n- 09:20 出门"], "her row shows the document alone")
+        XCTAssertEqual(days[1].rows.map(\.id), ["c8", "c9"])
+        XCTAssertEqual(days[1].rows.map(\.stamp), ["23:50", nil], "three seconds later is the same breath")
+        XCTAssertEqual(days[0].rows.map(\.his), [false])
     }
+
+    func testADayAfterAWeekSaysItsDate() {
+        XCTAssertEqual(TalkStream.title(date("2026-10-08T09:00:00"), cal, date("2026-10-15T09:00:00")), "10月8日 周四")
+    }
+
+    func testTheLiveTalkJoinsTodayAndKeepsItsRowsApart() throws {
+        let rows = try XCTUnwrap(ConversationRow.parse(Data(ordered.utf8)))
+        let days = TalkStream.convDays(rows, pics: [:], cal: cal, now: date("2026-10-09T23:55:00"))
+        let live = [LiveTurn(id: 1, his: true, text: "再说一遍", at: date("2026-10-09T23:55:00")), LiveTurn(id: 2, his: false, text: "九点二十。", at: date("2026-10-09T23:55:05"))]
+        let all = TalkStream.compose(days, live: live, cal: cal, now: date("2026-10-09T23:55:00"))
+        XCTAssertEqual(all.count, 2)
+        XCTAssertEqual(all[1].rows.map(\.id), ["c8", "c9", "l1", "l2"])
+        XCTAssertEqual(all[1].rows.map(\.current), [false, false, true, true])
+        XCTAssertEqual(all[1].rows[2].stamp, nil, "five minutes after the last row")
+        let next = TalkStream.compose(days, live: [LiveTurn(id: 3, his: true, text: "x", at: date("2026-10-10T00:30:00"))], cal: cal, now: date("2026-10-10T00:30:00"))
+        XCTAssertEqual(next.count, 3, "a row after midnight starts a new day")
+        XCTAssertEqual(next.last?.title, "今天")
+        XCTAssertEqual(next.last?.rows.first?.stamp, "00:30")
+    }
+
+    /// The talk's own rows are on the screen as live rows while it lasts; once the conversation has them the live rows go: nothing is said twice.
+    func testNoRowIsListedTwiceBeforeDuringOrAfterTheConversationBringsTheTalk() throws {
+        let rows = try XCTUnwrap(ConversationRow.parse(Data(ordered.utf8)))        // seq 7, 8, 9
+        let base = 8                                                               // the talk started with the conversation at 8
+        XCTAssertEqual(TalkStream.shown(rows, base: base, talking: true).map(\.seq), [7, 8], "while it is on show, row 9 is the talk's, in its live rows")
+        XCTAssertFalse(TalkStream.handedOver(rows, base: base, talking: true))
+        XCTAssertFalse(TalkStream.handedOver(Array(rows.prefix(2)), base: base, talking: false), "the conversation has not brought its rows yet: the live rows stay")
+        XCTAssertTrue(TalkStream.handedOver(rows, base: base, talking: false))
+        XCTAssertEqual(TalkStream.shown(rows, base: base, talking: false).map(\.seq), [7, 8, 9], "the talk is over: the conversation lists all of it")
+    }
+
+    private var cal: Calendar { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "Asia/Shanghai")!; return c }
+    private func date(_ s: String) -> Date { TalkStream.time(s, cal)! }
 }
 
 /// `POST /inherent/ask` (docs/spec.html): the body the brain accepts, and the three ways it answers.

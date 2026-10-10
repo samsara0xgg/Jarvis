@@ -315,7 +315,7 @@ final class StarStage: UIView, HerDrive {
         let p = t.location(in: self)
         return CGPoint(x: (Double(p.x) - ox) / k, y: (Double(p.y) - oy) / k)
     }
-    /// the dial's hit area: the band between the top row and the drawer's grabber, running past the screen's sides
+    /// the dial's hit area: the band between the top row and the panel's grabber, running past the screen's sides
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         let p = CGPoint(x: (Double(point.x) - ox) / k, y: (Double(point.y) - oy) / k)
         return p.y >= 58 && p.y <= 528

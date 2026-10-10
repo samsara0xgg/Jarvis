@@ -78,7 +78,7 @@ final class StarEngine {
     var speaking: Say?
     var release: Gate?
     var ti = 0
-    var rowKey = "", viewKey = "", drKey = ""
+    var rowKey = "", viewKey = "", panelKey = ""
     // her phone voice (Sky/StarVoice.swift): the session state last seen and when it changed, the last trouble and when it appeared
     var voiceState = VoiceSession.State.idle, voiceAt = 0.0, voiceErr: String?, voiceErrAt = -1e9
     #if DEBUG
@@ -88,8 +88,9 @@ final class StarEngine {
     var brainNote: String?, brainNoteUntil = 0.0, sendingToBrain = false
     // the talk under the dial (Sky/StarTalk.swift): the row ids being written, the talk's start in the conversation, and when the talk goes if nobody touches it
     var turnSeq = 0, talkId = 0, talkBase = 0, speakId: Int?, vHis: Int?, vHer: Int?, lingerUntil = 0.0, lingerHold = false
+    // the panel's second height: when it opened, whether this talk has used up its one self-opening, what the stream was last built from, when the pinned part was
+    var panelSince = 0.0, autoOpenSpent = false, streamSeen = (-1, false, -1), panelAt = 0.0
     var dateD: Int?
-    var drawer = false
     weak var herDrive: HerDrive?
     var endEditing: (() -> Void)?
     /// asks the stage to go to 60 fps right now, so a touch or a button does not wait for the next 20 fps tick
@@ -99,16 +100,16 @@ final class StarEngine {
     var byHand = false, hand = 0.0
     // render on demand: the dial is drawn again only when something on it moved, and at rest only for its slow pulses
     var mapAt = -1e9, wakeUntil = 0.0, pulsing = true
-    var herDt = 0.0, herN = 0, herFresh = true, drawerSince = 0.0, detFast = false
+    var herDt = 0.0, herN = 0, herFresh = true, detFast = false
     /// a sheet is over the dial and her: they nearly stop
-    var covered: Bool { (ui.drawerOpen && nowMs() - drawerSince > 450) || ui.settingsOpen }
+    var covered: Bool { (ui.panelOpen && nowMs() - panelSince > 450) || ui.settingsOpen }
     /// turning fast, the dial is only its marks: names and the light on what the meridian points at wait until it slows enough to read
     var calmK: Double { 1 - smooth(cam != nil ? 1.5 : 0.6, cam != nil ? 3.5 : 1.8, abs(omegaS)) }
 
     /// true while something moves fast enough to want 60 fps
     var isBusy: Bool {
         mode != .idle || abs(omegaS) > 0.01 || qHeld || abs(qs.value - qGoal) > 0.002 || abs(qs.velocity) > 0.002 || abs(ls.value - lensGoal) > 0.002
-            || g != nil || talk != nil || flyer != nil || !sonar.isEmpty || speaking != nil || ui.drawerOpen
+            || g != nil || talk != nil || flyer != nil || !sonar.isEmpty || speaking != nil || (ui.panelOpen && nowMs() - panelSince < 450)
     }
 
     func sound(_ cue: SoundCue, _ gain: Float) { Sound.shared.play(cue, gain: gain) }

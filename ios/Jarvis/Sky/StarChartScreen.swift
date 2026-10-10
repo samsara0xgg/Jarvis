@@ -50,25 +50,31 @@ struct StarChrome: View {
     @Bindable var ui: StarUI
     let k: Double
     @State private var focused = false                 // the field's keyboard (Attach/AttachField)
-    @State private var sheetY: Double? = nil           // while a finger holds the drawer
-    private let SHUT = 880.0
+    @State private var pull: Double? = nil             // while a finger holds the talk panel's top edge
+    @Environment(\.scenePhase) private var phase
+    @State private var leftAt: Date?                   // when the app went to the background
 
     var body: some View {
         ZStack(alignment: .topLeading) {
+            // behind the open panel the dial dims
+            Color.black.opacity(0.35 * panelOpenness(panelTop(ui, pull))).frame(width: W * 3, height: H * 3).offset(x: -W, y: -H)
+                .animation(pull == nil ? .spring(response: 0.42, dampingFraction: 0.9) : nil, value: ui.panelOpen).allowsHitTesting(false)
             topRow
             detail
-                .opacity(ui.drawerOpen ? 0 : 1)
-                .animation(.easeOut(duration: 0.25), value: ui.drawerOpen)
-            grabber
-            LiveTalk(ui: ui) { engine.holdLinger($0) }
+                grabber
+            TalkPanel(engine: engine, ui: ui, pull: $pull)
             voiceNote
-            drawer
             AttachDim(model: ui.attach)
             composer
             AttachOverlay(model: ui.attach, kbLift: ui.kbLift)
         }
         .frame(width: W, height: H, alignment: .topLeading)
-        .onChange(of: focused) { _, f in ui.typing = f }
+        .onChange(of: focused) { _, f in ui.typing = f; if f { engine.openPanel() } }     // the keyboard covers the reading zone: the conversation is shown while he types
+        .onChange(of: phase) { _, p in
+            // away for five minutes, it comes back to the star chart as it was first opened
+            if p == .background { leftAt = Date() }
+            else if p == .active, let t = leftAt { leftAt = nil; if Date().timeIntervalSince(t) > 300 { engine.comeBack() } }
+        }
         .onAppear {
             engine.endEditing = { focused = false }
             engine.watchVoice()
@@ -93,10 +99,10 @@ struct StarChrome: View {
         .sheet(isPresented: $ui.settingsOpen) { SettingsSheet() }
     }
 
-    /// a tap on a notification that waits on him: the drawer with today's cards
+    /// a tap on a notification that waits on him: the panel, with what waits pinned
     private func openCards() {
         CardsRequest.pending = false
-        engine.setDrawer(true)
+        engine.openPanel()
     }
 
     // MARK: the top row: the day you are looking at, the scale, settings
@@ -124,7 +130,8 @@ struct StarChrome: View {
     // MARK: the panel under the dial
 
     private var detail: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let away = ui.talking || ui.typing || ui.panelOpen
+        return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .bottom, spacing: 12) {
                 Text(ui.hm).font(serif(ui.view == "day" ? 80 : 68)).foregroundStyle(ink).lineLimit(1).fixedSize()
                     .contentTransition(.identity).monospacedDigit()
@@ -146,7 +153,7 @@ struct StarChrome: View {
             .frame(height: 70, alignment: .bottom)
             .opacity(ui.kbLift > 80 ? 0 : 1)
             .contentShape(Rectangle())
-            .gesture(drawerPull(opens: true, tap: false))
+            .gesture(panelDrag(engine, $pull, opens: true, tap: false))
             Text(ui.dayText).font(monoF(12)).tracking(1.2).foregroundStyle(muted).lineLimit(1).padding(.top, 12)
                 .opacity(ui.kbLift > 80 ? 0 : 1)
             Group {
@@ -161,9 +168,9 @@ struct StarChrome: View {
         .transition(.opacity.combined(with: .offset(y: 7)))
         .animation(.easeOut(duration: 0.42), value: ui.flip)
         // a talk takes the place of the detail: it goes up and out, and comes back when the talk has gone
-        .opacity(ui.talking || ui.typing ? 0 : 1).offset(y: ui.talking || ui.typing ? -6 : 0)
-        .allowsHitTesting(!(ui.talking || ui.typing))
-        .animation(.easeOut(duration: ui.talking || ui.typing ? 0.2 : 0.35), value: ui.talking || ui.typing)
+        .opacity(away ? 0 : 1).offset(y: away ? -6 : 0)
+        .allowsHitTesting(!away)
+        .animation(.easeOut(duration: away ? 0.2 : 0.35), value: away)
         .offset(y: 532)
     }
 
@@ -192,80 +199,19 @@ struct StarChrome: View {
         .animation(ui.rowsCalm ? .easeOut(duration: 0.5) : nil, value: ui.rowsKey)
     }
 
-    // MARK: the drawer: every card of today, pulled up over the dial
+    // MARK: the grabber: pull the talk panel up over the dial
 
     private var grabber: some View {
-        Capsule().fill(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.28)).frame(width: 36, height: 5)
+        let hide = ui.typing || ui.panelOpen || ui.view == "month"
+        return Capsule().fill(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.28)).frame(width: 36, height: 5)
             .frame(width: 120, height: 36)
             .contentShape(Rectangle())
-            .gesture(drawerPull(opens: true, tap: true))
-            .opacity(ui.talking || ui.typing || ui.drawerOpen || ui.view == "month" ? 0 : 1 - ui.camE)      // close up it would lie across the road; the big time pulls the drawer instead
-            .allowsHitTesting(!(ui.talking || ui.typing || ui.drawerOpen || ui.view == "month" || ui.camE > 0.5))
-            .animation(.easeOut(duration: 0.3), value: ui.talking || ui.typing || ui.drawerOpen)
+            .gesture(panelDrag(engine, $pull, opens: true, tap: true))
+            .opacity(hide ? 0 : 1 - ui.camE)      // close up it would lie across the road; the big time pulls the panel instead
+            .allowsHitTesting(!hide && ui.camE <= 0.5)
+            .animation(.easeOut(duration: 0.3), value: hide)
             .offset(x: (W - 120) / 2, y: 500)
-            .accessibilityLabel("展开今天的卡片")
-    }
-
-    private func drawerPull(opens: Bool, tap: Bool) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .named("design"))
-            .onChanged { v in
-                if opens && engine.talk != nil { return }
-                let moved = abs(v.location.y - v.startLocation.y) > 7
-                if moved { sheetY = clamp(opens ? v.location.y - 116 : (ui.drawerOpen ? 0 : SHUT) + v.location.y - v.startLocation.y, 0, SHUT) }
-            }
-            .onEnded { v in
-                if opens && engine.talk != nil { return }
-                let dy = v.location.y - v.startLocation.y, vel = v.velocity.height
-                let moved = sheetY != nil
-                sheetY = nil
-                if moved { engine.setDrawer(opens ? (dy < -40 || vel < -500) : !(dy > 40 || vel > 500)) }
-                else if tap { engine.setDrawer(!ui.drawerOpen) }
-            }
-    }
-
-    private var drawer: some View {
-        let y = sheetY ?? (ui.drawerOpen ? 0 : SHUT)
-        return VStack(spacing: 0) {
-            Capsule().fill(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.28)).frame(width: 36, height: 5)
-                .frame(maxWidth: .infinity).frame(height: 38).contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("design"))
-                    .onChanged { v in
-                        if abs(v.location.y - v.startLocation.y) > 7 { sheetY = clamp(v.location.y - v.startLocation.y, 0, SHUT) }
-                    }
-                    .onEnded { v in
-                        let dy = v.location.y - v.startLocation.y, vel = v.velocity.height, moved = sheetY != nil
-                        sheetY = nil
-                        if moved { engine.setDrawer(!(dy > 40 || vel > 500)) } else { engine.setDrawer(false) }
-                    })
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(ui.drawerGroups.enumerated()), id: \.element.id) { gi, g in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(g.name).font(.system(size: 13, weight: .semibold)).tracking(0.5).foregroundStyle(g.id == "等你的" ? amber : Color(red: 196 / 255, green: 204 / 255, blue: 238 / 255).opacity(0.66))
-                            Text("\(g.rows.count)").font(monoF(11.5)).foregroundStyle(Color(red: 196 / 255, green: 204 / 255, blue: 238 / 255).opacity(0.42))
-                        }.padding(.top, gi == 0 ? 4 : 22).padding(.bottom, 8)
-                        ForEach(g.rows) { r in RowView(row: r, engine: engine) }
-                    }
-                    if !ui.history.isEmpty {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text("对话").font(.system(size: 13, weight: .semibold)).tracking(0.5).foregroundStyle(Color(red: 196 / 255, green: 204 / 255, blue: 238 / 255).opacity(0.66))
-                            Text("\(ui.history.count)").font(monoF(11.5)).foregroundStyle(Color(red: 196 / 255, green: 204 / 255, blue: 238 / 255).opacity(0.42))
-                        }.padding(.top, ui.drawerGroups.isEmpty ? 4 : 22).padding(.bottom, 8)
-                        ForEach(ui.history) { l in ConversationLineView(line: l) }
-                    }
-                }.padding(.horizontal, 30).padding(.bottom, 24)
-            }
-            .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.96), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
-        }
-        .padding(.bottom, 88)
-        .frame(width: W, height: H - 104, alignment: .top)
-        .background(UnevenRoundedRectangle(topLeadingRadius: 28, topTrailingRadius: 28).fill(.ultraThinMaterial).overlay(UnevenRoundedRectangle(topLeadingRadius: 28, topTrailingRadius: 28).fill(Color(red: 8 / 255, green: 10 / 255, blue: 24 / 255).opacity(0.72))))
-        .overlay(alignment: .top) { UnevenRoundedRectangle(topLeadingRadius: 28, topTrailingRadius: 28).stroke(Color.white.opacity(0.1), lineWidth: 0.5) }
-        .shadow(color: .black.opacity(0.4), radius: 25, y: -9)
-        .offset(y: 104 + y)
-        .opacity(y >= SHUT - 0.5 ? 0 : 1)
-        .allowsHitTesting(ui.drawerOpen)
-        .animation(sheetY == nil ? .spring(response: 0.4, dampingFraction: 0.88) : nil, value: y)
+            .accessibilityLabel("展开对话")
     }
 
     // MARK: talking to her

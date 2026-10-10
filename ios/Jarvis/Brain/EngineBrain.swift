@@ -26,7 +26,7 @@ extension StarEngine {
         let n = NOW1
         fs = Spring(n - 330); goal = n; stiff = 2.6; mode = .seek; byHand = false
         F = n - 330; prevF = F; Trev = n; prevRev = n
-        qGoal = 0; openId = nil; rowKey = ""; viewKey = ""; drKey = ""; dateD = nil; seenVersion = -1; monthAsked = false
+        qGoal = 0; openId = nil; rowKey = ""; viewKey = ""; panelKey = ""; dateD = nil; seenVersion = -1; monthAsked = false
         epoch += 1; wake()
     }
 
@@ -38,8 +38,10 @@ extension StarEngine {
         for e in fresh {
             if let o = old[e.id] { e.born = o.born; e.flash = o.flash; e.ign = o.ign } else { e.born = now }
         }
+        let waits = EV.filter { $0.st == .wait }.count
         EV = fresh
-        sprites.minis.removeAll(); epoch += 1; rowKey = ""; drKey = ""; wake()
+        sprites.minis.removeAll(); epoch += 1; rowKey = ""; panelKey = ""; wake()
+        if ui.talking && fresh.filter({ $0.st == .wait }).count > waits { openPanel() }       // something waits on him while she talks: the panel has room for it
     }
 
     /// The day in focus and the week round it (nearest first), today, and the whole month while the month is open. The brain skips what it served since the app was opened.

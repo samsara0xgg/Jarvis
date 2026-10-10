@@ -50,7 +50,7 @@ extension BrainClient {
     }
 }
 
-/// The history in the drawer: the newest rows of the conversation, read when the drawer opens and after each answer.
+/// The history in the talk panel: the newest rows of the conversation, read when the panel opens and after each answer.
 @Observable
 final class Conversation {
     static let shared = Conversation()
@@ -59,9 +59,14 @@ final class Conversation {
     private(set) var version = 0
 
     @MainActor func refresh() async {
-        guard let got = try? await BrainLink.shared.call({ try await BrainClient.conversation(after: 0, limit: 40, bases: $0, token: $1) }), got != rows else { return }
+        guard let got = try? await BrainLink.shared.call({ try await BrainClient.conversation(after: 0, limit: 200, bases: $0, token: $1) }), got != rows else { return }
         rows = got; version += 1
     }
+
+    #if DEBUG
+    /// `-scene open` and the like: made-up rows, as if the brain had served them
+    @MainActor func debugSet(_ r: [ConversationRow]) { rows = r; version += 1 }
+    #endif
 
     /// the newest row's number, or nil when the brain keeps no conversation: what an answer is waited for after
     @MainActor func latestSeq() async -> Int? {
