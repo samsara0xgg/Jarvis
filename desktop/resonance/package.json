@@ -25,6 +25,7 @@
     "node-pty": "^1.1.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "uqr": "^0.1.3",
     "zod": "4.6.5"
   },
   "devDependencies": {

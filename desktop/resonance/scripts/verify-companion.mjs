@@ -416,10 +416,18 @@ try {
   await page.locator('.ad .corner [data-row="settings"]').click();
   await settle();
   const tile = name => page.locator('.ad .st-q', { hasText: name });
-  check('11 the gear opens Settings: Mic, Voice, Hands-free, then ten categories', await title() === 'Settings' && await page.locator('.ad .st-q').count() === 3 && await page.locator('.ad .st-cat').count() === 10);
+  check('11 the gear opens Settings: Mic, Voice, Hands-free, then twelve categories', await title() === 'Settings' && await page.locator('.ad .st-q').count() === 3 && await page.locator('.ad .st-cat').count() === 12);
   await tile('Hands-free').click(); await page.waitForTimeout(250); await tile('Hands-free').click(); await page.waitForTimeout(400);
   const loud = await page.evaluate(() => window.__cues.splice(0));
   check(`11 unmuted, hands-free on and off plays her cues (${loud.join()})`, loud.join() === 'voice-enter,voice-exit');
+  // Phone & devices, demo data: the QR appears in place with its countdown, and Disconnect asks before it acts.
+  await page.locator('.ad [data-cat="devices"]').click(); await page.waitForTimeout(500);
+  check('11 Phone & devices lists a paired phone and offers a QR code', await title() === 'Phone & devices' && await page.locator('.ad [data-item="dev-iphone"]').count() === 1 && await page.locator('.ad [data-item="phone"] svg').count() === 0);
+  await page.locator('.ad [data-item="phone"] button').click(); await page.waitForTimeout(500);
+  check('11 …Show QR code expands it in place with a countdown and New code', await page.locator('.ad [data-item="phone"] svg path').count() === 1 && /^\d+:\d\d$/.test(await page.locator('.ad [data-item="phone"] .st-val').textContent()) && await page.locator('.ad [data-item="phone"] .st-qr button').count() === 1);
+  await page.locator('.ad [data-item="dev-iphone"] button').click(); await page.waitForTimeout(250);
+  check('11 …Disconnect asks first, and Keep leaves the phone paired', await page.locator('.ad .st-sure').count() === 1 && (await page.locator('.ad .st-sure .btn-text').first().click(), await page.waitForTimeout(250), await page.locator('.ad [data-item="dev-iphone"]').count() === 1 && await page.locator('.ad .st-sure').count() === 0));
+  await page.locator('.ad .pg-back').click(); await page.waitForTimeout(450);
   await page.locator('.ad .pg-back').click();
   await page.waitForFunction(() => !document.querySelector('.ad .page'));
   await corner.nth(1).click();

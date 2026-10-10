@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
-import { CaretRight, Check, Cpu, Globe, House, Key, Lightbulb, LockSimple, Microphone, Planet, Robot, SlidersHorizontal, SpeakerHigh, Waveform, Bell } from '@phosphor-icons/react';
+import { CaretRight, Check, Cpu, DeviceMobile, Globe, House, Key, Lightbulb, LockSimple, Microphone, Planet, Robot, SlidersHorizontal, SpeakerHigh, Waveform, Bell } from '@phosphor-icons/react';
+import { encode } from 'uqr';
 import { tr, useCompanionSettings, useT, type L, type Lang } from './companionSettings';
 import { postRoute, useRoute } from './homeData';
 import { SKIN_KEYS, SKINS, type Skin } from './starCore';
@@ -36,6 +37,11 @@ const DEMO: Daemon = {
 // The reSpeaker board: GET /inherent/board answers whether it is plugged in and what it hears; its settings live in /inherent/settings and apply at once.
 type Board = { present: boolean; firmware: string | null; direction: number | null; speech: boolean };
 const DEMO_BOARD: Board = { present: true, firmware: '2.1.1', direction: 251, speech: false };
+// The phones paired with this Jarvis: GET /inherent/devices answers { devices: [{ name, created_at }] }. POST /inherent/devices/pairing
+// with { name } mints a code that pairs that device once, for ten minutes: { device, code, expires_at_ms, brain }. DELETE /inherent/devices/{name} unpairs.
+type Device = { name: string; created_at: string };
+type Pair = { name: string; code: string; brain: string[]; exp: number };
+const DEMO_DEVICES: Device[] = [{ name: 'iphone', created_at: new Date(Date.now() - 3 * 86_400_000).toISOString() }];
 const STALE: Record<'hour' | 'day' | 'never', L> = { hour: ['1 h', '1 小时'], day: ['1 day', '1 天'], never: ['never', '不收'] };
 const SKIN_EN: Record<Skin, string> = { glass: 'Glass', nebula: 'Nebula', galaxy: 'Galaxy', frost: 'Frost', aurora: 'Aurora', codex: 'Icon' };
 const SKIN_BG: Record<Skin, string> = {
@@ -71,7 +77,7 @@ type Ctl =
   | { k: 'act'; label: L; run: () => void }
   | { k: 'key'; provider: Provider; text: string; tone?: 'ok' | 'warn' }
   | { k: 'skins' };
-type Item = { id: string; name: L; note?: L; ctl: Ctl; off?: boolean };
+type Item = { id: string; name: L; note?: L; ctl: Ctl; off?: boolean; extra?: ReactNode };
 type Cat = { id: string; icon: ReactNode; name: L; sum: string; warm?: boolean; daemon?: boolean; items: Item[] };
 
 export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyDrafts, onKeyDraft, hiddenAgents, onUnhideAgents, onArrange, onPlugins, onResetHome, notify, head }: {
@@ -133,6 +139,56 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
   };
   useEffect(() => setPicks(p => { const keep = Object.entries(p).filter(([k, c]) => `${c}`.toLowerCase() !== `${v(k)}`.toLowerCase()); return keep.length === Object.keys(p).length ? p : Object.fromEntries(keep); }), [daemon]);
   const dInfo = (key: string): Ctl => ({ k: 'info', text: Array.isArray(v(key)) ? t([`${(v(key) as unknown[]).length} folders`, `${(v(key) as unknown[]).length} 个`]) : String(v(key) ?? '—') });
+  // Phone pairing: the code and its address ride a QR code the phone scans. The list is read again every 2 s while the code is live; its name showing up there means the phone claimed it.
+  const devs = useRoute<{ devices: Device[] }>(port, '/inherent/devices', open, 30_000);
+  const [demoDevs, setDemoDevs] = useState(DEMO_DEVICES), [pair, setPair] = useState<Pair | null>(null), [now, setNow] = useState(Date.now());
+  const [blocked, setBlocked] = useState(false), [joined, setJoined] = useState(false), [busy, setBusy] = useState(false), [ask, setAsk] = useState<string | null>(null);
+  const devices = port ? devs.data?.devices ?? null : demoDevs, live = !!pair && now < pair.exp;
+  useEffect(() => { if (cat !== 'devices' || !open) { setPair(null); setBlocked(false); setAsk(null); } }, [cat, open]);
+  useEffect(() => { if (!pair) return; const every = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(every); }, [!!pair]);
+  useEffect(() => { if (!port || !live) return; const every = setInterval(devs.reload, 2000); return () => clearInterval(every); }, [port, live]);
+  useEffect(() => { if (pair && devices?.some(d => d.name === pair.name)) { setPair(null); setJoined(true); } }, [devices, pair]);
+  useEffect(() => { if (!joined) return; const later = setTimeout(() => setJoined(false), 8000); return () => clearTimeout(later); }, [joined]);
+  // The first free name: iphone, iphone-2, iphone-3… A 409 that says the name is paired moves on to the next; any other 409 means nothing could reach this Mac to claim.
+  const showCode = async () => {
+    if (busy) return;
+    setBusy(true); setJoined(false);
+    try {
+      const taken = devices?.map(d => d.name) ?? [];
+      for (let n = 1; n < 20; n++) {
+        const name = n > 1 ? `iphone-${n}` : 'iphone';
+        if (taken.includes(name)) continue;
+        if (!port) { setNow(Date.now()); setPair({ name, code: 'demo-code-for-the-preview-only', brain: ['http://100.64.0.1:8006'], exp: Date.now() + 600_000 }); return; }
+        const r = await fetch(`http://127.0.0.1:${port}/inherent/devices/pairing`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }), signal: AbortSignal.timeout(8000) });
+        const a = await r.json().catch(() => ({})) as { code?: unknown; brain?: unknown; expires_at_ms?: unknown; detail?: unknown };
+        if (r.ok && typeof a.code === 'string' && Array.isArray(a.brain) && typeof a.expires_at_ms === 'number') { setNow(Date.now()); setBlocked(false); setPair({ name, code: a.code, brain: a.brain as string[], exp: a.expires_at_ms }); return; }
+        if (r.status === 409 && !/already paired/.test(String(a.detail))) { setBlocked(true); return; }
+        if (r.status !== 409) throw new Error(`pairing ${r.status}`);
+      }
+      throw new Error('no free name');
+    } catch { notify(t(['Jarvis couldn’t make a code.', 'Jarvis 没生成二维码。'])); }
+    finally { setBusy(false); }
+  };
+  const unpair = async (name: string) => {
+    setAsk(null);
+    if (!port) { setDemoDevs(d => d.filter(x => x.name !== name)); return; }
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/inherent/devices/${encodeURIComponent(name)}`, { method: 'DELETE', signal: AbortSignal.timeout(8000) });
+      if (!r.ok && r.status !== 404) throw new Error(`unpair ${r.status}`);
+      devs.reload();
+    } catch { notify(t(['Jarvis didn’t disconnect it.', 'Jarvis 没断开。'])); }
+  };
+  const left = pair ? Math.max(0, pair.exp - now) : 0, clock = `${Math.floor(left / 60_000)}:${String(Math.floor(left / 1000) % 60).padStart(2, '0')}`;
+  // A device is named iphone, iphone-2…; the list shows the day it connected.
+  const deviceName = (name: string) => name.replace(/^iphone/, 'iPhone');
+  const deviceRow = (d: Device): Item => {
+    const at = new Date(d.created_at), ok = !isNaN(+at), who = deviceName(d.name);
+    return { id: `dev-${d.name}`, name: [`${who}${ok ? ` · connected ${at.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}`, `${who}${ok ? ` · ${at.getMonth() + 1} 月 ${at.getDate()} 日连上` : ''}`],
+      ctl: { k: 'act', label: ['Disconnect', '断开'], run: () => setAsk(d.name) },
+      extra: ask === d.name && <span className="st-sure">{t([`Disconnect ${who}?`, `断开 ${who}？`])}
+        <button className="btn-text" onClick={() => setAsk(null)}>{t(['Keep', '不断开'])}</button>
+        <button className="btn-text is-danger" onClick={() => void unpair(d.name)}>{t(['Disconnect', '断开'])}</button></span> };
+  };
   const off = !ready;
   const keyCtl = (provider: Provider): Ctl => {
     const state = setup.data?.keys[provider];
@@ -231,6 +287,16 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
       ...accounts.map(a => ({ id: a.name, name: [a.name, a.name] as L, ctl: { k: 'info', text: a.text, tone: a.ok ? 'ok' : 'warn' } as Ctl })),
       { id: 'plugins', name: ['Plugins', '插件'], ctl: { k: 'act', label: ['Open', '打开'], run: onPlugins } },
     ] },
+    { id: 'devices', icon: <DeviceMobile/>, name: ['Phone & devices', '手机与设备'], sum: devices ? devices.length ? t([`${devices.length} connected`, `已连 ${devices.length} 台`]) : t(['None yet', '还没连']) : t(['Not connected yet', '还没接上']), items: [
+      { id: 'phone', name: ['Connect a phone', '连一台手机'], off: blocked, note: blocked ? ['This Mac isn’t open to your devices yet, so a phone can’t connect', '这台 Mac 还没对外开放，手机连不上'] : undefined,
+        ctl: joined ? { k: 'info', text: t(['iPhone connected', 'iPhone 已连上']), tone: 'ok' } : pair ? { k: 'info', text: clock, tone: live && left > 60_000 ? undefined : 'warn' } : { k: 'act', label: ['Show QR code', '显示二维码'], run: () => void showCode() },
+        extra: pair && <div className="st-qr">
+          <QrCode text={JSON.stringify({ code: pair.code, brain: pair.brain })} name={t(['QR code to pair a phone', '配对手机的二维码'])} gone={!live}/>
+          <p className="st-note">{t(['Scan this with Jarvis on your iPhone. Valid for 10 minutes', '用 iPhone 上的 Jarvis 扫这个码，10 分钟内有效'])}</p>
+          <button className="btn btn-ghost" disabled={busy} onClick={() => void showCode()}>{t(['New code', '换一个'])}</button>
+        </div> },
+      ...(devices ?? []).map(deviceRow),
+    ] },
     { id: 'models', icon: <Cpu/>, name: ['Models', '模型'], daemon: true, sum: ready ? String(v('model_conversation') ?? '—') : t(['Not connected yet', '还没接上']), items: [
       { id: 'm-conv', name: ['Conversation', '对话'], ctl: dInfo('model_conversation'), off },
       { id: 'm-bg', name: ['Background analysis', '后台分析'], ctl: dInfo('model_background'), off },
@@ -258,7 +324,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
     <button className={`st-q ${on ? 'is-on' : ''}`} aria-pressed={on} onClick={flip}>{icon}<b>{t(name)}</b><span>{t(state)}</span></button>;
   const row = (i: Item) => <div className={`st ${i.off ? 'is-off' : ''}`} key={i.id} data-item={i.id}>
     <div className="st-top"><span className="st-name">{t(i.name)}</span>{control(i)}</div>
-    {i.note && <p className="st-note">{t(i.note)}</p>}{below(i)}
+    {i.note && <p className="st-note">{t(i.note)}</p>}{below(i)}{i.extra}
   </div>;
   const control = (i: Item) => {
     const x = i.ctl;
@@ -316,6 +382,15 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
         : <button onClick={() => void restart()}>{t(['Restart', '重启'])}</button>}
     </div>}
   </>;
+}
+
+// The pairing code as a QR code: dark modules on a light card with the four-module quiet zone a phone camera needs, the same in both themes.
+function QrCode({ text, name, gone }: { text: string; name: string; gone?: boolean }) {
+  const { data: grid, size: n } = encode(text, { ecc: 'M', border: 0 }), pad = 4;
+  const d = grid.flatMap((row, y) => row.flatMap((on, x) => on ? [`M${x + pad} ${y + pad}h1v1h-1z`] : [])).join('');
+  return <svg className={gone ? 'is-gone' : ''} viewBox={`0 0 ${n + pad * 2} ${n + pad * 2}`} role="img" aria-label={name} shapeRendering="crispEdges">
+    <rect width="100%" height="100%" fill="#fff"/><path d={d} fill="#111"/>
+  </svg>;
 }
 
 // The board's colors. The companion is a panel that never becomes the key window, so the

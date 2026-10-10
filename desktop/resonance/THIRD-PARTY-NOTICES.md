@@ -23,3 +23,6 @@ and Chromium's in `LICENSES.chromium.html`; CPython's in
 - **highlight.js**, the code colours in Startrail's preview, bundled into the
   Agents window. Copyright (c) 2006, Ivan Sagalaev. BSD 3-Clause License:
   https://github.com/highlightjs/highlight.js/blob/main/LICENSE
+- **uqr**, the QR code that pairs a phone, bundled into the Dashboard. Copyright
+  (c) Project Nayuki, (c) 2023 Anthony Fu. MIT License:
+  https://github.com/unjs/uqr/blob/main/LICENSE
