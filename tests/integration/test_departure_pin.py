@@ -1,4 +1,4 @@
-"""ADR 0200, 0202 — a bus trip pinned on the notch: tool, card, ring, served pin, live refresh.
+"""ADR 0200, 0203 — a bus trip pinned on the notch: tool, card, ring, served pin, live refresh.
 
 The real tools run through ``ToolRegistry.dispatch`` onto a real event log; the real ``Reminders``
 tick and ``Departures`` fold that log under a fake clock, and the real ``/inherent/notices`` routes
@@ -432,7 +432,7 @@ def test_the_static_export_is_downloaded_once_a_day(tmp_path: Path) -> None:
     assert len(calls) == 1
 
 
-# --- ADR 0202: the card under the notch ------------------------------------------------
+# --- ADR 0203: the card under the notch ------------------------------------------------
 
 
 def _answer(world: _World, *legs: tuple[str, str]) -> None:

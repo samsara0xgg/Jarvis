@@ -653,7 +653,7 @@ class InherentDeps:
     # daemon wires them only while ``job_mail.enabled``. A LookupError is 404, a ValueError 400.
     notices_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     notice_act: Callable[[str, str, str | None], Awaitable[None]] | None = None
-    # ADR 0202: the notch's trip cards (pin an offered option, next bus, undo an unpin). ``None``
+    # ADR 0203: the notch's trip cards (pin an offered option, next bus, undo an unpin). ``None``
     # leaves the route unregistered (404); a LookupError is 404.
     departure_act: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
     # ADR 0160: the same feedback for every other proactive card the client raises, by card id.
@@ -1259,7 +1259,7 @@ class NoticeActionRequest(BaseModel):
 
 
 class DepartureRequest(BaseModel):
-    """Body of ``POST /inherent/departure`` (ADR 0202): the field each action needs is required."""
+    """Body of ``POST /inherent/departure`` (ADR 0203): the field each action needs is required."""
 
     action: Literal["pin", "next", "undo"]
     offer_id: str = Field(default="", max_length=40)
@@ -1499,7 +1499,7 @@ def _register_day_route(app: FastAPI, deps: InherentDeps) -> None:
 
 
 def _register_departure_route(app: FastAPI, deps: InherentDeps) -> None:
-    """ADR 0202: the notch's trip cards."""
+    """ADR 0203: the notch's trip cards."""
     if deps.departure_act is None:
         return
     departure_act = deps.departure_act

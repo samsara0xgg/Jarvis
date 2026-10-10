@@ -5076,7 +5076,7 @@ def _notice_deps(
             raise LookupError(msg)
 
     async def departure_act(body: dict[str, Any]) -> dict[str, Any]:
-        """``POST /inherent/departure`` (ADR 0202): the notch's trip cards."""
+        """``POST /inherent/departure`` (ADR 0203): the notch's trip cards."""
         return await asyncio.to_thread(reminders.departures.act, body)
 
     return {

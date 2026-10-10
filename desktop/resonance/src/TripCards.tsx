@@ -6,7 +6,7 @@ import { useEscape } from './Notices';
 import { isDeparture, offerLine, offerRoute, pinStatus, pinTrip, type Departure, type TransitOffer } from './pin';
 import type { NotchNote } from './Notch';
 
-// ADR 0202: the cards under the notch for the bus trip. After a bus lookup one row per option with a Pin button (it closes itself
+// ADR 0203: the cards under the notch for the bus trip. After a bus lookup one row per option with a Pin button (it closes itself
 // after 60 s, or when a newer lookup replaces it); the pinned pill opens a card with the trip, what the live refresh knows, and Next
 // bus / Cancel; Cancel leaves a 5 s "Unpinned · Undo" line. All of it is one daemon route, POST /inherent/departure.
 const OFFER_MS = 60_000, UNDO_MS = 5000, JUST_OPENED_MS = 800;

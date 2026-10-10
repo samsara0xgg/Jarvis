@@ -62,7 +62,7 @@ class Departures:
     ) -> None:
         """``live`` is BC Transit's feed; without it the pin keeps Google's times.
 
-        ``offers`` is what ``transit`` left for the notch's card (ADR 0202).
+        ``offers`` is what ``transit`` left for the notch's card (ADR 0203).
         """
         self._path = event_log
         self.live = live
@@ -115,7 +115,7 @@ class Departures:
                 reminders.cancel(conn, one.reminder_id, action_id=pin_id)
             folded.unpin(conn, pin_id)
 
-    # --- what the notch's cards ask for (ADR 0202) --------------------------------------
+    # --- what the notch's cards ask for (ADR 0203) --------------------------------------
 
     def act(self, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /inherent/departure``: one of the cards' three actions."""

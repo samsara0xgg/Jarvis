@@ -32,7 +32,7 @@ export function pinTrip(d: Departure, t: T): string {
   return t([`Leave ${d.leave_at} → bus ${route(d)} from ${d.board_stop} → ${arrive}`, `${d.leave_at} 出门 → ${d.board_stop} 上 ${d.route.split('→')[0].trim()} 路${d.route.includes('→') ? `（转 ${d.route.split('→').slice(1).join('→').trim()}）` : ''} → ${arrive}`]);
 }
 
-// ADR 0202: what the pin's card says the refresh knows: `实时 · 晚 2 分`, `准点`, `可能不准`; nothing before the first check.
+// ADR 0203: what the pin's card says the refresh knows: `实时 · 晚 2 分`, `准点`, `可能不准`; nothing before the first check.
 export function pinStatus(d: Departure, t: T): string {
   if (d.stale) return t(['May be off', '可能不准']);
   if (d.checked_at_ms == null) return '';
@@ -40,7 +40,7 @@ export function pinStatus(d: Departure, t: T): string {
   return m > 0 ? t([`Live · ${m} min late`, `实时 · 晚 ${m} 分`]) : m < 0 ? t([`Live · ${-m} min early`, `实时 · 早 ${-m} 分`]) : t(['On time', '准点']);
 }
 
-// ADR 0202: the options the last `transit` answer offers (`transit_offer`), one row each; `index` is what a click sends back.
+// ADR 0203: the options the last `transit` answer offers (`transit_offer`), one row each; `index` is what a click sends back.
 export type OfferRow = { index: number; route: string; board_stop: string; leave_at: string; departs: string; arrive_at: string; to: string };
 export type TransitOffer = { id: string; options: OfferRow[]; at_ms: number };
 export const isOffer = (o: unknown): o is TransitOffer => {

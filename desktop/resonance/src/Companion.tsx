@@ -338,7 +338,7 @@ export function Companion() {
     cue: (name, gain, always) => { const on = preferences.feedbackEnabled && !s.soundMuted && (always || s.quiet === 'off' && audioPrivate.current !== false); if (on) noticeCue(name, preferences.feedbackVolume, gain); return on; },
     answer: (req, body, id) => agents.find(a => a.id === id)?.host ? answerStartrail(id, req, body) : port ? answerRequest(port, req.id, body) : Promise.resolve(true), mark: markStartrail });
   const notice = notices.current;
-  // ADR 0202: the bus trip's cards; the offer answers what he just asked, so only another notice on screen holds it.
+  // ADR 0203: the bus trip's cards; the offer answers what he just asked, so only another notice on screen holds it.
   const busCards = useTripNote({ port, lang: companion.lang, offer: notices.offer, departure: notices.departure, blocked: !!notice, closeOffer: notices.closeOffer, setDeparture: notices.setDeparture, leaveDeparture: notices.leaveDeparture });
   // A press anywhere else on screen puts a card away (the window is click-through, so main reports it); not one that
   // came up under the pointer a moment ago, and not while the pointer is on the card.

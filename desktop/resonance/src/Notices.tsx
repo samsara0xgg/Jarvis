@@ -127,7 +127,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
       glows: [] as Glow[], glowGone: new Set<string>(),
       // The pinned bus trip (ADR 0200) the latest poll served, and the pin taken off here that the daemon may still serve for a poll.
       departure: null as Departure | null, departureGone: '',
-      // The options the last bus lookup offers (ADR 0202), and the offer closed here that the daemon may still serve for a poll.
+      // The options the last bus lookup offers (ADR 0203), and the offer closed here that the daemon may still serve for a poll.
       offer: null as TransitOffer | null, offerGone: '',
       // Other cards (ADR 0160): the ids told `seen` to the daemon, and the reactions already told, as `cid|reaction`.
       snapped: new Set<string>(), reacted: new Set<string>(),
@@ -326,7 +326,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   };
   // The pin leaves the wing at once and the daemon is told to unpin it (ADR 0200).
   const leaveDeparture = (d: Departure) => { s.departureGone = d.id; s.departure = null; tell(port, d.id, { action: 'dismissed' }); bump(); };
-  // The card pinned or closed: the offer leaves at once. A pin the daemon just made shows at once, without waiting for the next poll (ADR 0202).
+  // The card pinned or closed: the offer leaves at once. A pin the daemon just made shows at once, without waiting for the next poll (ADR 0203).
   const closeOffer = (id: string) => { s.offerGone = id; s.offer = null; bump(); };
   const setDeparture = (d: Departure | null) => { s.departure = d; bump(); };
   // Their names leave any pop; `cards` takes their needs-you cards away too.

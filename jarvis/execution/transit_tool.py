@@ -26,7 +26,7 @@ _URL: Final = "https://routes.googleapis.com/directions/v2:computeRoutes"
 _TIMEOUT_S: Final = 5.0
 _ZONE: Final = ZoneInfo("America/Vancouver")
 _MAX_OPTIONS: Final = 3
-# A far-fetched option (ADR 0202): it arrives this long after the earliest, or rides this much
+# A far-fetched option (ADR 0203): it arrives this long after the earliest, or rides this much
 # longer.
 _LATER_MIN: Final = 15
 _SLOWER: Final = 1.5
@@ -220,7 +220,7 @@ _PIN_DESCRIPTION: Final = (
 class TransitOffers:
     """What the last ``transit`` answer offers the notch's card, and the first stops it kept.
 
-    The card lists the options (ADR 0202) for ``OFFER_TTL_S`` after the answer; a click pins one
+    The card lists the options (ADR 0203) for ``OFFER_TTL_S`` after the answer; a click pins one
     through :func:`pin_trip`, as the tool does. The newest answer replaces the older. The options
     stay in memory after the card is gone, for the pin card's "next bus" (same route and stop).
     ``stops`` is each option's first stop place, keyed ``(first route, board stop)``: the notch's
@@ -421,7 +421,7 @@ def build_transit_tool(
     (ADR 0194), or with ``phone`` the phone's last report (ADR 0198), which the description and
     the result then say, with its age; its failure is a tool error telling the model to ask
     where the user is. ``offers`` is where each answer leaves its options for the notch's card
-    (ADR 0202); the runtime shares it with the routes that serve and pin them.
+    (ADR 0203); the runtime shares it with the routes that serve and pin them.
     """
     if not api_key:
         return ()

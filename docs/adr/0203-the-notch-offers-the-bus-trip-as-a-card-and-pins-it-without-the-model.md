@@ -1,4 +1,4 @@
-# ADR 0202 — The notch offers the bus trip as a card and pins it without the model
+# ADR 0203 — The notch offers the bus trip as a card and pins it without the model
 
 **Status:** Accepted
 **Date:** 2026-10-09

@@ -23,7 +23,7 @@ import { pinLabel, pinTrip, pinWidest, type Departure } from './pin';
 // A glow (ADR 0187) is one more amber point in the turn group: it counts there and arrives like anything new, and its rows
 // follow the sessions on the list: a click opens its place, the ✕ clears it. It is a mark, so only dnd keeps it back.
 // A pinned bus trip (ADR 0200) is a pill after the marks: `🚌 28 · 12 分` counts down to when he must leave, amber from 5 min and
-// 该走了 until the bus goes; resting on it shows the whole trip, a click opens its card (ADR 0202). It never opens the panel,
+// 该走了 until the bus goes; resting on it shows the whole trip, a click opens its card (ADR 0203). It never opens the panel,
 // and where the Dashboard leaves no room for it beside the marks it steps aside before they do.
 type Point = { x: number; y: number };
 export type Kind = 'turn' | 'work' | 'done' | 'moon';
@@ -641,7 +641,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     <canvas ref={fx} className="notch-fx" data-look={look} aria-hidden="true" style={{ width: geo.width }}/>
     <div ref={hit} className="notch-hit" data-hit aria-hidden="true"
       onPointerDown={e => {
-        // The pinned trip's pill: a click opens its card (ADR 0202). It opens no panel.
+        // The pinned trip's pill: a click opens its card (ADR 0203). It opens no panel.
         const trip = L.current.pin?.item;
         if (st.pin && trip && e.clientX >= st.pin.x0 && e.clientX < st.pin.x1) {
           L.current.pin!.open(trip);
