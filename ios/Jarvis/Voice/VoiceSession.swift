@@ -451,6 +451,7 @@ final class VoiceSession {
         playedAtSay = audio.core?.playedSamples ?? 0        // her earlier replies are not this turn's audio: thinking stays thinking until new audio plays
         rec = nil
         feed.set(nil)
+        segment += 1                                        // the finishing recognizer's last partials are his own words, not words over her
         Task {
             let (picked, _) = await r.finish()
             gotFinal(picked, wakeTurn: wakeTurn)
