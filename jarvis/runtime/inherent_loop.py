@@ -206,6 +206,7 @@ from jarvis.state.device_tokens import PairingCodes, device_name_for_token, devi
 from jarvis.state.event_log import (
     MAC_NODE,
     PHONE_VOICE_CHANNEL,
+    confirmation_device,
     emit_event,
     get_event,
     iter_events_for_turn,
@@ -6798,12 +6799,16 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             return {"since": since, "rows": rows, "has_more": has_more}
 
         def _read_card() -> dict[str, Any]:
-            """ADR 0062: the card waiting for Allen's button, or ``None``."""
+            """ADR 0062: the card waiting for Allen's button, or ``None``.
+
+            ``device`` (ADR 0218) is the one whose turn asked it, ``None`` when no turn did.
+            """
             conn = open_runtime_event_log(runtime.runtime_paths.event_log)
             try:
                 slot = PendingConfirmations.from_events(
                     iter_events_of_types(conn, _CARD_EVENT_TYPES),
                 ).slot
+                device = None if slot is None else confirmation_device(conn, slot.confirmation_id)
             finally:
                 with contextlib.suppress(sqlite3.Error):
                     conn.close()
@@ -6820,10 +6825,16 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 "source": parts[1] if len(parts) == 3 and parts[0] == "mcp" else "",  # noqa: PLR2004
                 "letter": lang.letter_to(args) is not None,
                 "args": args,
+                "device": device,
             }}
 
-        def _decide_card(confirmation_id: str, decision: str, edits: dict[str, str]) -> str:
-            """ADR 0062: a card's button, as an intent the turn pump runs like any other."""
+        def _decide_card(
+            confirmation_id: str, decision: str, edits: dict[str, str], device: str,
+        ) -> str:
+            """ADR 0062: a card's button, as an intent the turn pump runs like any other.
+
+            The turn is written under ``device``, the one that pressed it (ADR 0218).
+            """
             turn_id = _new_turn_id()
             conn = open_runtime_event_log(runtime.runtime_paths.event_log)
             try:
@@ -6841,6 +6852,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         },
                     },
                     correlation={"turn_id": turn_id},
+                    ingestion_node=device,
                 )
             finally:
                 with contextlib.suppress(sqlite3.Error):
@@ -6848,10 +6860,14 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             return turn_id
 
         def _read_question() -> dict[str, Any]:
-            """ADR 0066: the ask card waiting to be filled in, or ``None``."""
+            """ADR 0066: the ask card waiting to be filled in, or ``None``.
+
+            ``device`` (ADR 0218) is the one whose turn asked it, ``None`` when unknown.
+            """
             conn = open_runtime_event_log(runtime.runtime_paths.event_log)
             try:
                 slot = _visible_ask_card(conn, int(time.time() * 1000))
+                device = None if slot is None else turn_origin(conn, slot.asked_turn_id)[1]
             finally:
                 with contextlib.suppress(sqlite3.Error):
                     conn.close()
@@ -6862,6 +6878,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             ]
             card: dict[str, Any] = {
                 "id": slot.clarification_id, "question": slot.question, "fields": fields,
+                "device": device,
             }
             if slot.trip is not None:  # ADR 0205: a bus card shows only the rows still catchable
                 shown = live_card(slot.trip)
@@ -6871,11 +6888,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             return {"card": card}
 
         def _answer_question(
-            clarification_id: str, answers: dict[str, str] | None,
+            clarification_id: str, answers: dict[str, str] | None, device: str,
         ) -> str | None:
             """ADR 0066: filled-in answers are remembered and run as Allen's words.
 
-            Dismissing the card (``answers is None``) closes it and runs nothing.
+            Dismissing the card (``answers is None``) closes it and runs nothing. The answer's
+            turn is written under ``device``, the one that filled it in (ADR 0218).
 
             Returns the answer turn's id, or ``None`` for a dismissal. Raises
             ``LookupError`` once the card is not the one waiting.
@@ -6916,6 +6934,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         "answers": {str(f["label"]): value for f, value in filled},
                     },
                     correlation={"turn_id": turn_id},
+                    ingestion_node=device,
                 )
                 emit_event(
                     conn,
@@ -6926,6 +6945,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         "channel": "clarify",
                     },
                     correlation={"turn_id": turn_id},
+                    ingestion_node=device,
                 )
             finally:
                 with contextlib.suppress(sqlite3.Error):
@@ -7376,6 +7396,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             if phone_hub is not None:
                 # ADR 0209: a device with a live conversation socket needs no push.
                 push.phone_socket_open = phone_hub.connected
+            if runtime.whereabouts is not None:
+                # ADR 0218: a request, or a card no turn asked, goes to the phone only away from
+                # the Mac.
+                push.at_mac = runtime.whereabouts.at_mac
             if runtime.reminders is not None:
                 runtime.reminders.push = push.reminder
                 push.next_reminder = runtime.reminders.next_due

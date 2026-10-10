@@ -240,18 +240,31 @@ class World:
 
     def confirm(
         self, cid: str, *, expires_in_s: float = 600, text: str = "Send the draft?",
+        turn: str | None = None,
     ) -> None:
-        """Ask for a confirmation."""
+        """Ask for a confirmation, within ``turn`` if one is given."""
         emit_event(self.log, type="confirmation.requested", payload={
             "confirmation_id": cid, "action_snapshot": {"tool_name": "gmail_send"},
             "template_line": text, "expires_at_ms": int((self.clock() + expires_in_s) * 1000),
-        })
+        }, correlation=None if turn is None else {"turn_id": turn})
 
-    def ask(self, qid: str, question: str = "Which stop?") -> None:
+    def ask(self, qid: str, question: str = "Which stop?", turn: str = "T1") -> None:
         """Put up an ask card."""
         emit_event(self.log, type="clarification.requested", payload={
-            "clarification_id": qid, "question": question, "fields": [], "turn_id": "T1",
+            "clarification_id": qid, "question": question, "fields": [], "turn_id": turn,
         })
+
+    def turn(self, turn_id: str, device: str) -> None:
+        """Open ``turn_id`` with words ``device`` typed (ADR 0212)."""
+        emit_event(
+            self.log, type="surface.user_intent", ingestion_node=device,
+            payload={"transcript": "do it", "turn_id": turn_id, "channel": "cli_stdin"},
+            correlation={"turn_id": turn_id},
+        )
+
+    def settle(self) -> None:
+        """Wait for what the sender handed its own thread."""
+        self.push._pool.submit(lambda: None).result(5)  # noqa: SLF001 — one worker, in order
 
     def close(self) -> None:
         """Release the client and the log."""
@@ -730,6 +743,73 @@ def test_only_the_device_with_the_open_socket_is_skipped(world: World) -> None:
     assert [r["device"] for r in world.requests()] == [DEVICE_B]
     assert world.production.requests
     assert not world.sandbox.requests
+
+
+def test_a_card_goes_only_to_the_phone_whose_turn_asked_it_and_a_computers_never(
+    world: World,
+) -> None:
+    """ADR 0218: the asking turn's device decides; whether he is at the Mac does not."""
+    world.register("ipad", DEVICE_B, "production")
+    world.push.at_mac = lambda: True
+    world.turn("T1", "phone")
+    world.turn("T2", "macbook")
+    world.push.poll()
+    world.confirm("C1", turn="T1", text="From the phone")
+    world.ask("Q1", "From the Mac?", turn="T2")
+    world.confirm("C2", turn="T2", text="Also from the Mac")
+    world.push.poll()
+    assert [(r["device"], r["body"]["aps"]["alert"]["body"]) for r in world.requests()] == [
+        (DEVICE_A, "From the phone"),
+    ]
+
+
+def test_a_card_no_turn_asked_is_pushed_only_while_he_is_away_from_the_mac(
+    world: World,
+) -> None:
+    """ADR 0218: with no device it goes where he is when it is asked; unknown counts as away."""
+    world.push.poll()
+    world.push.at_mac = lambda: True
+    world.confirm("C1", text="Asked at the Mac")
+    world.push.poll()
+    world.push.at_mac = lambda: False
+    world.push.poll()  # not asked again: a card no turn asked is not followed
+    world.confirm("C2", text="Asked while away")
+    world.push.poll()
+    assert [r["body"]["aps"]["alert"]["body"] for r in world.requests()] == ["Asked while away"]
+
+
+def test_a_held_claude_request_waits_while_he_is_at_the_mac_and_follows_him_off_it(
+    world: World,
+) -> None:
+    """ADR 0218: pushed once he leaves while it still waits; one answered first never is."""
+    at_mac = [True]
+    world.push.at_mac = lambda: at_mac[0]
+    world.push.poll()
+    waiting = {"R1": True, "R2": True}
+    world.push.claude_request("Bash", "/Users/a/Projects", "R1", lambda: waiting["R1"])
+    world.push.claude_request("Edit", "/Users/a/Projects", "R2", lambda: waiting["R2"])
+    world.settle()
+    world.push.poll()
+    assert world.requests() == []  # he is at the Mac: the notch has it
+
+    waiting["R2"] = False  # answered on the notch, or in Claude's app
+    at_mac[0] = False
+    world.push.poll()
+    world.push.poll()
+    [request] = world.requests()
+    assert request["body"]["aps"]["alert"] == {
+        "title": lang.t("push.claude"), "body": "Bash · Projects",
+    }
+
+
+def test_a_claude_request_held_while_he_is_away_pushes_at_once(world: World) -> None:
+    """Away from the Mac, the hold itself pushes, as before (ADR 0210), without a poll."""
+    world.push.claude_request("Bash", "/Users/a/Jarvis", "R1", lambda: True)
+    world.settle()
+    assert [r["body"]["aps"]["alert"]["body"] for r in world.requests()] == ["Bash · Jarvis"]
+    world.push.poll()
+    world.push.poll()
+    assert len(world.requests()) == 1
 
 
 # --- the generic send ------------------------------------------------------------------------

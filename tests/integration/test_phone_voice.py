@@ -820,7 +820,7 @@ def test_the_phones_token_reads_the_question_slot_like_every_route(tmp_path: Pat
             submit_callable=lambda _text: "T1",
             broadcaster=InherentBroadcaster(),
             question_read=lambda: {"card": None},
-            question_answer=lambda _id, _answers: None,
+            question_answer=lambda _id, _answers, _device: None,
             device_name=functools.partial(device_name_for_token, root),
         ),
     )

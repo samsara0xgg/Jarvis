@@ -110,6 +110,7 @@ from jarvis.state.attachments import (
     valid_id,
 )
 from jarvis.state.day_line import parse_day
+from jarvis.state.event_log import MAC_NODE
 from jarvis.state.memory_page import Conflict
 from jarvis.state.push_tokens import RegistrationError
 from jarvis.state.shares import (
@@ -662,9 +663,10 @@ class InherentDeps:
     # ``POST /inherent/device/push``; it raises ``RegistrationError`` for a body it refuses.
     # Needs ``device_name``. ``None`` leaves the route unregistered (404).
     push_register: Callable[[str, object], None] | None = None
-    # ADR 0210: ``(tool, cwd, request_id) -> None``, called on the loop when a Claude Code
-    # permission prompt is held for him, so the host can push that it waits.
-    claude_request: Callable[[str, str, str], None] | None = None
+    # ADR 0210: ``(tool, cwd, request_id, waiting) -> None``, called on the loop when a Claude
+    # Code permission prompt is held for him, so the host can push that it waits; ``waiting()``
+    # says from any thread whether it still does (ADR 0218).
+    claude_request: Callable[[str, str, str, Callable[[], bool]], None] | None = None
     # ADR 0196: the four device-pairing routes. ``None`` leaves them unregistered (404).
     pairing: DevicePairing | None = None
     # ADR-0018: the quota dashboard's read model and its on-demand poll.
@@ -699,14 +701,17 @@ class InherentDeps:
     conversation_read: Callable[[int, int, int], dict[str, Any]] | None = None
     # ADR 0062: the card waiting for Allen's button (``{"card": ... | None}``, a
     # small fold off the loop thread) and his answer to it, which starts a turn
-    # and returns its id. ``None`` leaves both routes unregistered.
+    # under the device that answered and returns its id. ``None`` leaves both
+    # routes unregistered. A card's ``device`` is the one whose turn asked it
+    # (ADR 0218): only that device's reads are served it.
     card_read: Callable[[], dict[str, Any]] | None = None
-    card_decide: Callable[[str, str, dict[str, str]], str] | None = None
+    card_decide: Callable[[str, str, dict[str, str], str], str] | None = None
     # ADR 0066: the ask card waiting to be filled in (``{"card": ... | None}``)
-    # and Allen's answers to it, which start a turn (its id) or, dismissed,
-    # nothing (``None``). ``None`` leaves both routes unregistered.
+    # and Allen's answers to it, which start a turn (its id) under the device
+    # that answered or, dismissed, nothing (``None``). ``None`` leaves both
+    # routes unregistered. Its ``device`` is served as the confirmation's is.
     question_read: Callable[[], dict[str, Any]] | None = None
-    question_answer: Callable[[str, dict[str, str] | None], str | None] | None = None
+    question_answer: Callable[[str, dict[str, str] | None, str], str | None] | None = None
     # ADR 0108: whether a turn that thinks is under way, which one, and the
     # words that make one. A small SQLite read on the loop thread; ``None``
     # leaves the route unregistered.
@@ -2116,6 +2121,19 @@ def _paired_device(deps: InherentDeps, request: Request) -> str | None:
     return deps.device_name(token)
 
 
+def _reader(deps: InherentDeps, request: Request) -> str:
+    """The device a request comes from: a paired one by its token, else this host's own UI."""
+    return _paired_device(deps, request) or MAC_NODE
+
+
+def _for_reader(card: object, reader: str) -> dict[str, Any] | None:
+    """``card`` if ``reader`` may be shown it (ADR 0218): it is that device's, or no device's."""
+    if not isinstance(card, dict):
+        return None
+    device = card.get("device")
+    return card if device is None or device == reader else None
+
+
 async def _start_turn(
     deps: InherentDeps, device: str | None, text: str, ids: Sequence[str] = (),
     about: dict[str, Any] | None = None,
@@ -2726,30 +2744,35 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
         card_read, card_decide = deps.card_read, deps.card_decide
 
         @app.get("/inherent/confirmation")
-        async def confirmation_card() -> dict[str, Any]:
-            """ADR 0062: the pending card, or ``{"card": null}``."""
-            return await asyncio.to_thread(card_read)
+        async def confirmation_card(request: Request) -> dict[str, Any]:
+            """ADR 0062: the pending card, or ``{"card": null}``; another device's is null."""
+            card = (await asyncio.to_thread(card_read)).get("card")
+            return {"card": _for_reader(card, _reader(deps, request))}
 
         @app.post("/inherent/confirmation", status_code=200)
-        async def confirmation_answer(req: CardDecisionRequest) -> dict[str, str]:
+        async def confirmation_answer(req: CardDecisionRequest, request: Request) -> dict[str, str]:
             """ADR 0062: send or dismiss the card on screen; 409 once it is not the pending one."""
             card = (await asyncio.to_thread(card_read)).get("card")
             if not card or card.get("id") != req.confirmation_id:
                 raise HTTPException(status_code=409, detail="that card is no longer waiting")
             turn_id = await asyncio.to_thread(
                 card_decide, req.confirmation_id, req.decision, dict(req.edits),
+                _reader(deps, request),
             )
             return {"status": "accepted", "turn_id": turn_id}
     if deps.question_read is not None and deps.question_answer is not None:
         question_read, question_answer = deps.question_read, deps.question_answer
 
         @app.get("/inherent/clarification")
-        async def clarification_card() -> dict[str, Any]:
-            """ADR 0066: the ask card waiting to be filled in, or ``{"card": null}``."""
-            return await asyncio.to_thread(question_read)
+        async def clarification_card(request: Request) -> dict[str, Any]:
+            """ADR 0066: the ask card to fill in, or ``{"card": null}``; another device's: null."""
+            card = (await asyncio.to_thread(question_read)).get("card")
+            return {"card": _for_reader(card, _reader(deps, request))}
 
         @app.post("/inherent/clarification", status_code=200)
-        async def clarification_answer(req: QuestionAnswerRequest) -> dict[str, Any]:
+        async def clarification_answer(
+            req: QuestionAnswerRequest, request: Request,
+        ) -> dict[str, Any]:
             """ADR 0066: fill in or dismiss the ask card; 409 once it is not the one waiting."""
             if not req.dismiss and not any(v.strip() for v in req.answers.values()):
                 raise HTTPException(status_code=400, detail="nothing was filled in")
@@ -2758,6 +2781,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
                     question_answer,
                     req.clarification_id,
                     None if req.dismiss else dict(req.answers),
+                    _reader(deps, request),
                 )
             except LookupError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2838,7 +2862,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
 
         async def card(read: Callable[[], dict[str, Any]] | None) -> dict[str, Any] | None:
             found = None if read is None else (await asyncio.to_thread(read)).get("card")
-            return found if isinstance(found, dict) else None
+            return _for_reader(found, _reader(deps, request))
 
         async def notices() -> dict[str, Any]:
             return _no_notices() if deps.notices_read is None else await deps.notices_read()

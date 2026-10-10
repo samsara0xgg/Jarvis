@@ -2005,6 +2005,22 @@ def turn_origin(conn: sqlite3.Connection, turn_id: str) -> tuple[str | None, str
     )
 
 
+_SELECT_CONFIRMATION_TURN_SQL: Final = (
+    "SELECT correlation_id FROM events WHERE type = 'confirmation.requested' "
+    "AND json_extract(payload_json, '$.confirmation_id') = ? ORDER BY id DESC LIMIT 1"
+)
+
+
+def confirmation_device(conn: sqlite3.Connection, confirmation_id: str) -> str | None:
+    """The device whose turn asked ``confirmation_id`` (ADR 0218), from :func:`turn_origin`.
+
+    ``None`` for a card raised with no turn (ADR 0148) or a turn with no opening row.
+    """
+    row = conn.execute(_SELECT_CONFIRMATION_TURN_SQL, (confirmation_id,)).fetchone()
+    turn_id = row[0] if row is not None else None
+    return turn_origin(conn, turn_id)[1] if isinstance(turn_id, str) else None
+
+
 def turn_intent_channel(conn: sqlite3.Connection, turn_id: str) -> str | None:
     """The channel ``turn_id`` was submitted on, from the row that opened it (:func:`turn_origin`).
 

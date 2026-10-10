@@ -13,7 +13,8 @@ decision, Claude Code carries on as without the hook) when no companion has
 read the board lately (or it stops reading while the prompt waits), when
 the hook process goes away, and when the session moved on without it. From the
 quiet level ``no-pop`` up (ADR 0153) the notch shows no cards, so nothing is
-held and a prompt already held is let go within a second.
+held and a prompt already held is let go within a second. A project thread's
+session (``~/Projects``) is held like any other (ADR 0218).
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -86,11 +86,12 @@ class ClaudeHooks:
     def __init__(
         self,
         quiet: Callable[[], str] | None = None,
-        on_request: Callable[[str, str, str], None] | None = None,
+        on_request: Callable[[str, str, str, Callable[[], bool]], None] | None = None,
     ) -> None:
         """Nothing held, nothing marked, no companion reading yet; ``quiet`` reads the level.
 
-        ``on_request(tool, cwd, request_id)`` is called when a prompt is held for him (ADR 0210).
+        ``on_request(tool, cwd, request_id, waiting)`` is called when a prompt is held for him
+        (ADR 0210); ``waiting()`` says, from any thread, whether it still waits (ADR 0218).
         """
         self._quiet = quiet or (lambda: "off")
         self._on_request = on_request
@@ -122,12 +123,7 @@ class ClaudeHooks:
         self, payload: dict[str, Any], gone: Callable[[], Awaitable[bool]]
     ) -> dict[str, Any]:
         """Hold one prompt until Allen answers it; ``{}`` means no decision."""
-        # A project thread's session (cwd ~/Projects) is not his to answer on the notch (ADR 0153).
-        if (
-            time.monotonic() - self._read_at > LISTENER_S
-            or self._no_cards()
-            or payload.get("cwd") == str(Path.home() / "Projects")
-        ):
+        if time.monotonic() - self._read_at > LISTENER_S or self._no_cards():
             return {}
         tool_input = payload.get("tool_input")
         suggestions = payload.get("permission_suggestions")
@@ -146,7 +142,10 @@ class ClaudeHooks:
         self._held[held.id] = held
         if self._on_request is not None:
             try:
-                self._on_request(held.tool, held.cwd, held.id)
+                self._on_request(
+                    held.tool, held.cwd, held.id,
+                    lambda: held.id in self._held and not held.answer.done(),
+                )
             except Exception:  # noqa: BLE001 — telling his phone must not release the prompt.
                 LOGGER.warning("claude hooks: the held-prompt callback failed")
         deadline = time.monotonic() + HOLD_S

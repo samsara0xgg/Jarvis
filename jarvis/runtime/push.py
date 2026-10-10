@@ -8,7 +8,9 @@ module decides. Four things push, each by its own rule:
 - something that waits for him (:meth:`Push.waiting`): a confirmation or an ask card the watcher
   finds in the event log, or a Claude Code permission request the hooks hold. Once per item, not
   to a phone whose conversation socket is open, and as the quiet level allows: sound at ``off``,
-  a silent banner at ``quiet``, nothing from ``no-pop`` up;
+  a silent banner at ``quiet``, nothing from ``no-pop`` up. A card goes only to the device whose
+  turn asked it; a Claude Code request, or a card no turn asked, only while he is away from the
+  Mac, and a held request is pushed once he leaves it while it still waits (ADR 0218);
 - whatever another feature wants him to see (:meth:`Push.send`);
 - the running Live Activity's content (:meth:`Push.poll`), when her state or the next reminder
   changed.
@@ -33,7 +35,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import lang
 from jarvis.state import push_tokens
-from jarvis.state.event_log import iter_events_after, open_runtime_event_log
+from jarvis.state.event_log import iter_events_after, open_runtime_event_log, turn_origin
 from jarvis.surface.apns import (
     ApnsClient,
     Outcome,
@@ -109,8 +111,12 @@ class Push:
         self.clock: Callable[[], float] = time.time
         # ``(text, due_at_ms)`` of the reminder that rings next, or ``None``.
         self.next_reminder: Callable[[], tuple[str, int] | None] = lambda: None
+        # Whether he is at the Mac now (ADR 0218); called off the loop. Unknown is away.
+        self.at_mac: Callable[[], bool] = lambda: False
         self._lock = threading.Lock()
         self._remembered: dict[str, None] = {}
+        # Held Claude Code requests not pushed yet: id -> (text, whether it still waits).
+        self._prompts: dict[str, tuple[str, Callable[[], bool]]] = {}
         self._watch_from: int | None = None
         self._activity: dict[str, tuple[str, str]] = {}
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="push")
@@ -179,13 +185,21 @@ class Push:
                         time_sensitive=True),
         )
 
-    def waiting(self, kind: str, item_id: str, text: str) -> bool:
+    def waiting(self, kind: str, item_id: str, text: str, device: str | None = None) -> bool:
         """Push that ``kind`` (``confirmation``, ``question`` or ``claude``) waits; once per item.
 
+        ``device`` is the one whose turn asked it (ADR 0218): only that phone is pushed, and a
+        computer never is. With no device, it goes to the phones only while he is away from the
+        Mac; at the Mac nothing goes and it is not counted as seen, so it can go once he leaves.
         Nothing goes to a device whose conversation socket is open, or to any from ``no-pop`` up;
         the item counts as seen all the same. Returns whether a phone took it.
         """
         key = f"{kind}:{item_id}"
+        with self._lock:
+            if key in self._remembered:
+                return False
+        if device is None and self.at_mac():
+            return False
         with self._lock:
             if key in self._remembered:
                 return False
@@ -199,12 +213,38 @@ class Push:
             lang.t(_WAITING_TITLES[kind]), text, category=kind, thread="waiting",
             sound=level != _QUIET_SILENT,
         )
-        return self._deliver(message, skip=self.phone_socket_open) > 0
 
-    def claude_request(self, tool: str, cwd: str, request_id: str) -> None:
-        """A permission prompt is held for him (called on the loop); the push goes off-thread."""
+        def skip(name: str) -> bool:
+            return self.phone_socket_open(name) or (device is not None and name != device)
+
+        return self._deliver(message, skip=skip) > 0
+
+    def claude_request(
+        self, tool: str, cwd: str, request_id: str, still_waiting: Callable[[], bool],
+    ) -> None:
+        """A permission prompt is held for him (called on the loop); the push goes off-thread.
+
+        It goes now if he is away from the Mac, else from the watcher once he leaves while
+        ``still_waiting()`` (ADR 0218).
+        """
+        if self._client is None:
+            return
         text = f"{tool} · {Path(cwd).name}" if cwd else tool
-        self._pool.submit(self._safely, self.waiting, "claude", request_id, text)
+        with self._lock:
+            self._prompts[request_id] = (text, still_waiting)
+        self._pool.submit(self._safely, self._follow_prompts)
+
+    def _follow_prompts(self) -> None:
+        """Push each held Claude Code request once he is away; forget the answered or pushed."""
+        with self._lock:
+            prompts = list(self._prompts.items())
+        for request_id, (text, still_waiting) in prompts:
+            if still_waiting():
+                self.waiting("claude", request_id, text)
+                if f"claude:{request_id}" not in self._remembered:
+                    continue
+            with self._lock:
+                self._prompts.pop(request_id, None)
 
     # --- the watcher ------------------------------------------------------------------
 
@@ -220,16 +260,18 @@ class Push:
             raise
 
     def poll(self) -> None:
-        """Push the cards asked since the last poll, then update the Live Activity."""
+        """Push the new cards and the requests he left at the Mac, then update the Live Activity."""
         if self._client is None:
             return
-        for kind, item_id, text in self._new_waiting():
-            self.waiting(kind, item_id, text)
+        for kind, item_id, text, device in self._new_waiting():
+            self.waiting(kind, item_id, text, device)
+        self._follow_prompts()
         self._update_activity()
 
-    def _new_waiting(self) -> list[tuple[str, str, str]]:
-        """The cards asked since the last poll and not closed or expired by now.
+    def _new_waiting(self) -> list[tuple[str, str, str, str | None]]:
+        """The cards asked since the last poll and not closed or expired by now, with their device.
 
+        The device is the one whose turn asked the card (ADR 0218), ``None`` when no turn did.
         The first poll after boot only marks the log's end: what was waiting before it is not news.
         """
         with contextlib.closing(open_runtime_event_log(self._event_log)) as conn:
@@ -237,25 +279,29 @@ class Push:
             start, self._watch_from = self._watch_from, top
             if start is None:
                 return []
-            asked: list[tuple[str, str, str, int | None]] = []
+            asked: list[tuple[str, str, str, int | None, str | None]] = []
             closed: set[str] = set()
             for _, event in iter_events_after(conn, start, top):
                 payload = event.payload
                 if event.type == "confirmation.requested":
+                    turn_id = (event.correlation or {}).get("turn_id")
                     asked.append((
                         "confirmation", str(payload["confirmation_id"]),
                         str(payload["template_line"]), int(payload["expires_at_ms"]),
+                        turn_origin(conn, turn_id)[1] if turn_id else None,
                     ))
                 elif event.type == "clarification.requested":
+                    turn_id = payload.get("turn_id")
                     asked.append((
                         "question", str(payload["clarification_id"]),
                         str(payload["question"]), None,
+                        turn_origin(conn, str(turn_id))[1] if turn_id else None,
                     ))
                 elif (field := _CLOSERS.get(event.type)) and field in payload:
                     closed.add(str(payload[field]))
         now_ms = int(self.clock() * 1000)
         return [
-            (kind, item_id, text) for kind, item_id, text, expires in asked
+            (kind, item_id, text, device) for kind, item_id, text, expires, device in asked
             if item_id not in closed and (expires is None or expires > now_ms)
         ]
 

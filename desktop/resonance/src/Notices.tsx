@@ -246,9 +246,10 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
       s.queue.push({ ...a, key: `${a.kind}:${a.id}:${now}`, at: now } as Notice);
       return;
     }
-    // A project thread's session is not his to answer here; while he is in Claude a pop or ask line has no use, but
-    // a prompt Jarvis holds waits behind `hold` until he leaves (a background session has no dialog of its own).
-    if (s.parked.has(a.id) || live.current.byId.get(a.id)?.fromProject || live.current.inClaude && a.kind !== 'req') return;
+    // A project thread's session pops nothing here, but a prompt Jarvis holds for it is his to answer (ADR 0218); while he
+    // is in Claude a pop or ask line has no use, but a held prompt waits behind `hold` until he leaves (a background
+    // session has no dialog of its own).
+    if (s.parked.has(a.id) || live.current.byId.get(a.id)?.fromProject && a.kind !== 'req' || live.current.inClaude && a.kind !== 'req') return;
     if (a.kind === 'req' || a.kind === 'wait') {
       const k = askKey(a);
       if (s.dismissed.has(k) || [...s.queue, ...s.folded, ...s.held].some(m => needs(m) && askKey(m) === k)) return;
