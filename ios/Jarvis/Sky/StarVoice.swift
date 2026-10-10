@@ -54,11 +54,12 @@ extension StarEngine {
             wake()
             if was == .idle && talk != nil { interrupt() }      // a scripted talk in progress is over (voiceState is still idle: the session is left alone)
             voiceState = v.state; voiceAt = now
-            if was == .idle {
-                setDrawer(false, quiet: true)
-                ui.capYou = ""; ui.capPics = []; ui.capHer = ""; ui.capHerAlpha = []
-            } else if v.state == .idle {
+            if was == .idle { beginTalk() }
+            if v.state == .listening { vHis = nil; vHer = nil }     // a new utterance of the session: its words are new rows
+            else if v.state == .idle {
+                voiceRows(v)
                 talk = nil; endTalk()                           // no `end` cue: the microphone may still be open
+                adoptWritten()
                 return nil
             }
         }
@@ -69,40 +70,27 @@ extension StarEngine {
         expr = listening ? "35" : says ? "39" : now - voiceAt < 520 ? "31" : "30"
         hear = listening ? v.input : 0
         if hear > 0.55 && (sonar.isEmpty || now - sonar.last! > 360) { sonar.append(now) }
-        // his words as he says them, then his line; her words as they come (her last words stay while he has not started again)
-        put(\.talking, true); put(\.capOut, false)
-        put(\.capYou, voiceTail(listening ? v.partial : v.transcript, 42))
-        let her = voiceTail(listening && !v.partial.isEmpty ? "" : v.reply, 64)
-        put(\.capHer, her)
-        if ui.capHerAlpha.count != her.count { ui.capHerAlpha = Array(repeating: 1, count: her.count) }
+        voiceRows(v)
         return says ? v.output : nil
-    }
-
-    /// The last `cells` of a line, so the newest words stay in the box: a Chinese character is one cell, a Latin letter about half of one.
-    private func voiceTail(_ s: String, _ cells: Double) -> String {
-        var w = 0.0, n = 0
-        for ch in s.reversed() {
-            w += (ch.unicodeScalars.first?.value ?? 0) >= 0x2E80 ? 1 : 0.55
-            if w > cells { break }
-            n += 1
-        }
-        return n == s.count ? s : "…" + String(s.suffix(n))
     }
 }
 
 #if DEBUG
 extension StarEngine {
-    /// launch with `-voiceScene listening|thinking|speaking|error|download`: the sky shows that voice state with made-up words and levels
+    /// launch with `-voiceScene listening|thinking|speaking|speakingLong|error|download`: the sky shows that voice state with made-up words and levels
     func runVoiceScene(_ name: String) {
         let t0 = nowMs()
         let ask = "明天下午三点有什么安排，顺便提醒我晚上给 Mia 回电话"
+        let short = "明天下午三点有一个二面，晚上八点半给 Mia 回电话。"
         let answer = "明天下午三点你有一个和 Lumen Labs 的二面，在线上进行，大概四十五分钟。之前我会把你上次面试的笔记整理出来。晚上八点半给 Mia 回电话，我到时候提醒你。路上要不要我先查一下天气和出门的时间？"
+            + "另外后天上午十点你约了牙医，在市中心，坐 32 路过去大约三十分钟，我会在九点钟提醒你出门。周五的作品集评审还差首页的最后两张图，我可以今晚先帮你把素材整理好，明天上午再一起过一遍。"
         voiceFake = { now in
             var v = VoiceShot()
             switch name {
             case "listening": v.state = .listening; v.partial = ask; v.input = 0.3 + 0.7 * voiceLevel(now / 1000 * 1.3)
             case "thinking": v.state = .thinking; v.transcript = ask
-            case "speaking": v.state = .speaking; v.transcript = ask; v.reply = String(answer.prefix(Int((now - t0) / 120))); v.output = voiceLevel(now / 1000)
+            case "speaking": v.state = .speaking; v.transcript = ask; v.reply = String(short.prefix(Int((now - t0) / 120))); v.output = voiceLevel(now / 1000)
+            case "speakingLong": v.state = .speaking; v.transcript = ask; v.reply = String(answer.prefix(Int((now - t0) / 90))); v.output = voiceLevel(now / 1000)
             case "error": v.error = "没有麦克风权限"
             case "download": v.progress = 0.43
             default: break

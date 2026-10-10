@@ -53,10 +53,22 @@ struct ConvLine: Identifiable, Equatable {
     }
 }
 
+/// One row of the talk on show under the dial: his words or hers, as they are said. `alphas` brightens her words one character at a time while they are being said (empty: all lit).
+struct LiveTurn: Identifiable, Equatable {
+    let id: Int
+    var his: Bool
+    var text: String
+    var alphas: [Double] = []
+    var pics: [SentItem] = []           // what he sent with the words
+    var leadIn = false                  // a line before the answer ("我上网查查"): more follows
+    var at = Date()
+}
+
 @Observable
 final class StarUI {
     // the top row
     var dateText = "10月8日 周四"
+    var topTime = ""                    // the time the dial points at, beside the date; on show while a talk is
     var level = 0                       // -1 近, 0 日, 1 周, 2 月
     var camE = 0.0                      // how far the near view has come in, 0...1; the grabber leaves the road as it does
     // the detail under the dial
@@ -80,14 +92,10 @@ final class StarUI {
     var drawerGroups: [DrawerGroup] = []
     var history: [ConvLine] = []        // the conversation under them, when paired
     // talking
-    var talking = false
+    var talking = false                 // a talk is on show: while it lasts and for a while after her last word
+    var liveTurns: [LiveTurn] = []
     var typing = false
     var kbLift = 0.0
-    var capYou = ""
-    var capPics: [SentItem] = []        // what he sent with the words on show
-    var capHer = ""
-    var capHerAlpha: [Double] = []
-    var capOut = true
     var mic: MicState = .mic
     var chipsOn = false
     var settingsOpen = false

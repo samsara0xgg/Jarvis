@@ -60,7 +60,7 @@ struct StarChrome: View {
                 .opacity(ui.drawerOpen ? 0 : 1)
                 .animation(.easeOut(duration: 0.25), value: ui.drawerOpen)
             grabber
-            caption
+            LiveTalk(ui: ui) { engine.holdLinger($0) }
             voiceNote
             drawer
             AttachDim(model: ui.attach)
@@ -103,7 +103,11 @@ struct StarChrome: View {
 
     private var topRow: some View {
         HStack(spacing: 8) {
-            Text(ui.dateText).font(.system(size: 15, weight: .semibold)).foregroundStyle(ink).lineLimit(1)
+            HStack(spacing: 0) {
+                Text(ui.dateText).font(.system(size: 15, weight: .semibold)).foregroundStyle(ink).lineLimit(1)
+                Text("  " + ui.topTime).font(monoF(14)).foregroundStyle(ink).lineLimit(1)
+                    .opacity(ui.talking ? 1 : 0).animation(.easeOut(duration: 0.25), value: ui.talking)
+            }
             Spacer(minLength: 0)
             SegControl(level: ui.level) { engine.setLevel(Double($0)) }
             Button { ui.settingsOpen = true } label: {
@@ -148,9 +152,7 @@ struct StarChrome: View {
             Group {
                 if ui.showSum { sum } else { rowList(ui.rows, hint: ui.emptyHint) }
             }
-            .opacity(ui.talking || ui.typing ? 0 : ui.detFast ? 0.4 : 1).offset(y: ui.talking || ui.typing ? 8 : 0)
-            .allowsHitTesting(!(ui.talking || ui.typing))
-            .animation(.easeOut(duration: 0.35), value: ui.talking || ui.typing)
+            .opacity(ui.detFast ? 0.4 : 1)
             .animation(.easeOut(duration: ui.detFast ? 0.2 : 0.35), value: ui.detFast)
         }
         .padding(.horizontal, 30)
@@ -158,6 +160,10 @@ struct StarChrome: View {
         .id(ui.flip)
         .transition(.opacity.combined(with: .offset(y: 7)))
         .animation(.easeOut(duration: 0.42), value: ui.flip)
+        // a talk takes the place of the detail: it goes up and out, and comes back when the talk has gone
+        .opacity(ui.talking || ui.typing ? 0 : 1).offset(y: ui.talking || ui.typing ? -6 : 0)
+        .allowsHitTesting(!(ui.talking || ui.typing))
+        .animation(.easeOut(duration: ui.talking || ui.typing ? 0.2 : 0.35), value: ui.talking || ui.typing)
         .offset(y: 532)
     }
 
@@ -264,19 +270,6 @@ struct StarChrome: View {
 
     // MARK: talking to her
 
-    private var caption: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(ui.capYou).font(.system(size: 16)).lineSpacing(16 * 0.45 - 4).lineLimit(2).frame(minHeight: 22, alignment: .topLeading)
-                .foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.64))
-            if !ui.capPics.isEmpty { SentItemsRow(items: ui.capPics) }
-            herText
-        }
-        .frame(width: W - 64, alignment: .topLeading)
-        .opacity(ui.capOut ? 0 : 1).offset(y: ui.capOut ? -6 : 0)
-        .animation(.easeOut(duration: 0.35), value: ui.capOut)
-        .allowsHitTesting(false)
-        .offset(x: 32, y: 652)
-    }
     /// the voice's one line, just over the composer: the model download, or what went wrong
     private var voiceNote: some View {
         let on = ui.voiceNote != nil && !ui.typing
@@ -287,16 +280,6 @@ struct StarChrome: View {
             .allowsHitTesting(false)
             .offset(x: 30, y: 846 - ui.attach.rise)
     }
-    private var herText: Text {
-        var a = AttributedString()
-        for (i, ch) in ui.capHer.enumerated() {
-            var s = AttributedString(String(ch))
-            s.foregroundColor = Color.white.opacity(i < ui.capHerAlpha.count ? ui.capHerAlpha[i] : 0.32)
-            a += s
-        }
-        return Text(a).font(.system(size: 23, weight: .medium))
-    }
-
     // MARK: the composer: type to her, or tap the mic. A + at the left, what is attached above the words, a field that grows to five lines.
 
     /// words and attachments go together; with no words, the attachments are named

@@ -53,8 +53,8 @@ extension StarEngine {
 
     /// Her side of a typed turn: his line shown, her thinking look, then her words as they land in the conversation. A lead-in ("我上网查查") is shown and the answer waited for.
     @MainActor private func brainTalk(_ ok: Ok, shown: String, pics: [SentItem], after seq: Int) async throws {
-        setDrawer(false, quiet: true)
-        talk = "listen"; ui.talking = true; ui.capYou = shown; ui.capPics = pics; ui.capHer = ""; ui.capHerAlpha = []; ui.capOut = false
+        beginTalk(base: seq)
+        talk = "listen"; addTurn(his: true, shown, pics: pics)
         sound(.heard, 1); expr = "31"; try await nap(520, ok)
         sound(.think, 1); expr = "30"
         var last = seq, deadline = nowMs() + 90_000, said = false
@@ -63,29 +63,18 @@ extension StarEngine {
             let rows = await Conversation.shared.rows(after: last)
             try ok.check()
             if !SentPics.pending.isEmpty, let his = rows.first(where: { $0.isHis }) { SentPics.byRow[his.seq] = SentPics.pending; SentPics.pending = [] }
-            guard let row = rows.last(where: { !$0.isHis }) else { continue }
+            let hers = rows.filter { !$0.isHis }
+            guard let row = hers.last else { continue }
             last = rows.last?.seq ?? last
-            speaking?.stop()
-            let say = Say(Self.head(AnswerText.visible(row.text)), cps: 12); speaking = say
+            for r in hers.dropLast() { addTurn(his: false, AnswerText.visible(r.text), leadIn: r.isLeadIn) }
+            startSay(AnswerText.visible(row.text), leadIn: row.isLeadIn)
             expr = "39"; talk = "speak"; said = true
             if row.isLeadIn { deadline = nowMs() + 25_000; continue }          // more follows: it is waited for while this is read
             break
         }
-        if !said { ui.capHer = "她还在想，回答会在今天的对话里。"; ui.capHerAlpha = Array(repeating: 1, count: ui.capHer.count); talk = "speak"; expr = nil }
-        else { await speaking?.finished(); try ok.check(); speaking = nil }
-        try await nap(2400, ok)     // her words stay long enough to read
+        if !said { addTurn(his: false, "她还在想，回答会在今天的对话里。"); talk = "speak"; expr = nil }
+        else { await speaking?.finished(); try ok.check(); finishSay() }
         endTalk()
         await Conversation.shared.refresh()
-    }
-
-    /// The beginning of a long answer, as much as the caption holds: a Chinese character is one cell, a Latin letter about half. The whole of it is in the drawer.
-    private static func head(_ s: String, cells: Double = 70) -> String {
-        var w = 0.0, n = 0
-        for ch in s {
-            w += (ch.unicodeScalars.first?.value ?? 0) >= 0x2E80 ? 1 : 0.55
-            if w > cells { return String(s.prefix(n)) + "…" }
-            n += 1
-        }
-        return s
     }
 }

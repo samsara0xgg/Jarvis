@@ -86,6 +86,8 @@ final class StarEngine {
     #endif
     // what he typed and attached on its way to the brain (Sky/StarBrain): the line over the composer, and whether a send is in flight
     var brainNote: String?, brainNoteUntil = 0.0, sendingToBrain = false
+    // the talk under the dial (Sky/StarTalk.swift): the row ids being written, the talk's start in the conversation, and when the talk goes if nobody touches it
+    var turnSeq = 0, talkId = 0, talkBase = 0, speakId: Int?, vHis: Int?, vHer: Int?, lingerUntil = 0.0, lingerHold = false
     var dateD: Int?
     var drawer = false
     weak var herDrive: HerDrive?

@@ -386,16 +386,16 @@ extension StarEngine {
 
     // MARK: talking to her
 
-    func talkFlow(_ ok: Ok, _ sc: Talk, _ held: Gate?, _ typed: Bool) async throws {
-        setDrawer(false, quiet: true)
-        talk = "listen"; ui.talking = true; ui.capYou = typed ? sc.q : ""; ui.capHer = ""; ui.capHerAlpha = []; ui.capOut = false
+    func talkFlow(_ ok: Ok, _ sc: Talk, _ held: Gate?, _ typed: Bool, pics: [SentItem] = []) async throws {
+        beginTalk()
+        talk = "listen"
+        var his = typed ? addTurn(his: true, sc.q, pics: pics) : nil
         if !typed {
-            ui.capPics = []
             expr = "35"; sound(.listen, 1)
             try await nap(380, ok)
             let qc = Array(sc.q)
             for i in 1...qc.count {
-                ui.capYou = String(qc[0..<i])
+                if let id = his { setTurn(id, text: String(qc[0..<i])) } else { his = addTurn(his: true, String(qc[0..<i])) }
                 hear = 0.3 + 0.7 * voiceLevel(nowMs() / 1000 * 1.3)
                 if hear > 0.55 && (sonar.isEmpty || nowMs() - sonar.last! > 360) { sonar.append(nowMs()) }
                 try await nap("，。？".contains(qc[i - 1]) ? 170 : 88, ok)
@@ -408,26 +408,28 @@ extension StarEngine {
         sound(.think, 1); expr = "30"; try await nap(900, ok)
         expr = "39"; talk = "speak"
         if sc.replay { return try await replayFlow(ok, sc) }
-        let say = Say(sc.a, cps: 12); speaking = say
+        let say = startSay(sc.a, cps: 12)
         if let add = sc.add {
             let e = add.copy(); e.born = 1e12; e.flash = -1e9; e.ign = -1e9
             sound(.send, 1); flyer = (e, nowMs()); seek(e.t, true)
         }
         if let go = sc.go, let e = byId(go) { openId = go; rowKey = ""; seek(e.t, true); sound(.module, 1) }
-        await say.finished(); try ok.check(); speaking = nil
-        try await nap(2400, ok)   // her words stay long enough to read
+        await say.finished(); try ok.check(); finishSay()
         endTalk()
     }
+    /// The talk is over, but her words stay where they are for a while (`stepTalk` takes them away).
     func endTalk() {
         if talk != nil { sound(.end, 1) }
-        ui.capOut = true; ui.talking = false; talk = nil; expr = nil; hear = 0; rowKey = ""
+        finishSay()
+        talk = nil; expr = nil; hear = 0; rowKey = ""
+        lingerFrom(nowMs())
     }
     /// the day again: the sky turns from last night to now, and each star lights as it reaches the meridian
     func replayFlow(_ ok: Ok, _ sc: Talk) async throws {
         expr = "37"; qGoal = 0; openId = nil
         let a = 10.0, b = nowT(), dur2 = 10500.0, t1 = nowMs()
         mode = .script; byHand = false; replay = true; script = a; prevRev = a
-        let say = Say(sc.a, cps: 5.6, delay: 500); speaking = say
+        let say = startSay(sc.a, cps: 5.6, delay: 500)
         do {
             while true {
                 let k2 = clamp((nowMs() - t1) / dur2, 0, 1)
@@ -439,8 +441,8 @@ extension StarEngine {
         } catch { script = nil; replay = false; throw error }
         script = nil; replay = false
         fs.value = b; fs.velocity = 0; mode = .idle; prevRev = b
-        await say.finished(); try ok.check(); speaking = nil
-        try await nap(1600, ok); endTalk()
+        await say.finished(); try ok.check(); finishSay()
+        endTalk()
     }
     func holdTalk() {
         let sc = nextTalk(), gate = Gate(); release = gate
@@ -460,7 +462,6 @@ extension StarEngine {
     // MARK: the composer
 
     func send(_ text0: String, reply: String? = nil, pics: [SentItem] = []) {
-        ui.capPics = pics
         let text = text0.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { return }
         if reply == nil && BrainLink.shared.hasToken { return sendToBrain(text) }       // paired: the brain answers, not the demo
@@ -476,7 +477,7 @@ extension StarEngine {
         else if var dm = demo { dm.q = text; sc = dm }
         else { sc = Talk(q: text, a: "好，我记下了。", add: Ev("note\(EV.count)", t, .her, .done, ttl, "\(clock(t)) · 你打字说的", s: "记下")) }
         if talk != nil { interrupt() }
-        run { ok in try await self.talkFlow(ok, sc, nil, true) }
+        run { ok in try await self.talkFlow(ok, sc, nil, true, pics: pics) }
     }
     func micTap() {
         if !ui.text.trimmingCharacters(in: .whitespaces).isEmpty { return send(ui.text) }
@@ -555,12 +556,7 @@ extension StarEngine {
         put(\.camE, camE)
         let dd = floorDay(F)
         if dd != dateD { dateD = dd; let (mo, da) = dateOf(dd); ui.dateText = "\(mo)月\(da)日 \(dayName(dd))"; askDays() }
-        // her words
-        if let s = speaking {
-            let al = s.alphas(now)
-            if ui.capHerAlpha != al { ui.capHerAlpha = al }
-            let txt = String(s.chars); if ui.capHer != txt { ui.capHer = txt }
-        }
+        stepTalk(now)
         let ms: MicState = !ui.text.trimmingCharacters(in: .whitespaces).isEmpty ? .send : talk != nil ? .on : .mic
         put(\.mic, ms)
         put(\.chipsOn, ui.typing && ui.text.isEmpty)
