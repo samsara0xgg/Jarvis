@@ -1083,7 +1083,7 @@ def today_text(src: LedgerSources, now: datetime) -> str:
     midnight = datetime.combine(today, time.min, src.zone)
     monday = midnight - timedelta(days=local.weekday())
     data = _Data(
-        src, now, min(midnight - timedelta(days=2), monday - timedelta(days=1)),
+        src, now, min(midnight - timedelta(days=2), monday - timedelta(days=8)),
         phone_from=midnight,
     )
     spans = data.clip(midnight, now)
@@ -1096,14 +1096,27 @@ def today_text(src: LedgerSources, now: datetime) -> str:
             f"  Computer: {_fmt_bounds(today, bounds, still_on=True)}, active today "
             f"{hm(data.active(spans))}; top apps {apps}" + (f"; {calls}" if calls else ""),
         )
+        before = [run[1] for run in data.runs() if run[1] <= bounds[0]]
+        if before:  # the gap before today's working day: how long he was away from the Mac
+            away = bounds[0] - before[-1]
+            idle = before[-1].astimezone(src.zone)
+            when = f"{idle:%H:%M}" if idle.date() == today else f"{idle:%a %H:%M}"
+            out.append(
+                f"  Before that the computer was idle from {when}, {hm(away.total_seconds())}",
+            )
     else:
         out.append("  Computer: no activity recorded yet today")
     out += _phone_lines(data.phone.day(today), today)
     if monday < midnight:
         week_spans = data.clip(monday, now)
+        this = data.active(week_spans)
+        then = now - timedelta(days=7)
+        prior = data.active(data.clip(monday - timedelta(days=7), then))
         out.append(
-            f"  This week including today: active {hm(data.active(week_spans))}; per project "
-            f"{_fmt_top(_top(data.seconds_by(week_spans, lambda s: s.project), 8))}",
+            f"  This week including today: active {hm(this)} (the same stretch of last week, to "
+            f"{then.astimezone(src.zone):%a %m-%d %H:%M}: {hm(prior)}, "
+            f"{(this - prior) / 3600:+.1f}h); "
+            f"per project {_fmt_top(_top(data.seconds_by(week_spans, lambda s: s.project), 8))}",
         )
     state = _work_state(src, now)
     if state:

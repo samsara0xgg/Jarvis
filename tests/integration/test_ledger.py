@@ -207,6 +207,13 @@ def test_today_and_since_text(tmp_path: Path) -> None:
     today = today_text(src, NOW)
     assert "[Today so far · Thu 2026-10-08, now 15:00]" in today
     assert "started 10:00, still active, active today 1h00m" in today
+    # Wednesday's 13:00-13:45 was the last activity before today's 10:00 start.
+    assert "Before that the computer was idle from Wed 13:45, 20h15m" in today
+    # Mon 10-05 to now is 3h15m; last week to Thu 10-01 15:00 has no spans.
+    assert (
+        "This week including today: active 3h15m (the same stretch of last week, to "
+        "Thu 10-01 15:00: 0h00m, +3.2h)"
+    ) in today
     assert "Job mail today: 1, 11:30 interview mail (Beta Labs, from Pat Lee)" in today
     assert "Mail screened today: 1" in today
     assert "Pending reminders (1): Fri 10-09 09:00 call the dentist" in today
