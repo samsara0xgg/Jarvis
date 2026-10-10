@@ -13,7 +13,8 @@ private func serif(_ size: CGFloat) -> Font {
     UIFont(name: "Instrument Serif", size: size) != nil ? .custom("Instrument Serif", size: size) : .system(size: size, design: .serif)
 }
 private func monoF(_ size: CGFloat, _ w: Font.Weight = .medium) -> Font {
-    UIFont(name: "IBM Plex Mono", size: size) != nil ? .custom("IBM Plex Mono", size: size).weight(w) : .system(size: size, weight: w, design: .monospaced)
+    let face = w == .regular ? "IBMPlexMono-Regular" : "IBMPlexMono-Medium"
+    return UIFont(name: face, size: size) != nil ? .custom(face, size: size) : .system(size: size, weight: w, design: .monospaced)
 }
 
 struct StarChartScreen: View {

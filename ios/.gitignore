@@ -1,3 +1,4 @@
 Jarvis.xcodeproj/
 build/
 DerivedData/
+build-*/

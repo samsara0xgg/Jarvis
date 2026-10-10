@@ -26,7 +26,8 @@ struct WFont: Hashable {
     static func mono(_ w: Int, _ s: CGFloat) -> WFont { WFont(size: s, weight: w, mono: true) }
     var ui: UIFont {
         let w: UIFont.Weight = weight >= 600 ? .semibold : weight >= 500 ? .medium : .regular
-        return mono ? .monospacedSystemFont(ofSize: size, weight: w) : .systemFont(ofSize: size, weight: w)
+        if mono { return UIFont(name: weight >= 500 ? "IBMPlexMono-Medium" : "IBMPlexMono-Regular", size: size) ?? .monospacedSystemFont(ofSize: size, weight: w) }
+        return .systemFont(ofSize: size, weight: w)
     }
 }
 
