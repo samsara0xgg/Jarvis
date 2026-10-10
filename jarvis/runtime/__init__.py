@@ -3293,6 +3293,8 @@ def make_turn_cancel_callable(runtime: JarvisRuntime) -> Callable[[str, str], st
 
 def make_barge_in_interrupt_callable(
     runtime: JarvisRuntime,
+    *,
+    only_turns: Callable[[str], bool] | None = None,
 ) -> Callable[[str], str]:
     """Build the injectable ``(confirm_source) -> outcome`` barge-in seam.
 
@@ -3305,6 +3307,9 @@ def make_barge_in_interrupt_callable(
     Returned strings beyond ``make_response_cancel_callable``'s own outcomes:
     ``"no_open_run"``, ``"ambiguous_open_runs"``, ``"policy_ignore"``,
     ``"policy_generation_continue"``.
+
+    ``only_turns`` (ADR 0209) narrows the target to the open runs of the turns it accepts: a
+    phone's barge-in interrupts the phone's answer, whatever else is open on the Mac.
     """
     cancel = make_response_cancel_callable(runtime)
     registry = runtime.response_runs
@@ -3315,7 +3320,11 @@ def make_barge_in_interrupt_callable(
         # A commentary run for the same turn is legitimately open while the
         # final run waits on its action (ADR-0006 D8): counting it would make
         # every action-dispatching turn read as `ambiguous_open_runs`.
-        open_runs = tuple(run for run in registry.open_runs() if run.phase == "final")
+        open_runs = tuple(
+            run
+            for run in registry.open_runs()
+            if run.phase == "final" and (only_turns is None or only_turns(run.turn_id))
+        )
         if not open_runs:
             return "no_open_run"
         if len(open_runs) > 1:

@@ -38,7 +38,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import Event
-from jarvis.state.event_log import EventLogError, EventTypeRegistry, emit_event
+from jarvis.state.event_log import PHONE_VOICE_CHANNEL, EventLogError, EventTypeRegistry, emit_event
 from jarvis.surface import phone_events, repo_observer, timesink_observer, usage_observer
 
 if TYPE_CHECKING:
@@ -86,6 +86,9 @@ _UTTERANCE_TEXT_FIELDS: Final = {
     "session_id": 64, "endpoint_reason": 64,
 }
 _UTTERANCE_UID_NAMESPACE: Final = uuid.UUID("5f0c6a4e-0b1d-4f6e-9a57-6a1b2f0c1d00")
+_PHONE_TYPED_CHANNEL: Final = "cli_stdin"
+"""The channel of typed words (ADR 0181): answered on screen, never played."""
+_PHONE_TYPED_LANGUAGE: Final = "zh-CN"
 
 MAX_EVENT_CHARS: Final = 64 * 1024
 """One event frame's cap; the biggest observer payload is a few hundred bytes."""
@@ -187,6 +190,67 @@ class BrainEvents:
         except EventLogError as exc:
             raise ValueError(str(exc)) from exc
         return uid
+
+    def record_phone_say(  # noqa: PLR0913 - the fields of one `say` frame
+        self,
+        device: str,
+        utterance_id: str,
+        text: str,
+        *,
+        spoken: bool,
+        language: str | None = None,
+        confidence: float | None = None,
+    ) -> str:
+        """Append the words a paired phone sent (ADR 0209), once; the turn id they open.
+
+        Words the phone recognized itself go on :data:`PHONE_VOICE_CHANNEL` as
+        ``utterance.received`` (spoken for L3, played by the phone's own media actor); typed
+        words are a ``surface.user_intent`` on the typed channel (rows, no audio, ADR 0181).
+        Both carry ``device`` as their ``ingestion_node``. The phone mints the utterance id; the
+        event uid and the turn id derive from it and ``device``, so the same utterance sent
+        again writes nothing and returns the first one's turn id.
+
+        Raises:
+            ValueError: a field is missing or has the wrong shape.
+            sqlite3.Error: the log could not be written; nothing is recorded.
+        """
+        if (
+            _ID.fullmatch(utterance_id) is None
+            or not 0 < len(text) <= _MAX_TRANSCRIPT_CHARS
+            or not (language is None or len(language) <= _UTTERANCE_TEXT_FIELDS["language"])
+            or not (
+                confidence is None
+                or (isinstance(confidence, int | float) and not isinstance(confidence, bool))
+            )
+        ):
+            msg = "not an utterance this host accepts"
+            raise ValueError(msg)
+        key = f"{device}\0{utterance_id}"
+        turn_id = "T" + uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"turn\0{key}").hex[:16]
+        uid = uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"say\0{key}").hex
+        if self._conn.execute("SELECT 1 FROM events WHERE event_uid = ?", (uid,)).fetchone():
+            return turn_id
+        payload: dict[str, Any] = {"transcript": text, "turn_id": turn_id}
+        if spoken:
+            payload["channel"] = PHONE_VOICE_CHANNEL
+            if confidence is not None:
+                payload["confidence"] = confidence
+            if language is not None:
+                payload["language"] = language
+            payload["utterance_id"] = utterance_id
+            event_type = "utterance.received"
+        else:
+            payload["channel"] = _PHONE_TYPED_CHANNEL
+            payload["language"] = language or _PHONE_TYPED_LANGUAGE
+            event_type = "surface.user_intent"
+        try:
+            emit_event(
+                self._conn, type=event_type, payload=payload, correlation={"turn_id": turn_id},
+                event_uid=uid, ingestion_node=device,
+            )
+        except EventLogError as exc:
+            raise ValueError(str(exc)) from exc
+        return turn_id
 
     def record(
         self, device: str, frame: Mapping[str, Any], size: int, allowed: Collection[str],

@@ -182,6 +182,7 @@ from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.job_mail import served_notices, settle_notice
 from jarvis.runtime.memory_page import MemoryPage
 from jarvis.runtime.night_watch import NightWatch
+from jarvis.runtime.phone_voice import PhoneSpeech
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
 from jarvis.runtime.settings import SETTINGS_FILE
 from jarvis.runtime.setup import Setup
@@ -204,6 +205,7 @@ from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.departures import ID_PREFIX as PIN_PREFIX
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
 from jarvis.state.event_log import (
+    PHONE_VOICE_CHANNEL,
     emit_event,
     get_event,
     iter_events_for_turn,
@@ -212,6 +214,7 @@ from jarvis.state.event_log import (
     open_runtime_event_log,
     read_log_epoch,
     turn_intent_channel,
+    turn_origin,
 )
 from jarvis.state.input_claim import (
     REALTIME_INTENT_CONSUMER,
@@ -284,6 +287,8 @@ from jarvis.surface.inherent_server import (
     manager_authorize,
     require_local_key,
 )
+from jarvis.surface.phone_link import PhoneHub
+from jarvis.surface.phone_player import PHONE_SAMPLE_RATE_HZ, PhoneAudioStreamPlayer
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.timesink_observer import TimesinkHead, TimesinkObserver
@@ -336,9 +341,10 @@ _DEFAULT_PORT: int = 8006
 # that turn at all. It is deliberately absent from the broadcaster set below,
 # because Resonance still shows the full answer. ``cli_stdin`` (a turn typed
 # into the talk field) is the same kind of label and is silent for the same
-# reason: ADR 0181, only words he spoke are answered aloud.
+# reason: ADR 0181, only words he spoke are answered aloud. ``phone_voice`` (ADR 0209) is
+# spoken, but by the phone's own media actor: the Mac's speaker and a terminal's leave it alone.
 _TTS_SILENT_CHANNELS: frozenset[str] = frozenset(
-    {"queue_review", "silent_log", "badge_card", "gpt_live", TYPED_CHANNEL},
+    {"queue_review", "silent_log", "badge_card", "gpt_live", TYPED_CHANNEL, PHONE_VOICE_CHANNEL},
 )
 
 # WS-broadcaster suppression set — deliberately NARROWER than the TTS
@@ -3122,6 +3128,166 @@ def _build_brain_voice(
         voice_settings=runtime.voice_settings,
     )
     return terminal_voice.BrainVoice(client, _SpokenRows(runtime.conn))
+
+
+class _PhoneCursor:
+    """One phone's place in the log: the answer rows of the turns it opened (ADR 0209).
+
+    A turn is the device's when its opening row (``surface.user_intent`` or
+    ``utterance.received``) was written under the device's name. ``spoken_only`` keeps those
+    it spoke, on ``phone_voice``: the phone's media actor is fed from such a cursor, the
+    phone's ``row`` stream from one without.
+    """
+
+    _REMEMBERED = 4096
+
+    def __init__(
+        self, conn: sqlite3.Connection, after: int, device: str, *, spoken_only: bool,
+    ) -> None:
+        self._conn = conn
+        self._after = after
+        self._device = device
+        self._spoken_only = spoken_only
+        self._turns: dict[str, bool] = {}
+
+    def _mine(self, turn_id: str) -> bool:
+        known = self._turns.get(turn_id)
+        if known is None:
+            channel, node = turn_origin(self._conn, turn_id)
+            known = node == self._device and (
+                not self._spoken_only or channel == PHONE_VOICE_CHANNEL
+            )
+            if len(self._turns) >= self._REMEMBERED:
+                self._turns.clear()
+            self._turns[turn_id] = known
+        return known
+
+    def poll(self) -> terminal_voice.RowBatch:
+        rows = _fetch_events_after(
+            self._conn, after_id=self._after, event_types=terminal_voice.RESPONSE_ROW_TYPES,
+        )
+        mine: list[tuple[int, Event]] = []
+        for row_id, event in rows:
+            self._after = max(self._after, row_id)
+            if self._mine(str(event.payload.get("turn_id", ""))):
+                mine.append((row_id, event))
+        return self._after, mine
+
+
+class _PhoneRows:
+    """The host's answer rows by device, for :mod:`jarvis.surface.phone_link` (ADR 0209)."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def high_water(self) -> int:
+        return _latest_id(self._conn)
+
+    def cursor(self, device: str, after: int, *, spoken_only: bool = False) -> _PhoneCursor:
+        return _PhoneCursor(self._conn, after, device, spoken_only=spoken_only)
+
+
+def _phone_barge_in(runtime: JarvisRuntime, device: str) -> str:
+    """The local barge-in's generation interrupt, aimed at ``device``'s open answer alone."""
+    event_log_path = runtime.runtime_paths.event_log
+
+    def _is_device_turn(turn_id: str) -> bool:
+        with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
+            return turn_origin(conn, turn_id)[1] == device
+
+    return make_barge_in_interrupt_callable(runtime, only_turns=_is_device_turn)("phone_barge")
+
+
+def _build_phone_speech(
+    runtime: JarvisRuntime, knobs: _VoiceKnobs, rows: _PhoneRows,
+) -> PhoneSpeech | None:
+    """What gives a voice phone its own media actor: the key and the streaming speech config.
+
+    ``None`` without ``MINIMAX_API_KEY`` or without the streaming pipeline's own preconditions
+    (``_build_tts_pipeline``'s): the phone is then told ``voice: false`` and gets rows only.
+    The actor runs at the phone's 32 kHz so nothing is resampled, and without the Mac's
+    fallbacks: ``say`` would speak on this machine's speaker, and a cut-off line is the
+    Mac's to prefetch.
+    """
+    api_key = os.environ.get("MINIMAX_API_KEY")
+    if not api_key:
+        LOGGER.warning("MINIMAX_API_KEY unset; a phone will not be spoken to.")
+        return None
+    realtime_raw = runtime.config.get("realtime")
+    realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
+    streaming_raw = realtime.get("streaming_output")
+    streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
+    try:
+        base = voice_media.streaming_media_config_from_mapping(streaming)
+    except ValueError as exc:
+        LOGGER.warning("realtime.streaming_output config invalid (%s); a phone gets no voice.", exc)
+        return None
+    if not (
+        realtime.get("enabled") is True
+        and streaming.get("enabled") is True
+        and runtime.wave1_features.transactional_event_append
+        and runtime.wave1_features.lifecycle_terminal_cas
+    ):
+        LOGGER.warning("streaming speech is off; a phone gets no voice.")
+        return None
+    config = dataclasses.replace(
+        base,
+        canonical_sample_rate_hz=PHONE_SAMPLE_RATE_HZ,
+        enable_macos_say_fallback=False,
+        prefetch_network_lost_line=False,
+    )
+    volume_kwargs = _tts_volume_kwargs(realtime)
+    event_log_path = runtime.runtime_paths.event_log
+
+    def build(
+        player: PhoneAudioStreamPlayer,
+        speaks_turn: Callable[[sqlite3.Connection, str], bool],
+        boot_high_water_id: int,
+    ) -> voice_media.StreamingTTSPipeline | None:
+        provider = _minimax_client(
+            knobs, api_key, volume_kwargs,
+            sample_rate_out=PHONE_SAMPLE_RATE_HZ, recorder=None,
+            voice_settings=runtime.voice_settings,
+        )
+        try:
+            return voice_media.StreamingTTSPipeline(
+                provider=provider,
+                player=player,
+                conn_factory=lambda: open_runtime_event_log(event_log_path),
+                boot_high_water_id=boot_high_water_id,
+                config=config,
+                foreground_decision_callable=make_foreground_decision_callable(
+                    wait_for_lane=runtime.response_flags.slow_results,
+                ),
+                start_player=False,
+                speaks_turn=speaks_turn,
+            )
+        except Exception:
+            LOGGER.exception("a phone's media actor could not start")
+            return None
+
+    return PhoneSpeech(build=build, rows=rows, ring_seconds=config.ring_seconds)
+
+
+def _build_phone_hub(runtime: JarvisRuntime, knobs: _VoiceKnobs) -> PhoneHub | None:
+    """The phone's conversation socket (ADR 0209), on every host that listens.
+
+    ``None`` where the host has nowhere to write a phone's words. A voice phone gets its own
+    media actor when the host can speak; barge-in and cancel reach only that device's turns.
+    """
+    events = runtime.phone_events
+    if events is None:
+        return None
+    rows = _PhoneRows(runtime.conn)
+    speech = _build_phone_speech(runtime, knobs, rows)
+    registry = runtime.response_runs
+    return PhoneHub(
+        events=events,
+        rows=rows,
+        open_voice=None if speech is None else speech.open,
+        barge_in=None if registry is None else functools.partial(_phone_barge_in, runtime),
+        cancel_turn=None if registry is None else make_turn_cancel_callable(runtime),
+    )
 
 
 def _build_brain_listening(
@@ -6802,6 +6968,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             live=live_voice,
             terminals=runtime.terminal_hub if runtime.listen_addresses else None,
             phone_events=runtime.phone_events if runtime.listen_addresses else None,
+            phone=_build_phone_hub(runtime, voice_knobs) if runtime.listen_addresses else None,
             device_name=(
                 functools.partial(device_name_for_token, runtime.runtime_paths.root)
                 if runtime.listen_addresses

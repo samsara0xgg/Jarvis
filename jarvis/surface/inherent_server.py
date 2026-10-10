@@ -122,6 +122,7 @@ from jarvis.surface.inherent_protocol import (
     hello_is_supported,
 )
 from jarvis.surface.phone_events import MAX_BATCH_BYTES, MAX_BATCH_FRAMES, PHONE_EVENTS_PATH
+from jarvis.surface.phone_link import PHONE_PATH, PhoneHub, serve_phone
 from jarvis.surface.terminal_link import TERMINAL_PATH, TerminalHub, serve_terminal
 from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmptyError
 
@@ -573,6 +574,9 @@ class InherentDeps:
     terminals: TerminalHub | None = None
     device_name: Callable[[str], str | None] | None = None
     phone_events: BrainEvents | None = None
+    # ADR 0209: the phone's conversation socket ``/phone/ws``, on every host that has
+    # ``device_name``; it needs no terminal hub, so a Mac running alone has it too.
+    phone: PhoneHub | None = None
     # ADR 0196: the four device-pairing routes. ``None`` leaves them unregistered (404).
     pairing: DevicePairing | None = None
     # ADR-0018: the quota dashboard's read model and its on-demand poll.
@@ -2182,6 +2186,23 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
                 await ws.close(code=1008)
                 return
             await serve_terminal(terminals, ws, name)
+
+    if deps.phone is not None and deps.device_name is not None:
+        phone_hub, phone_socket_name = deps.phone, deps.device_name
+
+        @app.websocket(PHONE_PATH)
+        async def ws_phone(ws: WebSocket) -> None:
+            """ADR 0209: a paired phone's conversation; only its own device token opens it.
+
+            As on ``/terminal/ws`` and the phone-events route, the local key is not a device
+            token and is refused here: a phone always names itself by its token.
+            """
+            token = _v2_presented_token(ws.headers.get("authorization"))
+            name = None if token is None else phone_socket_name(token)
+            if name is None:
+                await ws.close(code=1008)
+                return
+            await serve_phone(phone_hub, ws, name)
 
     if deps.phone_events is not None and deps.device_name is not None:
         phone_name, brain_events = deps.device_name, deps.phone_events

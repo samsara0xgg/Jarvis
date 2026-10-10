@@ -1949,35 +1949,56 @@ def iter_events_for_turn(
         yield _row_to_event(row)
 
 
-_SELECT_TURN_INTENT_CHANNEL_SQL = (
-    "SELECT json_extract(payload_json, '$.channel') FROM events "
-    "WHERE type = 'surface.user_intent' "
-    "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
+PHONE_VOICE_CHANNEL: Final = "phone_voice"
+"""ADR 0209: the channel of words a paired phone recognized and sent as text; spoken for L3."""
+
+_SELECT_TURN_ORIGIN_SQL = (
+    "SELECT json_extract(payload_json, '$.channel'), ingestion_node FROM events "
+    "WHERE type IN ('surface.user_intent', 'utterance.received') "
+    "AND json_extract(payload_json, '$.turn_id') = ? "
+    "ORDER BY type = 'surface.user_intent' DESC, id LIMIT 1"
 )
 
 
-def turn_intent_channel(conn: sqlite3.Connection, turn_id: str) -> str | None:
-    """The channel ``turn_id`` was submitted on, from its ``surface.user_intent``.
+def turn_origin(conn: sqlite3.Connection, turn_id: str) -> tuple[str | None, str | None]:
+    """The ``(channel, ingestion_node)`` of the row that opened ``turn_id``.
 
-    The intent channel (``gpt_live``, the v2 surface label, ...) never reaches
-    the ``surface.response_open`` header. That row carries its own ``channel``
-    key, but it holds the PRESENTATION split — ``both`` / ``speech`` /
-    ``document``, computed in ``cli_render`` from which text slices are
-    non-empty — so a consumer that must suppress a whole turn by where the turn
-    came from has to read the submission row instead.
-
-    ``None`` when the turn has no submission row at all (a reconciliation or
-    supervisor-sweep turn), which keeps the silent-channel filters'
-    opt-in-by-explicit-label default: unknown origin is not silent.
+    That row is the turn's ``surface.user_intent`` (typed words, the v2 surface label,
+    ``gpt_live``) or its ``utterance.received`` (words heard by voice, ADR 0209's phone
+    included). ``ingestion_node`` is the device that wrote it: a paired phone's name, else
+    ``mac``. ``(None, None)`` when the turn has no such row (a reconciliation or
+    supervisor-sweep turn).
     """
     if not turn_id:
-        return None
-    row = conn.execute(_SELECT_TURN_INTENT_CHANNEL_SQL, (turn_id,)).fetchone()
-    channel = row[0] if row is not None else None
-    return channel if isinstance(channel, str) else None
+        return None, None
+    row = conn.execute(_SELECT_TURN_ORIGIN_SQL, (turn_id,)).fetchone()
+    if row is None:
+        return None, None
+    channel, node = row
+    return (
+        channel if isinstance(channel, str) else None,
+        node if isinstance(node, str) else None,
+    )
+
+
+def turn_intent_channel(conn: sqlite3.Connection, turn_id: str) -> str | None:
+    """The channel ``turn_id`` was submitted on, from the row that opened it (:func:`turn_origin`).
+
+    The intent channel (``gpt_live``, the v2 surface label, ``phone_voice``, ...) never reaches
+    the ``surface.response_open`` header. That row carries its own ``channel`` key, but it
+    holds the PRESENTATION split — ``both`` / ``speech`` / ``document``, computed in
+    ``cli_render`` from which text slices are non-empty — so a consumer that must suppress a
+    whole turn by where the turn came from has to read the opening row instead.
+
+    ``None`` when the turn has no such row at all (a reconciliation or supervisor-sweep turn),
+    which keeps the silent-channel filters' opt-in-by-explicit-label default: unknown origin
+    is not silent.
+    """
+    return turn_origin(conn, turn_id)[0]
 
 
 __all__ = [
+    "PHONE_VOICE_CHANNEL",
     "CommittedEventBus",
     "DanglingSourceEventError",
     "EventLogError",
@@ -1998,4 +2019,5 @@ __all__ = [
     "iter_events_of_types",
     "open_event_log",
     "turn_intent_channel",
+    "turn_origin",
 ]

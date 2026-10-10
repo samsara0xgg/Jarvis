@@ -16,6 +16,7 @@ import yaml
 
 from jarvis.decision.intent import tier_0_match
 from jarvis.decision.stream_risk import ResponseRiskContext, snapshot_content_hash
+from jarvis.state.event_log import PHONE_VOICE_CHANNEL
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -36,7 +37,7 @@ type Route = Literal["casual_or_explanatory", "action", "unknown"]
 ROUTINE_ATTENTION_CHANNEL = "voice_notify"
 """The channel a routine stream pins before generation; ordinary answers speak."""
 
-SPOKEN_CHANNELS = frozenset({"inherent_ptt", "inherent_wake", "speech"})
+SPOKEN_CHANNELS = frozenset({"inherent_ptt", "inherent_wake", "speech", PHONE_VOICE_CHANNEL})
 """Trigger channels whose words came in by voice; anything else is typed text."""
 
 TYPED_CHANNEL = "cli_stdin"

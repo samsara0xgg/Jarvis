@@ -107,7 +107,7 @@ class _MirroredRing(_GenerationRingBuffer):
     the samples, exactly as ``_GenerationRingBuffer.available_write`` does.
     """
 
-    def __init__(self, player: NativeAudioStreamPlayer, size_samples: int) -> None:
+    def __init__(self, player: FramedAudioStreamPlayer, size_samples: int) -> None:
         super().__init__(size_samples)
         self._player = player
         self.sent = 0
@@ -134,11 +134,12 @@ class _MirroredRing(_GenerationRingBuffer):
         output_start_cursor: int,
     ) -> int:
         """Send as much as fits the mirrored capacity; 0 means full (never a drop)."""
-        n = min(len(data), self.available_write(), _MAX_PCM_FRAME_SAMPLES)
+        n = min(len(data), self.available_write(), self._player.max_pcm_frame_samples)
         if n <= 0:
             return 0
         head = struct.pack("<qq", generation, output_start_cursor)
-        if not self._player.send_frame(_PCM, head, data[:n].astype("<f4", copy=False).tobytes()):
+        frame_type, payload = self._player.pcm_frame(data[:n])
+        if not self._player.send_frame(frame_type, head, payload):
             return 0
         self.sent += n
         return n
@@ -152,7 +153,160 @@ class _MirroredRing(_GenerationRingBuffer):
         return self.discard_before
 
 
-class NativeAudioStreamPlayer(AudioStreamPlayer):
+class FramedAudioStreamPlayer(AudioStreamPlayer):
+    """``AudioStreamPlayer`` whose realtime half sits behind a stream of ADR 0129 frames.
+
+    Leases, the ledger and the heard-prefix accounting stay in the inherited class; this one
+    mirrors the peer's ring (:class:`_MirroredRing`), sends PCM, ACTIVE, DISCARD, GAIN and HOLD
+    frames through :meth:`send_frame`, and accounts from the REPORT, STATUS and DISCARD_ACK
+    frames its subclass hands to :meth:`_on_frame`. Subclasses own the transport: the helper's
+    pipe (:class:`NativeAudioStreamPlayer`), or a phone's socket (ADR 0209).
+    """
+
+    _ACK_WAIT_S = 0.05
+    max_pcm_frame_samples = _MAX_PCM_FRAME_SAMPLES
+    """Most samples one PCM frame carries."""
+
+    def __init__(self, **kwargs: Any) -> None:  # noqa: ANN401 - AudioStreamPlayer's own surface
+        """Build an idle player; the transport starts with the subclass's ``start``."""
+        if not kwargs.get("generation_safe", False):
+            msg = "a framed player is generation-safe only"
+            raise NotImplementedError(msg)
+        kwargs.pop("lazy_open", None)
+        super().__init__(lazy_open=True, **kwargs)
+        ring = self._generation_ring
+        assert ring is not None  # noqa: S101 - generation_safe was checked above
+        self._mirror = _MirroredRing(self, ring._size)  # noqa: SLF001
+        self._generation_ring = self._mirror
+        self._native_gain = 1.0
+
+    def send_frame(self, frame_type: int, *parts: bytes) -> bool:
+        """Send one frame to the peer; False once it is gone."""
+        raise NotImplementedError
+
+    def pcm_frame(self, samples: np.ndarray) -> tuple[int, bytes]:
+        """The frame type and payload that carry ``samples`` (float32 mono) to the peer."""
+        return _PCM, samples.astype("<f4", copy=False).tobytes()
+
+    def _on_frame(self, frame_type: int, body: memoryview) -> None:
+        if frame_type == _REPORT:
+            gen, start, end, audibility, callback_ns, delay_ns, first = _REPORT_FMT.unpack(body)
+            self._callback_reports.write(
+                generation=gen,
+                output_start_cursor=start,
+                output_end_cursor=end,
+                audibility_class=_AUDIBILITY[audibility],
+                callback_monotonic_ns=self._host_callback_ns(callback_ns),
+                presentation_delay_ns=self._clamped_latency_ns(delay_ns),
+                first_for_generation=bool(first),
+            )
+        elif frame_type == _STATUS:
+            (
+                self._mirror.read_idx,
+                self._native_gain,
+                self._callback_calls,
+                self._underflow_count,
+                self._starvation_gaps,
+                self._tail_ramp_samples,
+                self._played_samples,
+            ) = _STATUS_FMT.unpack(body)
+        elif frame_type == _DISCARD_ACK:
+            (seq,) = struct.unpack("<Q", body)
+            self._mirror.acked_seq = max(self._mirror.acked_seq, seq)
+        else:
+            self._on_other_frame(frame_type, body)
+
+    def _on_other_frame(self, frame_type: int, body: memoryview) -> None:
+        """A frame only this transport's peer sends (READY, RENDERED); the base ignores it."""
+
+    def _host_callback_ns(self, callback_ns: int) -> int:
+        """A report's callback time on the ``time.monotonic_ns`` clock the ledger compares to."""
+        return callback_ns
+
+    def _clamped_latency_ns(self, latency_ns: int) -> int:
+        """A real report is clamped to the ceiling; a non-positive one carries no measurement."""
+        if latency_ns <= 0:
+            return self._default_output_latency_ns
+        return min(latency_ns, int(self._MAX_PLAUSIBLE_OUTPUT_LATENCY_S * 1_000_000_000))
+
+    # ------------------------------------------------------------------
+    # Realtime half, forwarded
+    # ------------------------------------------------------------------
+
+    def activate_generation(
+        self,
+        *,
+        session_id: str,
+        response_id: str,
+        response_group_id: str,
+        turn_id: str,
+    ) -> GenerationLease | ForegroundBusy:
+        """Mint the lease, then tell the peer which generation may play."""
+        lease = super().activate_generation(
+            session_id=session_id,
+            response_id=response_id,
+            response_group_id=response_group_id,
+            turn_id=turn_id,
+        )
+        if isinstance(lease, GenerationLease):
+            self.send_frame(_ACTIVE, struct.pack("<q", lease.playback_generation_id))
+        return lease
+
+    def complete_generation(
+        self,
+        *,
+        expected_playback_generation_id: int,
+    ) -> OutputTimelineSnapshot | StalePlaybackGeneration:
+        """Close a naturally presented generation; the helper then plays nothing of it."""
+        snapshot = super().complete_generation(
+            expected_playback_generation_id=expected_playback_generation_id,
+        )
+        if self._active_lease is None:
+            self.send_frame(_ACTIVE, struct.pack("<q", -1))
+        return snapshot
+
+    def settle_interrupted_generation(
+        self,
+        *,
+        expected_playback_generation_id: int,
+    ) -> OutputTimelineSnapshot | StalePlaybackGeneration | None:
+        """Freeze once the helper acked the discard (every report before it is then in).
+
+        The ack comes one render callback after the DISCARD frame (about 11 ms),
+        so this waits for it, bounded, instead of returning ``None`` at once: the
+        media actor yields to its other tasks on ``None``, and a response task
+        that reads the tombstone in that window ends its own turn as a failure
+        before the interrupt's terminal commits.  ``None`` is the bounded answer
+        for an ack that is slower than that; a dead helper never acks, so it
+        freezes at once.
+        """
+        mirror = self._mirror
+        if expected_playback_generation_id in self._tombstoned_generations:
+            deadline = time.monotonic() + self._ACK_WAIT_S
+            while mirror.acked_seq < mirror.discard_seq and self.is_running:
+                if time.monotonic() >= deadline:
+                    return None
+                time.sleep(0.0005)
+        return super().settle_interrupted_generation(
+            expected_playback_generation_id=expected_playback_generation_id,
+        )
+
+    def set_gain(self, target: float, ramp_ms: float = 30.0) -> None:
+        """Latest-wins gain ramp, consumed by the helper's render thread."""
+        ramp_samples = max(0, int(self._sample_rate_hz * ramp_ms / 1000.0))
+        self.send_frame(_GAIN, struct.pack("<fI", target, ramp_samples))
+
+    def pause_generation(self, *, paused: bool) -> None:
+        """Hold the answer playing now in place, or let it go on."""
+        super().pause_generation(paused=paused)
+        self.send_frame(_HOLD, struct.pack("<q", self._paused_generation))
+
+    def current_gain(self) -> float:
+        """Gain at the helper's last status frame."""
+        return self._native_gain
+
+
+class NativeAudioStreamPlayer(FramedAudioStreamPlayer):
     """``AudioStreamPlayer`` whose realtime callback runs in ``jarvis-voice-out``.
 
     Needs ``generation_safe=True``.  ``playback_tap`` (the echo canceller's far
@@ -161,7 +315,6 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
     """
 
     _READY_TIMEOUT_S = 5.0
-    _ACK_WAIT_S = 0.05
 
     def __init__(
         self,
@@ -171,15 +324,8 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
         **kwargs: Any,  # noqa: ANN401 - AudioStreamPlayer's own keyword surface
     ) -> None:
         """Build an idle player; ``extra_args`` go to the helper (``--null-device`` in tests)."""
-        if not kwargs.get("generation_safe", False):
-            msg = "the native player is generation-safe only"
-            raise NotImplementedError(msg)
         lazy_open = kwargs.pop("lazy_open", True)
-        super().__init__(lazy_open=True, **kwargs)
-        ring = self._generation_ring
-        assert ring is not None  # noqa: S101 - generation_safe was checked above
-        self._mirror = _MirroredRing(self, ring._size)  # noqa: SLF001
-        self._generation_ring = self._mirror
+        super().__init__(**kwargs)
         self._buffer_frames = int(buffer_frames)
         self._extra_args = extra_args
         self._proc: subprocess.Popen[bytes] | None = None
@@ -189,7 +335,6 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
         self._got_ready = False
         self._stderr_tail: collections.deque[str] = collections.deque(maxlen=8)
         self._stderr_thread = threading.Thread()
-        self._native_gain = 1.0
         self.clock_skew_ns = 0
         self.rendered_dropped_samples = 0
         self._tap_failed = False
@@ -219,6 +364,18 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
                 return False
         return True
 
+    def _on_other_frame(self, frame_type: int, body: memoryview) -> None:
+        if frame_type == _RENDERED:
+            self._on_rendered(body)
+        elif frame_type == _READY:
+            received_ns = time.monotonic_ns()
+            _rate, frames, latency_ns, clock_ns = _READY_FMT.unpack(body)
+            self._buffer_frames = frames
+            self._estimated_output_latency_ns = self._clamped_latency_ns(latency_ns)
+            self.clock_skew_ns = received_ns - clock_ns
+            self._got_ready = True
+            self._ready.set()
+
     def _read_loop(self, proc: subprocess.Popen[bytes]) -> None:
         stdout = proc.stdout
         assert stdout is not None  # noqa: S101 - Popen(stdout=PIPE)
@@ -237,42 +394,6 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
         finally:
             self._on_helper_exit(proc)
 
-    def _on_frame(self, frame_type: int, body: memoryview) -> None:
-        if frame_type == _REPORT:
-            gen, start, end, audibility, callback_ns, delay_ns, first = _REPORT_FMT.unpack(body)
-            self._callback_reports.write(
-                generation=gen,
-                output_start_cursor=start,
-                output_end_cursor=end,
-                audibility_class=_AUDIBILITY[audibility],
-                callback_monotonic_ns=callback_ns,
-                presentation_delay_ns=self._clamped_latency_ns(delay_ns),
-                first_for_generation=bool(first),
-            )
-        elif frame_type == _STATUS:
-            (
-                self._mirror.read_idx,
-                self._native_gain,
-                self._callback_calls,
-                self._underflow_count,
-                self._starvation_gaps,
-                self._tail_ramp_samples,
-                self._played_samples,
-            ) = _STATUS_FMT.unpack(body)
-        elif frame_type == _DISCARD_ACK:
-            (seq,) = struct.unpack("<Q", body)
-            self._mirror.acked_seq = max(self._mirror.acked_seq, seq)
-        elif frame_type == _RENDERED:
-            self._on_rendered(body)
-        elif frame_type == _READY:
-            received_ns = time.monotonic_ns()
-            _rate, frames, latency_ns, clock_ns = _READY_FMT.unpack(body)
-            self._buffer_frames = frames
-            self._estimated_output_latency_ns = self._clamped_latency_ns(latency_ns)
-            self.clock_skew_ns = received_ns - clock_ns
-            self._got_ready = True
-            self._ready.set()
-
     def _on_rendered(self, body: memoryview) -> None:
         """Hand one rendered block to the playback tap; a broken tap never ends her voice."""
         self.rendered_dropped_samples, presentation_ns = _RENDERED_HEAD.unpack_from(body)
@@ -289,12 +410,6 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
             if not self._tap_failed:
                 self._tap_failed = True
                 LOGGER.exception("playback tap failed; later failures are not logged")
-
-    def _clamped_latency_ns(self, latency_ns: int) -> int:
-        """A real report is clamped to the ceiling; a non-positive one carries no measurement."""
-        if latency_ns <= 0:
-            return self._default_output_latency_ns
-        return min(latency_ns, int(self._MAX_PLAUSIBLE_OUTPUT_LATENCY_S * 1_000_000_000))
 
     def _drain_stderr(self, proc: subprocess.Popen[bytes]) -> None:
         assert proc.stderr is not None  # noqa: S101 - Popen(stderr=PIPE)
@@ -480,68 +595,12 @@ class NativeAudioStreamPlayer(AudioStreamPlayer):
             self._helper_died = False
             restarted = self.start()
             LOGGER.warning("voice-out helper restarted for the next answer: %s", restarted.status)
-        lease = super().activate_generation(
+        return super().activate_generation(
             session_id=session_id,
             response_id=response_id,
             response_group_id=response_group_id,
             turn_id=turn_id,
         )
-        if isinstance(lease, GenerationLease):
-            self.send_frame(_ACTIVE, struct.pack("<q", lease.playback_generation_id))
-        return lease
-
-    def complete_generation(
-        self,
-        *,
-        expected_playback_generation_id: int,
-    ) -> OutputTimelineSnapshot | StalePlaybackGeneration:
-        """Close a naturally presented generation; the helper then plays nothing of it."""
-        snapshot = super().complete_generation(
-            expected_playback_generation_id=expected_playback_generation_id,
-        )
-        if self._active_lease is None:
-            self.send_frame(_ACTIVE, struct.pack("<q", -1))
-        return snapshot
-
-    def settle_interrupted_generation(
-        self,
-        *,
-        expected_playback_generation_id: int,
-    ) -> OutputTimelineSnapshot | StalePlaybackGeneration | None:
-        """Freeze once the helper acked the discard (every report before it is then in).
-
-        The ack comes one render callback after the DISCARD frame (about 11 ms),
-        so this waits for it, bounded, instead of returning ``None`` at once: the
-        media actor yields to its other tasks on ``None``, and a response task
-        that reads the tombstone in that window ends its own turn as a failure
-        before the interrupt's terminal commits.  ``None`` is the bounded answer
-        for an ack that is slower than that; a dead helper never acks, so it
-        freezes at once.
-        """
-        mirror = self._mirror
-        if expected_playback_generation_id in self._tombstoned_generations:
-            deadline = time.monotonic() + self._ACK_WAIT_S
-            while mirror.acked_seq < mirror.discard_seq and self.is_running:
-                if time.monotonic() >= deadline:
-                    return None
-                time.sleep(0.0005)
-        return super().settle_interrupted_generation(
-            expected_playback_generation_id=expected_playback_generation_id,
-        )
-
-    def set_gain(self, target: float, ramp_ms: float = 30.0) -> None:
-        """Latest-wins gain ramp, consumed by the helper's render thread."""
-        ramp_samples = max(0, int(self._sample_rate_hz * ramp_ms / 1000.0))
-        self.send_frame(_GAIN, struct.pack("<fI", target, ramp_samples))
-
-    def pause_generation(self, *, paused: bool) -> None:
-        """Hold the answer playing now in place, or let it go on."""
-        super().pause_generation(paused=paused)
-        self.send_frame(_HOLD, struct.pack("<q", self._paused_generation))
-
-    def current_gain(self) -> float:
-        """Gain at the helper's last status frame."""
-        return self._native_gain
 
     @property
     def is_running(self) -> bool:

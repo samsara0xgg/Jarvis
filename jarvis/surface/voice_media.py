@@ -671,8 +671,14 @@ class StreamingTTSPipeline:
         foreground_decision_callable: Callable[[str, int, str, int], str] | None = None,
         start_player: bool = True,
         silent_intent_channels: frozenset[str] = frozenset(),
+        speaks_turn: Callable[[sqlite3.Connection, str], bool] | None = None,
     ) -> None:
-        """Start one persistent actor without letting stuck startup pin exit."""
+        """Start one persistent actor without letting stuck startup pin exit.
+
+        ``speaks_turn`` (ADR 0209), given the actor's own connection and a turn id, says
+        whether this actor speaks that turn at all; a phone's actor speaks only the turns
+        its phone opened by voice. ``None`` speaks every turn not in ``silent_intent_channels``.
+        """
         self._provider = provider
         self._player = player
         self._conn_factory = conn_factory
@@ -682,6 +688,7 @@ class StreamingTTSPipeline:
         self._foreground_decision = foreground_decision_callable
         self._start_player = start_player
         self._silent_intent_channels = silent_intent_channels
+        self._speaks_turn = speaks_turn
         self._registry = ActivePlaybackRegistry(
             boot_high_water_id=boot_high_water_id,
         )
@@ -2378,6 +2385,9 @@ class StreamingTTSPipeline:
                 self._silent_intent_channels
                 and turn_intent_channel(self._require_conn(), str(payload.get("turn_id", "")))
                 in self._silent_intent_channels
+            ) or (
+                self._speaks_turn is not None
+                and not self._speaks_turn(self._require_conn(), str(payload.get("turn_id", "")))
             ):
                 self._registry.terminalize(response_id)
                 return outcome
