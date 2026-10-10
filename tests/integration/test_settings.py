@@ -168,7 +168,7 @@ def test_the_recognition_language_pick_beats_a_written_pin(tmp_path: Path) -> No
 
 
 def test_an_old_saved_mac_aec_is_ignored(tmp_path: Path) -> None:
-    """Echo cancellation follows the microphone now: the page has no such key, a saved one is inert."""
+    """Echo cancellation follows the microphone now: the page has no key, a saved one is inert."""
     (tmp_path / "settings.json").write_text(json.dumps({"mac_aec": True, "timesink": False}))
     booted = apply_settings(YAML, tmp_path)
     assert booted["realtime"]["single_audio_ingress"]["echo_cancellation"] == "auto"

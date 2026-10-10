@@ -945,7 +945,8 @@ class HybridFinalRecognizer:
         listener = self._on_prepared_text
         if listener is None or entry.result is None or not entry.result.text.strip():
             return
-        if _looks_looped(entry.result.text):  # a looped prefix would sit on screen until the next pass
+        # A looped prefix would sit on screen until the next pass.
+        if _looks_looped(entry.result.text):
             return
         try:
             listener(entry.utterance_id, len(entry.audio_pcm), entry.result.text)
