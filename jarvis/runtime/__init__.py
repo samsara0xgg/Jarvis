@@ -381,7 +381,7 @@ def _role(config: Mapping[str, Any]) -> Role:
 def _listen(config: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """``runtime.listen_addresses`` and ``runtime.listen_hosts``: where the daemon also answers.
 
-    A brain may have any (ADR 0170), and so may a Mac running alone (ADR 0206), only on private
+    A brain may have any (ADR 0170), and so may a Mac running alone (ADR 0207), only on private
     addresses: a wildcard or a public address stops the boot, so no setting can open the daemon
     to the internet.
     """
@@ -572,11 +572,11 @@ class JarvisRuntime:
             playback, power observer or device watcher in ``brain``.
         listen_addresses: ``runtime.listen_addresses``, the private addresses the
             daemon also listens on; ``listen_hosts``, the Host names it accepts
-            there. Empty by default (ADR 0170, 0206).
+            there. Empty by default (ADR 0170, 0207).
         terminal_hub: the connected terminals a brain's device-bound tool calls go to;
             ``None`` unless the role is ``brain``.
         phone_events: where a paired phone's events are appended (ADR 0197); ``None``
-            unless the daemon is a brain or listens beyond loopback (ADR 0206).
+            unless the daemon is a brain or listens beyond loopback (ADR 0207).
     """
 
     config: Mapping[str, Any]
@@ -669,13 +669,13 @@ class JarvisRuntime:
     ledger: LedgerContext | None = None
     # ADR 0170: ``brain`` runs headless and starts nothing device-bound.
     role: Role = "all"
-    # ADR 0170, 0206: the private addresses the daemon also listens on, and the Host names it
+    # ADR 0170, 0207: the private addresses the daemon also listens on, and the Host names it
     # accepts.
     listen_addresses: tuple[str, ...] = ()
     listen_hosts: tuple[str, ...] = ()
     # ADR 0170: where a brain's device-bound tool calls go. None unless ``role`` is ``brain``.
     terminal_hub: TerminalHub | None = None
-    # ADR 0197, 0206: where a paired phone's events are appended.
+    # ADR 0197, 0207: where a paired phone's events are appended.
     phone_events: BrainEvents | None = None
 
 

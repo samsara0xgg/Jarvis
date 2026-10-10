@@ -569,7 +569,7 @@ class InherentDeps:
     # ``device_name`` maps a device token to the paired name it belongs to; the route
     # ``/terminal/ws`` exists only with both, i.e. only where device tokens are wired.
     # ``POST /inherent/device/events`` (ADR 0197) needs ``device_name`` and ``phone_events``,
-    # the log it appends to; a Mac running alone has that without a hub (ADR 0206).
+    # the log it appends to; a Mac running alone has that without a hub (ADR 0207).
     terminals: TerminalHub | None = None
     device_name: Callable[[str], str | None] | None = None
     phone_events: BrainEvents | None = None

@@ -6,7 +6,7 @@ when the brain listens beyond loopback (no token, a wrong one, a revoked one, th
 and a wrong Host from a remote peer are refused, a paired device's token is accepted, a
 peer on loopback is checked as before); the v2 socket and its HTTP input route taking the
 device token from a remote peer and the boot token from loopback only; `runtime.listen_*`
-open to a brain and to a Mac running alone (ADR 0206); and the one-shot CLI as a remote client
+open to a brain and to a Mac running alone (ADR 0207); and the one-shot CLI as a remote client
 of a real server, exiting non-zero with a reason when the turn fails.
 """
 
@@ -336,7 +336,7 @@ def test_the_v2_routes_take_the_device_token_from_a_remote_peer_only(
 def test_listen_settings_are_empty_by_default_and_either_role_may_set_them(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Default: loopback only. A brain and a Mac running alone (ADR 0206) may listen further.
+    """Default: loopback only. A brain and a Mac running alone (ADR 0207) may listen further.
 
     Only a brain has a terminal hub; any daemon that listens can take a phone's events.
     """

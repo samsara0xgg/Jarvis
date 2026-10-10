@@ -1,4 +1,4 @@
-# ADR 0206 — A Mac running alone accepts paired devices on its tailnet address
+# ADR 0207 — A Mac running alone accepts paired devices on its tailnet address
 
 **Status:** Accepted
 **Date:** 2026-10-10

@@ -1,4 +1,4 @@
-"""ADR 0206: a Mac running alone (`runtime.role: all`) accepts paired devices on its own address.
+"""ADR 0207: a Mac running alone (`runtime.role: all`) accepts paired devices on its own address.
 
 One acceptance check against a real `python -m jarvis serve` in role all, listening on the
 machine's own private address besides loopback. A code is minted over loopback with the local
