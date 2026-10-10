@@ -52,13 +52,14 @@ struct StarChrome: View {
     @State private var focused = false                 // the field's keyboard (Attach/AttachField)
     @State private var pull: Double? = nil             // while a finger holds the talk panel's top edge
     @Environment(\.scenePhase) private var phase
+    @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var leftAt: Date?                   // when the app went to the background
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             // behind the open panel the dial dims
             Color.black.opacity(0.35 * panelOpenness(panelTop(ui, pull))).frame(width: W * 3, height: H * 3).offset(x: -W, y: -H)
-                .animation(pull == nil ? .spring(response: 0.42, dampingFraction: 0.9) : nil, value: ui.panelOpen).allowsHitTesting(false)
+                .animation(pull == nil ? panelSpring(reduce) : nil, value: ui.panelOpen).allowsHitTesting(false)
             topRow
             detail
                 grabber
@@ -168,7 +169,7 @@ struct StarChrome: View {
         .transition(.opacity.combined(with: .offset(y: 7)))
         .animation(.easeOut(duration: 0.42), value: ui.flip)
         // a talk takes the place of the detail: it goes up and out, and comes back when the talk has gone
-        .opacity(away ? 0 : 1).offset(y: away ? -6 : 0)
+        .opacity(away ? 0 : 1).offset(y: away && !reduce ? -6 : 0)
         .allowsHitTesting(!away)
         .animation(.easeOut(duration: away ? 0.2 : 0.35), value: away)
         .offset(y: 532)

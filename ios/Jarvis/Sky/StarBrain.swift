@@ -6,6 +6,8 @@ import UIKit
 extension StarEngine {
     /// A line for the status line over the composer (the same line the voice uses); it goes by itself after `ms`, or when `clearNote` is called.
     func note(_ text: String, for ms: Double = 8000) { brainNote = text; brainNoteUntil = nowMs() + ms }
+    /// a note that says something went wrong
+    func trouble(_ text: String) { note(text); Haptic.notify(.warning) }
     func clearNote() { brainNote = nil; brainNoteUntil = 0 }
 
     /// His words and everything attached go to the brain: each file up first, then the words with their ids. Anything that goes wrong is said on the status line and
@@ -14,7 +16,7 @@ extension StarEngine {
         let text = words.trimmingCharacters(in: .whitespacesAndNewlines), items = ui.attach.items
         if (text.isEmpty && items.isEmpty) || sendingToBrain { return }
         endEditing?()
-        if let m = AttachUpload.check(count: items.count) { return note(m) }
+        if let m = AttachUpload.check(count: items.count) { return trouble(m) }
         sendingToBrain = true
         note("正在发给她…", for: 120_000)
         let shown = text.isEmpty ? AttachModel.caption(items) : text, pics = SentPics.items(items)
@@ -25,21 +27,21 @@ extension StarEngine {
                 var ids: [String] = []
                 for part in try await AttachUpload.parts(items, photos: self.ui.attach.photos) {
                     let up = try await BrainLink.shared.call { try await BrainClient.upload(part, bases: $0, token: $1) }
-                    guard let id = up.id else { self.sendingToBrain = false; return self.note(AttachUpload.refusal(status: up.status, name: part.name)) }
+                    guard let id = up.id else { self.sendingToBrain = false; return self.trouble(AttachUpload.refusal(status: up.status, name: part.name)) }
                     ids.append(id)
                 }
                 seq = await Conversation.shared.latestSeq()      // her answer is the first row of hers past this one
                 let status = try await BrainLink.shared.call { try await BrainClient.submit(text, attachments: ids, bases: $0, token: $1) }
                 guard status == 200 else {
                     self.sendingToBrain = false
-                    return self.note(status == 404 ? "文件过期了，再发一次" : AttachUpload.refusal(status: status, name: ""))
+                    return self.trouble(status == 404 ? "文件过期了，再发一次" : AttachUpload.refusal(status: status, name: ""))
                 }
             } catch let e as AttachUpload.Refused {
-                self.sendingToBrain = false; return self.note(e.message)
+                self.sendingToBrain = false; return self.trouble(e.message)
             } catch let e as BrainError {
-                self.sendingToBrain = false; return self.note(e.message)
+                self.sendingToBrain = false; return self.trouble(e.message)
             } catch {
-                self.sendingToBrain = false; return self.note(BrainError.refused.message)
+                self.sendingToBrain = false; return self.trouble(BrainError.refused.message)
             }
             for it in self.ui.attach.take() { AttachTemp.discard(it.url) }
             self.ui.text = ""

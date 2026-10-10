@@ -51,6 +51,7 @@ extension StarEngine {
     /// Her words in a row of their own, brightening as they are said. A long answer is said faster, so reading it does not take minutes.
     @discardableResult func startSay(_ text: String, cps: Double? = nil, delay: Double = 0, leadIn: Bool = false) -> Say {
         finishSay()
+        if !leadIn { Haptic.impact(.soft) }
         let s = Say(text, cps: cps ?? max(12, Double(text.count) / 10), delay: delay)
         speaking = s
         speakId = addTurn(his: false, text, alphas: s.alphas(nowMs()), leadIn: leadIn)
@@ -63,7 +64,7 @@ extension StarEngine {
 
     /// every frame: the saying row brightens, and a talk nobody touches goes
     func stepTalk(_ now: Double) {
-        if let s = speaking { setTurn(speakId, alphas: s.alphas(now)) }
+        if let s = speaking { setTurn(speakId, alphas: s.alphas(now).map { ($0 * 16).rounded() / 16 }) }       // sixteenths: a character's fade is a few redraws, not one per frame
         if ui.talking && talk == nil && voiceState == .idle && !lingerHold && now > lingerUntil { ui.talking = false; rowKey = "" }
         put(\.topTime, clock(F))
         updateStream()
@@ -75,7 +76,7 @@ extension StarEngine {
         let listening = v.state == .listening
         let his = (listening ? v.partial : v.transcript).trimmingCharacters(in: .whitespacesAndNewlines)
         if !his.isEmpty { if let id = vHis { setTurn(id, text: his) } else { vHis = addTurn(his: true, his) } }
-        if !listening && !v.reply.isEmpty { if let id = vHer { setTurn(id, text: v.reply) } else { vHer = addTurn(his: false, v.reply) } }
+        if !listening && !v.reply.isEmpty { if let id = vHer { setTurn(id, text: v.reply) } else { vHer = addTurn(his: false, v.reply); Haptic.impact(.soft) } }
     }
 
     /// A voice answer can have more written than spoken: once the conversation has the row, her row shows what is written.
@@ -100,7 +101,7 @@ extension StarEngine {
         wake()
         if auto { autoOpenSpent = true }
         guard !ui.panelOpen else { return }
-        if !quiet { sound(.open, 0.7) }
+        if !quiet { sound(.open, 0.7); Haptic.selection() }
         ui.panelOpen = true; panelSince = nowMs()
         if BrainLink.shared.hasToken { Task { @MainActor in await Conversation.shared.refresh() } }
         updatePanel(force: true)
@@ -109,7 +110,7 @@ extension StarEngine {
         guard ui.panelOpen else { return }
         wake()
         if ui.talking { autoOpenSpent = true }      // he closed it during this talk: it does not open itself again
-        if !quiet { sound(.close, 0.7) }
+        if !quiet { sound(.close, 0.7); Haptic.selection() }
         ui.panelOpen = false; panelSince = nowMs()
     }
     /// the live rows are taller than the talk's place under the dial: the panel opens by itself, once per talk

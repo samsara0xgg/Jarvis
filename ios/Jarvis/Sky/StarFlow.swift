@@ -369,7 +369,7 @@ extension StarEngine {
         talk = "listen"
         var his = typed ? addTurn(his: true, sc.q, pics: pics) : nil
         if !typed {
-            expr = "35"; sound(.listen, 1)
+            expr = "35"; sound(.listen, 1); Haptic.impact(.light)
             try await nap(380, ok)
             let qc = Array(sc.q)
             for i in 1...qc.count {

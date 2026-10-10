@@ -244,6 +244,7 @@ final class Waiting {
             do {
                 let status = try await BrainLink.shared.call { try await BrainClient.answer(req.path, req.body, bases: $0, token: $1) }
                 if status == 400 || status == 422 { failures[card.id] = "没发出去：" + BrainError.refused.message; return }
+                if status == 200 { Haptic.notify(.success) }
                 // taken, or it was not waiting any more: either way it is not waiting. A plugin's card goes on in its next state, which the next look shows.
                 if card.kind == .plugin {
                     if answer == .plugin("connect") { awaitingLogin.insert(card.id) }

@@ -47,7 +47,7 @@ extension StarEngine {
     func syncVoice(_ now: Double) -> Double? {
         let v = voiceShot(now)
         // the one status line: the model download, the last trouble for eight seconds, or what the brain said about what he sent (Sky/StarBrain)
-        if v.error != voiceErr { voiceErr = v.error; voiceErrAt = now; if let e = v.error { VoiceTrace.note("error shown: \(e)") } }
+        if v.error != voiceErr { voiceErr = v.error; voiceErrAt = now; if let e = v.error { VoiceTrace.note("error shown: \(e)"); Haptic.notify(.warning) } }
         put(\.voiceNote, v.progress.map { "正在下载中英文识别模型 \(Int(($0 * 100).rounded()))%" } ?? (now - voiceErrAt < 8000 ? v.error : nil) ?? (now < brainNoteUntil ? brainNote : nil))
         if v.state != voiceState {
             let was = voiceState
@@ -55,7 +55,7 @@ extension StarEngine {
             if was == .idle && talk != nil { interrupt() }      // a scripted talk in progress is over (voiceState is still idle: the session is left alone)
             voiceState = v.state; voiceAt = now
             if was == .idle { beginTalk() }
-            if v.state == .listening { vHis = nil; vHer = nil }     // a new utterance of the session: its words are new rows
+            if v.state == .listening { vHis = nil; vHer = nil; Haptic.impact(.light) }     // a new utterance of the session: its words are new rows
             else if v.state == .idle {
                 voiceRows(v)
                 talk = nil; endTalk()                           // no `end` cue: the microphone may still be open

@@ -8,7 +8,8 @@ private let ink = SetColor.ink
 private let muted = SetColor.muted
 private let amber = Color(red: 1, green: 217 / 255, blue: 176 / 255)
 private let navy = Color(red: 8 / 255, green: 10 / 255, blue: 24 / 255)
-private let panelSpring = Animation.spring(response: 0.42, dampingFraction: 0.9)
+/// the panel's top edge moves with this; with Reduce Motion nothing moves, things fade in 0.2 s instead
+func panelSpring(_ reduce: Bool) -> Animation { reduce ? .easeOut(duration: 0.2) : .spring(response: 0.42, dampingFraction: 0.9) }
 
 // MARK: rows
 
@@ -155,6 +156,7 @@ struct TalkPanel: View {
     @Bindable var ui: StarUI
     @Binding var pull: Double?
     @State private var pinContent = 0.0
+    @Environment(\.accessibilityReduceMotion) private var reduce
 
     var body: some View {
         let top = panelTop(ui, pull), p = panelOpenness(top), held = pull != nil
@@ -163,13 +165,13 @@ struct TalkPanel: View {
         let streamTop = top + (90 + pinH) * p
         let shown = ui.talking || ui.panelOpen || held
         ZStack(alignment: .topLeading) {
-            background.frame(width: W, height: H - top + 60).offset(y: top).opacity(p)
+            background.opacity(p).animation(held ? nil : panelSpring(reduce), value: top).frame(width: W, height: H - top + 60).offset(y: top)
             topPart(p: p, held: held, pinH: pinH).frame(width: W, height: 90 + pinH, alignment: .top).offset(y: top)
             stream(top: streamTop, bottom: bottom, open: held ? p : ui.panelOpen ? 1 : 0)
             measure
         }
         .frame(width: W, height: H, alignment: .topLeading)
-        .animation(held ? nil : panelSpring, value: top)
+        .animation(held || reduce ? nil : panelSpring(false), value: top)
         .opacity(shown ? 1 : 0).allowsHitTesting(shown)
         .animation(.easeOut(duration: ui.talking || ui.panelOpen ? 0.25 : 0.35), value: shown)
     }
@@ -252,7 +254,7 @@ struct TalkPanel: View {
                                 }
                                 .opacity(r.current ? 1 : open)
                                 .id(r.id)
-                                .transition(.opacity.combined(with: .offset(y: 6)))
+                                .transition(reduce ? .opacity : .opacity.combined(with: .offset(y: 6)))
                                 .contextMenu { Button("拷贝", systemImage: "doc.on.doc") { UIPasteboard.general.string = r.text } }
                             }
                         } header: {
