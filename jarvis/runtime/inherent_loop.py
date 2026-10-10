@@ -6977,6 +6977,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             if runtime.listen_addresses
             else None
         )
+        if phone_hub is not None and runtime.whereabouts is not None:
+            # ADR 0217: a device with its conversation socket open is a phone, and that is said.
+            runtime.whereabouts.phone_open = phone_hub.connected
         deps = InherentDeps(
             submit_callable=submit_callable,
             attachments=runtime.attachments,

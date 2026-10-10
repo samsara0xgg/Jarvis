@@ -40,7 +40,6 @@ import logging
 import os
 import re
 import shutil
-import socket
 import sqlite3
 import subprocess
 import sys
@@ -191,6 +190,7 @@ from jarvis.runtime.reminders import Reminders
 from jarvis.runtime.settings import REPLY_LINES, SETUP_VOICES, Settings, apply_settings
 from jarvis.runtime.setup import write_setting
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
+from jarvis.runtime.whereabouts import Whereabouts
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event, lang, llm_io_log
 from jarvis.shared.action_admission import bind_action_admission
@@ -666,6 +666,8 @@ class JarvisRuntime:
     reminders: Reminders | None = None
     # ADR 0210: the pushes to his paired phone; pushes nothing until a key is configured.
     push: Push | None = None
+    # ADR 0217: the device each turn came from, the devices there are, where the phone put him.
+    whereabouts: Whereabouts | None = None
     # ADR 0052: the Settings page's file. None = hand-assembled.
     settings: Settings | None = None
     # ADR 0093: the night run; the daemon ticks it. None = hand-assembled.
@@ -1431,37 +1433,21 @@ def _register_dashboard_tool(registry: ToolRegistry, view: ViewState | None) -> 
 _LIVE_LINE_CHARS: Final = 200
 
 
-def _where_line(hub: TerminalHub | None) -> Callable[[], str | None]:
-    """The state-block line that says which machine she runs on, and which terminals are on.
-
-    A fact, with no instruction: on a brain the host's name and the terminals connected right
-    now, each with what it does; on ``all`` the Mac itself.
-    """
-    host = socket.gethostname()
-    model = Path("/proc/device-tree/model")  # what the board says it is, e.g. a Raspberry Pi
-    with contextlib.suppress(OSError):
-        host += ", a " + model.read_text(encoding="utf-8").strip("\x00\n ")
-
-    def describe(name: str, speaks: bool, listens: bool) -> str:  # noqa: FBT001
-        does = [word for word, on in (("speaks", speaks), ("listens", listens)) if on]
-        return f"{name} ({', '.join(does) or 'runs device tools only'})"
-
-    def line() -> str | None:
-        if hub is None:
-            return "Where you run: on this " + ("Mac." if sys.platform == "darwin" else "machine.")
-        terminals = "; ".join(describe(*row) for row in hub.roster()) or "none"
-        return (
-            f"Where you run: on the brain host {host}. Allen's devices are terminals connected "
-            f"to it; connected now: {terminals}."
-        )
-
-    return line
-
-
 def _shares_line(event_log_path: Path) -> str | None:
     """ADR 0211: the line naming what Allen last saved from other apps, folded from the log."""
     with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
         return shares_line(conn)
+
+
+def _whereabouts_lines(runtime: JarvisRuntime, turn_id: str) -> tuple[str, ...]:
+    """ADR 0217: this turn's device, the devices there are and the phone's place; never fails it."""
+    if runtime.whereabouts is None:
+        return ()
+    try:
+        return runtime.whereabouts.lines(runtime.conn, turn_id)
+    except Exception:  # a producer must never fail a turn.
+        LOGGER.exception("live context: the whereabouts lines failed, skipped")
+        return ()
 
 
 def _live_lines(producers: tuple[Callable[[], str | None], ...]) -> tuple[str, ...]:
@@ -2983,7 +2969,6 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         live_context=(
             *(() if view is None else (view.line,)),
             *(() if mail_drafts is None else (mail_drafts.line,)),
-            _where_line(terminal_hub),
             voice_cues.line,
             *(() if ambient is None else (ambient.line,)),
             partial(_shares_line, paths.event_log),
@@ -2993,6 +2978,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         job_mail=job_mail,
         moment=moment,
         push=Push.from_config(full_config, paths.root, paths.event_log),
+        whereabouts=Whereabouts(paths.root, terminal_hub, moment),
         reminders=reminders,
         voice_words=_voice_words(full_config, config_path, jev_log),
         oneshot=_jev_oneshot(
@@ -4329,7 +4315,10 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             history=memory_context.history if memory_context is not None else (),
             time_note=memory_context.now if memory_context is not None else None,
             connected_apps=connected_apps,
-            live_context=_live_lines(runtime.live_context),
+            live_context=(
+                *_live_lines(runtime.live_context),
+                *_whereabouts_lines(runtime, effective_turn_id),
+            ),
             record_sent_message=record_sent_message,
             cancellation_checkpoint=run.check_cancelled if run is not None else None,
             request_admission=(

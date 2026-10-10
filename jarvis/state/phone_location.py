@@ -45,6 +45,8 @@ class PhoneFix:
     place: str | None
     at_ms: int
     device: str
+    # A visit with a departure: he was leaving ``place`` at ``at_ms``.
+    left: bool = False
 
 
 def latest_phone_fix(conn: sqlite3.Connection) -> PhoneFix | None:
@@ -60,6 +62,7 @@ def latest_phone_fix(conn: sqlite3.Connection) -> PhoneFix | None:
         place=str(payload["place"]) if payload.get("place") else None,
         at_ms=int(row[2]),
         device=str(row[1]),
+        left=payload.get("departed_at_ms") is not None,
     )
 
 
