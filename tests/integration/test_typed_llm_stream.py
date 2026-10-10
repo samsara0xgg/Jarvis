@@ -372,9 +372,15 @@ def test_sdk_stream_assembles_tools_and_final_usage(
                 usage = [event for event in events if isinstance(event, LLMUsageCompleted)]
                 assert len(usage) == 1
                 assert usage[0].usage_status == "provider_final"
-                assert (usage[0].input_tokens, usage[0].output_tokens) == (12, 6)
+                # Anthropic's 12 leave out the 4 read and 2 written; OpenAI's 12 is whole.
+                whole = 18 if provider == "anthropic" else 12
+                assert (usage[0].input_tokens, usage[0].output_tokens) == (whole, 6)
                 assert usage[0].cache_read_tokens == 4
-                assert peer.body["messages"][-1]["content"] == "synthetic question"
+                assert peer.body["messages"][-1]["content"] == (
+                    "synthetic question"
+                    if provider == "openai"
+                    else [{"type": "text", "text": "synthetic question"}]
+                )
                 assert peer.path == (
                     "/v1/chat/completions" if provider == "openai" else "/v1/messages"
                 )

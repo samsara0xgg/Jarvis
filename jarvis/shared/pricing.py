@@ -27,6 +27,10 @@ DEFAULT_PRICING_JSON = Path("data/pricing.json")
 # "fast". A tier's rates sit in the table under "<model>:<tier>".
 _TIER_NAMES = {"priority": "fast"}
 
+# Anthropic prices a prompt above this many tokens (cache included) on a second rate card,
+# the "<model>:long" row, where the table has one.
+LONG_PROMPT_TOKENS = 100_000
+
 
 def compute_cost_usd(
     model: str | None,
@@ -65,6 +69,8 @@ def compute_cost_usd(
 
     tier = _TIER_NAMES.get(service_tier or "", service_tier)
     entry = (tier and pricing_table.get(f"{model}:{tier}")) or pricing_table.get(model)
+    if entry and tokens_in > LONG_PROMPT_TOKENS:
+        entry = pricing_table.get(f"{model}:long") or entry
     if not entry:
         if model not in _warned_models:
             LOGGER.warning(

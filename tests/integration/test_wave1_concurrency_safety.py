@@ -939,7 +939,8 @@ def test_cost_guard_covers_batch_stream_cancel_error_and_terminal_usage(tmp_path
 
     anthropic_client = _anthropic_client()
     anthropic_chunks = _stream_all(recorder, anthropic_client)
-    assert anthropic_chunks[-1].input_tokens == 23
+    # the whole prompt: 23 fresh plus 3 read and 2 written (what cost arithmetic means)
+    assert anthropic_chunks[-1].input_tokens == 28
     assert anthropic_chunks[-1].output_tokens == 7
     assert anthropic_chunks[-1].usage_status == "provider_final"
 

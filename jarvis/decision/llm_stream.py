@@ -13,6 +13,8 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from jarvis.decision.llm_anthropic import remember_thinking
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 
@@ -24,6 +26,7 @@ _MAX_ARGUMENT_BYTES = 65_536
 _MAX_CALL_ID = 512
 _MAX_TOOL_NAME = 256
 _MAX_BLOCKS = 128
+_MAX_THINKING_BYTES = 1_000_000
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -250,6 +253,12 @@ class StreamNormalizer:
         # Responses API: message item id -> its phase, function_call item id -> call index.
         self._phases: dict[str, MessagePhase | None] = {}
         self._calls: dict[str, int] = {}
+        # Anthropic: input_tokens excludes the cached tokens; ``input_tokens`` here is the
+        # whole prompt (what the cost arithmetic and the OpenAI paths mean by it).
+        self._fresh_input: int | None = None
+        # Anthropic thinking blocks by content index, kept to go back with the tool results.
+        self._thinking: dict[int, dict[str, Any]] = {}
+        self._thinking_bytes = 0
 
     def _identity(self) -> dict[str, Any]:
         return {"llm_request_id": self.request_id, "provider_response_id": self.response_id}
@@ -466,6 +475,17 @@ class StreamNormalizer:
         # nothing the delta and item events above did not.
         return []
 
+    def _anthropic_usage(self, usage: object) -> None:
+        self._usage(usage, {
+            "input_tokens": "_fresh_input", "output_tokens": "output_tokens",
+            "cache_read_input_tokens": "cache_read_tokens",
+            "cache_creation_input_tokens": "cache_write_tokens",
+        })
+        if self._fresh_input is not None:
+            self.input_tokens = (
+                self._fresh_input + (self.cache_read_tokens or 0) + (self.cache_write_tokens or 0)
+            )
+
     def _anthropic(self, raw: Mapping[str, Any]) -> list[LLMStreamEvent]:  # noqa: C901, PLR0911, PLR0912, PLR0915
         kind = _text(raw.get("type"))
         if kind == "ping":
@@ -478,11 +498,7 @@ class StreamNormalizer:
             self._message_started = True
             message = _object(raw.get("message"))
             self._response_id(message.get("id"))
-            self._usage(message.get("usage"), {
-                "input_tokens": "input_tokens", "output_tokens": "output_tokens",
-                "cache_read_input_tokens": "cache_read_tokens",
-                "cache_creation_input_tokens": "cache_write_tokens",
-            })
+            self._anthropic_usage(message.get("usage"))
             return []
         if not self._message_started:
             raise _protocol_error("missing_message_start")
@@ -517,6 +533,11 @@ class StreamNormalizer:
                 )] if text else []
             if block_type not in {"thinking", "redacted_thinking"}:
                 raise _protocol_error("unsupported_content_block")
+            self._thinking[index] = (
+                {"type": "thinking", "thinking": "", "signature": ""}
+                if block_type == "thinking"
+                else {"type": "redacted_thinking", "data": _text(block.get("data", ""))}
+            )
             return []
         if kind == "content_block_delta":
             index = _index(raw.get("index"))
@@ -531,6 +552,10 @@ class StreamNormalizer:
             if active_block == "thinking" and delta.get("type") in {
                 "thinking_delta", "signature_delta",
             }:
+                key = "thinking" if delta["type"] == "thinking_delta" else "signature"
+                piece = _text(delta.get(key, ""))
+                self._thinking[index][key] += piece
+                self._thinking_bytes += len(piece.encode("utf-8"))
                 return []
             raise _protocol_error("invalid_content_delta")
         if kind == "content_block_stop":
@@ -549,9 +574,11 @@ class StreamNormalizer:
                     raise _protocol_error("duplicate_finish")
                 if any(value != "stopped" for value in self._blocks.values()):
                     raise _protocol_error("finish_before_block_stop")
+                if reason == "refusal":
+                    raise _protocol_error("provider_refusal")
                 self.finish_reason = _text(reason)
             usage = raw.get("usage")
-            self._usage(usage, {"output_tokens": "output_tokens"})
+            self._anthropic_usage(usage)
             if isinstance(usage, dict) and usage.get("output_tokens") is not None:
                 self._final_usage_seen = True
             return []
@@ -590,6 +617,11 @@ class StreamNormalizer:
                 **self._identity(), call_index=index, call_id=tool.call_id,
                 name=tool.name, arguments_json=arguments,
             ))
+        if results and self._thinking and self._thinking_bytes <= _MAX_THINKING_BYTES:
+            remember_thinking(
+                [one.call_id for one in results],
+                [block for _, block in sorted(self._thinking.items())],
+            )
         return results
 
     def usage(self, *, completed: bool) -> LLMUsageCompleted:

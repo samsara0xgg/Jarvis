@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 
+from jarvis.decision.llm_anthropic import remember_thinking, request_fields
 from jarvis.decision.llm_io import stream_openai, warm_openai
 from jarvis.decision.llm_stream import LLMStreamHandle, StreamNormalizer
 from jarvis.shared import llm_io_log
@@ -99,21 +100,30 @@ FailureReason = Literal[
 
 def failure_reason(exc: BaseException) -> FailureReason:  # noqa: PLR0911 — one per reason.
     """Why a model call failed, from ``exc`` or the exceptions it was raised from."""
-    import openai  # noqa: PLC0415 — lazy SDK import (see module docstring)
+    import anthropic  # noqa: PLC0415 — lazy SDK import (see module docstring)
+    import openai  # noqa: PLC0415
 
     seen: BaseException | None = exc
     while seen is not None:
         if isinstance(seen, MissingAPIKeyError):
             return "missing_key"
-        if isinstance(seen, openai.AuthenticationError):
+        if isinstance(seen, openai.AuthenticationError | anthropic.AuthenticationError):
             return "unauthorized"
-        if isinstance(seen, openai.PermissionDeniedError | openai.NotFoundError):
+        if isinstance(
+            seen,
+            openai.PermissionDeniedError | openai.NotFoundError
+            | anthropic.PermissionDeniedError | anthropic.NotFoundError,
+        ):
             return "model_denied"
         if isinstance(seen, openai.RateLimitError):
             return "quota" if seen.code == "insufficient_quota" else "rate_limited"
-        if isinstance(seen, openai.APITimeoutError):  # before its base, APIConnectionError
+        if isinstance(seen, anthropic.RateLimitError):
+            return "rate_limited"
+        if isinstance(seen, anthropic.BadRequestError) and "credit balance" in str(seen):
+            return "quota"
+        if isinstance(seen, openai.APITimeoutError | anthropic.APITimeoutError):  # before the bases
             return "timeout"
-        if isinstance(seen, openai.APIConnectionError):
+        if isinstance(seen, openai.APIConnectionError | anthropic.APIConnectionError):
             return "network"
         seen = seen.__cause__ or seen.__context__
     return "error"
@@ -513,7 +523,6 @@ class LLMClient:
                 key). Translated to OpenAI when provider is ``openai``.
             tool_choice: ``auto`` / ``required`` / ``none``, or one tool's name to force
                 that call while the tool list, and so the prompt cache, stays the same.
-                Anthropic ignores.
             service_tier: OpenAI ``service_tier`` for this request only; dropped for any
                 other provider or host (:meth:`request_tier`).
 
@@ -561,6 +570,7 @@ class LLMClient:
                     messages=messages,
                     system=system,
                     tools=tools,
+                    tool_choice=tool_choice,
                 )
         except Exception as exc:
             if record is not None:
@@ -618,7 +628,8 @@ class LLMClient:
         text carries each message's phase; Anthropic ignores it.
         ``max_output_tokens`` caps this request below the preset's limit.
         ``text_format`` is the Responses API ``text.format`` (a strict
-        json_schema, ADR 0114); only a ``responses`` request carries it.
+        json_schema, ADR 0114); a ``responses`` request carries it, and an
+        Anthropic one sends its schema as ``output_config.format``.
         ``service_tier`` is OpenAI's request tier, sent on this request only
         (:meth:`request_tier`).
         """
@@ -660,12 +671,12 @@ class LLMClient:
             if self._extra_body:
                 body["extra_body"] = copy.deepcopy(self._extra_body)
         else:
-            body.update({
-                "max_tokens": max_tokens, "system": system,
-                "messages": copy.deepcopy(messages),
-            })
-            if tools:
-                body["tools"] = copy.deepcopy(tools)
+            # Thinking, effort, structured output and caching come from the preset and the
+            # call; ``responses`` and ``service_tier`` are OpenAI's and mean nothing here.
+            body.update(request_fields(
+                messages=messages, system=system, tools=tools, max_tokens=max_tokens,
+                reasoning_effort=self._reasoning_effort, text_format=text_format,
+            ))
         if tier := self.request_tier(service_tier):
             body["service_tier"] = tier
         record = llm_io_log.start(
@@ -702,13 +713,8 @@ class LLMClient:
             async for chunk in stream_openai(options, body, responses=responses):
                 yield chunk
         else:
-            from anthropic import AsyncAnthropic  # noqa: PLC0415 — lazy provider construction
-
-            async with AsyncAnthropic(**options) as anthropic_client:
-                response = await anthropic_client.messages.create(**body)
-                async with response:
-                    async for chunk in response:
-                        yield chunk.model_dump(exclude_none=True)
+            async for chunk in stream_openai(options, body, responses=False, provider="anthropic"):
+                yield chunk
 
     # ---- fresh-context contextmanager (ADR-0002 Step 9) ---------------
 
@@ -749,7 +755,7 @@ class LLMClient:
         handshake (~0.15 s measured) by asking for the model first. Never raises.
         """
         if self._provider != "openai":
-            return
+            return  # ponytail: Anthropic's sync client is not opened ahead; only the stream warms
         try:
             self._get_openai_client().models.retrieve(self._model)
         except Exception:  # noqa: BLE001 — a failed warm-up costs only the handshake it tried to save
@@ -761,9 +767,9 @@ class LLMClient:
         Called when Allen starts talking, so the spoken turn's first request
         finds its TLS connection already open. Never blocks, never raises.
         """
-        if self._provider != "openai" or not self._api_key:
+        if not self._api_key:
             return
-        warm_openai(self._stream_options(), self._model)
+        warm_openai(self._stream_options(), self._model, self._provider)
 
     def _stream_options(self) -> dict[str, Any]:
         options: dict[str, Any] = {"api_key": self._api_key}
@@ -1115,7 +1121,7 @@ class LLMClient:
         if not self._api_key:
             msg = "Anthropic API key is unset; check api_key_env in the active preset"
             raise MissingAPIKeyError(msg)
-        self._anthropic_client = anthropic.Anthropic(api_key=self._api_key)
+        self._anthropic_client = anthropic.Anthropic(**self._stream_options())
         return self._anthropic_client
 
     def _chat_anthropic(
@@ -1124,17 +1130,20 @@ class LLMClient:
         messages: list[dict[str, Any]],
         system: str,
         tools: list[dict[str, Any]] | None,
+        tool_choice: str | None = "auto",
     ) -> ChatResult:
         client = self._get_anthropic_client()
 
+        # Caching pays where the prefix comes back: a tool loop (same tools, system and
+        # the turns so far). A one-shot call would only pay the cache write.
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": self._max_tokens,
-            "system": system,
-            "messages": messages,
+            **request_fields(
+                messages=messages, system=system, tools=tools, max_tokens=self._max_tokens,
+                reasoning_effort=self._reasoning_effort, tool_choice=tool_choice,
+                cache=bool(tools),
+            ),
         }
-        if tools:
-            kwargs["tools"] = tools
 
         LOGGER.info("Sending request to Anthropic (model=%s)", self._model)
         record_realtime_trace(
@@ -1151,12 +1160,6 @@ class LLMClient:
         self._last_metadata["response_id"] = getattr(response, "id", None)
         self._last_metadata["streaming"] = False
         self._last_finish_reason = getattr(response, "stop_reason", None)
-        self._last_input_tokens = getattr(usage, "input_tokens", None) if usage else None
-        self._last_output_tokens = getattr(usage, "output_tokens", None) if usage else None
-        self._last_metadata["usage_status"] = _usage_status(
-            self._last_input_tokens,
-            self._last_output_tokens,
-        )
 
         # ADR-0002 Step 3: Anthropic exposes both cache_read and
         # cache_creation token counts on usage. Surface both on
@@ -1170,6 +1173,17 @@ class LLMClient:
             cw = getattr(usage, "cache_creation_input_tokens", None)
             if cw is not None:
                 cache_write_in_anth = int(cw)
+        # Anthropic's input_tokens leave the cached ones out; the cost arithmetic
+        # (and every other provider) means the whole prompt.
+        fresh = getattr(usage, "input_tokens", None) if usage else None
+        self._last_input_tokens = (
+            None if fresh is None else int(fresh) + cache_read_in_anth + cache_write_in_anth
+        )
+        self._last_output_tokens = getattr(usage, "output_tokens", None) if usage else None
+        self._last_metadata["usage_status"] = _usage_status(
+            self._last_input_tokens,
+            self._last_output_tokens,
+        )
         self._last_metadata["cache_read_tokens"] = cache_read_in_anth if usage is not None else None
         self._last_metadata["cache_write_tokens"] = (
             cache_write_in_anth if usage is not None else None
@@ -1177,9 +1191,12 @@ class LLMClient:
 
         text_parts: list[str] = []
         tool_calls_list: list[ToolCall] = []
+        thinking_blocks: list[Mapping[str, Any]] = []
         for block in getattr(response, "content", []) or []:
             btype = getattr(block, "type", None)
-            if btype == "text":
+            if btype in ("thinking", "redacted_thinking"):
+                thinking_blocks.append(_safe_model_dump(block))
+            elif btype == "text":
                 text_parts.append(getattr(block, "text", "") or "")
             elif btype == "tool_use":
                 # Anthropic returns parsed dict input; serialise back to JSON
@@ -1197,6 +1214,7 @@ class LLMClient:
                     )
                 )
 
+        remember_thinking([call.call_id for call in tool_calls_list], thinking_blocks)
         text_joined = "".join(text_parts).strip() or None
         raw = _safe_model_dump(response)
         return ChatResult(
@@ -1237,12 +1255,11 @@ class LLMClient:
         client = self._get_anthropic_client()
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": self._max_tokens,
-            "system": system,
-            "messages": messages,
+            **request_fields(
+                messages=messages, system=system, tools=tools, max_tokens=self._max_tokens,
+                reasoning_effort=self._reasoning_effort, cache=bool(tools),
+            ),
         }
-        if tools:
-            kwargs["tools"] = tools
 
         finish_reason: str | None = None
         first_text_delta = True
@@ -1337,6 +1354,10 @@ class LLMClient:
                     self._last_metadata["cache_write_tokens"] = (
                         int(cache_write) if cache_write is not None else 0
                     )
+        if self._last_input_tokens is not None:  # Anthropic's count leaves the cached ones out
+            self._last_input_tokens += (self.last_cache_read_tokens or 0) + (
+                self.last_cache_write_tokens or 0
+            )
         self._last_finish_reason = finish_reason
         self._last_metadata["usage_status"] = _usage_status(
             self._last_input_tokens,

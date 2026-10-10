@@ -88,9 +88,30 @@ LLM_MAP: dict[str, str] = {
     "gemini-2.5-flash": "gemini-2.5-flash",
 }
 
-# Service-tier rows, named "<model>:<tier>"; not in LiteLLM, so written by hand and merged in
-# after every refresh. OpenAI reports its Priority tier as "fast".
+# Rows not in LiteLLM, written by hand and merged in after every refresh. OpenAI reports its
+# Priority tier as "fast" ("<model>:<tier>"); Anthropic's ">100K token prompt" card is
+# "<model>:long" (pricing.compute_cost_usd picks it by prompt size).
 TIER_ROWS: dict[str, dict[str, Any]] = {
+    "claude-haiku-5-5": {
+        "litellm_id": "claude-haiku-5-5",
+        "provider": "anthropic",
+        "input_per_1m": 0.1,
+        "output_per_1m": 0.5,
+        "cache_read_per_1m": 0.01,
+        "cache_write_per_1m": 0.125,
+        "supports_prompt_caching": True,
+        "source": "Anthropic API docs (2026-10-10): prompts up to 100K tokens; 5-minute cache write 1.25x.",
+    },
+    "claude-haiku-5-5:long": {
+        "litellm_id": "claude-haiku-5-5",
+        "provider": "anthropic",
+        "input_per_1m": 0.5,
+        "output_per_1m": 2.5,
+        "cache_read_per_1m": 0.05,
+        "cache_write_per_1m": 0.625,
+        "supports_prompt_caching": True,
+        "source": "Anthropic API docs (2026-10-10): prompts above 100K tokens.",
+    },
     "gpt-6-luna:fast": {
         "litellm_id": "gpt-6-luna",
         "provider": "openai",
