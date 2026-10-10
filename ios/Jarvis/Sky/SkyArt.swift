@@ -76,19 +76,24 @@ final class SpriteCache {
         return w
     }
 
-    static func pad(_ size: Double) -> Double { ceil(0.22 * size) + 2 }
-    /// a word with a dark halo round it, so a line that runs under it is hidden there; the text box is the sprite inset by `pad`
-    func label(_ s: String, _ font: WFont, _ col: RGB) -> Sprite {
-        let key = "L|\(s)|\(font.size)|\(font.weight)|\(font.mono)|\(col.r),\(col.g),\(col.b)"
+    static func pad(_ size: Double) -> Double { ceil(0.3 * size) + 2 }
+    /// a word with a soft dark halo round it, so a line that runs under it is hidden there; the text box is the sprite inset by `pad`.
+    /// `more` > 0 ends it in " +N", the same font at 0.7 of its alpha: the others standing in the same place
+    func label(_ s: String, _ font: WFont, _ col: RGB, more: Int = 0) -> Sprite {
+        let key = "L|\(s)|\(more)|\(font.size)|\(font.weight)|\(font.mono)|\(col.r),\(col.g),\(col.b)"
         if let w = words[key] { return w }
-        let f = font.ui, p = Self.pad(Double(font.size))
-        let tw = ceil(Double((s as NSString).size(withAttributes: [.font: f]).width)), th = ceil(Double(f.lineHeight))
+        let f = font.ui, p = Self.pad(Double(font.size)), full = more > 0 ? "\(s) +\(more)" : s
+        let tw = ceil(Double((full as NSString).size(withAttributes: [.font: f]).width)), th = ceil(Double(f.lineHeight))
         let w = tw + 2 * p, h = th + 2 * p
         let img = render(size: CGSize(width: w, height: h), scale: px) { c in
             c.setLineJoin(.round)           // so a CJK corner does not spike
-            let halo = UIColor(red: 7 / 255, green: 8 / 255, blue: 24 / 255, alpha: 0.92)
-            (s as NSString).draw(at: CGPoint(x: p, y: p), withAttributes: [.font: f, .strokeColor: halo, .strokeWidth: 44])
-            (s as NSString).draw(at: CGPoint(x: p, y: p), withAttributes: [.font: f, .foregroundColor: col.ui()])
+            let sh = NSShadow(); sh.shadowBlurRadius = 0.25 * Double(font.size); sh.shadowOffset = .zero
+            sh.shadowColor = UIColor(red: 7 / 255, green: 8 / 255, blue: 24 / 255, alpha: 0.9)
+            let halo = UIColor(red: 7 / 255, green: 8 / 255, blue: 24 / 255, alpha: 0.8)
+            (full as NSString).draw(at: CGPoint(x: p, y: p), withAttributes: [.font: f, .strokeColor: halo, .strokeWidth: 20])
+            let at = NSMutableAttributedString(string: full, attributes: [.font: f, .foregroundColor: col.ui(), .shadow: sh])
+            if more > 0 { at.addAttribute(.foregroundColor, value: col.ui(0.7), range: NSRange(location: s.utf16.count, length: full.utf16.count - s.utf16.count)) }
+            at.draw(at: CGPoint(x: p, y: p))
         }
         let sp = Sprite(img: img, w: w, h: h)
         words[key] = sp

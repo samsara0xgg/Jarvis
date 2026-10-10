@@ -193,8 +193,8 @@ struct StarChrome: View {
             .frame(width: 120, height: 36)
             .contentShape(Rectangle())
             .gesture(drawerPull(opens: true, tap: true))
-            .opacity(ui.talking || ui.typing || ui.drawerOpen || ui.view == "month" ? 0 : 1)
-            .allowsHitTesting(!(ui.talking || ui.typing || ui.drawerOpen || ui.view == "month"))
+            .opacity(ui.talking || ui.typing || ui.drawerOpen || ui.view == "month" ? 0 : 1 - ui.camE)      // close up it would lie across the road; the big time pulls the drawer instead
+            .allowsHitTesting(!(ui.talking || ui.typing || ui.drawerOpen || ui.view == "month" || ui.camE > 0.5))
             .animation(.easeOut(duration: 0.3), value: ui.talking || ui.typing || ui.drawerOpen)
             .offset(x: (W - 120) / 2, y: 500)
             .accessibilityLabel("展开今天的卡片")

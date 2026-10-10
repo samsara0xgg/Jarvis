@@ -552,6 +552,7 @@ extension StarEngine {
         let at = q < 0.5 && abs(F - nowT()) < 8 && mode != .drag, gone = at || talk != nil
         put(\.showBack, !gone)
         put(\.level, Int(clamp(qGoal.rounded(), -1, 2)))
+        put(\.camE, camE)
         let dd = floorDay(F)
         if dd != dateD { dateD = dd; let (mo, da) = dateOf(dd); ui.dateText = "\(mo)月\(da)日 \(dayName(dd))"; askDays() }
         // her words

@@ -6,6 +6,17 @@ import CoreGraphics
 private let TICKS: [(Double, Double, Double, Double)] = [(5, 2.2, 0.2, 0.8), (15, 3.4, 0.27, 0.9), (60, 6.2, 0.4, 1), (180, 8.6, 0.5, 1.1), (720, 9.8, 0.54, 1.2), (1440, 13, 0.72, 1.5)]
 private let C_DONE = RGB.done.tint(0.15), C_WAIT = RGB.wait.tint(0.15), C_WORK = RGB.work.tint(0.2), C_HEAD = RGB.work.tint(0.5)
 
+/// Groups points that stand within `d` of the first of their group, in the order given; each group lists its indices, the first one leading.
+func nameClusters(_ pts: [(Double, Double)], _ d: Double) -> [[Int]] {
+    var out: [[Int]] = [], taken = Set<Int>()
+    for i in pts.indices where !taken.contains(i) {
+        var g = [i]
+        for j in pts.indices where j > i && !taken.contains(j) && hypot(pts[j].0 - pts[i].0, pts[j].1 - pts[i].1) <= d { g.append(j); taken.insert(j) }
+        out.append(g)
+    }
+    return out
+}
+
 extension StarEngine {
     var spr: SpriteCache { sprites }
 
@@ -23,7 +34,7 @@ extension StarEngine {
     }
 
     /// stroke part of a ring; seen close up, its line thickens as it comes near
-    func strokeRing(_ c: CGContext, _ r: Double, _ a0: Double, _ a1: Double, _ w: Double, dash: [CGFloat] = []) {
+    func strokeRing(_ c: CGContext, _ r: Double, _ a0: Double, _ a1: Double, _ w: Double, dash: [CGFloat] = [], thick: Double = 3.2) {
         if cam == nil {
             c.setLineWidth(w); c.setLineDash(phase: 0, lengths: dash)
             c.beginPath(); c.addArc(center: CGPoint(x: CX, y: CY), radius: r, startAngle: a0, endAngle: a1, clockwise: false); c.strokePath()
@@ -35,7 +46,7 @@ extension StarEngine {
         for i in 1...n {
             let ok = P(r, a0 + (a1 - a0) * Double(i) / Double(n))
             if ok && ok0 {
-                let key = (w * clamp(PS, 0.6, 3.2) * 4).rounded() / 4
+                let key = (w * clamp(PS, 0.6, thick) * 4).rounded() / 4
                 let p = paths[key] ?? CGMutablePath(); paths[key] = p
                 p.move(to: CGPoint(x: x0, y: y0)); p.addLine(to: CGPoint(x: PX, y: PY))
             }
@@ -276,12 +287,13 @@ extension StarEngine {
             func seg(_ a: Double, _ b: Double, _ col: RGB, _ al: Double, _ w: Double, _ dash: [CGFloat] = []) {
                 if b <= a { return }
                 c.setAlpha(1); c.setStrokeColor(col.cg(al * v))
-                strokeRing(c, r, ang(a), ang(b), w, dash: dash)
+                strokeRing(c, r, ang(a), ang(b), w, dash: dash, thick: 1.2)      // only the camera's path thickens; close up a span stays a thread beside the road
             }
             if e.st == .next || ahead { seg(e.t, end, .next, 0.26, 1.1, [1.5, 3.6]) } else {
                 let mid = min(end, max(e.t, Trev))
                 let col = e.st == .work ? RGB.work : youR ? RGB.lit : RGB.done
-                seg(e.t, mid, col, e.st == .work ? 0.55 : youR ? 0.3 : 0.4, e.st == .work ? 2.2 : 1.8)
+                let soft = e.st == .work ? 1 : 1 - 0.3 * camE
+                seg(e.t, mid, col, (e.st == .work ? 0.55 : youR ? 0.3 : 0.4) * soft, e.st == .work ? 2.2 : 1.8)
                 seg(mid, end, col, 0.28, 1.2, [2, 4])
             }
         }
@@ -431,10 +443,11 @@ extension StarEngine {
         var placed: [Box] = [], hits: [(id: String, box: Box)] = []
         let her: Box = (herP.0 - 22, herP.1 - 22, herP.0 + 22, herP.1 + 22)
         func hit(_ a: Box, _ b: Box, _ mx: Double = 0, _ my: Double = 0) -> Bool { a.0 - mx < b.2 && a.2 + mx > b.0 && a.1 - my < b.3 && a.3 + my > b.1 }
-        for cd in cands {
-            let e = cd.e, la = cd.v * fin * smooth(0.55, 0.80, cd.pr) * calmK; if la < 0.03 { continue }
+        let shown = cands.filter { $0.v * fin * smooth(0.55, 0.80, $0.pr) * calmK >= 0.03 }
+        for group in nameClusters(shown.map { ($0.x, $0.y) }, 14) {      // stars that stand as one point share their first one's name
+            let cd = shown[group[0]], e = cd.e, la = cd.v * fin * smooth(0.55, 0.80, cd.pr) * calmK
             let ps = clamp(cd.pr, 0.45, 2.4), n = clamp((9.5 + 4.2 * ps.squareRoot()).rounded(), 11, 17), p = SpriteCache.pad(n)
-            let s = spr.label(e.s!, .sans(500, n), e.kd == .wait ? RGB(255, 217, 176) : .ink)
+            let s = spr.label(e.s!, .sans(500, n), e.kd == .wait ? RGB(255, 217, 176) : .ink, more: group.count - 1)
             let tw = s.w - 2 * p, gap = 6 + 5 * ps, hh = 0.62 * n
             let left = (cd.x - gap - tw, cd.y - hh, cd.x - gap, cd.y + hh), right = (cd.x + gap, cd.y - hh, cd.x + gap + tw, cd.y + hh)
             var box: Box?
