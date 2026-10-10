@@ -76,6 +76,8 @@ final class StarEngine {
     var drawer = false
     weak var herDrive: HerDrive?
     var endEditing: (() -> Void)?
+    /// asks the stage to go to 60 fps right now, so a touch or a button does not wait for the next 20 fps tick
+    var wake: () -> Void = {}
 
     /// true while something moves fast enough to want 60 fps
     var isBusy: Bool {

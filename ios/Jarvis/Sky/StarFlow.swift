@@ -99,6 +99,7 @@ extension StarEngine {
     }
     func seek(_ t: Double, _ slow: Bool = false) { goal = t; mode = .seek; stiff = slow ? 2.6 : 6 }
     func setLevel(_ l0: Double) {
+        wake()
         let l = clamp(l0.rounded(), -1, 2)
         let was = qGoal.rounded(), d = floorDay(F), today = floorDay(nowT())
         qGoal = l
@@ -133,6 +134,7 @@ extension StarEngine {
     }
 
     func pointerDown(_ id: Int, _ p: CGPoint, _ ts: Double) {
+        wake()
         ptr[id] = p
         if ptr.count == 1 {
             var ng = Gest(kind: .press, p0: p, her: onHer(p), a: nil, hist: [(ts, fs.value)], caught: false)
@@ -351,6 +353,7 @@ extension StarEngine {
     // MARK: the drawer: every card of today
 
     func setDrawer(_ on: Bool, quiet: Bool = false) {
+        wake()
         if on != drawer && !quiet { sound(on ? .open : .close, 0.7) }
         if on && !drawer { drKey = "" }
         drawer = on; ui.drawerOpen = on

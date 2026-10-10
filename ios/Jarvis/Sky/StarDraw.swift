@@ -597,19 +597,8 @@ extension StarEngine {
         return s
     }
 
-    func drawMonth(_ c: CGContext) {
-        let fd = Int(clamp(Double(floorDay(F)), Double(M_FIRST), Double(M_LAST))), (_, _, r0, c0) = cellOf(fd)
-        c.setAlpha(smooth(0.3, 0.9, mon) * 0.5)
-        for (i, ch) in "一二三四五六日".enumerated() {
-            let w = spr.word(String(ch), .sans(500, 11), .ink, 11)
-            blit(c, w.img, GX0 + GW * (Double(i) + 0.5) - w.w / 2, GY0 - 26 - w.h / 2, w.w, w.h)
-        }
-        for d in M_FIRST...M_LAST {
-            let cell = cellOf(d), far = hypot(Double(cell.row - r0), Double(cell.col - c0)), ap = smooth(0.12 + far * 0.06, 0.55 + far * 0.07, mon)
-            if ap < 0.01 { continue }
-            let s = miniSprite(d), sc = 0.7 + 0.3 * Ease.out(ap)
-            c.setAlpha(ap); blit(c, s.img, cell.x - s.w / 2 * sc, cell.y - (MR + 3) * sc, s.w * sc, s.h * sc)
-        }
-        c.setAlpha(1)
+    /// warms the month's day sprites one at a time while the sky is quiet, so opening the month does not draw 31 of them in one frame
+    func warmMonth() {
+        for d in M_FIRST...M_LAST where spr.minis["\(d)"] == nil { _ = miniSprite(d); return }
     }
 }

@@ -20,7 +20,10 @@ final class StarStage: UIView, HerDrive {
     private let starsBox = CALayer(), rot = CALayer(), fade = CAGradientLayer()
     private let glowA = CAGradientLayer(), glowB = CAGradientLayer()
     private let dial = CALayer(), sun = CAGradientLayer(), sunMask = CAShapeLayer(), base = CALayer()
-    private let map = DrawLayer(), month = DrawLayer(), fxLayer = DrawLayer()
+    private let map = DrawLayer(), fxLayer = DrawLayer()
+    /// the month's grid: one layer per day and per weekday letter, so the compositor does the fading and scaling and nothing is redrawn per frame
+    private let monthBox = CALayer()
+    private var cells: [CALayer] = [], heads: [CALayer] = [], cellImg: [CGImage?] = [], headImg: [CGImage?] = []
     private let pole = CALayer(), halo = CAGradientLayer(), spikeH = CAGradientLayer(), spikeV = CAGradientLayer()
     private let her = HerView(radius: R_PS)
     private var link: CADisplayLink?
@@ -35,6 +38,7 @@ final class StarStage: UIView, HerDrive {
         backgroundColor = UIColor(red: 5 / 255, green: 6 / 255, blue: 13 / 255, alpha: 1)
         isMultipleTouchEnabled = true
         engine.herDrive = self
+        engine.wake = { [weak self] in self?.boost() }
         build()
         NotificationCenter.default.addObserver(self, selector: #selector(visibilityChanged), name: UIApplication.didBecomeActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(visibilityChanged), name: UIApplication.willResignActiveNotification, object: nil)
@@ -102,10 +106,11 @@ final class StarStage: UIView, HerDrive {
         map.drawBlock = { [weak self] c in self?.engine.drawMap(c, nowMs()) }
         dial.addSublayer(map)
         design.addSublayer(dial)
-        month.frame = CGRect(x: 0, y: 0, width: W, height: SKY_H); month.isHidden = true
-        month.drawBlock = { [weak self] c in self?.engine.drawMonth(c) }
-        design.addSublayer(month)
-        fxLayer.frame = month.frame; fxLayer.isHidden = true
+        monthBox.frame = CGRect(x: 0, y: 0, width: W, height: SKY_H); monthBox.isHidden = true
+        for _ in "一二三四五六日" { let l = CALayer(); l.isHidden = true; monthBox.addSublayer(l); heads.append(l); headImg.append(nil) }
+        for _ in M_FIRST...M_LAST { let l = CALayer(); l.isHidden = true; monthBox.addSublayer(l); cells.append(l); cellImg.append(nil) }
+        design.addSublayer(monthBox)
+        fxLayer.frame = monthBox.frame; fxLayer.isHidden = true; fxLayer.drawsAsynchronously = true
         fxLayer.drawBlock = { [weak self] c in self?.engine.drawFx(c, nowMs()) }
         design.addSublayer(fxLayer)
         // her, with her halo
@@ -150,7 +155,7 @@ final class StarStage: UIView, HerDrive {
         engine.px = p
         engine.sprites.px = CGFloat(min(3, max(1.5, p))); engine.sprites.clear()
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        for l in [map, month, fxLayer] { l.contentsScale = CGFloat(p) }
+        for l in [map, fxLayer] { l.contentsScale = CGFloat(p) }
         rot.contents = paintField(scale: CGFloat(min(2, p)))
         rot.contentsScale = CGFloat(min(2, p))
         paintBase(CGFloat(p))
@@ -185,6 +190,10 @@ final class StarStage: UIView, HerDrive {
         link = l; lastTime = 0
     }
     private func stop() { link?.invalidate(); link = nil }
+    private func boost() {
+        guard let l = link, l.preferredFrameRateRange.preferred != 60 else { return }
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 60, preferred: 60)
+    }
 
     fileprivate func tick(_ l: CADisplayLink) {
         let now = nowMs()
@@ -192,6 +201,7 @@ final class StarStage: UIView, HerDrive {
         engine.step(now: now, dt: dt, scale: laidPx)
         apply(now)
         let busy = engine.isBusy || her.isBusy
+        if !busy && now - engine.born > 1500 { engine.warmMonth() }
         let want: Float = busy ? 60 : 20
         if l.preferredFrameRateRange.preferred != want { l.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 60, preferred: want) }
     }
@@ -245,9 +255,9 @@ final class StarStage: UIView, HerDrive {
         // trails, her listening, a star flying out
         let fb = e.fxBusy
         if fb { fxLayer.isHidden = false; fxLayer.setNeedsDisplay(); fxOn = true } else if fxOn { fxLayer.isHidden = true; fxOn = false }
-        if e.mon < 0.004 { if monOn { month.isHidden = true; monOn = false; monKey = "" } } else {
+        if e.mon < 0.004 { if monOn { monthBox.isHidden = true; monOn = false; monKey = "" } } else {
             let key = String(format: "%.3f|%.2f|%d", e.mon, laidPx, floorDay(e.F))
-            if key != monKey { monKey = key; month.isHidden = false; monOn = true; month.setNeedsDisplay() }
+            if key != monKey { monKey = key; monthBox.isHidden = false; monOn = true; layoutMonth() }
         }
         // her
         her.paintLayers(scale: CGFloat(scale))
@@ -258,6 +268,28 @@ final class StarStage: UIView, HerDrive {
             let c = RGB(Double(r), Double(g), Double(b))
             halo.colors = [c.cg(0.24), c.cg(0.08), c.cg(0)]
             spikeH.colors = [c.cg(0), c.cg(0.34), c.cg(0)]; spikeV.colors = spikeH.colors
+        }
+    }
+
+    /// where each day's sprite sits for the month's opening: the same fades and growth the prototype draws, set on layers
+    private func layoutMonth() {
+        let e = engine, fd = Int(clamp(Double(floorDay(e.F)), Double(M_FIRST), Double(M_LAST))), (_, _, r0, c0) = e.cellOf(fd)
+        let headA = Float(smooth(0.3, 0.9, e.mon) * 0.5)
+        for (i, ch) in "一二三四五六日".enumerated() {
+            let w = e.sprites.word(String(ch), .sans(500, 11), .ink, 11), l = heads[i]
+            if headImg[i] !== w.img { headImg[i] = w.img; l.contents = w.img }
+            l.bounds = CGRect(x: 0, y: 0, width: w.w, height: w.h)
+            l.position = CGPoint(x: GX0 + GW * (Double(i) + 0.5), y: GY0 - 26)
+            l.opacity = headA; l.isHidden = false
+        }
+        for d in M_FIRST...M_LAST {
+            let cell = e.cellOf(d), far = hypot(Double(cell.row - r0), Double(cell.col - c0)), ap = smooth(0.12 + far * 0.06, 0.55 + far * 0.07, e.mon), l = cells[d - M_FIRST]
+            if ap < 0.01 { l.isHidden = true; continue }
+            let sp = e.miniSprite(d), sc = 0.7 + 0.3 * Ease.out(ap)
+            if cellImg[d - M_FIRST] !== sp.img { cellImg[d - M_FIRST] = sp.img; l.contents = sp.img }
+            l.bounds = CGRect(x: 0, y: 0, width: sp.w * sc, height: sp.h * sc)
+            l.position = CGPoint(x: cell.x, y: cell.y - (MR + 3) * sc + sp.h * sc / 2)
+            l.opacity = Float(ap); l.isHidden = false
         }
     }
 
