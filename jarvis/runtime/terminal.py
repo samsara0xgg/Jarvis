@@ -101,7 +101,7 @@ from jarvis.runtime.night_watch import NightWatch
 from jarvis.runtime.settings import DEVICE_KEYS, Settings, apply_settings
 from jarvis.shared import ActionRequest
 from jarvis.shared.realtime_trace import configure_realtime_trace_jsonl
-from jarvis.state import device_reads, job_time, timesink, timesink_moment
+from jarvis.state import device_reads, job_time, ledger, timesink, timesink_moment
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_report import git_show, local_commits, resolve_zone
 from jarvis.state.daily_store import commit_exists
@@ -179,6 +179,10 @@ def _when(args: Mapping[str, Any], key: str) -> datetime:
 
 def _derived_read(fn: str, args: Mapping[str, Any], store: Path | None) -> Any:  # noqa: ANN401 — one reader's JSON.
     """The reads that are a whole view of the day, not a query: each runs here, whole."""
+    if fn == "ledger_screen":
+        return ledger.terminal_screen(store, _when(args, "lo"), _when(args, "hi"))
+    if fn == "ledger_submissions":
+        return ledger.terminal_submissions(store, _when(args, "as_of"))
     if fn == "moment_facts":
         known = job_time.known_from_wire(args["known"])
         return timesink_moment.moment_facts(store, _when(args, "now"), known)
@@ -195,7 +199,7 @@ def _derived_read(fn: str, args: Mapping[str, Any], store: Path | None) -> Any: 
 
 def _timesink_read(fn: str, args: Mapping[str, Any], store: Path | None) -> Any:  # noqa: ANN401, PLR0911 — one reader's JSON; one return per reader.
     """One TimeSink reader of ``jarvis.state``, run on this machine's own store."""
-    if fn in {"moment_facts", "job_time", "project_window"}:
+    if fn in {"moment_facts", "job_time", "project_window", "ledger_screen", "ledger_submissions"}:
         return _derived_read(fn, args, store)
     if fn in {"read_capture", "read_span"}:
         reader = timesink.read_capture if fn == "read_capture" else timesink.read_span

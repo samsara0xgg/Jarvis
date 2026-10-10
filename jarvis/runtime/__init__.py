@@ -222,7 +222,7 @@ from jarvis.state.event_log import (
     open_event_log,
     open_runtime_event_log,
 )
-from jarvis.state.ledger import LedgerSources
+from jarvis.state.ledger import LedgerSources, TerminalScreen
 from jarvis.state.memory_db import (
     MemorySettings,
     SessionSettings,
@@ -1244,13 +1244,20 @@ def _timesink_db_path(full_config: Mapping[str, Any]) -> Path | None:
 
 def _ledger(
     full_config: Mapping[str, Any], memory: MemorySettings | None, event_log: Path,
+    device: DeviceLink | None = None,
 ) -> LedgerContext | None:
-    """ADR 0201: the one ledger both prompt renders ask; None without a ``ledger:`` block."""
+    """ADR 0201: the one ledger both prompt renders ask; None without a ``ledger:`` block.
+
+    On a brain (``device``, ADR 0170) its TimeSink is the terminal's.
+    """
     settings = LedgerSettings.from_config(full_config.get("ledger"))
     if settings is None or memory is None:
         return None
     zone = resolve_zone(None, _work_state_timezone(full_config))[1]
-    sources = LedgerSources(memory.db_path, event_log, _timesink_db_path(full_config), zone)
+    sources = LedgerSources(
+        memory.db_path, event_log, _timesink_db_path(full_config), zone,
+        None if device is None else TerminalScreen(device),
+    )
     return LedgerContext(sources, settings)
 
 
@@ -2970,7 +2977,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         night=night,
         voice_settings=voice_settings,
         daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config, terminal_hub),
-        ledger=_ledger(full_config, memory, paths.event_log),
+        ledger=_ledger(full_config, memory, paths.event_log, device),
     )
 
 

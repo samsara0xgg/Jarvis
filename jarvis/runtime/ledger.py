@@ -9,6 +9,7 @@ turn. :func:`run_day_prose` is the one model call of the ledger, run from the ni
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time as _time
 from collections.abc import Callable, Mapping
@@ -55,6 +56,7 @@ _DEFAULT_DAYS: Final[int] = 7
 _DEFAULT_MAX_CHARS: Final[int] = 800
 _ATTEMPTS: Final[int] = 3
 _BACKOFF_S: Final[tuple[float, ...]] = (2.0, 8.0)
+_RETRY_S: Final[float] = 60.0
 _TRANSIENT: Final[frozenset[str]] = frozenset({"rate_limited", "network", "timeout"})
 
 
@@ -111,7 +113,7 @@ class LedgerContext:
         self.sources = sources
         self.settings = settings
         self._lock = threading.Lock()
-        self._cached: tuple[object, str] | None = None
+        self._cached: tuple[object, str, float] | None = None  # key, text, trust it until
 
     def __call__(self, now: datetime, last_ts: datetime | None) -> tuple[str, str]:
         """The text that follows the core memory and the text that follows the time line."""
@@ -139,16 +141,22 @@ class LedgerContext:
                         days=self.settings.full_days + self.settings.compact_days,
                     ),
                 )
-                if self._cached is None or self._cached[0] != key:
-                    self._cached = (
-                        key,
-                        standing_text(
-                            self.sources, midnight,
-                            full_days=self.settings.full_days,
-                            compact_days=self.settings.compact_days, notes_as_of=now,
-                            day_end_as_of=day_end,
-                        ),
+                if (
+                    self._cached is None or self._cached[0] != key
+                    or _time.monotonic() > self._cached[2]
+                ):
+                    terminal = self.sources.terminal
+                    missed = 0 if terminal is None else terminal.misses
+                    text = standing_text(
+                        self.sources, midnight,
+                        full_days=self.settings.full_days,
+                        compact_days=self.settings.compact_days, notes_as_of=now,
+                        day_end_as_of=day_end,
                     )
+                    # a text built while the terminal was away is built again, once a minute,
+                    # until it answers
+                    away = terminal is not None and terminal.misses != missed
+                    self._cached = (key, text, _time.monotonic() + (_RETRY_S if away else math.inf))
                 return self._cached[1]
         except Exception:
             LOGGER.exception("ledger: the standing blocks failed; the turn goes without them")

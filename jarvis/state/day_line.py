@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from datetime import tzinfo
     from pathlib import Path
 
-    from jarvis.state.ledger import ActivitySpan
+    from jarvis.state.ledger import ActivitySpan, TerminalScreen
 
     type Source = Callable[[sqlite3.Connection, int, int, int], list[dict[str, Any]]]
 
@@ -73,6 +73,7 @@ class DaySources:
     zone: tzinfo
     timesink: Path | None = None
     memory_db: Path | None = None
+    terminal: TerminalScreen | None = None  # a brain's ``timesink``: the terminal's store
 
 
 class _NotConnected(Exception):  # noqa: N818 — a source's answer, not an error
@@ -251,16 +252,20 @@ def _mac_items(
 ) -> list[dict[str, Any]]:
     """Work blocks and calls from TimeSink, in the lane of him."""
     path = sources.timesink
-    if path is None:
+    if path is None and sources.terminal is None:
         raise _NotConnected
-    with timesink.snapshot(path) as snap:
-        opened = snap is not None
-    if not opened:
-        raise _NotConnected
+    if path is not None:
+        with timesink.snapshot(path) as snap:
+            opened = snap is not None
+        if not opened:
+            raise _NotConnected
+    missed = sources.terminal.misses if sources.terminal else 0
     activity = window_activity(
         _moment(window_start - BLOCK_REACH_MS), _moment(window_end + BLOCK_REACH_MS),
-        sources.zone, timesink=path,
+        sources.zone, timesink=path, terminal=sources.terminal,
     )
+    if sources.terminal and sources.terminal.misses != missed:
+        raise _NotConnected  # the terminal is away, or has no store
     items: list[dict[str, Any]] = []
     for group in _blocks(activity.spans):
         active = _union_s((span.start, span.end) for span in group)

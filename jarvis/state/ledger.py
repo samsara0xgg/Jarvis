@@ -23,6 +23,8 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+import threading
+import time as _clock
 from bisect import bisect_left
 from collections import Counter, defaultdict
 from contextlib import closing
@@ -32,13 +34,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 from urllib.parse import parse_qsl, urlsplit
 
-from jarvis.state import phone_day, reminders, timesink
+from jarvis.state import device_reads, phone_day, reminders, timesink
+from jarvis.state.daily_contract import DailyError
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
     from jarvis.shared import Event
+    from jarvis.shared.device_link import DeviceLink
 
 LOGGER = logging.getLogger(__name__)
 
@@ -88,14 +92,55 @@ _SECTIONS: Final[dict[str, str]] = {  # the headings of a day summary, in the or
 _RECORD_ID: Final[re.Pattern[str]] = re.compile(r"\s*\[record_id=[^\]]*\]")
 
 
+_TERMINAL_TTL_S: Final[float] = 60.0
+
+
+class TerminalScreen:
+    """A brain's TimeSink reads for the ledger (ADR 0170): the terminal runs them on its own store.
+
+    A turn asks every render, and one wide window is megabytes of spans, so an answer, or a
+    failure, is kept for a minute. Nothing is raised: a terminal that is away, slow past the
+    link's timeout or too old to know the read gives ``None`` and the part is empty, as with no
+    store. :attr:`misses` counts the asks that were given ``None``, so a caller can tell that what
+    it just built was built without the terminal.
+    """
+
+    def __init__(self, device: DeviceLink) -> None:
+        """Bind the brain's link to its terminal."""
+        self._device = device
+        self._lock = threading.Lock()
+        self._kept: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[float, Any]] = {}
+        self.misses = 0
+
+    def read(self, fn: str, **args: str) -> Any:  # noqa: ANN401 — the reader's JSON.
+        """The terminal's ``fn`` result, from the last minute when asked the same, else None."""
+        key = (fn, tuple(sorted(args.items())))
+        with self._lock:  # a turn and the prefix warm share one ask
+            now = _clock.monotonic()
+            self._kept = {k: v for k, v in self._kept.items() if now - v[0] < _TERMINAL_TTL_S}
+            if key not in self._kept:
+                try:
+                    found = device_reads.ask(self._device, device_reads.TIMESINK_READ, fn, **args)
+                except DailyError as exc:
+                    LOGGER.warning("ledger: the terminal's TimeSink read %s failed: %s", fn, exc)
+                    found = None
+                self._kept[key] = (now, found)
+            self.misses += self._kept[key][1] is None
+            return self._kept[key][1]
+
+
 @dataclass(frozen=True)
 class LedgerSources:
-    """Where the ledger reads, and the zone its days are cut in."""
+    """Where the ledger reads, and the zone its days are cut in.
+
+    ``terminal`` stands in for ``timesink`` on a brain, whose TimeSink is its terminal's.
+    """
 
     memory_db: Path
     event_log: Path
     timesink: Path | None
     zone: tzinfo
+    terminal: TerminalScreen | None = None
 
 
 class _Span(NamedTuple):
@@ -374,7 +419,7 @@ class _Data:
         src: LedgerSources, lo: datetime, hi: datetime,
     ) -> tuple[list[_Span], list[_Call]]:
         if src.timesink is None:
-            return [], []
+            return _terminal_spans(src.terminal, lo, hi)
         with timesink.snapshot(src.timesink) as snap:
             if not isinstance(snap, timesink.Snapshot):
                 return [], []
@@ -1036,7 +1081,7 @@ def _describe(url: str, domain: str, titles: Sequence[str]) -> tuple[str, str]:
 def _screen_submissions(src: LedgerSources, as_of: datetime) -> list[_Sub]:
     """Submission pages seen in the browser, one per posting, at the first sighting."""
     if src.timesink is None:
-        return []
+        return _terminal_submissions(src, as_of)
     with timesink.snapshot(src.timesink) as snap:
         if not isinstance(snap, timesink.Snapshot):
             return []
@@ -1421,6 +1466,79 @@ def since_text(src: LedgerSources, now: datetime, last_talk: datetime | None) ->
         out.append("  Nothing new: no mail, reminders or commits.")
     return "\n".join(out)
 
+# ------------------------------------------------------------------ a brain's TimeSink
+# The terminal runs the loaders above on its own store (``jarvis.runtime.terminal``) and sends
+# the rows the ledger keeps: epoch milliseconds, no window titles.
+
+
+_NO_STORE: Final[DailyError] = DailyError(
+    "TimeSink is not readable on this machine", "source_unavailable",
+)
+
+
+def _ms(moment: datetime) -> int:
+    return round(moment.timestamp() * 1000)
+
+
+def _at(ms: int, zone: tzinfo = UTC) -> datetime:
+    return datetime.fromtimestamp(ms / 1000, zone)
+
+
+def _next_minute(moment: datetime) -> str:
+    """The minute after ``moment``: nothing starts later than now, so a minute's asks agree."""
+    whole = moment.astimezone(UTC).replace(second=0, microsecond=0)
+    return (whole + timedelta(minutes=1)).isoformat()
+
+
+def terminal_screen(store: Path | None, lo: datetime, hi: datetime) -> dict[str, Any]:
+    """The terminal's side of the spans and calls in ``[lo, hi]``.
+
+    Raises:
+        DailyError: this machine has no TimeSink store.
+    """
+    if store is None:
+        raise _NO_STORE
+    spans, calls = _Data._timesink(LedgerSources(_UNREAD, _UNREAD, store, UTC), lo, hi)  # noqa: SLF001
+    return {
+        "spans": [
+            [_ms(s.start), _ms(s.end), s.app, s.document if s.app in _SESSION_APPS else "",
+             s.project]
+            for s in spans
+        ],
+        "calls": [[_ms(c.start), _ms(c.end), c.app] for c in calls],
+    }
+
+
+def terminal_submissions(store: Path | None, as_of: datetime) -> list[list[Any]]:
+    """The terminal's side of :func:`_screen_submissions`; ``DailyError`` without a store."""
+    if store is None:
+        raise _NO_STORE
+    found = _screen_submissions(LedgerSources(_UNREAD, _UNREAD, store, UTC), as_of)
+    return [[_ms(sub.at), sub.company, sub.role] for sub in found]
+
+
+def _terminal_spans(
+    terminal: TerminalScreen | None, lo: datetime, hi: datetime,
+) -> tuple[list[_Span], list[_Call]]:
+    got = None if terminal is None else terminal.read(
+        "ledger_screen", lo=lo.astimezone(UTC).isoformat(), hi=_next_minute(hi),
+    )
+    if got is None:
+        return [], []
+    return (
+        [_Span(_at(a), _at(b), app, "", doc, project) for a, b, app, doc, project in got["spans"]],
+        [_Call(_at(a), _at(b), app) for a, b, app in got["calls"]],
+    )
+
+
+def _terminal_submissions(src: LedgerSources, as_of: datetime) -> list[_Sub]:
+    got = None if src.terminal is None else src.terminal.read(
+        "ledger_submissions", as_of=_next_minute(as_of),
+    )
+    if got is None:
+        return []
+    return [_Sub(_at(at, src.zone), company, role) for at, company, role in got]
+
 
 # ------------------------------------------------------------------ one window, raw (ADR 0199)
 TOP_FLOOR_S: Final[float] = _TOP_FLOOR_S
@@ -1455,9 +1573,10 @@ class Activity(NamedTuple):
     talks: list[datetime]
 
 
-def window_activity(
+def window_activity(  # noqa: PLR0913 — the window, its zone and the three sources.
     begin: datetime, end: datetime, zone: tzinfo, *,
     timesink: Path | None = None, memory_db: Path | None = None,
+    terminal: TerminalScreen | None = None,
 ) -> Activity:
     """The raw activity in ``[begin, end)``, loaded the way every ledger render loads it.
 
@@ -1466,13 +1585,14 @@ def window_activity(
     cannot be read yields none, as there. ``memory_db`` feeds the times of his records
     (``source='allen'``) between ``begin`` and ``end`` inclusive, in ``zone``; it raises when the
     store cannot be read. A path left None is not read and its part is empty, so a caller that
-    wants the halves to fail apart asks for each in a call of its own.
+    wants the halves to fail apart asks for each in a call of its own. ``terminal`` is a brain's
+    ``timesink``: the terminal's store, asked for the same spans and calls.
     """
-    src = LedgerSources(memory_db or _UNREAD, _UNREAD, timesink, zone)
+    src = LedgerSources(memory_db or _UNREAD, _UNREAD, timesink, zone, terminal)
     spans: list[ActivitySpan] = []
     calls: list[ActivityCall] = []
     talks: list[datetime] = []
-    if timesink is not None:
+    if timesink is not None or terminal is not None:
         found, called = _Data._timesink(src, begin, end)  # noqa: SLF001 — this module's loader
         spans = [ActivitySpan(s.start, s.end, s.app, s.project) for s in found]
         calls = [
@@ -1491,6 +1611,7 @@ __all__ = [
     "ActivityCall",
     "ActivitySpan",
     "LedgerSources",
+    "TerminalScreen",
     "day_active",
     "day_numbers_text",
     "day_report",
@@ -1500,6 +1621,8 @@ __all__ = [
     "phone_stamp",
     "since_text",
     "standing_text",
+    "terminal_screen",
+    "terminal_submissions",
     "today_text",
     "window_activity",
 ]

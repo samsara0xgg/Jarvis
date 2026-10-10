@@ -44,7 +44,13 @@ from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_line import DaySources, day_window, fold_day, parse_day
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
 from jarvis.state.event_log import emit_event, open_event_log
-from jarvis.state.ledger import LedgerSources, day_numbers_text, hm, window_activity
+from jarvis.state.ledger import (
+    LedgerSources,
+    TerminalScreen,
+    day_numbers_text,
+    hm,
+    window_activity,
+)
 from jarvis.state.memory_db import open_memory_db
 from jarvis.state.phone_location import VISIT_EVENT
 from jarvis.state.plugin_settings import local_key, local_key_matches
@@ -53,7 +59,7 @@ from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.phone_events import PHONE_EVENTS_PATH
 from jarvis.surface.terminal_events import BrainEvents
-from tests.integration.test_ledger import _PROJECT, _SPAN, _VERDICT
+from tests.integration.test_ledger import _PROJECT, _SPAN, _VERDICT, _terminal_link
 from tests.integration.test_terminal_voice import REMOTE, _bearer, _brain_log
 
 if TYPE_CHECKING:
@@ -828,6 +834,32 @@ def test_the_mac_and_his_words_fold_into_the_items_of_the_day(
 
     assert line.items == _expected(case.items, start_ms)
     assert line.missing == []
+
+
+@pytest.mark.parametrize("case", MAC_CASES[:3], ids=[case.name for case in MAC_CASES[:3]])
+def test_a_brains_day_has_its_terminals_mac_lane_and_names_it_missing_when_it_is_away(
+    tmp_path: Path, case: MacCase,
+) -> None:
+    """No local TimeSink: the lane is the terminal's, the same items; away, ``mac`` is missing."""
+    zone = ZoneInfo(VANCOUVER)
+    start_ms, end_ms = day_window(parse_day("2026-10-10"), zone)
+    one = _stores(
+        tmp_path, zone, origin=start_ms, spans=case.spans, calls=case.calls, talks=case.talks,
+    )
+    up = [True]
+    link = _terminal_link(one.timesink, [], up=up)
+    brain = DaySources(zone, None, one.memory_db, TerminalScreen(link))
+    conn = open_event_log(tmp_path / "events.db")
+    now = _ms(start_ms, case.now)
+    assert fold_day(conn, start_ms, end_ms, now, brain) == fold_day(
+        conn, start_ms, end_ms, now, one,
+    )
+    up[0] = False
+    away = DaySources(zone, None, one.memory_db, TerminalScreen(link))
+    line = fold_day(conn, start_ms, end_ms, now, away)
+    conn.close()
+    assert line.missing == ["mac"]
+    assert not any(item["kind"] in {"work", "call"} for item in line.items)
 
 
 def test_a_block_and_a_talk_across_midnight_are_the_same_item_on_both_days(

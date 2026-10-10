@@ -236,6 +236,7 @@ from jarvis.state.input_submission_inbox import (
     resolve_asr_request,
     submit_text_once,
 )
+from jarvis.state.ledger import TerminalScreen
 from jarvis.state.memory_db import (
     MemorySettings,
     SessionSettings,
@@ -5174,20 +5175,22 @@ def _draft_deps(runtime: JarvisRuntime, home: Home | None) -> dict[str, Any]:
 
 def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked and the clock.
     event_log: Path, configured: tzinfo | None, memory_db: Path | None, timesink: Path | None,
-    day: date | None, now_ms: int,
+    day: date | None, now_ms: int, terminal: TerminalScreen | None = None,
 ) -> dict[str, Any]:
     """``GET /inherent/day`` (ADR 0199): the day asked for, or today in the owner's zone.
 
     The zone is ``work_state.timezone`` else the machine's, as every other day window is cut. The
     log is read on a connection of its own, so this runs on a worker thread. ``memory_db`` (his
     talks) and ``timesink`` (his Mac) are the configured stores or None; the ``ledger:`` block
-    does not gate them, and a store that is not there leaves its source in ``missing``.
+    does not gate them, and a store that is not there leaves its source in ``missing``. On a
+    brain ``terminal`` is his Mac's TimeSink.
     """
     zone_name, zone = resolve_zone(None, configured)
     on = datetime.fromtimestamp(now_ms / 1000, zone).date() if day is None else day
     start_ms, end_ms = day_window(on, zone)
     with contextlib.closing(open_runtime_event_log(event_log)) as conn:
-        line = fold_day(conn, start_ms, end_ms, now_ms, DaySources(zone, timesink, memory_db))
+        sources = DaySources(zone, timesink, memory_db, terminal)
+        line = fold_day(conn, start_ms, end_ms, now_ms, sources)
     return {
         "date": on.isoformat(),
         "tz": zone_name,
@@ -5199,13 +5202,14 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
     }
 
 
-async def _serve_day(
+async def _serve_day(  # noqa: PLR0913 — the route's stores, its zone, the terminal and the day.
     event_log: Path, configured: tzinfo | None, memory_db: Path | None, timesink: Path | None,
-    day: date | None,
+    day: date | None, *, terminal: TerminalScreen | None = None,
 ) -> dict[str, Any]:
     """:func:`_read_day` off the loop thread, at the brain's clock."""
     return await asyncio.to_thread(
         _read_day, event_log, configured, memory_db, timesink, day, int(time.time() * 1000),
+        terminal,
     )
 
 
@@ -7013,6 +7017,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 _work_state_timezone(runtime.config),
                 None if runtime.memory is None else runtime.memory.db_path,
                 _timesink_db_path(runtime.config),
+                terminal=(
+                    None if runtime.terminal_hub is None
+                    else TerminalScreen(runtime.terminal_hub.call)
+                ),
             ),
             today_read=(
                 None if runtime.home is None

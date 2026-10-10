@@ -21,12 +21,15 @@ from jarvis.decision.day_prose import build_day_prose_messages, check_day_prose
 from jarvis.decision.llm import ChatResult
 from jarvis.execution.job_ledger_tool import build_record_application_tool
 from jarvis.execution.tools import ToolError
+from jarvis.runtime import terminal as terminal_runtime
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings, ProseSettings, run_day_prose
+from jarvis.shared.device_link import DeviceCallError
 from jarvis.state import core_memory
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.job_ledger import add_application, list_applications, record_seen, upsert_mail
 from jarvis.state.ledger import (
     LedgerSources,
+    TerminalScreen,
     job_hunt_text,
     notes_stamp,
     since_text,
@@ -505,3 +508,95 @@ def test_applications_submitted_counts_each_submission_once_across_three_sources
     assert "Told me or added: Orbit Co (Data Co-op, 10-08); Hand Made Ltd (10-02)." in line
     assert "portal application with no mail and no such page is not visible" in hunt
     assert "Application confirmed (" in hunt  # the existing lines stay
+
+
+def _terminal_link(store: Path | None, asked: list[str], *, up: list[bool]) -> Any:  # noqa: ANN401
+    """A brain's device link whose far end is the real terminal reader on ``store``."""
+
+    def link(op: str, arguments: Any, target: str | None) -> dict[str, Any]:  # noqa: ANN401
+        del target
+        asked.append(str(arguments["fn"]))
+        if not up[0]:
+            msg = "the Mac is not connected right now, so timesink_read cannot run"
+            raise DeviceCallError(msg)
+        reply = terminal_runtime._read_device(op, arguments, store, ())  # noqa: SLF001
+        if not reply["ok"]:
+            raise DeviceCallError(reply["message"], code=reply["code"])
+        return dict(reply["output"])
+
+    return link
+
+
+def test_a_brains_ledger_reads_its_terminals_timesink_and_equals_one_machines(
+    tmp_path: Path,
+) -> None:
+    """No local TimeSink path, a terminal behind the link: every TimeSink part is the same text."""
+    one = _world(tmp_path)
+    assert one.timesink is not None
+    with closing(sqlite3.connect(one.timesink)) as conn, conn:
+        conn.execute(
+            'CREATE TABLE "callSpan" ("start" DATETIME, "end" DATETIME, "appBundleID" TEXT, '
+            '"appName" TEXT)',
+        )
+        conn.execute(
+            "INSERT INTO callSpan VALUES (?, ?, 'us.zoom.xos', 'zoom.us')",
+            (_utc(_at(8, 10, 15)), _utc(_at(8, 10, 45))),
+        )
+        conn.execute(
+            "INSERT INTO span (start, end, appBundleID, appName, title, document) "
+            "VALUES (?, ?, ?, 'Ghostty', 'repl', 'jarvis-docs')",
+            (_utc(_at(8, 12)), _utc(_at(8, 12, 40)), GHOSTTY),
+        )
+    _page(  # a submission page, no mail for it
+        one.timesink, _at(8, 9), "Application Submitted", "https://jobs.rbc.com/ca/en/applythankyou",
+        "jobs.rbc.com",
+    )
+    asked: list[str] = []
+    screen = TerminalScreen(_terminal_link(one.timesink, asked, up=[True]))
+    brain = LedgerSources(one.memory_db, one.event_log, None, ZONE, screen)
+    standing = standing_text(brain, MIDNIGHT)
+    assert standing == standing_text(one, MIDNIGHT)
+    assert "Computer: started 09:00, stopped 10:30, active 1h30m" in standing
+    assert "Projects (TimeSink): jarvis 1h30m" in standing
+    today = today_text(brain, NOW)
+    assert today == today_text(one, NOW)
+    assert "active today 1h42m" in today  # 09:00-09:02, 10:00-11:00 and 12:00-12:40
+    assert "top apps Ghostty 1h40m; Zoom call 0h30m" in today
+    hunt = job_hunt_text(brain, NOW)
+    assert hunt == job_hunt_text(one, NOW)
+    assert "Seen on screen only: Rbc" in hunt
+    # The turn path asks again within the minute for nothing: one ask per window.
+    asked.clear()
+    assert today_text(brain, NOW + timedelta(seconds=20)) == today
+    assert job_hunt_text(brain, NOW + timedelta(seconds=20)) == hunt
+    assert asked == []
+    assert screen.misses == 0
+
+
+def test_without_a_terminal_or_a_path_the_ledgers_timesink_parts_are_empty_not_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing to read, or a terminal that is away: the one-machine empty text, no raise."""
+    one = _world(tmp_path)
+    bare = LedgerSources(one.memory_db, one.event_log, None, ZONE)
+    assert "Computer: no recorded activity, active 0h00m" in standing_text(bare, MIDNIGHT)
+    assert "Computer: no activity recorded yet today" in today_text(bare, NOW)
+    assert "Applications submitted" in job_hunt_text(bare, NOW)
+    # A terminal that is away: the same empty text, counted as a miss, nothing raised.
+    asked: list[str] = []
+    up = [False]
+    away = TerminalScreen(_terminal_link(one.timesink, asked, up=up))
+    src = LedgerSources(one.memory_db, one.event_log, None, ZONE, away)
+    assert today_text(src, NOW) == today_text(bare, NOW)
+    assert away.misses == 1
+    assert today_text(src, NOW) == today_text(bare, NOW)  # kept for a minute: no second ask
+    assert asked == ["ledger_screen"] * 1
+    # The cached standing text built while it was away is built again once it answers.
+    monkeypatch.setattr("jarvis.state.ledger._TERMINAL_TTL_S", 0.0)
+    monkeypatch.setattr("jarvis.runtime.ledger._RETRY_S", 0.0)
+    context = LedgerContext(src, LedgerSettings())
+    assert "Computer: started 09:00" not in context(NOW, None)[0]
+    up[0] = True
+    assert "Computer: started 09:00" in context(NOW, None)[0]
+    up[0] = False
+    assert "Computer: started 09:00" in context(NOW, None)[0]  # answered once: kept for the day
