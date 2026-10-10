@@ -20,7 +20,7 @@ extension StarEngine {
         #endif
         return MainActor.assumeIsolated {
             let v = VoiceSession.shared
-            return VoiceShot(state: v.state, partial: v.partial, transcript: v.transcript, reply: v.reply,
+            return VoiceShot(state: v.state, partial: v.partial, transcript: v.transcript, reply: AnswerText.visible(v.reply),
                              input: v.inputLevel, output: v.outputLevel, error: v.errorText, progress: v.modelProgress)
         }
     }
