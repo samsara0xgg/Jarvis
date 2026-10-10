@@ -38,11 +38,12 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: com.allen.jarvis
             CFBundleURLSchemes: [jarvis]
+    # HealthKit is off until an Apple account is signed in to Xcode (the capability must be added to the App ID, and the wildcard
+    # profile cannot carry it). To turn it on: put com.apple.developer.healthkit and com.apple.developer.healthkit.background-delivery
+    # (both true) in these properties and add SWIFT_ACTIVE_COMPILATION_CONDITIONS: HEALTH_ENTITLED to the settings below.
     entitlements:
       path: Config/Jarvis.entitlements
-      properties:
-        com.apple.developer.healthkit: true
-        com.apple.developer.healthkit.background-delivery: true
+      properties: {}
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.allen.jarvis

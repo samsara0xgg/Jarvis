@@ -32,8 +32,18 @@ final class HealthCollector: Collector {
 
     var name: String { kinds == [.steps] ? "steps" : "health" }
 
+    /// The HealthKit entitlement needs the capability on the App ID, which needs an Apple account signed in to Xcode; until then
+    /// project.yml leaves both the entitlement and HEALTH_ENTITLED out, and touching HealthKit without it would crash the app.
+    nonisolated static let entitled: Bool = {
+        #if HEALTH_ENTITLED
+        true
+        #else
+        false
+        #endif
+    }()
+
     var access: ReportAccess {
-        guard HKHealthStore.isHealthDataAvailable() else { return .unavailable }
+        guard Self.entitled, HKHealthStore.isHealthDataAvailable() else { return .unavailable }
         return requested ? .asked : .notAsked
     }
 
@@ -46,7 +56,7 @@ final class HealthCollector: Collector {
     }
 
     func start() {
-        guard HKHealthStore.isHealthDataAvailable() else { return }
+        guard Self.entitled, HKHealthStore.isHealthDataAvailable() else { return }
         // The observers are registered at once: a background launch for a Health delivery needs them in place
         // before the launch settles, not after the authorization question has been asked.
         for k in kinds { register(k) }
@@ -66,12 +76,14 @@ final class HealthCollector: Collector {
     }
 
     func stop() {
+        guard Self.entitled else { return }
         observers.forEach(store.stop)
         observers = []
         for k in kinds { Task { try? await store.disableBackgroundDelivery(for: type(k)) } }
     }
 
     func wake() async {
+        guard Self.entitled else { return }
         for k in kinds { await sync(k) }
     }
 
