@@ -31,6 +31,10 @@ async def _empty() -> dict[str, Any]:
     return {}
 
 
+async def _empty_day(_day: object) -> dict[str, Any]:
+    return {}
+
+
 async def _set_todo(_todo_id: str, _done: bool) -> None:  # noqa: FBT001 — the deps signature
     return None
 
@@ -90,6 +94,7 @@ def _client(
             usage_record_balance=lambda _provider, _usd: None,
             work_state_read=dict,
             work_state_refresh=_empty,
+            day_read=_empty_day,
             projects_read=_empty,
             projects_refresh=_empty,
             conversation_read=lambda _after, _limit: {"since": None, "rows": []},
@@ -154,12 +159,12 @@ def _call(client: TestClient, route: str, headers: dict[str, str]) -> int:
 def test_the_route_table_is_the_one_this_test_walks(tmp_path: Any) -> None:  # noqa: ANN401
     """Pin the count, so a route added later is walked, not silently skipped.
 
-    64 HTTP method/path pairs, the four FastAPI docs pairs (GET and HEAD of
+    65 HTTP method/path pairs, the four FastAPI docs pairs (GET and HEAD of
     ``/openapi.json``, ``/docs``, ``/docs/oauth2-redirect``, ``/redoc``) and
     the ``/inherent/ws`` socket.
     """
     _, _, routes = _client(tmp_path)
-    assert len(routes) == 73, routes
+    assert len(routes) == 74, routes
 
 
 @pytest.mark.parametrize(

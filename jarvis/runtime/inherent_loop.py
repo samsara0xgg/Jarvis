@@ -90,6 +90,7 @@ import uvicorn
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from datetime import date, tzinfo
 
     from jarvis.decision import ToolRegistryLike
     from jarvis.decision.turn_end_asks import TurnEndAsks
@@ -153,6 +154,7 @@ from jarvis.runtime import (
     _timesink_db_path,
     _timesink_poll_interval_s,
     _wait_for_next_trigger,
+    _work_state_timezone,
     diagnostics_flag,
     drive_turn,
     make_barge_in_interrupt_callable,
@@ -196,6 +198,8 @@ from jarvis.shared.realtime import (
 )
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state import quiet_mode
+from jarvis.state.daily_report import resolve_zone
+from jarvis.state.day_line import day_window, fold_day
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
 from jarvis.state.event_log import (
     emit_event,
@@ -4990,6 +4994,37 @@ def _draft_deps(runtime: JarvisRuntime, home: Home | None) -> dict[str, Any]:
     }
 
 
+def _read_day(
+    event_log: Path, configured: tzinfo | None, day: date | None, now_ms: int,
+) -> dict[str, Any]:
+    """``GET /inherent/day`` (ADR 0199): the day asked for, or today in the owner's zone.
+
+    The zone is ``work_state.timezone`` else the machine's, as every other day window is cut. The
+    log is read on a connection of its own, so this runs on a worker thread.
+    """
+    zone_name, zone = resolve_zone(None, configured)
+    on = datetime.fromtimestamp(now_ms / 1000, zone).date() if day is None else day
+    start_ms, end_ms = day_window(on, zone)
+    with contextlib.closing(open_runtime_event_log(event_log)) as conn:
+        line = fold_day(conn, start_ms, end_ms, now_ms)
+    return {
+        "date": on.isoformat(),
+        "tz": zone_name,
+        "start_ms": start_ms,
+        "end_ms": end_ms,
+        "now_ms": now_ms,
+        "items": line.items,
+        "missing": line.missing,
+    }
+
+
+async def _serve_day(
+    event_log: Path, configured: tzinfo | None, day: date | None,
+) -> dict[str, Any]:
+    """:func:`_read_day` off the loop thread, at the brain's clock."""
+    return await asyncio.to_thread(_read_day, event_log, configured, day, int(time.time() * 1000))
+
+
 def _notice_deps(
     job_mail: JobMail | None, reminders: Reminders | None, moment: Moment | None,
     alerts: dict[str, Any] | None = None,
@@ -6621,6 +6656,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             think_read=(
                 None if runtime.think_mode is None
                 else functools.partial(runtime.think_mode.status, runtime.conn)
+            ),
+            day_read=functools.partial(
+                _serve_day, runtime.runtime_paths.event_log, _work_state_timezone(runtime.config),
             ),
             today_read=(
                 None if runtime.home is None

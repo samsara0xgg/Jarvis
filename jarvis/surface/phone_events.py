@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Final
 
+from jarvis.state.day_line import HEALTH_EVENT, MOTION_EVENT
 from jarvis.state.event_log import EventTypeRegistry
 from jarvis.state.phone_location import LOCATION_EVENT, VISIT_EVENT
 
@@ -33,8 +34,6 @@ if TYPE_CHECKING:
 
 PHONE_EVENTS_PATH: Final = "/inherent/device/events"
 
-MOTION_EVENT: Final = "phone.motion_observed"
-HEALTH_EVENT: Final = "phone.health_observed"
 STATE_EVENT: Final = "phone.state_observed"
 
 PHONE_EVENT_TYPES: Final = frozenset(

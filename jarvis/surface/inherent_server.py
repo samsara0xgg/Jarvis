@@ -79,6 +79,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     UploadFile,
     WebSocket,
@@ -93,6 +94,7 @@ from starlette.websockets import WebSocketClose
 
 from jarvis.shared.lang import language, t
 from jarvis.state.agent_marks import AgentMarks
+from jarvis.state.day_line import parse_day
 from jarvis.state.memory_page import Conflict
 from jarvis.surface.claude_hooks import ClaudeHooks
 from jarvis.surface.claude_sessions import ClaudeSessions
@@ -125,6 +127,7 @@ from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmpt
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+    from datetime import date
     from datetime import time as clock
     from pathlib import Path
 
@@ -613,6 +616,10 @@ class InherentDeps:
     # words that make one. A small SQLite read on the loop thread; ``None``
     # leaves the route unregistered.
     think_read: Callable[[], dict[str, Any]] | None = None
+    # ADR 0199: one day's timeline, folded from the log when asked: the day asked for, or ``None``
+    # for today in the owner's zone, to the response document. Off the loop thread. A ValueError
+    # is a 400; ``None`` leaves the route unregistered.
+    day_read: Callable[[date | None], Awaitable[dict[str, Any]]] | None = None
     # ADR 0051: the companion home's reads and its one write, all off the loop
     # thread. A LookupError is "not connected" (404, the home's fallback), any
     # other failure 502. ``None`` leaves the routes unregistered.
@@ -1441,6 +1448,22 @@ class JobApplicationEditRequest(BaseModel):
     applied_at: str | None = Field(default=None, max_length=10)
     note: str | None = Field(default=None, max_length=2000)
     hidden: bool | None = None
+
+
+def _register_day_route(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0199: ``GET /inherent/day``, one day as timed items; open to every admitted caller."""
+    if deps.day_read is None:
+        return
+    day_read = deps.day_read
+
+    @app.get("/inherent/day")
+    async def day(on: Annotated[str | None, Query(alias="date")] = None) -> dict[str, Any]:
+        """``{date, tz, start_ms, end_ms, now_ms, items, missing}`` of ``?date=YYYY-MM-DD``."""
+        try:
+            wanted = None if on is None else parse_day(on)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return await _home_call(day_read(wanted))
 
 
 def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C901 â€” one closed route table.
@@ -2344,6 +2367,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
             """ADR 0108: ``{on, on_words, turn_id}`` for the companion's deep look."""
             return think_read()
 
+    _register_day_route(app, deps)
     _register_home_routes(app, deps)
     _register_mail_page_routes(app, deps)
     _register_job_routes(app, deps)
