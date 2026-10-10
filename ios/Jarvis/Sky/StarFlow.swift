@@ -224,6 +224,7 @@ extension StarEngine {
             let dd = hypot(Double(p.x) - e.x, Double(p.y) - e.y)
             if dd < bd { bd = dd; best = e }
         }
+        if best == nil, cam != nil, let h = labelHits.first(where: { p.x >= $0.box.0 - 6 && p.x <= $0.box.2 + 6 && p.y >= $0.box.1 - 6 && p.y <= $0.box.3 + 6 }) { best = byId(h.id) }      // a name is a far bigger target than its star
         if let b = best { seek(b.t); openId = b.id; rowKey = ""; sound(.module, 1) }
         else if openId != nil { openId = nil; rowKey = ""; sound(.close, 0.6) }
     }
