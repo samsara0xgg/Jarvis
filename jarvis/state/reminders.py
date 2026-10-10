@@ -46,10 +46,15 @@ class Reminder:
         return not self.cancelled and self.fired_at_ms is None
 
 
-def fold(conn: sqlite3.Connection) -> dict[str, Reminder]:
-    """Every reminder ever scheduled, by id, in the order it was scheduled."""
+def fold(conn: sqlite3.Connection, *, until_ms: int | None = None) -> dict[str, Reminder]:
+    """Every reminder ever scheduled, by id, in the order it was scheduled.
+
+    ``until_ms`` folds only the events up to that instant: the reminders as they stood then.
+    """
     found: dict[str, Reminder] = {}
     for event in iter_events_of_types(conn, TYPES):
+        if until_ms is not None and event.ts_epoch_ms > until_ms:
+            continue
         payload = event.payload
         rid = str(payload["reminder_id"])
         if event.type == "reminder.scheduled":

@@ -21,10 +21,11 @@ SQLite's ``datetime()``, which understands the offset.
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -68,6 +69,15 @@ CREATE TABLE IF NOT EXISTS day_summaries (
     summary      TEXT NOT NULL,
     model        TEXT,
     record_count INTEGER NOT NULL,
+    input_chars  INTEGER NOT NULL,
+    output_chars INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS day_prose (
+    id           TEXT PRIMARY KEY,
+    day          TEXT NOT NULL,
+    ts           TEXT NOT NULL,
+    text         TEXT NOT NULL,
+    model        TEXT,
     input_chars  INTEGER NOT NULL,
     output_chars INTEGER NOT NULL
 );
@@ -223,6 +233,11 @@ class SessionSettings:
                 _positive("context_raw_max_chars", defaults.context_raw_max_chars),
             ),
         )
+
+
+# ADR 0199: (now, the last record's time) -> (the text that follows the core memory, the text that
+# follows the time line).
+Ledger = Callable[[datetime, datetime | None], tuple[str, str]]
 
 
 class MemoryContext(NamedTuple):
@@ -501,7 +516,40 @@ def _current_summary(conn: sqlite3.Connection) -> _Summary | None:
 def _core_memory_lines(conn: sqlite3.Connection) -> list[str]:
     """The rendered core memory, one prompt line each (ADR 0146)."""
     version = core_memory.current(conn, iso_seconds(local_now()))
-    return core_memory.render(version.doc).splitlines()
+    return core_memory.render(version.doc, _item_notes(conn, version.doc)).splitlines()
+
+
+def _item_notes(conn: sqlite3.Connection, doc: core_memory.Doc) -> dict[str, str]:
+    """Per item, ``first seen, kind[, pinned]``.
+
+    First seen is the date of the earliest record it cites, else its ``since``. Kind is ``said``
+    when all its records are the user's words, ``mail``, ``observed`` when none is,
+    ``said+observed`` for a mix, ``set`` when no record backs it.
+    """
+    cited = {s for items in doc.values() for item in items for s in item.get("sources") or []}
+    records = {
+        str(rid): (str(source), datetime.fromisoformat(str(ts)).astimezone().date().isoformat())
+        for rid, source, ts in conn.execute(
+            "SELECT id, source, ts FROM records WHERE id IN (SELECT value FROM json_each(?))",
+            (json.dumps(sorted(cited)),),
+        )
+    }
+    notes: dict[str, str] = {}
+    for items in doc.values():
+        for item in items:
+            found = [records[s] for s in item.get("sources") or [] if s in records]
+            kinds = {source for source, _ in found}
+            kind = (
+                "set" if not found
+                else "said" if kinds == {"allen"}
+                else "mail" if "mail" in kinds
+                else "observed" if "allen" not in kinds
+                else "said+observed"
+            )
+            first = min(day for _, day in found) if found else str(item.get("since", "?"))
+            pinned = ", pinned" if item.get("pinned") else ""
+            notes[item.get("id", "")] = f"{first}, {kind}{pinned}"
+    return notes
 
 
 def _effective_anchor(conn: sqlite3.Connection, anchor_rowid: int | None, since: str) -> int:
@@ -632,6 +680,7 @@ def _append_records(
 def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
     path: Path, *, exclude_id: str, since: str = "", now: datetime | None = None,
     recent: int = 0, context: str = "rolling", raw_max_chars: int = 40000,
+    ledger: Ledger | None = None,
 ) -> MemoryContext:
     """Render the decision-path prompt blocks in one consistent read.
 
@@ -655,6 +704,10 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
     latest three day summaries, a line naming the boundary day, and every record from that day
     on, the oldest hidden in blocks of 50 while they exceed ``raw_max_chars``. With no day
     summary stored it renders the rolling layout.
+
+    ``ledger`` (ADR 0199) is asked, with the same ``now`` and the time of the last record, for
+    the text that follows the core memory in ``profile`` and the text that follows the time line
+    in ``now``.
     """
     moment = now or local_now()
     with closing(open_memory_db(path)) as conn:
@@ -718,7 +771,13 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
             last_ts = str(last[0])
         elif current:
             last_ts = current.anchor_ts
-    return MemoryContext(profile_block, tuple(turns), _now_line(moment, last_ts))
+    now_line = _now_line(moment, last_ts)
+    if ledger is not None:
+        last = None if last_ts is None else datetime.fromisoformat(last_ts)
+        standing, per_turn = ledger(moment, last)
+        profile_block = "\n\n".join(part for part in (profile_block, standing) if part)
+        now_line = "\n\n".join(part for part in (now_line, per_turn) if part)
+    return MemoryContext(profile_block, tuple(turns), now_line)
 
 
 def _summary_sections(summary: str) -> list[str]:
@@ -968,6 +1027,32 @@ def append_day_summary(  # noqa: PLR0913 — the row's columns, all required.
     return summary_id
 
 
+def append_day_prose(  # noqa: PLR0913 — the row's columns, all required.
+    path: Path,
+    *,
+    day: str,
+    text: str,
+    model: str,
+    input_chars: int,
+    output_chars: int,
+) -> str:
+    """Append one day's "The day" line (ADR 0199), return its id; a day's latest row is current."""
+    prose_id = f"day-prose:{day}:{uuid.uuid4().hex}"
+    with closing(open_memory_db(path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO day_prose (id, day, ts, text, model, input_chars, output_chars) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (prose_id, day, iso_seconds(local_now()), text, model, input_chars, output_chars),
+        )
+    return prose_id
+
+
+def prose_days(path: Path) -> set[str]:
+    """The local days that already have a "The day" line."""
+    with closing(open_memory_db(path)) as conn:
+        return {str(day) for (day,) in conn.execute("SELECT DISTINCT day FROM day_prose")}
+
+
 def latest_day_summaries(
     conn: sqlite3.Connection, first_day: str, last_day: str,
 ) -> list[tuple[str, str]]:
@@ -1017,11 +1102,13 @@ __all__ = [
     "DAY_SUMMARIES_CONTEXT",
     "DEFAULT_SEARCH_LIMIT",
     "CompactionRange",
+    "Ledger",
     "MemoryContext",
     "MemorySettings",
     "Record",
     "SessionSettings",
     "VerbatimStats",
+    "append_day_prose",
     "append_day_summary",
     "append_nightly_core_memory",
     "append_record",
@@ -1036,6 +1123,7 @@ __all__ = [
     "local_now",
     "open_memory_db",
     "pending_days",
+    "prose_days",
     "remember_fact",
     "render_context",
     "search_records",

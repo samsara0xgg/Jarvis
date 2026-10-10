@@ -70,8 +70,10 @@ def test_the_first_read_migrates_profile_and_prompts_render_core_memory(tmp_path
                 ("fact:送餐地址", LEGACY_TS, "送餐地址: 1 Test St"),
             ],
         )
+    # ADR 0199: each line carries its first-seen date and kind.
     rendered = (
-        "### 关于你\n- The user's name is Ada.\n- Prefers short answers.\n- 送餐地址: 1 Test St"
+        "### 关于你\n- (2026-09-01, set) The user's name is Ada."
+        "\n- (2026-09-01, set) Prefers short answers.\n- (2026-09-01, set) 送餐地址: 1 Test St"
     )
     assert render_context(path, exclude_id="").profile == f"[About the user]\n{rendered}"
     assert f"[About the user]\n{rendered}\n" in brief_note(path, max_chars=10_000)
@@ -95,7 +97,7 @@ def test_the_first_read_migrates_profile_and_prompts_render_core_memory(tmp_path
     full = brief_note(path, max_chars=10_000)
     tight = brief_note(path, max_chars=len(full) - 1).splitlines()
     assert "### 承诺和待办" not in tight
-    assert "- 送餐地址: 1 Test St" in tight
+    assert "- (2026-09-01, set) 送餐地址: 1 Test St" in tight
 
 
 def test_an_empty_store_renders_no_block_and_a_rendered_item_has_no_ids(tmp_path: Path) -> None:

@@ -54,13 +54,18 @@ def empty_doc() -> Doc:
     return {section: [] for section in SECTIONS}
 
 
-def render(doc: Doc) -> str:
-    """The prompt text: ``### <section>`` then ``- <text>`` lines; empty sections omitted."""
+def render(doc: Doc, labels: Mapping[str, str] | None = None) -> str:
+    """The prompt text: ``### <section>`` then ``- <text>`` lines; empty sections omitted.
+
+    ``labels`` (item id to a short note) puts ``(note)`` ahead of that item's text.
+    """
     lines: list[str] = []
     for section in SECTIONS:
         if doc[section]:
             lines.append(f"### {section}")
-            lines.extend(f"- {item['text']}" for item in doc[section])
+            for item in doc[section]:
+                note = (labels or {}).get(item.get("id", ""))
+                lines.append(f"- ({note}) {item['text']}" if note else f"- {item['text']}")
     return "\n".join(lines)
 
 

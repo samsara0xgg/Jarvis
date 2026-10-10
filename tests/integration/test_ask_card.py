@@ -7,6 +7,7 @@ is still waiting, and the one status line the model gets on the turn that ends i
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -139,8 +140,10 @@ def test_a_kept_fact_is_one_about_the_user_line_and_its_topic_rewrites_it_in_pla
     remember_fact(db, "送餐地址", "1 Test St")
     remember_fact(db, "饮食偏好", "不吃香菜")
     remember_fact(db, "送餐地址", "2 Sample Rd")
+    today = datetime.now().astimezone().date().isoformat()  # ADR 0199: each line carries a note
     assert render_context(db, exclude_id="").profile == (
-        "[About the user]\n### 关于你\n- 送餐地址: 2 Sample Rd\n- 饮食偏好: 不吃香菜"
+        f"[About the user]\n### 关于你\n- ({today}, set) 送餐地址: 2 Sample Rd"
+        f"\n- ({today}, set) 饮食偏好: 不吃香菜"
     )
 
 
