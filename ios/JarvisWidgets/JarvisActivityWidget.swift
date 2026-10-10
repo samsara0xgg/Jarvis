@@ -102,12 +102,7 @@ struct JarvisLiveActivity: Widget {
                 DynamicIslandExpandedRegion(.leading) { Orb(state: s, size: 40).padding(.leading, 4) }
                 DynamicIslandExpandedRegion(.center) { Text(s.stateWord).font(serif(24)).foregroundStyle(Night.ink) }
                 DynamicIslandExpandedRegion(.trailing) {
-                    if let at = s.nextAt {
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text("下一个").font(.system(size: 11)).foregroundStyle(Night.muted)
-                            NextTime(at: at, size: 17)
-                        }
-                    }
+                    if let at = s.nextAt { NextTime(at: at, size: 18) }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     HStack {
