@@ -51,6 +51,7 @@ struct WaitingCard: Identifiable, Equatable {
     var meta: String
     var body: String
     var hint = ""                      // what "always" would allow, in the brain's own words
+    var pushLine = ""                  // a Claude request as its notification words it: "tool · folder"
     var fields: [CardField] = []
     var actions: [CardAction]          // the last one is the main button
     var loginURL: URL?
@@ -120,6 +121,7 @@ enum WaitingCards {
         let tool = str(r, "tool"), input = r["input"] as? [String: Any] ?? [:]
         let project = str(r, "project").isEmpty ? (str(r, "cwd") as NSString).lastPathComponent : str(r, "project")
         let always = str(r, "always")
+        let folder = (str(r, "cwd") as NSString).lastPathComponent
         var actions = [CardAction(label: "拒绝", answer: .claude("deny"))]
         var body: String
         if tool == "AskUserQuestion" {
@@ -133,7 +135,7 @@ enum WaitingCards {
         }
         return WaitingCard(id: "claude-\(id)", kind: .claude, brainId: id, short: "Claude", title: "Claude Code 想用 \(tool)",
                            meta: [project, str(r, "title")].filter { !$0.isEmpty }.joined(separator: " · "),
-                           body: body, hint: tool == "AskUserQuestion" ? "" : always, actions: actions)
+                           body: body, hint: tool == "AskUserQuestion" ? "" : always, pushLine: folder.isEmpty ? tool : "\(tool) · \(folder)", actions: actions)
     }
 
     private static func plugin(_ p: [String: Any], _ id: String) -> WaitingCard? {

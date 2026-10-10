@@ -18,6 +18,8 @@ final class ReportAppDelegate: NSObject, UIApplicationDelegate {
         if Reporter.shared.transport == nil { Reporter.shared.transport = HTTPReportTransport { BrainLink.shared.voiceEndpoint } }
         Reporter.shared.launchedForLocation = launchOptions?[.location] != nil
         Reporter.shared.launch()
+        // before launch returns: a button pressed on a notification can launch the app in the background
+        PushNotifications.shared.install()
         // paired: permission (the first time) and the APNs token, which iOS issues again at each launch
         Task { await PushRegistry.shared.start() }
         return true

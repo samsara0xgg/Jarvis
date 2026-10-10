@@ -72,6 +72,7 @@ struct StarChrome: View {
         .onAppear {
             engine.endEditing = { focused = false }
             engine.watchVoice()
+            if CardsRequest.pending { openCards() }
             #if DEBUG
             if let sc = UserDefaults.standard.string(forKey: "scene") {
                 let delay = UserDefaults.standard.double(forKey: "sceneDelay")
@@ -82,6 +83,7 @@ struct StarChrome: View {
             }
             #endif
         }
+        .onReceive(NotificationCenter.default.publisher(for: CardsRequest.notification)) { _ in openCards() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { n in
             guard let f = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) else { return }
             let screenH = UIScreen.main.bounds.height
@@ -89,6 +91,12 @@ struct StarChrome: View {
             withAnimation(.easeOut(duration: 0.3)) { ui.kbLift = lift }
         }
         .sheet(isPresented: $ui.settingsOpen) { SettingsSheet() }
+    }
+
+    /// a tap on a notification that waits on him: the drawer with today's cards
+    private func openCards() {
+        CardsRequest.pending = false
+        engine.setDrawer(true)
     }
 
     // MARK: the top row: the day you are looking at, the scale, settings
