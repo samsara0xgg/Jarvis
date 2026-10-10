@@ -57,10 +57,12 @@ struct RGB: Hashable {
     static let white = RGB(255, 255, 255), trail = RGB(220, 228, 255)
 }
 
-// MARK: - the calendar of the prototype (Thursday 10.8 is today)
+// MARK: - the calendar (the prototype's Thursday 10.8 is today until the phone is paired)
 
 let DAY = 1440.0
 let NOW0 = 21.0 * 60 + 14
+/// where the sky starts turning from: the prototype's 21:14, or the phone's own clock when paired
+var NOW1: Double { Cal.cur.real ? Cal.cur.nowT() : NOW0 }
 let TRACE0 = -7 * DAY
 let WD = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
@@ -68,8 +70,13 @@ func clock(_ m0: Double) -> String {
     let m = ((Int(m0.rounded()) % 1440) + 1440) % 1440
     return "\(two(m / 60)):\(two(m % 60))"
 }
-func dateOf(_ d: Int) -> (Int, Int) { let n = 8 + d; return n < 1 ? (9, 30 + n) : n > 31 ? (11, n - 31) : (10, n) }
-func dayName(_ d: Int) -> String { WD[(((3 + d) % 7) + 7) % 7] }
+// the calendar is `Cal.cur`: the prototype's Thursday 10.8 unpaired, the phone's own today paired (Brain/Cal.swift)
+func dateOf(_ d: Int) -> (Int, Int) { Cal.cur.dateOf(d) }
+func dayName(_ d: Int) -> String { WD[Cal.cur.weekday(d)] }
+func isWeekend(_ d: Int) -> Bool { Cal.cur.weekday(d) >= 5 }
+var M_FIRST: Int { Cal.cur.mFirst }       // the month's first and last day, as day numbers around today
+var M_LAST: Int { Cal.cur.mLast }
+func monthName(_ m: Int) -> String { ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"][m - 1] + "月" }
 func dayWord(_ d: Int) -> String { d == -1 ? "昨天" : d == 0 ? "今天" : d == 1 ? "明天" : dayName(d) }
 func partOfDay(_ m: Double) -> String {
     m < 300 ? "凌晨" : m < 540 ? "早上" : m < 690 ? "上午" : m < 780 ? "中午" : m < 1050 ? "下午" : m < 1140 ? "傍晚" : "晚上"

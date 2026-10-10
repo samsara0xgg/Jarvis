@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 /// Everything the settings sheet shows. Defaults are the prototype's sample values; wire real data by
-/// assigning to these properties (the sheet observes them).
+/// assigning to these properties (the sheet observes them). The brain rows already read the real link.
 @Observable
 final class SettingsModel {
     static let shared = SettingsModel()
@@ -26,10 +26,11 @@ final class SettingsModel {
         var title: String { ["中文", "English", "跟着我"][rawValue] }
     }
 
-    // 大脑
-    var brainName = "MacBook Pro"
-    var latency = "38 ms"
-    var statusLine: String { "连着 \(brainName) · 在线" }
+    // 大脑: the real link (Brain/BrainLink.swift); the sheet observes it through these
+    var brainName: String { BrainLink.shared.brainName }
+    var latency: String { BrainLink.shared.latencyText }
+    var statusLine: String { BrainLink.shared.statusLine }
+    var brainOnline: Bool { BrainLink.shared.isOnline }
 
     // 和她说话
     var siri = "已添加"

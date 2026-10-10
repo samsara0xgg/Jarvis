@@ -10,7 +10,10 @@ let R_PS = 34.0, R_HER = 96.0, R_YOU = 142.0, R_SC = 178.0, R_BAND = 182.5, R_NU
 let SKY_H = 640.0
 let MAP_Y = 74.0, MAP_H = 452.0
 let POLE_MY = 118.0                      // where she rests above the month
-let GX0 = 22.0, GW = (W - 44) / 7, GY0 = 206.0, GH = 64.0, MR = 20.0
+let GX0 = 22.0, GW = (W - 44) / 7, MR = 20.0
+// five rows fit above the month's title; a month that spans six (Nov 2026) packs them a little closer and starts a little higher
+var GY0: Double { Cal.cur.rows > 5 ? 182.0 : 206.0 }
+var GH: Double { Cal.cur.rows > 5 ? 56.0 : 64.0 }
 
 struct Cam { var ox, oy, oh, fx, fy, fh, rx, ry, ux, uy, uh, foc, X0, Y0, D: Double }
 struct NearParams { var gr = 142.0, ga = 1.37, gh = 46.0, tr = 142.0, ta = 2.35, foc = 240.0, X = 215.0, Y = 262.0 }
@@ -19,22 +22,22 @@ enum Mode { case seek, idle, drag, script }
 
 final class StarEngine {
     // ---------- data ----------
-    var EV: [Ev] = makeEvents()
+    var EV: [Ev] = Cal.cur.real ? [] : makeEvents()
     let talks = makeTalks()
     func byId(_ id: String) -> Ev? { EV.first { $0.id == id } }
     let sprites = SpriteCache()
 
     // ---------- clock ----------
-    let t0 = Date()
-    func nowT() -> Double { NOW0 + Date().timeIntervalSince(t0) / 60 }
+    var t0 = Date()
+    func nowT() -> Double { Cal.cur.real ? Cal.cur.nowT() : NOW0 + Date().timeIntervalSince(t0) / 60 }
 
     // ---------- state ----------
-    var fs = Spring(NOW0 - 330)       // the focus time, in minutes; the sky turns in from earlier tonight
+    var fs = Spring(NOW1 - 330)       // the focus time, in minutes; the sky turns in from earlier tonight
     var qs = Spring(0)                // zoom: -1 close, 0 a day, 1 a week, 2 the month
     var mode: Mode = .seek
-    var goal = NOW0, stiff = 2.6, qGoal = 0.0, qHeld = false
-    var F = NOW0 - 330, z = 1.0, amp = 8.5, k = TAU / DAY, q = 0.0, mon = 0.0, fl = 0.0
-    var sky = 0.0, prevF = NOW0 - 330, omega = 0.0, omegaS = 0.0, Trev = NOW0, prevRev = NOW0
+    var goal = NOW1, stiff = 2.6, qGoal = 0.0, qHeld = false
+    var F = NOW1 - 330, z = 1.0, amp = 8.5, k = TAU / DAY, q = 0.0, mon = 0.0, fl = 0.0
+    var sky = 0.0, prevF = NOW1 - 330, omega = 0.0, omegaS = 0.0, Trev = NOW1, prevRev = NOW1
     var herP: (Double, Double, Double) = (CX, CY, 1)
     var herRGB: (Int, Int, Int) = (157, 180, 255)
     var px = 3.0
@@ -48,6 +51,8 @@ final class StarEngine {
     var flyer: (e: Ev, at: Double)?
     var lastTick = 0.0, lastTock = 0.0
     let born = nowMs()
+    // the brain's days (Brain/EngineBrain.swift): what has been adopted, and what has been asked for
+    var epoch = 0, seenVersion = -1, seenOpen = 0, monthAsked = false, lastAdopt = -1e9
 
     // the lens: hold a finger on the ring and the time under it opens up
     var ls = Spring(0)
@@ -155,7 +160,7 @@ final class StarEngine {
 
     func poleXY() -> (Double, Double) { mon > 0.5 ? (CX, POLE_MY) : (herP.0, herP.1) }
     func cellOf(_ d: Int) -> (x: Double, y: Double, row: Int, col: Int) {
-        let i = 8 + d - 1 + 3, row = Int((Double(i) / 7).rounded(.down)), col = i % 7
+        let c = Cal.cur, i = d - c.mFirst + c.firstCol, row = i / 7, col = i % 7
         return (GX0 + GW * (Double(col) + 0.5), GY0 + GH * Double(row) + MR + 2, row, col)
     }
     func cellAt(_ x: Double, _ y: Double) -> Int? {

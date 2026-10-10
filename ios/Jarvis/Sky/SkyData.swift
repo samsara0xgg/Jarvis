@@ -21,6 +21,8 @@ final class Ev {
     var src: String?
     var mag: Double?
     var approve = false, draft = false, call = false
+    /// from the brain's day, not the prototype
+    var live = false
     var born: Double = -1e9, flash: Double = -1e9, ign: Double = -1e9
     // what the last frame drew, for hit tests and trails
     var on = false, focus = false
@@ -144,9 +146,25 @@ private func plan(_ d: Int) -> [Seg] {
     return s
 }
 
-struct DayAct { var act: [Double]; var kind: [Int] }
+struct DayAct { var act: [Double]; var kind: [Int]; var pal = KINDS }
 private var actCache: [Int: DayAct] = [:]
+/// the ring's edges softened: two box passes
+func smoothAct(_ o: DayAct) -> DayAct {
+    let N = o.act.count
+    var a = o.act
+    for _ in 0..<2 {
+        var b = [Double](repeating: 0, count: N)
+        for i in 0..<N {
+            var s = 0.0, n = 0.0
+            for j in -2...2 { let q = i + j; if q >= 0 && q < N { s += a[q]; n += 1 } }
+            b[i] = s / n
+        }
+        a = b
+    }
+    return DayAct(act: a, kind: o.kind, pal: o.pal)
+}
 func dayAct(_ d: Int) -> DayAct {
+    if Cal.cur.real { return RealDay.shared.act(d) }
     if let o = actCache[d] { return o }
     let segs = plan(d), N = 289
     var raw = [Double](repeating: 0, count: N), kind = [Int](repeating: 0, count: N)
@@ -157,28 +175,25 @@ func dayAct(_ d: Int) -> DayAct {
         let fi = Double(i)
         raw[i] = LV[sg.2]! * (sg.2 == "gym" ? 0.74 + 0.26 * abs(sin(fi * 1.9)) : sg.2 == "walk" ? 0.9 + 0.1 * sin(fi * 2.3) : 1)
     }
-    var a = raw   // soften the edges: two box passes
-    for _ in 0..<2 {
-        var b = [Double](repeating: 0, count: N)
-        for i in 0..<N {
-            var s = 0.0, n = 0.0
-            for j in -2...2 { let q = i + j; if q >= 0 && q < N { s += a[q]; n += 1 } }
-            b[i] = s / n
-        }
-        a = b
-    }
-    let o = DayAct(act: a, kind: kind)
+    let o = smoothAct(DayAct(act: raw, kind: kind))
     actCache[d] = o
     return o
 }
+func clearActCache() { actCache = [:] }
 func actAt(_ t: Double) -> Double {
     let d = floorDay(t), x = (t - Double(d) * DAY) / 5, i = min(287, Int(x.rounded(.down))), o = dayAct(d)
     return o.act[i] + (o.act[i + 1] - o.act[i]) * (x - Double(i))
 }
 func kindAt(_ t: Double) -> String {
     let d = floorDay(t), o = dayAct(d)
-    return KINDS[o.kind[min(288, Int(((t - Double(d) * DAY) / 5).rounded(.down)))]]
+    return o.pal[o.kind[min(288, Int(((t - Double(d) * DAY) / 5).rounded(.down)))]]
 }
+/// the words for a place on the ring: the prototype's kinds, or what the phone reported ("~" keys), or nothing in a gap
+func placeText(_ key: String) -> String {
+    key.hasPrefix("~") ? String(key.dropFirst()) : key == "gap" ? "" : PLACE[key] ?? ""
+}
+/// the ring is dim and dashed where you were asleep or the phone said nothing
+func isQuiet(_ key: String) -> Bool { key == "sleep" || key == "gap" }
 struct DayStats { var steps: Int; var sleep: Int; var gym: Int }
 func dayStats(_ d: Int) -> DayStats {
     if d == 0 { return DayStats(steps: 8420, sleep: 430, gym: 50) }
@@ -189,6 +204,7 @@ func dayStats(_ d: Int) -> DayStats {
     return DayStats(steps: Int(steps), sleep: Int(sleep), gym: Int(gym))
 }
 func statLine(_ d: Int) -> String {
+    if Cal.cur.real { return RealDay.shared.statLine(d) }
     let s = dayStats(d)
     let f = NumberFormatter(); f.numberStyle = .decimal; f.locale = Locale(identifier: "en_US")
     return "\(f.string(from: NSNumber(value: s.steps)) ?? "") 步 · 睡 \(durText(s.sleep))\(s.gym != 0 ? " · 健身 \(durText(s.gym))" : "")"
@@ -196,10 +212,9 @@ func statLine(_ d: Int) -> String {
 
 // MARK: - the month
 
-let M_FIRST = -7, M_LAST = 23   // October, around Thursday the 8th
 struct MiniEv { var t: Double; var lane: Lane; var st: St; var star = false }
 func monthDays(_ d: Int) -> [MiniEv]? {
-    if d >= -3 && d <= 3 { return nil }
+    if Cal.cur.real || (d >= -3 && d <= 3) { return nil }
     var r = Rng(900 + (d + 50) * 31)
     var out = [MiniEv(t: 380, lane: .her, st: d < 0 ? .done : .next)]
     let n = d < 0 ? 2 + Int((r.next() * 3).rounded(.down)) : Int((r.next() * 2.2).rounded(.down))

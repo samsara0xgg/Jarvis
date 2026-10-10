@@ -279,7 +279,7 @@ extension StarEngine {
         var m = a
         while true {
             if m > b { m = b }
-            let ac = actAt(m), kd = kindAt(m), cls = kd == "sleep" ? 0 : ac > 0.4 ? 2 : 1
+            let ac = actAt(m), kd = kindAt(m), cls = isQuiet(kd) ? 0 : ac > 0.4 ? 2 : 1
             if !P(R_YOU + amp * ac - (cls == 0 ? 1.2 : 0), ang(m)) {
                 prev = -1
                 if m >= b { break }
@@ -540,7 +540,7 @@ extension StarEngine {
                 let end = today ? nT - Double(floorDay(nT)) * DAY : DAY, p = CGMutablePath(), pd = CGMutablePath()
                 var m = 0.0
                 while m <= end {
-                    let t = Double(d) * DAY + m, r = MR * 0.74 + 3.4 * actAt(t), an = a(m), x = cx + r * cos(an), y = cy + r * sin(an), sl = kindAt(t) == "sleep"
+                    let t = Double(d) * DAY + m, r = MR * 0.74 + 3.4 * actAt(t), an = a(m), x = cx + r * cos(an), y = cy + r * sin(an), sl = isQuiet(kindAt(t))
                     let pt = CGPoint(x: x, y: y)
                     if sl { if m != 0 { pd.addLine(to: pt) } else { pd.move(to: pt) }; p.move(to: pt) }
                     else { if m != 0 { p.addLine(to: pt) } else { p.move(to: pt) }; pd.move(to: pt) }
@@ -566,7 +566,7 @@ extension StarEngine {
                 let an = a(nT.truncatingRemainder(dividingBy: DAY))
                 c.setBlendMode(.plusLighter); self.spr.glow(c, .warm, cx + MR * cos(an), cy + MR * sin(an), 5, 0.9); c.setBlendMode(.normal)
             }
-            let (_, dn) = dateOf(d), wkend = ((((3 + d) % 7) + 7) % 7) >= 5
+            let (_, dn) = dateOf(d), wkend = isWeekend(d)
             if today {
                 c.setFillColor(CGColor(srgbRed: 238 / 255, green: 241 / 255, blue: 1, alpha: 1))
                 c.addPath(CGPath(roundedRect: CGRect(x: cx - 11, y: h - 15, width: 22, height: 14), cornerWidth: 7, cornerHeight: 7, transform: nil)); c.fillPath()

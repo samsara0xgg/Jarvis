@@ -307,14 +307,16 @@ extension StarEngine {
         if fast != detFast { detFast = fast; ui.detFast = fast }
         let nT = nowT(), d = floorDay(F), today = floorDay(nT)
         if v == "month" {
-            put(\.hm, "十月"); put(\.tagText, nil); put(\.dayText, "2026 · 第 \(8 + today) 天")
+            put(\.hm, monthName(dateOf(today).0)); put(\.tagText, nil); put(\.dayText, "\(Cal.cur.year) · 第 \(dateOf(today).1) 天")
             if rowKey != "month" {
                 rowKey = "month"; ui.showSum = true
-                var steps = 0, sleep = 0, gym = 0, n = 0
-                for i in M_FIRST...today { let s = dayStats(i); steps += s.steps; sleep += s.sleep; gym += s.gym != 0 ? 1 : 0; n += 1 }
-                ui.sumMain = "一面过了，明天二面。这个月健身 \(gym) 次，平均每晚睡 \(durText(Int((Double(sleep) / Double(n)).rounded())))。"
-                ui.sumStat = nil
-                ui.chips = [ChipModel(kd: .lit, text: String(format: "%.1f 万步", Double(steps) / 10000)), ChipModel(kd: .wait, text: "3 件等你"), ChipModel(kd: .next, text: "23 天还空着")]
+                if Cal.cur.real { monthSummary(today) } else {
+                    var steps = 0, sleep = 0, gym = 0, n = 0
+                    for i in M_FIRST...today { let s = dayStats(i); steps += s.steps; sleep += s.sleep; gym += s.gym != 0 ? 1 : 0; n += 1 }
+                    ui.sumMain = "一面过了，明天二面。这个月健身 \(gym) 次，平均每晚睡 \(durText(Int((Double(sleep) / Double(n)).rounded())))。"
+                    ui.sumStat = nil
+                    ui.chips = [ChipModel(kd: .lit, text: String(format: "%.1f 万步", Double(steps) / 10000)), ChipModel(kd: .wait, text: "3 件等你"), ChipModel(kd: .next, text: "23 天还空着")]
+                }
                 ui.rows = []; ui.emptyHint = nil; ui.rowsKey += 1
             }
             return
@@ -326,11 +328,12 @@ extension StarEngine {
             var n: [St: Int] = [.done: 0, .work: 0, .wait: 0, .next: 0]
             let now = nowMs()
             for e in EV where floorDay(e.t) == d && e.born <= now { n[e.st]! += 1 }
-            let key = "w\(d)\(n[.done]!),\(n[.work]!),\(n[.wait]!),\(n[.next]!)"
+            let key = "w\(d)\(n[.done]!),\(n[.work]!),\(n[.wait]!),\(n[.next]!)|\(epoch)"
             if key != rowKey && !hold {
                 rowKey = key; ui.showSum = true
-                ui.sumMain = SUM[d] ?? ""
-                ui.sumStat = d <= today ? statLine(d) : nil
+                ui.sumMain = Cal.cur.real ? RealDay.shared.summary(d, BrainLink.shared.days[Cal.cur.iso(d)] != nil, today: today) : SUM[d] ?? ""
+                let stat = d <= today ? statLine(d) : ""
+                ui.sumStat = stat.isEmpty ? nil : stat
                 ui.chips = [(Kd.lit, n[.done]!, "完成"), (.work, n[.work]!, "在做"), (.wait, n[.wait]!, "等你"), (.next, n[.next]!, "要来")].filter { $0.1 != 0 }.map { ChipModel(kd: $0.0, text: "\($0.1) \($0.2)") }
                 ui.rows = []; ui.emptyHint = nil; ui.rowsKey += 1
             }
@@ -342,11 +345,12 @@ extension StarEngine {
         put(\.tagText, abs(T - nT) < 3 ? "现在" : nil)
         let m = ((Int(T.rounded()) % 1440) + 1440) % 1440
         var dt = "\(abs(dT) > 1 ? "\(dateOf(dT).0).\(dateOf(dT).1) \(dayName(dT))" : dayWord(dT)) · \(partOfDay(Double(m)))"
-        if T <= Trev + 1 && T >= TRACE0 { dt += " · \(PLACE[kindAt(T)] ?? "")" }
+        if T <= Trev + 1 && T >= TRACE0 { let p = placeText(kindAt(T)); if !p.isEmpty { dt += " · \(p)" } }
+        if Cal.cur.real, let n = BrainLink.shared.missingNote(Cal.cur.iso(dT)) { dt += " · \(n)" }
         put(\.dayText, dt)
         var list = lensT != nil ? focusSet(T, win: 26 * z / lensM) : focusSet()
         if let oid = openId, let o = byId(oid), lensT == nil { list = [o] }
-        let key = list.map { "\($0.id)\($0.st.rawValue)\($0.t > Trev ? "a" : "")" }.joined(separator: ",") + "|" + (openId ?? "")
+        let key = list.map { "\($0.id)\($0.st.rawValue)\($0.t > Trev ? "a" : "")" }.joined(separator: ",") + "|" + (openId ?? "") + "|\(epoch)"
         if key != rowKey && !hold {
             rowKey = key
             put(\.rowsCalm, abs(omegaS) < 0.08 && mode != .drag && lensT == nil)
@@ -475,6 +479,7 @@ extension StarEngine {
 
     func step(now: Double, dt: Double, scale: Double) {
         px = scale
+        syncBrain()
         // zoom
         if !qHeld { crit(&qs, qGoal, 7.5, dt) }
         q = qs.value; z = pow(7, clamp(q, 0, 1)); mon = clamp(q - 1, 0, 1); k = TAU / (DAY * z)
@@ -498,6 +503,7 @@ extension StarEngine {
         Trev = replay && script != nil ? script! : nowT()
         // a star lights when its time comes; what crosses the meridian clicks; the hours tock
         if Trev > prevRev {
+            for e in EV where e.live && e.st == .next && e.t <= Trev { e.st = e.d == nil ? .done : .work }     // the brain's day, until it is asked again
             for e in EV where e.t > prevRev && e.t <= Trev && e.born <= now && visT(e.t) > 0.2 {
                 e.ign = now
                 if now - lastTick > 70 { sound(e.lane == .you ? .tick : .tock, 0.8); lastTick = now }
@@ -537,7 +543,7 @@ extension StarEngine {
         put(\.showBack, !gone)
         put(\.level, Int(clamp(qGoal.rounded(), -1, 2)))
         let dd = floorDay(F)
-        if dd != dateD { dateD = dd; let (mo, da) = dateOf(dd); ui.dateText = "\(mo)月\(da)日 \(dayName(dd))" }
+        if dd != dateD { dateD = dd; let (mo, da) = dateOf(dd); ui.dateText = "\(mo)月\(da)日 \(dayName(dd))"; askDays() }
         // her words
         if let s = speaking {
             let al = s.alphas(now)
@@ -558,12 +564,14 @@ extension StarEngine {
     func runScene(_ name: String) {
         switch name {
         case "说话": run { ok in try await self.talkFlow(ok, self.talks[0], nil, false) }
-        case "明天": setLevel(0); openId = "iv2"; rowKey = ""; seek(byId("iv2")!.t, true)
+        case "明天": setLevel(0); if let e = byId("iv2") { openId = e.id; rowKey = ""; seek(e.t, true) }
         case "回放今天": run { ok in try await self.talkFlow(ok, self.talks[2], nil, false) }
+        case "凌晨": setLevel(0); seek(Double(floorDay(nowT())) * DAY + 200, true)       // paired: the night's sleep crosses midnight
+        case "前天": setLevel(0); seek(Double(floorDay(nowT()) - 2) * DAY + 800, true)    // paired: a day the Mac was missing
         case "近": setLevel(-1)
         case "一周": setLevel(1)
         case "一个月": setLevel(2)
-        case "确认": setLevel(0); openId = "thanks"; rowKey = ""; seek(byId("thanks")!.t)
+        case "确认": setLevel(0); if let e = byId("thanks") { openId = e.id; rowKey = ""; seek(e.t) }
         case "设置": ui.settingsOpen = true
         case "抽屉": setDrawer(true)
         case "放大镜": lensTh = -0.6; lensGoal = 1

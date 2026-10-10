@@ -65,6 +65,7 @@ struct SettingsMainPage: View {
         }
         .padding(.top, 14)
         .padding(.bottom, 56)
+        .onChange(of: isCurrent, initial: true) { _, now in if now { BrainLink.shared.ping() } }
     }
 
     private var hero: some View {
@@ -73,8 +74,8 @@ struct SettingsMainPage: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Jarvis").font(.system(size: 20, weight: .semibold))
                 HStack(spacing: 6) {
-                    Circle().fill(SetColor.mint).frame(width: 6, height: 6)
-                        .shadow(color: SetColor.mint.opacity(0.8), radius: 3)
+                    Circle().fill(model.brainOnline ? SetColor.mint : SetColor.faint).frame(width: 6, height: 6)
+                        .shadow(color: SetColor.mint.opacity(model.brainOnline ? 0.8 : 0), radius: 3)
                     Text(model.statusLine).font(.subheadline).foregroundStyle(SetColor.muted)
                 }
             }
@@ -130,42 +131,115 @@ private struct Orb: View {
 // MARK: - 重新配对
 
 struct SettingsPairPage: View {
-    /// The scan line only runs while this page is on screen.
+    /// The camera and the scan line only run while this page is on screen.
     let isCurrent: Bool
+    let done: () -> Void
+
+    private enum Phase: Equatable { case scan, claiming, paired(String), failed(String) }
+    @State private var scanner = QRScanner()
+    @State private var phase = Phase.scan
+    private let link = BrainLink.shared
 
     var body: some View {
         VStack(spacing: 0) {
-            Viewfinder(animate: isCurrent).padding(.top, 28)
-            Text("对准 Mac 设置里「手机」页上的二维码")
-                .font(.body).multilineTextAlignment(.center)
-                .padding(.horizontal, 40).padding(.top, 28)
-            Text("手机和 Mac 要在同一个 Tailscale 里")
-                .font(.subheadline).foregroundStyle(SetColor.muted).multilineTextAlignment(.center)
-                .padding(.horizontal, 40).padding(.top, 8)
+            Viewfinder(animate: isCurrent && phase == .scan, scanner: scanner, dim: phase != .scan).padding(.top, 28)
+            caption
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 14)
         .padding(.bottom, 56)
+        .onChange(of: isCurrent, initial: true) { _, now in if now { begin() } else { scanner.stop() } }
+        .onChange(of: link.state) { _, s in
+            guard phase == .claiming else { return }
+            if case .paired(let h) = s { phase = .paired(h) } else if case .error(let m) = s { phase = .failed(m) }
+        }
+        .onDisappear { scanner.stop() }
+    }
+
+    private func begin() {
+        phase = .scan
+        scanner.onCode = { text in
+            guard phase == .scan else { return }
+            phase = .claiming
+            scanner.stop()
+            link.pair(scanned: text)
+        }
+        scanner.start()
+        #if DEBUG
+        // `-fakeScan '<what the QR holds>'` hands the page a scan after a moment, for the simulator
+        let a = ProcessInfo.processInfo.arguments
+        if let i = a.firstIndex(of: "-fakeScan"), i + 1 < a.count {
+            let text = a[i + 1]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { scanner.onCode?(text) }
+        }
+        #endif
+    }
+
+    @ViewBuilder private var caption: some View {
+        switch phase {
+        case .scan:
+            switch scanner.availability {
+            case .noCamera: note("这台设备没有摄像头", "在 iPhone 上，对准 Mac 设置里「手机」页上的二维码")
+            case .denied:
+                note("没有相机权限", "到「设置」里允许 Jarvis 使用相机，才能扫二维码")
+                action("打开设置") { if let u = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(u) } }
+            default: note("对准 Mac 设置里「手机」页上的二维码", "手机和 Mac 要在同一个 Tailscale 里")
+            }
+        case .claiming: note("正在配对…", nil)
+        case .paired(let h):
+            note("已配对", "连着 \(h)")
+            action("完成", done)
+        case .failed(let m):
+            note(m, "在 Mac 上重新显示二维码，再扫一次")
+            action("再扫一次") { begin() }
+        }
+    }
+
+    private func note(_ title: String, _ sub: String?) -> some View {
+        VStack(spacing: 8) {
+            Text(title).font(.body).multilineTextAlignment(.center)
+            if let sub { Text(sub).font(.subheadline).foregroundStyle(SetColor.muted).multilineTextAlignment(.center) }
+        }
+        .padding(.horizontal, 40).padding(.top, 28)
+    }
+
+    private func action(_ title: String, _ run: @escaping () -> Void) -> some View {
+        Button(action: run) { Text(title).font(.body.weight(.semibold)).padding(.horizontal, 20).frame(height: 44).contentShape(Rectangle()) }
+            .foregroundStyle(SetColor.link)
+            .padding(.top, 12)
     }
 }
 
-/// A 260 pt viewfinder looking for the Mac's code: corner brackets and a scan line sweeping back and forth.
+/// A 260 pt viewfinder looking for the Mac's code: the camera's picture, corner brackets and a scan line sweeping back and forth.
+/// Without a camera (the simulator) or without permission it is only the dotted night and the brackets.
 private struct Viewfinder: View {
     let animate: Bool
+    let scanner: QRScanner
+    let dim: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let side = 260.0
     private var box: RoundedRectangle { RoundedRectangle(cornerRadius: 18) }
+    private var live: Bool { scanner.availability == .ready }
+    private var blind: Bool { scanner.availability == .noCamera || scanner.availability == .denied }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             backdrop
+            if live { CameraPreview(session: scanner.session).frame(width: side, height: side).opacity(dim ? 0.25 : 1).transition(.opacity) }
+            if blind {
+                Image(systemName: "camera.slash").font(.system(size: 28, weight: .light)).foregroundStyle(SetColor.faint)
+                    .frame(width: side, height: side)
+            }
             Brackets().stroke(SetColor.ink.opacity(0.92), style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
-            TimelineView(.animation(paused: !animate || reduceMotion)) { ctx in
-                let y = reduceMotion ? 0 : 154 * alternate(ctx.date, period: 2.6, curve: .bezier(startControlPoint: .init(x: 0.45, y: 0), endControlPoint: .init(x: 0.55, y: 1)))
-                scanLine.offset(y: 52 + y)
+            if !blind {
+                TimelineView(.animation(paused: !animate || reduceMotion)) { ctx in
+                    let y = reduceMotion ? 0 : 154 * alternate(ctx.date, period: 2.6, curve: .bezier(startControlPoint: .init(x: 0.45, y: 0), endControlPoint: .init(x: 0.55, y: 1)))
+                    scanLine.offset(y: 52 + y)
+                }
             }
         }
+        .animation(.easeOut(duration: 0.3), value: live)
         .frame(width: side, height: side)
         .clipShape(box)
         .overlay { box.strokeBorder(.white.opacity(0.07), lineWidth: 1) }

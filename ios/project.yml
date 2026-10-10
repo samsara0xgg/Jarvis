@@ -15,6 +15,17 @@ targets:
     platform: iOS
     deploymentTarget: "18.0"
     sources: [Jarvis]
+    # the brain answers on plain http over the tailnet (docs/spec.html: `brain` in the pairing answer is http://host:port).
+    # Local networking covers IP addresses and bare names; MagicDNS names (*.ts.net) need their own exception. Nothing else is opened.
+    info:
+      path: Jarvis/Info.plist
+      properties:
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            ts.net:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.allen.jarvis
@@ -24,6 +35,6 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UIUserInterfaceStyle: Dark
-        INFOPLIST_KEY_NSCameraUsageDescription: 拍照后交给 Jarvis 看
+        INFOPLIST_KEY_NSCameraUsageDescription: 拍照给 Jarvis 看，或扫大脑上的二维码来配对
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: 选照片交给 Jarvis 看
         ENABLE_USER_SCRIPT_SANDBOXING: NO

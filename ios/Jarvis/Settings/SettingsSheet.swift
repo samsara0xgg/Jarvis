@@ -9,7 +9,13 @@ struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init() {}
+    init() {
+        #if DEBUG
+        // `-settingsPage pair` opens on the pairing page, for screenshots
+        let a = ProcessInfo.processInfo.arguments
+        if let i = a.firstIndex(of: "-settingsPage"), i + 1 < a.count, a[i + 1] == "pair" { _page = State(initialValue: .pair) }
+        #endif
+    }
 
     private static let headerHeight = 56.0
 
@@ -20,7 +26,7 @@ struct SettingsSheet: View {
                 scrollPage(.main, width: geo.size.width) {
                     SettingsMainPage(model: model, isCurrent: page == .main) { go($0) }
                 }
-                scrollPage(.pair, width: geo.size.width) { SettingsPairPage(isCurrent: page == .pair) }
+                scrollPage(.pair, width: geo.size.width) { SettingsPairPage(isCurrent: page == .pair) { go(.main) } }
                 scrollPage(.log, width: geo.size.width) { SettingsLogPage(model: model) }
                 header
             }

@@ -26,7 +26,7 @@ final class StarStage: UIView, HerDrive {
     private var cells: [CALayer] = [], heads: [CALayer] = [], cellImg: [CGImage?] = [], headImg: [CGImage?] = []
     private let pole = CALayer(), halo = CAGradientLayer(), spikeH = CAGradientLayer(), spikeV = CAGradientLayer()
     private let her = HerView(radius: R_PS)
-    private struct MapSig: Equatable { var F, q, ls, lensTh: Int; var open: String?; var n: Int; var px: Double; var calm: Int }
+    private struct MapSig: Equatable { var F, q, ls, lensTh: Int; var open: String?; var n: Int; var px: Double; var calm: Int; var epoch: Int }
     private var mapSig: MapSig?
     private var link: CADisplayLink?
     private var lastTime = 0.0
@@ -110,7 +110,7 @@ final class StarStage: UIView, HerDrive {
         design.addSublayer(dial)
         monthBox.frame = CGRect(x: 0, y: 0, width: W, height: SKY_H); monthBox.isHidden = true
         for _ in "一二三四五六日" { let l = CALayer(); l.isHidden = true; monthBox.addSublayer(l); heads.append(l); headImg.append(nil) }
-        for _ in M_FIRST...M_LAST { let l = CALayer(); l.isHidden = true; monthBox.addSublayer(l); cells.append(l); cellImg.append(nil) }
+        for _ in 0..<31 { let l = CALayer(); l.isHidden = true; monthBox.addSublayer(l); cells.append(l); cellImg.append(nil) }
         design.addSublayer(monthBox)
         fxLayer.frame = monthBox.frame; fxLayer.isHidden = true; fxLayer.drawsAsynchronously = true
         fxLayer.drawBlock = { [weak self] c in self?.engine.drawFx(c, nowMs()) }
@@ -255,7 +255,7 @@ final class StarStage: UIView, HerDrive {
         // the dial is drawn again when something on it moved; at rest only its slow pulses (a waiting star breathing) need it, ten times a second
         if e.mon <= 0.985 {
             let sig = MapSig(F: Int((e.F * 1e4).rounded()), q: Int((e.q * 1e5).rounded()), ls: Int((e.ls.value * 1e4).rounded()), lensTh: Int((e.lensTh * 1e4).rounded()),
-                             open: e.openId, n: e.EV.count, px: laidPx, calm: Int((e.calmK * 20).rounded()))
+                             open: e.openId, n: e.EV.count, px: laidPx, calm: Int((e.calmK * 20).rounded()), epoch: e.epoch)
             let hot = sig != mapSig || now < e.wakeUntil || e.flyer != nil || e.EV.contains { now - $0.flash < 700 || now - $0.ign < 900 || now - $0.born < 650 }
             if hot || (e.pulsing && now - e.mapAt > 100 && !e.covered) { map.setNeedsDisplay(); e.mapAt = now; mapSig = sig }
         }
@@ -264,7 +264,7 @@ final class StarStage: UIView, HerDrive {
         let fb = e.fxBusy
         if fb { fxLayer.isHidden = false; fxLayer.setNeedsDisplay(); fxOn = true } else if fxOn { fxLayer.isHidden = true; fxOn = false }
         if e.mon < 0.004 { if monOn { monthBox.isHidden = true; monOn = false; monKey = "" } } else {
-            let key = String(format: "%.3f|%.2f|%d", e.mon, laidPx, floorDay(e.F))
+            let key = String(format: "%.3f|%.2f|%d|%d", e.mon, laidPx, floorDay(e.F), e.epoch)
             if key != monKey { monKey = key; monthBox.isHidden = false; monOn = true; layoutMonth() }
         }
         // her
