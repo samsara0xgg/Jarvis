@@ -174,6 +174,7 @@ from jarvis.runtime.departures import Departures
 from jarvis.runtime.home import Home, mail_body, mail_summarizer, weather_lookup
 from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
+from jarvis.runtime.ledger import LedgerContext, LedgerSettings
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.plugin_connections import PluginConnections
@@ -214,6 +215,7 @@ from jarvis.state.event_log import (
     open_event_log,
     open_runtime_event_log,
 )
+from jarvis.state.ledger import LedgerSources
 from jarvis.state.memory_db import (
     MemorySettings,
     SessionSettings,
@@ -660,6 +662,9 @@ class JarvisRuntime:
     voice_settings: VoiceSettings | None = None
     # ADR 0101: the day before's report, written once a day. None = `daily_report.at` unset.
     daily_schedule: DailySchedule | None = None
+    # ADR 0199: the day, week and job-hunt blocks of the prompt, from his own data. None = off
+    # (no ``ledger:`` block, or no memory store).
+    ledger: LedgerContext | None = None
     # ADR 0170: ``brain`` runs headless and starts nothing device-bound.
     role: Role = "all"
     # ADR 0170: the private addresses a brain also listens on, and the Host names it accepts.
@@ -1219,6 +1224,18 @@ def _timesink_db_path(full_config: Mapping[str, Any]) -> Path | None:
         message = "observer.timesink.db_path must be a nonempty local path"
         raise ValueError(message)
     return Path(raw).expanduser().resolve()
+
+
+def _ledger(
+    full_config: Mapping[str, Any], memory: MemorySettings | None, event_log: Path,
+) -> LedgerContext | None:
+    """ADR 0199: the one ledger both prompt renders ask; None without a ``ledger:`` block."""
+    settings = LedgerSettings.from_config(full_config.get("ledger"))
+    if settings is None or memory is None:
+        return None
+    zone = resolve_zone(None, _work_state_timezone(full_config))[1]
+    sources = LedgerSources(memory.db_path, event_log, _timesink_db_path(full_config), zone)
+    return LedgerContext(sources, settings)
 
 
 _FALLBACK_TIMESINK_POLL_INTERVAL_S: Final[float] = 300.0
@@ -2915,6 +2932,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         night=night,
         voice_settings=voice_settings,
         daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config, terminal_hub),
+        ledger=_ledger(full_config, memory, paths.event_log),
     )
 
 
@@ -2956,6 +2974,7 @@ def _warm_next_prefix(
                 recent=runtime.session.recent_records,
                 context=runtime.session.context,
                 raw_max_chars=runtime.session.context_raw_max_chars,
+                ledger=runtime.ledger,
             ).history
             with contextlib.closing(
                 open_runtime_event_log(runtime.runtime_paths.event_log),
@@ -3954,6 +3973,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             recent=runtime.session.recent_records,
             context=runtime.session.context,
             raw_max_chars=runtime.session.context_raw_max_chars,
+            ledger=runtime.ledger,
         )
         if memory is not None
         else None

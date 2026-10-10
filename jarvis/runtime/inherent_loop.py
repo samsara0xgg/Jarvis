@@ -7005,6 +7005,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                             runtime.config.get("core_memory"),
                         ),
                         jev_log=_jev_log(runtime.config, runtime.runtime_paths.root),
+                        ledger=runtime.ledger,
                     ).run(),
                     name="day_summary_schedule",
                 ),
