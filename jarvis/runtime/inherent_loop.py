@@ -6427,6 +6427,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
     with acquire_exclusive(lock_path):
         if runtime.decision_state is not None:
             runtime.decision_state.warm()  # ADR 0164: the first turn then reads only a delta
+        if runtime.ledger is not None:
+            runtime.ledger.warm(lambda: datetime.now(UTC))  # its standing text is a 38-day read
         broadcaster = InherentBroadcaster()
         broadcaster.attach_loop(asyncio.get_running_loop())
 

@@ -117,6 +117,12 @@ class LedgerContext:
         """The text that follows the core memory and the text that follows the time line."""
         return self._standing(now), self._per_turn(now, last_ts)
 
+    def warm(self, now: Callable[[], datetime]) -> None:
+        """Build today's standing text in the background, so the first turn finds it cached."""
+        threading.Thread(
+            target=lambda: self._standing(now()), name="jarvis-ledger-warm", daemon=True,
+        ).start()
+
     def _standing(self, now: datetime) -> str:
         zone = self.sources.zone
         today = now.astimezone(zone).date()

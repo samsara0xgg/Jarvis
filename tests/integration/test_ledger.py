@@ -8,6 +8,7 @@ Each check feeds known rows and asserts the text the program computes from them.
 from __future__ import annotations
 
 import sqlite3
+import time
 from contextlib import closing
 from datetime import UTC, date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -280,6 +281,17 @@ def test_ledger_context_caches_per_day_and_never_breaks_a_turn(tmp_path: Path) -
         LedgerSettings(),
     )
     assert broken(NOW, _at(8, 14)) == ("", "")
+
+
+def test_ledger_warm_leaves_the_first_turn_a_cached_standing_text(tmp_path: Path) -> None:
+    """The boot warm-up builds the standing text, so the first turn after a restart reuses it."""
+    context = LedgerContext(_world(tmp_path), LedgerSettings())
+    context.warm(lambda: NOW)
+    deadline = time.monotonic() + 10
+    while context._cached is None and time.monotonic() < deadline:  # noqa: SLF001
+        time.sleep(0.01)
+    assert context._cached is not None  # noqa: SLF001
+    assert context(NOW, None)[0] is context._cached[1]  # noqa: SLF001
 
 
 def test_settings_from_config() -> None:
