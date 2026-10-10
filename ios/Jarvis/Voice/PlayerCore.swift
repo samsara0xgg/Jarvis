@@ -45,6 +45,8 @@ private struct RenderState {
     var declickRemaining = 0
     var tailRampSamples = 0
     var firstGeneration: Int64 = -1
+    var reportedGen: Int64 = -1         // the last report's generation and end cursor: the next one starts there
+    var reportedEnd: Int64 = 0
     var starvationDry: Int64 = -1
     var starvationGaps: UInt64 = 0
     var fadeIn: Int64 = -1
@@ -411,8 +413,13 @@ final class PlayerCore: @unchecked Sendable {
             emitDeclick(out, actual)
             return
         }
-        let startCursor = scratchCur[0]
-        let endCursor = scratchCur[actual - 1] + 1
+        // At 48 kHz two slots can share a 32 kHz cursor, so a block's first slot may repeat the last one's: start where the
+        // last report ended, or the host's ledger reads a gap and never trusts the heard prefix again (live 2026-10-10: stuck at 735).
+        var startCursor = scratchCur[0]
+        if generation == s.pointee.reportedGen, startCursor <= s.pointee.reportedEnd { startCursor = s.pointee.reportedEnd }
+        let endCursor = max(startCursor, scratchCur[actual - 1] + 1)
+        s.pointee.reportedGen = generation
+        s.pointee.reportedEnd = endCursor
         let first = s.pointee.firstGeneration != generation
         if first {
             s.pointee.firstGeneration = generation
@@ -503,6 +510,14 @@ func demoPlayerCore() {
     assert(zip(reports, reports.dropFirst()).allSatisfy { $0.end <= $1.end && $1.first == false })
     assert(reports.allSatisfy { $0.generation == 3 && $0.audibility == 0 && $0.presentationDelayNs >= 20_000_000 }, "\(reports)")
     assert(abs(Int(p.playedSamples) - 4800) <= 1 && p.playedCursor == 4200, "\(p.playedSamples) \(p.playedCursor)")
+    // 1024-frame blocks: a block's first slot can share the last one's 32 kHz cursor; the reports must still join end to start
+    let q = PlayerCore(sampleRate: 48_000, ringSize: 1 << 14)
+    var big = [Float](repeating: 0, count: 1024)
+    q.ingest(.active(1))
+    for f in stride(from: 0, to: 3200, by: 735) { q.ingest(.pcm(generation: 1, start: Int64(f), samples: Array(tone[f..<min(f + 735, 3200)]))) }   // the host's frames
+    var joined: [PlayerReport] = []
+    for _ in 0..<6 { big.withUnsafeMutableBufferPointer { q.render($0.baseAddress!, frames: 1024, delayNs: 0) }; for case .report(let r) in q.drain() { joined.append(r) } }
+    assert(zip(joined, joined.dropFirst()).allSatisfy { $0.end == $1.start } && joined.last?.end == 3200, "\(joined.map { ($0.start, $0.end) })")
     // a local stop silences the next block and drops what is queued
     p.ingest(.pcm(generation: 3, start: 4200, samples: tone))
     render(); assert(block.contains { $0 != 0 })

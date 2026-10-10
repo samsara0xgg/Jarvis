@@ -54,6 +54,7 @@ final class VoiceSession {
     private let wakeReset = 120.0      // an armed recognizer with no words is restarted this often
     private let judgeTimeout = 2.5     // a judged say (over her, or a conversation follow-up) unanswered this long counts as a turn
     private let revealRate = 6.0       // her words appear at about the pace she speaks them (a CJK character is 1, see `speechUnits`)
+    private let continueWindow = 4.0  // words over her that start this soon after his last utterance ended are the rest of it
     private let holdCap = 8.0          // her voice is held at most this long for words over her
 
     // MARK: internals
@@ -350,6 +351,8 @@ final class VoiceSession {
                 goIdle(releasing: false)
                 return
             }
+            // A pause cut his sentence: what he says right after his last words goes on from them (live 2026-10-10: 「我现在在。」|「往39路的地方走」).
+            if heldAt - sayAt < continueWindow, !transcript.isEmpty, !typedTurn { text = transcript + text; VoiceTrace.note("held words go on from his last: joined") }
             VoiceTrace.note("judging over her: \(text.count) chars")
             let r: (turnId: String?, verdict: String)
             do { r = try await link.say(utteranceId: id, text: text, language: lang, confidence: picked.confidence, spoken: true, overHer: true, conversation: false, about: AboutNow.current?.json, timeout: judgeTimeout) }
