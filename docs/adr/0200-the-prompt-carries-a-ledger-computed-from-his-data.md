@@ -26,13 +26,17 @@ the program from rows; only the one "The day" line per day is model-made.
 
 - **A. Core memory items carry a note.** Each line shows the date it was first seen (the earliest
   record it cites, else its `since`) and a kind: said, mail, observed, a mix, or set.
-- **B-D. Standing blocks, in the system prompt after the core memory.** Recent days (seven in
+- **B-C. Standing blocks, in the system prompt after the core memory.** Recent days (seven in
   full with their conversation summary excerpt and "The day" line, seven more one line each), this
-  week so far, last week, the last 30 days, and the job hunt. They use complete days only, so
-  the text is the same for every turn of a local day and stays in the cached prefix. It is rebuilt
-  once when the day turns or when a new summary or "The day" line lands.
-- **E-F. Per-turn blocks, after the time line.** Today since midnight (computer, job mail,
-  interview changes, mail screened, reminders) and what happened since he last talked to her.
+  week so far, last week and the last 30 days. They use complete days only, so the text is the
+  same for every turn of a local day and stays in the cached prefix. It is rebuilt when the day
+  turns, at 05:00 (a working day that ran past midnight stops at its real end, which is known
+  only then; before 05:00 it shows as stopping at midnight), and when a new summary or "The day"
+  line lands.
+- **D-F. Per-turn blocks, after the time line.** The job hunt as of now (every job mail so far,
+  so an application confirmed this morning is already in the count; it reads only memory.db and
+  is about 1k characters), today since midnight (computer, job mail, interview changes, mail
+  screened, reminders) and what happened since he last talked to her.
 - **"The day" is written nightly** in the day-summary task, after the summaries and the core
   memory, by the flex tier, for each of the last seven complete days that has activity and no
   line yet. It is stored per day in `day_prose` and gated like a summary (not empty, not cut off,
@@ -54,7 +58,9 @@ the program from rows; only the one "The day" line per day is model-made.
 - **Put every block in the per-turn state.** The standing text is about 12k characters; sending
   it after the history on every turn makes it uncacheable, and it does not change within a day.
 - **Include today in the standing text.** Today changes every minute, so the cached prefix would
-  miss on every turn; E keeps it after the time line.
+  miss on every turn; D and E keep it after the time line. A product render with the job hunt
+  frozen at midnight answered "how many have I applied to" two short on a day with new
+  confirmations, which is why D moved out of the standing text.
 
 ## Consequences
 

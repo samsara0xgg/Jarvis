@@ -23,6 +23,7 @@ from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.job_ledger import record_seen, upsert_mail
 from jarvis.state.ledger import (
     LedgerSources,
+    job_hunt_text,
     notes_stamp,
     since_text,
     standing_text,
@@ -151,13 +152,18 @@ def test_standing_text_computes_days_job_hunt_and_notes(tmp_path: Path) -> None:
     assert "Computer: started 13:00, stopped 13:45, active 0h45m" in text
     assert "Job events: application confirmed (Acme Robotics, Co-op Dev, from Pat Lee)" in text
     # Job hunt as of midnight: today's mail (Beta Labs) is not in it, the dated invitation is.
-    assert "Application confirmed (2): Acme Robotics (Pat Lee), Gamma Inc (Pat Lee)" in text
-    assert "Interview mail (1): Delta Corp (Pat Lee)" in text
+    hunt = job_hunt_text(src, MIDNIGHT)
+    assert "Application confirmed (2): Acme Robotics (Pat Lee), Gamma Inc (Pat Lee)" in hunt
+    assert "Interview mail (1): Delta Corp (Pat Lee)" in hunt
     assert (
-        "Delta Corp (Intern): latest dated invitation Fri 2026-10-09 at 14:00-14:30 Pacific" in text
+        "Delta Corp (Intern): latest dated invitation Fri 2026-10-09 at 14:00-14:30 Pacific" in hunt
     )
-    assert "[upcoming;" in text
-    assert "Beta Labs" not in text
+    assert "[upcoming;" in hunt
+    assert "Beta Labs" not in hunt
+    # As of now it counts today's mail too; the standing text carries no job hunt at all.
+    now_hunt = job_hunt_text(src, NOW)
+    assert "Interview mail (2): Beta Labs (Pat Lee), Delta Corp (Pat Lee)" in now_hunt
+    assert "[Job hunt" not in text
     # This week so far: Mon 10-05 to Wed 10-07 is 1h30m + 0h45m.
     assert "[This week so far · Mon 10-05 to Wed 10-07; today is in Today so far]" in text
     assert "active 2h15m; projects jarvis 1h30m" in text
@@ -167,6 +173,22 @@ def test_standing_text_computes_days_job_hunt_and_notes(tmp_path: Path) -> None:
     later = standing_text(src, MIDNIGHT, notes_as_of=NOW)
     assert "Talked about: resume polish" in later
     assert "The day: He shipped the ledger and went to bed." in later
+
+
+def test_a_day_that_ran_past_midnight_stops_at_its_real_end_from_five(tmp_path: Path) -> None:
+    """At midnight Wednesday stops at midnight; from 05:00 on, at 00:40 when work went on."""
+    src = _world(tmp_path)
+    assert src.timesink is not None
+    with closing(sqlite3.connect(src.timesink)) as conn, conn:
+        conn.execute(
+            "INSERT INTO span (start, end, appBundleID, appName, title, document) "
+            "VALUES (?, ?, ?, 'Chrome', 'repl', '')",
+            (_utc(_at(7, 23, 30)), _utc(_at(8, 0, 40)), CHROME),
+        )
+    at_midnight = standing_text(src, MIDNIGHT)
+    assert "Computer: started 13:00, stopped 00:00 (after midnight), active 1h15m" in at_midnight
+    at_five = standing_text(src, MIDNIGHT, day_end_as_of=_at(8, 5))
+    assert "Computer: started 13:00, stopped 00:40 (after midnight), active 1h15m" in at_five
 
 
 def test_notes_stamp_follows_the_newest_note(tmp_path: Path) -> None:
@@ -240,6 +262,7 @@ def test_ledger_context_caches_per_day_and_never_breaks_a_turn(tmp_path: Path) -
     standing, per_turn = context(NOW, _at(8, 14))
     assert "[Recent days" in standing
     assert "[Today so far" in per_turn
+    assert per_turn.startswith("[Job hunt as of now")
     assert "Nothing new" in per_turn
     assert context(NOW + timedelta(hours=1), None)[0] is standing  # same day, same notes: cached
     assert "[Since you last talked" not in context(NOW, None)[1]

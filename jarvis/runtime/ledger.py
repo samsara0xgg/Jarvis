@@ -23,10 +23,12 @@ from jarvis.decision.day_prose import build_day_prose_messages, check_day_prose
 from jarvis.decision.llm import failure_reason
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.ledger import (
+    DAY_STARTS_AT,
     LedgerSources,
     day_active,
     day_numbers_text,
     day_report,
+    job_hunt_text,
     notes_stamp,
     since_text,
     standing_text,
@@ -117,16 +119,21 @@ class LedgerContext:
     def _standing(self, now: datetime) -> str:
         zone = self.sources.zone
         today = now.astimezone(zone).date()
+        midnight = datetime.combine(today, time.min, zone)
+        # Yesterday's working day may run past midnight: its stop is known once the day starts.
+        day_start = datetime.combine(today, DAY_STARTS_AT, zone)
+        day_end = day_start if now >= day_start else midnight
         try:
             with self._lock:  # the warm thread and the turn share one computation
-                key = (today, notes_stamp(self.sources))
+                key = (today, day_end, notes_stamp(self.sources))
                 if self._cached is None or self._cached[0] != key:
                     self._cached = (
                         key,
                         standing_text(
-                            self.sources, datetime.combine(today, time.min, zone),
+                            self.sources, midnight,
                             full_days=self.settings.full_days,
                             compact_days=self.settings.compact_days, notes_as_of=now,
+                            day_end_as_of=day_end,
                         ),
                     )
                 return self._cached[1]
@@ -135,7 +142,10 @@ class LedgerContext:
             return ""
 
     def _per_turn(self, now: datetime, last_ts: datetime | None) -> str:
-        parts = [self._guarded(partial(today_text, self.sources, now))]
+        parts = [
+            self._guarded(partial(job_hunt_text, self.sources, now)),
+            self._guarded(partial(today_text, self.sources, now)),
+        ]
         if last_ts is not None:
             parts.append(self._guarded(partial(since_text, self.sources, now, last_ts)))
         return "\n\n".join(part for part in parts if part)

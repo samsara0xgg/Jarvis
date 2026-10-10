@@ -2,10 +2,11 @@
 
 Pure reads of memory.db (day summaries, job mail, records), the Event Log (commits, work-state,
 reminders, daily reports), and TimeSink's spans, calls and project verdicts. Nothing here calls a
-model or writes. :func:`standing_text` is blocks B-D (recent days, this week, last week, the last
-30 days, the job hunt) as of a local midnight: complete days only, so the text is the same for every
+model or writes. :func:`standing_text` is blocks B-C (recent days, this week, last week, the last
+30 days) as of a local midnight: complete days only, so the text is the same for every
 turn of a day and sits in the cached prompt prefix. :func:`today_text` and :func:`since_text` are
-blocks E-F, the part of today that midnight cannot hold; they are rendered per turn.
+blocks E-F, the part of today that midnight cannot hold, and :func:`job_hunt_text` is block D
+as of now; they are rendered per turn.
 
 Every number is arithmetic over rows. A day's working hours are the union of its spans (two apps at
 once count once). A working day starts at the first run of activity that ends after 05:00 and stops
@@ -41,7 +42,7 @@ _APP_ALIAS: Final[dict[str, str]] = {
     "com.mitchellh.ghostty": "Ghostty",
 }
 _RUN_GAP: Final[timedelta] = timedelta(hours=4)
-_DAY_STARTS_AT: Final[time] = time(5)
+DAY_STARTS_AT: Final[time] = time(5)
 _TOP_FLOOR_S: Final[float] = 180.0  # a project or app under three minutes is not named
 _SESSION_FLOOR_S: Final[float] = 300.0
 _CALL_FLOOR_S: Final[float] = 120.0
@@ -210,12 +211,15 @@ class _Data:
 
     def __init__(
         self, src: LedgerSources, as_of: datetime, lo: datetime, *, screen: bool = True,
+        runs_until: datetime | None = None,
     ) -> None:
         self.src = src
         self.zone = src.zone
         self.as_of = as_of
+        # Working-day bounds may look past ``as_of``: a day that ran past midnight stops later.
+        self.runs_until = max(as_of, runs_until or as_of)
         self.lo = lo
-        self.spans, self.calls = self._timesink(src, lo, as_of) if screen else ([], [])
+        self.spans, self.calls = self._timesink(src, lo, self.runs_until) if screen else ([], [])
         self.starts = [span.start for span in self.spans]
         self.longest = max((span.end - span.start for span in self.spans), default=timedelta())
         self.union = self._union()
@@ -379,13 +383,13 @@ class _Data:
         return begin, datetime.combine(day + timedelta(days=1), time.min, self.zone)
 
     def runs(self) -> list[tuple[datetime, datetime]]:
-        """Runs of activity separated by gaps of four hours or more, cut at ``as_of``."""
+        """Runs of activity separated by gaps of four hours or more, cut at ``runs_until``."""
         if self._runs is None:
             out: list[tuple[datetime, datetime]] = []
             for begin, end in self.union:
-                if begin >= self.as_of:
+                if begin >= self.runs_until:
                     break
-                stop = min(end, self.as_of)
+                stop = min(end, self.runs_until)
                 if out and begin - out[-1][1] < _RUN_GAP:
                     out[-1] = (out[-1][0], max(out[-1][1], stop))
                 else:
@@ -395,7 +399,7 @@ class _Data:
 
     def bounds(self, day: date) -> tuple[datetime, datetime] | None:
         """(started, stopped) of the working day, which may have begun the evening before."""
-        cut = datetime.combine(day, _DAY_STARTS_AT, self.zone)
+        cut = datetime.combine(day, DAY_STARTS_AT, self.zone)
         runs = [run for run in self.runs() if run[1] > cut and run[0] < cut + timedelta(days=1)]
         if not runs:
             return None
@@ -626,7 +630,7 @@ def day_report(src: LedgerSources, day: date, as_of: datetime) -> str | None:
     return best
 
 
-# ------------------------------------------------------------------ blocks B-D (standing)
+# ------------------------------------------------------------------ blocks B-C (standing), D
 def _recent_days(  # noqa: PLR0913 — the data, the window sizes and the two note maps.
     data: _Data, today: date, full: int, compact: int,
     summaries: Mapping[str, str], prose: Mapping[str, str],
@@ -844,27 +848,33 @@ def notes_stamp(src: LedgerSources) -> tuple[str, str]:
     return newest[0], newest[1]
 
 
-def standing_text(
+def standing_text(  # noqa: PLR0913 — the window, the day counts and two cut-offs.
     src: LedgerSources, midnight: datetime, *, full_days: int = 7, compact_days: int = 7,
-    notes_as_of: datetime | None = None,
+    notes_as_of: datetime | None = None, day_end_as_of: datetime | None = None,
 ) -> str:
-    """Blocks B-D as of a local midnight: complete days only, one text for every turn of the day.
+    """Blocks B-C as of a local midnight: complete days only, one text for every turn of the day.
 
     The day summaries and "The day" lines shown are those stored by ``notes_as_of`` (default: the
     midnight), so a note written after midnight reaches the text without moving its numbers.
+    ``day_end_as_of`` (default: the midnight) is how far the working-day bounds look: yesterday's
+    work that ran past midnight stops at its real end once that moment has passed (05:00 at most).
     """
     today = midnight.astimezone(src.zone).date()
     reach = max(full_days + compact_days, 31) + 7  # 30-day window, two weeks of weekly blocks
-    data = _Data(src, midnight, midnight - timedelta(days=reach))
+    data = _Data(src, midnight, midnight - timedelta(days=reach), runs_until=day_end_as_of)
     summaries = _day_summaries(src, notes_as_of or midnight)
     prose = _day_prose(src, notes_as_of or midnight)
     return "\n\n".join(
         (
             _recent_days(data, today, full_days, compact_days, summaries, prose),
             _weeks(data),
-            _job_hunt(data),
         ),
     )
+
+
+def job_hunt_text(src: LedgerSources, now: datetime) -> str:
+    """Block D as of ``now``: every job mail so far, today's included."""
+    return _job_hunt(_Data(src, now, now - timedelta(days=1), screen=False))
 
 
 # ------------------------------------------------------------------ blocks E-F (per turn)
@@ -979,11 +989,13 @@ def since_text(src: LedgerSources, now: datetime, last_talk: datetime | None) ->
 
 
 __all__ = [
+    "DAY_STARTS_AT",
     "LedgerSources",
     "day_active",
     "day_numbers_text",
     "day_report",
     "hm",
+    "job_hunt_text",
     "notes_stamp",
     "since_text",
     "standing_text",
