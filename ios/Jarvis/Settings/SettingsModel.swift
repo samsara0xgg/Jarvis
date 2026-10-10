@@ -40,14 +40,20 @@ final class SettingsModel {
     var language = AnswerLanguage.followMe
 
     // 手机感知
+    // The five that report are off until turned on (and persist); the switch is what asks iOS for permission.
     var senses = [
-        Switch(title: "位置", detail: "3 分钟前 · 在家"),
-        Switch(title: "运动和步数", detail: "今天 8,412 步"),
-        Switch(title: "健康", detail: "昨晚睡了 7 小时 12 分 · 健身 1 次"),
-        Switch(title: "专注模式和闹钟", detail: "明早闹钟 07:30"),
-        Switch(title: "耳机和通话", detail: "AirPods · 20 分钟前断开"),
+        Switch(title: "位置", detail: "3 分钟前 · 在家", isOn: ReportMemory.isOn(.location)),
+        Switch(title: "运动和步数", detail: "今天 8,412 步", isOn: ReportMemory.isOn(.motion)),
+        Switch(title: "健康", detail: "昨晚睡了 7 小时 12 分 · 健身 1 次", isOn: ReportMemory.isOn(.health)),
+        Switch(title: "专注模式和闹钟", detail: "明早闹钟 07:30", isOn: ReportMemory.isOn(.focusAlarm)),
+        Switch(title: "耳机和通话", detail: "AirPods · 20 分钟前断开", isOn: ReportMemory.isOn(.headphonesCalls)),
         Switch(title: "分享给 Jarvis", detail: "今天 1 次"),
-    ]
+    ] {
+        didSet {
+            let changes = senses.compactMap { s in ReportSense(title: s.title).map { ($0, s.isOn) } }
+            Task { @MainActor in changes.forEach { Reporter.shared.setEnabled($0, $1) } }
+        }
+    }
 
     // 通知
     var notices = [Switch(title: "等你点头的事"), Switch(title: "提醒"), Switch(title: "她主动说的话")]

@@ -3,6 +3,7 @@ import CoreText
 
 @main
 struct JarvisApp: App {
+    @UIApplicationDelegateAdaptor(ReportAppDelegate.self) private var reportDelegate
     @Environment(\.scenePhase) private var phase
     @State private var wasBackground = false
 

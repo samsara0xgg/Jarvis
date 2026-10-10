@@ -28,10 +28,21 @@ targets:
             ts.net:
               NSIncludesSubdomains: true
               NSExceptionAllowsInsecureHTTPLoads: true
-        UIBackgroundModes: [audio]       # her reply keeps playing if the phone is locked mid-answer
+        UIBackgroundModes: [audio, location, fetch]   # audio: her reply keeps playing if the phone is locked mid-answer; location + fetch: the phone reports what it senses (ADR 0197)
+        BGTaskSchedulerPermittedIdentifiers: [com.allen.jarvis.report-flush]
+        NSLocationWhenInUseUsageDescription: 记下你去过的地方，让她知道你在哪。
+        NSLocationAlwaysAndWhenInUseUsageDescription: 选「始终」，你到了新地方、或走远了，她才收得到，不用你打开 App。平时只记到达和离开，走路、坐车时才记得密一些，不会一直定位。
+        NSMotionUsageDescription: 知道你是在走路、骑车还是坐着，她就明白你这一天是怎么过的。
+        NSHealthShareUsageDescription: 读取你选的步数、训练或睡眠，只发给你自己的大脑。
+        NSFocusStatusUsageDescription: 知道你开了专注模式，她就不会在这时候打扰你。
         CFBundleURLTypes:
           - CFBundleURLName: com.allen.jarvis
             CFBundleURLSchemes: [jarvis]
+    entitlements:
+      path: Config/Jarvis.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.background-delivery: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.allen.jarvis
@@ -66,3 +77,14 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: YES
         SKIP_INSTALL: YES
+  JarvisTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources: [JarvisTests]
+    dependencies:
+      - target: Jarvis
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.allen.jarvis.tests
