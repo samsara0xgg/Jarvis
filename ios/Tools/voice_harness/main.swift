@@ -16,8 +16,8 @@ func xlang(_ dir: URL) {
     assert(PlayerIn(bin("active_7")) == .active(7) && PlayerIn(bin("active_none")) == .active(-1) && PlayerIn(bin("discard")) == .discard(1))
     assert(PlayerIn(bin("gain")) == .gain(target: 0.25, ramp: 1920) && PlayerIn(bin("hold")) == .hold(-1))
     assert(PlayerIn(bin("pcm")) == .pcm(generation: 5, start: 96_000, samples: [0, 1, -1, 16384, -32768, 1234]), "\(String(describing: PlayerIn(bin("pcm"))))")
-    assert(text("ready_voice") == .ready(device: "phone", voice: true, sampleRate: 32_000) && text("ready_text") == .ready(device: "phone", voice: false, sampleRate: 32_000))
-    assert(text("said") == .said(utteranceId: "u1", turnId: "Tu1"))
+    assert(text("ready_voice") == .ready(device: "phone", voice: true, sampleRate: 32_000, judges: false) && text("ready_text") == .ready(device: "phone", voice: false, sampleRate: 32_000, judges: false))
+    assert(text("said") == .said(utteranceId: "u1", turnId: "Tu1", verdict: "turn"))
     guard case .row(let row) = text("row") else { fatalError("row") }
     assert(row.eventType == "surface.response_chunk" && row.eventUid == String(repeating: "a", count: 32) && row.tsEpochMs == 1_700_000_000_000)
     assert(row.turnId == "T1" && row.text == "好的" && row.phase == "final" && row.payload["sequence"] as? Int == 0, "\(row)")
@@ -56,7 +56,7 @@ if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "xlang" { xlang
         }
     }
     var rowTypes: [String] = [], rowText = "", rowTurns = Set<String>(), total = 0, frames = 0, loud = false
-    let turn = try await link.say(utteranceId: "u1", text: "你好 Jarvis", language: .zh, confidence: 0.9, spoken: true)
+    let (turn, verdict) = try await link.say(utteranceId: "u1", text: "你好 Jarvis", language: .zh, confidence: 0.9, spoken: true, overHer: false, conversation: false, about: nil, timeout: 10)
     let reader = Task { @MainActor in
         for await e in link.events {
             switch e {
@@ -78,7 +78,7 @@ if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "xlang" { xlang
         for case .report(let r) in core.drain() { reports.append(r); lastNew = Date(); loud = loud || core.level > 0.001 }
     }
     reader.cancel(); render.cancel()
-    assert(turn == "stub-1" && rowText == "还没连上大脑。你刚才说的是：你好 Jarvis" && rowTurns == [turn], "\(rowText) \(rowTurns)")
+    assert(turn == "stub-1" && verdict == "turn" && rowText == "还没连上大脑。你刚才说的是：你好 Jarvis" && rowTurns == [turn], "\(rowText) \(rowTurns)")
     assert(rowTypes == ["surface.response_open", "surface.response_chunk", "surface.response_chunk", "surface.response_emitted"], "\(rowTypes)")
     assert(total > 32_000, "synthesized speech is longer than a second: \(total) samples")
     assert(reports.last?.end == Int64(total), "every source sample is reported played: \(String(describing: reports.last?.end)) of \(total)")

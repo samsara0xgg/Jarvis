@@ -152,7 +152,8 @@ struct RowFrame: @unchecked Sendable, Equatable {
 /// phone -> host
 enum PhoneFrame: Equatable, Sendable {
     case hello
-    case say(utteranceId: String, text: String, language: String?, confidence: Double?, spoken: Bool)
+    case say(utteranceId: String, text: String, language: String?, confidence: Double?, spoken: Bool, overHer: Bool = false, conversation: Bool = false,
+             about: Data? = nil)                        // the item he has open (ADR 0214), as JSON
     case barge
     case cancel
     case ping(tNs: Int64)
@@ -161,10 +162,13 @@ enum PhoneFrame: Equatable, Sendable {
         var o: [String: Any]
         switch self {
         case .hello: o = ["type": "hello", "voice": true]
-        case .say(let id, let text, let lang, let conf, let spoken):
+        case .say(let id, let text, let lang, let conf, let spoken, let overHer, let conversation, let about):
             o = ["type": "say", "utterance_id": id, "text": text, "spoken": spoken]
             if let lang { o["language"] = lang }
             if let conf { o["confidence"] = conf }
+            if overHer { o["over_her"] = true }                 // only meaningful with spoken
+            if conversation { o["conversation"] = true }
+            if let about, let a = try? JSONSerialization.jsonObject(with: about) { o["about"] = a }
         case .barge: o = ["type": "barge"]
         case .cancel: o = ["type": "cancel"]
         case .ping(let t): o = ["type": "ping", "t_ns": t]
@@ -178,7 +182,9 @@ enum PhoneFrame: Equatable, Sendable {
         case "hello": self = .hello
         case "say":
             guard let id = o["utterance_id"] as? String, let text = o["text"] as? String, let spoken = o["spoken"] as? Bool else { return nil }
-            self = .say(utteranceId: id, text: text, language: o["language"] as? String, confidence: (o["confidence"] as? NSNumber)?.doubleValue, spoken: spoken)
+            self = .say(utteranceId: id, text: text, language: o["language"] as? String, confidence: (o["confidence"] as? NSNumber)?.doubleValue, spoken: spoken,
+                         overHer: o["over_her"] as? Bool ?? false, conversation: o["conversation"] as? Bool ?? false,
+                         about: (o["about"] as? [String: Any]).flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) })
         case "barge": self = .barge
         case "cancel": self = .cancel
         case "ping": guard let t = (o["t_ns"] as? NSNumber)?.int64Value else { return nil }; self = .ping(tNs: t)
@@ -189,8 +195,10 @@ enum PhoneFrame: Equatable, Sendable {
 
 /// host -> phone
 enum HostFrame: Equatable, Sendable {
-    case ready(device: String, voice: Bool, sampleRate: Int)
-    case said(utteranceId: String, turnId: String)
+    /// judges: the host judges over-her and follow-up says (a `verdict` on every `said`); old hosts omit it
+    case ready(device: String, voice: Bool, sampleRate: Int, judges: Bool)
+    /// verdict: turn | backchannel | unclear | echo | stop | wait | dismissed | quiet:<level>; turnId is nil unless it is a turn
+    case said(utteranceId: String, turnId: String?, verdict: String)
     case row(RowFrame)
     case pong(tNs: Int64, hostNs: Int64)
     /// codes: bad_say, bad_ping, bad_frame, no_voice, retry (resend the same say), interrupt_failed
@@ -199,8 +207,8 @@ enum HostFrame: Equatable, Sendable {
     var json: Data {                                    // the host's side; here for the round-trip check
         var o: [String: Any]
         switch self {
-        case .ready(let d, let v, let r): o = ["type": "ready", "device": d, "voice": v, "sample_rate": r]
-        case .said(let u, let t): o = ["type": "said", "utterance_id": u, "turn_id": t]
+        case .ready(let d, let v, let r, let j): o = ["type": "ready", "device": d, "voice": v, "sample_rate": r, "judges": j]
+        case .said(let u, let t, let v): o = ["type": "said", "utterance_id": u, "turn_id": t ?? NSNull(), "verdict": v]
         case .row(let r): o = ["type": "row", "event_type": r.eventType, "event_uid": r.eventUid, "payload": r.payload, "ts_epoch_ms": r.tsEpochMs]
         case .pong(let t, let h): o = ["type": "pong", "t_ns": t, "host_ns": h]
         case .error(let c, let m): o = ["type": "error", "code": c, "message": m]
@@ -213,10 +221,10 @@ enum HostFrame: Equatable, Sendable {
         switch type {
         case "ready":
             guard let d = o["device"] as? String, let v = o["voice"] as? Bool, let r = (o["sample_rate"] as? NSNumber)?.intValue else { return nil }
-            self = .ready(device: d, voice: v, sampleRate: r)
+            self = .ready(device: d, voice: v, sampleRate: r, judges: o["judges"] as? Bool ?? false)
         case "said":
-            guard let u = o["utterance_id"] as? String, let t = o["turn_id"] as? String else { return nil }
-            self = .said(utteranceId: u, turnId: t)
+            guard let u = o["utterance_id"] as? String else { return nil }
+            self = .said(utteranceId: u, turnId: o["turn_id"] as? String, verdict: o["verdict"] as? String ?? "turn")
         case "row":
             guard let t = o["event_type"] as? String, let u = o["event_uid"] as? String, let p = o["payload"] as? [String: Any],
                   let ts = (o["ts_epoch_ms"] as? NSNumber)?.int64Value else { return nil }
@@ -248,13 +256,24 @@ func demoVoiceWire() {
     assert([UInt8](PlayerOut.discardAck(1).bytes) == [0x84, 1, 0, 0, 0, 0, 0, 0, 0])
     assert(PlayerIn(Data([6, 1, 2])) == nil && PlayerIn(Data()) == nil && PlayerOut(Data([0x82, 1])) == nil)
     let phone: [PhoneFrame] = [.hello, .say(utteranceId: "u1", text: "你好 Jarvis", language: "zh", confidence: 0.93, spoken: true),
-                               .say(utteranceId: "u2", text: "hi", language: nil, confidence: nil, spoken: false), .barge, .cancel, .ping(tNs: 1_234_567_890_123)]
+                               .say(utteranceId: "u2", text: "hi", language: nil, confidence: nil, spoken: false),
+                               .say(utteranceId: "u3", text: "等一下", language: "zh", confidence: 0.8, spoken: true, overHer: true, conversation: true),
+                               .say(utteranceId: "u4", text: "这个几点", language: "zh", confidence: 0.9, spoken: true, about: Data(#"{"id":"r1","kind":"reminder","start_ms":1,"title":"t"}"#.utf8)), .barge, .cancel, .ping(tNs: 1_234_567_890_123)]
     for f in phone { assert(PhoneFrame(f.json) == f, "\(f)") }
+    // the flags go on the wire only when true
+    let plain = (try? JSONSerialization.jsonObject(with: PhoneFrame.say(utteranceId: "u", text: "x", language: nil, confidence: nil, spoken: true).json)) as? [String: Any]
+    assert(plain?["over_her"] == nil && plain?["conversation"] == nil)
+    let flagged = (try? JSONSerialization.jsonObject(with: phone[3].json)) as? [String: Any]
+    assert(flagged?["over_her"] as? Bool == true && flagged?["conversation"] as? Bool == true)
     let row = RowFrame(eventType: "surface.response_chunk", eventUid: String(repeating: "a", count: 32),
                        payload: ["turn_id": "T1", "text": "好的", "sequence": 2, "phase": "final"], tsEpochMs: 1_700_000_000_000)
     assert(row.turnId == "T1" && row.text == "好的" && row.phase == "final")
-    let host: [HostFrame] = [.ready(device: "phone", voice: true, sampleRate: 32_000), .ready(device: "phone", voice: false, sampleRate: 32_000),
-                             .said(utteranceId: "u1", turnId: "T1"), .row(row), .pong(tNs: 5, hostNs: 9), .error(code: "retry", message: "again")]
+    let host: [HostFrame] = [.ready(device: "phone", voice: true, sampleRate: 32_000, judges: true), .ready(device: "phone", voice: false, sampleRate: 32_000, judges: false),
+                             .said(utteranceId: "u1", turnId: "T1", verdict: "turn"), .said(utteranceId: "u4", turnId: nil, verdict: "quiet:night"), .row(row), .pong(tNs: 5, hostNs: 9), .error(code: "retry", message: "again")]
     for f in host { assert(HostFrame(f.json) == f, "\(f)") }
+    // an old host: no judges, no verdict
+    assert(HostFrame(Data(#"{"type":"ready","device":"phone","voice":true,"sample_rate":32000}"#.utf8)) == .ready(device: "phone", voice: true, sampleRate: 32_000, judges: false))
+    assert(HostFrame(Data(#"{"type":"said","utterance_id":"u1","turn_id":"T1"}"#.utf8)) == .said(utteranceId: "u1", turnId: "T1", verdict: "turn"))
+    assert(HostFrame(Data(#"{"type":"said","utterance_id":"u1","turn_id":null,"verdict":"echo"}"#.utf8)) == .said(utteranceId: "u1", turnId: nil, verdict: "echo"))
 }
 #endif

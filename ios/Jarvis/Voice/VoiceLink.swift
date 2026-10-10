@@ -3,7 +3,7 @@ import Foundation
 // The phone's line to the host. The session talks to a VoiceLink; which one is behind it is decided by whether a pairing exists.
 
 enum LinkEvent: Sendable {
-    case ready(device: String, voice: Bool, sampleRate: Int)
+    case ready(device: String, voice: Bool, sampleRate: Int, judges: Bool)
     case row(RowFrame)
     /// a frame for the player (from the host's binary messages)
     case audio(PlayerIn)
@@ -34,8 +34,9 @@ protocol VoiceLink: AnyObject {
     var events: AsyncStream<LinkEvent> { get }
     func connect()
     func disconnect()
-    /// The turn id the host gives this utterance.
-    func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool) async throws -> String
+    /// The host's answer to this utterance: the turn id (nil unless the verdict is "turn") and the verdict. `timeout` seconds without it throws `.timeout`.
+    func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
+             about: [String: Any]?, timeout: Double) async throws -> (turnId: String?, verdict: String)
     func barge()
     func cancel()
     /// what the player reports back (READY, REPORT, STATUS, DISCARD_ACK)
@@ -57,7 +58,7 @@ final class WebSocketVoiceLink: VoiceLink {
     private var wanted = false
     private var backoff = 1.0
     private var generation = 0                       // which connection a late callback belongs to
-    private var pending: [String: (c: CheckedContinuation<String, Error>, frame: PhoneFrame)] = [:]
+    private var pending: [String: (c: CheckedContinuation<(turnId: String?, verdict: String), Error>, frame: PhoneFrame)] = [:]
     private var pingTask: Task<Void, Never>?
 
     init(endpoint: @escaping () -> (base: URL, token: String)?) {
@@ -139,8 +140,8 @@ final class WebSocketVoiceLink: VoiceLink {
 
     private func handle(_ f: HostFrame) {
         switch f {
-        case .ready(let d, let v, let r): out.yield(.ready(device: d, voice: v, sampleRate: r))
-        case .said(let u, let turn): VoiceTrace.note("ws said frame"); pending.removeValue(forKey: u)?.c.resume(returning: turn)
+        case .ready(let d, let v, let r, let j): out.yield(.ready(device: d, voice: v, sampleRate: r, judges: j))
+        case .said(let u, let turn, let verdict): VoiceTrace.note("ws said frame: \(verdict)"); pending.removeValue(forKey: u)?.c.resume(returning: (turn, verdict))
         case .row(let r): out.yield(.row(r))
         case .pong: break
         case .error("retry", _):                      // the host could not write it down: send the same say again
@@ -161,15 +162,18 @@ final class WebSocketVoiceLink: VoiceLink {
         task.send(.string(s)) { _ in }
     }
 
-    func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool) async throws -> String {
+    func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
+             about: [String: Any]?, timeout: Double) async throws -> (turnId: String?, verdict: String) {
         if task == nil { connect() }
         guard task != nil else { throw LinkError.notConnected }
-        let frame = PhoneFrame.say(utteranceId: utteranceId, text: text, language: language?.code, confidence: confidence, spoken: spoken)
+        let frame = PhoneFrame.say(utteranceId: utteranceId, text: text, language: language?.code, confidence: confidence, spoken: spoken,
+                                   overHer: overHer, conversation: conversation,
+                                   about: about.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) })
         return try await withCheckedThrowingContinuation { c in
             pending[utteranceId] = (c, frame)
             sendText(frame)
             Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1e9))
                 self?.pending.removeValue(forKey: utteranceId)?.c.resume(throwing: LinkError.timeout)
             }
         }

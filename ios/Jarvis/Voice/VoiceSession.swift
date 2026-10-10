@@ -52,6 +52,8 @@ final class VoiceSession {
     private let noAudioAfterText = 6.0 // her text is done and no audio ever came this long after: the host did not speak it
     private let noReply = 30.0         // nothing from the host (no row, no audio) this long: she did not answer
     private let wakeReset = 120.0      // an armed recognizer with no words is restarted this often
+    private let judgeTimeout = 2.5     // a judged say (over her, or a conversation follow-up) unanswered this long counts as a turn
+    private let holdCap = 8.0          // her voice is held at most this long for words over her
 
     // MARK: internals
 
@@ -100,6 +102,10 @@ final class VoiceSession {
     @ObservationIgnored private var hostVoice = true
     @ObservationIgnored private var readySent = false
     @ObservationIgnored private var commandSaid: VoiceCommand?
+    @ObservationIgnored private var hostJudges = false             // the host judges words over her and follow-ups (`ready.judges`)
+    @ObservationIgnored private var held = false                   // his words over her are with the host; her output is held here meanwhile
+    @ObservationIgnored private var heldAt = 0.0
+    @ObservationIgnored private var inConversation = false         // listening was entered from a follow-up window or 「等一下」, not a tap or the wake word
     @ObservationIgnored private let log = Logger(subsystem: "com.allen.jarvis", category: "voice")
 
     private var now: Double { Double(uptimeNs()) / 1e9 }
@@ -292,7 +298,7 @@ final class VoiceSession {
         switch state {
         case .listening: partial = p.text; language = p.lang; reply = ""   // he has started again: her last answer must not come back when he pauses
         case .idle: if armed, heardWake(p.heard) { wakeTurn = true; language = p.lang; enterListening(); partial = p.text }
-        case .thinking, .speaking: overHerWords(p.text)
+        case .thinking, .speaking: if held { partial = p.text } else { overHerWords(p.text) }
         }
     }
 
@@ -303,8 +309,98 @@ final class VoiceSession {
         switch v {
         case .echo, .backchannel: judgedOverHer = text; duck(false)
         case .tooShort: duck(true)
-        case .barge: if inputLevel >= bargeLevel { bargeIn() } else { duck(true) }
+        case .barge: if inputLevel < bargeLevel { duck(true) } else if hostJudges, !awaitingSaid { holdHer() } else { bargeIn() }   // a follow-up still with the host: a plain barge-in
         }
+    }
+
+    /// An interruption the host judges: her voice is held here (not stopped), his words keep being recognized, the turn stays as it is.
+    private func holdHer() {
+        VoiceTrace.note("soft barge: holding her")
+        // ponytail: with no audio yet (thinking, generation -1) there is nothing to pin, so her first audio may start during the judgment; duck covers it
+        if let core = audio.core, core.activeGeneration >= 0 { core.ingest(.hold(core.activeGeneration)) }
+        held = true
+        heldAt = now
+        partial = segmentText
+        if let c = shortCommand(afterJudged(segmentText, judgedOverHer)), c == .stop || c == .goodnight { audio.core?.stopNow() }
+    }
+
+    /// His words over her ended: finish the segment and let the host judge them (state and turn stay until it answers).
+    @available(iOS 26, *)
+    private func finishHeld() {
+        guard held, let r = rec as? DualRecognizer else { return }
+        rec = nil
+        feed.set(nil)
+        let seq = turnSeq
+        Task {
+            let (picked, _) = await r.finish()
+            guard seq == turnSeq, held else { return }
+            var text = afterJudged(picked.text, judgedOverHer).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty, isOwnEcho(text, herRecent(since: heldAt)) { VoiceTrace.note("held words were her own echo: dropped"); text = "" }
+            if text.isEmpty { VoiceTrace.note("held: nothing recognized"); resumeHer(); return }
+            let id = UUID().uuidString, lang = picked.lang
+            guard let link else { resumeHer(); return }
+            if let c = shortCommand(text), c == .stop || c == .goodnight {
+                VoiceTrace.note("judged over her: local \(c.rawValue)")
+                audio.core?.stopNow()
+                Task { _ = try? await link.say(utteranceId: id, text: text, language: lang, confidence: picked.confidence, spoken: true, overHer: true, conversation: false, about: AboutNow.current?.json, timeout: 10) }
+                goIdle(releasing: false)
+                return
+            }
+            VoiceTrace.note("judging over her: \(text.count) chars")
+            let r: (turnId: String?, verdict: String)
+            do { r = try await link.say(utteranceId: id, text: text, language: lang, confidence: picked.confidence, spoken: true, overHer: true, conversation: false, about: AboutNow.current?.json, timeout: judgeTimeout) }
+            catch {
+                guard seq == turnSeq, held else { return }
+                VoiceTrace.note("judge timed out: turn (\(error.localizedDescription))")
+                link.barge()
+                takeOver(text, lang)
+                say(text, lang: lang, confidence: picked.confidence, spoken: true, utteranceId: id)
+                startSegment()
+                return
+            }
+            guard seq == turnSeq, held else { return }
+            VoiceTrace.note("judged over her: \(r.verdict)")
+            switch r.verdict {
+            case "backchannel", "unclear", "echo": resumeHer()
+            case "wait": audio.core?.stopNow(); holdForWait()
+            case _ where r.verdict == "stop" || r.verdict == "dismissed" || r.verdict.hasPrefix("quiet:"): audio.core?.stopNow(); goIdle(releasing: false)
+            default:
+                if let turn = r.turnId {
+                    takeOver(text, lang)
+                    sayAt = now; lastActivityAt = now
+                    currentTurn = turn
+                    startSegment()
+                } else {                                    // a turn with no id: the host did not write it down, so say it again
+                    link.barge()
+                    takeOver(text, lang)
+                    say(text, lang: lang, confidence: picked.confidence, spoken: true, utteranceId: id)
+                    startSegment()
+                }
+            }
+        }
+    }
+
+    /// A nod, an echo or noise over her: let go of her voice and listen on with a fresh segment.
+    @available(iOS 26, *)
+    private func resumeHer() {
+        audio.core?.ingest(.hold(-1))
+        held = false
+        duck(false)
+        startSegment()
+    }
+
+    /// His words over her became the turn: her audio is gone here and the screen follows his words (the host has stopped her, or is about to).
+    private func takeOver(_ text: String, _ lang: VoiceLang) {
+        audio.core?.stopNow()
+        duck(false)
+        endTurn()
+        language = lang
+        transcript = text
+        partial = ""
+        reply = ""
+        commandSaid = nil
+        set(.thinking)
+        playedAtSay = audio.core?.playedSamples ?? 0
     }
 
     /// Her words, if she was audible within 1.5 s of `t`: an echo needs her voice; words she said a while ago he may repeat himself.
@@ -324,6 +420,7 @@ final class VoiceSession {
 
     private func enterListening() {
         set(.listening)
+        inConversation = false
         startedAt = now
         lastWordAt = now
         errorText = missingNote
@@ -376,14 +473,15 @@ final class VoiceSession {
         transcript = text
         partial = ""
         commandSaid = shortCommand(text)
-        if commandSaid == .stop || commandSaid == .wait { audio.core?.stopNow(); link?.cancel() }
+        let conversation = hostJudges && inConversation
+        if commandSaid == .stop || commandSaid == .wait { audio.core?.stopNow(); if !conversation { link?.cancel() } }   // a judged say lets the host stop her
         playedAtSay = audio.core?.playedSamples ?? 0
-        say(text, lang: picked.lang, confidence: picked.confidence, spoken: true)
+        say(text, lang: picked.lang, confidence: picked.confidence, spoken: true, conversation: conversation)
         startSegment()                                      // listening for him to interrupt
     }
 
     /// Send the words and start following the turn the host opens for them.
-    private func say(_ text: String, lang: VoiceLang?, confidence: Double?, spoken: Bool) {
+    private func say(_ text: String, lang: VoiceLang?, confidence: Double?, spoken: Bool, utteranceId: String = UUID().uuidString, conversation: Bool = false) {
         endTurn()
         awaitingSaid = true
         typedTurn = !spoken
@@ -392,15 +490,35 @@ final class VoiceSession {
         lastActivityAt = now
         ensureLink()
         let seq = turnSeq
-        VoiceTrace.note("say sent: \(text.count) chars, spoken \(spoken), lang \(lang?.rawValue ?? "none")")
+        VoiceTrace.note("say sent: \(text.count) chars, spoken \(spoken), lang \(lang?.rawValue ?? "none")\(conversation ? ", follow-up" : "")")
         Task {
             do {
                 guard let link else { return }
-                let turn = try await link.say(utteranceId: UUID().uuidString, text: text, language: lang, confidence: confidence, spoken: spoken)
+                var r: (turnId: String?, verdict: String)
+                do { r = try await link.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: conversation, about: AboutNow.current?.json, timeout: conversation ? judgeTimeout : 10) }
+                catch LinkError.timeout where conversation {
+                    VoiceTrace.note("judge timed out: turn")
+                    guard seq == turnSeq else { return }
+                    r = try await link.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: false, about: AboutNow.current?.json, timeout: 10)
+                }
                 guard seq == turnSeq else { return }
+                if conversation {
+                    VoiceTrace.note("judged follow-up: \(r.verdict)")
+                    switch r.verdict {
+                    case "backchannel", "unclear", "echo":     // not for her: stay in the conversation window
+                        endTurn()
+                        enterListening()
+                        inConversation = true
+                        if #available(iOS 26, *) { startSegment() }
+                        return
+                    case "wait": holdForWait(); return
+                    case _ where r.verdict == "stop" || r.verdict == "dismissed" || r.verdict.hasPrefix("quiet:"): goIdle(releasing: false); return
+                    default: break
+                    }
+                }
                 VoiceTrace.note("said acknowledged by the host")
                 awaitingSaid = false
-                currentTurn = turn
+                currentTurn = r.turnId
                 let held = heldRows
                 heldRows = []
                 for r in held { handleRow(r) }
@@ -418,6 +536,7 @@ final class VoiceSession {
         awaitingSaid = false
         heldRows = []
         typedTurn = false
+        held = false
         finalText = ""; commentary = ""
         waitLines = []
         rowsDone = false
@@ -426,11 +545,13 @@ final class VoiceSession {
     }
 
     private func replyFinished() {
+        if held { return }                                  // his words over her are being judged; the verdict decides what happens next
         if commandSaid == .wait { holdForWait(); return }
         if typedTurn || commandSaid == .stop || commandSaid == .goodnight { goIdle(releasing: false); return }
         // a short window to answer without tapping; its own silence timer ends it
         endTurn()
         enterListening()
+        inConversation = true
         if #available(iOS 26, *) { startSegment() }
     }
 
@@ -439,6 +560,7 @@ final class VoiceSession {
         VoiceTrace.note("waiting for him: listening \(Int(waitHold)) s")
         endTurn()
         enterListening()
+        inConversation = true
         waitUntil = now + waitHold
         if #available(iOS 26, *) { startSegment() }
     }
@@ -456,6 +578,7 @@ final class VoiceSession {
         waitUntil = 0
         set(.idle)
         wakeTurn = false
+        inConversation = false
         endTurn()
         dropSegment()
         if releasing { release() } else { refreshArming() }
@@ -471,9 +594,10 @@ final class VoiceSession {
 
     private func handle(_ e: LinkEvent) {
         switch e {
-        case .ready(_, let voice, let rate):
-            VoiceTrace.note("host ready: voice \(voice), rate \(rate)")
+        case .ready(_, let voice, let rate, let judges):
+            VoiceTrace.note("host ready: voice \(voice), rate \(rate), judges \(judges)")
             hostVoice = voice
+            hostJudges = judges
             readySent = false
             sendReady()
         case .row(let r): handleRow(r)
@@ -503,6 +627,7 @@ final class VoiceSession {
 
     /// One row of this device's turns. `reply` is her words so far; the answer's `response_emitted` ends the text, the audio is judged in `tick`.
     private func handleRow(_ r: RowFrame) {
+        PhoneRows.offer(r)
         guard state == .thinking || state == .speaking else { return }
         guard let current = currentTurn else {
             if awaitingSaid { heldRows.append(r) }
@@ -551,7 +676,8 @@ final class VoiceSession {
             guard let core = audio.core, !typedTurn else { return }
             if core.trouble != lastTrouble { lastTrouble = core.trouble; VoiceTrace.note("player: \(lastTrouble.overloads) overloads, \(lastTrouble.gaps) gaps") }
             if state == .thinking, core.playedSamples > playedAtSay + 480 { set(.speaking) }
-            if ducked, t - lastWordAt > 1.5 { duck(false) }      // the words over her stopped short of an interruption
+            if held, #available(iOS 26, *), (t - lastWordAt > silenceEnd && inputLevel < quiet) || t - heldAt > holdCap { finishHeld() }
+            if ducked, !held, t - lastWordAt > 1.5 { duck(false) }      // the words over her stopped short of an interruption
             if !core.ringEmpty { lastActivityAt = t }
             let quietAfter = commandSaid == .stop || commandSaid == .wait || commandSaid == .goodnight
             if rowsDone {
