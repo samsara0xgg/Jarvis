@@ -30,15 +30,16 @@ extension StarEngine {
         if !on { lingerFrom(nowMs()) }
     }
 
-    @discardableResult func addTurn(his: Bool, _ text: String, alphas: [Double] = [], pics: [SentItem] = [], leadIn: Bool = false) -> Int {
+    @discardableResult func addTurn(his: Bool, _ text: String, alphas: [Double] = [], pics: [SentItem] = [], leadIn: Bool = false, growing: Bool = false) -> Int {
         turnSeq += 1
-        let t = LiveTurn(id: turnSeq, his: his, text: text, alphas: alphas, pics: pics, leadIn: leadIn)
+        let t = LiveTurn(id: turnSeq, his: his, text: text, alphas: alphas, pics: pics, leadIn: leadIn, growing: growing)
         withAnimation(.easeOut(duration: 0.25)) { ui.liveTurns.append(t) }
         if !his { openForWritten(text) }
         return turnSeq
     }
-    func setTurn(_ id: Int?, text: String? = nil, alphas: [Double]? = nil) {
+    func setTurn(_ id: Int?, text: String? = nil, alphas: [Double]? = nil, growing: Bool? = nil) {
         guard let id, let i = ui.liveTurns.lastIndex(where: { $0.id == id }) else { return }
+        if let growing, ui.liveTurns[i].growing != growing { ui.liveTurns[i].growing = growing }
         if let text, ui.liveTurns[i].text != text { ui.liveTurns[i].text = text; if !ui.liveTurns[i].his { openForWritten(text) } }
         if let alphas, ui.liveTurns[i].alphas != alphas { ui.liveTurns[i].alphas = alphas }
     }
@@ -75,7 +76,7 @@ extension StarEngine {
     func voiceRows(_ v: VoiceShot) {
         let listening = v.state == .listening
         let his = (listening ? v.partial : v.transcript).trimmingCharacters(in: .whitespacesAndNewlines)
-        if !his.isEmpty { if let id = vHis { setTurn(id, text: his) } else { vHis = addTurn(his: true, his) } }
+        if !his.isEmpty { if let id = vHis { setTurn(id, text: his, growing: listening) } else { vHis = addTurn(his: true, his, growing: listening) } }
         if !listening && !v.reply.isEmpty { if let id = vHer { setTurn(id, text: v.reply) } else { vHer = addTurn(his: false, v.reply); Haptic.impact(.soft) } }
     }
 

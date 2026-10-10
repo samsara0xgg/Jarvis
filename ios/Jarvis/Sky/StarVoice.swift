@@ -87,7 +87,7 @@ extension StarEngine {
         voiceFake = { now in
             var v = VoiceShot()
             switch name {
-            case "listening": v.state = .listening; v.partial = ask; v.input = 0.3 + 0.7 * voiceLevel(now / 1000 * 1.3)
+            case "listening": v.state = .listening; v.partial = String(ask.prefix(6 * (1 + Int((now - t0) / 1000)))); v.input = 0.3 + 0.7 * voiceLevel(now / 1000 * 1.3)
             case "thinking": v.state = .thinking; v.transcript = ask
             case "speaking": v.state = .speaking; v.transcript = ask; v.reply = String(short.prefix(Int((now - t0) / 120))); v.output = voiceLevel(now / 1000)
             case "speakingLong": v.state = .speaking; v.transcript = ask; v.reply = String(answer.prefix(Int((now - t0) / 90))); v.output = voiceLevel(now / 1000)

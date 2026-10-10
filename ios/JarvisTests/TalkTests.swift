@@ -86,3 +86,17 @@ final class AskTests: XCTestCase {
         XCTAssertNil(AskReply.parse(status: 413, data: Data()))
     }
 }
+
+/// His partial transcript: what stays put when a chunk arrives.
+final class HisTextTests: XCTestCase {
+    func testTheSharedFrontStaysAndOnlyTheRestBlends() {
+        XCTAssertEqual(HisText.common("明天几点", "明天几点出门"), 4)
+        XCTAssertEqual(HisText.common("明天几点出门", "明天几点出门？"), 6)
+        XCTAssertEqual(HisText.common("明天几点", "后天几点"), 0, "a revised front is all new")
+        XCTAssertEqual(HisText.common("", "你好"), 0)
+    }
+    func testACutThroughAnEnglishWordGoesBackToTheWordsStart() {
+        XCTAssertEqual(HisText.common("what is the wea", "what is the weather"), 12)
+        XCTAssertEqual(HisText.common("what is the", "what is the weather"), 11, "a space ends the word, nothing to go back over")
+    }
+}

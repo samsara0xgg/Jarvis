@@ -16,6 +16,8 @@ func panelSpring(_ reduce: Bool) -> Animation { reduce ? .easeOut(duration: 0.2)
 /// one row of the talk: his words in a bubble on the right, hers plain on the left
 struct TalkRowView: View, Equatable {
     let row: TalkRow
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    static func == (a: Self, b: Self) -> Bool { a.row == b.row }
 
     var body: some View {
         if row.his { bubble } else { her }
@@ -25,11 +27,14 @@ struct TalkRowView: View, Equatable {
         VStack(alignment: .trailing, spacing: 8) {
             if !row.pics.isEmpty { SentItemsRow(items: row.pics) }
             if !row.text.isEmpty {
-                Text(row.text).font(.system(size: 16)).foregroundStyle(ink.opacity(0.86))
+                // while his words still come in the bubble holds its width, so the part shown does not slide left with every chunk; it closes round them when he is done
+                HisText(text: row.text, live: row.current).font(.system(size: 16))
+                    .frame(maxWidth: row.growing ? .infinity : nil, alignment: .leading)
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .background(RoundedRectangle(cornerRadius: 18).fill(Color.white.opacity(0.08)))
                     .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.06), lineWidth: 0.5))
                     .frame(maxWidth: 300, alignment: .trailing)
+                    .animation(reduce ? nil : .easeOut(duration: 0.2), value: row.growing)
             }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -62,6 +67,46 @@ struct TalkRowView: View, Equatable {
             i = j
         }
         return Text(out)
+    }
+}
+
+/// His words. While he is still speaking the recognizer hands them over in chunks about a second apart: the part already shown stays as it is
+/// and only what changed after it comes in over 0.16 s, so the bubble does not jump. One short animation per chunk, nothing between chunks.
+struct HisText: View {
+    let text: String
+    let live: Bool
+    @State private var stable = Int.max                 // characters at the front that need no blending
+    @State private var chunk = 0
+    @Environment(\.accessibilityReduceMotion) private var reduce
+
+    /// how many characters at the front of `new` are the same in `old`, backed off to the start of a word when it cuts one (letters only; Chinese cuts anywhere)
+    static func common(_ old: String, _ new: String) -> Int {
+        let o = Array(old), n = Array(new)
+        var i = 0
+        while i < o.count && i < n.count && o[i] == n[i] { i += 1 }
+        func letter(_ c: Character) -> Bool { c.isASCII && (c.isLetter || c.isNumber) }
+        while i > 0 && i < n.count && letter(n[i - 1]) && letter(n[i]) { i -= 1 }
+        return i
+    }
+
+    var body: some View {
+        Text("").keyframeAnimator(initialValue: 1.0, trigger: chunk) { _, a in render(a) } keyframes: { _ in
+            MoveKeyframe(0.0)
+            CubicKeyframe(1.0, duration: 0.16)
+        }
+        .onChange(of: text) { old, new in
+            guard live, !reduce else { stable = Int.max; return }
+            stable = Self.common(old, new)
+            chunk += 1
+        }
+    }
+
+    /// the tail starts at 0.25 of its brightness and rises to 1
+    private func render(_ a: Double) -> Text {
+        let chars = Array(text), cut = min(stable, chars.count)
+        var head = AttributedString(String(chars[..<cut])); head.foregroundColor = ink.opacity(0.86)
+        var tail = AttributedString(String(chars[cut...])); tail.foregroundColor = ink.opacity(0.86 * (0.25 + 0.75 * a))
+        return Text(head + tail)
     }
 }
 
