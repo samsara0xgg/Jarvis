@@ -49,6 +49,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
+from jarvis.decision.attachment_parts import attachment_text, image_parts
 from jarvis.decision.confirm_grammar import ConfirmGrammarHit, match_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.gates import (
@@ -136,6 +137,7 @@ if TYPE_CHECKING:
     from jarvis.decision.tier0 import Tier0Hit, Tier0Table
     from jarvis.shared import AuthorizationLease, RiskLevel
     from jarvis.shared.lang import Language
+    from jarvis.state.attachments import LoadedAttachment
     from jarvis.state.committed_event_bus import CommittedEventBus
     from jarvis.state.conversation import PresentationRecord
     from jarvis.state.decision_snapshot import DecisionStateSnapshot
@@ -689,6 +691,9 @@ class DecideContext:
     # budget, the spoken-form rewrite, a spoken or routine stream) carries it; Jev and
     # the background jobs never see it. None (the default) sends nothing.
     service_tier: str | None = None
+    # ADR NNNN: reads the stored files a phone attached to a turn (one entry per id, ``None``
+    # for one that has expired). ``None`` (the default) attaches nothing.
+    read_attachments: Callable[[Sequence[str]], list[LoadedAttachment | None]] | None = None
 
 
 @dataclass(frozen=True)
@@ -1129,12 +1134,16 @@ def _insert_system_notes(
     """
     status = _current_status_block(packet, ctx)
     line = None
+    live: dict[str, Any] | None = None
+    attached = _read_attachments(packet, ctx)
     for message in reversed(messages):
         if message.get("role") == "user":
+            live = message
             words = str(message["content"])
             line = _reply_language_line(lang, words)
+            sent = f"{words}\n\n{attachment_text(attached)}" if attached else words
+            message["content"] = sent if line is None else f"{sent}\n\n{line}"
             if line is not None:
-                message["content"] = f"{words}\n\n{line}"
                 line = _after_results_note(words, line)
             if status is not None:
                 message["content"] = f"{status}\n\n{message['content']}"
@@ -1145,7 +1154,18 @@ def _insert_system_notes(
     if head and head[-1]["role"] == "user" and messages and messages[0].get("role") == "user":
         messages[0]["content"] = f"{head.pop()['content']}\n\n{messages[0]['content']}"
     messages[0:0] = head
+    # ADR NNNN: the pictures go last, once the text is final, on this turn's message only.
+    if live is not None and (parts := image_parts(attached)):
+        live["content"] = [{"type": "text", "text": live["content"]}, *parts]
     return line
+
+
+def _read_attachments(packet: SituationPacket, ctx: DecideContext) -> list[LoadedAttachment | None]:
+    """The files the user's message came with (ADR NNNN); none for any other trigger."""
+    ids = packet.trigger_event.payload.get("attachments")
+    if ctx.read_attachments is None or not isinstance(ids, list) or not ids:
+        return []
+    return ctx.read_attachments([str(one) for one in ids])
 
 
 _NOTE_WORDS_CHARS: Final = 200
@@ -1333,18 +1353,21 @@ def _handle_utterance(
                 scratch,
             )
 
-    # 「什么?」/「再说一遍」: say the last spoken answer again, word for word,
-    # through the Pre-emit Gate and without a model request (spec §17).
-    repeated = _repeat_of_last_answer(packet)
-    if repeated is not None:
-        return _finalize_response(repeated, packet, ctx, scratch)
+    # ADR NNNN: words that came with a file are about the file, so the model answers them and
+    # no shortcut that would not have looked at it does.
+    if not trigger.payload.get("attachments"):
+        # 「什么?」/「再说一遍」: say the last spoken answer again, word for word,
+        # through the Pre-emit Gate and without a model request (spec §17).
+        repeated = _repeat_of_last_answer(packet)
+        if repeated is not None:
+            return _finalize_response(repeated, packet, ctx, scratch)
 
-    # Tier 0 deterministic shortcut (spec §17): hit → dispatch through
-    # the full gate/audit chain with caller_principal=regex_router,
-    # LLM never invoked. Miss / no table → Tier 2 loop.
-    instant = _run_instant_route(packet, policy, ctx, scratch)
-    if instant is not None:
-        return instant
+        # Tier 0 deterministic shortcut (spec §17): hit → dispatch through
+        # the full gate/audit chain with caller_principal=regex_router,
+        # LLM never invoked. Miss / no table → Tier 2 loop.
+        instant = _run_instant_route(packet, policy, ctx, scratch)
+        if instant is not None:
+            return instant
     return _run_model_path(packet, policy, ctx, scratch)
 
 

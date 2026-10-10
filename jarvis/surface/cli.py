@@ -44,6 +44,7 @@ from jarvis.state.event_log import emit_event
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Sequence
 
     from jarvis.shared import Event
 
@@ -165,13 +166,14 @@ class ResponsePlanLike(Protocol):
 # --- Public API -------------------------------------------------------------
 
 
-def emit_surface_user_intent(
+def emit_surface_user_intent(  # noqa: PLR0913 — one keyword per payload field.
     conn: sqlite3.Connection,
     *,
     transcript: str,
     turn_id: str,
     channel: str = "cli_stdin",
     language: str = "zh-CN",
+    attachments: Sequence[str] = (),
 ) -> Event:
     """Emit the canonical ``surface.user_intent`` event for a CLI utterance.
 
@@ -190,6 +192,8 @@ def emit_surface_user_intent(
             mints ``"T" + uuid.uuid4().hex[:8]``).
         channel: Source channel label; Day-1 default ``"cli_stdin"``.
         language: BCP-47 language tag; Day-1 default ``"zh-CN"``.
+        attachments: Ids of stored files a phone sent with the words (ADR NNNN); the key is
+            written only when there are some.
 
     Returns:
         The frozen Event row appended to the log (carrying the
@@ -203,6 +207,7 @@ def emit_surface_user_intent(
             "turn_id": turn_id,
             "channel": channel,
             "language": language,
+            **({"attachments": list(attachments)} if attachments else {}),
         },
         correlation={"turn_id": turn_id},
     )

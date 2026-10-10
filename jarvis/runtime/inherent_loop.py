@@ -89,7 +89,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 import uvicorn
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from datetime import date, tzinfo
 
     from jarvis.decision import ToolRegistryLike
@@ -5445,14 +5445,35 @@ def _restart_soon() -> None:
 
 
 _DATA_SWEEP_INTERVAL_S = 3600.0
+_ATTACHMENT_DAYS = 30  # ADR NNNN: unless ``attachments.retention_days`` says otherwise
+
+
+def _model_takes_images(config: Mapping[str, Any]) -> bool:
+    """ADR NNNN: whether pictures may go to the conversation model.
+
+    Only OpenAI's chat request carries them, and only a preset that says ``images: true``
+    (the model is known to read them) is trusted with one.
+    """
+    llm = config.get("llm")
+    if not isinstance(llm, Mapping) or str(llm.get("provider", "openai")).lower() != "openai":
+        return False
+    presets = llm.get("presets")
+    preset = presets.get(llm.get("default_preset")) if isinstance(presets, Mapping) else None
+    return isinstance(preset, Mapping) and preset.get("images") is True
 
 
 def _media_dirs(runtime: JarvisRuntime) -> dict[Path, int | None]:
-    """ADR 0067: the recordings and screenshots, each with its days to keep (None: forever)."""
+    """ADR 0067: the recordings, screenshots and phone attachments, each with its days to keep."""
     tools = runtime.config.get("tools") or {}
     screen = tools.get("screen") if isinstance(tools, dict) else None
     days = retention_days(screen.get("retention_days")) if isinstance(screen, dict) else None
     dirs = {runtime.runtime_paths.artifacts_root / SCREEN_ARTIFACTS_DIRNAME: days}
+    sent = runtime.config.get("attachments")
+    if runtime.attachments is not None:
+        dirs[runtime.attachments.directory] = retention_days(
+            sent.get("retention_days", _ATTACHMENT_DAYS) if isinstance(sent, dict)
+            else _ATTACHMENT_DAYS,
+        )
     if runtime.memory is not None:
         dirs[runtime.memory.audio_dir] = runtime.memory.audio_retention_days
     return dirs
@@ -5855,18 +5876,20 @@ def _v2_runtime_capabilities(
     *,
     voice_input: bool,
     response_interrupt: bool,
+    image_input: bool,
 ) -> RuntimeCapabilities:
     """Report what this daemon can actually do, for the D7 server hello.
 
     Discovered from the wiring rather than declared: ``image_input`` is
-    false because ``/inherent/image-submit`` is still a 501 stub, and the
-    action / confirmation controls are false because no route accepts them
-    yet. ``aec_profile`` is ``headphones_only`` — there is no acoustic echo
-    canceller, so barge-in over speakers is not offered.
+    true while the upload route is open and the conversation model takes
+    pictures (ADR NNNN; they ride ``/inherent/submit`` as attachments), and
+    the action / confirmation controls are false because no route accepts
+    them yet. ``aec_profile`` is ``headphones_only`` — there is no acoustic
+    echo canceller, so barge-in over speakers is not offered.
     """
     return RuntimeCapabilities(
         text_input=True,
-        image_input=False,
+        image_input=image_input,
         voice_input=voice_input,
         response_interrupt=response_interrupt,
         action_cancel=False,
@@ -6184,6 +6207,42 @@ def _submit_text_v2(
             inner_conn.close()
 
 
+def _submit_with_attachments(
+    event_log_path: Path, text: str, attachment_ids: Sequence[str],
+) -> str:
+    """ADR NNNN: the turn of ``POST /inherent/submit`` whose words came with stored files.
+
+    Bound at daemon start and run on an ``asyncio.to_thread`` worker, so it opens its own
+    connection exactly as ``submit_callable`` does. Returns the minted ``turn_id``.
+    """
+    turn_id = _new_turn_id()
+    inner_conn = open_runtime_event_log(event_log_path)
+    try:
+        emit_surface_user_intent(
+            inner_conn, transcript=text, turn_id=turn_id, attachments=attachment_ids,
+        )
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            inner_conn.close()
+    return turn_id
+
+
+def _keep_share(event_log_path: Path, fields: dict[str, Any]) -> str:
+    """ADR NNNN: keep a share he did not ask about as one ``user.shared`` event; its id."""
+    share_id = uuid.uuid4().hex
+    inner_conn = open_runtime_event_log(event_log_path)
+    try:
+        emit_event(
+            inner_conn,
+            type="user.shared",
+            payload={"share_id": share_id, **{k: v for k, v in fields.items() if v}},
+        )
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            inner_conn.close()
+    return share_id
+
+
 def _submit_asr_v2(  # noqa: PLR0913 — the bound path and pipeline plus the four request fields.
     event_log_path: Path,
     voice_pipeline_callable: Callable[[bytes, str, str, str], Event],
@@ -6379,6 +6438,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 with contextlib.suppress(sqlite3.Error):
                     inner_conn.close()
             return turn_id
+
+        images_ok = _model_takes_images(runtime.config)
+        submit_attachments = functools.partial(
+            _submit_with_attachments, runtime.runtime_paths.event_log,
+        )
+        share_callable = functools.partial(_keep_share, runtime.runtime_paths.event_log)
 
         # ADR-0005 §12 pre-flight + voice subsystem wiring. Any failure
         # downgrades the daemon to text-only — text path must stay
@@ -6862,6 +6927,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         spend = SpendCapSettings.from_config(runtime.config.get("spend_cap"))
         deps = InherentDeps(
             submit_callable=submit_callable,
+            attachments=runtime.attachments,
+            images_ok=images_ok,
+            submit_attachments=submit_attachments,
+            share_callable=share_callable,
             broadcaster=broadcaster,
             usage_read=(
                 None if usage_observer is None else functools.partial(latest_usage, runtime.conn)
@@ -7049,6 +7118,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     _v2_runtime_capabilities,
                     voice_input=voice_pipeline_callable is not None,
                     response_interrupt=cancel_response_callable is not None,
+                    image_input=images_ok,
                 ),
                 attach_client=None if inherent_view is None else inherent_view.attach_client,
                 submit_text=functools.partial(

@@ -205,6 +205,7 @@ from jarvis.shared.realtime_trace import (
     record_realtime_trace,
 )
 from jarvis.state import device_reads
+from jarvis.state.attachments import ATTACHMENTS_DIRNAME, Attachments, marker
 from jarvis.state.authorized_dispatch_outbox import (
     ConfirmationRevalidationError,
     answer_confirmation_once,
@@ -228,6 +229,7 @@ from jarvis.state.memory_db import (
 )
 from jarvis.state.phone_location import read_phone_here
 from jarvis.state.projects import parse_catalog
+from jarvis.state.shares import SHARES_LINE_CHARS, SHARES_LINE_PREFIX, shares_line
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
 from jarvis.state.turn_overlap import any_turn_in_flight, turn_activity_since
@@ -577,6 +579,7 @@ class JarvisRuntime:
             ``None`` unless the role is ``brain``.
         phone_events: where a paired phone's events are appended (ADR 0197); ``None``
             unless the daemon is a brain or listens beyond loopback (ADR 0207).
+        attachments: the store of files a phone sends with a turn or a share (ADR NNNN).
     """
 
     config: Mapping[str, Any]
@@ -677,6 +680,8 @@ class JarvisRuntime:
     terminal_hub: TerminalHub | None = None
     # ADR 0197, 0207: where a paired phone's events are appended.
     phone_events: BrainEvents | None = None
+    # ADR NNNN: the pictures and text files a phone sends with a turn or a share.
+    attachments: Attachments | None = None
 
 
 @dataclass(frozen=True)
@@ -1431,6 +1436,12 @@ def _where_line(hub: TerminalHub | None) -> Callable[[], str | None]:
     return line
 
 
+def _shares_line(event_log_path: Path) -> str | None:
+    """ADR NNNN: the line naming what Allen last saved from other apps, folded from the log."""
+    with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
+        return shares_line(conn)
+
+
 def _live_lines(producers: tuple[Callable[[], str | None], ...]) -> tuple[str, ...]:
     """ADR 0148: what each live-context producer says now; a raising one is skipped, logged."""
     lines: list[str] = []
@@ -1445,6 +1456,7 @@ def _live_lines(producers: tuple[Callable[[], str | None], ...]) -> tuple[str, .
             limit = (
                 DRAFT_LINE_CHARS if line.startswith(DRAFT_LINE_PREFIX)
                 else VIEW_LINE_CHARS if line.startswith(VIEW_LINE_PREFIX)
+                else SHARES_LINE_CHARS if line.startswith(SHARES_LINE_PREFIX)
                 else _LIVE_LINE_CHARS
             )
             lines.append(line[:limit])
@@ -2877,6 +2889,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         listen_hosts=listen_hosts,
         terminal_hub=terminal_hub,
         phone_events=phone_events,
+        attachments=Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME),
         tier0_table=tier0_table,
         confirm_grammar_table=confirm_grammar_table,
         wave1_features=wave1_features,
@@ -2921,6 +2934,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             _where_line(terminal_hub),
             voice_cues.line,
             *(() if ambient is None else (ambient.line,)),
+            partial(_shares_line, paths.event_log),
         ),
         voice_cues=voice_cues,
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
@@ -3837,6 +3851,15 @@ def run_turn(
 _MAIL_GET: Final[str] = "mcp__gmail__gmail_get"
 
 
+def _record_words(store: Attachments | None, payload: Mapping[str, Any]) -> str:
+    """Allen's words as memory.db keeps them; files sent with them are named (ADR NNNN)."""
+    words = str(payload.get("transcript", ""))
+    ids = payload.get("attachments")
+    if store is None or not isinstance(ids, list) or not ids:
+        return words
+    return f"{words}\n{marker(store.get(str(one)) for one in ids)}"
+
+
 def _fetched_mail(conn: sqlite3.Connection, turn_id: str) -> tuple[str, str] | None:
     """ADR 0063: the message this turn read whole with ``gmail_get``, as a mail record.
 
@@ -3983,7 +4006,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             memory.db_path,
             record_id=user_intent_event.event_uid,
             source="allen",
-            text=str(user_intent_event.payload.get("transcript", "")),
+            text=_record_words(runtime.attachments, user_intent_event.payload),
             audio_path=audio_ref if isinstance(audio_ref, str) else None,
         )
     # One consistent read of memory.db for this turn's prompt: the history
@@ -4160,6 +4183,9 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # The same boot value as the system prompt's reply-language line.
             reply_language=str(runtime.config.get("reply_language", "follow")),
             service_tier=_voice_service_tier(runtime.config, user_intent_event),
+            read_attachments=(
+                None if runtime.attachments is None else runtime.attachments.load_many
+            ),
         )
 
         # SQLite row id of the surface.user_intent event — used as the

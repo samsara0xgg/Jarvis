@@ -19,6 +19,7 @@ from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
 from jarvis.deployment import bootstrap_runtime
+from jarvis.state.attachments import Attachments
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import (
@@ -128,6 +129,9 @@ def _client(
             settings_update=_save_settings,
             restart=lambda: None,
             agent_marks_path=tmp_path / "agent-marks.json",
+            attachments=Attachments(tmp_path / "attachments"),
+            submit_attachments=lambda _text, _ids: "T1",
+            share_callable=lambda _fields: "S1",
         )
     )
     require_local_key(app, matches, **guard)
@@ -165,12 +169,12 @@ def _call(client: TestClient, route: str, headers: dict[str, str]) -> int:
 def test_the_route_table_is_the_one_this_test_walks(tmp_path: Any) -> None:  # noqa: ANN401
     """Pin the count, so a route added later is walked, not silently skipped.
 
-    67 HTTP method/path pairs, the four FastAPI docs pairs (GET and HEAD of
+    68 HTTP method/path pairs, the four FastAPI docs pairs (GET and HEAD of
     ``/openapi.json``, ``/docs``, ``/docs/oauth2-redirect``, ``/redoc``) and
     the ``/inherent/ws`` socket.
     """
     _, _, routes = _client(tmp_path)
-    assert len(routes) == 76, routes
+    assert len(routes) == 77, routes
 
 
 @pytest.mark.parametrize(

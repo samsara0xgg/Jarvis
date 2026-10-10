@@ -2,8 +2,8 @@
 
 L5 surface module. Hosts the daemon's HTTP+WS endpoints the desktop
 surface speaks. The ADR-0003 wave shipped text + WS; push-to-talk audio
-arrives on ``/inherent/asr-submit/v2``; ``/inherent/image-submit`` remains
-a 501 stub until ADR-0004 lands. :func:`require_local_key` puts every
+arrives on ``/inherent/asr-submit/v2``; a phone's pictures, files and shares arrive on
+``/inherent/attachments`` and ``/inherent/share`` (ADR NNNN). :func:`require_local_key` puts every
 route except the liveness probe behind the local key and a local Host.
 
 The runtime wires this app via ``runtime/inherent_loop.serve_inherent``
@@ -56,7 +56,9 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
 - ``POST /inherent/work-state/refresh`` — ADR 0023 on-demand analysis (single-flight)
 - ``GET /inherent/projects``     — ADR 0037 seven-day project view (no model call)
 - ``POST /inherent/projects/refresh`` — ADR 0037 sort new activities (single-flight)
-- ``POST /inherent/image-submit`` — Step 2 / ADR-0004 stub (501)
+- ``POST /inherent/attachments`` — ADR NNNN; multipart ``file`` → ``{"id", "kind", "name", ...}``;
+  ``POST /inherent/submit`` then takes ``"attachments": [id]``
+- ``POST /inherent/share``       — ADR NNNN; a link, text or files from another app's share sheet
 """
 
 from __future__ import annotations
@@ -74,6 +76,7 @@ import time
 import wave
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, Protocol
+from urllib.parse import urlsplit
 
 import numpy as np
 import soxr
@@ -92,13 +95,27 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field, ValidationError
 from starlette.background import BackgroundTask
 from starlette.datastructures import Address, Headers
+from starlette.datastructures import UploadFile as FormFile
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.websockets import WebSocketClose
 
 from jarvis.shared.lang import language, t
 from jarvis.state.agent_marks import AgentMarks
+from jarvis.state.attachments import (
+    MAX_UPLOAD_BODY_BYTES,
+    AttachmentRef,
+    AttachmentRefused,
+    Attachments,
+    valid_id,
+)
 from jarvis.state.day_line import parse_day
 from jarvis.state.memory_page import Conflict
+from jarvis.state.shares import (
+    MAX_NOTE_CHARS,
+    MAX_SHARE_TEXT_CHARS,
+    MAX_TITLE_CHARS,
+    MAX_URL_CHARS,
+)
 from jarvis.surface.claude_hooks import ClaudeHooks
 from jarvis.surface.claude_sessions import ClaudeSessions
 from jarvis.surface.codex_sessions import (
@@ -234,6 +251,23 @@ class SubmitRequest(BaseModel):
     """
 
     text: str
+    # ADR NNNN: ids from ``POST /inherent/attachments``; the text may then be empty.
+    attachments: list[str] = Field(default_factory=list)
+
+
+class ShareRequest(BaseModel):
+    """Body of ``POST /inherent/share`` (ADR NNNN): one thing shared from another app.
+
+    Exactly one of ``url``, ``text`` or ``attachments``; ``title`` goes with a url. With ``ask``
+    the share is a turn, without it the share is kept for later.
+    """
+
+    url: str = ""
+    title: str = ""
+    text: str = ""
+    note: str = ""
+    attachments: list[str] = Field(default_factory=list)
+    ask: bool = False
 
 
 class QuestionAnswerRequest(BaseModel):
@@ -571,6 +605,16 @@ class InherentDeps:
 
     submit_callable: Callable[[str], str | None]
     broadcaster: InherentBroadcaster
+    # ADR NNNN: the phone's files. ``attachments`` is the store behind
+    # ``POST /inherent/attachments`` (``None`` leaves the route unregistered, and a submit
+    # carrying ids answers 501); ``images_ok`` is whether the conversation model takes pictures.
+    # ``submit_attachments(text, ids)`` starts a turn that carries the files and returns its id;
+    # ``share_callable(fields)`` keeps a share that is not a turn and returns its id (``None``
+    # leaves ``POST /inherent/share`` unregistered).
+    attachments: Attachments | None = None
+    images_ok: bool = False
+    submit_attachments: Callable[[str, Sequence[str]], str] | None = None
+    share_callable: Callable[[dict[str, Any]], str] | None = None
     cancel_response_callable: Callable[[str, str, str], str] | None = None
     # ``(turn_id, reason) -> outcome``: the same route's stop for a turn still
     # being thought about; wired with ``cancel_response_callable``.
@@ -1995,6 +2039,114 @@ _REQUEST_ID: Final[re.Pattern[str]] = re.compile(
 )
 
 
+def _refusal(exc: AttachmentRefused) -> HTTPException:
+    """The HTTP answer for a file or a turn the attachment store will not take."""
+    return HTTPException(status_code=exc.status, detail=str(exc))
+
+
+async def _checked_attachments(deps: InherentDeps, ids: Sequence[str]) -> list[AttachmentRef]:
+    """The refs of a turn's attachments, or the 404 / 422 / 501 that says why not (ADR NNNN)."""
+    if deps.attachments is None or deps.submit_attachments is None:
+        raise HTTPException(status_code=501, detail="attachments are not enabled on this daemon")
+    if not all(valid_id(one) for one in ids):
+        raise HTTPException(status_code=422, detail="an attachment id is malformed")
+    try:
+        return await asyncio.to_thread(deps.attachments.check_for_turn, ids)
+    except AttachmentRefused as exc:
+        raise _refusal(exc) from None
+
+
+async def _upload_attachment(
+    deps: InherentDeps, attachments: Attachments, request: Request,
+) -> dict[str, Any]:
+    """``POST /inherent/attachments``: one multipart ``file``, stored, answered with its id.
+
+    The size is judged from ``Content-Length`` before a byte is read, which the server holds the
+    body to, so a request without one (chunked) is refused outright.
+    """
+    declared = request.headers.get("content-length", "")
+    if not declared.isdigit():
+        raise HTTPException(status_code=411, detail="send a Content-Length")
+    if int(declared) > MAX_UPLOAD_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="body too large")
+    async with request.form() as form:
+        upload = form.get("file")
+        if not isinstance(upload, FormFile):
+            raise HTTPException(status_code=400, detail='send one file in the "file" field')
+        data = await upload.read(MAX_UPLOAD_BODY_BYTES)
+        name = upload.filename or ""
+    try:
+        ref = await asyncio.to_thread(attachments.save, data, name, images_ok=deps.images_ok)
+    except AttachmentRefused as exc:
+        raise _refusal(exc) from None
+    return {"id": ref.id, "kind": ref.kind, "name": ref.name, "bytes": ref.size, "mime": ref.mime}
+
+
+async def _submit_with_attachments(
+    deps: InherentDeps, text: str, ids: Sequence[str],
+) -> dict[str, str]:
+    """``POST /inherent/submit`` with ``attachments``: the files go with the words (ADR NNNN)."""
+    unique = list(dict.fromkeys(ids))
+    await _checked_attachments(deps, unique)
+    if deps.submit_attachments is None:  # _checked_attachments refused already
+        raise HTTPException(status_code=501, detail="attachments are not enabled")
+    turn_id = await asyncio.to_thread(
+        deps.submit_attachments, text or t("attach.no_words"), unique,
+    )
+    return {"status": "accepted", "turn_id": turn_id}
+
+
+def _share_fields(req: ShareRequest) -> dict[str, Any]:
+    """The share's one subject and its limits (ADR NNNN), or the 400 / 413 that refuses it."""
+    url, title, text, note = req.url.strip(), req.title.strip(), req.text.strip(), req.note.strip()
+    if sum(bool(one) for one in (url, text, req.attachments)) != 1:
+        raise HTTPException(status_code=400, detail="send exactly one of url, text or attachments")
+    if title and not url:
+        raise HTTPException(status_code=400, detail="a title goes with a url")
+    for value, limit, what in (
+        (url, MAX_URL_CHARS, "url"), (title, MAX_TITLE_CHARS, "title"),
+        (text, MAX_SHARE_TEXT_CHARS, "text"), (note, MAX_NOTE_CHARS, "note"),
+    ):
+        if len(value) > limit:
+            raise HTTPException(status_code=413, detail=f"{what} is over {limit} characters")
+    if url:
+        parts = urlsplit(url)
+        if parts.scheme not in {"http", "https"} or not parts.netloc:
+            raise HTTPException(status_code=400, detail="url must be an http(s) address")
+    kind = "link" if url else "text" if text else "file"
+    return {"kind": kind, "url": url, "title": title, "text": text, "note": note}
+
+
+async def _share(
+    deps: InherentDeps, share_callable: Callable[[dict[str, Any]], str], req: ShareRequest,
+) -> dict[str, str]:
+    """``POST /inherent/share``: a turn when he said ask her, otherwise one saved event."""
+    fields = _share_fields(req)
+    ids = list(dict.fromkeys(req.attachments))
+    if ids:
+        refs = await _checked_attachments(deps, ids)
+        fields["kind"] = "image" if any(r.kind == "image" for r in refs) else "file"
+        fields["attachments"] = ids
+    if not req.ask:
+        share_id = await asyncio.to_thread(share_callable, fields)
+        return {"status": "saved", "share_id": share_id}
+    words = "\n".join(
+        part
+        for part in (
+            fields["note"] or t("share.default_note"), fields["title"], fields["url"],
+            fields["text"],
+        )
+        if part
+    )
+    if ids and deps.submit_attachments is not None:
+        return {
+            "status": "accepted",
+            "turn_id": await asyncio.to_thread(deps.submit_attachments, words, ids),
+        }
+    minted = await asyncio.to_thread(deps.submit_callable, words)
+    return {"status": "accepted", "turn_id": minted or ""}
+
+
 def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 — one closed route table; the cancel and controls routes are registered only when injected.
     """Build the FastAPI app with all 5 endpoints registered.
 
@@ -2032,6 +2184,8 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
         that read only ``status`` keep working.
         """
         text = req.text.strip()
+        if req.attachments:
+            return await _submit_with_attachments(deps, text, req.attachments)
         if not text:
             raise HTTPException(status_code=400, detail="text required")
         turn_id = await asyncio.to_thread(deps.submit_callable, text)
@@ -2086,6 +2240,22 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
             return JSONResponse(
                 {"turn_id": turn_id, "spoken": outcome.spoken, "written": outcome.written},
             )
+
+    if deps.attachments is not None:
+        attachment_store = deps.attachments
+
+        @app.post("/inherent/attachments", status_code=200)
+        async def upload_attachment(request: Request) -> dict[str, Any]:
+            """ADR NNNN: one picture or text file from a phone, kept until it ages out."""
+            return await _upload_attachment(deps, attachment_store, request)
+
+    if deps.share_callable is not None:
+        share_callable = deps.share_callable
+
+        @app.post("/inherent/share", status_code=200)
+        async def share(req: ShareRequest) -> dict[str, str]:
+            """ADR NNNN: a share from another app, as a turn (``ask``) or kept for later."""
+            return await _share(deps, share_callable, req)
 
     if deps.cancel_response_callable is not None:
         cancel_response_callable = deps.cancel_response_callable
@@ -2698,14 +2868,6 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
         if not claude_hooks.answer(request_id, body):
             raise HTTPException(status_code=404, detail="that prompt is no longer waiting")
         return {"ok": True}
-
-    @app.post("/inherent/image-submit", status_code=501)
-    async def image_submit() -> None:
-        """Step 1 stub — image input lands in Step 2 (ADR-0004)."""
-        raise HTTPException(
-            status_code=501,
-            detail="image not implemented in step 1 (ADR-0004)",
-        )
 
     return app
 
