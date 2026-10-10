@@ -78,6 +78,29 @@ struct WaitingCardView: View {
     }
 }
 
+/// The pictures (small squares) and files (their names) he sent with a line
+struct SentItemsRow: View {
+    let items: [SentItem]
+    var side: CGFloat = 44
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(items.prefix(4)) { it in
+                if let img = it.image {
+                    Image(uiImage: img).resizable().scaledToFill().frame(width: side, height: side).clipShape(RoundedRectangle(cornerRadius: 9))
+                        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
+                } else {
+                    HStack(spacing: 5) {
+                        Image(systemName: "doc").font(.system(size: 12))
+                        Text(it.title).font(.system(size: 12)).lineLimit(1)
+                    }
+                    .foregroundStyle(SetColor.ink.opacity(0.85)).padding(.horizontal, 10).frame(height: 28).frame(maxWidth: 150)
+                    .background(Color.white.opacity(0.1), in: Capsule())
+                }
+            }
+        }
+    }
+}
+
 /// a line of the conversation in the drawer; a long one is cut to three lines until it is tapped
 struct ConversationLineView: View {
     let line: ConvLine
@@ -87,6 +110,7 @@ struct ConversationLineView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text((line.his ? "你" : "她") + (line.when.isEmpty ? "" : " · " + line.when)).font(AT.mono(11)).tracking(0.5)
                 .foregroundStyle(line.his ? SetColor.muted : Color(red: 1, green: 217 / 255, blue: 176 / 255).opacity(0.8))
+            if line.his, let sent = SentPics.byRow[line.id], !sent.isEmpty { SentItemsRow(items: sent, side: 56).padding(.vertical, 2) }
             Text(line.text).font(.system(size: 15)).lineSpacing(15 * 0.4 - 3).foregroundStyle(SetColor.ink).lineLimit(open ? nil : 3)
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 10)

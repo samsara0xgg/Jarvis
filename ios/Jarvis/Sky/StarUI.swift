@@ -21,6 +21,20 @@ struct ChipModel: Identifiable, Equatable { var id: String { text }; var kd: Kd;
 struct DrawerGroup: Identifiable, Equatable { var id: String; var name: String; var rows: [RowModel] }
 enum MicState { case mic, on, send }
 
+/// A picture or file he sent with his words: the picture's small copy, or the file's name. Shown with his line so he can see what went.
+struct SentItem: Identifiable, Equatable {
+    let id = UUID()
+    var image: UIImage?
+    var title: String
+}
+
+/// What he sent with a turn, kept by the number of his row in the conversation so the drawer can show it under his line (until the app is closed).
+@MainActor enum SentPics {
+    static var byRow: [Int: [SentItem]] = [:]
+    static var pending: [SentItem] = []
+    nonisolated static func items(_ items: [AttachItem]) -> [SentItem] { items.map { SentItem(image: $0.kind == .photo ? $0.thumbnail : nil, title: $0.kind == .photo ? "" : $0.title) } }
+}
+
 /// One line of the conversation in the drawer: his or hers, with the time it was said.
 struct ConvLine: Identifiable, Equatable {
     let id: Int                         // the row's number in the conversation
@@ -69,6 +83,7 @@ final class StarUI {
     var typing = false
     var kbLift = 0.0
     var capYou = ""
+    var capPics: [SentItem] = []        // what he sent with the words on show
     var capHer = ""
     var capHerAlpha: [Double] = []
     var capOut = true

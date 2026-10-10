@@ -56,7 +56,7 @@ extension StarEngine {
             voiceState = v.state; voiceAt = now
             if was == .idle {
                 setDrawer(false, quiet: true)
-                ui.capYou = ""; ui.capHer = ""; ui.capHerAlpha = []
+                ui.capYou = ""; ui.capPics = []; ui.capHer = ""; ui.capHerAlpha = []
             } else if v.state == .idle {
                 talk = nil; endTalk()                           // no `end` cue: the microphone may still be open
                 return nil

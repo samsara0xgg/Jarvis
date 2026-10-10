@@ -260,6 +260,7 @@ struct StarChrome: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(ui.capYou).font(.system(size: 16)).lineSpacing(16 * 0.45 - 4).lineLimit(2).frame(minHeight: 22, alignment: .topLeading)
                 .foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.64))
+            if !ui.capPics.isEmpty { SentItemsRow(items: ui.capPics) }
             herText
         }
         .frame(width: W - 64, alignment: .topLeading)
@@ -298,7 +299,7 @@ struct StarChrome: View {
         if words.isEmpty && sent.isEmpty { return }
         // her reply to what was sent: a file is offered a first read, a picture asks what to do with it
         let reply = sent.isEmpty ? nil : sent[0].kind == .file ? "收到「\(sent[0].stem)」。要我先看一遍，挑重点讲给你听吗？" : "收到。要我记下来，还是帮你看看？"
-        engine.send(words.isEmpty ? AttachModel.caption(sent) : words, reply: reply)
+        engine.send(words.isEmpty ? AttachModel.caption(sent) : words, reply: reply, pics: SentPics.items(sent))
     }
     private func composerTap() {
         ui.attach.close()

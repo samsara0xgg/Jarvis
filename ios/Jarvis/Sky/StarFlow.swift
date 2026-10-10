@@ -386,6 +386,7 @@ extension StarEngine {
         setDrawer(false, quiet: true)
         talk = "listen"; ui.talking = true; ui.capYou = typed ? sc.q : ""; ui.capHer = ""; ui.capHerAlpha = []; ui.capOut = false
         if !typed {
+            ui.capPics = []
             expr = "35"; sound(.listen, 1)
             try await nap(380, ok)
             let qc = Array(sc.q)
@@ -454,7 +455,8 @@ extension StarEngine {
 
     // MARK: the composer
 
-    func send(_ text0: String, reply: String? = nil) {
+    func send(_ text0: String, reply: String? = nil, pics: [SentItem] = []) {
+        ui.capPics = pics
         let text = text0.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { return }
         if reply == nil && BrainLink.shared.hasToken { return sendToBrain(text) }       // paired: the brain answers, not the demo

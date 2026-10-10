@@ -17,7 +17,7 @@ extension StarEngine {
         if let m = AttachUpload.check(count: items.count) { return note(m) }
         sendingToBrain = true
         note("正在发给她…", for: 120_000)
-        let shown = text.isEmpty ? AttachModel.caption(items) : text
+        let shown = text.isEmpty ? AttachModel.caption(items) : text, pics = SentPics.items(items)
         if talk != nil { interrupt() }
         run { @MainActor ok in
             let seq: Int?
@@ -46,14 +46,15 @@ extension StarEngine {
             self.sendingToBrain = false
             guard let seq else { return self.note("发给她了", for: 4000) }       // no conversation to read her answer from
             self.clearNote()
-            try await self.brainTalk(ok, shown: shown, after: seq)
+            SentPics.pending = pics
+            try await self.brainTalk(ok, shown: shown, pics: pics, after: seq)
         }
     }
 
     /// Her side of a typed turn: his line shown, her thinking look, then her words as they land in the conversation. A lead-in ("我上网查查") is shown and the answer waited for.
-    @MainActor private func brainTalk(_ ok: Ok, shown: String, after seq: Int) async throws {
+    @MainActor private func brainTalk(_ ok: Ok, shown: String, pics: [SentItem], after seq: Int) async throws {
         setDrawer(false, quiet: true)
-        talk = "listen"; ui.talking = true; ui.capYou = shown; ui.capHer = ""; ui.capHerAlpha = []; ui.capOut = false
+        talk = "listen"; ui.talking = true; ui.capYou = shown; ui.capPics = pics; ui.capHer = ""; ui.capHerAlpha = []; ui.capOut = false
         sound(.heard, 1); expr = "31"; try await nap(520, ok)
         sound(.think, 1); expr = "30"
         var last = seq, deadline = nowMs() + 90_000, said = false
@@ -61,6 +62,7 @@ extension StarEngine {
             try await nap(1000, ok)
             let rows = await Conversation.shared.rows(after: last)
             try ok.check()
+            if !SentPics.pending.isEmpty, let his = rows.first(where: { $0.isHis }) { SentPics.byRow[his.seq] = SentPics.pending; SentPics.pending = [] }
             guard let row = rows.last(where: { !$0.isHis }) else { continue }
             last = rows.last?.seq ?? last
             speaking?.stop()
