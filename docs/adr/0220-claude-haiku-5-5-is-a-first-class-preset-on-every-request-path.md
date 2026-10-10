@@ -1,4 +1,4 @@
-# ADR 0219 — Claude Haiku 5.5 is a first-class preset on every request path
+# ADR 0220 — Claude Haiku 5.5 is a first-class preset on every request path
 
 **Status:** Accepted
 **Date:** 2026-10-10

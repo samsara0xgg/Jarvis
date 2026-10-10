@@ -76,7 +76,7 @@ llm:
       context_length: 1050000
       reasoning_effort: medium
       images: true
-    # Claude Haiku 5.5，直连 Anthropic（ADR 0219）。对话预设的另一个选择，出厂不是默认：
+    # Claude Haiku 5.5，直连 Anthropic（ADR 0220）。对话预设的另一个选择，出厂不是默认：
     # 默认仍是 luna，等重放评测定了再换。reasoning_effort 对应 Anthropic 的 effort：
     # low = 自适应思考 + low（实测暖机首 token 中位 0.6s），none = 关思考（实测反而更慢，
     # 还会乱调工具，别用）。结构化回复、提示词缓存、思考块回传都由 LLMClient 处理。
