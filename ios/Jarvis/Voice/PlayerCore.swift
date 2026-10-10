@@ -148,6 +148,8 @@ final class PlayerCore: @unchecked Sendable {
     var playedCursor: Int64 { cursorPub.load(ordering: .relaxed) }
     var playedSamples: UInt64 { playedPub.load(ordering: .relaxed) }
     var activeGeneration: Int64 { activeGen.load(ordering: .relaxed) }
+    /// her audio queued here and not yet played, in seconds
+    var bufferedSeconds: Double { Double(writeIdx.load(ordering: .acquiring) - readIdxPub.load(ordering: .acquiring)) / Double(sampleRate) }
     var ringEmpty: Bool { writeIdx.load(ordering: .acquiring) - readIdxPub.load(ordering: .acquiring) <= 0 }
 
     // MARK: writer (one thread)

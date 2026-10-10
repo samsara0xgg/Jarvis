@@ -53,6 +53,7 @@ final class VoiceSession {
     private let noReply = 30.0         // nothing from the host (no row, no audio) this long: she did not answer
     private let wakeReset = 120.0      // an armed recognizer with no words is restarted this often
     private let judgeTimeout = 2.5     // a judged say (over her, or a conversation follow-up) unanswered this long counts as a turn
+    private let revealRate = 6.0       // her words appear at about the pace she speaks them (a CJK character is 1, see `speechUnits`)
     private let holdCap = 8.0          // her voice is held at most this long for words over her
 
     // MARK: internals
@@ -105,6 +106,9 @@ final class VoiceSession {
     @ObservationIgnored private var hostJudges = false             // the host judges words over her and follow-ups (`ready.judges`)
     @ObservationIgnored private var held = false                   // his words over her are with the host; her output is held here meanwhile
     @ObservationIgnored private var heldAt = 0.0
+    @ObservationIgnored private var answer = ""                    // her words so far; `reply` shows them as she speaks
+    @ObservationIgnored private var shown = 0.0                    // how much of `answer` is in `reply`, in speech units
+    @ObservationIgnored private var lastTickAt = 0.0
     @ObservationIgnored private var inConversation = false         // listening was entered from a follow-up window or 「等一下」, not a tap or the wake word
     @ObservationIgnored private let log = Logger(subsystem: "com.allen.jarvis", category: "voice")
 
@@ -308,8 +312,8 @@ final class VoiceSession {
         if v != overHer { overHer = v; VoiceTrace.note("over her: \(v) (\(afterJudged(text, judgedOverHer).count) chars)") }
         switch v {
         case .echo, .backchannel: judgedOverHer = text; duck(false)
-        case .tooShort: duck(true)
-        case .barge: if inputLevel < bargeLevel { duck(true) } else if hostJudges, !awaitingSaid { holdHer() } else { bargeIn() }   // a follow-up still with the host: a plain barge-in
+        case .tooShort: break                                // her voice stays as it is (yilun 2026-10-10: no ducking)
+        case .barge: if inputLevel < bargeLevel { break } else if hostJudges, !awaitingSaid { holdHer() } else { bargeIn() }   // a follow-up still with the host: a plain barge-in
         }
     }
 
@@ -401,6 +405,22 @@ final class VoiceSession {
         commandSaid = nil
         set(.thinking)
         playedAtSay = audio.core?.playedSamples ?? 0
+    }
+
+    /// Her words as they come; typed turns and a host without voice show them whole, spoken ones follow her voice (`revealAnswer`).
+    private func setAnswer(_ text: String) {
+        if !text.hasPrefix(answer) { shown = 0 }            // the answer replaced her wait line
+        answer = text
+        if typedTurn || !hostVoice { reply = text }
+    }
+
+    /// While her voice plays, `reply` grows at her speaking pace; once the host has sent all her audio, it paces itself to end with it.
+    private func revealAnswer(_ core: PlayerCore, _ dt: Double) {
+        guard !answer.isEmpty, reply != answer, audioStarted, !held, !core.ringEmpty else { return }
+        let left = speechUnits(answer) - shown
+        let rate = audioClosed ? max(revealRate, left / max(core.bufferedSeconds, 0.3)) : revealRate
+        shown += rate * dt
+        reply = speechPrefix(answer, shown)
     }
 
     /// Her words, if she was audible within 1.5 s of `t`: an echo needs her voice; words she said a while ago he may repeat himself.
@@ -538,6 +558,7 @@ final class VoiceSession {
         heldRows = []
         typedTurn = false
         held = false
+        answer = ""; shown = 0
         finalText = ""; commentary = ""
         waitLines = []
         rowsDone = false
@@ -547,6 +568,7 @@ final class VoiceSession {
 
     private func replyFinished() {
         if held { return }                                  // his words over her are being judged; the verdict decides what happens next
+        if !answer.isEmpty { reply = answer }
         if commandSaid == .wait { holdForWait(); return }
         if typedTurn || commandSaid == .stop || commandSaid == .goodnight { goIdle(releasing: false); return }
         // a short window to answer without tapping; its own silence timer ends it
@@ -644,10 +666,10 @@ final class VoiceSession {
             guard let t = r.text else { return }
             if isLine { commentary += t } else { finalText += t }
             herWords = String((herWords + t).suffix(300))
-            reply = finalText.isEmpty ? commentary : finalText
+            setAnswer(finalText.isEmpty ? commentary : finalText)
         case "surface.response_emitted":
             guard !isLine else { return }
-            if finalText.isEmpty, let t = r.text { finalText = t; reply = t }     // a turn that was not streamed has only this row
+            if finalText.isEmpty, let t = r.text { finalText = t; setAnswer(t) }     // a turn that was not streamed has only this row
             rowsDone = true
             rowsDoneAt = now
             if typedTurn || !hostVoice { replyFinished() }
@@ -665,6 +687,8 @@ final class VoiceSession {
 
     private func tick() {
         let t = now
+        let dt = min(0.1, t - lastTickAt)
+        lastTickAt = t
         inputLevel = max(rawLevel, inputLevel * 0.85)
         outputLevel = Double(min(1, (audio.core?.level ?? 0) * 4))
         switch state {
@@ -675,6 +699,7 @@ final class VoiceSession {
             else if age > utteranceCap + (waitUntil > 0 ? waitHold : 0) { endUtterance() }
         case .thinking, .speaking:
             guard let core = audio.core, !typedTurn else { return }
+            revealAnswer(core, dt)
             if core.trouble != lastTrouble { lastTrouble = core.trouble; VoiceTrace.note("player: \(lastTrouble.overloads) overloads, \(lastTrouble.gaps) gaps") }
             if state == .thinking, core.playedSamples > playedAtSay + 480 { set(.speaking) }
             if held, #available(iOS 26, *), (t - lastWordAt > silenceEnd && inputLevel < quiet) || t - heldAt > holdCap { finishHeld() }

@@ -109,6 +109,25 @@ func afterJudged(_ text: String, _ judged: String) -> String {
     return String(text.dropFirst(n))
 }
 
+/// Roughly how long a text takes to say: a CJK character 1, a Latin letter or digit 0.3, anything else 0.15.
+func speechUnits(_ s: String) -> Double { s.unicodeScalars.reduce(0) { $0 + unitCost($1) } }
+
+/// The start of `s` that takes `units` to say.
+func speechPrefix(_ s: String, _ units: Double) -> String {
+    var used = 0.0, end = s.startIndex
+    for i in s.indices {
+        used += s[i].unicodeScalars.reduce(0) { $0 + unitCost($1) }
+        if used > units { break }
+        end = s.index(after: i)
+    }
+    return String(s[..<end])
+}
+
+private func unitCost(_ c: Unicode.Scalar) -> Double {
+    if c.value >= 0x2E80 && !CharacterSet.punctuationCharacters.contains(c) { return 1 }
+    return CharacterSet.alphanumerics.contains(c) ? 0.3 : 0.15
+}
+
 enum OverHer: Equatable { case echo, backchannel, tooShort, barge }
 
 /// What his words over her voice are: her echo, a nod, too little to stop her for yet, or an interruption.
@@ -127,6 +146,8 @@ func judgeOverHer(_ text: String, hers: String, judged: String) -> OverHer {
 
 #if DEBUG || VOICE_HARNESS
 func demoVoiceCore() {
+    assert(speechUnits("你好") == 2 && abs(speechUnits("Hi，") - 0.75) < 1e-9)
+    assert(speechPrefix("你好 Allen。", 2) == "你好" && speechPrefix("你好 Allen。", 3.7) == "你好 Allen" && speechPrefix("你好", 0.5) == "" && speechPrefix("你好", 9) == "你好")
     // words over her voice: the 10-10 leak ("我看一下日程" heard while she said it), nods, a stop word, a real interruption
     let her = "我看一下日程。今天下午三点你有一个面试"
     assert(judgeOverHer("我看一下日程", hers: her, judged: "") == .echo)
