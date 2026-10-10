@@ -314,6 +314,15 @@ class TransitOffers:
         return (later[0][1], later[0][0], later[0][2]) if later else None
 
 
+def _leaves(made_at: datetime, row: Mapping[str, Any]) -> datetime:
+    """A row's leave time: its ``HH:MM`` on the day the answer was made.
+
+    The next day when that is more than an hour before the moment it was made.
+    """
+    at = datetime.combine(made_at.date(), time.fromisoformat(str(row["leave_at"])), _ZONE)
+    return at + timedelta(days=1) if at < made_at - timedelta(hours=1) else at
+
+
 def live_card(trip: Mapping[str, Any]) -> dict[str, Any] | None:
     """The card's trip as served now: no row whose leave time has passed; None if none is left.
 
@@ -325,13 +334,20 @@ def live_card(trip: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
     made_at = datetime.fromisoformat(str(trip["made_at"]))
     floor = _now().replace(second=0, microsecond=0)
-
-    def leaves(row: Mapping[str, Any]) -> datetime:
-        at = datetime.combine(made_at.date(), time.fromisoformat(str(row["leave_at"])), _ZONE)
-        return at + timedelta(days=1) if at < made_at - timedelta(hours=1) else at
-
-    rows = [r for r in trip["options"] if leaves(r) >= floor]
+    rows = [r for r in trip["options"] if _leaves(made_at, r) >= floor]
     return {**trip, "options": rows} if rows else None
+
+
+def first_leave_ms(trip: Mapping[str, Any]) -> int | None:
+    """When the card's first option says to leave, in epoch ms; None if it cannot be read.
+
+    The day is :func:`live_card`'s: the day the answer was made, as the card was kept.
+    """
+    try:
+        made_at = datetime.fromisoformat(str(trip["made_at"]))
+        return int(_leaves(made_at, trip["options"][0]).timestamp() * 1000)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
 
 
 def show_card(ctx: ToolContext, trip: Mapping[str, Any]) -> None:

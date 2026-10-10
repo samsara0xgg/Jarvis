@@ -77,6 +77,10 @@ RESPONSE_ROW_TYPES: Final = (
 )
 """What the media actor reads from the log: an answer, and the end of one."""
 
+PHONE_ROW_TYPES: Final = (*RESPONSE_ROW_TYPES, "clarification.requested", "clarification.withdrawn")
+"""What a phone's ``row`` stream carries: those, and the question card (ADR 0215), whose
+``trip`` is the bus card. Speech never reads the cards."""
+
 ROWS_PER_POLL: Final = 200
 POLL_INTERVAL_S: Final = 0.05
 """How often the brain looks for new answer rows, as the daemon's own watchers do."""

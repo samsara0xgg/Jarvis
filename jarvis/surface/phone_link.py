@@ -28,8 +28,13 @@ a newer one replaces the older (the older is closed with code 4000).
 pipeline: the phone then gets rows and no audio. ``say`` with ``spoken: true`` is words the
 phone heard; ``false`` is words typed, answered in rows only. The host derives the turn id from
 the device and ``utterance_id``, so a resent ``say`` writes nothing twice and is answered with
-the same ``said``. ``row`` carries the ``surface.response_*`` and ``response.cancelled|failed``
-rows of the turns this device opened, voice and typed alike, from the moment it connected.
+the same ``said``. ``row`` carries the ``surface.response_*``, ``response.cancelled|failed`` and
+``clarification.requested|withdrawn`` rows of the turns this device opened, voice and typed
+alike, from the moment it connected (ADR 0215): the question card, the transit card's ``trip``
+included, rides there and is never spoken; the phone reads the slot's current card with
+``GET /inherent/clarification``, which its device token opens like every route but the liveness
+probe. The final ``surface.response_emitted`` carries the written part (``document_text``,
+``written_apart``) and the times the answer refers to (``times``).
 
 ``say`` may carry ``about``, the item the phone has open (ADR 0214; ``jarvis.shared.about``): it
 is kept on the turn's opening row, and one that is malformed is answered with ``error bad_say``.

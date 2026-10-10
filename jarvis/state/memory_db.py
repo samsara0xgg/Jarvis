@@ -845,39 +845,65 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
     return _assemble()
 
 
-def conversation_rows(
-    path: Path, *, since: str = "", after: int = 0, limit: int = 200,
-) -> list[dict[str, object]]:
-    """Records for the conversation window, oldest first, each with its ``seq``.
+CONVERSATION_PAGE_BYTES = 512 * 1024
+"""The most text one page of :func:`conversation_rows` carries (UTF-8 bytes), one row at least."""
 
-    ``after`` is the ``seq`` (rowid) the client already holds: 0 asks for
-    the newest ``limit`` rows, anything else for the rows past it. ``since``
-    is the floor the prompt's history uses; earlier rows never appear here.
+
+def conversation_rows(
+    path: Path, *, since: str = "", after: int = 0, before: int = 0, limit: int = 200,
+) -> tuple[list[dict[str, object]], bool]:
+    """A page of records for the conversation window, oldest first, each with its ``seq``.
+
+    ``after`` is the ``seq`` (rowid) the client already holds: the rows past it, still under the
+    floor. ``before`` is the ``seq`` of its oldest row: the newest ``limit`` rows older than it,
+    past the floor back to the first record. With neither, the newest ``limit`` rows from
+    ``since``, the floor the prompt's history uses. A page holds at most
+    :data:`CONVERSATION_PAGE_BYTES` of text, and at least one row.
+
+    Returns ``(rows, has_more)``: ``has_more`` says rows exist beyond the page in the direction
+    it was read (past it for ``after``; older than its first row otherwise, whether or not they
+    are under the floor).
     """
-    clauses = ["rowid > ?"] if after else []
-    params: list[object] = [after] if after else []
-    if since:
+    limit = max(1, limit)
+    clauses: list[str] = []
+    params: list[object] = []
+    if after:
+        clauses.append("rowid > ?")
+        params.append(after)
+    elif before:
+        clauses.append("rowid < ?")
+        params.append(before)
+    if since and not before:
         clauses.append("datetime(ts) >= datetime(?)")
         params.append(since)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     order = "ORDER BY rowid" if after else "ORDER BY rowid DESC"
-    params.append(max(1, limit))
+    params.append(limit + 1)
     with closing(open_memory_db(path)) as conn:
         # S608: `where` / `order` are assembled from fixed literals; every value is bound.
         sql = f"SELECT rowid, id, ts, source, text FROM records {where} {order} LIMIT ?"  # noqa: S608
-        rows = conn.execute(sql, params).fetchall()
-    if not after:
+        fetched = conn.execute(sql, params).fetchall()
+        rows: list[dict[str, object]] = []
+        used, last = 0, before or None
+        for seq, rid, ts, source, text in fetched[:limit]:
+            plain = _plain(str(text))
+            used += len(plain.encode())
+            if rows and used > CONVERSATION_PAGE_BYTES:
+                break
+            rows.append(
+                {"seq": int(seq), "id": str(rid), "ts": str(ts), "source": str(source),
+                 "text": plain},
+            )
+            last = int(seq)
+        if after:
+            return rows, len(rows) < len(fetched)
         rows.reverse()
-    return [
-        {
-            "seq": int(seq),
-            "id": str(rid),
-            "ts": str(ts),
-            "source": str(source),
-            "text": _plain(str(text)),
-        }
-        for seq, rid, ts, source, text in rows
-    ]
+        # Older than the page's first row (the last read, else the cursor), under the floor or
+        # not; an empty default page asks whether there is any row.
+        probe = conn.execute(
+            "SELECT 1 FROM records WHERE ? IS NULL OR rowid < ? LIMIT 1", (last, last),
+        ).fetchone()
+        return rows, probe is not None
 
 
 def verbatim_stats(path: Path, *, since: str = "", recent: int = 0) -> VerbatimStats:

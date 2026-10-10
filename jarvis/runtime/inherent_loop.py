@@ -3139,7 +3139,8 @@ class _PhoneCursor:
     A turn is the device's when its opening row (``surface.user_intent`` or
     ``utterance.received``) was written under the device's name. ``spoken_only`` keeps those
     it spoke, on ``phone_voice``: the phone's media actor is fed from such a cursor, the
-    phone's ``row`` stream from one without.
+    phone's ``row`` stream from one without. The stream also carries the turn's question cards
+    (ADR 0215); the actor's rows stay the answer's.
     """
 
     _REMEMBERED = 4096
@@ -3167,7 +3168,11 @@ class _PhoneCursor:
 
     def poll(self) -> terminal_voice.RowBatch:
         rows = _fetch_events_after(
-            self._conn, after_id=self._after, event_types=terminal_voice.RESPONSE_ROW_TYPES,
+            self._conn, after_id=self._after,
+            event_types=(
+                terminal_voice.RESPONSE_ROW_TYPES if self._spoken_only
+                else terminal_voice.PHONE_ROW_TYPES
+            ),
         )
         mine: list[tuple[int, Event]] = []
         for row_id, event in rows:
@@ -6768,15 +6773,15 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         usage_observer = _make_usage_observer(runtime)
         window_memory = runtime.memory
 
-        def _read_conversation(after: int, limit: int) -> dict[str, Any]:
-            """Spec §18.3: the window's rows past ``after`` and the history floor they start at."""
+        def _read_conversation(after: int, limit: int, before: int) -> dict[str, Any]:
+            """Spec §18.3: a page of the window's rows, the history floor, and ``has_more``."""
             since = runtime.session.history_since
-            rows = (
-                []
-                if window_memory is None
-                else conversation_rows(window_memory.db_path, since=since, after=after, limit=limit)
+            if window_memory is None:
+                return {"since": since, "rows": [], "has_more": False}
+            rows, has_more = conversation_rows(
+                window_memory.db_path, since=since, after=after, before=before, limit=limit,
             )
-            return {"since": since, "rows": rows}
+            return {"since": since, "rows": rows, "has_more": has_more}
 
         def _read_card() -> dict[str, Any]:
             """ADR 0062: the card waiting for Allen's button, or ``None``."""

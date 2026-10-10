@@ -243,6 +243,10 @@ def _decode_wav_to_pcm16_mono_16k(wav_bytes: bytes) -> bytes:
     return samples.tobytes()
 
 
+_CONVERSATION_MAX_ROWS = 500
+"""The most rows one ``GET /inherent/conversation`` page may ask for."""
+
+
 class SubmitRequest(BaseModel):
     """Body of ``POST /inherent/submit``.
 
@@ -690,9 +694,9 @@ class InherentDeps:
     projects_refresh: Callable[[], Awaitable[dict[str, Any]]] | None = None
     # Spec §18.3: the conversation window reads the memory.db rows the
     # backend's own history starts from, oldest first, past a ``seq``
-    # cursor. ``(after, limit) -> {"since", "rows"}``; ``None`` leaves the
-    # route unregistered.
-    conversation_read: Callable[[int, int], dict[str, Any]] | None = None
+    # cursor or before one. ``(after, limit, before) -> {"since", "rows",
+    # "has_more"}``; ``None`` leaves the route unregistered.
+    conversation_read: Callable[[int, int, int], dict[str, Any]] | None = None
     # ADR 0062: the card waiting for Allen's button (``{"card": ... | None}``, a
     # small fold off the loop thread) and his answer to it, which starts a turn
     # and returns its id. ``None`` leaves both routes unregistered.
@@ -2703,9 +2707,20 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
         conversation_read = deps.conversation_read
 
         @app.get("/inherent/conversation")
-        async def conversation(after: int = 0, limit: int = 200) -> dict[str, Any]:
-            """Spec §18.3: the conversation of record past ``after`` (0 = the newest rows)."""
-            return conversation_read(after, limit)
+        async def conversation(
+            after: int = 0,
+            before: Annotated[int, Query(ge=0)] = 0,
+            limit: Annotated[int, Query(ge=1, le=_CONVERSATION_MAX_ROWS)] = 200,
+        ) -> dict[str, Any]:
+            """Spec §18.3: the conversation of record, a page of at most ``limit`` rows.
+
+            ``after`` asks for the rows past that ``seq``, ``before`` for the newest rows older
+            than it (ADR 0215); with neither, the newest rows. ``has_more`` says rows exist beyond
+            the page in the direction asked. ``after`` with ``before`` is a 400.
+            """
+            if after and before:
+                raise HTTPException(status_code=400, detail="send after or before, not both")
+            return conversation_read(after, limit, before)
 
     if deps.card_read is not None and deps.card_decide is not None:
         card_read, card_decide = deps.card_read, deps.card_decide

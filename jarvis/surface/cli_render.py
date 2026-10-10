@@ -92,6 +92,7 @@ from jarvis.surface.sentence_splitter import split_into_sentences
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Mapping, Sequence
 
     from jarvis.shared import Event
 
@@ -257,6 +258,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     delivery_terminal_only: bool = False,
     phase: str = "final",
     written_apart: bool = False,
+    times: Sequence[Mapping[str, object]] = (),
 ) -> tuple[SurfaceState, Event]:
     """Render an approved ResponsePlan across all surfaces for ``attention_channel``.
 
@@ -353,6 +355,8 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
         written_apart: ADR 0114 — the document is what the voice leaves
             out, not the whole answer; stamped on the audit event so the
             Inherent surface can show both.
+        times: ADR 0215 — the times the answer refers to, read from the turn's own log by
+            the composition root; the audit row carries them when there are any.
 
     Returns:
         ``(next_state, event)`` — the :class:`SurfaceState` with the
@@ -520,6 +524,8 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     }
     if written_apart and document_text.strip():
         audit_payload["written_apart"] = True
+    if times:
+        audit_payload["times"] = [dict(one) for one in times]
     if binding is not None:
         audit_payload.update(
             {

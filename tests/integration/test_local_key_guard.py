@@ -103,7 +103,7 @@ def _client(
             day_read=_empty_day,
             projects_read=_empty,
             projects_refresh=_empty,
-            conversation_read=lambda _after, _limit: {"since": None, "rows": []},
+            conversation_read=lambda _after, _limit, _before: {"since": None, "rows": []},
             ask_outcome=lambda _turn_id: None,
             plugin_read=dict,
             plugin_action=lambda _operation, _data: {},

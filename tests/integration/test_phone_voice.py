@@ -14,7 +14,10 @@ one, and the phone's actor the reverse; (e) a barge-in is a DISCARD, and the int
 the heard prefix come only after the phone's acknowledgement, frozen at what it reported; (f) a
 typed ``say`` gets rows and no audio; (g) the local key and a bad token are refused, a second
 connection replaces the first; (h) a real daemon in ``role: all`` that listens, with no terminal
-hub, serves the same socket.
+hub, serves the same socket; (i) (ADR 0215) the turn's question cards (the bus card's ``trip``
+included) reach the phone for its own turns only, the cursor that feeds its actor never sees them,
+the final emitted row carries its written part and the times it refers to, and the phone's token
+reads the card slot.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ import json
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self, cast
@@ -274,10 +278,14 @@ class _Host:
             ]
 
 
-def _answer(log: Path, turn_id: str, response_id: str, text: str | list[str]) -> None:
+def _answer(
+    log: Path, turn_id: str, response_id: str, text: str | list[str],
+    emitted: dict[str, Any] | None = None,
+) -> None:
     """The decision layer's answer rows for a turn: open, its chunks, emitted.
 
     One string is a finished text answer; a list is a stream, one speakable segment a chunk.
+    ``emitted`` adds fields to the final ``surface.response_emitted`` row.
     """
     chunks = [text] if isinstance(text, str) else text
     conn = open_event_log(log)
@@ -296,7 +304,7 @@ def _answer(log: Path, turn_id: str, response_id: str, text: str | list[str]) ->
             })
         emit_event(conn, type="surface.response_emitted", payload={
             "turn_id": turn_id, "text": "".join(chunks), "response_id": response_id,
-            "response_group_id": group, "phase": "final", "channel": "speech",
+            "response_group_id": group, "phase": "final", "channel": "speech", **(emitted or {}),
         })
     finally:
         conn.close()
@@ -697,3 +705,132 @@ def test_a_daemon_running_alone_serves_the_phone_socket_with_no_terminal_hub(
             ).fetchall()
         assert spoken == [(PHONE_VOICE_CHANNEL, "iphone")]
         assert typed == [("cli_stdin", "iphone")]
+
+
+TRIP: dict[str, Any] = {
+    "offer_id": "offer-1a2b3c4d", "to": "UVic", "made_at": "2026-10-10T08:00-07:00",
+    "options": [{
+        "index": 0, "route": "28", "board_stop": "Hillside", "leave_at": "08:20",
+        "departs": "08:25", "arrive_at": "08:55", "to": "UVic",
+    }],
+}
+
+
+def _card(log: Path, turn_id: str, clarification_id: str, *, trip: bool = False) -> None:
+    """The ask card of a turn, as ``ask_user`` (fields) or ``transit`` (``trip``) writes it."""
+    conn = open_event_log(log)
+    try:
+        emit_event(conn, type="clarification.requested", payload={
+            "clarification_id": clarification_id, "question": "Which one?" if not trip else "UVic",
+            "fields": [] if trip else [{"label": "Which", "kind": "text"}],
+            "turn_id": turn_id, "action_id": f"A-{clarification_id}",
+            **({"trip": TRIP} if trip else {}),
+        })
+    finally:
+        conn.close()
+
+
+def _withdraw(log: Path, turn_id: str, clarification_id: str) -> None:
+    conn = open_event_log(log)
+    try:
+        emit_event(conn, type="clarification.withdrawn", payload={
+            "clarification_id": clarification_id, "turn_id": turn_id,
+        })
+    finally:
+        conn.close()
+
+
+def test_question_cards_reach_the_phone_for_its_own_turns_and_never_its_speech(
+    tmp_path: Path,
+) -> None:
+    """(i): the device's spoken and typed turns get cards; the Mac's turn and the speaker none."""
+    times = [{"kind": "reminder", "at_ms": 1_791_619_200_000, "label": "mom", "ref": "reminder-1"}]
+    with _Host(tmp_path) as host:
+        phone = host.phone()
+        try:
+            phone.hello()
+            phone.send_ready()
+            phone.say("u-spoken", "when is the bus", spoken=True)
+            spoken_turn = phone.wait_text("said")["turn_id"]
+            phone.say("u-typed", "and the next one", spoken=False)
+            typed_turn = phone.wait_text("said", after=len(phone.texts))["turn_id"]
+            _mac_utterance(host.log, "TMAC", "something on the mac")
+
+            _card(host.log, spoken_turn, "offer-1a2b3c4d", trip=True)
+            _card(host.log, "TMAC", "offer-mac")
+            _card(host.log, typed_turn, "ask-typed")
+            _withdraw(host.log, typed_turn, "ask-typed")
+            _withdraw(host.log, "TMAC", "offer-mac")
+            _answer(
+                host.log, spoken_turn, "R-card", "Take the 28.",
+                emitted={
+                    "voice_text": "Take the 28.", "document_text": "Leave 08:20, Hillside.",
+                    "written_apart": True, "times": times,
+                },
+            )
+            phone.wait_until(
+                lambda: "surface.response_emitted" in {r["event_type"] for r in phone.rows()},
+                "the answer's rows never reached the phone",
+            )
+            rows = phone.rows()
+            cards = [r for r in rows if r["event_type"].startswith("clarification.")]
+            assert [(r["event_type"], r["payload"]["clarification_id"]) for r in cards] == [
+                ("clarification.requested", "offer-1a2b3c4d"),
+                ("clarification.requested", "ask-typed"),
+                ("clarification.withdrawn", "ask-typed"),
+            ]
+            assert cards[0]["payload"]["trip"] == TRIP
+            assert {r["payload"]["turn_id"] for r in rows} == {spoken_turn, typed_turn}
+            # in log order: the cards come between the turn's own rows as they were written
+            assert [r["event_type"] for r in rows].index("clarification.requested") < [
+                r["event_type"] for r in rows
+            ].index("surface.response_emitted")
+            [emitted] = [r for r in rows if r["event_type"] == "surface.response_emitted"]
+            assert emitted["payload"]["document_text"] == "Leave 08:20, Hillside."
+            assert emitted["payload"]["written_apart"] is True
+            assert emitted["payload"]["times"] == times
+
+            # the cursor that feeds the phone's media actor reads the answer rows and no card
+            with closing(sqlite3.connect(host.log)) as raw:
+                rows_of = inherent_loop._PhoneRows(raw)  # noqa: SLF001
+                _, voice_rows = rows_of.cursor("iphone", 0, spoken_only=True).poll()
+                _, all_rows = rows_of.cursor("iphone", 0).poll()
+            assert not any(e.type.startswith("clarification.") for _id, e in voice_rows)
+            assert {e.type for _id, e in voice_rows} >= {"surface.response_emitted"}
+            assert sum(e.type.startswith("clarification.") for _id, e in all_rows) == 3
+            # the card is never spoken: the phone's provider heard the answer's text alone
+            _wait_for(
+                lambda: "surface.playback_completed" in host.playback("R-card"),
+                "the answer never finished playing", timeout_s=20,
+            )
+            assert _sent_texts(host.phone_provider) == ["Take the 28."]
+        finally:
+            phone.close()
+
+
+def test_the_phones_token_reads_the_question_slot_like_every_route(tmp_path: Path) -> None:
+    """``GET /inherent/clarification`` is open to a paired device's token and to no other."""
+    root = tmp_path
+    token = pair_device(root, "iphone")
+    app = create_app(
+        InherentDeps(
+            submit_callable=lambda _text: "T1",
+            broadcaster=InherentBroadcaster(),
+            question_read=lambda: {"card": None},
+            question_answer=lambda _id, _answers: None,
+            device_name=functools.partial(device_name_for_token, root),
+        ),
+    )
+    remote = "100.87.250.92"
+    require_local_key(
+        app, functools.partial(local_key_matches, local_key(root)), extra_hosts=[remote],
+        device_token_matches=functools.partial(device_token_matches, root),
+    )
+    client = TestClient(app, base_url=f"http://{remote}:8006", client=(remote, 50000))
+    assert client.get("/inherent/clarification", headers=_bearer_header(token)).json() == {
+        "card": None,
+    }
+    assert client.get("/inherent/clarification").status_code == 401
+    assert client.get(
+        "/inherent/clarification", headers=_bearer_header(local_key(root)),
+    ).status_code == 401, "the local key is not for a remote peer"

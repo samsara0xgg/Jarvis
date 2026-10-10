@@ -72,7 +72,7 @@ class _Brain:
             InherentDeps(
                 submit_callable=lambda _text: "T1",
                 broadcaster=InherentBroadcaster(),
-                conversation_read=lambda _after, _limit: {"since": None, "rows": []},
+                conversation_read=lambda _after, _limit, _before: {"since": None, "rows": []},
                 pairing=DevicePairing(
                     root=root, codes=self.codes, listens=listens, brain_urls=self.urls,
                 ),

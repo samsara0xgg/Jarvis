@@ -20,7 +20,7 @@ const liveFrom = (p: Record<string, unknown>): Live => ({
   error: typeof p.error === 'string' ? p.error : null,
   notice: typeof p.notice === 'string' ? p.notice : null,
 });
-export interface Runtime { submit: (text: string) => Promise<void>; cancel: (responseId: string | null) => Promise<void>; stopTurn: (turnId: string) => Promise<void>; controls: (patch: Controls) => Promise<void>; conversation: (after: number, limit?: number) => Promise<Row[]>; card: () => Promise<Card | null>; decide: (id: string, decision: 'accept' | 'reject', edits?: Record<string, string>) => Promise<void>; question: () => Promise<Question | null>; answer: (id: string, answers: Record<string, string> | null) => Promise<void>; night: () => Promise<NightState>; nightAct: (action: NightAction, hours?: number) => Promise<NightState>; reconnect: () => void; close: () => void }
+export interface Runtime { submit: (text: string) => Promise<void>; cancel: (responseId: string | null) => Promise<void>; stopTurn: (turnId: string) => Promise<void>; controls: (patch: Controls) => Promise<void>; conversation: (after: number, limit?: number, before?: number) => Promise<Row[]>; card: () => Promise<Card | null>; decide: (id: string, decision: 'accept' | 'reject', edits?: Record<string, string>) => Promise<void>; question: () => Promise<Question | null>; answer: (id: string, answers: Record<string, string> | null) => Promise<void>; night: () => Promise<NightState>; nightAct: (action: NightAction, hours?: number) => Promise<NightState>; reconnect: () => void; close: () => void }
 
 // Daemon `voice` phases → UI phases. Anything unlisted leaves the phase alone.
 const voicePhase: Record<string, Action> = {
@@ -97,7 +97,7 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
     stopTurn: async turnId => { await post('/inherent/cancel-response', { turn_id: turnId, reason: 'user_stop' }); },
     controls,
     // Rows past `after` (0 = the newest `limit` rows, the daemon's default 200); the log is memory.db, so it survives every reload.
-    conversation: async (after, limit) => { const r = await fetch(`${http}/inherent/conversation?after=${after}${limit ? `&limit=${limit}` : ''}`); if (!r.ok) throw new Error(`/inherent/conversation ${r.status}`); return ((await r.json()) as { rows: Row[] }).rows; },
+    conversation: async (after, limit, before) => { const r = await fetch(`${http}/inherent/conversation?after=${after}${before ? `&before=${before}` : ''}${limit ? `&limit=${limit}` : ''}`); if (!r.ok) throw new Error(`/inherent/conversation ${r.status}`); return ((await r.json()) as { rows: Row[] }).rows; },
     // ADR 0062: the card waiting for a button, and the button. A 409 means it is no longer the pending card.
     card: async () => { const r = await fetch(`${http}/inherent/confirmation`); if (!r.ok) throw new Error(`/inherent/confirmation ${r.status}`); return ((await r.json()) as { card: Card | null }).card; },
     decide: async (id, decision, edits = {}) => { const r = await post('/inherent/confirmation', { confirmation_id: id, decision, edits }); if (typeof r.turn_id === 'string' && r.turn_id) dispatch({ type: 'pending', turnId: r.turn_id, at: Date.now() }); },

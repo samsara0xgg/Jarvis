@@ -514,17 +514,16 @@ export function Companion() {
     const id = setInterval(() => void load(), 2000);
     return () => { stop = true; clearInterval(id); };
   }, [dashboard, !!tail]); // and at once when an answer starts: its row is written before it streams
-  // Older days for the Conversation page: a longer page of the newest rows; a short answer means the history's start.
-  // ponytail: re-fetches the newest rows each time; a `before` cursor on the route if the history outgrows a few pages.
+  // Older days for the Conversation page: the next page of rows before the oldest held (the route caps a page at 500); an empty answer is the history's start.
   const [floor, setFloor] = useState(false);
   const older = async () => {
-    const want = s.rows.length + 200, first = s.rows[0]?.seq ?? Infinity;
+    const first = s.rows[0]?.seq;
     try {
-      const rows = await link.current?.conversation(0, want);
+      const rows = await link.current?.conversation(0, 200, first);
       if (!rows) return false;
-      if (rows.length < want) setFloor(true);
+      if (!rows.length) setFloor(true);
       dispatch({ type: 'older', rows });
-      return rows.some(row => row.seq < first);
+      return rows.length > 0;
     } catch { return false; }
   };
   // When Jarvis asks for a plugin mid-conversation, the Dashboard opens on it.

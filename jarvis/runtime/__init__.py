@@ -153,7 +153,7 @@ from jarvis.execution.tools import (
     release_turn_actions,
     turn_action_ids,
 )
-from jarvis.execution.transit_tool import TransitOffers
+from jarvis.execution.transit_tool import TransitOffers, first_leave_ms
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.daily_report import (
@@ -3911,6 +3911,116 @@ def _fetched_mail(conn: sqlite3.Connection, turn_id: str) -> tuple[str, str] | N
     return str(row[0]), "\n".join(headers) + "\n\n" + body
 
 
+_CALENDAR_WRITES: Final[frozenset[str]] = frozenset(
+    {"mcp__microsoft__create-calendar-event", "mcp__microsoft__update-calendar-event"},
+)
+_TIMES_MAX: Final[int] = 5
+_TIME_LABEL_CHARS: Final[int] = 40
+
+
+def _event_start_ms(body: object) -> int | None:
+    """Epoch ms of a Graph event body's ``start``; None if absent or its zone is not IANA's."""
+    start = body.get("start") if isinstance(body, dict) else None
+    if not isinstance(start, dict):
+        return None
+    try:
+        at = datetime.fromisoformat(str(start["dateTime"]))
+        if at.tzinfo is None:  # a Windows zone name ("Pacific Standard Time") has no ZoneInfo
+            at = at.replace(tzinfo=ZoneInfo(str(start["timeZone"])))
+        return int(at.timestamp() * 1000)
+    except (KeyError, ValueError, ZoneInfoNotFoundError):
+        return None
+
+
+def _calendar_time(
+    conn: sqlite3.Connection, action: Mapping[str, Any],
+) -> tuple[int, dict[str, Any]] | None:
+    """``(result row id, time entry)`` of one Outlook write that went through; else None."""
+    row = conn.execute(
+        "SELECT id, payload_json FROM events WHERE type = 'action.result_observed' "
+        "AND json_extract(payload_json, '$.action_id') = ?",
+        (action.get("action_id"),),
+    ).fetchone()
+    arguments = action.get("arguments")
+    arguments = arguments if isinstance(arguments, dict) else {}
+    body = arguments.get("body")
+    at_ms = _event_start_ms(body)
+    if row is None or at_ms is None:
+        return None
+    result = json.loads(row[1])
+    if result.get("semantics") == "error" or result.get("error"):
+        return None
+    event_id = arguments.get("eventId")
+    if not event_id:  # a created event: its id is in the server's answer
+        try:
+            answer = json.loads(json.loads(result.get("tool_output", "{}")).get("text", ""))
+            event_id = answer.get("id")
+        except (ValueError, AttributeError, TypeError):
+            event_id = None
+    return int(row[0]), {
+        "kind": "event", "at_ms": at_ms,
+        "label": str(body.get("subject", ""))[:_TIME_LABEL_CHARS] if isinstance(body, dict) else "",
+        "ref": str(event_id or action.get("action_id", "")),
+    }
+
+
+def _turn_times(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, Any]]:
+    """The times this turn's own log gives for the answer, or none if the log cannot give them.
+
+    The answer is written either way: an unreadable row costs the phone its dial, not the turn.
+    """
+    try:
+        return _read_turn_times(conn, turn_id)
+    except (sqlite3.Error, ValueError, KeyError, TypeError):
+        LOGGER.warning("turn %s: the times of its answer could not be read", turn_id, exc_info=True)
+        return []
+
+
+def _read_turn_times(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, Any]]:
+    """The turn's times: ``[{kind, at_ms, label, ref}]``.
+
+    From what the turn did, never from the model's words (ADR 0215): reminders it scheduled,
+    Outlook events it created or updated without error, and the first leave time of the transit
+    card it showed. In log order, at most five; an Outlook time in a zone name that is not
+    IANA's is left out.
+    """
+    found: list[tuple[int, dict[str, Any]]] = []
+    actions = [
+        event.payload for event in iter_events_for_turn(conn, turn_id, ("action.proposed",))
+    ]
+    ids = [str(one["action_id"]) for one in actions if one.get("action_id")]
+    for row in conn.execute(
+        "SELECT id, payload_json FROM events WHERE type = 'reminder.scheduled' "
+        "AND json_extract(payload_json, '$.action_id') IN (SELECT value FROM json_each(?)) "
+        "ORDER BY id",
+        (json.dumps(ids),),
+    ):
+        one = json.loads(row[1])
+        found.append((int(row[0]), {
+            "kind": "reminder", "at_ms": int(one["due_at_epoch_ms"]),
+            "label": str(one["text"])[:_TIME_LABEL_CHARS], "ref": str(one["reminder_id"]),
+        }))
+    found.extend(
+        done for action in actions
+        if action.get("tool_name") in _CALENDAR_WRITES and (done := _calendar_time(conn, action))
+    )
+    for row in conn.execute(
+        "SELECT id, payload_json FROM events WHERE type = 'clarification.requested' "
+        "AND json_extract(payload_json, '$.turn_id') = ? ORDER BY id",
+        (turn_id,),
+    ):
+        card = json.loads(row[1])
+        trip = card.get("trip")
+        leave_ms = first_leave_ms(trip) if isinstance(trip, dict) else None
+        if leave_ms is not None:
+            found.append((int(row[0]), {
+                "kind": "departure", "at_ms": leave_ms,
+                "label": str(trip.get("to", ""))[:_TIME_LABEL_CHARS],
+                "ref": str(card.get("clarification_id", "")),
+            }))
+    return [entry for _id, entry in sorted(found, key=lambda one: one[0])[:_TIMES_MAX]]
+
+
 def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; argument set + traced multi-trigger loop are the cross-surface contract, and every ResponseRun branch is flag-guarded.
     runtime: JarvisRuntime,
     *,
@@ -4445,6 +4555,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             response_group_id=run.response_group_id if run is not None else None,
             delivery_terminal_only=streamed,
             written_apart=written_apart,
+            times=_turn_times(runtime.conn, effective_turn_id),
         )
         rendered = capture.getvalue()
         sys.stdout.write(rendered)

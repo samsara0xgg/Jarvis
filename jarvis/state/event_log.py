@@ -752,6 +752,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "voice_text",
             "document_text",
             "written_apart",
+            # ADR 0215: the times the answer refers to, from the turn's own log.
+            "times",
             "response_hash",
             "response_id",
             "response_group_id",
