@@ -87,6 +87,7 @@ final class StarUI {
     var mic: MicState = .mic
     var chipsOn = false
     var settingsOpen = false
+    var tuning = false                  // the near-view camera panel is open (Sky/StarTune.swift)
     var text = ""
     var talkChips: [String] = []
     var voiceNote: String?              // the voice's one status line: the model download, or what went wrong

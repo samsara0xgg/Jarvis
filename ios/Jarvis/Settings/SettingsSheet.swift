@@ -3,13 +3,15 @@ import SwiftUI
 /// 设置: content for a standard iOS page sheet. Present it with `.sheet(isPresented:) { SettingsSheet() }`.
 /// It draws its own header (grabber, title, 完成 or back) and pushes the two sub pages over the list.
 struct SettingsSheet: View {
+    private let tuneNear: () -> Void
     @Bindable private var model = SettingsModel.shared
     @State private var page = SettingsPage.main
     @State private var scrolled: [SettingsPage: Bool] = [:]
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init() {
+    init(tuneNear: @escaping () -> Void = {}) {
+        self.tuneNear = tuneNear
         #if DEBUG
         // `-settingsPage pair` opens on the pairing page, for screenshots
         let a = ProcessInfo.processInfo.arguments
@@ -24,7 +26,7 @@ struct SettingsSheet: View {
             ZStack(alignment: .top) {
                 SetColor.bg.ignoresSafeArea()
                 scrollPage(.main, width: geo.size.width) {
-                    SettingsMainPage(model: model, isCurrent: page == .main) { go($0) }
+                    SettingsMainPage(model: model, isCurrent: page == .main, tuneNear: tuneNear) { go($0) }
                 }
                 scrollPage(.pair, width: geo.size.width) { SettingsPairPage(isCurrent: page == .pair) { go(.main) } }
                 scrollPage(.log, width: geo.size.width) { SettingsLogPage(model: model) }

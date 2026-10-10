@@ -565,6 +565,7 @@ extension StarEngine {
         case "一个月": setLevel(2)
         case "确认": setLevel(0); if let e = byId("thanks") { openId = e.id; rowKey = ""; seek(e.t) }
         case "设置": ui.settingsOpen = true
+        case "视角": setLevel(-1); ui.tuning = true
         case "抽屉": openPanel()
         // paired, with cards waiting: `看看:claude` opens that kind's card under the dial, `抽屉:claude` with the panel open (kinds: confirmation, clarification, notice, plugin, claude)
         case _ where name.hasPrefix("看看:") || name.hasPrefix("抽屉:"):

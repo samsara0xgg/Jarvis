@@ -66,6 +66,7 @@ struct StarChrome: View {
             TalkPanel(engine: engine, ui: ui, pull: $pull)
             voiceNote
             AttachDim(model: ui.attach)
+            if ui.tuning && ui.level == -1 { NearTune(engine: engine, done: { ui.tuning = false }) }
             composer
             AttachOverlay(model: ui.attach, kbLift: ui.kbLift)
         }
@@ -97,7 +98,7 @@ struct StarChrome: View {
             let lift = max(0, screenH - f.minY) / k
             withAnimation(.easeOut(duration: 0.3)) { ui.kbLift = lift }
         }
-        .sheet(isPresented: $ui.settingsOpen) { SettingsSheet() }
+        .sheet(isPresented: $ui.settingsOpen) { SettingsSheet(tuneNear: { ui.settingsOpen = false; engine.setLevel(-1); ui.tuning = true }) }
     }
 
     /// a tap on a notification that waits on him: the panel, with what waits pinned
@@ -131,7 +132,7 @@ struct StarChrome: View {
     // MARK: the panel under the dial
 
     private var detail: some View {
-        let away = ui.talking || ui.typing || ui.panelOpen
+        let away = ui.talking || ui.typing || ui.panelOpen || ui.tuning
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .bottom, spacing: 12) {
                 Text(ui.hm).font(serif(ui.view == "day" ? 80 : 68)).foregroundStyle(ink).lineLimit(1).fixedSize()

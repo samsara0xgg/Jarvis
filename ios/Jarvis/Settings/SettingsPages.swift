@@ -24,6 +24,7 @@ struct SettingsMainPage: View {
     @Bindable var model: SettingsModel
     /// False while another page covers this one: the avatar then stops breathing.
     let isCurrent: Bool
+    var tuneNear: () -> Void = {}
     let push: (SettingsPage) -> Void
 
     var body: some View {
@@ -62,6 +63,7 @@ struct SettingsMainPage: View {
                 NavRow(label: "查看手机报给大脑的记录") { push(.log) }
                 DeleteRow(count: model.todayCount, onDelete: model.deleteToday)
             }
+            SetSection { NavRow(label: "调整近景视角", action: tuneNear) }
             Text(model.version).font(.footnote).foregroundStyle(SetColor.muted).padding(.top, 32)
         }
         .padding(.top, 14)

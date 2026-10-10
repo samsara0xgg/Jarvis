@@ -16,7 +16,23 @@ var GY0: Double { Cal.cur.rows > 5 ? 182.0 : 206.0 }
 var GH: Double { Cal.cur.rows > 5 ? 56.0 : 64.0 }
 
 struct Cam { var ox, oy, oh, fx, fy, fh, rx, ry, ux, uy, uh, foc, X0, Y0, D: Double }
-struct NearParams { var gr = 142.0, ga = 1.37, gh = 46.0, tr = 142.0, ta = 2.35, foc = 240.0, X = 265.0, Y = 262.0 }
+struct NearParams: Codable, Equatable {
+    var gr = 142.0, ga = 1.37, gh = 46.0, tr = 142.0, ta = 2.35, foc = 240.0, X = 265.0, Y = 262.0
+
+    // the debug panel (Sky/StarTune.swift) shows ga and ta as minutes from the focus: before it, and after it
+    private static let rad = 2 * Double.pi / 1440
+    var gaMin: Double { get { (Double.pi / 2 - ga) / Self.rad } set { ga = Double.pi / 2 - newValue * Self.rad } }
+    var taMin: Double { get { (ta - Double.pi / 2) / Self.rad } set { ta = Double.pi / 2 + newValue * Self.rad } }
+
+    /// his tuned values survive a relaunch; the defaults are the absence of the key
+    static let key = "nearParamsOverride"
+    static func load(_ d: UserDefaults = .standard) -> NearParams {
+        d.data(forKey: key).flatMap { try? JSONDecoder().decode(NearParams.self, from: $0) } ?? NearParams()
+    }
+    func save(_ d: UserDefaults = .standard) {
+        if self == NearParams() { d.removeObject(forKey: Self.key) } else { d.set(try? JSONEncoder().encode(self), forKey: Self.key) }
+    }
+}
 
 enum Mode { case seek, idle, drag, script }
 
@@ -65,7 +81,7 @@ final class StarEngine {
     var names: [(Double, Double, Double, Double)] = []
     var labelHits: [(id: String, box: (Double, Double, Double, Double))] = []      // the names placed this frame, for a tap to find
     var numeralBoxes: [(Double, Double, Double, Double)] = []      // where the near view's hour numerals stand this frame, for the names to keep out of
-    let NEARP = NearParams()
+    var NEARP = NearParams.load()       // read every frame by setCam, so a change shows on the next one
 
     // ---------- flows, touches, panel ----------
     let ui = StarUI()
