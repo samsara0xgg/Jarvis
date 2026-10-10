@@ -173,6 +173,7 @@ struct StarChrome: View {
             }
         }
         .padding(.top, 16)
+        .environment(\.cardCompact, true)
         .id(ui.rowsKey)
         .animation(ui.rowsCalm ? .easeOut(duration: 0.5) : nil, value: ui.rowsKey)
     }
@@ -514,6 +515,7 @@ struct ExpandView: View {
                 btns(("不行", "deny"), ("允许", "allow"))
             case .hike: btns(("算了", "no"), ("去", "yes"))
             case .note(let t): para(Text(t))
+            case .card(let c): WaitingCardView(card: c)
             }
         }
     }

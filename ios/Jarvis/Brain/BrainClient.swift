@@ -87,14 +87,17 @@ struct DayItem: Decodable {
 
 /// Every call tries the brain's addresses in order with a short timeout, and says what went wrong in the owner's words.
 enum BrainClient {
-    private static let session: URLSession = {
+    private static func makeSession(request: TimeInterval, resource: TimeInterval) -> URLSession {
         let c = URLSessionConfiguration.ephemeral
-        c.timeoutIntervalForRequest = 4
-        c.timeoutIntervalForResource = 8
+        c.timeoutIntervalForRequest = request
+        c.timeoutIntervalForResource = resource
         c.waitsForConnectivity = false
         c.httpCookieStorage = nil
         return URLSession(configuration: c)
-    }()
+    }
+    private static let session = makeSession(request: 4, resource: 8)
+    /// for the calls that wait on the brain: a picture going up, a question whose answer takes up to 25 s
+    private static let slowSession = makeSession(request: 40, resource: 60)
 
     /// A tailnet address: the CGNAT range Tailscale hands out, a MagicDNS name, or a bare name that only MagicDNS can resolve.
     static func isTailnet(_ u: URL) -> Bool {
@@ -104,10 +107,12 @@ enum BrainClient {
         return h.hasSuffix(".ts.net") || !h.contains(".")
     }
 
-    struct Reply { let data: Data; let base: URL; let ms: Int }
+    struct Reply { let data: Data; let base: URL; let ms: Int; var status = 200 }
 
     /// `path` on the first base that answers. A refusal that means "this address is wrong" (400, 404) moves on; one that means "this answer is final" (401) stops.
-    static func send(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Data? = nil, bases: [URL], token: String?, unauthorized: BrainError) async throws -> Reply {
+    /// `also` lists statuses that are the route's own answer (a card no longer waiting, a file refused): they come back as a `Reply` with that status.
+    static func send(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Data? = nil, contentType: String = "application/json", slow: Bool = false, also: Set<Int> = [],
+                     bases: [URL], token: String?, unauthorized: BrainError) async throws -> Reply {
         var worst: BrainError?
         func note(_ e: BrainError) { if worst == nil || (worst!.rank < e.rank) { worst = e } }
         for base in bases {
@@ -116,14 +121,16 @@ enum BrainClient {
             guard let url = comps.url else { continue }
             var req = URLRequest(url: url)
             req.httpMethod = method
-            if let b = body { req.httpBody = b; req.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+            if let b = body { req.httpBody = b; req.setValue(contentType, forHTTPHeaderField: "Content-Type") }
             if let t = token { req.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization") }
             let t0 = Date()
             do {
-                let (data, resp) = try await session.data(for: req)
+                let (data, resp) = try await (slow ? slowSession : session).data(for: req)
                 let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                let ms = Int(Date().timeIntervalSince(t0) * 1000)
                 switch status {
-                case 200...299: return Reply(data: data, base: base, ms: Int(Date().timeIntervalSince(t0) * 1000))
+                case 200...299: return Reply(data: data, base: base, ms: ms)
+                case _ where also.contains(status): return Reply(data: data, base: base, ms: ms, status: status)
                 case 401: throw unauthorized
                 case 400, 404: note(.notOpen)
                 default: note(.refused)

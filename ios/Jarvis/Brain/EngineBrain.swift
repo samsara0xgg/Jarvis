@@ -9,7 +9,9 @@ extension StarEngine {
         if b.hasToken != Cal.cur.real { switchWorld(real: b.hasToken) }
         guard Cal.cur.real else { return }
         // answers arrive a few at a time: take them together, a quarter second apart at most
-        if b.dataVersion != seenVersion && nowMs() - lastAdopt > 250 { seenVersion = b.dataVersion; lastAdopt = nowMs(); adoptBrain(b) }
+        if (b.dataVersion != seenVersion || Waiting.shared.version != seenWaiting) && nowMs() - lastAdopt > 250 {
+            seenVersion = b.dataVersion; seenWaiting = Waiting.shared.version; lastAdopt = nowMs(); adoptBrain(b)
+        }
         if b.openTick != seenOpen { seenOpen = b.openTick; askDays() }
         let m = qGoal > 1.5
         if m != monthAsked { monthAsked = m; if m { askDays() } }
@@ -30,7 +32,8 @@ extension StarEngine {
 
     /// Replace the stars with the brain's. What was already there keeps its fade, so a refresh does not make the sky blink.
     func adoptBrain(_ b: BrainLink) {
-        let now = nowMs(), fresh = RealDay.shared.rebuild(b.days, now: nowT())
+        let now = nowMs(), day = RealDay.shared.rebuild(b.days, now: nowT())
+        let fresh = day + Waiting.shared.events(merging: day)
         let old = Dictionary(EV.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         for e in fresh {
             if let o = old[e.id] { e.born = o.born; e.flash = o.flash; e.ign = o.ign } else { e.born = now }

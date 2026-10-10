@@ -251,7 +251,7 @@ extension StarEngine {
         let (right, style): (String, RightStyle) = kd == .wait ? ("看看", .look) : kd == .work ? ("进行中", .mut) : kd == .done ? ("已完成", .mut) : kd == .lit ? (e.src ?? "", .src) : (rel(e.t), .mut)
         var ex: Expand?
         if openId == e.id {
-            if e.draft { ex = .draft(DRAFT) } else if e.call { ex = .call } else if e.approve { ex = .approve } else if e.id == "hike" { ex = .hike } else if let n = e.note { ex = .note(n) }
+            if let c = e.card { ex = .card(c) } else if e.draft { ex = .draft(DRAFT) } else if e.call { ex = .call } else if e.approve { ex = .approve } else if e.id == "hike" { ex = .hike } else if let n = e.note { ex = .note(n) }
         }
         return RowModel(id: e.id, kd: kd, title: e.title, meta: e.meta, right: right, rightStyle: style, expand: ex)
     }
@@ -576,6 +576,12 @@ extension StarEngine {
         case "确认": setLevel(0); if let e = byId("thanks") { openId = e.id; rowKey = ""; seek(e.t) }
         case "设置": ui.settingsOpen = true
         case "抽屉": setDrawer(true)
+        // paired, with cards waiting: `看看:claude` opens that kind's card under the dial, `抽屉:claude` in the drawer (kinds: confirmation, clarification, notice, plugin, claude)
+        case _ where name.hasPrefix("看看:") || name.hasPrefix("抽屉:"):
+            let kind = String(name.dropFirst(3))
+            guard let e = EV.first(where: { $0.card?.kind.rawValue == kind }) else { return }
+            setLevel(0); openId = e.id; rowKey = ""; drKey = ""; seek(e.t)
+            if name.hasPrefix("抽屉") { setDrawer(true) }
         case "放大镜": lensTh = -0.6; lensGoal = 1
         case "打字": ui.typing = true; ui.chipsOn = true
         default: break

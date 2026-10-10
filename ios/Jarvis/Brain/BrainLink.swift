@@ -77,6 +77,15 @@ final class BrainLink {
 
     static func host(_ u: URL) -> String { u.port.map { "\(u.host ?? ""):\($0)" } ?? (u.host ?? "") }
 
+    /// A call under this phone's token. When the brain answers 401 it has unpaired this phone: what it gave is dropped, as when a day is refused.
+    func call<T>(_ body: (_ bases: [URL], _ token: String) async throws -> T) async throws -> T {
+        guard hasToken, let tok = token else { throw BrainError.revoked }
+        do { return try await body(bases, tok) } catch let e as BrainError {
+            if e == .revoked { forget(e.message) }
+            throw e
+        }
+    }
+
     // MARK: pairing
 
     /// `text` is what the QR holds. The brain is asked for a token once; on any failure nothing that was held before changes.
@@ -95,6 +104,7 @@ final class BrainLink {
                 days = [:]; fetched = [:]; failedAt = [:]; generation += 1
                 state = .paired(Self.host(got.base))
                 dataVersion += 1; openTick += 1      // the days on screen are asked for under the new token
+                Waiting.shared.start()
             } catch let e as BrainError {
                 state = .error(e.message)
             } catch {
@@ -111,6 +121,7 @@ final class BrainLink {
         days = [:]; fetched = [:]; failedAt = [:]; inFlight = []
         state = message.map { .error($0) } ?? .unpaired
         dataVersion += 1
+        Waiting.shared.stop()
     }
 
     // MARK: days

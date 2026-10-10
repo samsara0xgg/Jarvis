@@ -23,6 +23,8 @@ final class Ev {
     var approve = false, draft = false, call = false
     /// from the brain's day, not the prototype
     var live = false
+    /// what waits on the owner behind this star, from the brain (Brain/Waiting)
+    var card: WaitingCard?
     var born: Double = -1e9, flash: Double = -1e9, ign: Double = -1e9
     // what the last frame drew, for hit tests and trails
     var on = false, focus = false

@@ -6,6 +6,7 @@ import Observation
 enum RightStyle { case look, mut, src }
 enum Expand: Equatable {
     case draft(String), call, approve, hike, note(String)
+    case card(WaitingCard)              // what the brain is waiting on, with its own buttons
 }
 struct RowModel: Identifiable, Equatable {
     var id: String
