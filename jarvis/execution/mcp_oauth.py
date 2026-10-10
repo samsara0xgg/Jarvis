@@ -102,6 +102,12 @@ class FileTokenStorage:
         expires_at = time.time() + tokens.expires_in if tokens.expires_in else None
         self._write(tokens=tokens.model_dump(mode="json", exclude_none=True), expires_at=expires_at)
 
+    def forget_other_registration(self, redirect_uris: list[str]) -> None:
+        """Drop a registration made for another redirect (ADR 0202); the tokens stay."""
+        registered = (self._read().get("client_info") or {}).get("redirect_uris")
+        if isinstance(registered, list) and registered != redirect_uris:
+            self._write(client_info=None)
+
     async def get_client_info(self) -> OAuthClientInformationFull | None:
         """The dynamic client registration, if one was made."""
         raw = self._read().get("client_info")
@@ -159,9 +165,10 @@ class _CallbackHandler(BaseHTTPRequestHandler):
 class BrowserLogin:
     """The interactive half: bind the listener, open the browser, wait for the code."""
 
-    def __init__(self, port: int, open_url: Callable[[str], object]) -> None:
+    def __init__(self, port: int, open_url: Callable[[str], object], redirect_uri: str) -> None:
         """``open_url`` gets the authorization URL once the listener is bound."""
         self._port = port
+        self._redirect_uri = redirect_uri
         self._open_url = open_url
         self._listener: _Listener | None = None
 
@@ -173,7 +180,7 @@ class BrowserLogin:
         ).start()
         sys.stderr.write(
             f"Open this URL in a browser to log in; it sends the browser back to "
-            f"http://127.0.0.1:{self._port}/callback on this machine:\n{url}\n"
+            f"{self._redirect_uri}, which reaches this machine's 127.0.0.1:{self._port}:\n{url}\n"
         )
         self._open_url(url)
 
@@ -189,19 +196,29 @@ class BrowserLogin:
             self._listener.server_close()
 
 
-def build_oauth(
+def build_oauth(  # noqa: PLR0913 — one keyword per knob of the login.
     server: str,
     url: str,
     token_path: Path,
     *,
     callback_port: int,
     open_url: Callable[[str], object] | None,
+    redirect_uri: str | None = None,
 ) -> OAuthClientProvider:
-    """The SDK provider for one server; without ``open_url`` it may only reuse a stored login."""
+    """The SDK provider for one server; without ``open_url`` it may only reuse a stored login.
+
+    ``redirect_uri`` (``tools.mcp.oauth_redirect_uri``, ADR 0202) is registered in place of the
+    loopback one; the listener is the same either way. A login that may happen drops a stored
+    registration made for another redirect, so the SDK registers again; a login that may not
+    keeps it, because refreshing a token needs the registration's client id.
+    """
     storage = FileTokenStorage(token_path)
+    redirect = redirect_uri or f"http://127.0.0.1:{callback_port}/callback"
     metadata = OAuthClientMetadata.model_validate(
-        {"client_name": "Jarvis", "redirect_uris": [f"http://127.0.0.1:{callback_port}/callback"]}
+        {"client_name": "Jarvis", "redirect_uris": [redirect]}
     )
+    if open_url is not None:
+        storage.forget_other_registration([str(uri) for uri in metadata.redirect_uris or ()])
     if open_url is None:
 
         async def refuse(_url: str) -> None:
@@ -220,7 +237,7 @@ def build_oauth(
             callback_handler=never,
         )
     else:
-        login = BrowserLogin(callback_port, open_url)
+        login = BrowserLogin(callback_port, open_url, redirect)
         provider = OAuthClientProvider(
             server_url=url,
             client_metadata=metadata,

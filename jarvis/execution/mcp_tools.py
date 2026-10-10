@@ -233,12 +233,13 @@ def _mail_send(listed: mcp_types.Tool, address: str) -> tuple[str, dict[str, Any
 class McpServers:
     """Every entered MCP client and the loop thread that keeps them open."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — one keyword per knob of the client.
         self,
         *,
         timeout_s: float = DEFAULT_MCP_TIMEOUT_S,
         token_dir: Path | None = None,
         callback_port: int = DEFAULT_OAUTH_CALLBACK_PORT,
+        redirect_uri: str | None = None,
         open_url: Callable[[str], object] | None = None,
         always_loaded: Collection[str] = (),
     ) -> None:
@@ -246,13 +247,15 @@ class McpServers:
 
         ``token_dir`` holds one OAuth token file per server. ``open_url`` is the
         login command's browser; without it an OAuth server is only reused,
-        never logged in. ``always_loaded`` names tools (``mcp__<server>__<tool>``)
+        never logged in. ``redirect_uri`` is the registered redirect in place of the
+        loopback one (ADR 0202). ``always_loaded`` names tools (``mcp__<server>__<tool>``)
         that stay on the model's menu without a ``tool_search`` (ADR 0127).
         """
         self._always_loaded = frozenset(always_loaded)
         self._timeout_s = timeout_s
         self._token_dir = token_dir
         self._callback_port = callback_port
+        self._redirect_uri = redirect_uri
         self._open_url = open_url
         self._wait_s = _LOGIN_WAIT_S if open_url else timeout_s + _JOIN_GRACE_S
         self._loop = asyncio.new_event_loop()
@@ -309,7 +312,12 @@ class McpServers:
                 msg = f"{server}: not logged in; {LOGIN_HINT.format(server=server)}"
                 raise RuntimeError(msg)
             auth = build_oauth(
-                server, url, path, callback_port=self._callback_port, open_url=self._open_url
+                server,
+                url,
+                path,
+                callback_port=self._callback_port,
+                open_url=self._open_url,
+                redirect_uri=self._redirect_uri,
             )
         http_client = httpx2.AsyncClient(headers=headers, auth=auth, timeout=_HTTP_TIMEOUT)
         return streamable_http_client(url, http_client=http_client), http_client

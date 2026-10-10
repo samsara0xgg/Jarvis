@@ -2395,6 +2395,7 @@ def _mcp_servers(
         timeout_s=float(block.get("timeout_s", DEFAULT_MCP_TIMEOUT_S)),
         token_dir=paths.root / "mcp",
         callback_port=int(block.get("oauth_callback_port", DEFAULT_OAUTH_CALLBACK_PORT)),
+        redirect_uri=block.get("oauth_redirect_uri") or None,
         open_url=open_url,
     )
 

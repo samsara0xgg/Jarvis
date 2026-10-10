@@ -628,6 +628,11 @@ tools:
     # OAuth 登录时浏览器跳回本机的端口。它写进了向对方注册的 redirect
     # URI，改了就要对该 server 重新 mcp-login。
     oauth_callback_port: 8789
+    # ADR 0202 — 注册给对方的 redirect URI，不写就是 http://127.0.0.1:<上面的端口>/callback。
+    # 大脑在树莓派上时写 https://<大脑>.ts.net/oauth/callback，再让 tailscale serve
+    # 把它转到 127.0.0.1:<上面的端口>/callback；监听器不变。改了之后，下一次登录
+    # 会重新注册，已有的 token 照常刷新。
+    # oauth_redirect_uri: https://jarvis.example.ts.net/oauth/callback
     # ADR 0127 — 这些工具（mcp__<server>__<tool>）不排在 tool_search 后面，
     # 一开始就在模型的菜单上：日程、待办、邮件的读取，省掉搜索和 list-accounts
     # 这类探路调用。名字对不上任何已连接的工具就什么也不做。

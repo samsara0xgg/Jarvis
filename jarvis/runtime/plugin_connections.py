@@ -500,6 +500,7 @@ class PluginConnections:
             timeout_s=float(self._mcp.get("timeout_s", 30)),
             token_dir=self.root / "mcp",
             callback_port=int(self._mcp.get("oauth_callback_port", DEFAULT_OAUTH_CALLBACK_PORT)),
+            redirect_uri=self._mcp.get("oauth_redirect_uri") or None,
             open_url=browser if interactive else None,
             always_loaded=self._mcp.get("always_loaded") or (),
         )
