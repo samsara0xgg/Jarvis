@@ -40,6 +40,7 @@ extension StarEngine {
         }
         let waits = EV.filter { $0.st == .wait }.count
         EV = fresh
+        if let l = lightRef { if nowMs() < l.until { lightStar(l.id) } else { lightRef = nil } }
         sprites.minis.removeAll(); epoch += 1; rowKey = ""; panelKey = ""; wake()
         if ui.talking && fresh.filter({ $0.st == .wait }).count > waits { openPanel() }       // something waits on him while she talks: the panel has room for it
         let days = b.days

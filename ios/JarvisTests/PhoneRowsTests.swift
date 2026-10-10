@@ -40,4 +40,27 @@ final class PhoneRowsTests: XCTestCase {
         XCTAssertNil(PhoneRows.event(try row("surface.response_chunk", #"{"turn_id":"T1","text":"好"}"#)))
         XCTAssertNil(PhoneRows.event(try row("surface.response_emitted", #"{"turn_id":"T1","text":"好"}"#)))
     }
+
+    // MARK: times
+
+    func testTheFinalAnswerRowsTimesAreReadInTheOrderTheTurnDidThem() throws {
+        let r = try row("surface.response_emitted", #"{"turn_id":"T1","text":"好","phase":"final","times":[{"kind":"reminder","at_ms":1791702000000,"label":"给 Mia 回电话","ref":"R-1"},{"kind":"event","at_ms":1791705600000,"label":"面试","ref":"AAMk1"},{"kind":"departure","at_ms":1791698000000,"label":"西二旗","ref":"O1"}]}"#)
+        guard case .times(let ts)? = PhoneRows.event(r) else { return XCTFail("times") }
+        XCTAssertEqual(ts.map(\.kind), ["reminder", "event", "departure"])
+        XCTAssertEqual(ts[0], AnswerTime(kind: "reminder", atMs: 1_791_702_000_000, label: "给 Mia 回电话", ref: "R-1"), "an integer epoch ms, whole")
+        XCTAssertEqual(ts.map(\.ref), ["R-1", "AAMk1", "O1"])
+    }
+
+    func testAnAnswerWithoutTimesOrWithOnlyBadOnesTurnsNothing() throws {
+        XCTAssertNil(PhoneRows.event(try row("surface.response_emitted", #"{"turn_id":"T1","text":"好","phase":"final"}"#)), "no times key: most answers")
+        XCTAssertNil(PhoneRows.event(try row("surface.response_emitted", #"{"turn_id":"T1","text":"好","times":[]}"#)))
+        XCTAssertNil(PhoneRows.event(try row("surface.response_emitted", #"{"turn_id":"T1","text":"好","times":[{"kind":"reminder","label":"x"},{"at_ms":5}]}"#)), "a time with no instant is not guessed")
+        guard case .times(let ts)? = PhoneRows.event(try row("surface.response_emitted", #"{"turn_id":"T1","times":[{"label":"x"},{"kind":"reminder","at_ms":7}]}"#)) else { return XCTFail("times") }
+        XCTAssertEqual(ts, [AnswerTime(kind: "reminder", atMs: 7, label: "", ref: "")], "the readable one stays")
+    }
+
+    /// a lead-in line's own row (phase commentary) is not the answer: its times, if any, are not turned to
+    func testACommentaryRowIsNotTheAnswer() throws {
+        XCTAssertNil(PhoneRows.event(try row("surface.response_emitted", #"{"turn_id":"T1","text":"我查查","phase":"commentary","times":[{"kind":"reminder","at_ms":7,"ref":"R"}]}"#)))
+    }
 }

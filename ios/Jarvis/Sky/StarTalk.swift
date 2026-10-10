@@ -99,7 +99,30 @@ extension StarEngine {
         case .cardGone(let id):
             withAnimation(.easeOut(duration: 0.25)) { ui.liveTurns.removeAll { $0.card?.brainId == id } }
             Task { @MainActor in await Waiting.shared.poll() }
+        case .times(let ts): showTimes(ts)
         }
+    }
+
+    /// Her answer names times (ADR 0215): the dial turns to each, in the order the turn did them and a moment apart, and the star there lights as it arrives. A touch on the dial ends it.
+    func showTimes(_ ts: [AnswerTime]) {
+        guard ui.talking else { return }
+        let id = talkId
+        Task { @MainActor in
+            for (i, t) in ts.enumerated() {
+                if i > 0 { try? await Task.sleep(nanoseconds: 2_200_000_000) }
+                guard id == talkId, g == nil else { return }
+                seek(Cal.cur.t(ms: t.atMs), true); wake()
+                if t.kind == "reminder" { lightRef = (t.ref, nowMs() + 10_000); BrainLink.shared.opened() }       // a reminder she just set is a star of the day once the days are read again
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                lightStar(t.ref)
+            }
+        }
+    }
+    /// the star under that id lights; a star the days have not brought yet lights when they do (`adoptBrain`)
+    func lightStar(_ ref: String) {
+        guard let e = EV.first(where: { $0.id == ref }) else { return }
+        e.flash = nowMs(); e.ign = nowMs(); lightRef = nil
+        sound(.tick, 0.8); wake()
     }
 
     /// The voice session's words as rows: his as he says them (then his line), hers as they come. A new utterance of the same session is new rows.
@@ -219,6 +242,19 @@ extension StarEngine {
             EV.append(e)
             TalkTopics.shared.debugSet(e.id, "明天几点出门？", "九点二十。坐 32 路，路上三十二分钟，可能下雨，带伞。")
             openId = e.id; rowKey = ""; seek(e.t)
+        case "times":
+            // her answer names tomorrow 15:00: the dial turns there and the reminder's star lights (the row is the host's own, read as the phone reads it off /phone/ws)
+            setLevel(0)
+            let cal = Cal.cur.cal, tomorrow = cal.date(byAdding: .day, value: 1, to: Date())!, at = cal.date(bySettingHour: 15, minute: 0, second: 0, of: tomorrow)!
+            let e = Ev("R-debug", Cal.cur.t(at), .her, .next, "提醒：给 Mia 回电话", "明天 15:00", s: "回电话")
+            e.live = true; e.born = -1e9; e.kind = "reminder"; e.startMs = Int64(at.timeIntervalSince1970 * 1000)
+            EV.append(e)
+            beginTalk(); lingerHold = true
+            addTurn(his: true, "明天三点提醒我给 Mia 回电话")
+            addTurn(his: false, "好，明天下午三点，我提醒你给 Mia 回电话。")
+            let ms = Int64(at.timeIntervalSince1970 * 1000)
+            let row = #"{"type":"row","event_type":"surface.response_emitted","event_uid":"6f1c2d3e4a5b46788899aabbccddeeff","ts_epoch_ms":1791650000000,"payload":{"turn_id":"T1","text":"好","phase":"final","times":[{"kind":"reminder","at_ms":\#(ms),"label":"给 Mia 回电话","ref":"R-debug"}]}}"#
+            if case .row(let r)? = HostFrame(Data(row.utf8)) { MainActor.assumeIsolated { PhoneRows.offer(r) } }
         case "clarify":
             // she asks him two things while she talks: the host's own row, read as the phone reads it off /phone/ws
             setLevel(0)
