@@ -15,10 +15,12 @@ if TYPE_CHECKING:
 
 _DESCRIPTION: Final = (
     "The user's current location, read from this Mac (he carries it): a place name (street"
-    " and area), latitude, longitude and accuracy in metres. Call it only when his question"
-    " depends on where he is right now: 'where am I', what is nearby, places, food or shops"
-    " near him, how far something is from here. For bus trips use transit with origin 'here'"
-    " instead. If it returns an error, say so and ask him where he is."
+    " and area), latitude, longitude and accuracy in metres. Never say you do not know where he"
+    " is without calling it. Call it only when his question depends on where he is right now:"
+    " 'where am I', what he is doing or just did away from the computer, what is nearby,"
+    " places, food or shops near him, how far something is from here. For bus trips use"
+    " transit with origin 'here' instead. If it returns an error, say so and ask him where he"
+    " is."
 )
 
 PHONE_REPORT_RULE: Final = (
@@ -31,8 +33,10 @@ _PHONE_DESCRIPTION: Final = (
     "The user's last known location, from his phone's last report (the phone is with him):"
     " a place name when the phone had one, latitude, longitude, accuracy in metres and age_s,"
     " how many seconds ago the phone reported it. " + PHONE_REPORT_RULE + " Tell him how old"
-    " the report is when that matters. Call it only when his question depends on where he is"
-    " right now: 'where am I', what is nearby, places, food or shops near him, how far"
+    " the report is when that matters. Never say you do not know where he is without calling"
+    " it. Call it only when his question depends on where he is right now: 'where am I', what"
+    " he is doing or just did away from the computer, what is nearby, places, food or shops"
+    " near him, how far"
     " something is from here. For bus trips use transit with origin 'here' instead. If it"
     " returns an error, no phone has reported a location: say so and ask him where he is."
 )
@@ -42,8 +46,10 @@ _BOTH_DESCRIPTION: Final = (
     " metres. When he is talking from his phone it is the phone's last report (the phone is"
     " with him), which also carries age_s, how many seconds ago the phone reported it. "
     + PHONE_REPORT_RULE + " Tell him how old the report is when that matters. Otherwise it is"
-    " read fresh from this Mac, which he carries. Call it only when his question depends on"
-    " where he is right now: 'where am I', what is nearby, places, food or shops near him, how"
+    " read fresh from this Mac, which he carries. Never say you do not know where he is without"
+    " calling it. Call it only when his question depends on where he is right now: 'where am"
+    " I', what he is doing or just did away from the computer, what is nearby, places, food or"
+    " shops near him, how"
     " far something is from here. For bus trips use transit with origin 'here' instead. If it"
     " returns an error, say so and ask him where he is."
 )
