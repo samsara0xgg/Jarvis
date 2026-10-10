@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 
 // Launch with `-attachScene 添加` (and optionally `-attachDelay 2`) to land on a state, for screenshots without touching the screen.
-// 添加 · 相册 · 相机 · 拍后 · 带附件 · 带附件添加 · 粘贴 · 文件选择 · 发送
+// 添加 · 相册 · 相机 · 相机循环 · 拍后 · 带附件 · 带附件添加 · 粘贴 · 文件选择 · 发送
 // `-attachText 一段很长的话` puts words in the field (to see it grow).
 
 enum AttachDebug {
@@ -24,6 +24,7 @@ enum AttachDebug {
                 for i in 0..<3 { if let a = m.photos.asset(at: i * 2) { m.togglePick(a.localIdentifier) } }
             }
         case "相机": m.open(); after(0.3) { m.go(.camera) }
+        case "相机循环": cameraLoop(m)
         case "拍后": m.open(); after(0.3) { m.go(.camera) }; after(1.0) { m.shoot() }
         case "带附件": m.attach(samples(), from: [])
         case "带附件添加": m.attach(samples(), from: []); after(0.6) { m.open() }
@@ -32,6 +33,19 @@ enum AttachDebug {
         case "发送": m.attach(samples(), from: []); after(1.5) { m.debugSend += 1 }
         default: break
         }
+    }
+
+    /// open, camera, close, again: the camera must stay smooth however fast or slowly it is opened and closed (`-attachScene 相机循环`)
+    private static func cameraLoop(_ m: AttachModel) {
+        var n = 0
+        func cycle() {
+            guard n < 24 else { print("CAM cycles done"); return }
+            n += 1
+            let gap = [0.3, 0.9, 0.5, 1.2, 0.15][n % 5]
+            m.open()
+            after(gap) { m.go(.camera); after(gap + 0.4) { m.close(); after(0.5) { cycle() } } }
+        }
+        cycle()
     }
 
     private static func samples() -> [AttachItem] {
