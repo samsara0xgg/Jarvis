@@ -24,6 +24,11 @@ _DESCRIPTION: Final = (
     "asks to close it."
 )
 
+_CATEGORIES: Final = (
+    ' On page "settings", item_id may be a category: {ids}. "devices" is pairing a phone and '
+    "shows its QR code."
+)
+
 _DONE: Final = (
     "The Dashboard has turned. Do not call show_on_dashboard again for this request; its "
     "rows reach you in the Dashboard line of the next turn."
@@ -70,12 +75,14 @@ def _asks_to_see(ctx: ToolContext) -> bool:
 def build_dashboard_tool(
     pages: Sequence[str],
     present: Callable[..., Mapping[str, Any]] | None,
+    settings_categories: Sequence[str] = (),
 ) -> tuple[Tool, ...]:
     """``show_on_dashboard`` bound to the runtime's presenter; none when the view is off.
 
     ``present(page, item_id, asked=...)`` raises ValueError for a page it does not know, a
     shut Dashboard nobody asked for, or when no Dashboard is connected, and answers what it
-    sent otherwise.
+    sent otherwise. ``settings_categories`` are the Settings category ids ``item_id`` may name
+    on page ``settings`` (ADR 0208).
     """
     if present is None:
         return ()
@@ -114,10 +121,13 @@ def build_dashboard_tool(
             shown["note"] = _DONE
         return shown
 
+    description = _DESCRIPTION
+    if settings_categories:
+        description += _CATEGORIES.format(ids=", ".join(settings_categories))
     return (
         Tool(
             name="show_on_dashboard",
-            description=_DESCRIPTION,
+            description=description,
             input_schema=schema,
             handler=show,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),

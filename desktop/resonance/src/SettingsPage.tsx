@@ -80,8 +80,8 @@ type Ctl =
 type Item = { id: string; name: L; note?: L; ctl: Ctl; off?: boolean; extra?: ReactNode };
 type Cat = { id: string; icon: ReactNode; name: L; sum: string; warm?: boolean; daemon?: boolean; items: Item[] };
 
-export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyDrafts, onKeyDraft, hiddenAgents, onUnhideAgents, onArrange, onPlugins, onResetHome, notify, head }: {
-  lang: Lang; port: string | null; open: boolean; cat: string | null; onCat: (id: string | null) => void; ctl: Controls; accounts: Account[];
+export function SettingsPage({ lang, port, open, cat, onCat, pairAsk = 0, ctl, accounts, keyDrafts, onKeyDraft, hiddenAgents, onUnhideAgents, onArrange, onPlugins, onResetHome, notify, head }: {
+  lang: Lang; port: string | null; open: boolean; cat: string | null; onCat: (id: string | null) => void; pairAsk?: number; ctl: Controls; accounts: Account[];
   keyDrafts: AccountKeyDrafts; onKeyDraft: (provider: Provider, value: string) => void;
   hiddenAgents: number; onUnhideAgents: () => void; onArrange: () => void; onPlugins: () => void; onResetHome: () => void;
   notify: (text: string) => void; head: (title: string, meta?: ReactNode) => ReactNode;
@@ -169,6 +169,8 @@ export function SettingsPage({ lang, port, open, cat, onCat, ctl, accounts, keyD
     } catch { notify(t(['Jarvis couldn’t make a code.', 'Jarvis 没生成二维码。'])); }
     finally { setBusy(false); }
   };
+  // ADR 0208: she opened this category to pair a phone, so the code is already showing. A code still live is kept: a new one voids it.
+  useEffect(() => { if (pairAsk && cat === 'devices' && open && !live && !joined) void showCode(); }, [pairAsk]);
   const unpair = async (name: string) => {
     setAsk(null);
     if (!port) { setDemoDevs(d => d.filter(x => x.name !== name)); return; }

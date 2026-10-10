@@ -14,7 +14,14 @@ from fastapi.testclient import TestClient
 from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.tools import ToolContext, ToolError
 from jarvis.runtime import _dashboard_view, _live_lines
-from jarvis.runtime.dashboard import CLOSE, PAGES, VIEW_LINE_CHARS, VIEW_STALE_S, ViewState
+from jarvis.runtime.dashboard import (
+    CLOSE,
+    PAGES,
+    SETTINGS_CATEGORIES,
+    VIEW_LINE_CHARS,
+    VIEW_STALE_S,
+    ViewState,
+)
 from jarvis.shared import CallerPrincipal
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
@@ -173,7 +180,9 @@ def test_the_route_sets_replaces_and_closes_the_view() -> None:
 
 
 def _tool(view: ViewState | None) -> Any:  # noqa: ANN401
-    tools = build_dashboard_tool((*PAGES, CLOSE), None if view is None else view.present)
+    tools = build_dashboard_tool(
+        (*PAGES, CLOSE), None if view is None else view.present, SETTINGS_CATEGORIES
+    )
     return next(iter(tools), None)
 
 
@@ -226,6 +235,35 @@ def test_show_on_dashboard_pushes_present_with_an_id_only_the_current_view_carri
     ]
     view.set(None)  # a closed panel knows no ids: the page opens alone
     assert _show(tool, page="mail", item_id="b2")["opened_page_only"] is True
+
+
+@pytest.mark.parametrize(
+    ("page", "item_id", "kept", "kind"),
+    [
+        ("settings", "devices", "devices", "category"),
+        ("settings", "voice", "voice", "category"),
+        ("settings", "nope", None, None),  # an unknown id still opens the page alone
+        ("mail", "devices", None, None),  # a category id means nothing on another page
+        ("settings", None, None, None),
+    ],
+)
+def test_present_keeps_a_settings_category_and_drops_any_other_id(
+    page: str, item_id: str | None, kept: str | None, kind: str | None
+) -> None:
+    """ADR 0208: on ``settings`` a category id survives although Settings reports no rows."""
+    view = ViewState()
+    sent: list[dict[str, str | None]] = []
+    view.push = sent.append
+    view.set("settings", tab="")  # Settings reports a tab and no rows
+    assert view.present(page, item_id) == {"page": page, "item_id": kept, "kind": kind}
+    assert sent == [{"page": page, "item_id": kept, "kind": kind}]
+    shut = ViewState()
+    shut.push = sent.append  # a shut Dashboard Allen asked to open takes the category too
+    assert shut.present(page, item_id)["item_id"] == kept
+    done = _show(_tool(view), page=page, **({} if item_id is None else {"item_id": item_id}))
+    assert done["item"] == kept
+    assert (kept is None) == done["opened_page_only"]
+    assert "devices" in _tool(view).description
 
 
 def test_show_on_dashboard_refuses_an_unknown_page_and_a_missing_link() -> None:

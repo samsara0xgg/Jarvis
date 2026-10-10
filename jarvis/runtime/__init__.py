@@ -165,6 +165,7 @@ from jarvis.runtime.dashboard import (
     DRAFT_LINE_CHARS,
     DRAFT_LINE_PREFIX,
     PAGES,
+    SETTINGS_CATEGORIES,
     VIEW_LINE_CHARS,
     VIEW_LINE_PREFIX,
     MailDrafts,
@@ -1397,7 +1398,9 @@ def _dashboard_state(
 
 def _register_dashboard_tool(registry: ToolRegistry, view: ViewState | None) -> None:
     """``show_on_dashboard`` (ADR 0176), registered only with ``dashboard.view.enabled``."""
-    for tool in build_dashboard_tool((*PAGES, CLOSE), None if view is None else view.present):
+    for tool in build_dashboard_tool(
+        (*PAGES, CLOSE), None if view is None else view.present, SETTINGS_CATEGORIES
+    ):
         registry.register(tool)
 
 

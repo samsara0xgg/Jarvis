@@ -32,6 +32,12 @@ PAGES: Final = (
     "home", "conversation", "now", "agents", "usage", "plugins", "projects", "settings", "brief",
     "mail", "memory", "jobs",
 )
+SETTINGS_CATEGORIES: Final = (
+    "general", "home", "look", "voice", "board", "sounds", "agents", "privacy", "accounts",
+    "devices", "models", "advanced",
+)
+"""The Settings categories ``show_on_dashboard`` can open (ADR 0208): ``cats`` in
+SettingsPage.tsx. ``devices`` is the one that pairs a phone."""
 # Not a page: she folds the Dashboard away when Allen asks to close it.
 CLOSE: Final = "close"
 """The pages ``show_on_dashboard`` can turn to: ``Page`` in AroundDashboard.tsx, less the
@@ -155,7 +161,8 @@ class ViewState:
     ) -> dict[str, str | None]:
         """Ask the companion to turn to ``page``, and to ``item_id`` when the view carries it.
 
-        An id the current view does not carry opens the page alone. ``asked`` is whether
+        On ``settings``, ``item_id`` may also be a Settings category (ADR 0208). An id the
+        current view does not carry opens the page alone. ``asked`` is whether
         Allen's words asked to see something: without it a shut Dashboard stays shut. Returns
         what was sent; ValueError for an unknown page, a shut Dashboard he did not ask for, or
         when no Dashboard link is attached.
@@ -173,8 +180,13 @@ class ViewState:
             closed: dict[str, str | None] = {"page": None, "item_id": None, "kind": None}
             self.push(closed)
             return closed
+        sent: dict[str, str | None]
+        if page == "settings" and item_id in SETTINGS_CATEGORIES:
+            sent = {"page": page, "item_id": item_id, "kind": "category"}
+            self.push(sent)
+            return sent
         known = self.knows(item_id) if item_id else None
-        sent: dict[str, str | None] = {
+        sent = {
             "page": page,
             "item_id": item_id if known else None,
             "kind": None if known is None else known.kind,

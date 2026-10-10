@@ -760,7 +760,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
 
   // ADR 0176: she turned the Dashboard (the companion opened the panel if it was shut). A letter or a note opens; any other row lights for a moment.
   // An ask that arrives while the panel is still shut waits for it to open, then is followed once.
-  const [lit, setLit] = useState<{ id: string; key: number } | null>(null), followed = useRef(0);
+  const [lit, setLit] = useState<{ id: string; key: number } | null>(null), followed = useRef(0), [pairAsk, setPairAsk] = useState(0);
   useEffect(() => {
     if (!present || !open || present.key === followed.current) return;
     followed.current = present.key;
@@ -776,6 +776,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     if (!id) return;
     if (name === 'mail') { const m = mail.find(x => x.id === id); if (m) setLetter(m); }
     else if (name === 'memory') setMemory({ ...MEM_HOME, stack: [{ k: 'item', id }] });
+    // ADR 0208: a Settings category opens in place; "devices" also shows the pairing QR code.
+    else if (name === 'settings' && present.kind === 'category') { setSettingsCat(id); if (id === 'devices') setPairAsk(present.key); }
     else {
       if (name === 'agents') setUnfolded(id);
       // A job id (its key or one of its mails') unfolds its card, so the mail is on screen to light.
@@ -888,7 +890,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
           </div>}</div>
       </>;
     },
-    settings: () => <SettingsPage lang={lang} port={port} open={open} cat={settingsCat} onCat={setSettingsCat} ctl={ctl} accounts={accounts}
+    settings: () => <SettingsPage lang={lang} port={port} open={open} cat={settingsCat} onCat={setSettingsCat} pairAsk={pairAsk} ctl={ctl} accounts={accounts}
       keyDrafts={accountKeyDrafts} onKeyDraft={(provider, value) => setAccountKeyDrafts(drafts => ({ ...drafts, [provider]: value }))}
       hiddenAgents={Object.keys(hidden).length} onUnhideAgents={() => { setHidden({}); notify(t(['Hidden sessions are back.', '隐藏的会话回来了。'])); }}
       onArrange={() => { setSettingsCat(null); setPage('arrange'); react('14', 1200); }} onPlugins={() => { setSettingsCat(null); setPage('plugins'); }}
