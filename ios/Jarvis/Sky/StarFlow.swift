@@ -185,7 +185,7 @@ extension StarEngine {
             while cur.hist.count > 16 { cur.hist.removeFirst() }
         } else if cur.kind == .pinch && ptr.count == 2 {
             let (d, a) = two2()
-            qs.value = clamp(cur.q0 - log(d / cur.d0) * 1.35, -1.22, 2.22); qs.velocity = 0; qGoal = qs.value
+            qs.value = clamp(cur.q0 - log(d / cur.d0) * 1.0, -1.22, 2.22); qs.velocity = 0; qGoal = qs.value
             if qs.value < 1.4 { fs.value = cur.F0 - wrapAngle(a - cur.a0) / (TAU / (DAY * pow(7, clamp(qs.value, 0, 1)))) }
         }
         g = cur
