@@ -23,9 +23,16 @@ final class VoiceAudio {
 
     func start() async throws {
         guard !running else { return }
+        Sound.shared.suspend()                              // one owner of the session: the UI cues' engine is stopped first
+        var started = false
+        defer { if !started { Sound.shared.resume() } }
         let s = AVAudioSession.sharedInstance()
         try s.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try s.setActive(true)
+        if s.category != .playAndRecord {
+            VoiceTrace.note("category is \(s.category.rawValue) after setting playAndRecord; setting it again")
+            try s.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+        }
         let input = engine.inputNode
         try input.setVoiceProcessingEnabled(true)          // changes the input format: read it only after this
         // installTap with a 0 Hz or 0-channel format raises an exception Swift cannot catch: wait up to 1 s for the route instead
@@ -61,6 +68,7 @@ final class VoiceAudio {
         try engine.start()
         self.core = core
         running = true
+        started = true
 
         let t = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "jarvis.voice.drain", qos: .userInteractive))
         t.schedule(deadline: .now(), repeating: .milliseconds(5), leeway: .milliseconds(2))
@@ -84,6 +92,7 @@ final class VoiceAudio {
         source = nil
         core = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        Sound.shared.resume()
     }
 
     private func observe() {

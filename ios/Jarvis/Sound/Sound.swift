@@ -39,6 +39,7 @@ final class Sound {
     private var busyUntil: [TimeInterval] = []
     private var idleStop: DispatchWorkItem?
     private var configObserver: NSObjectProtocol?
+    private var suspended = false
 
     private init() {
         // An interruption or media-services reset invalidates the engine; dropping it is enough,
@@ -56,8 +57,14 @@ final class Sound {
     /// Plays a cue. `gain` is a linear volume, clamped to 0...1.
     func play(_ cue: SoundCue, gain: Float = 1) {
         guard isOn else { return }
-        queue.async { self.start(cue, gain: gain) }
+        queue.async { if !self.suspended { self.start(cue, gain: gain) } }
     }
+
+    /// The voice owns the audio session while it listens or speaks: no cue may start a second engine or touch the
+    /// category meanwhile (a second running engine left the voice's microphone with no usable format).
+    /// Blocks until this engine is gone. `resume` when the voice has let the session go.
+    func suspend() { queue.sync { suspended = true; teardown() } }
+    func resume() { queue.async { self.suspended = false } }
 
     private func start(_ cue: SoundCue, gain: Float) {
         let buffer = self.buffer(for: cue)
