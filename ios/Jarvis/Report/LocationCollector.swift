@@ -265,9 +265,16 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
         ReportMemory.set(string: "yes", for: "location.firstFix")
         lastSent = loc
         thinned = nil
-        Reporter.shared.emit([.location(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude,
-                                        accuracyM: loc.horizontalAccuracy, at: loc.timestamp, place: nil,
-                                        speedMps: loc.speed >= 0 ? loc.speed : nil)])
+        // The place name goes with the fix (a later frame for the same fix would be dropped as a duplicate): the
+        // cached name within 100 m is instant, a new place waits for the geocoder, at most `geocodeTimeout`.
+        let hold = BackgroundHold.begin("jarvis.location.place")
+        Task { @MainActor in
+            let place = await self.place(for: loc)
+            Reporter.shared.emit([.location(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude,
+                                            accuracyM: loc.horizontalAccuracy, at: loc.timestamp, place: place,
+                                            speedMps: loc.speed >= 0 ? loc.speed : nil)])
+            hold.end()
+        }
     }
 
     // MARK: Adaptive updates
