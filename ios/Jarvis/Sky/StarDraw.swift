@@ -424,7 +424,7 @@ extension StarEngine {
         c.setAlpha(1)
     }
 
-    /// Close up, the names stand beside their stars, haloed, your own on the left of your lane and hers on the right of hers, and the time is read off the ring.
+    /// Close up, the names stand above their stars, haloed, larger as they come near, and the time is read off the ring.
     /// What needs him is placed first, so it is never the one to give way.
     private func nearNames(_ c: CGContext, _ list: [Ev], _ now: Double) {
         let fin = smooth(0.25, 0.7, camE), calmK = self.calmK
@@ -443,22 +443,19 @@ extension StarEngine {
         var placed: [Box] = [], hits: [(id: String, box: Box)] = []
         let her: Box = (herP.0 - 22, herP.1 - 22, herP.0 + 22, herP.1 + 22)
         func hit(_ a: Box, _ b: Box, _ mx: Double = 0, _ my: Double = 0) -> Bool { a.0 - mx < b.2 && a.2 + mx > b.0 && a.1 - my < b.3 && a.3 + my > b.1 }
-        let shown = cands.filter { $0.v * fin * smooth(0.55, 0.80, $0.pr) * calmK >= 0.03 }
+        let shown = cands.filter { $0.v * fin * smooth(0.8, 1.1, $0.pr) * calmK >= 0.03 }
         for group in nameClusters(shown.map { ($0.x, $0.y) }, 14) {      // stars that stand as one point share their first one's name
-            let cd = shown[group[0]], e = cd.e, la = cd.v * fin * smooth(0.55, 0.80, cd.pr) * calmK
-            let ps = clamp(cd.pr, 0.45, 2.4), n = clamp((9.5 + 4.2 * ps.squareRoot()).rounded(), 11, 17), p = SpriteCache.pad(n)
+            let cd = shown[group[0]], e = cd.e, la = cd.v * fin * smooth(0.8, 1.1, cd.pr) * calmK
+            let ps = clamp(cd.pr, 0.45, 2.4), n = sizeAt(11, ps), p = SpriteCache.pad(n)
             let s = spr.label(e.s!, .sans(500, n), e.kd == .wait ? RGB(255, 217, 176) : .ink, more: group.count - 1)
-            let tw = s.w - 2 * p, gap = 6 + 5 * ps, hh = 0.62 * n
-            let left = (cd.x - gap - tw, cd.y - hh, cd.x - gap, cd.y + hh), right = (cd.x + gap, cd.y - hh, cd.x + gap + tw, cd.y + hh)
-            var box: Box?
-            for b in e.lane == .you ? [left, right] : [right, left] where b.0 >= 6 && b.2 <= W - 6 {      // the other side if this one leaves the screen
-                if b.1 < MAP_Y + 6 || hit(b, her) || numeralBoxes.contains(where: { hit(b, $0) }) || placed.contains(where: { hit(b, $0, 2, 1) }) { continue }
-                box = b; break
-            }
-            guard let b = box else { continue }
+            let tw = s.w - 2 * p
+            if cd.x < 0 || cd.x > W { continue }
+            let lx = clamp(cd.x, tw / 2 + 8, W - tw / 2 - 8), ly = cd.y - (8 + 7 * ps) - n * 0.3
+            let b = (lx - tw / 2 - 4, ly - n * 0.62, lx + tw / 2 + 4, ly + n * 0.62)
+            if b.1 < MAP_Y + 6 || hit(b, her) || numeralBoxes.contains(where: { hit(b, $0) }) || placed.contains(where: { hit(b, $0, 2, 1) }) { continue }
             let a = (e.kd == .wait || e.kd == .work ? 0.95 : e.kd == .next ? 0.80 : 0.88) * la
             placed.append(b); hits.append((e.id, b))
-            c.setAlpha(a); blit(c, s.img, b.0 - p, cd.y - s.h / 2, s.w, s.h)
+            c.setAlpha(a); blit(c, s.img, lx - s.w / 2, ly - s.h / 2, s.w, s.h)
         }
         c.setAlpha(1); names = placed + numeralBoxes; labelHits = hits
     }

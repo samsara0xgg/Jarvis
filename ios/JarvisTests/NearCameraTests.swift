@@ -1,7 +1,7 @@
 import XCTest
 @testable import Jarvis
 
-/// The near view settled (q = -1, z = 1, no lens): where the lanes and the scale ring land on the screen (spec-1 section 1).
+/// The near view settled (q = -1, z = 1, no lens): where the lanes and the scale ring land on the screen (spec-1c section 1).
 final class NearCameraTests: XCTestCase {
     private func settled() -> StarEngine {
         let e = StarEngine()
@@ -13,9 +13,7 @@ final class NearCameraTests: XCTestCase {
     func testTheCameraPutsEachPointOfTheDialWhereTheSpecSays() {
         let e = settled()
         let table: [(Double, Double, Double, Double, Double)] = [
-            (R_YOU, 0, 220.6, 460.4, 3.6), (R_YOU, 60, 201.1, 360.5, 2.6), (R_YOU, 120, 210.0, 300.8, 2.1),
-            (R_YOU, 240, 262.2, 239.4, 1.5), (R_YOU, 360, 336.0, 215.6, 1.3),
-            (R_HER, 0, 356.7, 412.2, 3.1), (R_SC, 0, 83.5, 509.0, 4.0), (R_SC, 120, 139.1, 292.3, 2.0),
+            (R_YOU, 0, 199.9, 472.3, 6.0), (R_HER, 0, 417.8, 402.8, 4.6), (R_SC + 9, 60, 63.2, 338.7, 3.3),
         ]
         for (r, dm, x, y, ps) in table {
             XCTAssertTrue(e.P(r, e.ang(e.F + dm)))

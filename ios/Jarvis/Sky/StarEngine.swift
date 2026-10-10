@@ -16,8 +16,7 @@ var GY0: Double { Cal.cur.rows > 5 ? 182.0 : 206.0 }
 var GH: Double { Cal.cur.rows > 5 ? 56.0 : 64.0 }
 
 struct Cam { var ox, oy, oh, fx, fy, fh, rx, ry, ux, uy, uh, foc, X0, Y0, D: Double }
-struct NearParams { var gr = 162.0, ga = 1.30900, gh = 90.0, tr = 142.0, ta = 2.22529, foc = 310.0, X = 220.0, Y = 280.0 }
-// ga = π/2 − 60 min, ta = π/2 + 150 min on the dial: the eye 162 out, an hour behind F, 90 up; it looks at your lane 2.5 h ahead
+struct NearParams { var gr = 142.0, ga = 1.37, gh = 46.0, tr = 142.0, ta = 2.35, foc = 240.0, X = 265.0, Y = 262.0 }
 
 enum Mode { case seek, idle, drag, script }
 
@@ -155,6 +154,7 @@ final class StarEngine {
     }
     @discardableResult func P(_ r: Double, _ a: Double) -> Bool { Pxy(r * cos(a), r * sin(a)) }
     func fog() -> Double { guard let c = cam else { return 1 }; return 1 - 0.72 * smooth(c.D * 1.15, c.D * 2.9, PZ) }   // far things dim
+    func sizeAt(_ base: Double, _ s: Double) -> Double { clamp((base * s / 2).rounded() * 2, 10, 24) }
     /// the angle and radius on the dial under a point of the screen; nil above the horizon
     func unP(_ X: Double, _ Y: Double) -> (Double, Double)? {
         guard let c = cam else { return (atan2(Y - CY, X - CX), hypot(X - CX, Y - CY)) }
