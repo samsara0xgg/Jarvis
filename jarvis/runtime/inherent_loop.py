@@ -199,7 +199,7 @@ from jarvis.shared.realtime import (
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state import quiet_mode
 from jarvis.state.daily_report import resolve_zone
-from jarvis.state.day_line import day_window, fold_day
+from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.departures import ID_PREFIX as PIN_PREFIX
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
 from jarvis.state.event_log import (
@@ -4995,19 +4995,22 @@ def _draft_deps(runtime: JarvisRuntime, home: Home | None) -> dict[str, Any]:
     }
 
 
-def _read_day(
-    event_log: Path, configured: tzinfo | None, day: date | None, now_ms: int,
+def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked and the clock.
+    event_log: Path, configured: tzinfo | None, memory_db: Path | None, timesink: Path | None,
+    day: date | None, now_ms: int,
 ) -> dict[str, Any]:
     """``GET /inherent/day`` (ADR 0199): the day asked for, or today in the owner's zone.
 
     The zone is ``work_state.timezone`` else the machine's, as every other day window is cut. The
-    log is read on a connection of its own, so this runs on a worker thread.
+    log is read on a connection of its own, so this runs on a worker thread. ``memory_db`` (his
+    talks) and ``timesink`` (his Mac) are the configured stores or None; the ``ledger:`` block
+    does not gate them, and a store that is not there leaves its source in ``missing``.
     """
     zone_name, zone = resolve_zone(None, configured)
     on = datetime.fromtimestamp(now_ms / 1000, zone).date() if day is None else day
     start_ms, end_ms = day_window(on, zone)
     with contextlib.closing(open_runtime_event_log(event_log)) as conn:
-        line = fold_day(conn, start_ms, end_ms, now_ms)
+        line = fold_day(conn, start_ms, end_ms, now_ms, DaySources(zone, timesink, memory_db))
     return {
         "date": on.isoformat(),
         "tz": zone_name,
@@ -5020,10 +5023,13 @@ def _read_day(
 
 
 async def _serve_day(
-    event_log: Path, configured: tzinfo | None, day: date | None,
+    event_log: Path, configured: tzinfo | None, memory_db: Path | None, timesink: Path | None,
+    day: date | None,
 ) -> dict[str, Any]:
     """:func:`_read_day` off the loop thread, at the brain's clock."""
-    return await asyncio.to_thread(_read_day, event_log, configured, day, int(time.time() * 1000))
+    return await asyncio.to_thread(
+        _read_day, event_log, configured, memory_db, timesink, day, int(time.time() * 1000),
+    )
 
 
 def _notice_deps(
@@ -6662,7 +6668,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(runtime.think_mode.status, runtime.conn)
             ),
             day_read=functools.partial(
-                _serve_day, runtime.runtime_paths.event_log, _work_state_timezone(runtime.config),
+                _serve_day,
+                runtime.runtime_paths.event_log,
+                _work_state_timezone(runtime.config),
+                None if runtime.memory is None else runtime.memory.db_path,
+                _timesink_db_path(runtime.config),
             ),
             today_read=(
                 None if runtime.home is None

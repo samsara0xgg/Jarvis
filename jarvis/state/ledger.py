@@ -24,6 +24,7 @@ from collections import Counter, defaultdict
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, tzinfo
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from jarvis.state import reminders, timesink
@@ -31,7 +32,6 @@ from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
-    from pathlib import Path
 
 # Bundle ids TimeSink spells two ways, folded onto one display name.
 _APP_ALIAS: Final[dict[str, str]] = {
@@ -988,8 +988,74 @@ def since_text(src: LedgerSources, now: datetime, last_talk: datetime | None) ->
     return "\n".join(out)
 
 
+# ------------------------------------------------------------------ one window, raw (ADR 0199)
+TOP_FLOOR_S: Final[float] = _TOP_FLOOR_S
+"""The shortest stretch the ledger names a project or an app for."""
+CALL_FLOOR_S: Final[float] = _CALL_FLOOR_S
+"""The shortest call the ledger counts."""
+_UNREAD: Final[Path] = Path()  # stands in for the path of a half :func:`window_activity` skips
+
+
+class ActivitySpan(NamedTuple):
+    """A TimeSink span: aware UTC times, the app as the ledger names it, the project verdict."""
+
+    start: datetime
+    end: datetime
+    app: str
+    project: str  # "none" when TimeSink has no verdict for it
+
+
+class ActivityCall(NamedTuple):
+    """A TimeSink call span: aware UTC times and the app as the ledger names it."""
+
+    start: datetime
+    end: datetime
+    app: str
+
+
+class Activity(NamedTuple):
+    """What :func:`window_activity` read: spans and calls by start time, talks in time order."""
+
+    spans: list[ActivitySpan]
+    calls: list[ActivityCall]
+    talks: list[datetime]
+
+
+def window_activity(
+    begin: datetime, end: datetime, zone: tzinfo, *,
+    timesink: Path | None = None, memory_db: Path | None = None,
+) -> Activity:
+    """The raw activity in ``[begin, end)``, loaded the way every ledger render loads it.
+
+    ``timesink`` feeds the spans and calls that overlap the window, whole and not cut to it, with
+    the same project verdicts and app names the ledger's numbers use; a store that is missing or
+    cannot be read yields none, as there. ``memory_db`` feeds the times of his records
+    (``source='allen'``) between ``begin`` and ``end`` inclusive, in ``zone``; it raises when the
+    store cannot be read. A path left None is not read and its part is empty, so a caller that
+    wants the halves to fail apart asks for each in a call of its own.
+    """
+    src = LedgerSources(memory_db or _UNREAD, _UNREAD, timesink, zone)
+    spans: list[ActivitySpan] = []
+    calls: list[ActivityCall] = []
+    talks: list[datetime] = []
+    if timesink is not None:
+        found, called = _Data._timesink(src, begin, end)  # noqa: SLF001 — this module's loader
+        spans = [ActivitySpan(s.start, s.end, s.app, s.project) for s in found]
+        calls = [
+            ActivityCall(c.start, c.end, c.app) for c in called if c.end > begin and c.start < end
+        ]
+    if memory_db is not None:
+        talks = sorted(_Data._memory(src, begin, end)[0])  # noqa: SLF001 — this module's loader
+    return Activity(spans, sorted(calls), talks)
+
+
 __all__ = [
+    "CALL_FLOOR_S",
     "DAY_STARTS_AT",
+    "TOP_FLOOR_S",
+    "Activity",
+    "ActivityCall",
+    "ActivitySpan",
     "LedgerSources",
     "day_active",
     "day_numbers_text",
@@ -1000,4 +1066,5 @@ __all__ = [
     "since_text",
     "standing_text",
     "today_text",
+    "window_activity",
 ]
