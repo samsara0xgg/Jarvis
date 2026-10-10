@@ -1,6 +1,6 @@
 import Foundation
 
-// Every frame the phone and the host exchange, and nothing else knows the byte layouts. ADR 0209 is not final: change the codecs here.
+// Every frame the phone and the host exchange, and nothing else knows the byte layouts (ADR 0209; jarvis/surface/phone_link.py and phone_player.py on the host).
 //
 // Binary (one WebSocket message = u8 type + little-endian payload; main.swift's layouts without the u32 length prefix):
 //   host -> phone   2 ACTIVE i64 generation (-1: none) | 3 DISCARD u64 seq | 4 GAIN f32 target, u32 ramp_samples
@@ -136,20 +136,23 @@ enum PlayerOut: Equatable, Sendable {
 
 // MARK: JSON text frames
 
-/// A row of the conversation as the host sends it; `text` is her words, if the row carries any.
-/// TODO(ADR 0209): confirm the row shape (keys, whether a row is a segment or the whole answer so far).
+/// One event-log row the host sends for this device's turns: surface.response_open | response_chunk | response_emitted, response.cancelled | failed.
+/// Every one carries payload.turn_id; chunks and emitted carry payload.text; open, chunk and emitted may carry payload.phase ("commentary" | "final").
 struct RowFrame: @unchecked Sendable, Equatable {
-    let json: [String: Any]
-    var turnId: String? { json["turn_id"] as? String }
-    var role: String? { json["role"] as? String }
-    var text: String? { json["text"] as? String }
-    static func == (a: RowFrame, b: RowFrame) -> Bool { NSDictionary(dictionary: a.json).isEqual(to: b.json) }
+    let eventType: String, eventUid: String, payload: [String: Any], tsEpochMs: Int64
+    var turnId: String? { payload["turn_id"] as? String }
+    var phase: String? { payload["phase"] as? String }
+    var text: String? { payload["text"] as? String }
+    var reason: String? { payload["reason"] as? String }
+    static func == (a: RowFrame, b: RowFrame) -> Bool {
+        a.eventType == b.eventType && a.eventUid == b.eventUid && a.tsEpochMs == b.tsEpochMs && NSDictionary(dictionary: a.payload).isEqual(to: b.payload)
+    }
 }
 
 /// phone -> host
 enum PhoneFrame: Equatable, Sendable {
     case hello
-    case say(utteranceId: String, text: String, language: String?, spoken: Bool)
+    case say(utteranceId: String, text: String, language: String?, confidence: Double?, spoken: Bool)
     case barge
     case cancel
     case ping(tNs: Int64)
@@ -158,9 +161,10 @@ enum PhoneFrame: Equatable, Sendable {
         var o: [String: Any]
         switch self {
         case .hello: o = ["type": "hello", "voice": true]
-        case .say(let id, let text, let lang, let spoken):
+        case .say(let id, let text, let lang, let conf, let spoken):
             o = ["type": "say", "utterance_id": id, "text": text, "spoken": spoken]
             if let lang { o["language"] = lang }
+            if let conf { o["confidence"] = conf }
         case .barge: o = ["type": "barge"]
         case .cancel: o = ["type": "cancel"]
         case .ping(let t): o = ["type": "ping", "t_ns": t]
@@ -174,7 +178,7 @@ enum PhoneFrame: Equatable, Sendable {
         case "hello": self = .hello
         case "say":
             guard let id = o["utterance_id"] as? String, let text = o["text"] as? String, let spoken = o["spoken"] as? Bool else { return nil }
-            self = .say(utteranceId: id, text: text, language: o["language"] as? String, spoken: spoken)
+            self = .say(utteranceId: id, text: text, language: o["language"] as? String, confidence: (o["confidence"] as? NSNumber)?.doubleValue, spoken: spoken)
         case "barge": self = .barge
         case "cancel": self = .cancel
         case "ping": guard let t = (o["t_ns"] as? NSNumber)?.int64Value else { return nil }; self = .ping(tNs: t)
@@ -185,36 +189,42 @@ enum PhoneFrame: Equatable, Sendable {
 
 /// host -> phone
 enum HostFrame: Equatable, Sendable {
-    case ready(device: String, voice: String, sampleRate: Int)
+    case ready(device: String, voice: Bool, sampleRate: Int)
     case said(utteranceId: String, turnId: String)
     case row(RowFrame)
-    case pong(tNs: Int64?)
-    case error(String)
+    case pong(tNs: Int64, hostNs: Int64)
+    /// codes: bad_say, bad_ping, bad_frame, no_voice, retry (resend the same say), interrupt_failed
+    case error(code: String, message: String)
 
     var json: Data {                                    // the host's side; here for the round-trip check
         var o: [String: Any]
         switch self {
         case .ready(let d, let v, let r): o = ["type": "ready", "device": d, "voice": v, "sample_rate": r]
         case .said(let u, let t): o = ["type": "said", "utterance_id": u, "turn_id": t]
-        case .row(let r): o = r.json; o["type"] = "row"
-        case .pong(let t): o = ["type": "pong"]; if let t { o["t_ns"] = t }
-        case .error(let m): o = ["type": "error", "message": m]
+        case .row(let r): o = ["type": "row", "event_type": r.eventType, "event_uid": r.eventUid, "payload": r.payload, "ts_epoch_ms": r.tsEpochMs]
+        case .pong(let t, let h): o = ["type": "pong", "t_ns": t, "host_ns": h]
+        case .error(let c, let m): o = ["type": "error", "code": c, "message": m]
         }
         return (try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys])) ?? Data()
     }
 
     init?(_ data: Data) {
-        guard var o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let type = o["type"] as? String else { return nil }
+        guard let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let type = o["type"] as? String else { return nil }
         switch type {
         case "ready":
-            guard let d = o["device"] as? String, let v = o["voice"] as? String, let r = (o["sample_rate"] as? NSNumber)?.intValue else { return nil }
+            guard let d = o["device"] as? String, let v = o["voice"] as? Bool, let r = (o["sample_rate"] as? NSNumber)?.intValue else { return nil }
             self = .ready(device: d, voice: v, sampleRate: r)
         case "said":
             guard let u = o["utterance_id"] as? String, let t = o["turn_id"] as? String else { return nil }
             self = .said(utteranceId: u, turnId: t)
-        case "row": o["type"] = nil; self = .row(RowFrame(json: o))
-        case "pong": self = .pong(tNs: (o["t_ns"] as? NSNumber)?.int64Value)
-        case "error": self = .error(o["message"] as? String ?? "error")
+        case "row":
+            guard let t = o["event_type"] as? String, let u = o["event_uid"] as? String, let p = o["payload"] as? [String: Any],
+                  let ts = (o["ts_epoch_ms"] as? NSNumber)?.int64Value else { return nil }
+            self = .row(RowFrame(eventType: t, eventUid: u, payload: p, tsEpochMs: ts))
+        case "pong":
+            guard let t = (o["t_ns"] as? NSNumber)?.int64Value, let h = (o["host_ns"] as? NSNumber)?.int64Value else { return nil }
+            self = .pong(tNs: t, hostNs: h)
+        case "error": self = .error(code: o["code"] as? String ?? "", message: o["message"] as? String ?? "error")
         default: return nil
         }
     }
@@ -237,11 +247,14 @@ func demoVoiceWire() {
     for f in outs { assert(PlayerOut(f.bytes) == f, "\(f)") }
     assert([UInt8](PlayerOut.discardAck(1).bytes) == [0x84, 1, 0, 0, 0, 0, 0, 0, 0])
     assert(PlayerIn(Data([6, 1, 2])) == nil && PlayerIn(Data()) == nil && PlayerOut(Data([0x82, 1])) == nil)
-    let phone: [PhoneFrame] = [.hello, .say(utteranceId: "u1", text: "你好 Jarvis", language: "zh", spoken: true),
-                               .say(utteranceId: "u2", text: "hi", language: nil, spoken: false), .barge, .cancel, .ping(tNs: 1_234_567_890_123)]
+    let phone: [PhoneFrame] = [.hello, .say(utteranceId: "u1", text: "你好 Jarvis", language: "zh", confidence: 0.93, spoken: true),
+                               .say(utteranceId: "u2", text: "hi", language: nil, confidence: nil, spoken: false), .barge, .cancel, .ping(tNs: 1_234_567_890_123)]
     for f in phone { assert(PhoneFrame(f.json) == f, "\(f)") }
-    let host: [HostFrame] = [.ready(device: "mac", voice: "ember", sampleRate: 32_000), .said(utteranceId: "u1", turnId: "t9"),
-                             .row(RowFrame(json: ["turn_id": "t9", "role": "assistant", "text": "好的"])), .pong(tNs: 5), .pong(tNs: nil), .error("nope")]
+    let row = RowFrame(eventType: "surface.response_chunk", eventUid: String(repeating: "a", count: 32),
+                       payload: ["turn_id": "T1", "text": "好的", "sequence": 2, "phase": "final"], tsEpochMs: 1_700_000_000_000)
+    assert(row.turnId == "T1" && row.text == "好的" && row.phase == "final")
+    let host: [HostFrame] = [.ready(device: "phone", voice: true, sampleRate: 32_000), .ready(device: "phone", voice: false, sampleRate: 32_000),
+                             .said(utteranceId: "u1", turnId: "T1"), .row(row), .pong(tNs: 5, hostNs: 9), .error(code: "retry", message: "again")]
     for f in host { assert(HostFrame(f.json) == f, "\(f)") }
 }
 #endif

@@ -9,6 +9,40 @@ demoVoiceWire()
 demoPlayerCore()
 print("asserts ok (command table, pick rule, wake word, frame codecs, PCM16 layout, player render)")
 
+// Cross-language check (host_codec_check.py): `voice_harness xlang DIR` decodes the frames the host's own code wrote into DIR and writes ours back for it.
+func xlang(_ dir: URL) {
+    func bin(_ n: String) -> Data { try! Data(contentsOf: dir.appendingPathComponent(n + ".bin")) }
+    func text(_ n: String) -> HostFrame { HostFrame(try! Data(contentsOf: dir.appendingPathComponent(n + ".json")))! }
+    assert(PlayerIn(bin("active_7")) == .active(7) && PlayerIn(bin("active_none")) == .active(-1) && PlayerIn(bin("discard")) == .discard(1))
+    assert(PlayerIn(bin("gain")) == .gain(target: 0.25, ramp: 1920) && PlayerIn(bin("hold")) == .hold(-1))
+    assert(PlayerIn(bin("pcm")) == .pcm(generation: 5, start: 96_000, samples: [0, 1, -1, 16384, -32768, 1234]), "\(String(describing: PlayerIn(bin("pcm"))))")
+    assert(text("ready_voice") == .ready(device: "phone", voice: true, sampleRate: 32_000) && text("ready_text") == .ready(device: "phone", voice: false, sampleRate: 32_000))
+    assert(text("said") == .said(utteranceId: "u1", turnId: "Tu1"))
+    guard case .row(let row) = text("row") else { fatalError("row") }
+    assert(row.eventType == "surface.response_chunk" && row.eventUid == String(repeating: "a", count: 32) && row.tsEpochMs == 1_700_000_000_000)
+    assert(row.turnId == "T1" && row.text == "好的" && row.phase == "final" && row.payload["sequence"] as? Int == 0, "\(row)")
+    guard case .pong(let t, let host) = text("pong") else { fatalError("pong") }
+    assert(t == 1234 && host > 0)
+    guard case .error("bad_say", _) = text("error_bad_say"), case .error("bad_ping", _) = text("error_bad_ping"), case .error("retry", _) = text("error_retry") else { fatalError("error") }
+    func put(_ n: String, _ d: Data) { try! d.write(to: dir.appendingPathComponent(n)) }
+    put("swift_hello.json", PhoneFrame.hello.json)
+    put("swift_say_spoken.json", PhoneFrame.say(utteranceId: "u1", text: "你好 Jarvis", language: "zh", confidence: 0.93, spoken: true).json)
+    put("swift_say_typed.json", PhoneFrame.say(utteranceId: "u2", text: "hi", language: nil, confidence: nil, spoken: false).json)
+    put("swift_ping.json", PhoneFrame.ping(tNs: 1_234_567_890_123).json)
+    put("swift_barge.json", PhoneFrame.barge.json)
+    put("swift_cancel.json", PhoneFrame.cancel.json)
+    // READY through the player's own builder: the source rate, not the hardware's
+    let core = PlayerCore(sampleRate: 48_000)
+    core.deviceLatencyNs = 20_000_000
+    put("swift_ready.bin", core.readyFrame(bufferFrames: 512).bytes)
+    put("swift_report.bin", PlayerOut.report(PlayerReport(generation: 9, start: 100, end: 740, audibility: 1, callbackNs: 55, presentationDelayNs: 66, first: true)).bytes)
+    put("swift_report_none.bin", PlayerOut.report(PlayerReport(generation: -1, start: 0, end: 0, audibility: 3, callbackNs: 0, presentationDelayNs: 0, first: false)).bytes)
+    put("swift_status.bin", PlayerOut.status(PlayerStatus(readIdx: 77, gain: 0.5, callbacks: 3, overloads: 2, starvationGaps: 1, tailRampSamples: 128, playedSamples: 99)).bytes)
+    put("swift_discard_ack.bin", PlayerOut.discardAck((1 << 40) + 3).bytes)
+    print("host frames decoded by Swift: ACTIVE x2, DISCARD, GAIN, HOLD, PCM16, ready x2, said, row, pong, error x3")
+}
+if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "xlang" { xlang(URL(fileURLWithPath: CommandLine.arguments[2])); exit(0) }
+
 // The stub host end to end: say -> row + synthesized audio frames -> the player renders them and reports every sample played.
 @MainActor func stubLoop() async throws {
     let link = LocalStubLink()
@@ -21,12 +55,14 @@ print("asserts ok (command table, pick rule, wake word, frame codecs, PCM16 layo
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
     }
-    var row: String?, total = 0, frames = 0, loud = false
-    let turn = try await link.say(utteranceId: "u1", text: "你好 Jarvis", language: .zh, spoken: true)
+    var rowTypes: [String] = [], rowText = "", rowTurns = Set<String>(), total = 0, frames = 0, loud = false
+    let turn = try await link.say(utteranceId: "u1", text: "你好 Jarvis", language: .zh, confidence: 0.9, spoken: true)
     let reader = Task { @MainActor in
         for await e in link.events {
             switch e {
-            case .row(let r): row = r.text
+            case .row(let r):
+                rowTypes.append(r.eventType); rowTurns.insert(r.turnId ?? "")
+                if r.eventType == "surface.response_chunk" { rowText += r.text ?? "" }
             case .audio(let f):
                 core.ingest(f)
                 if case .pcm(_, _, let x) = f { total += x.count; frames += 1 }
@@ -42,7 +78,8 @@ print("asserts ok (command table, pick rule, wake word, frame codecs, PCM16 layo
         for case .report(let r) in core.drain() { reports.append(r); lastNew = Date(); loud = loud || core.level > 0.001 }
     }
     reader.cancel(); render.cancel()
-    assert(turn == "stub-1" && row == "还没连上大脑。你刚才说的是：你好 Jarvis", "\(String(describing: row))")
+    assert(turn == "stub-1" && rowText == "还没连上大脑。你刚才说的是：你好 Jarvis" && rowTurns == [turn], "\(rowText) \(rowTurns)")
+    assert(rowTypes == ["surface.response_open", "surface.response_chunk", "surface.response_chunk", "surface.response_emitted"], "\(rowTypes)")
     assert(total > 32_000, "synthesized speech is longer than a second: \(total) samples")
     assert(reports.last?.end == Int64(total), "every source sample is reported played: \(String(describing: reports.last?.end)) of \(total)")
     assert(loud && reports.first?.first == true)

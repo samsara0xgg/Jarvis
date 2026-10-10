@@ -1,34 +1,62 @@
 import AVFoundation
 
-/// A host that is only this phone: it echoes what he said, in text and in AVSpeechSynthesizer's voice, through the same player frames the
-/// real host sends, so listening, picking, saying, the row, the audio and the reports all run without a pairing.
+/// A host that is only this phone: it echoes what he said, in text rows and (for spoken says) in AVSpeechSynthesizer's voice through the same player
+/// frames the real host sends, so listening, picking, saying, the rows, the audio and the reports all run without a pairing. The rows have the real
+/// host's shapes: response_open, response_chunk*, response_emitted (response.cancelled when he cuts in), all carrying payload.turn_id.
 @MainActor
 final class LocalStubLink: VoiceLink {
     let events: AsyncStream<LinkEvent>
     private let out: AsyncStream<LinkEvent>.Continuation
     private var turns = 0
+    private var openTurn: String?
     private var generation: Int64 = 0
     private var discardSeq: UInt64 = 0
     private var speaking: Task<Void, Never>?
 
     init() { (events, out) = AsyncStream.makeStream(of: LinkEvent.self) }
 
-    func connect() { out.yield(.ready(device: "phone", voice: "AVSpeechSynthesizer", sampleRate: kWireRate)) }
+    func connect() { out.yield(.ready(device: "phone", voice: true, sampleRate: kWireRate)) }
     func disconnect() { stopSpeaking() }
-    func barge() { stopSpeaking() }
-    func cancel() { stopSpeaking() }
+    func barge() { stopSpeaking(); cancelOpen("barge_in") }
+    func cancel() { stopSpeaking(); cancelOpen("user_stop") }
     func send(_ frames: [PlayerOut]) {}
 
-    func say(utteranceId: String, text: String, language: VoiceLang?, spoken: Bool) async throws -> String {
+    func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool) async throws -> String {
         turns += 1
         let turn = "stub-\(turns)"
-        let reply = "还没连上大脑。你刚才说的是：\(text)"
-        out.yield(.row(RowFrame(json: ["turn_id": turn, "role": "assistant", "text": reply])))
-        if spoken {
-            let zh = language.map { $0 == .zh } ?? text.unicodeScalars.contains { $0.value >= 0x2E80 }
-            speaking = Task { await speak(zh ? reply : "Not connected to the brain yet. You said: \(text)", zh: zh) }
+        let zh = language.map { $0 == .zh } ?? text.unicodeScalars.contains { $0.value >= 0x2E80 }
+        let lead = zh ? "还没连上大脑。" : "Not connected to the brain yet. "
+        let body = zh ? "你刚才说的是：\(text)" : "You said: \(text)"
+        openTurn = turn
+        // like the host: `said` first, the rows after it
+        Task {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard openTurn == turn else { return }
+            row("surface.response_open", ["turn_id": turn, "query": text, "kind": "answer"])
+            row("surface.response_chunk", ["turn_id": turn, "text": lead, "sequence": 0, "phase": "final"])
+            row("surface.response_chunk", ["turn_id": turn, "text": body, "sequence": 1, "phase": "final"])
+            emitted(turn, lead + body)
+            if spoken { speaking = Task { await speak(lead + body, zh: zh) } }
         }
         return turn
+    }
+
+    private func row(_ type: String, _ payload: [String: Any]) {
+        out.yield(.row(RowFrame(eventType: type, eventUid: UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased(),
+                                payload: payload, tsEpochMs: Int64(Date().timeIntervalSince1970 * 1000))))
+    }
+
+    /// The real host writes `surface.response_emitted` when the answer's text is done, which for speech is before the audio has played.
+    private func emitted(_ turn: String, _ text: String) {
+        guard openTurn == turn else { return }
+        openTurn = nil
+        row("surface.response_emitted", ["turn_id": turn, "text": text, "phase": "final"])
+    }
+
+    private func cancelOpen(_ reason: String) {
+        guard let turn = openTurn else { return }
+        openTurn = nil
+        row("response.cancelled", ["turn_id": turn, "response_id": "stub", "response_group_id": "stub", "reason": reason])
     }
 
     private func stopSpeaking() {

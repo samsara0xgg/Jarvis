@@ -3,25 +3,28 @@ import Foundation
 // The phone's line to the host. The session talks to a VoiceLink; which one is behind it is decided by whether a pairing exists.
 
 enum LinkEvent: Sendable {
-    case ready(device: String, voice: String, sampleRate: Int)
+    case ready(device: String, voice: Bool, sampleRate: Int)
     case row(RowFrame)
     /// a frame for the player (from the host's binary messages)
     case audio(PlayerIn)
-    case error(String)
-    /// the host refused the token; nothing is retried until the phone is paired again
+    /// an `error` frame the link does not handle itself (bad_ping, bad_frame, no_voice, interrupt_failed)
+    case error(code: String, message: String)
+    /// the host refused the token (HTTP 403 on upgrade); nothing is retried until the phone is paired again
     case unpaired
-    case pong(Int64?)
+    /// a newer connection of this device took over (close code 4000); not reconnected
+    case replaced
     /// the connection dropped; it is being retried
     case closed
 }
 
 enum LinkError: Error, LocalizedError {
-    case notConnected, timeout, unpaired
+    case notConnected, timeout, unpaired, host(String)
     var errorDescription: String? {
         switch self {
         case .notConnected: return "没有连上 Jarvis"
         case .timeout: return "Jarvis 没有回应"
         case .unpaired: return "还没有配对"
+        case .host(let m): return m
         }
     }
 }
@@ -32,17 +35,19 @@ protocol VoiceLink: AnyObject {
     func connect()
     func disconnect()
     /// The turn id the host gives this utterance.
-    func say(utteranceId: String, text: String, language: VoiceLang?, spoken: Bool) async throws -> String
+    func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool) async throws -> String
     func barge()
     func cancel()
     /// what the player reports back (READY, REPORT, STATUS, DISCARD_ACK)
     func send(_ frames: [PlayerOut])
 }
 
-/// One URLSessionWebSocketTask to the host. Reconnects after 1 s, doubling to 30 s; a 401 or 403 is "unpaired" and stops.
+/// One URLSessionWebSocketTask to /phone/ws on the host. Reconnects after 1 s, doubling to 30 s; HTTP 403 on upgrade is "unpaired" and close code 4000
+/// is "replaced by a newer connection of this device"; neither is retried.
 @MainActor
 final class WebSocketVoiceLink: VoiceLink {
-    static let path = "/phone/ws"      // TODO(ADR 0209): confirm path
+    static let path = "/phone/ws"
+    static let pingEvery: UInt64 = 3_000_000_000
 
     let events: AsyncStream<LinkEvent>
     private let out: AsyncStream<LinkEvent>.Continuation
@@ -52,7 +57,7 @@ final class WebSocketVoiceLink: VoiceLink {
     private var wanted = false
     private var backoff = 1.0
     private var generation = 0                       // which connection a late callback belongs to
-    private var pending: [String: CheckedContinuation<String, Error>] = [:]
+    private var pending: [String: (c: CheckedContinuation<String, Error>, frame: PhoneFrame)] = [:]
     private var pingTask: Task<Void, Never>?
 
     init(endpoint: @escaping () -> (base: URL, token: String)?) {
@@ -83,12 +88,12 @@ final class WebSocketVoiceLink: VoiceLink {
         generation += 1
         let mine = generation
         t.resume()
-        sendText(.hello)
+        sendText(.hello)                                  // the first frame, well inside the host's 5 s
         Task { await receive(t, mine) }
-        pingTask = Task { [weak self] in
+        pingTask = Task { [weak self] in                  // the host maps our clock to its own from these
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 20_000_000_000)
                 self?.sendText(.ping(tNs: uptimeNs()))
+                try? await Task.sleep(nanoseconds: Self.pingEvery)
             }
         }
     }
@@ -98,7 +103,7 @@ final class WebSocketVoiceLink: VoiceLink {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         generation += 1
-        for (_, c) in pending { c.resume(throwing: why) }
+        for (_, p) in pending { p.c.resume(throwing: why) }
         pending = [:]
     }
 
@@ -117,8 +122,10 @@ final class WebSocketVoiceLink: VoiceLink {
         } catch {
             guard mine == generation else { return }
             let status = (t.response as? HTTPURLResponse)?.statusCode
-            close(status == 401 || status == 403 ? .unpaired : .notConnected)
-            if status == 401 || status == 403 { wanted = false; out.yield(.unpaired); return }
+            let replaced = t.closeCode.rawValue == 4000
+            close(status == 403 ? .unpaired : .notConnected)
+            if status == 403 { wanted = false; out.yield(.unpaired); return }
+            if replaced { wanted = false; out.yield(.replaced); return }
             out.yield(.closed)
             guard wanted else { return }
             let wait = backoff
@@ -131,10 +138,19 @@ final class WebSocketVoiceLink: VoiceLink {
     private func handle(_ f: HostFrame) {
         switch f {
         case .ready(let d, let v, let r): out.yield(.ready(device: d, voice: v, sampleRate: r))
-        case .said(let u, let turn): pending.removeValue(forKey: u)?.resume(returning: turn)
+        case .said(let u, let turn): pending.removeValue(forKey: u)?.c.resume(returning: turn)
         case .row(let r): out.yield(.row(r))
-        case .pong(let t): out.yield(.pong(t))
-        case .error(let m): out.yield(.error(m))
+        case .pong: break
+        case .error("retry", _):                      // the host could not write it down: send the same say again
+            Task { [weak self, mine = generation] in
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard let self, mine == self.generation else { return }
+                for (_, p) in self.pending { self.sendText(p.frame) }
+            }
+        case .error("bad_say", let m):
+            for (_, p) in pending { p.c.resume(throwing: LinkError.host(m)) }
+            pending = [:]
+        case .error(let c, let m): out.yield(.error(code: c, message: m))
         }
     }
 
@@ -143,15 +159,16 @@ final class WebSocketVoiceLink: VoiceLink {
         task.send(.string(s)) { _ in }
     }
 
-    func say(utteranceId: String, text: String, language: VoiceLang?, spoken: Bool) async throws -> String {
+    func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool) async throws -> String {
         if task == nil { connect() }
         guard task != nil else { throw LinkError.notConnected }
+        let frame = PhoneFrame.say(utteranceId: utteranceId, text: text, language: language?.code, confidence: confidence, spoken: spoken)
         return try await withCheckedThrowingContinuation { c in
-            pending[utteranceId] = c
-            sendText(.say(utteranceId: utteranceId, text: text, language: language?.code, spoken: spoken))
+            pending[utteranceId] = (c, frame)
+            sendText(frame)
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
-                self?.pending.removeValue(forKey: utteranceId)?.resume(throwing: LinkError.timeout)
+                self?.pending.removeValue(forKey: utteranceId)?.c.resume(throwing: LinkError.timeout)
             }
         }
     }

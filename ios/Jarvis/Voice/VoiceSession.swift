@@ -9,6 +9,7 @@ import UIKit
 ///     VoiceSession.shared.start()   // tap to talk (while she talks: interrupt her and listen)
 ///     VoiceSession.shared.stop()    // tap again: the utterance ends now (while she talks: cancel)
 ///     VoiceSession.shared.cancel()  // drop everything
+///     VoiceSession.shared.sendTyped("...")  // typed words: her answer comes back in `reply` as text only, no audio
 ///
 /// Read `state`, `partial` (live words), `transcript` (what was said), `reply` (her words so far), `inputLevel` / `outputLevel` (0...1),
 /// `language`, `errorText`, `modelProgress` (0...1 while the language models download on first use). Set `endpoint` once the pairing exists;
@@ -46,8 +47,9 @@ final class VoiceSession {
     private let utteranceCap = 30.0
     private let quiet = 0.3            // input level below this is quiet
     private let bargeLevel = 0.12      // words heard while she talks only count as him when the mic is at least this loud
-    private let replyDry = 1.5         // her ring empty and nothing new this long: she is done
-    private let noReply = 30.0
+    private let audioGrace = 1.0       // her text is done and her ring has been empty this long: her audio is done too (the host sends no end-of-audio row)
+    private let noAudioAfterText = 6.0 // her text is done and no audio ever came this long after: the host did not speak it
+    private let noReply = 30.0         // nothing from the host (no row, no audio) this long: she did not answer
     private let wakeReset = 120.0      // an armed recognizer with no words is restarted this often
 
     // MARK: internals
@@ -70,10 +72,23 @@ final class VoiceSession {
     @ObservationIgnored private var lastWordAt = 0.0
     @ObservationIgnored private var wakeTurn = false
     @ObservationIgnored private var sayAt = 0.0
-    @ObservationIgnored private var lastRowAt = 0.0
+    @ObservationIgnored private var lastActivityAt = 0.0
     @ObservationIgnored private var playedAtSay: UInt64 = 0
-    @ObservationIgnored private var replyStarted = false
-    @ObservationIgnored private var currentTurn: String?
+    // the turn being answered
+    @ObservationIgnored private var turnSeq = 0                     // bumped whenever a turn starts or ends; late results of an older one are dropped
+    @ObservationIgnored private var currentTurn: String?            // the host's turn_id, from `said`
+    @ObservationIgnored private var awaitingSaid = false
+    @ObservationIgnored private var heldRows: [RowFrame] = []       // rows that beat `said`
+    @ObservationIgnored private var typedTurn = false
+    @ObservationIgnored private var finalText = ""
+    @ObservationIgnored private var commentary = ""
+    @ObservationIgnored private var waitLines = Set<String>()       // response ids of commentary runs: their cancel is not the turn's
+    @ObservationIgnored private var rowsDone = false                // surface.response_emitted of the answer arrived
+    @ObservationIgnored private var rowsDoneAt = 0.0
+    @ObservationIgnored private var audioStarted = false
+    // the host's side of this connection
+    @ObservationIgnored private var hostVoice = true
+    @ObservationIgnored private var readySent = false
     @ObservationIgnored private var commandSaid: VoiceCommand?
     @ObservationIgnored private let log = Logger(subsystem: "com.allen.jarvis", category: "voice")
 
@@ -136,6 +151,26 @@ final class VoiceSession {
         goIdle(releasing: false)
     }
 
+    /// Typed words from the composer: sent the way spoken ones are, answered in `reply` as text only. Whatever she was doing is dropped first.
+    func sendTyped(_ text: String) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        cancel()
+        errorText = nil
+        transcript = text
+        partial = ""
+        commandSaid = nil
+        set(.thinking)
+        say(text, lang: nil, confidence: nil, spoken: false)
+        let seq = turnSeq
+        Task {                                                      // no tick runs without the microphone, so this turn times itself
+            while seq == turnSeq, state == .thinking, !rowsDone {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if now - lastActivityAt >= noReply { fail("Jarvis 没有回应"); return }
+            }
+        }
+    }
+
     // MARK: getting ready
 
     /// Microphone, models, audio engine. False (with `errorText`) if any of them is not there.
@@ -156,6 +191,7 @@ final class VoiceSession {
         }
         do {
             try audio.start()
+            sendReady()
             if tickTask == nil { tickTask = Task { while !Task.isCancelled { tick(); try? await Task.sleep(nanoseconds: 33_000_000) } } }
         } catch { errorText = "打不开麦克风：\(error.localizedDescription)"; return false }
         return true
@@ -245,7 +281,7 @@ final class VoiceSession {
     private func bargeIn() {
         audio.core?.stopNow()
         link?.barge()
-        currentTurn = nil
+        endTurn()
         wakeTurn = false
         enterListening()
         if #available(iOS 26, *), rec == nil { startSegment() }
@@ -278,27 +314,56 @@ final class VoiceSession {
         language = picked.lang
         transcript = text
         partial = ""
-        reply = ""
-        replyStarted = false
-        lastRowAt = 0
         commandSaid = shortCommand(text)
         if commandSaid == .stop || commandSaid == .wait { audio.core?.stopNow(); link?.cancel() }
         playedAtSay = audio.core?.playedSamples ?? 0
-        sayAt = now
-        ensureLink()
+        say(text, lang: picked.lang, confidence: picked.confidence, spoken: true)
         startSegment()                                      // listening for him to interrupt
-        let lang = picked.lang
+    }
+
+    /// Send the words and start following the turn the host opens for them.
+    private func say(_ text: String, lang: VoiceLang?, confidence: Double?, spoken: Bool) {
+        endTurn()
+        awaitingSaid = true
+        typedTurn = !spoken
+        reply = ""
+        sayAt = now
+        lastActivityAt = now
+        ensureLink()
+        let seq = turnSeq
         Task {
             do {
-                currentTurn = try await link?.say(utteranceId: UUID().uuidString, text: text, language: lang, spoken: true)
-            } catch { fail(error.localizedDescription) }
+                guard let link else { return }
+                let turn = try await link.say(utteranceId: UUID().uuidString, text: text, language: lang, confidence: confidence, spoken: spoken)
+                guard seq == turnSeq else { return }
+                awaitingSaid = false
+                currentTurn = turn
+                let held = heldRows
+                heldRows = []
+                for r in held { handleRow(r) }
+            } catch {
+                if seq == turnSeq { fail(error.localizedDescription) }
+            }
         }
     }
 
-    private func replyFinished() {
-        if commandSaid == .stop || commandSaid == .wait || commandSaid == .goodnight { goIdle(releasing: false); return }
-        // a short window to answer without tapping; its own silence timer ends it
+    /// Nothing of the turn in flight is kept; a late `said` or row of it is dropped.
+    private func endTurn() {
+        turnSeq += 1
         currentTurn = nil
+        awaitingSaid = false
+        heldRows = []
+        typedTurn = false
+        finalText = ""; commentary = ""
+        waitLines = []
+        rowsDone = false
+        audioStarted = false
+    }
+
+    private func replyFinished() {
+        if typedTurn || commandSaid == .stop || commandSaid == .wait || commandSaid == .goodnight { goIdle(releasing: false); return }
+        // a short window to answer without tapping; its own silence timer ends it
+        endTurn()
         enterListening()
         if #available(iOS 26, *) { startSegment() }
     }
@@ -312,7 +377,7 @@ final class VoiceSession {
         audio.core?.stopNow()
         set(.idle)
         wakeTurn = false
-        currentTurn = nil
+        endTurn()
         dropSegment()
         if releasing { release() } else { refreshArming() }
     }
@@ -327,20 +392,60 @@ final class VoiceSession {
 
     private func handle(_ e: LinkEvent) {
         switch e {
-        case .ready:
-            if let core = audio.core { link?.send([core.readyFrame(bufferFrames: audio.bufferFrames)]) }
-        case .row(let r):
-            guard r.role == nil || r.role == "assistant", let t = r.text,
-                  currentTurn == nil || r.turnId == nil || r.turnId == currentTurn, state == .thinking || state == .speaking else { return }
-            reply += t
-            lastRowAt = now
-            replyStarted = true
+        case .ready(_, let voice, _):
+            hostVoice = voice
+            readySent = false
+            sendReady()
+        case .row(let r): handleRow(r)
         case .audio(let f):
             audio.core?.ingest(f)
-            if case .pcm = f { replyStarted = true }
-        case .error(let m): errorText = m
+            if case .pcm = f, currentTurn != nil || awaitingSaid { audioStarted = true; lastActivityAt = now }
+        case .error(_, let m): errorText = m
         case .unpaired: fail("还没有和 Jarvis 配对")
-        case .pong, .closed: break
+        case .replaced: fail("Jarvis 在这台手机的另一条连接上被接管了")
+        case .closed:
+            readySent = false
+            if state == .thinking || state == .speaking { fail("和 Jarvis 的连接断了") }
+        }
+    }
+
+    /// The player's READY, once per connection and only for a host that speaks: our audio session must be up. Its rate is the wire's 32 kHz.
+    private func sendReady() {
+        guard hostVoice, !readySent, let link, let core = audio.core else { return }
+        link.send([core.readyFrame(bufferFrames: audio.bufferFrames)])
+        readySent = true
+    }
+
+    /// One row of this device's turns. `reply` is her words so far; the answer's `response_emitted` ends the text, the audio is judged in `tick`.
+    private func handleRow(_ r: RowFrame) {
+        guard state == .thinking || state == .speaking else { return }
+        guard let current = currentTurn else {
+            if awaitingSaid { heldRows.append(r) }
+            return
+        }
+        guard r.turnId == current else { return }
+        lastActivityAt = now
+        let isLine = r.phase == "commentary"
+        switch r.eventType {
+        case "surface.response_open":
+            if isLine, let id = r.payload["response_id"] as? String { waitLines.insert(id) }
+        case "surface.response_chunk":
+            guard let t = r.text else { return }
+            if isLine { commentary += t } else { finalText += t }
+            reply = finalText.isEmpty ? commentary : finalText
+        case "surface.response_emitted":
+            guard !isLine else { return }
+            if finalText.isEmpty, let t = r.text { finalText = t; reply = t }     // a turn that was not streamed has only this row
+            rowsDone = true
+            rowsDoneAt = now
+            if typedTurn || !hostVoice { replyFinished() }
+        case "response.cancelled":
+            if let id = r.payload["response_id"] as? String, waitLines.contains(id) { return }
+            goIdle(releasing: false)
+        case "response.failed":
+            if let id = r.payload["response_id"] as? String, waitLines.contains(id) { return }
+            fail("Jarvis 没答出来" + (r.reason.map { "：\($0)" } ?? ""))
+        default: break
         }
     }
 
@@ -357,12 +462,14 @@ final class VoiceSession {
             else if segmentText.isEmpty, age > noSpeech { goIdle(releasing: false) }
             else if age > utteranceCap { endUtterance() }
         case .thinking, .speaking:
-            guard let core = audio.core else { return }
+            guard let core = audio.core, !typedTurn else { return }
             if state == .thinking, core.playedSamples > playedAtSay + 480 { set(.speaking) }
+            if !core.ringEmpty { lastActivityAt = t }
             let quietAfter = commandSaid == .stop || commandSaid == .wait || commandSaid == .goodnight
-            if replyStarted {
-                if core.ringEmpty, t - max(Double(core.lastAudioNs) / 1e9, lastRowAt) > replyDry { replyFinished() }
-            } else if t - sayAt > (quietAfter ? 3 : noReply) {
+            if rowsDone {
+                let played = audioStarted && core.lastAudioNs > 0
+                if core.ringEmpty, played ? t - Double(core.lastAudioNs) / 1e9 > audioGrace : t - rowsDoneAt > noAudioAfterText { replyFinished() }
+            } else if t - lastActivityAt > (quietAfter ? 3 : noReply) {
                 if quietAfter { goIdle(releasing: false) } else { fail("Jarvis 没有回应") }
             }
         case .idle:

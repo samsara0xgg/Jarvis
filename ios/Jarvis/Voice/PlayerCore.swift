@@ -467,8 +467,9 @@ final class PlayerCore: @unchecked Sendable {
         return frames
     }
 
+    /// READY names the rate the host sends at (32 kHz); resampling to the hardware rate is this side's own business.
     func readyFrame(bufferFrames: Int) -> PlayerOut {
-        .ready(sampleRate: UInt32(sampleRate), bufferFrames: UInt32(bufferFrames), deviceLatencyNs: deviceLatencyNs, clockNs: uptimeNs())
+        .ready(sampleRate: UInt32(kWireRate), bufferFrames: UInt32(bufferFrames), deviceLatencyNs: deviceLatencyNs, clockNs: uptimeNs())
     }
 }
 
