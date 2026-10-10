@@ -236,7 +236,7 @@ let STARS: [SkyStar] = {
         out.append(SkyStar(x: x, y: y, R: R, a: atan2(y, x), b: pow(r.next(), 3.6), t: r.next()))
     }
     out.sort { $0.b > $1.b }
-    for i in out.indices { out[i].tw = i >= 4 && i < 26; out[i].trail = i < 160 }
+    for i in out.indices { out[i].tw = i >= 4 && i < 26; out[i].trail = i < 56 }
     return out
 }()
 func starRGB(_ s: SkyStar) -> RGB { s.t < 0.24 ? RGB(190, 208, 255) : s.t > 0.84 ? RGB(255, 226, 200) : RGB(232, 236, 255) }

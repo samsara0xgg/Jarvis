@@ -39,6 +39,7 @@ final class StarUI {
     var rows: [RowModel] = []
     var emptyHint: String?
     var rowsCalm = true
+    var detFast = false                 // the dial turns fast: the cards under it dim and hold still
     var rowsKey = 0                     // bumps when the list is rebuilt
     // the drawer of today's cards
     var drawerOpen = false

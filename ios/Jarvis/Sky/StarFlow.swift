@@ -97,7 +97,7 @@ extension StarEngine {
         try await Task.sleep(nanoseconds: UInt64(ms * 1_000_000))
         try ok.check()
     }
-    func seek(_ t: Double, _ slow: Bool = false) { goal = t; mode = .seek; stiff = slow ? 2.6 : 6 }
+    func seek(_ t: Double, _ slow: Bool = false) { goal = t; mode = .seek; stiff = slow ? 2.6 : 6; byHand = false }
     func setLevel(_ l0: Double) {
         wake()
         let l = clamp(l0.rounded(), -1, 2)
@@ -126,7 +126,7 @@ extension StarEngine {
         }
         let dist = T - F
         stiff = abs(dist) > 0.3 && (dist > 0) == (v > 0) && v != 0 ? clamp(abs(v / dist), 1.8, 9) : 6.5
-        goal = T; mode = .seek
+        goal = T; mode = .seek; byHand = true
     }
     private func two2() -> (Double, Double) {
         let v = Array(ptr.values), a = v[0], b = v[1]
@@ -160,7 +160,7 @@ extension StarEngine {
         } else if ptr.count == 2, let cur = g, cur.kind != .hold {
             cur.timer?.cancel(); lensGoal = 0
             let (d0, a0) = two2()
-            g = Gest(kind: .pinch, d0: d0, a0: a0, q0: qs.value, F0: fs.value); qHeld = true; pressed = false; mode = .drag
+            g = Gest(kind: .pinch, d0: d0, a0: a0, q0: qs.value, F0: fs.value); qHeld = true; pressed = false; mode = .drag; byHand = true
         }
     }
 
@@ -171,7 +171,7 @@ extension StarEngine {
         if cur.kind == .press && hypot(Double(p.x - cur.p0.x), Double(p.y - cur.p0.y)) > 7 {
             cur.timer?.cancel(); pressed = false
             if talk != nil || mon > 0.5 { cur.kind = .none; g = cur; return }
-            cur.kind = .drag; mode = .drag; fs.velocity = 0; cur.a = nil
+            cur.kind = .drag; mode = .drag; byHand = true; fs.velocity = 0; cur.a = nil
             if openId != nil { openId = nil; rowKey = "" }
         }
         if cur.kind == .lens { lensTh = atan2(Double(p.y) - CY, Double(p.x) - CX) }
@@ -192,6 +192,7 @@ extension StarEngine {
     }
 
     func pointerUp(_ id: Int, _ ts: Double, cancelled: Bool) {
+        wake()
         guard ptr[id] != nil else { return }
         ptr[id] = nil
         guard let cur = g else { return }
@@ -228,7 +229,7 @@ extension StarEngine {
     }
     func openDay(_ d: Int) {
         let today = floorDay(nowT())
-        fs.value = d == today ? nowT() : Double(d) * DAY + 720; fs.velocity = 0; goal = fs.value; mode = .idle
+        fs.value = d == today ? nowT() : Double(d) * DAY + 720; fs.velocity = 0; goal = fs.value; mode = .idle; byHand = false
         qGoal = 0; openId = nil; rowKey = ""; sound(.close, 1)
     }
     func nextTalk() -> Talk { defer { ti += 1 }; return talks[ti % talks.count] }
@@ -301,6 +302,9 @@ extension StarEngine {
     func updateDetail() {
         let v = q < 0.5 || lensT != nil ? "day" : q < 1.5 ? "week" : "month"
         if v != viewKey { viewKey = v; rowKey = ""; ui.flip += 1; ui.view = v }
+        // turning fast, the cards under the dial hold still and dim, and catch up once it slows enough to read; the time above them keeps up
+        let fast = abs(omegaS) > 1.2 && lensT == nil && v != "month", hold = fast && rowKey != ""
+        if fast != detFast { detFast = fast; ui.detFast = fast }
         let nT = nowT(), d = floorDay(F), today = floorDay(nT)
         if v == "month" {
             put(\.hm, "十月"); put(\.tagText, nil); put(\.dayText, "2026 · 第 \(8 + today) 天")
@@ -323,7 +327,7 @@ extension StarEngine {
             let now = nowMs()
             for e in EV where floorDay(e.t) == d && e.born <= now { n[e.st]! += 1 }
             let key = "w\(d)\(n[.done]!),\(n[.work]!),\(n[.wait]!),\(n[.next]!)"
-            if key != rowKey {
+            if key != rowKey && !hold {
                 rowKey = key; ui.showSum = true
                 ui.sumMain = SUM[d] ?? ""
                 ui.sumStat = d <= today ? statLine(d) : nil
@@ -343,7 +347,7 @@ extension StarEngine {
         var list = lensT != nil ? focusSet(T, win: 26 * z / lensM) : focusSet()
         if let oid = openId, let o = byId(oid), lensT == nil { list = [o] }
         let key = list.map { "\($0.id)\($0.st.rawValue)\($0.t > Trev ? "a" : "")" }.joined(separator: ",") + "|" + (openId ?? "")
-        if key != rowKey {
+        if key != rowKey && !hold {
             rowKey = key
             put(\.rowsCalm, abs(omegaS) < 0.08 && mode != .drag && lensT == nil)
             ui.rows = list.map(rowModel); ui.emptyHint = list.isEmpty ? nextHint(T) : nil; ui.rowsKey += 1
@@ -356,7 +360,7 @@ extension StarEngine {
         wake()
         if on != drawer && !quiet { sound(on ? .open : .close, 0.7) }
         if on && !drawer { drKey = "" }
-        drawer = on; ui.drawerOpen = on
+        drawer = on; ui.drawerOpen = on; drawerSince = nowMs()
         if on { updateDrawer() }
     }
     func updateDrawer() {
@@ -412,7 +416,7 @@ extension StarEngine {
     func replayFlow(_ ok: Ok, _ sc: Talk) async throws {
         expr = "37"; qGoal = 0; openId = nil
         let a = 10.0, b = nowT(), dur2 = 10500.0, t1 = nowMs()
-        mode = .script; replay = true; script = a; prevRev = a
+        mode = .script; byHand = false; replay = true; script = a; prevRev = a
         let say = Say(sc.a, cps: 5.6, delay: 500); speaking = say
         do {
             while true {
@@ -481,12 +485,15 @@ extension StarEngine {
         if let sc = script { fs.value = sc; fs.velocity = 0 }
         else if mode == .seek {
             crit(&fs, goal, stiff, dt)
-            if abs(fs.value - goal) < 0.02 && abs(fs.velocity) < 0.5 { fs.value = goal; fs.velocity = 0; mode = .idle }
+            // it comes to rest once what is left of the turn is under a twentieth of a pixel on the bezel
+            let pxm = k * R_BEZ * (cam != nil ? 3 : 1)
+            if abs(fs.value - goal) * pxm < 0.05 && abs(fs.velocity) * pxm < 1.5 { fs.value = goal; fs.velocity = 0; mode = .idle }
         }
         F = fs.value
         let dF = F - prevF; prevF = F
         sky -= dF * k; omega = dt > 0 ? -dF * k / dt : 0
         omegaS += (omega - omegaS) * (1 - exp(-dt / 0.07))
+        hand += ((byHand && mode != .idle ? 1 : 0) - hand) * (1 - exp(-dt / 0.12))
         Trev = replay && script != nil ? script! : nowT()
         // a star lights when its time comes; what crosses the meridian clicks; the hours tock
         if Trev > prevRev {
@@ -501,7 +508,8 @@ extension StarEngine {
             for e in EV where e.on && e.v > 0.3 && sgn(e.t - lt) != sgn(e.t - pl) { e.flash = now; if now - lastTick > 55 { sound(.tick, 0.6); lastTick = now } }
         }
         prevLensT = lensT
-        if abs(dF) > 0.01 && !replay {
+        // under your finger, slow enough to read, what crosses the meridian glints and clicks; flung fast or sent by a button, it passes quietly
+        if abs(dF) > 0.01 && !replay && byHand && abs(omegaS) < 1.2 {
             for e in EV where e.on && e.v > 0.3 && sgn(e.t - F) != sgn(e.t - (F - dF)) { e.flash = now; if now - lastTick > 55 { sound(.tick, 0.7); lastTick = now } }
             let unit = z > 2.6 ? DAY : 60
             if floor(F / unit) != floor((F - dF) / unit) && now - lastTock > 80 && now - lastTick > 40 { sound(.tock, 0.5); lastTock = now }
@@ -510,8 +518,15 @@ extension StarEngine {
         let spin = abs(omegaS)
         let focusWait = talk == nil && q < 0.5 && focusSet().contains { $0.st == .wait }
         let said: Double? = speaking.map { $0.speaking ? voiceLevel(now / 1000) : 0 }
-        herDrive?.herUpdate(now: now, dt: dt, expr: expr ?? (spin > 0.9 ? "40" : q > 0.5 ? "deep" : focusWait ? "ask" : "02"),
-                            look: look ?? (spin > 0.2 ? (clamp(-omegaS * 0.5, -0.8, 0.8), 0.4) : nil), hear: hear, pressed: pressed, say: said)
+        // under a sheet she is updated on every sixth frame
+        herDt += dt; herN += 1
+        herFresh = herN >= (covered ? 6 : 1)
+        if herFresh {
+            herN = 0
+            herDrive?.herUpdate(now: now, dt: herDt, expr: expr ?? (q > 0.5 ? "deep" : focusWait ? "ask" : "02"),
+                                look: look ?? (spin > 0.2 ? (clamp(-omegaS * 0.5, -0.8, 0.8), 0.4) : nil), hear: hear, pressed: pressed, say: said)
+            herDt = 0
+        }
         // close up the middle of the ring is out of sight, so she rises into the empty sky at the upper right, a small sun you can still touch
         herP = cam != nil ? (lerp(CX, 372, camE), lerp(CY, 132, camE), lerp(1, 0.42, camE)) : (CX, CY, 1)
         baseOff = cam != nil || lensM > 1.002           // close up or under the lens, the fixed rings are drawn with everything else

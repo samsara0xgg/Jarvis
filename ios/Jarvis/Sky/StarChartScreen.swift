@@ -132,9 +132,10 @@ struct StarChrome: View {
             Group {
                 if ui.showSum { sum } else { rowList(ui.rows, hint: ui.emptyHint) }
             }
-            .opacity(ui.talking || ui.typing ? 0 : 1).offset(y: ui.talking || ui.typing ? 8 : 0)
+            .opacity(ui.talking || ui.typing ? 0 : ui.detFast ? 0.4 : 1).offset(y: ui.talking || ui.typing ? 8 : 0)
             .allowsHitTesting(!(ui.talking || ui.typing))
             .animation(.easeOut(duration: 0.35), value: ui.talking || ui.typing)
+            .animation(.easeOut(duration: ui.detFast ? 0.2 : 0.35), value: ui.detFast)
         }
         .padding(.horizontal, 30)
         .frame(width: W, alignment: .topLeading)

@@ -26,6 +26,8 @@ final class StarStage: UIView, HerDrive {
     private var cells: [CALayer] = [], heads: [CALayer] = [], cellImg: [CGImage?] = [], headImg: [CGImage?] = []
     private let pole = CALayer(), halo = CAGradientLayer(), spikeH = CAGradientLayer(), spikeV = CAGradientLayer()
     private let her = HerView(radius: R_PS)
+    private struct MapSig: Equatable { var F, q, ls, lensTh: Int; var open: String?; var n: Int; var px: Double; var calm: Int }
+    private var mapSig: MapSig?
     private var link: CADisplayLink?
     private var lastTime = 0.0
     private var k = 1.0, ox = 0.0, oy = 0.0, scale = 3.0
@@ -38,7 +40,7 @@ final class StarStage: UIView, HerDrive {
         backgroundColor = UIColor(red: 5 / 255, green: 6 / 255, blue: 13 / 255, alpha: 1)
         isMultipleTouchEnabled = true
         engine.herDrive = self
-        engine.wake = { [weak self] in self?.boost() }
+        engine.onWake = { [weak self] in self?.boost() }
         build()
         NotificationCenter.default.addObserver(self, selector: #selector(visibilityChanged), name: UIApplication.didBecomeActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(visibilityChanged), name: UIApplication.willResignActiveNotification, object: nil)
@@ -185,14 +187,14 @@ final class StarStage: UIView, HerDrive {
     private func start() {
         if link != nil { return }
         let l = CADisplayLink(target: LinkProxy(self), selector: #selector(LinkProxy.tick))
-        l.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 60, preferred: 60)
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 8, maximum: 60, preferred: 60)
         l.add(to: .main, forMode: .common)
         link = l; lastTime = 0
     }
     private func stop() { link?.invalidate(); link = nil }
     private func boost() {
         guard let l = link, l.preferredFrameRateRange.preferred != 60 else { return }
-        l.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 60, preferred: 60)
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 8, maximum: 60, preferred: 60)
     }
 
     fileprivate func tick(_ l: CADisplayLink) {
@@ -202,8 +204,8 @@ final class StarStage: UIView, HerDrive {
         apply(now)
         let busy = engine.isBusy || her.isBusy
         if !busy && now - engine.born > 1500 { engine.warmMonth() }
-        let want: Float = busy ? 60 : 20
-        if l.preferredFrameRateRange.preferred != want { l.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 60, preferred: want) }
+        let want: Float = busy ? 60 : engine.covered ? 10 : 20
+        if l.preferredFrameRateRange.preferred != want { l.preferredFrameRateRange = CAFrameRateRange(minimum: 8, maximum: 60, preferred: want) }
     }
 
     private func apply(_ now: Double) {
@@ -250,7 +252,13 @@ final class StarStage: UIView, HerDrive {
                 sun.endPoint = CGPoint(x: (CX + 100 * cos(a0)) / W, y: (CY + 100 * sin(a0)) / SKY_H)
             }
         }
-        if e.mon <= 0.985 { map.setNeedsDisplay() }
+        // the dial is drawn again when something on it moved; at rest only its slow pulses (a waiting star breathing) need it, ten times a second
+        if e.mon <= 0.985 {
+            let sig = MapSig(F: Int((e.F * 1e4).rounded()), q: Int((e.q * 1e5).rounded()), ls: Int((e.ls.value * 1e4).rounded()), lensTh: Int((e.lensTh * 1e4).rounded()),
+                             open: e.openId, n: e.EV.count, px: laidPx, calm: Int((e.calmK * 20).rounded()))
+            let hot = sig != mapSig || now < e.wakeUntil || e.flyer != nil || e.EV.contains { now - $0.flash < 700 || now - $0.ign < 900 || now - $0.born < 650 }
+            if hot || (e.pulsing && now - e.mapAt > 100 && !e.covered) { map.setNeedsDisplay(); e.mapAt = now; mapSig = sig }
+        }
         map.isHidden = e.mon > 0.985
         // trails, her listening, a star flying out
         let fb = e.fxBusy
@@ -260,7 +268,7 @@ final class StarStage: UIView, HerDrive {
             if key != monKey { monKey = key; monthBox.isHidden = false; monOn = true; layoutMonth() }
         }
         // her
-        her.paintLayers(scale: CGFloat(scale))
+        if e.herFresh { her.paintLayers(scale: CGFloat(scale)) }
         let (r, g, b) = her.rgb, hk = "\(r),\(g),\(b)"
         e.herRGB = (r, g, b)
         if hk != haloKey {

@@ -351,6 +351,8 @@ extension StarEngine {
             e.on = true; e.v = v; e.r = r; e.an = an; e.x = PX; e.y = PY; e.pr = PS; e.ps = cam != nil ? clamp(PS, 0.45, 2.4) : 1
             list.append(e)
         }
+        pulsing = list.contains { $0.kd == .wait || $0.kd == .work || $0.kd == .lit }     // these breathe, so the dial keeps drawing a little at rest
+        let calmK = self.calmK
         c.setBlendMode(.plusLighter)
         for e in list {
             let m = (e.mag ?? 1) * sc * e.ps, v = e.v, fh = clamp(1 - (now - e.flash) / 700, 0, 1), ig = clamp(1 - (now - e.ign) / 900, 0, 1)
@@ -361,7 +363,7 @@ extension StarEngine {
             case .done: spr.glow(c, .done, e.x, e.y, 8 * m, 0.2 * v)
             case .next: break
             }
-            if e.focus || fh > 0 || openId == e.id { spr.glow(c, .white, e.x, e.y, (17 + 7 * fh) * m, (0.15 + 0.34 * fh) * v) }
+            if e.focus || fh > 0 || openId == e.id { spr.glow(c, .white, e.x, e.y, (17 + 7 * fh) * m, ((openId == e.id ? 0.15 : 0.15 * calmK) + 0.34 * fh) * v) }
             if ig > 0 { spr.glow(c, .warm, e.x, e.y, (7 + 28 * (1 - ig)) * m, 0.95 * ig * ig * v) }
         }
         c.setBlendMode(.normal)
@@ -372,7 +374,7 @@ extension StarEngine {
             var placed: [(Double, Double, Double, Double)] = []
             let fin = smooth(0.25, 0.7, camE)
             for e in list.filter({ $0.s != nil }).sorted(by: { $0.pr > $1.pr }) {
-                let la = e.v * fin * smooth(0.8, 1.1, e.pr); if la < 0.03 { continue }
+                let la = e.v * fin * smooth(0.8, 1.1, e.pr) * calmK; if la < 0.03 { continue }
                 let n = sizeAt(11, e.ps), w = spr.word(e.ps > 0.95 ? "\(clock(e.t))  \(e.s!)" : e.s!, .sans(500, n), .ink, n)
                 if e.x < 0 || e.x > W { continue }
                 let lx = clamp(e.x, w.w / 2 + 8, W - w.w / 2 - 8), ly = e.y - (8 + 7 * e.ps) - n * 0.3
@@ -394,7 +396,7 @@ extension StarEngine {
         }
         for item in cand {
             let e = item.e, dist = item.dist, lm = item.lm
-            var la = z > 2.6 ? 0 : e.v * smooth(14 * z, 34 * z, dist) * (1 - smooth(100 * z, 190 * z, dist))
+            var la = z > 2.6 ? 0 : e.v * smooth(14 * z, 34 * z, dist) * (1 - smooth(100 * z, 190 * z, dist)) * calmK
             if lensOn { la = max(la, e.v * ls.value * smooth(1.3, 2.2, lm)) }
             if la < 0.03 { continue }
             let r = e.r + (e.lane == .you ? 17 : -16), lx = CX + r * cos(e.an), ly = CY + r * sin(e.an)
@@ -460,19 +462,20 @@ extension StarEngine {
         c.addLine(to: CGPoint(x: CX + rb * cs, y: CY + rb * sn)); c.closePath(); c.fillPath()
     }
 
-    // MARK: what moves with the hand: trails, her listening, a star flying out
+    // MARK: what moves with the hand: a faint streak, her listening, a star flying out
 
-    var trailAmount: Double { UIAccessibility.isReduceMotionEnabled || fl > 0.02 ? 0 : smooth(0.28, 1.5, abs(omegaS)) * (1 - mon) }
+    /// a faint long exposure on the brightest stars, only while your finger flings the sky fast; sent somewhere by a button, it turns clean
+    var trailAmount: Double { UIAccessibility.isReduceMotionEnabled || fl > 0.02 ? 0 : smooth(1, 3, abs(omegaS)) * (1 - mon) * hand }
     var fxBusy: Bool { trailAmount > 0.01 || !sonar.isEmpty || flyer != nil }
 
     func drawFx(_ c: CGContext, _ now: Double) {
         let ta = trailAmount
         c.setLineCap(.round)
-        if ta > 0.01 { skyTrails(c, ta); eventTrails(c, ta) }
+        if ta > 0.01 { skyTrails(c, ta) }
         sonarRings(c, now); flyerDraw(c, now)
     }
     func skyTrails(_ c: CGContext, _ ta: Double) {
-        let sweep = clamp(-omegaS * 0.3, -1.3, 1.3)
+        let sweep = clamp(-omegaS * 0.14, -0.45, 0.45)
         var buckets: [[SkyStar]] = [[], [], [], []]
         for s in STARS where s.trail {
             let a = s.a + sky, y = CY + s.R * sin(a), x = CX + s.R * cos(a)
@@ -487,27 +490,8 @@ extension StarEngine {
                     p.move(to: CGPoint(x: CX + s.R * cos(a0), y: CY + s.R * sin(a0)))
                     p.addArc(center: CGPoint(x: CX, y: CY), radius: s.R, startAngle: a0, endAngle: a1, clockwise: a1 < a0)
                 }
-                c.setLineWidth(0.55 + Double(bi) * 0.32); c.setStrokeColor(RGB.trail.cg((0.1 + 0.2 * Double(bi)) * (half == 1 ? 1 : 0.42) * ta))
+                c.setLineWidth(0.55 + Double(bi) * 0.32); c.setStrokeColor(RGB.trail.cg((0.05 + 0.1 * Double(bi)) * (half == 1 ? 1 : 0.4) * ta))
                 c.addPath(p); c.strokePath()
-            }
-        }
-    }
-    func eventTrails(_ c: CGContext, _ ta: Double) {
-        let sweep = clamp(-omegaS * 0.26, -1.1, 1.1)
-        var groups: [RGB: [Ev]] = [:]
-        for e in EV where e.on && e.v >= 0.1 {
-            let col: RGB = e.kd == .lit ? .lit : e.kd == .done ? .done : e.kd == .wait ? .wait : e.kd == .work ? .work : .next
-            groups[col, default: []].append(e)
-        }
-        for (col, list) in groups {
-            for half in [0, 1] {
-                let p = CGMutablePath()
-                for e in list {
-                    let a0 = e.an + sweep * (half == 1 ? 0.5 : 1), a1 = e.an + sweep * (half == 1 ? 0 : 0.5)
-                    p.move(to: CGPoint(x: CX + e.r * cos(a0), y: CY + e.r * sin(a0)))
-                    p.addArc(center: CGPoint(x: CX, y: CY), radius: e.r, startAngle: a0, endAngle: a1, clockwise: a1 < a0)
-                }
-                c.setLineWidth(1.6); c.setStrokeColor(col.cg((half == 1 ? 0.5 : 0.2) * ta)); c.addPath(p); c.strokePath()
             }
         }
     }
