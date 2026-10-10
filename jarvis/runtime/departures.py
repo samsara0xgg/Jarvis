@@ -90,7 +90,7 @@ class Departures:
     ) -> None:
         """``live`` is BC Transit's feed; without it the pin keeps Google's times.
 
-        ``offers`` is what ``transit`` left for the notch's card (ADR 0203).
+        ``offers`` is what ``transit`` left for the chat card's rows (ADR 0205).
         """
         self._path = event_log
         self.live = live
@@ -136,10 +136,6 @@ class Departures:
             "delay_min": known.delay_min,
             "checked_at_ms": known.checked_ms,
         }
-
-    def offer(self) -> dict[str, Any] | None:
-        """The latest ``transit`` answer's options while the card may show them."""
-        return self.offers.view()
 
     def unpin(self, pin_id: str) -> None:
         """``POST /inherent/notices/{id}``: take the whole set off and cancel its reminder."""
@@ -328,19 +324,28 @@ class Departures:
     def _poll(self, one: folded.Departure, now_ms: int) -> list[folded.Trip]:
         """Ask the feed about every catchable trip; the ones it moved, already shifted in place."""
         moved = []
-        # ponytail: one feed download per trip (three at most); share a parsed feed if it matters.
-        for trip in one.catchable(now_ms):
+        live, feed, trips = self.live, None, one.catchable(now_ms)
+        if live is not None and any(t.stop_lat is not None for t in trips):  # one download for all
+            try:
+                feed = live.snapshot()
+            except Exception:  # noqa: BLE001 - network or feed trouble means every trip is stale.
+                LOGGER.warning("departures: BC Transit live data unavailable", exc_info=True)
+        for trip in trips:
             mine = self._live.setdefault(trip.tid, _Live())
             found = None
-            if self.live is not None and trip.stop_lat is not None and trip.stop_lng is not None:
+            if (
+                feed is not None and live is not None
+                and trip.stop_lat is not None and trip.stop_lng is not None
+            ):
                 try:
-                    found = self.live.departure(
+                    found = live.departure(
                         trip.first_route,
                         (trip.stop_lat, trip.stop_lng),
                         trip.departs_at_ms,
                         mine.trip_id,
+                        feed,
                     )
-                except Exception:  # noqa: BLE001 - network, zip or feed trouble all mean stale.
+                except Exception:  # noqa: BLE001 - the static export or zip trouble means stale.
                     LOGGER.warning("departures: BC Transit live data unavailable", exc_info=True)
             mine.stale = found is None
             if found is None:

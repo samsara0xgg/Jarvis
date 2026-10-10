@@ -219,7 +219,7 @@ def format_pending_clarification_note(packet: SituationPacket) -> str | None:
     after it was dismissed.
     """
     slot = packet.pending_clarification
-    if slot is None:
+    if slot is None or slot.trip is not None:  # a bus card (ADR 0205) asks nothing of him
         return None
     labels = ", ".join(str(f.get("label", "")) for f in slot.fields)
     if slot.answered_turn_id is not None and slot.answered_turn_id == packet.current_turn_id:

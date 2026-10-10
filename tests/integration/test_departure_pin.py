@@ -24,10 +24,11 @@ from fastapi.testclient import TestClient
 from google.transit import gtfs_realtime_pb2
 
 from jarvis.decision.commentary import _dispatch_key
+from jarvis.decision.packet import assemble_packet, format_pending_clarification_note
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution import transit_tool
 from jarvis.execution.tools import ActionLifecycle, ToolError, build_default_registry
-from jarvis.execution.transit_tool import TransitOffers
+from jarvis.execution.transit_tool import TransitOffers, live_card
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.departures import REFRESH_S, Departures
 from jarvis.runtime.inherent_loop import _notice_deps
@@ -37,6 +38,7 @@ from jarvis.state import departures as departures_state
 from jarvis.state import event_log
 from jarvis.state import reminders as reminder_state
 from jarvis.state.event_log import iter_events_of_types, open_event_log
+from jarvis.state.projections import CLARIFICATION_EVENT_TYPES, PendingClarification
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 
@@ -123,8 +125,6 @@ class _World:
         self.paths = bootstrap_runtime(tmp_path)
         self.conn = open_event_log(self.paths.event_log)
         self.offers = TransitOffers()
-        self.offer_clock = 1_000_000.0
-        self.offers.clock = lambda: self.offer_clock
         self.local_now = NOW
         self.registry = build_default_registry(
             transit_api_key="not-a-key",
@@ -450,10 +450,21 @@ def _answer(world: _World, *legs: tuple[str, str]) -> None:
     world.look_up()
 
 
+def _slot(world: _World) -> PendingClarification:
+    """The conversation's card (ADR 0205): the ask-card slot, its `trip` the bus rows."""
+    found = PendingClarification.from_events(
+        iter_events_of_types(world.conn, CLARIFICATION_EVENT_TYPES)
+    )
+    assert found is not None
+    assert found.trip is not None
+    return found
+
+
 def _offer(world: _World) -> dict[str, Any]:
-    offer = world.app().get("/inherent/notices").json()["transit_offer"]
-    assert offer is not None
-    return dict(offer)
+    """The card as the companion is served it now: the offer's id and the rows still catchable."""
+    shown = live_card(_slot(world).trip or {})
+    assert shown is not None
+    return {"id": shown["offer_id"], "options": shown["options"]}
 
 
 def _take(world: _World, action: str, **more: str | int) -> Any:  # noqa: ANN401
@@ -479,7 +490,17 @@ def test_an_answer_serves_one_row_per_option_and_drops_the_past(world: _World) -
     world.local_now = _local("17:10")
     assert [o["index"] for o in _offer(world)["options"]] == [1, 2]
     world.local_now = _local("17:40")
-    assert world.app().get("/inherent/notices").json()["transit_offer"] is None
+    assert live_card(_slot(world).trip or {}) is None
+
+
+def test_the_bus_card_asks_the_model_nothing(world: _World) -> None:
+    """ADR 0205: words said over the card get no "your card closed" note, as a question would."""
+    _answer(world, ("17:05", "28"))
+    said = event_log.emit_event(
+        world.conn, type="utterance.received", payload={"transcript": "ok", "turn_id": "T-next"},
+        correlation={"turn_id": "T-next"},
+    )
+    assert format_pending_clarification_note(assemble_packet(said, world.conn)) is None
 
 
 def test_the_card_pins_the_chosen_option_through_the_tools_path(world: _World) -> None:
@@ -507,7 +528,7 @@ def test_the_card_pins_the_chosen_option_through_the_tools_path(world: _World) -
 
 
 def test_a_stale_offer_or_row_pins_nothing(world: _World) -> None:
-    """Unknown id, unknown index, an expired offer, a past row and a replaced offer are all 404."""
+    """Unknown id, unknown index, a past row and a replaced offer are all 404."""
     _answer(world, ("17:05", "28"), ("17:15", "28"))
     old = _offer(world)["id"]
     assert _take(world, "pin", offer_id="offer-nope", index=0).status_code == 404
@@ -515,12 +536,8 @@ def test_a_stale_offer_or_row_pins_nothing(world: _World) -> None:
     world.local_now = _local("17:10")  # row 0 has gone
     assert _take(world, "pin", offer_id=old, index=0).status_code == 404
     world.local_now = NOW
-    world.offer_clock += 61  # the card has closed itself
-    assert world.app().get("/inherent/notices").json()["transit_offer"] is None
-    assert _take(world, "pin", offer_id=old, index=1).status_code == 404
     _answer(world, ("17:20", "12"))  # a newer answer replaces the offer
     assert _offer(world)["id"] != old
-    world.offer_clock += 1
     assert _take(world, "pin", offer_id=old, index=0).status_code == 404
     assert world.events("departure.pinned") == []
     assert world.pending() == []
@@ -756,7 +773,7 @@ def test_every_trip_is_refreshed_on_its_own(world: _World) -> None:
     world.reminders.tick()
     world.clock += timedelta(seconds=REFRESH_S)
     world.reminders.tick()
-    assert world.feed_calls == 2  # one look per trip
+    assert world.feed_calls == 1  # one download for both trips
     moved = {e["tid"]: e["departs_at_ms"] for e in world.events("departure.updated")}
     assert sorted(moved.values()) == [
         int(_local("17:08").timestamp() * 1000), int(_local("17:17").timestamp() * 1000),

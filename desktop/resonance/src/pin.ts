@@ -44,13 +44,15 @@ export function pinStatus(d: DepTrip, t: T): string {
   return m > 0 ? t([`Live · ${m} min late`, `实时 · 晚 ${m} 分`]) : m < 0 ? t([`Live · ${-m} min early`, `实时 · 早 ${-m} 分`]) : t(['On time', '准点']);
 }
 
-// ADR 0203: the options the last `transit` answer offers (`transit_offer`), one row each; `index` is what a click sends back.
+// ADR 0205: the bus card in the conversation, the `trip` of the ask card a `transit` answer puts up: one row per option (`index` is what a click sends back with
+// `offer_id`; the pinned trip's id is `offer_id-index`), and how long the other ways take.
 export type OfferRow = { index: number; route: string; board_stop: string; leave_at: string; departs: string; arrive_at: string; to: string };
-export type TransitOffer = { id: string; options: OfferRow[]; at_ms: number };
-export const isOffer = (o: unknown): o is TransitOffer => {
-  const x = o as Partial<TransitOffer> | null;
-  return !!x && typeof x.id === 'string' && Array.isArray(x.options) && x.options.length > 0;
-};
+export type Way = { minutes: number; km: number };
+export type TripCardData = { offer_id: string; to: string; options: OfferRow[]; modes?: { drive?: Way; walk?: Way } };
+export const tripTid = (c: TripCardData, o: OfferRow) => `${c.offer_id}-${o.index}`;
 // `19:16 出门 → 19:34 到家`; the route is the row's chip.
 export const offerLine = (o: OfferRow, t: T) => t([`Leave ${o.leave_at} → ${arrivePhrase(o.arrive_at, o.to, t)}`, `${o.leave_at} 出门 → ${arrivePhrase(o.arrive_at, o.to, t)}`]);
 export const offerRoute = (o: OfferRow) => o.route.replace(/\s*→\s*/g, '→');
+// `开车 12 分 · 走路 40 分`; an hour or more reads `1 小时 5 分`.
+const span = (m: number, t: T) => m < 60 ? t([`${m} min`, `${m} 分`]) : t([`${Math.floor(m / 60)} h ${m % 60} min`, `${Math.floor(m / 60)} 小时 ${m % 60} 分`]);
+export const modesLine = (c: TripCardData, t: T) => [c.modes?.drive && `${t(['Drive', '开车'])} ${span(c.modes.drive.minutes, t)}`, c.modes?.walk && `${t(['Walk', '走路'])} ${span(c.modes.walk.minutes, t)}`].filter(Boolean).join(' · ');

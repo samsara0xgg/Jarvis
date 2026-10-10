@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, X } from '@phosphor-icons/react';
 import { tr, type L, type Lang } from './companionSettings';
+import type { TripCardData } from './pin';
 import './action-card.css';
 
 // ADR 0062: the card Jarvis puts up before it does something with consequences. It shows exactly what will run;
@@ -102,7 +103,8 @@ export function MailCard({ text, lang }: { text: string; lang: Lang }) {
 // ADR 0066: Jarvis asks for details it cannot go on without. One input per detail, or a row of choices; "Done" sends
 // what is filled in (and the daemon remembers it), the × closes the card and nothing runs.
 export interface QuestionField { label: string; choices?: string[]; value?: string }
-export interface Question { id: string; question: string; fields: QuestionField[] }
+// ADR 0205: a `trip` makes it the bus card (TripCards.tsx) instead of a question.
+export interface Question { id: string; question: string; fields: QuestionField[]; trip?: TripCardData }
 export type Answer = (answers: Record<string, string> | null) => void;
 
 export function QuestionCard({ question, lang, onAnswer, draft, onDraft }: {

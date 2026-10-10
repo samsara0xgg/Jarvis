@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import json
 import re
-import time as _time
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
 from jarvis.execution.location_tool import PHONE_REPORT_RULE, phone_report, read_here
-from jarvis.execution.tools import Tool, ToolError, _get_running_event_uid
+from jarvis.execution.tools import Tool, ToolError, _get_running_event_uid, _turn_of
 from jarvis.shared import CallerPrincipal, lang
 from jarvis.state import departures, reminders
+from jarvis.state.event_log import emit_event
 
 if TYPE_CHECKING:
     import sqlite3
@@ -41,6 +42,9 @@ _FIELD_MASK: Final = ",".join(
         "transitDetails.transitLine.name",
     )
 )
+# DRIVE and WALK need only how long and how far; the default routing preference is the cheap one.
+_MODE_MASK: Final = "routes.duration,routes.distanceMeters"
+_MODES: Final = (("drive", "DRIVE"), ("walk", "WALK"))
 _LAT_LNG = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 
 _MAC_HERE: Final = "his location, read from this Mac, which he carries."
@@ -65,9 +69,12 @@ def _description(*, phone: bool) -> str:
         " language), the word 'school' for the campus (going to school or class, in any"
         " language), or a place as an address or name, e.g. 'Mayfair Mall'. depart_at is a"
         " local time today as HH:MM, only when he names a later time; leave it out for now. If"
-        " it returns an error, say so and do not guess times. Do not ask whether to pin the trip: a"
-        " card under the notch already offers it with a button. Call pin_departure only when he"
-        " asks for it by voice ('pin it', 'put it on the notch')."
+        " it returns an error, say so and do not guess times. `modes` gives the driving and"
+        " walking minutes and km for the same trip when Google answered them; mention an"
+        " alternative in a few words only when it matters (walking under about 20 minutes, or"
+        " driving much faster), never read them all out. Do not ask whether to pin the trip: a"
+        " card in the chat already lists the buses with a button each. Call pin_departure only"
+        " when he asks for it by voice ('pin it', 'put it on the notch')."
     )
 
 
@@ -161,20 +168,34 @@ def _option(route: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _compute(api_key: str, body: Mapping[str, Any]) -> dict[str, Any]:
+def _compute(
+    api_key: str, body: Mapping[str, Any], mask: str = _FIELD_MASK,
+) -> dict[str, Any]:
     request = urllib.request.Request(  # noqa: S310 — a fixed https URL.
         _URL,
         data=json.dumps(body).encode(),
         headers={
             "Content-Type": "application/json",
             "X-Goog-Api-Key": api_key,
-            "X-Goog-FieldMask": _FIELD_MASK,
+            "X-Goog-FieldMask": mask,
         },
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as reply:  # noqa: S310
         answer: dict[str, Any] = json.load(reply)
     return answer
+
+
+def _mode(api_key: str, start: Mapping[str, Any], end: Mapping[str, Any], travel: str) -> Any:  # noqa: ANN401
+    """``{minutes, km}`` of the trip by ``travel`` (DRIVE or WALK); None when Google has none."""
+    try:
+        body = {"origin": start, "destination": end, "travelMode": travel}
+        route = _compute(api_key, body, _MODE_MASK)["routes"][0]
+        seconds = float(str(route["duration"]).removesuffix("s"))
+        km = round(route["distanceMeters"] / 1000, 1)
+        return {"minutes": max(1, round(seconds / 60)), "km": km}
+    except Exception:  # noqa: BLE001 - a mode that fails is left out; the bus answer stands.
+        return None
 
 
 def _first_board(route: Mapping[str, Any]) -> tuple[tuple[str, str], tuple[float, float]] | None:
@@ -202,12 +223,11 @@ def _today(value: object, field: str) -> datetime:
 
 
 _PIN_PAST_GRACE: Final = timedelta(minutes=1)
-OFFER_TTL_S: Final = 60.0
 _PIN_DESCRIPTION: Final = (
     "Pin the bus trip he just got from transit on the notch, as a countdown to when he must"
     " leave, and ring him at leave time. Call it ONLY when he asks to pin it by voice ('pin it',"
     " 'put it on the notch', or the same in any other language); never on your own, and never to"
-    " offer it: a card under the notch does that. It is already on your menu: no tool_search, and"
+    " offer it: a card in the chat does that. It is already on your menu: no tool_search, and"
     " do not call transit again first; copy from the transit result already in the conversation."
     " Copy the fields from the transit option he is taking (the first option unless"
     " he picked another): leave_at; route, the number of the first bus ('28', or '28 → 12' for"
@@ -230,30 +250,31 @@ _TRIP_REQUIRED: Final = ["leave_at", "route", "board_stop", "departs", "arrive_a
 
 
 class TransitOffers:
-    """What the last ``transit`` answer offers the notch's card, and the first stops it kept.
+    """What the last ``transit`` answer offers, and the first stops it kept.
 
-    The card lists the options (ADR 0203) for ``OFFER_TTL_S`` after the answer; a click pins one
-    through :func:`pin_trip`, as the tool does. The newest answer replaces the older. The options
-    stay in memory after the card is gone, for the pin card's "next bus" (same route and stop).
-    ``stops`` is each option's first stop place, keyed ``(first route, board stop)``: the notch's
-    live refresh finds the stop in BC Transit's data by position, as the two feeds spell names
-    differently.
+    The conversation card (ADR 0205) lists the options for as long as the card stays; a click pins
+    one through :func:`pin_trip`, as the tool does. The newest answer replaces the older. The
+    options stay in memory after the card is gone, for the pin card's "next bus" (same route and
+    stop). ``stops`` is each option's first stop place, keyed ``(first route, board stop)``: the
+    notch's live refresh finds the stop in BC Transit's data by position, as the two feeds spell
+    names differently.
     """
 
     def __init__(self) -> None:
-        """Start with no answer; ``clock`` is replaceable for a test."""
+        """Start with no answer."""
         self.stops: dict[tuple[str, str], tuple[float, float]] = {}
-        self.clock: Callable[[], float] = _time.time
         self._id = ""
-        self._at = 0.0
-        self._rows: list[dict[str, str]] = []
+        self._rows: list[dict[str, Any]] = []
 
-    def put(self, options: list[dict[str, Any]], to: str) -> None:
-        """Take a fresh answer's options as the offer; ``to`` is the destination as asked."""
-        self._id, self._at = "offer-" + uuid.uuid4().hex[:8], self.clock()
+    def put(self, options: list[dict[str, Any]], to: str) -> dict[str, Any]:
+        """Take a fresh answer's options as the offer; ``to`` is the destination as asked.
+
+        Returns the card's trip: ``{offer_id, to, options}``, one row per option.
+        """
+        self._id = "offer-" + uuid.uuid4().hex[:8]
         self._rows = [
             {
-                "index": str(i),
+                "index": i,
                 "route": " → ".join(leg["route"] for leg in o["legs"]),
                 "board_stop": o["legs"][0]["board_stop"],
                 "leave_at": o["leave_at"],
@@ -263,23 +284,12 @@ class TransitOffers:
             }
             for i, o in enumerate(options)
         ]
+        return {"offer_id": self._id, "to": to, "options": self._rows}
 
-    def view(self) -> dict[str, Any] | None:
-        """The offer as ``GET /inherent/notices`` serves it: no row past, none after the TTL."""
-        if not self._rows or self.clock() - self._at > OFFER_TTL_S:
-            return None
-        floor = _now().replace(second=0, microsecond=0)
-        rows = [
-            {**r, "index": int(r["index"])}
-            for r in self._rows
-            if _today(r["leave_at"], "") >= floor
-        ]
-        return {"id": self._id, "options": rows, "at_ms": int(self._at * 1000)} if rows else None
-
-    def row(self, offer_id: str, index: int) -> dict[str, str]:
-        """The offered option; LookupError when the offer is unknown, expired or has no such row."""
-        mine = [r for r in self._rows if int(r["index"]) == index]
-        if offer_id != self._id or self.clock() - self._at > OFFER_TTL_S or not mine:
+    def row(self, offer_id: str, index: int) -> dict[str, Any]:
+        """The offered option; LookupError when the offer is unknown or has no such row."""
+        mine = [r for r in self._rows if r["index"] == index]
+        if offer_id != self._id or not mine:
             msg = "that offer is gone"
             raise LookupError(msg)
         return mine[0]
@@ -295,6 +305,31 @@ class TransitOffers:
         ]
         later = sorted(f for f in found if f[0] > after and f[1] >= _now() - _PIN_PAST_GRACE)
         return (later[0][1], later[0][0], later[0][2]) if later else None
+
+
+def live_card(trip: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The card's trip as served now: no row whose leave time has passed; None if none is left."""
+    floor = _now().replace(second=0, microsecond=0)
+    rows = [r for r in trip["options"] if _today(r["leave_at"], "") >= floor]
+    return {**trip, "options": rows} if rows else None
+
+
+def show_card(ctx: ToolContext, trip: Mapping[str, Any]) -> None:
+    """Put the answer up as the conversation's card (ADR 0205): an ask card (ADR 0066) with rows."""
+    emit_event(
+        ctx.conn,
+        type="clarification.requested",
+        payload={
+            "clarification_id": trip["offer_id"],
+            "question": trip["to"],
+            "fields": [],
+            "turn_id": _turn_of(ctx.action_id) or "",
+            "action_id": ctx.action_id,
+            "trip": trip,
+        },
+        source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
+        correlation={"action_id": ctx.action_id},
+    )
 
 
 def trip_of(  # noqa: PLR0913 — one keyword per trip field.
@@ -551,14 +586,14 @@ def build_transit_tool(
     that word a tool error rather than a guess. ``here`` reads this Mac's location when asked
     (ADR 0194), or with ``phone`` the phone's last report (ADR 0198), which the description and
     the result then say, with its age; its failure is a tool error telling the model to ask
-    where the user is. ``offers`` is where each answer leaves its options for the notch's card
-    (ADR 0203); the runtime shares it with the routes that serve and pin them.
+    where the user is. ``offers`` is where each answer leaves its options for the chat card
+    (ADR 0205); the runtime shares it with the routes that pin them.
     """
     if not api_key:
         return ()
     offers = offers if offers is not None else TransitOffers()
 
-    def transit(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+    def transit(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         origin, destination = str(args.get("origin", "")), str(args.get("destination", ""))
         if not origin.strip() or not destination.strip():
             msg = "origin and destination are both required"
@@ -573,11 +608,17 @@ def build_transit_tool(
         }
         if args.get("depart_at"):
             body["departureTime"] = _departure(str(args["depart_at"]))
-        try:
-            answer = _compute(api_key, body)
-        except Exception as exc:  # timeout, HTTP error, bad JSON: all one short reason.
-            msg = f"transit unavailable ({type(exc).__name__})"
-            raise ToolError(msg, code="network_error") from exc
+        # The bus answer and, concurrently, the other ways there (ADR 0205): one request each.
+        with ThreadPoolExecutor(max_workers=1 + len(_MODES)) as pool:
+            ways = {
+                name: pool.submit(_mode, api_key, start, end, travel) for name, travel in _MODES
+            }
+            try:
+                answer = pool.submit(_compute, api_key, body).result()
+            except Exception as exc:  # timeout, HTTP error, bad JSON: all one short reason.
+                msg = f"transit unavailable ({type(exc).__name__})"
+                raise ToolError(msg, code="network_error") from exc
+        modes = {name: found for name, way in ways.items() if (found := way.result())}
         options = _sensible([o for r in answer.get("routes", ()) if (o := _option(r))])
         if not options:
             msg = "no transit route found for that trip at that time"
@@ -586,8 +627,9 @@ def build_transit_tool(
         for found in map(_first_board, answer.get("routes", ())):
             if found:
                 offers.stops[found[0]] = found[1]
-        offers.put(options, destination.strip().lower()[:60])
-        return {"from": start_label, "to": end_label, "options": options}
+        show_card(ctx, {**offers.put(options, destination.strip().lower()[:60]), "modes": modes})
+        found = {"modes": modes} if modes else {}
+        return {"from": start_label, "to": end_label, "options": options, **found}
 
     return (
         Tool(
@@ -636,12 +678,13 @@ def build_transit_tool(
 
 
 __all__ = [
-    "OFFER_TTL_S",
     "TransitOffers",
     "add_trip",
     "build_transit_tool",
+    "live_card",
     "pin_offered",
     "pin_trips",
     "ring",
+    "show_card",
     "trip_of",
 ]

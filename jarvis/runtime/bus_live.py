@@ -80,14 +80,23 @@ class BusLive:
         stop: tuple[float, float],
         around_ms: int,
         trip_id: str | None = None,
+        feed: gtfs_realtime_pb2.FeedMessage | None = None,
     ) -> tuple[str, int] | None:
         """``(trip_id, live departure ms)`` of the bus on ``route`` at ``stop``, or None.
 
         With ``trip_id`` (the bus matched last time) that trip is looked for first; otherwise,
         or when it is gone from the feed, the trip whose timetable (or live) time is closest to
-        ``around_ms``, and no more than ten minutes from it. Network and file errors propagate.
+        ``around_ms``, and no more than ten minutes from it. ``feed`` is a :meth:`snapshot`
+        shared by several lookups; without it the feed is downloaded for this one. Network and
+        file errors propagate.
         """
-        return _closest(self._stop_times(route, stop, around_ms), trip_id)
+        return _closest(self._stop_times(route, stop, around_ms, feed), trip_id)
+
+    def snapshot(self) -> gtfs_realtime_pb2.FeedMessage:
+        """The realtime feed, downloaded and parsed once, for lookups to share."""
+        feed = gtfs_realtime_pb2.FeedMessage()
+        feed.ParseFromString(self._feed())
+        return feed
 
     def next_departure(
         self,
@@ -108,13 +117,16 @@ class BusLive:
         return (min(later)[1], min(later)[0]) if later else None
 
     def _stop_times(
-        self, route: str, stop: tuple[float, float], around_ms: int,
+        self,
+        route: str,
+        stop: tuple[float, float],
+        around_ms: int,
+        feed: gtfs_realtime_pb2.FeedMessage | None = None,
     ) -> list[tuple[int, str, int]]:
         """Each bus on ``route`` at ``stop`` as ``(distance from around_ms, trip, live ms)``."""
         trips = self._lookups()
         near = {sid for sid, at in self._stops.items() if _metres(stop, at) <= STOP_RADIUS_M}
-        feed = gtfs_realtime_pb2.FeedMessage()
-        feed.ParseFromString(self._feed())
+        feed = feed if feed is not None else self.snapshot()
         found: list[tuple[int, str, int]] = []
         for entity in feed.entity:
             update = entity.trip_update

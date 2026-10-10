@@ -137,6 +137,7 @@ from jarvis.deployment.launchd import logs_dir, repo_root, spawned_by_agent
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
 from jarvis.execution.tools import SCREEN_ARTIFACTS_DIRNAME, live_action_ids
+from jarvis.execution.transit_tool import live_card
 from jarvis.runtime import (
     JarvisRuntime,
     TriggerWaitTimeout,
@@ -5059,10 +5060,7 @@ def _notice_deps(
             body = {"notices": [], "audio_private": private, **(hold or {"hold": None})}
         cards = await asyncio.to_thread(reminders.notices)
         pin = await asyncio.to_thread(reminders.departures.view)
-        offer = reminders.departures.offer()
-        return {
-            **body, "notices": [*cards, *body["notices"]], "departure": pin, "transit_offer": offer,
-        }
+        return {**body, "notices": [*cards, *body["notices"]], "departure": pin}
 
     async def act(notice_id: str, action: str, reaction: str | None) -> None:
         if notice_id.startswith(PIN_PREFIX):
@@ -5076,7 +5074,7 @@ def _notice_deps(
             raise LookupError(msg)
 
     async def departure_act(body: dict[str, Any]) -> dict[str, Any]:
-        """``POST /inherent/departure`` (ADR 0203): the notch's trip cards."""
+        """``POST /inherent/departure`` (ADR 0203, 0205): the bus card and the notch's."""
         return await asyncio.to_thread(reminders.departures.act, body)
 
     return {
@@ -6531,7 +6529,14 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             fields = [
                 {k: f[k] for k in ("label", "choices", "value") if k in f} for f in slot.fields
             ]
-            card = {"id": slot.clarification_id, "question": slot.question, "fields": fields}
+            card: dict[str, Any] = {
+                "id": slot.clarification_id, "question": slot.question, "fields": fields,
+            }
+            if slot.trip is not None:  # ADR 0205: a bus card shows only the rows still catchable
+                shown = live_card(slot.trip)
+                if shown is None:
+                    return {"card": None}
+                card["trip"] = shown
             return {"card": card}
 
         def _answer_question(

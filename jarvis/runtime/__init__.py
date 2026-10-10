@@ -2692,7 +2692,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         AmbientSounds(log_path=logs_dir(paths.root) / "ambient-sounds.jsonl")
         if _ambient_sounds(full_config) else None
     )
-    transit_offers = TransitOffers()  # what `transit` leaves for the notch's card (ADR 0203)
+    transit_offers = TransitOffers()  # the rows `transit` leaves for the chat card (ADR 0205)
     registry = build_default_registry(
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,

@@ -4044,7 +4044,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         transit_api_key: ADR 0189 — the Google Routes key (`GOOGLE_MAPS_API_KEY`, resolved
             by the runtime); empty or `None` leaves `transit` off the menu.
         transit_places: the saved `home` and `school` for `transit` (an address or `lat,lng`).
-        transit_offers: where `transit` leaves its options for the notch's card (ADR 0203).
+        transit_offers: where `transit` leaves its options for the chat card (ADR 0205).
         here_location: ADR 0194 — one fresh read of this Mac's location (`lat`, `lng`,
             `accuracy_m`, optional `place`); gives `transit` its `here` and registers
             `where_am_i`. `None` leaves both off.

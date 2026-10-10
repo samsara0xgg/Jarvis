@@ -65,5 +65,12 @@
 .qc-choice.is-on { color:#10131d; background:var(--p-ink); box-shadow:none; font-weight:600; }
 .ac .ac-go:disabled { opacity:.38; filter:none; transform:none; }
 
+/* ADR 0205: the bus card. The other ways there as one line, then a row per bus with its pin button. */
+.tc-modes { margin:0; font-size:var(--text-detail); color:var(--p-muted); }
+.tc-rows { display:flex; flex-direction:column; gap:7px; margin:0; padding:0; list-style:none; }
+.tc-row { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; }
+.tc-route { font-size:var(--text-detail); font-weight:600; white-space:nowrap; }
+.tc-line { min-width:0; font-size:var(--text-detail); color:var(--p-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
 @media (prefers-reduced-motion:reduce) { .ac-label i { animation:none; } .ac-go,.ac-edit,.qc-input,.qc-choice { transition:none; } }
 .ac-go kbd { font:var(--text-mono)/1 ui-monospace,Menlo,monospace; opacity:.72; }

@@ -1113,7 +1113,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="jarvis_llm",
         required_payload=("clarification_id", "question", "fields", "turn_id"),
-        optional_payload=("action_id",),
+        # `trip`: a `transit` answer's rows and modes (ADR 0205), a card with no fields.
+        optional_payload=("action_id", "trip"),
         schema_version=1,
     ),
     # `surface.dismissed` / `surface.clarified` — spec §3.6.3-named

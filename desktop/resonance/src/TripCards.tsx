@@ -3,26 +3,49 @@ import { Check, X } from '@phosphor-icons/react';
 import { postRoute } from './homeData';
 import { tr, type L, type Lang } from './companionSettings';
 import { useEscape } from './Notices';
-import { isDeparture, offerLine, offerRoute, pinStatus, pinTrip, type Departure, type TransitOffer } from './pin';
+import { isDeparture, modesLine, offerLine, offerRoute, pinStatus, pinTrip, tripTid, type Departure, type TripCardData } from './pin';
 import type { NotchNote } from './Notch';
 
-// ADR 0203: the cards under the notch for the bus trip. After a bus lookup one row per option with a Pin button (it closes itself
-// after 60 s, or when a newer lookup replaces it); the pinned pill opens a card with the trip, what the live refresh knows, and Next
-// bus / Cancel; Cancel leaves a 5 s "Unpinned · Undo" line. All of it is one daemon route, POST /inherent/departure.
-const OFFER_MS = 60_000, UNDO_MS = 5000, JUST_OPENED_MS = 800;
+// ADR 0203: the notch's card for the pinned bus trip: the pill opens a card with the trips, what the live refresh knows, and Next
+// bus / Cancel; Cancel leaves a 5 s "Unpinned · Undo" line. ADR 0205: the bus lookup's rows are not here but in the conversation
+// (TripCard below). All of it is one daemon route, POST /inherent/departure.
+const UNDO_MS = 5000, JUST_OPENED_MS = 800;
 type View = 'pin' | 'undo' | null;
 
-function OfferCard({ offer, lang, onPin, onClose }: { offer: TransitOffer; lang: Lang; onPin: (index: number) => void; onClose: () => void }) {
-  const t = (l: L) => tr(lang, l), root = useRef<HTMLDivElement>(null);
-  useEscape(root, true, onClose, offer.id);
-  return <div ref={root} className="nc nc-jobs">
-    <div className="nc-bar"><span className="nc-label is-other"><i/>{t(['Pin the bus', '挂上这趟车'])}</span>
-      <button type="button" className="nc-x nc-dismiss" aria-label={t(['Dismiss', '关掉'])} title={t(['Dismiss', '关掉'])} onClick={onClose}><X size={14}/></button></div>
-    <ul className="nc-away nc-jobrows">{offer.options.map(o => <li key={o.index} className="nc-jobrow">
-      <span className="tagc">🚌 {offerRoute(o)}</span>
-      <span className="nc-jr-who">{offerLine(o, t)}</span>
-      <button type="button" className="btn btn-warm" onClick={() => onPin(o.index)}>{t(['Pin', '挂上'])}</button>
+type Reply = { departure?: unknown; reason?: string | null };
+export async function departureAct(port: string | null, body: Record<string, unknown>) {
+  const r = await postRoute(port ?? '', '/inherent/departure', body) as Reply;
+  return { d: isDeparture(r.departure) ? r.departure : null, reason: r.reason ?? null };
+}
+// What the conversation's bus card needs: the pin now served (to mark its rows) and the route (which also updates it).
+export type TripLink = { departure: Departure | null; act: (body: Record<string, unknown>) => Promise<string | null> };
+export const tripLink = (port: string | null, departure: Departure | null, setDeparture: (d: Departure | null) => void): TripLink => ({
+  departure,
+  act: async body => { const r = await departureAct(port, body); setDeparture(r.d); return r.reason; },
+});
+
+// ADR 0205: the bus card in the conversation, drawn from the ask card's `trip`. A row's button adds that bus to the pin (up to three; it
+// shows ✓ while the pin holds it, and a second press takes it off); the closing × and the card's lifetime are the ask card's.
+export function TripCard({ trip, link, lang, onClose }: { trip: TripCardData; link: TripLink; lang: Lang; onClose: () => void }) {
+  const t = (l: L) => tr(lang, l), [msg, setMsg] = useState(''), held = new Set(link.departure?.trips?.map(x => x.id));
+  const press = (o: TripCardData['options'][number]) => {
+    const tid = tripTid(trip, o);
+    setMsg('');
+    link.act(held.has(tid) ? { action: 'remove', trip_id: tid } : { action: 'add', offer_id: trip.offer_id, index: o.index })
+      .then(reason => { if (reason === 'full') setMsg(t(['Three are pinned already', '已经挂满三班了'])); })
+      .catch(() => setMsg(t(['That bus is no longer on offer', '这班车已经过期了'])));
+  };
+  return <div className="ac tc" data-question={trip.offer_id}>
+    <div className="ac-bar"><span className="ac-label"><i/>{t(['Bus', '公交'])}</span>
+      <button type="button" className="ac-x" aria-label={t(['Dismiss', '关掉'])} onClick={onClose}><X size={10} weight="bold"/></button></div>
+    {modesLine(trip, t) && <p className="tc-modes">{modesLine(trip, t)}</p>}
+    <ul className="tc-rows">{trip.options.map(o => <li key={o.index} className="tc-row">
+      <span className="tc-route">🚌 {offerRoute(o)}</span>
+      <span className="tc-line">{offerLine(o, t)}</span>
+      <button type="button" className={`qc-choice${held.has(tripTid(trip, o)) ? ' is-on' : ''}`} aria-pressed={held.has(tripTid(trip, o))} onClick={() => press(o)}>
+        {held.has(tripTid(trip, o)) ? t(['✓ Pinned', '✓ 已挂']) : t(['Pin', '挂上'])}</button>
     </li>)}</ul>
+    {msg && <p className="ac-more">{msg}</p>}
   </div>;
 }
 
@@ -50,28 +73,15 @@ function UndoCard({ lang, onUndo }: { lang: Lang; onUndo: () => void }) {
     <button type="button" className="btn btn-ghost" onClick={onUndo}>{t(['Undo', '撤销'])}</button></p></div>;
 }
 
-type Reply = { departure?: unknown; reason?: string | null };
-export function useTripNote({ port, lang, offer, departure, blocked, closeOffer, setDeparture, leaveDeparture }: {
-  port: string | null; lang: Lang; offer: TransitOffer | null; departure: Departure | null; blocked: boolean;
-  closeOffer: (id: string) => void; setDeparture: (d: Departure | null) => void; leaveDeparture: (d: Departure) => void;
+export function useTripNote({ port, lang, departure, setDeparture, leaveDeparture }: {
+  port: string | null; lang: Lang; departure: Departure | null; setDeparture: (d: Departure | null) => void; leaveDeparture: (d: Departure) => void;
 }): { note: NotchNote | null; open: () => void; away: () => void } {
   const [view, setView] = useState<View>(null), [msg, setMsg] = useState(''), undo = useRef<Departure | null>(null), openedAt = useRef(0);
   const t = (l: L) => tr(lang, l), close = () => setView(null);
-  const send = async (body: Record<string, unknown>) => {
-    const r = await postRoute(port ?? '', '/inherent/departure', body) as Reply;
-    return { d: isDeparture(r.departure) ? r.departure : null, reason: r.reason ?? null };
-  };
-  // An offer closes itself a minute after it first showed; the daemon stops serving it then too.
-  useEffect(() => { if (!offer) return; const id = offer.id, timer = setTimeout(() => closeOffer(id), OFFER_MS); return () => clearTimeout(timer); }, [offer?.id]);
+  const send = (body: Record<string, unknown>) => departureAct(port, body);
   useEffect(() => { if (view !== 'undo') return; const timer = setTimeout(close, UNDO_MS); return () => clearTimeout(timer); }, [view]);
   useEffect(() => { if (view === 'pin' && !departure) close(); }, [departure?.id]);
 
-  const pin = (index: number) => {
-    if (!offer) return;
-    const id = offer.id;
-    closeOffer(id);
-    void send({ action: 'pin', offer_id: id, index }).then(r => { if (r.d) setDeparture(r.d); }).catch(() => undefined);
-  };
   const next = () => {
     void send({ action: 'next' }).then(r => {
       if (r.d && !r.reason) { setDeparture(r.d); setMsg(''); } else setMsg(t(['No later bus', '没有更晚的车了']));
@@ -97,7 +107,6 @@ export function useTripNote({ port, lang, offer, departure, blocked, closeOffer,
   const note: NotchNote | null = view === 'pin' && departure
     ? { key: 'trip:pin', onClose: close, card: <PinCard d={departure} lang={lang} msg={msg} onNext={next} onCancel={cancel} onDrop={drop} onClose={close}/> }
     : view === 'undo' ? { key: 'trip:undo', onClose: close, card: <UndoCard lang={lang} onUndo={bringBack}/> }
-    : !view && offer && !blocked ? { key: `trip:offer:${offer.id}`, onClose: () => closeOffer(offer.id), card: <OfferCard offer={offer} lang={lang} onPin={pin} onClose={() => closeOffer(offer.id)}/> }
     : null;
   return {
     note,

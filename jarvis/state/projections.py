@@ -754,6 +754,8 @@ class PendingClarification:
             `utterance.received`) after the ask while it was open, or after
             it was dismissed. The one being handled is already appended, so
             the first one sees 1.
+        trip: A `transit` answer's rows and modes (ADR 0205): the card is a bus
+            card, not a question.
     """
 
     clarification_id: str
@@ -765,6 +767,7 @@ class PendingClarification:
     answered_turn_id: str | None = None
     answered_labels: tuple[str, ...] = ()
     utterances_since: int = 0
+    trip: Mapping[str, Any] | None = None
 
     @property
     def waiting(self) -> bool:
@@ -803,6 +806,7 @@ def _fold_pending_clarification(
                 clarification_id=str(evt.payload["clarification_id"]),
                 question=str(evt.payload.get("question", "")),
                 asked_turn_id=str(evt.payload.get("turn_id", "")),
+                trip=evt.payload.get("trip"),
                 fields=(
                     tuple(f for f in fields if isinstance(f, Mapping))
                     if isinstance(fields, list) else ()

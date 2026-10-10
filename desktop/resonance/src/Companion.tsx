@@ -17,7 +17,7 @@ import { answerStartrail, markStartrail, useStartrail } from './startrail';
 import { CardRate, DigestCard, JobsDigestCard, MailNotice, NoticeCard, RateRow, cardTell, ended, noticeCue, useNotices, type Glow, type MomentHold } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { Notch, type Kind as MarkGroup, type NotchNote } from './Notch';
-import { useTripNote } from './TripCards';
+import { TripCard, tripLink, useTripNote } from './TripCards';
 import { fitWindow } from './fitWindow';
 import { NightCard, isNightLook, markNightSeen, morningOf, seenNight, type NightAction, type NightSession, type NightState } from './NightCard';
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
@@ -338,8 +338,9 @@ export function Companion() {
     cue: (name, gain, always) => { const on = preferences.feedbackEnabled && !s.soundMuted && (always || s.quiet === 'off' && audioPrivate.current !== false); if (on) noticeCue(name, preferences.feedbackVolume, gain); return on; },
     answer: (req, body, id) => agents.find(a => a.id === id)?.host ? answerStartrail(id, req, body) : port ? answerRequest(port, req.id, body) : Promise.resolve(true), mark: markStartrail });
   const notice = notices.current;
-  // ADR 0203: the bus trip's cards; the offer answers what he just asked, so only another notice on screen holds it.
-  const busCards = useTripNote({ port, lang: companion.lang, offer: notices.offer, departure: notices.departure, blocked: !!notice, closeOffer: notices.closeOffer, setDeparture: notices.setDeparture, leaveDeparture: notices.leaveDeparture });
+  // ADR 0203: the notch's card for the pinned bus trip. ADR 0205: the bus lookup's rows are the conversation's card (`trip` below), not the notch's.
+  const busCards = useTripNote({ port, lang: companion.lang, departure: notices.departure, setDeparture: notices.setDeparture, leaveDeparture: notices.leaveDeparture });
+  const busLink = tripLink(port, notices.departure, notices.setDeparture);
   // A press anywhere else on screen puts a card away (the window is click-through, so main reports it); not one that
   // came up under the pointer a moment ago, and not while the pointer is on the card.
   const away = useRef(() => undefined as void);
@@ -830,6 +831,7 @@ export function Companion() {
 
   const { out } = geo;
   const cardView = card ? <ActionCard key={card.id} card={card} lang={companion.lang} onDecide={decideCard}/>
+    : question?.trip ? <TripCard key={question.id} trip={question.trip} link={busLink} lang={companion.lang} onClose={() => answerQuestion(null)}/>
     : question ? <QuestionCard key={question.id} question={question} lang={companion.lang} onAnswer={answerQuestion}/> : undefined;
   const note: NotchNote | null = carded && cardView ? { key: card ? `card:${card.id}` : `question:${question?.id}`, onClose: () => undefined, card: cardView }
     : nightShown && nightState ? { key: nightKey, onClose: closeMorning, card: <NightCard key={nightKey} state={nightState} morning={morning} unread={notices.unread.size} lang={companion.lang} marks={wardrobe.marks} look={wardrobe.night}
@@ -850,7 +852,7 @@ export function Companion() {
       }}/> };
   const dashboardContent = <AroundDashboard open={dashboard} port={port} onClose={closeDashboard} viewRef={dashboardView} onView={value => { if (detached && detachedMode.current) window.jarvis?.dashboardMessage?.('parent', { type: 'view', value }); }}
           onMood={dashboardMood} settingFocus={settingsFocus} jobsFocus={jobsFocus} agentsFocus={agentsFocus} marksHover={dashboard ? markHover : null} present={s.present} onHop={height => ball.current?.hop(height)}
-          talk={port ? { rows: s.rows, tail, busy: voice === 'thinking', offline: s.phase === 'error', floor, submit: ask, older, card, decide: decideCard, question, answer: answerQuestion,
+          talk={port ? { rows: s.rows, tail, busy: voice === 'thinking', offline: s.phase === 'error', floor, submit: ask, older, card, decide: decideCard, question, answer: answerQuestion, trip: busLink,
             think: { on: deep, secs: deepSecs, words, thoughts } } : undefined}
           plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}
           onAnswer={id => { if (detached) window.jarvis?.dashboardMessage?.('parent', { type: 'notice', id }); else notices.focus(id); closeDashboard('an answer'); }} ctl={ctl}/>;

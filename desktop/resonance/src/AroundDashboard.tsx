@@ -19,6 +19,7 @@ import { scrollWithin } from './scrollWithin';
 import { ArrangeHome, BLOCK } from './ArrangeHome';
 import { BriefPage } from './BriefPage';
 import { SettingsPage, type Account, type AccountKeyDrafts, type Controls } from './SettingsPage';
+import { TripCard, type TripLink } from './TripCards';
 import { ActionCard, MailCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { JobsPage, jobKey, jobKind, type JobApplication, type JobGroup, type JobRule, type Skipped } from './JobsPage';
 import { MAIL_FILTERS, MailLetter, MailList, type MailAct, type MailFilter } from './MailPage';
@@ -124,7 +125,7 @@ const BASIS: Record<Basis, L> = { observed: ['Observed', '看到的'], stated: [
 // `card` is the one waiting for a button (ADR 0062); it sits above the input until it is sent or dismissed.
 // `question` is the ask card (ADR 0066), in the same place, until it is filled in, dismissed or talked over.
 type Talk = { rows: Row[]; tail: string; busy: boolean; offline: boolean; floor: boolean; submit: (text: string) => void; older: () => Promise<boolean>; card?: Card | null; decide?: Decide;
-  question?: Question | null; answer?: Answer; think: Think };
+  question?: Question | null; answer?: Answer; trip?: TripLink; think: Think };
 // Think mode (ADR 0064): whether this turn is deep, the seconds of the deep answer still coming, the words that make a turn deep,
 // and each deep answer's wait by the log position its row lands after.
 export type Think = { on: boolean; secs: number; words: RegExp | null; thoughts: { after: number; secs: number }[] };
@@ -814,7 +815,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
           {turn.work && <Fold label={turn.work[0]}><pre>{turn.work[1]}</pre></Fold>}</div>}
       </div>)}
       {talk?.card && talk.decide && <ActionCard key={talk.card.id} card={talk.card} lang={lang} onDecide={talk.decide} draft={actionDraft?.id === talk.card.id ? actionDraft.value : undefined} onDraft={value => setActionDraft({ id: talk.card!.id, value })}/>}
-      {talk?.question && talk.answer && <QuestionCard key={talk.question.id} question={talk.question} lang={lang} onAnswer={talk.answer} draft={questionDraft?.id === talk.question.id ? questionDraft.value : undefined} onDraft={value => setQuestionDraft({ id: talk.question!.id, value })}/>}
+      {talk?.question?.trip && talk.trip && talk.answer && <TripCard key={talk.question.id} trip={talk.question.trip} link={talk.trip} lang={lang} onClose={() => talk.answer!(null)}/>}
+      {talk?.question && !talk.question.trip && talk.answer && <QuestionCard key={talk.question.id} question={talk.question} lang={lang} onAnswer={talk.answer} draft={questionDraft?.id === talk.question.id ? questionDraft.value : undefined} onDraft={value => setQuestionDraft({ id: talk.question!.id, value })}/>}
       {talk && talk.think.secs > 0 && <div className="pg-sec tr-think">{t([`Thinking deeply · ${talk.think.secs} s`, `深想中 · ${talk.think.secs} 秒`])}</div>}
       <Ask className="pg-input" text={talkDraft} setText={setTalkDraft} onAsk={ask} think={talk?.think}/></div>
     </>,

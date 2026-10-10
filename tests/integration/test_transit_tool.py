@@ -9,6 +9,7 @@ import sys
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -19,6 +20,8 @@ from jarvis.execution import transit_tool
 from jarvis.execution.tools import ToolError, build_default_registry
 from jarvis.runtime import _here_location, _transit_places
 from jarvis.shared import CallerPrincipal
+from jarvis.state.event_log import iter_events_of_types, open_event_log
+from jarvis.state.projections import CLARIFICATION_EVENT_TYPES, PendingClarification
 from jarvis.surface import mac_location
 
 if TYPE_CHECKING:
@@ -43,11 +46,19 @@ def _serve(
     *,
     fail: Exception | None = None,
     answer: dict[str, Any] = HANDBUILT,
+    modes: dict[str, Any] | None = None,
 ) -> list[Any]:
+    """Serve ``answer`` to TRANSIT; DRIVE and WALK get ``modes[mode]`` (none: no routes)."""
     seen: list[Any] = []
 
     def urlopen(request: urllib.request.Request, *, timeout: float) -> io.BytesIO:
         seen.append((request, timeout))
+        travel = json.loads(request.data)["travelMode"]
+        if travel != "TRANSIT":
+            reply = (modes or {}).get(travel, {})
+            if isinstance(reply, Exception):
+                raise reply
+            return io.BytesIO(json.dumps(reply).encode())
         if fail is not None:
             raise fail
         return io.BytesIO(json.dumps(answer).encode())
@@ -58,6 +69,21 @@ def _serve(
     return seen
 
 
+def _sent(seen: list[Any], travel: str = "TRANSIT") -> tuple[urllib.request.Request, float]:
+    """The one request made for ``travel``, with its timeout."""
+    (found,) = (s for s in seen if json.loads(s[0].data)["travelMode"] == travel)
+    return found  # type: ignore[no-any-return]
+
+
+@pytest.fixture(autouse=True)
+def _event_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The conversation card is an event in the log the tool is handed."""
+    monkeypatch.setitem(_LOG, "conn", open_event_log(tmp_path / "events.db"))
+    # A direct call has no `action.running` event to link the card to.
+    monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
+
+
+_LOG: dict[str, Any] = {}
 FIX = {"lat": 48.46, "lng": -123.31, "accuracy_m": 40.4, "place": "Ring Rd, Saanich"}
 
 
@@ -77,7 +103,8 @@ def _call(
         here_location=here,
     )
     (definition,) = (d for d in registry.get_definitions() if d.name == tool)
-    return dict(definition.handler(args, None))  # type: ignore[arg-type,call-arg,misc]
+    ctx = SimpleNamespace(conn=_LOG["conn"], action_id="A1")
+    return dict(definition.handler(args, ctx))  # type: ignore[arg-type,call-arg,misc]
 
 
 def test_the_answer_is_plain_words_in_local_time_with_three_options(
@@ -116,7 +143,8 @@ def test_one_post_with_the_key_a_tight_field_mask_and_the_saved_places(
     """One request: headers, body, timeout; home is lat/lng, school an address, depart_at in UTC."""
     seen = _serve(monkeypatch)
     _call({"origin": "Home", "destination": "school", "depart_at": "17:30"})
-    ((request, timeout),) = seen
+    assert len(seen) == 3  # the bus, and the other ways there at the same time
+    request, timeout = _sent(seen)
     assert request.full_url == "https://routes.googleapis.com/directions/v2:computeRoutes"
     assert request.get_method() == "POST"
     assert request.get_header("X-goog-api-key") == FAKE_KEY
@@ -146,7 +174,7 @@ def test_any_other_text_goes_to_google_as_an_address_and_now_sends_no_time(
     """Free text is an address; without depart_at no departureTime is sent."""
     seen = _serve(monkeypatch)
     _call({"origin": "school", "destination": "Mayfair Mall"})
-    body = json.loads(seen[0][0].data)
+    body = json.loads(_sent(seen)[0].data)
     assert body["destination"] == {"address": "Mayfair Mall"}
     assert "departureTime" not in body
 
@@ -179,7 +207,7 @@ def test_an_unsaved_place_is_a_tool_error_and_sends_nothing(
         _call({"origin": "home", "destination": "school"}, places={"school": "UVic"})
     assert seen == []
     _call({"origin": "school", "destination": "work"})
-    assert json.loads(seen[0][0].data)["destination"] == {"address": "work"}
+    assert json.loads(_sent(seen)[0].data)["destination"] == {"address": "work"}
 
 
 @pytest.mark.parametrize(
@@ -219,7 +247,7 @@ def test_here_is_the_macs_location_as_a_lat_lng_waypoint_and_is_said_with_its_ac
     """'here': the fix goes to Google as latLng; from says this Mac, the place and the metres."""
     seen = _serve(monkeypatch)
     out = _call({"origin": "Here", "destination": "home"}, here=_fix())
-    assert json.loads(seen[0][0].data)["origin"] == {
+    assert json.loads(_sent(seen)[0].data)["origin"] == {
         "location": {"latLng": {"latitude": 48.46, "longitude": -123.31}}
     }
     assert out["from"] == "here (this Mac, Ring Rd, Saanich, ±40 m)"
@@ -338,3 +366,62 @@ def test_the_runtime_offers_this_macs_reader_only_on_a_mac_and_a_brain_reads_its
     monkeypatch.setattr(sys, "platform", "linux")
     assert _here_location("all", log) is None
     assert _here_location("brain", log) is not None  # ADR 0198: its phone, not a Mac
+
+
+def test_the_other_ways_there_come_back_beside_the_bus_and_a_failed_one_is_left_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0205: DRIVE and WALK ask only for time and distance; a failure leaves that out."""
+    seen = _serve(
+        monkeypatch,
+        modes={
+            "DRIVE": {"routes": [{"duration": "725s", "distanceMeters": 9340}]},
+            "WALK": OSError("HTTP 500"),
+        },
+    )
+    out = _call({"origin": "school", "destination": "home"})
+    assert out["modes"] == {"drive": {"minutes": 12, "km": 9.3}}
+    assert len(out["options"]) == 2  # the bus answer is as it was
+    for travel in ("DRIVE", "WALK"):
+        request, timeout = _sent(seen, travel)
+        assert request.get_header("X-goog-fieldmask") == "routes.duration,routes.distanceMeters"
+        assert json.loads(request.data) == {
+            "origin": {"address": "University of Victoria, Victoria, BC"},
+            "destination": {"location": {"latLng": {"latitude": 48.48, "longitude": -123.38}}},
+            "travelMode": travel,
+        }
+        assert timeout == 5.0
+
+
+def test_no_other_way_answering_leaves_no_modes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both fail or return nothing: the result is the bus options alone."""
+    _serve(monkeypatch, modes={"DRIVE": OSError("down"), "WALK": {}})
+    assert "modes" not in _call({"origin": "school", "destination": "home"})
+
+
+def test_the_answer_puts_up_one_bus_card_that_a_newer_answer_replaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0205: the card is the ask card's slot with `trip` rows and modes; newer replaces."""
+    _serve(monkeypatch, modes={"WALK": {"routes": [{"duration": "2400s", "distanceMeters": 3100}]}})
+
+    def slot() -> PendingClarification:
+        found = PendingClarification.from_events(
+            iter_events_of_types(_LOG["conn"], CLARIFICATION_EVENT_TYPES)
+        )
+        assert found is not None
+        return found
+
+    _call({"origin": "school", "destination": "home"})
+    first = slot()
+    assert first.waiting
+    assert first.fields == ()
+    assert first.trip is not None
+    assert first.trip["offer_id"] == first.clarification_id
+    assert first.trip["modes"] == {"walk": {"minutes": 40, "km": 3.1}}
+    assert [(r["index"], r["route"], r["leave_at"]) for r in first.trip["options"]] == [
+        (0, "26", "17:06"),
+        (1, "28 → 6", "17:16"),
+    ]
+    _call({"origin": "school", "destination": "home"})
+    assert slot().clarification_id != first.clarification_id

@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useLayoutEffect, useReducer, useR
 import { ArrowSquareOut, ArrowUp, Check, Moon, X } from '@phosphor-icons/react';
 import { jobKind, jobStamp } from './JobsPage';
 import { postRoute } from './homeData';
-import { isDeparture, isOffer, type Departure, type TransitOffer } from './pin';
+import { isDeparture, type Departure } from './pin';
 import { AGENT_NAME, loadMarks, openLabel, requestLine, saveMark, type Agent, type AgentRequest, type AgentState } from './agents';
 import { AgentMark, type MarkLook, type MarkState } from './AgentMarks';
 import { tr, useT, type L, type Lang } from './companionSettings';
@@ -127,8 +127,6 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
       glows: [] as Glow[], glowGone: new Set<string>(),
       // The pinned bus trip (ADR 0200) the latest poll served, and the pin taken off here that the daemon may still serve for a poll.
       departure: null as Departure | null, departureGone: '',
-      // The options the last bus lookup offers (ADR 0203), and the offer closed here that the daemon may still serve for a poll.
-      offer: null as TransitOffer | null, offerGone: '',
       // Other cards (ADR 0160): the ids told `seen` to the daemon, and the reactions already told, as `cid|reaction`.
       snapped: new Set<string>(), reacted: new Set<string>(),
       // Sessions changed here before the daemon's marks arrived: their marks stay as she set them.
@@ -299,16 +297,15 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
       try {
         let r = await get();
         if (r.status === 404 && route === '/inherent/notices') { audio.current = undefined; route = '/inherent/moment'; r = await get(); }
-        if (r.status === 404) { word(null); takeGlows([]); s.departure = null; s.offer = null; bump(); return; }
+        if (r.status === 404) { word(null); takeGlows([]); s.departure = null; bump(); return; }
         if (!r.ok) { if (route === '/inherent/notices') audio.current = false; miss(); }
         if (r.ok && !stop) {
-          const { notices, audio_private, hold, departure, transit_offer } = await r.json() as { notices?: JobNotice[]; audio_private?: boolean; hold?: unknown; departure?: unknown; transit_offer?: unknown };
+          const { notices, audio_private, hold, departure } = await r.json() as { notices?: JobNotice[]; audio_private?: boolean; hold?: unknown; departure?: unknown };
           if (route === '/inherent/notices') audio.current = typeof audio_private === 'boolean' ? audio_private : undefined;
           word(hold);
           const rows = (Array.isArray(notices) ? notices : []).filter(n => typeof n.id === 'string' && typeof n.title === 'string');
           takeGlows(rows.filter(n => n.level === 'glow'));
           s.departure = isDeparture(departure) && departure.id !== s.departureGone ? departure : null;
-          s.offer = isOffer(transit_offer) && transit_offer.id !== s.offerGone ? transit_offer : null;
           for (const n of rows) if ((n.kind === 'mail' || n.kind === 'digest') && n.level !== 'glow') arrive({ kind: n.kind === 'mail' ? 'mail' : 'jobs', id: n.id, job: n });
           bump();
         }
@@ -326,8 +323,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   };
   // The pin leaves the wing at once and the daemon is told to unpin it (ADR 0200).
   const leaveDeparture = (d: Departure) => { s.departureGone = d.id; s.departure = null; tell(port, d.id, { action: 'dismissed' }); bump(); };
-  // The card pinned or closed: the offer leaves at once. A pin the daemon just made shows at once, without waiting for the next poll (ADR 0203).
-  const closeOffer = (id: string) => { s.offerGone = id; s.offer = null; bump(); };
+  // A pin the daemon just made shows at once, without waiting for the next poll (ADR 0203).
   const setDeparture = (d: Departure | null) => { s.departure = d; bump(); };
   // Their names leave any pop; `cards` takes their needs-you cards away too.
   const drop = (ids: string[], cards = false) => {
@@ -507,7 +503,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   };
   return { current, count: s.queue.filter(needs).length, peek: s.peek, openedAt: s.openedAt, over: s.over, card: current ? card(current) : null,
     unread: s.unread as ReadonlySet<string>, archived: s.archived as ReadonlySet<string>, parked: s.parked as ReadonlyMap<string, number>,
-    glows: s.glows.filter(g => !s.glowGone.has(g.id)), leaveGlow, departure: s.departure, leaveDeparture, offer: s.offer, closeOffer, setDeparture, read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, rate, acted, focus, bump };
+    glows: s.glows.filter(g => !s.glowGone.has(g.id)), leaveGlow, departure: s.departure, leaveDeparture, setDeparture, read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, rate, acted, focus, bump };
 }
 
 // ---------- what waited ----------
