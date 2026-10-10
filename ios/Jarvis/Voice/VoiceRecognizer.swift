@@ -77,7 +77,7 @@ final class VoiceLane: @unchecked Sendable {
         self.lang = lang
         self.fault = fault
         self.onPartial = onPartial
-        transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults],
+        transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults, .fastResults],
                                         attributeOptions: [.transcriptionConfidence])
         analyzer = SpeechAnalyzer(modules: [transcriber], options: .init(priority: .userInitiated, modelRetention: .processLifetime))
         (stream, cont) = AsyncStream.makeStream(of: AnalyzerInput.self)
