@@ -9,7 +9,7 @@ import Speech
 private let log = Logger(subsystem: "com.allen.jarvis", category: "voice")
 
 /// After the end of the audio each lane gets this long to deliver its final text; a lane that misses it is cut off.
-let kLaneDeadline = 1.5
+let kLaneDeadline = 3.0
 
 let kContextualNames = ["Jarvis", "Claude Code", "Opus", "TimeSink", "co-op", "Pola", "Eva", "美光"]
 
@@ -44,7 +44,16 @@ func convert(_ buf: AVAudioPCMBuffer, using conv: AVAudioConverter) -> AVAudioPC
 
 /// What a lane thinks so far, for the live caption: the same pick rule as the final.
 /// `heard` is every lane's text, for spotting the wake word in whichever locale caught it.
-struct Partial: Sendable { var lang: VoiceLang; var text: String; var confidence: Double; var heard = "" }
+struct Partial: Sendable, LaneText { var lang: VoiceLang; var text: String; var confidence: Double; var heard = "" }
+
+/// What a lane has heard so far: the finalized text, and the volatile guess for the audio after it (a final result replaces it).
+private struct Heard {
+    var text = "", conf: [Double] = [], vol = "", volConf: [Double] = []
+    func result(_ lang: VoiceLang) -> LaneResult {
+        let t = text + vol
+        return LaneResult(lang: lang, text: t, confidence: t.isEmpty ? 0 : meanConfidence(conf + volConf))
+    }
+}
 
 @available(iOS 26, macOS 26, *)
 final class VoiceLane: @unchecked Sendable {
@@ -57,11 +66,11 @@ final class VoiceLane: @unchecked Sendable {
     private struct Gate { var format: AVAudioFormat?; var conv: AVAudioConverter?; var waiting: [AVAudioPCMBuffer] = []; var dead = false }
     private let gate = OSAllocatedUnfairLock(initialState: Gate())
     private var collector: Task<LaneResult, Never>?
-    /// What the collector has finalized so far, for a lane that is cut off at the deadline.
-    private let got = OSAllocatedUnfairLock(initialState: (text: "", conf: [Double]()))
+    /// What the collector has heard so far, for a lane that is cut off at the deadline.
+    private let got = OSAllocatedUnfairLock(initialState: Heard())
     private let onPartial: @Sendable (Partial) -> Void
     /// Test seam for the harness: make this lane fail to start, or never finish.
-    enum Fault { case failStart, hangFinish }
+    enum Fault { case failStart, hangFinish, noFinal }
     private let fault: Fault?
 
     init(_ lang: VoiceLang, locale: Locale, fault: Fault? = nil, onPartial: @escaping @Sendable (Partial) -> Void) {
@@ -90,22 +99,20 @@ final class VoiceLane: @unchecked Sendable {
         ctx.contextualStrings[.general] = kContextualNames
         try await analyzer.setContext(ctx)
         let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
-        let (t, lang, onPartial, got) = (transcriber, self.lang, self.onPartial, self.got)
+        let (t, lang, onPartial, got, noFinal) = (transcriber, self.lang, self.onPartial, self.got, fault == .noFinal)
         collector = Task {
-            var text = "", conf: [Double] = []
             do {
                 for try await r in t.results {
-                    let runs = r.text.runs.compactMap { $0.transcriptionConfidence }
-                    if r.isFinal {
-                        text += String(r.text.characters); conf += runs
-                        let (t0, c0) = (text, conf); got.withLock { $0 = (t0, c0) }
-                        onPartial(Partial(lang: lang, text: text, confidence: meanConfidence(conf)))
-                    } else {
-                        onPartial(Partial(lang: lang, text: text + String(r.text.characters), confidence: meanConfidence(conf + runs)))
+                    if r.isFinal && noFinal { continue }                // harness fault: this lane only ever has volatile text
+                    let (str, runs) = (String(r.text.characters), r.text.runs.compactMap { $0.transcriptionConfidence })
+                    let h = got.withLock { h -> Heard in
+                        if r.isFinal { h.text += str; h.conf += runs; h.vol = ""; h.volConf = [] } else { h.vol = str; h.volConf = runs }
+                        return h
                     }
+                    onPartial(Partial(lang: lang, text: h.text + h.vol, confidence: meanConfidence(h.conf + h.volConf)))
                 }
             } catch {}
-            return LaneResult(lang: lang, text: text, confidence: text.isEmpty ? 0 : meanConfidence(conf))
+            return got.withLock { $0 }.result(lang)
         }
         if fault == .failStart { throw StartFault() }
         try await analyzer.start(inputSequence: stream)
@@ -157,12 +164,13 @@ final class VoiceLane: @unchecked Sendable {
             let timer = Task { try? await Task.sleep(nanoseconds: UInt64(deadline * 1e9)); resume(nil) }
             Task { resume(await work.value); timer.cancel() }
         }
-        if let done { VoiceTrace.note("lane \(lang.rawValue) finished: \(done.text.count) chars, confidence \(done.confidence)"); return done }
+        let h = got.withLock { $0 }
+        VoiceTrace.note("lane \(lang.rawValue) finish: final \(h.text.count) chars, volatile \(h.vol.count) chars, timed out \(done == nil ? "yes" : "no"), confidence \(h.result(lang).confidence)")
+        if let done { return done }
         log.error("voice lane \(self.lang.rawValue) missed the \(deadline)s deadline; using what it had")
-        VoiceTrace.note("lane \(lang.rawValue) missed the \(deadline)s deadline")
         work.cancel()
         Task { await self.cancel() }
-        return got.withLock { LaneResult(lang: lang, text: $0.text, confidence: $0.text.isEmpty ? 0 : meanConfidence($0.conf)) }
+        return h.result(lang)
     }
 
     func cancel() async {
@@ -191,10 +199,9 @@ final class DualRecognizer: @unchecked Sendable {
             VoiceLane(lang, locale: resolved[lang] ?? lang.locale, fault: faults[lang]) { p in
                 let best = store.withLock { s -> Partial in
                     s[p.lang] = p
-                    // volatile results often carry no confidence: with nothing to compare, the lane with more text leads
-                    var best = VoiceLang.allCases.compactMap { s[$0] }.reduce(p) {
-                        $1.confidence > $0.confidence || ($1.confidence == 0 && $0.confidence == 0 && $1.text.count > $0.text.count) ? $1 : $0
-                    }
+                    // volatile results often carry no confidence: then the lane whose text is in its own script leads (see pickLane)
+                    let seen = VoiceLang.allCases.compactMap { s[$0] }
+                    var best = seen.dropFirst().reduce(seen[0], pickLane)
                     best.heard = s.values.map(\.text).joined(separator: " ")
                     return best
                 }

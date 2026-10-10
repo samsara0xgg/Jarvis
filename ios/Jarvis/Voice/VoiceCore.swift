@@ -20,9 +20,22 @@ struct LaneResult: Equatable, Sendable {
 /// Mean transcriptionConfidence over a lane's runs; no runs (empty text) counts as 0.
 func meanConfidence(_ runs: [Double]) -> Double { runs.isEmpty ? 0 : runs.reduce(0, +) / Double(runs.count) }
 
+protocol LaneText { var lang: VoiceLang { get }; var text: String { get }; var confidence: Double { get } }
+extension LaneResult: LaneText {}
+
+/// zh: the text has CJK (scalar >= U+2E80). en: it has Latin letters and no CJK.
+func inOwnScript(_ l: some LaneText) -> Bool {
+    let u = l.text.unicodeScalars
+    let cjk = u.contains { $0.value >= 0x2E80 }
+    return l.lang == .zh ? cjk : !cjk && u.contains { $0.isASCII && $0.properties.isAlphabetic }
+}
+
 /// The locale whose text is more confident wins. Measured on 40 real recordings; it ties a SenseVoice detector, so no other language detector.
-/// A tie goes to the first (zh).
-func pickLane(_ a: LaneResult, _ b: LaneResult) -> LaneResult { b.confidence > a.confidence ? b : a }
+/// On equal confidence (volatile text carries none) the lane whose text is in its own script wins; if neither or both are, the first (zh).
+func pickLane<T: LaneText>(_ a: T, _ b: T) -> T {
+    if a.confidence != b.confidence { return b.confidence > a.confidence ? b : a }
+    return inOwnScript(b) && !inOwnScript(a) ? b : a
+}
 
 // MARK: short commands
 
@@ -71,6 +84,12 @@ func demoVoiceCore() {
     assert(pickLane(zh, en).lang == .zh && pickLane(en, zh).lang == .zh)
     assert(pickLane(LaneResult(lang: .zh), LaneResult(lang: .en)).lang == .zh)       // tie
     assert(pickLane(LaneResult(lang: .zh), LaneResult(lang: .en, text: "I would.", confidence: 0.57)).lang == .en)
+    // zero confidence on both (volatile text): the lane in its own script wins, else zh
+    let (zhText, enGarbage) = (LaneResult(lang: .zh, text: "今天天气怎么样"), LaneResult(lang: .en, text: "Jin tian tian chi"))
+    assert(pickLane(zhText, enGarbage).lang == .zh)
+    assert(pickLane(LaneResult(lang: .zh), LaneResult(lang: .en, text: "What time is it")).lang == .en)
+    assert(pickLane(LaneResult(lang: .zh, text: "ok"), LaneResult(lang: .en, text: "ok")).lang == .en)
+    assert(pickLane(LaneResult(lang: .zh), LaneResult(lang: .en)).lang == .zh && pickLane(LaneResult(lang: .zh, text: "你好"), LaneResult(lang: .en)).lang == .zh)
     for (t, c) in [("退下", VoiceCommand.stop), ("退下吧。", .stop), (" Shut up! ", .stop), ("shut  up", .stop), ("Stop.", .stop), ("停", .stop),
                    ("等一下", .wait), ("Hold on", .wait), ("hold on,", .wait), ("继续", .resume), ("Go on.", .resume), ("接着说", .resume),
                    ("晚安", .goodnight), ("Good night!", .goodnight)] {

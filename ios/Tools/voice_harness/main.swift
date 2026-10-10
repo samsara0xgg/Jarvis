@@ -127,8 +127,28 @@ do {
     assert(d1.all.count == 1 && d1.all[0].0 == other && !d1.all[0].1, "\(d1.all)")
     print(String(format: "dead lane %@ (failed to start): finish %.2fs, picked %@ \"%@\" like the unfaulted run, reported dead once, not both", other.rawValue, failed.seconds, failed.picked.lang.rawValue, failed.picked.text))
     let hung = try await recognize(clip, faults: [other: .hangFinish])
-    assert(hung.seconds >= kLaneDeadline && hung.seconds < kLaneDeadline + 1 && hung.picked == base.picked, "\(hung)")
+    assert(hung.seconds >= kLaneDeadline && hung.seconds < kLaneDeadline + 1 && hung.picked.lang == base.picked.lang && !hung.picked.text.isEmpty, "\(hung)")
     print(String(format: "hung lane %@ (never finishes): cut off, finish %.2fs (deadline %.1fs), picked %@ \"%@\"", other.rawValue, hung.seconds, kLaneDeadline, hung.picked.lang.rawValue, hung.picked.text))
+    // A lane that never delivers a final result still gives its last volatile text; both-empty stays empty.
+    let nf = try await recognize(clip, faults: [live: .noFinal, other: .failStart])
+    assert(nf.seconds < kLaneDeadline && nf.picked.lang == live && !nf.picked.text.isEmpty, "\(nf)")
+    print(String(format: "no-final lane %@ (isFinal dropped): finish %.2fs, fell back to volatile text, %d chars (the normal run had %d)", live.rawValue, nf.seconds, nf.picked.text.count, base.picked.text.count))
+    let nfBoth = try await recognize(clip, faults: [.zh: .noFinal, .en: .noFinal])
+    assert(!nfBoth.picked.text.isEmpty, "\(nfBoth)")
+    print(String(format: "no-final on both lanes: finish %.2fs, picked %@ with %d chars of volatile text", nfBoth.seconds, nfBoth.picked.lang.rawValue, nfBoth.picked.text.count))
+    // The tie-break on zero confidence: a lane in its own script beats one that is not; neither or both -> zh.
+    let pairs: [(String, LaneResult, LaneResult, VoiceLang)] = [
+        ("zh text vs en garbage, conf 0", LaneResult(lang: .zh, text: "今天天气怎么样"), LaneResult(lang: .en, text: "Jin tian tian chi yang"), .zh),
+        ("en garbage longer than zh text, conf 0", LaneResult(lang: .zh, text: "你好"), LaneResult(lang: .en, text: "Knee how a very long run"), .zh),
+        ("en text vs empty zh, conf 0", LaneResult(lang: .zh), LaneResult(lang: .en, text: "What time is it"), .en),
+        ("zh latin-only vs en text, conf 0", LaneResult(lang: .zh, text: "ok"), LaneResult(lang: .en, text: "ok"), .en),
+        ("both empty", LaneResult(lang: .zh), LaneResult(lang: .en), .zh),
+    ]
+    for (name, a, b, want) in pairs {
+        let got = pickLane(a, b)
+        assert(got.lang == want, name)
+        print("tie-break \(name): picked \(got.lang.rawValue)")
+    }
     let d2 = DeadLog()
     let none = try await recognize(clip, faults: [.zh: .failStart, .en: .failStart], dead: d2)
     assert(none.seconds < 2 && none.picked.text.isEmpty && d2.all.count == 2 && d2.all.contains { $0.1 }, "\(none) \(d2.all)")
