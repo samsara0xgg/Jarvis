@@ -280,6 +280,7 @@ from jarvis.surface.inherent_server import (
     InherentV2Deps,
     InputSubmissionOutcome,
     create_app,
+    manager_authorize,
     require_local_key,
 )
 from jarvis.surface.playback_recovery import reconcile_open_playback
@@ -6759,7 +6760,14 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             plugin_read=runtime.plugin_connections.read if runtime.plugin_connections else None,
             plugin_action=runtime.plugin_connections.action if runtime.plugin_connections else None,
             plugin_authorize=(
-                runtime.plugin_connections.settings.matches if runtime.plugin_connections else None
+                manager_authorize(
+                    runtime.plugin_connections.settings.matches,
+                    functools.partial(device_token_matches, runtime.runtime_paths.root)
+                    if runtime.listen_addresses
+                    else None,
+                )
+                if runtime.plugin_connections
+                else None
             ),
             plugin_icon=runtime.plugin_connections.icon if runtime.plugin_connections else None,
             language_save=functools.partial(save_language, runtime.runtime_paths.settings),

@@ -21,7 +21,12 @@ from starlette.websockets import WebSocketDisconnect
 from jarvis.deployment import bootstrap_runtime
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from jarvis.surface.inherent_server import (
+    InherentDeps,
+    create_app,
+    manager_authorize,
+    require_local_key,
+)
 from jarvis.surface.voice_controls import VoiceControls
 
 KEYLESS = {"/api/health"}
@@ -100,7 +105,7 @@ def _client(
             conversation_read=lambda _after, _limit: {"since": None, "rows": []},
             plugin_read=dict,
             plugin_action=lambda _operation, _data: {},
-            plugin_authorize=matches,
+            plugin_authorize=manager_authorize(matches, guard.get("device_token_matches")),
             plugin_icon=lambda _plugin_id: None,
             language_save=lambda _code: "zh",
             today_read=_empty,

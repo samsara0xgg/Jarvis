@@ -393,6 +393,19 @@ def test_a_get_and_a_post_reach_the_brain_under_the_device_token_and_never_the_l
         assert rig.key not in everything
 
 
+def test_the_plugin_routes_are_forwarded_under_the_device_token(tmp_path: Path) -> None:
+    """ADR 0202: the companion's plugin request reaches the brain as this device, not as the key."""
+    with _rig(tmp_path) as rig:
+        listed = rig.get("/inherent/plugins", headers=rig.headers)
+        assert listed.json()["path"] == "/inherent/plugins"
+        body = json.dumps({"operation": "open", "data": {"plugin_id": "notion"}}).encode()
+        sent = rig.post("/inherent/plugins/action", content=body,
+                        headers={**rig.headers, "Content-Type": "application/json"})
+        assert sent.json()["path"] == "/inherent/plugins/action"
+        assert [one["headers"]["authorization"] for one in rig.brain.seen] == [
+            f"Bearer {DEVICE_TOKEN}"] * 2
+
+
 def test_a_brain_refusal_comes_back_as_it_is_and_is_not_retried(tmp_path: Path) -> None:
     """A route the device token cannot open answers the UI with the brain's own refusal."""
     with _rig(tmp_path) as rig:

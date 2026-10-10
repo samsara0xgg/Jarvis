@@ -48,16 +48,6 @@ if TYPE_CHECKING:
 
 REMOTE = "100.87.250.92"
 V2 = "/inherent/ws/v2"
-# These handlers check the local key themselves (plugin credentials, the language file, the
-# Codex reset and the balance record), so a device token alone does not open them.
-LOCAL_KEY_ONLY = {
-    "GET /inherent/plugins",
-    "GET /inherent/plugins/{plugin_id}/icon",
-    "POST /inherent/plugins/action",
-    "POST /inherent/language",
-    "POST /inherent/usage/codex/reset",
-    "POST /inherent/usage/balance",
-}
 
 
 def _run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
@@ -162,8 +152,8 @@ def test_a_remote_peer_needs_a_device_token_on_every_route(
 ) -> None:
     """No token, a wrong one and the local key are refused on every route but health.
 
-    Six routes that hold the owner's credentials answer to the local key as well, so they stay
-    closed to a device token.
+    The plugin, language, Codex reset and balance routes check again in their handler (ADR 0202):
+    a device token opens them as it opens every other route.
     """
     client, key, routes = _remote(tmp_path)
     token = _pair(tmp_path, "macbook", capsys)
@@ -181,11 +171,34 @@ def test_a_remote_peer_needs_a_device_token_on_every_route(
 
     good = {"Authorization": f"Bearer {token}", **host}
     for route in routes:
-        opened = _call(client, route, good) not in {401, 1008}
-        assert opened == (route not in LOCAL_KEY_ONLY), route
+        assert _call(client, route, good) not in {401, 1008}, route
     assert client.get("/inherent/conversation", headers=good).json() == {
         "since": None, "rows": [],
     }
+
+
+def test_a_paired_device_manages_plugins_and_a_wrong_token_does_not(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ADR 0202: the plugin, language and usage-write routes answer 200 to a device token only."""
+    client, key, _ = _remote(tmp_path)
+    token = _pair(tmp_path, "phone", capsys)
+    plugin_action = {"operation": "open", "data": {"plugin_id": "x"}}
+    reset = {"request_id": "00000000-0000-0000-0000-000000000000"}
+    requests: tuple[tuple[str, str, dict[str, Any]], ...] = (
+        ("GET", "/inherent/plugins", {}),
+        ("GET", "/inherent/plugins/x/icon", {}),
+        ("POST", "/inherent/plugins/action", plugin_action),
+        ("POST", "/inherent/language", {"language": "en"}),
+        ("POST", "/inherent/usage/codex/reset", reset),
+        ("POST", "/inherent/usage/balance", {"service": "openai", "usd": 1}),
+    )
+    for bearer, expected in ((token, 200), ("wrong", 401), (key, 401)):
+        headers = {"Authorization": f"Bearer {bearer}", "Host": "jarvis"}
+        for method, path, body in requests:
+            sent = client.request(method, path, headers=headers, json=body or None)
+            status = sent.status_code
+            assert status == expected, (method, path, bearer == token)
 
 
 def test_revoking_a_device_takes_effect_without_a_restart(

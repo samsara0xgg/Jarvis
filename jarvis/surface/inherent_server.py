@@ -701,8 +701,9 @@ class InherentDeps:
     # ADR 0069: the file Allen's marks on agent sessions live in (unread,
     # parked, archived). ``None`` leaves the marks routes unregistered.
     agent_marks_path: Path | None = None
-    # ADR 0038: desktop management uses a private local credential, unlike
-    # ordinary text submission. Secrets never travel on the public websocket.
+    # ADR 0038, 0202: desktop management takes the local key or a paired device's
+    # token (``manager_authorize``), unlike ordinary text submission. Secrets never
+    # travel on the public websocket.
     plugin_read: Callable[[], dict[str, Any]] | None = None
     plugin_action: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None
     plugin_authorize: Callable[[str | None], bool] | None = None
@@ -976,6 +977,25 @@ def _is_loopback_peer(client: Address | None) -> bool:
         return ipaddress.ip_address(client.host).is_loopback
     except ValueError:
         return False
+
+
+def manager_authorize(
+    authorize: Callable[[str | None], bool],
+    device_token_matches: Callable[[str], bool] | None,
+) -> Callable[[str | None], bool]:
+    """The handler-level check of the plugin, language, Codex reset and balance routes (ADR 0202).
+
+    ``authorize`` is the local key; with ``device_token_matches`` a paired device's token passes
+    too. The middleware has already refused a remote peer without a device token.
+    """
+    if device_token_matches is None:
+        return authorize
+
+    def allowed(header: str | None) -> bool:
+        token = _v2_presented_token(header)
+        return authorize(header) or (token is not None and device_token_matches(token))
+
+    return allowed
 
 
 class _LocalKeyMiddleware:
@@ -2510,6 +2530,7 @@ __all__ = [
     "V2Session",
     "create_app",
     "dictation_stream",
+    "manager_authorize",
     "register_night_routes",
     "require_local_key",
 ]
