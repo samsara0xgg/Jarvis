@@ -72,12 +72,16 @@ final class PlayerCore: @unchecked Sendable {
     private let pcm: UnsafeMutablePointer<Float>
     private let gens: UnsafeMutablePointer<Int64>
     private let curs: UnsafeMutablePointer<Int64>
+    // 32 kHz samples handed over up to and including this slot, counted since this player began: what STATUS reports as read,
+    // because the host mirrors the ring in its own (wire) samples and paces against that, not against hardware-rate slots
+    private let srcs: UnsafeMutablePointer<Int64>
     private let scratchGen: UnsafeMutablePointer<Int64>
     private let scratchCur: UnsafeMutablePointer<Int64>
     private let rs: UnsafeMutablePointer<RenderState>
 
     private let writeIdx = Atomic<Int>(0)
     private let readIdxPub = Atomic<Int>(0)
+    private let srcReadPub = Atomic<Int64>(0)
     private let discardBefore = Atomic<Int>(0)
     private let discardSeq = Atomic<UInt64>(0)
     private let activeGen = Atomic<Int64>(-1)
@@ -105,6 +109,7 @@ final class PlayerCore: @unchecked Sendable {
     // Writer-side state (single producer thread).
     private var gainSeq: UInt8 = 0
     private var rsGen: Int64 = -2, rsNext: Int64 = 0, rsT = 0.0, rsPrev: Float = 0
+    private var srcCum: Int64 = 0
     // Drain-side state (single consumer thread).
     private var lastStatus: Int64 = 0
 
@@ -118,6 +123,7 @@ final class PlayerCore: @unchecked Sendable {
         pcm = .allocate(capacity: ringSize); pcm.initialize(repeating: 0, count: ringSize)
         gens = .allocate(capacity: ringSize); gens.initialize(repeating: -1, count: ringSize)
         curs = .allocate(capacity: ringSize); curs.initialize(repeating: 0, count: ringSize)
+        srcs = .allocate(capacity: ringSize); srcs.initialize(repeating: 0, count: ringSize)
         scratchGen = .allocate(capacity: maxFrames); scratchGen.initialize(repeating: -1, count: maxFrames)
         scratchCur = .allocate(capacity: maxFrames); scratchCur.initialize(repeating: 0, count: maxFrames)
         rs = .allocate(capacity: 1)
@@ -126,7 +132,7 @@ final class PlayerCore: @unchecked Sendable {
     }
 
     deinit {
-        pcm.deallocate(); gens.deallocate(); curs.deallocate(); scratchGen.deallocate(); scratchCur.deallocate()
+        pcm.deallocate(); gens.deallocate(); curs.deallocate(); srcs.deallocate(); scratchGen.deallocate(); scratchCur.deallocate()
         rs.deallocate(); outRing.deallocate()
     }
 
@@ -197,11 +203,15 @@ final class PlayerCore: @unchecked Sendable {
             pcm[slot] = a + (b - a) * Float(t - Double(i))
             gens[slot] = generation
             curs[slot] = start + Int64(i)
+            srcs[slot] = srcCum + Int64(i)
             wrote += 1
             t += step
         }
         // The last sample out covers the frame's end, so the ledger's end cursor lands on the true total.
         if wrote > 0 { curs[(w + wrote - 1) & mask] = start + Int64(n - 1) }
+        // the frame's last slot accounts for all of it (a tail dropped on overload too: the host counted it as sent)
+        srcCum += Int64(n)
+        if wrote > 0 { srcs[(w + wrote - 1) & mask] = srcCum }
         rsT = t - Double(n)
         rsPrev = Float(x[n - 1]) * scale
         w += wrote
@@ -354,6 +364,7 @@ final class PlayerCore: @unchecked Sendable {
         }
         if actual < frames { for i in actual..<frames { out[i] = 0 } }
         s.pointee.readIdx = ri + actual
+        if ri + actual > 0 { srcReadPub.store(srcs[(ri + actual - 1) & mask], ordering: .relaxed) }
 
         // ADR-0006:347 starvation clause.
         var resumed = false
@@ -460,7 +471,7 @@ final class PlayerCore: @unchecked Sendable {
         let every: Int64 = activeGen.load(ordering: .relaxed) >= 0 ? 20_000_000 : 500_000_000
         if !frames.isEmpty || now - lastStatus >= every {
             frames.append(.status(PlayerStatus(
-                readIdx: Int64(readIdxPub.load(ordering: .acquiring)), gain: Double(bitPattern: gainPub.load(ordering: .relaxed)),
+                readIdx: srcReadPub.load(ordering: .relaxed), gain: Double(bitPattern: gainPub.load(ordering: .relaxed)),
                 callbacks: callbacksPub.load(ordering: .relaxed), overloads: overloads.load(ordering: .relaxed),
                 starvationGaps: gapsPub.load(ordering: .relaxed), tailRampSamples: UInt32(tailPub.load(ordering: .relaxed)),
                 playedSamples: playedPub.load(ordering: .relaxed))))
