@@ -12,6 +12,7 @@ final class LocalStubLink: VoiceLink {
     private var generation: Int64 = 0
     private var discardSeq: UInt64 = 0
     private var speaking: Task<Void, Never>?
+    private var sentEnd: (gen: Int64, end: Int64)?          // the last sample of the generation being spoken, once all of it is sent
 
     init() { (events, out) = AsyncStream.makeStream(of: LinkEvent.self) }
 
@@ -19,7 +20,15 @@ final class LocalStubLink: VoiceLink {
     func disconnect() { stopSpeaking() }
     func barge() { stopSpeaking(); cancelOpen("barge_in") }
     func cancel() { stopSpeaking(); cancelOpen("user_stop") }
-    func send(_ frames: [PlayerOut]) {}
+    /// Like the host: ACTIVE(-1) once the phone's reports show the whole generation played.
+    func send(_ frames: [PlayerOut]) {
+        guard let e = sentEnd else { return }
+        for case .report(let r) in frames where r.generation == e.gen && r.end >= e.end {
+            sentEnd = nil
+            out.yield(.audio(.active(-1)))
+            return
+        }
+    }
 
     func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool) async throws -> String {
         turns += 1
@@ -62,6 +71,7 @@ final class LocalStubLink: VoiceLink {
     private func stopSpeaking() {
         guard let t = speaking else { return }
         speaking = nil
+        sentEnd = nil
         t.cancel()
         discardSeq += 1
         out.yield(.audio(.active(-1)))                  // what the host sends on a barge-in
@@ -83,6 +93,7 @@ final class LocalStubLink: VoiceLink {
             }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        if !Task.isCancelled, generation == gen { sentEnd = (gen, Int64(x.count)) }
     }
 }
 

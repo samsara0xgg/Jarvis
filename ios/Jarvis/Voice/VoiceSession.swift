@@ -47,7 +47,7 @@ final class VoiceSession {
     private let utteranceCap = 30.0
     private let quiet = 0.3            // input level below this is quiet
     private let bargeLevel = 0.12      // words heard while she talks only count as him when the mic is at least this loud
-    private let audioGrace = 1.0       // her text is done and her ring has been empty this long: her audio is done too (the host sends no end-of-audio row)
+    private let audioFallback = 3.0    // her text is done and her ring has been empty this long but ACTIVE(-1) never came: treat her audio as done (logged)
     private let noAudioAfterText = 6.0 // her text is done and no audio ever came this long after: the host did not speak it
     private let noReply = 30.0         // nothing from the host (no row, no audio) this long: she did not answer
     private let wakeReset = 120.0      // an armed recognizer with no words is restarted this often
@@ -86,6 +86,7 @@ final class VoiceSession {
     @ObservationIgnored private var rowsDone = false                // surface.response_emitted of the answer arrived
     @ObservationIgnored private var rowsDoneAt = 0.0
     @ObservationIgnored private var audioStarted = false
+    @ObservationIgnored private var audioClosed = false             // ACTIVE(-1) after her last PCM16: the host saw it all presented
     // the host's side of this connection
     @ObservationIgnored private var hostVoice = true
     @ObservationIgnored private var readySent = false
@@ -358,6 +359,7 @@ final class VoiceSession {
         waitLines = []
         rowsDone = false
         audioStarted = false
+        audioClosed = false
     }
 
     private func replyFinished() {
@@ -399,7 +401,11 @@ final class VoiceSession {
         case .row(let r): handleRow(r)
         case .audio(let f):
             audio.core?.ingest(f)
-            if case .pcm = f, currentTurn != nil || awaitingSaid { audioStarted = true; lastActivityAt = now }
+            switch f {
+            case .pcm where currentTurn != nil || awaitingSaid: audioStarted = true; audioClosed = false; lastActivityAt = now
+            case .active(-1) where audioStarted: audioClosed = true
+            default: break
+            }
         case .error(_, let m): errorText = m
         case .unpaired: fail("还没有和 Jarvis 配对")
         case .replaced: fail("Jarvis 在这台手机的另一条连接上被接管了")
@@ -467,8 +473,14 @@ final class VoiceSession {
             if !core.ringEmpty { lastActivityAt = t }
             let quietAfter = commandSaid == .stop || commandSaid == .wait || commandSaid == .goodnight
             if rowsDone {
-                let played = audioStarted && core.lastAudioNs > 0
-                if core.ringEmpty, played ? t - Double(core.lastAudioNs) / 1e9 > audioGrace : t - rowsDoneAt > noAudioAfterText { replyFinished() }
+                if !audioStarted {
+                    if t - rowsDoneAt > noAudioAfterText { replyFinished() }
+                } else if core.ringEmpty, audioClosed {
+                    replyFinished()
+                } else if core.ringEmpty, core.lastAudioNs > 0, t - Double(core.lastAudioNs) / 1e9 > audioFallback {
+                    log.notice("voice: reply ended by the \(self.audioFallback) s fallback, no ACTIVE(-1) came")
+                    replyFinished()
+                }
             } else if t - lastActivityAt > (quietAfter ? 3 : noReply) {
                 if quietAfter { goIdle(releasing: false) } else { fail("Jarvis 没有回应") }
             }
