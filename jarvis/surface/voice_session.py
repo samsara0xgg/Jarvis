@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
-from jarvis.surface import ambient_sounds, voice_asr, voice_audio, voice_pipeline
+from jarvis.surface import ambient_sounds, voice_asr, voice_audio, voice_pipeline, word_judge
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1747,65 +1747,28 @@ class DuplexVoiceSession:
         self._conversation_hold_until = 0.0
         self._supersede(turn_id)
 
+    def _word_hooks(self) -> word_judge.WordHooks:
+        return word_judge.WordHooks(
+            ask=self._ask_words, note=self._note_words, begin=self._begin_line,
+            recent=self._recent_speech, quiet=self._set_quiet is not None,
+        )
+
     def _words_verdict(
         self, turn_id: str, text: str, *, conversation: bool, over_her: bool,
     ) -> str:
         """dismissed, wait, backchannel, unclear, stop, echo or turn; Jev settles what is left."""
-        ask = self._ask_words
-        # With Jev, a dismissal found only inside a sentence must be confirmed by it.
-        loose = (
-            ask is not None and conversation
-            and voice_asr.is_dismissal(text) and not voice_asr.is_whole_dismissal(text)
+        return word_judge.words_verdict(
+            self._word_hooks(), turn_id, text, conversation=conversation, over_her=over_her,
         )
-        verdict = self._regex_words(
-            text, conversation=conversation, over_her=over_her, whole_only=ask is not None,
-        )
-        if verdict == "turn" and self._begin_line is not None:
-            try:
-                self._begin_line(turn_id, text, self._recent(), over_her, conversation)
-            except Exception:  # noqa: BLE001 - Jev cannot break capture; the line stays a turn
-                LOGGER.warning("begin_line failed turn_id=%s", turn_id, exc_info=True)
-        if ask is None:
-            return verdict
-        if verdict != "turn":
-            if self._note_words is not None:
-                self._note_words(turn_id, verdict, text, over_her, conversation)
-            return verdict
-        if not (over_her or conversation):
-            return verdict
-        try:
-            choice = ask(turn_id, text, self._recent(), over_her, loose)
-        except Exception:  # noqa: BLE001 - Jev cannot break capture; the line stays a turn
-            LOGGER.warning("ask_words failed turn_id=%s", turn_id, exc_info=True)
-            return verdict
-        return _jev_verdict(choice, conversation=conversation, over_her=over_her)
 
     def _regex_words(
         self, text: str, *, conversation: bool, over_her: bool, whole_only: bool,
     ) -> str:
         """What the regexes make of ``text``; ``whole_only`` leaves out the loose dismissal."""
-        checks: list[tuple[str, Callable[[str], bool]]] = []
-        # ADR 0153: said in any state, ahead of every other verdict.
-        if self._set_quiet is not None and (level := voice_asr.quiet_command(text)) is not None:
-            return f"quiet:{level}"
-        if conversation:
-            dismissal = voice_asr.is_whole_dismissal if whole_only else voice_asr.is_dismissal
-            checks += [("dismissed", dismissal), ("wait", voice_asr.is_wait_request)]
-            if not over_her:
-                checks += [
-                    ("backchannel", voice_asr.is_backchannel),
-                    ("unclear", voice_asr.is_unclear_sound),
-                ]
-        if over_her:
-            checks += [
-                ("backchannel", voice_asr.is_backchannel),
-                ("stop", voice_asr.is_stop_request),
-                ("unclear", voice_asr.is_unclear_sound),
-            ]
-        for verdict, test in checks:
-            if test(text):
-                return verdict
-        return "echo" if over_her and self._is_own_echo(text) else "turn"
+        return word_judge.regex_words(
+            self._word_hooks(), text,
+            conversation=conversation, over_her=over_her, whole_only=whole_only,
+        )
 
     def _act_on_words(self, turn_id: str, text: str, verdict: str, *, over_her: bool) -> None:
         """Carry out a verdict; raises when the words are no turn."""
@@ -1875,26 +1838,6 @@ class DuplexVoiceSession:
             self._cancel_voice_runs()
         except Exception:  # noqa: BLE001 - what is audible must still stop
             LOGGER.warning("cancel_voice_runs failed", exc_info=True)
-
-    def _recent(self) -> str:
-        """What she said lately, for Jev's context; none when it cannot be read."""
-        if self._recent_speech is None:
-            return ""
-        try:
-            return self._recent_speech()
-        except Exception:  # noqa: BLE001 - her recent words cannot break capture
-            LOGGER.debug("recent_speech failed", exc_info=True)
-            return ""
-
-    def _is_own_echo(self, text: str) -> bool:
-        """Whether ``text`` copies what she said lately; no answer means no."""
-        if self._recent_speech is None:
-            return False
-        try:
-            return voice_asr.is_own_echo(text, self._recent_speech())
-        except Exception:  # noqa: BLE001 - her recent words cannot break capture
-            LOGGER.debug("recent_speech failed", exc_info=True)
-            return False
 
     def _judge_no_words(self, turn_id: str, heard: str, *, addressed: bool = False) -> None:
         """No turn in it: her name or a lone stop word over her stops her, anything else not."""
@@ -2369,21 +2312,8 @@ def realtime_input_session_config_from_mapping(
     )
 
 
-def _jev_verdict(choice: str | None, *, conversation: bool, over_her: bool) -> str:
-    """Jev's choice as the verdict the regex path would have given (ADR 0130).
-
-    Dismiss and wait only mean something in conversation mode; over her outside it they
-    stop her, and a stop with her silent has nothing to stop. Everything else is a turn.
-    """
-    if choice == "keep_going":
-        return "backchannel"
-    if choice == "dismiss" and conversation:
-        return "dismissed"
-    if choice == "wait" and conversation:
-        return "wait"
-    if choice in {"stop", "wait", "dismiss"} and over_her:
-        return "stop"
-    return "turn"
+_jev_verdict = word_judge.jev_verdict
+"""Kept under its old name for callers written before the judge moved (ADR 0216)."""
 
 
 def _barge_in_yield(

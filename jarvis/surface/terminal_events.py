@@ -230,9 +230,8 @@ class BrainEvents:
             msg = "not an utterance this host accepts"
             raise ValueError(msg)
         checked_about = None if about is None else clean_about(about)
-        key = f"{device}\0{utterance_id}"
-        turn_id = "T" + uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"turn\0{key}").hex[:16]
-        uid = uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"say\0{key}").hex
+        turn_id = phone_turn_id(device, utterance_id)
+        uid = uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"say\0{device}\0{utterance_id}").hex
         if self._conn.execute("SELECT 1 FROM events WHERE event_uid = ?", (uid,)).fetchone():
             return turn_id
         payload: dict[str, Any] = {"transcript": text, "turn_id": turn_id}
@@ -323,6 +322,12 @@ class BrainEvents:
             ack = self.record(device, frame, size, phone_events.PHONE_EVENT_TYPES)
             acks.append(_ack(frame["event_uid"], "retry") if ack is None else ack)
         return acks
+
+
+def phone_turn_id(device: str, utterance_id: str) -> str:
+    """The turn id a phone's ``say`` opens, from the device and utterance id alone (ADR 0209)."""
+    key = f"{device}\0{utterance_id}"
+    return "T" + uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"turn\0{key}").hex[:16]
 
 
 def _well_formed(frame: Mapping[str, Any]) -> bool:

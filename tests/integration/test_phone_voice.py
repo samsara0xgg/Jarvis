@@ -337,6 +337,7 @@ def test_a_spoken_say_is_one_utterance_answered_in_rows_and_played_by_the_phones
             ready = phone.hello()
             assert ready == {
                 "type": "ready", "device": "iphone", "voice": True, "sample_rate": RATE,
+                "judges": True,
             }
             phone.send_ready()
             phone.send({"type": "ping", "t_ns": phone.phone_ns()})
@@ -347,6 +348,7 @@ def test_a_spoken_say_is_one_utterance_answered_in_rows_and_played_by_the_phones
             phone.say("u-1", "what is the weather", spoken=True)
             said = phone.wait_text("said")
             assert said["utterance_id"] == "u-1"
+            assert said["verdict"] == "turn"  # ADR 0216: an unflagged say is a turn
             turn = said["turn_id"]
             phone.say("u-1", "what is the weather", spoken=True)
             with phone.lock:
@@ -681,6 +683,7 @@ def test_a_daemon_running_alone_serves_the_phone_socket_with_no_terminal_hub(
             ready = phone.hello()
             assert ready == {
                 "type": "ready", "device": "iphone", "voice": False, "sample_rate": RATE,
+                "judges": True,
             }  # the daemon here has no speech key: rows and text only
             phone.send({"type": "ping", "t_ns": 5})
             assert phone.wait_text("pong")["t_ns"] == 5

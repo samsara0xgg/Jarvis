@@ -10,15 +10,18 @@ a newer one replaces the older (the older is closed with code 4000).
 
     phone -> host   {"type": "hello", "voice": true}
     host -> phone   {"type": "ready", "device": "<paired name>", "voice": true,
-                     "sample_rate": 32000}
+                     "sample_rate": 32000, "judges": true}
     phone -> host   {"type": "say", "utterance_id": "<1-64 of A-Za-z0-9_->", "text": "...",
                      "spoken": true, "language": "en", "confidence": 0.93,
-                     "about": {"kind": "reminder", "id": "...", "title": "...", "start_ms": 0}}
-    host -> phone   {"type": "said", "utterance_id": "...", "turn_id": "T..."}
+                     "about": {"kind": "reminder", "id": "...", "title": "...", "start_ms": 0},
+                     "over_her": true, "conversation": false}
+    host -> phone   {"type": "said", "utterance_id": "...", "turn_id": "T...",
+                     "verdict": "turn"}
     host -> phone   {"type": "row", "event_type": "surface.response_chunk",
                      "event_uid": "<32 hex>", "payload": {...}, "ts_epoch_ms": 1700000000000}
     phone -> host   {"type": "barge"}                     it heard Allen over her voice, held
                                                           its output, and asks the host to stop
+                                                          (the older phone; see ``over_her``)
     phone -> host   {"type": "cancel"}                    stop the current answer
     phone -> host   {"type": "ping", "t_ns": 123}
     host -> phone   {"type": "pong", "t_ns": 123, "host_ns": 456}
@@ -39,9 +42,28 @@ probe. The final ``surface.response_emitted`` carries the written part (``docume
 ``say`` may carry ``about``, the item the phone has open (ADR 0214; ``jarvis.shared.about``): it
 is kept on the turn's opening row, and one that is malformed is answered with ``error bad_say``.
 
+**Judging words (ADR 0216).** ``judges`` in ``ready`` is true whenever the host can judge, which
+the regexes alone do. A phone that hears Allen over her voice holds her audio itself and sends
+no ``barge``; it sends the final words as a spoken ``say`` with ``over_her: true`` (and with
+``conversation: true`` for a follow-up in its conversation mode) and the host judges them as the
+Mac does (:mod:`jarvis.surface.word_judge`), answering ``said`` with a ``verdict``. A flag that is
+present and not a bool is ``error bad_say``; typed words ignore both. ``turn``: with ``over_her``
+the host first does what ``barge`` does, then records the say and answers its ``turn_id``.
+``backchannel``, ``unclear``, ``echo``: nothing happens and ``turn_id`` is null, so the phone
+resumes its held audio. ``stop``, ``wait``: the host does what ``barge`` does, no turn.
+``dismissed``: what ``cancel`` does, no turn; the phone ends its own conversation mode.
+``quiet:<level>``: that, then ``set_quiet(level)``; quiet commands are heard only where the host
+wires ``set_quiet``. No turn is recorded for any verdict but ``turn``. The judging runs beside
+the receive loop (Jev may take seconds), so DISCARD_ACK keeps flowing. A resent flagged ``say``
+is judged again, with no cache; a phone that gave up waiting resends it with no flags, which
+records a turn, once. A ``say`` with no flag is a turn: ``verdict`` is ``"turn"``.
+
 **Binary frames** carry the player protocol, one WebSocket message per frame:
 :mod:`jarvis.surface.phone_player` has the layouts. After ``ready`` with ``voice: true`` the
 phone sends READY (its audio session is up); the host speaks nothing before it.
+
+The host speaks no line back to a dismissal, 「等我一下」 or a quiet command as the Mac does
+(:func:`jarvis.runtime.inherent_loop._say_conversation_line`); the phone shows its own.
 
 Layer rules: stdlib, FastAPI and ``jarvis.surface`` only.
 """
@@ -61,7 +83,9 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from fastapi import WebSocketDisconnect
 
+from jarvis.surface import word_judge
 from jarvis.surface.phone_player import PHONE_SAMPLE_RATE_HZ, PhoneFrameError
+from jarvis.surface.terminal_events import phone_turn_id
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -125,6 +149,10 @@ class PhoneHub:
     ``barge_in(device)`` cancels the generation of the device's open answer under its
     interrupt policy; ``cancel_turn(turn_id, reason)`` cancels every open run of one turn.
     Both block (they open their own connections) and run on a worker thread.
+
+    The words judge (ADR 0216) takes the Mac's hooks: ``ask_words``, ``note_words``,
+    ``begin_line`` and ``recent_speech``, all of which block, and ``set_quiet(level)``, without
+    which a quiet command is not recognized. Each is optional; the regexes alone are a judge.
     """
 
     events: BrainEvents
@@ -132,11 +160,23 @@ class PhoneHub:
     open_voice: OpenVoice | None = None
     barge_in: Callable[[str], str] | None = None
     cancel_turn: Callable[[str, str], str] | None = None
+    ask_words: Callable[[str, str, str, bool, bool], str | None] | None = None
+    note_words: Callable[[str, str, str, bool, bool], None] | None = None
+    begin_line: Callable[[str, str, str, bool, bool], None] | None = None
+    recent_speech: Callable[[], str] | None = None
+    set_quiet: Callable[[str], None] | None = None
     live: dict[str, _Connection] = field(default_factory=dict)
 
     def connected(self, device: str) -> bool:
         """Whether ``device`` has a live socket now; the push sender reads it (ADR 0210)."""
         return device in self.live
+
+    def word_hooks(self) -> word_judge.WordHooks:
+        """The judge's view of this host."""
+        return word_judge.WordHooks(
+            ask=self.ask_words, note=self.note_words, begin=self.begin_line,
+            recent=self.recent_speech, quiet=self.set_quiet is not None,
+        )
 
 
 class _Connection:
@@ -246,7 +286,7 @@ async def serve_phone(hub: PhoneHub, ws: WebSocket, device: str) -> None:
         conn.send_json(
             {
                 "type": "ready", "device": device, "voice": conn.voice is not None,
-                "sample_rate": PHONE_SAMPLE_RATE_HZ,
+                "sample_rate": PHONE_SAMPLE_RATE_HZ, "judges": True,
             },
         )
         await _receive(hub, conn)
@@ -360,9 +400,29 @@ def _control(hub: PhoneHub, conn: _Connection, text: str) -> None:
         conn.spawn(_interrupt(hub, conn, reason="user_stop", cancel_turns=True))
 
 
+@dataclass(frozen=True)
+class _Say:
+    """One ``say`` frame, checked."""
+
+    utterance_id: str
+    text: str
+    spoken: bool
+    language: str | None
+    confidence: Any
+    about: Any
+    over_her: bool
+    conversation: bool
+
+    @property
+    def judged(self) -> bool:
+        """Spoken words the phone asks the host to judge; typed words ignore the flags."""
+        return self.spoken and (self.over_her or self.conversation)
+
+
 def _say(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
     utterance_id, text, spoken = frame.get("utterance_id"), frame.get("text"), frame.get("spoken")
     language, confidence = frame.get("language"), frame.get("confidence")
+    over_her, conversation = frame.get("over_her", False), frame.get("conversation", False)
     if (
         not isinstance(utterance_id, str) or _ID.fullmatch(utterance_id) is None
         or not isinstance(text, str) or not isinstance(spoken, bool)
@@ -370,10 +430,25 @@ def _say(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
     ):
         conn.error("bad_say", "say needs utterance_id, text and spoken")
         return
+    if not isinstance(over_her, bool) or not isinstance(conversation, bool):
+        conn.error("bad_say", "say's over_her and conversation are true or false")
+        return
+    say = _Say(
+        utterance_id, text, spoken, language, confidence, frame.get("about"),
+        over_her, conversation,
+    )
+    if say.judged:
+        conn.spawn(_judge_say(hub, conn, say))
+    else:
+        _record_say(hub, conn, say)
+
+
+def _record_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
+    """Write the words as a turn, once, and answer ``said`` with its id."""
     try:
         turn_id = hub.events.record_phone_say(
-            conn.device, utterance_id, text, spoken=spoken, language=language,
-            confidence=confidence, about=frame.get("about"),
+            conn.device, say.utterance_id, say.text, spoken=say.spoken, language=say.language,
+            confidence=say.confidence, about=say.about,
         )
     except ValueError as exc:
         LOGGER.warning("phone %s: say refused: %s", conn.device, exc)
@@ -385,7 +460,47 @@ def _say(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
         return
     if turn_id not in conn.recent_turns:
         conn.recent_turns.append(turn_id)
-    conn.send_json({"type": "said", "utterance_id": utterance_id, "turn_id": turn_id})
+    conn.send_json(
+        {"type": "said", "utterance_id": say.utterance_id, "turn_id": turn_id, "verdict": "turn"},
+    )
+
+
+async def _judge_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
+    """Judge words the phone heard over her or in its conversation mode, as the Mac does.
+
+    The verdict runs on a worker thread (Jev may take seconds) beside the receive loop. A judge
+    that fails leaves the words a turn. See the module docstring for what each verdict does.
+    """
+    turn_id = phone_turn_id(conn.device, say.utterance_id)
+    try:
+        verdict = await asyncio.to_thread(
+            word_judge.words_verdict, hub.word_hooks(), turn_id, say.text,
+            conversation=say.conversation, over_her=say.over_her,
+        )
+    except Exception:
+        LOGGER.exception("phone %s: judging its words failed; they stay a turn", conn.device)
+        verdict = "turn"
+    LOGGER.info("phone %s: words over_her=%s conversation=%s -> %s",
+                conn.device, say.over_her, say.conversation, verdict)
+    if verdict == "turn":
+        if say.over_her:
+            await _interrupt(hub, conn, reason="barge_in", cancel_turns=False)
+        _record_say(hub, conn, say)
+        return
+    if verdict in {"stop", "wait"}:
+        await _interrupt(hub, conn, reason="barge_in", cancel_turns=False)
+    elif verdict == "dismissed" or verdict.startswith("quiet:"):
+        await _interrupt(hub, conn, reason="user_stop", cancel_turns=True)
+        if verdict.startswith("quiet:") and hub.set_quiet is not None:
+            try:
+                await asyncio.to_thread(hub.set_quiet, verdict.removeprefix("quiet:"))
+            except Exception:
+                LOGGER.exception("phone %s: setting quiet failed", conn.device)
+                conn.error("quiet_failed", "the quiet level was not set")
+    # backchannel, unclear, echo: nothing happens and the phone goes on with her audio
+    conn.send_json(
+        {"type": "said", "utterance_id": say.utterance_id, "turn_id": None, "verdict": verdict},
+    )
 
 
 async def _interrupt(

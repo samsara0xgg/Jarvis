@@ -3277,11 +3277,15 @@ def _build_phone_speech(
     return PhoneSpeech(build=build, rows=rows, ring_seconds=config.ring_seconds)
 
 
-def _build_phone_hub(runtime: JarvisRuntime, knobs: _VoiceKnobs) -> PhoneHub | None:
+def _build_phone_hub(
+    runtime: JarvisRuntime, knobs: _VoiceKnobs, *, set_quiet: Callable[[str], None] | None,
+) -> PhoneHub | None:
     """The phone's conversation socket (ADR 0209), on every host that listens.
 
     ``None`` where the host has nowhere to write a phone's words. A voice phone gets its own
     media actor when the host can speak; barge-in and cancel reach only that device's turns.
+    Words it hears over her are judged with the Mac's own hooks (ADR 0216,
+    :func:`_local_listen_ports`) and ``set_quiet``, the daemon's, which the caller passes in.
     """
     events = runtime.phone_events
     if events is None:
@@ -3289,12 +3293,18 @@ def _build_phone_hub(runtime: JarvisRuntime, knobs: _VoiceKnobs) -> PhoneHub | N
     rows = _PhoneRows(runtime.conn)
     speech = _build_phone_speech(runtime, knobs, rows)
     registry = runtime.response_runs
+    mine = _local_listen_ports(runtime, None)
     return PhoneHub(
         events=events,
         rows=rows,
         open_voice=None if speech is None else speech.open,
         barge_in=None if registry is None else functools.partial(_phone_barge_in, runtime),
         cancel_turn=None if registry is None else make_turn_cancel_callable(runtime),
+        ask_words=mine.ask_words,
+        note_words=mine.note_words,
+        begin_line=mine.begin_line,
+        recent_speech=mine.recent_speech,
+        set_quiet=set_quiet,
     )
 
 
@@ -6962,7 +6972,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         if runtime.view is not None:  # ADR 0176: her ``present`` op reaches the companion
             runtime.view.push = lambda sent: broadcaster.broadcast_op_sync("present", **sent)
         spend = SpendCapSettings.from_config(runtime.config.get("spend_cap"))
-        phone_hub = _build_phone_hub(runtime, voice_knobs) if runtime.listen_addresses else None
+        phone_hub = (
+            _build_phone_hub(runtime, voice_knobs, set_quiet=_set_quiet)
+            if runtime.listen_addresses
+            else None
+        )
         deps = InherentDeps(
             submit_callable=submit_callable,
             attachments=runtime.attachments,
