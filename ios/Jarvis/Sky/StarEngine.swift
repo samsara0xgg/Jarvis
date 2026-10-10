@@ -1,0 +1,185 @@
+import UIKit
+import CoreGraphics
+
+// 星盘 — your time as a planisphere turning around her, the pole star. One turn of the sky is a day.
+// This file is the geometry and the state of the dial; StarDraw.swift paints it; StarFlow.swift is what the touches and her talking do to it.
+// Names follow the HTML prototype so the two can be read side by side.
+
+let W = 440.0, H = 956.0, CX = 220.0, CY = 292.0
+let R_PS = 34.0, R_HER = 96.0, R_YOU = 142.0, R_SC = 178.0, R_BAND = 182.5, R_NUM = 194.0, R_BEZ = 206.0
+let SKY_H = 640.0
+let MAP_Y = 74.0, MAP_H = 452.0
+let POLE_MY = 118.0                      // where she rests above the month
+let GX0 = 22.0, GW = (W - 44) / 7, GY0 = 206.0, GH = 64.0, MR = 20.0
+
+struct Cam { var ox, oy, oh, fx, fy, fh, rx, ry, ux, uy, uh, foc, X0, Y0, D: Double }
+struct NearParams { var gr = 142.0, ga = 1.37, gh = 46.0, tr = 142.0, ta = 2.35, foc = 240.0, X = 215.0, Y = 262.0 }
+
+enum Mode { case seek, idle, drag, script }
+
+final class StarEngine {
+    // ---------- data ----------
+    var EV: [Ev] = makeEvents()
+    let talks = makeTalks()
+    func byId(_ id: String) -> Ev? { EV.first { $0.id == id } }
+    let sprites = SpriteCache()
+
+    // ---------- clock ----------
+    let t0 = Date()
+    func nowT() -> Double { NOW0 + Date().timeIntervalSince(t0) / 60 }
+
+    // ---------- state ----------
+    var fs = Spring(NOW0 - 330)       // the focus time, in minutes; the sky turns in from earlier tonight
+    var qs = Spring(0)                // zoom: -1 close, 0 a day, 1 a week, 2 the month
+    var mode: Mode = .seek
+    var goal = NOW0, stiff = 2.6, qGoal = 0.0, qHeld = false
+    var F = NOW0 - 330, z = 1.0, amp = 8.5, k = TAU / DAY, q = 0.0, mon = 0.0, fl = 0.0
+    var sky = 0.0, prevF = NOW0 - 330, omega = 0.0, omegaS = 0.0, Trev = NOW0, prevRev = NOW0
+    var herP: (Double, Double, Double) = (CX, CY, 1)
+    var herRGB: (Int, Int, Int) = (157, 180, 255)
+    var px = 3.0
+    var baseOff = false
+    var openId: String?
+    var replay = false
+    var script: Double?
+    var pressed = false
+    var hear = 0.0
+    var sonar: [Double] = []
+    var flyer: (e: Ev, at: Double)?
+    var lastTick = 0.0, lastTock = 0.0
+    let born = nowMs()
+
+    // the lens: hold a finger on the ring and the time under it opens up
+    var ls = Spring(0)
+    var lensGoal = 0.0, lensTh = Double.pi / 2, lensM = 1.0
+    var lensT: Double?, prevLensT: Double?
+
+    // ---------- the camera ----------
+    var cam: Cam?
+    var PX = 0.0, PY = 0.0, PS = 1.0, PZ = 0.0, camE = 0.0, cenX = CX, cenY = CY, cenS = 1.0
+    var names: [(Double, Double, Double, Double)] = []
+    let NEARP = NearParams()
+
+    // ---------- flows, touches, panel ----------
+    let ui = StarUI()
+    var gen = 0
+    var ptr: [Int: CGPoint] = [:]
+    var g: Gest?
+    var talk: String?
+    var expr: String?
+    var look: (Double, Double)?
+    var speaking: Say?
+    var release: Gate?
+    var ti = 0
+    var rowKey = "", viewKey = "", drKey = ""
+    var dateD: Int?
+    var drawer = false
+    weak var herDrive: HerDrive?
+    var endEditing: (() -> Void)?
+
+    /// true while something moves fast enough to want 60 fps
+    var isBusy: Bool {
+        mode != .idle || abs(omegaS) > 0.01 || qHeld || abs(qs.value - qGoal) > 0.002 || abs(qs.velocity) > 0.002 || abs(ls.value - lensGoal) > 0.002
+            || g != nil || talk != nil || flyer != nil || !sonar.isEmpty || speaking != nil || ui.drawerOpen
+    }
+
+    func sound(_ cue: SoundCue, _ gain: Float) { Sound.shared.play(cue, gain: gain) }
+
+    // MARK: geometry
+
+    func ang(_ t: Double) -> Double {
+        let th = Double.pi / 2 + (t - F) * k
+        if lensM < 1.002 { return th }
+        return th + wrapAngle(lensTh + 2 * atan(lensM * tan(wrapAngle(th - lensTh) / 2)) - th)
+    }
+    func magAt(_ t: Double) -> Double {      // how much the lens stretches the dial at t
+        if lensM < 1.002 { return 1 }
+        let h = wrapAngle(Double.pi / 2 + (t - F) * k - lensTh) / 2, c = cos(h), s2 = sin(h)
+        return lensM / (c * c + lensM * lensM * s2 * s2)
+    }
+    func visT(_ t: Double) -> Double { 1 - smooth(0.62, 0.97, abs(t - F) / (DAY * z / 2)) }
+    func span() -> Double { DAY * z / 2 * 0.975 }
+    func laneR(_ e: Ev) -> Double { e.lane == .her ? R_HER : R_YOU + (e.t <= Trev ? amp * actAt(e.t) : 0) }
+
+    /// close up the camera comes down and floats just over the ring, looking ahead
+    func setCam(_ f: Double) {
+        if f <= 0 { cam = nil; camE = 0; cenX = CX; cenY = CY; cenS = 1; return }
+        let N = NEARP, e = f * f * (3 - 2 * f); camE = e
+        func L(_ a: Double, _ b: Double) -> Double { a + (b - a) * e }
+        func G(_ a: Double, _ b: Double) -> Double { exp(L(log(a), log(b))) }
+        let cx1 = N.gr * cos(N.ga), cy1 = N.gr * sin(N.ga), tx1 = N.tr * cos(N.ta), ty1 = N.tr * sin(N.ta), run = hypot(tx1 - cx1, ty1 - cy1)
+        let ps1 = -Double.pi / 2 + wrapAngle(atan2(ty1 - cy1, tx1 - cx1) + Double.pi / 2)
+        let th = L(Double.pi / 2, atan2(N.gh, run)), psi = L(-Double.pi / 2, ps1), D = G(1600, hypot(N.gh, run)), foc = G(1600, N.foc)
+        let fx = cos(th) * cos(psi), fy = cos(th) * sin(psi), fh = -sin(th), rx = -sin(psi), ry = cos(psi)
+        let tx = L(0, tx1), ty = L(0, ty1)
+        cam = Cam(ox: tx - D * fx, oy: ty - D * fy, oh: D * sin(th), fx: fx, fy: fy, fh: fh, rx: rx, ry: ry, ux: -fh * ry, uy: fh * rx, uh: fx * ry - fy * rx,
+                  foc: foc, X0: L(CX, N.X), Y0: L(CY, N.Y), D: D)
+        _ = Pxy(0, 0); cenX = PX; cenY = PY; cenS = PS
+    }
+    /// A point of the dial's plane (x, y from its centre, h above it) is seen at PX, PY, PS pixels per unit, PZ deep; false behind the camera.
+    @discardableResult func Pxy(_ x: Double, _ y: Double, _ h: Double = 0) -> Bool {
+        guard let c = cam else { PX = CX + x; PY = CY + y; PS = 1; PZ = 0; return true }
+        let dx = x - c.ox, dy = y - c.oy, dh = h - c.oh, zc = dx * c.fx + dy * c.fy + dh * c.fh
+        if zc < 18 { return false }
+        PS = c.foc / zc; PZ = zc
+        PX = c.X0 + (dx * c.rx + dy * c.ry) * PS
+        PY = c.Y0 - (dx * c.ux + dy * c.uy + dh * c.uh) * PS
+        return true
+    }
+    @discardableResult func P(_ r: Double, _ a: Double) -> Bool { Pxy(r * cos(a), r * sin(a)) }
+    func fog() -> Double { guard let c = cam else { return 1 }; return 1 - 0.72 * smooth(c.D * 1.15, c.D * 2.9, PZ) }   // far things dim
+    func sizeAt(_ base: Double, _ s: Double) -> Double { clamp((base * s / 2).rounded() * 2, 8, 24) }
+    /// the angle and radius on the dial under a point of the screen; nil above the horizon
+    func unP(_ X: Double, _ Y: Double) -> (Double, Double)? {
+        guard let c = cam else { return (atan2(Y - CY, X - CX), hypot(X - CX, Y - CY)) }
+        let xn = (X - c.X0) / c.foc, yn = (c.Y0 - Y) / c.foc
+        let dx = c.fx + xn * c.rx + yn * c.ux, dy = c.fy + xn * c.ry + yn * c.uy, dh = c.fh + yn * c.uh
+        if dh > -1e-4 { return nil }
+        let t = c.oh / -dh, x = c.ox + t * dx, y = c.oy + t * dy
+        return (atan2(y, x), hypot(x, y))
+    }
+
+    // MARK: the pole (her) and the month's cells
+
+    func poleXY() -> (Double, Double) { mon > 0.5 ? (CX, POLE_MY) : (herP.0, herP.1) }
+    func cellOf(_ d: Int) -> (x: Double, y: Double, row: Int, col: Int) {
+        let i = 8 + d - 1 + 3, row = Int((Double(i) / 7).rounded(.down)), col = i % 7
+        return (GX0 + GW * (Double(col) + 0.5), GY0 + GH * Double(row) + MR + 2, row, col)
+    }
+    func cellAt(_ x: Double, _ y: Double) -> Int? {
+        for d in M_FIRST...M_LAST {
+            let c = cellOf(d)
+            if abs(x - c.x) < GW / 2 && y > c.y - MR - 8 && y < c.y + MR + 22 { return d }
+        }
+        return nil
+    }
+
+    // MARK: what the meridian points at
+
+    func kdOf(_ e: Ev) -> Kd {
+        let ahead = e.t > Trev && (replay || e.st != .wait)
+        if ahead || e.st == .next { return .next }
+        if e.st == .done { return e.lane == .you ? .lit : .done }
+        return e.st == .wait ? .wait : .work
+    }
+    func focusSet(_ T0: Double? = nil, win win0: Double? = nil) -> [Ev] {
+        let T = T0 ?? F, win = win0 ?? 26 * z
+        let nT = nowT(), atNow = abs(T - nT) < win, now = nowMs()
+        return EV.filter { e in
+            e.born <= now && (atNow && e.st == .wait && e.t <= nT + win ? true : e.d != nil ? (T >= e.t - win && T <= e.t + e.d! + win) : abs(e.t - T) <= win)
+        }.sorted { a, b in
+            a.st.rawValue != b.st.rawValue ? a.st.rawValue < b.st.rawValue : abs(a.t - T) < abs(b.t - T)
+        }.prefix(3).map { $0 }
+    }
+    func nearestEvent(_ t: Double, _ win: Double) -> Double? {
+        var best: Double?, bd = win
+        for e in EV {
+            if e.born > nowMs() || visT(e.t) < 0.3 { continue }
+            let dd = abs(e.t - t)
+            if dd < bd { bd = dd; best = e.t }
+        }
+        let nT = nowT()
+        if abs(nT - t) < min(bd, win) { best = nT }
+        return best
+    }
+}

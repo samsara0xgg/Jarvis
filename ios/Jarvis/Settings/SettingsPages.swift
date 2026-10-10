@@ -1,0 +1,266 @@
+import SwiftUI
+
+enum SettingsPage: Hashable {
+    case main, pair, log
+
+    var title: String {
+        switch self {
+        case .main: "设置"
+        case .pair: "重新配对"
+        case .log: "手机报给大脑的记录"
+        }
+    }
+}
+
+/// Position 0...1 of a CSS `animation-direction: alternate` loop at `date`, shaped by `curve`.
+private func alternate(_ date: Date, period: Double, curve: UnitCurve) -> Double {
+    let u = (date.timeIntervalSinceReferenceDate / period).truncatingRemainder(dividingBy: 2)
+    return curve.value(at: u < 1 ? u : 2 - u)
+}
+
+// MARK: - Main list
+
+struct SettingsMainPage: View {
+    @Bindable var model: SettingsModel
+    /// False while another page covers this one: the avatar then stops breathing.
+    let isCurrent: Bool
+    let push: (SettingsPage) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SetGroup { hero }
+            SetSection(header: "大脑") {
+                InfoRow(label: "连接的大脑", detail: model.brainName)
+                InfoRow(label: "延迟", detail: model.latency)
+                NavRow(label: "重新配对") { push(.pair) }
+            }
+            SetSection(header: "和她说话") {
+                InfoRow(label: "嘿 Siri，叫 Jarvis", detail: model.siri)
+                SwitchRow(title: "操作按钮叫她", isOn: $model.actionButton)
+                SliderRow(title: "说话速度", value: $model.speechRate) { Text("慢") } hi: { Text("快") }
+                SliderRow(title: "音量", value: $model.volume) {
+                    Image(systemName: "speaker.fill")
+                } hi: {
+                    Image(systemName: "speaker.wave.3.fill")
+                }
+                SegmentedRow(title: "回答语言", options: SettingsModel.AnswerLanguage.allCases.map(\.title),
+                             selection: Binding(get: { model.language.rawValue },
+                                                set: { model.language = .init(rawValue: $0) ?? .followMe }))
+            }
+            SetSection(header: "手机感知", footer: "这些只发给你自己的大脑，随时可以关。") {
+                ForEach($model.senses) { $s in SwitchRow(title: s.title, detail: s.detail, isOn: $s.isOn) }
+            }
+            SetSection(header: "通知") {
+                ForEach($model.notices) { $s in SwitchRow(title: s.title, detail: s.detail, isOn: $s.isOn) }
+                NavRow(label: "免打扰时段", detail: model.quietHours)
+            }
+            SetSection(header: "声音") {
+                SwitchRow(title: "声音效果", isOn: $model.soundOn)
+            }
+            SetSection(header: "数据") {
+                NavRow(label: "查看手机报给大脑的记录") { push(.log) }
+                DeleteRow(count: model.todayCount, onDelete: model.deleteToday)
+            }
+            Text(model.version).font(.footnote).foregroundStyle(SetColor.muted).padding(.top, 32)
+        }
+        .padding(.top, 14)
+        .padding(.bottom, 56)
+    }
+
+    private var hero: some View {
+        HStack(spacing: 14) {
+            Orb(animate: isCurrent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Jarvis").font(.system(size: 20, weight: .semibold))
+                HStack(spacing: 6) {
+                    Circle().fill(SetColor.mint).frame(width: 6, height: 6)
+                        .shadow(color: SetColor.mint.opacity(0.8), radius: 3)
+                    Text(model.statusLine).font(.subheadline).foregroundStyle(SetColor.muted)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// 44 pt pearl with a breathing halo.
+private struct Orb: View {
+    let animate: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(paused: !animate || reduceMotion)) { ctx in
+            let u = reduceMotion ? 1 : alternate(ctx.date, period: 4.4, curve: .easeInOut)
+            ZStack {
+                Circle()
+                    .fill(RadialGradient(colors: [SetColor.glow.opacity(0.38), SetColor.glow.opacity(0)],
+                                         center: .center, startRadius: 0, endRadius: 32))
+                    .frame(width: 64, height: 64)
+                    .opacity(reduceMotion ? 1 : 0.45 + 0.55 * u)
+                    .scaleEffect(reduceMotion ? 1 : 0.92 + 0.14 * u)
+                pearl
+            }
+        }
+        .frame(width: 44, height: 44)
+    }
+
+    private var pearl: some View {
+        Circle()
+            .fill(RadialGradient(stops: [
+                .init(color: .white, location: 0), .init(color: .white, location: 0.05),
+                .init(color: SetColor.color(234, 241, 255), location: 0.22),
+                .init(color: SetColor.color(180, 198, 255), location: 0.54),
+                .init(color: SetColor.color(127, 141, 240), location: 0.84),
+                .init(color: SetColor.color(106, 111, 224), location: 1),
+            ], center: UnitPoint(x: 0.38, y: 0.32), startRadius: 0, endRadius: 40.5))
+            .overlay {  // the inset shadows: a dark crescent below, a bright rim above
+                ZStack {
+                    Circle().strokeBorder(SetColor.color(76, 80, 200, 0.4), lineWidth: 10).blur(radius: 5).offset(y: -5)
+                    Circle().strokeBorder(.white.opacity(0.8), lineWidth: 1).blur(radius: 0.5).offset(y: 1)
+                }
+                .clipShape(Circle())
+            }
+            .frame(width: 44, height: 44)
+            .shadow(color: SetColor.glow.opacity(0.5), radius: 7)
+    }
+}
+
+// MARK: - 重新配对
+
+struct SettingsPairPage: View {
+    /// The scan line only runs while this page is on screen.
+    let isCurrent: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Viewfinder(animate: isCurrent).padding(.top, 28)
+            Text("对准 Mac 设置里「手机」页上的二维码")
+                .font(.body).multilineTextAlignment(.center)
+                .padding(.horizontal, 40).padding(.top, 28)
+            Text("手机和 Mac 要在同一个 Tailscale 里")
+                .font(.subheadline).foregroundStyle(SetColor.muted).multilineTextAlignment(.center)
+                .padding(.horizontal, 40).padding(.top, 8)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 14)
+        .padding(.bottom, 56)
+    }
+}
+
+/// A 260 pt viewfinder looking for the Mac's code: corner brackets and a scan line sweeping back and forth.
+private struct Viewfinder: View {
+    let animate: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private let side = 260.0
+    private var box: RoundedRectangle { RoundedRectangle(cornerRadius: 18) }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            backdrop
+            Brackets().stroke(SetColor.ink.opacity(0.92), style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+            TimelineView(.animation(paused: !animate || reduceMotion)) { ctx in
+                let y = reduceMotion ? 0 : 154 * alternate(ctx.date, period: 2.6, curve: .bezier(startControlPoint: .init(x: 0.45, y: 0), endControlPoint: .init(x: 0.55, y: 1)))
+                scanLine.offset(y: 52 + y)
+            }
+        }
+        .frame(width: side, height: side)
+        .clipShape(box)
+        .overlay { box.strokeBorder(.white.opacity(0.07), lineWidth: 1) }
+        .overlay { box.inset(by: -0.25).stroke(.black.opacity(0.6), lineWidth: 0.5) }
+        .shadow(color: .black.opacity(0.6), radius: 14, y: 14)
+        .accessibilityHidden(true)
+    }
+
+    /// Dot grid over a night-blue radial wash.
+    private var backdrop: some View {
+        ZStack {
+            Rectangle()
+                .fill(RadialGradient(stops: [
+                    .init(color: SetColor.color(21, 26, 51), location: 0),
+                    .init(color: SetColor.color(10, 12, 27), location: 0.56),
+                    .init(color: SetColor.color(5, 6, 13), location: 1),
+                ], center: .center, startRadius: 0, endRadius: 1.3 * side))
+                .frame(width: 3 * side, height: 3 * side)
+                .scaleEffect(y: 1.1 / 1.3, anchor: .center)  // 130% x 110% ellipse
+                .offset(y: (0.38 - 0.5) * side)
+            Canvas { ctx, size in
+                var y = 6.5
+                while y < size.height {
+                    var x = 6.5
+                    while x < size.width {
+                        ctx.fill(Path(ellipseIn: CGRect(x: x - 1.2, y: y - 1.2, width: 2.4, height: 2.4)), with: .color(.white.opacity(0.06)))
+                        x += 13
+                    }
+                    y += 13
+                }
+            }
+        }
+        .frame(width: side, height: side)
+    }
+
+    private var scanLine: some View {
+        let clear = SetColor.link.opacity(0)
+        return ZStack(alignment: .bottom) {
+            Rectangle()
+                .fill(LinearGradient(colors: [SetColor.glow.opacity(0), SetColor.glow.opacity(0.2)], startPoint: .top, endPoint: .bottom))
+                .frame(height: 46)
+                .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.3),
+                                             .init(color: .black, location: 0.7), .init(color: .clear, location: 1)],
+                                     startPoint: .leading, endPoint: .trailing))
+                .offset(y: -2)
+            RoundedRectangle(cornerRadius: 1)
+                .fill(LinearGradient(stops: [.init(color: clear, location: 0), .init(color: SetColor.link, location: 0.22),
+                                             .init(color: .white, location: 0.5), .init(color: SetColor.link, location: 0.78),
+                                             .init(color: clear, location: 1)],
+                                     startPoint: .leading, endPoint: .trailing))
+                .frame(height: 2)
+                .shadow(color: SetColor.glow.opacity(0.6), radius: 7)
+        }
+        .frame(width: side - 92, height: 2, alignment: .bottom)
+        .padding(.leading, 46)
+    }
+}
+
+/// The four corner brackets, in the 260 x 260 space of the prototype's SVG.
+private struct Brackets: Shape {
+    func path(in rect: CGRect) -> Path {
+        let k = rect.width / 260
+        func pt(_ x: Double, _ y: Double) -> CGPoint { CGPoint(x: rect.minX + x * k, y: rect.minY + y * k) }
+        var p = Path()
+        for (a, corner, b) in [((52.0, 92.0), (52.0, 52.0), (92.0, 52.0)), ((168.0, 52.0), (208.0, 52.0), (208.0, 92.0)),
+                               ((208.0, 168.0), (208.0, 208.0), (168.0, 208.0)), ((92.0, 208.0), (52.0, 208.0), (52.0, 168.0))] {
+            p.move(to: pt(a.0, a.1))
+            p.addArc(tangent1End: pt(corner.0, corner.1), tangent2End: pt(b.0, b.1), radius: 16 * k)
+            p.addLine(to: pt(b.0, b.1))
+        }
+        return p
+    }
+}
+
+// MARK: - 手机报给大脑的记录
+
+struct SettingsLogPage: View {
+    let model: SettingsModel
+
+    var body: some View {
+        SetSection(header: "今天", footer: "今天一共 \(model.todayCount) 条，这里只列最新的 \(model.records.count) 条。") {
+            ForEach(model.records) { r in
+                HStack(spacing: 12) {
+                    Text(r.time).font(.system(size: 14, design: .monospaced)).foregroundStyle(SetColor.muted)
+                        .frame(width: 48, alignment: .leading)
+                    Text("\(Text("\(r.kind) ·").foregroundStyle(SetColor.muted)) \(r.value)").font(.body)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 11)
+                .frame(minHeight: 44)
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .padding(.top, 14)
+        .padding(.bottom, 56)
+    }
+}
