@@ -207,12 +207,14 @@ struct TalkPanel: View {
         let top = panelTop(ui, pull), p = panelOpenness(top), held = pull != nil
         let bottom = 836 - ui.attach.rise - ui.kbLift
         let pinH = ui.typing ? 0 : min(pinContent, 0.4 * (bottom - StarEngine.panelOpen))      // while he types the keyboard leaves little room: what waits is under the header again after he sends
-        let streamTop = top + (90 + pinH) * p
+        // The stream's frame goes straight to where the panel is heading: a scroll view resized every frame of the spring loses its rows for a few frames. The older rows above it fade in with the panel.
+        let topTo = held ? top : ui.panelOpen ? StarEngine.panelOpen : StarEngine.panelHome
+        let streamTo = topTo + (90 + pinH) * panelOpenness(topTo)
         let shown = ui.talking || ui.panelOpen || held
         ZStack(alignment: .topLeading) {
             background.opacity(p).animation(held ? nil : panelSpring(reduce), value: top).frame(width: W, height: H - top + 60).offset(y: top)
             topPart(p: p, held: held, pinH: pinH).frame(width: W, height: 90 + pinH, alignment: .top).offset(y: top)
-            stream(top: streamTop, bottom: bottom, open: held ? p : ui.panelOpen ? 1 : 0)
+            stream(top: streamTo, bottom: bottom, open: held ? p : ui.panelOpen ? 1 : 0).animation(nil, value: streamTo)
             measure
         }
         .frame(width: W, height: H, alignment: .topLeading)
