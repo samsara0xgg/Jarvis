@@ -58,6 +58,7 @@ final class VoiceSession {
     @ObservationIgnored private let feed = Feed()
     @ObservationIgnored private var rec: AnyObject?                 // a DualRecognizer (iOS 26)
     @ObservationIgnored private var segment = 0
+    @ObservationIgnored private var lastTrouble: (overloads: UInt64, gaps: UInt64) = (0, 0)
     @ObservationIgnored private var segmentText = ""
     @ObservationIgnored private var segmentAt = 0.0
     @ObservationIgnored private var link: VoiceLink?
@@ -499,6 +500,7 @@ final class VoiceSession {
             else if age > utteranceCap { endUtterance() }
         case .thinking, .speaking:
             guard let core = audio.core, !typedTurn else { return }
+            if core.trouble != lastTrouble { lastTrouble = core.trouble; VoiceTrace.note("player: \(lastTrouble.overloads) overloads, \(lastTrouble.gaps) gaps") }
             if state == .thinking, core.playedSamples > playedAtSay + 480 { set(.speaking) }
             if !core.ringEmpty { lastActivityAt = t }
             let quietAfter = commandSaid == .stop || commandSaid == .wait || commandSaid == .goodnight

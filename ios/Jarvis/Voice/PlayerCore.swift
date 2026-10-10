@@ -136,6 +136,8 @@ final class PlayerCore: @unchecked Sendable {
     var level: Float { Float(bitPattern: levelPub.load(ordering: .relaxed)) }
     /// when a block of hers last played, on the uptime clock (0: never)
     var lastAudioNs: Int64 { lastAudioPub.load(ordering: .relaxed) }
+    /// frames cut short because the host sent past the ring, and callbacks that ran dry mid-stream
+    var trouble: (overloads: UInt64, gaps: UInt64) { (overloads.load(ordering: .relaxed), gapsPub.load(ordering: .relaxed)) }
     /// 32 kHz cursor just past the last sample played
     var playedCursor: Int64 { cursorPub.load(ordering: .relaxed) }
     var playedSamples: UInt64 { playedPub.load(ordering: .relaxed) }
