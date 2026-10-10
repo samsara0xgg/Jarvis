@@ -1,0 +1,27 @@
+name: Jarvis
+options:
+  bundleIdPrefix: com.allen
+  developmentLanguage: zh-Hans
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: 3MEBVQ3N3U
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  Jarvis:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources: [Jarvis]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.allen.jarvis
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Jarvis
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UIUserInterfaceStyle: Dark
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
