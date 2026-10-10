@@ -126,7 +126,7 @@ enum ReportMemory {
 final class Reporter {
     static let shared = Reporter(queue: .standard)
 
-    static let refreshID = "com.allen.jarvis.report-flush"
+    static let refreshID = "com.yilunshi.jarvis.report-flush"
     /// Earliest start the app asks of the system for a background refresh; iOS decides the real time.
     static let refreshEvery: TimeInterval = 2 * 3600
 

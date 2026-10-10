@@ -4,7 +4,7 @@
 <dict>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.allen.jarvis.report-flush</string>
+		<string>com.yilunshi.jarvis.report-flush</string>
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
@@ -24,7 +24,7 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>com.allen.jarvis</string>
+			<string>com.yilunshi.jarvis</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>jarvis</string>

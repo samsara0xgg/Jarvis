@@ -32,8 +32,7 @@ final class HealthCollector: Collector {
 
     var name: String { kinds == [.steps] ? "steps" : "health" }
 
-    /// The HealthKit entitlement needs the capability on the App ID, which needs an Apple account signed in to Xcode; until then
-    /// project.yml leaves both the entitlement and HEALTH_ENTITLED out, and touching HealthKit without it would crash the app.
+    /// HEALTH_ENTITLED is set in project.yml together with the HealthKit entitlement; touching HealthKit without the entitlement would crash the app.
     nonisolated static let entitled: Bool = {
         #if HEALTH_ENTITLED
         true
