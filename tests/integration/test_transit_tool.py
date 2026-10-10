@@ -245,10 +245,11 @@ def test_here_without_a_reading_is_a_tool_error_that_says_to_ask_and_sends_nothi
 
 
 def test_the_description_makes_here_the_default_origin() -> None:
-    """The model is told an unstated origin is 'here'."""
+    """The model is told the origin is always 'here', never a guessed saved place."""
     registry = build_default_registry(transit_api_key=FAKE_KEY, transit_places=PLACES)
     (definition,) = (d for d in registry.get_definitions() if d.name == "transit")
-    assert "origin is 'here'" in definition.description
+    assert "origin is always 'here'" in definition.description
+    assert "never guess his start" in definition.description
     assert "this Mac" in definition.description
 
 
