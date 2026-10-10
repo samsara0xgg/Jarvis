@@ -92,7 +92,8 @@ def test_a_filled_in_card_closes_and_its_answer_turn_hears_what_it_answers(
 
 
 _STILL_UP = (
-    f"Your card {_ASKED} is still on screen. If the user's words answer it, carry on with them "
+    f"When this turn began, your card {_ASKED} was still on screen. "
+    "If the user's words answer it, carry on with them "
     "and take it down with close_question in the same step; if it no longer applies, take it "
     "down; otherwise leave it."
 )

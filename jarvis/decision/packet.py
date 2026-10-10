@@ -240,7 +240,8 @@ def format_pending_clarification_note(packet: SituationPacket) -> str | None:
         )
     if slot.spoken_over:
         return (
-            f"Your card “{slot.question}” ({labels}) is still on screen. If the user's words "
+            f"When this turn began, your card “{slot.question}” ({labels}) was still on screen. "
+            "If the user's words "
             "answer it, carry on with them and take it down with close_question in the same "
             "step; if it no longer applies, take it down; otherwise leave it."
         )
