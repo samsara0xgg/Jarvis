@@ -18,13 +18,28 @@ final class VoiceAudio {
 
     var bufferFrames: Int { Int(AVAudioSession.sharedInstance().ioBufferDuration * Double(core?.sampleRate ?? 48_000)) }
 
-    func start() throws {
+    /// The microphone had no usable format within a second (a headset switching over, another app holding it).
+    struct NotReady: Error {}
+
+    func start() async throws {
         guard !running else { return }
         let s = AVAudioSession.sharedInstance()
         try s.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try s.setActive(true)
         let input = engine.inputNode
-        try input.setVoiceProcessingEnabled(true)
+        try input.setVoiceProcessingEnabled(true)          // changes the input format: read it only after this
+        // installTap with a 0 Hz or 0-channel format raises an exception Swift cannot catch: wait up to 1 s for the route instead
+        var inFmt = input.outputFormat(forBus: 0)
+        for attempt in 0...10 {
+            let r = s.currentRoute
+            VoiceTrace.note("mic attempt \(attempt): input available \(s.isInputAvailable), \(Int(inFmt.sampleRate)) Hz \(inFmt.channelCount) ch, "
+                + "in \(r.inputs.map { "\($0.portType.rawValue) \($0.portName)" }), out \(r.outputs.map(\.portType.rawValue)), "
+                + "\(s.category.rawValue)/\(s.mode.rawValue)")
+            if s.isInputAvailable && inFmt.sampleRate > 0 && inFmt.channelCount > 0 { break }
+            if attempt == 10 { throw NotReady() }
+            try await Task.sleep(nanoseconds: 100_000_000)
+            inFmt = input.outputFormat(forBus: 0)
+        }
         let rate = engine.outputNode.outputFormat(forBus: 0).sampleRate
         let fmt = AVAudioFormat(standardFormatWithSampleRate: rate > 0 ? rate : 48_000, channels: 1)!
         let core = PlayerCore(sampleRate: Int(fmt.sampleRate))
@@ -38,7 +53,7 @@ final class VoiceAudio {
         engine.attach(src)
         source = src
         engine.connect(src, to: engine.mainMixerNode, format: fmt)
-        input.installTap(onBus: 0, bufferSize: 2048, format: input.outputFormat(forBus: 0)) { [weak self] buf, _ in
+        input.installTap(onBus: 0, bufferSize: 2048, format: inFmt) { [weak self] buf, _ in
             guard let mono = monoFloat(buf) else { return }
             self?.onMic?(mono, Self.level(mono))
         }

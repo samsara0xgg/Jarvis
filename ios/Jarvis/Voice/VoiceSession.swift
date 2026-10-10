@@ -199,10 +199,12 @@ final class VoiceSession {
             } catch { errorText = "语言模型没装好：\(error.localizedDescription)"; return false }
         }
         do {
-            try audio.start()
+            try await audio.start()
             VoiceTrace.note("audio engine started")
             sendReady()
             if tickTask == nil { tickTask = Task { while !Task.isCancelled { tick(); try? await Task.sleep(nanoseconds: 33_000_000) } } }
+        } catch is VoiceAudio.NotReady {
+            errorText = "麦克风还没准备好，再点一次"; return false
         } catch { errorText = "打不开麦克风：\(error.localizedDescription)"; return false }
         return true
     }
