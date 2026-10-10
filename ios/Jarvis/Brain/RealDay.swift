@@ -43,7 +43,7 @@ final class RealDay {
         switch i.kind {
         case "stay":
             let place = i.place.flatMap { $0.isEmpty ? nil : $0 }
-            title = place.map { "在\($0)" } ?? "停留"; s = place.map { short($0, 5) } ?? "停留"; src = "定位"
+            title = place.map { "在\($0)" } ?? "停留"; s = place.map { fit($0, 8) } ?? "停留"; src = "定位"
             meta = when + (t1 == nil ? "" : " · " + durText(Int((d ?? 0).rounded())))
         case "move":
             let (name, label) = Self.moves[i.activity ?? ""] ?? ("移动", "移动")
@@ -56,7 +56,7 @@ final class RealDay {
         case "work":
             let p = i.projects?.first?.name, a = i.apps?.first?.name
             title = p.map { "专注 · \($0)" } ?? a.map { "用 \($0) 工作" } ?? "在 Mac 上工作"
-            s = short(p ?? a ?? "工作", 5); src = "Mac"
+            s = fit(p ?? a ?? "工作", 8); src = "Mac"
             meta = when + (i.active_s.map { " · 活跃 \(durText(Int(($0 / 60).rounded())))" } ?? "")
             let parts = [("项目", i.projects), ("应用", i.apps)].compactMap { name, tops -> String? in
                 guard let tops, !tops.isEmpty else { return nil }
@@ -72,7 +72,7 @@ final class RealDay {
             meta = when
         case "reminder":
             let text = i.text ?? "提醒"
-            title = "提醒：\(text)"; s = short(text, 5); src = nil
+            title = "提醒：\(text)"; s = fit(text, 8); src = nil
             meta = when
             note = i.fired == true ? (i.acknowledged == true ? "已经响过，你确认过了" : "已经响过，你还没确认") : "还没到点"
             // a reminder that rang and was not acknowledged is waiting on you, for a day
@@ -89,7 +89,19 @@ final class RealDay {
     private static let moves: [String: (String, String)] = [
         "walking": ("走路", "走路"), "running": ("跑步", "跑步"), "cycling": ("骑车", "骑车"), "automotive": ("在路上", "路上"),
     ]
-    private func short(_ s: String, _ n: Int) -> String { s.count > n ? String(s.prefix(n - 1)) + "…" : s }
+    /// A name on the dial: whole up to `cells` cells (a Chinese character is one, any other about half of one); longer, cut at the last word break in the first `cells - 0.6` if that keeps most of it.
+    func fit(_ s: String, _ cells: Double) -> String {
+        func cell(_ ch: Character) -> Double { (ch.unicodeScalars.first?.value ?? 0) >= 0x2E80 ? 1 : 0.55 }
+        if s.reduce(0, { $0 + cell($1) }) <= cells { return s }
+        var w = 0.0, kept: [Character] = []
+        for ch in s {
+            w += cell(ch)
+            if w > cells - 0.6 { break }
+            kept.append(ch)
+        }
+        if let i = kept.lastIndex(where: { " ·-_/、，".contains($0) }), Double(i) >= 0.6 * Double(kept.count) { kept = Array(kept[..<i]) }
+        return String(kept).trimmingCharacters(in: .whitespaces) + "…"
+    }
     /// 昨天 / 明天 / 周x in front of anything that is not today
     private func dayPrefix(_ t: Double, _ now: Double) -> String {
         let d = floorDay(t), td = floorDay(now)
