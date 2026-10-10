@@ -212,7 +212,7 @@ final class Waiting {
     }
 
     /// One look at what waits. A failure leaves what is on screen as it was; the next round asks again.
-    func poll() async {
+    @MainActor func poll() async {
         guard let data = try? await BrainLink.shared.call({ try await BrainClient.waiting(bases: $0, token: $1) }), let new = WaitingCards.parse(data) else { return }
         apply(new)
     }

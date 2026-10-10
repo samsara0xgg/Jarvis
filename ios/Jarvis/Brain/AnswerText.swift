@@ -22,4 +22,7 @@ enum AnswerText {
         }
         return visible(region).replacingOccurrences(of: "\\*\\*|`", with: "", options: .regularExpression)
     }
+
+    /// A line before the answer: it has a voice part and no document, so more follows.
+    static func isLeadIn(_ reply: String) -> Bool { reply.contains("<voice>") && !reply.contains("<document>") }
 }

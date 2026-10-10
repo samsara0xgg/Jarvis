@@ -232,6 +232,13 @@ struct StarChrome: View {
                         }.padding(.top, gi == 0 ? 4 : 22).padding(.bottom, 8)
                         ForEach(g.rows) { r in RowView(row: r, engine: engine) }
                     }
+                    if !ui.history.isEmpty {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("对话").font(.system(size: 13, weight: .semibold)).tracking(0.5).foregroundStyle(Color(red: 196 / 255, green: 204 / 255, blue: 238 / 255).opacity(0.66))
+                            Text("\(ui.history.count)").font(monoF(11.5)).foregroundStyle(Color(red: 196 / 255, green: 204 / 255, blue: 238 / 255).opacity(0.42))
+                        }.padding(.top, ui.drawerGroups.isEmpty ? 4 : 22).padding(.bottom, 8)
+                        ForEach(ui.history) { l in ConversationLineView(line: l) }
+                    }
                 }.padding(.horizontal, 30).padding(.bottom, 24)
             }
             .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.96), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
@@ -286,7 +293,7 @@ struct StarChrome: View {
     /// words and attachments go together; with no words, the attachments are named
     private func sendComposer() {
         let words = ui.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if BrainLink.shared.hasToken && ui.attach.hasItems { return engine.sendToBrain(words) }
+        if BrainLink.shared.hasToken { return engine.sendToBrain(words) }
         let sent = ui.attach.take()
         if words.isEmpty && sent.isEmpty { return }
         // her reply to what was sent: a file is offered a first read, a picture asks what to do with it

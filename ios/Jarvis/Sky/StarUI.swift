@@ -21,6 +21,24 @@ struct ChipModel: Identifiable, Equatable { var id: String { text }; var kd: Kd;
 struct DrawerGroup: Identifiable, Equatable { var id: String; var name: String; var rows: [RowModel] }
 enum MicState { case mic, on, send }
 
+/// One line of the conversation in the drawer: his or hers, with the time it was said.
+struct ConvLine: Identifiable, Equatable {
+    let id: Int                         // the row's number in the conversation
+    let his: Bool
+    let text: String
+    let when: String
+
+    /// the rows newest first as lines of the drawer; `today` is `YYYY-MM-DD`, and only a line of another day says its date
+    static func lines(_ rows: [ConversationRow], today: String) -> [ConvLine] {
+        rows.reversed().compactMap { r in
+            let text = r.isHis ? r.text.trimmingCharacters(in: .whitespacesAndNewlines) : AnswerText.visible(r.text)
+            if text.isEmpty { return nil }
+            let day = String(r.ts.prefix(10)), clock = r.ts.count >= 16 ? String(r.ts.dropFirst(11).prefix(5)) : ""
+            return ConvLine(id: r.seq, his: r.isHis, text: text, when: (day == today || day.isEmpty ? "" : String(day.dropFirst(5)) + " ") + clock)
+        }
+    }
+}
+
 @Observable
 final class StarUI {
     // the top row
@@ -45,6 +63,7 @@ final class StarUI {
     // the drawer of today's cards
     var drawerOpen = false
     var drawerGroups: [DrawerGroup] = []
+    var history: [ConvLine] = []        // the conversation under them, when paired
     // talking
     var talking = false
     var typing = false

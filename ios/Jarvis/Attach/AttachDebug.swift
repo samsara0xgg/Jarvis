@@ -4,7 +4,7 @@ import UIKit
 
 // Launch with `-attachScene 添加` (and optionally `-attachDelay 2`) to land on a state, for screenshots without touching the screen.
 // 添加 · 相册 · 相机 · 相机循环 · 相机返回 · 拍后 · 带附件 · 带附件添加 · 粘贴 · 文件选择 · 发送
-// 真图发送 · 真文件发送 · 带PDF发送: real files in the temp folder (a 3000 × 2000 picture, a note, a PDF), so a paired phone really uploads them.
+// 发送文字 (sends what `-attachText` put in the field) · 真图发送 · 真文件发送 · 带PDF发送: real files in the temp folder (a 3000 × 2000 picture, a note, a PDF), so a paired phone really uploads them.
 // `-attachText 一段很长的话` puts words in the field (to see it grow).
 
 enum AttachDebug {
@@ -33,6 +33,7 @@ enum AttachDebug {
         case "粘贴": paste(m)
         case "文件选择": m.pickFiles()
         case "发送": m.attach(samples(), from: []); after(1.5) { m.debugSend += 1 }
+        case "发送文字": after(0.5) { m.debugSend += 1 }
         case "真图发送": m.attach(files(["风景.png", "笔记.md"]), from: []); after(1.5) { m.debugSend += 1 }
         case "真文件发送": m.attach(files(["笔记.md"]), from: []); after(1.5) { m.debugSend += 1 }
         case "带PDF发送": m.attach(files(["风景.png", "简历.pdf"]), from: []); after(1.5) { m.debugSend += 1 }

@@ -363,15 +363,16 @@ extension StarEngine {
     func setDrawer(_ on: Bool, quiet: Bool = false) {
         wake()
         if on != drawer && !quiet { sound(on ? .open : .close, 0.7) }
-        if on && !drawer { drKey = "" }
+        if on && !drawer { drKey = ""; if BrainLink.shared.hasToken { Task { @MainActor in await Conversation.shared.refresh() } } }
         drawer = on; ui.drawerOpen = on; drawerSince = nowMs()
         if on { updateDrawer() }
     }
     func updateDrawer() {
         let today = floorDay(nowT()), now = nowMs(), ev = EV.filter { $0.born <= now && floorDay($0.t) == today }
-        let key = ev.map { "\($0.id)\($0.st.rawValue)\($0.t)\($0.t > Trev ? "a" : "")" }.joined(separator: ",") + "|" + (openId ?? "")
+        let key = ev.map { "\($0.id)\($0.st.rawValue)\($0.t)\($0.t > Trev ? "a" : "")" }.joined(separator: ",") + "|" + (openId ?? "") + "|c\(Conversation.shared.version)"
         if key == drKey { return }
         drKey = key
+        put(\.history, Cal.cur.real ? ConvLine.lines(Conversation.shared.rows, today: Cal.cur.iso(today)) : [])
         let groups: [(String, St)] = [("等你的", .wait), ("她在做", .work), ("接下来", .next), ("今天走过的", .done)]
         ui.drawerGroups = groups.compactMap { name, s in
             let list = ev.filter { $0.st == s }.sorted { s == .done ? $0.t > $1.t : $0.t < $1.t }
@@ -456,6 +457,7 @@ extension StarEngine {
     func send(_ text0: String, reply: String? = nil) {
         let text = text0.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { return }
+        if reply == nil && BrainLink.shared.hasToken { return sendToBrain(text) }       // paired: the brain answers, not the demo
         ui.text = ""; endEditing?()
         let t = nowT()
         let keys = ["提醒", "出门", "今天.*做了什么|回放"]

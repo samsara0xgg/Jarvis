@@ -78,7 +78,7 @@ final class BrainLink {
     static func host(_ u: URL) -> String { u.port.map { "\(u.host ?? ""):\($0)" } ?? (u.host ?? "") }
 
     /// A call under this phone's token. When the brain answers 401 it has unpaired this phone: what it gave is dropped, as when a day is refused.
-    func call<T>(_ body: (_ bases: [URL], _ token: String) async throws -> T) async throws -> T {
+    @MainActor func call<T>(_ body: (_ bases: [URL], _ token: String) async throws -> T) async throws -> T {
         guard hasToken, let tok = token else { throw BrainError.revoked }
         do { return try await body(bases, tok) } catch let e as BrainError {
             if e == .revoked { forget(e.message) }

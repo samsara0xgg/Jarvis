@@ -77,3 +77,20 @@ struct WaitingCardView: View {
         }
     }
 }
+
+/// a line of the conversation in the drawer; a long one is cut to three lines until it is tapped
+struct ConversationLineView: View {
+    let line: ConvLine
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text((line.his ? "你" : "她") + (line.when.isEmpty ? "" : " · " + line.when)).font(AT.mono(11)).tracking(0.5)
+                .foregroundStyle(line.his ? SetColor.muted : Color(red: 1, green: 217 / 255, blue: 176 / 255).opacity(0.8))
+            Text(line.text).font(.system(size: 15)).lineSpacing(15 * 0.4 - 3).foregroundStyle(SetColor.ink).lineLimit(open ? nil : 3)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 10)
+        .overlay(alignment: .top) { Rectangle().fill(SetColor.line).frame(height: 0.5) }
+        .contentShape(Rectangle()).onTapGesture { open.toggle() }
+    }
+}
