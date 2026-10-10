@@ -76,6 +76,8 @@ struct Gest {
     var hist: [(Double, Double)] = []
     var caught = false
     var d0 = 0.0, a0 = 0.0, q0 = 0.0, F0 = 0.0
+    var c0y = 0.0                 // two fingers: where their middle started, up and down
+    var slide: Bool?              // two fingers: moving together up and down (steps the zoom level) or pinching; nil until one of them is clear
     var timer: DispatchWorkItem?
 }
 
@@ -128,6 +130,7 @@ extension StarEngine {
         stiff = abs(dist) > 0.3 && (dist > 0) == (v > 0) && v != 0 ? clamp(abs(v / dist), 1.8, 9) : 6.5
         goal = T; mode = .seek; byHand = true
     }
+    private func cy2() -> Double { let v = Array(ptr.values); return Double(v[0].y + v[1].y) / 2 }
     private func two2() -> (Double, Double) {
         let v = Array(ptr.values), a = v[0], b = v[1]
         return (hypot(Double(b.x - a.x), Double(b.y - a.y)), atan2(Double(b.y - a.y), Double(b.x - a.x)))
@@ -160,7 +163,7 @@ extension StarEngine {
         } else if ptr.count == 2, let cur = g, cur.kind != .hold {
             cur.timer?.cancel(); lensGoal = 0
             let (d0, a0) = two2()
-            g = Gest(kind: .pinch, d0: d0, a0: a0, q0: qs.value, F0: fs.value); qHeld = true; pressed = false; mode = .drag; byHand = true
+            g = Gest(kind: .pinch, d0: d0, a0: a0, q0: qs.value, F0: fs.value, c0y: cy2()); qHeld = true; pressed = false; mode = .drag; byHand = true
         }
     }
 
@@ -184,9 +187,20 @@ extension StarEngine {
             }
             while cur.hist.count > 16 { cur.hist.removeFirst() }
         } else if cur.kind == .pinch && ptr.count == 2 {
-            let (d, a) = two2()
-            qs.value = clamp(cur.q0 - log(d / cur.d0) * 1.0, -1.22, 2.22); qs.velocity = 0; qGoal = qs.value
-            if qs.value < 1.4 { fs.value = cur.F0 - wrapAngle(a - cur.a0) / (TAU / (DAY * pow(7, clamp(qs.value, 0, 1)))) }
+            let (d, a) = two2(), dy = cy2() - cur.c0y, dl = abs(log(d / cur.d0))
+            if cur.slide == nil {
+                if abs(dy) > 14 && dl < 0.12 { cur.slide = true }
+                else if dl >= 0.12 || abs(wrapAngle(a - cur.a0)) > 0.25 { cur.slide = false }
+            }
+            if cur.slide == true {
+                // both fingers up and down together: up goes out a level (day, week, month), down goes in, 120 points a level; it settles on a level when they lift
+                let q = clamp(cur.q0 - dy / 120, -1.22, 2.22)
+                if q.rounded() != qs.value.rounded() { haptic.selectionChanged() }
+                qs.value = q; qs.velocity = 0; qGoal = q
+            } else {
+                qs.value = clamp(cur.q0 - log(d / cur.d0) * 1.0, -1.22, 2.22); qs.velocity = 0; qGoal = qs.value
+                if qs.value < 1.4 { fs.value = cur.F0 - wrapAngle(a - cur.a0) / (TAU / (DAY * pow(7, clamp(qs.value, 0, 1)))) }
+            }
         }
         g = cur
     }

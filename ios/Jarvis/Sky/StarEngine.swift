@@ -26,6 +26,7 @@ final class StarEngine {
     let talks = makeTalks()
     func byId(_ id: String) -> Ev? { EV.first { $0.id == id } }
     let sprites = SpriteCache()
+    let haptic = UISelectionFeedbackGenerator()
 
     // ---------- clock ----------
     var t0 = Date()
