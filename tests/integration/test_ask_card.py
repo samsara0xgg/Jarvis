@@ -1,4 +1,4 @@
-"""ADR 0066 acceptance: the ask card's lifecycle in the event log, and the facts it keeps.
+"""ADR 0066 and 0206 acceptance: the ask card's lifecycle in the event log, and the facts it keeps.
 
 Each case writes the events the tool, the companion's routes and Allen's words
 write, then reads what the companion and the model would see: whether the card
@@ -8,11 +8,14 @@ is still waiting, and the one status line the model gets on the turn that ends i
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
 from jarvis.decision.packet import assemble_packet, format_pending_clarification_note
+from jarvis.execution import tools
+from jarvis.execution.tools import ToolError, build_default_registry
 from jarvis.runtime.inherent_loop import _FRAGMENT_CARD_HOLD_MS, _visible_ask_card
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from jarvis.state.memory_db import remember_fact, render_context
@@ -88,18 +91,39 @@ def test_a_filled_in_card_closes_and_its_answer_turn_hears_what_it_answers(
     assert _note(conn, _says(conn, "T-later")) is None
 
 
-def test_speaking_over_the_card_closes_it_and_only_that_turn_hears_the_question(
-    conn: sqlite3.Connection,
+_STILL_UP = (
+    f"Your card {_ASKED} is still on screen. If the user's words answer it, carry on with them "
+    "and take it down with close_question in the same step; if it no longer applies, take it "
+    "down; otherwise leave it."
+)
+
+
+@pytest.mark.parametrize("spoken", [1, 2, 3])
+def test_speaking_over_the_card_leaves_it_up_and_every_turn_hears_it_is_still_on_screen(
+    conn: sqlite3.Connection, spoken: int,
 ) -> None:
-    """The first utterance after the ask closes the card and carries its question."""
+    """ADR 0206: his utterances do not close the card; each of those turns carries the note."""
     _ask(conn, "Q1")
-    first = _says(conn, "T1", "1 Test St, V8W 1A1")
-    assert not _card(conn).waiting
-    assert _note(conn, first) == (
-        f"Your card {_ASKED} closed because the user spoke instead "
-        "of filling it in. If these words answer it, carry on with them."
-    )
-    assert _note(conn, _says(conn, "T2")) is None
+    for n in range(spoken):
+        said = _says(conn, f"T{n}", "1 Test St, V8W 1A1")
+        assert _card(conn).waiting
+        assert _note(conn, said) == _STILL_UP
+    shown = _visible_ask_card(conn, _asked_at(conn) + _FRAGMENT_CARD_HOLD_MS)
+    assert shown is not None
+    assert shown.clarification_id == "Q1"
+
+
+def test_a_card_he_spoke_over_still_takes_his_submit(conn: sqlite3.Connection) -> None:
+    """ADR 0206: the submit path asks only `waiting`; after two utterances it still closes by id."""
+    _ask(conn, "Q1")
+    _says(conn, "T1")
+    _says(conn, "T2")
+    assert _card(conn).waiting
+    emit_event(conn, type="surface.clarified", payload={
+        "turn_id": "T-answer", "clarification_id": "Q1", "answers": {"送餐地址": "1 Test St"},
+    })
+    closed = _card(conn)
+    assert (closed.waiting, closed.answered_turn_id) == (False, "T-answer")
 
 
 def test_a_dismissed_card_runs_nothing_and_the_next_turn_hears_it_went_unanswered(
@@ -115,6 +139,69 @@ def test_a_dismissed_card_runs_nothing_and_the_next_turn_hears_it_went_unanswere
         f"The user closed your card {_ASKED} without filling it in."
     )
     assert _note(conn, _says(conn, "T2")) is None
+
+
+def test_a_card_he_spoke_over_and_then_closed_tells_the_next_turn_it_went_unanswered(
+    conn: sqlite3.Connection,
+) -> None:
+    """ADR 0206: his close button after speaking over it still reads as his close."""
+    _ask(conn, "Q1")
+    _says(conn, "T1")
+    emit_event(
+        conn, type="surface.dismissed", payload={"turn_id": "T-ask", "clarification_id": "Q1"},
+    )
+    assert not _card(conn).waiting
+    assert _note(conn, _says(conn, "T2")) == (
+        f"The user closed your card {_ASKED} without filling it in."
+    )
+
+
+def _take_down(conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """Run `close_question` as the dispatcher would, for action A1."""
+    monkeypatch.setattr(tools, "_get_running_event_uid", lambda *_: None)
+    (definition,) = (
+        d for d in build_default_registry().get_definitions() if d.name == "close_question"
+    )
+    ctx = SimpleNamespace(conn=conn, action_id="A1")
+    return dict(definition.handler({}, ctx))  # type: ignore[arg-type,call-arg,misc]
+
+
+def test_close_question_takes_the_card_down_and_the_next_turn_hears_no_close_note(
+    conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0206: her take-down closes the card, and is not his close, so no note says so."""
+    _ask(conn, "Q1")
+    _says(conn, "T1")
+    assert _take_down(conn, monkeypatch) == {"status": "closed", "question": _QUESTION}
+    closed = _card(conn)
+    assert (closed.waiting, closed.dismissed, closed.just_dismissed) == (False, False, False)
+    assert _visible_ask_card(conn, _asked_at(conn) + _FRAGMENT_CARD_HOLD_MS) is None
+    assert _note(conn, _says(conn, "T2")) is None
+
+
+def test_close_question_errors_when_no_question_card_waits(
+    conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing asked, taken down, closed by him, or a bus card: each is code no_card."""
+    def refused() -> str:
+        with pytest.raises(ToolError) as caught:
+            _take_down(conn, monkeypatch)
+        return caught.value.code
+
+    assert refused() == "no_card"
+    _ask(conn, "Q1")
+    _take_down(conn, monkeypatch)
+    assert refused() == "no_card"
+    _ask(conn, "Q2")
+    emit_event(
+        conn, type="surface.dismissed", payload={"turn_id": "T-ask", "clarification_id": "Q2"},
+    )
+    assert refused() == "no_card"
+    emit_event(conn, type="clarification.requested", payload={
+        "clarification_id": "Q3", "question": "mall", "fields": [], "turn_id": "T-ask",
+        "trip": {"offer_id": "Q3", "to": "mall", "options": [], "modes": {}},
+    })
+    assert refused() == "no_card"
 
 
 def test_a_newer_ask_replaces_the_card_and_a_stale_close_is_ignored(
@@ -173,16 +260,18 @@ def test_a_card_from_a_barge_pause_fragment_waits_out_the_hold_before_it_shows(
     assert shown.clarification_id == "Q1"
 
 
-def test_a_continuation_inside_the_hold_closes_the_fragment_card_unseen(
+def test_a_continuation_inside_the_hold_no_longer_closes_the_fragment_card(
     conn: sqlite3.Connection,
 ) -> None:
-    """ADR 0144: the rest of his sentence folds the fragment in before the hold ends."""
+    """ADR 0206 over ADR 0144: the rest of his sentence leaves the card; the hold still hides it."""
     _heard(conn, "T-ask", "barge_pause")
     _ask(conn, "Q1")
     at = _asked_at(conn)
     _heard(conn, "T-rest", "acoustic_pause")
     assert _visible_ask_card(conn, at + 10) is None
-    assert _visible_ask_card(conn, at + _FRAGMENT_CARD_HOLD_MS + 1) is None
+    shown = _visible_ask_card(conn, at + _FRAGMENT_CARD_HOLD_MS + 1)
+    assert shown is not None
+    assert shown.clarification_id == "Q1"
 
 
 def test_a_card_from_any_other_turn_shows_at_once(conn: sqlite3.Connection) -> None:

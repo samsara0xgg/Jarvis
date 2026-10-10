@@ -501,6 +501,7 @@ def test_the_bus_card_asks_the_model_nothing(world: _World) -> None:
         correlation={"turn_id": "T-next"},
     )
     assert format_pending_clarification_note(assemble_packet(said, world.conn)) is None
+    assert _slot(world).waiting  # ADR 0206: the card follows the ask card's rule, so it stays up
 
 
 def test_the_card_pins_the_chosen_option_through_the_tools_path(world: _World) -> None:

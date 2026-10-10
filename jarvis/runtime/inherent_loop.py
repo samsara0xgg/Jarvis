@@ -632,7 +632,8 @@ def _visible_ask_card(conn: sqlite3.Connection, now_ms: int) -> PendingClarifica
     """ADR 0066: the ask card to show, or ``None``.
 
     ADR 0144: a card its turn put up from a barge-pause fragment stays hidden for
-    ``_FRAGMENT_CARD_HOLD_MS``; a continuation arriving by then closes it unseen.
+    ``_FRAGMENT_CARD_HOLD_MS``. ADR 0206: a continuation no longer closes it, so the hold
+    only delays showing it.
     """
     slot = PendingClarification.from_events(iter_events_of_types(conn, CLARIFICATION_EVENT_TYPES))
     if slot is None or not slot.waiting:

@@ -212,11 +212,10 @@ def format_pending_confirmation_note(
 
 
 def format_pending_clarification_note(packet: SituationPacket) -> str | None:
-    """Tell the model about its ask card on the one turn the card ends in, or None.
+    """Tell the model about its ask card when the turn needs the question, or None.
 
-    Three turns need the question to make sense: the turn its filled-in
-    answers start, the utterance that talked over it, and the first utterance
-    after it was dismissed.
+    Three cases: the turn its filled-in answers start, every utterance while
+    it is still up (ADR 0206), and the first utterance after it was dismissed.
     """
     slot = packet.pending_clarification
     if slot is None or slot.trip is not None:  # a bus card (ADR 0205) asks nothing of him
@@ -239,10 +238,11 @@ def format_pending_clarification_note(packet: SituationPacket) -> str | None:
             "Fields you did not mark one-off are already saved in [About the user]. "
             "Carry on with what they asked for."
         )
-    if slot.answered_by_words:
+    if slot.spoken_over:
         return (
-            f"Your card “{slot.question}” ({labels}) closed because the user spoke instead "
-            "of filling it in. If these words answer it, carry on with them."
+            f"Your card “{slot.question}” ({labels}) is still on screen. If the user's words "
+            "answer it, carry on with them and take it down with close_question in the same "
+            "step; if it no longer applies, take it down; otherwise leave it."
         )
     if slot.just_dismissed:
         return f"The user closed your card “{slot.question}” ({labels}) without filling it in."

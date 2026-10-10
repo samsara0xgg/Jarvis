@@ -93,6 +93,7 @@ _QUIET_TOOLS: Final = (
     "cancel_reminder",
     "remember",
     "withdraw_card",
+    "close_question",
     "show_on_dashboard",
     "mcp__hue__",
 )

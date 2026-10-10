@@ -123,7 +123,7 @@ const BASIS: Record<Basis, L> = { observed: ['Observed', '看到的'], stated: [
 // Live conversation: the memory.db rows and the answer still streaming, from the companion's daemon link.
 // `older` fetches a longer page and says whether it brought earlier rows; `floor` means the history's start is on hand.
 // `card` is the one waiting for a button (ADR 0062); it sits above the input until it is sent or dismissed.
-// `question` is the ask card (ADR 0066), in the same place, until it is filled in, dismissed or talked over.
+// `question` is the ask card (ADR 0066), in the same place, until it is filled in, dismissed, replaced or taken down (ADR 0206).
 type Talk = { rows: Row[]; tail: string; busy: boolean; offline: boolean; floor: boolean; submit: (text: string) => void; older: () => Promise<boolean>; card?: Card | null; decide?: Decide;
   question?: Question | null; answer?: Answer; trip?: TripLink; think: Think };
 // Think mode (ADR 0064): whether this turn is deep, the seconds of the deep answer still coming, the words that make a turn deep,

@@ -84,7 +84,11 @@ from jarvis.state.core_memory import SECTIONS as CORE_MEMORY_SECTIONS
 from jarvis.state.event_log import emit_event, iter_events_of_types
 from jarvis.state.lifecycle_terminal import terminalize_action
 from jarvis.state.memory_db import remember_fact
-from jarvis.state.projections import PendingConfirmations
+from jarvis.state.projections import (
+    CLARIFICATION_EVENT_TYPES,
+    PendingClarification,
+    PendingConfirmations,
+)
 
 if TYPE_CHECKING:
     import sqlite3
@@ -1022,6 +1026,39 @@ def withdraw_card(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         msg = "withdraw_card: the card was answered or replaced just now"
         raise ToolError(msg, code="no_card") from exc
     return {"status": "withdrawn", "tool": slot.snapshot.get("tool_name", "")}
+
+
+@tool(
+    description=(
+        "Take down your question card (ask_user) that is still on screen. Use it when the "
+        "user's own words answered it, in the same step as carrying on with them, or when it "
+        "no longer applies. Leave it if their words are about something else. No arguments."
+    ),
+    input_schema={"type": "object", "properties": {}, "required": []},
+    allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+    risk_level="L1",
+    read_only=False,
+)
+def close_question(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """Close the waiting question card with `clarification.withdrawn` (ADR 0206)."""
+    slot = PendingClarification.from_events(
+        iter_events_of_types(ctx.conn, CLARIFICATION_EVENT_TYPES),
+    )
+    if slot is None or not slot.waiting or slot.trip is not None:  # a bus card is no question
+        msg = "close_question: no question card is waiting"
+        raise ToolError(msg, code="no_card")
+    emit_event(
+        ctx.conn,
+        type="clarification.withdrawn",
+        payload={
+            "clarification_id": slot.clarification_id,
+            "turn_id": _turn_of(ctx.action_id) or "",
+            "action_id": ctx.action_id,
+        },
+        source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
+        correlation={"action_id": ctx.action_id},
+    )
+    return {"status": "closed", "question": slot.question}
 
 
 def _make_remember(memory_db_path: Path) -> Tool:
@@ -4106,6 +4143,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     registry.register(cancel_reminder)
     registry.register(ask_user)
     registry.register(withdraw_card)
+    registry.register(close_question)
     if memory_db_path is not None:
         registry.register(_make_remember(memory_db_path))
     if web_search_provider is not None:

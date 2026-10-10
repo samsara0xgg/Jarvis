@@ -725,6 +725,7 @@ def _fold_pending_confirmations(  # noqa: C901, PLR0912 - a flat one-branch-per-
 
 CLARIFICATION_EVENT_TYPES: Final[tuple[str, ...]] = (
     "clarification.requested",
+    "clarification.withdrawn",
     "surface.clarified",
     "surface.dismissed",
     "surface.user_intent",
@@ -743,8 +744,8 @@ class PendingClarification:
         fields: The card's fields as the tool stored them (label, choices,
             value, remember).
         asked_turn_id: The turn that put the card up.
-        closed: A `surface.clarified` or `surface.dismissed` naming this id
-            has landed.
+        closed: A `surface.clarified`, `surface.dismissed` or
+            `clarification.withdrawn` naming this id has landed.
         dismissed: It was closed with its close button, unanswered.
         answered_turn_id: The turn Allen's filled-in answers started, or
             ``None`` when he never submitted it.
@@ -752,8 +753,9 @@ class PendingClarification:
             blank.
         utterances_since: User utterances (`surface.user_intent` /
             `utterance.received`) after the ask while it was open, or after
-            it was dismissed. The one being handled is already appended, so
-            the first one sees 1.
+            it was dismissed (counted anew from the dismissal). The one being
+            handled is already appended, so the first one sees 1. They do not
+            close the card (ADR 0206).
         trip: A `transit` answer's rows and modes (ADR 0205): the card is a bus
             card, not a question.
     """
@@ -771,13 +773,13 @@ class PendingClarification:
 
     @property
     def waiting(self) -> bool:
-        """The card is on screen: not answered, dismissed, replaced or talked over."""
-        return not self.closed and self.utterances_since == 0
+        """The card is on screen: not answered, dismissed, replaced or taken down (ADR 0206)."""
+        return not self.closed
 
     @property
-    def answered_by_words(self) -> bool:
-        """The turn being handled is the utterance that closed the card by speaking over it."""
-        return not self.closed and self.utterances_since == 1
+    def spoken_over(self) -> bool:
+        """The card is still up and he has spoken since it went up (ADR 0206)."""
+        return not self.closed and self.utterances_since > 0
 
     @property
     def just_dismissed(self) -> bool:
@@ -794,7 +796,7 @@ def _fold_pending_clarification(
     events: Iterable[Event],
     start: PendingClarification | None = None,
 ) -> PendingClarification | None:
-    """A newer ask replaces the slot; an answer or dismissal closes it only by its own id.
+    """A newer ask replaces the slot; an answer, dismissal or take-down closes it by its id.
 
     ``start`` is the card folded from the log's earlier events; the card is its own fold state.
     """
@@ -814,6 +816,9 @@ def _fold_pending_clarification(
             )
         elif slot is None:
             continue
+        elif evt.type == "clarification.withdrawn":  # she took it down (ADR 0206), not his close
+            if not slot.closed and evt.payload.get("clarification_id") == slot.clarification_id:
+                slot = replace(slot, closed=True)
         elif evt.type in ("surface.clarified", "surface.dismissed"):
             if not slot.closed and evt.payload.get("clarification_id") == slot.clarification_id:
                 dismissed = evt.type == "surface.dismissed"
@@ -822,6 +827,7 @@ def _fold_pending_clarification(
                 slot = replace(
                     slot, closed=True, dismissed=dismissed, answered_turn_id=answered,
                     answered_labels=tuple(answers) if isinstance(answers, Mapping) else (),
+                    utterances_since=0 if dismissed else slot.utterances_since,  # count anew
                 )
         elif evt.type in ("surface.user_intent", "utterance.received") and (
             not slot.closed or slot.dismissed

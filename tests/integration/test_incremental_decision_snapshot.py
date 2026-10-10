@@ -240,7 +240,7 @@ class _Log:
         else:
             _emit(
                 self.conn,
-                rng.choice(("surface.clarified", "surface.dismissed")),
+                rng.choice(("surface.clarified", "surface.dismissed", "clarification.withdrawn")),
                 clarification_id=card,
                 turn_id=self._id("T"),
                 answers={"a": 1} if kind == 1 else {},

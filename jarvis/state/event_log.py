@@ -1117,6 +1117,16 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("action_id", "trip"),
         schema_version=1,
     ),
+    # ADR 0206: she took the waiting card down (`close_question`) because his words
+    # answered it or it no longer applied; unlike `surface.dismissed` it is not his close button.
+    EventTypeSchema(
+        event_type="clarification.withdrawn",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("clarification_id", "turn_id"),
+        optional_payload=("action_id",),
+        schema_version=1,
+    ),
     # `surface.dismissed` / `surface.clarified` — spec §3.6.3-named
     # UserResponse durable forms (ADR-0012 §3 D3), emitted by the ask card
     # (ADR 0066). owner_layer/actor align with the `surface.*` family: L5,
