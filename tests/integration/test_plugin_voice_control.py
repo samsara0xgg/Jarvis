@@ -70,6 +70,12 @@ def test_open_plugin_starts_a_credential_free_plugin_and_only_opens_the_panel_fo
         assert service.read()["request"]["state"] in {"connecting", "ready"}
         _wait(service, "ready")
         assert service.connected_apps_line() == "Connected apps: echo"
+        again = service.request_from_tool(
+            {"plugin_id": "echo", "continue_task": False},
+            ToolContext(fixture.conn, fixture.paths, "A1"),
+        )
+        assert again["panel_opened"] is False
+        assert "already connected" in again["instruction"]
 
         reply = service.request_from_tool(
             {"plugin_id": "private", "continue_task": False},

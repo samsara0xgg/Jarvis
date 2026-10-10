@@ -308,6 +308,18 @@ class PluginConnections:
                 )
             if self._request["state"] == "offered" and self._needs_no_typed_credential(plugin_id):
                 self._start(self._request, {})
+            if self._request["state"] == "ready":
+                # The companion opens nothing for a connected plugin (ADR 0202).
+                return {
+                    "panel_opened": False,
+                    "plugin_id": plugin_id,
+                    "state": "ready",
+                    "instruction": (
+                        "This app is already connected and its tools are available now. No panel "
+                        "was opened. If there is an app task, do it directly; otherwise tell the "
+                        "user it is already connected."
+                    ),
+                }
             return {
                 "panel_opened": True,
                 "plugin_id": self._request["plugin_id"],
