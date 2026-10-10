@@ -388,21 +388,7 @@ extension StarEngine {
         for e in list { c.setAlpha(e.v); mark(c, e, t, now, (e.mag ?? 1) * sc * e.ps) }
         c.setAlpha(1)
         let lensOn = ls.value > 0.02
-        if cam != nil {        // close up, every name in view stands up and faces you, larger as it comes near; too far to read, it lets go
-            var placed: [(Double, Double, Double, Double)] = []
-            let fin = smooth(0.25, 0.7, camE)
-            for e in list.filter({ $0.s != nil }).sorted(by: { $0.pr > $1.pr }) {
-                let la = e.v * fin * smooth(0.8, 1.1, e.pr) * calmK; if la < 0.03 { continue }
-                let n = sizeAt(11, e.ps), w = spr.word(e.ps > 0.95 ? "\(clock(e.t))  \(e.s!)" : e.s!, .sans(500, n), .ink, n)
-                if e.x < 0 || e.x > W { continue }
-                let lx = clamp(e.x, w.w / 2 + 8, W - w.w / 2 - 8), ly = e.y - (8 + 7 * e.ps) - n * 0.3
-                let box = (lx - w.w / 2 - 4, ly - n * 0.62, lx + w.w / 2 + 4, ly + n * 0.62)
-                if placed.contains(where: { box.0 < $0.2 && box.2 > $0.0 && box.1 < $0.3 && box.3 > $0.1 }) { continue }
-                placed.append(box); c.setAlpha(0.84 * la); blit(c, w.img, lx - w.w / 2, ly - w.h / 2, w.w, w.h)
-            }
-            c.setAlpha(1); names = placed
-            return
-        }
+        if cam != nil { nearNames(c, list, now); return }
         if z > 2.6 && !lensOn { return }
         // names of what is near the meridian (or under the lens) but not in focus, nearest first, never on top of each other
         var placed: [(Double, Double, Double, Double)] = []
@@ -424,6 +410,44 @@ extension StarEngine {
             c.setAlpha(0.62 * la); blit(c, w.img, lx - w.w / 2, ly - w.h / 2, w.w, w.h)
         }
         c.setAlpha(1)
+    }
+
+    /// Close up, the names stand beside their stars, haloed, your own on the left of your lane and hers on the right of hers, and the time is read off the ring.
+    /// What needs him is placed first, so it is never the one to give way.
+    private func nearNames(_ c: CGContext, _ list: [Ev], _ now: Double) {
+        let fin = smooth(0.25, 0.7, camE), calmK = self.calmK
+        typealias Box = (Double, Double, Double, Double)
+        var cands: [(e: Ev, x: Double, y: Double, pr: Double, v: Double)] = []
+        for e in list where e.s != nil {
+            var x = e.x, y = e.y, pr = e.pr, v = e.v
+            if e.kd == .work && e.lane == .you && e.d != nil && e.t + e.d! >= Trev - 0.5 {      // still going on: its name is where you are now, not at its start behind the camera
+                guard P(R_YOU + amp * actAt(Trev), ang(Trev)) else { continue }
+                x = PX; y = PY; pr = PS; v = visT(Trev) * clamp((now - e.born) / 600, 0, 1) * fog()
+            }
+            cands.append((e, x, y, pr, v))
+        }
+        func rank(_ e: Ev) -> Int { e.id == openId ? -1 : e.kd == .wait ? 0 : e.kd == .work ? 1 : e.kd == .next ? 2 : 3 }
+        cands.sort { rank($0.e) != rank($1.e) ? rank($0.e) < rank($1.e) : $0.pr > $1.pr }
+        var placed: [Box] = [], hits: [(id: String, box: Box)] = []
+        let her: Box = (herP.0 - 22, herP.1 - 22, herP.0 + 22, herP.1 + 22)
+        func hit(_ a: Box, _ b: Box, _ mx: Double = 0, _ my: Double = 0) -> Bool { a.0 - mx < b.2 && a.2 + mx > b.0 && a.1 - my < b.3 && a.3 + my > b.1 }
+        for cd in cands {
+            let e = cd.e, la = cd.v * fin * smooth(0.55, 0.80, cd.pr) * calmK; if la < 0.03 { continue }
+            let ps = clamp(cd.pr, 0.45, 2.4), n = clamp((9.5 + 4.2 * ps.squareRoot()).rounded(), 11, 17), p = SpriteCache.pad(n)
+            let s = spr.label(e.s!, .sans(500, n), e.kd == .wait ? RGB(255, 217, 176) : .ink)
+            let tw = s.w - 2 * p, gap = 6 + 5 * ps, hh = 0.62 * n
+            let left = (cd.x - gap - tw, cd.y - hh, cd.x - gap, cd.y + hh), right = (cd.x + gap, cd.y - hh, cd.x + gap + tw, cd.y + hh)
+            var box: Box?
+            for b in e.lane == .you ? [left, right] : [right, left] where b.0 >= 6 && b.2 <= W - 6 {      // the other side if this one leaves the screen
+                if b.1 < MAP_Y + 6 || hit(b, her) || numeralBoxes.contains(where: { hit(b, $0) }) || placed.contains(where: { hit(b, $0, 2, 1) }) { continue }
+                box = b; break
+            }
+            guard let b = box else { continue }
+            let a = (e.kd == .wait || e.kd == .work ? 0.95 : e.kd == .next ? 0.80 : 0.88) * la
+            placed.append(b); hits.append((e.id, b))
+            c.setAlpha(a); blit(c, s.img, b.0 - p, cd.y - s.h / 2, s.w, s.h)
+        }
+        c.setAlpha(1); names = placed + numeralBoxes; labelHits = hits
     }
 
     func mark(_ c: CGContext, _ e: Ev, _ t: Double, _ now: Double, _ m: Double) {

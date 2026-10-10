@@ -64,6 +64,7 @@ final class StarEngine {
     var cam: Cam?
     var PX = 0.0, PY = 0.0, PS = 1.0, PZ = 0.0, camE = 0.0, cenX = CX, cenY = CY, cenS = 1.0
     var names: [(Double, Double, Double, Double)] = []
+    var labelHits: [(id: String, box: (Double, Double, Double, Double))] = []      // the names placed this frame, for a tap to find
     var numeralBoxes: [(Double, Double, Double, Double)] = []      // where the near view's hour numerals stand this frame, for the names to keep out of
     let NEARP = NearParams()
 
@@ -154,7 +155,6 @@ final class StarEngine {
     }
     @discardableResult func P(_ r: Double, _ a: Double) -> Bool { Pxy(r * cos(a), r * sin(a)) }
     func fog() -> Double { guard let c = cam else { return 1 }; return 1 - 0.72 * smooth(c.D * 1.15, c.D * 2.9, PZ) }   // far things dim
-    func sizeAt(_ base: Double, _ s: Double) -> Double { clamp((base * s / 2).rounded() * 2, 8, 24) }
     /// the angle and radius on the dial under a point of the screen; nil above the horizon
     func unP(_ X: Double, _ Y: Double) -> (Double, Double)? {
         guard let c = cam else { return (atan2(Y - CY, X - CX), hypot(X - CX, Y - CY)) }
