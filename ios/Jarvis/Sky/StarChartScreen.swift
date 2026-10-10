@@ -49,7 +49,7 @@ struct StarChrome: View {
     let engine: StarEngine
     @Bindable var ui: StarUI
     let k: Double
-    @FocusState private var focused: Bool
+    @State private var focused = false                 // the field's keyboard (Attach/AttachField)
     @State private var sheetY: Double? = nil           // while a finger holds the drawer
     private let SHUT = 880.0
 
@@ -62,7 +62,9 @@ struct StarChrome: View {
             grabber
             caption
             drawer
+            AttachDim(model: ui.attach)
             composer
+            AttachOverlay(model: ui.attach, kbLift: ui.kbLift)
         }
         .frame(width: W, height: H, alignment: .topLeading)
         .onChange(of: focused) { _, f in ui.typing = f }
@@ -263,19 +265,37 @@ struct StarChrome: View {
         return Text(a).font(.system(size: 23, weight: .medium))
     }
 
-    // MARK: the composer: type to her, or tap the mic
+    // MARK: the composer: type to her, or tap the mic. A + at the left, what is attached above the words, a field that grows to five lines.
+
+    /// words and attachments go together; with no words, the attachments are named
+    private func sendComposer() {
+        let words = ui.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sent = ui.attach.take()
+        if words.isEmpty && sent.isEmpty { return }
+        engine.send(words.isEmpty ? AttachModel.caption(sent) : words)
+    }
+    private func composerTap() {
+        ui.attach.close()
+        if ui.attach.hasItems || !ui.text.trimmingCharacters(in: .whitespaces).isEmpty { sendComposer() } else { engine.micTap() }
+    }
 
     private var composer: some View {
-        ZStack(alignment: .trailing) {
-            TextField("", text: $ui.text, prompt: Text("跟她说…").foregroundStyle(Color(red: 196 / 255, green: 204 / 255, blue: 238 / 255).opacity(0.5)))
-                .focused($focused).font(.system(size: 16)).foregroundStyle(ink).tint(Color(red: 157 / 255, green: 180 / 255, blue: 1))
-                .submitLabel(.send).onSubmit { engine.send(ui.text) }
-                .onChange(of: ui.text) { _, t in if t.count > 120 { ui.text = String(t.prefix(120)) } }
-                .textInputAutocapitalization(.never).autocorrectionDisabled()
-                .padding(.leading, 20).padding(.trailing, 56).frame(width: W - 40, height: 48)
-            MicButton(state: ui.mic) { engine.micTap() }.padding(.trailing, 6)
+        let at = ui.attach
+        return VStack(spacing: 0) {
+            AttachStrip(model: at)
+            ZStack(alignment: .bottom) {
+                AttachField(text: $ui.text, focused: $focused, model: at, send: sendComposer)
+                    .onChange(of: ui.text) { _, t in if t.count > 120 { ui.text = String(t.prefix(120)) } }
+                HStack(spacing: 0) {
+                    AttachPlusButton(model: at)
+                    Spacer(minLength: 0)
+                    MicButton(state: at.hasItems ? .send : ui.mic) { composerTap() }
+                }.padding(.horizontal, 6).padding(.bottom, 6)
+            }
+            .frame(width: W - 40, height: at.fieldH)
         }
-        .frame(width: W - 40, height: 48).glass(Capsule(), focused: focused)
+        .frame(width: W - 40, height: 48 + at.rise, alignment: .bottom)
+        .glass(RoundedRectangle(cornerRadius: 24), focused: focused)
         .overlay(alignment: .topLeading) {
             WrapLayout(spacing: 8) {
                 ForEach(Array(engine.talks.enumerated()), id: \.offset) { _, t in
@@ -289,11 +309,11 @@ struct StarChrome: View {
             .frame(width: W - 40, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .alignmentGuide(.top) { $0[.bottom] + 58 }
-            .opacity(ui.chipsOn ? 1 : 0).offset(y: ui.chipsOn ? 0 : 8)
-            .allowsHitTesting(ui.chipsOn)
-            .animation(.easeOut(duration: 0.3), value: ui.chipsOn)
+            .opacity(ui.chipsOn && !at.hasItems && !at.isOpen ? 1 : 0).offset(y: ui.chipsOn && !at.hasItems && !at.isOpen ? 0 : 8)
+            .allowsHitTesting(ui.chipsOn && !at.hasItems && !at.isOpen)
+            .animation(.easeOut(duration: 0.3), value: ui.chipsOn && !at.hasItems && !at.isOpen)
         }
-        .offset(x: 20, y: H - 34 - 48 - ui.kbLift)
+        .offset(x: 20, y: H - 34 - 48 - at.rise - ui.kbLift)
     }
 }
 

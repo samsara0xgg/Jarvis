@@ -57,4 +57,6 @@ final class StarUI {
     var settingsOpen = false
     var text = ""
     var talkChips: [String] = []
+    // what is attached to the words, and the panel that picks it (Attach/)
+    let attach = AttachModel()
 }
