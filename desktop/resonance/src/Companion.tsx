@@ -17,6 +17,7 @@ import { answerStartrail, markStartrail, useStartrail } from './startrail';
 import { CardRate, DigestCard, JobsDigestCard, MailNotice, NoticeCard, RateRow, cardTell, ended, noticeCue, useNotices, type Glow, type MomentHold } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { Notch, type Kind as MarkGroup, type NotchNote } from './Notch';
+import { useTripNote } from './TripCards';
 import { fitWindow } from './fitWindow';
 import { NightCard, isNightLook, markNightSeen, morningOf, seenNight, type NightAction, type NightSession, type NightState } from './NightCard';
 import { tr, useCompanionSettings, type L, type Lang } from './companionSettings';
@@ -337,10 +338,15 @@ export function Companion() {
     cue: (name, gain, always) => { const on = preferences.feedbackEnabled && !s.soundMuted && (always || s.quiet === 'off' && audioPrivate.current !== false); if (on) noticeCue(name, preferences.feedbackVolume, gain); return on; },
     answer: (req, body, id) => agents.find(a => a.id === id)?.host ? answerStartrail(id, req, body) : port ? answerRequest(port, req.id, body) : Promise.resolve(true), mark: markStartrail });
   const notice = notices.current;
+  // ADR 0202: the bus trip's cards; the offer waits for any other notice and for the quiet levels.
+  const busCards = useTripNote({ port, lang: companion.lang, offer: notices.offer, departure: notices.departure, blocked: !!notice || s.quiet !== 'off', closeOffer: notices.closeOffer, setDeparture: notices.setDeparture, leaveDeparture: notices.leaveDeparture });
   // A press anywhere else on screen puts a card away (the window is click-through, so main reports it); not one that
   // came up under the pointer a moment ago, and not while the pointer is on the card.
   const away = useRef(() => undefined as void);
-  away.current = () => { if (notice && notice.kind !== 'pop' && !notices.hovering && performance.now() - notices.openedAt > 800) notices.dismiss(); };
+  away.current = () => {
+    if (notice && notice.kind !== 'pop' && !notices.hovering && performance.now() - notices.openedAt > 800) notices.dismiss();
+    if (!notices.hovering) busCards.away();
+  };
   useEffect(() => window.jarvis?.onMouseDown?.(() => { away.current(); outside.current(); }), []);
   // ADR 0153: at dnd the marks beside the notch stay as they were when it began; nothing outside shows there. A glow is one of them (ADR 0187).
   const frozen = useRef<{ agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; glows: Glow[] } | null>(null);
@@ -829,6 +835,7 @@ export function Companion() {
     : nightShown && nightState ? { key: nightKey, onClose: closeMorning, card: <NightCard key={nightKey} state={nightState} morning={morning} unread={notices.unread.size} lang={companion.lang} marks={wardrobe.marks} look={wardrobe.night}
       act={nightAct} onGo={nightGo} onClose={closeMorning}
       rate={nightCid ? <CardRate key={nightCid} level="card" lang={companion.lang} onRate={reaction => { nightReact(reaction); if (morning) setTimeout(closeMorning, 850); }}/> : undefined}/> }
+    : busCards.note ? busCards.note
     : !notice ? null : notice.kind === 'pop' ? { key: notice.key, pop: notice.ids, onClose: notices.dismiss,
       rate: <RateRow card={notices.card!} level={notices.card?.level ?? 'card'} lang={companion.lang} onChange={notices.bump} onRate={(reaction, text) => notices.rate(notice, reaction, text)}/> }
     : notice.kind === 'mail' ? { key: notice.key, id: notice.id, onClose: notices.dismiss,
@@ -898,7 +905,7 @@ export function Companion() {
       </DuskDashboard>
       <DockingDrop near={docking} width={geo.width} top={placement.topInset} center={geo.center}/>
       <Notch look={wardrobe.marks} agents={frozen.current?.agents ?? (agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents)} unread={frozen.current?.unread ?? notices.unread} parked={frozen.current?.parked ?? notices.parked} archived={frozen.current?.archived ?? notices.archived} cursor={cursor} quiet={agentsFront || dashboard || moving} aside={dashboard ? { hover: setMarkHover, open: group => setAgentsFocus({ group, key: Date.now() }) } : undefined} edge={dashboardJoined ? geo.center + PANEL / 2 : null}
-        pin={{ item: notices.departure, unpin: notices.leaveDeparture }} glow={{ items: frozen.current?.glows ?? notices.glows, open: g => { showJobs(); notices.leaveGlow(g.id, true); }, clear: g => notices.leaveGlow(g.id, false) }} onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
+        pin={{ item: notices.departure, open: busCards.open }} glow={{ items: frozen.current?.glows ?? notices.glows, open: g => { showJobs(); notices.leaveGlow(g.id, true); }, clear: g => notices.leaveGlow(g.id, false) }} onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
         act={{ jump, answer: notices.focus, read: ids => { notices.acted(ids); notices.read(ids); }, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
         port={port} keys={keysPress} onViewing={setViewing} onJoinedChange={setNotchJoined} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}

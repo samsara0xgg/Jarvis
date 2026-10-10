@@ -87,6 +87,30 @@ class BusLive:
         or when it is gone from the feed, the trip whose timetable (or live) time is closest to
         ``around_ms``, and no more than ten minutes from it. Network and file errors propagate.
         """
+        return _closest(self._stop_times(route, stop, around_ms), trip_id)
+
+    def next_departure(
+        self,
+        route: str,
+        stop: tuple[float, float],
+        around_ms: int,
+        trip_id: str | None = None,
+    ) -> tuple[str, int] | None:
+        """``(trip_id, live departure ms)`` of the bus after the one :meth:`departure` would match.
+
+        The bus now matched (or, when it is gone from the feed, ``around_ms``) is the line:
+        the earliest bus on ``route`` at ``stop`` leaving after it. Errors propagate.
+        """
+        found = self._stop_times(route, stop, around_ms)
+        now = _closest(found, trip_id)
+        line = now[1] if now else around_ms
+        later = [(live, trip) for _, trip, live in found if live > line]
+        return (min(later)[1], min(later)[0]) if later else None
+
+    def _stop_times(
+        self, route: str, stop: tuple[float, float], around_ms: int,
+    ) -> list[tuple[int, str, int]]:
+        """Each bus on ``route`` at ``stop`` as ``(distance from around_ms, trip, live ms)``."""
         trips = self._lookups()
         near = {sid for sid, at in self._stops.items() if _metres(stop, at) <= STOP_RADIUS_M}
         feed = gtfs_realtime_pb2.FeedMessage()
@@ -102,12 +126,8 @@ class BusLive:
                     continue
                 live = event.time * 1000
                 off = min(abs(live - event.delay * 1000 - around_ms), abs(live - around_ms))
-                sticky = update.trip.trip_id == trip_id
-                found.append((-1 if sticky else off, update.trip.trip_id, live))
-        if not found:
-            return None
-        off, best, live = min(found)
-        return (best, live) if off <= MATCH_WINDOW_MS else None
+                found.append((off, update.trip.trip_id, live))
+        return found
 
     def _lookups(self) -> dict[str, str]:
         """The trip -> route number map, building it (and the stop positions) on first use."""
@@ -143,6 +163,14 @@ class BusLive:
 
     def _fresh(self) -> bool:
         return self._zip.exists() and time.time() - self._zip.stat().st_mtime < STATIC_MAX_AGE_S
+
+
+def _closest(found: list[tuple[int, str, int]], trip_id: str | None) -> tuple[str, int] | None:
+    """The matched bus: ``trip_id`` if the feed still has it, else the closest within the window."""
+    if not found:
+        return None
+    off, best, live = min((-1 if trip == trip_id else off, trip, live) for off, trip, live in found)
+    return (best, live) if off <= MATCH_WINDOW_MS else None
 
 
 def _rows(archive: zipfile.ZipFile, name: str) -> csv.DictReader[str]:

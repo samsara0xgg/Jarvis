@@ -653,6 +653,9 @@ class InherentDeps:
     # daemon wires them only while ``job_mail.enabled``. A LookupError is 404, a ValueError 400.
     notices_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
     notice_act: Callable[[str, str, str | None], Awaitable[None]] | None = None
+    # ADR 0202: the notch's trip cards (pin an offered option, next bus, undo an unpin). ``None``
+    # leaves the route unregistered (404); a LookupError is 404.
+    departure_act: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
     # ADR 0160: the same feedback for every other proactive card the client raises, by card id.
     # ``None`` leaves the route unregistered (404); a LookupError is 404, a ValueError 400.
     card_act: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
@@ -1255,6 +1258,15 @@ class NoticeActionRequest(BaseModel):
     reaction: str | None = Field(default=None, max_length=50)
 
 
+class DepartureRequest(BaseModel):
+    """Body of ``POST /inherent/departure`` (ADR 0202): the field each action needs is required."""
+
+    action: Literal["pin", "next", "undo"]
+    offer_id: str = Field(default="", max_length=40)
+    index: int = Field(default=0, ge=0, le=9)
+    pin_id: str = Field(default="", max_length=40)
+
+
 class CardActionRequest(BaseModel):
     """Body of ``POST /inherent/cards/{id}`` (ADR 0160): ``seen`` with a snapshot, or feedback."""
 
@@ -1484,6 +1496,18 @@ def _register_day_route(app: FastAPI, deps: InherentDeps) -> None:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         return await _home_call(day_read(wanted))
+
+
+def _register_departure_route(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0202: the notch's trip cards."""
+    if deps.departure_act is None:
+        return
+    departure_act = deps.departure_act
+
+    @app.post("/inherent/departure", status_code=200)
+    async def departure(req: DepartureRequest) -> dict[str, Any]:
+        """``{departure, reason}``: the pin now served, and why an action changed nothing."""
+        return await _home_call(departure_act(req.model_dump()))
 
 
 def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C901 â€” one closed route table.
@@ -2391,6 +2415,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
     _register_home_routes(app, deps)
     _register_mail_page_routes(app, deps)
     _register_job_routes(app, deps)
+    _register_departure_route(app, deps)
     _register_memory_routes(app, deps)
     _register_data_routes(app, deps)
     _register_setup_routes(app, deps)

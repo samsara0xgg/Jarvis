@@ -1,4 +1,4 @@
-"""ADR 0200 — a bus trip pinned on the notch: tool, ring, served pin and live refresh.
+"""ADR 0200, 0202 — a bus trip pinned on the notch: tool, card, ring, served pin, live refresh.
 
 The real tools run through ``ToolRegistry.dispatch`` onto a real event log; the real ``Reminders``
 tick and ``Departures`` fold that log under a fake clock, and the real ``/inherent/notices`` routes
@@ -26,6 +26,7 @@ from jarvis.decision.commentary import _dispatch_key
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution import transit_tool
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
+from jarvis.execution.transit_tool import TransitOffers
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.departures import REFRESH_S, Departures
 from jarvis.runtime.inherent_loop import _notice_deps
@@ -118,8 +119,14 @@ class _World:
     def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.paths = bootstrap_runtime(tmp_path)
         self.conn = open_event_log(self.paths.event_log)
+        self.offers = TransitOffers()
+        self.offer_clock = 1_000_000.0
+        self.offers.clock = lambda: self.offer_clock
+        self.local_now = NOW
         self.registry = build_default_registry(
-            transit_api_key="not-a-key", transit_places={"home": "48.48,-123.38"}
+            transit_api_key="not-a-key",
+            transit_places={"home": "48.48,-123.38"},
+            transit_offers=self.offers,
         )
         self.lifecycle = ActionLifecycle()
         self.n = 0
@@ -136,13 +143,13 @@ class _World:
         self.reminders = Reminders(
             self.paths.event_log,
             moment=SimpleNamespace(hold=lambda: None),  # type: ignore[arg-type]
-            departures=Departures(self.paths.event_log, self.live),
+            departures=Departures(self.paths.event_log, self.live, self.offers),
         )
         self.reminders.now = lambda: self.clock
         self.reminders.may_speak = lambda: True
         self.reminders.say = self.said.append
         self.departures = self.reminders.departures
-        monkeypatch.setattr(transit_tool, "_now", lambda: NOW)
+        monkeypatch.setattr(transit_tool, "_now", lambda: self.local_now)
         monkeypatch.setattr(
             urllib.request,
             "urlopen",
@@ -423,3 +430,180 @@ def test_the_static_export_is_downloaded_once_a_day(tmp_path: Path) -> None:
     assert live.departure("28", STOP, around + 15 * 60_000) is None  # beyond ten minutes
     assert live.departure("12", STOP, around) is None  # that trip is not in the feed
     assert len(calls) == 1
+
+
+# --- ADR 0202: the card under the notch ------------------------------------------------
+
+
+def _answer(world: _World, *legs: tuple[str, str]) -> None:
+    """The next ``transit`` answer has one option per ``(first bus departs, route)``."""
+    world.google = {"routes": [r for at, route in legs for r in _google(at, route)["routes"]]}
+    world.look_up()
+
+
+def _offer(world: _World) -> dict[str, Any]:
+    offer = world.app().get("/inherent/notices").json()["transit_offer"]
+    assert offer is not None
+    return dict(offer)
+
+
+def _take(world: _World, action: str, **more: str | int) -> Any:  # noqa: ANN401
+    return world.app().post("/inherent/departure", json={"action": action, **more})
+
+
+def test_an_answer_serves_one_row_per_option_and_drops_the_past(world: _World) -> None:
+    """Each option is a row; a row whose leave time has passed goes, the rest keep their index."""
+    _answer(world, ("17:05", "28"), ("17:15", "28"), ("17:30", "12"))
+    offer = _offer(world)
+    assert offer["id"].startswith("offer-")
+    rows = [
+        (o["index"], o["route"], o["leave_at"], o["departs"], o["arrive_at"])
+        for o in offer["options"]
+    ]
+    assert rows == [
+        (0, "28", "17:02", "17:05", "17:20"),
+        (1, "28", "17:12", "17:15", "17:30"),
+        (2, "12", "17:27", "17:30", "17:45"),
+    ]
+    assert offer["options"][0]["board_stop"] == "Shelbourne at Pear"
+    assert offer["options"][0]["to"] == "mayfair mall"
+    world.local_now = _local("17:10")
+    assert [o["index"] for o in _offer(world)["options"]] == [1, 2]
+    world.local_now = _local("17:40")
+    assert world.app().get("/inherent/notices").json()["transit_offer"] is None
+
+
+def test_the_card_pins_the_chosen_option_through_the_tools_path(world: _World) -> None:
+    """A click pins that option: event, ring and stop position as the tool writes them."""
+    _answer(world, ("17:05", "28"), ("17:15", "28"))
+    offer = _offer(world)
+    reply = _take(world, "pin", offer_id=offer["id"], index=1)
+    assert reply.status_code == 200
+    (pinned,) = world.events("departure.pinned")
+    assert (pinned["route"], pinned["board_stop"], pinned["arrive_at"], pinned["to"]) == (
+        "28", "Shelbourne at Pear", "17:30", "mayfair mall",
+    )
+    assert (pinned["stop_lat"], pinned["stop_lng"]) == STOP
+    assert pinned["leave_at_ms"] == int(_local("17:12").timestamp() * 1000)
+    (ring,) = world.pending()
+    assert ring.reminder_id == pinned["reminder_id"]
+    assert ring.text == "该出门了，28 路 17:15 在 Shelbourne at Pear 上车"
+    served = reply.json()["departure"]
+    assert (served["id"], served["leave_at"], served["departs"]) == (
+        pinned["pin_id"], "17:12", "17:15",
+    )
+    assert world.app().get("/inherent/notices").json()["departure"]["id"] == pinned["pin_id"]
+
+
+def test_a_stale_offer_or_row_pins_nothing(world: _World) -> None:
+    """Unknown id, unknown index, an expired offer, a past row and a replaced offer are all 404."""
+    _answer(world, ("17:05", "28"), ("17:15", "28"))
+    old = _offer(world)["id"]
+    assert _take(world, "pin", offer_id="offer-nope", index=0).status_code == 404
+    assert _take(world, "pin", offer_id=old, index=5).status_code == 404
+    world.local_now = _local("17:10")  # row 0 has gone
+    assert _take(world, "pin", offer_id=old, index=0).status_code == 404
+    world.local_now = NOW
+    world.offer_clock += 61  # the card has closed itself
+    assert world.app().get("/inherent/notices").json()["transit_offer"] is None
+    assert _take(world, "pin", offer_id=old, index=1).status_code == 404
+    _answer(world, ("17:20", "12"))  # a newer answer replaces the offer
+    assert _offer(world)["id"] != old
+    world.offer_clock += 1
+    assert _take(world, "pin", offer_id=old, index=0).status_code == 404
+    assert world.events("departure.pinned") == []
+    assert world.pending() == []
+
+
+def test_the_description_no_longer_asks_to_pin() -> None:
+    """The card offers the pin; the model pins only when he asks by voice."""
+    registry = build_default_registry(transit_api_key="not-a-key", transit_places={})
+    descriptions = {d.name: d.description for d in registry.get_definitions()}
+    assert "ask him" not in descriptions["transit"]
+    assert "Do not ask whether to pin" in descriptions["transit"]
+    assert "by voice" in descriptions["pin_departure"]
+    assert "says yes" not in descriptions["pin_departure"]
+
+
+def test_next_bus_takes_a_later_option_of_the_last_answer(world: _World) -> None:
+    """The next bus of the same route and stop comes from the last answer when it has one."""
+    _answer(world, ("17:05", "28"), ("17:15", "28"), ("17:30", "12"))
+    world.pin()
+    (before,) = world.pending()
+    reply = _take(world, "next").json()
+    assert reply["reason"] is None
+    assert (reply["departure"]["leave_at"], reply["departure"]["departs"]) == ("17:12", "17:15")
+    assert reply["departure"]["arrive_at"] == "17:30"
+    (after,) = world.pending()
+    assert after.reminder_id != before.reminder_id
+    assert after.due_at_ms == int(_local("17:12").timestamp() * 1000)
+    # Again: the 12 is another route, so there is no later 28.
+    again = _take(world, "next").json()
+    assert again["reason"] == "no_later"
+    assert again["departure"]["departs"] == "17:15"
+
+
+def test_next_bus_falls_back_to_the_live_feed(world: _World) -> None:
+    """Without a later option the feed's next trip at the matched stop is pinned, times shifted."""
+    world.pin()
+    world.feed = _feed(
+        ("T28a", "S1", "17:05", 0), ("T28b", "S1", "17:15", 0), ("T12a", "S1", "17:08", 0),
+    )
+    reply = _take(world, "next").json()
+    assert reply["reason"] is None
+    assert (reply["departure"]["leave_at"], reply["departure"]["departs"]) == ("17:12", "17:15")
+    assert reply["departure"]["arrive_at"] == "17:30"
+    (ring,) = world.pending()
+    assert ring.due_at_ms == int(_local("17:12").timestamp() * 1000)
+    pinned = world.events("departure.pinned")[-1]
+    assert (pinned["stop_lat"], pinned["stop_lng"]) == STOP
+    world.feed = _feed(("T28a", "S1", "17:05", 0), ("T28b", "S1", "17:15", 0))
+    assert _take(world, "next").json()["reason"] == "no_later"
+    world.feed = b""
+    world.feed_error = OSError("down")
+    assert _take(world, "next").json()["reason"] == "no_later"
+    assert len(world.events("departure.pinned")) == 2
+
+
+def test_cancel_then_undo_pins_the_same_trip_again(world: _World) -> None:
+    """Undo re-pins the unpinned trip through the shared path, unless its leave time has passed."""
+    made = world.pin()
+    client = world.app()
+    client.post(f"/inherent/notices/{made['pin_id']}", json={"action": "dismissed"})
+    assert world.pending() == []
+    assert _take(world, "undo", pin_id="departure-nope").status_code == 404
+    reply = _take(world, "undo", pin_id=made["pin_id"]).json()
+    assert reply["reason"] is None
+    back = reply["departure"]
+    assert back["id"] != made["pin_id"]
+    assert (back["route"], back["leave_at"], back["departs"], back["arrive_at"], back["to"]) == (
+        "28", "17:02", "17:05", "17:20", "home",
+    )
+    (pinned,) = world.events("departure.pinned")[-1:]
+    assert (pinned["stop_lat"], pinned["stop_lng"]) == STOP
+    (ring,) = world.pending()
+    assert ring.due_at_ms == int(_local("17:02").timestamp() * 1000)
+    # It was used up; and a trip whose leave time has gone cannot come back.
+    assert _take(world, "undo", pin_id=made["pin_id"]).status_code == 404
+    again = world.app().post(f"/inherent/notices/{back['id']}", json={"action": "dismissed"})
+    assert again.status_code == 200
+    world.local_now = _local("17:10")
+    late = _take(world, "undo", pin_id=back["id"]).json()
+    assert late["reason"] == "past"
+    assert late["departure"] is None
+    assert world.pending() == []
+
+
+def test_the_served_pin_says_what_the_refresh_knows(world: _World) -> None:
+    """delay_min and checked_at_ms follow the feed; an unchecked pin has no check time."""
+    world.pin()
+    client = world.app()
+    first = client.get("/inherent/notices").json()["departure"]
+    assert (first["delay_min"], first["checked_at_ms"]) == (0, None)
+    _late(world)
+    world.reminders.tick()
+    world.clock += timedelta(seconds=REFRESH_S)
+    world.reminders.tick()
+    seen = client.get("/inherent/notices").json()["departure"]
+    assert seen["delay_min"] == 3
+    assert seen["checked_at_ms"] == int(world.clock.timestamp() * 1000)

@@ -92,6 +92,7 @@ if TYPE_CHECKING:
 
     from jarvis.execution.mail_draft_tool import DraftStore
     from jarvis.execution.night_tools import NightControl
+    from jarvis.execution.transit_tool import TransitOffers
     from jarvis.shared import Event
     from jarvis.shared.device_link import DeviceLink
     from jarvis.state.voice_settings import VoiceSettings
@@ -3967,6 +3968,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     weather_lookup: Callable[[], Mapping[str, Any]] | None = None,
     transit_api_key: str | None = None,
     transit_places: Mapping[str, str] | None = None,
+    transit_offers: TransitOffers | None = None,
     here_location: Callable[[], Mapping[str, Any]] | None = None,
     here_from_phone: bool = False,
 ) -> ToolRegistry:
@@ -4042,6 +4044,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         transit_api_key: ADR 0189 — the Google Routes key (`GOOGLE_MAPS_API_KEY`, resolved
             by the runtime); empty or `None` leaves `transit` off the menu.
         transit_places: the saved `home` and `school` for `transit` (an address or `lat,lng`).
+        transit_offers: where `transit` leaves its options for the notch's card (ADR 0202).
         here_location: ADR 0194 — one fresh read of this Mac's location (`lat`, `lng`,
             `accuracy_m`, optional `place`); gives `transit` its `here` and registers
             `where_am_i`. `None` leaves both off.
@@ -4201,6 +4204,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         *build_weather_tool(weather_lookup),
         *build_transit_tool(
             transit_api_key, transit_places or {}, here_location, phone=here_from_phone,
+            offers=transit_offers,
         ),
         *build_where_tool(here_location, phone=here_from_phone),
     ):

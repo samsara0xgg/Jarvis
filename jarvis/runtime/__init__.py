@@ -150,6 +150,7 @@ from jarvis.execution.tools import (
     release_turn_actions,
     turn_action_ids,
 )
+from jarvis.execution.transit_tool import TransitOffers
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.daily_report import (
@@ -2691,6 +2692,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         AmbientSounds(log_path=logs_dir(paths.root) / "ambient-sounds.jsonl")
         if _ambient_sounds(full_config) else None
     )
+    transit_offers = TransitOffers()  # what `transit` leaves for the notch's card (ADR 0202)
     registry = build_default_registry(
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
@@ -2702,6 +2704,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         weather_lookup=weather_lookup(_home_weather(full_config)),
         transit_api_key=os.environ.get("GOOGLE_MAPS_API_KEY", "").strip(),
         transit_places=_transit_places(full_config),
+        transit_offers=transit_offers,
         here_location=_here_location(role, paths.event_log),
         here_from_phone=role == "brain",
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
@@ -2918,7 +2921,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         reminders=Reminders(
             paths.event_log,
             moment=moment,
-            departures=Departures(paths.event_log, BusLive(paths.root / "cache")),
+            departures=Departures(paths.event_log, BusLive(paths.root / "cache"), transit_offers),
         ),
         voice_words=_voice_words(full_config, config_path, jev_log),
         oneshot=_jev_oneshot(

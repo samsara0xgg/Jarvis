@@ -5059,7 +5059,10 @@ def _notice_deps(
             body = {"notices": [], "audio_private": private, **(hold or {"hold": None})}
         cards = await asyncio.to_thread(reminders.notices)
         pin = await asyncio.to_thread(reminders.departures.view)
-        return {**body, "notices": [*cards, *body["notices"]], "departure": pin}
+        offer = reminders.departures.offer()
+        return {
+            **body, "notices": [*cards, *body["notices"]], "departure": pin, "transit_offer": offer,
+        }
 
     async def act(notice_id: str, action: str, reaction: str | None) -> None:
         if notice_id.startswith(PIN_PREFIX):
@@ -5072,7 +5075,14 @@ def _notice_deps(
             msg = f"no such notice: {notice_id}"
             raise LookupError(msg)
 
-    return {**deps, "notices_read": read, "notice_act": act}
+    async def departure_act(body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /inherent/departure`` (ADR 0202): the notch's trip cards."""
+        return await asyncio.to_thread(reminders.departures.act, body)
+
+    return {
+        **deps, "notices_read": read, "notice_act": act,
+        "departure_act": departure_act,
+    }
 
 
 def _alert_deps(

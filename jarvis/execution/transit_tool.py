@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+import time as _time
 import urllib.request
+import uuid
 from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
@@ -15,6 +17,7 @@ from jarvis.shared import CallerPrincipal, lang
 from jarvis.state import departures, reminders
 
 if TYPE_CHECKING:
+    import sqlite3
     from collections.abc import Callable, Mapping
 
     from jarvis.execution.tools import ToolContext
@@ -58,9 +61,9 @@ def _description(*, phone: bool) -> str:
         " language), the word 'school' for the campus (going to school or class, in any"
         " language), or a place as an address or name, e.g. 'Mayfair Mall'. depart_at is a"
         " local time today as HH:MM, only when he names a later time; leave it out for now. If"
-        " it returns an error, say so and do not guess times. After the times, ask him in one short"
-        " line whether to pin the trip on the notch; when he says yes or asks for it, call"
-        " pin_departure at once."
+        " it returns an error, say so and do not guess times. Do not ask whether to pin the trip: a"
+        " card under the notch already offers it with a button. Call pin_departure only when he"
+        " asks for it by voice ('pin it', 'put it on the notch')."
     )
 
 
@@ -195,66 +198,136 @@ def _today(value: object, field: str) -> datetime:
 
 
 _PIN_PAST_GRACE: Final = timedelta(minutes=1)
+OFFER_TTL_S: Final = 60.0
 _PIN_DESCRIPTION: Final = (
     "Pin the bus trip he just got from transit on the notch, as a countdown to when he must"
-    " leave, and ring him at leave time. Call it ONLY when he asks to pin it or put it on the"
-    " notch ('pin it', 'put it on the notch', or the same in any other language), or says yes"
-    " when you offered; never on your own. It is already on your menu: no tool_search, and do"
-    " not call transit again first; copy from the transit result already in the conversation."
+    " leave, and ring him at leave time. Call it ONLY when he asks to pin it by voice ('pin it',"
+    " 'put it on the notch', or the same in any other language); never on your own, and never to"
+    " offer it: a card under the notch does that. It is already on your menu: no tool_search, and"
+    " do not call transit again first; copy from the transit result already in the conversation."
     " Copy the fields from the transit option he is taking (the first option unless"
     " he picked another): leave_at; route, the number of the first bus ('28', or '28 → 12' for"
     " two buses); board_stop and departs of the first bus; arrive_at. destination is the word"
-    " you gave transit. A newer pin replaces the older one. If it returns an error because"
+    " you gave transit. A newer pin replaces the older. If it returns an error because"
     " leave_at is past, say so and offer to look the bus up again."
 )
 
 
-def _pin_departure(
-    stops: Mapping[tuple[str, str], tuple[float, float]], args: Mapping[str, Any], ctx: ToolContext,
+class TransitOffers:
+    """What the last ``transit`` answer offers the notch's card, and the first stops it kept.
+
+    The card lists the options (ADR 0202) for ``OFFER_TTL_S`` after the answer; a click pins one
+    through :func:`pin_trip`, as the tool does. The newest answer replaces the older. The options
+    stay in memory after the card is gone, for the pin card's "next bus" (same route and stop).
+    ``stops`` is each option's first stop place, keyed ``(first route, board stop)``: the notch's
+    live refresh finds the stop in BC Transit's data by position, as the two feeds spell names
+    differently.
+    """
+
+    def __init__(self) -> None:
+        """Start with no answer; ``clock`` is replaceable for a test."""
+        self.stops: dict[tuple[str, str], tuple[float, float]] = {}
+        self.clock: Callable[[], float] = _time.time
+        self._id = ""
+        self._at = 0.0
+        self._rows: list[dict[str, str]] = []
+
+    def put(self, options: list[dict[str, Any]], to: str) -> None:
+        """Take a fresh answer's options as the offer; ``to`` is the destination as asked."""
+        self._id, self._at = "offer-" + uuid.uuid4().hex[:8], self.clock()
+        self._rows = [
+            {
+                "index": str(i),
+                "route": " → ".join(leg["route"] for leg in o["legs"]),
+                "board_stop": o["legs"][0]["board_stop"],
+                "leave_at": o["leave_at"],
+                "departs": o["legs"][0]["departs"],
+                "arrive_at": o["arrive_at"],
+                "to": to,
+            }
+            for i, o in enumerate(options)
+        ]
+
+    def view(self) -> dict[str, Any] | None:
+        """The offer as ``GET /inherent/notices`` serves it: no row past, none after the TTL."""
+        if not self._rows or self.clock() - self._at > OFFER_TTL_S:
+            return None
+        floor = _now().replace(second=0, microsecond=0)
+        rows = [
+            {**r, "index": int(r["index"])}
+            for r in self._rows
+            if _today(r["leave_at"], "") >= floor
+        ]
+        return {"id": self._id, "options": rows, "at_ms": int(self._at * 1000)} if rows else None
+
+    def row(self, offer_id: str, index: int) -> dict[str, str]:
+        """The offered option; LookupError when the offer is unknown, expired or has no such row."""
+        mine = [r for r in self._rows if int(r["index"]) == index]
+        if offer_id != self._id or self.clock() - self._at > OFFER_TTL_S or not mine:
+            msg = "that offer is gone"
+            raise LookupError(msg)
+        return mine[0]
+
+    def later(
+        self, route: str, board_stop: str, after: datetime,
+    ) -> tuple[datetime, datetime, str] | None:
+        """``(leave, departs, arrive_at)`` of the earliest option on that route and stop."""
+        found = [
+            (_today(r["departs"], ""), _today(r["leave_at"], ""), r["arrive_at"])
+            for r in self._rows
+            if r["route"].split("→")[0].strip() == route and r["board_stop"] == board_stop
+        ]
+        later = sorted(f for f in found if f[0] > after and f[1] >= _now() - _PIN_PAST_GRACE)
+        return (later[0][1], later[0][0], later[0][2]) if later else None
+
+
+def pin_trip(  # noqa: PLR0913 — one keyword per pinned field.
+    conn: sqlite3.Connection,
+    *,
+    route: str,
+    board_stop: str,
+    leave: datetime,
+    departs: datetime,
+    arrive_at: str,
+    to: str,
+    stop: tuple[float, float] | None,
+    action_id: str,
+    source_event_id: str | None = None,
 ) -> dict[str, Any]:
-    """Pin the trip on the notch and schedule its ring (ADR 0200)."""
-    leave = _today(args.get("leave_at"), "leave_at")
-    departs = _today(args.get("departs"), "departs")
-    arrive = _today(args.get("arrive_at"), "arrive_at").strftime("%H:%M")
-    route = str(args.get("route", "")).strip()
-    board_stop = str(args.get("board_stop", "")).strip()
-    if not route or not board_stop:
-        msg = "route and board_stop are both required"
-        raise ToolError(msg, code="invalid_argument")
+    """Pin the trip on the notch and schedule its ring (ADR 0200); every way to pin comes here."""
     if leave < _now() - _PIN_PAST_GRACE:
         msg = f"leave_at {leave:%H:%M} has already passed; look the bus up again"
         raise ToolError(msg, code="time_in_past")
     if departs < leave:
         msg = "departs is before leave_at; copy both from the same option"
         raise ToolError(msg, code="invalid_argument")
-    source = _get_running_event_uid(ctx.conn, ctx.action_id)
     # One pin at a time: the older pin's reminder must not ring for a dropped trip.
-    older = departures.current(ctx.conn)
-    ringing = reminders.fold(ctx.conn).get(older.reminder_id) if older else None
+    older = departures.current(conn)
+    ringing = reminders.fold(conn).get(older.reminder_id) if older else None
     if ringing and ringing.pending:
         reminders.cancel(
-            ctx.conn, ringing.reminder_id, action_id=ctx.action_id, source_event_id=source,
+            conn, ringing.reminder_id, action_id=action_id, source_event_id=source_event_id,
         )
-    first = route.split("→")[0].strip()
+    first = route.split("→", maxsplit=1)[0].strip()
     reminder_id = reminders.schedule(
-        ctx.conn,
+        conn,
         due=leave,
         text=lang.t("departure.go", route=first, departs=f"{departs:%H:%M}", stop=board_stop),
-        action_id=ctx.action_id,
-        source_event_id=source,
+        action_id=action_id,
+        source_event_id=source_event_id,
     )
     pin_id = departures.pin(
-        ctx.conn,
+        conn,
         reminder_id=reminder_id,
         route=route,
         board_stop=board_stop,
         leave_at_ms=int(leave.timestamp() * 1000),
         departs_at_ms=int(departs.timestamp() * 1000),
-        arrive_at=arrive,
-        stop=stops.get((first, board_stop)),
-        to=str(args.get("destination", "")).strip().lower()[:60],
-        action_id=ctx.action_id,
-        source_event_id=source,
+        arrive_at=arrive_at,
+        stop=stop,
+        to=to,
+        action_id=action_id,
+        source_event_id=source_event_id,
     )
     return {
         "pin_id": pin_id,
@@ -265,12 +338,61 @@ def _pin_departure(
     }
 
 
+def pin_offered(
+    conn: sqlite3.Connection, offers: TransitOffers, offer_id: str, index: int,
+) -> dict[str, Any]:
+    """The card's click: pin that option; LookupError when the offer cannot be pinned."""
+    row = offers.row(offer_id, index)
+    first = row["route"].split("→")[0].strip()
+    try:
+        return pin_trip(
+            conn,
+            route=row["route"],
+            board_stop=row["board_stop"],
+            leave=_today(row["leave_at"], "leave_at"),
+            departs=_today(row["departs"], "departs"),
+            arrive_at=row["arrive_at"],
+            to=row["to"],
+            stop=offers.stops.get((first, row["board_stop"])),
+            action_id=offer_id,
+        )
+    except ToolError as exc:
+        raise LookupError(str(exc)) from exc
+
+
+def _pin_departure(
+    offers: TransitOffers, args: Mapping[str, Any], ctx: ToolContext,
+) -> dict[str, Any]:
+    """The ``pin_departure`` tool: the model's copied fields, pinned through :func:`pin_trip`."""
+    leave = _today(args.get("leave_at"), "leave_at")
+    departs = _today(args.get("departs"), "departs")
+    arrive = _today(args.get("arrive_at"), "arrive_at").strftime("%H:%M")
+    route = str(args.get("route", "")).strip()
+    board_stop = str(args.get("board_stop", "")).strip()
+    if not route or not board_stop:
+        msg = "route and board_stop are both required"
+        raise ToolError(msg, code="invalid_argument")
+    return pin_trip(
+        ctx.conn,
+        route=route,
+        board_stop=board_stop,
+        leave=leave,
+        departs=departs,
+        arrive_at=arrive,
+        to=str(args.get("destination", "")).strip().lower()[:60],
+        stop=offers.stops.get((route.split("→")[0].strip(), board_stop)),
+        action_id=ctx.action_id,
+        source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
+    )
+
+
 def build_transit_tool(
     api_key: str | None,
     places: Mapping[str, str],
     here: Callable[[], Mapping[str, Any]] | None = None,
     *,
     phone: bool = False,
+    offers: TransitOffers | None = None,
 ) -> tuple[Tool, ...]:
     """``transit`` over Google Routes; none without a key.
 
@@ -278,13 +400,12 @@ def build_transit_tool(
     that word a tool error rather than a guess. ``here`` reads this Mac's location when asked
     (ADR 0194), or with ``phone`` the phone's last report (ADR 0198), which the description and
     the result then say, with its age; its failure is a tool error telling the model to ask
-    where the user is.
+    where the user is. ``offers`` is where each answer leaves its options for the notch's card
+    (ADR 0202); the runtime shares it with the routes that serve and pin them.
     """
     if not api_key:
         return ()
-    # The first stop's place for each option last shown: the notch's live refresh finds the stop
-    # in BC Transit's data by position, since the two feeds spell stop names differently.
-    stops: dict[tuple[str, str], tuple[float, float]] = {}
+    offers = offers if offers is not None else TransitOffers()
 
     def transit(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         origin, destination = str(args.get("origin", "")), str(args.get("destination", ""))
@@ -310,12 +431,12 @@ def build_transit_tool(
         if not options:
             msg = "no transit route found for that trip at that time"
             raise ToolError(msg, code="not_found")
-        stops.clear()
+        offers.stops.clear()
         for found in map(_first_board, answer.get("routes", ())):
             if found:
-                stops[found[0]] = found[1]
+                offers.stops[found[0]] = found[1]
+        offers.put(options, destination.strip().lower()[:60])
         return {"from": start_label, "to": end_label, "options": options}
-
 
     return (
         Tool(
@@ -356,7 +477,7 @@ def build_transit_tool(
                 },
                 "required": ["leave_at", "route", "board_stop", "departs", "arrive_at"],
             },
-            handler=lambda args, ctx: _pin_departure(stops, args, ctx),
+            handler=lambda args, ctx: _pin_departure(offers, args, ctx),
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",
             read_only=False,
@@ -364,4 +485,4 @@ def build_transit_tool(
     )
 
 
-__all__ = ["build_transit_tool"]
+__all__ = ["OFFER_TTL_S", "TransitOffers", "build_transit_tool", "pin_offered", "pin_trip"]

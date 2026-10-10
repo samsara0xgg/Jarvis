@@ -23,7 +23,7 @@ import { pinLabel, pinTrip, pinWidest, type Departure } from './pin';
 // A glow (ADR 0187) is one more amber point in the turn group: it counts there and arrives like anything new, and its rows
 // follow the sessions on the list: a click opens its place, the ✕ clears it. It is a mark, so only dnd keeps it back.
 // A pinned bus trip (ADR 0200) is a pill after the marks: `🚌 28 · 12 分` counts down to when he must leave, amber from 5 min and
-// 该走了 until the bus goes; resting on it shows the whole trip, a click shows ✕ and the next click unpins. It never opens the panel,
+// 该走了 until the bus goes; resting on it shows the whole trip, a click opens its card (ADR 0202). It never opens the panel,
 // and where the Dashboard leaves no room for it beside the marks it steps aside before they do.
 type Point = { x: number; y: number };
 export type Kind = 'turn' | 'work' | 'done' | 'moon';
@@ -41,14 +41,14 @@ export type NotchAct = {
 // The glows on the wing, and what a click on one and its ✕ do.
 export type NotchGlow = { items: Glow[]; open: (g: Glow) => void; clear: (g: Glow) => void };
 // The pinned bus trip, and what the pill's ✕ does.
-export type NotchPin = { item: Departure | null; unpin: (d: Departure) => void };
+export type NotchPin = { item: Departure | null; open: (d: Departure) => void };
 // A pop names sessions; a card is a needs-you card the companion builds, for session `id` when it has one.
 // A pop carries its 合适吗 row in `rate` (ADR 0160).
 export type NotchNote = { key: string; id?: string; pop?: string[]; card?: ReactNode; rate?: ReactNode; onClose: () => void };
 
 // Your turn: asking first, then stopped, then finished.
 const TURN_ORDER: AgentState[] = ['wait', 'err', 'done'];
-const PAD = 4, DONE_FADE_MS = 10 * 60_000, GCELL = 26, GCX = 6, WING_W = 112, DOT_WING_W = 64, DOT_R = 2.6, DOT_COUNT_X = 7.5, DOT_GAP = 5, DIGIT_W = 6.1, POP_W = 360, ALL_W = 440, PAGE_W = 560, CARD_W = 440, DRAG_OUT = 30, DWELL_MS = 1500, PIN_H = 16, PIN_PAD = 6, PIN_GAP = 5, PIN_TIP_MS = 250, PIN_ASK_MS = 2500;
+const PAD = 4, DONE_FADE_MS = 10 * 60_000, GCELL = 26, GCX = 6, WING_W = 112, DOT_WING_W = 64, DOT_R = 2.6, DOT_COUNT_X = 7.5, DOT_GAP = 5, DIGIT_W = 6.1, POP_W = 360, ALL_W = 440, PAGE_W = 560, CARD_W = 440, DRAG_OUT = 30, DWELL_MS = 1500, PIN_H = 16, PIN_PAD = 6, PIN_GAP = 5, PIN_TIP_MS = 250;
 const PIN_FONT = '600 10px "JetBrains Mono", Menlo, monospace';
 const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -262,7 +262,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     // Sessions on their way into the moon, from where the pointer was, and when the last one landed.
     flights: [] as { id: string; to: Kind; st: AgentState; x: number; y: number; at: number }[],
     bumpAt: { turn: -1e9, work: -1e9, done: -1e9, moon: -1e9 }, parkedIds: new Set<string>(),
-    pin: null as { x0: number; x1: number } | null, pinAsk: false, pinSeen: -1e9, pinOn: -1e9, pinId: '', pinLabel: '',
+    pin: null as { x0: number; x1: number } | null, pinOn: -1e9, pinId: '', pinLabel: '',
     popOrigins: new Map<string, Point>(), intent: new PointerIntent(), resolvedNote: '', workLandingUntil: 0, joined: false, asideKey: null as Kind | null,
   }).current;
   const L = useRef({ look, turn, work, fin, moon, glows, pin, geo, note, quiet, edge, aside, onNoteHover, onJoinedChange, held: false, pageW: false, say: t });
@@ -378,11 +378,10 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       const inWing = !!p && p.y <= top + 2 && p.x >= g.notchR && p.x <= g.notchR + ww + 2;
       // The pinned trip (ADR 0200): the pointer on its pill shows the trip in one line; it never opens the panel.
       const pinNow = L.current.pin?.item ?? null, onPin = !!p && inWing && !!pinNow && !!st.pin && p.x >= st.pin.x0 && p.x < st.pin.x1;
-      if (onPin) { if (st.pinOn < 0) st.pinOn = now; st.pinSeen = now; } else st.pinOn = -1;
-      if (st.pinAsk && (now - st.pinSeen > PIN_ASK_MS || pinNow?.id !== st.pinId)) st.pinAsk = false;
+      if (onPin) { if (st.pinOn < 0) st.pinOn = now; } else st.pinOn = -1;
       st.pinId = pinNow?.id ?? '';
       if (tip.current) {
-        const show = onPin && !st.pinAsk && now - st.pinOn >= PIN_TIP_MS && !L.current.held;
+        const show = onPin && !L.current.note && now - st.pinOn >= PIN_TIP_MS && !L.current.held;
         if (show && pinNow) {
           const line = pinTrip(pinNow, L.current.say);
           if (tip.current.textContent !== line) tip.current.textContent = line;
@@ -552,14 +551,14 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       // The pinned trip: a pill in the wing's own mark colours, amber from 5 min, its countdown read from the clock each frame.
       const trip = L.current.pin?.item;
       if (st.pin && trip) {
-        const shown = pinLabel(trip, Date.now(), say), words = st.pinAsk ? `✕ ${say(['Unpin', '取消'])}` : shown.text, c = COLOR.wait.join(',');
+        const shown = pinLabel(trip, Date.now(), say), words = shown.text, c = COLOR.wait.join(',');
         if (!shown.gone) {
           ctx.save();
-          if (trip.stale && !st.pinAsk) ctx.globalAlpha = .6;
-          ctx.fillStyle = shown.amber && !st.pinAsk ? `rgba(${c},.16)` : 'rgba(214,222,250,.1)';
+          if (trip.stale) ctx.globalAlpha = .6;
+          ctx.fillStyle = shown.amber ? `rgba(${c},.16)` : 'rgba(214,222,250,.1)';
           ctx.beginPath(); ctx.roundRect(st.pin.x0, top / 2 - PIN_H / 2, st.pin.x1 - st.pin.x0, PIN_H, PIN_H / 2); ctx.fill();
           ctx.font = PIN_FONT; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
-          ctx.fillStyle = shown.amber && !st.pinAsk ? rgba(tint(COLOR.wait, .45)) : 'rgba(214,222,250,.62)';
+          ctx.fillStyle = shown.amber ? rgba(tint(COLOR.wait, .45)) : 'rgba(214,222,250,.62)';
           ctx.fillText(words, (st.pin.x0 + st.pin.x1) / 2, top / 2 + .5);
           ctx.restore();
         }
@@ -642,10 +641,10 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     <canvas ref={fx} className="notch-fx" data-look={look} aria-hidden="true" style={{ width: geo.width }}/>
     <div ref={hit} className="notch-hit" data-hit aria-hidden="true"
       onPointerDown={e => {
-        // The pinned trip's pill: a click shows ✕, the next one unpins (ADR 0200). It opens nothing.
+        // The pinned trip's pill: a click opens its card (ADR 0202). It opens no panel.
         const trip = L.current.pin?.item;
         if (st.pin && trip && e.clientX >= st.pin.x0 && e.clientX < st.pin.x1) {
-          if (st.pinAsk) { st.pinAsk = false; L.current.pin!.unpin(trip); } else { st.pinAsk = true; st.pinSeen = performance.now(); }
+          L.current.pin!.open(trip);
           return;
         }
         const b = st.boxes.find(x => e.clientX >= x.x0 && e.clientX < x.x1);
