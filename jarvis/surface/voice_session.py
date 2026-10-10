@@ -1219,6 +1219,7 @@ class DuplexVoiceSession:
         hold_output: Callable[[bool], None] | None = None,
         supersede_unspoken: Callable[[str], None] | None = None,
         cancel_voice_runs: Callable[[], None] | None = None,
+        heard_elsewhere: Callable[[str, str], bool] | None = None,
         yield_speaking: Callable[[float], None] | None = None,
         pause_speaking: Callable[[bool], None] | None = None,
         ambient: ambient_sounds.AmbientSounds | None = None,
@@ -1262,6 +1263,9 @@ class DuplexVoiceSession:
         ADR 0138: ``cancel_voice_runs()`` ends every answer still being written for
         the speaker, for :meth:`dismiss`.
 
+        ADR 0219: ``heard_elsewhere(turn_id, text)`` is whether another device recorded these
+        words just now; the word judge asks it first, and a line it calls so is no turn here.
+
         ADR 0151: ``ambient`` is fed the diagnostic lane's frames, started and stopped with
         this session.
         """
@@ -1291,6 +1295,7 @@ class DuplexVoiceSession:
         self._hold_output = hold_output
         self._supersede_unspoken = supersede_unspoken
         self._cancel_voice_runs = cancel_voice_runs
+        self._heard_elsewhere = heard_elsewhere
         self._yield_speaking = yield_speaking
         self._pause_speaking = pause_speaking
         # Soft barge-in: the turns spoken over Jarvis until final ASR has
@@ -1751,6 +1756,7 @@ class DuplexVoiceSession:
         return word_judge.WordHooks(
             ask=self._ask_words, note=self._note_words, begin=self._begin_line,
             recent=self._recent_speech, quiet=self._set_quiet is not None,
+            heard_elsewhere=self._heard_elsewhere,
         )
 
     def _words_verdict(
@@ -1772,6 +1778,12 @@ class DuplexVoiceSession:
 
     def _act_on_words(self, turn_id: str, text: str, verdict: str, *, over_her: bool) -> None:
         """Carry out a verdict; raises when the words are no turn."""
+        if verdict == "elsewhere":
+            # ADR 0219: another device took these words first. She is not being talked to, so
+            # whatever was held goes on, and nothing is superseded (the caller's drop comes
+            # after this raises).
+            self._settle_barge_in(turn_id, go_on=True)
+            raise voice_pipeline.VoicePipelineAbsorbedError(verdict)
         if verdict.startswith("quiet:") and self._set_quiet is not None:
             level = verdict.removeprefix("quiet:")
             self._settle_barge_in(turn_id, go_on=False)

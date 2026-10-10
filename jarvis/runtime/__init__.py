@@ -3358,8 +3358,8 @@ def make_barge_in_interrupt_callable(
     ``"no_open_run"``, ``"ambiguous_open_runs"``, ``"policy_ignore"``,
     ``"policy_generation_continue"``.
 
-    ``only_turns`` (ADR 0209) narrows the target to the open runs of the turns it accepts: a
-    phone's barge-in interrupts the phone's answer, whatever else is open on the Mac.
+    ``only_turns`` (ADR 0209, 0219) narrows the target to the open runs of the turns it
+    accepts: a device's barge-in interrupts that device's answer, whatever else is open.
     """
     cancel = make_response_cancel_callable(runtime)
     registry = runtime.response_runs
@@ -3405,6 +3405,8 @@ _SUPERSEDE_WINDOW_S: Final[float] = 10.0
 def make_supersede_unspoken_callable(
     runtime: JarvisRuntime,
     drop_unspoken: Callable[[frozenset[str]], frozenset[str]],
+    *,
+    only_turns: Callable[[str], bool] | None = None,
 ) -> Callable[[str], None]:
     """Build the ADR 0074 ``(accepted_turn_id) -> None`` seam.
 
@@ -3428,6 +3430,10 @@ def make_supersede_unspoken_callable(
     new question gets its own answer while the lookup's follows. Live test
     2026-10-01: a weekday question 7 s after a Micron search was dispatched
     cancelled it, re-ran the search for 24 s and never answered the weekday.
+
+    ``only_turns`` (ADR 0219) narrows both the open runs and the turns marked superseded to
+    the turns it accepts: a device's voice replaces its own earlier sentence, never another
+    device's answer.
     """
     cancel = make_response_cancel_callable(runtime)
     registry = runtime.response_runs
@@ -3442,6 +3448,7 @@ def make_supersede_unspoken_callable(
             if run.phase == "final"
             and run.turn_id != turn_id
             and run.interrupt_policy.generation_action == "cancel"
+            and (only_turns is None or only_turns(run.turn_id))
         ]
         any_open = bool(runs)
         since_ms = int((time.time() - _SUPERSEDE_WINDOW_S) * 1000)
@@ -3458,6 +3465,8 @@ def make_supersede_unspoken_callable(
                     (since_ms,),
                 )
             }
+            if only_turns is not None:
+                recent = {recent_turn for recent_turn in recent if only_turns(recent_turn)}
             working: set[str] = set()
             if runtime.response_flags.slow_results:
                 # The action names its turn in `correlation_json` (L4 stamps it

@@ -50,6 +50,7 @@ class _Rig:
     root: Path
     calls: list[tuple[Any, ...]] = field(default_factory=list)
     asked: list[tuple[Any, ...]] = field(default_factory=list)
+    elsewhere_asked: list[tuple[str, str, str]] = field(default_factory=list)
     log: Path = field(init=False)
     token: str = field(init=False)
     client: TestClient = field(init=False)
@@ -57,6 +58,7 @@ class _Rig:
     def build(
         self, *, quiet: bool = True, ask: Callable[..., str | None] | None = None,
         recent: str | None = RECENT,
+        elsewhere: Callable[[str, str, str], bool] | None = None,
     ) -> None:
         self.root.mkdir(exist_ok=True)
         self.log = self.root / "events.db"
@@ -95,6 +97,10 @@ class _Rig:
             self.asked.append(args)
             return None if ask is None else ask(*args)
 
+        def heard_elsewhere(device: str, turn_id: str, text: str) -> bool:
+            self.elsewhere_asked.append((device, turn_id, text))
+            return False if elsewhere is None else elsewhere(device, turn_id, text)
+
         hub = PhoneHub(
             events=BrainEvents(conn),
             rows=inherent_loop._PhoneRows(conn),  # noqa: SLF001
@@ -106,6 +112,7 @@ class _Rig:
             begin_line=lambda *args: self.calls.append(("begin_line", args[0])),
             recent_speech=None if recent is None else (lambda: recent),
             set_quiet=set_quiet if quiet else None,
+            heard_elsewhere=None if elsewhere is None else heard_elsewhere,
         )
         app = create_app(
             InherentDeps(

@@ -156,6 +156,7 @@ from jarvis.runtime import (
     _timesink_poll_interval_s,
     _wait_for_next_trigger,
     _work_state_timezone,
+    device_voice,
     diagnostics_flag,
     drive_turn,
     make_barge_in_interrupt_callable,
@@ -2500,7 +2501,9 @@ async def _commentary_heard(
     return True
 
 
-def _make_cancel_voice_runs(runtime: JarvisRuntime) -> Callable[[], None]:
+def _make_cancel_voice_runs(
+    runtime: JarvisRuntime, *, only_turns: Callable[[str], bool] | None = None,
+) -> Callable[[], None]:
     """ADR 0138: the ``() -> None`` that ends every answer still being written for the speaker.
 
     An exit from the surface must leave nothing that can speak after it,
@@ -2510,6 +2513,9 @@ def _make_cancel_voice_runs(runtime: JarvisRuntime) -> Callable[[], None]:
     of it opening later is cancelled at its open, and the media owner drops what
     it had of a cancelled run. A turn submitted on a channel the speaker is silent
     for (``_TTS_SILENT_CHANNELS``) and background turns are left alone.
+
+    ``only_turns`` (ADR 0219) narrows it to the turns it accepts: a device's exit ends that
+    device's answers, not another's.
     """
     cancel = make_response_cancel_callable(runtime)
     registry = runtime.response_runs
@@ -2541,6 +2547,8 @@ def _make_cancel_voice_runs(runtime: JarvisRuntime) -> Callable[[], None]:
             open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
         ) as conn:
             runs = [run for run in runs if _from_his_words(conn, run.turn_id)]
+        if only_turns is not None:
+            runs = [run for run in runs if only_turns(run.turn_id)]
         for run in runs:
             registry.mark_turn_stopped(run.turn_id)
         for run in runs:
@@ -3198,13 +3206,8 @@ class _PhoneRows:
 
 def _phone_barge_in(runtime: JarvisRuntime, device: str) -> str:
     """The local barge-in's generation interrupt, aimed at ``device``'s open answer alone."""
-    event_log_path = runtime.runtime_paths.event_log
-
-    def _is_device_turn(turn_id: str) -> bool:
-        with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
-            return turn_origin(conn, turn_id)[1] == device
-
-    return make_barge_in_interrupt_callable(runtime, only_turns=_is_device_turn)("phone_barge")
+    only_turns = device_voice.device_turns(runtime.runtime_paths.event_log, device)
+    return make_barge_in_interrupt_callable(runtime, only_turns=only_turns)("phone_barge")
 
 
 def _build_phone_speech(
@@ -3306,7 +3309,22 @@ def _build_phone_hub(
         begin_line=mine.begin_line,
         recent_speech=mine.recent_speech,
         set_quiet=set_quiet,
+        heard_elsewhere=lambda device, _turn_id, text: device_voice.heard_elsewhere(
+            runtime.runtime_paths.event_log, device, text,
+        ),
     )
+
+
+def _per_device[T](make: Callable[[str], T]) -> Callable[[str], T]:
+    """``make`` for a device, built on first use and kept: a terminal's hooks are asked often."""
+    made: dict[str, T] = {}
+
+    def get(device: str) -> T:
+        if device not in made:
+            made[device] = make(device)
+        return made[device]
+
+    return get
 
 
 def _build_brain_listening(
@@ -3321,8 +3339,10 @@ def _build_brain_listening(
 
     The brain's half of each capture-session callback is the one a daemon runs for its own
     session (:func:`_local_listen_ports`); only supersede and relate differ, since the audio
-    they drop or stop is on the terminal that heard the line (ADR 0172). ``None`` without
-    the brain's log, where an utterance has nowhere to go.
+    they drop or stop is on the terminal that heard the line (ADR 0172). The voice-driven
+    cancels (interrupt, supersede, cancel_runs) and ``heard_elsewhere`` take the terminal's
+    name and act on the turns it opened alone (ADR 0219); ``hold_runs`` stays global.
+    ``None`` without the brain's log, where an utterance has nowhere to go.
     """
     if hub.events is None:
         return None
@@ -3341,6 +3361,25 @@ def _build_brain_listening(
         if held and mine.warm is not None:
             mine.warm()  # his words will end in a request; have its connection open by then
 
+    # ADR 0219: a terminal's voice acts on the turns that terminal opened, nothing else's.
+    event_log_path = runtime.runtime_paths.event_log
+    barge_in = _per_device(
+        lambda device: make_barge_in_interrupt_callable(
+            runtime, only_turns=device_voice.device_turns(event_log_path, device),
+        ),
+    )
+    supersede = _per_device(
+        lambda device: make_supersede_unspoken_callable(
+            runtime, listening.drop_unspoken,
+            only_turns=device_voice.device_turns(event_log_path, device),
+        ),
+    )
+    cancel_runs = _per_device(
+        lambda device: _make_cancel_voice_runs(
+            runtime, only_turns=device_voice.device_turns(event_log_path, device),
+        ),
+    )
+
     listening.hooks = terminal_listen.ListenHooks(
         ask_words=mine.ask_words,
         note_words=mine.note_words,
@@ -3349,13 +3388,18 @@ def _build_brain_listening(
         turn_working=mine.turn_working,
         recent_speech=mine.recent_speech,
         hold_runs=_hold_runs,
-        interrupt=mine.interrupt,
+        interrupt=lambda device, source: barge_in(device)(source),
         supersede=(
-            make_supersede_unspoken_callable(runtime, listening.drop_unspoken)
+            (lambda device, turn_id: supersede(device)(turn_id))
             if registry is not None
             else None
         ),
-        cancel_runs=mine.cancel_voice_runs,
+        cancel_runs=(
+            (lambda device: cancel_runs(device)()) if registry is not None else None
+        ),
+        heard_elsewhere=lambda device, _turn_id, text: device_voice.heard_elsewhere(
+            event_log_path, device, text,
+        ),
         set_conversation=set_conversation,
         set_quiet=set_quiet,
         controls=controls.update,
@@ -4126,6 +4170,8 @@ class _ListenPorts:
     """Open the model connection a request is about to need."""
     supersede_unspoken: Callable[[str], None] | None = None
     cancel_voice_runs: Callable[[], None] | None = None
+    heard_elsewhere: Callable[[str, str], bool] | None = None
+    """``(turn_id, text) -> bool``: another device recorded these words just now (ADR 0219)."""
     cues: VoiceCues | None = None
     ambient: AmbientSounds | None = None
 
@@ -4134,7 +4180,10 @@ def _local_listen_ports(
     runtime: JarvisRuntime,
     streaming: voice_media.StreamingTTSPipeline | None,
 ) -> _ListenPorts:
-    """The ports of a daemon that holds the turn itself: direct calls into ``runtime``."""
+    """The ports of a daemon that holds the turn itself: direct calls into ``runtime``.
+
+    Its voice acts on the host's own turns only (ADR 0219); ``hold_runs`` stays global.
+    """
     oneshot = runtime.oneshot
     if oneshot is not None and streaming is not None and runtime.response_runs is not None:
         # ADR 0139: a supplement or correction of the line before it acts on that turn.
@@ -4144,6 +4193,8 @@ def _local_listen_ports(
             lambda: streaming.stop_foreground_output(None, reason="correction"),
         )
     registry = runtime.response_runs
+    # ADR 0219: the Mac's mic acts on the host's own turns; a paired phone's are never touched.
+    host_turns = device_voice.host_turns(runtime.runtime_paths.event_log)
 
     def _hold_runs(held: bool) -> None:  # noqa: FBT001 - the capture side's one bit
         # ADR 0053: while Allen's words are coming in, no run completes.
@@ -4203,15 +4254,24 @@ def _local_listen_ports(
         ),
         note_words=runtime.voice_words.note if runtime.voice_words is not None else None,
         begin_line=oneshot.begin if oneshot is not None else None,
-        interrupt=make_barge_in_interrupt_callable(runtime),
+        interrupt=make_barge_in_interrupt_callable(runtime, only_turns=host_turns),
         hold_runs=_hold_runs,
         warm=lambda: runtime.llm_client.warm_stream(),  # noqa: PLW0108 — looked up per call.
         supersede_unspoken=(
-            make_supersede_unspoken_callable(runtime, streaming.drop_unspoken)
+            make_supersede_unspoken_callable(
+                runtime, streaming.drop_unspoken, only_turns=host_turns,
+            )
             if streaming is not None and registry is not None
             else None
         ),
-        cancel_voice_runs=_make_cancel_voice_runs(runtime) if registry is not None else None,
+        cancel_voice_runs=(
+            _make_cancel_voice_runs(runtime, only_turns=host_turns)
+            if registry is not None
+            else None
+        ),
+        heard_elsewhere=lambda _turn_id, text: device_voice.heard_elsewhere(
+            runtime.runtime_paths.event_log, MAC_NODE, text,
+        ),
         cues=runtime.voice_cues,
         ambient=runtime.ambient,
     )
@@ -4482,6 +4542,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             hold_output=_hold_output,
             supersede_unspoken=listen.supersede_unspoken,
             cancel_voice_runs=listen.cancel_voice_runs,
+            heard_elsewhere=listen.heard_elsewhere,
             yield_speaking=streaming.set_yield_gain if streaming is not None else None,
             pause_speaking=streaming.pause_speaking if streaming is not None else None,
             ambient=listen.ambient,

@@ -639,6 +639,7 @@ async def _start_listening(speaking: _Speaking, speech: _Speech) -> _Listening |
         recent_speech=turn.recent_speech, ask_words=turn.ask_words, note_words=turn.note_words,
         begin_line=turn.begin_line, interrupt=turn.interrupt, hold_runs=turn.hold_runs,
         supersede_unspoken=turn.supersede, cancel_voice_runs=turn.cancel_runs,
+        heard_elsewhere=turn.heard_elsewhere,
     )
     broadcaster = speech.broadcaster
 

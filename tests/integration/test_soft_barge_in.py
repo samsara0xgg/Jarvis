@@ -109,6 +109,7 @@ class _Rig:
         answer_words: Callable[[str, str, str], None] | None = None,
         cancel_voice_runs: Callable[[], None] | None = None,
         cues: VoiceCues | None = None,
+        heard_elsewhere: Callable[[str, str], bool] | None = None,
     ) -> None:
         self.output: list[str] = []
         self.phases: list[tuple[str, object]] = []
@@ -163,6 +164,7 @@ class _Rig:
                 note_words=note_words,
                 begin_line=begin_line,
                 cues=cues,
+                heard_elsewhere=heard_elsewhere,
             )
             assert self.session.start().started
 

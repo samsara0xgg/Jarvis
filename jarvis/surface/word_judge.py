@@ -3,10 +3,12 @@
 One judge for every ear: the Mac's :class:`~jarvis.surface.voice_session.DuplexVoiceSession` and a
 paired phone's ``say`` (:mod:`jarvis.surface.phone_link`) both ask :func:`words_verdict`. The
 verdict is one of ``turn``, ``backchannel``, ``unclear``, ``echo``, ``stop``, ``wait``,
-``dismissed`` or ``quiet:<level>``; what to do about it belongs to the caller.
+``dismissed``, ``quiet:<level>`` or ``elsewhere`` (ADR 0219: another device recorded these
+words first); what to do about it belongs to the caller.
 
 The regexes (:mod:`jarvis.surface.voice_asr`) judge first. Where the hooks carry ``ask`` (Jev,
-ADR 0130), a line they call a turn, said over her or in conversation mode, is put to it.
+ADR 0130), a line they call a turn, said over her or in conversation mode, is put to it. Where the
+hooks carry ``heard_elsewhere``, it is asked before any of that and costs no Jev request.
 
 Layer rules: stdlib and ``jarvis.surface`` only.
 """
@@ -35,6 +37,8 @@ class WordHooks:
     over_her, conversation)`` is called for every line the regexes call a turn and sends its
     one Jev request without waiting. ``recent()`` is what she said lately. ``quiet`` is whether
     the host can set a quiet level, which is what makes a quiet command recognizable (ADR 0153).
+    ``heard_elsewhere(turn_id, text)`` is whether another device recorded these words just now
+    (ADR 0219); it is asked first and blocks up to its own timeout.
     """
 
     ask: Callable[[str, str, str, bool, bool], str | None] | None = None
@@ -42,12 +46,15 @@ class WordHooks:
     begin: Callable[[str, str, str, bool, bool], None] | None = None
     recent: Callable[[], str] | None = None
     quiet: bool = False
+    heard_elsewhere: Callable[[str, str], bool] | None = None
 
 
 def words_verdict(
     hooks: WordHooks, turn_id: str, text: str, *, conversation: bool, over_her: bool,
 ) -> str:
-    """dismissed, wait, backchannel, unclear, stop, echo or turn; Jev settles what is left."""
+    """elsewhere, dismissed, wait, backchannel, unclear, stop, echo or turn; Jev settles some."""
+    if _heard_elsewhere(hooks, turn_id, text):
+        return "elsewhere"
     ask = hooks.ask
     # With Jev, a dismissal found only inside a sentence must be confirmed by it.
     loose = (
@@ -76,6 +83,17 @@ def words_verdict(
         LOGGER.warning("ask_words failed turn_id=%s", turn_id, exc_info=True)
         return verdict
     return jev_verdict(choice, conversation=conversation, over_her=over_her)
+
+
+def _heard_elsewhere(hooks: WordHooks, turn_id: str, text: str) -> bool:
+    """Whether another device recorded ``text`` first; no answer means no."""
+    if hooks.heard_elsewhere is None:
+        return False
+    try:
+        return hooks.heard_elsewhere(turn_id, text)
+    except Exception:  # noqa: BLE001 - another device's log cannot break capture
+        LOGGER.warning("heard_elsewhere failed turn_id=%s", turn_id, exc_info=True)
+        return False
 
 
 def regex_words(

@@ -53,10 +53,14 @@ the host first does what ``barge`` does, then records the say and answers its ``
 resumes its held audio. ``stop``, ``wait``: the host does what ``barge`` does, no turn.
 ``dismissed``: what ``cancel`` does, no turn; the phone ends its own conversation mode.
 ``quiet:<level>``: that, then ``set_quiet(level)``; quiet commands are heard only where the host
-wires ``set_quiet``. No turn is recorded for any verdict but ``turn``. The judging runs beside
+wires ``set_quiet``. ``elsewhere``: another device recorded these words first (ADR 0219), so
+nothing happens and ``turn_id`` is null; the phone does not resend them. No turn is recorded
+for any verdict but ``turn``. The judging runs beside
 the receive loop (Jev may take seconds), so DISCARD_ACK keeps flowing. A resent flagged ``say``
 is judged again, with no cache; a phone that gave up waiting resends it with no flags, which
-records a turn, once. A ``say`` with no flag is a turn: ``verdict`` is ``"turn"``.
+records a turn, once. A ``say`` with no flag is a turn: ``verdict`` is ``"turn"``, unless the
+host heard the words elsewhere first, which answers ``elsewhere`` flagged or not (ADR 0219);
+typed words are never checked.
 
 **Binary frames** carry the player protocol, one WebSocket message per frame:
 :mod:`jarvis.surface.phone_player` has the layouts. After ``ready`` with ``voice: true`` the
@@ -153,6 +157,10 @@ class PhoneHub:
     The words judge (ADR 0216) takes the Mac's hooks: ``ask_words``, ``note_words``,
     ``begin_line`` and ``recent_speech``, all of which block, and ``set_quiet(level)``, without
     which a quiet command is not recognized. Each is optional; the regexes alone are a judge.
+
+    ``heard_elsewhere(device, turn_id, text)`` (ADR 0219) is whether another device recorded
+    these words just now. It blocks and runs on a worker thread; true answers a spoken ``say``
+    with ``elsewhere`` and records nothing.
     """
 
     events: BrainEvents
@@ -165,17 +173,21 @@ class PhoneHub:
     begin_line: Callable[[str, str, str, bool, bool], None] | None = None
     recent_speech: Callable[[], str] | None = None
     set_quiet: Callable[[str], None] | None = None
+    heard_elsewhere: Callable[[str, str, str], bool] | None = None
     live: dict[str, _Connection] = field(default_factory=dict)
 
     def connected(self, device: str) -> bool:
         """Whether ``device`` has a live socket now; the push sender reads it (ADR 0210)."""
         return device in self.live
 
-    def word_hooks(self) -> word_judge.WordHooks:
-        """The judge's view of this host."""
+    def word_hooks(
+        self, heard_elsewhere: Callable[[str, str], bool] | None = None,
+    ) -> word_judge.WordHooks:
+        """The judge's view of this host; ``heard_elsewhere`` is one connection's check."""
         return word_judge.WordHooks(
             ask=self.ask_words, note=self.note_words, begin=self.begin_line,
             recent=self.recent_speech, quiet=self.set_quiet is not None,
+            heard_elsewhere=heard_elsewhere,
         )
 
 
@@ -439,6 +451,53 @@ def _say(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
     )
     if say.judged:
         conn.spawn(_judge_say(hub, conn, say))
+    elif say.spoken and (check := _elsewhere_check(hub, conn)) is not None:
+        conn.spawn(_record_unless_elsewhere(hub, conn, say, check))
+    else:
+        _record_say(hub, conn, say)
+
+
+def _elsewhere_check(hub: PhoneHub, conn: _Connection) -> Callable[[str, str], bool] | None:
+    """``(turn_id, text) -> bool`` for this phone: another device just recorded those words.
+
+    A ``say`` this connection already recorded is never absorbed by a device that came after
+    it, so a resent one is answered with the turn it made (ADR 0219).
+    """
+    ask = hub.heard_elsewhere
+    if ask is None:
+        return None
+
+    def check(turn_id: str, text: str) -> bool:
+        return turn_id not in conn.recent_turns and ask(conn.device, turn_id, text)
+
+    return check
+
+
+def _answer_elsewhere(conn: _Connection, say: _Say) -> None:
+    LOGGER.info("phone %s: words heard elsewhere first; no turn", conn.device)
+    conn.send_json(
+        {"type": "said", "utterance_id": say.utterance_id, "turn_id": None,
+         "verdict": "elsewhere"},
+    )
+
+
+async def _record_unless_elsewhere(
+    hub: PhoneHub, conn: _Connection, say: _Say, check: Callable[[str, str], bool],
+) -> None:
+    """An unflagged spoken ``say`` is a turn unless another device recorded the words first.
+
+    The log is read on a worker thread, so the receive loop never blocks on SQLite.
+    """
+    try:
+        elsewhere = await asyncio.to_thread(
+            check, phone_turn_id(conn.device, say.utterance_id), say.text,
+        )
+    except Exception:  # noqa: BLE001 - another device's log cannot lose the phone's words
+        LOGGER.warning("phone %s: heard_elsewhere failed; the say stays a turn",
+                       conn.device, exc_info=True)
+        elsewhere = False
+    if elsewhere:
+        _answer_elsewhere(conn, say)
     else:
         _record_say(hub, conn, say)
 
@@ -474,7 +533,8 @@ async def _judge_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
     turn_id = phone_turn_id(conn.device, say.utterance_id)
     try:
         verdict = await asyncio.to_thread(
-            word_judge.words_verdict, hub.word_hooks(), turn_id, say.text,
+            word_judge.words_verdict, hub.word_hooks(_elsewhere_check(hub, conn)), turn_id,
+            say.text,
             conversation=say.conversation, over_her=say.over_her,
         )
     except Exception:
@@ -497,7 +557,7 @@ async def _judge_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
             except Exception:
                 LOGGER.exception("phone %s: setting quiet failed", conn.device)
                 conn.error("quiet_failed", "the quiet level was not set")
-    # backchannel, unclear, echo: nothing happens and the phone goes on with her audio
+    # backchannel, unclear, echo, elsewhere: nothing happens and the phone goes on with her audio
     conn.send_json(
         {"type": "said", "utterance_id": say.utterance_id, "turn_id": None, "verdict": verdict},
     )

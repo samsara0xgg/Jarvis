@@ -23,6 +23,8 @@ utterance the final words, as the pipeline     ``{"event_uid"}``: written once a
          utterance_id, ...)                    name, so a second send of it writes nothing
 words    turn_id, text, recent, over_her,      ``{"choice": str | null}``: the word judge
          confirm
+elsewhere turn_id, text                        ``{"elsewhere": bool}``: another device recorded
+                                               these words in the last few seconds (ADR 0219)
 working  (none)                                ``{"working": bool}``: a turn is in flight
 recent   (none)                                ``{"text": str}``: what she said lately
 interrupt source                               ``{"outcome": str}``: generation cancel
@@ -42,6 +44,11 @@ begin    turn_id, text, recent, over_her,      (tell) the word judge's one reque
          conversation
 say      turn_id, reason, text                 (tell) one spoken line back
 ======== ===================================== ==============================================
+
+``interrupt``, ``supersede``, ``cancel_runs`` and ``elsewhere`` act for the terminal that
+sent them, which the brain knows from the link: they touch the turns that terminal opened and
+no others (ADR 0219), and the frames carry no device. A brain that does not know ``elsewhere``
+answers ``unknown_op``, which the terminal reads as false.
 
 The brain also commands the terminal, on the ordinary ``call`` frame, with two tool names that
 are not menu tools: :data:`DROP_UNSPOKEN` and :data:`STOP_OUTPUT`, for supersede and
@@ -84,15 +91,20 @@ COMMAND_TIMEOUT_S: Final = 3.0
 
 ASKS: Final = frozenset(
     {
-        "utterance", "words", "working", "recent", "interrupt", "supersede", "cancel_runs",
-        "controls", "conversation", "quiet", "polish",
+        "utterance", "words", "elsewhere", "working", "recent", "interrupt", "supersede",
+        "cancel_runs", "controls", "conversation", "quiet", "polish",
     },
 )
+_DEVICE_OPS: Final = frozenset({"elsewhere", "interrupt", "supersede", "cancel_runs"})
+"""The asks whose hook is told which terminal sent them (ADR 0219)."""
 TELLS: Final = frozenset({"hold", "note", "begin", "say"})
 
 UTTERANCE_TIMEOUT_S: Final = 8.0
 WORDS_TIMEOUT_S: Final = 3.0
 """The word judge blocks up to its own ``words_timeout_ms`` (0.8 s) on the brain."""
+ELSEWHERE_TIMEOUT_S: Final = 0.3
+"""One log read on the brain. Asked before every line is judged, so an unreachable brain must
+not hold the line: past this the words are taken as heard here alone."""
 WORKING_TIMEOUT_S: Final = 1.0
 RECENT_TIMEOUT_S: Final = 1.0
 INTERRUPT_TIMEOUT_S: Final = 3.0
@@ -142,7 +154,8 @@ class ListenHooks:
     """The brain's half of each capture-session callback; the runtime binds them.
 
     An unset hook is the neutral answer: no judge means a turn, nothing in flight, nothing
-    said lately, no run to hold or cancel.
+    said lately, no run to hold or cancel. The hooks that cancel or compare take the name of
+    the terminal that sent the frame first (``link.name``), so they act on its turns alone.
     """
 
     ask_words: Callable[[str, str, str, bool, bool], str | None] | None = None
@@ -152,9 +165,14 @@ class ListenHooks:
     turn_working: Callable[[], bool] | None = None
     recent_speech: Callable[[], str] | None = None
     hold_runs: Callable[[bool], None] | None = None
-    interrupt: Callable[[str], str] | None = None
-    supersede: Callable[[str], None] | None = None
-    cancel_runs: Callable[[], None] | None = None
+    heard_elsewhere: Callable[[str, str, str], bool] | None = None
+    """``(device, turn_id, text)``: another device recorded these words just now (ADR 0219)."""
+    interrupt: Callable[[str, str], str] | None = None
+    """``(device, source)``: cancel the answer being written for ``device``'s turns (ADR 0219)."""
+    supersede: Callable[[str, str], None] | None = None
+    """``(device, turn_id)``: drop ``device``'s earlier unspoken answers (ADR 0219)."""
+    cancel_runs: Callable[[str], None] | None = None
+    """``(device)``: end every answer being written for ``device``'s turns (ADR 0219)."""
     set_conversation: Callable[[bool, str], None] | None = None
     set_quiet: Callable[[str], None] | None = None
     controls: Callable[[], Mapping[str, Any]] | None = None
@@ -186,10 +204,13 @@ class BrainListening:
         self._last: _Link | None = None  # the terminal that last sent a turn
         self._ops: dict[str, Callable[[Mapping[str, Any]], Any]] = {
             "words": self._words, "working": self._working, "recent": self._recent,
-            "interrupt": self._interrupt, "supersede": self._supersede,
-            "cancel_runs": self._cancel_runs, "controls": self._controls,
+            "controls": self._controls,
             "conversation": self._conversation, "quiet": self._quiet, "polish": self._polish,
             "hold": self._hold, "note": self._note, "begin": self._begin, "say": self._say,
+        }
+        self._device_ops: dict[str, Callable[[str, Mapping[str, Any]], Any]] = {
+            "elsewhere": self._elsewhere, "interrupt": self._interrupt,
+            "supersede": self._supersede, "cancel_runs": self._cancel_runs,
         }
 
     # -- frames ------------------------------------------------------------------------
@@ -255,7 +276,7 @@ class BrainListening:
             if op == "utterance":
                 reply["value"] = self._utterance(link, args)
             else:
-                reply["value"] = await asyncio.to_thread(self._ops[str(op)], args)
+                reply["value"] = await asyncio.to_thread(self._run, str(op), link.name, args)
         except asyncio.CancelledError:
             raise
         except _Refused as exc:
@@ -269,6 +290,12 @@ class BrainListening:
             await link.send(json.dumps(reply, ensure_ascii=False))
         except Exception:  # noqa: BLE001 — the link may have dropped while the hook ran.
             LOGGER.debug("terminal listening: no one to answer %s", op)
+
+    def _run(self, op: str, device: str, args: Mapping[str, Any]) -> Any:  # noqa: ANN401 — the op's JSON.
+        """Run an answered op; the device is passed to those that act for one terminal."""
+        if op in _DEVICE_OPS:
+            return self._device_ops[op](device, args)
+        return self._ops[op](args)
 
     # -- the asks ----------------------------------------------------------------------
 
@@ -296,19 +323,24 @@ class BrainListening:
         hook = self.hooks.recent_speech
         return {"text": hook() if hook is not None else ""}
 
-    def _interrupt(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _elsewhere(self, device: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        turn_id, text = _text(args, "turn_id", _ID_CHARS), _text(args, "text")
+        hook = self.hooks.heard_elsewhere
+        return {"elsewhere": bool(hook(device, turn_id, text)) if hook is not None else False}
+
+    def _interrupt(self, device: str, args: Mapping[str, Any]) -> dict[str, Any]:
         hook = self.hooks.interrupt
         source = _text(args, "source", _ID_CHARS)
-        return {"outcome": hook(source) if hook is not None else "no_open_run"}
+        return {"outcome": hook(device, source) if hook is not None else "no_open_run"}
 
-    def _supersede(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _supersede(self, device: str, args: Mapping[str, Any]) -> dict[str, Any]:
         if self.hooks.supersede is not None:
-            self.hooks.supersede(_text(args, "turn_id", _ID_CHARS))
+            self.hooks.supersede(device, _text(args, "turn_id", _ID_CHARS))
         return {}
 
-    def _cancel_runs(self, _args: Mapping[str, Any]) -> dict[str, Any]:
+    def _cancel_runs(self, device: str, _args: Mapping[str, Any]) -> dict[str, Any]:
         if self.hooks.cancel_runs is not None:
-            self.hooks.cancel_runs()
+            self.hooks.cancel_runs(device)
         return {}
 
     def _controls(self, _args: Mapping[str, Any]) -> dict[str, Any]:
@@ -503,6 +535,21 @@ class LinkedTurn:
             return None
         choice = value.get("choice") if isinstance(value, dict) else None
         return choice if isinstance(choice, str) else None
+
+    def heard_elsewhere(self, turn_id: str, text: str) -> bool:
+        """Whether another device recorded these words just now; false when it cannot be asked.
+
+        A brain that does not know the op answers ``unknown_op`` and one that errors answers
+        ``brain_error``; both, and a brain that is slow or gone, read as false (ADR 0219).
+        """
+        try:
+            value = self._link.ask(
+                "elsewhere", {"turn_id": turn_id, "text": text}, timeout_s=ELSEWHERE_TIMEOUT_S,
+            )
+        except BrainCallError as exc:
+            LOGGER.debug("the brain could not say whether another device heard this: %s", exc)
+            return False
+        return isinstance(value, dict) and value.get("elsewhere") is True
 
     def note_words(
         self, turn_id: str, verdict: str, text: str, over_her: bool, conversation: bool,  # noqa: FBT001
