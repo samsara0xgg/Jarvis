@@ -575,6 +575,14 @@ extension StarEngine {
         case "凌晨": setLevel(0); seek(Double(floorDay(nowT())) * DAY + 200, true)       // paired: the night's sleep crosses midnight
         case "前天": setLevel(0); seek(Double(floorDay(nowT()) - 2) * DAY + 800, true)    // paired: a day the Mac was missing
         case "近": setLevel(-1)
+        // `近@昨天17:43` or `近@21:30`: the near view resting at that time
+        case _ where name.hasPrefix("近@"):
+            var w = String(name.dropFirst(2)), day = floorDay(nowT())
+            if w.hasPrefix("昨天") { day -= 1; w = String(w.dropFirst(2)) }
+            let hm = w.split(separator: ":").compactMap { Double($0) }
+            guard hm.count == 2 else { return }
+            let t = Double(day) * DAY + hm[0] * 60 + hm[1]
+            setLevel(-1); fs.value = t; fs.velocity = 0; goal = t; mode = .idle
         case "一周": setLevel(1)
         case "一个月": setLevel(2)
         case "确认": setLevel(0); if let e = byId("thanks") { openId = e.id; rowKey = ""; seek(e.t) }

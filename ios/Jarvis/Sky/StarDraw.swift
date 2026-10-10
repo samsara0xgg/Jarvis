@@ -99,11 +99,20 @@ extension StarEngine {
         c.setLineCap(.round)
         if cam != nil { sunBand(c) }
         ticks(c)
-        if cam == nil { numerals(c) }
+        numerals(c)                         // close up they go down before the names, so the names keep out of their way
         arcs(c); trace(c, now); constellations(c); events(c, now)
-        if cam != nil { numerals(c) }
         nowMark(c)
         if ls.value > 0.02 && cam == nil { lensMark(c) }
+        if cam != nil { fadeBottom(c) }
+    }
+
+    /// close up the road and the ring run to the bottom of the map layer; let them go out before the big time instead of stopping in a line
+    func fadeBottom(_ c: CGContext) {
+        let y0 = MAP_Y + MAP_H - 24, y1 = MAP_Y + MAP_H
+        c.saveGState(); c.setBlendMode(.destinationOut); c.setAlpha(1)
+        c.clip(to: CGRect(x: 0, y: y0, width: W, height: y1 - y0))
+        c.drawLinearGradient(linGradient([(0, CGColor(gray: 0, alpha: 0)), (1, CGColor(gray: 0, alpha: 1))]), start: CGPoint(x: 0, y: y0), end: CGPoint(x: 0, y: y1), options: [])
+        c.restoreGState()
     }
 
     /// seen at a slant: short strokes, each its own colour (flat, the band is a conic gradient layer of its own)
