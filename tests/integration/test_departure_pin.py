@@ -9,12 +9,13 @@ hand-built bytes. No network.
 # ruff: noqa: RUF001 - the reminder text is Chinese, as the daemon says it.
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import urllib.request
 import zipfile
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -25,13 +26,15 @@ from google.transit import gtfs_realtime_pb2
 from jarvis.decision.commentary import _dispatch_key
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution import transit_tool
-from jarvis.execution.tools import ActionLifecycle, build_default_registry
+from jarvis.execution.tools import ActionLifecycle, ToolError, build_default_registry
 from jarvis.execution.transit_tool import TransitOffers
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.departures import REFRESH_S, Departures
 from jarvis.runtime.inherent_loop import _notice_deps
 from jarvis.runtime.reminders import Reminders
 from jarvis.shared import ActionRequest, CallerPrincipal, lang
+from jarvis.state import departures as departures_state
+from jarvis.state import event_log
 from jarvis.state import reminders as reminder_state
 from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -182,6 +185,11 @@ class _World:
         out = json.loads(bundle.slots[0].tool_output or "{}")
         return out if isinstance(out, dict) else {"value": out}
 
+    def at(self, hhmm: str) -> None:
+        """Both clocks (the tool's and the daemon's) to that time today."""
+        self.local_now = _local(hhmm)
+        self.clock = self.local_now.astimezone(UTC)
+
     def look_up(self) -> None:
         self.call("transit", {"origin": "home", "destination": "Mayfair Mall"})
 
@@ -226,14 +234,15 @@ def test_a_pin_is_an_event_and_a_reminder_at_the_leave_time(world: _World) -> No
     made = world.pin()
     assert made["pinned"]
     (pinned,) = world.events("departure.pinned")
-    assert (pinned["route"], pinned["board_stop"], pinned["arrive_at"]) == (
+    (trip,) = pinned["trips"]
+    assert (trip["route"], trip["board_stop"], trip["arrive_at"]) == (
         "28", "Shelbourne at Pear", "17:20",
     )
-    assert (pinned["stop_lat"], pinned["stop_lng"], pinned["to"]) == (*STOP, "home")
-    assert pinned["leave_at_ms"] == int(_local("17:02").timestamp() * 1000)
+    assert (trip["stop_lat"], trip["stop_lng"], trip["to"]) == (*STOP, "home")
+    assert trip["leave_at_ms"] == int(_local("17:02").timestamp() * 1000)
     (ring,) = world.pending()
     assert ring.reminder_id == pinned["reminder_id"]
-    assert ring.due_at_ms == pinned["leave_at_ms"]
+    assert ring.due_at_ms == trip["leave_at_ms"]
     assert ring.text == "该出门了，28 路 17:05 在 Shelbourne at Pear 上车"
     world.clock = _local("17:02").astimezone(UTC) + timedelta(seconds=5)
     assert world.reminders.tick() == 1
@@ -480,11 +489,13 @@ def test_the_card_pins_the_chosen_option_through_the_tools_path(world: _World) -
     reply = _take(world, "pin", offer_id=offer["id"], index=1)
     assert reply.status_code == 200
     (pinned,) = world.events("departure.pinned")
-    assert (pinned["route"], pinned["board_stop"], pinned["arrive_at"], pinned["to"]) == (
+    (trip,) = pinned["trips"]
+    assert (trip["route"], trip["board_stop"], trip["arrive_at"], trip["to"]) == (
         "28", "Shelbourne at Pear", "17:30", "mayfair mall",
     )
-    assert (pinned["stop_lat"], pinned["stop_lng"]) == STOP
-    assert pinned["leave_at_ms"] == int(_local("17:12").timestamp() * 1000)
+    assert (trip["stop_lat"], trip["stop_lng"]) == STOP
+    assert trip["leave_at_ms"] == int(_local("17:12").timestamp() * 1000)
+    assert (pinned["offer_id"], trip["tid"]) == (offer["id"], f"{offer['id']}-1")
     (ring,) = world.pending()
     assert ring.reminder_id == pinned["reminder_id"]
     assert ring.text == "该出门了，28 路 17:15 在 Shelbourne at Pear 上车"
@@ -555,14 +566,16 @@ def test_next_bus_falls_back_to_the_live_feed(world: _World) -> None:
     assert reply["departure"]["arrive_at"] == "17:30"
     (ring,) = world.pending()
     assert ring.due_at_ms == int(_local("17:12").timestamp() * 1000)
-    pinned = world.events("departure.pinned")[-1]
-    assert (pinned["stop_lat"], pinned["stop_lng"]) == STOP
+    assert len(world.events("departure.pinned")) == 1
+    assert world.events("departure.updated")[-1]["departs_at_ms"] == int(
+        _local("17:15").timestamp() * 1000
+    )
     world.feed = _feed(("T28a", "S1", "17:05", 0), ("T28b", "S1", "17:15", 0))
     assert _take(world, "next").json()["reason"] == "no_later"
     world.feed = b""
     world.feed_error = OSError("down")
     assert _take(world, "next").json()["reason"] == "no_later"
-    assert len(world.events("departure.pinned")) == 2
+    assert len(world.events("departure.updated")) == 1
 
 
 def test_cancel_then_undo_pins_the_same_trip_again(world: _World) -> None:
@@ -580,14 +593,14 @@ def test_cancel_then_undo_pins_the_same_trip_again(world: _World) -> None:
         "28", "17:02", "17:05", "17:20", "home",
     )
     (pinned,) = world.events("departure.pinned")[-1:]
-    assert (pinned["stop_lat"], pinned["stop_lng"]) == STOP
+    assert (pinned["trips"][0]["stop_lat"], pinned["trips"][0]["stop_lng"]) == STOP
     (ring,) = world.pending()
     assert ring.due_at_ms == int(_local("17:02").timestamp() * 1000)
     # It was used up; and a trip whose leave time has gone cannot come back.
     assert _take(world, "undo", pin_id=made["pin_id"]).status_code == 404
     again = world.app().post(f"/inherent/notices/{back['id']}", json={"action": "dismissed"})
     assert again.status_code == 200
-    world.local_now = _local("17:10")
+    world.at("17:10")
     late = _take(world, "undo", pin_id=back["id"]).json()
     assert late["reason"] == "past"
     assert late["departure"] is None
@@ -607,3 +620,268 @@ def test_the_served_pin_says_what_the_refresh_knows(world: _World) -> None:
     seen = client.get("/inherent/notices").json()["departure"]
     assert seen["delay_min"] == 3
     assert seen["checked_at_ms"] == int(world.clock.timestamp() * 1000)
+
+
+# --- ADR 0204: a set of trips -----------------------------------------------------------
+
+
+def _option(leave: str, departs: str, route: str = "28") -> dict[str, str]:
+    return {
+        "leave_at": leave, "route": route, "board_stop": "Shelbourne at Pear",
+        "departs": departs, "arrive_at": "17:30", "destination": "Home",
+    }
+
+
+def _pin_two(world: _World) -> dict[str, Any]:
+    """Two buses by voice: the 28 at 17:05 (leave 17:02) and at 17:15 (leave 17:12)."""
+    options = [_option("17:12", "17:15"), _option("17:02", "17:05")]
+    return world.call("pin_departure", {"options": options})
+
+
+def _served(world: _World) -> dict[str, Any] | None:
+    got = world.app().get("/inherent/notices").json()["departure"]
+    return None if got is None else dict(got)
+
+
+def test_a_card_click_adds_a_trip_and_a_second_click_takes_it_off(world: _World) -> None:
+    """Rows are additive on one offer; the ring names the earliest and the other; a row toggles."""
+    _answer(world, ("17:05", "28"), ("17:15", "28"), ("17:18", "12"))
+    offer = _offer(world)
+    first = _take(world, "add", offer_id=offer["id"], index=0).json()["departure"]
+    assert (first["more"], len(first["trips"])) == (0, 1)
+    both = _take(world, "add", offer_id=offer["id"], index=1).json()["departure"]
+    assert both["id"] == first["id"]
+    assert (both["leave_at"], both["departs"], both["more"]) == ("17:02", "17:05", 1)
+    assert [(t["id"], t["departs"]) for t in both["trips"]] == [
+        (f"{offer['id']}-0", "17:05"), (f"{offer['id']}-1", "17:15"),
+    ]
+    (ring,) = world.pending()
+    assert ring.due_at_ms == int(_local("17:02").timestamp() * 1000)
+    assert ring.text == "该出门了，28 路 17:05 在 Shelbourne at Pear 上车；也可以坐 28 路 17:15"
+    assert len(world.events("departure.pinned")) == 1
+    # The same row again (a double click) adds nothing.
+    again = _take(world, "add", offer_id=offer["id"], index=1).json()["departure"]
+    assert len(again["trips"]) == 2
+    # A click on a pinned row takes just that trip off, and the ring follows the one left.
+    left = _take(world, "remove", trip_id=f"{offer['id']}-0").json()["departure"]
+    assert (left["id"], left["departs"], left["more"]) == (first["id"], "17:15", 0)
+    (ring,) = world.pending()
+    assert ring.due_at_ms == int(_local("17:12").timestamp() * 1000)
+    assert ring.text == "该出门了，28 路 17:15 在 Shelbourne at Pear 上车"
+    assert _take(world, "remove", trip_id="nope").status_code == 404
+
+
+def test_a_newer_answer_starts_a_new_set(world: _World) -> None:
+    """The first click on a new offer replaces the set; later clicks on it add to the new one."""
+    _answer(world, ("17:05", "28"), ("17:15", "28"))
+    old = _offer(world)
+    first = _take(world, "add", offer_id=old["id"], index=0).json()["departure"]
+    _answer(world, ("17:20", "12"), ("17:25", "12"))
+    new = _offer(world)
+    assert new["id"] != old["id"]
+    started = _take(world, "add", offer_id=new["id"], index=1).json()["departure"]
+    assert started["id"] != first["id"]
+    assert [t["id"] for t in started["trips"]] == [f"{new['id']}-1"]
+    assert len(world.pending()) == 1
+    grown = _take(world, "add", offer_id=new["id"], index=0).json()["departure"]
+    assert (grown["id"], len(grown["trips"])) == (started["id"], 2)
+    # "pin" always starts a set with that row, even on the offer that started this one.
+    fresh = _take(world, "pin", offer_id=new["id"], index=0).json()["departure"]
+    assert (fresh["id"] != grown["id"], len(fresh["trips"])) == (True, 1)
+
+
+def test_three_trips_is_the_most(world: _World) -> None:
+    """A fourth catchable trip is refused with ToolError full; the card says so in `reason`."""
+    world.call("pin_departure", {"options": [
+        _option("17:02", "17:05"), _option("17:12", "17:15"), _option("17:22", "17:25"),
+    ]})
+    assert world.call("pin_departure", {"options": [_option("17:02", "17:05")] * 4}).get("error")
+    one = departures_state.current(world.conn)
+    assert one is not None
+    extra = transit_tool.trip_of(
+        tid="x", route="28", board_stop="Shelbourne at Pear", leave=_local("17:32"),
+        departs=_local("17:35"), arrive_at="17:50", to="home", stop=STOP,
+    )
+    with pytest.raises(ToolError) as full:
+        transit_tool.add_trip(world.conn, one, extra, action_id="A")
+    assert full.value.code == "full"
+
+
+def test_the_current_trip_is_the_earliest_catchable_and_the_ring_moves_on(world: _World) -> None:
+    """Missed trips drop off, the ring moves to the next, and the pin ends with the last."""
+    _pin_two(world)
+    (ring,) = world.pending()
+    assert ring.text == "该出门了，28 路 17:05 在 Shelbourne at Pear 上车；也可以坐 28 路 17:15"
+    pin = _served(world)
+    assert pin is not None
+    assert (pin["leave_at"], pin["more"], [t["departs"] for t in pin["trips"]]) == (
+        "17:02", 1, ["17:05", "17:15"],
+    )
+    world.at("17:02")
+    world.clock += timedelta(seconds=5)
+    assert world.reminders.tick() == 1
+    assert world.said == [
+        "提醒：该出门了，28 路 17:05 在 Shelbourne at Pear 上车；也可以坐 28 路 17:15",
+    ]
+    # Past its leave time but before the bus: still the current trip, and no second ring.
+    world.at("17:04")
+    world.reminders.tick()
+    assert (_served(world) or {})["departs"] == "17:05"
+    assert world.pending() == []
+    # The bus has gone: the other trip is current, alone, and the ring is set for it.
+    world.at("17:05")
+    world.reminders.tick()
+    pin = _served(world)
+    assert pin is not None
+    assert (pin["leave_at"], pin["departs"], pin["more"], len(pin["trips"])) == (
+        "17:12", "17:15", 0, 1,
+    )
+    (ring,) = world.pending()
+    assert ring.due_at_ms == int(_local("17:12").timestamp() * 1000)
+    assert ring.text == "该出门了，28 路 17:15 在 Shelbourne at Pear 上车"
+    world.reminders.tick()
+    assert len(world.pending()) == 1  # settled: nothing is rescheduled again
+    world.at("17:12")
+    world.clock += timedelta(seconds=5)
+    assert world.reminders.tick() == 1
+    world.at("17:15")
+    world.reminders.tick()
+    assert _served(world) is None
+
+
+def test_every_trip_is_refreshed_on_its_own(world: _World) -> None:
+    """Each trip keeps its matched bus and delay; the ring moves with the earliest trip's time."""
+    _pin_two(world)
+    world.feed = _feed(("T28a", "S1", "17:05", 180), ("T28b", "S1", "17:15", 120))
+    world.reminders.tick()
+    world.clock += timedelta(seconds=REFRESH_S)
+    world.reminders.tick()
+    assert world.feed_calls == 2  # one look per trip
+    moved = {e["tid"]: e["departs_at_ms"] for e in world.events("departure.updated")}
+    assert sorted(moved.values()) == [
+        int(_local("17:08").timestamp() * 1000), int(_local("17:17").timestamp() * 1000),
+    ]
+    pin = _served(world)
+    assert pin is not None
+    delays = [(t["departs"], t["delay_min"]) for t in pin["trips"]]
+    assert delays == [("17:08", 3), ("17:17", 2)]
+    assert pin["leave_at"] == "17:05"
+    (ring,) = world.pending()
+    assert ring.due_at_ms == int(_local("17:05").timestamp() * 1000)
+    assert ring.text == "该出门了，28 路 17:08 在 Shelbourne at Pear 上车；也可以坐 28 路 17:17"
+    # A trip whose stop has no position is stale alone.
+    world.call("pin_departure", {"options": [
+        _option("17:02", "17:05"), {**_option("17:12", "17:15"), "board_stop": "Nowhere"},
+    ]})
+    world.reminders.tick()
+    world.feed = _feed(("T28a", "S1", "17:05", 0))
+    world.clock += timedelta(seconds=REFRESH_S)
+    world.reminders.tick()
+    pin = _served(world)
+    assert pin is not None
+    assert [t["stale"] for t in pin["trips"]] == [False, True]
+    assert pin["stale"] is False
+
+
+def test_undo_brings_back_what_the_last_removal_took(world: _World) -> None:
+    """One trip removed comes back into the set; the whole set removed comes back as a set."""
+    pin_id = _pin_two(world)["pin_id"]
+    gone = [t["id"] for t in (_served(world) or {})["trips"]]
+    client = world.app()
+    left = _take(world, "remove", trip_id=gone[0]).json()["departure"]
+    assert [t["id"] for t in left["trips"]] == [gone[1]]
+    back = _take(world, "undo", pin_id=pin_id).json()
+    assert back["reason"] is None
+    assert [t["id"] for t in back["departure"]["trips"]] == gone
+    assert back["departure"]["id"] == pin_id
+    (ring,) = world.pending()
+    assert ring.due_at_ms == int(_local("17:02").timestamp() * 1000)
+    # The whole set: x on the pill, then undo.
+    reply = client.post(f"/inherent/notices/{pin_id}", json={"action": "dismissed"})
+    assert reply.status_code == 200
+    assert world.pending() == []
+    set_back = _take(world, "undo", pin_id=pin_id).json()["departure"]
+    assert set_back["id"] != pin_id
+    assert [t["id"] for t in set_back["trips"]] == gone
+    assert len(world.pending()) == 1
+    # Removing the last trip of a set is removing the set.
+    new_id = set_back["id"]
+    _take(world, "remove", trip_id=gone[0])
+    assert _take(world, "remove", trip_id=gone[1]).json()["departure"] is None
+    assert world.pending() == []
+    again = _take(world, "undo", pin_id=new_id).json()["departure"]
+    assert [t["id"] for t in again["trips"]] == [gone[1]]
+
+
+def test_an_old_single_trip_pin_still_folds(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A departure.pinned and departure.updated from before ADR 0204 are a set of one."""
+    legacy = {
+        "departure.pinned": (
+            "pin_id", "reminder_id", "route", "board_stop", "leave_at_ms", "departs_at_ms",
+            "arrive_at", "stop_lat", "stop_lng", "to", "action_id",
+        ),
+        "departure.updated": (
+            "pin_id", "reminder_id", "leave_at_ms", "departs_at_ms", "arrive_at",
+        ),
+    }
+    schemas = dict(event_log._REGISTRY_MAP)  # noqa: SLF001 - the old shapes are not registered.
+    for kind, required in legacy.items():
+        schemas[kind] = dataclasses.replace(schemas[kind], required_payload=required)
+    monkeypatch.setattr(event_log, "_REGISTRY_MAP", MappingProxyType(schemas))
+    ring = reminder_state.schedule(
+        world.conn, due=_local("17:02"), action_id="old",
+        text="该出门了，28 路 17:05 在 Shelbourne at Pear 上车",
+    )
+    event_log.emit_event(world.conn, type="departure.pinned", payload={
+        "pin_id": "departure-old", "reminder_id": ring, "route": "28",
+        "board_stop": "Shelbourne at Pear", "leave_at_ms": int(_local("17:02").timestamp() * 1000),
+        "departs_at_ms": int(_local("17:05").timestamp() * 1000), "arrive_at": "17:20",
+        "stop_lat": STOP[0], "stop_lng": STOP[1], "to": "home", "action_id": "old",
+    })
+    pin = _served(world)
+    assert pin is not None
+    assert (pin["id"], pin["route"], pin["departs"], pin["more"], len(pin["trips"])) == (
+        "departure-old", "28", "17:05", 0, 1,
+    )
+    event_log.emit_event(world.conn, type="departure.updated", payload={
+        "pin_id": "departure-old", "reminder_id": ring,
+        "leave_at_ms": int(_local("17:03").timestamp() * 1000),
+        "departs_at_ms": int(_local("17:06").timestamp() * 1000), "arrive_at": "17:21",
+    })
+    pin = _served(world)
+    assert pin is not None
+    assert (pin["leave_at"], pin["departs"], pin["arrive_at"]) == ("17:03", "17:06", "17:21")
+    # It can be added to and refreshed like any set.
+    world.look_up()
+    world.reminders.tick()
+    assert world.reminders.departures.view() is not None
+    one = departures_state.current(world.conn)
+    assert one is not None
+    extra = transit_tool.trip_of(
+        tid="n", route="28", board_stop="Shelbourne at Pear", leave=_local("17:12"),
+        departs=_local("17:15"), arrive_at="17:30", to="home", stop=STOP,
+    )
+    transit_tool.add_trip(world.conn, one, extra, action_id="A")
+    assert (_served(world) or {})["more"] == 1
+
+
+def test_voice_can_pin_several_options_and_one_set_of_fields_still_works(world: _World) -> None:
+    """`options` pins a set (one ring, all trips); the plain fields pin one trip as before."""
+    made = _pin_two(world)
+    assert made["pinned"]
+    assert (made["leave_at"], made["departs"]) == ("17:02", "17:05")  # the earliest
+    assert [t["departs"] for t in made["trips"]] == ["17:15", "17:05"]
+    (pinned,) = world.events("departure.pinned")
+    assert pinned["offer_id"] is None
+    assert len(pinned["trips"]) == 2
+    assert len(world.pending()) == 1
+    single = world.pin(leave="17:10", departs="17:13")
+    assert single["pinned"]
+    assert len((_served(world) or {})["trips"]) == 1
+    (ring,) = world.pending()
+    assert ring.due_at_ms == int(_local("17:10").timestamp() * 1000)
+    # One bad option refuses the lot.
+    options = [_option("17:12", "17:15"), _option("16:00", "17:05")]
+    bad = world.call("pin_departure", {"options": options})
+    assert bad["code"] == "time_in_past"
+    assert (_served(world) or {})["departs"] == "17:13"

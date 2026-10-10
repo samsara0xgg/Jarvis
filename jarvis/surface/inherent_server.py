@@ -1259,12 +1259,13 @@ class NoticeActionRequest(BaseModel):
 
 
 class DepartureRequest(BaseModel):
-    """Body of ``POST /inherent/departure`` (ADR 0203): the field each action needs is required."""
+    """Body of ``POST /inherent/departure`` (ADR 0203, 0204): the field each action needs."""
 
-    action: Literal["pin", "next", "undo"]
+    action: Literal["pin", "add", "remove", "next", "undo"]
     offer_id: str = Field(default="", max_length=40)
     index: int = Field(default=0, ge=0, le=9)
     pin_id: str = Field(default="", max_length=40)
+    trip_id: str = Field(default="", max_length=60)
 
 
 class CardActionRequest(BaseModel):

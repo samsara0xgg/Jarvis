@@ -26,14 +26,17 @@ function OfferCard({ offer, lang, onPin, onClose }: { offer: TransitOffer; lang:
   </div>;
 }
 
-function PinCard({ d, lang, msg, onNext, onCancel, onClose }: { d: Departure; lang: Lang; msg: string; onNext: () => void; onCancel: () => void; onClose: () => void }) {
-  const t = (l: L) => tr(lang, l), root = useRef<HTMLDivElement>(null), status = pinStatus(d, t);
+function PinCard({ d, lang, msg, onNext, onCancel, onDrop, onClose }: { d: Departure; lang: Lang; msg: string; onNext: () => void; onCancel: () => void; onDrop: (tid: string) => void; onClose: () => void }) {
+  const t = (l: L) => tr(lang, l), root = useRef<HTMLDivElement>(null);
   useEscape(root, true, onClose, d.id);
   return <div ref={root} className="nc nc-mail">
     <div className="nc-bar"><span className="nc-label is-wait"><i/>{t(['Pinned bus', '挂着的车'])}</span>
       <button type="button" className="nc-x nc-dismiss" aria-label={t(['Close', '关闭'])} title={t(['Close', '关闭'])} onClick={onClose}><X size={14}/></button></div>
-    <p className="nc-what">{pinTrip(d, t)}</p>
-    {(status || msg) && <div className="nc-tags">{status && <span className="tagc">{status}</span>}{msg && <span className="tagc">{msg}</span>}</div>}
+    <ul className="nc-away nc-jobrows">{(d.trips ?? [d]).map(x => <li key={x.id} className="nc-jobrow">
+      <span className="nc-jr-who">{pinTrip(x, t)}{pinStatus(x, t) && <span className="tagc">{pinStatus(x, t)}</span>}</span>
+      <button type="button" className="nc-x nc-dismiss" aria-label={t(['Remove this trip', '去掉这班'])} title={t(['Remove this trip', '去掉这班'])} onClick={() => onDrop(x.id)}><X size={12}/></button>
+    </li>)}</ul>
+    {msg && <div className="nc-tags"><span className="tagc">{msg}</span></div>}
     <div className="nc-choice">
       <button type="button" className="btn btn-warm" onClick={onNext}>{t(['Next bus', '换下一班'])}</button>
       <button type="button" className="btn btn-ghost" onClick={onCancel}>{t(['Cancel', '取消'])}</button>
@@ -75,6 +78,16 @@ export function useTripNote({ port, lang, offer, departure, blocked, closeOffer,
     }).catch(() => close());
   };
   const cancel = () => { if (!departure) return; undo.current = departure; leaveDeparture(departure); setView('undo'); };
+  // One trip off the set: the daemon takes the whole pin off with the last one. Either way the undo line shows, and undo brings back just what this took.
+  const drop = (tid: string) => {
+    if (!departure) return;
+    const was = departure;
+    undo.current = was;
+    void send({ action: 'remove', trip_id: tid }).then(r => {
+      if (r.d) setDeparture(r.d); else leaveDeparture(was);
+      setView('undo');
+    }).catch(() => undefined);
+  };
   const bringBack = () => {
     const gone = undo.current;
     close();
@@ -82,7 +95,7 @@ export function useTripNote({ port, lang, offer, departure, blocked, closeOffer,
   };
 
   const note: NotchNote | null = view === 'pin' && departure
-    ? { key: 'trip:pin', onClose: close, card: <PinCard d={departure} lang={lang} msg={msg} onNext={next} onCancel={cancel} onClose={close}/> }
+    ? { key: 'trip:pin', onClose: close, card: <PinCard d={departure} lang={lang} msg={msg} onNext={next} onCancel={cancel} onDrop={drop} onClose={close}/> }
     : view === 'undo' ? { key: 'trip:undo', onClose: close, card: <UndoCard lang={lang} onUndo={bringBack}/> }
     : !view && offer && !blocked ? { key: `trip:offer:${offer.id}`, onClose: () => closeOffer(offer.id), card: <OfferCard offer={offer} lang={lang} onPin={pin} onClose={() => closeOffer(offer.id)}/> }
     : null;

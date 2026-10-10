@@ -212,9 +212,21 @@ _PIN_DESCRIPTION: Final = (
     " Copy the fields from the transit option he is taking (the first option unless"
     " he picked another): leave_at; route, the number of the first bus ('28', or '28 → 12' for"
     " two buses); board_stop and departs of the first bus; arrive_at. destination is the word"
-    " you gave transit. A newer pin replaces the older. If it returns an error because"
+    " you gave transit. When he wants several ('pin both', up to 3), put one such object per"
+    " option in options instead. A newer pin replaces the older. If it returns an error because"
     " leave_at is past, say so and offer to look the bus up again."
 )
+
+
+_TRIP_FIELDS: Final = {
+    "leave_at": {"type": "string", "description": "HH:MM, from the option"},
+    "route": {"type": "string", "description": "'28', or '28 → 12'"},
+    "board_stop": {"type": "string", "description": "first bus's stop"},
+    "departs": {"type": "string", "description": "first bus, HH:MM"},
+    "arrive_at": {"type": "string", "description": "HH:MM, from the option"},
+    "destination": {"type": "string", "description": "as given to transit"},
+}
+_TRIP_REQUIRED: Final = ["leave_at", "route", "board_stop", "departs", "arrive_at"]
 
 
 class TransitOffers:
@@ -285,9 +297,9 @@ class TransitOffers:
         return (later[0][1], later[0][0], later[0][2]) if later else None
 
 
-def pin_trip(  # noqa: PLR0913 — one keyword per pinned field.
-    conn: sqlite3.Connection,
+def trip_of(  # noqa: PLR0913 — one keyword per trip field.
     *,
+    tid: str,
     route: str,
     board_stop: str,
     leave: datetime,
@@ -295,62 +307,165 @@ def pin_trip(  # noqa: PLR0913 — one keyword per pinned field.
     arrive_at: str,
     to: str,
     stop: tuple[float, float] | None,
-    action_id: str,
-    source_event_id: str | None = None,
-) -> dict[str, Any]:
-    """Pin the trip on the notch and schedule its ring (ADR 0200); every way to pin comes here."""
+) -> departures.Trip:
+    """A trip to pin, checked: its leave time not past (a minute's grace), its bus after it."""
     if leave < _now() - _PIN_PAST_GRACE:
         msg = f"leave_at {leave:%H:%M} has already passed; look the bus up again"
         raise ToolError(msg, code="time_in_past")
     if departs < leave:
         msg = "departs is before leave_at; copy both from the same option"
         raise ToolError(msg, code="invalid_argument")
-    # One pin at a time: the older pin's reminder must not ring for a dropped trip.
-    older = departures.current(conn)
-    ringing = reminders.fold(conn).get(older.reminder_id) if older else None
+    return departures.Trip(
+        tid,
+        route,
+        board_stop,
+        int(leave.timestamp() * 1000),
+        int(departs.timestamp() * 1000),
+        arrive_at,
+        None if stop is None else stop[0],
+        None if stop is None else stop[1],
+        to,
+    )
+
+
+def _hhmm(ms: int) -> str:
+    return f"{datetime.fromtimestamp(ms / 1000, _ZONE):%H:%M}"
+
+
+def _now_ms() -> int:
+    return int(_now().timestamp() * 1000)
+
+
+def ring(  # noqa: PLR0913 — the older ring, the set, the clock and who is asking.
+    conn: sqlite3.Connection,
+    trips: list[departures.Trip],
+    *,
+    now_ms: int,
+    reminder_id: str | None,
+    ring_tid: str | None,
+    action_id: str,
+    source_event_id: str | None = None,
+) -> tuple[str, str]:
+    """Make the pin's one reminder ring for its earliest catchable trip (ADR 0204).
+
+    It names that trip and, after it, the others still catchable. ``reminder_id`` and
+    ``ring_tid`` are the older ring and the trip it was for (None for a new set). A ring that
+    already says this stays; one that says something else is cancelled and scheduled again; one
+    that already rang for this trip is not rung twice, and a trip whose leave time is long past
+    gets no ring. Returns ``(reminder id, trip it is for)`` for the event that records them.
+    """
+    catchable = (t for t in trips if now_ms < t.departs_at_ms)
+    live = sorted(catchable, key=lambda t: (t.leave_at_ms, t.departs_at_ms)) or trips
+    target = live[0]
+    text = lang.t(
+        "departure.go", route=target.first_route, departs=_hhmm(target.departs_at_ms),
+        stop=target.board_stop,
+    ) + "".join(
+        lang.t("departure.also", route=t.first_route, departs=_hhmm(t.departs_at_ms))
+        for t in live[1:]
+    )
+    old = reminders.fold(conn).get(reminder_id) if reminder_id else None
+    if old is not None and old.pending:
+        if (old.due_at_ms, old.text, ring_tid) == (target.leave_at_ms, text, target.tid):
+            return old.reminder_id, target.tid
+        reminders.cancel(
+            conn, old.reminder_id, action_id=action_id, source_event_id=source_event_id,
+        )
+    elif old is not None and ring_tid == target.tid:
+        return old.reminder_id, target.tid
+    if target.leave_at_ms < now_ms - int(_PIN_PAST_GRACE.total_seconds() * 1000):
+        return reminder_id or "", target.tid
+    new = reminders.schedule(
+        conn,
+        due=datetime.fromtimestamp(target.leave_at_ms / 1000, _ZONE),
+        text=text,
+        action_id=action_id,
+        source_event_id=source_event_id,
+    )
+    return new, target.tid
+
+
+def _cancel_ring(
+    conn: sqlite3.Connection, pin: departures.Departure | None, action_id: str,
+    source_event_id: str | None = None,
+) -> None:
+    ringing = reminders.fold(conn).get(pin.reminder_id) if pin else None
     if ringing and ringing.pending:
         reminders.cancel(
             conn, ringing.reminder_id, action_id=action_id, source_event_id=source_event_id,
         )
-    first = route.split("→", maxsplit=1)[0].strip()
-    reminder_id = reminders.schedule(
-        conn,
-        due=leave,
-        text=lang.t("departure.go", route=first, departs=f"{departs:%H:%M}", stop=board_stop),
-        action_id=action_id,
+
+
+def pin_trips(
+    conn: sqlite3.Connection,
+    trips: list[departures.Trip],
+    *,
+    offer_id: str | None,
+    action_id: str,
+    source_event_id: str | None = None,
+) -> dict[str, Any]:
+    """Pin these trips as a new set and schedule its ring (ADR 0200, 0204); a newer set replaces."""
+    if not 1 <= len(trips) <= departures.MAX_TRIPS:
+        msg = f"pin between 1 and {departures.MAX_TRIPS} trips"
+        raise ToolError(msg, code="invalid_argument")
+    # One pin at a time: the older pin's reminder must not ring for a dropped set.
+    _cancel_ring(conn, departures.current(conn), action_id, source_event_id)
+    reminder_id, ring_tid = ring(
+        conn, trips, now_ms=_now_ms(), reminder_id=None, ring_tid=None, action_id=action_id,
         source_event_id=source_event_id,
     )
     pin_id = departures.pin(
         conn,
         reminder_id=reminder_id,
-        route=route,
-        board_stop=board_stop,
-        leave_at_ms=int(leave.timestamp() * 1000),
-        departs_at_ms=int(departs.timestamp() * 1000),
-        arrive_at=arrive_at,
-        stop=stop,
-        to=to,
+        ring=ring_tid,
+        trips=trips,
+        offer_id=offer_id,
         action_id=action_id,
         source_event_id=source_event_id,
     )
+    first = min(trips, key=lambda t: t.leave_at_ms)
     return {
         "pin_id": pin_id,
         "pinned": True,
-        "leave_at": f"{leave:%H:%M}",
-        "departs": f"{departs:%H:%M}",
-        "route": route,
+        "leave_at": _hhmm(first.leave_at_ms),
+        "departs": _hhmm(first.departs_at_ms),
+        "route": first.route,
+        "trips": [
+            {"route": t.route, "leave_at": _hhmm(t.leave_at_ms), "departs": _hhmm(t.departs_at_ms)}
+            for t in trips
+        ],
     }
 
 
+def add_trip(
+    conn: sqlite3.Connection, pin: departures.Departure, trip: departures.Trip, *, action_id: str,
+) -> None:
+    """Add a trip to the set (once); ToolError ``full`` when it already holds three catchable."""
+    if pin.trip(trip.tid):
+        return
+    now_ms = _now_ms()
+    if len(pin.catchable(now_ms)) >= departures.MAX_TRIPS:
+        msg = f"{departures.MAX_TRIPS} trips are already pinned"
+        raise ToolError(msg, code="full")
+    reminder_id, ring_tid = ring(
+        conn, [*pin.trips, trip], now_ms=now_ms, reminder_id=pin.reminder_id,
+        ring_tid=pin.ring_tid, action_id=action_id,
+    )
+    departures.add(conn, pin.pin_id, trip, reminder_id=reminder_id, ring=ring_tid)
+
+
 def pin_offered(
-    conn: sqlite3.Connection, offers: TransitOffers, offer_id: str, index: int,
+    conn: sqlite3.Connection, offers: TransitOffers, offer_id: str, index: int, *, add: bool,
 ) -> dict[str, Any]:
-    """The card's click: pin that option; LookupError when the offer cannot be pinned."""
+    """The card's click: pin that option; ``add`` puts it on the set this offer already started.
+
+    LookupError when the offer cannot be pinned; ``{"reason": "full"}`` when the set is full.
+    """
     row = offers.row(offer_id, index)
     first = row["route"].split("→")[0].strip()
     try:
-        return pin_trip(
-            conn,
+        trip = trip_of(
+            tid=f"{offer_id}-{index}",
             route=row["route"],
             board_stop=row["board_stop"],
             leave=_today(row["leave_at"], "leave_at"),
@@ -358,33 +473,49 @@ def pin_offered(
             arrive_at=row["arrive_at"],
             to=row["to"],
             stop=offers.stops.get((first, row["board_stop"])),
-            action_id=offer_id,
         )
+        pin = departures.active(conn, _now_ms())
+        if add and pin is not None and pin.offer_id == offer_id:
+            add_trip(conn, pin, trip, action_id=offer_id)
+            return {"pin_id": pin.pin_id}
+        return pin_trips(conn, [trip], offer_id=offer_id, action_id=offer_id)
     except ToolError as exc:
+        if exc.code == "full":
+            return {"reason": "full"}
         raise LookupError(str(exc)) from exc
 
 
 def _pin_departure(
     offers: TransitOffers, args: Mapping[str, Any], ctx: ToolContext,
 ) -> dict[str, Any]:
-    """The ``pin_departure`` tool: the model's copied fields, pinned through :func:`pin_trip`."""
-    leave = _today(args.get("leave_at"), "leave_at")
-    departs = _today(args.get("departs"), "departs")
-    arrive = _today(args.get("arrive_at"), "arrive_at").strftime("%H:%M")
-    route = str(args.get("route", "")).strip()
-    board_stop = str(args.get("board_stop", "")).strip()
-    if not route or not board_stop:
-        msg = "route and board_stop are both required"
-        raise ToolError(msg, code="invalid_argument")
-    return pin_trip(
+    """The ``pin_departure`` tool: the model's copied fields, pinned through :func:`pin_trips`."""
+    several = args.get("options")
+    trips = []
+    for one in several if isinstance(several, list) and several else [args]:
+        leave = _today(one.get("leave_at"), "leave_at")
+        departs = _today(one.get("departs"), "departs")
+        arrive = _today(one.get("arrive_at"), "arrive_at").strftime("%H:%M")
+        route = str(one.get("route", "")).strip()
+        board_stop = str(one.get("board_stop", "")).strip()
+        if not route or not board_stop:
+            msg = "route and board_stop are both required"
+            raise ToolError(msg, code="invalid_argument")
+        trips.append(
+            trip_of(
+                tid=departures.new_tid(),
+                route=route,
+                board_stop=board_stop,
+                leave=leave,
+                departs=departs,
+                arrive_at=arrive,
+                to=str(one.get("destination", "")).strip().lower()[:60],
+                stop=offers.stops.get((route.split("→")[0].strip(), board_stop)),
+            )
+        )
+    return pin_trips(
         ctx.conn,
-        route=route,
-        board_stop=board_stop,
-        leave=leave,
-        departs=departs,
-        arrive_at=arrive,
-        to=str(args.get("destination", "")).strip().lower()[:60],
-        stop=offers.stops.get((route.split("→")[0].strip(), board_stop)),
+        trips,
+        offer_id=None,
         action_id=ctx.action_id,
         source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
     )
@@ -487,15 +618,14 @@ def build_transit_tool(
             description=_PIN_DESCRIPTION,
             input_schema={
                 "type": "object",
-                "properties": {
-                    "leave_at": {"type": "string", "description": "HH:MM, from the option"},
-                    "route": {"type": "string", "description": "'28', or '28 → 12'"},
-                    "board_stop": {"type": "string", "description": "first bus's stop"},
-                    "departs": {"type": "string", "description": "first bus, HH:MM"},
-                    "arrive_at": {"type": "string", "description": "HH:MM, from the option"},
-                    "destination": {"type": "string", "description": "as given to transit"},
-                },
-                "required": ["leave_at", "route", "board_stop", "departs", "arrive_at"],
+                "properties": {**_TRIP_FIELDS, "options": {
+                    "type": "array",
+                    "maxItems": departures.MAX_TRIPS,
+                    "description": "several trips to pin at once, each with the fields above",
+                    "items": {
+                        "type": "object", "properties": _TRIP_FIELDS, "required": _TRIP_REQUIRED,
+                    },
+                }},
             },
             handler=lambda args, ctx: _pin_departure(offers, args, ctx),
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
@@ -505,4 +635,13 @@ def build_transit_tool(
     )
 
 
-__all__ = ["OFFER_TTL_S", "TransitOffers", "build_transit_tool", "pin_offered", "pin_trip"]
+__all__ = [
+    "OFFER_TTL_S",
+    "TransitOffers",
+    "add_trip",
+    "build_transit_tool",
+    "pin_offered",
+    "pin_trips",
+    "ring",
+    "trip_of",
+]

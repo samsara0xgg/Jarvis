@@ -330,6 +330,11 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "该出门了，{route} 路 {departs} 在 {stop} 上车",
         "en": "Time to leave: the {route} at {departs} from {stop}",
     },
+    # ADR 0202: when a pin holds more trips, the reminder names the others after the first.
+    "departure.also": {
+        "zh": "；也可以坐 {route} 路 {departs}",
+        "en": "; or the {route} at {departs}",
+    },
     # ADR 0093: the night run's spoken lines; its cards show the times.
     "night.started": {
         "zh": "好，挂到{until}。{seconds}秒后熄屏，晚安。",
