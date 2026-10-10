@@ -64,6 +64,7 @@ final class StarEngine {
     var cam: Cam?
     var PX = 0.0, PY = 0.0, PS = 1.0, PZ = 0.0, camE = 0.0, cenX = CX, cenY = CY, cenS = 1.0
     var names: [(Double, Double, Double, Double)] = []
+    var numeralBoxes: [(Double, Double, Double, Double)] = []      // where the near view's hour numerals stand this frame, for the names to keep out of
     let NEARP = NearParams()
 
     // ---------- flows, touches, panel ----------

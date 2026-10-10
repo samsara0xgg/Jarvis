@@ -76,6 +76,25 @@ final class SpriteCache {
         return w
     }
 
+    static func pad(_ size: Double) -> Double { ceil(0.22 * size) + 2 }
+    /// a word with a dark halo round it, so a line that runs under it is hidden there; the text box is the sprite inset by `pad`
+    func label(_ s: String, _ font: WFont, _ col: RGB) -> Sprite {
+        let key = "L|\(s)|\(font.size)|\(font.weight)|\(font.mono)|\(col.r),\(col.g),\(col.b)"
+        if let w = words[key] { return w }
+        let f = font.ui, p = Self.pad(Double(font.size))
+        let tw = ceil(Double((s as NSString).size(withAttributes: [.font: f]).width)), th = ceil(Double(f.lineHeight))
+        let w = tw + 2 * p, h = th + 2 * p
+        let img = render(size: CGSize(width: w, height: h), scale: px) { c in
+            c.setLineJoin(.round)           // so a CJK corner does not spike
+            let halo = UIColor(red: 7 / 255, green: 8 / 255, blue: 24 / 255, alpha: 0.92)
+            (s as NSString).draw(at: CGPoint(x: p, y: p), withAttributes: [.font: f, .strokeColor: halo, .strokeWidth: 44])
+            (s as NSString).draw(at: CGPoint(x: p, y: p), withAttributes: [.font: f, .foregroundColor: col.ui()])
+        }
+        let sp = Sprite(img: img, w: w, h: h)
+        words[key] = sp
+        return sp
+    }
+
     /// 周四 10.8, for the week's dial
     func dayWord(_ d: Int, _ col: RGB) -> Sprite {
         let key = "day\(d)|\(col.r),\(col.g),\(col.b)"

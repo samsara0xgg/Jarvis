@@ -60,7 +60,7 @@ extension StarEngine {
         strokeRing(c, R_HER, 0, TAU, 1.1, dash: [0, CGFloat(TAU * R_HER / 168)])      // her ring: fine dots
         c.setLineDash(phase: 0, lengths: [])
         func ring(_ r: Double, _ a: Double, _ w: Double) { c.setStrokeColor(RGB.dial.cg(a)); strokeRing(c, r, 0, TAU, w) }
-        ring(R_YOU, 0.075 + 0.14 * camE, 1); ring(R_SC, 0.22, 0.8); ring(R_BEZ, 0.075, 0.7); ring(R_BEZ + 3.5, 0.04, 0.6)
+        ring(R_YOU, 0.075 + 0.14 * camE, 1); ring(R_SC, 0.22, 0.8); ring(R_BEZ, 0.075 * (1 - camE), 0.7); ring(R_BEZ + 3.5, 0.04 * (1 - camE), 0.6)
         // a narrow light along the meridian, and the meridian itself; it marks F, so under the lens it bends aside too (close up you stand on F)
         let a = ang(F), cs = cos(a), sn = sin(a)
         func pts(_ q: [(Double, Double)]) -> [CGPoint]? {
@@ -115,7 +115,7 @@ extension StarEngine {
         c.restoreGState()
     }
 
-    /// seen at a slant: short strokes, each its own colour (flat, the band is a conic gradient layer of its own)
+    /// seen at a slant: short strokes, each its own colour, a fine line between the ticks and the numerals (flat, the band is a conic gradient layer of its own)
     func sunBand(_ c: CGContext) {
         let sp = DAY * z, s0 = F - sp / 2
         var ok0 = P(R_BAND, ang(s0)), x0 = PX, y0 = PY
@@ -123,9 +123,9 @@ extension StarEngine {
         for i in 1...180 {
             let t = s0 + sp * Double(i) / 180, ok = P(R_BAND, ang(t))
             if ok && ok0 {
-                let (col, al) = sunAt(t), a = al * visT(t) * fog()
+                let (col, al) = sunAt(t), a = min(al * visT(t) * fog(), 0.30)
                 if a > 0.01 {
-                    c.setStrokeColor(col.cg(a)); c.setLineWidth(2.4 * clamp(PS, 0.6, 2.2))
+                    c.setStrokeColor(col.cg(a)); c.setLineWidth(1.6 * clamp(PS, 0.8, 1.6))
                     c.beginPath(); c.move(to: CGPoint(x: x0, y: y0)); c.addLine(to: CGPoint(x: PX, y: PY)); c.strokePath()
                 }
             }
@@ -159,9 +159,14 @@ extension StarEngine {
             if a < 0.015 { return }
             let cs = cos(an), sn = sin(an)
             if !Pxy(r0 * cs, r0 * sn) { return }
-            let x0 = PX, y0 = PY, s = PS
+            var x0 = PX, y0 = PY
+            let s = PS
             if !Pxy(r1 * cs, r1 * sn) { return }
-            if cam != nil { wd = (wd * clamp(s, 0.6, 2.4) * 4).rounded() / 4; a *= fog() }
+            if cam != nil {
+                wd = (wd * clamp(s, 0.6, 2.4) * 4).rounded() / 4 * 0.8; a *= fog()
+                let len = hypot(x0 - PX, y0 - PY)       // a mark never reaches further than 12 pt: its inner end comes toward the ring
+                if len > 12 { x0 = PX + (x0 - PX) * 12 / len; y0 = PY + (y0 - PY) * 12 / len }
+            }
             let aq = (a * 20).rounded() / 20, key = "\(wd)|\(aq)"
             var e = paths[key]
             if e == nil { e = (CGMutablePath(), wd, aq); paths[key] = e }
@@ -181,7 +186,8 @@ extension StarEngine {
             if cam != nil { if !P(R_SC, an) { continue }; sc *= PS }
             let fine = smooth(4.5, 9, TICKS[L].0 * pxm * sc); if fine < 0.02 { continue }
             let near = 1 - smooth(0, 75 * z, abs(m - F)), (_, len0, a0, wd) = TICKS[L]
-            push(an, R_SC - len0 * (1 + 0.5 * near), R_SC + (L == 5 ? 5 : 0), wd, (a0 + 0.34 * near) * v * fine)
+            let lf = cam == nil ? 1 : L < 2 ? 0.8 : 1.25, af = cam == nil ? 1 : L < 2 ? 0.6 : 1.2      // close up the hour marks are the longer and the brighter
+            push(an, R_SC - len0 * lf * (1 + 0.5 * near), R_SC + (L == 5 ? 5 : 0), wd, (a0 + 0.34 * near) * af * v * fine)
         }
         let vz = li != 0 ? 1 - smooth(1.15, 1.6, z) : 0            // a vernier of five-minute marks around the meridian
         if vz > 0.01 {
@@ -190,7 +196,7 @@ extension StarEngine {
                 defer { m += 5 }
                 if m.truncatingRemainder(dividingBy: 15) == 0 { continue }
                 let near = 1 - smooth(8, 70, abs(m - F))
-                push(ang(m), R_SC - 2.2 - 1.4 * near, R_SC, 0.7, 0.34 * near * vz)
+                push(ang(m), R_SC - 2.2 - 1.4 * near, R_SC, 0.7, 0.34 * near * vz * (cam != nil ? 0.6 : 1))
             }
         }
         c.setAlpha(1)
@@ -216,19 +222,22 @@ extension StarEngine {
 
     func numerals(_ c: CGContext) {
         let sp = span(), pxh = 60 * k * R_NUM, today = floorDay(nowT())
-        if cam != nil {
-            var m = ceil((F - sp) / 60) * 60
-            while m <= F + sp {
-                defer { m += 60 }
+        if cam != nil {        // close up the hours stand just outside the scale ring, haloed, and the near part of the ring names every one
+            numeralBoxes = []
+            var hours: [Double] = [], m = ceil((F - sp) / 60) * 60
+            while m <= F + sp { hours.append(m); m += 60 }
+            for m in hours.sorted(by: { abs($0 - F) < abs($1 - F) }) {      // the nearest take their place first
                 let v = visT(m), an = ang(m)
-                if v < 0.02 || !Pxy((R_SC + 5) * cos(an), (R_SC + 5) * sin(an), 5) { continue }
+                if v < 0.02 || !Pxy((R_SC + 9) * cos(an), (R_SC + 9) * sin(an)) { continue }
+                if PX < 4 || PX > W - 4 || PY < MAP_Y + 8 || PY > MAP_Y + MAP_H - 4 { continue }
                 let hr = Int((m / 60).rounded()), h = ((hr % 24) + 24) % 24
-                let major = h % 3 == 0, a0 = smooth(26, 40, (major ? 3 : 1) * pxh * PS)
-                if a0 < 0.01 { continue }
-                let near = 1 - smooth(0, 150 * z, abs(m - F)), dd = Int((m / DAY).rounded()), n = sizeAt(10, PS)
-                let s = h == 0 ? spr.word(dayWord(dd), .sans(600, n), dd == today ? .warm : .ink, n) : spr.word(two(h), .mono(500, n), .ink, n)
-                if names.contains(where: { PX - s.w / 2 < $0.2 && PX + s.w / 2 > $0.0 && PY - n * 0.6 < $0.3 && PY + n * 0.6 > $0.1 }) { continue }
-                stand(c, s, PX, PY, ((major ? 0.5 : 0.3) + 0.5 * near) * a0 * v * fog())
+                if h % 3 != 0 && PS < 0.85 { continue }
+                let near = 1 - smooth(0, 150 * z, abs(m - F)), dd = Int((m / DAY).rounded()), n = clamp((9 + 3.2 * PS.squareRoot()).rounded(), 10, 17)
+                let s = h == 0 ? spr.label(dayWord(dd), .sans(600, n), dd == today ? .warm : .ink) : spr.label(two(h), .mono(500, n), .ink)
+                let box = (PX - (s.w - 2 * SpriteCache.pad(n)) / 2, PY - 0.62 * n, PX + (s.w - 2 * SpriteCache.pad(n)) / 2, PY + 0.62 * n)
+                if numeralBoxes.contains(where: { box.0 < $0.2 && box.2 > $0.0 && box.1 < $0.3 && box.3 > $0.1 }) { continue }
+                numeralBoxes.append(box)
+                stand(c, s, PX, PY, (0.62 + 0.30 * near) * v * fog())
             }
             c.setAlpha(1)
             return
