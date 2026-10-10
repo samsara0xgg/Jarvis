@@ -3,13 +3,15 @@
 The state is the event log (``jarvis.state.reminders``). Once at start and then every ``TICK_S``
 the daemon folds it and fires each reminder whose time has passed, so a reminder missed while the
 daemon was down or the Mac asleep rings at the next tick and says how late it is. Every reminder
-rings exactly once: ``reminder.fired`` is written before anything is shown or said.
+rings exactly once: ``reminder.fired`` is written before anything is shown, said or pushed.
 
 A reminder ignores the quiet level, the away hold and whether the output is private (Allen asked
 for it). It is a card that ``GET /inherent/notices`` serves until Allen takes it in. She says one
 line when Allen is not on a call, speech is on and no conversation is live, and then the card is
 silent: her voice is the alert. When she cannot speak, or the reminder is more than
 ``SPEAK_UNTIL`` late, the card carries the cue instead. It is never merged into a job-mail digest.
+It is also pushed to his phone (ADR 0210) at any quiet level, once it is written as fired, unless
+it is more than ``SPEAK_UNTIL`` late.
 """
 
 from __future__ import annotations
@@ -83,6 +85,10 @@ class Reminders:
         # conversation) and the one function that says a line. Until then she never speaks.
         self.may_speak: Callable[[], bool] = lambda: False
         self.say: Callable[[str], None] | None = None
+        # Wired by the daemon (ADR 0210): pushes the reminder's line to his phone, at any quiet
+        # level. Called after ``reminder.fired`` is written and never for a reminder more than
+        # ``SPEAK_UNTIL`` late.
+        self.push: Callable[[str], object] | None = None
         # Where sound would come out now; only for the notices' ``audio_private`` without job mail.
         self.output: Callable[..., dict[str, Any]] = audio_output.current_output
 
@@ -139,8 +145,19 @@ class Reminders:
                         self.say(line(one.text, late_ms))
                     except Exception:
                         LOGGER.exception("reminders: the spoken line failed")
+                if self.push is not None and timedelta(milliseconds=late_ms) <= SPEAK_UNTIL:
+                    try:
+                        self.push(line(one.text, late_ms))
+                    except Exception:
+                        LOGGER.exception("reminders: the push failed")
         self.departures.refresh()
         return len(due)
+
+    def next_due(self) -> tuple[str, int] | None:
+        """``(text, due_at_ms)`` of the reminder that rings next, or ``None`` (ADR 0210)."""
+        with contextlib.closing(open_runtime_event_log(self._path)) as conn:
+            soonest = folded.pending(conn)
+        return (soonest[0].text, soonest[0].due_at_ms) if soonest else None
 
     def _speakable(self, late_ms: int) -> bool:
         """Speak when not too late, off a call, unmuted and no live conversation, on any output."""

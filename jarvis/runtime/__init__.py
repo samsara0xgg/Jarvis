@@ -182,6 +182,7 @@ from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.runtime.projects import ProjectsService
+from jarvis.runtime.push import Push
 from jarvis.runtime.reminders import Reminders
 from jarvis.runtime.settings import REPLY_LINES, SETUP_VOICES, Settings, apply_settings
 from jarvis.runtime.setup import write_setting
@@ -659,6 +660,8 @@ class JarvisRuntime:
     moment: Moment | None = None
     # ADR 0179: the clock that fires the owner's reminders. None = hand-assembled.
     reminders: Reminders | None = None
+    # ADR 0210: the pushes to his paired phone; pushes nothing until a key is configured.
+    push: Push | None = None
     # ADR 0052: the Settings page's file. None = hand-assembled.
     settings: Settings | None = None
     # ADR 0093: the night run; the daemon ticks it. None = hand-assembled.
@@ -2940,6 +2943,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
         job_mail=job_mail,
         moment=moment,
+        push=Push.from_config(full_config, paths.root, paths.event_log),
         reminders=Reminders(
             paths.event_log,
             moment=moment,

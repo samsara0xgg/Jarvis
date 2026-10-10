@@ -251,6 +251,7 @@ from jarvis.state.projections import (
     PendingConfirmations,
     rebuild_projections,
 )
+from jarvis.state.push_tokens import register_body
 from jarvis.state.reminders import ID_PREFIX
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.state.turn_overlap import any_turn_in_flight
@@ -5323,6 +5324,13 @@ def _say_job_line(runtime: JarvisRuntime) -> None:
     _say_conversation_line(runtime, _new_turn_id(), "job_speak", "")
 
 
+def _her_state(controls: voice_controls.VoiceControls) -> str:
+    """ADR 0210: the Live Activity's word for her: ``conversation``, else the quiet level."""
+    if controls.conversation:
+        return "conversation"
+    return "idle" if controls.quiet == "off" else controls.quiet
+
+
 def _say_reminder(runtime: JarvisRuntime, said: str) -> None:
     """ADR 0179: one reminder line, said as a conversation line (no model, no turn)."""
     _say_conversation_line(runtime, _new_turn_id(), "reminder", "", phrase=said)
@@ -6925,6 +6933,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         if runtime.view is not None:  # ADR 0176: her ``present`` op reaches the companion
             runtime.view.push = lambda sent: broadcaster.broadcast_op_sync("present", **sent)
         spend = SpendCapSettings.from_config(runtime.config.get("spend_cap"))
+        phone_hub = _build_phone_hub(runtime, voice_knobs) if runtime.listen_addresses else None
         deps = InherentDeps(
             submit_callable=submit_callable,
             attachments=runtime.attachments,
@@ -7090,7 +7099,13 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             live=live_voice,
             terminals=runtime.terminal_hub if runtime.listen_addresses else None,
             phone_events=runtime.phone_events if runtime.listen_addresses else None,
-            phone=_build_phone_hub(runtime, voice_knobs) if runtime.listen_addresses else None,
+            phone=phone_hub,
+            push_register=(
+                functools.partial(register_body, runtime.runtime_paths.root)
+                if runtime.listen_addresses
+                else None
+            ),
+            claude_request=None if runtime.push is None else runtime.push.claude_request,
             device_name=(
                 functools.partial(device_name_for_token, runtime.runtime_paths.root)
                 if runtime.listen_addresses
@@ -7299,6 +7314,18 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             reminders.may_speak = lambda: not controls.speech_muted and not controls.conversation
             reminders.say = functools.partial(_say_reminder, runtime)
             watchers.append(asyncio.create_task(reminders.run(), name="reminders"))
+        if runtime.push is not None and runtime.push.enabled:
+            # ADR 0210: a fired reminder pushes at any quiet level; waiting cards follow the level.
+            push = runtime.push
+            push.quiet = lambda: controls.quiet
+            push.her_state = lambda: _her_state(controls)
+            if phone_hub is not None:
+                # ADR 0209: a device with a live conversation socket needs no push.
+                push.phone_socket_open = phone_hub.connected
+            if runtime.reminders is not None:
+                runtime.reminders.push = push.reminder
+                push.next_reminder = runtime.reminders.next_due
+            watchers.append(asyncio.create_task(push.run(), name="push"))
         if runtime.night is not None:
             # ADR 0093: the night run mutes after the goodnight line, never under a wake capture.
             runtime.night.busy = lambda: shared_ducker.active or shared_ducker.outputting

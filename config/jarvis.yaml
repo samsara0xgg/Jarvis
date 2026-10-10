@@ -1250,6 +1250,21 @@ dictation:
   # (ADR 0175); zh or en skips both (~0.5 s faster) but garbles the other language.
   language: ""
 
+# Pushes to his paired iPhone through Apple's push service (ADR 0210). Off until a key is set:
+# the host then pushes nothing and logs that once at boot. Set these in ~/.jarvis/settings.yaml.
+#   key_file:  the .p8 signing key from Apple Developer, a regular file under the runtime root,
+#              mode 0600 (relative to the root). Instead of a file, the key may be in the
+#              environment variable APNS_AUTH_KEY (macOS: saved in the login Keychain; newlines
+#              written as \n), which load_env_file reads like the API keys.
+#   key_id:    the key's Key ID.   team_id: the developer Team ID.
+#   bundle_id: the app's bundle id (the apns-topic).
+# The sandbox or production endpoint is chosen per device by what the phone registers.
+push:
+  key_file: ""
+  key_id: ""
+  team_id: ""
+  bundle_id: ""
+
 # The night run (ADR 0093): "我要睡觉了，让它继续跑" keeps the Mac awake this long,
 # screen off and sound muted. Before `morning` an unlock is only a look; from it on,
 # coming back puts brightness and sound back. Times follow work_state.timezone.

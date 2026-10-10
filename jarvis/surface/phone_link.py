@@ -125,6 +125,10 @@ class PhoneHub:
     cancel_turn: Callable[[str, str], str] | None = None
     live: dict[str, _Connection] = field(default_factory=dict)
 
+    def connected(self, device: str) -> bool:
+        """Whether ``device`` has a live socket now; the push sender reads it (ADR 0210)."""
+        return device in self.live
+
 
 class _Connection:
     """One phone's socket: everything it sends goes through one queue, so frames keep order."""

@@ -325,6 +325,10 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "reminder.line": {"zh": "提醒：{text}", "en": "Reminder: {text}"},
     "reminder.late_minutes": {"zh": "（晚了 {n} 分钟）", "en": " ({n} minutes late)"},
     "reminder.late_hours": {"zh": "（晚了 {n} 小时）", "en": " ({n} hours late)"},
+    # ADR 0210: the titles of the pushes to his phone when something waits for him.
+    "push.confirmation": {"zh": "等你确认", "en": "Waiting for your OK"},
+    "push.question": {"zh": "有个问题等你回答", "en": "A question for you"},
+    "push.claude": {"zh": "Claude Code 请求许可", "en": "Claude Code asks permission"},
     # ADR 0200: the reminder a pinned bus trip rings at its leave time; the stop name is the model's.
     "departure.go": {
         "zh": "该出门了，{route} 路 {departs} 在 {stop} 上车",

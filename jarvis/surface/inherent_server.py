@@ -110,12 +110,14 @@ from jarvis.state.attachments import (
 )
 from jarvis.state.day_line import parse_day
 from jarvis.state.memory_page import Conflict
+from jarvis.state.push_tokens import RegistrationError
 from jarvis.state.shares import (
     MAX_NOTE_CHARS,
     MAX_SHARE_TEXT_CHARS,
     MAX_TITLE_CHARS,
     MAX_URL_CHARS,
 )
+from jarvis.surface.apns import MAX_REGISTER_BYTES, REGISTER_PATH
 from jarvis.surface.claude_hooks import ClaudeHooks
 from jarvis.surface.claude_sessions import ClaudeSessions
 from jarvis.surface.codex_sessions import (
@@ -639,6 +641,13 @@ class InherentDeps:
     # ADR 0209: the phone's conversation socket ``/phone/ws``, on every host that has
     # ``device_name``; it needs no terminal hub, so a Mac running alone has it too.
     phone: PhoneHub | None = None
+    # ADR 0210: ``(device name, body) -> None`` keeps the push tokens a paired device registers at
+    # ``POST /inherent/device/push``; it raises ``RegistrationError`` for a body it refuses.
+    # Needs ``device_name``. ``None`` leaves the route unregistered (404).
+    push_register: Callable[[str, object], None] | None = None
+    # ADR 0210: ``(tool, cwd, request_id) -> None``, called on the loop when a Claude Code
+    # permission prompt is held for him, so the host can push that it waits.
+    claude_request: Callable[[str, str, str], None] | None = None
     # ADR 0196: the four device-pairing routes. ``None`` leaves them unregistered (404).
     pairing: DevicePairing | None = None
     # ADR-0018: the quota dashboard's read model and its on-demand poll.
@@ -2480,6 +2489,32 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
                 raise HTTPException(status_code=413, detail="too many events in one batch")
             return {"acks": brain_events.record_phone_batch(name, frames)}
 
+    if deps.push_register is not None and deps.device_name is not None:
+        push_name, push_register = deps.device_name, deps.push_register
+
+        @app.post(REGISTER_PATH)
+        async def post_push_registration(request: Request) -> dict[str, bool]:
+            """ADR 0210: a paired phone registers its APNs device token (and Live Activity token).
+
+            Only a paired device's own token opens it; the local key is refused here as it is on
+            ``/inherent/device/events``. A refusal never repeats a value of the body.
+            """
+            token = _v2_presented_token(request.headers.get("authorization"))
+            name = None if token is None else push_name(token)
+            if name is None:
+                raise HTTPException(
+                    status_code=403, detail="a paired device's token is required",
+                )
+            try:
+                body = json.loads(await _capped_body(request, MAX_REGISTER_BYTES))
+            except (ValueError, RecursionError):
+                body = None
+            try:
+                await asyncio.to_thread(push_register, name, body)
+            except RegistrationError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+            return {"ok": True}
+
     @app.get("/api/health")
     async def health() -> dict[str, str]:
         """Liveness probe â€” used by ops scripts to confirm the daemon is up."""
@@ -2722,6 +2757,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
     )
     claude_hooks = ClaudeHooks(
         lambda: deps.controls.quiet if deps.controls is not None else "off",
+        deps.claude_request,
     )
 
     async def read_claude_board() -> dict[str, Any]:

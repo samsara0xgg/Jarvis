@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -28,6 +29,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+LOGGER = logging.getLogger(__name__)
 
 # A companion that read the board this recently is showing notices.
 LISTENER_S = 10.0
@@ -80,9 +83,17 @@ def _always(suggestions: list[dict[str, Any]]) -> str:
 class ClaudeHooks:
     """Held permission prompts and the compacting / stopped marks, per session."""
 
-    def __init__(self, quiet: Callable[[], str] | None = None) -> None:
-        """Nothing held, nothing marked, no companion reading yet; ``quiet`` reads the level."""
+    def __init__(
+        self,
+        quiet: Callable[[], str] | None = None,
+        on_request: Callable[[str, str, str], None] | None = None,
+    ) -> None:
+        """Nothing held, nothing marked, no companion reading yet; ``quiet`` reads the level.
+
+        ``on_request(tool, cwd, request_id)`` is called when a prompt is held for him (ADR 0210).
+        """
         self._quiet = quiet or (lambda: "off")
+        self._on_request = on_request
         self._held: dict[str, _Held] = {}
         self._compacting: set[str] = set()
         self._stopped: dict[str, tuple[str, int]] = {}
@@ -133,6 +144,11 @@ class ClaudeHooks:
             answer=asyncio.get_running_loop().create_future(),
         )
         self._held[held.id] = held
+        if self._on_request is not None:
+            try:
+                self._on_request(held.tool, held.cwd, held.id)
+            except Exception:  # noqa: BLE001 — telling his phone must not release the prompt.
+                LOGGER.warning("claude hooks: the held-prompt callback failed")
         deadline = time.monotonic() + HOLD_S
         try:
             while not held.answer.done() and time.monotonic() < deadline:
