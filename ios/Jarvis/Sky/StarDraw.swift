@@ -446,7 +446,7 @@ extension StarEngine {
         let shown = cands.filter { $0.v * fin * smooth(0.8, 1.1, $0.pr) * calmK >= 0.03 }
         for group in nameClusters(shown.map { ($0.x, $0.y) }, 14) {      // stars that stand as one point share their first one's name
             let cd = shown[group[0]], e = cd.e, la = cd.v * fin * smooth(0.8, 1.1, cd.pr) * calmK
-            let ps = clamp(cd.pr, 0.45, 2.4), n = sizeAt(11, ps), p = SpriteCache.pad(n)
+            let ps = clamp(cd.pr, 0.45, 2.4), n = sizeAt(9, ps), p = SpriteCache.pad(n)
             let s = spr.label(e.s!, .sans(500, n), e.kd == .wait ? RGB(255, 217, 176) : .ink, more: group.count - 1)
             let tw = s.w - 2 * p
             if cd.x < 0 || cd.x > W { continue }

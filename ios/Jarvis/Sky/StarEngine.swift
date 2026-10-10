@@ -173,7 +173,7 @@ final class StarEngine {
     }
     @discardableResult func P(_ r: Double, _ a: Double) -> Bool { Pxy(r * cos(a), r * sin(a)) }
     func fog() -> Double { guard let c = cam else { return 1 }; return 1 - 0.72 * smooth(c.D * 1.15, c.D * 2.9, PZ) }   // far things dim
-    func sizeAt(_ base: Double, _ s: Double) -> Double { clamp((base * s / 2).rounded() * 2, 10, 24) }
+    func sizeAt(_ base: Double, _ s: Double) -> Double { clamp((base * s * 2).rounded() / 2, 9, 18) }
     /// the angle and radius on the dial under a point of the screen; nil above the horizon
     func unP(_ X: Double, _ Y: Double) -> (Double, Double)? {
         guard let c = cam else { return (atan2(Y - CY, X - CX), hypot(X - CX, Y - CY)) }
