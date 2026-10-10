@@ -15,6 +15,8 @@ targets:
     platform: iOS
     deploymentTarget: "18.0"
     sources: [Jarvis]
+    dependencies:
+      - target: JarvisWidgets
     # the brain answers on plain http over the tailnet (docs/spec.html: `brain` in the pairing answer is http://host:port).
     # Local networking covers IP addresses and bare names; MagicDNS names (*.ts.net) need their own exception. Nothing else is opened.
     info:
@@ -26,6 +28,10 @@ targets:
             ts.net:
               NSIncludesSubdomains: true
               NSExceptionAllowsInsecureHTTPLoads: true
+        UIBackgroundModes: [audio]       # her reply keeps playing if the phone is locked mid-answer
+        CFBundleURLTypes:
+          - CFBundleURLName: com.allen.jarvis
+            CFBundleURLSchemes: [jarvis]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.allen.jarvis
@@ -37,4 +43,26 @@ targets:
         INFOPLIST_KEY_UIUserInterfaceStyle: Dark
         INFOPLIST_KEY_NSCameraUsageDescription: 拍照给 Jarvis 看，或扫大脑上的二维码来配对
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: 选照片交给 Jarvis 看
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: 和 Jarvis 说话时用麦克风
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: 在手机上把你的话转成文字
         ENABLE_USER_SCRIPT_SANDBOXING: NO
+  JarvisWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: JarvisWidgets
+        excludes: ["Info.plist"]
+      - Jarvis/Voice/TalkIntent.swift       # the control's button names the app's intent
+    info:
+      path: JarvisWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Jarvis
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.allen.jarvis.widgets
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES

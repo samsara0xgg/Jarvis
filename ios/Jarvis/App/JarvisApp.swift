@@ -15,7 +15,7 @@ struct JarvisApp: App {
         #endif
     }
     var body: some Scene {
-        WindowGroup { StarChartScreen() }
+        WindowGroup { StarChartScreen().voiceEntry() }
             .onChange(of: phase) { _, p in
                 // the brain's days are asked for again when the app comes back from the background (not on a timer)
                 if p == .background { wasBackground = true }
