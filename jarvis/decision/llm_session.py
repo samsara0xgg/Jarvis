@@ -69,6 +69,8 @@ class LLMPresetSnapshot:
     extra_body_json: str = "{}"
     # ``"responses"`` routes chat() to /v1/responses; None keeps chat/completions.
     api: str | None = None
+    # The preset's own lines after the system prompt (ADR 0220).
+    system_note: str | None = None
 
 
 def _optional_str(value: object) -> str | None:
@@ -95,7 +97,7 @@ class LLMSessionFactory:
         """Store a deep copy of the parsed ``llm:`` configuration block."""
         self._config: dict[str, Any] = copy.deepcopy(dict(llm_config))
 
-    def snapshot(self, preset_name: str | None = None) -> LLMPresetSnapshot:
+    def snapshot(self, preset_name: str | None = None) -> LLMPresetSnapshot:  # noqa: C901, PLR0915 — one branch per optional preset field
         """Freeze one preset's provider identity.
 
         ``preset_name=None`` resolves ``llm_config["default_preset"]`` — the
@@ -123,6 +125,7 @@ class LLMSessionFactory:
         reasoning_effort = _optional_str(self._config.get("reasoning_effort"))
         extra_body = dict(self._config.get("extra_body") or {})
         api = _optional_str(self._config.get("api"))
+        system_note: str | None = None
 
         if resolved is not None:
             preset = presets.get(resolved)
@@ -141,6 +144,7 @@ class LLMSessionFactory:
             reasoning_effort = _optional_str(preset.get("reasoning_effort"))
             extra_body = dict(preset.get("extra_body") or {})
             api = _optional_str(preset.get("api"))
+            system_note = _optional_str(preset.get("system_note"))
         elif preset_name is not None:
             msg = f"preset {preset_name!r} is not configured under llm.presets"
             raise UnknownRequestPresetError(msg)
@@ -180,6 +184,8 @@ class LLMSessionFactory:
         }
         if api is not None:  # absent keeps every existing preset's hash unchanged
             fields["api"] = api
+        if system_note is not None:
+            fields["system_note"] = system_note
         return LLMPresetSnapshot(
             preset_name=resolved,
             provider=provider,
@@ -193,6 +199,7 @@ class LLMSessionFactory:
             reasoning_effort=reasoning_effort,
             extra_body_json=json.dumps(extra_body, sort_keys=True, separators=(",", ":")),
             api=api,
+            system_note=system_note,
         )
 
     def create(
@@ -237,6 +244,8 @@ class LLMRequestClient(LLMClient):
             preset["extra_body"] = extra_body
         if snapshot.api is not None:
             preset["api"] = snapshot.api
+        if snapshot.system_note is not None:
+            preset["system_note"] = snapshot.system_note
         request_config: dict[str, Any] = {
             "provider": snapshot.provider,
             "presets": {preset_name: preset},
