@@ -58,6 +58,8 @@
 	<string>记下你去过的地方，让她知道你在哪。</string>
 	<key>NSMotionUsageDescription</key>
 	<string>知道你是在走路、骑车还是坐着，她就明白你这一天是怎么过的。</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

@@ -28,6 +28,7 @@ targets:
             ts.net:
               NSIncludesSubdomains: true
               NSExceptionAllowsInsecureHTTPLoads: true
+        NSSupportsLiveActivities: true   # her state and the next reminder in the Dynamic Island, updated by the brain's pushes
         UIBackgroundModes: [audio, location, fetch]   # audio: her reply keeps playing if the phone is locked mid-answer; location + fetch: the phone reports what it senses (ADR 0197)
         BGTaskSchedulerPermittedIdentifiers: [com.yilunshi.jarvis.report-flush]
         NSLocationWhenInUseUsageDescription: 记下你去过的地方，让她知道你在哪。
@@ -69,10 +70,14 @@ targets:
       - path: JarvisWidgets
         excludes: ["Info.plist"]
       - Jarvis/Voice/TalkIntent.swift       # the control's button names the app's intent
+      - Jarvis/Push/JarvisActivity.swift    # the Live Activity's shape, started by the app and drawn here
+      - path: Jarvis/Resources/Fonts        # the app's faces, for the Live Activity
+        excludes: ["README.md"]
     info:
       path: JarvisWidgets/Info.plist
       properties:
         CFBundleDisplayName: Jarvis
+        UIAppFonts: [InstrumentSerif-Regular.ttf, IBMPlexMono-Regular.ttf, IBMPlexMono-Medium.ttf]
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:

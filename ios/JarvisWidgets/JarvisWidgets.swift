@@ -2,13 +2,14 @@ import AppIntents
 import SwiftUI
 import WidgetKit
 
-// Two ways to start talking from outside the app. Visuals are placeholders (an SF Symbol) for the design team.
+// Two ways to start talking from outside the app, and her Live Activity. The talk visuals are placeholders (an SF Symbol) for the design team.
 
 @main
 struct JarvisWidgets: WidgetBundle {
     var body: some Widget {
         TalkControl()
         TalkLockWidget()
+        JarvisLiveActivity()
     }
 }
 

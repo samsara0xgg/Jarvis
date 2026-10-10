@@ -121,3 +121,30 @@ final class PushNotificationTests: XCTestCase {
         XCTAssertNil(PushShape.url(["url": "x://" + String(repeating: "a", count: 1030)]), "the brain allows 1024")
     }
 }
+
+/// The Live Activity's content-state as the brain pushes it (docs/spec.html "Live Activity"; jarvis/runtime/push.py `_update_activity`).
+final class LiveActivityTests: XCTestCase {
+    private typealias State = JarvisActivityAttributes.ContentState
+    private func decode(_ json: String) throws -> State { try JSONDecoder().decode(State.self, from: Data(json.utf8)) }
+
+    func testAConversationWithAReminderComingDecodes() throws {
+        let s = try decode(#"{"state": "conversation", "next_text": "取快递", "next_at_ms": 1760000000000}"#)
+        XCTAssertEqual(s, State(state: "conversation", nextText: "取快递", nextAtMs: 1_760_000_000_000))
+        XCTAssertEqual(s.nextAt, Date(timeIntervalSince1970: 1_760_000_000))
+        XCTAssertEqual(s.stateWord, "正在对话")
+    }
+
+    func testNoReminderIsNullForBothAndEveryQuietLevelHasAWord() throws {
+        let s = try decode(#"{"state": "idle", "next_text": null, "next_at_ms": null}"#)
+        XCTAssertEqual(s, .idle)
+        XCTAssertNil(s.nextAt)
+        XCTAssertEqual(["idle", "quiet", "no-pop", "dnd"].map { State(state: $0, nextText: nil, nextAtMs: nil).stateWord }, ["在这儿", "安静", "不弹卡片", "勿扰"])
+        XCTAssertEqual(State(state: "future-state", nextText: nil, nextAtMs: nil).stateWord, "future-state", "a state the app does not know is shown as it is")
+    }
+
+    func testTheStateIsEncodedWithTheBrainsKeys() throws {
+        let data = try JSONEncoder().encode(State(state: "dnd", nextText: "a", nextAtMs: 5))
+        let o = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary)
+        XCTAssertEqual(o, ["state": "dnd", "next_text": "a", "next_at_ms": 5])
+    }
+}

@@ -16,17 +16,18 @@ struct JarvisApp: App {
         #endif
     }
     var body: some Scene {
-        WindowGroup { StarChartScreen().voiceEntry().task { Waiting.shared.start() } }
+        WindowGroup { StarChartScreen().voiceEntry().task { Waiting.shared.start(); JarvisActivity.shared.start() } }
             .onChange(of: BrainLink.shared.hasToken) { _, paired in
                 // frames queued before pairing go out now, and the phone asks to be notified (once)
-                if paired { Task { await Reporter.shared.flush() }; Task { await PushRegistry.shared.start() } }
+                if paired { Task { await Reporter.shared.flush() }; Task { await PushRegistry.shared.start() }; JarvisActivity.shared.start() }
+                else { Task { await JarvisActivity.shared.end() } }
             }
             .onChange(of: phase) { _, p in
                 // the brain's days are asked for again when the app comes back from the background (not on a timer)
                 if p == .background { wasBackground = true }
                 else if p == .active && wasBackground { wasBackground = false; BrainLink.shared.opened() }
                 // what waits on him is asked for every few seconds, only while the app is on screen
-                if p == .active { Waiting.shared.start(); PushRegistry.shared.retryIfNeeded() } else { Waiting.shared.stop() }
+                if p == .active { Waiting.shared.start(); PushRegistry.shared.retryIfNeeded(); JarvisActivity.shared.start() } else { Waiting.shared.stop() }
             }
     }
 }
