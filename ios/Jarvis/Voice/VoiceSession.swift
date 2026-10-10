@@ -300,6 +300,7 @@ final class VoiceSession {
 
     /// He spoke over her (or tapped): stop her audio here at once, tell the host, listen.
     private func bargeIn() {
+        VoiceTrace.note("barge-in from \(state)")
         audio.core?.stopNow()
         link?.barge()
         endTurn()
@@ -316,6 +317,7 @@ final class VoiceSession {
         set(.thinking)
         sayAt = now
         lastActivityAt = now                                // the no-reply clock starts here, not at the last turn (the finals take a moment)
+        playedAtSay = audio.core?.playedSamples ?? 0        // her earlier replies are not this turn's audio: thinking stays thinking until new audio plays
         rec = nil
         feed.set(nil)
         Task {
@@ -326,7 +328,7 @@ final class VoiceSession {
 
     @available(iOS 26, *)
     private func gotFinal(_ picked: LaneResult, wakeTurn: Bool) {
-        guard state == .thinking else { return }            // cancelled meanwhile
+        guard state == .thinking else { VoiceTrace.note("final dropped: state \(state)"); return }   // cancelled meanwhile
         let text = (wakeTurn ? stripWake(picked.text) : picked.text).trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty {
             VoiceTrace.note("nothing recognized (picked lane \(picked.lang.rawValue))")
