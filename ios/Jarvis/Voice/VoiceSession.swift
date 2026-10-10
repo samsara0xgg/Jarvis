@@ -283,7 +283,7 @@ final class VoiceSession {
         if p.text != segmentText { lastWordAt = now }
         segmentText = p.text
         switch state {
-        case .listening: partial = p.text; language = p.lang
+        case .listening: partial = p.text; language = p.lang; reply = ""   // he has started again: her last answer must not come back when he pauses
         case .idle: if armed, heardWake(p.heard) { wakeTurn = true; language = p.lang; enterListening(); partial = p.text }
         case .thinking, .speaking: if rawLevel >= bargeLevel { bargeIn() }
         }
