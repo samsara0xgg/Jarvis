@@ -280,6 +280,7 @@ from jarvis.surface.device_pairing import DevicePairing, brain_urls
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_protocol import RuntimeCapabilities
 from jarvis.surface.inherent_server import (
+    AskOutcome,
     InherentDeps,
     InherentV2Deps,
     InputSubmissionOutcome,
@@ -6081,6 +6082,57 @@ def _turn_outcome(conn: sqlite3.Connection, turn_id: str) -> voice_live.Delegati
     return None
 
 
+_ASK_OUTCOME_TYPES: Final[tuple[str, ...]] = (
+    "response.started",
+    "surface.response_emitted",
+    "response.failed",
+    "response.cancelled",
+    "turn.failed",
+)
+
+
+def _ask_outcome(event_log_path: Path, turn_id: str) -> AskOutcome | None:
+    """How the turn behind ``POST /inherent/ask`` ended, or None while it is still running.
+
+    The answer is the turn's final ``surface.response_emitted``: ``spoken`` its ``voice_text``
+    (the ``text`` of an answer with no channels) and ``written`` its ``document_text`` when
+    that is what the voice leaves out (``written_apart``, ADR 0114), as the ``done`` envelope
+    carries them. A wait line (a ``commentary`` run, ADR 0116) is not the answer and neither
+    is its end, nor the end of a streamed run another run has taken over (ADR-0008 D3).
+    """
+    conn = open_runtime_event_log(event_log_path)
+    try:
+        events = list(iter_events_for_turn(conn, turn_id, _ASK_OUTCOME_TYPES))
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    not_the_turn = {
+        str(event.payload.get("response_id"))
+        for event in events
+        if event.type == "response.started" and event.payload.get("phase") == "commentary"
+    } | {
+        str(event.payload["corrects_response_id"])
+        for event in events
+        if event.type == "response.started" and event.payload.get("corrects_response_id")
+    }
+    for event in events:
+        final = event.payload.get("phase", "final") == "final"
+        if event.type == "surface.response_emitted" and final:
+            voice, document = event.payload.get("voice_text"), event.payload.get("document_text")
+            apart = event.payload.get("written_apart") is True
+            spoken = voice if isinstance(voice, str) and voice else None
+            return AskOutcome(
+                spoken=spoken or str(document or event.payload.get("text") or ""),
+                written=document if apart and isinstance(document, str) else "",
+            )
+    for event in events:
+        if event.type in {"response.failed", "response.cancelled", "turn.failed"} and (
+            str(event.payload.get("response_id")) not in not_the_turn
+        ):
+            return AskOutcome(failure=str(event.payload.get("reason") or event.type))
+    return None
+
+
 def _live_wake_subscriber(live_voice: voice_live.LiveVoice) -> Callable[[Event], None]:
     """Bus subscriber: a response terminal wakes the delegation that owns its turn (D9).
 
@@ -6842,6 +6894,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else functools.partial(asyncio.to_thread, runtime.projects.refresh)
             ),
             conversation_read=None if window_memory is None else _read_conversation,
+            ask_outcome=functools.partial(_ask_outcome, runtime.runtime_paths.event_log),
             card_read=_read_card,
             card_decide=_decide_card,
             question_read=_read_question,

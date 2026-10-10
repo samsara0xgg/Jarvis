@@ -74,10 +74,13 @@ home is starlette.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from starlette.websockets import WebSocket
 
     from jarvis.shared import Event
@@ -114,6 +117,9 @@ class InherentBroadcaster:
         # stay loop-free.
         self._loop: asyncio.AbstractEventLoop | None = None
         self._latest_voice_capability: dict[str, object] | None = None
+        # Events a caller of ``watch_settled`` waits on; set whenever a turn's answer, failure or
+        # cancellation reaches the wire (loop thread only, like the watcher that sends them).
+        self._settled: set[asyncio.Event] = set()
 
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Store the daemon's event loop for the worker-thread → broadcaster bridge.
@@ -149,6 +155,24 @@ class InherentBroadcaster:
     def has_clients(self) -> bool:
         """Whether any v1 client is still connected."""
         return bool(self._clients)
+
+    @contextlib.contextmanager
+    def watch_settled(self) -> Iterator[asyncio.Event]:
+        """Yield an event that is set whenever any turn's answer, failure or cancellation is sent.
+
+        It is a wake-up, not a record: the caller reads the Event Log for what happened and
+        clears the event before each read. It is set whether or not a socket is connected.
+        """
+        woken = asyncio.Event()
+        self._settled.add(woken)
+        try:
+            yield woken
+        finally:
+            self._settled.discard(woken)
+
+    def _notify_settled(self) -> None:
+        for woken in tuple(self._settled):
+            woken.set()
 
     async def unregister(self, ws: WebSocket) -> None:
         """Remove a disconnected WS client from the registry. Idempotent."""
@@ -227,6 +251,7 @@ class InherentBroadcaster:
                 written part) rides it as ``spoken``: the streamed chunks may
                 hold only its first sentence while the voice says all of it.
         """
+        self._notify_settled()
         turn_id = str(event.payload.get("turn_id", "<unknown>"))
         payload: dict[str, object] = {"fadeMs": 5000, "turn_id": turn_id}
         written = event.payload.get("document_text")
@@ -403,6 +428,8 @@ class InherentBroadcaster:
         GPT-Live phase A uses ``live`` (session status) and ``subtitle``
         (transcript deltas); the payload is sent verbatim.
         """
+        if op in {"failed", "cancelled"}:
+            self._notify_settled()
         await self._send_all({"op": op, "payload": dict(payload)}, turn_id="")
 
     def broadcast_op_sync(self, op: str, **payload: object) -> None:

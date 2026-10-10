@@ -38,6 +38,9 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
   ``{"status": "accepted", "turn_id": str}`` (ADR-0009 D2 added
   ``turn_id``; additive, so the inherent-swift client that reads only
   ``status`` is unaffected)
+- ``POST /inherent/ask``         — body ``{"text": str}`` → ``{"turn_id", "spoken", "written"}``
+  once that turn's final answer is in (504 / 502 otherwise), for a one-shot caller (Siri)
+- ``GET  /inherent/waiting``     — everything waiting on Allen in one read, for a paired phone
 - ``WS  /inherent/ws``           — outbound-only; client receives ``{"op", "payload"}`` envelopes
 - ``WS  /inherent/ws/v2``        — ADR-0014 D5-D7; ``Authorization: Bearer <token>``
   on the upgrade, typed :mod:`jarvis.surface.inherent_protocol` envelopes, and a
@@ -160,6 +163,12 @@ _PCM16_SAMPLE_WIDTH_BYTES = 2
 _LOCAL_HOSTS: Final[tuple[str, ...]] = ("127.0.0.1", "localhost")
 # ADR 0070 / 0069: the longest line the island types into a session, the longest mark key.
 _REPLY_CHARS: Final = 4000
+# ``POST /inherent/ask``: the biggest body and question, how long the answer is waited for, and
+# how often a wait re-reads the log without a wake-up (``response.failed`` never reaches the wire).
+_ASK_BODY_BYTES: Final = 4096
+_ASK_TEXT_CHARS: Final = 2000
+_ASK_WAIT_S: Final[float] = 25.0
+_ASK_RECHECK_S: Final = 1.0
 _SESSION_ID_CHARS: Final = 128
 # Open without the local key: the liveness probe, and the v2 routes, which
 # check their own per-boot token.
@@ -500,6 +509,15 @@ class InherentV2Deps:
 
 
 @dataclass(frozen=True)
+class AskOutcome:
+    """How a turn ended for ``POST /inherent/ask``: its final answer, or the reason it has none."""
+
+    spoken: str = ""
+    written: str = ""
+    failure: str | None = None
+
+
+@dataclass(frozen=True)
 class InherentDeps:
     """Injectable dependencies for the FastAPI app.
 
@@ -623,6 +641,10 @@ class InherentDeps:
     # words that make one. A small SQLite read on the loop thread; ``None``
     # leaves the route unregistered.
     think_read: Callable[[], dict[str, Any]] | None = None
+    # ``POST /inherent/ask``: how the turn ended (its final answer or its failure), ``None`` while
+    # it is still running. A small SQLite read, called off the loop thread; ``None`` leaves the
+    # route unregistered.
+    ask_outcome: Callable[[str], AskOutcome | None] | None = None
     # ADR 0199: one day's timeline, folded from the log when asked: the day asked for, or ``None``
     # for today in the owner's zone, to the response document. Off the loop thread. A ValueError
     # is a 400; ``None`` leaves the route unregistered.
@@ -1356,6 +1378,11 @@ class ViewRequest(BaseModel):
     rows: list[ViewRow] = Field(default_factory=list, max_length=50)
 
 
+def _no_notices() -> dict[str, Any]:
+    """The ``GET /inherent/notices`` body of a daemon with nothing to show."""
+    return {"notices": [], "audio_private": False, "hold": None, "departure": None}
+
+
 async def _home_call[T](call: Awaitable[T]) -> T:
     """ADR 0051: not connected is 404 (the home's fallback), a bad id 400, anything else 502."""
     try:
@@ -2010,6 +2037,56 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
         turn_id = await asyncio.to_thread(deps.submit_callable, text)
         return {"status": "accepted", "turn_id": turn_id or ""}
 
+    if deps.ask_outcome is not None:
+        ask_outcome = deps.ask_outcome
+
+        @app.post("/inherent/ask", status_code=200)
+        async def ask(request: Request) -> Response:
+            """A one-shot question: submit it like ``/inherent/submit``, answer with the reply.
+
+            ``{"text"}`` (at most 2000 characters in a body of at most 4 KiB) is typed in, so the
+            turn is never spoken on the Mac. Answers 200 ``{turn_id, spoken, written}`` from the
+            turn's final answer (a wait line is not it), 502 ``{turn_id, detail}`` when the turn
+            fails or is cancelled, and 504 ``{turn_id, detail}`` after 25 s; that turn keeps
+            running and is in the conversation.
+            """
+            try:
+                body = json.loads(await _capped_body(request, _ASK_BODY_BYTES) or b"{}")
+            except ValueError:  # no echo of the body in an error
+                body = None
+            text = body.get("text") if isinstance(body, dict) else None
+            if not isinstance(text, str) or not text.strip():
+                raise HTTPException(status_code=400, detail="text required")
+            text = text.strip()
+            if len(text) > _ASK_TEXT_CHARS:
+                raise HTTPException(
+                    status_code=400, detail=f"text is over {_ASK_TEXT_CHARS} characters",
+                )
+            # Watch before submitting, so an answer sent at once still wakes the wait.
+            with deps.broadcaster.watch_settled() as settled:
+                turn_id = await asyncio.to_thread(deps.submit_callable, text) or ""
+                deadline = time.monotonic() + _ASK_WAIT_S
+                while True:
+                    settled.clear()  # before the read: an answer written meanwhile sets it again
+                    outcome = await asyncio.to_thread(ask_outcome, turn_id)
+                    if outcome is not None:
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return JSONResponse(
+                            {"turn_id": turn_id, "detail": "no answer yet; the turn goes on"},
+                            status_code=504,
+                        )
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(settled.wait(), min(remaining, _ASK_RECHECK_S))
+            if outcome.failure is not None:
+                return JSONResponse(
+                    {"turn_id": turn_id, "detail": outcome.failure}, status_code=502,
+                )
+            return JSONResponse(
+                {"turn_id": turn_id, "spoken": outcome.spoken, "written": outcome.written},
+            )
+
     if deps.cancel_response_callable is not None:
         cancel_response_callable = deps.cancel_response_callable
 
@@ -2477,12 +2554,80 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
         lambda: deps.controls.quiet if deps.controls is not None else "off",
     )
 
-    @app.get("/inherent/claude-sessions")
-    async def claude_sessions() -> dict[str, Any]:
-        """Newest-first Claude Code session rows for the Resonance Agents page."""
+    async def read_claude_board() -> dict[str, Any]:
+        """The board with its held prompts; reading it is what tells a hook someone listens."""
         if not deps.claude_sessions_read:
             return claude_hooks.merge({"sessions": []})
         return claude_hooks.merge(await asyncio.to_thread(claude_board.read))
+
+    @app.get("/inherent/claude-sessions")
+    async def claude_sessions() -> dict[str, Any]:
+        """Newest-first Claude Code session rows for the Resonance Agents page."""
+        return await read_claude_board()
+
+    @app.get("/inherent/waiting")
+    async def waiting(request: Request) -> dict[str, Any]:
+        """Everything waiting on Allen, read once; answering stays on each card's own route.
+
+        ``{confirmation, clarification, notices, plugin_request, claude_requests}``: the card of
+        ``GET /inherent/confirmation`` and of ``/clarification`` (``card``), the body of
+        ``/notices``, ``request`` of ``/plugins``, and each Claude Code session's held prompt
+        (the ``request`` of its ``/claude-sessions`` row with the session's id, title and
+        project). Nothing waiting is ``null`` or empty, and so is a source this daemon does not
+        have. The board is read exactly as ``/claude-sessions`` reads it, so a phone that asks
+        for this keeps Claude Code's prompts held.
+        """
+
+        async def card(read: Callable[[], dict[str, Any]] | None) -> dict[str, Any] | None:
+            found = None if read is None else (await asyncio.to_thread(read)).get("card")
+            return found if isinstance(found, dict) else None
+
+        async def notices() -> dict[str, Any]:
+            return _no_notices() if deps.notices_read is None else await deps.notices_read()
+
+        async def plugin_request() -> dict[str, Any] | None:
+            if deps.plugin_read is None or deps.plugin_authorize is None:
+                return None
+            if not deps.plugin_authorize(request.headers.get("authorization")):
+                return None
+            found = (await asyncio.to_thread(deps.plugin_read)).get("request")
+            return found if isinstance(found, dict) else None
+
+        async def claude_requests() -> list[dict[str, Any]]:
+            rows = (await read_claude_board())["sessions"]
+            return [
+                {
+                    **row["request"],
+                    "session_id": row["session_id"],
+                    "title": row.get("title", ""),
+                    "project": row.get("project", ""),
+                }
+                for row in rows
+                if row.get("request")
+            ]
+
+        async def source[T](name: str, read: Awaitable[T], empty: T) -> T:
+            # One source down (a mail or Microsoft call) leaves the rest of what waits readable.
+            try:
+                return await read
+            except Exception as exc:  # noqa: BLE001 — a source failing is an empty one, logged.
+                LOGGER.warning("waiting: %s unreadable: %s: %s", name, type(exc).__name__, exc)
+                return empty
+
+        confirmation, clarification, notice_body, plugin, claude = await asyncio.gather(
+            source("confirmation", card(deps.card_read), None),
+            source("clarification", card(deps.question_read), None),
+            source("notices", notices(), _no_notices()),
+            source("plugin request", plugin_request(), None),
+            claude_requests(),
+        )
+        return {
+            "confirmation": confirmation,
+            "clarification": clarification,
+            "notices": notice_body,
+            "plugin_request": plugin,
+            "claude_requests": claude,
+        }
 
     @app.get("/inherent/claude-sessions/{session_id}/conversation")
     async def claude_conversation(session_id: str) -> dict[str, Any]:
@@ -2566,6 +2711,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
 
 
 __all__ = [
+    "AskOutcome",
     "ControlsRequest",
     "DictationRequest",
     "DictationRoutes",
