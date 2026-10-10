@@ -965,11 +965,14 @@ def _unspaced(text: str) -> str:
 
 
 def _repeat_of_last_answer(packet: SituationPacket) -> str | None:
-    """The last spoken answer's voice text when Allen only asks to hear it again."""
+    """The last spoken answer's voice text when Allen only asks to hear it again.
+
+    Only by voice: typed, 「嗯?」 or 「什么?」 means he does not follow, not that he missed it.
+    """
     transcript = packet.trigger_event.payload.get("transcript")
     if (
         not isinstance(transcript, str)
-        or packet.trigger_event.payload.get("channel") == "gpt_live"
+        or not spoken_turn(packet.trigger_event)
         or _REPEAT_REQUEST_RE.fullmatch(re.sub(r"[\s,，。.!！]+", "", transcript.lower())) is None  # noqa: RUF001 — the fullwidth marks are Allen's own punctuation.
     ):
         return None

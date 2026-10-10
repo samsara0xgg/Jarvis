@@ -53,14 +53,17 @@ def _answered_aloud(conn: sqlite3.Connection) -> None:
     )
 
 
-def _decide(tmp_path: Path, heard: str) -> tuple[str, int]:
+def _decide(tmp_path: Path, heard: str, *, typed: bool = False) -> tuple[str, int]:
     ctx, conn, llm = _build_ctx(tmp_path, draft_text="the model's own answer")
     try:
         _answered_aloud(conn)
         trigger = emit_event(
             conn,
-            type="utterance.received",
-            payload={"turn_id": "T2", "transcript": heard, "channel": "inherent_wake"},
+            type="surface.user_intent" if typed else "utterance.received",
+            payload={
+                "turn_id": "T2", "transcript": heard,
+                "channel": "cli_stdin" if typed else "inherent_wake",
+            },
             correlation={"turn_id": "T2"},
         )
         result = decide(trigger, ctx)
@@ -108,5 +111,16 @@ def test_asking_to_hear_it_again_repeats_the_last_spoken_answer(tmp_path: Path, 
 def test_anything_more_than_the_request_goes_to_the_model(tmp_path: Path, heard: str) -> None:
     """A question that only starts like a repair request is a question."""
     text, model_requests = _decide(tmp_path, heard)
+    assert model_requests >= 1
+    assert _SAID not in text
+
+
+@pytest.mark.parametrize("typed", ["嗯？", "什么？", "What?"])  # noqa: RUF001
+def test_typed_huh_is_a_question_for_the_model(tmp_path: Path, typed: str) -> None:
+    """Typed, he read the answer and did not follow it: the same words again do not help.
+
+    On 2026-10-10 a typed 「嗯?」 on the phone got her last answer back byte for byte.
+    """
+    text, model_requests = _decide(tmp_path, typed, typed=True)
     assert model_requests >= 1
     assert _SAID not in text
