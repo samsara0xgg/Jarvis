@@ -14,6 +14,8 @@ final class ReportAppDelegate: NSObject, UIApplicationDelegate {
             Reporter.shared.transport = HTTPReportTransport { (base, token) }
         }
         #endif
+        // the paired brain's address and token, read when a batch goes out (nil until paired: frames wait in the queue)
+        if Reporter.shared.transport == nil { Reporter.shared.transport = HTTPReportTransport { BrainLink.shared.voiceEndpoint } }
         Reporter.shared.launchedForLocation = launchOptions?[.location] != nil
         Reporter.shared.launch()
         return true

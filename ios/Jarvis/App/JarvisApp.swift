@@ -17,6 +17,10 @@ struct JarvisApp: App {
     }
     var body: some Scene {
         WindowGroup { StarChartScreen().voiceEntry().task { Waiting.shared.start() } }
+            .onChange(of: BrainLink.shared.hasToken) { _, paired in
+                // frames queued before pairing go out now
+                if paired { Task { await Reporter.shared.flush() } }
+            }
             .onChange(of: phase) { _, p in
                 // the brain's days are asked for again when the app comes back from the background (not on a timer)
                 if p == .background { wasBackground = true }
