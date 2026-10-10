@@ -50,7 +50,7 @@ READY, REPORT, STATUS, DISCARD_ACK = 0x81, 0x82, 0x83, 0x84
 class FakePhone:
     """A paired phone: ``hello``, READY, a renderer at real-time pace, and a log of what came."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - a phone's few knobs, all keywords
         self,
         url: str,
         token: str,
@@ -58,6 +58,7 @@ class FakePhone:
         voice: bool = True,
         speed: float = 1.0,
         clock_offset_ns: int = DEFAULT_CLOCK_OFFSET_NS,
+        report_overlap: int = 0,
     ) -> None:
         # The proxy variables of a sandbox must not carry a socket to a private address.
         self.ws = connect(
@@ -66,6 +67,7 @@ class FakePhone:
         self.voice = voice
         self.speed = speed
         self.clock_offset_ns = clock_offset_ns
+        self.report_overlap = report_overlap  # samples each later REPORT starts before the last end
         self.heard: list[np.ndarray] = []  # everything the renderer played, in order
         self.last_played_at = time.monotonic()
         self.lock = threading.Condition()
@@ -219,8 +221,9 @@ class FakePhone:
             for generation, start, end in reports:
                 first = generation not in self.first_reported
                 self.first_reported.add(generation)
+                reported = start if first else start - self.report_overlap
                 body = struct.pack(
-                    "<qqqBqqB", generation, start, end, 0, self.phone_ns(), PRESENTATION_DELAY_NS,
+                    "<qqqBqqB", generation, reported, end, 0, self.phone_ns(), PRESENTATION_DELAY_NS,
                     int(first),
                 )
                 with self.lock:

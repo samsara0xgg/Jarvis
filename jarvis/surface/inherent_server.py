@@ -2116,7 +2116,7 @@ async def _upload_attachment(
     return {"id": ref.id, "kind": ref.kind, "name": ref.name, "bytes": ref.size, "mime": ref.mime}
 
 
-def _paired_device(deps: InherentDeps, request: Request) -> str | None:
+def _paired_device(deps: InherentDeps, request: Request | WebSocket) -> str | None:
     """The paired device whose token this request carries (ADR 0212); ``None`` for the local key."""
     token = _v2_presented_token(request.headers.get("authorization"))
     if deps.device_name is None or token is None:
@@ -2124,7 +2124,7 @@ def _paired_device(deps: InherentDeps, request: Request) -> str | None:
     return deps.device_name(token)
 
 
-def _reader(deps: InherentDeps, request: Request) -> str:
+def _reader(deps: InherentDeps, request: Request | WebSocket) -> str:
     """The device a request comes from: a paired one by its token, else this host's own UI."""
     return _paired_device(deps, request) or MAC_NODE
 
@@ -2424,7 +2424,9 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
            sockets.
         """
         await ws.accept()
-        await deps.broadcaster.register(ws)
+        # ADR 0222: the device this socket is (the terminal's upstream carries its token), so
+        # another device's turns stay off it.
+        await deps.broadcaster.register(ws, _reader(deps, ws))
         # The `live` op is the client's only writer of live state (resonance
         # src/runtime.ts), so a fresh client needs one snapshot; sending it
         # through the broadcaster keeps it in the same order as the pushes.

@@ -148,6 +148,7 @@ class _Host:
         self.barges: list[str] = []
         self.cancels: list[tuple[str, str]] = []
         self.voices: list[Any] = []
+        self.hub: PhoneHub | None = None
         self.server: uvicorn.Server | None = None
         self.thread = threading.Thread(target=lambda: asyncio.run(self._main()), daemon=True)
 
@@ -179,7 +180,9 @@ class _Host:
         conn = sqlite3.connect(self.log, check_same_thread=False)
         events = BrainEvents(conn)
         rows = inherent_loop._PhoneRows(conn)  # noqa: SLF001
-        speech = PhoneSpeech(build=self._build_phone_pipeline, rows=rows, ring_seconds=0.5)
+        speech = PhoneSpeech(
+            build=self._build_phone_pipeline, rows=rows, ring_seconds=0.5, event_log=self.log,
+        )
 
         async def open_voice(device: str, send_binary: Callable[[bytes], bool]) -> Any:  # noqa: ANN401
             voice = await speech.open(device, send_binary)
@@ -193,6 +196,7 @@ class _Host:
             barge_in=self._barge,
             cancel_turn=self._cancel,
         )
+        self.hub = hub
         mac_player = voice_tts.AudioStreamPlayer(
             sample_rate_hz=8_000, ring_seconds=0.5, lazy_open=True, generation_safe=True,
             estimated_output_latency_s=0.0,
@@ -208,6 +212,11 @@ class _Host:
         )
         watcher = asyncio.create_task(
             inherent_loop._tts_watcher(conn=conn, pipeline=mac, poll_interval_s=0.01),  # noqa: SLF001
+        )
+        ends = asyncio.create_task(  # ADR 0222: the daemon runs this beside the other watchers
+            inherent_loop._phone_ends_watcher(  # noqa: SLF001
+                conn, speech.owner_boot, poll_interval_s=0.01,
+            ),
         )
         app = create_app(
             InherentDeps(
@@ -233,7 +242,8 @@ class _Host:
                 await self.server.serve()
             finally:
                 watcher.cancel()
-                await asyncio.gather(watcher, return_exceptions=True)
+                ends.cancel()
+                await asyncio.gather(watcher, ends, return_exceptions=True)
                 await asyncio.to_thread(mac.close)
 
     def __enter__(self) -> Self:
@@ -252,8 +262,12 @@ class _Host:
 
     def phone(
         self, *, token: str | None = None, voice: bool = True, speed: float = 1.0,
+        report_overlap: int = 0,
     ) -> FakePhone:
-        return FakePhone(self.url, token or self.token, voice=voice, speed=speed).start()
+        return FakePhone(
+            self.url, token or self.token, voice=voice, speed=speed,
+            report_overlap=report_overlap,
+        ).start()
 
     # -- the log
 

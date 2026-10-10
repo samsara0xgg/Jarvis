@@ -182,7 +182,7 @@ from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.job_mail import served_notices, settle_notice
 from jarvis.runtime.memory_page import MemoryPage
 from jarvis.runtime.night_watch import NightWatch
-from jarvis.runtime.phone_voice import PhoneSpeech
+from jarvis.runtime.phone_voice import PhoneSpeech, UnplayedAnswers
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
 from jarvis.runtime.settings import SETTINGS_FILE
 from jarvis.runtime.setup import Setup
@@ -885,6 +885,28 @@ def _drop_for_silent_channel(  # noqa: PLR0913 - two verdict sources, one bookke
     if event.type in {"surface.response_emitted", "response.cancelled", "response.failed"}:
         silent_turns.discard(turn_id)
     return True
+
+
+_TURN_DEVICES_REMEMBERED: Final = 4096
+
+
+def _turn_devices(conn: sqlite3.Connection) -> Callable[[str], str | None]:
+    """``turn_id -> device`` for the broadcaster (ADR 0222), read once per turn on the loop thread.
+
+    The device is :func:`~jarvis.state.event_log.turn_origin`'s: the name the turn's opening row
+    was written under, ``None`` for a turn with no opening row. That row precedes every row of the
+    turn's answer, so a turn read once is read for good.
+    """
+    known: dict[str, str | None] = {}
+
+    def device(turn_id: str) -> str | None:
+        if turn_id not in known:
+            if len(known) >= _TURN_DEVICES_REMEMBERED:
+                known.clear()
+            known[turn_id] = turn_origin(conn, turn_id)[1]
+        return known[turn_id]
+
+    return device
 
 
 def _log_watcher_death(task: asyncio.Task[None]) -> None:
@@ -1799,6 +1821,41 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
             await asyncio.sleep(poll_interval_s)
     except asyncio.CancelledError:
         LOGGER.info("tts_watcher cancelled")
+        raise
+
+
+async def _phone_ends_watcher(
+    conn: sqlite3.Connection,
+    owner_boot: Callable[[str], int | None],
+    *,
+    poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+) -> None:
+    """Background task: end the phone voice answers that no actor plays (ADR 0222).
+
+    One cursor over the response rows, anchored at the log's end like the other watchers: an
+    answer from before this boot is the boot's reconciliation, not news. Each row goes to
+    :class:`~jarvis.runtime.phone_voice.UnplayedAnswers`, which writes a
+    ``surface.speech_dropped`` for an answer that ends while its device's actor does not hold
+    it. A row that cannot be taken is retried from the same place.
+    """
+    ends = UnplayedAnswers(owner_boot)
+    after_id = _latest_id(conn)
+    LOGGER.info("phone_ends_watcher started (after_id=%d)", after_id)
+    try:
+        while True:
+            try:
+                for row_id, event in _fetch_events_after(
+                    conn, after_id=after_id, event_types=terminal_voice.RESPONSE_ROW_TYPES,
+                ):
+                    ends.observe(conn, row_id, event)
+                    after_id = max(after_id, row_id)
+            except Exception:
+                LOGGER.exception("phone_ends_watcher: failed at after_id=%d; retrying", after_id)
+                await asyncio.sleep(_WATCHER_RETRY_S)
+                continue
+            await asyncio.sleep(poll_interval_s)
+    except asyncio.CancelledError:
+        LOGGER.info("phone_ends_watcher cancelled")
         raise
 
 
@@ -3278,18 +3335,22 @@ def _build_phone_speech(
             LOGGER.exception("a phone's media actor could not start")
             return None
 
-    return PhoneSpeech(build=build, rows=rows, ring_seconds=config.ring_seconds)
+    return PhoneSpeech(
+        build=build, rows=rows, ring_seconds=config.ring_seconds, event_log=event_log_path,
+    )
 
 
 def _build_phone_hub(
     runtime: JarvisRuntime, knobs: _VoiceKnobs, *, set_quiet: Callable[[str], None] | None,
-) -> PhoneHub | None:
+) -> tuple[PhoneHub, Callable[[str], int | None]] | None:
     """The phone's conversation socket (ADR 0209), on every host that listens.
 
     ``None`` where the host has nowhere to write a phone's words. A voice phone gets its own
     media actor when the host can speak; barge-in and cancel reach only that device's turns.
     Words it hears over her are judged with the Mac's own hooks (ADR 0216,
     :func:`_local_listen_ports`) and ``set_quiet``, the daemon's, which the caller passes in.
+    The second value says which log row a device's actor was built at (``None``: it has none),
+    for :func:`_phone_ends_watcher`.
     """
     events = runtime.phone_events
     if events is None:
@@ -3298,7 +3359,7 @@ def _build_phone_hub(
     speech = _build_phone_speech(runtime, knobs, rows)
     registry = runtime.response_runs
     mine = _local_listen_ports(runtime, None)
-    return PhoneHub(
+    hub = PhoneHub(
         events=events,
         rows=rows,
         open_voice=None if speech is None else speech.open,
@@ -3313,6 +3374,7 @@ def _build_phone_hub(
             runtime.runtime_paths.event_log, device, text,
         ),
     )
+    return hub, (lambda _device: None) if speech is None else speech.owner_boot
 
 
 def _per_device[T](make: Callable[[str], T]) -> Callable[[str], T]:
@@ -6520,6 +6582,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             runtime.ledger.warm(lambda: datetime.now(UTC))  # its standing text is a 38-day read
         broadcaster = InherentBroadcaster()
         broadcaster.attach_loop(asyncio.get_running_loop())
+        broadcaster.turn_device = _turn_devices(runtime.conn)  # ADR 0222
 
         def submit_callable(text: str) -> str:
             """Bound at daemon-start time. Mints a fresh ``turn_id`` per call.
@@ -7056,11 +7119,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         if runtime.view is not None:  # ADR 0176: her ``present`` op reaches the companion
             runtime.view.push = lambda sent: broadcaster.broadcast_op_sync("present", **sent)
         spend = SpendCapSettings.from_config(runtime.config.get("spend_cap"))
-        phone_hub = (
+        built_phone = (
             _build_phone_hub(runtime, voice_knobs, set_quiet=_set_quiet)
             if runtime.listen_addresses
             else None
         )
+        phone_hub = None if built_phone is None else built_phone[0]
         if phone_hub is not None and runtime.whereabouts is not None:
             # ADR 0217: a device with its conversation socket open is a phone, and that is said.
             runtime.whereabouts.phone_open = phone_hub.connected
@@ -7379,6 +7443,16 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         broadcaster=broadcaster,
                     ),
                     name="tts_watcher",
+                ),
+            )
+        if built_phone is not None:
+            # ADR 0222: a phone voice answer that ends with no actor for its device still ends.
+            watchers.append(
+                asyncio.create_task(
+                    _phone_ends_watcher(
+                        runtime.conn, built_phone[1], poll_interval_s=poll_interval_s,
+                    ),
+                    name="phone_ends_watcher",
                 ),
             )
         if runtime.response_flags.lifecycle_commentary:

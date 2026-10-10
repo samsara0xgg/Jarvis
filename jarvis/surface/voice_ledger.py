@@ -126,6 +126,10 @@ class OutputTimelineSnapshot:
         )
 
 
+_REPORT_OVERLAP_SAMPLES = 1
+"""How far before the submitted cursor a callback report may start and still be contiguous."""
+
+
 class PlaybackLedger:
     """Mutable single-owner timeline for one playback generation."""
 
@@ -248,8 +252,12 @@ class PlaybackLedger:
             msg = "invalid submitted output span"
             raise ValueError(msg)
         # Reports are ordered, but callback-report overflow may create a gap.
-        # Never guess through it: keep the cursor at the last contiguous end.
-        if output_start_cursor != self._submitted_cursor:
+        # Never guess through it: keep the cursor at the last contiguous end. A report that
+        # starts one sample before that end overlaps it, which loses nothing: the phone's
+        # reports did so on 2026-10-10, and each answer then stalled at its first report.
+        if output_start_cursor not in (
+            self._submitted_cursor, self._submitted_cursor - _REPORT_OVERLAP_SAMPLES,
+        ):
             self._cursor_quality = "unknown"
             self._cursor_quality_observed = True
             for chunk in self._chunks.values():

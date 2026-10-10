@@ -27,6 +27,12 @@ Step 2 wire schema (three envelopes per turn, mirrored from
    plus ``"written": <text>`` when the event says ``written_apart`` (ADR 0114):
    the details the answer's spoken part leaves out, which no chunk carried.
 
+A client registered as a device (the push socket takes it from the token, ADR 0222) is sent a
+turn's ``open``, ``append``, ``done``, ``voice``, ``tool``, ``failed`` and ``cancelled`` only when
+that device opened the turn, the host did (``mac``) or the turn has no opening row. The device of
+a turn comes from ``turn_device``, which the runtime sets; with none, or for a client registered
+without a device, nothing is filtered.
+
 A wait line (a ``phase="commentary"`` response, ADR 0116) goes out in the same
 three envelopes with ``"response_phase": "commentary"`` added, so a client can
 treat it as speech only and not as her answer (ADR 0121); an answer's envelopes
@@ -76,10 +82,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
+
+from jarvis.state.event_log import MAC_NODE
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from starlette.websockets import WebSocket
 
@@ -87,6 +95,9 @@ if TYPE_CHECKING:
 
 
 LOGGER = logging.getLogger("jarvis.surface.inherent_output")
+
+_TURN_OPS: Final = frozenset({"open", "append", "done", "voice", "tool", "failed", "cancelled"})
+"""The ops that describe one turn (their payload names it); every other op is for all clients."""
 
 
 def _mark_wait_line(event: Event, payload: dict[str, object]) -> None:
@@ -107,6 +118,13 @@ class InherentBroadcaster:
     def __init__(self) -> None:
         """Create an empty registry."""
         self._clients: set[WebSocket] = set()
+        # The paired device each authenticated client is (ADR 0222); a client absent here sees
+        # every turn, as does any client when ``turn_device`` is unset.
+        self._devices: dict[WebSocket, str] = {}
+        self.turn_device: Callable[[str], str | None] | None = None
+        """``turn_id -> device`` that opened it (``turn_origin``), set by the runtime; ``None``
+        for a turn with no opening row. A turn another device opened is not sent to a client
+        that is a different device (ADR 0222)."""
         self._lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
         # Daemon's event loop, set by ``attach_loop`` at composition root
@@ -132,11 +150,18 @@ class InherentBroadcaster:
         """
         self._loop = loop
 
-    async def register(self, ws: WebSocket) -> None:
-        """Add a connected WS client to the registry. Idempotent."""
+    async def register(self, ws: WebSocket, device: str | None = None) -> None:
+        """Add a connected WS client to the registry. Idempotent.
+
+        ``device`` is the device the client is (the paired name its token carries, else this
+        host's own :data:`~jarvis.state.event_log.MAC_NODE`); with it, the client is sent only
+        the turns that device opened or the host did (ADR 0222).
+        """
         async with self._send_lock:
             async with self._lock:
                 self._clients.add(ws)
+                if device is not None:
+                    self._devices[ws] = device
                 capability = (
                     dict(self._latest_voice_capability)
                     if self._latest_voice_capability is not None
@@ -178,6 +203,7 @@ class InherentBroadcaster:
         """Remove a disconnected WS client from the registry. Idempotent."""
         async with self._lock:
             self._clients.discard(ws)
+            self._devices.pop(ws, None)
 
     async def broadcast_open(self, event: Event) -> None:
         """Translate ``surface.response_open`` into the ``open`` wire envelope.
@@ -481,9 +507,13 @@ class InherentBroadcaster:
                 )
                 return
             clients_snapshot = list(self._clients)
+            devices = dict(self._devices)
 
+        origin = self._origin_of(msg)
         dead: list[WebSocket] = []
         for ws in clients_snapshot:
+            if origin not in (None, MAC_NODE) and devices.get(ws, origin) != origin:
+                continue  # another device's turn: that device plays and shows it (ADR 0222)
             try:
                 await ws.send_json(msg)
             except Exception as exc:  # noqa: BLE001 — WS transport raises many errno/type variants; logging + drop is the right posture per ADR-0003 F4.
@@ -498,6 +528,16 @@ class InherentBroadcaster:
             async with self._lock:
                 for ws in dead:
                     self._clients.discard(ws)
+                    self._devices.pop(ws, None)
+
+    def _origin_of(self, msg: dict[str, object]) -> str | None:
+        """The device that opened the turn ``msg`` describes; ``None`` for the host's or none."""
+        lookup = self.turn_device
+        payload = msg.get("payload")
+        if lookup is None or msg.get("op") not in _TURN_OPS or not isinstance(payload, dict):
+            return None
+        turn_id = payload.get("turn_id")
+        return lookup(turn_id) if isinstance(turn_id, str) and turn_id else None
 
 
 __all__ = [
