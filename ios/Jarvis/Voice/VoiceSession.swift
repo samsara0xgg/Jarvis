@@ -315,6 +315,7 @@ final class VoiceSession {
         self.wakeTurn = false
         set(.thinking)
         sayAt = now
+        lastActivityAt = now                                // the no-reply clock starts here, not at the last turn (the finals take a moment)
         rec = nil
         feed.set(nil)
         Task {
@@ -400,6 +401,7 @@ final class VoiceSession {
     }
 
     private func goIdle(releasing: Bool) {
+        VoiceTrace.note("idle from \(state)\(releasing ? ", releasing the mic" : "")")
         audio.core?.stopNow()
         set(.idle)
         wakeTurn = false
@@ -491,7 +493,7 @@ final class VoiceSession {
         case .listening:
             let age = t - startedAt
             if !segmentText.isEmpty, t - lastWordAt > silenceEnd, inputLevel < quiet { endUtterance() }
-            else if segmentText.isEmpty, age > noSpeech { goIdle(releasing: false) }
+            else if segmentText.isEmpty, age > noSpeech { VoiceTrace.note("no words for \(Int(noSpeech)) s: idle"); goIdle(releasing: false) }
             else if age > utteranceCap { endUtterance() }
         case .thinking, .speaking:
             guard let core = audio.core, !typedTurn else { return }

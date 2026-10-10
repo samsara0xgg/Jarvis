@@ -5,7 +5,8 @@ import AVFoundation
 final class VoiceAudio {
     private(set) var core: PlayerCore?
     private var source: AVAudioSourceNode?
-    private let engine = AVAudioEngine()
+    private var tapFormat: AVAudioFormat?
+    private var engine = AVAudioEngine()
     private var timer: DispatchSourceTimer?
     private var observers: [NSObjectProtocol] = []
     private(set) var running = false
@@ -21,6 +22,13 @@ final class VoiceAudio {
     /// The microphone had no usable format within a second (a headset switching over, another app holding it).
     struct NotReady: Error {}
 
+    init() {
+        // what the session went through while the voice was not using it, for when the microphone comes up dead
+        for n in [AVAudioSession.mediaServicesWereResetNotification, AVAudioSession.interruptionNotification] {
+            NotificationCenter.default.addObserver(forName: n, object: nil, queue: nil) { VoiceTrace.note("session: \($0.name.rawValue) \($0.userInfo ?? [:])") }
+        }
+    }
+
     func start() async throws {
         guard !running else { return }
         Sound.shared.suspend()                              // one owner of the session: the UI cues' engine is stopped first
@@ -33,6 +41,9 @@ final class VoiceAudio {
             VoiceTrace.note("category is \(s.category.rawValue) after setting playAndRecord; setting it again")
             try s.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         }
+        // A fresh engine each time, built on the session as it is now: the one kept from launch was seen on the phone with a 0 Hz
+        // input that never recovered, so every tap failed.
+        engine = AVAudioEngine()
         let input = engine.inputNode
         try input.setVoiceProcessingEnabled(true)          // changes the input format: read it only after this
         // installTap with a 0 Hz or 0-channel format raises an exception Swift cannot catch: wait up to 1 s for the route instead
@@ -60,6 +71,7 @@ final class VoiceAudio {
         engine.attach(src)
         source = src
         engine.connect(src, to: engine.mainMixerNode, format: fmt)
+        tapFormat = inFmt
         input.installTap(onBus: 0, bufferSize: 2048, format: inFmt) { [weak self] buf, _ in
             guard let mono = monoFloat(buf) else { return }
             self?.onMic?(mono, Self.level(mono))
@@ -102,9 +114,17 @@ final class VoiceAudio {
                 let began = (n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.began.rawValue
                 MainActor.assumeIsolated { self?.teardown(interrupted: began) }
             },
-            // the hardware changed (route, sample rate): the graph is stale, rebuild it
+            // the hardware changed and the engine stopped itself. One comes right after every start, as voice processing settles:
+            // with the microphone's format unchanged the graph is still good and is started again; otherwise it is stale and goes.
             nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.teardown(interrupted: false) }
+                guard let self else { return }
+                let f = engine.inputNode.outputFormat(forBus: 0)
+                if f.sampleRate == tapFormat?.sampleRate, f.channelCount == tapFormat?.channelCount, (try? engine.start()) != nil {
+                    VoiceTrace.note("engine configuration changed: started again at \(Int(f.sampleRate)) Hz")
+                    return
+                }
+                VoiceTrace.note("engine configuration changed: microphone now \(Int(f.sampleRate)) Hz \(f.channelCount) ch, stopping")
+                MainActor.assumeIsolated { self.teardown(interrupted: false) }
             },
             nc.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] n in
                 guard let self, let core else { return }
