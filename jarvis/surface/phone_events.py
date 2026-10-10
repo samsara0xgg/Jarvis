@@ -23,8 +23,8 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Final
 
-from jarvis.state.day_line import HEALTH_EVENT, MOTION_EVENT
 from jarvis.state.event_log import EventTypeRegistry
+from jarvis.state.phone_day import HEALTH_EVENT, MOTION_EVENT
 from jarvis.state.phone_location import LOCATION_EVENT, VISIT_EVENT
 
 if TYPE_CHECKING:

@@ -1,22 +1,26 @@
 """The ledger: the day, week and month facts about the user, computed from his own data.
 
 Pure reads of memory.db (day summaries, job mail, records), the Event Log (commits, work-state,
-reminders, daily reports), and TimeSink's spans, calls and project verdicts. Nothing here calls a
-model or writes. :func:`standing_text` is blocks B-C (recent days, this week, last week, the last
-30 days) as of a local midnight: complete days only, so the text is the same for every
-turn of a day and sits in the cached prompt prefix. :func:`today_text` and :func:`since_text` are
-blocks E-F, the part of today that midnight cannot hold, and :func:`job_hunt_text` is block D
-as of now; they are rendered per turn.
+reminders, daily reports, the phone's places, sleep, steps and workouts), and TimeSink's spans,
+calls and project verdicts. Nothing here calls a model or writes. :func:`standing_text` is blocks
+B-C (recent days, this week, last week, the last 30 days) as of a local midnight: complete days
+only, so the text is the same for every turn of a day and sits in the cached prompt prefix.
+:func:`today_text` and :func:`since_text` are blocks E-F, the part of today that midnight cannot
+hold, and :func:`job_hunt_text` is block D as of now; they are rendered per turn.
 
 Every number is arithmetic over rows. A day's working hours are the union of its spans (two apps at
 once count once). A working day starts at the first run of activity that ends after 05:00 and stops
 at the last run that begins before 05:00 the next morning; a run is activity separated from the next
-by less than four hours. Only the day's "The day" prose line, which the decision layer writes once a
-night from these numbers, is model-made (ADR 0201).
+by less than four hours. The phone's numbers are cut at the local midnight like the active time,
+and a night's sleep belongs to the day he woke; its stays and sleep are folded by
+:mod:`jarvis.state.phone_day`, the rules the day line (ADR 0199) serves. Only the day's "The day"
+prose line, which the decision layer writes once a night from these numbers, is model-made
+(ADR 0201).
 """
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from bisect import bisect_left
@@ -27,11 +31,15 @@ from datetime import date, datetime, time, timedelta, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
-from jarvis.state import reminders, timesink
+from jarvis.state import phone_day, reminders, timesink
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+
+    from jarvis.shared import Event
+
+LOGGER = logging.getLogger(__name__)
 
 # Bundle ids TimeSink spells two ways, folded onto one display name.
 _APP_ALIAS: Final[dict[str, str]] = {
@@ -205,13 +213,139 @@ def _start_from_text(event_text: str | None, event_at: str | None) -> str | None
 def _app_name(bundle: str, name: str) -> str:
     return _APP_ALIAS.get(bundle, name)
 
+# ------------------------------------------------------------------ the phone
+_PLACE_CHARS: Final[int] = 40
+
+
+class _PhoneDay(NamedTuple):
+    """What the phone reported for one local day; empty lists and zeros print nothing."""
+
+    sleep: list[tuple[datetime, datetime, float]]  # (bed, up, minutes) of each block he woke from
+    steps: int
+    workout_min: int
+    places: list[tuple[str, float]]  # named stays, longest first, seconds
+
+
+_NO_PHONE_DAY: Final[_PhoneDay] = _PhoneDay([], 0, 0, [])
+
+
+def _slices(
+    start: datetime, end: datetime, zone: tzinfo,
+) -> Iterator[tuple[date, datetime, datetime]]:
+    """``[start, end)`` cut at the local midnights, each piece with its day; an instant is one."""
+    day = start.astimezone(zone).date()
+    while True:
+        after = datetime.combine(day + timedelta(days=1), time.min, zone)
+        yield day, max(start, datetime.combine(day, time.min, zone)), min(end, after)
+        if end <= after:
+            return
+        day += timedelta(days=1)
+
+
+def _health_totals(events: Iterable[Event], metric: str) -> list[tuple[int, int, float]]:
+    """The totals of one metric as (start_ms, end_ms, value); a span reported again is the later."""
+    latest: dict[tuple[int, int], float] = {}
+    for event in events:
+        if event.payload["metric"] == metric:
+            span = (int(event.payload["start_ms"]), int(event.payload["end_ms"]))
+            latest[span] = float(event.payload["value"])
+    return [(start, end, value) for (start, end), value in latest.items()]
+
+
+class _Phone:
+    """The phone's days: stays, sleep, steps and workouts folded once, read by local day."""
+
+    def __init__(self) -> None:
+        self.sleep: dict[date, list[tuple[datetime, datetime, float]]] = defaultdict(list)
+        self.steps: dict[date, float] = defaultdict(float)
+        self.workout_min: dict[date, float] = defaultdict(float)
+        self.stayed: dict[date, dict[str, list[tuple[datetime, datetime]]]] = defaultdict(
+            lambda: defaultdict(list),
+        )
+
+    @classmethod
+    def load(cls, src: LedgerSources, since: datetime, as_of: datetime) -> _Phone:
+        """The phone's days from ``since`` on, as of ``as_of``; empty when its rows cannot be read.
+
+        A failure is logged and costs the phone lines only, never the rest of the text.
+        """
+        found = cls()
+        try:
+            with closing(open_runtime_event_log(src.event_log)) as conn:
+                rows = phone_day.read_rows(
+                    conn, int(since.timestamp() * 1000) - phone_day.LOOKBACK_MS,
+                )
+            found._fold(src.zone, rows, as_of)
+        except Exception:
+            LOGGER.exception("ledger: the phone rows could not be read; the text goes without them")
+            return cls()
+        return found
+
+    def _fold(self, zone: tzinfo, rows: phone_day.PhoneRows, as_of: datetime) -> None:
+        def moment(ms: float) -> datetime:
+            return datetime.fromtimestamp(ms / 1000, zone)
+
+        for block in phone_day.sleeps(rows.health):
+            if block.end is not None and moment(block.end) <= as_of:
+                up = moment(block.end)
+                self.sleep[up.date()].append(
+                    (moment(block.start), up, float(block.fields["minutes"])),
+                )
+        for stay in phone_day.stays(rows.visits):
+            place = " ".join(str(stay.fields.get("place", "")).split())
+            left = as_of if stay.end is None else min(moment(stay.end), as_of)
+            if place and moment(stay.start) < left:
+                for day, begin, stop in _slices(moment(stay.start), left, zone):
+                    self.stayed[day][_trim(place, _PLACE_CHARS)].append((begin, stop))
+        for metric, into in (("steps", self.steps), ("workout_min", self.workout_min)):
+            for first, last, value in _health_totals(rows.health, metric):
+                whole = last - first
+                for day, begin, stop in _slices(moment(first), moment(last), zone):
+                    share = (stop - begin).total_seconds() * 1000 / whole if whole else 1.0
+                    into[day] += value * share
+
+    def day(self, day: date) -> _PhoneDay:
+        """The day's sleep (by wake-up), steps, workout minutes and longest named stays."""
+        places = _top({name: _merged(iv) for name, iv in self.stayed.get(day, {}).items()}, 3)
+        return _PhoneDay(
+            sorted(self.sleep.get(day, [])), round(self.steps.get(day, 0.0)),
+            round(self.workout_min.get(day, 0.0)), places,
+        )
+
+
+def _phone_lines(row: _PhoneDay, day: date) -> list[str]:
+    """The phone's lines of a day, none for what the phone did not report."""
+    health = [
+        f"sleep {hm(minutes * 60)} ({bed:%H:%M}{' the evening before' if bed.date() < day else ''}"
+        f" to {up:%H:%M})"
+        for bed, up, minutes in row.sleep
+    ]
+    if row.steps:
+        health.append(f"steps {row.steps}")
+    if row.workout_min:
+        health.append(f"workout {hm(row.workout_min * 60)}")
+    lines = [f"  Health (phone): {', '.join(health)}"] if health else []
+    if row.places:
+        lines.append(f"  Places (phone): {_fmt_top(row.places)}")
+    return lines
+
+
+def _phone_compact(row: _PhoneDay) -> str:
+    """The phone's part of a one-line day: sleep, steps and workout, each only when reported."""
+    parts = [f"sleep {hm(sum(m for _, _, m in row.sleep) * 60)}"] if row.sleep else []
+    if row.steps:
+        parts.append(f"steps {row.steps}")
+    if row.workout_min:
+        parts.append(f"workout {hm(row.workout_min * 60)}")
+    return "; ".join(parts)
+
 
 class _Data:
     """Everything one render reads, loaded once for the window [lo, as_of]."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — the window, its two cut-offs and the two switches.
         self, src: LedgerSources, as_of: datetime, lo: datetime, *, screen: bool = True,
-        runs_until: datetime | None = None,
+        runs_until: datetime | None = None, phone_from: datetime | None = None,
     ) -> None:
         self.src = src
         self.zone = src.zone
@@ -226,6 +360,9 @@ class _Data:
         self.mail = self._mail(src, as_of)
         self.commits = self._commits(src, lo, as_of)
         self.talks, self.seen = self._memory(src, lo, as_of)
+        # The phone's days from ``phone_from`` on; None reads none (the per-turn blocks that
+        # need only mail do not touch the log's phone rows).
+        self.phone = _Phone() if phone_from is None else _Phone.load(src, phone_from, as_of)
         self._runs: list[tuple[datetime, datetime]] | None = None
 
     # --- loading ---------------------------------------------------------------------------
@@ -472,6 +609,7 @@ class _Day:
     mail_total: int
     mail_job: int
     talks: int
+    phone: _PhoneDay
 
 
 def _day(data: _Data, day: date) -> _Day:
@@ -489,7 +627,7 @@ def _day(data: _Data, day: date) -> _Day:
         _top(data.seconds_by(named, lambda s: s.document), 4, _SESSION_FLOOR_S),
         data.calls_seconds(begin, end), data.commit_repos(begin, end), _event_lines(job),
         sum(1 for at, _ in data.seen if begin <= at < end), len(job),
-        data.talks_between(begin, end),
+        data.talks_between(begin, end), data.phone.day(day),
     )
 
 
@@ -524,6 +662,7 @@ def _day_text(row: _Day) -> str:
         lines.append(f"  Projects (TimeSink): {_fmt_top(row.projects)}")
     if row.apps:
         lines.append(f"  Top apps: {_fmt_top(row.apps)}")
+    lines += _phone_lines(row.phone, row.day)
     if row.sessions:
         lines.append(
             "  Claude Code sessions: " + "; ".join(f"{k} {hm(v)}" for k, v in row.sessions),
@@ -548,18 +687,19 @@ def _compact_text(row: _Day) -> str:
             f"{first:%H:%M}" + (" (eve before)" if first.date() < row.day else "")
             + f"-{last:%H:%M}" + (" (after midnight)" if last.date() > row.day else "")
         )
-    calls = _fmt_calls(row.calls)
+    calls, phone = _fmt_calls(row.calls), _phone_compact(row.phone)
     return (
         f"{row.day:%m-%d} {row.day:%a}: {span}, active {hm(row.active)}; "
         f"projects {_fmt_top(row.projects[:2])}; commits {sum(row.commits.values())}; "
         f"jobs: {'; '.join(row.job_events) or 'none'}" + (f"; {calls}" if calls else "")
+        + (f"; {phone}" if phone else "")
     )
 
 
 def day_numbers_text(src: LedgerSources, day: date, as_of: datetime) -> str:
     """One day's numbers as the "Last seven days in full" block prints them (the prose input)."""
     begin = datetime.combine(day, time.min, src.zone)
-    return _day_text(_day(_Data(src, as_of, begin - timedelta(days=1)), day))
+    return _day_text(_day(_Data(src, as_of, begin - timedelta(days=1), phone_from=begin), day))
 
 
 def day_active(src: LedgerSources, day: date, as_of: datetime) -> bool:
@@ -636,8 +776,9 @@ def _recent_days(  # noqa: PLR0913 — the data, the window sizes and the two no
     summaries: Mapping[str, str], prose: Mapping[str, str],
 ) -> str:
     lines = [
-        "[Recent days · numbers computed by the program from TimeSink, mail, commits and "
-        "conversation; the prose lines were written from them]",
+        "[Recent days · numbers computed by the program from TimeSink, mail, commits, "
+        "conversation and the phone (a phone line is there only when the phone reported); "
+        "the prose lines were written from them]",
         "Earlier days, one line each "
         "(started/stopped = first and last activity of the working day):",
     ]
@@ -848,6 +989,21 @@ def notes_stamp(src: LedgerSources) -> tuple[str, str]:
     return newest[0], newest[1]
 
 
+def phone_stamp(src: LedgerSources, midnight: datetime, *, days: int = 14) -> tuple[int, int]:
+    """The phone rows timed in the ``days`` before ``midnight``, as (count, newest id).
+
+    Changes exactly when a late phone batch adds to a day :func:`standing_text` shows. A row timed
+    today is not in it, so the batches of the day do not move the cached text. (0, 0) when the
+    rows cannot be read: the text then has no phone lines to go stale.
+    """
+    since = int((midnight - timedelta(days=days)).timestamp() * 1000) - phone_day.LOOKBACK_MS
+    try:
+        with closing(open_runtime_event_log(src.event_log)) as conn:
+            return phone_day.stamp(conn, since, int(midnight.timestamp() * 1000))
+    except sqlite3.Error:
+        return 0, 0
+
+
 def standing_text(  # noqa: PLR0913 — the window, the day counts and two cut-offs.
     src: LedgerSources, midnight: datetime, *, full_days: int = 7, compact_days: int = 7,
     notes_as_of: datetime | None = None, day_end_as_of: datetime | None = None,
@@ -861,7 +1017,10 @@ def standing_text(  # noqa: PLR0913 — the window, the day counts and two cut-o
     """
     today = midnight.astimezone(src.zone).date()
     reach = max(full_days + compact_days, 31) + 7  # 30-day window, two weeks of weekly blocks
-    data = _Data(src, midnight, midnight - timedelta(days=reach), runs_until=day_end_as_of)
+    data = _Data(
+        src, midnight, midnight - timedelta(days=reach), runs_until=day_end_as_of,
+        phone_from=midnight - timedelta(days=full_days + compact_days),
+    )
     summaries = _day_summaries(src, notes_as_of or midnight)
     prose = _day_prose(src, notes_as_of or midnight)
     return "\n\n".join(
@@ -923,7 +1082,10 @@ def today_text(src: LedgerSources, now: datetime) -> str:
     today = local.date()
     midnight = datetime.combine(today, time.min, src.zone)
     monday = midnight - timedelta(days=local.weekday())
-    data = _Data(src, now, min(midnight - timedelta(days=2), monday - timedelta(days=1)))
+    data = _Data(
+        src, now, min(midnight - timedelta(days=2), monday - timedelta(days=1)),
+        phone_from=midnight,
+    )
     spans = data.clip(midnight, now)
     out = [f"[Today so far · {local:%a %Y-%m-%d}, now {local:%H:%M}]"]
     bounds = data.bounds(today)
@@ -936,6 +1098,7 @@ def today_text(src: LedgerSources, now: datetime) -> str:
         )
     else:
         out.append("  Computer: no activity recorded yet today")
+    out += _phone_lines(data.phone.day(today), today)
     if monday < midnight:
         week_spans = data.clip(monday, now)
         out.append(
@@ -1063,6 +1226,7 @@ __all__ = [
     "hm",
     "job_hunt_text",
     "notes_stamp",
+    "phone_stamp",
     "since_text",
     "standing_text",
     "today_text",

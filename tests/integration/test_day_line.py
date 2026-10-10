@@ -39,7 +39,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.runtime.inherent_loop import _read_day, _serve_day
-from jarvis.state import day_line, reminders
+from jarvis.state import day_line, phone_day, reminders
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_line import DaySources, day_window, fold_day, parse_day
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
@@ -1307,7 +1307,7 @@ def test_a_reminder_fold_that_raises_is_the_reminders_missing(
 
 def test_the_phone_types_the_fold_reads_are_the_phone_types_the_route_accepts() -> None:
     """The names the fold reads are the ones a phone may write, and the rows here use them."""
-    read = (VISIT_EVENT, day_line.MOTION_EVENT, day_line.HEALTH_EVENT)
+    read = (VISIT_EVENT, phone_day.MOTION_EVENT, phone_day.HEALTH_EVENT)
     assert read == (VISIT, MOTION, HEALTH)
     assert set(read) <= phone_events.PHONE_EVENT_TYPES
 

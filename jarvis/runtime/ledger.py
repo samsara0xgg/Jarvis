@@ -30,6 +30,7 @@ from jarvis.state.ledger import (
     day_report,
     job_hunt_text,
     notes_stamp,
+    phone_stamp,
     since_text,
     standing_text,
     today_text,
@@ -125,7 +126,13 @@ class LedgerContext:
         day_end = day_start if now >= day_start else midnight
         try:
             with self._lock:  # the warm thread and the turn share one computation
-                key = (today, day_end, notes_stamp(self.sources))
+                key = (
+                    today, day_end, notes_stamp(self.sources),
+                    phone_stamp(
+                        self.sources, midnight,
+                        days=self.settings.full_days + self.settings.compact_days,
+                    ),
+                )
                 if self._cached is None or self._cached[0] != key:
                     self._cached = (
                         key,

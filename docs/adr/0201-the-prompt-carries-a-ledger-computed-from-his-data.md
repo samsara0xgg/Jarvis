@@ -32,11 +32,17 @@ the program from rows; only the one "The day" line per day is model-made.
   same for every turn of a local day and stays in the cached prefix. It is rebuilt when the day
   turns, at 05:00 (a working day that ran past midnight stops at its real end, which is known
   only then; before 05:00 it shows as stopping at midnight), and when a new summary or "The day"
-  line lands.
+  line lands or a late phone batch adds to a finished day.
 - **D-F. Per-turn blocks, after the time line.** The job hunt as of now (every job mail so far,
   so an application confirmed this morning is already in the count; it reads only memory.db and
-  is about 1k characters), today since midnight (computer, job mail, interview changes, mail
-  screened, reminders) and what happened since he last talked to her.
+  is about 1k characters), today since midnight (computer, phone, job mail, interview changes,
+  mail screened, reminders) and what happened since he last talked to her.
+- **The phone is a source** (ADR 0197 left what she does with its signals to a later decision):
+  per recent day and so far today, last night's sleep with its bed and wake times, steps,
+  workout minutes and the named places he stayed longest. Days are cut at local midnight, a
+  night's sleep belongs to the day he woke, and stays and sleep come from the day line's own fold
+  (ADR 0199), so the two agree. A day the phone sent nothing for prints nothing for it. A batch of
+  today moves only the per-turn text.
 - **"The day" is written nightly** in the day-summary task, after the summaries and the core
   memory, by the flex tier, for each of the last seven complete days that has activity and no
   line yet. It is stored per day in `day_prose` and gated like a summary (not empty, not cut off,
@@ -67,7 +73,8 @@ the program from rows; only the one "The day" line per day is model-made.
 - The system prompt grows by about 12k characters, and the provider's cache misses once a day
   when the text is rebuilt (and once when a new summary or "The day" line lands).
 - The standing text takes about 0.8 s to compute once a day, in the first turn or the prefix
-  warm that needs it; the per-turn text takes about 60 ms every turn.
+  warm that needs it; the per-turn text takes about 60 ms every turn. The phone adds about 35 ms
+  to the first and 4 ms to the second at 300 rows a day, and its cache check 1 ms a turn.
 - "The day" costs a fraction of a cent a day.
 - A day with no TimeSink spans reads as "no recorded activity", which is what the data says and
   not necessarily what happened.
