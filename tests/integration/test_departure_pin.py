@@ -453,7 +453,7 @@ def _take(world: _World, action: str, **more: str | int) -> Any:  # noqa: ANN401
 
 def test_an_answer_serves_one_row_per_option_and_drops_the_past(world: _World) -> None:
     """Each option is a row; a row whose leave time has passed goes, the rest keep their index."""
-    _answer(world, ("17:05", "28"), ("17:15", "28"), ("17:30", "12"))
+    _answer(world, ("17:05", "28"), ("17:15", "28"), ("17:18", "12"))
     offer = _offer(world)
     assert offer["id"].startswith("offer-")
     rows = [
@@ -463,7 +463,7 @@ def test_an_answer_serves_one_row_per_option_and_drops_the_past(world: _World) -
     assert rows == [
         (0, "28", "17:02", "17:05", "17:20"),
         (1, "28", "17:12", "17:15", "17:30"),
-        (2, "12", "17:27", "17:30", "17:45"),
+        (2, "12", "17:15", "17:18", "17:33"),
     ]
     assert offer["options"][0]["board_stop"] == "Shelbourne at Pear"
     assert offer["options"][0]["to"] == "mayfair mall"

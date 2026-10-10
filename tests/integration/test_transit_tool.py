@@ -83,11 +83,12 @@ def _call(
 def test_the_answer_is_plain_words_in_local_time_with_three_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Leave time, walk, each bus, arrival and total, in Vancouver time; the fourth route is cut."""
+    """Leave time, walk, each bus, arrival and total, in Vancouver time; far-fetched ones cut."""
     _serve(monkeypatch)
     out = _call({"origin": "school", "destination": "home"})
     options = out["options"]
-    assert len(options) == 3
+    # The third arrives 20 min after the first and the fourth is past the cap: both cut.
+    assert len(options) == 2
     assert options[0] == {
         "leave_at": "17:06",
         "walk_to_first_stop_min": 6,

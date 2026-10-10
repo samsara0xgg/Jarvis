@@ -26,6 +26,10 @@ _URL: Final = "https://routes.googleapis.com/directions/v2:computeRoutes"
 _TIMEOUT_S: Final = 5.0
 _ZONE: Final = ZoneInfo("America/Vancouver")
 _MAX_OPTIONS: Final = 3
+# A far-fetched option (ADR 0202): it arrives this long after the earliest, or rides this much
+# longer.
+_LATER_MIN: Final = 15
+_SLOWER: Final = 1.5
 _FIELD_MASK: Final = ",".join(
     f"routes.legs.steps.{path}"
     for path in (
@@ -386,6 +390,22 @@ def _pin_departure(
     )
 
 
+def _sensible(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop the far-fetched: arriving over 15 min after the earliest, or 1.5x the shortest ride."""
+    if not options:
+        return options
+    def minutes(o: dict[str, Any]) -> int:
+        h, m = str(o["arrive_at"]).split(":")
+        return int(h) * 60 + int(m)
+    first = min(map(minutes, options))
+    shortest = min(int(o["total_min"]) for o in options)
+    kept = [
+        o for o in options
+        if minutes(o) - first <= _LATER_MIN and o["total_min"] <= _SLOWER * shortest
+    ]
+    return (kept or options[:1])[:_MAX_OPTIONS]
+
+
 def build_transit_tool(
     api_key: str | None,
     places: Mapping[str, str],
@@ -427,7 +447,7 @@ def build_transit_tool(
         except Exception as exc:  # timeout, HTTP error, bad JSON: all one short reason.
             msg = f"transit unavailable ({type(exc).__name__})"
             raise ToolError(msg, code="network_error") from exc
-        options = [o for r in answer.get("routes", ()) if (o := _option(r))][:_MAX_OPTIONS]
+        options = _sensible([o for r in answer.get("routes", ()) if (o := _option(r))])
         if not options:
             msg = "no transit route found for that trip at that time"
             raise ToolError(msg, code="not_found")
