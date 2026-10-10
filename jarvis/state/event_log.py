@@ -297,6 +297,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "language_detected",
             "emotion",
             "audio_artifact_ref",
+            # ADR 0214: the item a paired phone has open when it speaks.
+            "about",
         ),
         schema_version=1,
     ),
@@ -718,8 +720,10 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # empty transcript; it writes no row of Allen's words.
         # ADR 0211: ``attachments`` are the ids of files a phone sent with the
         # words (``jarvis.state.attachments``); the bytes stay in their files.
+        # ADR 0214: ``about`` is the item a paired phone has open, checked by
+        # ``jarvis.shared.about.clean_about``.
         optional_payload=(
-            "channel", "language", "record_id", "confirmation_decision", "attachments",
+            "channel", "language", "record_id", "confirmation_decision", "attachments", "about",
         ),
         schema_version=1,
     ),

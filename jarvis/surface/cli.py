@@ -38,13 +38,13 @@ from __future__ import annotations
 import re
 import sys
 from dataclasses import dataclass
-from typing import IO, TYPE_CHECKING, Protocol
+from typing import IO, TYPE_CHECKING, Any, Protocol
 
 from jarvis.state.event_log import emit_event
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from jarvis.shared import Event
 
@@ -175,6 +175,7 @@ def emit_surface_user_intent(  # noqa: PLR0913 — one keyword per payload field
     language: str = "zh-CN",
     attachments: Sequence[str] = (),
     ingestion_node: str = "mac",
+    about: Mapping[str, Any] | None = None,
 ) -> Event:
     """Emit the canonical ``surface.user_intent`` event for a CLI utterance.
 
@@ -196,6 +197,8 @@ def emit_surface_user_intent(  # noqa: PLR0913 — one keyword per payload field
         attachments: Ids of stored files a phone sent with the words (ADR 0211); the key is
             written only when there are some.
         ingestion_node: The paired device the words came from (ADR 0212), else this Mac.
+        about: The item that device's phone has open, already checked by
+            :func:`jarvis.shared.about.clean_about` (ADR 0214); the key is written only when given.
 
     Returns:
         The frozen Event row appended to the log (carrying the
@@ -210,6 +213,7 @@ def emit_surface_user_intent(  # noqa: PLR0913 — one keyword per payload field
             "channel": channel,
             "language": language,
             **({"attachments": list(attachments)} if attachments else {}),
+            **({"about": dict(about)} if about else {}),
         },
         correlation={"turn_id": turn_id},
         ingestion_node=ingestion_node,

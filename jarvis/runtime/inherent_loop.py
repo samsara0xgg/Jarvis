@@ -6218,11 +6218,13 @@ def _submit_text_v2(
 
 def _submit_with_attachments(
     event_log_path: Path, text: str, attachment_ids: Sequence[str], *, device: str = MAC_NODE,
+    about: dict[str, Any] | None = None,
 ) -> str:
     """ADR 0211: the turn of ``POST /inherent/submit`` whose words came with stored files.
 
     ``device``: the paired device that sent them (ADR 0212); the turn's opening row is written
-    under its name, as the ones ``/phone/ws`` writes are.
+    under its name, as the ones ``/phone/ws`` writes are. ``about``: the item its phone has open
+    (ADR 0214), already checked, kept on that row.
 
     Bound at daemon start and run on an ``asyncio.to_thread`` worker, so it opens its own
     connection exactly as ``submit_callable`` does. Returns the minted ``turn_id``.
@@ -6232,7 +6234,7 @@ def _submit_with_attachments(
     try:
         emit_surface_user_intent(
             inner_conn, transcript=text, turn_id=turn_id, attachments=attachment_ids,
-            ingestion_node=device,
+            ingestion_node=device, about=about,
         )
     finally:
         with contextlib.suppress(sqlite3.Error):
@@ -6242,9 +6244,12 @@ def _submit_with_attachments(
 
 def _submit_as_device(
     event_log_path: Path, device: str, text: str, attachment_ids: Sequence[str],
+    about: dict[str, Any] | None,
 ) -> str:
     """ADR 0212: the turn of words a paired ``device`` sent over HTTP, with or without files."""
-    return _submit_with_attachments(event_log_path, text, attachment_ids, device=device)
+    return _submit_with_attachments(
+        event_log_path, text, attachment_ids, device=device, about=about,
+    )
 
 
 def _keep_share(event_log_path: Path, fields: dict[str, Any]) -> str:

@@ -92,13 +92,14 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from starlette.background import BackgroundTask
 from starlette.datastructures import Address, Headers
 from starlette.datastructures import UploadFile as FormFile
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.websockets import WebSocketClose
 
+from jarvis.shared.about import clean_about
 from jarvis.shared.lang import language, t
 from jarvis.state.agent_marks import AgentMarks
 from jarvis.state.attachments import (
@@ -255,6 +256,13 @@ class SubmitRequest(BaseModel):
     text: str
     # ADR 0211: ids from ``POST /inherent/attachments``; the text may then be empty.
     attachments: list[str] = Field(default_factory=list)
+    # ADR 0214: the item a paired phone has open (``jarvis.shared.about``); 422 if it is bad.
+    about: dict[str, Any] | None = None
+
+    @field_validator("about")
+    @classmethod
+    def _checked_about(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        return None if value is None else clean_about(value)
 
 
 class ShareRequest(BaseModel):
@@ -616,10 +624,11 @@ class InherentDeps:
     attachments: Attachments | None = None
     images_ok: bool = False
     submit_attachments: Callable[[str, Sequence[str]], str] | None = None
-    # ADR 0212: ``submit_as_device(device, text, ids)`` starts the same turn with the opening row
-    # written under the paired ``device``'s name, for words a paired device sent over
+    # ADR 0212: ``submit_as_device(device, text, ids, about)`` starts the same turn with the
+    # opening row written under the paired ``device``'s name, for words a paired device sent over
     # ``submit``, ``ask`` or ``share`` (``ids`` may be empty). ``None``: the Mac's own name.
-    submit_as_device: Callable[[str, str, Sequence[str]], str] | None = None
+    # ADR 0214: ``about`` is the checked item the phone has open, or ``None`` (``submit`` only).
+    submit_as_device: Callable[[str, str, Sequence[str], dict[str, Any] | None], str] | None = None
     share_callable: Callable[[dict[str, Any]], str] | None = None
     cancel_response_callable: Callable[[str, str, str], str] | None = None
     # ``(turn_id, reason) -> outcome``: the same route's stop for a turn still
@@ -2105,10 +2114,15 @@ def _paired_device(deps: InherentDeps, request: Request) -> str | None:
 
 async def _start_turn(
     deps: InherentDeps, device: str | None, text: str, ids: Sequence[str] = (),
+    about: dict[str, Any] | None = None,
 ) -> str:
-    """Start the turn of ``text`` (with stored files ``ids``), written under ``device`` if any."""
+    """Start the turn of ``text`` (with stored files ``ids``), written under ``device`` if any.
+
+    ``about`` (ADR 0214) is the item the paired phone has open; the caller has refused it for
+    anyone else.
+    """
     if device is not None and deps.submit_as_device is not None:
-        return await asyncio.to_thread(deps.submit_as_device, device, text, ids)
+        return await asyncio.to_thread(deps.submit_as_device, device, text, ids, about)
     if ids and deps.submit_attachments is not None:
         return await asyncio.to_thread(deps.submit_attachments, text, ids)
     return await asyncio.to_thread(deps.submit_callable, text) or ""
@@ -2116,13 +2130,14 @@ async def _start_turn(
 
 async def _submit_with_attachments(
     deps: InherentDeps, text: str, ids: Sequence[str], device: str | None,
+    about: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """``POST /inherent/submit`` with ``attachments``: the files go with the words (ADR 0211)."""
     unique = list(dict.fromkeys(ids))
     await _checked_attachments(deps, unique)
     if deps.submit_attachments is None:  # _checked_attachments refused already
         raise HTTPException(status_code=501, detail="attachments are not enabled")
-    turn_id = await _start_turn(deps, device, text or t("attach.no_words"), unique)
+    turn_id = await _start_turn(deps, device, text or t("attach.no_words"), unique, about)
     return {"status": "accepted", "turn_id": turn_id}
 
 
@@ -2212,11 +2227,14 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
         """
         text = req.text.strip()
         device = _paired_device(deps, request)
+        if req.about is not None and device is None:
+            raise HTTPException(status_code=400, detail="about is for a paired device")
         if req.attachments:
-            return await _submit_with_attachments(deps, text, req.attachments, device)
+            return await _submit_with_attachments(deps, text, req.attachments, device, req.about)
         if not text:
             raise HTTPException(status_code=400, detail="text required")
-        return {"status": "accepted", "turn_id": await _start_turn(deps, device, text)}
+        turn_id = await _start_turn(deps, device, text, (), req.about)
+        return {"status": "accepted", "turn_id": turn_id}
 
     if deps.ask_outcome is not None:
         ask_outcome = deps.ask_outcome

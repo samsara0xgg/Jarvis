@@ -12,7 +12,8 @@ a newer one replaces the older (the older is closed with code 4000).
     host -> phone   {"type": "ready", "device": "<paired name>", "voice": true,
                      "sample_rate": 32000}
     phone -> host   {"type": "say", "utterance_id": "<1-64 of A-Za-z0-9_->", "text": "...",
-                     "spoken": true, "language": "en", "confidence": 0.93}
+                     "spoken": true, "language": "en", "confidence": 0.93,
+                     "about": {"kind": "reminder", "id": "...", "title": "...", "start_ms": 0}}
     host -> phone   {"type": "said", "utterance_id": "...", "turn_id": "T..."}
     host -> phone   {"type": "row", "event_type": "surface.response_chunk",
                      "event_uid": "<32 hex>", "payload": {...}, "ts_epoch_ms": 1700000000000}
@@ -29,6 +30,9 @@ phone heard; ``false`` is words typed, answered in rows only. The host derives t
 the device and ``utterance_id``, so a resent ``say`` writes nothing twice and is answered with
 the same ``said``. ``row`` carries the ``surface.response_*`` and ``response.cancelled|failed``
 rows of the turns this device opened, voice and typed alike, from the moment it connected.
+
+``say`` may carry ``about``, the item the phone has open (ADR 0214; ``jarvis.shared.about``): it
+is kept on the turn's opening row, and one that is malformed is answered with ``error bad_say``.
 
 **Binary frames** carry the player protocol, one WebSocket message per frame:
 :mod:`jarvis.surface.phone_player` has the layouts. After ``ready`` with ``voice: true`` the
@@ -364,7 +368,7 @@ def _say(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
     try:
         turn_id = hub.events.record_phone_say(
             conn.device, utterance_id, text, spoken=spoken, language=language,
-            confidence=confidence,
+            confidence=confidence, about=frame.get("about"),
         )
     except ValueError as exc:
         LOGGER.warning("phone %s: say refused: %s", conn.device, exc)
