@@ -46,9 +46,9 @@ extension StarEngine {
     /// Every frame. While the session is idle this is a few compares. Returns the level of her voice while she speaks (the orb's `say`).
     func syncVoice(_ now: Double) -> Double? {
         let v = voiceShot(now)
-        // the one status line: the model download, or the last trouble for eight seconds
+        // the one status line: the model download, the last trouble for eight seconds, or what the brain said about what he sent (Sky/StarBrain)
         if v.error != voiceErr { voiceErr = v.error; voiceErrAt = now }
-        put(\.voiceNote, v.progress.map { "正在下载中英文识别模型 \(Int(($0 * 100).rounded()))%" } ?? (now - voiceErrAt < 8000 ? v.error : nil))
+        put(\.voiceNote, v.progress.map { "正在下载中英文识别模型 \(Int(($0 * 100).rounded()))%" } ?? (now - voiceErrAt < 8000 ? v.error : nil) ?? (now < brainNoteUntil ? brainNote : nil))
         if v.state != voiceState {
             let was = voiceState
             wake()

@@ -269,7 +269,7 @@ struct StarChrome: View {
             .opacity(on ? 1 : 0)
             .animation(.easeOut(duration: 0.3), value: on)
             .allowsHitTesting(false)
-            .offset(x: 30, y: 846)
+            .offset(x: 30, y: 846 - ui.attach.rise)
     }
     private var herText: Text {
         var a = AttributedString()
@@ -286,6 +286,7 @@ struct StarChrome: View {
     /// words and attachments go together; with no words, the attachments are named
     private func sendComposer() {
         let words = ui.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if BrainLink.shared.hasToken && ui.attach.hasItems { return engine.sendToBrain(words) }
         let sent = ui.attach.take()
         if words.isEmpty && sent.isEmpty { return }
         // her reply to what was sent: a file is offered a first read, a picture asks what to do with it

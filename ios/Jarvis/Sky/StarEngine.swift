@@ -82,6 +82,8 @@ final class StarEngine {
     #if DEBUG
     var voiceFake: ((Double) -> VoiceShot)?
     #endif
+    // what he typed and attached on its way to the brain (Sky/StarBrain): the line over the composer, and whether a send is in flight
+    var brainNote: String?, brainNoteUntil = 0.0, sendingToBrain = false
     var dateD: Int?
     var drawer = false
     weak var herDrive: HerDrive?
