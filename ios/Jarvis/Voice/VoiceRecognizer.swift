@@ -157,8 +157,9 @@ final class VoiceLane: @unchecked Sendable {
             let timer = Task { try? await Task.sleep(nanoseconds: UInt64(deadline * 1e9)); resume(nil) }
             Task { resume(await work.value); timer.cancel() }
         }
-        if let done { return done }
+        if let done { VoiceTrace.note("lane \(lang.rawValue) finished: \(done.text.count) chars, confidence \(done.confidence)"); return done }
         log.error("voice lane \(self.lang.rawValue) missed the \(deadline)s deadline; using what it had")
+        VoiceTrace.note("lane \(lang.rawValue) missed the \(deadline)s deadline")
         work.cancel()
         Task { await self.cancel() }
         return got.withLock { LaneResult(lang: lang, text: $0.text, confidence: $0.text.isEmpty ? 0 : meanConfidence($0.conf)) }
@@ -203,9 +204,10 @@ final class DualRecognizer: @unchecked Sendable {
         self.lanes = lanes
         starts = lanes.map { l in
             Task {
-                do { try await l.start() } catch {
+                do { try await l.start(); VoiceTrace.note("lane \(l.lang.rawValue) started") } catch {
                     l.markDead()
                     log.error("voice lane \(l.lang.rawValue) did not start: \(String(describing: error))")
+                    VoiceTrace.note("lane \(l.lang.rawValue) did not start: \(String(describing: error))")
                     onDead(l.lang, lanes.allSatisfy(\.isDead))
                 }
             }
@@ -252,7 +254,9 @@ final class DualRecognizer: @unchecked Sendable {
                 try Task.checkCancellation()
                 log.error("voice assets for \(locale.identifier) failed: \(String(describing: error))")
             }
-            if await AssetInventory.status(forModules: [t]) != .installed { missing.append(lang) }
+            let installed = await AssetInventory.status(forModules: [t]) == .installed
+            VoiceTrace.note("assets \(locale.identifier): \(installed ? "installed" : "missing")")
+            if !installed { missing.append(lang) }
         }
         progress(1)
         if missing.count == VoiceLang.allCases.count { throw NSError(domain: "Jarvis.voice", code: 1, userInfo: [NSLocalizedDescriptionKey: "中文和英文语音模型都没装好"]) }

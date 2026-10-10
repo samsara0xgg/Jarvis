@@ -84,6 +84,7 @@ final class WebSocketVoiceLink: VoiceLink {
         var req = URLRequest(url: url)
         req.setValue("Bearer \(ep.token)", forHTTPHeaderField: "Authorization")
         let t = urlSession.webSocketTask(with: req)
+        VoiceTrace.note("ws opening \(url.scheme ?? "")://\(url.host ?? ""):\(url.port.map(String.init) ?? "")\(url.path)")
         task = t
         generation += 1
         let mine = generation
@@ -123,6 +124,7 @@ final class WebSocketVoiceLink: VoiceLink {
             guard mine == generation else { return }
             let status = (t.response as? HTTPURLResponse)?.statusCode
             let replaced = t.closeCode.rawValue == 4000
+            VoiceTrace.note("ws closed: http \(status.map(String.init) ?? "none"), close code \(t.closeCode.rawValue), \((error as NSError).domain) \((error as NSError).code)")
             close(status == 403 ? .unpaired : .notConnected)
             if status == 403 { wanted = false; out.yield(.unpaired); return }
             if replaced { wanted = false; out.yield(.replaced); return }
@@ -138,7 +140,7 @@ final class WebSocketVoiceLink: VoiceLink {
     private func handle(_ f: HostFrame) {
         switch f {
         case .ready(let d, let v, let r): out.yield(.ready(device: d, voice: v, sampleRate: r))
-        case .said(let u, let turn): pending.removeValue(forKey: u)?.c.resume(returning: turn)
+        case .said(let u, let turn): VoiceTrace.note("ws said frame"); pending.removeValue(forKey: u)?.c.resume(returning: turn)
         case .row(let r): out.yield(.row(r))
         case .pong: break
         case .error("retry", _):                      // the host could not write it down: send the same say again

@@ -65,6 +65,8 @@ final class VoiceSession {
     @ObservationIgnored private var linkTask: Task<Void, Never>?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
     @ObservationIgnored private var assetsReady = false
+    @ObservationIgnored private var assetsTriedAt = -60.0      // `now` of the last model install try, so a missing model is retried at most once a minute
+    @ObservationIgnored private var missingNote: String?       // what listening keeps saying while one language's model is not installed
     @ObservationIgnored private var preparing = false
     @ObservationIgnored private var foreground = true
     @ObservationIgnored private var rawLevel = 0.0
@@ -129,6 +131,7 @@ final class VoiceSession {
     }
 
     func start() {
+        VoiceTrace.note("mic tapped, state \(state)")
         guard #available(iOS 26, *) else { errorText = "语音需要 iOS 26 或更新的系统"; return }
         errorText = nil
         switch state {
@@ -180,19 +183,24 @@ final class VoiceSession {
         if preparing { return false }
         preparing = true
         defer { preparing = false }
-        if !(await AVAudioApplication.requestRecordPermission()) { errorText = "没有麦克风权限"; return false }
-        if !assetsReady {
+        let heard = await AVAudioApplication.requestRecordPermission()
+        VoiceTrace.note("microphone permission \(heard ? "granted" : "refused")")
+        if !heard { errorText = "没有麦克风权限"; return false }
+        if !assetsReady && now - assetsTriedAt >= 60 {
+            assetsTriedAt = now
             guard SpeechTranscriber.isAvailable else { errorText = "这台设备不能在本地识别语音"; return false }
             modelProgress = 0
             defer { modelProgress = nil }
             do {
                 let missing = try await DualRecognizer.ensureAssets { p in Task { @MainActor in VoiceSession.shared.modelProgress = p } }
-                assetsReady = true
-                if let lang = missing.first { errorText = lang.modelMissingText }
+                assetsReady = missing.isEmpty
+                missingNote = missing.first?.modelMissingText
+                if let note = missingNote { errorText = note }
             } catch { errorText = "语言模型没装好：\(error.localizedDescription)"; return false }
         }
         do {
             try audio.start()
+            VoiceTrace.note("audio engine started")
             sendReady()
             if tickTask == nil { tickTask = Task { while !Task.isCancelled { tick(); try? await Task.sleep(nanoseconds: 33_000_000) } } }
         } catch { errorText = "打不开麦克风：\(error.localizedDescription)"; return false }
@@ -204,6 +212,7 @@ final class VoiceSession {
         if let link, real == linkIsReal { link.connect(); return }
         linkTask?.cancel()
         link?.disconnect()
+        VoiceTrace.note(real ? "link: websocket to \(endpoint().map { ($0.base.scheme ?? "") + "://" + (BrainLink.host($0.base)) } ?? "?")" : "link: local stub (not paired)")
         let l: VoiceLink = real ? WebSocketVoiceLink(endpoint: endpoint) : LocalStubLink()
         link = l
         linkIsReal = real
@@ -283,7 +292,7 @@ final class VoiceSession {
         set(.listening)
         startedAt = now
         lastWordAt = now
-        errorText = nil
+        errorText = missingNote
         transcript = ""
     }
 
@@ -317,8 +326,9 @@ final class VoiceSession {
         guard state == .thinking else { return }            // cancelled meanwhile
         let text = (wakeTurn ? stripWake(picked.text) : picked.text).trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty {
+            VoiceTrace.note("nothing recognized (picked lane \(picked.lang.rawValue))")
             if wakeTurn { enterListening(); startSegment() }  // only the wake word: now the request
-            else { goIdle(releasing: false) }
+            else { errorText = "没听清，再说一次"; goIdle(releasing: false) }
             return
         }
         language = picked.lang
@@ -341,17 +351,20 @@ final class VoiceSession {
         lastActivityAt = now
         ensureLink()
         let seq = turnSeq
+        VoiceTrace.note("say sent: \(text.count) chars, spoken \(spoken), lang \(lang?.rawValue ?? "none")")
         Task {
             do {
                 guard let link else { return }
                 let turn = try await link.say(utteranceId: UUID().uuidString, text: text, language: lang, confidence: confidence, spoken: spoken)
                 guard seq == turnSeq else { return }
+                VoiceTrace.note("said acknowledged by the host")
                 awaitingSaid = false
                 currentTurn = turn
                 let held = heldRows
                 heldRows = []
                 for r in held { handleRow(r) }
             } catch {
+                VoiceTrace.note("say failed: \(error.localizedDescription)")
                 if seq == turnSeq { fail(error.localizedDescription) }
             }
         }
@@ -403,7 +416,8 @@ final class VoiceSession {
 
     private func handle(_ e: LinkEvent) {
         switch e {
-        case .ready(_, let voice, _):
+        case .ready(_, let voice, let rate):
+            VoiceTrace.note("host ready: voice \(voice), rate \(rate)")
             hostVoice = voice
             readySent = false
             sendReady()
@@ -419,6 +433,7 @@ final class VoiceSession {
         case .unpaired: fail("还没有和 Jarvis 配对")
         case .replaced: fail("Jarvis 在这台手机的另一条连接上被接管了")
         case .closed:
+            VoiceTrace.note("link closed")
             readySent = false
             if state == .thinking || state == .speaking { fail("和 Jarvis 的连接断了") }
         }
