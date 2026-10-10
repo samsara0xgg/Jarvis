@@ -43,7 +43,8 @@ final class VoiceSession {
     // MARK: timings
 
     private let silenceEnd = 0.8       // no new words and a quiet mic after speech began: the utterance is over
-    private let noSpeech = 6.0         // nothing said this long after listening began: back to idle (also the follow-up window)
+    private let noSpeech = 10.0        // nothing said this long after listening began: back to idle (also the follow-up window; the Mac's conversation_idle_exit_s)
+    private let waitHold = 60.0        // after 「等一下」 the microphone stays open this long (the Mac's conversation_wait_s)
     private let utteranceCap = 30.0
     private let quiet = 0.3            // input level below this is quiet
     private let bargeLevel = 0.12      // words heard while she talks only count as him when the mic is at least this loud
@@ -62,6 +63,7 @@ final class VoiceSession {
     @ObservationIgnored private var judgedOverHer = ""     // the start of this segment's text already judged echo or a nod
     @ObservationIgnored private var overHer: OverHer?
     @ObservationIgnored private var ducked = false
+    @ObservationIgnored private var waitUntil = 0.0       // listening is held open until then after 「等一下」
     @ObservationIgnored private var lastTrouble: (overloads: UInt64, gaps: UInt64) = (0, 0)
     @ObservationIgnored private var segmentText = ""
     @ObservationIgnored private var segmentAt = 0.0
@@ -347,6 +349,7 @@ final class VoiceSession {
         self.wakeTurn = false
         set(.thinking)
         sayAt = now
+        waitUntil = 0                                       // he spoke: the wait is over
         lastActivityAt = now                                // the no-reply clock starts here, not at the last turn (the finals take a moment)
         playedAtSay = audio.core?.playedSamples ?? 0        // her earlier replies are not this turn's audio: thinking stays thinking until new audio plays
         rec = nil
@@ -423,10 +426,20 @@ final class VoiceSession {
     }
 
     private func replyFinished() {
-        if typedTurn || commandSaid == .stop || commandSaid == .wait || commandSaid == .goodnight { goIdle(releasing: false); return }
+        if commandSaid == .wait { holdForWait(); return }
+        if typedTurn || commandSaid == .stop || commandSaid == .goodnight { goIdle(releasing: false); return }
         // a short window to answer without tapping; its own silence timer ends it
         endTurn()
         enterListening()
+        if #available(iOS 26, *) { startSegment() }
+    }
+
+    /// 「等一下」: she is quiet and the microphone stays open for a minute; anything he says then is a turn.
+    private func holdForWait() {
+        VoiceTrace.note("waiting for him: listening \(Int(waitHold)) s")
+        endTurn()
+        enterListening()
+        waitUntil = now + waitHold
         if #available(iOS 26, *) { startSegment() }
     }
 
@@ -440,6 +453,7 @@ final class VoiceSession {
         audio.core?.stopNow()
         duck(false)
         herWords = ""
+        waitUntil = 0
         set(.idle)
         wakeTurn = false
         endTurn()
@@ -531,8 +545,8 @@ final class VoiceSession {
         case .listening:
             let age = t - startedAt
             if !segmentText.isEmpty, t - lastWordAt > silenceEnd, inputLevel < quiet { endUtterance() }
-            else if segmentText.isEmpty, age > noSpeech { VoiceTrace.note("no words for \(Int(noSpeech)) s: idle"); goIdle(releasing: false) }
-            else if age > utteranceCap { endUtterance() }
+            else if segmentText.isEmpty, age > noSpeech, t > waitUntil { VoiceTrace.note("no words for \(Int(noSpeech)) s: idle"); goIdle(releasing: false) }
+            else if age > utteranceCap + (waitUntil > 0 ? waitHold : 0) { endUtterance() }
         case .thinking, .speaking:
             guard let core = audio.core, !typedTurn else { return }
             if core.trouble != lastTrouble { lastTrouble = core.trouble; VoiceTrace.note("player: \(lastTrouble.overloads) overloads, \(lastTrouble.gaps) gaps") }
@@ -550,7 +564,7 @@ final class VoiceSession {
                     replyFinished()
                 }
             } else if t - lastActivityAt > (quietAfter ? 3 : noReply) {
-                if quietAfter { goIdle(releasing: false) } else { fail("Jarvis 没有回应") }
+                if commandSaid == .wait { holdForWait() } else if quietAfter { goIdle(releasing: false) } else { fail("Jarvis 没有回应") }
             }
         case .idle:
             // armed: a phrase that is not the wake word is forgotten, and a long silence restarts the recognizer
