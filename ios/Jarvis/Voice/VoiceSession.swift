@@ -675,6 +675,7 @@ final class VoiceSession {
             if typedTurn || !hostVoice { replyFinished() }
         case "response.cancelled":
             if let id = r.payload["response_id"] as? String, waitLines.contains(id) { return }
+            if held { return }                              // his words over her are being judged: a turn verdict cancels this answer, the verdict decides
             goIdle(releasing: false)
         case "response.failed":
             if let id = r.payload["response_id"] as? String, waitLines.contains(id) { return }
