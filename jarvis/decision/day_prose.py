@@ -1,4 +1,4 @@
-"""L3 day prose: the input and the gate for the one model-made line of the ledger (ADR 0200).
+"""L3 day prose: the input and the gate for the one model-made line of the ledger (ADR 0201).
 
 A day's computed numbers, its conversation summary and its work report go in; two to four plain
 sentences come out, or the reason to store nothing. The runtime owns when it runs and the client;

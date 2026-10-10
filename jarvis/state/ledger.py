@@ -12,7 +12,7 @@ Every number is arithmetic over rows. A day's working hours are the union of its
 once count once). A working day starts at the first run of activity that ends after 05:00 and stops
 at the last run that begins before 05:00 the next morning; a run is activity separated from the next
 by less than four hours. Only the day's "The day" prose line, which the decision layer writes once a
-night from these numbers, is model-made (ADR 0200).
+night from these numbers, is model-made (ADR 0201).
 """
 
 from __future__ import annotations

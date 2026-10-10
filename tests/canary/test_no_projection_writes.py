@@ -61,7 +61,7 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # every utterance and answer, append-only, plus the summaries that stand
     # in for compacted history (session compaction), and the message a turn
     # sent for its row (docs/plans/replay-as-sent-proposal.md). Not a
-    # projection of events. ADR 0200: day_prose is the nightly "The day" line of the ledger.
+    # projection of events. ADR 0201: day_prose is the nightly "The day" line of the ledger.
     "jarvis/state/memory_db.py": frozenset(
         {"records", "summaries", "sent", "day_summaries", "day_prose"},
     ),

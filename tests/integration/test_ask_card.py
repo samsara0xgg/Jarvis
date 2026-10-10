@@ -140,7 +140,7 @@ def test_a_kept_fact_is_one_about_the_user_line_and_its_topic_rewrites_it_in_pla
     remember_fact(db, "送餐地址", "1 Test St")
     remember_fact(db, "饮食偏好", "不吃香菜")
     remember_fact(db, "送餐地址", "2 Sample Rd")
-    today = datetime.now().astimezone().date().isoformat()  # ADR 0200: each line carries a note
+    today = datetime.now().astimezone().date().isoformat()  # ADR 0201: each line carries a note
     assert render_context(db, exclude_id="").profile == (
         f"[About the user]\n### 关于你\n- ({today}, set) 送餐地址: 2 Sample Rd"
         f"\n- ({today}, set) 饮食偏好: 不吃香菜"

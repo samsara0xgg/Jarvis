@@ -101,7 +101,7 @@ def test_history_replays_records_by_role_from_since(tmp_path: Path) -> None:
 
     ctx = render_context(db, exclude_id="new-6", since=SINCE, now=NOW)
 
-    # ADR 0200: each core-memory line carries its first-seen date and kind.
+    # ADR 0201: each core-memory line carries its first-seen date and kind.
     assert ctx.profile == (
         "[About the user]\n### 关于你\n- (2026-09-14, set) 用户叫 Allen。"
         "\n- (2026-09-14, set) 默认用中文。"
