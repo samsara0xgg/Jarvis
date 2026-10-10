@@ -70,7 +70,7 @@ def test_the_first_read_migrates_profile_and_prompts_render_core_memory(tmp_path
                 ("fact:送餐地址", LEGACY_TS, "送餐地址: 1 Test St"),
             ],
         )
-    # ADR 0199: each line carries its first-seen date and kind.
+    # ADR 0200: each line carries its first-seen date and kind.
     rendered = (
         "### 关于你\n- (2026-09-01, set) The user's name is Ada."
         "\n- (2026-09-01, set) Prefers short answers.\n- (2026-09-01, set) 送餐地址: 1 Test St"

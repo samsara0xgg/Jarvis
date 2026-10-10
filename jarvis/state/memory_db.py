@@ -235,7 +235,7 @@ class SessionSettings:
         )
 
 
-# ADR 0199: (now, the last record's time) -> (the text that follows the core memory, the text that
+# ADR 0200: (now, the last record's time) -> (the text that follows the core memory, the text that
 # follows the time line).
 Ledger = Callable[[datetime, datetime | None], tuple[str, str]]
 
@@ -705,7 +705,7 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
     on, the oldest hidden in blocks of 50 while they exceed ``raw_max_chars``. With no day
     summary stored it renders the rolling layout.
 
-    ``ledger`` (ADR 0199) is asked, with the same ``now`` and the time of the last record, for
+    ``ledger`` (ADR 0200) is asked, with the same ``now`` and the time of the last record, for
     the text that follows the core memory in ``profile`` and the text that follows the time line
     in ``now``.
     """
@@ -1036,7 +1036,7 @@ def append_day_prose(  # noqa: PLR0913 — the row's columns, all required.
     input_chars: int,
     output_chars: int,
 ) -> str:
-    """Append one day's "The day" line (ADR 0199), return its id; a day's latest row is current."""
+    """Append one day's "The day" line (ADR 0200), return its id; a day's latest row is current."""
     prose_id = f"day-prose:{day}:{uuid.uuid4().hex}"
     with closing(open_memory_db(path)) as conn, conn:
         conn.execute(

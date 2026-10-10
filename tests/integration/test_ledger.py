@@ -1,4 +1,4 @@
-"""ADR 0199 — the ledger: his days, weeks and job hunt computed from his own data.
+"""ADR 0200 — the ledger: his days, weeks and job hunt computed from his own data.
 
 Real memory.db, Event Log and a TimeSink-shaped sqlite built in ``tmp_path``; the day-prose
 call is the only fake (a client that answers from a script and records what it was asked).

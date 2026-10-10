@@ -257,7 +257,7 @@ day_summary:
     ### Decisions and facts the user stated
     ### Unfinished
 
-# ADR 0199 — 账本：决策模型的提示里带上由他自己的数据算出的日/周/月事实（最近 14 天、本周、上周、
+# ADR 0200 — 账本：决策模型的提示里带上由他自己的数据算出的日/周/月事实（最近 14 天、本周、上周、
 # 近 30 天、求职、今天到现在、上次聊完之后），所有数字都是对原始记录的算术。enabled 不是 true
 # 或没有 ledger 块 = 不加。full_days / compact_days：详细几天、一行一天几天。
 # prose：每晚（在 day_summary 的每日任务里，核心记忆之后）给最近 prose.days 个还没有的完整日期

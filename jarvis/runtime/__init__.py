@@ -662,7 +662,7 @@ class JarvisRuntime:
     voice_settings: VoiceSettings | None = None
     # ADR 0101: the day before's report, written once a day. None = `daily_report.at` unset.
     daily_schedule: DailySchedule | None = None
-    # ADR 0199: the day, week and job-hunt blocks of the prompt, from his own data. None = off
+    # ADR 0200: the day, week and job-hunt blocks of the prompt, from his own data. None = off
     # (no ``ledger:`` block, or no memory store).
     ledger: LedgerContext | None = None
     # ADR 0170: ``brain`` runs headless and starts nothing device-bound.
@@ -1229,7 +1229,7 @@ def _timesink_db_path(full_config: Mapping[str, Any]) -> Path | None:
 def _ledger(
     full_config: Mapping[str, Any], memory: MemorySettings | None, event_log: Path,
 ) -> LedgerContext | None:
-    """ADR 0199: the one ledger both prompt renders ask; None without a ``ledger:`` block."""
+    """ADR 0200: the one ledger both prompt renders ask; None without a ``ledger:`` block."""
     settings = LedgerSettings.from_config(full_config.get("ledger"))
     if settings is None or memory is None:
         return None

@@ -1,4 +1,4 @@
-# ADR 0199 — The prompt carries a ledger computed from his data
+# ADR 0200 — The prompt carries a ledger computed from his data
 
 **Status:** Accepted
 **Date:** 2026-10-09

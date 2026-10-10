@@ -1,4 +1,4 @@
-"""Runtime wiring for the ledger (ADR 0199): the prompt blocks and the nightly "The day" line.
+"""Runtime wiring for the ledger (ADR 0200): the prompt blocks and the nightly "The day" line.
 
 :class:`LedgerContext` is the callable ``render_context`` asks for the day, week and job-hunt
 blocks. The standing blocks are one text per local day, cached here; the per-turn blocks are

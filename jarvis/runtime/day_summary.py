@@ -234,7 +234,7 @@ class DaySummarySchedule:
         return outcomes
 
     def _write_prose(self, today: date) -> None:
-        """The ledger's "The day" lines (ADR 0199); their failure never fails what ran before."""
+        """The ledger's "The day" lines (ADR 0200); their failure never fails what ran before."""
         if self._ledger is None or self._ledger.settings.prose is None:
             return
         prose = self._ledger.settings.prose
