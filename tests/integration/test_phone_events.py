@@ -51,7 +51,6 @@ from jarvis.surface.terminal_events import (
     PLAYBACK_EVENT_TYPES,
     BrainEvents,
 )
-from jarvis.surface.terminal_link import TerminalHub
 from tests.integration.test_terminal_voice import (
     REMOTE,
     TERMINAL_WS,
@@ -491,13 +490,14 @@ def test_the_local_key_alone_is_a_403_and_only_a_paired_devices_token_opens_the_
     assert [uid for uid, *_ in _rows(log)] == [_uid(1)]
 
 
-def test_a_daemon_that_is_not_a_brain_has_no_such_route(tmp_path: Path) -> None:
-    """No hub with events, no route: it is 404 even to a caller holding every credential."""
+def test_a_daemon_that_does_not_listen_has_no_such_route(tmp_path: Path) -> None:
+    """No log to append to, or no device tokens, no route: 404 to a holder of every credential."""
     token = pair_device(tmp_path, "phone")
-    for hub in (None, TerminalHub()):
+    events_only = (BrainEvents(sqlite3.connect(":memory:")), None)
+    for events, name in ((None, lambda _t: "phone"), events_only):
         app = create_app(InherentDeps(
-            submit_callable=lambda _text: "T1", broadcaster=InherentBroadcaster(), terminals=hub,
-            device_name=None if hub is None else (lambda _t: "phone"),
+            submit_callable=lambda _text: "T1", broadcaster=InherentBroadcaster(),
+            phone_events=events, device_name=name,
         ))
         require_local_key(
             app, lambda _h: True, device_token_matches=lambda _t: True,
@@ -586,7 +586,7 @@ class _LoopOwnedBrain:
         app = create_app(InherentDeps(
             submit_callable=lambda _text: "T1",
             broadcaster=InherentBroadcaster(),
-            terminals=TerminalHub(events=BrainEvents(conn)),
+            phone_events=BrainEvents(conn),
             device_name=lambda token: device_name_for_token(self.root, token),
         ))
         require_local_key(

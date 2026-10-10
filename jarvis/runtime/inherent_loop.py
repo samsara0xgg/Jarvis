@@ -6800,6 +6800,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             ),
             live=live_voice,
             terminals=runtime.terminal_hub if runtime.listen_addresses else None,
+            phone_events=runtime.phone_events if runtime.listen_addresses else None,
             device_name=(
                 functools.partial(device_name_for_token, runtime.runtime_paths.root)
                 if runtime.listen_addresses

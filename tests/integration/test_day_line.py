@@ -53,7 +53,6 @@ from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.phone_events import PHONE_EVENTS_PATH
 from jarvis.surface.terminal_events import BrainEvents
-from jarvis.surface.terminal_link import TerminalHub
 from tests.integration.test_ledger import _PROJECT, _SPAN, _VERDICT
 from tests.integration.test_terminal_voice import REMOTE, _bearer, _brain_log
 
@@ -1328,11 +1327,11 @@ def _client(
     log = tmp_path / "events.db"
     conn = _brain_log(log)
     stores = _stores(tmp_path, ZoneInfo(zone or VANCOUVER))
-    hub = TerminalHub(events=BrainEvents(conn)) if phone else None
+    events = BrainEvents(conn) if phone else None
     app = create_app(InherentDeps(
         submit_callable=lambda _text: "T1",
         broadcaster=InherentBroadcaster(),
-        terminals=hub,
+        phone_events=events,
         device_name=functools.partial(device_name_for_token, tmp_path) if phone else None,
         day_read=functools.partial(
             _serve_day, log, None if zone is None else ZoneInfo(zone),

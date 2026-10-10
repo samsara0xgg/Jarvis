@@ -133,6 +133,7 @@ if TYPE_CHECKING:
 
     from starlette.types import ASGIApp, Receive, Scope, Send
 
+    from jarvis.surface.terminal_events import BrainEvents
     from jarvis.surface.voice_controls import VoiceControls
     from jarvis.surface.voice_live import LiveVoice
 
@@ -566,10 +567,12 @@ class InherentDeps:
     live: LiveVoice | None = None
     # ADR 0170: the brain's terminals. ``terminals`` holds the connected ones and
     # ``device_name`` maps a device token to the paired name it belongs to; the route
-    # ``/terminal/ws`` exists only with both, i.e. only where device tokens are wired; so does
-    # ``POST /inherent/device/events`` (ADR 0197), which also needs the hub's ``events``.
+    # ``/terminal/ws`` exists only with both, i.e. only where device tokens are wired.
+    # ``POST /inherent/device/events`` (ADR 0197) needs ``device_name`` and ``phone_events``,
+    # the log it appends to; a Mac running alone has that without a hub (ADR 0206).
     terminals: TerminalHub | None = None
     device_name: Callable[[str], str | None] | None = None
+    phone_events: BrainEvents | None = None
     # ADR 0196: the four device-pairing routes. ``None`` leaves them unregistered (404).
     pairing: DevicePairing | None = None
     # ADR-0018: the quota dashboard's read model and its on-demand poll.
@@ -2180,34 +2183,34 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
                 return
             await serve_terminal(terminals, ws, name)
 
-        if terminals.events is not None:
-            brain_events = terminals.events
+    if deps.phone_events is not None and deps.device_name is not None:
+        phone_name, brain_events = deps.device_name, deps.phone_events
 
-            @app.post(PHONE_EVENTS_PATH)
-            async def post_phone_events(request: Request) -> dict[str, Any]:
-                """ADR 0197: a paired phone's batch of sensed events, each appended once.
+        @app.post(PHONE_EVENTS_PATH)
+        async def post_phone_events(request: Request) -> dict[str, Any]:
+            """ADR 0197: a paired phone's batch of sensed events, each appended once.
 
-                Only a paired device's own token opens it; the local key is refused here as it
-                is on ``/terminal/ws``. ``async`` on purpose: the append runs on the loop
-                thread that owns the runtime's log connection, as the socket's does, and a
-                plain ``def`` would run it on a worker thread the connection is closed to.
-                """
-                token = _v2_presented_token(request.headers.get("authorization"))
-                name = None if token is None else device_name(token)
-                if name is None:
-                    raise HTTPException(
-                        status_code=403, detail="a paired device's token is required",
-                    )
-                try:
-                    body = json.loads(await _capped_body(request, MAX_BATCH_BYTES))
-                except (ValueError, RecursionError):
-                    body = None
-                frames = body.get("events") if isinstance(body, dict) else None
-                if not isinstance(frames, list):
-                    raise HTTPException(status_code=400, detail='send {"events": [...]}')
-                if len(frames) > MAX_BATCH_FRAMES:
-                    raise HTTPException(status_code=413, detail="too many events in one batch")
-                return {"acks": brain_events.record_phone_batch(name, frames)}
+            Only a paired device's own token opens it; the local key is refused here as it
+            is on ``/terminal/ws``. ``async`` on purpose: the append runs on the loop
+            thread that owns the runtime's log connection, as the socket's does, and a
+            plain ``def`` would run it on a worker thread the connection is closed to.
+            """
+            token = _v2_presented_token(request.headers.get("authorization"))
+            name = None if token is None else phone_name(token)
+            if name is None:
+                raise HTTPException(
+                    status_code=403, detail="a paired device's token is required",
+                )
+            try:
+                body = json.loads(await _capped_body(request, MAX_BATCH_BYTES))
+            except (ValueError, RecursionError):
+                body = None
+            frames = body.get("events") if isinstance(body, dict) else None
+            if not isinstance(frames, list):
+                raise HTTPException(status_code=400, detail='send {"events": [...]}')
+            if len(frames) > MAX_BATCH_FRAMES:
+                raise HTTPException(status_code=413, detail="too many events in one batch")
+            return {"acks": brain_events.record_phone_batch(name, frames)}
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:

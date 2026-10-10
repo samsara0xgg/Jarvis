@@ -6,8 +6,8 @@ when the brain listens beyond loopback (no token, a wrong one, a revoked one, th
 and a wrong Host from a remote peer are refused, a paired device's token is accepted, a
 peer on loopback is checked as before); the v2 socket and its HTTP input route taking the
 device token from a remote peer and the boot token from loopback only; `runtime.listen_*`
-refused unless the role is brain; and the one-shot CLI as a remote client of a real server,
-exiting non-zero with a reason when the turn fails.
+open to a brain and to a Mac running alone (ADR 0206); and the one-shot CLI as a remote client
+of a real server, exiting non-zero with a reason when the turn fails.
 """
 
 from __future__ import annotations
@@ -333,32 +333,32 @@ def test_the_v2_routes_take_the_device_token_from_a_remote_peer_only(
 # --- runtime.listen_* ---------------------------------------------------------
 
 
-def test_listen_settings_are_empty_by_default_and_need_the_brain_role(
+def test_listen_settings_are_empty_by_default_and_either_role_may_set_them(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Default: loopback only. Any extra address or host with another role stops the boot."""
-    for i in range(4):
+    """Default: loopback only. A brain and a Mac running alone (ADR 0206) may listen further.
+
+    Only a brain has a terminal hub; any daemon that listens can take a phone's events.
+    """
+    for i in range(3):
         (tmp_path / str(i)).mkdir()
+    listen = f"  listen_addresses: ['{REMOTE}']\n  listen_hosts: [jarvis]\n"
     default = _runtime(tmp_path / "0", "assistant_name: Jarvis\n", monkeypatch)
-    brain = _runtime(
-        tmp_path / "1",
-        f"runtime:\n  role: brain\n  listen_addresses: ['{REMOTE}']\n"
-        "  listen_hosts: [jarvis]\n",
-        monkeypatch,
-    )
+    brain = _runtime(tmp_path / "1", f"runtime:\n  role: brain\n{listen}", monkeypatch)
+    alone = _runtime(tmp_path / "2", f"runtime:\n  role: all\n{listen}", monkeypatch)
     try:
         assert (default.listen_addresses, default.listen_hosts) == ((), ())
-        assert brain.listen_addresses == (REMOTE,)
-        assert brain.listen_hosts == ("jarvis",)
+        assert default.phone_events is None
+        for listening in (brain, alone):
+            assert listening.listen_addresses == (REMOTE,)
+            assert listening.listen_hosts == ("jarvis",)
+            assert listening.phone_events is not None
+        assert brain.terminal_hub is not None
+        assert alone.terminal_hub is None
     finally:
         default.conn.close()
         brain.conn.close()
-
-    for i, (key, value) in enumerate(
-        (("listen_addresses", f"['{REMOTE}']"), ("listen_hosts", "[jarvis]")), start=2,
-    ):
-        with pytest.raises(RuntimeBootstrapError, match=r"need runtime\.role: brain"):
-            _runtime(tmp_path / str(i), f"runtime:\n  {key}: {value}\n", monkeypatch)
+        alone.conn.close()
 
 
 @pytest.mark.parametrize(
@@ -374,7 +374,7 @@ def test_listen_settings_are_empty_by_default_and_need_the_brain_role(
         ("listen_hosts: ['']", "no wildcards"),
     ],
 )
-def test_a_brain_never_listens_on_a_wildcard_or_public_address(
+def test_a_daemon_never_listens_on_a_wildcard_or_public_address(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setting: str, message: str,
 ) -> None:
     """The settings cannot open the daemon to the internet."""

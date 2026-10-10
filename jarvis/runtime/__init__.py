@@ -377,11 +377,12 @@ def _role(config: Mapping[str, Any]) -> Role:
     raise RuntimeBootstrapError(msg)
 
 
-def _listen(config: Mapping[str, Any], role: Role) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """``runtime.listen_addresses`` and ``runtime.listen_hosts``: where a brain also answers.
+def _listen(config: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``runtime.listen_addresses`` and ``runtime.listen_hosts``: where the daemon also answers.
 
-    Only a brain may have any, and only on private addresses (ADR 0170): a wildcard or a
-    public address stops the boot, so no setting can open the daemon to the internet.
+    A brain may have any (ADR 0170), and so may a Mac running alone (ADR 0206), only on private
+    addresses: a wildcard or a public address stops the boot, so no setting can open the daemon
+    to the internet.
     """
     block = config.get("runtime")
     block = block if isinstance(block, Mapping) else {}
@@ -392,9 +393,6 @@ def _listen(config: Mapping[str, Any], role: Role) -> tuple[tuple[str, ...], tup
             raise RuntimeBootstrapError(msg)
     if not raw["listen_addresses"] and not raw["listen_hosts"]:
         return (), ()
-    if role != "brain":
-        msg = "runtime: runtime.listen_addresses and listen_hosts need runtime.role: brain"
-        raise RuntimeBootstrapError(msg)
     for item in raw["listen_addresses"]:
         try:
             address = ipaddress.ip_address(item)
@@ -571,11 +569,13 @@ class JarvisRuntime:
             means inert" posture as an empty ``tier0_table``).
         role: ``runtime.role`` (ADR 0170); the daemon starts no microphone,
             playback, power observer or device watcher in ``brain``.
-        listen_addresses: ``runtime.listen_addresses``, the private addresses a
-            brain also listens on; ``listen_hosts``, the Host names it accepts
-            there. Empty unless the role is ``brain``.
+        listen_addresses: ``runtime.listen_addresses``, the private addresses the
+            daemon also listens on; ``listen_hosts``, the Host names it accepts
+            there. Empty by default (ADR 0170, 0206).
         terminal_hub: the connected terminals a brain's device-bound tool calls go to;
             ``None`` unless the role is ``brain``.
+        phone_events: where a paired phone's events are appended (ADR 0197); ``None``
+            unless the daemon is a brain or listens beyond loopback (ADR 0206).
     """
 
     config: Mapping[str, Any]
@@ -668,11 +668,14 @@ class JarvisRuntime:
     ledger: LedgerContext | None = None
     # ADR 0170: ``brain`` runs headless and starts nothing device-bound.
     role: Role = "all"
-    # ADR 0170: the private addresses a brain also listens on, and the Host names it accepts.
+    # ADR 0170, 0206: the private addresses the daemon also listens on, and the Host names it
+    # accepts.
     listen_addresses: tuple[str, ...] = ()
     listen_hosts: tuple[str, ...] = ()
     # ADR 0170: where a brain's device-bound tool calls go. None unless ``role`` is ``brain``.
     terminal_hub: TerminalHub | None = None
+    # ADR 0197, 0206: where a paired phone's events are appended.
+    phone_events: BrainEvents | None = None
 
 
 @dataclass(frozen=True)
@@ -2597,7 +2600,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     # user's settings.yaml for this boot.
     full_config = apply_settings(_load_full_config(config_path, paths.settings), paths.root)
     role = _role(full_config)
-    listen_addresses, listen_hosts = _listen(full_config, role)
+    listen_addresses, listen_hosts = _listen(full_config)
     full_config = _for_role(full_config, role)
     lang.set_language(_language(full_config))
     log_llm_io = diagnostics_flag(full_config, "log_llm_io")
@@ -2617,7 +2620,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
     memory = MemorySettings.from_config(full_config.get("memory"), runtime_root=paths.root)
     # ADR 0170: a brain's TimeSink and git are its terminal's, so what reads them asks the hub.
-    terminal_hub = TerminalHub(events=BrainEvents(conn)) if role == "brain" else None
+    phone_events = BrainEvents(conn) if role == "brain" or listen_addresses else None
+    terminal_hub = TerminalHub(events=phone_events) if role == "brain" else None
     device = None if terminal_hub is None else terminal_hub.call
     moment = _moment(full_config, config_path, memory.db_path, device)
     # ADR 0068: refuse a memory.db a newer Jarvis wrote before anything writes to it.
@@ -2869,6 +2873,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         listen_addresses=listen_addresses,
         listen_hosts=listen_hosts,
         terminal_hub=terminal_hub,
+        phone_events=phone_events,
         tier0_table=tier0_table,
         confirm_grammar_table=confirm_grammar_table,
         wave1_features=wave1_features,

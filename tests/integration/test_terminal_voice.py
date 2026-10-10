@@ -623,6 +623,7 @@ def _brain_client(
             submit_callable=lambda _text: "T1",
             broadcaster=InherentBroadcaster(),
             terminals=hub,
+            phone_events=hub.events,
             device_name=functools.partial(device_name_for_token, tmp_path),
         ),
     )
