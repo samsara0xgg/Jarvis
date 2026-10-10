@@ -212,6 +212,7 @@ async def serve_phone(hub: PhoneHub, ws: WebSocket, device: str) -> None:
         message = {}
     wants_voice = _hello_voice(message["text"]) if isinstance(message.get("text"), str) else None
     if wants_voice is None:
+        LOGGER.info("phone %s: closed before a hello", device)
         with contextlib.suppress(RuntimeError):
             await ws.close(code=1008)
         return
@@ -232,6 +233,7 @@ async def serve_phone(hub: PhoneHub, ws: WebSocket, device: str) -> None:
             except Exception:
                 LOGGER.exception("phone %s: the voice pipeline could not be built", device)
         streaming = asyncio.create_task(_stream_rows(hub, conn))
+        LOGGER.info("phone %s: connected (voice=%s)", device, conn.voice is not None)
         conn.send_json(
             {
                 "type": "ready", "device": device, "voice": conn.voice is not None,
@@ -267,6 +269,7 @@ async def _end(
         del hub.live[conn.device]
     with contextlib.suppress(RuntimeError):
         await conn.ws.close()
+    LOGGER.info("phone %s: disconnected", conn.device)
     conn.done.set()
 
 
@@ -364,6 +367,7 @@ def _say(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
             confidence=confidence,
         )
     except ValueError as exc:
+        LOGGER.warning("phone %s: say refused: %s", conn.device, exc)
         conn.error("bad_say", str(exc))
         return
     except sqlite3.Error:
