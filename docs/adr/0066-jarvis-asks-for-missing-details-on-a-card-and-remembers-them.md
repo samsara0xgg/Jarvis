@@ -1,6 +1,6 @@
 # ADR 0066 — Jarvis asks for missing details on a card and remembers them
 
-**Status:** Accepted
+**Status:** Superseded-by-0206
 **Date:** 2026-09-26
 **Supersedes:** none
 
