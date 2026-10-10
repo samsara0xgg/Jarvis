@@ -246,6 +246,27 @@ def test_gateway_only_plugin_is_not_connectable(tmp_path: Path, fixture: _Fixtur
         service.stop()
 
 
+def test_asking_again_for_the_offered_app_keeps_its_request_and_another_app_replaces_it(
+    tmp_path: Path, fixture: _Fixture
+) -> None:
+    """ADR 0206: the panel he is looking at keeps its id; only `presentation` moves."""
+    _package(tmp_path, "alpha", {}, app_only=True)
+    _package(tmp_path, "beta", {}, app_only=True)
+    service = _service(tmp_path, fixture)
+    try:
+        first = _open(service, "alpha")
+        shown = service.read()["request"]["presentation"]
+        assert _open(service, "alpha") == first
+        assert _tool_request(service, fixture, "alpha") == first
+        request = service.read()["request"]
+        assert (request["state"], request["presentation"]) == ("offered", shown + 2)
+        other = _open(service, "beta")
+        assert other != first
+        assert service.read()["request"]["plugin_id"] == "beta"
+    finally:
+        service.stop()
+
+
 def test_runtime_choices_survive_restart(tmp_path: Path, fixture: _Fixture) -> None:
     """Enabled/disabled choices, approval and skills reload without rewriting YAML."""
     _package(tmp_path, "echo", ECHO)

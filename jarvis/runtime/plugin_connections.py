@@ -343,6 +343,12 @@ class PluginConnections:
             if self._request["plugin_id"] != plugin_id:
                 msg = t("plugin.busy")
                 raise ValueError(msg)
+        elif (
+            self._request
+            and self._request["state"] == "offered"
+            and self._request["plugin_id"] == plugin_id
+        ):
+            pass  # ADR 0206: asking again for the app he is looking at keeps its panel
         else:
             self._request = {
                 "id": uuid.uuid4().hex,
