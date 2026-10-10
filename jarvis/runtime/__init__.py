@@ -125,7 +125,10 @@ from jarvis.deployment.launchd import logs_dir
 from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
 from jarvis.deployment.night_power import MacPower
 from jarvis.execution.dashboard_tool import build_dashboard_tool
-from jarvis.execution.job_ledger_tool import build_job_ledger_tool
+from jarvis.execution.job_ledger_tool import (
+    build_job_ledger_tool,
+    build_record_application_tool,
+)
 from jarvis.execution.mail_inbox_tool import build_mail_inbox_tool
 from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
 from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth, stdio_env
@@ -1626,8 +1629,14 @@ def _interview_reminders(block: object, config_path: Path) -> InterviewSettings 
 
 
 def _register_job_ledger(registry: ToolRegistry, job_mail: JobMail | None) -> None:
-    """The ``job_ledger`` tool reads what ``GET /inherent/jobs`` serves; absent while it is off."""
-    for tool in build_job_ledger_tool(None if job_mail is None else job_mail.ledger):
+    """``job_ledger`` reads what ``GET /inherent/jobs`` serves, ``record_application`` adds a row.
+
+    Both are absent while job mail is off.
+    """
+    for tool in (
+        *build_job_ledger_tool(None if job_mail is None else job_mail.ledger),
+        *build_record_application_tool(None if job_mail is None else job_mail.add_application),
+    ):
         registry.register(tool)
 
 

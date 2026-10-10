@@ -27,9 +27,10 @@ from bisect import bisect_left
 from collections import Counter, defaultdict
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
+from urllib.parse import parse_qsl, urlsplit
 
 from jarvis.state import phone_day, reminders, timesink
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
@@ -123,6 +124,7 @@ class _Mail:
     event_at: str | None
     event_text: str | None
     message_id: str
+    via_ats: bool = False  # sent by an applicant-tracking system on the employer's behalf
 
     @property
     def cancelled(self) -> bool:
@@ -459,6 +461,7 @@ class _Data:
                     at, sender, subject, str(row[3] or ""), employer, str(row[5] or ""),
                     None if row[6] is None else str(row[6]),
                     None if row[7] is None else str(row[7]), str(row[8]),
+                    company.lower() in _ATS,
                 ),
             )
         return out
@@ -938,6 +941,257 @@ def _cancel_line(mail: _Mail) -> str:
     )
 
 
+# ---------------------------------------------------------- applications submitted (ADR 0213)
+# A submission page seen on screen is a TimeSink span; a mail tab with such a title is not one.
+_MAIL_DOMAINS: Final[frozenset[str]] = frozenset(
+    {"mail.google.com", "outlook.office.com", "outlook.live.com", "outlook.office365.com"},
+)
+_SUCCESS_TITLE: Final[re.Pattern[str]] = re.compile(
+    r"thank you for (applying|your application)|application (submitted|received)"
+    r"|successfully applied|^congratulations$",
+    re.IGNORECASE,
+)
+_SUCCESS_URL: Final[re.Pattern[str]] = re.compile(
+    r"/confirmation(\?|$)|/apply/success|applythankyou|/thanks(\?|$)", re.IGNORECASE,
+)
+_SUCCESS_TAIL: Final[re.Pattern[str]] = re.compile(
+    r"/(?:apply/success|confirmation|success|thanks|applythankyou)/?$", re.IGNORECASE,
+)
+# The spans that can be a success page, narrowed in SQL before the regexes decide.
+_CANDIDATES: Final[str] = """
+SELECT start,title,url,domain FROM span
+WHERE start>=? AND start<=? AND domain IS NOT NULL AND domain!='' AND (
+    title LIKE '%thank you for%' OR title LIKE '%application submitted%'
+    OR title LIKE '%application received%' OR title LIKE '%successfully applied%'
+    OR title LIKE '%congratulations%' OR url LIKE '%confirmation%'
+    OR url LIKE '%/apply/success%' OR url LIKE '%applythankyou%' OR url LIKE '%/thanks%'
+) ORDER BY start
+"""
+_GENERIC_HOST: Final[frozenset[str]] = frozenset(
+    {"jobs", "careers", "www", "job-boards", "boards", "apply"},
+)
+_GREENHOUSE: Final[re.Pattern[str]] = re.compile(r"Job Application for (.+) at (.+)$")
+_GENERIC_TITLE: Final[re.Pattern[str]] = re.compile(
+    r"apply|applying|manual application|loading|job details|sign in|job\d*|jobs at", re.IGNORECASE,
+)
+_SITE_TAIL: Final[re.Pattern[str]] = re.compile(r"\s*\|[^|]*$")
+# ponytail: the whole span table is not scanned per turn, only this far back; widen if the hunt
+# outlasts it (a success page first seen earlier would then count again when revisited).
+_SCREEN_LOOKBACK: Final[timedelta] = timedelta(days=120)
+_TITLE_LOOKBACK: Final[timedelta] = timedelta(hours=2)
+_SAME_SUBMISSION: Final[timedelta] = timedelta(minutes=30)
+_BY_DAY: Final[int] = 7
+_LIST_MAX: Final[int] = 8
+_ROLE_CHARS: Final[int] = 50
+_NAME_PREFIX: Final[int] = 4  # letters of a company name that identify it
+
+
+class _Sub(NamedTuple):
+    """One submitted application: when (local), the company and role as its source named them."""
+
+    at: datetime
+    company: str
+    role: str
+
+
+def _stored(moment: datetime) -> str:
+    """A bound in the text form TimeSink stores instants in (UTC, milliseconds, no suffix)."""
+    return moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.000")
+
+
+def _posting_key(domain: str, url: str) -> str:
+    """The posting a success page belongs to: host and path less the success tail, plus job ids.
+
+    The job ids are the values of the query parameters whose name contains "job".
+    """
+    parts = urlsplit(url)
+    jobs = [v for k, v in parse_qsl(parts.query) if "job" in k.casefold()]
+    return "|".join([domain.casefold() + _SUCCESS_TAIL.sub("", parts.path).casefold(), *jobs])
+
+
+def _host_company(domain: str, url: str) -> str:
+    labels = (urlsplit(url).hostname or domain).split(".")
+    return labels[-2] if labels[0] in _GENERIC_HOST and len(labels) > 1 else labels[0]
+
+
+def _describe(url: str, domain: str, titles: Sequence[str]) -> tuple[str, str]:
+    """The company and role of a success page: its URL first, then the pages seen just before.
+
+    ``titles`` are the same-domain page titles of the two hours before it, newest first.
+    """
+    query = {k.casefold(): v for k, v in parse_qsl(urlsplit(url).query)}
+    green = next((m for title in titles if (m := _GREENHOUSE.search(title))), None)
+    company = query.get("company") or (green[2].strip() if green else "") or _host_company(
+        domain, url,
+    )
+    earlier = (_SITE_TAIL.sub("", title).strip() for title in titles if not (
+        _GENERIC_TITLE.match(title) or _SUCCESS_TITLE.search(title)
+    ))
+    role = query.get("jobtitle") or (green[1].strip() if green else "") or next(
+        (title for title in earlier if title), "",
+    )
+    return company, role
+
+
+def _screen_submissions(src: LedgerSources, as_of: datetime) -> list[_Sub]:
+    """Submission pages seen in the browser, one per posting, at the first sighting."""
+    if src.timesink is None:
+        return []
+    with timesink.snapshot(src.timesink) as snap:
+        if not isinstance(snap, timesink.Snapshot):
+            return []
+        try:
+            first: dict[str, sqlite3.Row] = {}
+            for row in snap.conn.execute(
+                _CANDIDATES, (_stored(as_of - _SCREEN_LOOKBACK), _stored(as_of)),
+            ):
+                url = str(row["url"] or "").split("#")[0]
+                if str(row["domain"]).casefold() not in _MAIL_DOMAINS and (
+                    _SUCCESS_TITLE.search(str(row["title"] or "").strip())
+                    or _SUCCESS_URL.search(url)
+                ):
+                    first.setdefault(_posting_key(str(row["domain"]), url), row)
+            out = []
+            for row in first.values():
+                at = datetime.fromisoformat(timesink.moment(str(row["start"]))).astimezone(src.zone)
+                titles = [
+                    str(r[0]) for r in snap.conn.execute(
+                        "SELECT title FROM span WHERE domain=? AND start<? AND start>=?"
+                        " AND title IS NOT NULL AND title!='' ORDER BY start DESC",
+                        (row["domain"], row["start"], _stored(at - _TITLE_LOOKBACK)),
+                    )
+                ]
+                url = str(row["url"] or "").split("#")[0]
+                out.append(_Sub(at, *_describe(url, str(row["domain"]), titles)))
+        except (sqlite3.Error, ValueError):
+            return []
+    return out
+
+
+def _own_submissions(src: LedgerSources, as_of: datetime) -> list[_Sub]:
+    """What he told Jarvis or added on the Jobs page (``said``, ``manual`` rows), by their date."""
+    with closing(sqlite3.connect(f"file:{src.memory_db}?mode=ro", uri=True)) as conn:
+        try:
+            rows = conn.execute(
+                "SELECT company,role,applied_at FROM job_application"
+                " WHERE source IN ('manual','said') AND COALESCE(hidden,0)=0",
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+    out = []
+    for company, role, applied_at in rows:
+        try:
+            day = date.fromisoformat(str(applied_at))
+        except ValueError:
+            continue
+        if day <= as_of.astimezone(src.zone).date():
+            began = datetime.combine(day, time.min, src.zone)
+            out.append(_Sub(began, str(company), str(role or "")))
+    return out
+
+
+def _receipts(mail: Sequence[_Mail]) -> list[_Sub]:
+    """Confirmation mails, one per submission.
+
+    A receipt within half an hour of a kept one of the same company is the same submission when
+    exactly one of the two came through an applicant-tracking system (the employer and its ATS
+    both confirm); two from the same sender stay two (two roles applied minutes apart).
+    """
+    out: list[_Sub] = []
+    kept: list[_Mail] = []
+    for m in sorted((m for m in mail if m.kind == "receipt"), key=lambda m: m.at):
+        if any(
+            m.at - k.at <= _SAME_SUBMISSION and k.via_ats != m.via_ats
+            and _same_company(k.company, m.company)
+            for k in kept
+        ):
+            continue
+        kept.append(m)
+        out.append(_Sub(m.at, m.company, m.role))
+    return out
+
+
+def _alnum(name: str) -> str:
+    return "".join(ch for ch in name.casefold() if ch.isalnum())
+
+
+def _same_company(a: str, b: str) -> bool:
+    """Equal once only letters and digits are kept, or one holds the other's first four."""
+    ka, kb = _alnum(a), _alnum(b)
+    if not ka or not kb:
+        return False
+    head_a, head_b = ka[:_NAME_PREFIX], kb[:_NAME_PREFIX]
+    return ka == kb or (min(len(ka), len(kb)) >= _NAME_PREFIX and (head_a in kb or head_b in ka))
+
+
+class _Submitted(NamedTuple):
+    mail: list[_Sub]
+    screen: list[_Sub]  # seen on screen with no confirmation mail
+    told: list[_Sub]  # said or added, and in no other source
+
+    @property
+    def every(self) -> list[_Sub]:
+        return [*self.mail, *self.screen, *self.told]
+
+
+def _submitted(data: _Data) -> _Submitted:
+    """Applications submitted, from the three sources, a submission counted once."""
+    receipts = _receipts(data.mail)
+    pages = sorted(_screen_submissions(data.src, data.as_of))
+    taken: set[int] = set()
+    alone: list[_Sub] = []
+    for page in pages:
+        near = [
+            (abs(r.at - page.at), i) for i, r in enumerate(receipts)
+            if i not in taken and abs(r.at - page.at) <= _SAME_SUBMISSION
+            and (_same_company(page.company, r.company)
+                 or (page.role and page.role.casefold() == r.role.casefold()))
+        ]
+        if near:
+            taken.add(min(near)[1])
+        else:
+            alone.append(page)
+    seen = [*receipts, *pages]
+    told = [
+        own for own in _own_submissions(data.src, data.as_of)
+        if not any(
+            _same_company(own.company, s.company)
+            and abs(own.at.date() - s.at.date()) <= timedelta(days=1)
+            for s in seen
+        )
+    ]
+    return _Submitted(receipts, alone, told)
+
+
+def _listed(subs: Sequence[_Sub]) -> str:
+    newest = sorted(subs, reverse=True)
+    shown = "; ".join(
+        f"{s.company.capitalize() if s.company.islower() else s.company}"
+        f" ({_trim(s.role, _ROLE_CHARS) + ', ' if s.role else ''}{s.at:%m-%d})"
+        for s in newest[:_LIST_MAX]
+    )
+    return shown + (f"; +{len(newest) - _LIST_MAX} more" if len(newest) > _LIST_MAX else "")
+
+
+def _submitted_line(data: _Data) -> str:
+    found = _submitted(data)
+    today = data.as_of.astimezone(data.zone).date()
+    days = Counter(s.at.date() for s in found.every)
+    by_day = ", ".join(
+        f"{day:%a %m-%d} {days[day]}" for day in (today - timedelta(days=i) for i in range(_BY_DAY))
+    )
+    line = (
+        f"  Applications submitted: at least {len(found.every)} ({len(found.mail)} by confirmation "
+        f"mail, {len(found.screen)} by a submission page seen on screen with no confirmation "
+        f"mail, {len(found.told)} you told me or added). By day, last {_BY_DAY} days: {by_day}."
+    )
+    if found.screen:
+        line += f" Seen on screen only: {_listed(found.screen)}."
+    if found.told:
+        line += f" Told me or added: {_listed(found.told)}."
+    return line
+
+
 def _job_hunt(data: _Data) -> str:
     comp = _by_company(data.mail)
 
@@ -954,8 +1208,12 @@ def _job_hunt(data: _Data) -> str:
     offers = sorted(c for c, v in comp.items() if v["offer"])
     every = sorted(c for c, v in comp.items() if any(v.values()))
     out = [
-        "[Job hunt as of now · from job mail; ATS senders mapped to the real company; contact name "
-        f"in brackets] {len(every)} companies have confirmation, rejection or interview mail.",
+        "[Job hunt as of now · the lists below are from job mail (ATS senders mapped to the real "
+        "company, contact name in brackets); the submitted count also uses submission pages seen "
+        "in the browser and applications he told me or added, so a portal application with no "
+        f"mail and no such page is not visible unless he tells me] {len(every)} companies have "
+        "confirmation, rejection or interview mail.",
+        _submitted_line(data),
         f"  Application confirmed ({len(applied)}): "
         f"{', '.join(who(c, 'receipt') for c in applied) or 'none'}",
         f"  Rejected ({len(rejected)}): "

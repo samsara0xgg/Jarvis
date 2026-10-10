@@ -69,8 +69,8 @@ def test_the_tool_is_l0_read_only_for_the_model_and_absent_while_job_mail_is_off
     registry.register(tool)
     assert [one.name for one in registry.for_caller(CallerPrincipal.JARVIS_LLM)] == ["job_ledger"]
     on = ToolRegistry()
-    _register_job_ledger(on, cast("Any", SimpleNamespace(ledger=dict)))
-    assert [one.name for one in on.get_definitions()] == ["job_ledger"]
+    _register_job_ledger(on, cast("Any", SimpleNamespace(ledger=dict, add_application=str)))
+    assert [one.name for one in on.get_definitions()] == ["job_ledger", "record_application"]
 
 
 def test_a_row_reads_stage_last_mail_next_event_and_time_spent() -> None:

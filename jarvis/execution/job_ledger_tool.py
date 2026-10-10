@@ -1,10 +1,14 @@
-"""The conversation's way to read the job-mail ledger the Dashboard Jobs page shows (ADR 0155)."""
+"""The conversation's way to read the job ledger (ADR 0155) and to record an application he told.
+
+``job_ledger`` reads what the Dashboard Jobs page shows; ``record_application`` (ADR 0213) adds
+the row of an application he says he submitted somewhere Jarvis has no record of.
+"""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.execution.tools import Tool
+from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
 
 if TYPE_CHECKING:
@@ -24,6 +28,22 @@ _DESCRIPTION: Final = (
     "known, and the time spent on that company's site. Use this when the user asks about job "
     "applications, interviews, offers or how the job hunt is going. Read-only."
 )
+_RECORD_DESCRIPTION: Final = (
+    "Record one job application Allen says he submitted somewhere Jarvis has no record of, for "
+    "example 'I applied to Acme'. Do not use it for a company that is already "
+    "in the job ledger with that role (job_ledger shows what is there). One call per "
+    "application. The role and the date (YYYY-MM-DD, default today) are optional."
+)
+_RECORD_SCHEMA: Final = {
+    "type": "object",
+    "properties": {
+        "company": {"type": "string", "description": "The company he applied to."},
+        "role": {"type": "string", "description": "The role, if he said it."},
+        "applied_at": {"type": "string", "description": "YYYY-MM-DD; today when he did not say."},
+    },
+    "required": ["company"],
+    "additionalProperties": False,
+}
 
 
 def _clip(text: str, limit: int) -> str:
@@ -80,4 +100,38 @@ def build_job_ledger_tool(read: Callable[[], Mapping[str, Any]] | None) -> tuple
     )
 
 
-__all__ = ["MAX_APPLICATIONS", "build_job_ledger_tool"]
+def build_record_application_tool(
+    add: Callable[[Mapping[str, Any]], str] | None,
+) -> tuple[Tool, ...]:
+    """``record_application`` over the runtime's ``add_application``; none while job mail is off."""
+    if add is None:
+        return ()
+
+    def record_application(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+        fields: dict[str, Any] = {
+            "company": str(args.get("company") or ""),
+            "role": str(args.get("role") or ""),
+            "source": "said",
+        }
+        if args.get("applied_at"):
+            fields["applied_at"] = str(args["applied_at"])
+        try:
+            return {"recorded": True, "id": add(fields)}
+        except ValueError as exc:
+            msg = f"record_application: {exc}"
+            raise ToolError(msg, code="invalid_argument") from exc
+
+    return (
+        Tool(
+            name="record_application",
+            description=_RECORD_DESCRIPTION,
+            input_schema=_RECORD_SCHEMA,
+            handler=record_application,
+            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            risk_level="L1",
+            read_only=False,
+        ),
+    )
+
+
+__all__ = ["MAX_APPLICATIONS", "build_job_ledger_tool", "build_record_application_tool"]

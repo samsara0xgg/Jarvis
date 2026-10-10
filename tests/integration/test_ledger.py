@@ -15,13 +15,16 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import openai
+import pytest
 
 from jarvis.decision.day_prose import build_day_prose_messages, check_day_prose
 from jarvis.decision.llm import ChatResult
+from jarvis.execution.job_ledger_tool import build_record_application_tool
+from jarvis.execution.tools import ToolError
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings, ProseSettings, run_day_prose
 from jarvis.state import core_memory
 from jarvis.state.event_log import emit_event, open_event_log
-from jarvis.state.job_ledger import record_seen, upsert_mail
+from jarvis.state.job_ledger import add_application, list_applications, record_seen, upsert_mail
 from jarvis.state.ledger import (
     LedgerSources,
     job_hunt_text,
@@ -411,3 +414,94 @@ def test_day_prose_input_and_gate() -> None:
     assert check_day_prose("Fine.\n- a bullet", "stop", 100) is not None
     assert check_day_prose("# Heading", "stop", 100) is not None
 
+
+
+def _page(ts: Path, start: datetime, title: str, url: str | None, domain: str) -> None:
+    with closing(sqlite3.connect(ts)) as conn, conn:
+        conn.execute(
+            "INSERT INTO span (start, end, appBundleID, appName, title, url, domain, document) "
+            "VALUES (?, ?, ?, 'Chrome', ?, ?, ?, '')",
+            (_utc(start), _utc(start + timedelta(minutes=2)), CHROME, title, url, domain),
+        )
+
+
+def test_applications_submitted_counts_each_submission_once_across_three_sources(
+    tmp_path: Path,
+) -> None:
+    """Block D: mail receipts, success pages seen on screen and what he told her, deduplicated."""
+    src = _world(tmp_path)  # two receipts: Gamma Inc 10-05 and Acme Robotics 10-07
+    assert src.timesink is not None
+    ts, memory = src.timesink, src.memory_db
+    greenhouse = "job-boards.greenhouse.io"
+    # A Greenhouse form, then its confirmation page, then the receipt 3 minutes later: one.
+    form = f"https://{greenhouse}/zeta/jobs/55"
+    _page(ts, _at(8, 9, 50), "Job Application for Backend Co-op at Zeta Corp", form, greenhouse)
+    _page(ts, _at(8, 10), "Thank you for applying", form + "/confirmation", greenhouse)
+    _mail(
+        memory, "z1", _at(8, 10, 3), kind="receipt", company="Zeta Corp", role="Backend Co-op",
+        subject="Thanks Zeta",
+    )
+    # RBC: a role page, the applythankyou page, and the same page again hours later; no mail: one.
+    rbc = "jobs.rbc.com"
+    role_page = "https://jobs.rbc.com/ca/en/job/R-1"
+    _page(ts, _at(6, 10, 50), "Winter 2027 Co-op Student | RBC Careers", role_page, rbc)
+    thanks = (
+        "https://jobs.rbc.com/ca/en/applythankyou?jobId=R-1"
+        "&jobTitle=Winter%202027%20Co-op%20Student#top"
+    )
+    _page(ts, _at(6, 11), "Application Submitted", thanks, rbc)
+    _page(ts, _at(6, 18), "Application Submitted", thanks, rbc)
+    # Workday: no jobTitle, so the role is the last real page title before it (not "Apply").
+    clio = "clio.wd3.myworkdayjobs.com"
+    flow = f"https://{clio}/en-US/Clio/job/Vancouver/Data-Co-op_R1"
+    _page(ts, _at(7, 15), "Senior Data Co-op - Clio | Workday", flow, clio)
+    _page(ts, _at(7, 15, 5), "Apply", flow + "/apply", clio)
+    _page(ts, _at(7, 15, 10), "Application Received", flow + "/apply/success", clio)
+    # A Gmail tab whose title reads like a success page is not a submission.
+    inbox = "https://mail.google.com/mail/u/0/#inbox"
+    _page(ts, _at(8, 12), "Thank you for applying to Acme - Gmail", inbox, "mail.google.com")
+    # Moment Energy: its ATS confirming the same role 3 minutes later is the same submission, a
+    # mail 70 minutes later is a second one.
+    for mid, minute, sender in (("e1", 0, "Moment Energy"), ("e2", 3, "Workable"),
+                                ("e3", 70, "Moment Energy")):
+        _mail(
+            memory, mid, _at(7, 10) + timedelta(minutes=minute), kind="receipt",
+            company=sender, role="Co-op",
+            subject="Thank you for applying to Moment Energy",
+        )
+    # He told her about Zeta (already seen) and Orbit; he added Hand Made on the Jobs page.
+    (record,) = build_record_application_tool(
+        lambda fields: add_application(memory, NOW, **fields),
+    )
+    for fields in (
+        {"company": "zeta corp", "applied_at": "2026-10-08"},
+        {"company": "Orbit Co", "role": "Data Co-op", "applied_at": "2026-10-08"},
+    ):
+        assert record.handler(fields, None)["recorded"] is True  # type: ignore[arg-type]
+    add_application(memory, NOW, company="Hand Made Ltd", applied_at="2026-10-02")
+    with pytest.raises(ToolError):
+        record.handler({"company": "Bad", "applied_at": "yesterday"}, None)  # type: ignore[arg-type]
+    assert {"Orbit Co", "zeta corp", "Hand Made Ltd"} <= {
+        a["company"] for a in list_applications(memory, NOW)
+    }
+    with closing(sqlite3.connect(memory)) as conn:
+        stored = conn.execute("SELECT company, source FROM job_application").fetchall()
+    assert sorted(stored) == [
+        ("Hand Made Ltd", "manual"), ("Orbit Co", "said"), ("zeta corp", "said"),
+    ]
+
+    hunt = job_hunt_text(src, NOW)
+    line = next(x for x in hunt.splitlines() if x.startswith("  Applications submitted"))
+    assert line.startswith(
+        "  Applications submitted: at least 9 (5 by confirmation mail, 2 by a submission page "
+        "seen on screen with no confirmation mail, 2 you told me or added).",
+    )
+    assert "By day, last 7 days: Thu 10-08 2, Wed 10-07 4, Tue 10-06 1, Mon 10-05 1, " in line
+    assert "Sun 10-04 0, Sat 10-03 0, Fri 10-02 1." in line
+    assert (
+        "Seen on screen only: Clio (Senior Data Co-op - Clio, 10-07); "
+        "Rbc (Winter 2027 Co-op Student, 10-06)."
+    ) in line
+    assert "Told me or added: Orbit Co (Data Co-op, 10-08); Hand Made Ltd (10-02)." in line
+    assert "portal application with no mail and no such page is not visible" in hunt
+    assert "Application confirmed (" in hunt  # the existing lines stay

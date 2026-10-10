@@ -66,6 +66,9 @@ _KIND_STATUS: Final[dict[str, str]] = {
     "offer": "offer",
     "rejection": "rejected",
 }
+# The ``job_application.source`` of a row that is an application of its own: added on the Jobs page
+# or told to Jarvis in conversation. Any other source (``edit``) overrides a mail-derived one.
+OWN_SOURCES: Final[tuple[str, ...]] = ("manual", "said")
 # An application still ``applied`` whose newest mail is older than this is ``no_reply``.
 NO_REPLY_AFTER: Final[timedelta] = timedelta(days=21)
 # The tracker's order: offers and interviews first, then waiting, then silent, then rejected.
@@ -721,8 +724,9 @@ def _applications(
     One application per company, case-folded. A mail whose company ``is_ats`` (only an
     applicant-tracking system's name) joins the other company's application with the same role,
     else it stays its own. A mail-derived application has Allen's ``edit`` row of its company (the
-    newest, when there are several) override its fields; a ``manual`` row is an application of its
-    own. ``details`` reads the interview and links out of a body start (ADR 0182).
+    newest, when there are several) override its fields; a ``manual`` or ``said`` row is an
+    application of its own. ``details`` reads the interview and links out of a body start
+    (ADR 0182).
     """
     with _db(path) as conn:
         rows = conn.execute(
@@ -794,7 +798,7 @@ def _applications(
             "hidden": bool(row["hidden"]),
         }
         for row in mine
-        if row["source"] == "manual"
+        if row["source"] in OWN_SOURCES
     )
     return found
 
@@ -840,11 +844,18 @@ def add_application(  # noqa: PLR0913 - the row's fields
     applied_at: str | None = None,
     status: str | None = None,
     note: str = "",
+    source: str = "manual",
 ) -> str:
-    """Allen's own application, one with no mail; returns its id. A bad value is a ValueError."""
+    """Allen's own application, one with no mail; returns its id. A bad value is a ValueError.
+
+    ``source`` is ``manual`` for a row he added on the Jobs page, ``said`` for one he told Jarvis.
+    """
     company = company.strip()
     if not company:
         msg = "company is required"
+        raise ValueError(msg)
+    if source not in OWN_SOURCES:
+        msg = f"not a source: {source!r}"
         raise ValueError(msg)
     _check_application(status, applied_at)
     app_id = uuid.uuid4().hex[:12]
@@ -852,7 +863,7 @@ def add_application(  # noqa: PLR0913 - the row's fields
     with _db(path) as conn:
         conn.execute(
             "INSERT INTO job_application (id, company, role, applied_at, status, note, source,"
-            " hidden, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'manual', 0, ?, ?)",
+            " hidden, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
             (
                 app_id,
                 company,
@@ -860,6 +871,7 @@ def add_application(  # noqa: PLR0913 - the row's fields
                 applied_at or now.astimezone().date().isoformat(),
                 status or "applied",
                 note,
+                source,
                 stamp,
                 stamp,
             ),
@@ -895,7 +907,7 @@ def edit_application(
             raise LookupError(msg)
     stamp = _stamp(now)
     sets = {name: (int(bool(v)) if name == "hidden" else v) for name, v in given.items()}
-    if (row is not None and row["source"] == "manual") or "status" in sets:
+    if (row is not None and row["source"] in OWN_SOURCES) or "status" in sets:
         sets["updated_at"] = stamp
     with _db(path) as conn:
         if base is not None:
