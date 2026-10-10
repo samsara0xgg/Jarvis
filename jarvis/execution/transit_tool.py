@@ -58,8 +58,9 @@ def _description(*, phone: bool) -> str:
         " language), the word 'school' for the campus (going to school or class, in any"
         " language), or a place as an address or name, e.g. 'Mayfair Mall'. depart_at is a"
         " local time today as HH:MM, only when he names a later time; leave it out for now. If"
-        " it returns an error, say so and do not guess times. To pin a trip on the notch when he"
-        " asks, call pin_departure."
+        " it returns an error, say so and do not guess times. After the times, ask him in one short"
+        " line whether to pin the trip on the notch; when he says yes or asks for it, call"
+        " pin_departure at once."
     )
 
 
@@ -197,8 +198,10 @@ _PIN_PAST_GRACE: Final = timedelta(minutes=1)
 _PIN_DESCRIPTION: Final = (
     "Pin the bus trip he just got from transit on the notch, as a countdown to when he must"
     " leave, and ring him at leave time. Call it ONLY when he asks to pin it or put it on the"
-    " notch ('pin it', 'put it on the notch', or the same in any other language); never on"
-    " your own. Copy the fields from the transit option he is taking (the first option unless"
+    " notch ('pin it', 'put it on the notch', or the same in any other language), or says yes"
+    " when you offered; never on your own. It is already on your menu: no tool_search, and do"
+    " not call transit again first; copy from the transit result already in the conversation."
+    " Copy the fields from the transit option he is taking (the first option unless"
     " he picked another): leave_at; route, the number of the first bus ('28', or '28 → 12' for"
     " two buses); board_stop and departs of the first bus; arrive_at. destination is the word"
     " you gave transit. A newer pin replaces the older one. If it returns an error because"
