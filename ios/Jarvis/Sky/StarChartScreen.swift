@@ -272,7 +272,9 @@ struct StarChrome: View {
         let words = ui.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let sent = ui.attach.take()
         if words.isEmpty && sent.isEmpty { return }
-        engine.send(words.isEmpty ? AttachModel.caption(sent) : words)
+        // her reply to what was sent: a file is offered a first read, a picture asks what to do with it
+        let reply = sent.isEmpty ? nil : sent[0].kind == .file ? "收到「\(sent[0].stem)」。要我先看一遍，挑重点讲给你听吗？" : "收到。要我记下来，还是帮你看看？"
+        engine.send(words.isEmpty ? AttachModel.caption(sent) : words, reply: reply)
     }
     private func composerTap() {
         ui.attach.close()

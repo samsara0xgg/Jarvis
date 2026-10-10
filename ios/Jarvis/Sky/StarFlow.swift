@@ -448,18 +448,19 @@ extension StarEngine {
 
     // MARK: the composer
 
-    func send(_ text0: String) {
+    func send(_ text0: String, reply: String? = nil) {
         let text = text0.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { return }
         ui.text = ""; endEditing?()
         let t = nowT()
         let keys = ["提醒", "出门", "今天.*做了什么|回放"]
-        var demo = talks.first { $0.q == text }
-        if demo == nil, let i = keys.firstIndex(where: { text.range(of: $0, options: .regularExpression) != nil }) { demo = talks[i] }
+        var demo = reply == nil ? talks.first { $0.q == text } : nil
+        if demo == nil, reply == nil, let i = keys.firstIndex(where: { text.range(of: $0, options: .regularExpression) != nil }) { demo = talks[i] }
         let chars = Array("记下了：\(text)")
         let ttl = chars.count > 18 ? String(chars[0..<17]) + "…" : String(chars)
         var sc: Talk
-        if var dm = demo { dm.q = text; sc = dm }
+        if let r = reply { sc = Talk(q: text, a: r) }
+        else if var dm = demo { dm.q = text; sc = dm }
         else { sc = Talk(q: text, a: "好，我记下了。", add: Ev("note\(EV.count)", t, .her, .done, ttl, "\(clock(t)) · 你打字说的", s: "记下")) }
         if talk != nil { interrupt() }
         run { ok in try await self.talkFlow(ok, sc, nil, true) }
