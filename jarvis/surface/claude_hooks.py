@@ -15,16 +15,24 @@ the hook process goes away, and when the session moved on without it. From the
 quiet level ``no-pop`` up (ADR 0153) the notch shows no cards, so nothing is
 held and a prompt already held is let go within a second. A project thread's
 session (``~/Projects``) is held like any other (ADR 0218).
+
+Every prompt that comes in, held or not, is also counted in ``claude-prompts.jsonl``: its time,
+tool, folder and the rule Claude Code offers to remember, never the command or the tool's input,
+so the owner can pick which kinds to allow for good (his choice of 2026-10-10).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -38,6 +46,11 @@ LISTENER_S = 10.0
 HOLD_S = 86_000.0
 # Transcript writes this long after a prompt came in mean the session went on without it.
 MOVED_ON_MS = 3_000
+# The prompt count stops growing past this; a week of prompts is a few hundred lines.
+PROMPT_LOG_BYTES = 1_000_000
+_RULE_CHARS = 120
+# A long unbroken run in a rule may be a token pasted into a command: never written.
+_SECRETISH = re.compile(r"[A-Za-z0-9_\-+/=]{20,}")
 _ERRORS = {
     "rate_limit": "Rate limited",
     "overloaded": "The API is overloaded",
@@ -60,6 +73,19 @@ class _Held:
     suggestions: list[dict[str, Any]]
     at_ms: int
     answer: asyncio.Future[dict[str, Any] | None] = field(repr=False)
+
+
+def _offered(suggestions: list[dict[str, Any]]) -> str:
+    """The rule Claude Code's first suggestion would remember, as settings write it, or empty."""
+    first = suggestions[0] if suggestions else {}
+    if first.get("type") == "setMode":
+        return f"mode:{first.get('mode', '')}"
+    rules = [r for r in first.get("rules") or [] if isinstance(r, dict)]
+    if not rules:
+        return ""
+    content = rules[0].get("ruleContent")
+    name = str(rules[0].get("toolName", ""))
+    return f"{name}({content})" if content else name
 
 
 def _always(suggestions: list[dict[str, Any]]) -> str:
@@ -87,14 +113,17 @@ class ClaudeHooks:
         self,
         quiet: Callable[[], str] | None = None,
         on_request: Callable[[str, str, str, Callable[[], bool]], None] | None = None,
+        prompt_log: Path | None = None,
     ) -> None:
         """Nothing held, nothing marked, no companion reading yet; ``quiet`` reads the level.
 
         ``on_request(tool, cwd, request_id, waiting)`` is called when a prompt is held for him
         (ADR 0210); ``waiting()`` says, from any thread, whether it still waits (ADR 0218).
+        ``prompt_log`` is where each prompt is counted; ``None`` counts nothing.
         """
         self._quiet = quiet or (lambda: "off")
         self._on_request = on_request
+        self._prompt_log = prompt_log
         self._held: dict[str, _Held] = {}
         self._compacting: set[str] = set()
         self._stopped: dict[str, tuple[str, int]] = {}
@@ -123,6 +152,7 @@ class ClaudeHooks:
         self, payload: dict[str, Any], gone: Callable[[], Awaitable[bool]]
     ) -> dict[str, Any]:
         """Hold one prompt until Allen answers it; ``{}`` means no decision."""
+        self._count(payload)
         if time.monotonic() - self._read_at > LISTENER_S or self._no_cards():
             return {}
         tool_input = payload.get("tool_input")
@@ -163,6 +193,28 @@ class ClaudeHooks:
         if decision is None:
             return {}
         return {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}}
+
+    def _count(self, payload: dict[str, Any]) -> None:
+        """Append one line for this prompt: when, which tool, which folder, the rule on offer."""
+        if self._prompt_log is None:
+            return
+        suggestions = payload.get("permission_suggestions")
+        rule = _offered([s for s in suggestions if isinstance(s, dict)]) if isinstance(
+            suggestions, list,
+        ) else ""
+        line = {
+            "at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "tool": str(payload.get("tool_name") or "")[:_RULE_CHARS],
+            "folder": Path(str(payload.get("cwd") or "")).name,
+            "rule": _SECRETISH.sub("…", rule)[:_RULE_CHARS],
+        }
+        try:
+            if self._prompt_log.exists() and self._prompt_log.stat().st_size > PROMPT_LOG_BYTES:
+                return
+            with self._prompt_log.open("a", encoding="utf-8") as out:
+                out.write(json.dumps(line, ensure_ascii=False) + "\n")
+        except OSError:
+            LOGGER.warning("claude hooks: the prompt count could not be written")
 
     def _no_cards(self) -> bool:
         """ADR 0153: at ``no-pop`` and ``dnd`` the notch shows no card to answer on."""

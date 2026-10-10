@@ -667,6 +667,9 @@ class InherentDeps:
     # Code permission prompt is held for him, so the host can push that it waits; ``waiting()``
     # says from any thread whether it still does (ADR 0218).
     claude_request: Callable[[str, str, str, Callable[[], bool]], None] | None = None
+    # Where each Claude Code permission prompt is counted (tool, folder, offered rule; never the
+    # command), so the owner can choose which kinds to allow for good. ``None`` counts nothing.
+    claude_prompt_log: Path | None = None
     # ADR 0196: the four device-pairing routes. ``None`` leaves them unregistered (404).
     pairing: DevicePairing | None = None
     # ADR-0018: the quota dashboard's read model and its on-demand poll.
@@ -2834,6 +2837,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
     claude_hooks = ClaudeHooks(
         lambda: deps.controls.quiet if deps.controls is not None else "off",
         deps.claude_request,
+        deps.claude_prompt_log,
     )
 
     async def read_claude_board() -> dict[str, Any]:

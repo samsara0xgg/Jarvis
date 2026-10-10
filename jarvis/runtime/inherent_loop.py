@@ -7180,6 +7180,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else None
             ),
             claude_request=None if runtime.push is None else runtime.push.claude_request,
+            claude_prompt_log=runtime.runtime_paths.root / "claude-prompts.jsonl",
             device_name=(
                 functools.partial(device_name_for_token, runtime.runtime_paths.root)
                 if runtime.listen_addresses

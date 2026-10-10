@@ -82,7 +82,7 @@ class _Rig:
         self.controls = VoiceControls()
         app = create_app(InherentDeps(
             submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True,
-            controls=self.controls,
+            controls=self.controls, claude_prompt_log=self.root / "claude-prompts.jsonl",
         ))
         require_local_key(app, functools.partial(local_key_matches, key))
         self.server = uvicorn.Server(
@@ -336,3 +336,36 @@ def test_prompt_from_the_projects_folder_is_held_like_any_other(
         assert answered.json() == {"ok": True}
         assert _decision(thread) == {"behavior": "allow"}
 
+
+def test_every_prompt_is_counted_by_kind_and_never_by_its_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Held or let go, each prompt adds one line: tool, folder, the offered rule, masked."""
+    for rig in _rig(tmp_path, monkeypatch):
+        token = "sk_live_" + "Q7x" * 10
+        let_go = rig.hook(
+            "PermissionRequest", tool_name="Bash",
+            tool_input={"command": f"curl -H 'Authorization: {token}' x"},
+            permission_suggestions=[{
+                "type": "addRules", "behavior": "allow", "destination": "localSettings",
+                "rules": [{"toolName": "Bash", "ruleContent": f"curl -H {token}:*"}],
+            }],
+        )
+        assert _decision(let_go) == {}  # nobody reading the board: still counted
+        rig.row()
+        held = rig.hook(
+            "PermissionRequest", tool_name="Bash", tool_input={"command": "npm run build"},
+            permission_suggestions=[SUGGESTION], cwd=str(Path.home() / "Projects"),
+        )
+        request = rig.held()
+        rig.http.post(f"/inherent/claude-requests/{request['id']}", json={"decision": "deny"})
+        _decision(held)
+        text = (rig.root / "claude-prompts.jsonl").read_text(encoding="utf-8")
+        lines = [json.loads(line) for line in text.splitlines()]
+        assert [(x["tool"], x["folder"], x["rule"]) for x in lines] == [
+            ("Bash", "jarvis", "Bash(curl -H …:*)"),
+            ("Bash", "Projects", "Bash(npm run build:*)"),
+        ]
+        assert all(set(x) == {"at", "tool", "folder", "rule"} for x in lines)
+        assert "Q7x" not in text
+        assert "Authorization" not in text
