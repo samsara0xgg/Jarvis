@@ -270,7 +270,7 @@ struct TalkPanel: View {
             .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.holdLinger(true) }.onEnded { _ in engine.holdLinger(false) })
             .onChange(of: ui.scrollTo) { _, id in
                 guard let id else { return }
-                proxy.scrollTo(id, anchor: .top); ui.scrollTo = nil
+                proxy.scrollTo(id, anchor: UnitPoint(x: 0.5, y: 0.1)); ui.scrollTo = nil       // a little under the top, so the day's header does not cover the time above the row
             }
             // a lazy stack's height is an estimate until its rows are seen: opening lands on the real bottom
             .onChange(of: ui.panelOpen) { _, on in

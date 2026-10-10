@@ -9,8 +9,8 @@ extension StarEngine {
         if b.hasToken != Cal.cur.real { switchWorld(real: b.hasToken) }
         guard Cal.cur.real else { return }
         // answers arrive a few at a time: take them together, a quarter second apart at most
-        if (b.dataVersion != seenVersion || Waiting.shared.version != seenWaiting) && nowMs() - lastAdopt > 250 {
-            seenVersion = b.dataVersion; seenWaiting = Waiting.shared.version; lastAdopt = nowMs(); adoptBrain(b)
+        if (b.dataVersion != seenVersion || Waiting.shared.version != seenWaiting || TalkTopics.shared.version != seenTopics) && nowMs() - lastAdopt > 250 {
+            seenVersion = b.dataVersion; seenWaiting = Waiting.shared.version; seenTopics = TalkTopics.shared.version; lastAdopt = nowMs(); adoptBrain(b)
         }
         if b.openTick != seenOpen { seenOpen = b.openTick; askDays() }
         let m = qGoal > 1.5
@@ -42,6 +42,8 @@ extension StarEngine {
         EV = fresh
         sprites.minis.removeAll(); epoch += 1; rowKey = ""; panelKey = ""; wake()
         if ui.talking && fresh.filter({ $0.st == .wait }).count > waits { openPanel() }       // something waits on him while she talks: the panel has room for it
+        let days = b.days
+        Task { @MainActor in await TalkTopics.shared.ensure(days) }                           // what the talks were about
     }
 
     /// The day in focus and the week round it (nearest first), today, and the whole month while the month is open. The brain skips what it served since the app was opened.

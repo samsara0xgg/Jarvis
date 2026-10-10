@@ -52,7 +52,7 @@ final class StarEngine {
     var lastTick = 0.0, lastTock = 0.0
     let born = nowMs()
     // the brain's days (Brain/EngineBrain.swift): what has been adopted, and what has been asked for
-    var epoch = 0, seenVersion = -1, seenWaiting = -1, seenOpen = 0, monthAsked = false, lastAdopt = -1e9
+    var epoch = 0, seenVersion = -1, seenWaiting = -1, seenTopics = -1, seenOpen = 0, monthAsked = false, lastAdopt = -1e9
 
     // the lens: hold a finger on the ring and the time under it opens up
     var ls = Spring(0)

@@ -7,6 +7,7 @@ enum RightStyle { case look, mut, src }
 enum Expand: Equatable {
     case draft(String), call, approve, hike, note(String)
     case card(WaitingCard)              // what the brain is waiting on, with its own buttons
+    case talk(his: String, hers: String, start: Int64)      // a talk: its first exchange (empty while unknown) and when it began
 }
 struct RowModel: Identifiable, Equatable {
     var id: String

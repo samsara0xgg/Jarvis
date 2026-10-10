@@ -25,6 +25,8 @@ final class Ev {
     var live = false
     /// what waits on the owner behind this star, from the brain (Brain/Waiting)
     var card: WaitingCard?
+    /// a talk star: when the talk began (ms), for its opened row to show the talk
+    var talkStart: Int64?
     var born: Double = -1e9, flash: Double = -1e9, ign: Double = -1e9
     // what the last frame drew, for hit tests and trails
     var on = false, focus = false

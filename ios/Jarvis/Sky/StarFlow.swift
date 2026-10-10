@@ -255,7 +255,7 @@ extension StarEngine {
         let (right, style): (String, RightStyle) = kd == .wait ? ("看看", .look) : kd == .work ? ("进行中", .mut) : kd == .done ? ("已完成", .mut) : kd == .lit ? (e.src ?? "", .src) : (rel(e.t), .mut)
         var ex: Expand?
         if openId == e.id {
-            if let c = e.card { ex = .card(c) } else if e.draft { ex = .draft(DRAFT) } else if e.call { ex = .call } else if e.approve { ex = .approve } else if e.id == "hike" { ex = .hike } else if let n = e.note { ex = .note(n) }
+            if let c = e.card { ex = .card(c) } else if let ms = e.talkStart { let x = TalkTopics.shared.exchange(e.id); ex = .talk(his: x?.his ?? "", hers: x?.hers ?? "", start: ms) } else if e.draft { ex = .draft(DRAFT) } else if e.call { ex = .call } else if e.approve { ex = .approve } else if e.id == "hike" { ex = .hike } else if let n = e.note { ex = .note(n) }
         }
         return RowModel(id: e.id, kd: kd, title: e.title, meta: e.meta, right: right, rightStyle: style, expand: ex)
     }

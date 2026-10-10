@@ -67,9 +67,9 @@ final class RealDay {
             title = "通话 · \(i.app ?? "电话")"; s = "通话"; src = i.app ?? "电话"
             meta = when + (t1 == nil ? "" : " · " + durText(Int((d ?? 0).rounded())))
         case "talk":
-            let n = i.turns ?? 1
-            title = n <= 1 ? "你对我说了一句话" : "和你说了 \(n) 句话"; s = "对话"; src = nil
-            meta = when
+            let n = i.turns ?? 1, topic = TalkTopics.shared.topic(i.id)
+            title = topic ?? (n <= 1 ? "你对我说了一句话" : "和你说了 \(n) 句话"); s = topic.map { fit($0, 8) } ?? "对话"; src = nil
+            meta = topic == nil ? when : dayPrefix(t0, now) + clock(t0) + " · 和你说了 \(n) 句"
         case "reminder":
             let text = i.text ?? "提醒"
             title = "提醒：\(text)"; s = fit(text, 8); src = nil
@@ -83,6 +83,7 @@ final class RealDay {
         }
         let e = Ev(i.id, t0, lane, st, title, meta, d: d, s: s, src: src, note: note)
         e.live = true
+        if i.kind == "talk" { e.talkStart = i.start_ms }
         return e
     }
 

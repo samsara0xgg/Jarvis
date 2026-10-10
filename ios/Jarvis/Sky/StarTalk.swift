@@ -116,6 +116,16 @@ extension StarEngine {
     func measureLive(_ h: Double) {
         if ui.talking && !ui.panelOpen && !autoOpenSpent && h > 280 { openPanel(auto: true) }
     }
+    /// A talk star's `全部 ›`: the panel, at the first row of the talk (or the nearest after it).
+    func showTalk(_ startMs: Int64) {
+        openPanel()
+        Task { @MainActor in
+            if BrainLink.shared.hasToken { await Conversation.shared.refresh() }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            let t = Double(startMs) / 1000 - 1
+            if let r = ui.convDays.flatMap(\.rows).first(where: { $0.at >= t }) { ui.scrollTo = r.id }
+        }
+    }
     /// the app came back after a long time away: the star chart as it was first opened, on now
     func comeBack() { setLevel(0); goBack() }
 
@@ -159,25 +169,18 @@ extension StarEngine {
         case "open":
             setLevel(0)
             EV.removeAll { $0.st == .wait && !["thanks", "mia"].contains($0.id) }      // two things wait on him
-            let cal = Cal.cur.cal, now = Date(), day = { (back: Int, h: Int, m: Int) -> String in
-                let d = cal.date(byAdding: .day, value: -back, to: now)!
-                let c = cal.date(bySettingHour: h, minute: m, second: 0, of: d)!
-                return TalkStream.dayId(c, cal) + "T" + TalkStream.clock(c, cal) + ":00"
-            }
-            let doc = "<voice>好，我把这周的安排列在下面了。</voice><document>## 本周安排\n- 周五 10:00 周会\n- 周六 09:00 爬山，我会提前看天气\n- 周日 21:00 整理这一周的记忆\n\n先做这三件：\n1. 把首页的最后两张图做完\n2. 再投两份简历\n3. 给 Mia 回电话\n\n| 日期 | 事项 | 时间 | 地点 | 备注 |\n|---|---|---|---|---|\n| 周五 | 周会 | 10:00 | 线上 | 提前十分钟进会议室 |\n| 周六 | 爬山 | 09:00 | 西山步道 | 带伞和水壶，前一天看天气 |\n| 周日 | 整理记忆 | 21:00 | 在家 | 我先整理，你再补充 |\n\n```swift\nlet next = plan.first(where: { !$0.done })\n```</document>"
-            let rows: [(Bool, String, String)] = [
-                (true, day(1, 18, 12), "明天几点出门？"),
-                (false, day(1, 18, 12), "<voice>九点二十。坐 32 路，路上三十二分钟，可能下雨，带伞。</voice>"),
-                (true, day(1, 18, 14), "那后天呢"),
-                (false, day(1, 18, 14), "后天上午十点你约了牙医，九点钟出门。"),
-                (true, day(0, 9, 5), "帮我整理一下这周的安排"),
-                (false, day(0, 9, 6), "<voice>我先看一下日历。</voice>"),
-                (false, day(0, 9, 6), doc),
-            ]
-            MainActor.assumeIsolated {
-                Conversation.shared.debugSet(rows.enumerated().map { ConversationRow(seq: $0.offset + 1, source: $0.element.0 ? "allen" : "jarvis", ts: $0.element.1, text: $0.element.2) })
-            }
+            debugConversation()
             openPanel(quiet: true)
+        case "talkStar":
+            // a talk of yesterday evening, named by what he asked, opened to its first exchange; `全部 ›` shows it in the conversation
+            setLevel(0)
+            debugConversation()
+            let cal = Cal.cur.cal, d = cal.date(byAdding: .day, value: -1, to: Date())!, at = cal.date(bySettingHour: 18, minute: 12, second: 0, of: d)!
+            let e = Ev("talk-debug", Cal.cur.t(at), .her, .done, "明天几点出门？", "昨天 18:12 · 和你说了 2 句", s: "明天几点出门？")
+            e.live = true; e.talkStart = Int64(at.timeIntervalSince1970 * 1000)
+            EV.append(e)
+            TalkTopics.shared.debugSet(e.id, "明天几点出门？", "九点二十。坐 32 路，路上三十二分钟，可能下雨，带伞。")
+            openId = e.id; rowKey = ""; seek(e.t)
         case "typing":
             setLevel(0)
             beginTalk(); lingerHold = true
@@ -186,6 +189,28 @@ extension StarEngine {
             ui.typing = true; ui.chipsOn = false; ui.kbLift = 336
             openPanel(quiet: true)
         default: break
+        }
+    }
+
+    /// made-up conversation rows over two days, the newest with a written answer, for the scenes
+    private func debugConversation() {
+        let cal = Cal.cur.cal, now = Date(), day = { (back: Int, h: Int, m: Int) -> String in
+            let d = cal.date(byAdding: .day, value: -back, to: now)!
+            let c = cal.date(bySettingHour: h, minute: m, second: 0, of: d)!
+            return TalkStream.dayId(c, cal) + "T" + TalkStream.clock(c, cal) + ":00"
+        }
+        let doc = "<voice>好，我把这周的安排列在下面了。</voice><document>## 本周安排\n- 周五 10:00 周会\n- 周六 09:00 爬山，我会提前看天气\n- 周日 21:00 整理这一周的记忆\n\n先做这三件：\n1. 把首页的最后两张图做完\n2. 再投两份简历\n3. 给 Mia 回电话\n\n| 日期 | 事项 | 时间 | 地点 | 备注 |\n|---|---|---|---|---|\n| 周五 | 周会 | 10:00 | 线上 | 提前十分钟进会议室 |\n| 周六 | 爬山 | 09:00 | 西山步道 | 带伞和水壶，前一天看天气 |\n| 周日 | 整理记忆 | 21:00 | 在家 | 我先整理，你再补充 |\n\n```swift\nlet next = plan.first(where: { !$0.done })\n```</document>"
+        let rows: [(Bool, String, String)] = [
+            (true, day(1, 18, 12), "明天几点出门？"),
+            (false, day(1, 18, 12), "<voice>九点二十。坐 32 路，路上三十二分钟，可能下雨，带伞。</voice>"),
+            (true, day(1, 18, 14), "那后天呢"),
+            (false, day(1, 18, 14), "后天上午十点你约了牙医，九点钟出门。"),
+            (true, day(0, 9, 5), "帮我整理一下这周的安排"),
+            (false, day(0, 9, 6), "<voice>我先看一下日历。</voice>"),
+            (false, day(0, 9, 6), doc),
+        ]
+        MainActor.assumeIsolated {
+            Conversation.shared.debugSet(rows.enumerated().map { ConversationRow(seq: $0.offset + 1, source: $0.element.0 ? "allen" : "jarvis", ts: $0.element.1, text: $0.element.2) })
         }
     }
 }

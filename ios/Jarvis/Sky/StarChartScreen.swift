@@ -462,6 +462,17 @@ struct ExpandView: View {
             case .hike: btns(("算了", "no"), ("去", "yes"))
             case .note(let t): para(Text(t))
             case .card(let c): WaitingCardView(card: c)
+            case .talk(let his, let hers, let start):
+                VStack(alignment: .leading, spacing: 8) {
+                    if !his.isEmpty { Text(his).font(.system(size: 14)).foregroundStyle(ink.opacity(0.86)).lineLimit(2) }
+                    if !hers.isEmpty { Text(hers).font(.system(size: 14)).foregroundStyle(muted).lineLimit(2) }
+                    Button { engine.showTalk(start) } label: {
+                        Text("全部 ›").font(.system(size: 13.5, weight: .semibold)).foregroundStyle(ink).padding(.horizontal, 14).frame(height: 30).background(Color.white.opacity(0.1), in: Capsule())
+                    }.buttonStyle(PressScale())
+                }
+                .padding(.horizontal, 14).padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.08), lineWidth: 0.5))
             }
         }
     }
