@@ -175,7 +175,15 @@ final class StarEngine {
     }
     @discardableResult func P(_ r: Double, _ a: Double) -> Bool { Pxy(r * cos(a), r * sin(a)) }
     func fog() -> Double { guard let c = cam else { return 1 }; return 1 - 0.72 * smooth(c.D * 1.15, c.D * 2.9, PZ) }   // far things dim
-    func sizeAt(_ base: Double, _ s: Double) -> Double { clamp((base * s * 2).rounded() / 2, 9, 18) }
+    /// A near-view name's look, by its rank (-1 open, 0 waiting, 1 in progress, 2 next, 3 done) and its star's perspective scale PS.
+    /// On screen PS runs from about 1.1 at the horizon to 6 at the camera; the size follows √PS in half points, so a name grows the whole way in.
+    /// The open and the waiting are the largest, boldest and brightest, and stay bright far out; the rest dim with distance, never gone.
+    static func nameStyle(_ rank: Int, _ ps: Double) -> (size: Double, weight: Int, alpha: Double) {
+        let t = min(3, max(0, rank)), k = [1.05, 0.95, 0.85, 0.8][t], lo = [11.0, 10, 9, 9][t], w = [600, 500, 500, 400][t]
+        let aNear = [1, 0.95, 0.8, 0.72][t], aFar = [0.85, 0.7, 0.5, 0.42][t]
+        let n = clamp((k * 8.2 * max(ps, 0).squareRoot() * 2).rounded() / 2, lo, 20)
+        return (n, w, aFar + (aNear - aFar) * smooth(1.2, 3, ps))
+    }
     /// the angle and radius on the dial under a point of the screen; nil above the horizon
     func unP(_ X: Double, _ Y: Double) -> (Double, Double)? {
         guard let c = cam else { return (atan2(Y - CY, X - CX), hypot(X - CX, Y - CY)) }

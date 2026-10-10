@@ -446,16 +446,22 @@ extension StarEngine {
         let shown = cands.filter { $0.v * fin * smooth(0.8, 1.1, $0.pr) * calmK >= 0.03 }
         for group in nameClusters(shown.map { ($0.x, $0.y) }, 14) {      // stars that stand as one point share their first one's name
             let cd = shown[group[0]], e = cd.e, la = cd.v * fin * smooth(0.8, 1.1, cd.pr) * calmK
-            let ps = clamp(cd.pr, 0.45, 2.4), n = sizeAt(9, ps), p = SpriteCache.pad(n)
-            let s = spr.label(e.s!, .sans(500, n), e.kd == .wait ? RGB(255, 217, 176) : .ink, more: group.count - 1)
-            let tw = s.w - 2 * p
             if cd.x < 0 || cd.x > W { continue }
-            let lx = clamp(cd.x, tw / 2 + 8, W - tw / 2 - 8), ly = cd.y - (8 + 7 * ps) - n * 0.3
-            let b = (lx - tw / 2 - 4, ly - n * 0.62, lx + tw / 2 + 4, ly + n * 0.62)
-            if b.1 < MAP_Y + 6 || hit(b, her) || numeralBoxes.contains(where: { hit(b, $0) }) || placed.contains(where: { hit(b, $0, 2, 1) }) { continue }
-            let a = (e.kd == .wait || e.kd == .work ? 0.95 : e.kd == .next ? 0.80 : 0.88) * la
-            placed.append(b); hits.append((e.id, b))
-            c.setAlpha(a); blit(c, s.img, lx - s.w / 2, ly - s.h / 2, s.w, s.h)
+            let ps = clamp(cd.pr, 0.45, 2.4), st = StarEngine.nameStyle(rank(e), cd.pr), col = e.kd == .wait ? RGB(255, 217, 176) : RGB.ink
+            let others = shown.indices.filter { !group.contains($0) }.map { (shown[$0].x, shown[$0].y) }
+            // above the star, else below, right or left of it; then all that a size smaller: crowded, a name shrinks before it goes
+            let small = max(9, (st.size * 1.6).rounded() / 2)
+            for (n, side) in [st.size, small].flatMap({ n in (0..<4).map { (n, $0) } }) {
+                let s = spr.label(e.s!, .sans(st.weight, n), col, more: group.count - 1), tw = s.w - 2 * SpriteCache.pad(n), gap = 6 + 5 * ps
+                let lx = side < 2 ? clamp(cd.x, tw / 2 + 8, W - tw / 2 - 8) : cd.x + (side == 2 ? 1 : -1) * (gap + tw / 2)
+                let ly = side == 0 ? cd.y - (8 + 7 * ps) - n * 0.3 : side == 1 ? cd.y + (4 + 5 * ps) + n * 0.62 : cd.y
+                let b = (lx - tw / 2 - 4, ly - n * 0.62, lx + tw / 2 + 4, ly + n * 0.62)
+                if b.0 < 4 || b.2 > W - 4 || b.1 < MAP_Y + 6 || b.3 > MAP_Y + MAP_H - 24 || hit(b, her) || numeralBoxes.contains(where: { hit(b, $0) })
+                    || placed.contains(where: { hit(b, $0, 2, 1) }) || others.contains(where: { hit(b, ($0.0, $0.1, $0.0, $0.1), 3, 3) }) { continue }      // nor over another star
+                placed.append(b); hits.append((e.id, b))
+                c.setAlpha(st.alpha * la); blit(c, s.img, lx - s.w / 2, ly - s.h / 2, s.w, s.h)
+                break
+            }
         }
         c.setAlpha(1); names = placed + numeralBoxes; labelHits = hits
     }
