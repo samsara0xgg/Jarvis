@@ -33,11 +33,12 @@ final class BrainLink {
     @ObservationIgnored private var fetched: [String: Int] = [:]      // date -> the generation it was served in
     @ObservationIgnored private var inFlight: Set<String> = []
     @ObservationIgnored private var failedAt: [String: Date] = [:]
-    @ObservationIgnored private let defaults = UserDefaults.standard
+    @ObservationIgnored private let defaults = BrainStore.defaults
 
-    private enum Key { static let addresses = "brain.addresses", device = "brain.device", token = "brain.token" }
+    private typealias Key = BrainStore.Key
 
     private init() {
+        BrainStore.adopt()
         if let t = Keychain.get(Key.token), let a = defaults.stringArray(forKey: Key.addresses) {
             let urls = a.compactMap(URL.init(string:))
             if !urls.isEmpty {

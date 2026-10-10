@@ -179,25 +179,37 @@ private extension BrainError {
     }
 }
 
-/// The phone's token lives only in the Keychain.
+/// The phone's token lives only in the Keychain, in the access group the app and its share extension share: both list it first in their entitlements,
+/// and an item written without a group goes to the first one.
 enum Keychain {
     private static let service = "com.allen.jarvis.brain"
+    private static let sharedGroupName = "com.yilunshi.jarvis.shared"
     private static func query(_ account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
+    private static func add(_ value: Data, _ account: String) -> Bool {
+        var q = query(account)
+        q[kSecValueData as String] = value
+        q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly   // readable when a background wake reports (ADR 0197)
+        return SecItemAdd(q as CFDictionary, nil) == errSecSuccess
+    }
     static func get(_ account: String) -> String? {
         var q = query(account)
-        q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
+        q[kSecReturnData as String] = true; q[kSecReturnAttributes as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return nil }
-        return String(data: d, encoding: .utf8)
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let row = out as? [String: Any],
+              let d = row[kSecValueData as String] as? Data, let value = String(data: d, encoding: .utf8) else { return nil }
+        // An item written before the shared group existed sits in the app's own group, which the extension cannot read: it is copied into the shared one, then the old one goes.
+        if let old = row[kSecAttrAccessGroup as String] as? String, !old.hasSuffix(sharedGroupName), add(d, account) {
+            var gone = query(account)
+            gone[kSecAttrAccessGroup as String] = old
+            SecItemDelete(gone as CFDictionary)
+        }
+        return value
     }
     @discardableResult static func set(_ value: String, _ account: String) -> Bool {
         SecItemDelete(query(account) as CFDictionary)
-        var q = query(account)
-        q[kSecValueData as String] = Data(value.utf8)
-        q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly   // readable when a background wake reports (ADR 0197)
-        return SecItemAdd(q as CFDictionary, nil) == errSecSuccess
+        return add(Data(value.utf8), account)
     }
     static func delete(_ account: String) { SecItemDelete(query(account) as CFDictionary) }
 }

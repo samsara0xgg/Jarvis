@@ -17,6 +17,7 @@ targets:
     sources: [Jarvis]
     dependencies:
       - target: JarvisWidgets
+      - target: JarvisShare
     # the brain answers on plain http over the tailnet (docs/spec.html: `brain` in the pairing answer is http://host:port).
     # Local networking covers IP addresses and bare names; MagicDNS names (*.ts.net) need their own exception. Nothing else is opened.
     info:
@@ -47,6 +48,10 @@ targets:
         com.apple.developer.healthkit: true
         com.apple.developer.healthkit.background-delivery: true
         aps-environment: development
+        # the pairing is shared with the share extension: the token in this Keychain group (first, so it is where items are written; the app's own group second, so a token
+        # saved before the group existed can still be read and moved), the brain's addresses in the App Group's defaults
+        keychain-access-groups: ["$(AppIdentifierPrefix)com.yilunshi.jarvis.shared", "$(AppIdentifierPrefix)com.yilunshi.jarvis"]
+        com.apple.security.application-groups: [group.com.yilunshi.jarvis]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.yilunshi.jarvis
@@ -86,11 +91,44 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: YES
         SKIP_INSTALL: YES
+  JarvisShare:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: JarvisShare
+        excludes: ["Info.plist"]
+      - Jarvis/Brain/BrainClient.swift      # the request code and the Keychain wrapper
+      - Jarvis/Brain/BrainStore.swift       # the pairing, as the app saved it
+    info:
+      path: JarvisShare/Info.plist
+      properties:
+        CFBundleDisplayName: Jarvis
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:       # one web address, or text; nothing else
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsText: true
+    entitlements:
+      path: Config/JarvisShare.entitlements
+      properties:
+        keychain-access-groups: ["$(AppIdentifierPrefix)com.yilunshi.jarvis.shared"]
+        com.apple.security.application-groups: [group.com.yilunshi.jarvis]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.yilunshi.jarvis.share
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES
   JarvisTests:
     type: bundle.unit-test
     platform: iOS
     deploymentTarget: "18.0"
-    sources: [JarvisTests]
+    sources:
+      - JarvisTests
+      - JarvisShare/SharePayload.swift      # the share extension's pure part
     dependencies:
       - target: Jarvis
     settings:
