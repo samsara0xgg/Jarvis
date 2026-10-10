@@ -284,7 +284,8 @@ class TransitOffers:
             }
             for i, o in enumerate(options)
         ]
-        return {"offer_id": self._id, "to": to, "options": self._rows}
+        made_at = _now().isoformat(timespec="minutes")
+        return {"offer_id": self._id, "to": to, "options": self._rows, "made_at": made_at}
 
     def row(self, offer_id: str, index: int) -> dict[str, Any]:
         """The offered option; LookupError when the offer is unknown or has no such row."""
@@ -308,9 +309,22 @@ class TransitOffers:
 
 
 def live_card(trip: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The card's trip as served now: no row whose leave time has passed; None if none is left."""
+    """The card's trip as served now: no row whose leave time has passed; None if none is left.
+
+    A row's ``HH:MM`` is on the day the answer was made (the next day when it is more than an hour
+    before that moment), so a card does not come back after midnight. A card without ``made_at``
+    is from before it was kept and is gone.
+    """
+    if not trip.get("made_at"):
+        return None
+    made_at = datetime.fromisoformat(str(trip["made_at"]))
     floor = _now().replace(second=0, microsecond=0)
-    rows = [r for r in trip["options"] if _today(r["leave_at"], "") >= floor]
+
+    def leaves(row: Mapping[str, Any]) -> datetime:
+        at = datetime.combine(made_at.date(), time.fromisoformat(str(row["leave_at"])), _ZONE)
+        return at + timedelta(days=1) if at < made_at - timedelta(hours=1) else at
+
+    rows = [r for r in trip["options"] if leaves(r) >= floor]
     return {**trip, "options": rows} if rows else None
 
 

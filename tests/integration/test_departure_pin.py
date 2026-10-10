@@ -491,6 +491,8 @@ def test_an_answer_serves_one_row_per_option_and_drops_the_past(world: _World) -
     assert [o["index"] for o in _offer(world)["options"]] == [1, 2]
     world.local_now = _local("17:40")
     assert live_card(_slot(world).trip or {}) is None
+    world.local_now = _local("17:10") + timedelta(days=1)
+    assert live_card(_slot(world).trip or {}) is None, "a past card must not come back the next day"
 
 
 def test_the_bus_card_asks_the_model_nothing(world: _World) -> None:
@@ -903,3 +905,21 @@ def test_voice_can_pin_several_options_and_one_set_of_fields_still_works(world: 
     bad = world.call("pin_departure", {"options": options})
     assert bad["code"] == "time_in_past"
     assert (_served(world) or {})["departs"] == "17:13"
+
+
+def test_a_late_card_keeps_its_after_midnight_row_and_an_unkept_day_is_gone(world: _World) -> None:
+    """A row past midnight belongs to the next day; a trip without ``made_at`` is not served."""
+    made = _local("23:50")
+    trip = {
+        "offer_id": "offer-late",
+        "to": "home",
+        "made_at": made.isoformat(timespec="minutes"),
+        "options": [{"index": 0, "leave_at": "23:55"}, {"index": 1, "leave_at": "00:10"}],
+    }
+    world.local_now = made + timedelta(minutes=15)
+    shown = live_card(trip)
+    assert shown is not None
+    assert [o["index"] for o in shown["options"]] == [1]
+    world.local_now = made + timedelta(minutes=25)
+    assert live_card(trip) is None
+    assert live_card({**trip, "made_at": ""}) is None
