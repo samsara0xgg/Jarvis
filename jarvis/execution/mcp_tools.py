@@ -90,6 +90,11 @@ def mcp_tool_name(server: str, name: str) -> str:
     return _NAME_CHARS.sub("_", f"mcp__{server}__{name}")[:_MAX_NAME_CHARS]
 
 
+def mcp_token_path(token_dir: Path, server: str) -> Path:
+    """Where ``server``'s OAuth login lives under ``token_dir``."""
+    return token_dir / f"{re.sub(r'[^\w-]', '_', server)[:128]}.json"
+
+
 def is_oauth(spec: Mapping[str, Any]) -> bool:
     """``auth: oauth``, or Codex's ``oauth`` / ``oauth_resource`` keys (ADR 0035)."""
     return str(spec.get("auth") or "").lower() == "oauth" or bool(
@@ -277,7 +282,7 @@ class McpServers:
         if self._token_dir is None:
             msg = "no token_dir: OAuth servers need one"
             raise ValueError(msg)
-        return self._token_dir / f"{re.sub(r'[^\w-]', '_', server)[:128]}.json"
+        return mcp_token_path(self._token_dir, server)
 
     def has_login(self, server: str) -> bool:
         """Whether ``server``'s file holds a token set; a timed-out login leaves a registration."""

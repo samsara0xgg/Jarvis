@@ -87,6 +87,14 @@ class PluginSettings:
         with self._lock:
             return dict(self._credentials.get(plugin_id, {}))
 
+    def forget_credentials(self, plugin_id: str) -> None:
+        """Delete one plugin's stored input values."""
+        with self._lock:
+            if plugin_id in self._credentials:
+                data = {k: v for k, v in self._credentials.items() if k != plugin_id}
+                write_private_json(self.root / "plugin-credentials.json", data)
+                self._credentials = data
+
     def save_credentials(self, plugin_id: str, values: dict[str, str]) -> None:
         """Store credentials privately; they never enter the conversation log."""
         with self._lock:

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
-from jarvis.execution.mcp_tools import McpServers, is_oauth
+from jarvis.execution.mcp_tools import McpServers, is_oauth, mcp_token_path
 from jarvis.execution.plugin_panel import plugin_panel_tools
 from jarvis.execution.skill_reader import build_read_skill
 from jarvis.execution.tool_search import build_tool_search
@@ -110,7 +110,8 @@ class PluginConnections:
 
     def initialize(self) -> None:
         """Load enabled packages at boot without ever opening an authorization page."""
-        for tool in plugin_panel_tools(self.catalog, self.request_from_tool):
+        panel = plugin_panel_tools(self.catalog, self.request_from_tool, self.disable, self.remove)
+        for tool in panel:
             self.registry.register(tool)
         for plugin_id, package in list(self.packages.items()):
             if not self._enabled(plugin_id) or package.unsupported:
@@ -287,8 +288,9 @@ class PluginConnections:
             msg = "This request is no longer the current conversation"
             raise ToolError(msg, code="stale_request")
         data = json.loads(origin[2])
+        plugin_id = str(args.get("plugin_id") or "")
         with self._lock:
-            self._present(str(args.get("plugin_id") or ""), str(args.get("purpose") or "")[:300])
+            self._present(plugin_id, str(args.get("purpose") or "")[:300])
             if self._request is None:
                 msg = "Plugin panel request was not created"
                 raise RuntimeError(msg)
@@ -304,15 +306,21 @@ class PluginConnections:
                         "_origin_channel": data.get("plugin_origin_channel", data.get("channel")),
                     }
                 )
+            if self._request["state"] == "offered" and self._needs_no_typed_credential(plugin_id):
+                self._start(self._request, {})
             return {
                 "panel_opened": True,
                 "plugin_id": self._request["plugin_id"],
                 "state": self._request["state"],
                 "instruction": (
-                    "The panel is open. Wait for the user's connection action; "
-                    "do not repeat this tool. If continue_task is true, the runtime resumes "
-                    "automatically after connection. Do not ask the user to report when done."
-                ),
+                    "The connection has started. If the app asks for a login, a link appears "
+                    "in the panel for the user to approve on any of their devices; "
+                    if self._request["state"] == "connecting"
+                    else "The panel is open. Wait for the user to enter the key and click "
+                    "Connect; "
+                )
+                + "do not repeat this tool. If continue_task is true, the runtime resumes "
+                "automatically after connection. Do not ask the user to report when done.",
             }
 
     def _present(self, plugin_id: str, purpose: str = "") -> None:
@@ -375,12 +383,9 @@ class PluginConnections:
                 self._open_url(self._auth_url)
         elif operation == "disable":
             self._require_idle(request)
-            self.settings.update(plugin_id, enabled=False)
-            active = self._active.pop(plugin_id, None)
-            self._publish()
-            self._status[plugin_id] = ("disabled", None)
+            stop = self._disable(plugin_id)
             request.update(state="offered", continue_task=False)
-            return active.client if active else None
+            return stop
         elif operation == "approval":
             self._require_idle(request)
             self._approval(plugin_id, data.get("mode"))
@@ -388,6 +393,63 @@ class PluginConnections:
             msg = t("plugin.unknown_operation")
             raise ValueError(msg)
         return None
+
+    def _disable(self, plugin_id: str) -> McpServers | None:
+        """Turn the plugin off and unpublish its tools; the caller stops the returned client."""
+        self.settings.update(plugin_id, enabled=False)
+        active = self._active.pop(plugin_id, None)
+        self._publish()
+        self._status[plugin_id] = ("disabled", None)
+        return active.client if active else None
+
+    def _needs_no_typed_credential(self, plugin_id: str) -> bool:
+        specs = self._specs(plugin_id).values()
+        return not self.packages[plugin_id].unsupported and not any(
+            credential_fields(spec) for spec in specs
+        )
+
+    def _disable_by_voice(self, plugin_id: str) -> McpServers | None:
+        """Disable without a request id; refused while this plugin is connecting."""
+        if self._closed:
+            msg = t("plugin.shutting_down")
+            raise ValueError(msg)
+        if plugin_id not in self.packages:
+            msg = t("plugin.unknown")
+            raise ValueError(msg)
+        current = self._request
+        request = current if current and current["plugin_id"] == plugin_id else None
+        if request:
+            self._require_idle(request)
+        stop = self._disable(plugin_id)
+        if request:
+            request.update(state="offered", continue_task=False)
+        return stop
+
+    def disable(self, plugin_id: str) -> dict[str, Any]:
+        """Turn a plugin off by name: its tools leave, its login stays (ADR 0202)."""
+        with self._lock:
+            stop = self._disable_by_voice(plugin_id)
+        if stop:
+            stop.stop()
+        return {"plugin_id": plugin_id, "enabled": False}
+
+    def remove(self, plugin_id: str) -> dict[str, Any]:
+        """Turn a plugin off and delete its stored login and credentials here (ADR 0202).
+
+        The confirmation card is the registration's (``plugin_panel_tools``); this only runs on
+        his yes. Access granted at the service stays his to revoke.
+        """
+        with self._lock:
+            stop = self._disable_by_voice(plugin_id)
+            servers = list(self._specs(plugin_id))
+        if stop:
+            stop.stop()
+        for server in servers:
+            token = mcp_token_path(self.root / "mcp", server)
+            token.unlink(missing_ok=True)
+            token.with_suffix(".tmp").unlink(missing_ok=True)
+        self.settings.forget_credentials(plugin_id)
+        return {"plugin_id": plugin_id, "removed": True}
 
     @staticmethod
     def _require_idle(request: dict[str, Any]) -> None:

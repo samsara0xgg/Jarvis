@@ -30,6 +30,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+PANEL_TOOLS = {"list_plugins", "open_plugin", "disable_plugin", "remove_plugin"}
+
+
 def _package(root: Path, name: str, servers: dict[str, Any], *, app_only: bool = False) -> None:
     path = root / "plugins" / name
     (path / ".codex-plugin").mkdir(parents=True)
@@ -112,10 +115,7 @@ def test_connect_publishes_real_tools_skills_and_disable_removes_them(
     _package(tmp_path, "echo", ECHO)
     service = _service(tmp_path, fixture)
     try:
-        assert {t.name for t in fixture.registry.get_definitions()} == {
-            "list_plugins",
-            "open_plugin",
-        }
+        assert {t.name for t in fixture.registry.get_definitions()} == PANEL_TOOLS
         assert service.connected_apps_line() is None
         request_id = _open(service, "echo")
         service.action("connect", {"request_id": request_id})
@@ -131,10 +131,7 @@ def test_connect_publishes_real_tools_skills_and_disable_removes_them(
             if t.name.startswith("mcp__")
         )
         service.action("disable", {"request_id": request_id})
-        assert {t.name for t in fixture.registry.get_definitions()} == {
-            "list_plugins",
-            "open_plugin",
-        }
+        assert {t.name for t in fixture.registry.get_definitions()} == PANEL_TOOLS
         assert service.skills_prompt() == ""
         assert service.connected_apps_line() is None
         assert (

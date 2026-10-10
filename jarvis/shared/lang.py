@@ -146,6 +146,10 @@ _ACTIONS: Final[dict[str, dict[Language, tuple[str, str]]]] = {
         "zh": ("派这个后台任务", "已派出去"),
         "en": ("start this background task", "Started"),
     },
+    "remove_plugin": {
+        "zh": ("删掉这个插件的登录和凭据", "已移除"),
+        "en": ("remove this plugin's login and saved keys", "Removed"),
+    },
 }
 
 CONFIRMED_TOOLS: Final = frozenset(_ACTIONS)
