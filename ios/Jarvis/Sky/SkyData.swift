@@ -27,6 +27,8 @@ final class Ev {
     var card: WaitingCard?
     /// a talk star: when the talk began (ms), for its opened row to show the talk
     var talkStart: Int64?
+    /// the brain's item kind and start (ms), for telling it what is open (Brain/About)
+    var kind: String?, startMs: Int64?
     var born: Double = -1e9, flash: Double = -1e9, ign: Double = -1e9
     // what the last frame drew, for hit tests and trails
     var on = false, focus = false

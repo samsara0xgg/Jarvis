@@ -16,11 +16,12 @@ func panelSpring(_ reduce: Bool) -> Animation { reduce ? .easeOut(duration: 0.2)
 /// one row of the talk: his words in a bubble on the right, hers plain on the left
 struct TalkRowView: View, Equatable {
     let row: TalkRow
+    var dropAbout: () -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var reduce
     static func == (a: Self, b: Self) -> Bool { a.row == b.row }
 
     var body: some View {
-        if row.his { bubble } else { her }
+        if let a = row.about { AboutChip(about: a, drop: dropAbout) } else if row.his { bubble } else { her }
     }
 
     private var bubble: some View {
@@ -67,6 +68,29 @@ struct TalkRowView: View, Equatable {
             i = j
         }
         return Text(out)
+    }
+}
+
+/// What he has open, over the first row of the talk: the star's mark, its title and time, and a × to take it off. While it shows, every turn tells the brain what "it" is (ADR 0214).
+struct AboutChip: View {
+    let about: About
+    let drop: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 8) {
+                MarkShape(kd: about.mark).frame(width: 16, height: 16)
+                Text(about.title).font(.system(size: 14)).foregroundStyle(ink.opacity(0.86)).lineLimit(1)
+                Text(about.when(Cal.cur.cal, Date())).font(AT.mono(12)).foregroundStyle(muted).lineLimit(1).fixedSize()
+            }
+            .padding(.leading, 14)
+            Button(action: drop) {
+                Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(muted).frame(width: 36, height: 36).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).accessibilityLabel("不再说这一项")
+        }
+        .frame(height: 36).glass(Capsule())
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -288,7 +312,7 @@ struct TalkPanel: View {
     // MARK: the stream
 
     private func stream(top: Double, bottom: Double, open: Double) -> some View {
-        let days = TalkStream.compose(ui.convDays, live: ui.liveTurns, cal: Cal.cur.cal, now: Date())
+        let days = TalkStream.compose(ui.convDays, live: ui.liveTurns, about: ui.about, cal: Cal.cur.cal, now: Date())
         return ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 14, pinnedViews: [.sectionHeaders]) {
@@ -297,7 +321,7 @@ struct TalkPanel: View {
                             ForEach(day.rows) { r in
                                 VStack(alignment: .leading, spacing: 6) {
                                     if let s = r.stamp { Text(s).font(AT.mono(11)).foregroundStyle(muted).frame(maxWidth: .infinity, alignment: r.his ? .trailing : .leading) }
-                                    TalkRowView(row: r).equatable()
+                                    TalkRowView(row: r, dropAbout: { engine.dropAbout() }).equatable()
                                 }
                                 .opacity(r.current ? 1 : open)
                                 .id(r.id)
@@ -338,7 +362,7 @@ struct TalkPanel: View {
     /// Until the panel has opened by itself once, a copy of the talk's rows (unseen) tells whether they are taller than the place under the dial.
     @ViewBuilder private var measure: some View {
         if ui.talking && !ui.panelOpen && !engine.autoOpenSpent {
-            VStack(alignment: .leading, spacing: 14) { ForEach(ui.liveTurns) { TalkRowView(row: TalkStream.row($0)).equatable() } }
+            VStack(alignment: .leading, spacing: 14) { if let a = ui.about { AboutChip(about: a, drop: {}) }; ForEach(ui.liveTurns) { TalkRowView(row: TalkStream.row($0)).equatable() } }
                 .padding(.horizontal, 32).frame(width: W, alignment: .topLeading).fixedSize(horizontal: false, vertical: true)
                 .onGeometryChange(for: Double.self) { Double($0.size.height) } action: { engine.measureLive($0) }
                 .hidden().allowsHitTesting(false)

@@ -82,6 +82,7 @@ final class StarUI {
     // talking
     var talking = false                 // a talk is on show: while it lasts and for a while after her last word
     var liveTurns: [LiveTurn] = []
+    var about: About?                   // the item he has open, as the chip over the talk's first row says it; every turn carries it while it shows
     var typing = false
     var kbLift = 0.0
     var mic: MicState = .mic

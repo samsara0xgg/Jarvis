@@ -83,6 +83,7 @@ final class RealDay {
         }
         let e = Ev(i.id, t0, lane, st, title, meta, d: d, s: s, src: src, note: note)
         e.live = true
+        e.kind = i.kind; e.startMs = i.start_ms
         if i.kind == "talk" { e.talkStart = i.start_ms }
         return e
     }

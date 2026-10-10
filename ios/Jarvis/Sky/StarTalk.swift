@@ -23,6 +23,19 @@ extension StarEngine {
         wake()
     }
 
+    /// The chip for the star that is open, when a turn is about to go out and the phone is paired (ADR 0214). He can take it off; it stays off for that star.
+    func captureAbout() {
+        guard BrainLink.shared.hasToken, let id = openId, let e = byId(id), var a = About.of(e), a.id != ui.about?.id, a.id != aboutDropped else { return }
+        a.mark = kdOf(e)
+        setAbout(a)
+    }
+    func setAbout(_ a: About?) {
+        ui.about = a
+        MainActor.assumeIsolated { AboutNow.current = a }
+    }
+    /// the chip's ×
+    func dropAbout() { aboutDropped = ui.about?.id; setAbout(nil); Haptic.selection() }
+
     /// The talk is over; its rows stay for `linger`, and a finger on them keeps them longer.
     func lingerFrom(_ now: Double) { lingerUntil = now + Self.linger }
     func holdLinger(_ on: Bool) {
@@ -66,7 +79,7 @@ extension StarEngine {
     /// every frame: the saying row brightens, and a talk nobody touches goes
     func stepTalk(_ now: Double) {
         if let s = speaking { setTurn(speakId, alphas: s.alphas(now).map { ($0 * 16).rounded() / 16 }) }       // sixteenths: a character's fade is a few redraws, not one per frame
-        if ui.talking && talk == nil && voiceState == .idle && !lingerHold && now > lingerUntil { ui.talking = false; rowKey = "" }
+        if ui.talking && talk == nil && voiceState == .idle && !lingerHold && now > lingerUntil { ui.talking = false; rowKey = ""; setAbout(nil); aboutDropped = nil }
         put(\.topTime, clock(F))
         updateStream()
         if ui.panelOpen { updatePanel() }
@@ -183,6 +196,18 @@ extension StarEngine {
             EV.append(e)
             TalkTopics.shared.debugSet(e.id, "明天几点出门？", "九点二十。坐 32 路，路上三十二分钟，可能下雨，带伞。")
             openId = e.id; rowKey = ""; seek(e.t)
+        case "about":
+            // a reminder open when he starts to talk: the chip is the talk's first row, and "它" in his words is that reminder
+            setLevel(0)
+            let cal = Cal.cur.cal, at = cal.date(bySettingHour: 15, minute: 0, second: 0, of: Date())!
+            let e = Ev("rem-debug", Cal.cur.t(at), .her, .next, "提醒：给 Mia 回电话", "15:00", s: "回电话")
+            e.live = true; e.kind = "reminder"; e.startMs = Int64(at.timeIntervalSince1970 * 1000)
+            EV.append(e)
+            openId = e.id; rowKey = ""; seek(e.t)
+            beginTalk(); lingerHold = true
+            if var a = About.of(e) { a.mark = kdOf(e); setAbout(a) }
+            addTurn(his: true, "把它推到明天")
+            addTurn(his: false, "好，明天下午三点再提醒你给 Mia 回电话。")
         case "typing":
             setLevel(0)
             beginTalk(); lingerHold = true

@@ -18,6 +18,8 @@ extension StarEngine {
         endEditing?()
         if let m = AttachUpload.check(count: items.count) { return trouble(m) }
         sendingToBrain = true
+        captureAbout()
+        let about = ui.about
         note("正在发给她…", for: 120_000)
         let shown = text.isEmpty ? AttachModel.caption(items) : text, pics = SentPics.items(items)
         if talk != nil { interrupt() }
@@ -31,10 +33,11 @@ extension StarEngine {
                     ids.append(id)
                 }
                 seq = await Conversation.shared.latestSeq()      // her answer is the first row of hers past this one
-                let status = try await BrainLink.shared.call { try await BrainClient.submit(text, attachments: ids, bases: $0, token: $1) }
+                let status = try await BrainLink.shared.call { try await BrainClient.submit(text, attachments: ids, about: about, bases: $0, token: $1) }
                 guard status == 200 else {
                     self.sendingToBrain = false
-                    return self.trouble(status == 404 ? "文件过期了，再发一次" : AttachUpload.refusal(status: status, name: ""))
+                    // the host takes the item whole or refuses the turn: say so, and leave the chip for him to take off
+                    return self.trouble(status == 404 ? "文件过期了，再发一次" : status == 422 && about != nil ? "她没接住上面的那一项，去掉它再发" : AttachUpload.refusal(status: status, name: ""))
                 }
             } catch let e as AttachUpload.Refused {
                 self.sendingToBrain = false; return self.trouble(e.message)

@@ -14,6 +14,7 @@ struct TalkRow: Identifiable, Equatable {
     var at = 0.0                        // seconds since 1970
     var stamp: String?
     var current = false                 // a row of the talk on show
+    var about: About?                   // not words: the chip of the item he has open, the first row of the talk
 }
 
 struct TalkDay: Identifiable, Equatable {
@@ -50,9 +51,11 @@ enum TalkStream {
     }
 
     /// The days with the live talk after them, under today's date.
-    static func compose(_ days: [TalkDay], live: [LiveTurn], cal: Calendar, now: Date) -> [TalkDay] {
+    static func compose(_ days: [TalkDay], live: [LiveTurn], about: About? = nil, cal: Calendar, now: Date) -> [TalkDay] {
         if live.isEmpty { return days }
-        return group(live.map(row), days, cal: cal, now: now)
+        var rows = live.map(row)
+        if let about { rows.insert(TalkRow(id: "about", his: false, text: about.title, at: rows[0].at, current: true, about: about), at: 0) }
+        return group(rows, days, cal: cal, now: now)
     }
     static func row(_ t: LiveTurn) -> TalkRow {
         TalkRow(id: "l\(t.id)", his: t.his, text: t.text, alphas: t.alphas, pics: t.pics, leadIn: t.leadIn, growing: t.growing, at: t.at.timeIntervalSince1970, current: true)

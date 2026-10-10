@@ -35,9 +35,16 @@ extension BrainClient {
         return (id, 200)
     }
 
-    /// The words of a turn and the ids of the files that go with them (the text may be empty then). 200 it was taken; 404 a file is gone, 422 over the turn's limits, 501 no files here.
-    static func submit(_ text: String, attachments: [String], bases: [URL], token: String) async throws -> Int {
-        let body = try JSONSerialization.data(withJSONObject: ["text": text, "attachments": attachments] as [String: Any])
+    /// The body of `POST /inherent/submit`: the words, the files, and the item he has open (ADR 0214) while its chip shows.
+    static func submitBody(_ text: String, attachments: [String], about: About?) throws -> Data {
+        var o: [String: Any] = ["text": text, "attachments": attachments]
+        if let about { o["about"] = about.json }
+        return try JSONSerialization.data(withJSONObject: o)
+    }
+
+    /// The words of a turn and the ids of the files that go with them (the text may be empty then). 200 it was taken; 404 a file is gone, 422 over the turn's limits or the `about` refused, 501 no files here.
+    static func submit(_ text: String, attachments: [String], about: About? = nil, bases: [URL], token: String) async throws -> Int {
+        let body = try submitBody(text, attachments: attachments, about: about)
         return try await send("POST", "/inherent/submit", body: body, also: [404, 422, 501], bases: bases, token: token, unauthorized: .revoked).status
     }
 
