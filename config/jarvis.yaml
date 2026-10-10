@@ -76,6 +76,38 @@ llm:
       context_length: 1050000
       reasoning_effort: medium
       images: true
+    # Claude Haiku 5.5，直连 Anthropic（ADR 0219）。对话预设的另一个选择，出厂不是默认：
+    # 默认仍是 luna，等重放评测定了再换。reasoning_effort 对应 Anthropic 的 effort：
+    # low = 自适应思考 + low（实测暖机首 token 中位 0.6s），none = 关思考（实测反而更慢，
+    # 还会乱调工具，别用）。结构化回复、提示词缓存、思考块回传都由 LLMClient 处理。
+    # 价钱 $0.10/$0.50 每百万 token（提示 100K 以内），缓存读 0.1 倍。
+    haiku:
+      provider: anthropic
+      model: claude-haiku-5-5
+      api_key_env: ANTHROPIC_API_KEY
+      max_tokens: 16384
+      context_length: 1000000
+      reasoning_effort: low
+      # 收图：图片转成 Anthropic 的 image 块（ADR 0211）。
+      images: true
+    # 深想一轮用的（llm.think.preset 指向它时）：同一个模型，effort 开到 medium。
+    haiku-think:
+      provider: anthropic
+      model: claude-haiku-5-5
+      api_key_env: ANTHROPIC_API_KEY
+      max_tokens: 16384
+      context_length: 1000000
+      reasoning_effort: medium
+      images: true
+    # 后台工作（工作状态、项目归类、截屏读图、对话摘要……）想改走 Anthropic 时指向它，
+    # 和 gpt6-luna 一样中等思考。强制调工具的请求（work_state）Anthropic 不许思考，
+    # 会自动关掉。没有 flex 档：extra_body 里的 OpenAI 字段对它不生效。
+    haiku-bg:
+      provider: anthropic
+      model: claude-haiku-5-5
+      api_key_env: ANTHROPIC_API_KEY
+      max_tokens: 16384
+      reasoning_effort: medium
     # context_length：模型窗口（token）。session.compact_at_context_ratio
     # 按它算压缩门槛；决策预设缺了它就永远不压缩。
     #
@@ -846,7 +878,8 @@ realtime:
     # one warning, without it.  first_clause_chars > 0 lets the first thing
     # said end at the first clause end (，；,;) at or past that many
     # characters, so speech starts before the first sentence is written;
-    # 0 waits for the sentence's end.  structured (ADR 0114, only with
+    # 0 waits for the sentence's end.  An Anthropic preset takes this route too, over
+    # /v1/messages with output_config.format: it labels no line before a call.  structured (ADR 0114, only with
     # spoken_streaming on) sends every request of such a turn with a strict
     # JSON schema {spoken, written}: the spoken line is streamed and said as
     # written, the written part (lists, times, links) is for the screen only,
@@ -869,7 +902,8 @@ realtime:
     # system prompt and tools (~6k of ~45k tokens, 2026-09-30): OpenAI finds a
     # cached prompt where an earlier request ended, and none ended there.
     # Costs one mostly cached request per turn and counts against the
-    # per-minute token limit. OpenAI presets only.
+    # per-minute token limit. An Anthropic preset sends it with max_tokens 0 and the
+    # next turn's output_config.format (its cache is keyed on both).
     prefix_warm:
       enabled: false
     # ADR 0107.  Allen asks something slow, then
