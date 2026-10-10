@@ -12,7 +12,7 @@ export type Plugin = {
 export type PluginRequest = {
   id: string; plugin_id: string; presentation: number; purpose: string; continue_task: boolean;
   state: 'offered' | 'connecting' | 'authorizing' | 'ready' | 'error' | 'cancelled';
-  error: string | null; resume_status: string;
+  error: string | null; resume_status: string; auth_url?: string; // the sign-in link, only while state is 'authorizing' (ADR 0202)
 };
 export type PluginSnapshot = { plugins: Plugin[]; request: PluginRequest | null };
 export const cleanError = (error: unknown) => String(error instanceof Error ? error.message : error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
@@ -49,6 +49,14 @@ export function usePlugins() {
     } catch (e) { if (alive.current) setError(cleanError(e)); return false; }
     finally { mutation.current = false; if (alive.current) setBusy(false); }
   }, []);
+  // ADR 0202: the sign-in link opens on this device the first time a request shows it (the main process keeps
+  // the once-per-request count, so a second window or a hidden panel does not open it again).
+  const request = snapshot?.request, opened = useRef('');
+  useEffect(() => {
+    if (request?.state !== 'authorizing' || !request.auth_url || opened.current === request.id) return;
+    opened.current = request.id;
+    void window.jarvis?.openLogin?.(request.auth_url, request.id);
+  }, [request?.id, request?.state, request?.auth_url]);
   return { snapshot, error, busy, action, refresh: load };
 }
 
@@ -132,7 +140,7 @@ export function PluginPanel({ controller, onHide, onConversation, presentation, 
         <span className="plugin-spinner" aria-hidden="true"/>
         <h3>{simulation ? '等待模拟授权结果' : request.state === 'authorizing' ? '等待你在浏览器中授权' : '正在接入插件'}</h3>
         <p>{request.continue_task ? '完成后会自动继续刚才的任务' : '完成后，这个插件即可在对话中使用'}</p>
-        {simulation ? <p>在左侧选择授权「成功」或「失败」，也可以先切换页面。</p> : request.state === 'authorizing' && <button className="plugin-secondary" disabled={busy} onClick={() => void command('reopen')}><ArrowSquareOut/>重新打开授权页面</button>}
+        {simulation ? <p>在左侧选择授权「成功」或「失败」，也可以先切换页面。</p> : request.state === 'authorizing' && request.auth_url && <button className="plugin-secondary" disabled={busy} onClick={() => void window.jarvis?.openLogin?.(request.auth_url!, request.id, true)}><ArrowSquareOut/>重新打开授权页面</button>}
         <div className="plugin-progress-actions"><button onClick={onHide}>收起</button><button disabled={busy} onClick={() => void cancel()}>取消连接</button></div>
       </div> : <>
         {request.purpose && <div className="plugin-purpose"><span>本次用途</span><p>{request.purpose}</p></div>}

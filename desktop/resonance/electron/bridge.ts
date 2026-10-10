@@ -16,6 +16,7 @@ const ACCOUNT_PAGES: Record<string, string> = {
   deepseek: 'https://platform.deepseek.com/top_up',
   minimax: 'https://platform.minimax.io/user-center/payment/balance',
 };
+const openedLogins = new Set<string>();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // The local key every daemon route needs, read fresh so a first boot's key is picked up.
 export const daemonToken = () => readFile(path.join(process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis'), 'plugin-access.json'), 'utf8')
@@ -91,6 +92,18 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     if (!fromThisWindow(event) || typeof url !== 'string' || !/^https?:\/\//i.test(url) || url.length >= 4096) return false;
     if (verification || lab) return false;
     try { await shell.openExternal(url); return true; }
+    catch { return false; }
+  });
+  // ADR 0202: a plugin sign-in link opens on this device. The renderer passes the link the brain put in the
+  // request; only an https address opens, once per request id unless the person asked to open it again.
+  ipcMain.handle('open-login', async (event, url, requestId, again) => {
+    if (!fromThisWindow(event) || typeof url !== 'string' || url.length >= 4096 || typeof requestId !== 'string' || requestId.length > 64) return false;
+    let link: URL;
+    try { link = new URL(url); } catch { return false; }
+    if (link.protocol !== 'https:' || verification || lab) return false;
+    if (again !== true && openedLogins.has(requestId)) return false;
+    openedLogins.add(requestId);
+    try { await shell.openExternal(link.href); return true; }
     catch { return false; }
   });
   // A Usage page write (ADR 0048/0065): main reads the desktop credential and posts to the

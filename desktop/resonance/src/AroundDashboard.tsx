@@ -474,7 +474,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     const request = snapshot?.request, mine = request?.plugin_id === id ? request : null;
     const run = (operation: string, data: Record<string, unknown> = {}) => live!.action(operation, { request_id: mine?.id, ...data });
     if (act === 'later') { if (mine?.state === 'offered' || mine?.state === 'error') void run('cancel'); setPlugin(null); }
-    else if (act === 'reopen' || act === 'cancel') void run(act);
+    else if (act === 'reopen') { if (mine?.auth_url) void window.jarvis?.openLogin?.(mine.auth_url, mine.id, true); }
+    else if (act === 'cancel') void run(act);
     else if (act === 'off') { if (await run('disable')) notify(t([`${plugins[id].name} is off.`, `${plugins[id].name} 已关掉。`])); }
     else if (act === 'approval') { if (await run('approval', { mode: value })) notify(t(['Saved.', '已保存。'])); }
     else if (act === 'connect') {

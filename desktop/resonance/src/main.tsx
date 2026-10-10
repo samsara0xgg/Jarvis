@@ -49,6 +49,7 @@ declare global { interface Window { jarvis?: {
   openAccount: (service: string) => Promise<boolean>;
   openMail?: (id: string) => Promise<boolean>;
   openUrl?: (url: string) => Promise<boolean>;
+  openLogin?: (url: string, requestId: string, again?: boolean) => Promise<boolean>;
   usageReset: (service: 'codex', requestId: string) => Promise<{ code: string; windows_reset: number }>;
   usageBalance: (service: 'openai', usd: number) => Promise<{ recorded: boolean }>;
   tokenUsage?: (refresh?: boolean) => Promise<TokenUsage>;

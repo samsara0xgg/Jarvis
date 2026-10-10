@@ -81,6 +81,7 @@ contextBridge.exposeInMainWorld('jarvis', {
   openAccount: (service: string) => ipcRenderer.invoke('open-account', service),
   openMail: (id: string) => ipcRenderer.invoke('open-mail', id),
   openUrl: (url: string) => ipcRenderer.invoke('open-url', url),
+  openLogin: (url: string, requestId: string, again = false) => ipcRenderer.invoke('open-login', url, requestId, again),
   usageReset: (service: string, requestId: string) => ipcRenderer.invoke('usage-reset', service, requestId),
   usageBalance: (service: string, usd: number) => ipcRenderer.invoke('usage-balance', service, usd),
   tokenUsage: (refresh = false) => ipcRenderer.invoke('token-usage', refresh),
