@@ -353,7 +353,7 @@ private struct AttachViewfinder: View {
             Color.white.opacity(flash).allowsHitTesting(false)
             // top: close, flip
             HStack {
-                roundButton("xmark", "关闭相机") { model.close() }
+                roundButton("xmark", "回到添加菜单") { model.closeCamera() }
                 Spacer()
                 roundButton("arrow.triangle.2.circlepath.camera", "切换镜头") { cam.flip() }
                     .opacity(frozen || cam.status == .unavailable ? 0 : 1).allowsHitTesting(!frozen && cam.status != .unavailable)

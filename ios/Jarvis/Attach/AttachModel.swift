@@ -128,6 +128,9 @@ final class AttachModel {
 
     func go(_ p: AttachPage) { animate(0.42) { page = p } }
 
+    /// the viewfinder's ✕ goes back to the add menu (a picture just taken is dropped), not out of the whole panel
+    func closeCamera() { AttachTemp.discard(shot?.url); shot = nil; go(.menu) }
+
     /// 文件: the panel goes away and the phone's own document picker opens
     func pickFiles() { close(); importing = true }
 

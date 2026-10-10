@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 
 // Launch with `-attachScene 添加` (and optionally `-attachDelay 2`) to land on a state, for screenshots without touching the screen.
-// 添加 · 相册 · 相机 · 相机循环 · 拍后 · 带附件 · 带附件添加 · 粘贴 · 文件选择 · 发送
+// 添加 · 相册 · 相机 · 相机循环 · 相机返回 · 拍后 · 带附件 · 带附件添加 · 粘贴 · 文件选择 · 发送
 // `-attachText 一段很长的话` puts words in the field (to see it grow).
 
 enum AttachDebug {
@@ -25,6 +25,7 @@ enum AttachDebug {
             }
         case "相机": m.open(); after(0.3) { m.go(.camera) }
         case "相机循环": cameraLoop(m)
+        case "相机返回": m.open(); after(0.3) { m.go(.camera) }; after(1.5) { m.closeCamera() }
         case "拍后": m.open(); after(0.3) { m.go(.camera) }; after(1.0) { m.shoot() }
         case "带附件": m.attach(samples(), from: [])
         case "带附件添加": m.attach(samples(), from: []); after(0.6) { m.open() }
