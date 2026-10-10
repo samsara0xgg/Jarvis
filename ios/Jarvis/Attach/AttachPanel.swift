@@ -326,7 +326,8 @@ struct AttachFeed: View {
                 LinearGradient(colors: [Color(red: 6 / 255, green: 9 / 255, blue: 24 / 255), Color(red: 16 / 255, green: 21 / 255, blue: 58 / 255), Color(red: 29 / 255, green: 18 / 255, blue: 55 / 255)], startPoint: .top, endPoint: .bottom)
                 RadialGradient(colors: [Color(red: 157 / 255, green: 180 / 255, blue: 1).opacity(0.22), .clear], center: UnitPoint(x: 0.3, y: 0.35), startRadius: 0, endRadius: 190)
             case .denied: EmptyView()
-            default: AttachCameraPreview(session: camera.session)
+            case .idle: EmptyView()
+            case .running: AttachCameraPreview(camera: camera)   // only once the session runs: attaching the layer to a starting session blocks the main thread
             }
         }
     }

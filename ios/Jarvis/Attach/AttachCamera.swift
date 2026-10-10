@@ -15,7 +15,9 @@ final class AttachCamera {
 
     @ObservationIgnored let session = AVCaptureSession()
     @ObservationIgnored private let queue = DispatchQueue(label: "jarvis.attach.camera")
-    @ObservationIgnored private let output = AVCapturePhotoOutput()
+    @ObservationIgnored private var output: AVCapturePhotoOutput?   // made on the queue: building one asks the camera daemon and blocks for ~170 ms
+    @ObservationIgnored private var layers: [AVCaptureVideoPreviewLayer] = []   // the live previews, queue only
+    @ObservationIgnored private var links: [ObjectIdentifier: AVCaptureConnection] = [:]
     @ObservationIgnored private var configured = false
     @ObservationIgnored private var wanted = false
     @ObservationIgnored private var delegate: PhotoDelegate?
@@ -64,8 +66,10 @@ final class AttachCamera {
         session.sessionPreset = .photo
         guard let d = Self.device(front: front), let input = try? AVCaptureDeviceInput(device: d), session.canAddInput(input) else { return false }
         session.addInput(input)
+        let output = AVCapturePhotoOutput()
         guard session.canAddOutput(output) else { return false }
         session.addOutput(output)
+        self.output = output
         configured = true
         return true
     }
@@ -79,6 +83,33 @@ final class AttachCamera {
             self.session.inputs.forEach { self.session.removeInput($0) }
             if let d = Self.device(front: front), let i = try? AVCaptureDeviceInput(device: d), self.session.canAddInput(i) { self.session.addInput(i) }
             self.session.commitConfiguration()
+            self.links.removeAll()   // they went with the old input
+            self.join()
+        }
+    }
+
+    // MARK: the previews
+
+    /// Each preview joins the session through a connection made on the queue. Assigning `layer.session` on the main thread waits on the
+    /// camera daemon: ~150 ms for the first preview and about 9 s for a second one, which was the tap on 相机 hanging.
+    func connect(_ layer: AVCaptureVideoPreviewLayer) { queue.async { self.layers.append(layer); self.join() } }
+
+    func disconnect(_ layer: AVCaptureVideoPreviewLayer) {
+        queue.async {
+            self.layers.removeAll { $0 === layer }
+            if let c = self.links.removeValue(forKey: ObjectIdentifier(layer)) { self.session.removeConnection(c) }
+        }
+    }
+
+    private func join() {
+        guard configured, let port = (session.inputs.first as? AVCaptureDeviceInput)?.ports(for: .video, sourceDeviceType: nil, sourceDevicePosition: .unspecified).first else { return }
+        session.beginConfiguration(); defer { session.commitConfiguration() }
+        for l in layers where links[ObjectIdentifier(l)] == nil {
+            let c = AVCaptureConnection(inputPort: port, videoPreviewLayer: l)
+            guard session.canAddConnection(c) else { continue }
+            session.addConnection(c)
+            if c.isVideoRotationAngleSupported(90) { c.videoRotationAngle = 90 }   // the app is portrait only
+            links[ObjectIdentifier(l)] = c
         }
     }
 
@@ -97,9 +128,10 @@ final class AttachCamera {
         let d = PhotoDelegate { data in finish(data.flatMap(Self.make)) }
         delegate = d
         queue.async {
-            if let c = self.output.connection(with: .video), c.isVideoRotationAngleSupported(90) { c.videoRotationAngle = 90 }   // the app is portrait only
-            let s = self.output.availablePhotoCodecTypes.contains(.jpeg) ? AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg]) : AVCapturePhotoSettings()
-            self.output.capturePhoto(with: s, delegate: d)
+            guard let output = self.output else { return finish(nil) }
+            if let c = output.connection(with: .video), c.isVideoRotationAngleSupported(90) { c.videoRotationAngle = 90 }   // the app is portrait only
+            let s = output.availablePhotoCodecTypes.contains(.jpeg) ? AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg]) : AVCapturePhotoSettings()
+            output.capturePhoto(with: s, delegate: d)
         }
         #endif
     }
@@ -136,20 +168,28 @@ final class AttachCamera {
     }
 }
 
-/// a live preview of the session, filling its frame
+/// a live preview of the camera's session, filling its frame
 struct AttachCameraPreview: UIViewRepresentable {
-    let session: AVCaptureSession
+    let camera: AttachCamera
     func makeUIView(context: Context) -> PreviewView {
-        let v = PreviewView(); v.preview.session = session; v.preview.videoGravity = .resizeAspectFill; return v
+        let v = PreviewView(session: camera.session); v.camera = camera; camera.connect(v.preview); return v
     }
     func updateUIView(_ v: PreviewView, context: Context) {}
+    static func dismantleUIView(_ v: PreviewView, coordinator: ()) { v.camera?.disconnect(v.preview) }
 
     final class PreviewView: UIView {
-        override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
-        var preview: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+        let preview: AVCaptureVideoPreviewLayer
+        weak var camera: AttachCamera?
+        init(session: AVCaptureSession) {
+            preview = AVCaptureVideoPreviewLayer(sessionWithNoConnection: session)
+            preview.videoGravity = .resizeAspectFill
+            super.init(frame: .zero)
+            layer.addSublayer(preview)
+        }
+        required init?(coder: NSCoder) { fatalError() }
         override func layoutSubviews() {
             super.layoutSubviews()
-            if let c = preview.connection, c.isVideoRotationAngleSupported(90) { c.videoRotationAngle = 90 }
+            CATransaction.begin(); CATransaction.setDisableActions(true); preview.frame = bounds; CATransaction.commit()
         }
     }
 }
