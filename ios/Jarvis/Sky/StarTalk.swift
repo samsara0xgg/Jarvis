@@ -141,6 +141,11 @@ extension StarEngine {
             if let r = ui.convDays.flatMap(\.rows).first(where: { $0.at >= t }) { ui.scrollTo = r.id }
         }
     }
+    /// He scrolled to the top of the open panel: the page before the oldest row listed.
+    func loadOlder(_ done: @escaping (Bool) -> Void) {
+        guard ui.panelOpen else { return done(false) }
+        Task { @MainActor in done(await Conversation.shared.loadOlder()) }
+    }
     /// the app came back after a long time away: the star chart as it was first opened, on now
     func comeBack() { setLevel(0); goBack() }
 
@@ -149,6 +154,7 @@ extension StarEngine {
         let seen = (Conversation.shared.version, ui.talking, talkBase)
         if seen == streamSeen { return }
         streamSeen = seen
+        put(\.olderMore, Conversation.shared.hasMore)
         let rows = Conversation.shared.rows
         if TalkStream.handedOver(rows, base: talkBase, talking: ui.talking) { ui.liveTurns = [] }
         let days = TalkStream.convDays(TalkStream.shown(rows, base: talkBase, talking: ui.talking), pics: MainActor.assumeIsolated { SentPics.byRow }, cal: Cal.cur.cal, now: Date())
@@ -208,6 +214,22 @@ extension StarEngine {
             if var a = About.of(e) { a.mark = kdOf(e); setAbout(a) }
             addTurn(his: true, "把它推到明天")
             addTurn(his: false, "好，明天下午三点再提醒你给 Mia 回电话。")
+        case "history":
+            // 24 newest rows, and a made-up page of 40 before them: scroll to the top and it comes in
+            setLevel(0)
+            let cal = Cal.cur.cal, now = Date()
+            func rows(_ range: ClosedRange<Int>) -> [ConversationRow] {
+                range.map { n in
+                    let c = now.addingTimeInterval(-Double(124 - n) * 50 * 60)
+                    return ConversationRow(seq: n, source: n % 2 == 0 ? "allen" : "jarvis", ts: TalkStream.dayId(c, cal) + "T" + TalkStream.clock(c, cal) + ":00",
+                                           text: n % 2 == 0 ? "第 \(n) 行，他说的话" : "<voice>第 \(n) 行，她的回答。</voice>")
+                }
+            }
+            MainActor.assumeIsolated {
+                Conversation.shared.debugSet(rows(101...124), hasMore: true)
+                Conversation.shared.fakeOlder = { first in ConversationPage(rows: rows(max(1, first - 40)...(first - 1)), hasMore: first - 40 > 1) }
+            }
+            openPanel(quiet: true)
         case "typing":
             setLevel(0)
             beginTalk(); lingerHold = true

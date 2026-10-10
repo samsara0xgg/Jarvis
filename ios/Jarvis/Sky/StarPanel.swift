@@ -213,6 +213,18 @@ func panelDrag(_ engine: StarEngine, _ pull: Binding<Double?>, opens: Bool, tap:
         }
 }
 
+/// Where the stream is scrolled and where the row that was first listed stands, so that the row he is looking at stays where it is when older rows come in above it.
+final class StreamProbe {
+    var offset = 0.0
+    var y: Double?                      // the top, in the stream's own space, of the first row listed (while a page is asked for and just after: the row that was first)
+    var anchor: String?                 // that row
+    var rest = true                     // the list is not being moved
+    var touching = false                // a finger is on it
+    var asked = false                   // a page is being asked for
+    var scrolled = false                // the page came and the stream was sent to the anchor: from here its place is corrected
+    var pinY = 0.0, pinUntil = 0.0      // where the anchor is kept, and until when: the lazy stack's heights firm up as the rows are laid out
+}
+
 /// where the panel's top edge is: held by a finger, or at one of its two places
 func panelTop(_ ui: StarUI, _ pull: Double?) -> Double { pull ?? (ui.panelOpen ? StarEngine.panelOpen : StarEngine.panelHome) }
 /// 0 at the reading zone, 1 fully open
@@ -225,6 +237,8 @@ struct TalkPanel: View {
     @Bindable var ui: StarUI
     @Binding var pull: Double?
     @State private var pinContent = 0.0
+    @State private var pos = ScrollPosition()
+    @State private var probe = StreamProbe()
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     var body: some View {
@@ -311,6 +325,31 @@ struct TalkPanel: View {
 
     // MARK: the stream
 
+    private func askOlder() {
+        guard probe.rest, probe.offset < 40, ui.olderMore, ui.panelOpen, !probe.asked, nowMs() > probe.pinUntil, nowMs() - engine.panelSince > 700,
+              let id = ui.convDays.first?.rows.first?.id, let y = probe.y else { return }
+        probe.asked = true; probe.scrolled = false; probe.anchor = id; probe.pinY = y
+        engine.loadOlder { if !$0 { probe.asked = false } }
+    }
+
+    /// A row's top moved. The first row listed is followed; once a page is asked for, the row that was first, which is kept where he saw it while the page's rows are laid out above it.
+    private func moved(_ id: String, to y: Double) {
+        guard probe.asked || nowMs() < probe.pinUntil else {
+            if id == ui.convDays.first?.rows.first?.id { probe.y = y }
+            return
+        }
+        guard id == probe.anchor else { return }
+        probe.y = y
+        if probe.scrolled && !probe.touching && abs(y - probe.pinY) > 1 { pos.scrollTo(y: probe.offset + y - probe.pinY) }
+    }
+
+    /// The page came in above the anchor: the stream goes to it (a lazy stack lays the rows out on the way, so the place is right), then `moved` sets it back where it was.
+    private func arrived(_ proxy: ScrollViewProxy) {
+        guard probe.asked, let id = probe.anchor else { return }
+        probe.asked = false; probe.pinUntil = nowMs() + 1200
+        DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top); probe.scrolled = true }
+    }
+
     private func stream(top: Double, bottom: Double, open: Double) -> some View {
         let days = TalkStream.compose(ui.convDays, live: ui.liveTurns, about: ui.about, cal: Cal.cur.cal, now: Date())
         return ScrollViewReader { proxy in
@@ -325,6 +364,7 @@ struct TalkPanel: View {
                                 }
                                 .opacity(r.current ? 1 : open)
                                 .id(r.id)
+                                .onGeometryChange(for: Double.self) { $0.frame(in: .named("stream")).minY } action: { moved(r.id, to: $0) }
                                 .transition(reduce ? .opacity : .opacity.combined(with: .offset(y: 6)))
                                 .contextMenu { Button("拷贝", systemImage: "doc.on.doc") { UIPasteboard.general.string = r.text } }
                             }
@@ -340,6 +380,12 @@ struct TalkPanel: View {
                 .animation(.easeOut(duration: 0.25), value: ui.panelOpen)
             }
             .defaultScrollAnchor(.bottom)
+            .scrollPosition($pos)
+            .coordinateSpace(name: "stream")
+            // At the top of a panel that has been open a moment, at rest, with older rows at the brain: ask for the page before. Not while the finger or its glide is still moving the list: a scroll made then would be undone.
+            .onScrollGeometryChange(for: Double.self) { $0.contentOffset.y + $0.contentInsets.top } action: { _, y in probe.offset = y; askOlder() }
+            .onScrollPhaseChange { _, phase in probe.rest = phase == .idle; probe.touching = phase == .interacting; askOlder() }
+            .onChange(of: ui.convDays.first?.rows.first?.id) { _, _ in arrived(proxy) }
             .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.holdLinger(true) }.onEnded { _ in engine.holdLinger(false) })
             .onChange(of: ui.scrollTo) { _, id in
                 guard let id else { return }

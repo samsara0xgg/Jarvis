@@ -78,6 +78,7 @@ final class StarUI {
     var headLine = ""                   // the panel header's line: the next item, or what waits
     var headWaits = false
     var convDays: [TalkDay] = []        // the conversation of record, by day (Brain/TalkStream)
+    var olderMore = false               // the brain has rows older than the first one listed
     var scrollTo: String?               // a row of the stream the panel is asked to show
     // talking
     var talking = false                 // a talk is on show: while it lasts and for a while after her last word
