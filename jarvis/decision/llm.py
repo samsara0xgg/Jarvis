@@ -311,6 +311,9 @@ class LLMClient:
         # Provider-specific request fields merged verbatim into the OpenAI
         # request body (e.g. DeepSeek ``thinking: {type: disabled}``).
         self._extra_body: dict[str, Any] = dict(cfg.get("extra_body") or {})
+        # A preset's own lines after every system prompt it is sent (ADR 0220): how
+        # this model must work, kept out of the shared prompt the other presets read.
+        self._system_note = ""
         # ``"responses"`` sends chat() to OpenAI's /v1/responses: GPT rejects
         # function tools with reasoning on in chat/completions. Streams stay there.
         self._api: str | None = cfg.get("api")
@@ -476,6 +479,8 @@ class LLMClient:
         self._reasoning_effort = preset.get("reasoning_effort")
         self._extra_body = dict(preset.get("extra_body") or {})
         self._api = preset.get("api")
+        note = str(preset.get("system_note") or "").strip()
+        self._system_note = f"\n\n{note}" if note else ""
 
         api_key_env = preset.get("api_key_env")
         if api_key_env:
@@ -529,6 +534,7 @@ class LLMClient:
         Returns:
             A frozen :class:`ChatResult`.
         """
+        system += self._system_note
         # Reset per-call metadata so stale values don't bleed across turns.
         self._last_metadata = _empty_metadata()
         self._last_finish_reason = None
@@ -609,6 +615,7 @@ class LLMClient:
         Yields :class:`ChatStreamChunk` instances; the final has
         ``is_final=True`` and a non-None ``finish_reason``.
         """
+        system += self._system_note
         if self._provider == "openai":
             return self._chat_stream_openai(messages=messages, system=system, tools=tools)
         return self._chat_stream_anthropic(messages=messages, system=system, tools=tools)
@@ -634,6 +641,7 @@ class LLMClient:
         (:meth:`request_tier`).
         """
         request_id = _new_llm_request_id()
+        system += self._system_note
         responses = responses and self._provider == "openai"
         # Capture everything before returning the lazy source. Later preset or
         # caller-message mutations cannot redirect this request or its payload.

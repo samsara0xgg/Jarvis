@@ -77,9 +77,11 @@ llm:
       reasoning_effort: medium
       images: true
     # Claude Haiku 5.5，直连 Anthropic（ADR 0220）。对话预设的另一个选择，出厂不是默认：
-    # 默认仍是 luna，等重放评测定了再换。reasoning_effort 对应 Anthropic 的 effort：
-    # low = 自适应思考 + low（实测暖机首 token 中位 0.6s），none = 关思考（实测反而更慢，
-    # 还会乱调工具，别用）。结构化回复、提示词缓存、思考块回传都由 LLMClient 处理。
+    # 默认仍是 luna，等重放评测定了再换。reasoning_effort 对应 Anthropic 的 effort，都是
+    # 自适应思考；none = 关思考（实测反而更慢，还会乱调工具，别用）。2026-10-10 重放：
+    # low 和 medium 首 token 一样快，但 low 遇到要查的事常只说“我查一下”就结束（结构化
+    # 回复下它的开场白就是整个回答），medium 加下面的 system_note 33 次查了 33 次。
+    # 结构化回复、提示词缓存、思考块回传都由 LLMClient 处理。
     # 价钱 $0.10/$0.50 每百万 token（提示 100K 以内），缓存读 0.1 倍。
     haiku:
       provider: anthropic
@@ -87,18 +89,25 @@ llm:
       api_key_env: ANTHROPIC_API_KEY
       max_tokens: 16384
       context_length: 1000000
-      reasoning_effort: low
+      reasoning_effort: medium
       # 收图：图片转成 Anthropic 的 image 块（ADR 0211）。
       images: true
-    # 深想一轮用的（llm.think.preset 指向它时）：同一个模型，effort 开到 medium。
+      # 这两句接在系统提示词末尾，只发给这个预设（2026-10-10 重放：不加时“今天有什么日程”
+      # 8 次里 0 次去查日历，多半只说“我查一下”就结束）。
+      system_note: &haiku_note |-
+        # Working on this model
+        - Any text you write is your final spoken answer and ends the turn at once; nothing runs after it. So when the answer depends on something a tool can look up (calendar, mail, memory, bus times, the web), your reply must be the tool call alone, with no text before it and never an empty answer. Words like "我查一下" or "let me check" as a reply are always wrong: they end the turn without checking.
+        - Before asking Allen for a detail, look for it first with recall or the calendar; ask him only when they come back empty.
+    # 深想一轮用的（llm.think.preset 指向它时）：同一个模型，effort 开到 high。
     haiku-think:
       provider: anthropic
       model: claude-haiku-5-5
       api_key_env: ANTHROPIC_API_KEY
       max_tokens: 16384
       context_length: 1000000
-      reasoning_effort: medium
+      reasoning_effort: high
       images: true
+      system_note: *haiku_note
     # 后台工作（工作状态、项目归类、截屏读图、对话摘要……）想改走 Anthropic 时指向它，
     # 和 gpt6-luna 一样中等思考。强制调工具的请求（work_state）Anthropic 不许思考，
     # 会自动关掉。没有 flex 档：extra_body 里的 OpenAI 字段对它不生效。

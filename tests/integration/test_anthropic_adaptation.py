@@ -130,6 +130,21 @@ def test_a_spoken_request_carries_structure_thinking_caching_and_no_openai_field
     assert done.finish_reason == "end_turn"
 
 
+def test_a_preset_note_follows_the_system_prompt_only_on_that_preset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """system_note rides after every system prompt of its preset, and leaves on a switch."""
+    monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
+    client = _preset("", system_note="# Working on this model\n- Call the tool.")
+    frames = _reply({"type": "text", "text": '{"spoken": "好", "written": ""}'}, stop="end_turn")
+    peer, _ = asyncio.run(_run(client, frames, messages=[{"role": "user", "content": "x"}], system="SYS"))
+    assert peer.body["system"] == "SYS\n\n# Working on this model\n- Call the tool."
+    client._presets["plain"] = {"provider": "anthropic", "model": "claude-haiku-5-5"}  # noqa: SLF001 — a second preset
+    client.switch_model("plain")
+    peer, _ = asyncio.run(_run(client, frames, messages=[{"role": "user", "content": "x"}], system="SYS"))
+    assert peer.body["system"] == "SYS"
+
+
 def test_a_tool_turn_sends_its_thinking_blocks_back_unchanged_with_the_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -45,6 +45,12 @@ effort rather than disabled thinking, and `luna` stays the default.
 - Prefix warming on Anthropic sends the next turn's tools, system, thinking and format with
   `max_tokens: 0`, ending on the last user message.
 - `service_tier`, `extra_body` and the Responses `phase` labels are ignored on Anthropic.
+- A preset may carry `system_note`, appended after every system prompt that preset sends, so a
+  model's own working rules stay out of the prompt the other presets read. The `haiku` voice
+  preset runs at effort medium with a note that its text ends the turn. Under the enforced
+  `spoken_reply` format Haiku's habit of a one-line preamble ("我查一下") becomes the whole
+  answer: on 2026-10-10 replays it skipped the calendar 8 times out of 8 at effort low without the
+  note, and looked 33 times out of 33 at effort medium with it, at the same first-token latency.
 
 ## Alternatives rejected
 
@@ -57,6 +63,9 @@ effort rather than disabled thinking, and `luna` stays the default.
 - **Caching every request** — a one-shot call (summaries, dictation, vision) pays 1.25x on its
   input for a cache that is never read; the tool loops and the spoken stream are where the prefix
   comes back.
+- **Dropping the enforced format on Anthropic** — with the rules in the prompt instead, Haiku
+  looked up every time, but about one text answer in ten came back as bare prose (an emotional
+  turn imitating the plain-text history), losing the spoken/written split.
 - **Switching the default now** — latency is a tie at the priority tier and quality is unmeasured
   on this adaptation; a replay eval (`scripts/replay_decision.py`) comes first.
 
