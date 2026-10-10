@@ -1,6 +1,6 @@
 import UIKit
 
-/// Starts the reporter at every launch, including the background launches iOS makes for a location visit,
+/// Starts the reporter and the push registration at every launch, including the background launches iOS makes for a location visit,
 /// a Health delivery or a refresh: those need their delegates and handlers in place before launch returns.
 final class ReportAppDelegate: NSObject, UIApplicationDelegate {
     func application(
@@ -18,6 +18,17 @@ final class ReportAppDelegate: NSObject, UIApplicationDelegate {
         if Reporter.shared.transport == nil { Reporter.shared.transport = HTTPReportTransport { BrainLink.shared.voiceEndpoint } }
         Reporter.shared.launchedForLocation = launchOptions?[.location] != nil
         Reporter.shared.launch()
+        // paired: permission (the first time) and the APNs token, which iOS issues again at each launch
+        Task { await PushRegistry.shared.start() }
         return true
+    }
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        PushRegistry.shared.gotDeviceToken(deviceToken)
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        // only the error's code: nothing here may carry a token
+        NSLog("push: registering with APNs failed (%ld)", (error as NSError).code)
     }
 }
