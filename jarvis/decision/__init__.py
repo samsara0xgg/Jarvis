@@ -2811,6 +2811,7 @@ def open_prefix_warm(  # noqa: PLR0913 — the next request's whole prefix, plus
     tool_registry: ToolRegistryLike,
     responses: bool,
     committed_event_bus: CommittedEventBus | None = None,
+    text_format: Mapping[str, Any] | None = None,
 ) -> LLMStreamHandle | None:
     """The next turn's first request up to its new message, as a request of its own.
 
@@ -2818,9 +2819,17 @@ def open_prefix_warm(  # noqa: PLR0913 — the next request's whole prefix, plus
     :func:`_loop_messages` puts ahead of the next user message. A history that
     ends on Allen's unanswered words is sent without them: the next turn folds
     them into its own message. ``None`` when there is no history to send.
+
+    Anthropic's cache is keyed on everything the next turn sends ahead of its
+    messages, its ``text_format`` included, so the caller passes the one that turn
+    will use; it takes no assistant prefill, so this request ends on the last user
+    message and asks for no output (``max_tokens`` 0).
     """
     messages = [dict(turn) for turn in history]
     if messages and messages[-1]["role"] == "user":
+        messages.pop()
+    anthropic = llm_client.provider == "anthropic"
+    while anthropic and messages and messages[-1]["role"] != "user":
         messages.pop()
     if not messages:
         return None
@@ -2837,7 +2846,8 @@ def open_prefix_warm(  # noqa: PLR0913 — the next request's whole prefix, plus
         kind="prefix_warm",
         turn_id=None,
         responses=responses,
-        max_output_tokens=PREFIX_WARM_MAX_OUTPUT_TOKENS,
+        max_output_tokens=0 if anthropic else PREFIX_WARM_MAX_OUTPUT_TOKENS,
+        text_format=text_format if anthropic else None,
     )
 
 

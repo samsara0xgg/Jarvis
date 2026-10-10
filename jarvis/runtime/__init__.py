@@ -60,6 +60,7 @@ import yaml
 
 from jarvis.decision import (
     DEFAULT_MAX_TOOL_ITERATIONS,
+    SPOKEN_REPLY_FORMAT,
     DecideContext,
     EntityResolverLike,
     LifecycleLike,
@@ -3010,13 +3011,14 @@ def _labels_phases(base_url: str | None) -> bool:
     return "api.openai.com" in (base_url or "api.openai.com")
 
 
-def _warm_next_prefix(
+def _warm_next_prefix(  # noqa: PLR0913 — the next turn's request: client, prompt, shape, format
     runtime: JarvisRuntime,
     memory: MemorySettings,
     *,
     llm_client: LLMClient,
     system_prompt: str,
     responses: bool,
+    text_format: Mapping[str, Any] | None = None,
 ) -> None:
     """Send the next turn's prompt prefix in the background (``open_prefix_warm``).
 
@@ -3049,6 +3051,7 @@ def _warm_next_prefix(
                     tool_registry=cast("ToolRegistryLike", runtime.tool_registry),
                     responses=responses,
                     committed_event_bus=runtime.committed_event_bus,
+                    text_format=text_format,
                 )
                 if handle is not None:
                     asyncio.run(_drain(handle))
@@ -3112,12 +3115,15 @@ def _start_drive_turn_response(
         runtime.response_flags.spoken_streaming
         and correction is None
         and (spoken_turn(user_intent_event) or typed_turn(user_intent_event))
-        and snapshot.provider == "openai"
-        and _labels_phases(snapshot.base_url)
+        and (
+            snapshot.provider == "anthropic"
+            or (snapshot.provider == "openai" and _labels_phases(snapshot.base_url))
+        )
     ):
         # docs/plans/speak-as-written-proposal.md: a turn Allen spoke streams
         # every request through /v1/responses, whose phase labels tell the line
         # before a call from the answer, and speaks the answer as it is written.
+        # Anthropic labels none: its structured reply carries no line before a call.
         route = "spoken"
         context = spoken_risk_context(
             assemble_packet(user_intent_event, runtime.conn, _snapshot_reader(runtime)),
@@ -4621,17 +4627,19 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             if (
                 runtime.response_flags.prefix_warm
                 and run is not None
-                and run.request_client.provider == "openai"
                 and user_intent_event.payload.get("channel") != "gpt_live"
             ):
+                spoken = stream_route is not None and stream_route.context.route == "spoken"
                 _warm_next_prefix(
                     runtime,
                     memory,
                     llm_client=run.request_client,
                     system_prompt=decide_ctx.system_prompt,
-                    responses=(
-                        (stream_route is not None and stream_route.context.route == "spoken")
-                        or run.request_client.preset_snapshot.api == "responses"
+                    responses=spoken or run.request_client.preset_snapshot.api == "responses",
+                    text_format=(
+                        SPOKEN_REPLY_FORMAT
+                        if spoken and stream_route is not None and stream_route.structured
+                        else None
                     ),
                 )
         record_realtime_trace(

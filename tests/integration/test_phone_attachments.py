@@ -821,13 +821,17 @@ def test_attachments_age_out_with_the_recordings_and_clear_with_them(tmp_path: P
 
 
 def test_only_a_preset_that_says_it_reads_pictures_gets_them() -> None:
-    """The shipped conversation preset does; another provider or preset does not."""
+    """The shipped chat presets say so; a preset that does not, or another host, gets none."""
     shipped = yaml.safe_load((Path(__file__).parents[2] / "config" / "jarvis.yaml").read_text())
     takes = inherent_loop._model_takes_images  # noqa: SLF001
 
     assert takes(shipped) is True
     assert takes({"llm": {**shipped["llm"], "default_preset": "grok-fast"}}) is False
-    assert takes({"llm": {**shipped["llm"], "provider": "anthropic"}}) is False
+    assert takes({"llm": {**shipped["llm"], "default_preset": "haiku"}}) is True
+    assert takes({"llm": {**shipped["llm"], "default_preset": "haiku-bg"}}) is False
+    other = {"provider": "openai", "default_preset": "x", "presets": {"x": {
+        "provider": "deepseek", "images": True}}}
+    assert takes({"llm": other}) is False
     bare = {"provider": "openai", "default_preset": "x", "presets": {"x": {}}}
     assert takes({"llm": bare}) is False
     assert takes({}) is False

@@ -5541,15 +5541,18 @@ _ATTACHMENT_DAYS = 30  # ADR 0211: unless ``attachments.retention_days`` says ot
 def _model_takes_images(config: Mapping[str, Any]) -> bool:
     """ADR 0211: whether pictures may go to the conversation model.
 
-    Only OpenAI's chat request carries them, and only a preset that says ``images: true``
+    OpenAI's and Anthropic's requests carry them, and only a preset that says ``images: true``
     (the model is known to read them) is trusted with one.
     """
     llm = config.get("llm")
-    if not isinstance(llm, Mapping) or str(llm.get("provider", "openai")).lower() != "openai":
+    if not isinstance(llm, Mapping):
         return False
     presets = llm.get("presets")
     preset = presets.get(llm.get("default_preset")) if isinstance(presets, Mapping) else None
-    return isinstance(preset, Mapping) and preset.get("images") is True
+    if not isinstance(preset, Mapping):
+        return False
+    provider = str(preset.get("provider") or llm.get("provider") or "openai").lower()
+    return provider in ("openai", "anthropic") and preset.get("images") is True
 
 
 def _media_dirs(runtime: JarvisRuntime) -> dict[Path, int | None]:
