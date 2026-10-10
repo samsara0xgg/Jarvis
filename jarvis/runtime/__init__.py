@@ -1355,6 +1355,15 @@ def _phone_here(event_log_path: Path) -> dict[str, Any]:
         return read_phone_here(conn)
 
 
+def _live_departure(live: BusLive) -> Callable[[str, tuple[float, float], int], int | None]:
+    """BC Transit's live departure (epoch ms) of a route at a stop, for the `transit` tool."""
+    def departure(route: str, stop: tuple[float, float], around_ms: int) -> int | None:
+        found = live.departure(route, stop, around_ms)
+        return found[1] if found else None
+
+    return departure
+
+
 def _here_location(role: str) -> Callable[[], dict[str, Any]] | None:
     """This Mac's location for `transit` and `where_am_i`, read on demand (ADR 0194).
 
@@ -2744,6 +2753,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         AmbientSounds(log_path=logs_dir(paths.root) / "ambient-sounds.jsonl")
         if _ambient_sounds(full_config) else None
     )
+    bus_live = BusLive(paths.root / "cache")
     transit_offers = TransitOffers()  # the rows `transit` leaves for the chat card (ADR 0205)
     registry = build_default_registry(
         mail_drafts=mail_drafts,
@@ -2759,6 +2769,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         transit_offers=transit_offers,
         here_location=_here_location(role),
         here_phone=partial(_phone_here, paths.event_log),
+        bus_live=_live_departure(bus_live),
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
@@ -2893,7 +2904,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     reminders = Reminders(
         paths.event_log,
         moment=moment,
-        departures=Departures(paths.event_log, BusLive(paths.root / "cache"), transit_offers),
+        departures=Departures(paths.event_log, bus_live, transit_offers),
     )
     output = _sound_output(terminal_hub, job_mail, reminders)
     home = Home(

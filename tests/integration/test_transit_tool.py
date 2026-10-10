@@ -45,15 +45,19 @@ def _serve(
     monkeypatch: pytest.MonkeyPatch,
     *,
     fail: Exception | None = None,
-    answer: dict[str, Any] = HANDBUILT,
+    answer: dict[str, Any] | Callable[[dict[str, Any]], dict[str, Any]] = HANDBUILT,
     modes: dict[str, Any] | None = None,
 ) -> list[Any]:
-    """Serve ``answer`` to TRANSIT; DRIVE and WALK get ``modes[mode]`` (none: no routes)."""
+    """Serve ``answer`` (or what it makes of the request body) to TRANSIT.
+
+    DRIVE and WALK get ``modes[mode]`` (none: no routes).
+    """
     seen: list[Any] = []
 
     def urlopen(request: urllib.request.Request, *, timeout: float) -> io.BytesIO:
         seen.append((request, timeout))
-        travel = json.loads(request.data)["travelMode"]
+        sent = json.loads(request.data)
+        travel = sent["travelMode"]
         if travel != "TRANSIT":
             reply = (modes or {}).get(travel, {})
             if isinstance(reply, Exception):
@@ -61,7 +65,7 @@ def _serve(
             return io.BytesIO(json.dumps(reply).encode())
         if fail is not None:
             raise fail
-        return io.BytesIO(json.dumps(answer).encode())
+        return io.BytesIO(json.dumps(answer(sent) if callable(answer) else answer).encode())
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     now = datetime(2026, 10, 6, 17, 0, tzinfo=ZoneInfo("America/Vancouver"))
@@ -96,8 +100,10 @@ def _call(
     places: dict[str, str] | None = None,
     here: Callable[[], dict[str, Any]] | None = None,
     tool: str = "transit",
+    bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
 ) -> dict[str, Any]:
     registry = build_default_registry(
+        bus_live=bus_live,
         transit_api_key=FAKE_KEY,
         transit_places=PLACES if places is None else places,
         here_location=here,
@@ -132,9 +138,11 @@ def test_the_answer_is_plain_words_in_local_time_with_three_options(
         "walk_at_end_min": 7,
         "arrive_at": "17:48",
         "total_min": 42,
+        "spare_min": 6,  # leaves 17:12, now 17:00, 6 min walk
     }
     assert [leg["route"] for leg in options[1]["legs"]] == ["28", "6"]
     assert options[1]["arrive_at"] == "18:03"
+    assert [o["spare_min"] for o in options] == [6, 16]  # on every option
 
 
 def test_one_post_with_the_key_a_tight_field_mask_and_the_saved_places(
@@ -424,3 +432,267 @@ def test_the_answer_puts_up_one_bus_card_that_a_newer_answer_replaces(
     ]
     _call({"origin": "school", "destination": "home"})
     assert slot().clarification_id != first.clarification_id
+
+
+def _bus(
+    line: str,
+    departs: str,
+    *,
+    walk: int = 4,
+    ride: int = 20,
+    at: tuple[float, float] = (48.46, -123.3),
+) -> dict[str, Any]:
+    """One route: a walk, one bus ``line`` leaving at local ``departs`` (HH:MM, 2026-10-06)."""
+    def utc(hhmm: str) -> str:
+        hour, minute = map(int, hhmm.split(":"))
+        total = hour * 60 + minute + 7 * 60  # PDT is UTC-7
+        return f"2026-10-{6 + total // 1440:02d}T{total % 1440 // 60:02d}:{total % 60:02d}:00Z"
+
+    end = f"{int(departs[:2]) * 60 + int(departs[3:]) + ride}"
+    arrives = f"{int(end) // 60:02d}:{int(end) % 60:02d}"
+    return {
+        "legs": [
+            {
+                "steps": [
+                    {"staticDuration": f"{walk * 60}s", "travelMode": "WALK"},
+                    {
+                        "staticDuration": f"{ride * 60}s",
+                        "travelMode": "TRANSIT",
+                        "transitDetails": {
+                            "stopDetails": {
+                                "departureStop": {
+                                    "name": f"Stop of {line}",
+                                    "location": {
+                                        "latLng": {"latitude": at[0], "longitude": at[1]}
+                                    },
+                                },
+                                "departureTime": utc(departs),
+                                "arrivalStop": {"name": "UVic Exchange"},
+                                "arrivalTime": utc(arrives),
+                            },
+                            "headsign": "UVic",
+                            "transitLine": {"nameShort": line},
+                        },
+                    },
+                ]
+            }
+        ]
+    }
+
+
+def _ms(hour: int, minute: int) -> int:
+    at = datetime(2026, 10, 6, hour, minute, tzinfo=ZoneInfo("America/Vancouver"))
+    return int(at.timestamp() * 1000)
+
+
+def _routes(*buses: dict[str, Any]) -> dict[str, Any]:
+    return {"routes": list(buses)}
+
+
+def _times(seen: list[Any]) -> list[str | None]:
+    """The departureTime of each TRANSIT request made, in order."""
+    bodies = [json.loads(s[0].data) for s in seen]
+    return [b.get("departureTime") for b in bodies if b["travelMode"] == "TRANSIT"]
+
+
+@pytest.mark.parametrize(
+    ("departs", "spare", "verdict"),
+    [
+        ("17:06", 2, "easy"),
+        ("17:05", 1, "tight"),
+        ("17:04", 0, "tight"),
+        ("17:03", -1, "tight"),
+        ("17:02", -2, "missed"),
+        ("17:00", -4, "missed"),
+    ],
+)
+def test_a_named_route_is_asked_from_ten_minutes_ago_and_judged_by_its_spare_minutes(
+    monkeypatch: pytest.MonkeyPatch, departs: str, spare: int, verdict: str
+) -> None:
+    """Now 17:00, walk 4: spare = minutes to the bus - 4; easy >= 2, missed <= -2; 28 not first."""
+    seen = _serve(monkeypatch, answer=_routes(_bus("28", "17:20", ride=5), _bus("39", departs)))
+    out = _call({"origin": "here", "destination": "UVic", "route": "39"}, here=_fix())
+    assert _times(seen) == ["2026-10-06T23:50:00Z"]  # 16:50 PDT
+    assert out["named_route"] == {
+        "route": "39",
+        "board_stop": "Stop of 39",
+        "departs": departs,
+        "walk_min": 4,
+        "spare_min": spare,
+        "verdict": verdict,
+    }
+    assert [o["legs"][0]["route"] for o in out["options"]] == ["39", "28"]
+    assert out["options"][0]["spare_min"] == spare
+
+
+def test_the_named_route_is_matched_by_number_case_and_the_next_one_comes_with_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """'26a路' or '26A' is route 26A; a gone bus is skipped; next is the following 26A."""
+    _serve(
+        monkeypatch,
+        answer=_routes(
+            _bus("26A", "16:58"), _bus("26A", "17:21"), _bus("26A", "17:08"), _bus("26", "17:03")
+        ),
+    )
+    out = _call({"origin": "here", "destination": "home", "route": "26a路"}, here=_fix())
+    named = out["named_route"]
+    assert (named["route"], named["departs"], named["verdict"]) == ("26A", "17:08", "easy")
+    assert named["next"] == {"board_stop": "Stop of 26A", "departs": "17:21", "leave_at": "17:17"}
+
+
+def test_the_named_bus_stays_first_even_when_it_arrives_much_later_than_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The far-fetched cut never drops it: a 39 arriving 50 min after the 28 is still first."""
+    _serve(monkeypatch, answer=_routes(_bus("28", "17:06", ride=10), _bus("39", "17:07", ride=60)))
+    out = _call({"origin": "here", "destination": "home", "route": "39"}, here=_fix())
+    assert [o["legs"][0]["route"] for o in out["options"]] == ["39", "28"]
+
+
+def test_a_route_google_does_not_have_says_none_and_the_plain_now_answer_comes_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No such bus from the earlier start: a second request without a time is made.
+
+    Buses already out of reach at a normal walk (the earlier start's) are not offered.
+    """
+    def answer(body: dict[str, Any]) -> dict[str, Any]:
+        if "departureTime" in body:
+            return _routes(_bus("28", "16:55"), _bus("26", "17:08"))
+        return _routes(_bus("28", "17:12"))
+
+    seen = _serve(monkeypatch, answer=answer)
+    out = _call({"origin": "here", "destination": "home", "route": "39"}, here=_fix())
+    assert _times(seen) == ["2026-10-06T23:50:00Z", None]
+    assert out["named_route"] == {
+        "route": "39",
+        "verdict": "none",
+        "note": "no route 39 bus found then",
+    }
+    assert [o["legs"][0]["route"] for o in out["options"]] == ["28"]
+
+
+def test_the_plain_answer_may_hold_the_named_bus_and_depart_at_is_not_moved_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The second request finds the 39: it is the named route; depart_at: one request, as is."""
+    def answer(body: dict[str, Any]) -> dict[str, Any]:
+        if "departureTime" in body:
+            return _routes(_bus("28", "17:12"))
+        return _routes(_bus("39", "17:09"))
+
+    seen = _serve(monkeypatch, answer=answer)
+    out = _call({"origin": "here", "destination": "home", "route": "39"}, here=_fix())
+    assert out["named_route"]["departs"] == "17:09"
+    assert [o["legs"][0]["route"] for o in out["options"]] == ["39"]
+    seen.clear()
+    out = _call(
+        {"origin": "here", "destination": "home", "route": "39", "depart_at": "17:30"}, here=_fix()
+    )
+    assert _times(seen) == ["2026-10-07T00:30:00Z"]
+    assert out["named_route"]["verdict"] == "none"
+
+
+def test_without_a_route_the_request_and_the_answer_are_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No route: no departureTime, no named_route."""
+    seen = _serve(monkeypatch)
+    out = _call({"origin": "school", "destination": "home"})
+    assert _times(seen) == [None]
+    assert "named_route" not in out
+
+
+def test_the_live_time_replaces_googles_for_the_named_bus_and_a_failure_keeps_googles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Injected BC Transit reader: called with the route, the stop's place and Google's time."""
+    _serve(monkeypatch, answer=_routes(_bus("39", "17:06", at=(48.46, -123.3))))
+    got: list[Any] = []
+
+    def live(route: str, stop: tuple[float, float], around_ms: int) -> int | None:
+        got.append((route, stop, around_ms))
+        return _ms(17, 9)
+
+    args = {"origin": "here", "destination": "home", "route": "39"}
+    named = _call(args, here=_fix(), bus_live=live)["named_route"]
+    assert got == [("39", (48.46, -123.3), _ms(17, 6))]
+    assert (named["departs"], named["spare_min"], named["verdict"], named["live"]) == (
+        "17:09", 5, "easy", True,
+    )
+
+    def broken(*_: object) -> int | None:
+        down = OSError()
+        raise down
+
+    named = _call(args, here=_fix(), bus_live=broken)["named_route"]
+    assert (named["departs"], named["spare_min"], "live" in named) == ("17:06", 2, False)
+    named = _call(args, here=_fix(), bus_live=lambda *_: None)["named_route"]
+    assert named["departs"] == "17:06"
+
+
+@pytest.mark.parametrize("word", ["UVic", "u vic", " University  of Victoria ", "uvic"])
+def test_uvic_is_the_saved_school(monkeypatch: pytest.MonkeyPatch, word: str) -> None:
+    """The campus by name goes to Google as the saved school address."""
+    seen = _serve(monkeypatch)
+    _call({"origin": "here", "destination": word}, here=_fix())
+    assert json.loads(_sent(seen)[0].data)["destination"] == {"address": PLACES["school"]}
+
+
+def test_a_text_destination_not_found_is_tried_again_with_the_city(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """'CARSA' alone is not found: once more with the home's city (default Victoria, BC)."""
+    def answer(body: dict[str, Any]) -> dict[str, Any]:
+        found = body["destination"].get("address") == "CARSA, Victoria, BC"
+        return HANDBUILT if found else {}
+
+    seen = _serve(monkeypatch, answer=answer)
+    out = _call({"origin": "here", "destination": "CARSA"}, here=_fix())
+    assert out["to"] == "CARSA, Victoria, BC"
+    asked = [json.loads(s[0].data) for s in seen]
+    assert [b["destination"] for b in asked if b["travelMode"] == "TRANSIT"] == [
+        {"address": "CARSA"},
+        {"address": "CARSA, Victoria, BC"},
+    ]
+
+    def saanich(body: dict[str, Any]) -> dict[str, Any]:
+        return HANDBUILT if body["destination"].get("address") == "CARSA, Saanich, BC" else {}
+
+    _serve(monkeypatch, answer=saanich)
+    places = {**PLACES, "home": "1 Example St, Saanich, BC V8X 1A1"}
+    assert _call({"origin": "here", "destination": "CARSA"}, places=places, here=_fix())["to"] == (
+        "CARSA, Saanich, BC"
+    )
+
+
+def test_a_saved_place_or_a_second_miss_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """School (a saved address) is not found: one request; text twice not found: the error."""
+    seen = _serve(monkeypatch, answer={})
+    with pytest.raises(ToolError, match="no transit route"):
+        _call({"origin": "here", "destination": "school"}, here=_fix())
+    assert len(_times(seen)) == 1
+    seen.clear()
+    with pytest.raises(ToolError, match="no transit route"):
+        _call({"origin": "here", "destination": "Nowhere"}, here=_fix())
+    assert len(_times(seen)) == 2
+
+
+def test_the_description_teaches_the_named_bus_and_the_misheard_number() -> None:
+    """route, the verdicts, 'one call', no invented target, and speech-recognition mishearing."""
+    registry = build_default_registry(transit_api_key=FAKE_KEY, transit_places=PLACES)
+    (definition,) = (d for d in registry.get_definitions() if d.name == "transit")
+    text = definition.description
+    needles = (
+        "pass it as route",
+        "named_route",
+        "39 degrees",
+        "nonsense words",
+        "never call transit again",
+        "never invent a target arrival",
+        "absent",
+    )
+    for needle in needles:
+        assert needle in text
+    assert "route" in definition.input_schema["properties"]

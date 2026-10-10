@@ -4009,6 +4009,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     transit_offers: TransitOffers | None = None,
     here_location: Callable[[], Mapping[str, Any]] | None = None,
     here_phone: Callable[[], Mapping[str, Any]] | None = None,
+    bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -4090,6 +4091,8 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             and `device`). Without `here_location` (a brain) it is every turn's `here`; with
             both, a turn a paired phone opened gets it and the Mac's own turn gets the Mac's
             (ADR 0212). Both tools say which they read.
+        bus_live: the live departure (epoch ms) of a route at a stop position around a time, for
+            a route `transit` is asked about.
     """
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
 
@@ -4245,7 +4248,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         *build_weather_tool(weather_lookup),
         *build_transit_tool(
             transit_api_key, transit_places or {}, here_location, phone_here=here_phone,
-            offers=transit_offers,
+            offers=transit_offers, bus_live=bus_live,
         ),
         *build_where_tool(here_location, here_phone),
     ):

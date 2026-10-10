@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import urllib.request
 import uuid
@@ -31,6 +32,13 @@ _MAX_OPTIONS: Final = 3
 # longer.
 _LATER_MIN: Final = 15
 _SLOWER: Final = 1.5
+# `route` asks Google from this long before now: a bus whose leave time (departure minus Google's
+# walking estimate) just passed is still returned, and he can walk faster than Google assumes.
+_ROUTE_LOOKBACK_MIN: Final = 10
+_LIVE_TIMEOUT_S: Final = 4.0
+# spare_min: at or above this he has room (easy); at or below its negative the bus is gone.
+_EASY_SPARE_MIN: Final = 2
+_SCHOOL_NAMES: Final = frozenset({"uvic", "u vic", "university of victoria"})
 _FIELD_MASK: Final = ",".join(
     f"routes.legs.steps.{path}"
     for path in (
@@ -45,6 +53,7 @@ _FIELD_MASK: Final = ",".join(
 # DRIVE and WALK need only how long and how far; the default routing preference is the cheap one.
 _MODE_MASK: Final = "routes.duration,routes.distanceMeters"
 _MODES: Final = (("drive", "DRIVE"), ("walk", "WALK"))
+_POSTAL = re.compile(r"\s*[A-Z]\d[A-Z]\s?\d[A-Z]\d\s*$")
 _LAT_LNG = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 
 _MAC_HERE: Final = "his location, read from this Mac, which he carries."
@@ -72,11 +81,24 @@ def _description(here: str) -> str:
         " Mayfair to ...'); never guess his start from the time of day or his routine. The"
         " destination is the word 'home' for his own home ('my bus home', going home, in any"
         " language), the word 'school' for the campus (going to school or class, in any"
-        " language), or a place as an address or name, e.g. 'Mayfair Mall'. depart_at is a"
+        " language; 'UVic' is the campus too), or a place as an address or name, e.g. 'Mayfair"
+        " Mall'. depart_at is a"
         " local time today as HH:MM, only when he names a later time; leave it out for now. Each"
         " call asks Google again and may come back with a different set of options; the options"
-        " already on the card stay valid until their leave time. If"
-        " it returns an error, say so and do not guess times. `modes` gives the driving and"
+        " already on the card stay valid until their leave time. When he names a bus number"
+        " ('can I still catch the 39?'), pass it as route and answer about THAT bus first, from"
+        " named_route: catchable or not, how tight (verdict: easy has room; tight means he must"
+        " walk fast; missed means it is gone; none means Google has no such bus then), and the"
+        " next one (next) if it is missed. Speech recognition may mishear the number or the word"
+        " after it (route 39 heard as '39 degrees', or as nonsense words before a 9): use the"
+        " number. One call with route answers it: never call"
+        " transit again with shifting depart_at to probe, and never invent a target arrival"
+        " time he did not ask for. Say a bus can or cannot be caught only when this turn's"
+        " result shows that bus; do not infer it from the bus being absent."
+        " spare_min on each option is how many minutes he has beyond a normal walk to"
+        " the first stop (negative: late). If it returns an error, say only that"
+        " this lookup failed, do not guess times, and do not contradict an earlier result."
+        " `modes` gives the driving and"
         " walking minutes and km for the same trip when Google answered them; mention an"
         " alternative in a few words only when it matters (walking under about 20 minutes, or"
         " driving much faster), never read them all out. Do not ask whether to pin the trip: a"
@@ -105,7 +127,9 @@ def _waypoint(
     phone: Callable[[], Mapping[str, Any]] | None,
     ctx: ToolContext,
 ) -> tuple[dict[str, Any], str]:
-    word = place.strip().lower()
+    word = " ".join(place.lower().split())
+    if word in _SCHOOL_NAMES:
+        word = "school"
     if word == "here":
         return _here(mac, phone, ctx)
     text = saved.get(word, "") if word in ("home", "school") else place.strip()
@@ -125,6 +149,10 @@ def _departure(depart_at: str) -> str:
         msg = f"depart_at must be a local time today as HH:MM, not {depart_at!r}"
         raise ToolError(msg, code="invalid_argument") from exc
     when = datetime.combine(_now().date(), at.replace(second=0, microsecond=0), tzinfo=_ZONE)
+    return _utc(when)
+
+
+def _utc(when: datetime) -> str:
     return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -174,6 +202,162 @@ def _option(route: Mapping[str, Any]) -> dict[str, Any] | None:
         "arrive_at": arrive.strftime("%H:%M"),
         "total_min": round((arrive - leave).total_seconds() / 60),
     }
+
+
+def _spare(departs: datetime, walk_min: int, now: datetime) -> int:
+    """Whole minutes he has left beyond a normal walk to catch the bus (negative: late)."""
+    return math.floor((departs - now).total_seconds() / 60) - walk_min
+
+
+def _pairs(answer: Mapping[str, Any], now: datetime) -> list[tuple[dict[str, Any], Any]]:
+    """Each bus route of Google's answer as ``(option with spare_min, Google's route)``."""
+    pairs = [(o, r) for r in answer.get("routes", ()) if (o := _option(r))]
+    for o, _ in pairs:
+        at = _today(o["legs"][0]["departs"], "departs")
+        o["spare_min"] = _spare(at, o["walk_to_first_stop_min"], now)
+    return pairs
+
+
+def _ahead(
+    pairs: list[tuple[dict[str, Any], Any]], wanted: str, now: datetime,
+) -> list[tuple[dict[str, Any], Any]]:
+    """The routes whose first bus is ``wanted`` and not gone yet, earliest first."""
+    floor = now.replace(second=0, microsecond=0)
+    mine = [
+        p for p in pairs
+        if p[0]["legs"][0]["route"].casefold() == wanted.casefold()
+        and _today(p[0]["legs"][0]["departs"], "departs") >= floor
+    ]
+    return sorted(mine, key=lambda p: p[0]["legs"][0]["departs"])  # ponytail: one day, no midnight
+
+
+def _live_ms(
+    live: Callable[[str, tuple[float, float], int], int | None],
+    route: str,
+    stop: tuple[float, float],
+    around_ms: int,
+) -> int | None:
+    """BC Transit's live departure for the bus; None when it has none, fails or is too slow."""
+    pool = ThreadPoolExecutor(max_workers=1)  # a cold first download is left to finish alone
+    try:
+        return pool.submit(live, route, stop, around_ms).result(timeout=_LIVE_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 - the Google time stands.
+        return None
+    finally:
+        pool.shutdown(wait=False)
+
+
+def _named_route(
+    wanted: str,
+    hits: list[tuple[dict[str, Any], Any]],
+    now: datetime,
+    live: Callable[[str, tuple[float, float], int], int | None] | None,
+) -> dict[str, Any]:
+    """The answer to 'can I still catch bus ``wanted``': how tight, and the next one."""
+    if not hits:
+        return {"route": wanted, "verdict": "none", "note": f"no route {wanted} bus found then"}
+    option, raw = hits[0]
+    leg = option["legs"][0]
+    at, fresh = _today(leg["departs"], "departs"), False
+    stop = _first_board(raw)
+    if live is not None and stop is not None:
+        ms = _live_ms(live, leg["route"], stop[1], int(at.timestamp() * 1000))
+        if ms:
+            at, fresh = datetime.fromtimestamp(ms / 1000, _ZONE), True
+    walk = option["walk_to_first_stop_min"]
+    spare = _spare(at, walk, now)
+    verdict = (
+        "easy" if spare >= _EASY_SPARE_MIN else "missed" if spare <= -_EASY_SPARE_MIN else "tight"
+    )
+    named: dict[str, Any] = {
+        "route": leg["route"],
+        "board_stop": leg["board_stop"],
+        "departs": at.strftime("%H:%M"),
+        "walk_min": walk,
+        "spare_min": spare,
+        "verdict": verdict,
+    }
+    if fresh:
+        named["live"] = True
+    if len(hits) > 1:
+        later = hits[1][0]
+        named["next"] = {
+            "board_stop": later["legs"][0]["board_stop"],
+            "departs": later["legs"][0]["departs"],
+            "leave_at": later["leave_at"],
+        }
+    return named
+
+
+def _with_city(end: Mapping[str, Any], places: Mapping[str, str]) -> dict[str, Any] | None:
+    """A text destination with the home's city added (Victoria, BC if none); None for the rest.
+
+    'UVic' or 'CARSA' alone is not found; 'CARSA, University of Victoria' is.
+    """
+    address = end.get("address")
+    if not address or address in places.values():
+        return None
+    home = places.get("home", "")
+    city = "" if _LAT_LNG.match(home) else ", ".join(p.strip() for p in home.split(",")[1:3])
+    city = _POSTAL.sub("", city).strip(", ")
+    return {"address": f"{address}, {city or 'Victoria, BC'}"}
+
+
+def _search(  # noqa: PLR0913 - the trip, how it was asked and the clock.
+    api_key: str,
+    start: Mapping[str, Any],
+    end: Mapping[str, Any],
+    args: Mapping[str, Any],
+    wanted: str,
+    now: datetime,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[tuple[dict[str, Any], Any]], dict[str, Any]]:
+    """Ask Google and the other ways: ``(answer, options, hits of the named route, modes)``.
+
+    A named route asks from ten minutes ago, so a bus whose leave time just passed still shows;
+    if that finds no such bus, the usual 'now' answer is used. ToolError ``not_found`` when no
+    bus route is left.
+    """
+    body: dict[str, Any] = {
+        "origin": start,
+        "destination": end,
+        "travelMode": "TRANSIT",
+        "computeAlternativeRoutes": True,
+    }
+    plain = dict(body)
+    if args.get("depart_at"):
+        body["departureTime"] = _departure(str(args["depart_at"]))
+    elif wanted:
+        ago = now.replace(second=0, microsecond=0) - timedelta(minutes=_ROUTE_LOOKBACK_MIN)
+        body["departureTime"] = _utc(ago)
+    shifted = "departureTime" in body and not args.get("depart_at")
+    # The bus answer and, concurrently, the other ways there (ADR 0205): one request each.
+    with ThreadPoolExecutor(max_workers=1 + len(_MODES)) as pool:
+        ways = {name: pool.submit(_mode, api_key, start, end, travel) for name, travel in _MODES}
+        try:
+            answer = pool.submit(_compute, api_key, body).result()
+        except Exception as exc:  # timeout, HTTP error, bad JSON: all one short reason.
+            msg = f"transit unavailable ({type(exc).__name__})"
+            raise ToolError(msg, code="network_error") from exc
+        pairs = _pairs(answer, now)
+        hits = _ahead(pairs, wanted, now) if wanted else []
+        if wanted and shifted and not hits:
+            try:
+                later = pool.submit(_compute, api_key, plain).result()
+            except Exception:  # noqa: BLE001 - the first answer stands.
+                later = None
+            if later is not None:
+                answer, pairs = later, _pairs(later, now)
+                hits = _ahead(pairs, wanted, now)
+    modes = {name: found for name, way in ways.items() if (found := way.result())}
+    # An earlier start returns buses he could not reach at a normal pace: only the named one stays.
+    first = hits[0][0] if hits else None
+    rest = [o for o, _ in pairs if o is not first and (not shifted or o["spare_min"] >= 0)]
+    # The named bus is first however late or slow it is; it does not set the others' yardstick.
+    options = ([first] if first else []) + _sensible(rest)
+    if not options:
+        msg = "no transit route found for that trip at that time"
+        raise ToolError(msg, code="not_found")
+    return answer, options[:_MAX_OPTIONS], hits, modes
 
 
 def _compute(
@@ -610,13 +794,14 @@ def _sensible(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return (kept or options[:1])[:_MAX_OPTIONS]
 
 
-def build_transit_tool(
+def build_transit_tool(  # noqa: PLR0913 - the key, places, two readers, offers, live.
     api_key: str | None,
     places: Mapping[str, str],
     here: Callable[[], Mapping[str, Any]] | None = None,
     *,
     phone_here: Callable[[], Mapping[str, Any]] | None = None,
     offers: TransitOffers | None = None,
+    bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
 ) -> tuple[Tool, ...]:
     """``transit`` over Google Routes; none without a key.
 
@@ -626,7 +811,9 @@ def build_transit_tool(
     says; with both, a turn a phone opened gets the phone's (ADR 0212), and the description says
     so. A failed read is a tool error telling the model to ask where the user is. ``offers``
     is where each answer leaves its options for the chat card (ADR 0205); the runtime shares
-    it with the routes that pin them.
+    it with the routes that pin them. ``bus_live`` is BC Transit's live departure of a route at
+    a stop near ``(lat, lng)`` around an epoch ms (the runtime wires it, as it does ``here``);
+    when it answers, a named route's ``departs`` and ``spare_min`` use it.
     """
     if not api_key:
         return ()
@@ -639,36 +826,26 @@ def build_transit_tool(
             raise ToolError(msg, code="invalid_argument")
         start, start_label = _waypoint(origin, places, here, phone_here, ctx)
         end, end_label = _waypoint(destination, places, here, phone_here, ctx)
-        body: dict[str, Any] = {
-            "origin": start,
-            "destination": end,
-            "travelMode": "TRANSIT",
-            "computeAlternativeRoutes": True,
-        }
-        if args.get("depart_at"):
-            body["departureTime"] = _departure(str(args["depart_at"]))
-        # The bus answer and, concurrently, the other ways there (ADR 0205): one request each.
-        with ThreadPoolExecutor(max_workers=1 + len(_MODES)) as pool:
-            ways = {
-                name: pool.submit(_mode, api_key, start, end, travel) for name, travel in _MODES
-            }
-            try:
-                answer = pool.submit(_compute, api_key, body).result()
-            except Exception as exc:  # timeout, HTTP error, bad JSON: all one short reason.
-                msg = f"transit unavailable ({type(exc).__name__})"
-                raise ToolError(msg, code="network_error") from exc
-        modes = {name: found for name, way in ways.items() if (found := way.result())}
-        options = _sensible([o for r in answer.get("routes", ()) if (o := _option(r))])
-        if not options:
-            msg = "no transit route found for that trip at that time"
-            raise ToolError(msg, code="not_found")
+        now = _now()
+        wanted = re.sub(r"[^0-9A-Za-z]", "", str(args.get("route") or ""))
+        try:
+            answer, options, hits, modes = _search(api_key, start, end, args, wanted, now)
+        except ToolError as exc:
+            retry = _with_city(end, places) if exc.code == "not_found" else None
+            if retry is None:
+                raise
+            end = retry
+            end_label = retry["address"]
+            answer, options, hits, modes = _search(api_key, start, end, args, wanted, now)
         offers.stops.clear()
         for found in map(_first_board, answer.get("routes", ())):
             if found:
                 offers.stops[found[0]] = found[1]
         show_card(ctx, {**offers.put(options, destination.strip().lower()[:60]), "modes": modes})
-        found = {"modes": modes} if modes else {}
-        return {"from": start_label, "to": end_label, "options": options, **found}
+        extra: dict[str, Any] = {"modes": modes} if modes else {}
+        if wanted:
+            extra["named_route"] = _named_route(wanted, hits, now, bus_live)
+        return {"from": start_label, "to": end_label, "options": options, **extra}
 
     return (
         Tool(
@@ -690,6 +867,11 @@ def build_transit_tool(
                         "description": "'here', 'home', 'school', or a place",
                     },
                     "depart_at": {"type": "string", "description": "local time today, HH:MM"},
+                    "route": {
+                        "type": "string",
+                        "description": "the bus number he names, e.g. '39' or '26A'; digits only"
+                        " when speech recognition garbled the rest",
+                    },
                 },
                 "required": ["origin", "destination"],
             },
