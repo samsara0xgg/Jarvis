@@ -73,3 +73,37 @@ final class Conversation {
         (try? await BrainLink.shared.call { try await BrainClient.conversation(after: seq, limit: 20, bases: $0, token: $1) }) ?? []
     }
 }
+
+/// The answer of `POST /inherent/ask` (docs/spec.html): `spoken` is what she says, `written` the part she leaves to the screen (empty when there is none).
+enum AskReply: Equatable {
+    case answered(spoken: String, written: String)
+    case working            // 504: no final answer in 25 s; the turn goes on and is in the conversation
+    case failed             // 502: the turn failed or was cancelled
+
+    /// The request body, or nil when the brain would refuse it: no words, more than 2000 characters, or a body over 4 KiB (413).
+    static func body(_ text: String) -> Data? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, t.count <= 2000, let d = try? JSONSerialization.data(withJSONObject: ["text": t]), d.count <= 4096 else { return nil }
+        return d
+    }
+
+    static func parse(status: Int, data: Data) -> AskReply? {
+        switch status {
+        case 200:
+            guard let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let spoken = o["spoken"] as? String else { return nil }
+            return .answered(spoken: spoken, written: (o["written"] as? String) ?? "")
+        case 504: return .working
+        case 502: return .failed
+        default: return nil
+        }
+    }
+}
+
+extension BrainClient {
+    /// `POST /inherent/ask`: a question and the answer to it, waiting up to 25 s on the brain's side.
+    static func ask(_ body: Data, bases: [URL], token: String) async throws -> AskReply {
+        let r = try await send("POST", "/inherent/ask", body: body, slow: true, also: [413, 502, 504], bases: bases, token: token, unauthorized: .revoked)
+        guard let reply = AskReply.parse(status: r.status, data: r.data) else { throw BrainError.refused }
+        return reply
+    }
+}

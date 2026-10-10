@@ -26,3 +26,24 @@ final class TalkTests: XCTestCase {
         XCTAssertEqual(lines.map(\.his), [false, false, true])
     }
 }
+
+/// `POST /inherent/ask` (docs/spec.html): the body the brain accepts, and the three ways it answers.
+final class AskTests: XCTestCase {
+    func testTheBodyIsTheTrimmedWordsAndNothingTheBrainWouldRefuse() throws {
+        let d = try XCTUnwrap(AskReply.body("  明天几点出门？ \n"))
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: d) as? [String: String], ["text": "明天几点出门？"])
+        XCTAssertNil(AskReply.body("   "))
+        XCTAssertNil(AskReply.body(String(repeating: "a", count: 2001)))
+        XCTAssertNotNil(AskReply.body(String(repeating: "a", count: 2000)))
+        XCTAssertNil(AskReply.body(String(repeating: "字", count: 1500)), "within 2000 characters but over 4 KiB as bytes: the brain answers 413")
+    }
+
+    func testAnAnswerHasSpokenAndMaybeWrittenAnd504IsStillWorking() {
+        XCTAssertEqual(AskReply.parse(status: 200, data: Data(#"{"turn_id": "t", "spoken": "九点二十。", "written": ""}"#.utf8)), .answered(spoken: "九点二十。", written: ""))
+        XCTAssertEqual(AskReply.parse(status: 200, data: Data(#"{"turn_id": "t", "spoken": "我列在下面。", "written": "- 09:20 出门"}"#.utf8)), .answered(spoken: "我列在下面。", written: "- 09:20 出门"))
+        XCTAssertEqual(AskReply.parse(status: 504, data: Data(#"{"turn_id": "t", "detail": "no answer yet; the turn goes on"}"#.utf8)), .working)
+        XCTAssertEqual(AskReply.parse(status: 502, data: Data(#"{"turn_id": "t", "detail": "x"}"#.utf8)), .failed)
+        XCTAssertNil(AskReply.parse(status: 200, data: Data("{}".utf8)))
+        XCTAssertNil(AskReply.parse(status: 413, data: Data()))
+    }
+}
