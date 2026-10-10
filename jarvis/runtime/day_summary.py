@@ -23,6 +23,7 @@ from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.day_summary import build_day_summary_messages, check_day_summary
 from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.runtime.core_memory import CoreMemorySettings, run_core_memory
+from jarvis.runtime.ledger import LedgerContext, run_day_prose
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import (
@@ -188,6 +189,7 @@ class DaySummarySchedule:
         pricing_table: Mapping[str, Mapping[str, float]],
         core_memory: CoreMemorySettings | None = None,
         jev_log: JevLog | None = None,
+        ledger: LedgerContext | None = None,
         poll_s: float = 60.0,
     ) -> None:
         """Bind the store and the knobs; nothing runs until :meth:`run`."""
@@ -199,6 +201,8 @@ class DaySummarySchedule:
         self._core_memory = core_memory
         self._jev_log = jev_log
         self._review: SurrogateRoute | None = None
+        self._ledger = ledger
+        self._prose_client: LLMClient | None = None
         self._poll_s = poll_s
         self._client: LLMClient | None = None
         self._core_client: LLMClient | None = None
@@ -226,7 +230,29 @@ class DaySummarySchedule:
         )
         if self._core_memory is not None:
             self._consolidate(self._core_memory, today)
+        self._write_prose(today)
         return outcomes
+
+    def _write_prose(self, today: date) -> None:
+        """The ledger's "The day" lines (ADR 0199); their failure never fails what ran before."""
+        if self._ledger is None or self._ledger.settings.prose is None:
+            return
+        prose = self._ledger.settings.prose
+        try:
+            if self._prose_client is None:
+                self._prose_client = build_compact_client(self._llm_config, prose.preset)
+            prose_outcomes = run_day_prose(
+                self._ledger.sources,
+                prose,
+                self._prose_client,
+                event_log_path=self._event_log_path,
+                pricing_table=self._pricing_table,
+                today=today,
+            )
+        except Exception:
+            LOGGER.exception("day_prose: run for %s failed", today)
+            return
+        LOGGER.info("day_prose: %s -> %s", today, prose_outcomes)
 
     def _consolidate(self, settings: CoreMemorySettings, today: date) -> None:
         """Core memory over the days just summarised; its failure never fails the summaries."""
