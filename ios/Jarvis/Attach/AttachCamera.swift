@@ -16,7 +16,10 @@ final class AttachCamera {
     @ObservationIgnored let session = AVCaptureSession()
     @ObservationIgnored private let queue = DispatchQueue(label: "jarvis.attach.camera")
     @ObservationIgnored private var output: AVCapturePhotoOutput?   // made on the queue: building one asks the camera daemon and blocks for ~170 ms
-    @ObservationIgnored private var layers: [AVCaptureVideoPreviewLayer] = []   // the live previews, queue only
+    /// The two live previews (0 the tile, 1 the viewfinder), made once on the queue and joined to the session before it first runs.
+    /// Creating a preview layer or joining one while the session is starting, running or reconfiguring blocks the main thread on the
+    /// camera daemon (a second layer made 0.1 s after the first hung it for ~9 s), so the views only borrow these two.
+    @ObservationIgnored private(set) var previews: [AVCaptureVideoPreviewLayer] = []
     @ObservationIgnored private var links: [ObjectIdentifier: AVCaptureConnection] = [:]
     @ObservationIgnored private var configured = false
     @ObservationIgnored private var wanted = false
@@ -70,6 +73,12 @@ final class AttachCamera {
         guard session.canAddOutput(output) else { return false }
         session.addOutput(output)
         self.output = output
+        previews = (0..<2).map { _ in
+            let l = AVCaptureVideoPreviewLayer(sessionWithNoConnection: session)
+            l.videoGravity = .resizeAspectFill
+            return l
+        }
+        join()
         configured = true
         return true
     }
@@ -88,23 +97,10 @@ final class AttachCamera {
         }
     }
 
-    // MARK: the previews
-
-    /// Each preview joins the session through a connection made on the queue. Assigning `layer.session` on the main thread waits on the
-    /// camera daemon: ~150 ms for the first preview and about 9 s for a second one, which was the tap on 相机 hanging.
-    func connect(_ layer: AVCaptureVideoPreviewLayer) { queue.async { self.layers.append(layer); self.join() } }
-
-    func disconnect(_ layer: AVCaptureVideoPreviewLayer) {
-        queue.async {
-            self.layers.removeAll { $0 === layer }
-            if let c = self.links.removeValue(forKey: ObjectIdentifier(layer)) { self.session.removeConnection(c) }
-        }
-    }
-
     private func join() {
-        guard configured, let port = (session.inputs.first as? AVCaptureDeviceInput)?.ports(for: .video, sourceDeviceType: nil, sourceDevicePosition: .unspecified).first else { return }
+        guard let port = (session.inputs.first as? AVCaptureDeviceInput)?.ports(for: .video, sourceDeviceType: nil, sourceDevicePosition: .unspecified).first else { return }
         session.beginConfiguration(); defer { session.commitConfiguration() }
-        for l in layers where links[ObjectIdentifier(l)] == nil {
+        for l in previews where links[ObjectIdentifier(l)] == nil {
             let c = AVCaptureConnection(inputPort: port, videoPreviewLayer: l)
             guard session.canAddConnection(c) else { continue }
             session.addConnection(c)
@@ -168,21 +164,18 @@ final class AttachCamera {
     }
 }
 
-/// a live preview of the camera's session, filling its frame
+/// one of the camera's two live previews, filling its frame
 struct AttachCameraPreview: UIViewRepresentable {
     let camera: AttachCamera
-    func makeUIView(context: Context) -> PreviewView {
-        let v = PreviewView(session: camera.session); v.camera = camera; camera.connect(v.preview); return v
-    }
+    let slot: Int
+    func makeUIView(context: Context) -> PreviewView { PreviewView(camera.previews[slot]) }
     func updateUIView(_ v: PreviewView, context: Context) {}
-    static func dismantleUIView(_ v: PreviewView, coordinator: ()) { v.camera?.disconnect(v.preview) }
+    static func dismantleUIView(_ v: PreviewView, coordinator: ()) { if v.preview.superlayer === v.layer { v.preview.removeFromSuperlayer() } }
 
     final class PreviewView: UIView {
         let preview: AVCaptureVideoPreviewLayer
-        weak var camera: AttachCamera?
-        init(session: AVCaptureSession) {
-            preview = AVCaptureVideoPreviewLayer(sessionWithNoConnection: session)
-            preview.videoGravity = .resizeAspectFill
+        init(_ preview: AVCaptureVideoPreviewLayer) {
+            self.preview = preview
             super.init(frame: .zero)
             layer.addSublayer(preview)
         }

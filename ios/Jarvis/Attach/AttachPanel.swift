@@ -161,7 +161,7 @@ private struct AttachMenu: View {
     private var cameraTile: some View {
         Button { model.go(.camera) } label: {
             ZStack {
-                AttachFeed(camera: model.camera).scaleEffect(1.14)
+                AttachFeed(camera: model.camera, slot: 0).scaleEffect(1.14)
                 Color(red: 8 / 255, green: 10 / 255, blue: 24 / 255).opacity(0.3)
                 Image(systemName: "camera").font(.system(size: 24, weight: .regular)).foregroundStyle(.white).shadow(color: .black.opacity(0.5), radius: 3, y: 1)
             }
@@ -318,6 +318,7 @@ private struct AttachTile: View {
 /// the live feed, or a calm placeholder where there is no camera
 struct AttachFeed: View {
     let camera: AttachCamera
+    let slot: Int
     var body: some View {
         ZStack {
             Color(red: 5 / 255, green: 6 / 255, blue: 13 / 255)
@@ -327,7 +328,7 @@ struct AttachFeed: View {
                 RadialGradient(colors: [Color(red: 157 / 255, green: 180 / 255, blue: 1).opacity(0.22), .clear], center: UnitPoint(x: 0.3, y: 0.35), startRadius: 0, endRadius: 190)
             case .denied: EmptyView()
             case .idle: EmptyView()
-            case .running: AttachCameraPreview(camera: camera)   // only once the session runs: attaching the layer to a starting session blocks the main thread
+            case .running: AttachCameraPreview(camera: camera, slot: slot)   // only once the session runs: attaching the layer to a starting session blocks the main thread
             }
         }
     }
@@ -340,7 +341,7 @@ private struct AttachViewfinder: View {
     var body: some View {
         let cam = model.camera, frozen = model.shot != nil
         ZStack {
-            AttachFeed(camera: cam)
+            AttachFeed(camera: cam, slot: 1)
             if let s = model.shot { Image(uiImage: s.preview).resizable().scaledToFill().frame(width: AT.panelW, height: 320).clipped() }
             VStack(spacing: 0) {
                 LinearGradient(colors: [Color(red: 4 / 255, green: 5 / 255, blue: 14 / 255).opacity(0.5), .clear], startPoint: .top, endPoint: .bottom).frame(height: 88)
