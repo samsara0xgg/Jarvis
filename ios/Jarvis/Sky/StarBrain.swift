@@ -15,7 +15,6 @@ extension StarEngine {
     func sendToBrain(_ words: String) {
         let text = words.trimmingCharacters(in: .whitespacesAndNewlines), items = ui.attach.items
         if (text.isEmpty && items.isEmpty) || sendingToBrain { return }
-        endEditing?()
         if let m = AttachUpload.check(count: items.count) { return trouble(m) }
         sendingToBrain = true
         captureAbout()

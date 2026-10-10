@@ -111,6 +111,9 @@ final class StarEngine {
     var dateD: Int?
     weak var herDrive: HerDrive?
     var endEditing: (() -> Void)?
+    #if DEBUG
+    var beginEditing: (() -> Void)?
+    #endif
     /// asks the stage to go to 60 fps right now, so a touch or a button does not wait for the next 20 fps tick
     var onWake: () -> Void = {}
     func wake() { wakeUntil = nowMs() + 450; onWake() }

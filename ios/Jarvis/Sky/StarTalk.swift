@@ -164,6 +164,7 @@ extension StarEngine {
         guard ui.panelOpen else { return }
         wake()
         if ui.talking { autoOpenSpent = true }      // he closed it during this talk: it does not open itself again
+        if ui.typing { endEditing?() }              // the panel goes with the keyboard, and the keyboard with the panel
         if !quiet { sound(.close, 0.7); Haptic.selection() }
         ui.panelOpen = false; panelSince = nowMs()
     }
@@ -201,12 +202,12 @@ extension StarEngine {
         if days != ui.convDays { ui.convDays = days }
     }
 
-    /// What is pinned over the stream (what waits on him, what she is doing) and the header's line, a few times a second while the panel is open.
+    /// What is pinned over the stream (what waits on him, what she is doing), a few times a second while the panel is open.
     func updatePanel(force: Bool = false) {
         let now = nowMs()
         if !force && now - panelAt < 500 { return }
         panelAt = now
-        let nT = nowT(), today = floorDay(nT), ev = EV.filter { $0.born <= now }
+        let today = floorDay(nowT()), ev = EV.filter { $0.born <= now }
         let waits = ev.filter { $0.st == .wait }.sorted { $0.t < $1.t }
         let works = ev.filter { $0.st == .work && floorDay($0.t) == today }.sorted { $0.t < $1.t }
         let key = (waits + works).map { "\($0.id)\($0.st.rawValue)\($0.t)\($0.t > Trev ? "a" : "")" }.joined(separator: ",") + "|" + (openId ?? "") + "|\(epoch)"
@@ -214,16 +215,12 @@ extension StarEngine {
             panelKey = key
             ui.pinned = [("等你的", waits), ("她在做", works)].compactMap { name, list in list.isEmpty ? nil : PinGroup(id: name, name: name, rows: list.map(rowModel)) }
         }
-        let next = ev.filter { $0.st == .next && $0.t > nT }.min(by: { $0.t < $1.t })
-        put(\.headLine, !waits.isEmpty ? "等你 \(waits.count) 件"
-            : next.map { "接下来 \(floorDay($0.t) == today ? "" : dayWord(floorDay($0.t)) + " ")\(clock($0.t)) \($0.title)" } ?? "接下来没有安排")
-        put(\.headWaits, !waits.isEmpty)
     }
 }
 
 #if DEBUG
 extension StarEngine {
-    /// `-scene open|typing|rest`: the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
+    /// `-scene open|typing|typingWaiting|typingChipOpen|rest`: the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
     func runTalkScene(_ name: String) {
         switch name {
         case "rest": setLevel(0)
@@ -291,13 +288,22 @@ extension StarEngine {
                 Conversation.shared.fakeOlder = { first in ConversationPage(rows: rows(max(1, first - 40)...(first - 1)), hasMore: first - 40 > 1) }
             }
             openPanel(quiet: true)
-        case "typing":
+        case "typing", "typingWaiting", "typingChipOpen", "typingGrow", "typingScrolled", "typingDismiss":
+            // the keyboard is the real one: the field is focused, and the panel comes up with it
             setLevel(0)
+            if name == "typing" { EV.removeAll { $0.st == .wait || $0.st == .work } }
+            else { EV.removeAll { $0.st == .wait && !["thanks", "mia"].contains($0.id) } }
+            panelKey = ""
+            debugConversation()
             beginTalk(); lingerHold = true
             addTurn(his: true, "我下周二想约牙医，帮我看看哪个时间合适")
-            addTurn(his: false, "周二上午十点和下午三点都空着。你想约哪一个？")
-            ui.typing = true; ui.chipsOn = false; ui.kbLift = 336
-            openPanel(quiet: true)
+            let hers = addTurn(his: false, "周二上午十点和下午三点都空着。你想约哪一个？上午的话十点到十一点半我没有别的安排，下午三点之后有一个电话会。")
+            beginEditing?()
+            let later = { (s: Double, f: @escaping () -> Void) in DispatchQueue.main.asyncAfter(deadline: .now() + s) { f() } }
+            if name == "typingGrow" { later(3) { self.setTurn(hers, text: "周二上午十点和下午三点都空着。你想约哪一个？上午的话十点到十一点半我没有别的安排，下午三点之后有一个电话会。\n\n另外周三全天都有空，周四上午有一个面试，我建议避开。如果你想约得近一些，我可以先帮你把周二下午三点占住，等你确认以后再正式发给诊所，这样不会耽误你别的事。") } }
+            if name == "typingScrolled" { later(3) { self.ui.scrollTo = "c1" }; later(5) { self.addTurn(his: false, "我在这里，你慢慢看。") } }
+            if name == "typingDismiss" { later(4) { self.endEditing?() } }
+            if name == "typingChipOpen" { later(3) { self.ui.chipOpen = true } }       // as a tap on the chip does
         default: break
         }
     }

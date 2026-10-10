@@ -71,7 +71,7 @@ struct StarChrome: View {
             AttachOverlay(model: ui.attach, kbLift: ui.kbLift)
         }
         .frame(width: W, height: H, alignment: .topLeading)
-        .onChange(of: focused) { _, f in ui.typing = f; if f { engine.openPanel() } }     // the keyboard covers the reading zone: the conversation is shown while he types
+        .onChange(of: focused) { _, f in ui.typing = f; if f { engine.openPanel() } else { engine.closePanel() } }     // the panel comes with the keyboard and goes with it
         .onChange(of: phase) { _, p in
             // away for five minutes, it comes back to the star chart as it was first opened
             if p == .background { leftAt = Date() }
@@ -79,6 +79,9 @@ struct StarChrome: View {
         }
         .onAppear {
             engine.endEditing = { focused = false }
+            #if DEBUG
+            engine.beginEditing = { focused = true }
+            #endif
             engine.watchVoice()
             if CardsRequest.pending { openCards() }
             #if DEBUG
@@ -95,7 +98,7 @@ struct StarChrome: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { n in
             guard let f = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) else { return }
             let screenH = UIScreen.main.bounds.height
-            let lift = max(0, screenH - f.minY) / k
+            let lift = StarUI.lift(keyboardHeight: max(0, screenH - f.minY) / k)
             withAnimation(.easeOut(duration: 0.3)) { ui.kbLift = lift }
         }
         .sheet(isPresented: $ui.settingsOpen) { SettingsSheet(tuneNear: { ui.settingsOpen = false; engine.setLevel(-1); ui.tuning = true }) }
@@ -279,7 +282,7 @@ struct StarChrome: View {
             .allowsHitTesting(ui.chipsOn && !at.hasItems && !at.isOpen)
             .animation(.easeOut(duration: 0.3), value: ui.chipsOn && !at.hasItems && !at.isOpen)
         }
-        .offset(x: 20, y: H - 34 - 48 - at.rise - ui.kbLift)
+        .offset(x: 20, y: H - StarUI.restGap - 48 - at.rise - ui.kbLift)
     }
 }
 

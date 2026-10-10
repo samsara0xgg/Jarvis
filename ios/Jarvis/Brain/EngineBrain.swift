@@ -38,11 +38,9 @@ extension StarEngine {
         for e in fresh {
             if let o = old[e.id] { e.born = o.born; e.flash = o.flash; e.ign = o.ign } else { e.born = now }
         }
-        let waits = EV.filter { $0.st == .wait }.count
         EV = fresh
         if let l = lightRef { if nowMs() < l.until { lightStar(l.id) } else { lightRef = nil } }
         sprites.minis.removeAll(); epoch += 1; rowKey = ""; panelKey = ""; wake()
-        if ui.talking && fresh.filter({ $0.st == .wait }).count > waits { openPanel() }       // something waits on him while she talks: the panel has room for it
         let days = b.days
         Task { @MainActor in await TalkTopics.shared.ensure(days) }                           // what the talks were about
     }

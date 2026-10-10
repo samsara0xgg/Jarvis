@@ -250,26 +250,35 @@ struct TalkPanel: View {
     @State private var pinContent = 0.0
     @State private var pos = ScrollPosition()
     @State private var probe = StreamProbe()
+    @State private var follow = true                    // the stream keeps to its bottom (he has not scrolled up on purpose)
+    @State private var byHand = false                   // a finger is on the stream, or it is still gliding from one
     @Environment(\.accessibilityReduceMotion) private var reduce
+
+    /// grabber and chip are the panel's whole top part (spec-2c: no header)
+    private static let grabH = 20.0, chipH = 32.0
 
     var body: some View {
         let top = panelTop(ui, pull), p = panelOpenness(top), held = pull != nil
-        let bottom = 836 - ui.attach.rise - ui.kbLift
-        let pinH = ui.typing ? 0 : min(pinContent, 0.4 * (bottom - StarEngine.panelOpen))      // while he types the keyboard leaves little room: what waits is under the header again after he sends
+        // while he types the stream ends 8 pt over the composer (which is 8 pt over the keys); at rest it leaves the voice's status line its place
+        let bottom = (ui.typing ? H - StarUI.restGap - 48 - StarUI.keyGap : 836) - ui.attach.rise - ui.kbLift
+        let chip = PanelRules.chip(waits: ui.pinned.first { $0.id == "等你的" }?.rows.count ?? 0, works: ui.pinned.first { $0.id == "她在做" }?.rows.count ?? 0)
+        let chipH = chip == nil ? 0 : Self.chipH
+        let pinH = chip != nil && ui.chipOpen ? min(pinContent, 0.4 * (bottom - StarEngine.panelOpen)) : 0
         // The stream's frame goes straight to where the panel is heading: a scroll view resized every frame of the spring loses its rows for a few frames. The older rows above it fade in with the panel.
         let topTo = held ? top : ui.panelOpen ? StarEngine.panelOpen : StarEngine.panelHome
-        let streamTo = topTo + (90 + pinH) * panelOpenness(topTo)
+        let streamTo = topTo + (Self.grabH + chipH + pinH) * panelOpenness(topTo)
         let shown = ui.talking || ui.panelOpen || held
         ZStack(alignment: .topLeading) {
             background.opacity(p).animation(held ? nil : panelSpring(reduce), value: top).frame(width: W, height: H - top + 60).offset(y: top)
-            topPart(p: p, held: held, pinH: pinH).frame(width: W, height: 90 + pinH, alignment: .top).offset(y: top)
-            stream(top: streamTo, bottom: bottom, open: held ? p : ui.panelOpen ? 1 : 0).animation(nil, value: streamTo)
+            topPart(p: p, held: held, chip: chip, pinH: pinH).frame(width: W, height: Self.grabH + chipH + pinH, alignment: .top).offset(y: top)
+            stream(top: streamTo, bottom: bottom, fade: ui.typing ? 8 : 24, open: held ? p : ui.panelOpen ? 1 : 0).animation(nil, value: streamTo)
             measure
         }
         .frame(width: W, height: H, alignment: .topLeading)
         .animation(held || reduce ? nil : panelSpring(false), value: top)
         .opacity(shown ? 1 : 0).allowsHitTesting(shown)
         .animation(.easeOut(duration: ui.talking || ui.panelOpen ? 0.25 : 0.35), value: shown)
+        .onChange(of: ui.panelOpen) { _, on in if !on { ui.chipOpen = false } else { follow = true } }
     }
 
     private var background: some View {
@@ -280,14 +289,14 @@ struct TalkPanel: View {
             .contentShape(Rectangle())
     }
 
-    // MARK: grabber, header, pinned
+    // MARK: grabber, chip, pinned
 
-    private func topPart(p: Double, held: Bool, pinH: Double) -> some View {
+    private func topPart(p: Double, held: Bool, chip: String?, pinH: Double) -> some View {
         VStack(spacing: 0) {
             Capsule().fill(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.28)).frame(width: 36, height: 5)
-                .frame(maxWidth: .infinity).frame(height: 38).contentShape(Rectangle())
+                .frame(maxWidth: .infinity).frame(height: Self.grabH).contentShape(Rectangle())
                 .gesture(panelDrag(engine, $pull, opens: false, tap: true))
-            header.frame(height: 52).contentShape(Rectangle()).gesture(panelDrag(engine, $pull, opens: false, tap: true))
+            if let chip { chipButton(chip) }
             pinnedList(pinH)
         }
         .opacity(held ? p : ui.panelOpen ? 1 : 0)
@@ -295,17 +304,18 @@ struct TalkPanel: View {
         .allowsHitTesting(ui.panelOpen)
     }
 
-    /// the day's little ring (where he is in the day), the time, and the next thing or what waits
-    private var header: some View {
-        HStack(spacing: 12) {
-            Image(decorative: engine.miniSprite(0, label: false).img, scale: engine.sprites.px).frame(width: 40, height: 46).padding(.leading, 28).padding(.trailing, -4)
-            VStack(alignment: .leading, spacing: 2) {
-                TimelineView(.everyMinute) { _ in Text(clock(engine.nowT())).font(AT.mono(15)).foregroundStyle(ink) }
-                Text(ui.headLine).font(.system(size: 13)).foregroundStyle(ui.headWaits ? amber : muted).lineLimit(1)
+    /// `等你 2 件 · 她在做 1 ›`: amber when anything waits; a tap opens the pinned groups under it, and again folds them
+    private func chipButton(_ text: String) -> some View {
+        let waits = ui.pinned.contains { $0.id == "等你的" }
+        return Button { ui.chipOpen.toggle() } label: {
+            HStack(spacing: 6) {
+                Text(text).font(.system(size: 13, weight: .semibold))
+                Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).rotationEffect(.degrees(ui.chipOpen ? 90 : 0))
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.down").font(.system(size: 14, weight: .semibold)).foregroundStyle(muted).padding(.trailing, 30)
-        }
+            .foregroundStyle(waits ? amber : muted)
+            .padding(.horizontal, 32).frame(height: Self.chipH).contentShape(Rectangle())
+        }.buttonStyle(.plain)
     }
 
     private func pinnedList(_ height: Double) -> some View {
@@ -361,11 +371,12 @@ struct TalkPanel: View {
         DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top); probe.scrolled = true }
     }
 
-    private func stream(top: Double, bottom: Double, open: Double) -> some View {
+    /// `fade` is the strip under the last row where rows scrolled out of view melt away; the last row itself rests above it
+    private func stream(top: Double, bottom: Double, fade: Double, open: Double) -> some View {
         let days = TalkStream.compose(ui.convDays, live: ui.liveTurns, about: ui.about, cal: Cal.cur.cal, now: Date())
         return ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 14, pinnedViews: [.sectionHeaders]) {
+                LazyVStack(alignment: .leading, spacing: 14, pinnedViews: ui.typing ? [] : [.sectionHeaders]) {
                     ForEach(days) { day in
                         Section {
                             ForEach(day.rows) { r in
@@ -380,16 +391,21 @@ struct TalkPanel: View {
                                 .contextMenu { Button("拷贝", systemImage: "doc.on.doc") { UIPasteboard.general.string = r.text } }
                             }
                         } header: {
-                            Text(day.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(muted)
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6).padding(.horizontal, 32)
-                                .background(navy.opacity(0.96)).padding(.horizontal, -32)
-                                .opacity(open)
+                            // no day headers while he types: the keyboard leaves no room for them
+                            if !ui.typing {
+                                Text(day.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(muted)
+                                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6).padding(.horizontal, 32)
+                                    .background(navy).padding(.horizontal, -32)
+                                    .opacity(open)
+                            }
                         }
                     }
                 }
                 .padding(.horizontal, 32)
                 .animation(.easeOut(duration: 0.25), value: ui.panelOpen)
             }
+            .contentMargins(.bottom, fade, for: .scrollContent)
+            .id(ui.chipOpen)         // a lazy stack resized under it loses its place now and then: opening or folding the chip starts the list again, at the bottom
             .defaultScrollAnchor(.bottom)
             .scrollPosition($pos)
             .coordinateSpace(name: "stream")
@@ -400,19 +416,35 @@ struct TalkPanel: View {
             .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.holdLinger(true) }.onEnded { _ in engine.holdLinger(false) })
             .onChange(of: ui.scrollTo) { _, id in
                 guard let id else { return }
+                follow = false
                 proxy.scrollTo(id, anchor: UnitPoint(x: 0.5, y: 0.1)); ui.scrollTo = nil       // a little under the top, so the day's header does not cover the time above the row
             }
-            // a lazy stack's height is an estimate until its rows are seen: opening lands on the real bottom
-            .onChange(of: ui.panelOpen) { _, on in
-                guard on, let last = days.last?.rows.last?.id else { return }
-                DispatchQueue.main.async { proxy.scrollTo(last, anchor: .bottom) }
+            // Kept to the bottom while he has not scrolled up: opening, the keyboard, a new row and a growing answer all change the size of the rows or of the window,
+            // and then the distance to the bottom grows without him (PanelRules.follows). Past 80 pt of his own scrolling the ↓ button stands in for the jump.
+            .onScrollPhaseChange { _, phase in byHand = phase == .interacting || phase == .decelerating }
+            .onScrollGeometryChange(for: Double.self) { g in max(0, g.contentSize.height + g.contentInsets.bottom - g.visibleRect.maxY) } action: { _, away in
+                follow = PanelRules.follows(was: follow, byHand: byHand, away: away)
+                if follow && away > 0.5 { pos.scrollTo(edge: .bottom) }
+            }
+            .onChange(of: ui.panelOpen) { _, on in if on { pos.scrollTo(edge: .bottom) } }
+            .overlay(alignment: .bottomTrailing) {
+                let show = ui.panelOpen && !follow
+                Button { follow = true; withAnimation(.easeOut(duration: 0.25)) { pos.scrollTo(edge: .bottom) } } label: {
+                    Image(systemName: "arrow.down").font(.system(size: 14, weight: .semibold)).foregroundStyle(ink)
+                        .frame(width: 32, height: 32).background(Circle().fill(Color.white.opacity(0.14))).overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 0.5))
+                }
+                .buttonStyle(PressScale()).accessibilityLabel("回到最新")
+                .padding(.trailing, 14).padding(.bottom, fade + 8)
+                .opacity(show ? 1 : 0).allowsHitTesting(show).animation(.easeOut(duration: 0.2), value: show)
             }
         }
         .mask(VStack(spacing: 0) {
             LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: 24 * (1 - open))
             Color.black
+            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: fade)
         })
-        .frame(width: W, height: max(0, bottom - top))
+        .frame(width: W, height: max(0, bottom + fade - top))
+        .clipped()
         .offset(y: top)
     }
 

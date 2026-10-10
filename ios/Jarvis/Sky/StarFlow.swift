@@ -443,7 +443,7 @@ extension StarEngine {
         let text = text0.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { return }
         if reply == nil && BrainLink.shared.hasToken { return sendToBrain(text) }       // paired: the brain answers, not the demo
-        ui.text = ""; endEditing?()
+        ui.text = ""       // the keyboard stays, as in a chat
         let t = nowT()
         let keys = ["提醒", "出门", "今天.*做了什么|回放"]
         var demo = reply == nil ? talks.first { $0.q == text } : nil

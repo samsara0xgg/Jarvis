@@ -75,9 +75,8 @@ final class StarUI {
     // the talk panel's second height: the whole conversation, with what waits on him and what she is doing pinned over it
     var panelOpen = false
     var pinned: [PinGroup] = []
+    var chipOpen = false                // the pinned groups are open under the panel's chip
     var unfolded: Set<String> = []      // pinned groups of more than two that he opened
-    var headLine = ""                   // the panel header's line: the next item, or what waits
-    var headWaits = false
     var convDays: [TalkDay] = []        // the conversation of record, by day (Brain/TalkStream)
     var olderMore = false               // the brain has rows older than the first one listed
     var scrollTo: String?               // a row of the stream the panel is asked to show
@@ -86,7 +85,11 @@ final class StarUI {
     var liveTurns: [LiveTurn] = []
     var about: About?                   // the item he has open, as the chip over the talk's first row says it; every turn carries it while it shows
     var typing = false
-    var kbLift = 0.0
+    var kbLift = 0.0                    // how far the composer is raised over its rest place (restGap from the bottom): the keyboard's height less restGap - keyGap
+    static let restGap = 34.0, keyGap = 8.0       // the composer's bottom from the screen's bottom at rest (the home indicator), and from the keyboard's top
+    /// The keyboard's frame runs to the bottom of the screen, so its height already holds the home-indicator inset that restGap is: lifting the composer by the whole height
+    /// would count that inset twice (a 34 pt gap over the keys). It is lifted by the height less the difference of the two gaps.
+    static func lift(keyboardHeight h: Double) -> Double { h > 0 ? max(0, h - (restGap - keyGap)) : 0 }
     var mic: MicState = .mic
     var chipsOn = false
     var settingsOpen = false

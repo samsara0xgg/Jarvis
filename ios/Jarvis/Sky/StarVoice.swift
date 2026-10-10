@@ -89,6 +89,7 @@ extension StarEngine {
             switch name {
             case "listening": v.state = .listening; v.partial = String(ask.prefix(6 * (1 + Int((now - t0) / 1000)))); v.input = 0.3 + 0.7 * voiceLevel(now / 1000 * 1.3)
             case "thinking": v.state = .thinking; v.transcript = ask
+            case "waiting": v.state = .speaking; v.transcript = "有消息吗"; v.reply = "有一件事要问你。"; v.output = voiceLevel(now / 1000)
             case "speaking": v.state = .speaking; v.transcript = ask; v.reply = String(short.prefix(Int((now - t0) / 120))); v.output = voiceLevel(now / 1000)
             case "speakingLong": v.state = .speaking; v.transcript = ask; v.reply = String(answer.prefix(Int((now - t0) / 90))); v.output = voiceLevel(now / 1000)
             case "error": v.error = "没有麦克风权限"
@@ -96,6 +97,10 @@ extension StarEngine {
             default: break
             }
             return v
+        }
+        if name == "waiting" {       // she asks him something while she talks: the host's own row, as the phone reads it off /phone/ws; a row in the talk, no panel
+            let row = #"{"type":"row","event_type":"clarification.requested","event_uid":"6f1c2d3e4a5b46788899aabbccddeeff","ts_epoch_ms":1791650000000,"payload":{"clarification_id":"Qdebug0001","turn_id":"T1","question":"回 Mia 电话，现在打吗？","fields":[]}}"#
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { if case .row(let r)? = HostFrame(Data(row.utf8)) { MainActor.assumeIsolated { PhoneRows.offer(r) } } }
         }
         wake()
     }
