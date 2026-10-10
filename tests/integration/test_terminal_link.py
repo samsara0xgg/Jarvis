@@ -23,7 +23,8 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Self
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import pytest
 import uvicorn
@@ -40,8 +41,9 @@ from jarvis.execution.tools import (
     build_default_registry,
     make_screen_capture,
 )
-from jarvis.runtime import _make_entity_resolver
+from jarvis.runtime import _make_entity_resolver, _sound_output, audio_output
 from jarvis.runtime.night_run import NightRun, NightSettings
+from jarvis.runtime.reminders import Reminders
 from jarvis.runtime.terminal import _declared, make_executor
 from jarvis.shared import ActionRequest, CallerPrincipal, RawResult
 from jarvis.shared.device_link import DeviceCallError
@@ -61,12 +63,16 @@ from jarvis.surface.terminal_link import (
     TerminalRefusedError,
     run_terminal_client,
 )
+from jarvis.surface.terminal_voice import BrainVoice
+from tests.integration.test_terminal_voice import _NoRows
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from pathlib import Path
 
     from starlette.types import ASGIApp, Receive, Scope, Send
+
+    from jarvis.runtime.job_mail import JobMail
 
 REMOTE = "100.87.250.92"
 TERMINAL_WS = "ws://127.0.0.1:8006/terminal/ws"
@@ -361,6 +367,54 @@ def test_the_most_recently_connected_terminal_gets_the_call() -> None:
         return seen
 
     assert _on_a_thread(scenario) == ["new", "old"]
+
+
+def test_a_call_for_what_she_says_unprompted_goes_to_the_voice_terminal() -> None:
+    """The voice terminal that connected last plays it, not the terminal connected last.
+
+    With no voice terminal it is the newest terminal that declared the tool, and a slow
+    terminal is waited for only as long as the caller says.
+    """
+
+    async def scenario() -> list[str]:
+        hub = TerminalHub(call_timeout_s=30)
+        speaker = _FakeTerminal(hub, {"timesink_read"}, _ok({"result": "speaker"}), name="macbook")
+        other = _FakeTerminal(hub, {"timesink_read"}, _ok({"result": "other"}), name="laptop")
+        async def played() -> str:
+            reply = await asyncio.to_thread(hub.call_player, "timesink_read", {}, None, 5)
+            return str(reply["result"])
+
+        seen = [await played()]
+        hub.voice = BrainVoice(cast("Any", object()), _NoRows())
+        speaker.link.speech = hub.voice.attach("macbook", speaker.send, None)
+        seen.append(await played())
+        hub.detach(speaker.link)
+        seen.append(await played())
+        hub.detach(other.link)
+        _FakeTerminal(hub, {"timesink_read"}, lambda _f, _t: None, name="slow")
+        began = time.monotonic()
+        with pytest.raises(DeviceCallError) as slow:
+            await asyncio.to_thread(hub.call_player, "timesink_read", {}, None, 0.3)
+        assert slow.value.code == "device_timeout"
+        assert time.monotonic() - began < 5
+        return seen
+
+    assert _on_a_thread(scenario) == ["other", "speaker", "other"]
+
+
+def test_a_brain_asks_its_terminal_where_sound_would_come_out_and_one_machine_asks_itself(
+    tmp_path: Path,
+) -> None:
+    """The wiring gives job mail and reminders the terminal's answer on a brain, else the Mac's."""
+    reminders = Reminders(tmp_path / "events.db")
+    assert _sound_output(None, None, reminders) is audio_output.current_output
+    assert reminders.output is audio_output.current_output
+    mail = cast("JobMail", SimpleNamespace(output=None))
+    output = _sound_output(TerminalHub(), mail, reminders)
+    assert isinstance(output, audio_output.TerminalOutput)
+    assert reminders.output is output
+    assert mail.output is output
+    assert output()["private"] is False  # no terminal connected
 
 
 def test_a_device_call_on_the_loop_that_serves_the_terminal_is_refused() -> None:

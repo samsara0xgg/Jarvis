@@ -168,6 +168,7 @@ class TerminalHub:
 
     def call(
         self, tool: str, arguments: Mapping[str, Any], target_entity_ref: str | None,
+        *, timeout_s: float | None = None,
     ) -> dict[str, Any]:
         """Run ``tool`` on the most recently connected terminal that declared it.
 
@@ -181,7 +182,23 @@ class TerminalHub:
         if link is None:
             msg = f"{label} is not connected right now, so {tool} cannot run"
             raise DeviceCallError(msg, code="device_not_connected")
-        return self.call_on(link, tool, arguments, target_entity_ref, self._call_timeout_s)
+        return self.call_on(link, tool, arguments, target_entity_ref, timeout_s)
+
+    def call_player(
+        self, tool: str, arguments: Mapping[str, Any], target_entity_ref: str | None,
+        timeout_s: float,
+    ) -> dict[str, Any]:
+        """Run ``tool`` on the terminal that plays what no one asked for.
+
+        Her unprompted speech has no turn to follow, so it is spoken by the voice terminal that
+        connected last (ADR 0172); with none, the terminal that was asked last, as :meth:`call`.
+        Same errors as :meth:`call`.
+        """
+        peer = None if self.voice is None else self.voice.peer_for_turn("")
+        link = None if peer is None else self.voice_link_of(peer)
+        if link is None:
+            return self.call(tool, arguments, target_entity_ref, timeout_s=timeout_s)
+        return self.call_on(link, tool, arguments, target_entity_ref, timeout_s)
 
     def call_on(
         self, link: _Link, tool: str, arguments: Mapping[str, Any],

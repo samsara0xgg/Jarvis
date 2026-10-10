@@ -67,7 +67,10 @@ def test_card_is_served_with_job_mail_off(tmp_path: Path) -> None:
     _cost(log, 1.5, NOON)
     assert SpendCap(SpendCapSettings(daily_usd=1.0), log, db).check(NOON)
     quiet = ["dnd"]
-    deps = _notice_deps(None, None, None, alerts=_alert_deps(db, lambda: quiet[0], None))
+    speakers = lambda **_: {"private": False}  # noqa: E731
+    deps = _notice_deps(
+        None, None, None, alerts=_alert_deps(db, lambda: quiet[0], None, speakers),
+    )
     client = TestClient(create_app(InherentDeps(
         submit_callable=lambda _text: None, broadcaster=InherentBroadcaster(), **deps,
     )))

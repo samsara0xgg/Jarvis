@@ -155,6 +155,7 @@ from jarvis.execution.tools import (
 )
 from jarvis.execution.transit_tool import TransitOffers, first_leave_ms
 from jarvis.execution.workers import Workers, make_worker_tools
+from jarvis.runtime import audio_output
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.daily_report import (
     PLAN_SERVER,
@@ -676,6 +677,9 @@ class JarvisRuntime:
     # ADR 0201: the day, week and job-hunt blocks of the prompt, from his own data. None = off
     # (no ``ledger:`` block, or no memory store).
     ledger: LedgerContext | None = None
+    # ADR 0156: where sound would come out now, for the notices' ``audio_private`` and the job
+    # mail; on a brain (ADR 0170) the output of the terminal that plays.
+    sound_output: Callable[..., dict[str, Any]] = audio_output.current_output
     # ADR 0170: ``brain`` runs headless and starts nothing device-bound.
     role: Role = "all"
     # ADR 0170, 0207: the private addresses the daemon also listens on, and the Host names it
@@ -1264,6 +1268,9 @@ def _ledger(
 _FALLBACK_TIMESINK_POLL_INTERVAL_S: Final[float] = 300.0
 _FALLBACK_WORK_STATE_PRESET: Final[str] = "gpt6-luna"
 _DAILY_REPORT_TIMEOUT_S: Final[float] = 900.0
+_OUTPUT_TIMEOUT_S: Final[float] = 5.0
+"""How long a brain waits for its terminal to say where sound would come out: its probe takes
+at most 3 s, and a slow answer is a no (ADR 0156)."""
 """ADR 0028 — a whole day served whole: the draft call read 300k tokens in 175 s on v4-pro
 (2026-09-12), and a retry after a timeout would resend it all."""
 
@@ -1610,6 +1617,24 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
         settings, route, connections, db_path, rule_judge_v1,
         moment=moment, timesink_path=_timesink_db_path(config), device=device, event_log=event_log,
     )
+
+
+def _sound_output(
+    hub: TerminalHub | None, job_mail: JobMail | None, reminders: Reminders,
+) -> Callable[..., dict[str, Any]]:
+    """ADR 0156: where sound would come out now, given to everything that asks.
+
+    One machine plays on its own output. A brain (ADR 0170) asks the terminal that plays what she
+    says unprompted.
+    """
+    output = (
+        audio_output.current_output if hub is None
+        else audio_output.TerminalOutput(partial(hub.call_player, timeout_s=_OUTPUT_TIMEOUT_S))
+    )
+    reminders.output = output
+    if job_mail is not None:
+        job_mail.output = output
+    return output
 
 
 def _interview_reminders(block: object, config_path: Path) -> InterviewSettings | None:
@@ -2878,6 +2903,12 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         paths.event_log,
     )
     _register_job_ledger(registry, job_mail)
+    reminders = Reminders(
+        paths.event_log,
+        moment=moment,
+        departures=Departures(paths.event_log, BusLive(paths.root / "cache"), transit_offers),
+    )
+    output = _sound_output(terminal_hub, job_mail, reminders)
     home = Home(
         plugin_connections,
         resolve_zone(None, _work_state_timezone(full_config)),
@@ -2962,11 +2993,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         job_mail=job_mail,
         moment=moment,
         push=Push.from_config(full_config, paths.root, paths.event_log),
-        reminders=Reminders(
-            paths.event_log,
-            moment=moment,
-            departures=Departures(paths.event_log, BusLive(paths.root / "cache"), transit_offers),
-        ),
+        reminders=reminders,
         voice_words=_voice_words(full_config, config_path, jev_log),
         oneshot=_jev_oneshot(
             full_config, config_path, jev_log, tier0_table, _event_emitter(paths.event_log),
@@ -2981,6 +3008,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         voice_settings=voice_settings,
         daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config, terminal_hub),
         ledger=_ledger(full_config, memory, paths.event_log, device),
+        sound_output=output,
     )
 
 

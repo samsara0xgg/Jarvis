@@ -166,7 +166,6 @@ from jarvis.runtime import (
     make_turn_cancel_callable,
     save_language,
 )
-from jarvis.runtime.audio_output import current_output
 from jarvis.runtime.card_feedback import CardFeedback
 from jarvis.runtime.core_memory import CoreMemorySettings
 from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
@@ -5264,6 +5263,7 @@ def _notice_deps(
 
 def _alert_deps(
     db: Path, quiet: Callable[[], str], moment: Moment | None,
+    output: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
     """The notice routes over the job-alert rows alone, for a daemon with job mail off (ADR 0185).
 
@@ -5273,7 +5273,7 @@ def _alert_deps(
 
     def read() -> dict[str, Any]:
         return served_notices(
-            db, quiet(), datetime.now(UTC), moment, current_output,
+            db, quiet(), datetime.now(UTC), moment, output,
         )
 
     async def act(notice_id: str, action: str, reaction: str | None) -> None:
@@ -7045,7 +7045,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             **_notice_deps(
                 runtime.job_mail, runtime.reminders, runtime.moment,
                 alerts=(
-                    _alert_deps(runtime.memory.db_path, lambda: controls.quiet, runtime.moment)
+                    _alert_deps(
+                        runtime.memory.db_path, lambda: controls.quiet, runtime.moment,
+                        runtime.sound_output,
+                    )
                     if spend is not None and runtime.memory is not None else None
                 ),
             ),

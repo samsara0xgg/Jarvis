@@ -37,17 +37,21 @@ from jarvis.decision.attention import (
 from jarvis.decision.surrogate_route import SurrogateRoute
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ToolError
-from jarvis.runtime import RuntimeBootstrapError, _job_mail
+from jarvis.runtime import RuntimeBootstrapError, _job_mail, audio_output
+from jarvis.runtime import terminal as terminal_runtime
+from jarvis.runtime.audio_output import TerminalOutput
 from jarvis.runtime.inherent_loop import _job_mail_deps, _say_job_line
 from jarvis.runtime.interview_reminders import InterviewSettings, outlook_write
 from jarvis.runtime.job_mail import JobMail, JobMailSettings, gmail_read, repair
 from jarvis.shared import lang
+from jarvis.shared.device_link import DeviceCallError
 from jarvis.state import job_ledger
 from jarvis.state import reminders as reminder_state
 from jarvis.state.event_log import open_event_log, open_runtime_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
+from tests.integration.test_audio_output import BT, BUILTIN, _default, _profile
 from tests.integration.test_lifecycle_commentary import _make_runtime, _only_phrase
 
 if TYPE_CHECKING:
@@ -3573,3 +3577,120 @@ def test_the_interview_reminders_block_is_validated_like_the_other_job_mail_keys
         bad = {"job_mail": {**on["job_mail"], "interview_reminders": value}}
         with pytest.raises(RuntimeBootstrapError, match=r"job_mail\.interview_reminders"):
             _job_mail(bad, config_path, None, connections, db)
+
+
+# --- a brain asks the terminal that plays (ADR 0156, 0170) ------------------------------------
+
+
+def _terminal_link(monkeypatch: pytest.MonkeyPatch, profile: str) -> Any:  # noqa: ANN401 - a DeviceLink
+    """A brain's device link whose far end is the real terminal reader on a Mac with ``profile``."""
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(audio_output, "_cache", None)
+    monkeypatch.setattr(audio_output, "_probe", lambda: profile)
+
+    def link(op: str, arguments: Any, target: str | None) -> dict[str, Any]:  # noqa: ANN401
+        del target
+        reply = terminal_runtime._read_device(op, arguments, None, ())  # noqa: SLF001
+        if not reply["ok"]:
+            raise DeviceCallError(reply["message"], code=reply["code"])
+        return dict(reply["output"])
+
+    return link
+
+
+def test_a_brain_speaks_and_sounds_when_its_terminal_reports_headphones(
+    tmp_path: Path, jev: _Jev, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The terminal's own default output is private: the line is said and the cues are served."""
+    h = _harness(tmp_path, jev, speak_gap_s=0)
+    h.job.output = TerminalOutput(
+        _terminal_link(monkeypatch, _profile(_default("Allen's AirPods Pro", BT))),
+    )
+    h.job.poll_once()
+
+    assert h.spoken == 1
+    reply = h.client.get("/inherent/notices").json()
+    assert reply["audio_private"] is True
+    assert {n["level"] for n in h.flat()} == {"speak", "card", "card_sound"}
+    rows = {r["event_id"]: r for r in job_ledger.list_attention(h.db, "job_mail")}
+    assert rows["m-interview"]["delivery"]["audio"] == {
+        "device": "Allen's AirPods Pro", "private": True,
+    }
+
+
+def test_a_brain_stays_silent_when_its_terminal_reports_speakers(
+    tmp_path: Path, jev: _Jev, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The terminal's speakers are not private: no line, and every sound level is a card."""
+    h = _harness(tmp_path, jev, speak_gap_s=0)
+    h.job.output = TerminalOutput(_terminal_link(
+        monkeypatch, _profile(_default("MacBook Pro Speakers", BUILTIN, "MacBook Pro Speakers")),
+    ))
+    h.job.poll_once()
+
+    assert h.spoken == 0
+    assert set(dict(h.sql("SELECT message_id, level FROM job_alert")).values()) == {"card"}
+    reply = h.client.get("/inherent/notices").json()
+    assert reply["audio_private"] is False
+    assert {n["level"] for n in reply["notices"]} == {"card"}
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        DeviceCallError("the Mac is not connected", code="device_not_connected"),
+        DeviceCallError("the Mac did not answer", code="device_timeout"),
+        DeviceCallError("the Mac dropped", code="device_disconnected"),
+        DeviceCallError("this terminal has no TimeSink read 'audio_output'", code="unknown_read"),
+        {"result": None},
+        {"result": "private"},
+        {"result": {"name": "AirPods", "private": "yes"}},
+        {},
+    ],
+    ids=["away", "timeout", "dropped", "old terminal", "null", "text", "not a flag", "no result"],
+)
+def test_a_brain_whose_terminal_cannot_say_is_never_private(
+    tmp_path: Path, jev: _Jev, failure: Any,  # noqa: ANN401
+) -> None:
+    """Away, slow, old or unreadable: no line and no cue, the alerts are silent cards."""
+
+    def link(op: str, arguments: Any, target: str | None) -> dict[str, Any]:  # noqa: ANN401
+        del op, arguments, target
+        if isinstance(failure, DeviceCallError):
+            raise failure
+        return dict(failure)
+
+    h = _harness(tmp_path, jev, speak_gap_s=0)
+    h.job.output = TerminalOutput(link)
+    h.job.poll_once()
+
+    assert h.spoken == 0
+    assert set(dict(h.sql("SELECT message_id, level FROM job_alert")).values()) == {"card"}
+    reply = h.client.get("/inherent/notices").json()
+    assert reply["audio_private"] is False
+    assert {n["level"] for n in reply["notices"]} == {"card"}
+
+
+def test_a_brain_looks_again_at_each_decision_and_keeps_a_look_for_two_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Headphones come off between looks: a look holds two seconds, ``fresh`` is never held."""
+    asked: list[object] = []
+    seen = [_profile(_default("Allen's AirPods Pro", BT))]
+    link = _terminal_link(monkeypatch, seen[0])
+
+    def counting(op: str, arguments: Any, target: str | None) -> dict[str, Any]:  # noqa: ANN401
+        asked.append(arguments["args"])
+        return link(op, arguments, target)  # type: ignore[no-any-return]
+
+    output = TerminalOutput(counting)
+    assert output()["private"] is True
+    monkeypatch.setattr(audio_output, "_probe", lambda: _profile(_default("X", BUILTIN, "X")))
+    assert output()["private"] is True  # the brain's own two seconds
+    assert len(asked) == 1
+    assert output(fresh=True)["private"] is False  # the terminal looks again too
+    assert asked[-1] == {"fresh": True}
+    assert output()["private"] is False
+    monkeypatch.setattr(time, "monotonic", lambda: 1e9)
+    monkeypatch.setattr(audio_output, "_probe", lambda: _profile(_default("A", BT)))
+    assert output()["private"] is True  # expired, so asked again (and the terminal's expired too)

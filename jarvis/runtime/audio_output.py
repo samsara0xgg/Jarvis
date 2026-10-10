@@ -5,16 +5,29 @@ out of the built-in speakers or an unknown device. ``current_output`` asks ``sys
 the default output and answers ``{name, transport, private}``. Only a Bluetooth device, the
 built-in headphone jack, or a device named like headphones is private; everything else, and every
 failure to find out, is not.
+
+A brain (ADR 0170) has no sound output to ask: :class:`TerminalOutput` asks the terminal that plays,
+which answers with its own ``current_output``, and the same rules stand.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import sys
+import threading
 import time
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
+
+from jarvis.state import device_reads
+from jarvis.state.daily_contract import DailyError
+
+if TYPE_CHECKING:
+    from jarvis.shared.device_link import DeviceLink
+
+LOGGER = logging.getLogger(__name__)
 
 _PROBE: Final[list[str]] = ["system_profiler", "SPAudioDataType", "-json"]
 _TIMEOUT_S: Final[float] = 3.0
@@ -70,3 +83,43 @@ def current_output(*, fresh: bool = False) -> dict[str, Any]:
             found = dict(_NONE)
     _cache = (time.monotonic(), found)
     return dict(found)
+
+
+class TerminalOutput:
+    """A brain's ``current_output`` (ADR 0156, 0170): the default output of the terminal that plays.
+
+    ``device`` is a link to that terminal. Each look asks it, kept for the same two seconds as a
+    local one unless ``fresh``. A terminal that is away, slow, too old to know the read or that
+    answers with anything but a clear yes is not private, and that no is kept as long as a yes.
+    """
+
+    def __init__(self, device: DeviceLink) -> None:
+        """Bind the link to the terminal that plays what she says unprompted."""
+        self._device = device
+        self._lock = threading.Lock()
+        self._kept: tuple[float, dict[str, Any]] | None = None
+
+    def __call__(self, *, fresh: bool = False) -> dict[str, Any]:
+        """``{name, transport, private}`` as the terminal reports it, else not private."""
+        with self._lock:  # a poll and a decision share one ask
+            if not fresh and self._kept is not None and time.monotonic() - self._kept[0] < _CACHE_S:
+                return dict(self._kept[1])
+            found = self._ask(fresh=fresh)
+            self._kept = (time.monotonic(), found)
+            return dict(found)
+
+    def _ask(self, *, fresh: bool) -> dict[str, Any]:
+        try:
+            got = device_reads.ask(
+                self._device, device_reads.TIMESINK_READ, "audio_output", fresh=fresh,
+            )
+        except DailyError as exc:
+            LOGGER.warning("audio output: the terminal's read failed, so not private: %s", exc)
+            return dict(_NONE)
+        if not isinstance(got, dict):
+            return dict(_NONE)
+        return {
+            "name": str(got.get("name") or ""),
+            "transport": str(got.get("transport") or ""),
+            "private": got.get("private") is True,
+        }

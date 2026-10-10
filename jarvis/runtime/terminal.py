@@ -76,6 +76,7 @@ from jarvis.runtime import (
     _wave1_feature_flags,
     _wave4_response_flags,
     _work_state_timezone,
+    audio_output,
 )
 from jarvis.runtime.dictation import Dictation, build_dictation, load_vocab
 from jarvis.runtime.inherent_loop import (
@@ -198,7 +199,13 @@ def _derived_read(fn: str, args: Mapping[str, Any], store: Path | None) -> Any: 
 
 
 def _timesink_read(fn: str, args: Mapping[str, Any], store: Path | None) -> Any:  # noqa: ANN401, PLR0911 — one reader's JSON; one return per reader.
-    """One TimeSink reader of ``jarvis.state``, run on this machine's own store."""
+    """One TimeSink reader of ``jarvis.state``, run on this machine's own store.
+
+    ``audio_output`` is the odd one out: no store, this machine's default output, which a brain
+    asks for before it lets her speak or sound unprompted (ADR 0156).
+    """
+    if fn == "audio_output":
+        return audio_output.current_output(fresh=args.get("fresh") is True)
     if fn in {"moment_facts", "job_time", "project_window", "ledger_screen", "ledger_submissions"}:
         return _derived_read(fn, args, store)
     if fn in {"read_capture", "read_span"}:
