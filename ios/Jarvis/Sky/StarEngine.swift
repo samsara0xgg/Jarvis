@@ -77,6 +77,11 @@ final class StarEngine {
     var release: Gate?
     var ti = 0
     var rowKey = "", viewKey = "", drKey = ""
+    // her phone voice (Sky/StarVoice.swift): the session state last seen and when it changed, the last trouble and when it appeared
+    var voiceState = VoiceSession.State.idle, voiceAt = 0.0, voiceErr: String?, voiceErrAt = -1e9
+    #if DEBUG
+    var voiceFake: ((Double) -> VoiceShot)?
+    #endif
     var dateD: Int?
     var drawer = false
     weak var herDrive: HerDrive?

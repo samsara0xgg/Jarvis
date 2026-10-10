@@ -61,6 +61,7 @@ struct StarChrome: View {
                 .animation(.easeOut(duration: 0.25), value: ui.drawerOpen)
             grabber
             caption
+            voiceNote
             drawer
             AttachDim(model: ui.attach)
             composer
@@ -70,10 +71,14 @@ struct StarChrome: View {
         .onChange(of: focused) { _, f in ui.typing = f }
         .onAppear {
             engine.endEditing = { focused = false }
+            engine.watchVoice()
             #if DEBUG
             if let sc = UserDefaults.standard.string(forKey: "scene") {
                 let delay = UserDefaults.standard.double(forKey: "sceneDelay")
                 DispatchQueue.main.asyncAfter(deadline: .now() + (delay > 0 ? delay : 1.5)) { engine.runScene(sc) }
+            }
+            if let vs = UserDefaults.standard.string(forKey: "voiceScene") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { engine.runVoiceScene(vs) }
             }
             #endif
         }
@@ -254,6 +259,16 @@ struct StarChrome: View {
         .animation(.easeOut(duration: 0.35), value: ui.capOut)
         .allowsHitTesting(false)
         .offset(x: 32, y: 652)
+    }
+    /// the voice's one line, just over the composer: the model download, or what went wrong
+    private var voiceNote: some View {
+        let on = ui.voiceNote != nil && !ui.typing
+        return Text(ui.voiceNote ?? "").font(monoF(12)).tracking(1.2).foregroundStyle(muted).lineLimit(1)
+            .frame(width: W - 60, alignment: .leading)
+            .opacity(on ? 1 : 0)
+            .animation(.easeOut(duration: 0.3), value: on)
+            .allowsHitTesting(false)
+            .offset(x: 30, y: 846)
     }
     private var herText: Text {
         var a = AttributedString()

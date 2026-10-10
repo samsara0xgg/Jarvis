@@ -57,6 +57,7 @@ final class StarUI {
     var settingsOpen = false
     var text = ""
     var talkChips: [String] = []
+    var voiceNote: String?              // the voice's one status line: the model download, or what went wrong
     // what is attached to the words, and the panel that picks it (Attach/)
     let attach = AttachModel()
 }

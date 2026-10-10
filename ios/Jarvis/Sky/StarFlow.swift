@@ -442,6 +442,7 @@ extension StarEngine {
     }
     func interrupt() {
         speaking?.stop()
+        if voiceState != .idle { voiceState = .idle; MainActor.assumeIsolated { VoiceSession.shared.cancel() } }
         sound(.interrupt, 1)
         run { _ in
             self.flyer = nil
@@ -472,7 +473,7 @@ extension StarEngine {
     func micTap() {
         if !ui.text.trimmingCharacters(in: .whitespaces).isEmpty { return send(ui.text) }
         endEditing?()
-        if talk != nil { interrupt() } else { run { ok in try await self.talkFlow(ok, self.nextTalk(), nil, false) } }
+        if talk != nil && voiceState == .idle { interrupt() } else { micVoice() }
     }
 
     // MARK: every frame
@@ -522,9 +523,10 @@ extension StarEngine {
             if floor(F / unit) != floor((F - dF) / unit) && now - lastTock > 80 && now - lastTick > 40 { sound(.tock, 0.5); lastTock = now }
         }
         // her
+        let voiceSay = syncVoice(now)
         let spin = abs(omegaS)
         let focusWait = talk == nil && q < 0.5 && focusSet().contains { $0.st == .wait }
-        let said: Double? = speaking.map { $0.speaking ? voiceLevel(now / 1000) : 0 }
+        let said: Double? = speaking.map { $0.speaking ? voiceLevel(now / 1000) : 0 } ?? voiceSay
         // under a sheet she is updated on every sixth frame
         herDt += dt; herN += 1
         herFresh = herN >= (covered ? 6 : 1)
