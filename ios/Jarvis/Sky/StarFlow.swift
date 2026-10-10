@@ -144,7 +144,7 @@ extension StarEngine {
                 let w = DispatchWorkItem { [weak self] in
                     guard let s = self, s.g?.kind == .press else { return }
                     s.g?.kind = .hold; s.pressed = false
-                    if s.talk == nil { s.holdTalk() }
+                    if s.talk == nil { if BrainLink.shared.hasToken { s.micTap() } else { s.holdTalk() } }      // paired, she listens for real; the scripted talks are the unpaired demo
                 }
                 ng.timer = w; DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: w)
             } else if talk == nil && mon < 0.5 && fl < 0.05 {
@@ -217,7 +217,10 @@ extension StarEngine {
 
     func tap(_ p: CGPoint, _ onH: Bool) {
         if talk != nil { return interrupt() }
-        if onH { return run { ok in try await self.talkFlow(ok, self.nextTalk(), nil, false) } }
+        if onH {
+            if BrainLink.shared.hasToken { return micTap() }
+            return run { ok in try await self.talkFlow(ok, self.nextTalk(), nil, false) }
+        }
         if mon > 0.5 { if let d = cellAt(Double(p.x), Double(p.y)) { openDay(d) }; return }
         var best: Ev?, bd = 22.0
         for e in EV where e.on && e.v >= 0.2 {
