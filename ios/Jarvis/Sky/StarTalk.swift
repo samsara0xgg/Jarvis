@@ -224,6 +224,19 @@ extension StarEngine {
     func runTalkScene(_ name: String) {
         switch name {
         case "rest": setLevel(0)
+        case "talkAfter", "twoRounds":
+            // a talk that starts after a conversation (the last round of it shows dimmer), and, for twoRounds, a second round of the same talk
+            setLevel(0)
+            debugConversation()
+            beginTalk(); lingerHold = true
+            addTurn(his: true, "我下周二想约牙医，帮我看看哪个时间合适")
+            addTurn(his: false, "周二上午十点和下午三点都空着。你想约哪一个？")
+            if name == "twoRounds" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    self.addTurn(his: true, "上午吧")
+                    self.addTurn(his: false, "好，我帮你把周二上午十点占上。")
+                }
+            }
         case "open":
             setLevel(0)
             EV.removeAll { $0.st == .wait && !["thanks", "mia"].contains($0.id) }      // two things wait on him

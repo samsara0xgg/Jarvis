@@ -374,6 +374,8 @@ struct TalkPanel: View {
     /// `fade` is the strip under the last row where rows scrolled out of view melt away; the last row itself rests above it
     private func stream(top: Double, bottom: Double, fade: Double, open: Double) -> some View {
         let days = TalkStream.compose(ui.convDays, live: ui.liveTurns, about: ui.about, cal: Cal.cur.cal, now: Date())
+        // under the dial the previous round shows dimmer over the newest one; with the panel open every row shows in full
+        let shown = Dictionary(zip(days.flatMap(\.rows).map(\.id), TalkStream.reading(days.flatMap(\.rows))), uniquingKeysWith: { a, _ in a })
         return ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 14, pinnedViews: ui.typing ? [] : [.sectionHeaders]) {
@@ -384,7 +386,7 @@ struct TalkPanel: View {
                                     if let s = r.stamp { Text(s).font(AT.mono(11)).foregroundStyle(muted).frame(maxWidth: .infinity, alignment: r.his ? .trailing : .leading) }
                                     TalkRowView(row: r, dropAbout: { engine.dropAbout() }).equatable()
                                 }
-                                .opacity(r.current ? 1 : open)
+                                .opacity((shown[r.id] ?? 0) + (1 - (shown[r.id] ?? 0)) * open)
                                 .id(r.id)
                                 .onGeometryChange(for: Double.self) { $0.frame(in: .named("stream")).minY } action: { moved(r.id, to: $0) }
                                 .transition(reduce ? .opacity : .opacity.combined(with: .offset(y: 6)))
@@ -422,7 +424,7 @@ struct TalkPanel: View {
             // Kept to the bottom while he has not scrolled up: opening, the keyboard, a new row and a growing answer all change the size of the rows or of the window,
             // and then the distance to the bottom grows without him (PanelRules.follows). Past 80 pt of his own scrolling the ↓ button stands in for the jump.
             .onScrollPhaseChange { _, phase in byHand = phase == .interacting || phase == .decelerating }
-            .onScrollGeometryChange(for: Double.self) { g in max(0, g.contentSize.height + g.contentInsets.bottom - g.visibleRect.maxY) } action: { _, away in
+            .onScrollGeometryChange(for: Double.self) { g in (max(0, g.contentSize.height + g.contentInsets.bottom - g.visibleRect.maxY) * 2).rounded() / 2 } action: { _, away in
                 follow = PanelRules.follows(was: follow, byHand: byHand, away: away)
                 if follow && away > 0.5 { pos.scrollTo(edge: .bottom) }
             }

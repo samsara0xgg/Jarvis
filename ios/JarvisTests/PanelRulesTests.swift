@@ -79,4 +79,18 @@ final class PanelRulesTests: XCTestCase {
         XCTAssertEqual(dragged(voice: true).mode, .drag)
         XCTAssertNotEqual(dragged(voice: false).mode, .drag)
     }
+
+    // MARK: the previous round under the dial
+
+    private func row(_ id: String, his: Bool, current: Bool) -> TalkRow { TalkRow(id: id, his: his, text: id, current: current) }
+
+    func testUnderTheDialTheNewestRoundShowsWholeAndTheOneBeforeItDimmer() {
+        let rows = [row("c1", his: true, current: false), row("c2", his: false, current: false), row("c3", his: true, current: false), row("c4", his: false, current: false),
+                    row("l5", his: true, current: true), row("l6", his: false, current: true)]
+        XCTAssertEqual(TalkStream.reading(rows), [0, 0, 0.5, 0.5, 1, 1])
+        let two = rows + [row("l7", his: true, current: true), row("l8", his: false, current: true)]
+        XCTAssertEqual(TalkStream.reading(two), [0, 0, 0, 0, 0.5, 0.5, 1, 1], "a second round of the same talk dims the first")
+        XCTAssertEqual(TalkStream.reading(Array(rows[4...])), [1, 1], "a first round has nothing before it")
+        XCTAssertEqual(TalkStream.reading(Array(rows[..<4])), [0, 0, 0, 0], "before the talk has a row, the conversation stays out of the reading zone")
+    }
 }

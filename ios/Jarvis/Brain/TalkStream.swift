@@ -51,6 +51,15 @@ enum TalkStream {
         return group(out, [], cal: cal, now: now)
     }
 
+    /// How much of each row shows in the reading zone under the dial (the panel shut), by the order the rows are listed in: the newest round, from his last line on, in full; the round before it
+    /// (from his line before that), dimmer; everything older not at all. Nothing shows until the talk has a row of its own, so the last round of the conversation does not flash up as the newest.
+    static func reading(_ rows: [TalkRow]) -> [Double] {
+        guard rows.contains(where: \.current) else { return rows.map { _ in 0 } }
+        let cur = rows.lastIndex(where: \.his) ?? 0
+        let prev = rows[..<cur].lastIndex(where: \.his) ?? cur
+        return rows.indices.map { $0 >= cur ? 1 : $0 >= prev ? 0.5 : 0 }
+    }
+
     /// The days with the live talk after them, under today's date.
     static func compose(_ days: [TalkDay], live: [LiveTurn], about: About? = nil, cal: Calendar, now: Date) -> [TalkDay] {
         if live.isEmpty { return days }
