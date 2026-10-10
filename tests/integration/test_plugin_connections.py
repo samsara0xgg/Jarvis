@@ -57,7 +57,7 @@ def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Fixtur
 
 
 def _service(
-    root: Path, fx: _Fixture, *, open_url: Callable[[str], object] = lambda _url: None
+    root: Path, fx: _Fixture, *, open_url: Callable[[str], object] | None = lambda _url: None
 ) -> PluginConnections:
     service = PluginConnections(
         repo_root=root,

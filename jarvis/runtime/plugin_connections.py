@@ -9,7 +9,6 @@ import shutil
 import sqlite3
 import threading
 import uuid
-import webbrowser
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -68,9 +67,12 @@ class PluginConnections:
         event_log: Path,
         registry: ToolRegistry,
         config: Mapping[str, Any],
-        open_url: Callable[[str], object] = webbrowser.open,
+        open_url: Callable[[str], object] | None = None,
     ) -> None:
-        """Discover packages without authorizing; initialize() loads enabled ones."""
+        """Discover packages without authorizing; initialize() loads enabled ones.
+
+        The brain opens no browser (ADR 0202): ``open_url`` is for a caller that has one.
+        """
         self.root = runtime_root
         self._repo_root = repo_root
         self.event_log = event_log
@@ -198,13 +200,15 @@ class PluginConnections:
         }
 
     def read(self) -> dict[str, Any]:
-        """Snapshot for the authenticated desktop; excludes every secret and auth URL."""
+        """Snapshot for the paired UI: no credential or token; the login link while it waits."""
         with self._lock:
             request = (
                 None
                 if self._request is None
                 else {k: v for k, v in self._request.items() if not k.startswith("_")}
             )
+            if request and request["state"] == "authorizing" and self._auth_url:
+                request["auth_url"] = self._auth_url
             return {"plugins": [self._public(n) for n in sorted(self.packages)], "request": request}
 
     def icon(self, plugin_id: str) -> str | None:
@@ -365,7 +369,10 @@ class PluginConnections:
             if request["state"] != "authorizing" or not self._auth_url:
                 msg = t("plugin.no_pending_login")
                 raise ValueError(msg)
-            self._open_url(self._auth_url)
+            # The UI opens the link on its own device (ADR 0202); only a caller that
+            # handed in an opener still has the brain open it.
+            if self._open_url:
+                self._open_url(self._auth_url)
         elif operation == "disable":
             self._require_idle(request)
             self.settings.update(plugin_id, enabled=False)
@@ -494,7 +501,7 @@ class PluginConnections:
                     raise RuntimeError(msg)
                 self._auth_url = url
                 request["state"] = "authorizing"
-                return self._open_url(url)
+                return self._open_url(url) if self._open_url else None
 
         client = McpServers(
             timeout_s=float(self._mcp.get("timeout_s", 30)),
