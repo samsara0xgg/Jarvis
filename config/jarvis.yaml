@@ -63,7 +63,7 @@ llm:
       max_tokens: 16384
       context_length: 1050000
       reasoning_effort: none
-      # ADR NNNN：这个模型自己读手机发来的图（和 screen_look 读截图的是同一个 gpt-6-luna）。
+      # ADR 0211：这个模型自己读手机发来的图（和 screen_look 读截图的是同一个 gpt-6-luna）。
       # 只有对话用的预设写了 images: true，才收图；换成别的预设要自己确认它收图再写。
       images: true
     # 深想一轮用的（上面的 llm.think）。思考和工具同开只能走 /v1/responses。
@@ -154,7 +154,7 @@ llm:
     # 保护英文缩写不在 Dr./e.g./vs. 等处误切
     abbreviation_protect: true
 
-# ADR NNNN — 手机随一轮对话或分享发来的图片和文本文件，放在 runtime root 的
+# ADR 0211 — 手机随一轮对话或分享发来的图片和文本文件，放在 runtime root 的
 # artifacts/attachments/。和录音、截图一起按文件时间清理（每小时一次）、一起导出和清掉；
 # null = 永久保留。单张图 4 MiB、文本文件 256 KiB、一轮最多 4 个、整个目录 512 MiB
 # 是代码里的上限，不在这里改。

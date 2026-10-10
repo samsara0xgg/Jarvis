@@ -3,7 +3,7 @@
 L5 surface module. Hosts the daemon's HTTP+WS endpoints the desktop
 surface speaks. The ADR-0003 wave shipped text + WS; push-to-talk audio
 arrives on ``/inherent/asr-submit/v2``; a phone's pictures, files and shares arrive on
-``/inherent/attachments`` and ``/inherent/share`` (ADR NNNN). :func:`require_local_key` puts every
+``/inherent/attachments`` and ``/inherent/share`` (ADR 0211). :func:`require_local_key` puts every
 route except the liveness probe behind the local key and a local Host.
 
 The runtime wires this app via ``runtime/inherent_loop.serve_inherent``
@@ -56,9 +56,9 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
 - ``POST /inherent/work-state/refresh`` — ADR 0023 on-demand analysis (single-flight)
 - ``GET /inherent/projects``     — ADR 0037 seven-day project view (no model call)
 - ``POST /inherent/projects/refresh`` — ADR 0037 sort new activities (single-flight)
-- ``POST /inherent/attachments`` — ADR NNNN; multipart ``file`` → ``{"id", "kind", "name", ...}``;
+- ``POST /inherent/attachments`` — ADR 0211; multipart ``file`` → ``{"id", "kind", "name", ...}``;
   ``POST /inherent/submit`` then takes ``"attachments": [id]``
-- ``POST /inherent/share``       — ADR NNNN; a link, text or files from another app's share sheet
+- ``POST /inherent/share``       — ADR 0211; a link, text or files from another app's share sheet
 """
 
 from __future__ import annotations
@@ -251,12 +251,12 @@ class SubmitRequest(BaseModel):
     """
 
     text: str
-    # ADR NNNN: ids from ``POST /inherent/attachments``; the text may then be empty.
+    # ADR 0211: ids from ``POST /inherent/attachments``; the text may then be empty.
     attachments: list[str] = Field(default_factory=list)
 
 
 class ShareRequest(BaseModel):
-    """Body of ``POST /inherent/share`` (ADR NNNN): one thing shared from another app.
+    """Body of ``POST /inherent/share`` (ADR 0211): one thing shared from another app.
 
     Exactly one of ``url``, ``text`` or ``attachments``; ``title`` goes with a url. With ``ask``
     the share is a turn, without it the share is kept for later.
@@ -605,7 +605,7 @@ class InherentDeps:
 
     submit_callable: Callable[[str], str | None]
     broadcaster: InherentBroadcaster
-    # ADR NNNN: the phone's files. ``attachments`` is the store behind
+    # ADR 0211: the phone's files. ``attachments`` is the store behind
     # ``POST /inherent/attachments`` (``None`` leaves the route unregistered, and a submit
     # carrying ids answers 501); ``images_ok`` is whether the conversation model takes pictures.
     # ``submit_attachments(text, ids)`` starts a turn that carries the files and returns its id;
@@ -2045,7 +2045,7 @@ def _refusal(exc: AttachmentRefused) -> HTTPException:
 
 
 async def _checked_attachments(deps: InherentDeps, ids: Sequence[str]) -> list[AttachmentRef]:
-    """The refs of a turn's attachments, or the 404 / 422 / 501 that says why not (ADR NNNN)."""
+    """The refs of a turn's attachments, or the 404 / 422 / 501 that says why not (ADR 0211)."""
     if deps.attachments is None or deps.submit_attachments is None:
         raise HTTPException(status_code=501, detail="attachments are not enabled on this daemon")
     if not all(valid_id(one) for one in ids):
@@ -2085,7 +2085,7 @@ async def _upload_attachment(
 async def _submit_with_attachments(
     deps: InherentDeps, text: str, ids: Sequence[str],
 ) -> dict[str, str]:
-    """``POST /inherent/submit`` with ``attachments``: the files go with the words (ADR NNNN)."""
+    """``POST /inherent/submit`` with ``attachments``: the files go with the words (ADR 0211)."""
     unique = list(dict.fromkeys(ids))
     await _checked_attachments(deps, unique)
     if deps.submit_attachments is None:  # _checked_attachments refused already
@@ -2097,7 +2097,7 @@ async def _submit_with_attachments(
 
 
 def _share_fields(req: ShareRequest) -> dict[str, Any]:
-    """The share's one subject and its limits (ADR NNNN), or the 400 / 413 that refuses it."""
+    """The share's one subject and its limits (ADR 0211), or the 400 / 413 that refuses it."""
     url, title, text, note = req.url.strip(), req.title.strip(), req.text.strip(), req.note.strip()
     if sum(bool(one) for one in (url, text, req.attachments)) != 1:
         raise HTTPException(status_code=400, detail="send exactly one of url, text or attachments")
@@ -2246,7 +2246,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
 
         @app.post("/inherent/attachments", status_code=200)
         async def upload_attachment(request: Request) -> dict[str, Any]:
-            """ADR NNNN: one picture or text file from a phone, kept until it ages out."""
+            """ADR 0211: one picture or text file from a phone, kept until it ages out."""
             return await _upload_attachment(deps, attachment_store, request)
 
     if deps.share_callable is not None:
@@ -2254,7 +2254,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
 
         @app.post("/inherent/share", status_code=200)
         async def share(req: ShareRequest) -> dict[str, str]:
-            """ADR NNNN: a share from another app, as a turn (``ask``) or kept for later."""
+            """ADR 0211: a share from another app, as a turn (``ask``) or kept for later."""
             return await _share(deps, share_callable, req)
 
     if deps.cancel_response_callable is not None:

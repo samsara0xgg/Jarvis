@@ -526,7 +526,7 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         " again, then retry",
     },
     "plugin.bad_request": {"zh": "无效的插件请求", "en": "Invalid plugin request"},
-    # ADR NNNN: the words of a turn whose phone sent a file or a share and none of its own.
+    # ADR 0211: the words of a turn whose phone sent a file or a share and none of its own.
     "attach.no_words": {"zh": "（只发来了附件）", "en": "(Sent with no words.)"},
     "share.default_note": {
         "zh": "我从别的应用分享了这个给你。", "en": "I shared this with you from another app.",

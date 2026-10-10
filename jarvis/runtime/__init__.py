@@ -579,7 +579,7 @@ class JarvisRuntime:
             ``None`` unless the role is ``brain``.
         phone_events: where a paired phone's events are appended (ADR 0197); ``None``
             unless the daemon is a brain or listens beyond loopback (ADR 0207).
-        attachments: the store of files a phone sends with a turn or a share (ADR NNNN).
+        attachments: the store of files a phone sends with a turn or a share (ADR 0211).
     """
 
     config: Mapping[str, Any]
@@ -680,7 +680,7 @@ class JarvisRuntime:
     terminal_hub: TerminalHub | None = None
     # ADR 0197, 0207: where a paired phone's events are appended.
     phone_events: BrainEvents | None = None
-    # ADR NNNN: the pictures and text files a phone sends with a turn or a share.
+    # ADR 0211: the pictures and text files a phone sends with a turn or a share.
     attachments: Attachments | None = None
 
 
@@ -1437,7 +1437,7 @@ def _where_line(hub: TerminalHub | None) -> Callable[[], str | None]:
 
 
 def _shares_line(event_log_path: Path) -> str | None:
-    """ADR NNNN: the line naming what Allen last saved from other apps, folded from the log."""
+    """ADR 0211: the line naming what Allen last saved from other apps, folded from the log."""
     with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
         return shares_line(conn)
 
@@ -3852,7 +3852,7 @@ _MAIL_GET: Final[str] = "mcp__gmail__gmail_get"
 
 
 def _record_words(store: Attachments | None, payload: Mapping[str, Any]) -> str:
-    """Allen's words as memory.db keeps them; files sent with them are named (ADR NNNN)."""
+    """Allen's words as memory.db keeps them; files sent with them are named (ADR 0211)."""
     words = str(payload.get("transcript", ""))
     ids = payload.get("attachments")
     if store is None or not isinstance(ids, list) or not ids:

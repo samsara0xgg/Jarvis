@@ -1,4 +1,4 @@
-"""A turn's attachments as they reach the model (ADR NNNN).
+"""A turn's attachments as they reach the model (ADR 0211).
 
 A phone sends files beside the words. Pictures ride the turn's user message as image parts, so
 the conversation model reads the pixels itself; a text file's head rides it as a block marked as

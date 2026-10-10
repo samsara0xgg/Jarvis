@@ -1,4 +1,4 @@
-"""What Allen shared from another app and did not ask about (ADR NNNN).
+"""What Allen shared from another app and did not ask about (ADR 0211).
 
 A share the share sheet marked "ask her" is an ordinary turn. Any other is one ``user.shared``
 event, and every later turn reads the latest few as a single line of context, folded from the log

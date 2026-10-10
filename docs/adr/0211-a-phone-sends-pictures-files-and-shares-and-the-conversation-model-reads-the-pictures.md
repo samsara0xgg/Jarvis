@@ -1,4 +1,4 @@
-# ADR NNNN — A phone sends pictures, files and shares, and the conversation model reads the pictures itself
+# ADR 0211 — A phone sends pictures, files and shares, and the conversation model reads the pictures itself
 
 **Status:** Accepted
 **Date:** 2026-10-10

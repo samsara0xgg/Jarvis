@@ -37,7 +37,7 @@ _LABELS: contextvars.ContextVar[Mapping[str, str | None]] = contextvars.ContextV
 # The request carries no key (the SDK adds it), but a key pasted into a
 # message or an extra_body would; the line is scrubbed whatever its source.
 _SECRETS = re.compile(r"sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE)
-# A picture a phone attached rides the request as a base64 data URL (ADR NNNN); the line keeps
+# A picture a phone attached rides the request as a base64 data URL (ADR 0211); the line keeps
 # that it was sent, not megabytes of it.
 _IMAGE_DATA = re.compile(r"data:image/[a-z+.-]+;base64,[A-Za-z0-9+/=]+")
 

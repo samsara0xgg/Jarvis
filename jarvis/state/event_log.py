@@ -716,14 +716,14 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # ADR 0062: ``confirmation_decision`` is a card's button,
         # ``{confirmation_id, decision: accept | reject, edits?}``, with an
         # empty transcript; it writes no row of Allen's words.
-        # ADR NNNN: ``attachments`` are the ids of files a phone sent with the
+        # ADR 0211: ``attachments`` are the ids of files a phone sent with the
         # words (``jarvis.state.attachments``); the bytes stay in their files.
         optional_payload=(
             "channel", "language", "record_id", "confirmation_decision", "attachments",
         ),
         schema_version=1,
     ),
-    # ADR NNNN: something Allen shared from another app and did not ask about. Written only
+    # ADR 0211: something Allen shared from another app and did not ask about. Written only
     # by ``POST /inherent/share``; ``share_id`` is its own id, ``kind`` is link, text or image.
     # Storing it decides nothing: the next turns read it as one line of context.
     EventTypeSchema(

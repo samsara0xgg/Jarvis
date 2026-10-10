@@ -192,7 +192,7 @@ def emit_surface_user_intent(  # noqa: PLR0913 — one keyword per payload field
             mints ``"T" + uuid.uuid4().hex[:8]``).
         channel: Source channel label; Day-1 default ``"cli_stdin"``.
         language: BCP-47 language tag; Day-1 default ``"zh-CN"``.
-        attachments: Ids of stored files a phone sent with the words (ADR NNNN); the key is
+        attachments: Ids of stored files a phone sent with the words (ADR 0211); the key is
             written only when there are some.
 
     Returns:

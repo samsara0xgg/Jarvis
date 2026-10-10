@@ -5445,11 +5445,11 @@ def _restart_soon() -> None:
 
 
 _DATA_SWEEP_INTERVAL_S = 3600.0
-_ATTACHMENT_DAYS = 30  # ADR NNNN: unless ``attachments.retention_days`` says otherwise
+_ATTACHMENT_DAYS = 30  # ADR 0211: unless ``attachments.retention_days`` says otherwise
 
 
 def _model_takes_images(config: Mapping[str, Any]) -> bool:
-    """ADR NNNN: whether pictures may go to the conversation model.
+    """ADR 0211: whether pictures may go to the conversation model.
 
     Only OpenAI's chat request carries them, and only a preset that says ``images: true``
     (the model is known to read them) is trusted with one.
@@ -5882,7 +5882,7 @@ def _v2_runtime_capabilities(
 
     Discovered from the wiring rather than declared: ``image_input`` is
     true while the upload route is open and the conversation model takes
-    pictures (ADR NNNN; they ride ``/inherent/submit`` as attachments), and
+    pictures (ADR 0211; they ride ``/inherent/submit`` as attachments), and
     the action / confirmation controls are false because no route accepts
     them yet. ``aec_profile`` is ``headphones_only`` — there is no acoustic
     echo canceller, so barge-in over speakers is not offered.
@@ -6210,7 +6210,7 @@ def _submit_text_v2(
 def _submit_with_attachments(
     event_log_path: Path, text: str, attachment_ids: Sequence[str],
 ) -> str:
-    """ADR NNNN: the turn of ``POST /inherent/submit`` whose words came with stored files.
+    """ADR 0211: the turn of ``POST /inherent/submit`` whose words came with stored files.
 
     Bound at daemon start and run on an ``asyncio.to_thread`` worker, so it opens its own
     connection exactly as ``submit_callable`` does. Returns the minted ``turn_id``.
@@ -6228,7 +6228,7 @@ def _submit_with_attachments(
 
 
 def _keep_share(event_log_path: Path, fields: dict[str, Any]) -> str:
-    """ADR NNNN: keep a share he did not ask about as one ``user.shared`` event; its id."""
+    """ADR 0211: keep a share he did not ask about as one ``user.shared`` event; its id."""
     share_id = uuid.uuid4().hex
     inner_conn = open_runtime_event_log(event_log_path)
     try:

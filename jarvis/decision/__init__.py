@@ -691,7 +691,7 @@ class DecideContext:
     # budget, the spoken-form rewrite, a spoken or routine stream) carries it; Jev and
     # the background jobs never see it. None (the default) sends nothing.
     service_tier: str | None = None
-    # ADR NNNN: reads the stored files a phone attached to a turn (one entry per id, ``None``
+    # ADR 0211: reads the stored files a phone attached to a turn (one entry per id, ``None``
     # for one that has expired). ``None`` (the default) attaches nothing.
     read_attachments: Callable[[Sequence[str]], list[LoadedAttachment | None]] | None = None
 
@@ -1154,14 +1154,14 @@ def _insert_system_notes(
     if head and head[-1]["role"] == "user" and messages and messages[0].get("role") == "user":
         messages[0]["content"] = f"{head.pop()['content']}\n\n{messages[0]['content']}"
     messages[0:0] = head
-    # ADR NNNN: the pictures go last, once the text is final, on this turn's message only.
+    # ADR 0211: the pictures go last, once the text is final, on this turn's message only.
     if live is not None and (parts := image_parts(attached)):
         live["content"] = [{"type": "text", "text": live["content"]}, *parts]
     return line
 
 
 def _read_attachments(packet: SituationPacket, ctx: DecideContext) -> list[LoadedAttachment | None]:
-    """The files the user's message came with (ADR NNNN); none for any other trigger."""
+    """The files the user's message came with (ADR 0211); none for any other trigger."""
     ids = packet.trigger_event.payload.get("attachments")
     if ctx.read_attachments is None or not isinstance(ids, list) or not ids:
         return []
@@ -1353,7 +1353,7 @@ def _handle_utterance(
                 scratch,
             )
 
-    # ADR NNNN: words that came with a file are about the file, so the model answers them and
+    # ADR 0211: words that came with a file are about the file, so the model answers them and
     # no shortcut that would not have looked at it does.
     if not trigger.payload.get("attachments"):
         # 「什么?」/「再说一遍」: say the last spoken answer again, word for word,
