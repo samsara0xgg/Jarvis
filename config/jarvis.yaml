@@ -569,7 +569,9 @@ tools:
   # `python -m jarvis mcp-login notion`。
   # gmail（ADR 0055）跑 Google 给 Gemini CLI 做的 Workspace server
   # （github.com/gemini-cli-extensions/workspace，Apache-2.0），要先装在
-  # ~/Projects/external/gemini-workspace 并 npm ci && npm run build。它用
+  # ~/Projects/external/gemini-workspace 并 npm ci && npm run build（那份克隆带一个本地补丁：
+  # 刷新出错时只在 Google 明确拒绝才删凭据，见它的 workspace-server/JARVIS_PATCHES.md，
+  # 重装或 git pull 后要重新应用）。它用
   # Google 自己的 OAuth 应用，换 token 和刷新走 Google 的云函数，不用自建
   # Google Cloud 项目；邮件只在本机和 Google 之间走。它的 .mcp.json 里：
   # WORKSPACE_FEATURE_OVERRIDES 关掉 Gmail 以外的每一组，授权只要
