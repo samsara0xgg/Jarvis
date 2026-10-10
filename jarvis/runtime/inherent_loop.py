@@ -1549,9 +1549,15 @@ async def _response_watcher(
     ``voiced=False`` (no speech pipeline this boot) follows every
     ``done`` with ``voice spoken {output_outcome: "no_voice"}``: a surface
     ends a turn's speaking face on ``spoken``, and nothing else would send it.
+    A turn typed on :data:`TYPED_CHANNEL` (ADR 0181) is ended with
+    ``suppressed`` instead, as :func:`_tts_watcher` ends it where a speaker
+    exists: ``no_voice`` is the word a voice terminal drops, since its own
+    player will say ``spoken``, and that player is never given a typed turn.
+    Every other channel keeps ``no_voice``, a phone's included.
     """
     after_id = _latest_id(runtime.conn)
     silent_turns: set[str] = set()
+    typed_turns: set[str] = set()  # the turns no player is given, as the TTS watcher drops them
     wait_lines: set[str] = set()  # response ids of wait lines, whose cancel is not the turn's
     LOGGER.info("response_watcher started (after_id=%d)", after_id)
     try:
@@ -1572,6 +1578,18 @@ async def _response_watcher(
                         consumer="response_watcher",
                     ):
                         continue
+                    typed = _drop_for_silent_channel(
+                        ev,
+                        turn_id=turn_id,
+                        silent_turns=typed_turns,
+                        silent_channels=frozenset({TYPED_CHANNEL}),
+                        consumer="response_watcher (speech)",
+                        intent_channel=(
+                            turn_intent_channel(runtime.conn, turn_id)
+                            if ev.type == "surface.response_open"
+                            else None
+                        ),
+                    )
                     response_id = ev.payload.get("response_id")
                     is_line = ev.payload.get("phase") == "commentary"
                     if ev.type == "surface.response_open" and is_line:
@@ -1581,7 +1599,7 @@ async def _response_watcher(
                     elif ev.type == "response.cancelled" and response_id in wait_lines:
                         continue  # a wait line taken back says nothing about the turn (ADR 0121)
                     await _broadcast_response_event(
-                        broadcaster, ev, turn_id=turn_id, voiced=voiced,
+                        broadcaster, ev, turn_id=turn_id, voiced=voiced, typed=typed,
                     )
             except Exception:
                 LOGGER.exception("response_watcher: poll failed at after_id=%d; retrying", after_id)
@@ -1599,6 +1617,7 @@ async def _broadcast_response_event(
     *,
     turn_id: str,
     voiced: bool,
+    typed: bool,
 ) -> None:
     """Put one response row on the wire; see :func:`_response_watcher`."""
     if ev.type == "surface.response_open":
@@ -1608,7 +1627,9 @@ async def _broadcast_response_event(
     elif ev.type == "surface.response_emitted":
         await broadcaster.broadcast_done(ev)
         if not voiced:
-            await broadcaster.broadcast_voice("spoken", turn_id=turn_id, output_outcome="no_voice")
+            await broadcaster.broadcast_voice(
+                "spoken", turn_id=turn_id, output_outcome="suppressed" if typed else "no_voice",
+            )
     elif ev.type == "turn.failed":
         reason = str(ev.payload.get("reason") or "error")
         await broadcaster.broadcast_op(

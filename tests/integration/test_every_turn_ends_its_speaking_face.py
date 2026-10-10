@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 from jarvis.runtime import inherent_loop
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.event_log import PHONE_VOICE_CHANNEL, emit_event, open_event_log
+from jarvis.surface.terminal_ui import Device, _own_voice
 from tests.integration.test_incremental_tts import _cancel, _chunk, _open, _pipeline, _wait_for
 from tests.integration.test_wave2_streaming_media import (
     _CallbackPump,
@@ -125,6 +127,59 @@ def test_a_boot_without_speech_ends_every_answer_with_no_voice(tmp_path: Path) -
         ("done", "T-1", ""),
         ("spoken", "T-1", "no_voice"),
     ]
+
+
+def test_a_brain_ends_a_typed_turn_with_a_word_a_voice_terminal_passes_on(tmp_path: Path) -> None:
+    """A brain has no speaker: a typed turn ends ``suppressed``, any other ``no_voice``.
+
+    The voice terminal's relay drops ``no_voice`` because its own player says the real
+    ``spoken``, but its player is never given a typed turn (ADR 0181), so for that turn the
+    brain's word is the only one and must get through. A phone's turn keeps ``no_voice``.
+    """
+    conn = open_event_log(tmp_path / "events.db")
+    wire = _Wire()
+
+    def emit() -> None:
+        emit_event(
+            conn,
+            type="surface.user_intent",
+            payload={"turn_id": "T-typed", "transcript": "hello", "channel": "cli_stdin"},
+        )
+        _answer(conn, "T-typed", attention_channel=None)
+        _answer(conn, "T-voice", attention_channel="voice_notify")
+        emit_event(
+            conn,
+            type="surface.user_intent",
+            payload={"turn_id": "T-phone", "transcript": "hi", "channel": PHONE_VOICE_CHANNEL},
+        )
+        _answer(conn, "T-phone", attention_channel=None)
+
+    asyncio.run(
+        _watch(
+            inherent_loop._response_watcher(  # noqa: SLF001 - the production watcher
+                SimpleNamespace(conn=conn),  # type: ignore[arg-type]
+                wire,  # type: ignore[arg-type]
+                poll_interval_s=0.01,
+                voiced=False,
+            ),
+            emit,
+        ),
+    )
+    ends = [(turn, outcome) for phase, turn, outcome in wire.sent if phase == "spoken"]
+    assert ends == [
+        ("T-typed", "suppressed"), ("T-voice", "no_voice"), ("T-phone", "no_voice"),
+    ]
+    speaking = Device(speaks=lambda: True)
+    relayed = [
+        _own_voice(
+            speaking,
+            json.dumps({"op": "voice", "payload": {
+                "phase": "spoken", "turn_id": turn, "output_outcome": outcome,
+            }}),
+        )
+        for turn, outcome in ends
+    ]
+    assert [r is not None for r in relayed] == [True, False, False]
 
 
 def test_an_answer_dropped_from_the_queue_is_announced_spoken(tmp_path: Path) -> None:
