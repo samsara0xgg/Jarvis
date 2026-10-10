@@ -13,7 +13,7 @@ private let panelSpring = Animation.spring(response: 0.42, dampingFraction: 0.9)
 // MARK: rows
 
 /// one row of the talk: his words in a bubble on the right, hers plain on the left
-struct TalkRowView: View {
+struct TalkRowView: View, Equatable {
     let row: TalkRow
 
     var body: some View {
@@ -34,7 +34,13 @@ struct TalkRowView: View {
         .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
-    private var her: some View {
+    @ViewBuilder private var her: some View {
+        let blocks = AnswerBlocks.parse(row.text)
+        if blocks.contains(where: { if case .paragraph = $0 { false } else { true } }) { AnswerView(blocks: blocks) }       // written: shown at once, laid out as it is
+        else { plain }
+    }
+
+    private var plain: some View {
         words.font(.system(size: row.leadIn ? 15 : 18)).lineSpacing(row.leadIn ? 3 : 5)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -55,6 +61,67 @@ struct TalkRowView: View {
             i = j
         }
         return Text(out)
+    }
+}
+
+/// A written answer: paragraphs, headings, lists with a hanging indent, code and tables in mono boxes (a table scrolls sideways), inline marks as markdown.
+struct AnswerView: View {
+    let blocks: [AnswerBlock]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, b in block(b) }
+        }
+        .tint(AT.pale)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func inline(_ s: String) -> AttributedString {
+        (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
+    }
+
+    @ViewBuilder private func block(_ b: AnswerBlock) -> some View {
+        switch b {
+        case .paragraph(let s): Text(inline(s)).font(.system(size: 18)).lineSpacing(5).foregroundStyle(ink.opacity(0.92))
+        case .heading(let s): Text(inline(s)).font(.system(size: 17, weight: .semibold)).foregroundStyle(ink).padding(.top, 4)
+        case .list(let items):
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, it in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(it.marker).font(it.marker == "•" ? .system(size: 18) : AT.mono(15)).foregroundStyle(muted).frame(minWidth: 22, alignment: .trailing)
+                        Text(inline(it.text)).font(.system(size: 18)).lineSpacing(5).foregroundStyle(ink.opacity(0.92))
+                    }
+                }
+            }
+        case .code(let s): mono(s)
+        case .table(let rows): table(rows)
+        }
+    }
+
+    /// a table: mono cells in columns, the header over a line, in a box that scrolls sideways
+    private func table(_ rows: [[String]]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { r, cells in
+                    GridRow {
+                        ForEach(Array(cells.enumerated()), id: \.offset) { _, c in
+                            Text(c).font(AT.mono(13)).foregroundStyle(r == 0 ? ink : ink.opacity(0.8)).fixedSize()
+                        }
+                    }
+                    if r == 0 { Color.white.opacity(0.14).frame(height: 0.5) }
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 10)
+        }
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.06)))
+    }
+
+    /// code keeps its lines and columns: a box that scrolls sideways
+    private func mono(_ s: String) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Text(s).font(AT.mono(13)).foregroundStyle(ink.opacity(0.88)).fixedSize().padding(.horizontal, 12).padding(.vertical, 10)
+        }
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.06)))
     }
 }
 
@@ -181,7 +248,7 @@ struct TalkPanel: View {
                             ForEach(day.rows) { r in
                                 VStack(alignment: .leading, spacing: 6) {
                                     if let s = r.stamp { Text(s).font(AT.mono(11)).foregroundStyle(muted).frame(maxWidth: .infinity, alignment: r.his ? .trailing : .leading) }
-                                    TalkRowView(row: r)
+                                    TalkRowView(row: r).equatable()
                                 }
                                 .opacity(r.current ? 1 : open)
                                 .id(r.id)
@@ -222,7 +289,7 @@ struct TalkPanel: View {
     /// Until the panel has opened by itself once, a copy of the talk's rows (unseen) tells whether they are taller than the place under the dial.
     @ViewBuilder private var measure: some View {
         if ui.talking && !ui.panelOpen && !engine.autoOpenSpent {
-            VStack(alignment: .leading, spacing: 14) { ForEach(ui.liveTurns) { TalkRowView(row: TalkStream.row($0)) } }
+            VStack(alignment: .leading, spacing: 14) { ForEach(ui.liveTurns) { TalkRowView(row: TalkStream.row($0)).equatable() } }
                 .padding(.horizontal, 32).frame(width: W, alignment: .topLeading).fixedSize(horizontal: false, vertical: true)
                 .onGeometryChange(for: Double.self) { Double($0.size.height) } action: { engine.measureLive($0) }
                 .hidden().allowsHitTesting(false)

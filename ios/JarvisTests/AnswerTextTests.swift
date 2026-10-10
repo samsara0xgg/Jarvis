@@ -26,4 +26,38 @@ final class AnswerTextTests: XCTestCase {
         XCTAssertEqual(AnswerText.visible("你好<"), "你好")
         XCTAssertEqual(AnswerText.spoken("<voice>我上网"), "我上网")
     }
+
+    // MARK: the blocks of a written answer
+
+    func testParagraphsAndHeadingsAreBlocks() {
+        let blocks = AnswerBlocks.parse("## 本周\n先看这个\n再看那个\n\n最后一段")
+        XCTAssertEqual(blocks, [.heading("本周"), .paragraph("先看这个\n再看那个"), .paragraph("最后一段")])
+        XCTAssertEqual(AnswerBlocks.parse("好，我来整理。"), [.paragraph("好，我来整理。")])
+        XCTAssertEqual(AnswerBlocks.parse(""), [])
+    }
+
+    func testBulletsAndNumbersAreListsAndAnIndentedLineContinuesItsItem() {
+        let blocks = AnswerBlocks.parse("先做：\n- 周会\n* 爬山\n  带伞\n• 整理\n\n1. 首页\n2) 简历")
+        XCTAssertEqual(blocks, [
+            .paragraph("先做："),
+            .list([.init(marker: "•", text: "周会"), .init(marker: "•", text: "爬山\n带伞"), .init(marker: "•", text: "整理")]),
+            .list([.init(marker: "1.", text: "首页"), .init(marker: "2)", text: "简历")]),
+        ])
+    }
+
+    func testFencedCodeKeepsItsLinesAndAnOpenFenceIsStillCode() {
+        XCTAssertEqual(AnswerBlocks.parse("看这段：\n```swift\nlet a = 1\n  let b = 2\n```\n就这样"),
+                       [.paragraph("看这段："), .code("let a = 1\n  let b = 2"), .paragraph("就这样")])
+        XCTAssertEqual(AnswerBlocks.parse("```\nlet a"), [.code("let a")], "the answer is still arriving")
+    }
+
+    func testATableLosesItsSeparatorRow() {
+        let blocks = AnswerBlocks.parse("| 日期 | 事项 |\n|---|:--:|\n| 周五 | 周会 |\n| 周六 | Hike |\n之后")
+        XCTAssertEqual(blocks, [.table([["日期", "事项"], ["周五", "周会"], ["周六", "Hike"]]), .paragraph("之后")])
+    }
+
+    func testOnlyPlainWordsAreNotRich() {
+        XCTAssertFalse(AnswerBlocks.isRich("好，我来整理。\n第二行"))
+        for t in ["# 标题", "- 一项", "1. 一项", "| a | b |", "```\ncode\n```"] { XCTAssertTrue(AnswerBlocks.isRich(t), t) }
+    }
 }

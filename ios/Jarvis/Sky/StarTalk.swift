@@ -34,12 +34,18 @@ extension StarEngine {
         turnSeq += 1
         let t = LiveTurn(id: turnSeq, his: his, text: text, alphas: alphas, pics: pics, leadIn: leadIn)
         withAnimation(.easeOut(duration: 0.25)) { ui.liveTurns.append(t) }
+        if !his { openForWritten(text) }
         return turnSeq
     }
     func setTurn(_ id: Int?, text: String? = nil, alphas: [Double]? = nil) {
         guard let id, let i = ui.liveTurns.lastIndex(where: { $0.id == id }) else { return }
-        if let text, ui.liveTurns[i].text != text { ui.liveTurns[i].text = text }
+        if let text, ui.liveTurns[i].text != text { ui.liveTurns[i].text = text; if !ui.liveTurns[i].his { openForWritten(text) } }
         if let alphas, ui.liveTurns[i].alphas != alphas { ui.liveTurns[i].alphas = alphas }
+    }
+
+    /// a document, a list, a table or code needs room: the panel opens by itself, once per talk
+    private func openForWritten(_ text: String) {
+        if ui.talking && !ui.panelOpen && !autoOpenSpent && AnswerBlocks.isRich(text) { openPanel(auto: true) }
     }
 
     /// Her words in a row of their own, brightening as they are said. A long answer is said faster, so reading it does not take minutes.
@@ -158,7 +164,7 @@ extension StarEngine {
                 let c = cal.date(bySettingHour: h, minute: m, second: 0, of: d)!
                 return TalkStream.dayId(c, cal) + "T" + TalkStream.clock(c, cal) + ":00"
             }
-            let doc = "<voice>好，我把这周的安排列在下面了。</voice><document>## 本周安排\n- 周五 10:00 周会\n- 周六 09:00 爬山，我会提前看天气\n- 周日 21:00 整理这一周的记忆\n\n先做这三件：\n1. 把首页的最后两张图做完\n2. 再投两份简历\n3. 给 Mia 回电话\n\n| 日期 | 事项 | 时间 | 地点 |\n|---|---|---|---|\n| 周五 | 周会 | 10:00 | 线上 |\n| 周六 | 爬山 | 09:00 | 西山步道 |\n| 周日 | 整理记忆 | 21:00 | 在家 |\n\n```swift\nlet next = plan.first(where: { !$0.done })\n```</document>"
+            let doc = "<voice>好，我把这周的安排列在下面了。</voice><document>## 本周安排\n- 周五 10:00 周会\n- 周六 09:00 爬山，我会提前看天气\n- 周日 21:00 整理这一周的记忆\n\n先做这三件：\n1. 把首页的最后两张图做完\n2. 再投两份简历\n3. 给 Mia 回电话\n\n| 日期 | 事项 | 时间 | 地点 | 备注 |\n|---|---|---|---|---|\n| 周五 | 周会 | 10:00 | 线上 | 提前十分钟进会议室 |\n| 周六 | 爬山 | 09:00 | 西山步道 | 带伞和水壶，前一天看天气 |\n| 周日 | 整理记忆 | 21:00 | 在家 | 我先整理，你再补充 |\n\n```swift\nlet next = plan.first(where: { !$0.done })\n```</document>"
             let rows: [(Bool, String, String)] = [
                 (true, day(1, 18, 12), "明天几点出门？"),
                 (false, day(1, 18, 12), "<voice>九点二十。坐 32 路，路上三十二分钟，可能下雨，带伞。</voice>"),
