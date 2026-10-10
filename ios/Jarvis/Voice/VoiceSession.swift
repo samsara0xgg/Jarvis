@@ -58,6 +58,10 @@ final class VoiceSession {
     @ObservationIgnored private let feed = Feed()
     @ObservationIgnored private var rec: AnyObject?                 // a DualRecognizer (iOS 26)
     @ObservationIgnored private var segment = 0
+    @ObservationIgnored private var herWords = ""          // what she said lately (rows' text), for telling her echo from him
+    @ObservationIgnored private var judgedOverHer = ""     // the start of this segment's text already judged echo or a nod
+    @ObservationIgnored private var overHer: OverHer?
+    @ObservationIgnored private var ducked = false
     @ObservationIgnored private var lastTrouble: (overloads: UInt64, gaps: UInt64) = (0, 0)
     @ObservationIgnored private var segmentText = ""
     @ObservationIgnored private var segmentAt = 0.0
@@ -256,6 +260,7 @@ final class VoiceSession {
         feed.set(r)
         if let old { Task { await old.cancel() } }
         segmentText = ""
+        judgedOverHer = ""; overHer = nil
         segmentAt = now
         lastWordAt = now
         partial = ""
@@ -285,8 +290,32 @@ final class VoiceSession {
         switch state {
         case .listening: partial = p.text; language = p.lang; reply = ""   // he has started again: her last answer must not come back when he pauses
         case .idle: if armed, heardWake(p.heard) { wakeTurn = true; language = p.lang; enterListening(); partial = p.text }
-        case .thinking, .speaking: if rawLevel >= bargeLevel { bargeIn() }
+        case .thinking, .speaking: overHerWords(p.text)
         }
+    }
+
+    /// Words while she talks: her own echo and nods are let through, a few words lower her voice, an interruption stops her.
+    private func overHerWords(_ text: String) {
+        let v = judgeOverHer(text, hers: herRecent(since: now), judged: judgedOverHer)
+        if v != overHer { overHer = v; VoiceTrace.note("over her: \(v) (\(afterJudged(text, judgedOverHer).count) chars)") }
+        switch v {
+        case .echo, .backchannel: judgedOverHer = text; duck(false)
+        case .tooShort: duck(true)
+        case .barge: if inputLevel >= bargeLevel { bargeIn() } else { duck(true) }
+        }
+    }
+
+    /// Her words, if she was audible within 1.5 s of `t`: an echo needs her voice; words she said a while ago he may repeat himself.
+    private func herRecent(since t: Double) -> String {
+        guard let ns = audio.core?.lastAudioNs, ns > 0, Double(ns) / 1e9 >= t - 1.5 else { return "" }
+        return herWords
+    }
+
+    /// Her voice lowered (or back) while words over her are judged; the player ramps it in 50 ms.
+    private func duck(_ on: Bool) {
+        guard on != ducked else { return }
+        ducked = on
+        audio.core.map { $0.ingest(.gain(target: on ? 0.3 : 1, ramp: UInt32($0.sampleRate / 20))) }
     }
 
     // MARK: turns
@@ -303,6 +332,7 @@ final class VoiceSession {
     private func bargeIn() {
         VoiceTrace.note("barge-in from \(state)")
         audio.core?.stopNow()
+        duck(false)                                         // the next answer plays at full volume
         link?.barge()
         endTurn()
         wakeTurn = false
@@ -330,7 +360,9 @@ final class VoiceSession {
     @available(iOS 26, *)
     private func gotFinal(_ picked: LaneResult, wakeTurn: Bool) {
         guard state == .thinking else { VoiceTrace.note("final dropped: state \(state)"); return }   // cancelled meanwhile
-        let text = (wakeTurn ? stripWake(picked.text) : picked.text).trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = (wakeTurn ? stripWake(picked.text) : picked.text).trimmingCharacters(in: .whitespacesAndNewlines)
+        text = afterJudged(text, judgedOverHer).trimmingCharacters(in: .whitespacesAndNewlines)   // her echo or a nod before his words
+        if !text.isEmpty, isOwnEcho(text, herRecent(since: startedAt)) { VoiceTrace.note("final was her own echo: dropped"); text = "" }
         if text.isEmpty {
             VoiceTrace.note("nothing recognized (picked lane \(picked.lang.rawValue))")
             if wakeTurn { enterListening(); startSegment() }  // only the wake word: now the request
@@ -406,6 +438,8 @@ final class VoiceSession {
     private func goIdle(releasing: Bool) {
         VoiceTrace.note("idle from \(state)\(releasing ? ", releasing the mic" : "")")
         audio.core?.stopNow()
+        duck(false)
+        herWords = ""
         set(.idle)
         wakeTurn = false
         endTurn()
@@ -469,6 +503,7 @@ final class VoiceSession {
         case "surface.response_chunk":
             guard let t = r.text else { return }
             if isLine { commentary += t } else { finalText += t }
+            herWords = String((herWords + t).suffix(300))
             reply = finalText.isEmpty ? commentary : finalText
         case "surface.response_emitted":
             guard !isLine else { return }
@@ -502,6 +537,7 @@ final class VoiceSession {
             guard let core = audio.core, !typedTurn else { return }
             if core.trouble != lastTrouble { lastTrouble = core.trouble; VoiceTrace.note("player: \(lastTrouble.overloads) overloads, \(lastTrouble.gaps) gaps") }
             if state == .thinking, core.playedSamples > playedAtSay + 480 { set(.speaking) }
+            if ducked, t - lastWordAt > 1.5 { duck(false) }      // the words over her stopped short of an interruption
             if !core.ringEmpty { lastActivityAt = t }
             let quietAfter = commandSaid == .stop || commandSaid == .wait || commandSaid == .goodnight
             if rowsDone {

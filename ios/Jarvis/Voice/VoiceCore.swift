@@ -76,8 +76,69 @@ func stripWake(_ text: String) -> String {
     return String(text[hit.upperBound...].drop { $0.isPunctuation || $0.isWhitespace })
 }
 
+// MARK: words over her voice
+
+private let backchannels: Set<String> = ["嗯", "嗯嗯", "嗯嗯嗯", "对", "对对", "对的", "是", "是的", "好", "好的", "哦", "噢", "喔", "啊", "行",
+                                         "ok", "okay", "yeah", "yes", "mhm", "mmhmm", "uhhuh", "right", "sure"]
+
+/// 2 x longest common subsequence / total length: 1 for equal strings
+private func similarity(_ a: [Character], _ b: [Character]) -> Double {
+    guard !a.isEmpty, !b.isEmpty else { return 0 }
+    var prev = [Int](repeating: 0, count: b.count + 1)
+    for x in a {
+        var cur = [Int](repeating: 0, count: b.count + 1)
+        for (j, y) in b.enumerated() { cur[j + 1] = x == y ? prev[j] + 1 : max(prev[j + 1], cur[j]) }
+        prev = cur
+    }
+    return 2 * Double(prev[b.count]) / Double(a.count + b.count)
+}
+
+/// Her own voice leaking into the microphone: the words are in what she said lately, or nearly (0.8, the Mac's rule).
+func isOwnEcho(_ heard: String, _ hers: String) -> Bool {
+    let h = Array(squash(heard)), r = Array(squash(hers))
+    guard !h.isEmpty, !r.isEmpty else { return false }
+    if String(r).contains(String(h)) { return true }
+    guard h.count < r.count else { return similarity(h, r) >= 0.8 }
+    // windows as long as the words, or a little longer for a word the recognizer added
+    return (0...(r.count - h.count)).contains { i in [0, 2].contains { similarity(h, Array(r[i..<min(r.count, i + h.count + $0)])) >= 0.8 } }
+}
+
+/// The part of `text` after what was already judged (a growing partial starts with the earlier one, give or take a revision).
+func afterJudged(_ text: String, _ judged: String) -> String {
+    let n = zip(text, judged).prefix { $0 == $1 }.count
+    return String(text.dropFirst(n))
+}
+
+enum OverHer: Equatable { case echo, backchannel, tooShort, barge }
+
+/// What his words over her voice are: her echo, a nod, too little to stop her for yet, or an interruption.
+/// `hers`: what she said lately. A stop or wait word interrupts at once; otherwise three CJK characters or two Latin words.
+func judgeOverHer(_ text: String, hers: String, judged: String) -> OverHer {
+    let rest = afterJudged(text, judged)
+    let t = squash(rest)
+    if t.isEmpty { return .echo }
+    if let c = shortCommand(rest), c == .stop || c == .wait { return .barge }
+    if isOwnEcho(rest, hers) { return .echo }
+    if backchannels.contains(t) { return .backchannel }
+    let cjk = t.unicodeScalars.filter { $0.value >= 0x2E80 }.count
+    let words = rest.split { !$0.isLetter }.filter { $0.unicodeScalars.allSatisfy(\.isASCII) }.count
+    return cjk >= 3 || words >= 2 ? .barge : .tooShort
+}
+
 #if DEBUG || VOICE_HARNESS
 func demoVoiceCore() {
+    // words over her voice: the 10-10 leak ("我看一下日程" heard while she said it), nods, a stop word, a real interruption
+    let her = "我看一下日程。今天下午三点你有一个面试"
+    assert(judgeOverHer("我看一下日程", hers: her, judged: "") == .echo)
+    assert(judgeOverHer("我看一下日成", hers: her, judged: "") == .echo)
+    assert(judgeOverHer("嗯", hers: her, judged: "") == .backchannel && judgeOverHer("Okay.", hers: her, judged: "") == .backchannel)
+    assert(judgeOverHer("停", hers: her, judged: "") == .barge && judgeOverHer("等一下", hers: her, judged: "") == .barge)
+    assert(judgeOverHer("不是", hers: her, judged: "") == .tooShort)
+    assert(judgeOverHer("不是这个意思", hers: her, judged: "") == .barge)
+    assert(judgeOverHer("我看一下日程不是这个意思", hers: her, judged: "我看一下日程") == .barge)
+    assert(judgeOverHer("嗯我看一下日程", hers: her, judged: "嗯") == .echo)
+    assert(judgeOverHer("wait a second", hers: "The weather is fine", judged: "") == .barge)
+    assert(afterJudged("我看一下日程不是", "我看一下日程") == "不是")
     assert(meanConfidence([]) == 0 && meanConfidence([0.5, 1]) == 0.75)
     let zh = LaneResult(lang: .zh, text: "退下吧", confidence: 0.998)
     let en = LaneResult(lang: .en, text: "Toy Saba.", confidence: 0.529)
