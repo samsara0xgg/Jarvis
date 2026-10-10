@@ -565,6 +565,55 @@ def default_device_name(kind: str) -> str | None:
     return next((name for name, device in devices[1].items() if device == devices[0]), None)
 
 
+def _fourcc(value: int) -> str:
+    return struct.pack(">I", value).decode("latin-1")
+
+
+def _active_sub_devices(ca: Any, cf: Any, device: int) -> list[tuple[str, str, bool]]:  # noqa: ANN401
+    size = _coreaudio_size(ca, device, b"agrp", _CA_GLOBAL_SCOPE)
+    ids = (ctypes.c_uint32 * ((size or 0) // ctypes.sizeof(ctypes.c_uint32)))()
+    if not size or not _coreaudio_property(ca, device, b"agrp", _CA_GLOBAL_SCOPE, ids):
+        return []
+    parts: list[tuple[str, str, bool]] = []
+    for sub in ids:
+        name = _coreaudio_string(ca, cf, sub, b"lnam")
+        kind = ctypes.c_uint32(0)
+        if name is None or not _coreaudio_property(ca, sub, b"tran", _CA_GLOBAL_SCOPE, kind):
+            return []
+        source = ctypes.c_uint32(0)
+        jack = (
+            _coreaudio_property(ca, sub, b"ssrc", _CA_OUTPUT_SCOPE, source)
+            and _fourcc(source.value) == "hdpn"
+        )
+        parts.append((name, _fourcc(kind.value), jack))
+    return parts
+
+
+def aggregate_output_parts() -> list[tuple[str, str, bool]] | None:
+    """The active sub-devices of an aggregate default output, else ``None``.
+
+    Each part is ``(name, transport fourcc, on the headphone jack)``. ``None`` when the default
+    output is not an aggregate ('grup' / 'fgrp') or cannot be read at all; ``[]`` when it is one
+    but its sub-devices cannot be read. Never raises.
+    """
+    try:
+        libraries = _coreaudio_libraries()
+        if libraries is None:
+            return None
+        ca, cf = libraries
+        device = ctypes.c_uint32(0)
+        transport = ctypes.c_uint32(0)
+        if not _coreaudio_property(
+            ca, _CA_SYSTEM_OBJECT, b"dOut", _CA_GLOBAL_SCOPE, device
+        ) or not _coreaudio_property(ca, device.value, b"tran", _CA_GLOBAL_SCOPE, transport):
+            return None
+        if _fourcc(transport.value) not in {"grup", "fgrp"}:
+            return None
+        return _active_sub_devices(ca, cf, device.value)
+    except (OSError, ValueError):
+        return []
+
+
 # Held around PortAudio device queries and the re-initialisation, which frees
 # the device list a query would be reading.
 _PORTAUDIO_LOCK = threading.Lock()

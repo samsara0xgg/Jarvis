@@ -73,6 +73,7 @@ def probe(monkeypatch: pytest.MonkeyPatch) -> Callable[[Any], None]:
     """Set what ``system_profiler`` answers (text, or an exception to raise); no cache."""
     monkeypatch.setattr(audio_output.sys, "platform", "darwin")
     monkeypatch.setattr(audio_output, "_cache", None)
+    monkeypatch.setattr(audio_output, "_aggregate_parts", lambda: None)  # not an aggregate
 
     def answer(value: Any) -> None:  # noqa: ANN401
         def fake() -> str:
@@ -164,3 +165,70 @@ def test_the_answer_is_cached_for_two_seconds_unless_fresh(
     monkeypatch.setattr(audio_output.time, "monotonic", lambda: 1e9)
     monkeypatch.setattr(audio_output, "_probe", lambda: _profile(_default("A", BT)))
     assert audio_output.current_output()["private"] is True  # the cache expired
+
+
+AIRPODS = ("Allen's AirPods Pro", "blue", False)
+SPEAKERS = ("MacBook Pro Speakers", "bltn", False)
+JACK = ("MacBook Pro Speakers", "bltn", True)
+BLACKHOLE = ("BlackHole 2ch", "virt", False)
+RESPEAKER = ("reSpeaker XVF3800 4-Mic Array", "usb ", False)
+
+AGGREGATES = [
+    ("airpods + blackhole", [AIRPODS, BLACKHOLE], True),
+    ("airpods alone", [AIRPODS], True),
+    ("jack + blackhole", [JACK, BLACKHOLE], True),
+    ("headphone-like name, usb", [("USB Headphones", "usb ", False), BLACKHOLE], True),
+    ("speakers + blackhole", [SPEAKERS, BLACKHOLE], False),
+    ("airpods + speakers", [AIRPODS, SPEAKERS], False),
+    ("speakers + reSpeaker (this Mac)", [SPEAKERS, RESPEAKER], False),
+    ("airpods + unknown transport", [AIRPODS, ("Mystery", "\x00\x00\x00\x00", False)], False),
+    ("only virtual parts", [BLACKHOLE], False),
+    ("sub-devices unreadable", [], False),
+]
+
+
+@pytest.mark.parametrize(("label", "parts", "private"), AGGREGATES, ids=[c[0] for c in AGGREGATES])
+def test_an_aggregate_output_is_private_only_when_its_real_parts_are(
+    probe: Callable[[Any], None],
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,  # noqa: ARG001
+    parts: list[tuple[str, str, bool]],
+    private: bool,  # noqa: FBT001
+) -> None:
+    """Virtual parts are ignored; every remaining part must be private, and at least one exists."""
+    probe(_profile(_default("Multi-Output Device 2", "coreaudio_device_type_unknown")))
+    monkeypatch.setattr(audio_output, "_aggregate_parts", lambda: parts)
+    out = audio_output.current_output()
+    assert out["private"] is private
+    assert out["name"] == "Multi-Output Device 2"
+
+
+def test_the_expanded_parts_are_logged_only_when_they_change(
+    probe: Callable[[Any], None],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One INFO line per distinct sub-device list, naming each part and its transport."""
+    probe(_profile(_default("Multi-Output Device 2", "coreaudio_device_type_unknown")))
+    monkeypatch.setattr(audio_output, "_last_parts", None)
+    parts = [SPEAKERS, RESPEAKER]
+    monkeypatch.setattr(audio_output, "_aggregate_parts", lambda: parts)
+    with caplog.at_level("INFO", logger=audio_output.LOGGER.name):
+        audio_output.current_output(fresh=True)
+        audio_output.current_output(fresh=True)
+        assert len(caplog.records) == 1
+        assert "MacBook Pro Speakers (bltn)" in caplog.text
+        assert "reSpeaker XVF3800 4-Mic Array (usb)" in caplog.text
+        parts = [AIRPODS]
+        monkeypatch.setattr(audio_output, "_aggregate_parts", lambda: parts)
+        audio_output.current_output(fresh=True)
+    assert len(caplog.records) == 2
+
+
+def test_a_non_aggregate_default_ignores_the_part_rule(
+    probe: Callable[[Any], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``None`` from the sub-device reader leaves the profile's own verdict alone."""
+    probe(_profile(_default("Allen's AirPods Pro", BT)))
+    monkeypatch.setattr(audio_output, "_aggregate_parts", lambda: None)
+    assert audio_output.current_output()["private"] is True

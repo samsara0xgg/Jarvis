@@ -6,6 +6,9 @@ the default output and answers ``{name, transport, private}``. Only a Bluetooth 
 built-in headphone jack, or a device named like headphones is private; everything else, and every
 failure to find out, is not.
 
+An aggregate or multi-output default is read as the devices it plays through: virtual parts (a
+loopback such as BlackHole) are ignored, and it is private only if every real part is.
+
 A brain (ADR 0170) has no sound output to ask: :class:`TerminalOutput` asks the terminal that plays,
 which answers with its own ``current_output``, and the same rules stand.
 """
@@ -37,9 +40,11 @@ _BUILTIN: Final[str] = "coreaudio_device_type_builtin"
 _NAME: Final[re.Pattern[str]] = re.compile(
     r"headphone|airpods|buds|earphone|earbuds", re.IGNORECASE
 )
+_BLUETOOTH_FOURCC: Final[frozenset[str]] = frozenset({"blue", "blea"})
 _NONE: Final[dict[str, Any]] = {"name": "", "transport": "", "private": False}
 
 _cache: tuple[float, dict[str, Any]] | None = None
+_last_parts: list[tuple[str, str, bool]] | None = None
 
 
 def classify(profile: Any) -> dict[str, Any]:  # noqa: ANN401 - parsed JSON, any shape
@@ -68,6 +73,31 @@ def _probe() -> str:
     ).stdout
 
 
+def _aggregate_parts() -> list[tuple[str, str, bool]] | None:
+    """``(name, transport, on the jack)`` of the default aggregate's sub-devices, else ``None``."""
+    from jarvis.surface.voice_backend import aggregate_output_parts  # noqa: PLC0415 - darwin only
+
+    return aggregate_output_parts()
+
+
+def _parts_private(parts: list[tuple[str, str, bool]]) -> bool:
+    """Some real (non-virtual) part exists and each is Bluetooth, on the jack or headphone-named."""
+    global _last_parts  # noqa: PLW0603 - log only when the expansion changes
+    if parts != _last_parts:
+        _last_parts = list(parts)
+        LOGGER.info(
+            "audio output: aggregate default expands to %s",
+            [f"{name} ({transport.strip()})" for name, transport, _ in parts] or "nothing readable",
+        )
+    real = [part for part in parts if part[1] != "virt"]
+    return bool(real) and all(
+        transport in _BLUETOOTH_FOURCC
+        or (transport == "bltn" and jack)
+        or bool(_NAME.search(name))
+        for name, transport, jack in real
+    )
+
+
 def current_output(*, fresh: bool = False) -> dict[str, Any]:
     """``{name, transport, private}`` of the default output, cached for 2 s unless ``fresh``."""
     global _cache  # noqa: PLW0603 - one two-second cache for the whole daemon
@@ -81,6 +111,9 @@ def current_output(*, fresh: bool = False) -> dict[str, Any]:
             found = classify(json.loads(_probe()))
         except (OSError, subprocess.SubprocessError, ValueError):
             found = dict(_NONE)
+        parts = _aggregate_parts()
+        if parts is not None:
+            found["private"] = _parts_private(parts)
     _cache = (time.monotonic(), found)
     return dict(found)
 
