@@ -186,8 +186,9 @@ final class VoiceSession {
             modelProgress = 0
             defer { modelProgress = nil }
             do {
-                try await DualRecognizer.ensureAssets { p in Task { @MainActor in VoiceSession.shared.modelProgress = p } }
+                let missing = try await DualRecognizer.ensureAssets { p in Task { @MainActor in VoiceSession.shared.modelProgress = p } }
                 assetsReady = true
+                if let lang = missing.first { errorText = lang.modelMissingText }
             } catch { errorText = "语言模型没装好：\(error.localizedDescription)"; return false }
         }
         do {
@@ -237,7 +238,8 @@ final class VoiceSession {
         segment += 1
         let id = segment
         let old = rec as? DualRecognizer
-        let r = DualRecognizer { [weak self] p in Task { @MainActor in self?.heard(p, id) } }
+        let r = DualRecognizer(onDead: { [weak self] lang, both in Task { @MainActor in self?.laneDead(lang, both: both, id) } },
+                               onPartial: { [weak self] p in Task { @MainActor in self?.heard(p, id) } })
         rec = r
         feed.set(r)
         if let old { Task { await old.cancel() } }
@@ -254,6 +256,13 @@ final class VoiceSession {
         rec = nil
         segmentText = ""
         partial = ""
+    }
+
+    /// One language's recognizer could not start: say so; with none left, the listen fails.
+    private func laneDead(_ lang: VoiceLang, both: Bool, _ id: Int) {
+        guard id == segment else { return }
+        if both { if state == .listening { fail("中文和英文语音模型都没装好") } else { errorText = "中文和英文语音模型都没装好" } }
+        else { errorText = lang.modelMissingText }
     }
 
     /// Words from the recognizer, live.

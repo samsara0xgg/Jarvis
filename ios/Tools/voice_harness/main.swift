@@ -94,10 +94,10 @@ let wavs = try FileManager.default.contentsOfDirectory(at: root.appendingPathCom
 guard #available(macOS 26, *) else { fatalError("needs macOS 26") }
 try await DualRecognizer.ensureAssets { _ in }
 
-func recognize(_ url: URL) async throws -> (picked: LaneResult, all: [LaneResult], seconds: Double) {
+func recognize(_ url: URL, faults: [VoiceLang: VoiceLane.Fault] = [:], dead: DeadLog? = nil) async throws -> (picked: LaneResult, all: [LaneResult], seconds: Double) {
     let file = try AVAudioFile(forReading: url)
     let start = Date()
-    let rec = DualRecognizer { _ in }
+    let rec = DualRecognizer(faults: faults, onDead: { dead?.add($0, $1) }, onPartial: { _ in })
     while file.framePosition < file.length {
         guard let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else { break }
         try file.read(into: buf)
@@ -108,6 +108,32 @@ func recognize(_ url: URL) async throws -> (picked: LaneResult, all: [LaneResult
 }
 
 _ = try await recognize(wavs[0])        // warm both models; not counted
+
+// A lane that cannot start, or never delivers, must not hang finish(): the live lane's text is still picked.
+final class DeadLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [(VoiceLang, Bool)] = []
+    func add(_ l: VoiceLang, _ both: Bool) { lock.lock(); items.append((l, both)); lock.unlock() }
+    var all: [(VoiceLang, Bool)] { lock.lock(); defer { lock.unlock() }; return items }
+}
+do {
+    var clip = wavs[0], base = try await recognize(clip)
+    for w in wavs where base.picked.text.isEmpty { clip = w; base = try await recognize(w) }
+    let live = base.picked.lang, other: VoiceLang = live == .zh ? .en : .zh
+    assert(!base.picked.text.isEmpty)
+    let d1 = DeadLog()
+    let failed = try await recognize(clip, faults: [other: .failStart], dead: d1)
+    assert(failed.seconds < 2 && failed.picked == base.picked && failed.all.first { $0.lang == other }!.text.isEmpty, "\(failed)")
+    assert(d1.all.count == 1 && d1.all[0].0 == other && !d1.all[0].1, "\(d1.all)")
+    print(String(format: "dead lane %@ (failed to start): finish %.2fs, picked %@ \"%@\" like the unfaulted run, reported dead once, not both", other.rawValue, failed.seconds, failed.picked.lang.rawValue, failed.picked.text))
+    let hung = try await recognize(clip, faults: [other: .hangFinish])
+    assert(hung.seconds >= kLaneDeadline && hung.seconds < kLaneDeadline + 1 && hung.picked == base.picked, "\(hung)")
+    print(String(format: "hung lane %@ (never finishes): cut off, finish %.2fs (deadline %.1fs), picked %@ \"%@\"", other.rawValue, hung.seconds, kLaneDeadline, hung.picked.lang.rawValue, hung.picked.text))
+    let d2 = DeadLog()
+    let none = try await recognize(clip, faults: [.zh: .failStart, .en: .failStart], dead: d2)
+    assert(none.seconds < 2 && none.picked.text.isEmpty && d2.all.count == 2 && d2.all.contains { $0.1 }, "\(none) \(d2.all)")
+    print(String(format: "both lanes dead: finish %.2fs, empty text, reported both dead", none.seconds))
+}
 
 var rows: [[String: Any]] = []
 var times: [Double] = []

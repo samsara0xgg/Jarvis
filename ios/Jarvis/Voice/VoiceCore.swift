@@ -7,6 +7,7 @@ enum VoiceLang: String, CaseIterable, Sendable {
     var locale: Locale { Locale(identifier: rawValue) }
     /// what the host gets in `say.language`
     var code: String { self == .zh ? "zh" : "en" }
+    var modelMissingText: String { self == .zh ? "中文语音模型没装好" : "英文语音模型没装好" }
 }
 
 /// What one locale's transcriber finalized for an utterance.
