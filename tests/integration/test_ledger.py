@@ -222,7 +222,10 @@ def test_today_and_since_text(tmp_path: Path) -> None:
     ) in today
     assert "Job mail today: 1, 11:30 interview mail (Beta Labs, from Pat Lee)" in today
     assert "Mail screened today: 1" in today
-    assert "Pending reminders (1): Fri 10-09 09:00 call the dentist" in today
+    assert (
+        "Pending reminders (1; the words after each due time are what she says when it rings, "
+        'worded for that moment): Fri 10-09 09:00 "call the dentist"'
+    ) in today
     # He last talked at 14:00, after the 11:30 mail: nothing is new.
     assert "Nothing new: no mail, reminders or commits." in since_text(src, NOW, _at(8, 14))
     assert since_text(src, NOW, None) == ""

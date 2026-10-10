@@ -1364,9 +1364,14 @@ def _reminders(src: LedgerSources, as_of: datetime, day: date) -> list[str]:
     def due(r: reminders.Reminder) -> datetime:
         return datetime.fromtimestamp(r.due_at_ms / 1000, src.zone)
 
+    # A reminder's words were written for the moment it rings ("Tomorrow at 1 PM: …"), not for now.
+    worded = (
+        "; the words after each due time are what she says when it rings, worded for that moment"
+        if pending else ""
+    )
     lines = [
-        f"  Pending reminders ({len(pending)}): "
-        + ("; ".join(f"{due(r):%a %m-%d %H:%M} {r.text}" for r in pending) or "none"),
+        f"  Pending reminders ({len(pending)}{worded}): "
+        + ("; ".join(f'{due(r):%a %m-%d %H:%M} "{r.text}"' for r in pending) or "none"),
     ]
     fired = sorted(
         (r for r in found.values() if r.fired_at_ms is not None and due(r).date() == day),
