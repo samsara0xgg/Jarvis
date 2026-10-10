@@ -205,6 +205,7 @@ from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.departures import ID_PREFIX as PIN_PREFIX
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
 from jarvis.state.event_log import (
+    MAC_NODE,
     PHONE_VOICE_CHANNEL,
     emit_event,
     get_event,
@@ -6216,9 +6217,12 @@ def _submit_text_v2(
 
 
 def _submit_with_attachments(
-    event_log_path: Path, text: str, attachment_ids: Sequence[str],
+    event_log_path: Path, text: str, attachment_ids: Sequence[str], *, device: str = MAC_NODE,
 ) -> str:
     """ADR 0211: the turn of ``POST /inherent/submit`` whose words came with stored files.
+
+    ``device``: the paired device that sent them (ADR 0212); the turn's opening row is written
+    under its name, as the ones ``/phone/ws`` writes are.
 
     Bound at daemon start and run on an ``asyncio.to_thread`` worker, so it opens its own
     connection exactly as ``submit_callable`` does. Returns the minted ``turn_id``.
@@ -6228,11 +6232,19 @@ def _submit_with_attachments(
     try:
         emit_surface_user_intent(
             inner_conn, transcript=text, turn_id=turn_id, attachments=attachment_ids,
+            ingestion_node=device,
         )
     finally:
         with contextlib.suppress(sqlite3.Error):
             inner_conn.close()
     return turn_id
+
+
+def _submit_as_device(
+    event_log_path: Path, device: str, text: str, attachment_ids: Sequence[str],
+) -> str:
+    """ADR 0212: the turn of words a paired ``device`` sent over HTTP, with or without files."""
+    return _submit_with_attachments(event_log_path, text, attachment_ids, device=device)
 
 
 def _keep_share(event_log_path: Path, fields: dict[str, Any]) -> str:
@@ -6451,6 +6463,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         submit_attachments = functools.partial(
             _submit_with_attachments, runtime.runtime_paths.event_log,
         )
+        submit_as_device = functools.partial(_submit_as_device, runtime.runtime_paths.event_log)
         share_callable = functools.partial(_keep_share, runtime.runtime_paths.event_log)
 
         # ADR-0005 §12 pre-flight + voice subsystem wiring. Any failure
@@ -6939,6 +6952,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             attachments=runtime.attachments,
             images_ok=images_ok,
             submit_attachments=submit_attachments,
+            submit_as_device=submit_as_device,
             share_callable=share_callable,
             broadcaster=broadcaster,
             usage_read=(

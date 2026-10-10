@@ -1335,15 +1335,14 @@ def _phone_here(event_log_path: Path) -> dict[str, Any]:
         return read_phone_here(conn)
 
 
-def _here_location(role: str, event_log_path: Path) -> Callable[[], dict[str, Any]] | None:
-    """Where the user is, for `transit` and `where_am_i`.
+def _here_location(role: str) -> Callable[[], dict[str, Any]] | None:
+    """This Mac's location for `transit` and `where_am_i`, read on demand (ADR 0194).
 
-    A brain has no Mac to read, so it reads the phone's last report from its log (ADR 0198);
-    otherwise this Mac's location read on demand (ADR 0194), none off macOS.
+    None in the `brain` role, which has no Mac to read, and off macOS. Every role also gets the
+    phone's last report (`_phone_here`, ADR 0198); which one answers is decided per turn
+    (ADR 0212), and a brain's only reading is the phone's.
     """
-    if role == "brain":
-        return partial(_phone_here, event_log_path)
-    if sys.platform != "darwin":
+    if role == "brain" or sys.platform != "darwin":
         return None
     return lambda: asdict(read_mac_location())
 
@@ -2727,8 +2726,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         transit_api_key=os.environ.get("GOOGLE_MAPS_API_KEY", "").strip(),
         transit_places=_transit_places(full_config),
         transit_offers=transit_offers,
-        here_location=_here_location(role, paths.event_log),
-        here_from_phone=role == "brain",
+        here_location=_here_location(role),
+        here_phone=partial(_phone_here, paths.event_log),
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,

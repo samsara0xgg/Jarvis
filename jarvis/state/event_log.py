@@ -1964,6 +1964,9 @@ def iter_events_for_turn(
         yield _row_to_event(row)
 
 
+MAC_NODE: Final = "mac"
+"""The ``ingestion_node`` of the rows this host writes itself; a paired device's carry its name."""
+
 PHONE_VOICE_CHANNEL: Final = "phone_voice"
 """ADR 0209: the channel of words a paired phone recognized and sent as text; spoken for L3."""
 
@@ -2013,6 +2016,7 @@ def turn_intent_channel(conn: sqlite3.Connection, turn_id: str) -> str | None:
 
 
 __all__ = [
+    "MAC_NODE",
     "PHONE_VOICE_CHANNEL",
     "CommittedEventBus",
     "DanglingSourceEventError",

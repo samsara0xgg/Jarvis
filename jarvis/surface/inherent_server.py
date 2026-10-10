@@ -616,6 +616,10 @@ class InherentDeps:
     attachments: Attachments | None = None
     images_ok: bool = False
     submit_attachments: Callable[[str, Sequence[str]], str] | None = None
+    # ADR 0212: ``submit_as_device(device, text, ids)`` starts the same turn with the opening row
+    # written under the paired ``device``'s name, for words a paired device sent over
+    # ``submit``, ``ask`` or ``share`` (``ids`` may be empty). ``None``: the Mac's own name.
+    submit_as_device: Callable[[str, str, Sequence[str]], str] | None = None
     share_callable: Callable[[dict[str, Any]], str] | None = None
     cancel_response_callable: Callable[[str, str, str], str] | None = None
     # ``(turn_id, reason) -> outcome``: the same route's stop for a turn still
@@ -2091,17 +2095,34 @@ async def _upload_attachment(
     return {"id": ref.id, "kind": ref.kind, "name": ref.name, "bytes": ref.size, "mime": ref.mime}
 
 
+def _paired_device(deps: InherentDeps, request: Request) -> str | None:
+    """The paired device whose token this request carries (ADR 0212); ``None`` for the local key."""
+    token = _v2_presented_token(request.headers.get("authorization"))
+    if deps.device_name is None or token is None:
+        return None
+    return deps.device_name(token)
+
+
+async def _start_turn(
+    deps: InherentDeps, device: str | None, text: str, ids: Sequence[str] = (),
+) -> str:
+    """Start the turn of ``text`` (with stored files ``ids``), written under ``device`` if any."""
+    if device is not None and deps.submit_as_device is not None:
+        return await asyncio.to_thread(deps.submit_as_device, device, text, ids)
+    if ids and deps.submit_attachments is not None:
+        return await asyncio.to_thread(deps.submit_attachments, text, ids)
+    return await asyncio.to_thread(deps.submit_callable, text) or ""
+
+
 async def _submit_with_attachments(
-    deps: InherentDeps, text: str, ids: Sequence[str],
+    deps: InherentDeps, text: str, ids: Sequence[str], device: str | None,
 ) -> dict[str, str]:
     """``POST /inherent/submit`` with ``attachments``: the files go with the words (ADR 0211)."""
     unique = list(dict.fromkeys(ids))
     await _checked_attachments(deps, unique)
     if deps.submit_attachments is None:  # _checked_attachments refused already
         raise HTTPException(status_code=501, detail="attachments are not enabled")
-    turn_id = await asyncio.to_thread(
-        deps.submit_attachments, text or t("attach.no_words"), unique,
-    )
+    turn_id = await _start_turn(deps, device, text or t("attach.no_words"), unique)
     return {"status": "accepted", "turn_id": turn_id}
 
 
@@ -2127,7 +2148,10 @@ def _share_fields(req: ShareRequest) -> dict[str, Any]:
 
 
 async def _share(
-    deps: InherentDeps, share_callable: Callable[[dict[str, Any]], str], req: ShareRequest,
+    deps: InherentDeps,
+    share_callable: Callable[[dict[str, Any]], str],
+    req: ShareRequest,
+    device: str | None,
 ) -> dict[str, str]:
     """``POST /inherent/share``: a turn when he said ask her, otherwise one saved event."""
     fields = _share_fields(req)
@@ -2147,13 +2171,7 @@ async def _share(
         )
         if part
     )
-    if ids and deps.submit_attachments is not None:
-        return {
-            "status": "accepted",
-            "turn_id": await asyncio.to_thread(deps.submit_attachments, words, ids),
-        }
-    minted = await asyncio.to_thread(deps.submit_callable, words)
-    return {"status": "accepted", "turn_id": minted or ""}
+    return {"status": "accepted", "turn_id": await _start_turn(deps, device, words, ids)}
 
 
 def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â€” one closed route table; the cancel and controls routes are registered only when injected.
@@ -2178,7 +2196,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
     )
 
     @app.post("/inherent/submit", status_code=200)
-    async def submit(req: SubmitRequest) -> dict[str, str]:
+    async def submit(req: SubmitRequest, request: Request) -> dict[str, str]:
         """Accept user text and hand off to the runtime via ``submit_callable``.
 
         ``req.text`` is stripped; an empty post-strip string returns
@@ -2193,12 +2211,12 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
         that read only ``status`` keep working.
         """
         text = req.text.strip()
+        device = _paired_device(deps, request)
         if req.attachments:
-            return await _submit_with_attachments(deps, text, req.attachments)
+            return await _submit_with_attachments(deps, text, req.attachments, device)
         if not text:
             raise HTTPException(status_code=400, detail="text required")
-        turn_id = await asyncio.to_thread(deps.submit_callable, text)
-        return {"status": "accepted", "turn_id": turn_id or ""}
+        return {"status": "accepted", "turn_id": await _start_turn(deps, device, text)}
 
     if deps.ask_outcome is not None:
         ask_outcome = deps.ask_outcome
@@ -2226,8 +2244,9 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
                     status_code=400, detail=f"text is over {_ASK_TEXT_CHARS} characters",
                 )
             # Watch before submitting, so an answer sent at once still wakes the wait.
+            device = _paired_device(deps, request)
             with deps.broadcaster.watch_settled() as settled:
-                turn_id = await asyncio.to_thread(deps.submit_callable, text) or ""
+                turn_id = await _start_turn(deps, device, text)
                 deadline = time.monotonic() + _ASK_WAIT_S
                 while True:
                     settled.clear()  # before the read: an answer written meanwhile sets it again
@@ -2262,9 +2281,9 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
         share_callable = deps.share_callable
 
         @app.post("/inherent/share", status_code=200)
-        async def share(req: ShareRequest) -> dict[str, str]:
+        async def share(req: ShareRequest, request: Request) -> dict[str, str]:
             """ADR 0211: a share from another app, as a turn (``ask``) or kept for later."""
-            return await _share(deps, share_callable, req)
+            return await _share(deps, share_callable, req, _paired_device(deps, request))
 
     if deps.cancel_response_callable is not None:
         cancel_response_callable = deps.cancel_response_callable

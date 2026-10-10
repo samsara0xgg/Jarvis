@@ -1,6 +1,6 @@
 # ADR 0198 — On a brain, "here" is the phone's latest report
 
-**Status:** Accepted
+**Status:** Superseded-by-0212
 **Date:** 2026-10-09
 **Supersedes:** none
 

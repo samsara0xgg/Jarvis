@@ -4007,7 +4007,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     transit_places: Mapping[str, str] | None = None,
     transit_offers: TransitOffers | None = None,
     here_location: Callable[[], Mapping[str, Any]] | None = None,
-    here_from_phone: bool = False,
+    here_phone: Callable[[], Mapping[str, Any]] | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -4084,9 +4084,11 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         transit_offers: where `transit` leaves its options for the chat card (ADR 0205).
         here_location: ADR 0194 — one fresh read of this Mac's location (`lat`, `lng`,
             `accuracy_m`, optional `place`); gives `transit` its `here` and registers
-            `where_am_i`. `None` leaves both off.
-        here_from_phone: ADR 0198 — `here_location` is a brain's read of the phone's last
-            report (it also returns `age_s`, `source` and `device`), and both tools say so.
+            `where_am_i`. `None` leaves both off unless `here_phone` is given.
+        here_phone: ADR 0198 — one read of the phone's last report (it also returns `age_s`
+            and `device`). Without `here_location` (a brain) it is every turn's `here`; with
+            both, a turn a paired phone opened gets it and the Mac's own turn gets the Mac's
+            (ADR 0212). Both tools say which they read.
     """
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
 
@@ -4241,10 +4243,10 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         *build_voice_tool(voice_settings),
         *build_weather_tool(weather_lookup),
         *build_transit_tool(
-            transit_api_key, transit_places or {}, here_location, phone=here_from_phone,
+            transit_api_key, transit_places or {}, here_location, phone_here=here_phone,
             offers=transit_offers,
         ),
-        *build_where_tool(here_location, phone=here_from_phone),
+        *build_where_tool(here_location, here_phone),
     ):
         registry.register(conversation_tool)
     for draft_tool in build_mail_draft_tool(mail_drafts):

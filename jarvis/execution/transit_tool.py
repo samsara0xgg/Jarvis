@@ -11,7 +11,7 @@ from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
-from jarvis.execution.location_tool import PHONE_REPORT_RULE, phone_report, read_here
+from jarvis.execution.location_tool import PHONE_REPORT_RULE, read_here, said_where
 from jarvis.execution.tools import Tool, ToolError, _get_running_event_uid, _turn_of
 from jarvis.shared import CallerPrincipal, lang
 from jarvis.state import departures, reminders
@@ -52,17 +52,22 @@ _PHONE_HERE: Final = (
     "his location from his phone's last report, with its age and accuracy in the result."
     " " + PHONE_REPORT_RULE
 )
+_BOTH_HERE: Final = (
+    "his location: from his phone's last report when he is talking from his phone, with its age"
+    " and accuracy in the result (" + PHONE_REPORT_RULE + "), otherwise read from this Mac,"
+    " which he carries."
+)
 
 
-def _description(*, phone: bool) -> str:
-    """The tool's description; ``phone``: on a brain, ``here`` is the phone's last report."""
+def _description(here: str) -> str:
+    """The tool's description; ``here`` says whose location 'here' is (ADR 0194, 0198, 0212)."""
     return (
         "Bus and transit times from one place to another, from now or from a clock time today:"
         " when to leave, the walk to the first stop, each bus (route number, direction, board"
         " stop, departure time, alight stop), arrival time and total minutes, for up to 3"
         " options. Use it for any question about the bus, transit, 'when's the next bus', 'how"
         " do I get to X by bus' or 'when should I leave'. The origin is always 'here', his real"
-        f" location: {_PHONE_HERE if phone else _MAC_HERE}"
+        f" location: {here}"
         " Use another origin only when he says outright that he starts somewhere else ('from"
         " Mayfair to ...'); never guess his start from the time of day or his routine. The"
         " destination is the word 'home' for his own home ('my bus home', going home, in any"
@@ -79,13 +84,14 @@ def _description(*, phone: bool) -> str:
 
 
 def _here(
-    reader: Callable[[], Mapping[str, Any]] | None, *, phone: bool,
+    mac: Callable[[], Mapping[str, Any]] | None,
+    phone: Callable[[], Mapping[str, Any]] | None,
+    ctx: ToolContext,
 ) -> tuple[dict[str, Any], str]:
     """The user's location as a waypoint, and how to say it in the result."""
-    fix = read_here(reader, phone=phone)
+    fix = read_here(mac, phone, ctx)
     near = f"{fix['place']}, " if fix["place"] else ""
-    where = phone_report(fix) if phone else "this Mac"
-    label = f"here ({where}, {near}±{round(fix['accuracy_m'])} m)"
+    label = f"here ({said_where(fix)}, {near}±{round(fix['accuracy_m'])} m)"
     latlng = {"latitude": fix["lat"], "longitude": fix["lng"]}
     return {"location": {"latLng": latlng}}, label
 
@@ -93,13 +99,13 @@ def _here(
 def _waypoint(
     place: str,
     saved: Mapping[str, str],
-    reader: Callable[[], Mapping[str, Any]] | None,
-    *,
-    phone: bool,
+    mac: Callable[[], Mapping[str, Any]] | None,
+    phone: Callable[[], Mapping[str, Any]] | None,
+    ctx: ToolContext,
 ) -> tuple[dict[str, Any], str]:
     word = place.strip().lower()
     if word == "here":
-        return _here(reader, phone=phone)
+        return _here(mac, phone, ctx)
     text = saved.get(word, "") if word in ("home", "school") else place.strip()
     if not text:
         msg = f"the {word} address isn't saved yet"
@@ -591,17 +597,18 @@ def build_transit_tool(
     places: Mapping[str, str],
     here: Callable[[], Mapping[str, Any]] | None = None,
     *,
-    phone: bool = False,
+    phone_here: Callable[[], Mapping[str, Any]] | None = None,
     offers: TransitOffers | None = None,
 ) -> tuple[Tool, ...]:
     """``transit`` over Google Routes; none without a key.
 
     ``places`` maps ``home`` and ``school`` to an address or ``lat,lng``; a missing one makes
     that word a tool error rather than a guess. ``here`` reads this Mac's location when asked
-    (ADR 0194), or with ``phone`` the phone's last report (ADR 0198), which the description and
-    the result then say, with its age; its failure is a tool error telling the model to ask
-    where the user is. ``offers`` is where each answer leaves its options for the chat card
-    (ADR 0205); the runtime shares it with the routes that pin them.
+    (ADR 0194) and ``phone_here`` the phone's last report (ADR 0198), whose age the result then
+    says; with both, a turn a phone opened gets the phone's (ADR 0212), and the description says
+    so. A failed read is a tool error telling the model to ask where the user is. ``offers``
+    is where each answer leaves its options for the chat card (ADR 0205); the runtime shares
+    it with the routes that pin them.
     """
     if not api_key:
         return ()
@@ -612,8 +619,8 @@ def build_transit_tool(
         if not origin.strip() or not destination.strip():
             msg = "origin and destination are both required"
             raise ToolError(msg, code="invalid_argument")
-        start, start_label = _waypoint(origin, places, here, phone=phone)
-        end, end_label = _waypoint(destination, places, here, phone=phone)
+        start, start_label = _waypoint(origin, places, here, phone_here, ctx)
+        end, end_label = _waypoint(destination, places, here, phone_here, ctx)
         body: dict[str, Any] = {
             "origin": start,
             "destination": end,
@@ -648,7 +655,11 @@ def build_transit_tool(
     return (
         Tool(
             name="transit",
-            description=_description(phone=phone),
+            description=_description(
+                _BOTH_HERE if here is not None and phone_here is not None
+                else _PHONE_HERE if phone_here is not None
+                else _MAC_HERE,
+            ),
             input_schema={
                 "type": "object",
                 "properties": {

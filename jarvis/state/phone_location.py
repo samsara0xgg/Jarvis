@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
+from jarvis.state.event_log import MAC_NODE, turn_origin
+
 if TYPE_CHECKING:
     import sqlite3
 
@@ -59,6 +61,16 @@ def latest_phone_fix(conn: sqlite3.Connection) -> PhoneFix | None:
         at_ms=int(row[2]),
         device=str(row[1]),
     )
+
+
+def turn_from_phone(conn: sqlite3.Connection, turn_id: str | None) -> bool:
+    """Whether a paired device opened ``turn_id``: its opening row was written under a device name.
+
+    A Mac running alone has no terminal, so a device that talks to it is a phone (ADR 0212). A
+    turn with no opening row, or none given, is the Mac's own.
+    """
+    node = turn_origin(conn, turn_id or "")[1]
+    return node is not None and node != MAC_NODE
 
 
 def read_phone_here(conn: sqlite3.Connection, *, now_ms: int | None = None) -> dict[str, Any]:

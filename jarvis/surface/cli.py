@@ -174,6 +174,7 @@ def emit_surface_user_intent(  # noqa: PLR0913 — one keyword per payload field
     channel: str = "cli_stdin",
     language: str = "zh-CN",
     attachments: Sequence[str] = (),
+    ingestion_node: str = "mac",
 ) -> Event:
     """Emit the canonical ``surface.user_intent`` event for a CLI utterance.
 
@@ -194,6 +195,7 @@ def emit_surface_user_intent(  # noqa: PLR0913 — one keyword per payload field
         language: BCP-47 language tag; Day-1 default ``"zh-CN"``.
         attachments: Ids of stored files a phone sent with the words (ADR 0211); the key is
             written only when there are some.
+        ingestion_node: The paired device the words came from (ADR 0212), else this Mac.
 
     Returns:
         The frozen Event row appended to the log (carrying the
@@ -210,6 +212,7 @@ def emit_surface_user_intent(  # noqa: PLR0913 — one keyword per payload field
             **({"attachments": list(attachments)} if attachments else {}),
         },
         correlation={"turn_id": turn_id},
+        ingestion_node=ingestion_node,
     )
 
 

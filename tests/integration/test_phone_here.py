@@ -1,4 +1,4 @@
-"""ADR 0198: on a brain, "here" is the phone's latest report, read from the log when asked.
+"""ADR 0198, 0212: "here" is the phone's latest report on a brain, and for a turn a phone opened.
 
 Acceptance checks, each against a real event log:
 
@@ -9,33 +9,68 @@ Acceptance checks, each against a real event log:
 - on a brain booted for real, `where_am_i` and `transit`'s `here` say the fix is the phone's last
   report with its age and accuracy, read from a tool's own thread; with no report, or a log that
   cannot be read, they are a tool error that tells the model to ask;
-- the age in words, and a Mac running alone keeping the wording of ADR 0194.
+- the age in words, and a Mac running alone keeping the wording of ADR 0194;
+- one host with both readers (ADR 0212), as a table of the turn's opening row to the reading it
+  gets: a phone's spoken or typed turn reads the phone, the Mac's own turn reads the Mac, a phone
+  turn before any report falls back to the Mac and says so, and a brain reads the phone for every
+  turn; the same for the `transit` origin, and for the descriptions the model is shown;
+- the HTTP routes a phone uses (`submit`, `ask`, `share`) write the turn's opening row under the
+  device's name, and the Mac's own key writes it under the Mac's.
 """
 
 from __future__ import annotations
 
 import concurrent.futures
+import functools
 import json
 import sqlite3
 import time
+from contextlib import closing
 from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 from jarvis.decision.commentary import _dispatch_key
 from jarvis.execution import transit_tool
 from jarvis.execution.location_tool import describe_age
-from jarvis.execution.tools import ToolError, build_default_registry
-from jarvis.runtime import _phone_here, bootstrap_runtime_app
+from jarvis.execution.tools import (
+    ToolError,
+    build_default_registry,
+    register_live_action,
+    release_turn_actions,
+)
+from jarvis.runtime import _phone_here, bootstrap_runtime_app, inherent_loop
 from jarvis.shared import CallerPrincipal
-from jarvis.state.device_tokens import pair_device
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.attachments import ATTACHMENTS_DIRNAME, Attachments
+from jarvis.state.device_tokens import (
+    device_name_for_token,
+    device_token_matches,
+    pair_device,
+)
+from jarvis.state.event_log import (
+    emit_event,
+    open_event_log,
+    open_runtime_event_log,
+    turn_origin,
+)
 from jarvis.state.phone_location import NoPhoneReport, read_phone_here
+from jarvis.state.plugin_settings import local_key, local_key_matches
+from jarvis.surface.cli import emit_surface_user_intent
+from jarvis.surface.inherent_output import InherentBroadcaster
+from jarvis.surface.inherent_server import (
+    AskOutcome,
+    InherentDeps,
+    create_app,
+    require_local_key,
+)
 from jarvis.surface.phone_events import PHONE_EVENTS_PATH
+from tests.integration.test_phone_attachments import PNG
 from tests.integration.test_phone_events import GOOD, LOCATION, VISIT, _frame
 from tests.integration.test_terminal_voice import _bearer, _brain_client
+from tests.integration.test_transit_tool import FIX as MAC_FIX
 from tests.integration.test_transit_tool import _serve
 
 if TYPE_CHECKING:
@@ -313,8 +348,7 @@ def test_on_a_brain_where_am_i_and_transit_here_say_it_is_the_phones_last_report
 def test_a_log_that_cannot_be_read_is_a_tool_error_that_says_to_ask(tmp_path: Path) -> None:
     """The reader is the runtime's own: a missing log is the phone's report not being readable."""
     registry = build_default_registry(
-        here_location=partial(_phone_here, tmp_path / "missing" / "events.db"),
-        here_from_phone=True,
+        here_phone=partial(_phone_here, tmp_path / "missing" / "events.db"),
     )
     definition = next(d for d in registry.get_definitions() if d.name == "where_am_i")
     unreadable = r"last location report could not be read.*ask the user"
@@ -346,3 +380,259 @@ def test_a_mac_running_alone_keeps_the_wording_of_adr_0194() -> None:
 def test_the_age_is_told_in_words(seconds: int, words: str) -> None:
     """What the model reads for how old a report is."""
     assert describe_age(seconds) == words
+
+
+# --- one host, two devices (ADR 0212) ---------------------------------------------------------
+
+Opening = tuple[str, str, str]
+"""The row that opens a turn: its event type, its channel, and the node it was written under."""
+
+PHONE_SPOKEN: Opening = ("utterance.received", "phone_voice", "iphone")
+PHONE_TYPED: Opening = ("surface.user_intent", "cli_stdin", "iphone")
+MAC_TYPED: Opening = ("surface.user_intent", "cli_stdin", "mac")
+MAC_SPOKEN: Opening = ("utterance.received", "inherent_ptt", "mac")
+
+
+def _open_turn(conn: sqlite3.Connection, turn_id: str, opening: Opening) -> None:
+    kind, channel, node = opening
+    words = {"transcript": "where am I", "turn_id": turn_id, "channel": channel}
+    emit_event(
+        conn, type=kind, payload=words, correlation={"turn_id": turn_id}, ingestion_node=node,
+    )
+
+
+def _both(log: Path) -> Any:  # noqa: ANN401
+    """The registry of a Mac that also hears a phone: both readers, as the runtime wires them."""
+    registry = build_default_registry(
+        transit_api_key="test-key-not-real", transit_places={}, here_location=lambda: dict(MAC_FIX),
+        here_phone=partial(_phone_here, log),
+    )
+    return {d.name: d for d in registry.get_definitions()}
+
+
+def _in_turn(conn: sqlite3.Connection, turn_id: str | None, definition: Any,  # noqa: ANN401
+             args: dict[str, Any]) -> dict[str, Any]:
+    """Run a handler as the dispatcher does: its action is live under ``turn_id`` while it runs."""
+    action_id = f"A-{turn_id}"
+    if turn_id is not None:
+        register_live_action(turn_id=turn_id, action_id=action_id)
+    try:
+        return dict(definition.handler(args, SimpleNamespace(conn=conn, action_id=action_id)))
+    finally:
+        if turn_id is not None:
+            release_turn_actions(turn_id)
+
+
+# (opening row of the turn or None for a turn without one, whether a phone has reported)
+# -> (source of the reading, device if the phone's, words the note must carry)
+ORIGINS: dict[str, tuple[Opening | None, bool, tuple[str, str | None, str]]] = {
+    "a phone's spoken turn reads the phone": (PHONE_SPOKEN, True, ("phone", "iphone", "500 m")),
+    "a phone's typed turn reads the phone": (PHONE_TYPED, True, ("phone", "iphone", "500 m")),
+    "any paired device's name is a phone": (
+        ("surface.user_intent", "cli_stdin", "ipad"), True, ("phone", "iphone", "500 m"),
+    ),
+    "the Mac's typed turn reads the Mac, though a phone has reported": (
+        MAC_TYPED, True, ("this Mac", None, ""),
+    ),
+    "the Mac's spoken turn reads the Mac, though a phone has reported": (
+        MAC_SPOKEN, True, ("this Mac", None, ""),
+    ),
+    "a turn with no opening row is the Mac's": (None, True, ("this Mac", None, "")),
+    "a phone's turn before any report falls back to the Mac and says so": (
+        PHONE_SPOKEN, False, ("this Mac", None, "no phone has reported a location yet"),
+    ),
+    "the Mac's turn before any report is just the Mac": (MAC_TYPED, False, ("this Mac", None, "")),
+}
+
+
+@pytest.mark.parametrize("name", list(ORIGINS))
+def test_where_am_i_answers_from_the_device_the_turn_came_from(name: str, tmp_path: Path) -> None:
+    """Opening row and log in, the reading out: the phone's report, the Mac's, or the fallback."""
+    opening, reported, (source, device, words) = ORIGINS[name]
+    conn = open_event_log(tmp_path / "events.db")
+    try:
+        if reported:
+            emit_event(conn, type="phone.location_observed", ingestion_node="iphone",
+                       payload={"lat": 48.5, "lng": -123.5, "accuracy_m": 90.0},
+                       ts_epoch_ms=int(time.time() * 1000) - 5 * MIN)
+        if opening is not None:
+            _open_turn(conn, "T1", opening)
+        got = _in_turn(conn, "T1", _both(tmp_path / "events.db")["where_am_i"], {})
+    finally:
+        conn.close()
+    assert got["source"] == source
+    assert got.get("device") == device
+    if source == "phone":
+        assert (got["lat"], got["lng"], got["accuracy_m"]) == (48.5, -123.5, 90.0)
+        assert 300 <= got["age_s"] <= 330
+        assert "the phone's last report 5 min ago" in got["note"]
+    else:
+        assert (got["lat"], got["lng"], got["place"]) == (MAC_FIX["lat"], MAC_FIX["lng"],
+                                                           MAC_FIX["place"])
+        assert "age_s" not in got
+    assert words in got.get("note", "")
+    assert "phone_unreported" not in got
+
+
+def test_an_action_outside_any_turn_is_the_macs(tmp_path: Path) -> None:
+    """No live turn to ask about: the Mac's own reading, as when a tool is called directly."""
+    conn = open_event_log(tmp_path / "events.db")
+    try:
+        emit_event(conn, type="phone.location_observed", ingestion_node="iphone",
+                   payload={"lat": 48.5, "lng": -123.5, "accuracy_m": 90.0})
+        got = _in_turn(conn, None, _both(tmp_path / "events.db")["where_am_i"], {})
+    finally:
+        conn.close()
+    assert got["source"] == "this Mac"
+
+
+def test_transit_here_starts_from_the_device_the_turn_came_from(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The origin of the request and the label follow the turn: phone, Mac, or the fallback."""
+    seen = _serve(monkeypatch)
+    monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
+    log = tmp_path / "events.db"
+    conn = open_event_log(log)
+    try:
+        transit = _both(log)["transit"]
+        trip = {"origin": "here", "destination": "Mayfair Mall"}
+        _open_turn(conn, "TM", MAC_TYPED)
+        _open_turn(conn, "TP", PHONE_SPOKEN)
+        origins = []
+
+        def go(turn: str) -> str:
+            seen.clear()
+            label = str(_in_turn(conn, turn, transit, trip)["from"])
+            latlng = json.loads(seen[0][0].data)["origin"]["location"]["latLng"]
+            origins.append((latlng["latitude"], latlng["longitude"]))
+            return label
+
+        before = go("TP")  # a phone turn, and no phone has reported
+        emit_event(conn, type="phone.location_observed", ingestion_node="iphone",
+                   payload={"lat": 48.5, "lng": -123.5, "accuracy_m": 90.0},
+                   ts_epoch_ms=int(time.time() * 1000) - 12 * MIN)
+        phone = go("TP")
+        mac = go("TM")
+    finally:
+        conn.close()
+    fix = (MAC_FIX["lat"], MAC_FIX["lng"])
+    assert origins == [fix, (48.5, -123.5), fix]
+    assert before == "here (this Mac, no phone has reported yet, Ring Rd, Saanich, ±40 m)"
+    assert phone == "here (the phone's last report 12 min ago, ±90 m)"
+    assert mac == "here (this Mac, Ring Rd, Saanich, ±40 m)"
+
+
+def test_a_brain_reads_the_phone_for_every_turn(tmp_path: Path) -> None:
+    """Without a Mac reader, as on a brain, a Mac-looking turn and an unknown one get the phone."""
+    log = tmp_path / "events.db"
+    conn = open_event_log(log)
+    registry = build_default_registry(here_phone=partial(_phone_here, log))
+    where = next(d for d in registry.get_definitions() if d.name == "where_am_i")
+    try:
+        for turn, opening in (("T1", MAC_TYPED), ("T2", PHONE_SPOKEN), ("T3", None)):
+            if opening is not None:
+                _open_turn(conn, turn, opening)
+            with pytest.raises(ToolError, match="no phone has reported a location"):
+                _in_turn(conn, turn, where, {})
+        emit_event(conn, type="phone.location_observed", ingestion_node="iphone",
+                   payload={"lat": 48.5, "lng": -123.5, "accuracy_m": 90.0})
+        _open_turn(conn, "T4", MAC_TYPED)
+        got = _in_turn(conn, "T4", where, {})
+    finally:
+        conn.close()
+    assert (got["source"], got["device"]) == ("phone", "iphone")
+    assert "Mac" not in where.description
+
+
+def test_the_descriptions_name_the_sources_the_host_has(tmp_path: Path) -> None:
+    """Both devices: both are named, briefly; one device: only that one, as before."""
+    log = tmp_path / "events.db"
+    both = _both(log)
+    for definition in (both["where_am_i"], both["transit"]):
+        text = definition.description
+        assert "phone" in text
+        assert "this Mac" in text
+        assert "500 m" in text
+    phone_only = build_default_registry(
+        transit_api_key="k", transit_places={}, here_phone=partial(_phone_here, log),
+    )
+    for definition in phone_only.get_definitions():
+        if definition.name in {"where_am_i", "transit"}:
+            assert "Mac" not in definition.description
+    assert len(both["where_am_i"].description) < 1.3 * len(
+        next(d for d in phone_only.get_definitions() if d.name == "where_am_i").description,
+    )
+
+
+# --- the routes a phone uses write its name ---------------------------------------------------
+
+REMOTE = "100.87.250.92"
+LOOPBACK = "127.0.0.1"
+
+
+def _daemon(tmp_path: Path) -> tuple[Path, str, str, TestClient, TestClient]:
+    """A daemon's routes over a real log: ``(log, local key, device token, loopback, tailnet)``."""
+    root = tmp_path / "root"
+    root.mkdir()
+    log = root / "events.db"
+    open_event_log(log).close()
+
+    def submit_plain(text: str) -> str:
+        with closing(open_runtime_event_log(log)) as conn:
+            turn = f"T{int(time.time_ns())}"
+            emit_surface_user_intent(conn, transcript=text, turn_id=turn)
+            return turn
+
+    deps = InherentDeps(
+        submit_callable=submit_plain,
+        broadcaster=InherentBroadcaster(),
+        attachments=Attachments(root / "artifacts" / ATTACHMENTS_DIRNAME),
+        images_ok=True,
+        submit_attachments=functools.partial(inherent_loop._submit_with_attachments, log),  # noqa: SLF001
+        submit_as_device=functools.partial(inherent_loop._submit_as_device, log),  # noqa: SLF001
+        share_callable=functools.partial(inherent_loop._keep_share, log),  # noqa: SLF001
+        ask_outcome=lambda _turn: AskOutcome(spoken="ok"),
+        device_name=functools.partial(device_name_for_token, root),
+    )
+    app = create_app(deps)
+    key = local_key(root)
+    require_local_key(
+        app, functools.partial(local_key_matches, key), extra_hosts=[REMOTE],
+        device_token_matches=functools.partial(device_token_matches, root),
+    )
+    token = pair_device(root, "iphone")
+    return (
+        log, key, token,
+        TestClient(app, base_url=f"http://{LOOPBACK}:8006", client=(LOOPBACK, 50000)),
+        TestClient(app, base_url=f"http://{REMOTE}:8006", client=(REMOTE, 50000)),
+    )
+
+
+def test_a_paired_devices_words_over_http_open_turns_written_under_its_name(
+    tmp_path: Path,
+) -> None:
+    """`submit`, `submit` with a file, `ask` and `share`: the turn is the device's or the Mac's."""
+    log, key, token, loopback, remote = _daemon(tmp_path)
+    phone, local = {"Authorization": f"Bearer {token}"}, {"Authorization": f"Bearer {key}"}
+    file_id = remote.post(
+        "/inherent/attachments", files={"file": ("a.png", PNG)}, headers=phone,
+    ).json()["id"]
+    routes: dict[str, tuple[str, dict[str, Any]]] = {
+        "submit": ("/inherent/submit", {"text": "where am I"}),
+        "submit with a file": (
+            "/inherent/submit", {"text": "what is this", "attachments": [file_id]},
+        ),
+        "ask": ("/inherent/ask", {"text": "where am I"}),
+        "share asked about": ("/inherent/share", {"text": "dinner at 7", "ask": True}),
+    }
+    for name, (path, body) in routes.items():
+        sent = {
+            "phone": remote.post(path, json=body, headers=phone),
+            "mac": loopback.post(path, json=body, headers=local),
+        }
+        for node, response in sent.items():
+            assert response.status_code == 200, (name, node, response.text)
+            with closing(open_runtime_event_log(log)) as conn:
+                origin = turn_origin(conn, response.json()["turn_id"])
+            assert origin == ("cli_stdin", "iphone" if node == "phone" else "mac"), (name, node)
