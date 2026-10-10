@@ -61,4 +61,22 @@ final class PanelRulesTests: XCTestCase {
         e.addTurn(his: false, "## 本周\n- 周五 10:00 周会\n- 周六 09:00 爬山")
         XCTAssertTrue(e.ui.panelOpen)
     }
+
+    // MARK: the dial under his finger
+
+    private func dragged(voice: Bool) -> StarEngine {
+        let e = StarEngine()
+        e.F = 1000; e.z = 1; e.k = TAU / DAY; e.lensM = 1
+        e.setCam(0)
+        e.talk = "listen"
+        if voice { e.voiceState = .listening }
+        e.pointerDown(1, CGPoint(x: 330, y: 300), 0)
+        e.pointerMove(1, [(CGPoint(x: 330, y: 360), 20)])
+        return e
+    }
+
+    func testTheDialTurnsUnderAFingerWhileHeTalksByVoiceButNotDuringAScriptedTalk() {
+        XCTAssertEqual(dragged(voice: true).mode, .drag)
+        XCTAssertNotEqual(dragged(voice: false).mode, .drag)
+    }
 }

@@ -170,7 +170,7 @@ extension StarEngine {
         ptr[id] = p
         if cur.kind == .press && hypot(Double(p.x - cur.p0.x), Double(p.y - cur.p0.y)) > 7 {
             cur.timer?.cancel(); pressed = false
-            if talk != nil || mon > 0.5 { cur.kind = .none; g = cur; return }
+            if (talk != nil && voiceState == .idle) || mon > 0.5 { cur.kind = .none; g = cur; return }       // a scripted talk drives the dial itself; his voice talk leaves it to his finger
             cur.kind = .drag; mode = .drag; byHand = true; fs.velocity = 0; cur.a = nil
             if openId != nil { openId = nil; rowKey = "" }
         }
