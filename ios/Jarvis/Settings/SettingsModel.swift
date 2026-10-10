@@ -35,6 +35,18 @@ final class SettingsModel {
     // 和她说话
     var siri = "已添加"
     var actionButton = true
+    /// Listen for "Jarvis" while the app is open. The voice session holds the switch (off by default); UserDefaults keeps it across launches.
+    static let wakeKey = "voice.wakeInApp"
+    var wakeInApp: Bool {
+        get {
+            access(keyPath: \.wakeInApp)
+            return MainActor.assumeIsolated { VoiceSession.shared.wakeWordInApp }
+        }
+        set {
+            withMutation(keyPath: \.wakeInApp) { MainActor.assumeIsolated { VoiceSession.shared.wakeWordInApp = newValue } }
+            UserDefaults.standard.set(newValue, forKey: Self.wakeKey)
+        }
+    }
     var speechRate = 50.0
     var volume = 70.0
     var language = AnswerLanguage.followMe
