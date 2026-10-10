@@ -38,10 +38,12 @@ enum TalkStream {
     /// The conversation by day, oldest first. `pics` are what he sent, by the number of his row.
     static func convDays(_ rows: [ConversationRow], pics: [Int: [SentItem]], cal: Calendar, now: Date) -> [TalkDay] {
         var out: [TalkRow] = []
-        for r in rows {
+        for (i, r) in rows.enumerated() {
             let text = r.isHis ? r.text.trimmingCharacters(in: .whitespacesAndNewlines) : AnswerText.visible(r.text)
             guard !text.isEmpty, let at = time(r.ts, cal) else { continue }
-            out.append(TalkRow(id: "c\(r.seq)", his: r.isHis, text: text, pics: r.isHis ? pics[r.seq] ?? [] : [], leadIn: r.isLeadIn, at: at.timeIntervalSince1970))
+            // a spoken line before his next words was the whole answer; only one that more of hers follows (or may follow) is a lead-in
+            let leadIn = r.isLeadIn && !(i + 1 < rows.count && rows[i + 1].isHis)
+            out.append(TalkRow(id: "c\(r.seq)", his: r.isHis, text: text, pics: r.isHis ? pics[r.seq] ?? [] : [], leadIn: leadIn, at: at.timeIntervalSince1970))
         }
         return group(out, [], cal: cal, now: now)
     }
