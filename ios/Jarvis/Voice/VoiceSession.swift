@@ -365,7 +365,7 @@ final class VoiceSession {
             guard seq == turnSeq, held else { return }
             VoiceTrace.note("judged over her: \(r.verdict)")
             switch r.verdict {
-            case "backchannel", "unclear", "echo": resumeHer()
+            case "backchannel", "unclear", "echo", "elsewhere": resumeHer()    // elsewhere: the Mac already took these words
             case "wait": audio.core?.stopNow(); holdForWait()
             case _ where r.verdict == "stop" || r.verdict == "dismissed" || r.verdict.hasPrefix("quiet:"): audio.core?.stopNow(); goIdle(releasing: false)
             default:
@@ -526,7 +526,7 @@ final class VoiceSession {
                 if conversation {
                     VoiceTrace.note("judged follow-up: \(r.verdict)")
                     switch r.verdict {
-                    case "backchannel", "unclear", "echo":     // not for her: stay in the conversation window
+                    case "backchannel", "unclear", "echo", "elsewhere":     // not for her (or the Mac took them): stay in the conversation window
                         endTurn()
                         enterListening()
                         inConversation = true
@@ -537,6 +537,7 @@ final class VoiceSession {
                     default: break
                     }
                 }
+                if r.verdict == "elsewhere" { VoiceTrace.note("said: the Mac took these words"); goIdle(releasing: false); return }
                 VoiceTrace.note("said acknowledged by the host")
                 awaitingSaid = false
                 currentTurn = r.turnId
