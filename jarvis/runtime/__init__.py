@@ -1431,6 +1431,9 @@ def _where_line(hub: TerminalHub | None) -> Callable[[], str | None]:
     now, each with what it does; on ``all`` the Mac itself.
     """
     host = socket.gethostname()
+    model = Path("/proc/device-tree/model")  # what the board says it is, e.g. a Raspberry Pi
+    with contextlib.suppress(OSError):
+        host += ", a " + model.read_text(encoding="utf-8").strip("\x00\n ")
 
     def describe(name: str, speaks: bool, listens: bool) -> str:  # noqa: FBT001
         does = [word for word, on in (("speaks", speaks), ("listens", listens)) if on]
