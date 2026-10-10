@@ -19,11 +19,13 @@ import json
 import sqlite3
 import time
 from functools import partial
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from jarvis.decision.commentary import _dispatch_key
+from jarvis.execution import transit_tool
 from jarvis.execution.location_tool import describe_age
 from jarvis.execution.tools import ToolError, build_default_registry
 from jarvis.runtime import _phone_here, bootstrap_runtime_app
@@ -235,6 +237,23 @@ def _report(runtime: JarvisRuntime, kind: str, payload: dict[str, Any], ts: int)
     assert ack["ok"] is True, ack
 
 
+def _on_a_tool_thread(
+    event_log: Path, definition: Any, args: dict[str, Any],  # noqa: ANN401
+) -> dict[str, Any]:
+    """Run a handler on a worker thread, as a tool runs: the runtime's connection can't go there."""
+
+    def run() -> dict[str, Any]:
+        conn = sqlite3.connect(event_log)
+        try:  # The transit card (ADR 0205) is written through the call's own connection.
+            ctx = SimpleNamespace(conn=conn, action_id="A1")
+            return dict(definition.handler(args, ctx))
+        finally:
+            conn.close()
+
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        return pool.submit(run).result()
+
+
 def test_on_a_brain_where_am_i_and_transit_here_say_it_is_the_phones_last_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -243,6 +262,8 @@ def test_on_a_brain_where_am_i_and_transit_here_say_it_is_the_phones_last_report
     They carry the report's age and accuracy; transit starts the trip from the reported position.
     """
     seen = _serve(monkeypatch)
+    # A direct call has no `action.running` event to link the transit card to.
+    monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
     brain = _brain(tmp_path, monkeypatch)
     try:
         where, transit = _tool(brain, "where_am_i"), _tool(brain, "transit")
@@ -255,10 +276,7 @@ def test_on_a_brain_where_am_i_and_transit_here_say_it_is_the_phones_last_report
         assert not where.requires_confirmation
         assert _dispatch_key("where_am_i") is None
 
-        def call(definition: Any, args: dict[str, Any]) -> dict[str, Any]:  # noqa: ANN401
-            """On a worker thread, as a tool runs: the runtime's connection cannot be used."""
-            with concurrent.futures.ThreadPoolExecutor(1) as pool:
-                return dict(pool.submit(definition.handler, args, None).result())
+        call = partial(_on_a_tool_thread, brain.runtime_paths.event_log)
 
         with pytest.raises(ToolError, match=r"no phone has reported a location.*ask the user"):
             call(where, {})
