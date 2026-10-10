@@ -27,6 +27,7 @@ private struct VoiceEntry: ViewModifier {
             }
             .task {
                 let session = VoiceSession.shared    // created here so an intent that fired during launch is picked up
+                session.endpoint = { BrainLink.shared.voiceEndpoint }    // nil until the phone is paired: the local stub answers
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("-voiceTest") { session.start() }
                 #endif

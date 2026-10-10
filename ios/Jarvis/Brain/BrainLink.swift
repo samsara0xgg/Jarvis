@@ -59,6 +59,11 @@ final class BrainLink {
         }
     }
     var latencyText: String { hasToken && isOnline ? latencyMs.map { "\($0) ms" } ?? "—" : "—" }
+    /// Where the brain answered last and the token that proves this phone, for the voice link; nil until paired.
+    var voiceEndpoint: (base: URL, token: String)? {
+        guard let token, let base = bases.first else { return nil }
+        return (base, token)
+    }
     var statusLine: String {
         switch state {
         case .unpaired: "还没连上大脑"
