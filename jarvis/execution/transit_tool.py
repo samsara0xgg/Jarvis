@@ -10,8 +10,9 @@ from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
 from jarvis.execution.location_tool import PHONE_REPORT_RULE, phone_report, read_here
-from jarvis.execution.tools import Tool, ToolError
-from jarvis.shared import CallerPrincipal
+from jarvis.execution.tools import Tool, ToolError, _get_running_event_uid
+from jarvis.shared import CallerPrincipal, lang
+from jarvis.state import departures, reminders
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -57,7 +58,8 @@ def _description(*, phone: bool) -> str:
         " language), the word 'school' for the campus (going to school or class, in any"
         " language), or a place as an address or name, e.g. 'Mayfair Mall'. depart_at is a"
         " local time today as HH:MM, only when he names a later time; leave it out for now. If"
-        " it returns an error, say so and do not guess times."
+        " it returns an error, say so and do not guess times. To pin a trip on the notch when he"
+        " asks, call pin_departure."
     )
 
 
@@ -167,6 +169,99 @@ def _compute(api_key: str, body: Mapping[str, Any]) -> dict[str, Any]:
     return answer
 
 
+def _first_board(route: Mapping[str, Any]) -> tuple[tuple[str, str], tuple[float, float]] | None:
+    """A route's first bus as ``((number, board stop), (lat, lng))``, when Google gave its place."""
+    for leg in route.get("legs", ()):
+        for step in leg.get("steps", ()):
+            if detail := step.get("transitDetails"):
+                line, stop = detail.get("transitLine", {}), detail["stopDetails"]["departureStop"]
+                found = stop.get("location", {}).get("latLng")
+                if not found:
+                    return None
+                key = (line.get("nameShort") or line.get("name", "?"), stop["name"])
+                return key, (float(found["latitude"]), float(found["longitude"]))
+    return None
+
+
+def _today(value: object, field: str) -> datetime:
+    """``HH:MM`` as a local time today, or a tool error naming the field."""
+    try:
+        at = time.fromisoformat(str(value).strip())
+    except ValueError as exc:
+        msg = f"{field} must be a local time today as HH:MM, not {value!r}"
+        raise ToolError(msg, code="invalid_argument") from exc
+    return datetime.combine(_now().date(), at.replace(second=0, microsecond=0), tzinfo=_ZONE)
+
+
+_PIN_PAST_GRACE: Final = timedelta(minutes=1)
+_PIN_DESCRIPTION: Final = (
+    "Pin the bus trip he just got from transit on the notch, as a countdown to when he must"
+    " leave, and ring him at leave time. Call it ONLY when he asks to pin it or put it on the"
+    " notch ('pin it', 'put it on the notch', or the same in any other language); never on"
+    " your own. Copy the fields from the transit option he is taking (the first option unless"
+    " he picked another): leave_at; route, the number of the first bus ('28', or '28 → 12' for"
+    " two buses); board_stop and departs of the first bus; arrive_at. destination is the word"
+    " you gave transit. A newer pin replaces the older one. If it returns an error because"
+    " leave_at is past, say so and offer to look the bus up again."
+)
+
+
+def _pin_departure(
+    stops: Mapping[tuple[str, str], tuple[float, float]], args: Mapping[str, Any], ctx: ToolContext,
+) -> dict[str, Any]:
+    """Pin the trip on the notch and schedule its ring (ADR 0200)."""
+    leave = _today(args.get("leave_at"), "leave_at")
+    departs = _today(args.get("departs"), "departs")
+    arrive = _today(args.get("arrive_at"), "arrive_at").strftime("%H:%M")
+    route = str(args.get("route", "")).strip()
+    board_stop = str(args.get("board_stop", "")).strip()
+    if not route or not board_stop:
+        msg = "route and board_stop are both required"
+        raise ToolError(msg, code="invalid_argument")
+    if leave < _now() - _PIN_PAST_GRACE:
+        msg = f"leave_at {leave:%H:%M} has already passed; look the bus up again"
+        raise ToolError(msg, code="time_in_past")
+    if departs < leave:
+        msg = "departs is before leave_at; copy both from the same option"
+        raise ToolError(msg, code="invalid_argument")
+    source = _get_running_event_uid(ctx.conn, ctx.action_id)
+    # One pin at a time: the older pin's reminder must not ring for a dropped trip.
+    older = departures.current(ctx.conn)
+    ringing = reminders.fold(ctx.conn).get(older.reminder_id) if older else None
+    if ringing and ringing.pending:
+        reminders.cancel(
+            ctx.conn, ringing.reminder_id, action_id=ctx.action_id, source_event_id=source,
+        )
+    first = route.split("→")[0].strip()
+    reminder_id = reminders.schedule(
+        ctx.conn,
+        due=leave,
+        text=lang.t("departure.go", route=first, departs=f"{departs:%H:%M}", stop=board_stop),
+        action_id=ctx.action_id,
+        source_event_id=source,
+    )
+    pin_id = departures.pin(
+        ctx.conn,
+        reminder_id=reminder_id,
+        route=route,
+        board_stop=board_stop,
+        leave_at_ms=int(leave.timestamp() * 1000),
+        departs_at_ms=int(departs.timestamp() * 1000),
+        arrive_at=arrive,
+        stop=stops.get((first, board_stop)),
+        to=str(args.get("destination", "")).strip().lower()[:60],
+        action_id=ctx.action_id,
+        source_event_id=source,
+    )
+    return {
+        "pin_id": pin_id,
+        "pinned": True,
+        "leave_at": f"{leave:%H:%M}",
+        "departs": f"{departs:%H:%M}",
+        "route": route,
+    }
+
+
 def build_transit_tool(
     api_key: str | None,
     places: Mapping[str, str],
@@ -184,6 +279,9 @@ def build_transit_tool(
     """
     if not api_key:
         return ()
+    # The first stop's place for each option last shown: the notch's live refresh finds the stop
+    # in BC Transit's data by position, since the two feeds spell stop names differently.
+    stops: dict[tuple[str, str], tuple[float, float]] = {}
 
     def transit(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         origin, destination = str(args.get("origin", "")), str(args.get("destination", ""))
@@ -209,7 +307,12 @@ def build_transit_tool(
         if not options:
             msg = "no transit route found for that trip at that time"
             raise ToolError(msg, code="not_found")
+        stops.clear()
+        for found in map(_first_board, answer.get("routes", ())):
+            if found:
+                stops[found[0]] = found[1]
         return {"from": start_label, "to": end_label, "options": options}
+
 
     return (
         Tool(
@@ -234,6 +337,26 @@ def build_transit_tool(
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",
             read_only=True,
+        ),
+        Tool(
+            name="pin_departure",
+            description=_PIN_DESCRIPTION,
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "leave_at": {"type": "string", "description": "HH:MM, from the option"},
+                    "route": {"type": "string", "description": "'28', or '28 → 12'"},
+                    "board_stop": {"type": "string", "description": "first bus's stop"},
+                    "departs": {"type": "string", "description": "first bus, HH:MM"},
+                    "arrive_at": {"type": "string", "description": "HH:MM, from the option"},
+                    "destination": {"type": "string", "description": "as given to transit"},
+                },
+                "required": ["leave_at", "route", "board_stop", "departs", "arrive_at"],
+            },
+            handler=lambda args, ctx: _pin_departure(stops, args, ctx),
+            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            risk_level="L1",
+            read_only=False,
         ),
     )
 

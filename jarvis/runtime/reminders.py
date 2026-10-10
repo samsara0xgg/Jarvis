@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.runtime import audio_output
+from jarvis.runtime.departures import Departures
 from jarvis.shared import lang
 from jarvis.state import reminders as folded
 from jarvis.state.event_log import emit_event, open_runtime_event_log
@@ -62,17 +63,37 @@ def line(text: str, late_ms: int) -> str:
 class Reminders:
     """The tick and what the surface reads of it; built once at boot."""
 
-    def __init__(self, event_log: Path, *, moment: Moment | None = None) -> None:
-        """``event_log`` is the daemon's log; ``moment`` says whether Allen is on a call."""
+    def __init__(
+        self,
+        event_log: Path,
+        *,
+        moment: Moment | None = None,
+        departures: Departures | None = None,
+    ) -> None:
+        """``event_log`` is the daemon's log; ``moment`` says whether Allen is on a call.
+
+        ``departures`` is the pinned bus trip (ADR 0200): it rides this tick and its reminder is
+        an ordinary one, so the notch's countdown and the ring share one clock.
+        """
         self._path = event_log
         self.moment = moment
-        self.now: Callable[[], datetime] = lambda: datetime.now(UTC)
+        self.departures = departures or Departures(event_log)
+        self._now: Callable[[], datetime] = lambda: datetime.now(UTC)
         # Wired by the daemon: whether speaking is allowed (speech not muted, no live
         # conversation) and the one function that says a line. Until then she never speaks.
         self.may_speak: Callable[[], bool] = lambda: False
         self.say: Callable[[str], None] | None = None
         # Where sound would come out now; only for the notices' ``audio_private`` without job mail.
         self.output: Callable[..., dict[str, Any]] = audio_output.current_output
+
+    @property
+    def now(self) -> Callable[[], datetime]:
+        """The clock; the pinned trip reads the same one."""
+        return self._now
+
+    @now.setter
+    def now(self, clock: Callable[[], datetime]) -> None:
+        self._now = self.departures.now = clock
 
     async def run(self) -> None:
         """Tick at once and then every ``TICK_S``; a failed tick is logged, never ends the loop."""
@@ -118,6 +139,7 @@ class Reminders:
                         self.say(line(one.text, late_ms))
                     except Exception:
                         LOGGER.exception("reminders: the spoken line failed")
+        self.departures.refresh()
         return len(due)
 
     def _speakable(self, late_ms: int) -> bool:

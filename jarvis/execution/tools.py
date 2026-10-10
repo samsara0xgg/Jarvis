@@ -752,19 +752,12 @@ def set_reminder(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if due > now + _REMINDER_HORIZON:
         msg = "set_reminder: more than a year ahead"
         raise ToolError(msg, code="too_far_ahead")
-    reminder_id = reminder_state.ID_PREFIX + uuid.uuid4().hex[:8]
-    emit_event(
+    reminder_id = reminder_state.schedule(
         ctx.conn,
-        type="reminder.scheduled",
-        payload={
-            "reminder_id": reminder_id,
-            "due_at_epoch_ms": int(due.timestamp() * 1000),
-            "due_at_local": due.isoformat(timespec="seconds"),
-            "text": text,
-            "action_id": ctx.action_id,
-        },
+        due=due,
+        text=text,
+        action_id=ctx.action_id,
         source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
-        correlation={"action_id": ctx.action_id},
     )
     return {
         "reminder_id": reminder_id,
@@ -822,12 +815,11 @@ def cancel_reminder(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]
     if one is None or not one.pending:
         msg = f"cancel_reminder: no waiting reminder {reminder_id!r}"
         raise ToolError(msg, code="no_such_reminder")
-    emit_event(
+    reminder_state.cancel(
         ctx.conn,
-        type="reminder.cancelled",
-        payload={"reminder_id": reminder_id, "action_id": ctx.action_id},
+        reminder_id,
+        action_id=ctx.action_id,
         source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
-        correlation={"action_id": ctx.action_id},
     )
     return {"reminder_id": reminder_id, "text": one.text}
 

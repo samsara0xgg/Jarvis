@@ -151,6 +151,7 @@ from jarvis.execution.tools import (
     turn_action_ids,
 )
 from jarvis.execution.workers import Workers, make_worker_tools
+from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.daily_report import (
     PLAN_SERVER,
     DailyReportService,
@@ -169,6 +170,7 @@ from jarvis.runtime.dashboard import (
     ViewState,
 )
 from jarvis.runtime.decision_state import DecisionStateCache
+from jarvis.runtime.departures import Departures
 from jarvis.runtime.home import Home, mail_body, mail_summarizer, weather_lookup
 from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
@@ -2895,7 +2897,11 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
         job_mail=job_mail,
         moment=moment,
-        reminders=Reminders(paths.event_log, moment=moment),
+        reminders=Reminders(
+            paths.event_log,
+            moment=moment,
+            departures=Departures(paths.event_log, BusLive(paths.root / "cache")),
+        ),
         voice_words=_voice_words(full_config, config_path, jev_log),
         oneshot=_jev_oneshot(
             full_config, config_path, jev_log, tier0_table, _event_emitter(paths.event_log),

@@ -11,6 +11,7 @@ import { spring, step } from './starCore';
 import { HOVER_DWELL_MS, HOVER_EXIT_MS, HOVER_SPEED, PointerIntent } from './pointerIntent';
 import { MOTION, SPRINGS } from './motion';
 import { skyline, type IslandRect as Rect } from './islandShape';
+import { pinLabel, pinTrip, pinWidest, type Departure } from './pin';
 
 // Beside the notch, after the notch lab (ADR 0069, 0070). Right of the camera, one mark per group with its count:
 // your turn (the beacon), working, finished, parked (the moon). Only working moves; the beacon sends out its rings
@@ -21,6 +22,9 @@ import { skyline, type IslandRect as Rect } from './islandShape';
 // the panel or by dragging the finished mark down out of the menu bar; anything on your turn can be parked.
 // A glow (ADR 0187) is one more amber point in the turn group: it counts there and arrives like anything new, and its rows
 // follow the sessions on the list: a click opens its place, the ✕ clears it. It is a mark, so only dnd keeps it back.
+// A pinned bus trip (ADR 0200) is a pill after the marks: `🚌 28 · 12 分` counts down to when he must leave, amber from 5 min and
+// 该走了 until the bus goes; resting on it shows the whole trip, a click shows ✕ and the next click unpins. It never opens the panel,
+// and where the Dashboard leaves no room for it beside the marks it steps aside before they do.
 type Point = { x: number; y: number };
 export type Kind = 'turn' | 'work' | 'done' | 'moon';
 // While the Dashboard hangs below, the wing opens nothing of its own: the pointer on a mark tells the Dashboard which group,
@@ -36,13 +40,16 @@ export type NotchAct = {
 };
 // The glows on the wing, and what a click on one and its ✕ do.
 export type NotchGlow = { items: Glow[]; open: (g: Glow) => void; clear: (g: Glow) => void };
+// The pinned bus trip, and what the pill's ✕ does.
+export type NotchPin = { item: Departure | null; unpin: (d: Departure) => void };
 // A pop names sessions; a card is a needs-you card the companion builds, for session `id` when it has one.
 // A pop carries its 合适吗 row in `rate` (ADR 0160).
 export type NotchNote = { key: string; id?: string; pop?: string[]; card?: ReactNode; rate?: ReactNode; onClose: () => void };
 
 // Your turn: asking first, then stopped, then finished.
 const TURN_ORDER: AgentState[] = ['wait', 'err', 'done'];
-const PAD = 4, DONE_FADE_MS = 10 * 60_000, GCELL = 26, GCX = 6, WING_W = 112, DOT_WING_W = 64, DOT_R = 2.6, DOT_COUNT_X = 7.5, DOT_GAP = 5, DIGIT_W = 6.1, POP_W = 360, ALL_W = 440, PAGE_W = 560, CARD_W = 440, DRAG_OUT = 30, DWELL_MS = 1500;
+const PAD = 4, DONE_FADE_MS = 10 * 60_000, GCELL = 26, GCX = 6, WING_W = 112, DOT_WING_W = 64, DOT_R = 2.6, DOT_COUNT_X = 7.5, DOT_GAP = 5, DIGIT_W = 6.1, POP_W = 360, ALL_W = 440, PAGE_W = 560, CARD_W = 440, DRAG_OUT = 30, DWELL_MS = 1500, PIN_H = 16, PIN_PAD = 6, PIN_GAP = 5, PIN_TIP_MS = 250, PIN_ASK_MS = 2500;
+const PIN_FONT = '600 10px "JetBrains Mono", Menlo, monospace';
 const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const countPulse = (progress: number) => reduced.matches ? 1 : 1 + .45 * Math.sin(Math.PI * progress);
@@ -51,6 +58,13 @@ const working = (st: AgentState) => st === 'work' || st === 'pack';
 const turnLead = (look: MarkLook, turn: Agent[], glows = 0): 'wait' | 'err' | 'done' => look === 'dot' && !glows && turn[0] && turn[0].state !== 'wait' ? turn[0].state === 'err' ? 'err' : 'done' : 'wait';
 // The panel's words in the chosen language (the panels get them from `useT`, the canvas from `L.current.say`).
 type T = (l: L) => string;
+// The pinned trip's pill is as wide as its widest words, so it does not shift when the minutes lose a digit.
+let measuring: CanvasRenderingContext2D | null = null;
+const pinWidth = (d: Departure, say: T) => {
+  const ctx = measuring ??= document.createElement('canvas').getContext('2d')!;
+  ctx.font = PIN_FONT;
+  return Math.ceil(Math.max(...pinWidest(d, say).map(w => ctx.measureText(w).width))) + 2 * PIN_PAD;
+};
 
 // ---------- what the panels show ----------
 // The beacon or the moon at `size` css px, for a panel's label.
@@ -215,9 +229,9 @@ function Pop({ agents, look, act, rate, onClose }: { agents: Agent[]; look: Mark
     <div className="u-list">{agents.map(a => <PopRow key={a.id} a={a} look={look} act={act} tag={a.state === 'err' && !all ? <em> {t(['stopped', '出错停了'])}</em> : null}/>)}</div>{rate}</div>;
 }
 
-export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, edge, aside, act, glow, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
+export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, edge, aside, act, glow, pin, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
   look: MarkLook; agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; geo: NotchGeo;
-  cursor: RefObject<Point>; note: NotchNote | null; quiet: boolean; edge: number | null; aside?: NotchAside; act: NotchAct; glow?: NotchGlow; onNoteHover: (on: boolean) => void;
+  cursor: RefObject<Point>; note: NotchNote | null; quiet: boolean; edge: number | null; aside?: NotchAside; act: NotchAct; glow?: NotchGlow; pin?: NotchPin; onNoteHover: (on: boolean) => void;
   port: string | null; keys: number; onKeys: (on: boolean) => void; onViewing: (id: string | null) => void;
   onJoinedChange?: (joined: boolean) => void;
 }) {
@@ -236,7 +250,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
   if (kb && kb.view === 'list' && order.length && !order.includes(kb.id)) { kb.i = Math.min(kb.i, order.length - 1); kb.id = order[kb.i]; }
   const kbAgent = kb ? agents.find(a => a.id === kb.id) : undefined;
   const paged = kb?.view === 'page' && kbAgent && !kbCard ? kbAgent : undefined;
-  const root = useRef<HTMLDivElement>(null), shape = useRef<SVGPathElement>(null), fx = useRef<HTMLCanvasElement>(null), hit = useRef<HTMLDivElement>(null);
+  const root = useRef<HTMLDivElement>(null), tip = useRef<HTMLDivElement>(null), shape = useRef<SVGPathElement>(null), fx = useRef<HTMLCanvasElement>(null), hit = useRef<HTMLDivElement>(null);
   const drop = useRef<HTMLDivElement>(null), dropIn = useRef<HTMLDivElement>(null), noteP = useRef<HTMLDivElement>(null), noteIn = useRef<HTMLDivElement>(null);
   const st = useRef({
     boxes: [] as Box[], wingTarget: 0, opened: false, dirty: true, innerL: 0, lastIn: 0, wantAt: 0, want: false, open: false, hot: '',
@@ -248,10 +262,11 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     // Sessions on their way into the moon, from where the pointer was, and when the last one landed.
     flights: [] as { id: string; to: Kind; st: AgentState; x: number; y: number; at: number }[],
     bumpAt: { turn: -1e9, work: -1e9, done: -1e9, moon: -1e9 }, parkedIds: new Set<string>(),
+    pin: null as { x0: number; x1: number } | null, pinAsk: false, pinSeen: -1e9, pinOn: -1e9, pinId: '', pinLabel: '',
     popOrigins: new Map<string, Point>(), intent: new PointerIntent(), resolvedNote: '', workLandingUntil: 0, joined: false, asideKey: null as Kind | null,
   }).current;
-  const L = useRef({ look, turn, work, fin, moon, glows, geo, note, quiet, edge, aside, onNoteHover, onJoinedChange, held: false, pageW: false, say: t });
-  L.current = { look, turn, work, fin, moon, glows, geo, note, quiet, edge, aside, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged, say: t };
+  const L = useRef({ look, turn, work, fin, moon, glows, pin, geo, note, quiet, edge, aside, onNoteHover, onJoinedChange, held: false, pageW: false, say: t });
+  L.current = { look, turn, work, fin, moon, glows, pin, geo, note, quiet, edge, aside, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged, say: t };
   const members = (key: Kind) => ({ turn: L.current.turn, work: L.current.work, done: L.current.fin, moon: L.current.moon })[key];
   // What a group's mark counts: its sessions, and for the turn its glows too.
   const size = (key: Kind) => members(key).length + (key === 'turn' ? L.current.glows.length : 0);
@@ -361,24 +376,54 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       const p = cursor.current, ww = Math.max(0, s.ww.value);
       const speed = st.intent.sample(p, now);
       const inWing = !!p && p.y <= top + 2 && p.x >= g.notchR && p.x <= g.notchR + ww + 2;
+      // The pinned trip (ADR 0200): the pointer on its pill shows the trip in one line; it never opens the panel.
+      const pinNow = L.current.pin?.item ?? null, onPin = !!p && inWing && !!pinNow && !!st.pin && p.x >= st.pin.x0 && p.x < st.pin.x1;
+      if (onPin) { if (st.pinOn < 0) st.pinOn = now; st.pinSeen = now; } else st.pinOn = -1;
+      if (st.pinAsk && (now - st.pinSeen > PIN_ASK_MS || pinNow?.id !== st.pinId)) st.pinAsk = false;
+      st.pinId = pinNow?.id ?? '';
+      if (tip.current) {
+        const show = onPin && !st.pinAsk && now - st.pinOn >= PIN_TIP_MS && !L.current.held;
+        if (show && pinNow) {
+          const line = pinTrip(pinNow, L.current.say);
+          if (tip.current.textContent !== line) tip.current.textContent = line;
+          tip.current.style.transform = `translate(${st.pin!.x1}px,${top + 6}px) translateX(-100%)`;
+        }
+        tip.current.classList.toggle('is-on', show);
+      }
       // One mark per group, so the row is at most four marks. Nothing moves while the pointer is on the row or the
       // panel is open; the counts follow along, and the row catches up once you leave.
       if (st.drag || !st.boxes.length || !(st.open || inWing) || now < st.workLandingUntil && !st.boxes.some(b => b.key === 'work')) {
         const kinds = (['turn', 'work', 'done', 'moon'] as const).filter(key => size(key) || key === 'work' && now < st.workLandingUntil);
-        if (look === 'dot') {
-          // 点线环 matches her lobe on the notch's other side, 64 pt, and only grows when the counts need the room.
-          const widths = kinds.map(key => DOT_COUNT_X + DIGIT_W * Math.min(3, String(size(key)).length));
-          const used = widths.reduce((sum, w) => sum + w, 0) + DOT_GAP * Math.max(0, kinds.length - 1);
-          st.wingTarget = kinds.length ? Math.max(DOT_WING_W, Math.ceil(used + 2 * PAD)) : 0;
-          let x = g.notchR + (st.wingTarget - used) / 2;
-          st.boxes = kinds.map((key, i) => { const b = { key, x0: x - DOT_GAP / 2, x1: x + widths[i] + DOT_GAP / 2, cx: x + DOT_R }; x += widths[i] + DOT_GAP; return b; });
-        } else {
-          let x = g.notchR + PAD + (4 - kinds.length) * GCELL / 2;
-          st.boxes = kinds.map(key => { const b = { key, x0: x, x1: x + GCELL, cx: x + GCX }; x += GCELL; return b; });
-          st.wingTarget = kinds.length ? WING_W : 0;
-        }
+        // The pinned trip (ADR 0200) is a pill after the marks. Where the Dashboard leaves no room for it beside the marks it steps aside, the marks stay.
+        const pinned = L.current.pin?.item ?? null, pinW = pinned ? pinWidth(pinned, L.current.say) : 0;
+        const lay = (withPin: boolean) => {
+          const pw = withPin ? pinW : 0, lead = kinds.length ? PIN_GAP : 0;
+          if (look === 'dot') {
+            // 点线环 matches her lobe on the notch's other side, 64 pt, and only grows when the counts need the room.
+            const widths = kinds.map(key => DOT_COUNT_X + DIGIT_W * Math.min(3, String(size(key)).length));
+            const marksW = widths.reduce((sum, w) => sum + w, 0) + DOT_GAP * Math.max(0, kinds.length - 1), used = marksW + (pw ? lead + pw : 0);
+            st.wingTarget = kinds.length || pw ? Math.max(DOT_WING_W, Math.ceil(used + 2 * PAD)) : 0;
+            let x = g.notchR + (st.wingTarget - used) / 2;
+            st.boxes = kinds.map((key, i) => { const b = { key, x0: x - DOT_GAP / 2, x1: x + widths[i] + DOT_GAP / 2, cx: x + DOT_R }; x += widths[i] + DOT_GAP; return b; });
+            st.pin = pw ? { x0: kinds.length ? x - DOT_GAP + lead : x, x1: (kinds.length ? x - DOT_GAP + lead : x) + pw } : null;
+          } else if (pw) {
+            let x = g.notchR + PAD;
+            st.boxes = kinds.map(key => { const b = { key, x0: x, x1: x + GCELL, cx: x + GCX }; x += GCELL; return b; });
+            const x0 = kinds.length ? x + lead : x;
+            st.pin = { x0, x1: x0 + pw };
+            st.wingTarget = Math.ceil(st.pin.x1 - g.notchR + PAD);
+          } else {
+            let x = g.notchR + PAD + (4 - kinds.length) * GCELL / 2;
+            st.boxes = kinds.map(key => { const b = { key, x0: x, x1: x + GCELL, cx: x + GCX }; x += GCELL; return b; });
+            st.wingTarget = kinds.length ? WING_W : 0;
+            st.pin = null;
+          }
+        };
+        lay(!!pinned);
+        const e = L.current.edge;
+        if (pinned && e !== null && g.notchR + st.wingTarget > e) lay(false);
         // What the row shows, for the checks: `turn2 work4 done3 moon1`.
-        const marks = st.boxes.map(b => `${b.key}${size(b.key)}`).join(' ');
+        const marks = [...st.boxes.map(b => `${b.key}${size(b.key)}`), ...st.pin ? ['pin'] : []].join(' ');
         if (root.current!.dataset.marks !== marks) root.current!.dataset.marks = marks;
       }
       // A slow 140 ms dwell signals intent. The exit grace bridges the growing
@@ -387,7 +432,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         const inDrop = !!p && st.open && p.x >= s.dx.value && p.x <= s.dx.value + s.dw.value && p.y >= top - 2 && p.y <= s.dd.value;
         const slot = inWing ? st.boxes.find(b => p!.x >= b.x0 && p!.x < b.x1) : undefined;
         const approaching = st.open && st.intent.headingTo({ left: s.dx.value, right: s.dx.value + s.dw.value, top, bottom: s.dd.value });
-        const want = held || (!note && !quiet && (inWing || inDrop || approaching));
+        const want = held || (!note && !quiet && (inWing && !onPin || inDrop || approaching));
         if (!held && slot) setHotKey(slot.key);
         const ak = L.current.aside && slot ? slot.key : null;
         if (ak !== st.asideKey) { st.asideKey = ak; L.current.aside?.hover(ak); }
@@ -504,6 +549,22 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
           ctx.beginPath(); ctx.roundRect(b.cx - 5, top - 3.5, 10, 1.6, .8); ctx.fill(); ctx.shadowBlur = 0;
         }
       }
+      // The pinned trip: a pill in the wing's own mark colours, amber from 5 min, its countdown read from the clock each frame.
+      const trip = L.current.pin?.item;
+      if (st.pin && trip) {
+        const shown = pinLabel(trip, Date.now(), say), words = st.pinAsk ? `✕ ${say(['Unpin', '取消'])}` : shown.text, c = COLOR.wait.join(',');
+        if (!shown.gone) {
+          ctx.save();
+          if (trip.stale && !st.pinAsk) ctx.globalAlpha = .6;
+          ctx.fillStyle = shown.amber && !st.pinAsk ? `rgba(${c},.16)` : 'rgba(214,222,250,.1)';
+          ctx.beginPath(); ctx.roundRect(st.pin.x0, top / 2 - PIN_H / 2, st.pin.x1 - st.pin.x0, PIN_H, PIN_H / 2); ctx.fill();
+          ctx.font = PIN_FONT; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+          ctx.fillStyle = shown.amber && !st.pinAsk ? rgba(tint(COLOR.wait, .45)) : 'rgba(214,222,250,.62)';
+          ctx.fillText(words, (st.pin.x0 + st.pin.x1) / 2, top / 2 + .5);
+          ctx.restore();
+        }
+        if (root.current!.dataset.pin !== words) root.current!.dataset.pin = words;
+      } else if (root.current!.dataset.pin) root.current!.dataset.pin = '';
       ctx.restore();
       // Pops and parked stars share the same arc, landing in their own group.
       const ty = top / 2;
@@ -577,9 +638,16 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
   const shownNote = note ?? lastNote.current;
   return <div ref={root} className="notch">
     <svg className="notch-shape" aria-hidden="true"><path ref={shape}/></svg>
+    <div ref={tip} className="notch-pin-tip" aria-hidden="true"/>
     <canvas ref={fx} className="notch-fx" data-look={look} aria-hidden="true" style={{ width: geo.width }}/>
     <div ref={hit} className="notch-hit" data-hit aria-hidden="true"
       onPointerDown={e => {
+        // The pinned trip's pill: a click shows ✕, the next one unpins (ADR 0200). It opens nothing.
+        const trip = L.current.pin?.item;
+        if (st.pin && trip && e.clientX >= st.pin.x0 && e.clientX < st.pin.x1) {
+          if (st.pinAsk) { st.pinAsk = false; L.current.pin!.unpin(trip); } else { st.pinAsk = true; st.pinSeen = performance.now(); }
+          return;
+        }
         const b = st.boxes.find(x => e.clientX >= x.x0 && e.clientX < x.x1);
         if (L.current.aside) { if (b) L.current.aside.open(b.key); return; }
         if (b) setHotKey(b.key);

@@ -34,6 +34,7 @@ dependencies = [
     "livekit>=1.1.20",    # WebRTC AEC3 echo canceller: Jarvis does not hear itself over the laptop speakers
     "pyusb",              # ADR 0147 — the reSpeaker XVF3800's lights and output levels over USB control transfers
     "libusb-package",     # ADR 0147 — the libusb dylib pyusb loads, so a fresh Mac needs no Homebrew
+    "gtfs-realtime-bindings>=3.0.0",
 ]
 
 [project.optional-dependencies]

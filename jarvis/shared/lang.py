@@ -321,6 +321,11 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "reminder.line": {"zh": "提醒：{text}", "en": "Reminder: {text}"},
     "reminder.late_minutes": {"zh": "（晚了 {n} 分钟）", "en": " ({n} minutes late)"},
     "reminder.late_hours": {"zh": "（晚了 {n} 小时）", "en": " ({n} hours late)"},
+    # ADR 0200: the reminder a pinned bus trip rings at its leave time; the stop name is the model's.
+    "departure.go": {
+        "zh": "该出门了，{route} 路 {departs} 在 {stop} 上车",
+        "en": "Time to leave: the {route} at {departs} from {stop}",
+    },
     # ADR 0093: the night run's spoken lines; its cards show the times.
     "night.started": {
         "zh": "好，挂到{until}。{seconds}秒后熄屏，晚安。",

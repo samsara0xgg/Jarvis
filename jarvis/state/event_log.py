@@ -1183,6 +1183,36 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    # A pinned bus departure on the notch (ADR 0200): the pin is a fold over these three types
+    # (`jarvis.state.departures`); a newer `pinned` replaces the older, the daemon's live refresh
+    # emits `updated`, and the notch's x emits `unpinned`.
+    EventTypeSchema(
+        event_type="departure.pinned",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=(
+            "pin_id", "reminder_id", "route", "board_stop", "leave_at_ms", "departs_at_ms",
+            "arrive_at", "stop_lat", "stop_lng", "to", "action_id",
+        ),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="departure.updated",
+        owner_layer="L5",
+        actor="jarvis_runtime",
+        required_payload=("pin_id", "reminder_id", "leave_at_ms", "departs_at_ms", "arrive_at"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="departure.unpinned",
+        owner_layer="L5",
+        actor="user",
+        required_payload=("pin_id",),
+        optional_payload=(),
+        schema_version=1,
+    ),
     EventTypeSchema(
         event_type="todo.revised",
         owner_layer="L4",

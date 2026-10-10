@@ -7,13 +7,15 @@ followed. ``set_reminder`` (L4) and the daemon's tick (runtime) read the same fo
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
-from jarvis.state.event_log import iter_events_of_types
+from jarvis.state.event_log import emit_event, iter_events_of_types
 
 if TYPE_CHECKING:
     import sqlite3
+    from datetime import datetime
 
 TYPES: Final[tuple[str, ...]] = (
     "reminder.scheduled",
@@ -72,3 +74,46 @@ def fold(conn: sqlite3.Connection) -> dict[str, Reminder]:
 def pending(conn: sqlite3.Connection) -> list[Reminder]:
     """The reminders still to fire, soonest first."""
     return sorted((r for r in fold(conn).values() if r.pending), key=lambda r: r.due_at_ms)
+
+
+def schedule(
+    conn: sqlite3.Connection,
+    *,
+    due: datetime,
+    text: str,
+    action_id: str,
+    source_event_id: str | None = None,
+) -> str:
+    """Append one ``reminder.scheduled`` event for ``due`` (aware) and return the new id."""
+    reminder_id = ID_PREFIX + uuid.uuid4().hex[:8]
+    emit_event(
+        conn,
+        type="reminder.scheduled",
+        payload={
+            "reminder_id": reminder_id,
+            "due_at_epoch_ms": int(due.timestamp() * 1000),
+            "due_at_local": due.isoformat(timespec="seconds"),
+            "text": text,
+            "action_id": action_id,
+        },
+        source_event_id=source_event_id,
+        correlation={"action_id": action_id},
+    )
+    return reminder_id
+
+
+def cancel(
+    conn: sqlite3.Connection,
+    reminder_id: str,
+    *,
+    action_id: str,
+    source_event_id: str | None = None,
+) -> None:
+    """Append ``reminder.cancelled`` for a reminder the caller knows is still pending."""
+    emit_event(
+        conn,
+        type="reminder.cancelled",
+        payload={"reminder_id": reminder_id, "action_id": action_id},
+        source_event_id=source_event_id,
+        correlation={"action_id": action_id},
+    )

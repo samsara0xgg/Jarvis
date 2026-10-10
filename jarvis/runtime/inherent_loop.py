@@ -200,6 +200,7 @@ from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state import quiet_mode
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_line import day_window, fold_day
+from jarvis.state.departures import ID_PREFIX as PIN_PREFIX
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
 from jarvis.state.event_log import (
     emit_event,
@@ -5050,10 +5051,13 @@ def _notice_deps(
             private = bool((await asyncio.to_thread(reminders.output))["private"])
             body = {"notices": [], "audio_private": private, **(hold or {"hold": None})}
         cards = await asyncio.to_thread(reminders.notices)
-        return {**body, "notices": [*cards, *body["notices"]]}
+        pin = await asyncio.to_thread(reminders.departures.view)
+        return {**body, "notices": [*cards, *body["notices"]], "departure": pin}
 
     async def act(notice_id: str, action: str, reaction: str | None) -> None:
-        if notice_id.startswith(ID_PREFIX):
+        if notice_id.startswith(PIN_PREFIX):
+            await asyncio.to_thread(reminders.departures.unpin, notice_id)
+        elif notice_id.startswith(ID_PREFIX):
             await asyncio.to_thread(reminders.acknowledge, notice_id, action)
         elif mail_act is not None:
             await mail_act(notice_id, action, reaction)

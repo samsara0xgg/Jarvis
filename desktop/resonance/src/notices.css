@@ -11,6 +11,8 @@
 .notch-pane { position:absolute; left:0; top:0; z-index:1; overflow:hidden; visibility:hidden; }
 .notch-pane.is-open { pointer-events:auto; }
 .notch-pane-in { position:absolute; top:0; padding:8px 12px 12px; transition:opacity var(--motion-fast) var(--ease-out); }
+.notch-pin-tip { position:absolute; left:0; top:0; z-index:4; padding:5px 10px; border-radius:var(--radius-control); background:#000; color:var(--p-muted); font-size:var(--text-detail); white-space:nowrap; opacity:0; visibility:hidden; pointer-events:none; transition:opacity var(--motion-fast) var(--ease-out),visibility 0s var(--motion-fast); }
+.notch-pin-tip.is-on { opacity:1; visibility:visible; transition-delay:0s; }
 .notch-catch { position:fixed; inset:0; z-index:9; pointer-events:auto; cursor:grabbing; }
 
 /* a star's panel, your turn, a folded colour, a pop */

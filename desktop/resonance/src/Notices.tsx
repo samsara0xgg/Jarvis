@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useLayoutEffect, useReducer, useR
 import { ArrowSquareOut, ArrowUp, Check, Moon, X } from '@phosphor-icons/react';
 import { jobKind, jobStamp } from './JobsPage';
 import { postRoute } from './homeData';
+import { isDeparture, type Departure } from './pin';
 import { AGENT_NAME, loadMarks, openLabel, requestLine, saveMark, type Agent, type AgentRequest, type AgentState } from './agents';
 import { AgentMark, type MarkLook, type MarkState } from './AgentMarks';
 import { tr, useT, type L, type Lang } from './companionSettings';
@@ -50,7 +51,7 @@ const isJob = (n: Notice): n is Notice & { kind: 'mail' | 'jobs' } => n.kind ===
 // ADR 0179: a reminder Allen set rides the job-mail notice, but no quiet level, call or away hold keeps it back, and it rings even on speakers.
 const isReminder = (n: { kind: string; job?: JobItem }) => n.kind === 'mail' && n.job?.mail_kind === 'reminder';
 // What the daemon is told about a notice: POST /inherent/notices/{id} { action: 'seen' } or { action: 'feedback', reaction }.
-const tell = (port: string | null, id: string, body: { action: 'seen' } | { action: 'feedback'; reaction: string }) => { if (port) void postRoute(port, `/inherent/notices/${encodeURIComponent(id)}`, body).catch(() => undefined); };
+const tell = (port: string | null, id: string, body: { action: 'seen' | 'dismissed' } | { action: 'feedback'; reaction: string }) => { if (port) void postRoute(port, `/inherent/notices/${encodeURIComponent(id)}`, body).catch(() => undefined); };
 type Arrival = Notice extends infer N ? N extends Notice ? Omit<N, 'key' | 'at' | 'cid' | 'held'> : never : never;
 // ADR 0160: every proactive card that is not job mail tells the daemon it was shown (with the facts and level it was shown at) and what Allen did with it.
 export const cardTell = (port: string | null, cid: string | undefined, body: Record<string, unknown>) => { if (port && cid) void postRoute(port, `/inherent/cards/${encodeURIComponent(cid)}`, body).catch(() => undefined); };
@@ -124,6 +125,8 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
       jobIds: new Set<string>(), seen: new Set<string>(),
       // Glows (ADR 0187): the glow rows of the latest poll, and the ids cleared here that the daemon may still serve for a poll or two.
       glows: [] as Glow[], glowGone: new Set<string>(),
+      // The pinned bus trip (ADR 0200) the latest poll served, and the pin taken off here that the daemon may still serve for a poll.
+      departure: null as Departure | null, departureGone: '',
       // Other cards (ADR 0160): the ids told `seen` to the daemon, and the reactions already told, as `cid|reaction`.
       snapped: new Set<string>(), reacted: new Set<string>(),
       // Sessions changed here before the daemon's marks arrived: their marks stay as she set them.
@@ -294,14 +297,15 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
       try {
         let r = await get();
         if (r.status === 404 && route === '/inherent/notices') { audio.current = undefined; route = '/inherent/moment'; r = await get(); }
-        if (r.status === 404) { word(null); takeGlows([]); bump(); return; }
+        if (r.status === 404) { word(null); takeGlows([]); s.departure = null; bump(); return; }
         if (!r.ok) { if (route === '/inherent/notices') audio.current = false; miss(); }
         if (r.ok && !stop) {
-          const { notices, audio_private, hold } = await r.json() as { notices?: JobNotice[]; audio_private?: boolean; hold?: unknown };
+          const { notices, audio_private, hold, departure } = await r.json() as { notices?: JobNotice[]; audio_private?: boolean; hold?: unknown; departure?: unknown };
           if (route === '/inherent/notices') audio.current = typeof audio_private === 'boolean' ? audio_private : undefined;
           word(hold);
           const rows = (Array.isArray(notices) ? notices : []).filter(n => typeof n.id === 'string' && typeof n.title === 'string');
           takeGlows(rows.filter(n => n.level === 'glow'));
+          s.departure = isDeparture(departure) && departure.id !== s.departureGone ? departure : null;
           for (const n of rows) if ((n.kind === 'mail' || n.kind === 'digest') && n.level !== 'glow') arrive({ kind: n.kind === 'mail' ? 'mail' : 'jobs', id: n.id, job: n });
           bump();
         }
@@ -317,6 +321,8 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
     tell(port, id, opened ? { action: 'seen' } : { action: 'feedback', reaction: 'dismissed' });
     bump();
   };
+  // The pin leaves the wing at once and the daemon is told to unpin it (ADR 0200).
+  const leaveDeparture = (d: Departure) => { s.departureGone = d.id; s.departure = null; tell(port, d.id, { action: 'dismissed' }); bump(); };
   // Their names leave any pop; `cards` takes their needs-you cards away too.
   const drop = (ids: string[], cards = false) => {
     for (const n of s.queue) if (n.kind === 'pop') n.ids = n.ids.filter(id => !ids.includes(id));
@@ -495,7 +501,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   };
   return { current, count: s.queue.filter(needs).length, peek: s.peek, openedAt: s.openedAt, over: s.over, card: current ? card(current) : null,
     unread: s.unread as ReadonlySet<string>, archived: s.archived as ReadonlySet<string>, parked: s.parked as ReadonlyMap<string, number>,
-    glows: s.glows.filter(g => !s.glowGone.has(g.id)), leaveGlow, read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, rate, acted, focus, bump };
+    glows: s.glows.filter(g => !s.glowGone.has(g.id)), leaveGlow, departure: s.departure, leaveDeparture, read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, rate, acted, focus, bump };
 }
 
 // ---------- what waited ----------
