@@ -21,6 +21,7 @@ struct WaitingCardView: View {
         // one field to pick from: the pick is the answer
         let oneTap = card.kind == .clarification && card.fields.count == 1 && !card.fields[0].choices.isEmpty
         VStack(alignment: .leading, spacing: 12) {
+            if !card.trip.isEmpty { box { VStack(alignment: .leading, spacing: 6) { ForEach(card.trip, id: \.self) { Text($0).font(AT.mono(12.5)).lineLimit(2) } } } }
             if !card.body.isEmpty { box { Text(card.body).font(.system(size: 14)).lineSpacing(14 * 0.5 - 3).lineLimit(compact ? (card.hint.isEmpty ? 4 : 3) : 12) } }
             if !card.hint.isEmpty { Text("一直允许：" + card.hint).font(AT.mono(11)).foregroundStyle(SetColor.muted).lineLimit(compact ? 1 : 3) }
             ForEach(card.fields, id: \.label) { f in field(f, oneTap: oneTap) }

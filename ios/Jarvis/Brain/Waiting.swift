@@ -53,6 +53,7 @@ struct WaitingCard: Identifiable, Equatable {
     var hint = ""                      // what "always" would allow, in the brain's own words
     var pushLine = ""                  // a Claude request as its notification words it: "tool · folder"
     var fields: [CardField] = []
+    var trip: [String] = []            // a bus card's options, one line each (ADR 0205): the card has no fields
     var actions: [CardAction]          // the last one is the main button
     var loginURL: URL?
 }
@@ -106,15 +107,29 @@ enum WaitingCards {
                            actions: [CardAction(label: "拒绝", answer: .decide(accept: false)), CardAction(label: "允许", answer: .decide(accept: true))])
     }
 
-    private static func clarification(_ c: [String: Any], _ id: String) -> WaitingCard {
+    /// the ask card of `GET /inherent/waiting` and of a `clarification.requested` row: a question and its fields, or a bus card (no fields, `trip` rows to read)
+    static func clarification(_ c: [String: Any], _ id: String) -> WaitingCard {
         let fields = ((c["fields"] as? [[String: Any]]) ?? []).compactMap { f -> CardField? in
             guard let label = f["label"] as? String else { return nil }
             return CardField(label: label, choices: (f["choices"] as? [String]) ?? [])
         }
         let question = str(c, "question")
+        let trip = tripLines(c["trip"] as? [String: Any])
+        if !trip.isEmpty {
+            return WaitingCard(id: "clarification-\(id)", kind: .clarification, brainId: id, short: "出行", title: question.isEmpty ? "怎么去" : question,
+                               meta: "她查了出行", body: "", trip: trip, actions: [CardAction(label: "知道了", answer: .dismiss)])
+        }
         return WaitingCard(id: "clarification-\(id)", kind: .clarification, brainId: id, short: "问你", title: question.isEmpty ? "她想问你" : question,
                            meta: fields.isEmpty ? "她想问你" : "要你补充 \(fields.count) 项", body: "", fields: fields,
                            actions: [CardAction(label: "取消", answer: .dismiss), CardAction(label: "发送", answer: .fill)])
+    }
+
+    /// up to three of a bus card's options: when to leave, the route and the stop to board at, when it arrives
+    private static func tripLines(_ trip: [String: Any]?) -> [String] {
+        ((trip?["options"] as? [[String: Any]]) ?? []).prefix(3).map { o in
+            let arrive = str(o, "arrive_at")
+            return [str(o, "leave_at") + " 出发", str(o, "route"), str(o, "board_stop")].filter { $0 != " 出发" && !$0.isEmpty }.joined(separator: " · ") + (arrive.isEmpty ? "" : " → " + arrive)
+        }
     }
 
     private static func claude(_ r: [String: Any], _ id: String) -> WaitingCard {

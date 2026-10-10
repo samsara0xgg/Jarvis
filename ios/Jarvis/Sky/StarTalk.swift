@@ -81,8 +81,25 @@ extension StarEngine {
         if let s = speaking { setTurn(speakId, alphas: s.alphas(now).map { ($0 * 16).rounded() / 16 }) }       // sixteenths: a character's fade is a few redraws, not one per frame
         if ui.talking && talk == nil && voiceState == .idle && !lingerHold && now > lingerUntil { ui.talking = false; rowKey = ""; setAbout(nil); aboutDropped = nil }
         put(\.topTime, clock(F))
+        for e in MainActor.assumeIsolated({ PhoneRows.take() }) { phoneEvent(e) }
         updateStream()
         if ui.panelOpen { updatePanel() }
+    }
+
+    /// What the host sent besides her words. A card goes in the talk as a row, after what she has said, and the waiting cards are read again at once so the panel and the dial have it too.
+    func phoneEvent(_ e: PhoneEvent) {
+        switch e {
+        case .card(let c):
+            if ui.talking {
+                ui.liveTurns.removeAll { $0.card?.brainId == c.brainId }
+                turnSeq += 1
+                withAnimation(.easeOut(duration: 0.25)) { ui.liveTurns.append(LiveTurn(id: turnSeq, his: false, text: "", card: c)) }
+            }
+            Task { @MainActor in await Waiting.shared.poll() }
+        case .cardGone(let id):
+            withAnimation(.easeOut(duration: 0.25)) { ui.liveTurns.removeAll { $0.card?.brainId == id } }
+            Task { @MainActor in await Waiting.shared.poll() }
+        }
     }
 
     /// The voice session's words as rows: his as he says them (then his line), hers as they come. A new utterance of the same session is new rows.
@@ -202,6 +219,14 @@ extension StarEngine {
             EV.append(e)
             TalkTopics.shared.debugSet(e.id, "明天几点出门？", "九点二十。坐 32 路，路上三十二分钟，可能下雨，带伞。")
             openId = e.id; rowKey = ""; seek(e.t)
+        case "clarify":
+            // she asks him two things while she talks: the host's own row, read as the phone reads it off /phone/ws
+            setLevel(0)
+            beginTalk(); lingerHold = true
+            addTurn(his: true, "帮我订周五晚上的位子")
+            addTurn(his: false, "好，我要先问你两件事。")
+            let row = #"{"type":"row","event_type":"clarification.requested","event_uid":"6f1c2d3e4a5b46788899aabbccddeeff","ts_epoch_ms":1791650000000,"payload":{"clarification_id":"Qdebug0001","turn_id":"T1","question":"哪一天，几位？","fields":[{"label":"哪一天","choices":["周五","周六"]},{"label":"几位","choices":["2 位","4 位"]}]}}"#
+            if case .row(let r)? = HostFrame(Data(row.utf8)) { MainActor.assumeIsolated { PhoneRows.offer(r) } }
         case "about":
             // a reminder open when he starts to talk: the chip is the talk's first row, and "它" in his words is that reminder
             setLevel(0)

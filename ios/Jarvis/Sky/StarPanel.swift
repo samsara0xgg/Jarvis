@@ -21,7 +21,18 @@ struct TalkRowView: View, Equatable {
     static func == (a: Self, b: Self) -> Bool { a.row == b.row }
 
     var body: some View {
-        if let a = row.about { AboutChip(about: a, drop: dropAbout) } else if row.his { bubble } else { her }
+        if let a = row.about { AboutChip(about: a, drop: dropAbout) } else if let c = row.card { cardRow(c) } else if row.his { bubble } else { her }
+    }
+
+    /// a card she put up while she talks: her question over its fields and buttons, in the glass box the pinned cards open into
+    private func cardRow(_ c: WaitingCard) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(c.title).font(.system(size: 16)).foregroundStyle(ink.opacity(0.92)).lineLimit(3)
+            WaitingCardView(card: c)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.08), lineWidth: 0.5))
     }
 
     private var bubble: some View {

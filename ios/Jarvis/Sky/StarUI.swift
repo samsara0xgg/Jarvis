@@ -45,6 +45,7 @@ struct LiveTurn: Identifiable, Equatable {
     var pics: [SentItem] = []           // what he sent with the words
     var leadIn = false                  // a line before the answer ("我上网查查"): more follows
     var growing = false                 // his words still coming in (the recognizer's partial)
+    var card: WaitingCard?              // a card she put up, in the place of words
     var at = Date()
 }
 
