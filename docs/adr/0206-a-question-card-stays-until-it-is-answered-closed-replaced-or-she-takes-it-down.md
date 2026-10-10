@@ -61,6 +61,9 @@ never approves an action.
 - A card she forgets to take down stays until he closes it or she asks
   again.
 - Each turn while a card waits carries one more note line in the packet.
+- The bus card of ADR 0205 follows these rules too: it stays while he talks.
+- ADR 0144's hold still hides a fragment's card for its window; the rest of
+  his sentence no longer closes it.
 - Taking a card down is one more tool call when his words answered it.
 - Every remembered fact still goes to the model provider in the system
   prompt of every request, as under ADR 0066.
