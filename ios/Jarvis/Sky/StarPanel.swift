@@ -375,8 +375,10 @@ struct TalkPanel: View {
     /// `fade` is the strip under the last row where rows scrolled out of view melt away; the last row itself rests above it
     private func stream(top: Double, bottom: Double, fade: Double, open: Double) -> some View {
         let days = TalkStream.compose(ui.convDays, live: ui.liveTurns, about: ui.about, cal: Cal.cur.cal, now: Date())
-        // under the dial the previous round shows dimmer over the newest one; with the panel open every row shows in full
-        let shown = Dictionary(zip(days.flatMap(\.rows).map(\.id), TalkStream.reading(days.flatMap(\.rows))), uniquingKeysWith: { a, _ in a })
+        // under the dial the previous round shows dimmer over the newest one; with the panel open every row shows in full.
+        // Those rounds are in the last two days: read only them, not the whole history on every frame of her talk.
+        let tail = days.suffix(2).flatMap(\.rows)
+        let shown = Dictionary(zip(tail.map(\.id), TalkStream.reading(tail)), uniquingKeysWith: { a, _ in a })
         return ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 14, pinnedViews: ui.typing ? [] : [.sectionHeaders]) {
