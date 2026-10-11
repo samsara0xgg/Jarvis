@@ -2033,6 +2033,56 @@ def iter_events_for_turn(
         yield _row_to_event(row)
 
 
+_STEP_TURN_ROWS: Final = (
+    "action.proposed", "action.running", "turn.ended", "turn.failed", "response.cancelled",
+)
+_STEP_ACTION_ENDS: Final = (
+    "action.result_observed", "action.failed", "action.timeout_assumed", "action.cancelled",
+)
+_STEP_COLUMNS: Final = (
+    "id, event_uid, type, schema_version, ts_epoch_ms, payload_json, source_event_id, "
+    "correlation_json"
+)
+
+
+def turn_action_events(conn: sqlite3.Connection, turn_ids: Iterable[str]) -> list[Event]:
+    """What the steps of ``turn_ids`` are folded from (ADR 0228), in append order.
+
+    Each turn's proposed, running and ending rows, by the indexed turn id, and the terminal rows
+    of the actions it proposed: those carry only the ``action_id``, so they are read through the
+    ``(type, action_id)`` index, one type at a time.
+    """
+    turns = json.dumps(list(dict.fromkeys(turn_ids)))
+    rows = conn.execute(
+        f"SELECT {_STEP_COLUMNS} FROM events WHERE correlation_id IN (SELECT value FROM "  # noqa: S608
+        "json_each(?)) AND type IN (SELECT value FROM json_each(?))",
+        (turns, json.dumps(_STEP_TURN_ROWS)),
+    ).fetchall()
+    actions = json.dumps(
+        [json.loads(row[5]).get("action_id") for row in rows if row[2] == "action.proposed"],
+    )
+    for ending in _STEP_ACTION_ENDS:
+        rows += conn.execute(
+            f"SELECT {_STEP_COLUMNS} FROM events WHERE type = ? AND "  # noqa: S608
+            "json_extract(payload_json, '$.action_id') IN (SELECT value FROM json_each(?))",
+            (ending, actions),
+        ).fetchall()
+    return [_row_to_event(row) for row in sorted(rows, key=lambda row: row[0])]
+
+
+def turns_of_events(conn: sqlite3.Connection, event_uids: Iterable[str]) -> dict[str, str]:
+    """``{event_uid: turn_id}`` for the events among ``event_uids`` that carry a turn id."""
+    return {
+        str(uid): str(turn)
+        for uid, turn in conn.execute(
+            "SELECT event_uid, json_extract(payload_json, '$.turn_id') FROM events "
+            "WHERE event_uid IN (SELECT value FROM json_each(?))",
+            (json.dumps(list(dict.fromkeys(event_uids))),),
+        )
+        if turn
+    }
+
+
 MAC_NODE: Final = "mac"
 """The ``ingestion_node`` of the rows this host writes itself; a paired device's carry its name."""
 

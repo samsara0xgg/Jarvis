@@ -9,11 +9,13 @@ other tool shows the generic line only if it is still running after
 
 from __future__ import annotations
 
-import re
 from collections import deque
 from typing import TYPE_CHECKING, Final, NamedTuple
 
 from jarvis.shared.lang import SLOW_TOOLS
+from jarvis.shared.steps import ENDS_ACTION as _ENDS_ACTION
+from jarvis.shared.steps import ENDS_TURN as _ENDS_TURN
+from jarvis.shared.steps import READ_TOOL as _READ_TOOL
 
 if TYPE_CHECKING:
     from jarvis.shared import Event
@@ -28,11 +30,6 @@ _MCP_SERVERS: Final[dict[str, str]] = {
     "gmail": "tool_status.mail",
     "notion": "tool_status.notion",
 }
-_READ_TOOL: Final = re.compile(r"search|list|get|fetch|read|query|view|find", re.IGNORECASE)
-_ENDS_TURN: Final = ("turn.ended", "turn.failed", "response.cancelled")
-_ENDS_ACTION: Final = (
-    "action.result_observed", "action.failed", "action.timeout_assumed", "action.cancelled",
-)
 EVENT_TYPES: Final[tuple[str, ...]] = (
     "action.proposed", "action.running", *_ENDS_ACTION, *_ENDS_TURN,
 )
