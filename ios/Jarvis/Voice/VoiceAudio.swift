@@ -10,6 +10,8 @@ final class VoiceAudio {
     private var timer: DispatchSourceTimer?
     private var observers: [NSObjectProtocol] = []
     private(set) var running = false
+    /// stopping the engine and handing the session back can block for a second (AirPods leaving the call route), so it runs here, off the main thread
+    private let sessionQueue = DispatchQueue(label: "jarvis.voice.session")
     /// mono Float32 microphone buffers and their level 0...1; off the main thread
     var onMic: (@Sendable (AVAudioPCMBuffer, Double) -> Void)?
     /// what the player owes the host, in order; on the main queue
@@ -31,7 +33,8 @@ final class VoiceAudio {
 
     func start() async throws {
         guard !running else { return }
-        Sound.shared.suspend()                              // one owner of the session: the UI cues' engine is stopped first
+        await withCheckedContinuation { c in sessionQueue.async { c.resume() } }   // a stop still letting go of the session finishes first
+        Sound.shared.suspend()                             // one owner of the session: the UI cues' engine is stopped first
         var started = false
         defer { if !started { Sound.shared.resume() } }
         let s = AVAudioSession.sharedInstance()
@@ -98,13 +101,16 @@ final class VoiceAudio {
         running = false
         timer?.cancel(); timer = nil
         observers.forEach(NotificationCenter.default.removeObserver); observers = []
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        if let source { engine.detach(source) }
-        source = nil
+        let engine = engine, source = source
+        self.source = nil
         core = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        Sound.shared.resume()
+        sessionQueue.async {                                // taps froze for a moment after each talk ended with AirPods on (live 2026-10-10)
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            if let source { engine.detach(source) }
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            Sound.shared.resume()
+        }
     }
 
     private func observe() {
