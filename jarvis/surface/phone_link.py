@@ -14,11 +14,15 @@ a newer one replaces the older (the older is closed with code 4000).
     phone -> host   {"type": "say", "utterance_id": "<1-64 of A-Za-z0-9_->", "text": "...",
                      "spoken": true, "language": "en", "confidence": 0.93,
                      "about": {"kind": "reminder", "id": "...", "title": "...", "start_ms": 0},
-                     "over_her": true, "conversation": false}
+                     "over_her": true, "conversation": false,
+                     "attachments": ["<id from POST /inherent/attachments>"]}
     host -> phone   {"type": "said", "utterance_id": "...", "turn_id": "T...",
                      "verdict": "turn"}
     host -> phone   {"type": "row", "event_type": "surface.response_chunk",
                      "event_uid": "<32 hex>", "payload": {...}, "ts_epoch_ms": 1700000000000}
+    host -> phone   {"type": "step", "turn_id": "T...", "step": 1, "tool": "transit",
+                     "label": "...", "state": "running", "started_ms": 1700000000000,
+                     "ended_ms": null}
     phone -> host   {"type": "barge"}                     it heard Allen over her voice, held
                                                           its output, and asks the host to stop
                                                           (the older phone; see ``over_her``)
@@ -38,6 +42,22 @@ included, rides there and is never spoken; the phone reads the slot's current ca
 ``GET /inherent/clarification``, which its device token opens like every route but the liveness
 probe. The final ``surface.response_emitted`` carries the written part (``document_text``,
 ``written_apart``) and the times the answer refers to (``times``).
+
+**Steps (ADR 0228).** ``step`` is one tool call of a turn this device opened, voice or typed: it
+goes out with ``state: "running"`` when the tool starts and again, with the same ``step`` number,
+as ``done`` or ``failed`` with ``ended_ms`` set. ``step`` counts from 1 in the order the tools
+started; ``tool`` is the tool's name; ``label`` is a fixed line of the language table, with a short
+detail of the call's arguments after " · " for the few tools where it helps
+(:mod:`jarvis.shared.steps`), and never the arguments themselves. ``started_ms`` and ``ended_ms``
+are the host's clock. Steps and rows are sent in log order, so a tool's ``running`` precedes the
+words it led to. The phone shows its own elapsed seconds; the steps of an answered turn come back,
+summarized, on ``GET /inherent/conversation``.
+
+A typed ``say`` (``spoken: false``) may carry ``attachments``, ids stored by ``POST
+/inherent/attachments``: the turn is the one ``POST /inherent/submit`` makes with them, checked
+by the same store (``error attachment_refused``, with the store's sentence, or ``no_attachments``
+on a host without one) and, if ``text`` is blank, given the same filler words. Spoken words carry
+none.
 
 ``say`` may carry ``about``, the item the phone has open (ADR 0214; ``jarvis.shared.about``): it
 is kept on the turn's opening row, and one that is malformed is answered with ``error bad_say``.
@@ -87,15 +107,18 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from fastapi import WebSocketDisconnect
 
+from jarvis.shared import lang
+from jarvis.state.attachments import AttachmentRefused, valid_id
 from jarvis.surface import word_judge
 from jarvis.surface.phone_player import PHONE_SAMPLE_RATE_HZ, PhoneFrameError
 from jarvis.surface.terminal_events import phone_turn_id
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
 
     from fastapi import WebSocket
 
+    from jarvis.shared import Event
     from jarvis.surface.phone_player import PhoneAudioStreamPlayer
     from jarvis.surface.terminal_events import BrainEvents
     from jarvis.surface.terminal_voice import RowCursor
@@ -140,6 +163,16 @@ class PhoneRows(Protocol):
     def cursor(self, device: str, after: int, *, spoken_only: bool = False) -> RowCursor:
         """Rows with ``id > after`` of the turns ``device`` opened (``spoken_only``: by voice)."""
 
+    def steps(self, device: str, after: int) -> StepCursor:
+        """The ``step`` frames of the tools those turns ran, from the rows past ``after``."""
+
+
+class StepCursor(Protocol):
+    """A place in the action rows of one device's turns (ADR 0228)."""
+
+    def poll(self) -> tuple[int, list[tuple[int, dict[str, Any]]]]:
+        """``(highest id seen, [(id of the row it came from, step frame)])``, advancing."""
+
 
 type OpenVoice = Callable[[str, Callable[[bytes], bool]], Awaitable[PhoneVoice | None]]
 """``(device, send_binary) -> voice``: build one connection's speech, or ``None`` if the host
@@ -161,6 +194,11 @@ class PhoneHub:
     ``heard_elsewhere(device, turn_id, text)`` (ADR 0219) is whether another device recorded
     these words just now. It blocks and runs on a worker thread; true answers a spoken ``say``
     with ``elsewhere`` and records nothing.
+
+    ``check_attachments(ids)`` (ADR 0228) is the store's check of the files a typed ``say``
+    names, as ``POST /inherent/submit`` makes it: it returns, or raises
+    :class:`~jarvis.state.attachments.AttachmentRefused`. It blocks and runs on a worker thread;
+    ``None`` is a host that takes no attachments.
     """
 
     events: BrainEvents
@@ -174,6 +212,7 @@ class PhoneHub:
     recent_speech: Callable[[], str] | None = None
     set_quiet: Callable[[str], None] | None = None
     heard_elsewhere: Callable[[str, str, str], bool] | None = None
+    check_attachments: Callable[[Sequence[str]], object] | None = None
     live: dict[str, _Connection] = field(default_factory=dict)
 
     def connected(self, device: str) -> bool:
@@ -335,21 +374,34 @@ async def _end(
 
 
 async def _stream_rows(hub: PhoneHub, conn: _Connection) -> None:
-    """Send the response rows of this device's turns, in log order, from where it connected."""
-    cursor = hub.rows.cursor(conn.device, hub.rows.high_water())
+    """Send the rows and the steps of this device's turns, in log order, from where it connected.
+
+    Rows are read before steps, and the two merged by log id: a step whose action row came
+    before a row read now is read now too, so its ``running`` never trails the words it led to.
+    """
+    start = hub.rows.high_water()
+    cursor = hub.rows.cursor(conn.device, start)
+    steps = hub.rows.steps(conn.device, start)
     while True:
+        batch: list[tuple[int, Event]] = []
+        stepped: list[tuple[int, dict[str, Any]]] = []
         try:
             _after, batch = cursor.poll()
         except sqlite3.Error:
             LOGGER.exception("phone %s: reading its rows failed; retrying", conn.device)
-            batch = []
-        for _row_id, event in batch:
-            conn.send_json(
-                {
-                    "type": "row", "event_type": event.type, "event_uid": event.event_uid,
-                    "payload": dict(event.payload), "ts_epoch_ms": event.ts_epoch_ms,
-                },
-            )
+        try:
+            _seen, stepped = steps.poll()
+        except sqlite3.Error:
+            LOGGER.exception("phone %s: reading its steps failed; retrying", conn.device)
+        frames = [
+            (row_id, {
+                "type": "row", "event_type": event.type, "event_uid": event.event_uid,
+                "payload": dict(event.payload), "ts_epoch_ms": event.ts_epoch_ms,
+            })
+            for row_id, event in batch
+        ]
+        for _row_id, frame in sorted([*frames, *stepped], key=lambda one: one[0]):
+            conn.send_json(frame)
         await asyncio.sleep(POLL_INTERVAL_S)
 
 
@@ -424,6 +476,7 @@ class _Say:
     about: Any
     over_her: bool
     conversation: bool
+    attachments: tuple[str, ...] = ()
 
     @property
     def judged(self) -> bool:
@@ -445,16 +498,44 @@ def _say(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
     if not isinstance(over_her, bool) or not isinstance(conversation, bool):
         conn.error("bad_say", "say's over_her and conversation are true or false")
         return
+    files = frame.get("attachments", [])
+    if (
+        not isinstance(files, list) or not all(valid_id(one) for one in files)
+        or (files and spoken)
+    ):
+        conn.error("bad_say", "say's attachments are the ids of files, and go with typed words")
+        return
+    if files and hub.check_attachments is None:
+        conn.error("no_attachments", "this host takes no attachments")
+        return
+    if files and not text.strip():
+        text = lang.t("attach.no_words")
     say = _Say(
         utterance_id, text, spoken, language, confidence, frame.get("about"),
-        over_her, conversation,
+        over_her, conversation, tuple(dict.fromkeys(files)),
     )
-    if say.judged:
+    if say.attachments:
+        conn.spawn(_record_with_files(hub, conn, say))
+    elif say.judged:
         conn.spawn(_judge_say(hub, conn, say))
     elif say.spoken and (check := _elsewhere_check(hub, conn)) is not None:
         conn.spawn(_record_unless_elsewhere(hub, conn, say, check))
     else:
         _record_say(hub, conn, say)
+
+
+async def _record_with_files(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
+    """A typed ``say`` with files is a turn once the store has vouched for them (ADR 0228).
+
+    The store is read on a worker thread, so the receive loop never blocks on the disk.
+    """
+    if hub.check_attachments is not None:
+        try:
+            await asyncio.to_thread(hub.check_attachments, say.attachments)
+        except AttachmentRefused as exc:
+            conn.error("attachment_refused", str(exc))
+            return
+    _record_say(hub, conn, say)
 
 
 def _elsewhere_check(hub: PhoneHub, conn: _Connection) -> Callable[[str, str], bool] | None:
@@ -507,7 +588,7 @@ def _record_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
     try:
         turn_id = hub.events.record_phone_say(
             conn.device, say.utterance_id, say.text, spoken=say.spoken, language=say.language,
-            confidence=say.confidence, about=say.about,
+            confidence=say.confidence, about=say.about, attachments=say.attachments,
         )
     except ValueError as exc:
         LOGGER.warning("phone %s: say refused: %s", conn.device, exc)

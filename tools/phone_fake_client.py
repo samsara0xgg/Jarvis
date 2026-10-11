@@ -65,6 +65,7 @@ class FakePhone:
             url, additional_headers={"Authorization": f"Bearer {token}"}, proxy=None,
         )
         self.voice = voice
+        self.host_voice = False  # set by hello(): a renderer has nothing to say to a mute host
         self.speed = speed
         self.clock_offset_ns = clock_offset_ns
         self.report_overlap = report_overlap  # samples each later REPORT starts before the last end
@@ -115,16 +116,21 @@ class FakePhone:
 
     def hello(self) -> dict[str, Any]:
         self.send({"type": "hello", "voice": self.voice})
-        return self.wait_text("ready")
+        ready = self.wait_text("ready")
+        self.host_voice = bool(ready.get("voice"))
+        return ready
 
     def send_ready(self) -> None:
         body = struct.pack("<IIqq", RATE, 512, PRESENTATION_DELAY_NS, self.phone_ns())
         self.ws.send(bytes([READY]) + body)
 
-    def say(self, utterance_id: str, text: str, *, spoken: bool) -> None:
+    def say(
+        self, utterance_id: str, text: str, *, spoken: bool, attachments: list[str] | None = None,
+    ) -> None:
         self.send({
             "type": "say", "utterance_id": utterance_id, "text": text, "spoken": spoken,
             "language": "en", "confidence": 0.9,
+            **({"attachments": attachments} if attachments else {}),
         })
 
     def wait_text(self, kind: str, timeout_s: float = 10.0, *, after: int = 0) -> dict[str, Any]:
@@ -144,6 +150,11 @@ class FakePhone:
     def rows(self) -> list[dict[str, Any]]:
         with self.lock:
             return [f for f in self.texts if f.get("type") == "row"]
+
+    def steps(self) -> list[dict[str, Any]]:
+        """The ``step`` frames received so far (ADR 0228), in arrival order."""
+        with self.lock:
+            return [f for f in self.texts if f.get("type") == "step"]
 
     def wait_until(self, condition: Callable[[], bool], what: str, timeout_s: float = 15.0) -> None:
         deadline = time.monotonic() + timeout_s
@@ -205,6 +216,9 @@ class FakePhone:
 
     def _render_until_closed(self) -> None:
         while not self._stop.wait(0.005):
+            if not self.host_voice:
+                self._last_tick = time.monotonic()
+                continue
             now = time.monotonic()
             due = int((now - self._last_tick) * RATE * self.speed)
             self._last_tick += due / (RATE * self.speed)
@@ -343,6 +357,7 @@ def main(argv: list[str] | None = None) -> int:
         text = "".join(
             r["payload"].get("text", "") for r in rows if r["event_type"] == "surface.response_chunk"
         )
+        print("".join(f"step {k['step']} {k['state']}: {k['label']}\n" for k in phone.steps()), end="")
         print(f"rows: {[r['event_type'] for r in rows]}")
         print(f"answer text: {text!r}")
         with phone.lock:

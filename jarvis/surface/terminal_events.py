@@ -202,6 +202,7 @@ class BrainEvents:
         language: str | None = None,
         confidence: float | None = None,
         about: object = None,
+        attachments: Sequence[str] = (),
     ) -> str:
         """Append the words a paired phone sent (ADR 0209), once; the turn id they open.
 
@@ -212,7 +213,9 @@ class BrainEvents:
         event uid and the turn id derive from it and ``device``, so the same utterance sent
         again writes nothing and returns the first one's turn id. ``about`` is the item the
         phone has open (ADR 0214); checked by :func:`jarvis.shared.about.clean_about` and kept on
-        the opening row, in either branch, only when given.
+        the opening row, in either branch, only when given. ``attachments`` (ADR 0228) are the ids
+        of the files typed words came with, already checked by the store; they ride the typed
+        row as ``POST /inherent/submit`` writes them, and spoken words take none.
 
         Raises:
             ValueError: a field is missing or has the wrong shape, ``about`` included.
@@ -246,6 +249,8 @@ class BrainEvents:
         else:
             payload["channel"] = _PHONE_TYPED_CHANNEL
             payload["language"] = language or _PHONE_TYPED_LANGUAGE
+            if attachments:
+                payload["attachments"] = list(attachments)
             event_type = "surface.user_intent"
         if checked_about is not None:
             payload["about"] = checked_about

@@ -202,6 +202,8 @@ from jarvis.shared.realtime import (
     new_response_id,
 )
 from jarvis.shared.realtime_trace import record_realtime_trace
+from jarvis.shared.steps import EVENT_TYPES as STEP_EVENT_TYPES
+from jarvis.shared.steps import StepFold
 from jarvis.state import picture_notes, quiet_mode
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_line import DaySources, day_window, fold_day
@@ -261,6 +263,7 @@ from jarvis.state.push_tokens import register_body
 from jarvis.state.reminders import ID_PREFIX
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.state.turn_overlap import any_turn_in_flight
+from jarvis.state.turn_steps import answer_steps
 from jarvis.surface import (
     respeaker_board,
     terminal_listen,
@@ -3245,7 +3248,7 @@ class _PhoneCursor:
         self._spoken_only = spoken_only
         self._turns: dict[str, bool] = {}
 
-    def _mine(self, turn_id: str) -> bool:
+    def mine(self, turn_id: str) -> bool:
         known = self._turns.get(turn_id)
         if known is None:
             channel, node = turn_origin(self._conn, turn_id)
@@ -3268,9 +3271,36 @@ class _PhoneCursor:
         mine: list[tuple[int, Event]] = []
         for row_id, event in rows:
             self._after = max(self._after, row_id)
-            if self._mine(str(event.payload.get("turn_id", ""))):
+            if self.mine(str(event.payload.get("turn_id", ""))):
                 mine.append((row_id, event))
         return self._after, mine
+
+
+class _PhoneStepCursor:
+    """One phone's place in the action rows: the ``step`` frames of the turns it opened (ADR 0228).
+
+    The proposal of an action names its turn, so only a proposal is checked against the device
+    (:meth:`_PhoneCursor.mine`); the fold ignores every later row of an action it never kept.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, after: int, device: str) -> None:
+        self._after = after
+        self._conn = conn
+        self._fold = StepFold()
+        self._own = _PhoneCursor(conn, after, device, spoken_only=False)
+
+    def poll(self) -> tuple[int, list[tuple[int, dict[str, Any]]]]:
+        frames: list[tuple[int, dict[str, Any]]] = []
+        for row_id, event in _fetch_events_after(
+            self._conn, after_id=self._after, event_types=STEP_EVENT_TYPES,
+        ):
+            self._after = max(self._after, row_id)
+            if event.type == "action.proposed" and not self._own.mine(
+                str(event.payload.get("turn_id") or (event.correlation or {}).get("turn_id") or ""),
+            ):
+                continue
+            frames.extend((row_id, step.frame()) for step in self._fold.feed(event))
+        return self._after, frames
 
 
 class _PhoneRows:
@@ -3284,6 +3314,31 @@ class _PhoneRows:
 
     def cursor(self, device: str, after: int, *, spoken_only: bool = False) -> _PhoneCursor:
         return _PhoneCursor(self._conn, after, device, spoken_only=spoken_only)
+
+    def steps(self, device: str, after: int) -> _PhoneStepCursor:
+        return _PhoneStepCursor(self._conn, after, device)
+
+
+def _add_steps(event_log: Path, rows: list[dict[str, object]]) -> None:
+    """ADR 0228: put the steps of the turn on each of her answers in a page of the conversation.
+
+    Her answer's record id is its ``surface.response_emitted`` row's uid, whose turn ran the
+    tools. A log that cannot be read leaves the page without steps, never without rows.
+    """
+    ids = [str(row["id"]) for row in rows if row["source"] == "jarvis"]
+    if not ids:
+        return
+    conn = open_runtime_event_log(event_log)
+    try:
+        found = answer_steps(conn, ids)
+    except sqlite3.Error:
+        LOGGER.warning("conversation: the steps of its answers could not be read", exc_info=True)
+        return
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    for row in rows:
+        row.update(found.get(str(row["id"]), {}))
 
 
 def _phone_barge_in(runtime: JarvisRuntime, device: str) -> str:
@@ -3397,6 +3452,9 @@ def _build_phone_hub(
         set_quiet=set_quiet,
         heard_elsewhere=lambda device, _turn_id, text: device_voice.heard_elsewhere(
             runtime.runtime_paths.event_log, device, text,
+        ),
+        check_attachments=(
+            None if runtime.attachments is None else runtime.attachments.check_for_turn
         ),
     )
     return hub, (lambda _device: None) if speech is None else speech.owner_boot
@@ -7038,6 +7096,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             rows, has_more = conversation_rows(
                 window_memory.db_path, since=since, after=after, before=before, limit=limit,
             )
+            _add_steps(runtime.runtime_paths.event_log, rows)
             return {"since": since, "rows": rows, "has_more": has_more}
 
         def _read_card() -> dict[str, Any]:
