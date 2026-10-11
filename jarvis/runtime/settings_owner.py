@@ -44,7 +44,7 @@ type Owner = Literal["brain", "device", "both", "machine"]
 
 _TABLE: Final[dict[Owner, tuple[str, ...]]] = {
     "brain": (
-        "llm", "attachments", "supervisor", "work_state.preset", "work_state.auto",
+        "llm", "attachments", "lifelog", "supervisor", "work_state.preset", "work_state.auto",
         "daily_report.preset", "daily_report.at", "day_summary", "ledger", "core_memory", "home",
         "job_mail", "moment", "spend_cap", "dashboard", "agents", "jev_log", "tools.web",
         "tools.screen.vision_preset", "tools.plugins", "tools.mcp", "confirmation",

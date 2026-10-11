@@ -245,6 +245,7 @@ from jarvis.state.input_submission_inbox import (
     submit_text_once,
 )
 from jarvis.state.ledger import TerminalScreen
+from jarvis.state.lifelog import DEFAULT_MIN_FREE_BYTES, LIFELOG_DIRNAME, Lifelog
 from jarvis.state.memory_db import (
     MemorySettings,
     SessionSettings,
@@ -5782,6 +5783,23 @@ def _model_takes_images(config: Mapping[str, Any]) -> bool:
     return provider in ("openai", "anthropic") and preset.get("images") is True
 
 
+def _lifelog(runtime: JarvisRuntime) -> Lifelog:
+    """ADR 0238: the archive of his recorded days, at ``lifelog.dir`` or in the runtime root."""
+    section = runtime.config.get("lifelog")
+    section = section if isinstance(section, dict) else {}
+    where = section.get("dir")
+    directory = (
+        Path(where).expanduser() if isinstance(where, str) and where.strip()
+        else runtime.runtime_paths.root / LIFELOG_DIRNAME
+    )
+    floor = section.get("min_free_gb")
+    min_free = (
+        int(floor * 1024 ** 3) if isinstance(floor, (int, float)) and floor >= 0
+        else DEFAULT_MIN_FREE_BYTES
+    )
+    return Lifelog(directory, min_free_bytes=min_free)
+
+
 def _media_dirs(runtime: JarvisRuntime) -> dict[Path, int | None]:
     """ADR 0067: the recordings, screenshots and phone attachments, each with its days to keep."""
     tools = runtime.config.get("tools") or {}
@@ -7491,6 +7509,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             live=live_voice,
             terminals=runtime.terminal_hub if runtime.listen_addresses else None,
             phone_events=runtime.phone_events if runtime.listen_addresses else None,
+            lifelog=_lifelog(runtime) if runtime.listen_addresses else None,
             phone=phone_hub,
             push_register=(
                 functools.partial(register_body, runtime.runtime_paths.root)

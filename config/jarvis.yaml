@@ -202,6 +202,13 @@ llm:
 attachments:
   retention_days: 30
 
+# ADR 0238 — 手机随身录下的一天（开关在手机上），每段约十分钟，存成原始档案，永久保留：
+# 不按时间清理，不进导出的 zip，「清掉录音」也不动它；只有放在运行目录里时，「抹掉全部数据」
+# 才会清掉它。路由 PUT /inherent/lifelog/audio/{id} 只在听已配对设备的主机上开。
+lifelog:
+  # dir: /mnt/ssd/lifelog          # 默认：<runtime root>/lifelog
+  min_free_gb: 5                   # 存一段之后磁盘剩余低于这个数就回 507，手机留着稍后重传
+
 # Supervisor sweep（ADR-0009 D4 / spec §3.4.8）：扫 open actions，超过
 # deadline 且无 terminal event 的 emit action.timeout_assumed。
 supervisor:

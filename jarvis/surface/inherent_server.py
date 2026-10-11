@@ -59,6 +59,7 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
 - ``POST /inherent/attachments`` — ADR 0211; multipart ``file`` → ``{"id", "kind", "name", ...}``;
   ``POST /inherent/submit`` then takes ``"attachments": [id]``
 - ``POST /inherent/share``       — ADR 0211; a link, text or files from another app's share sheet
+- ``PUT /inherent/lifelog/audio/{id}`` — ADR 0238; one piece of the phone's day recording, kept
 """
 
 from __future__ import annotations
@@ -111,6 +112,7 @@ from jarvis.state.attachments import (
 )
 from jarvis.state.day_line import parse_day
 from jarvis.state.event_log import MAC_NODE
+from jarvis.state.lifelog import MAX_PIECE_BYTES, Lifelog, PieceRefused
 from jarvis.state.memory_page import Conflict
 from jarvis.state.push_tokens import RegistrationError
 from jarvis.state.shares import (
@@ -638,6 +640,10 @@ class InherentDeps:
     # ``share_callable(fields)`` keeps a share that is not a turn and returns its id (``None``
     # leaves ``POST /inherent/share`` unregistered).
     attachments: Attachments | None = None
+    # ADR 0238: the archive a paired phone's recordings of his day go to, at
+    # ``PUT /inherent/lifelog/audio/{id}``. Needs ``device_name``; ``None`` leaves the route
+    # unregistered (404).
+    lifelog: Lifelog | None = None
     images_ok: bool = False
     submit_attachments: Callable[[str, Sequence[str]], str] | None = None
     # ADR 0212: ``submit_as_device(device, text, ids, about)`` starts the same turn with the
@@ -2659,6 +2665,42 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
             if len(frames) > MAX_BATCH_FRAMES:
                 raise HTTPException(status_code=413, detail="too many events in one batch")
             return {"acks": brain_events.record_phone_batch(name, frames)}
+
+    if deps.lifelog is not None and deps.device_name is not None:
+        lifelog_name, lifelog = deps.device_name, deps.lifelog
+
+        @app.put("/inherent/lifelog/audio/{piece_id}")
+        async def put_lifelog_audio(
+            piece_id: str,
+            request: Request,
+            started_ms: Annotated[int, Query()],
+            duration_ms: Annotated[int, Query()],
+        ) -> JSONResponse:
+            """ADR 0238: one closed piece of a paired phone's day recording, kept for good.
+
+            Only a paired device's own token opens it, as on ``/inherent/device/events``. 201 when
+            the piece is new, 200 when it was already kept with the same bytes; the phone deletes
+            its copy only once the answer's ``sha256`` matches its own.
+            """
+            token = _v2_presented_token(request.headers.get("authorization"))
+            name = None if token is None else lifelog_name(token)
+            if name is None:
+                raise HTTPException(
+                    status_code=403, detail="a paired device's token is required",
+                )
+            if not request.headers.get("content-length", "").isdigit():
+                raise HTTPException(status_code=411, detail="send a Content-Length")
+            data = await _capped_body(request, MAX_PIECE_BYTES)
+            try:
+                kept = await asyncio.to_thread(
+                    lifelog.save_audio, name, piece_id, started_ms, duration_ms, data,
+                )
+            except PieceRefused as exc:
+                raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+            return JSONResponse(
+                {"id": kept.id, "sha256": kept.sha256, "bytes": kept.size},
+                status_code=201 if kept.created else 200,
+            )
 
     if deps.push_register is not None and deps.device_name is not None:
         push_name, push_register = deps.device_name, deps.push_register
