@@ -843,7 +843,11 @@ def build_transit_tool(  # noqa: PLR0913 - the key, places, two readers, offers,
         for found in map(_first_board, answer.get("routes", ())):
             if found:
                 offers.stops[found[0]] = found[1]
-        show_card(ctx, {**offers.put(options, destination.strip().lower()[:60]), "modes": modes})
+        # The card offers only buses he can still catch: a missed one is in the answer, not a row.
+        catchable = [o for o in options if o["spare_min"] > -_EASY_SPARE_MIN]
+        if catchable:
+            trip = offers.put(catchable, destination.strip().lower()[:60])
+            show_card(ctx, {**trip, "modes": modes})
         extra: dict[str, Any] = {"modes": modes} if modes else {}
         if wanted:
             extra["named_route"] = _named_route(wanted, hits, now, bus_live)

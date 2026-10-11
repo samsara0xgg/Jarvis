@@ -523,6 +523,15 @@ def test_a_named_route_is_asked_from_ten_minutes_ago_and_judged_by_its_spare_min
     }
     assert [o["legs"][0]["route"] for o in out["options"]] == ["39", "28"]
     assert out["options"][0]["spare_min"] == spare
+    # The card offers only what he can still catch: a missed 39 is said, not offered.
+    card = PendingClarification.from_events(
+        iter_events_of_types(_LOG["conn"], CLARIFICATION_EVENT_TYPES)
+    )
+    assert card is not None
+    assert card.trip is not None
+    assert [r["route"] for r in card.trip["options"]] == (
+        ["28"] if verdict == "missed" else ["39", "28"]
+    )
 
 
 def test_the_named_route_is_matched_by_number_case_and_the_next_one_comes_with_it(
