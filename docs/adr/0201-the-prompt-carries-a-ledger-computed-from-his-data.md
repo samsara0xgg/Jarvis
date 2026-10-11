@@ -72,9 +72,11 @@ the program from rows; only the one "The day" line per day is model-made.
 
 - The system prompt grows by about 12k characters, and the provider's cache misses once a day
   when the text is rebuilt (and once when a new summary or "The day" line lands).
-- The standing text takes about 0.8 s to compute once a day, in the first turn or the prefix
-  warm that needs it; the per-turn text takes about 60 ms every turn. The phone adds about 35 ms
-  to the first and 4 ms to the second at 300 rows a day, and its cache check 1 ms a turn.
+- The standing text takes about 0.8 s to compute (about 2 s on the Pi at 2,200 spans a day), once
+  a day and when a note or a late phone batch lands. A background thread started at boot checks it
+  once a minute and rebuilds it, so no turn waits for it; the per-turn text takes about 60 ms
+  every turn (about 0.3 s on the Pi). The phone adds about 35 ms to the first and 4 ms to the
+  second at 300 rows a day, and its cache check 1 ms a turn.
 - "The day" costs a fraction of a cent a day.
 - A day with no TimeSink spans reads as "no recorded activity", which is what the data says and
   not necessarily what happened.

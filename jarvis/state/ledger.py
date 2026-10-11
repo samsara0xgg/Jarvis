@@ -30,6 +30,7 @@ from collections import Counter, defaultdict
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 from urllib.parse import parse_qsl, urlsplit
@@ -453,13 +454,37 @@ class _Data:
         self.starts = [span.start for span in self.spans]
         self.longest = max((span.end - span.start for span in self.spans), default=timedelta())
         self.union = self._union()
-        self.mail = self._mail(src, as_of)
-        self.commits = self._commits(src, lo, as_of)
-        self.talks, self.seen = self._memory(src, lo, as_of)
-        # The phone's days from ``phone_from`` on; None reads none (the per-turn blocks that
-        # need only mail do not touch the log's phone rows).
-        self.phone = _Phone() if phone_from is None else _Phone.load(src, phone_from, as_of)
+        self._phone_from = phone_from
         self._runs: list[tuple[datetime, datetime]] | None = None
+
+    # The sources below are read on first use: a per-turn block needs two of the five, and a
+    # turn renders three blocks.
+    @cached_property
+    def mail(self) -> list[_Mail]:
+        return self._mail(self.src, self.as_of)
+
+    @cached_property
+    def commits(self) -> list[tuple[datetime, str]]:
+        return self._commits(self.src, self.lo, self.as_of)
+
+    @cached_property
+    def _records(self) -> tuple[list[datetime], list[tuple[datetime, str]]]:
+        return self._memory(self.src, self.lo, self.as_of)
+
+    @property
+    def talks(self) -> list[datetime]:
+        return self._records[0]
+
+    @property
+    def seen(self) -> list[tuple[datetime, str]]:
+        return self._records[1]
+
+    @cached_property
+    def phone(self) -> _Phone:
+        """The phone's days from ``phone_from`` on; None reads none."""
+        if self._phone_from is None:
+            return _Phone()
+        return _Phone.load(self.src, self._phone_from, self.as_of)
 
     # --- loading ---------------------------------------------------------------------------
 
@@ -603,14 +628,13 @@ class _Data:
     def clip(self, begin: datetime, end: datetime) -> list[_Span]:
         """Spans overlapping [begin, end), cut to it."""
         end = min(end, self.as_of)
-        out: list[_Span] = []
         first = bisect_left(self.starts, begin - self.longest)
-        for span in self.spans[first:]:
-            if span.start >= end:
-                break
-            if span.end > begin:
-                out.append(span._replace(start=max(span.start, begin), end=min(span.end, end)))
-        return out
+        last = bisect_left(self.starts, end)
+        return [
+            span if span.start >= begin and span.end <= end
+            else span._replace(start=max(span.start, begin), end=min(span.end, end))
+            for span in self.spans[first:last] if span.end > begin
+        ]
 
     def day(self, day: date) -> tuple[datetime, datetime]:
         begin = datetime.combine(day, time.min, self.zone)

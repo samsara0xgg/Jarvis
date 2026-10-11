@@ -57,6 +57,7 @@ _DEFAULT_MAX_CHARS: Final[int] = 800
 _ATTEMPTS: Final[int] = 3
 _BACKOFF_S: Final[tuple[float, ...]] = (2.0, 8.0)
 _RETRY_S: Final[float] = 60.0
+_KEEP_WARM_S: Final[float] = 60.0
 _TRANSIENT: Final[frozenset[str]] = frozenset({"rate_limited", "network", "timeout"})
 
 
@@ -120,10 +121,19 @@ class LedgerContext:
         return self._standing(now), self._per_turn(now, last_ts)
 
     def warm(self, now: Callable[[], datetime]) -> None:
-        """Build today's standing text in the background, so the first turn finds it cached."""
-        threading.Thread(
-            target=lambda: self._standing(now()), name="jarvis-ledger-warm", daemon=True,
-        ).start()
+        """Keep the standing text current in the background, so no turn builds it.
+
+        The text is a 38-day read that costs seconds on a Pi, and it is rebuilt when the day turns,
+        a note lands, a late phone batch arrives or the terminal answers after being away. Checked
+        once a minute, as :meth:`_standing` checks it per turn (cheap when nothing changed), the
+        first turn of the day finds it already built.
+        """
+        def keep() -> None:
+            while True:
+                self._standing(now())
+                _time.sleep(_KEEP_WARM_S)
+
+        threading.Thread(target=keep, name="jarvis-ledger-warm", daemon=True).start()
 
     def _standing(self, now: datetime) -> str:
         zone = self.sources.zone
