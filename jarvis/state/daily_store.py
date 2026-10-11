@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from contextlib import closing
 from datetime import date, datetime
@@ -25,7 +26,7 @@ from jarvis.state.daily_contract import (
     timestamp,
     validate,
 )
-from jarvis.state.daily_records import read_connection
+from jarvis.state.daily_records import rank_by_words, read_connection
 from jarvis.state.event_log import append_event_in_transaction, read_log_epoch
 
 if TYPE_CHECKING:
@@ -336,15 +337,21 @@ def search_items(conn: sqlite3.Connection, operation: str, args: dict[str, Any])
             continue
         if "kind" in args and item["kind"] != args["kind"]:
             continue
-        if (
-            kind == "knowledge"
-            and args.get("query", "").casefold() not in item["statement"].casefold()
-        ):
-            continue
         if before and (item.get("due_at") is None or timestamp(item["due_at"]) >= before):
             continue
         found.append(item)
-    return page_rows(found, args, binding, snapshot, offset)
+    # Any of the words, as search_records: a whole-query substring found nothing for
+    # 「莲香 餐厅」 and the model saved the same fact three more times (live 2026-10-10).
+    terms = re.split(r"[\W_]+", args.get("query", "").casefold()) if kind == "knowledge" else []
+    words = list(dict.fromkeys(filter(None, terms)))
+    extra: dict[str, Any] = {}
+    if words:
+        found.sort(key=lambda item: timestamp(item["updated_at"]), reverse=True)
+        scores, extra["unmatched"] = rank_by_words([i["statement"] for i in found], words)
+        scored = [(score, item) for score, item in zip(scores, found, strict=True) if score]
+        scored.sort(key=lambda pair: -pair[0])
+        found = [item for _, item in scored]
+    return {**page_rows(found, args, binding, snapshot, offset), **extra}
 
 
 def _log_identity(conn: sqlite3.Connection) -> str:

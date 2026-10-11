@@ -60,3 +60,12 @@ into the first version and never deleted or read again.
 > all 7 bad ones but also 23 of 26 good ones, and Jev cannot see a mishearing. With
 > `review_drop` on, only `keep` at `review_min_confidence` lands, each other change is
 > dropped and logged, and a Jev failure rejects the day like a gate.
+
+> **Amendment (2026-10-10) — During conversation the model writes memory only on request.**
+> `remember` and `save_knowledge` are used mid-conversation only when the user explicitly
+> asks to remember or save something; the descriptions of both tools say so. Everything
+> else is left to the nightly pass, which reads the whole day's records, and today's words
+> are already in the history. Live 2026-10-10: after 「不是麦当劳 我在吃莲香」 the model filed what
+> he was eating as a lasting preference, then saved it again three times because
+> `search_knowledge` matched the query as one substring and found nothing; the search now
+> matches any of the query's words, ranked like `search_records`.

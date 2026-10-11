@@ -39,6 +39,19 @@ def read_connection(path: Path | None) -> sqlite3.Connection:
     return sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
 
 
+def rank_by_words(texts: list[str], words: list[str]) -> tuple[list[float], list[str]]:
+    """Score each text by the words it holds, rare words weighing more.
+
+    A score of 0 means no word occurs; the second value lists the words no text holds.
+    """
+    folded = [text.casefold() for text in texts]
+    hits = [[word in text for word in words] for text in folded]
+    doc_freq = [sum(h[i] for h in hits) for i in range(len(words))]
+    weight = [math.log(1 + len(texts) / df) if df else 0.0 for df in doc_freq]
+    scores = [sum(w for w, hit in zip(weight, h, strict=True) if hit) for h in hits]
+    return scores, [w for w, df in zip(words, doc_freq, strict=True) if not df]
+
+
 def search_records(path: Path | None, args: dict[str, Any]) -> dict[str, Any]:
     """Page timestamped, identified excerpts at one append watermark."""
     start, end = window(args)
@@ -71,18 +84,11 @@ def search_records(path: Path | None, args: dict[str, Any]) -> dict[str, Any]:
     if words:
         # Relevance: rare words weigh more, so a date digit shared by hundreds of rows
         # cannot bury the record that holds the rare words (live 2026-10-03).
-        hits = [[word in row[3].casefold() for word in words] for row in passing]
-        doc_freq = [sum(h[i] for h in hits) for i in range(len(words))]
-        weight = [math.log(1 + len(passing) / df) if df else 0.0 for df in doc_freq]
-        scored = [
-            (sum(w for w, hit in zip(weight, h, strict=True) if hit), row)
-            for h, row in zip(hits, passing, strict=True)
-            if any(h)
-        ]
+        scores, result["unmatched"] = rank_by_words([row[3] for row in passing], words)
+        scored = [(score, row) for score, row in zip(scores, passing, strict=True) if score]
         # Stable sort keeps the rowid order (newest or oldest first) among equal scores.
         scored.sort(key=lambda pair: -pair[0])
         passing = [row for _, row in scored]
-        result["unmatched"] = [w for w, df in zip(words, doc_freq, strict=True) if not df]
     found = [
         {
             "id": record_id,

@@ -89,12 +89,15 @@ _DESCRIPTIONS = {
         "result's source_refs is the full reference to cite when saving."
     ),
     "search_knowledge": (
-        "Find saved reusable facts, decisions, lessons and preferences. Defaults to active; "
+        "Find saved reusable facts, decisions, lessons and preferences. query matches any of "
+        "its words, best match first; unmatched lists words found nowhere. Defaults to active; "
         "status=all includes deprecated and needs_confirmation. Returns full statements, "
         "versions and source refs."
     ),
     "save_knowledge": (
-        "Save a sourced knowledge item, not a current activity state. source_refs must be "
+        "Save a sourced knowledge item, not a current activity state. Not during conversation "
+        "unless the user explicitly asks to save it; facts about the user go to remember "
+        "(on request), never here. source_refs must be "
         "record:<id>, event:<uid>, or timesink:<database>:<id>:<revision> returned by tools. "
         "TimeSink refs must still match when saved. basis describes origin, not "
         "verification. To correct/deprecate supply knowledge_id and expected_version, "

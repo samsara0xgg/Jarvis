@@ -1083,9 +1083,12 @@ def _make_remember(memory_db_path: Path) -> Tool:
         description=(
             "Keep a lasting fact about the user in [About the user], which you see at the "
             "start of every conversation: an address, a dietary need, a preference they "
-            "state. Use it when the user tells you such a fact or asks you to remember "
-            "something. A fact under a topic you used before replaces the old one. Not for "
-            "one-off choices or things that change from day to day. It is filed under a "
+            "state. Use it only when the user explicitly asks you to remember something "
+            "(remember this, don't forget, keep this in mind). Do not call it on your own "
+            "judgement: lasting facts are picked up by the nightly consolidation from the "
+            "day's records, and today's words are already in the history. What the user is "
+            "doing, eating or where they are right now is never a remember. A fact under a "
+            "topic you used before replaces the old one. It is filed under a "
             f"section: {', '.join(CORE_MEMORY_SECTIONS)} (default {CORE_MEMORY_SECTIONS[0]})."
         ),
         input_schema={

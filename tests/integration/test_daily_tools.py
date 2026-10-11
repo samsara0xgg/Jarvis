@@ -577,3 +577,59 @@ def test_no_memory_file_is_created_by_history_lookup(tmp_path: Path) -> None:
         assert not missing.exists()
     finally:
         fx.close()
+
+
+_SEARCH_STATEMENTS = (
+    "Allen 说他现在在吃莲香",
+    "偏好: 常去麦当劳",
+    "Prefers oat milk",
+    "莲香是一家餐厅",
+)
+# (query, statements expected in order, unmatched words). Cases avoid equal scores: ties fall
+# back to recency, which a one-second timestamp cannot order inside a test.
+_SEARCH_CASES = (
+    ("莲香 餐厅", (3, 0), []),  # the statement holding both words ranks first
+    ("莲香\uff0c餐厅\u3002", (3, 0), []),  # punctuation splits like whitespace
+    ("莲香 麦当劳 餐厅", (3, 1, 0), []),  # rare words outweigh the common one
+    ("麦当劳 火星", (1,), ["火星"]),
+    ("OAT  milk", (2,), []),  # casefolded
+    ("火星", (), ["火星"]),
+    (None, (0, 1, 2, 3), None),  # no query: every active item, no ranking report
+)
+
+
+@pytest.mark.parametrize(("query", "expected", "unmatched"), _SEARCH_CASES)
+def test_knowledge_search_matches_any_word_ranked(
+    daily: DailyHarness, query: str | None, expected: tuple[int, ...], unmatched: list[str] | None
+) -> None:
+    """The 2026-10-10 miss: 「莲香 餐厅」 found nothing as one substring and was re-saved."""
+    for i, statement in enumerate(_SEARCH_STATEMENTS):
+        daily.call("save_knowledge", _knowledge(daily, statement, f"s{i}"))
+    result = daily.call("search_knowledge", {} if query is None else {"query": query})
+    got = tuple(_SEARCH_STATEMENTS.index(item["statement"]) for item in result["items"])
+    if query is None:
+        got = tuple(sorted(got))  # unranked items come in id order, a random uuid
+    assert got == expected
+    assert result.get("unmatched") == unmatched
+
+
+def test_knowledge_search_pages_one_ranked_snapshot(daily: DailyHarness) -> None:
+    """A cursor keeps the ranked order and ignores a save made between pages."""
+    for i, statement in enumerate(_SEARCH_STATEMENTS):
+        daily.call("save_knowledge", _knowledge(daily, statement, f"s{i}"))
+    query = {"query": "莲香 餐厅", "limit": 1}
+    first = daily.call("search_knowledge", query)
+    daily.call("save_knowledge", _knowledge(daily, "莲香 餐厅 莲香 餐厅", "late"))
+    second = daily.call("search_knowledge", {**query, "cursor": first["next_cursor"]})
+    paged = [p["items"][0]["statement"] for p in (first, second)]
+    assert paged == [_SEARCH_STATEMENTS[3], _SEARCH_STATEMENTS[0]]
+    assert second["next_cursor"] is None
+
+
+def test_write_tools_say_writes_need_an_explicit_request(daily: DailyHarness) -> None:
+    """ADR 0146: during conversation the model writes memory only when the user asks."""
+    described = {t.name: t.description for t in daily.tools if isinstance(t, Tool)}
+    remember, save = described["remember"], described["save_knowledge"]
+    assert "only when the user explicitly asks" in remember
+    assert "never a remember" in remember
+    assert "unless the user explicitly asks" in save
