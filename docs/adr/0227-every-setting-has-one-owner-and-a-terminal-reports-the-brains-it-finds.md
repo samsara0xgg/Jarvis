@@ -48,15 +48,22 @@ decides where it is saved, and what is warned about and asked about when two mac
   `both` keys its own `settings.yaml` and page store set, with plain values. A key whose name
   matches `key|token|secret|pass|cred|auth` is reported as present, never its value; the shipped
   defaults are not reported. The brain compares them with its own effective config. For keys that
-  differ or are missing it logs one warning naming the keys, and puts a notice (`kind: mail`,
-  `mail_kind: settings`) on `GET /inherent/notices` for that device only (ADR 0218). The notice
-  is not in the conversation or memory.
+  differ or are missing it logs one warning naming the keys, and puts a notice of its own
+  `kind: "settings"` on `GET /inherent/notices` for that device only (ADR 0218). That endpoint
+  served only job mail's `mail` and `digest`, so this extends its kinds; the notice carries
+  `choices`, and the companion draws them as buttons. It is not in the conversation or memory.
 - **Only the owner's choice changes a file.** Through `POST /inherent/notices/{id}`:
   `device` writes the terminal's values into the brain's `settings.yaml` or page store (the file
-  backed up first) and restarts the brain once voice is idle; `brain` changes nothing on the
-  brain. Either answer then makes the terminal delete its own brain-owned keys (backed up
+  backed up first, and only the touched keys change: the comments, order and indentation of every
+  other line stay) and restarts the brain once voice is idle; `brain` changes nothing on the
+  brain. The answer says `restart: idle` or `manual`, which the card shows. Either answer then makes the terminal delete its own brain-owned keys (backed up
   first), so each setting has one owner. The card returns only when the reported differences
   change; they are kept in `terminal-settings.json` (0600) and dropped when the device is unpaired.
+- **A restart happens wherever something brings the daemon back.** `supervised()` is true under
+  the LaunchAgent or under systemd (`INVOCATION_ID` in the environment), and gates every restart
+  the daemon offers itself. The brain's unit (`jarvis/deployment/systemd/jarvis-brain.service`)
+  uses `Restart=always`: a self-restart ends the process with SIGTERM, which systemd counts as a
+  clean stop and `on-failure` would not restart.
 - **Each side warns at start** about keys in its own files that belong to the other side (a brain:
   `device` keys; a terminal: `brain` keys), names only, and ignores them.
 - **The Settings page routes by owner.** The terminal saves `device` and `both` keys locally and
@@ -76,6 +83,11 @@ decides where it is saved, and what is warned about and asked about when two mac
 - **The ask card for the question.** It is a single slot shared with the model's questions, and
   answering it starts a turn: the settings question and the answer enter the conversation and the
   model's context (ADR 0206's reminder line each turn). A notice does neither.
+- **Exit non-zero under systemd and keep `Restart=on-failure`.** The restart is SIGTERM through
+  the normal shutdown, which returns 0, so a second exit path would have to be added and chosen
+  by every caller; `Restart=always` is one line in the unit, and `systemctl stop` is still a stop.
+- **`yaml.safe_dump` for the brain's and terminal's files.** It rewrites the whole file: the
+  owner's `settings.yaml` has 37 comment lines, all of which it drops. `ruamel.yaml` round-trips.
 - **Keep `DEVICE_KEYS` as a hand list for the page.** It was the list that missed
   `wake_threshold` and `board_*`; a new page key would be wrong again without a failing test.
 
@@ -85,13 +97,16 @@ decides where it is saved, and what is warned about and asked about when two mac
 - A `both` key that differs stays different after "use the brain's": the terminal keeps its
   own copy, because the terminal also reads it. The card is not raised again until the reported
   values change.
-- Rewriting the brain's `settings.yaml` drops its comments and key order; the backup
-  (`settings.yaml.bak-<time>`) keeps them.
-- The brain restarts for a chosen change, where a supervisor restarts it; elsewhere it logs
-  that a restart is needed. A restart waits for no conversation and no sound playing, and a turn
-  in flight is not waited for.
-- The card needs the companion to draw `choices` as buttons and send `feedback` with the chosen
-  `id` as its reaction; until then the card shows its title and line and can only be dismissed.
+- `ruamel.yaml` is a new dependency (a pure-Python wheel, so the aarch64 brain installs it). A
+  deploy needs `uv sync --frozen --inexact`. An emptied parent mapping is removed with the
+  comments attached to it; the backup (`settings.yaml.bak-<time>`) keeps them.
+- The unit changed from `on-failure` to `always` and from `~/Jarvis` to `~/jarvis-brain`: an
+  installed unit is copied again, then `daemon-reload` and a restart. Until then the brain's
+  Settings page restart and a chosen change do nothing but log.
+- A chosen change restarts the brain once no conversation and no sound is going on; a turn in
+  flight is not waited for. Unsupervised, it logs and the card says to restart by hand.
+- Every client of `GET /inherent/notices` must ignore a `kind` it does not know; a settings
+  notice reaches only the device it names.
 - reSpeaker `board_*` keys are now saved on the terminal, which does not apply the board look.
 - `terminal-settings.json` is one more file under the runtime root, kept like
   `terminal-tools.json` (ADR 0225).
