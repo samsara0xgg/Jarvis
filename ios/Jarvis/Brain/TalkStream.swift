@@ -16,6 +16,8 @@ struct TalkRow: Identifiable, Equatable {
     var current = false                 // a row of the talk on show
     var card: WaitingCard?              // not words: a card she put up while she talks (ADR 0215)
     var about: About?                   // not words: the chip of the item he has open, the first row of the talk
+    var status: StatusLine?             // not words yet: the typing dots or the step she is on, in her place
+    var steps: StepsInfo?               // what she did to answer: the small line under her words
 }
 
 struct TalkDay: Identifiable, Equatable {
@@ -46,7 +48,8 @@ enum TalkStream {
             guard !text.isEmpty, let at = time(r.ts, cal) else { continue }
             // a spoken line before his next words was the whole answer; only one that more of hers follows (or may follow) is a lead-in
             let leadIn = r.isLeadIn && !(i + 1 < rows.count && rows[i + 1].isHis)
-            out.append(TalkRow(id: "c\(r.seq)", his: r.isHis, text: text, pics: r.isHis ? pics[r.seq] ?? [] : [], leadIn: leadIn, at: at.timeIntervalSince1970))
+            out.append(TalkRow(id: "c\(r.seq)", his: r.isHis, text: text, pics: r.isHis ? pics[r.seq] ?? [] : [], leadIn: leadIn, at: at.timeIntervalSince1970,
+                               steps: r.isHis || leadIn ? nil : r.steps))
         }
         return group(out, [], cal: cal, now: now)
     }
@@ -68,7 +71,7 @@ enum TalkStream {
         return group(rows, days, cal: cal, now: now)
     }
     static func row(_ t: LiveTurn) -> TalkRow {
-        TalkRow(id: "l\(t.id)", his: t.his, text: t.text, alphas: t.alphas, pics: t.pics, leadIn: t.leadIn, growing: t.growing, at: t.at.timeIntervalSince1970, current: true, card: t.card)
+        TalkRow(id: "l\(t.id)", his: t.his, text: t.text, alphas: t.alphas, pics: t.pics, leadIn: t.leadIn, growing: t.growing, at: t.at.timeIntervalSince1970, current: true, card: t.card, status: t.status, steps: t.steps)
     }
 
     /// `rows` after `days`: each row joins the last day when it is on that day, and the time goes above a row after a long gap or a new day

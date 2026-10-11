@@ -5,6 +5,8 @@ import Foundation
 enum LinkEvent: Sendable {
     case ready(device: String, voice: Bool, sampleRate: Int, judges: Bool)
     case row(RowFrame)
+    /// one tool call of a turn this device opened, started or ended (ADR 0228)
+    case step(StepFrame)
     /// a frame for the player (from the host's binary messages)
     case audio(PlayerIn)
     /// an `error` frame the link does not handle itself (bad_ping, bad_frame, no_voice, interrupt_failed)
@@ -19,8 +21,14 @@ enum LinkEvent: Sendable {
 
 enum LinkError: Error, LocalizedError {
     case notConnected, timeout, unpaired, host(String)
+    /// a typed say's files were refused by the host's store (`attachment_refused`): its own sentence
+    case refused(String)
+    /// the host takes no files with a say (`no_attachments`)
+    case noAttachments
     var errorDescription: String? {
         switch self {
+        case .refused(let m): return m
+        case .noAttachments: return "这个大脑不收文件"
         case .notConnected: return "没有连上 Jarvis"
         case .timeout: return "Jarvis 没有回应"
         case .unpaired: return "还没有配对"
@@ -36,11 +44,20 @@ protocol VoiceLink: AnyObject {
     func disconnect()
     /// The host's answer to this utterance: the turn id (nil unless the verdict is "turn") and the verdict. `timeout` seconds without it throws `.timeout`.
     func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
-             about: [String: Any]?, timeout: Double) async throws -> (turnId: String?, verdict: String)
+             about: [String: Any]?, attachments: [String], timeout: Double) async throws -> (turnId: String?, verdict: String)
     func barge()
     func cancel()
     /// what the player reports back (READY, REPORT, STATUS, DISCARD_ACK)
     func send(_ frames: [PlayerOut])
+}
+
+extension VoiceLink {
+    /// a say with no files, as the voice sends it
+    func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
+             about: [String: Any]?, timeout: Double) async throws -> (turnId: String?, verdict: String) {
+        try await say(utteranceId: utteranceId, text: text, language: language, confidence: confidence, spoken: spoken, overHer: overHer,
+                      conversation: conversation, about: about, attachments: [], timeout: timeout)
+    }
 }
 
 /// One URLSessionWebSocketTask to /phone/ws on the host. Reconnects after 1 s, doubling to 30 s; HTTP 403 on upgrade is "unpaired" and close code 4000
@@ -153,6 +170,7 @@ final class WebSocketVoiceLink: VoiceLink {
             out.yield(.ready(device: d, voice: v, sampleRate: r, judges: j))
         case .said(let u, let turn, let verdict): VoiceTrace.note("ws said frame: \(verdict)"); pending.removeValue(forKey: u)?.c.resume(returning: (turn, verdict))
         case .row(let r): out.yield(.row(r))
+        case .step(let f): out.yield(.step(f))
         case .pong: break
         case .error("retry", _):                      // the host could not write it down: send the same say again
             Task { [weak self, mine = generation] in
@@ -163,7 +181,18 @@ final class WebSocketVoiceLink: VoiceLink {
         case .error("bad_say", let m):
             for (_, p) in pending { p.c.resume(throwing: LinkError.host(m)) }
             pending = [:]
+        case .error("attachment_refused", let m): failPending(withFiles: .refused(m))
+        case .error("no_attachments", _): failPending(withFiles: .noAttachments)
         case .error(let c, let m): out.yield(.error(code: c, message: m))
+        }
+    }
+
+    /// The host answers a refused file with an `error` frame that names no utterance: it is the say that carried files.
+    private func failPending(withFiles why: LinkError) {
+        for (id, p) in pending {
+            guard case .say(_, _, _, _, _, _, _, _, let files) = p.frame, !files.isEmpty else { continue }
+            pending.removeValue(forKey: id)
+            p.c.resume(throwing: why)
         }
     }
 
@@ -173,7 +202,7 @@ final class WebSocketVoiceLink: VoiceLink {
     }
 
     func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
-             about: [String: Any]?, timeout: Double) async throws -> (turnId: String?, verdict: String) {
+             about: [String: Any]?, attachments: [String], timeout: Double) async throws -> (turnId: String?, verdict: String) {
         if task == nil { connect() }
         // Not sent before the host is there: a say queued on a socket still connecting reached the host after the phone had given
         // up on it, and opened a turn nobody was waiting for. The answer's clock starts once it is sent.
@@ -184,7 +213,7 @@ final class WebSocketVoiceLink: VoiceLink {
         }
         let frame = PhoneFrame.say(utteranceId: utteranceId, text: text, language: language?.code, confidence: confidence, spoken: spoken,
                                    overHer: overHer, conversation: conversation,
-                                   about: about.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) })
+                                   about: about.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) }, attachments: attachments)
         return try await withCheckedThrowingContinuation { c in
             pending[utteranceId] = (c, frame)
             sendText(frame)

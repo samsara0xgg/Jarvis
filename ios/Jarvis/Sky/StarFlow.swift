@@ -415,6 +415,8 @@ extension StarEngine {
     func endTalk() {
         if talk != nil { sound(.end, 1) }
         finishSay()
+        dropStatus()
+        MainActor.assumeIsolated { StatusBoard.shared.end() }
         talk = nil; expr = nil; hear = 0; rowKey = ""
         lingerFrom(nowMs())
     }

@@ -10,6 +10,7 @@ struct ConversationRow: Equatable {
     let source: String
     let ts: String                     // local time as the brain wrote it, `2026-10-09T23:52:02`
     let text: String                   // with the voice and document markup: `AnswerText` reads it
+    var steps: StepsInfo?              // what she did to answer, from the brain (ADR 0228); nil when no tool ran
     var isHis: Bool { source == "allen" }
     /// a line she says before the answer comes (only a voice part): more is on its way
     var isLeadIn: Bool { !isHis && AnswerText.isLeadIn(text) }
@@ -19,7 +20,7 @@ struct ConversationRow: Equatable {
         guard let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let rows = o["rows"] as? [[String: Any]] else { return nil }
         return rows.compactMap { r in
             guard let seq = r["seq"] as? Int, let source = r["source"] as? String, let text = r["text"] as? String else { return nil }
-            return ConversationRow(seq: seq, source: source, ts: (r["ts"] as? String) ?? "", text: text)
+            return ConversationRow(seq: seq, source: source, ts: (r["ts"] as? String) ?? "", text: text, steps: StepsInfo.parse(r))
         }
     }
 }

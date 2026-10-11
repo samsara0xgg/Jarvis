@@ -46,6 +46,8 @@ struct LiveTurn: Identifiable, Equatable {
     var leadIn = false                  // a line before the answer ("我上网查查"): more follows
     var growing = false                 // his words still coming in (the recognizer's partial)
     var card: WaitingCard?              // a card she put up, in the place of words
+    var status: StatusLine?             // not words yet: she is typing, or working on a step (Brain/TurnStatus); her first words take this row
+    var steps: StepsInfo?               // what she did to answer, for the small line under it
     var at = Date()
 }
 
@@ -83,6 +85,7 @@ final class StarUI {
     // talking
     var talking = false                 // a talk is on show: while it lasts and for a while after her last word
     var liveTurns: [LiveTurn] = []
+    var stepsOpen: Set<String> = []     // answers (row ids of the stream) whose steps he opened
     var about: About?                   // the item he has open, as the chip over the talk's first row says it; every turn carries it while it shows
     var typing = false
     var kbLift = 0.0                    // how far the composer is raised over its rest place (restGap from the bottom): the keyboard's height less restGap - keyGap

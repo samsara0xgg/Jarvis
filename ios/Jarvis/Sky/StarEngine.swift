@@ -104,6 +104,7 @@ final class StarEngine {
     var brainNote: String?, brainNoteUntil = 0.0, sendingToBrain = false
     // the talk under the dial (Sky/StarTalk.swift): the row ids being written, the talk's start in the conversation, and when the talk goes if nobody touches it
     var turnSeq = 0, talkId = 0, talkBase = 0, speakId: Int?, vHis: Int?, vHer: Int?, vShown = 0.0, vShownAt = 0.0, lingerUntil = 0.0, lingerHold = false
+    var statusTurn: Int?            // the live row standing in for her until her first words (Sky/StarStatus.swift)
     var lightRef: (id: String, until: Double)?     // a star her answer named that the days have not brought yet
     var aboutDropped: String?       // the item whose chip he took off: it does not come back while that star is the open one
     // the panel's second height: when it opened, whether this talk has used up its one self-opening, what the stream was last built from, when the pinned part was

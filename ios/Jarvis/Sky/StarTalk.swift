@@ -12,7 +12,7 @@ extension StarEngine {
         lingerUntil = .infinity
         if ui.talking { return }
         talkId += 1
-        ui.liveTurns = []; speakId = nil; vHis = nil; vHer = nil
+        ui.liveTurns = []; speakId = nil; vHis = nil; vHer = nil; statusTurn = nil
         talkBase = base ?? Conversation.shared.rows.last?.seq ?? 0
         if base == nil && BrainLink.shared.hasToken {
             let id = talkId
@@ -43,9 +43,18 @@ extension StarEngine {
         if !on { lingerFrom(nowMs()) }
     }
 
-    @discardableResult func addTurn(his: Bool, _ text: String, alphas: [Double] = [], pics: [SentItem] = [], leadIn: Bool = false, growing: Bool = false) -> Int {
+    @discardableResult func addTurn(his: Bool, _ text: String, alphas: [Double] = [], pics: [SentItem] = [], leadIn: Bool = false, growing: Bool = false, steps: StepsInfo? = nil) -> Int {
+        // her first words take the place of the typing line, in the same row, so nothing moves
+        if !his, let id = statusTurn {
+            statusTurn = nil
+            if let i = ui.liveTurns.lastIndex(where: { $0.id == id }) {
+                ui.liveTurns[i].text = text; ui.liveTurns[i].alphas = alphas; ui.liveTurns[i].leadIn = leadIn; ui.liveTurns[i].steps = steps; ui.liveTurns[i].status = nil
+                openForWritten(text)
+                return id
+            }
+        }
         turnSeq += 1
-        let t = LiveTurn(id: turnSeq, his: his, text: text, alphas: alphas, pics: pics, leadIn: leadIn, growing: growing)
+        let t = LiveTurn(id: turnSeq, his: his, text: text, alphas: alphas, pics: pics, leadIn: leadIn, growing: growing, steps: steps)
         withAnimation(.easeOut(duration: 0.25)) { ui.liveTurns.append(t) }
         if !his { openForWritten(text) }
         return turnSeq
@@ -64,12 +73,12 @@ extension StarEngine {
     }
 
     /// Her words in a row of their own, brightening as they are said. A long answer is said faster, so reading it does not take minutes.
-    @discardableResult func startSay(_ text: String, cps: Double? = nil, delay: Double = 0, leadIn: Bool = false) -> Say {
+    @discardableResult func startSay(_ text: String, cps: Double? = nil, delay: Double = 0, leadIn: Bool = false, steps: StepsInfo? = nil) -> Say {
         finishSay()
         if !leadIn { Haptic.impact(.soft) }
         let s = Say(text, cps: cps ?? max(12, Double(text.count) / 10), delay: delay)
         speaking = s
-        speakId = addTurn(his: false, text, alphas: s.alphas(nowMs()), leadIn: leadIn)
+        speakId = addTurn(his: false, text, alphas: s.alphas(nowMs()), leadIn: leadIn, steps: steps)
         return s
     }
     func finishSay() {
@@ -82,6 +91,7 @@ extension StarEngine {
         if let s = speaking { setTurn(speakId, alphas: s.alphas(now).map { ($0 * 16).rounded() / 16 }) }       // sixteenths: a character's fade is a few redraws, not one per frame
         if ui.talking && talk == nil && voiceState == .idle && !lingerHold && now > lingerUntil { ui.talking = false; rowKey = ""; setAbout(nil); aboutDropped = nil }
         put(\.topTime, clock(F))
+        syncStatus()
         for e in MainActor.assumeIsolated({ PhoneRows.take() }) { phoneEvent(e) }
         updateStream()
         if ui.panelOpen { updatePanel() }
@@ -139,6 +149,8 @@ extension StarEngine {
             his = String(his.prefix(Int(vShown)))
         }
         if !his.isEmpty { if let id = vHis { setTurn(id, text: his, growing: listening) } else { vHis = addTurn(his: true, his, growing: listening) } }
+        // he is done and she has not said a word: the typing line, under his
+        if v.state == .thinking, v.reply.isEmpty, vHis != nil, vHer == nil { showStatus() }
         if !listening && !v.reply.isEmpty { if let id = vHer { setTurn(id, text: v.reply) } else { vHer = addTurn(his: false, v.reply); Haptic.impact(.soft) } }
     }
 
@@ -151,6 +163,7 @@ extension StarEngine {
                   let i = ui.liveTurns.lastIndex(where: { !$0.his && !$0.leadIn }) else { return }
             let shown = AnswerText.visible(row.text)
             if !shown.isEmpty && ui.liveTurns[i].text != shown { ui.liveTurns[i].text = shown; ui.liveTurns[i].alphas = [] }
+            ui.liveTurns[i].steps = row.steps ?? MainActor.assumeIsolated { StatusBoard.shared.info }
         }
     }
 }
@@ -232,7 +245,13 @@ extension StarEngine {
         let listed = streamFrom.map { f in shown.filter { $0.seq >= f } } ?? Array(shown.suffix(Self.streamPage))
         if ui.panelOpen && streamFrom == nil { streamFrom = listed.first?.seq ?? 0; streamSeen.3 = streamFrom! }      // open: what is listed stays listed
         put(\.olderMore, Conversation.shared.hasMore || listed.count < shown.count)
-        if TalkStream.handedOver(rows, base: talkBase, talking: ui.talking) { ui.liveTurns = [] }
+        if TalkStream.handedOver(rows, base: talkBase, talking: ui.talking) {
+            // the steps he opened on a live row stay open on the conversation's row of the same answer
+            if let open = ui.liveTurns.first(where: { ui.stepsOpen.contains("l\($0.id)") }), let c = rows.last(where: { !$0.isHis && $0.seq > talkBase && $0.steps != nil }) {
+                ui.stepsOpen.remove("l\(open.id)"); ui.stepsOpen.insert("c\(c.seq)")
+            }
+            ui.liveTurns = []
+        }
         let days = TalkStream.convDays(listed, pics: MainActor.assumeIsolated { SentPics.byRow }, cal: Cal.cur.cal, now: Date())
         if days != ui.convDays { ui.convDays = days }
     }
@@ -255,7 +274,7 @@ extension StarEngine {
 
 #if DEBUG
 extension StarEngine {
-    /// `-scene open|typing|typingWaiting|typingChipOpen|rest`: the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
+    /// `-scene open|typing|typingWaiting|typingChipOpen|rest` (and the `steps…` ones of Sky/StarStatus.swift): the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
     func runTalkScene(_ name: String) {
         switch name {
         case "rest": setLevel(0)
@@ -272,6 +291,7 @@ extension StarEngine {
                     self.addTurn(his: false, "好，我帮你把周二上午十点占上。")
                 }
             }
+        case "steps", "stepsDots", "stepsStep", "stepsDone", "stepsOpen": runStepsScene(name)
         case "open":
             setLevel(0)
             EV.removeAll { $0.st == .wait && !["thanks", "mia"].contains($0.id) }      // two things wait on him

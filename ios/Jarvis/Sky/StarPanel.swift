@@ -16,12 +16,23 @@ func panelSpring(_ reduce: Bool) -> Animation { reduce ? .easeOut(duration: 0.2)
 /// one row of the talk: his words in a bubble on the right, hers plain on the left
 struct TalkRowView: View, Equatable {
     let row: TalkRow
+    var stepsOpen = false
     var dropAbout: () -> Void = {}
+    var toggleSteps: () -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var reduce
-    static func == (a: Self, b: Self) -> Bool { a.row == b.row }
+    static func == (a: Self, b: Self) -> Bool { a.row == b.row && a.stepsOpen == b.stepsOpen }
 
     var body: some View {
-        if let a = row.about { AboutChip(about: a, drop: dropAbout) } else if let c = row.card { cardRow(c) } else if row.his { bubble } else { her }
+        if let a = row.about { AboutChip(about: a, drop: dropAbout) } else if let c = row.card { cardRow(c) } else if row.his { bubble } else { hers }
+    }
+
+    /// Her typing line, then her words in the same place (the line fades into them), and under them what she did to get there.
+    private var hers: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let s = row.status { StatusRow(line: s).transition(.opacity) } else { her.transition(.opacity) }
+            if let info = row.steps, row.status == nil { StepsLine(info: info, open: stepsOpen, toggle: toggleSteps) }
+        }
+        .animation(.easeOut(duration: 0.2), value: row.status == nil)
     }
 
     /// a card she put up while she talks: her question over its fields and buttons, in the glass box the pinned cards open into
@@ -398,13 +409,13 @@ struct TalkPanel: View {
                             ForEach(day.rows) { r in
                                 VStack(alignment: .leading, spacing: 6) {
                                     if let s = r.stamp { Text(s).font(AT.mono(11)).foregroundStyle(muted).frame(maxWidth: .infinity, alignment: r.his ? .trailing : .leading) }
-                                    TalkRowView(row: r, dropAbout: { engine.dropAbout() }).equatable()
+                                    TalkRowView(row: r, stepsOpen: ui.stepsOpen.contains(r.id), dropAbout: { engine.dropAbout() }, toggleSteps: { engine.toggleSteps(r.id) }).equatable()
                                 }
                                 .opacity((shown[r.id] ?? 0) + (1 - (shown[r.id] ?? 0)) * open)
                                 .id(r.id)
                                 .onGeometryChange(for: Double.self) { $0.frame(in: .named("stream")).minY } action: { moved(r.id, to: $0) }
                                 .transition(reduce ? .opacity : .opacity.combined(with: .offset(y: 6)))
-                                .contextMenu { Button("拷贝", systemImage: "doc.on.doc") { UIPasteboard.general.string = r.text } }
+                                .contextMenu { if r.status == nil { Button("拷贝", systemImage: "doc.on.doc") { UIPasteboard.general.string = r.text } } }
                             }
                         } header: {
                             // no day headers while he types: the keyboard leaves no room for them

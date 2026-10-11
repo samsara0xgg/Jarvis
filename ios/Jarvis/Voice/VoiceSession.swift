@@ -12,8 +12,8 @@ import UIKit
 ///     VoiceSession.shared.sendTyped("...")  // typed words: her answer comes back in `reply` as text only, no audio
 ///
 /// Read `state`, `partial` (live words), `transcript` (what was said), `reply` (her words so far), `inputLevel` / `outputLevel` (0...1),
-/// `language`, `errorText`, `modelProgress` (0...1 while the language models download on first use). Set `endpoint` once the pairing exists;
-/// until then a local stub answers.
+/// `language`, `errorText`, `modelProgress` (0...1 while the language models download on first use). The line to the host is `PhoneLink`'s; until the
+/// pairing exists a local stub answers.
 @MainActor @Observable
 final class VoiceSession {
     enum State: Equatable { case idle, listening, thinking, speaking }
@@ -36,9 +36,6 @@ final class VoiceSession {
         set { wake = newValue; refreshArming() }
     }
     private var wake = false
-
-    /// Where the host is and the token that proves this phone; the pairing owns both.
-    @ObservationIgnored var endpoint: () -> (base: URL, token: String)? = { nil } { didSet { prewarm() } }
 
     // MARK: timings
 
@@ -71,8 +68,7 @@ final class VoiceSession {
     @ObservationIgnored private var lastTrouble: (overloads: UInt64, gaps: UInt64) = (0, 0)
     @ObservationIgnored private var segmentText = ""
     @ObservationIgnored private var segmentAt = 0.0
-    @ObservationIgnored private var link: VoiceLink?
-    @ObservationIgnored private var linkIsReal = false
+    private var link: VoiceLink? { PhoneLink.shared.link }
     @ObservationIgnored private var linkTask: Task<Void, Never>?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
     @ObservationIgnored private var assetsReady = false
@@ -127,6 +123,7 @@ final class VoiceSession {
             feed.feed(buf)
             Task { @MainActor in self?.rawLevel = level }
         }
+        linkTask = Task { for await e in PhoneLink.shared.events() { handle(e) } }
         audio.onOut = { [weak self] frames in self?.link?.send(frames) }
         audio.onReset = { [weak self] interrupted in
             guard let self else { return }
@@ -136,13 +133,11 @@ final class VoiceSession {
         if TalkRequest.pending { requestTalk() }
     }
 
-    /// What a tap would wait for, made ready as the app comes on screen. The line to the host: over Tailscale it has taken 13-15 s to
-    /// connect, and a say waits for it; it stays open while the app is on screen, which is also what the host reads as "the app is
-    /// open" (ADR 0210). The speech models, when the microphone is already allowed (asking is left to his tap). Not the microphone:
-    /// it is on only in voice mode.
-    private func prewarm() {
+    /// What a tap would wait for, made ready as the app comes on screen. The line to the host (`PhoneLink`). The speech models, when the microphone is
+    /// already allowed (asking is left to his tap). Not the microphone: it is on only in voice mode.
+    func prewarm() {
         guard foreground else { return }
-        if endpoint() != nil { ensureLink() }
+        PhoneLink.shared.connectIfOnScreen()
         if #available(iOS 26, *), !assetsReady, AVAudioApplication.shared.recordPermission == .granted { Task { _ = await checkModels() } }
     }
 
@@ -250,19 +245,6 @@ final class VoiceSession {
         return await t.value
     }
 
-    private func ensureLink() {
-        let real = endpoint() != nil
-        if let link, real == linkIsReal { link.connect(); return }
-        linkTask?.cancel()
-        link?.disconnect()
-        VoiceTrace.note(real ? "link: websocket to \(endpoint().map { ($0.base.scheme ?? "") + "://" + (BrainLink.host($0.base)) } ?? "?")" : "link: local stub (not paired)")
-        let l: VoiceLink = real ? WebSocketVoiceLink(endpoint: endpoint) : LocalStubLink()
-        link = l
-        linkIsReal = real
-        l.connect()
-        linkTask = Task { for await e in l.events { handle(e) } }
-    }
-
     /// Wake-word listening runs while the app is open and idle; otherwise an idle session lets go of the microphone.
     private func refreshArming() {
         guard #available(iOS 26, *) else { return }
@@ -277,7 +259,7 @@ final class VoiceSession {
         dropSegment()
         audio.stop()
         tickTask?.cancel(); tickTask = nil
-        if !foreground { linkTask?.cancel(); linkTask = nil; link?.disconnect(); link = nil }   // on screen it stays: see prewarm
+        PhoneLink.shared.settle()                           // on screen it stays: see prewarm
         inputLevel = 0; outputLevel = 0
     }
 
@@ -370,7 +352,7 @@ final class VoiceSession {
             if let c = shortCommand(text), c == .stop || c == .goodnight {
                 VoiceTrace.note("judged over her: local \(c.rawValue)")
                 audio.core?.stopNow()
-                Task { _ = try? await link.say(utteranceId: id, text: text, language: lang, confidence: picked.confidence, spoken: true, overHer: true, conversation: false, about: AboutNow.current?.json, timeout: 10) }
+                Task { _ = try? await PhoneLink.shared.say(utteranceId: id, text: text, language: lang, confidence: picked.confidence, spoken: true, overHer: true, conversation: false, about: AboutNow.current?.json, timeout: 10) }
                 goIdle(releasing: false)
                 return
             }
@@ -378,7 +360,7 @@ final class VoiceSession {
             if heldAt - sayAt < continueWindow, !transcript.isEmpty, !typedTurn { text = transcript + text; VoiceTrace.note("held words go on from his last: joined") }
             VoiceTrace.note("judging over her: \(text.count) chars")
             let r: (turnId: String?, verdict: String)
-            do { r = try await link.say(utteranceId: id, text: text, language: lang, confidence: picked.confidence, spoken: true, overHer: true, conversation: false, about: AboutNow.current?.json, timeout: judgeTimeout) }
+            do { r = try await PhoneLink.shared.say(utteranceId: id, text: text, language: lang, confidence: picked.confidence, spoken: true, overHer: true, conversation: false, about: AboutNow.current?.json, timeout: judgeTimeout) }
             catch {
                 guard seq == turnSeq, held else { return }
                 VoiceTrace.note("judge timed out: turn (\(error.localizedDescription))")
@@ -476,6 +458,7 @@ final class VoiceSession {
     /// He spoke over her (or tapped): stop her audio here at once, tell the host, listen.
     private func bargeIn() {
         VoiceTrace.note("barge-in from \(state)")
+        StatusBoard.shared.end()
         audio.core?.stopNow()
         duck(false)                                         // the next answer plays at full volume
         link?.barge()
@@ -535,18 +518,17 @@ final class VoiceSession {
         reply = ""
         sayAt = now
         lastActivityAt = now
-        ensureLink()
+        PhoneLink.shared.ensure()
         let seq = turnSeq
         VoiceTrace.note("say sent: \(text.count) chars, spoken \(spoken), lang \(lang?.rawValue ?? "none")\(conversation ? ", follow-up" : "")")
         Task {
             do {
-                guard let link else { return }
                 var r: (turnId: String?, verdict: String)
-                do { r = try await link.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: conversation, about: AboutNow.current?.json, timeout: conversation ? judgeTimeout : 10) }
+                do { r = try await PhoneLink.shared.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: conversation, about: AboutNow.current?.json, timeout: conversation ? judgeTimeout : 10) }
                 catch LinkError.timeout where conversation {
                     VoiceTrace.note("judge timed out: turn")
                     guard seq == turnSeq else { return }
-                    r = try await link.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: false, about: AboutNow.current?.json, timeout: 10)
+                    r = try await PhoneLink.shared.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: false, about: AboutNow.current?.json, timeout: 10)
                 }
                 guard seq == turnSeq else { return }
                 if conversation {
@@ -622,6 +604,7 @@ final class VoiceSession {
 
     private func goIdle(releasing: Bool) {
         VoiceTrace.note("idle from \(state)\(releasing ? ", releasing the mic" : "")")
+        StatusBoard.shared.end()
         audio.core?.stopNow()
         duck(false)
         herWords = ""
@@ -651,6 +634,7 @@ final class VoiceSession {
             readySent = false
             sendReady()
         case .row(let r): handleRow(r)
+        case .step: break                                   // the board has it (PhoneLink)
         case .audio(let f):
             audio.core?.ingest(f)
             switch f {
