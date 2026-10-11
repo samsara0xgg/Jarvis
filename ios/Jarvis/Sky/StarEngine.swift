@@ -107,7 +107,10 @@ final class StarEngine {
     var lightRef: (id: String, until: Double)?     // a star her answer named that the days have not brought yet
     var aboutDropped: String?       // the item whose chip he took off: it does not come back while that star is the open one
     // the panel's second height: when it opened, whether this talk has used up its one self-opening, what the stream was last built from, when the pinned part was
-    var panelSince = 0.0, autoOpenSpent = false, streamSeen = (-1, false, -1), panelAt = 0.0
+    var panelSince = 0.0, autoOpenSpent = false, streamSeen = (-1, false, -1, -1, false), panelAt = 0.0
+    /// the first conversation row the stream lists (nil: the newest page, which slides as rows come). Held while the panel is open, so a row coming in at the
+    /// bottom takes nothing away above what he reads; a page earlier each time he scrolls to the top; the newest page again a moment after the panel shuts.
+    var streamFrom: Int?
     var dateD: Int?
     weak var herDrive: HerDrive?
     var endEditing: (() -> Void)?

@@ -151,6 +151,9 @@ extension StarEngine {
 
 extension StarEngine {
     static let panelHome = 540.0, panelOpen = 104.0
+    /// The stream lists this many rows at a time, however long the conversation: every change to the talk (her caption grows 30 times a second) lays out
+    /// and compares what is listed, so the cost has to stay the same with 50 rows held or 5000.
+    static let streamPage = 60
 
     func openPanel(auto: Bool = false, quiet: Bool = false) {
         wake()
@@ -180,15 +183,26 @@ extension StarEngine {
         openPanel()
         Task { @MainActor in
             if BrainLink.shared.hasToken { await Conversation.shared.refresh() }
+            let t = Double(startMs) / 1000 - 1, cal = Cal.cur.cal
+            // the stream lists that row: as many rows back as it is
+            let rows = TalkStream.shown(Conversation.shared.rows, base: talkBase, talking: ui.talking)
+            if let r = rows.first(where: { (TalkStream.time($0.ts, cal)?.timeIntervalSince1970 ?? 0) >= t }) { streamFrom = min(streamFrom ?? .max, r.seq) }
             try? await Task.sleep(nanoseconds: 400_000_000)
-            let t = Double(startMs) / 1000 - 1
             if let r = ui.convDays.flatMap(\.rows).first(where: { $0.at >= t }) { ui.scrollTo = r.id }
         }
     }
-    /// He scrolled to the top of the open panel: the page before the oldest row listed.
+    /// He scrolled to the top of the open panel: a page more of the rows held, or the page before the oldest row held from the brain. `done(true)` when rows came in.
     func loadOlder(_ done: @escaping (Bool) -> Void) {
         guard ui.panelOpen else { return done(false) }
-        Task { @MainActor in done(await Conversation.shared.loadOlder()) }
+        if pageBefore() { return done(true) }
+        Task { @MainActor in done(await Conversation.shared.loadOlder() && pageBefore()) }
+    }
+    /// the stream starts a page earlier, when the conversation holds rows before its first
+    private func pageBefore() -> Bool {
+        let from = streamFrom ?? .max, older = TalkStream.shown(Conversation.shared.rows, base: talkBase, talking: ui.talking).filter { $0.seq < from }
+        guard let first = older.suffix(Self.streamPage).first else { return false }
+        streamFrom = first.seq
+        return true
     }
     /// the app came back after a long time away: the star chart as it was first opened, on now
     func comeBack() { setLevel(0); goBack() }
@@ -202,13 +216,16 @@ extension StarEngine {
 
     /// The conversation by day, rebuilt only when it, the talk's start or whether a talk is on show changed; and the live rows go once the conversation has them.
     func updateStream() {
-        let seen = (Conversation.shared.version, ui.talking, talkBase)
+        if !ui.panelOpen && streamFrom != nil && nowMs() - panelSince > 600 { streamFrom = nil }       // shut, and done moving: the newest page again
+        let seen = (Conversation.shared.version, ui.talking, talkBase, streamFrom ?? -1, ui.panelOpen)
         if seen == streamSeen { return }
         streamSeen = seen
-        put(\.olderMore, Conversation.shared.hasMore)
-        let rows = Conversation.shared.rows
+        let rows = Conversation.shared.rows, shown = TalkStream.shown(rows, base: talkBase, talking: ui.talking)
+        let listed = streamFrom.map { f in shown.filter { $0.seq >= f } } ?? Array(shown.suffix(Self.streamPage))
+        if ui.panelOpen && streamFrom == nil { streamFrom = listed.first?.seq ?? 0; streamSeen.3 = streamFrom! }      // open: what is listed stays listed
+        put(\.olderMore, Conversation.shared.hasMore || listed.count < shown.count)
         if TalkStream.handedOver(rows, base: talkBase, talking: ui.talking) { ui.liveTurns = [] }
-        let days = TalkStream.convDays(TalkStream.shown(rows, base: talkBase, talking: ui.talking), pics: MainActor.assumeIsolated { SentPics.byRow }, cal: Cal.cur.cal, now: Date())
+        let days = TalkStream.convDays(listed, pics: MainActor.assumeIsolated { SentPics.byRow }, cal: Cal.cur.cal, now: Date())
         if days != ui.convDays { ui.convDays = days }
     }
 
@@ -322,6 +339,20 @@ extension StarEngine {
                                        text: i % 2 == 1 ? "第 \(i) 行，他说的话，有时候长一点，比如问一下明天几点出门" : i % 10 == 0 ? doc : "<voice>第 \(i) 行，她的回答。九点二十出门，坐 32 路，路上三十二分钟。</voice>")
             }
             MainActor.assumeIsolated { Conversation.shared.debugSet(rows) }
+            // `-stress keys`: over that history, again and again: the keyboard up, a line typed a character at a time, sent (her canned answer brightens as she says it), the keyboard down
+            if UserDefaults.standard.string(forKey: "stress") == "keys" {
+                let line = Array("今天晚上几点出门比较好，顺便看看天气")
+                func round(_ n: Int) {
+                    guard n < 6 else { return }
+                    let at = { (s: Double, f: @escaping () -> Void) in DispatchQueue.main.asyncAfter(deadline: .now() + s, execute: f) }
+                    at(0) { StallLog.mark("stress round \(n)"); self.beginEditing?() }
+                    for i in 1...line.count { at(1 + Double(i) * 0.12) { self.ui.text = String(line[..<i]) } }
+                    at(4) { self.send(self.ui.text) }
+                    at(9) { self.endEditing?() }
+                    at(11) { round(n + 1) }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { round(0) }
+            }
         case "typing", "typingWaiting", "typingChipOpen", "typingGrow", "typingScrolled", "typingDismiss":
             // the keyboard is the real one: the field is focused, and the panel comes up with it
             setLevel(0)
