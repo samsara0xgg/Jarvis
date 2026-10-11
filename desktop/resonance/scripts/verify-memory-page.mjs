@@ -1,6 +1,7 @@
 // The Dashboard's Memory page (ADR 0154) against a fake daemon: the home block, the kept notes with last night's entries and their
 // actions, one note opened with its sources and the conversation they point to, editing in place (autofocus, Esc, Cmd+Enter), moving,
-// deleting, undo, the debounced search, the day summaries with their edit, the changes with undo and the character limit.
+// deleting, undo, the debounced search, the day summaries with their edit, the kept places (ADR 0234: order, facts, rename, role, forget
+// with a second click, undo, errors inline, empty state), the changes with undo and place changes merged in, and the character limit.
 // Real AroundDashboard through vite, the native bridge stubbed, every daemon route answered here. Screenshots land in /tmp/memory-ev/.
 
 // a letter's body, focus, trash / archive / read with their undo, and Jarvis's reply draft (404 = no drafts, a draft, a rewrite that
@@ -59,6 +60,14 @@ const fresh = () => ({
   ],
   hidden: new Set(), versions: [{ id: 'v0', ts: iso('2026-10-03', '05:00'), origin: 'nightly', kind: 'nightly', day: '2026-10-02', undoable: true, lines: [{ tag: 'add', text: '周六和朋友吃饭，周日看电影。' }] }],
   snaps: {}, cap: 4000, seq: 0,
+  places: [
+    { id: 'p1', name: 'Home', role: 'home', radius_m: 100, has_centre: true, address: null, origin: 'model', days_28: 25, days_84: 70, last_visit: '2026-10-09', median_stay_min: 600, phone_label: null },
+    { id: 'p2', name: 'Library', role: 'other', radius_m: 100, has_centre: true, address: null, origin: 'model', days_28: 6, days_84: 12, last_visit: '2026-10-08', median_stay_min: 40, phone_label: null },
+    { id: 'p3', name: 'Gym', role: 'other', radius_m: 100, has_centre: true, address: null, origin: 'model', days_28: 0, days_84: 3, last_visit: '2026-09-02', median_stay_min: null, phone_label: null },
+    { id: 'p4', name: 'Dentist', role: 'other', radius_m: 100, has_centre: false, address: '12 Main St', origin: 'model', days_28: 0, days_84: 0, last_visit: null, median_stay_min: null, phone_label: null },
+    { id: 'p5', name: 'Campus', role: 'school', radius_m: 100, has_centre: true, address: null, origin: 'model', days_28: 12, days_84: 40, last_visit: '2026-10-09', median_stay_min: 210, phone_label: null },
+  ],
+  pchanges: [{ id: 'c0', ts: iso('2026-10-04', '12:00'), origin: 'model', op: 'save', place_id: 'p1', name: 'Home', before: null, after: { name: 'Home', role: 'home' }, undoable: true }],
 });
 let S = fresh();
 const entries = () => [
@@ -112,6 +121,24 @@ try {
     if (rest === '/search') {
       const q = url.searchParams.get('q'), who = url.searchParams.get('who'), hits = [{ id: 'r1', ts: SRC[0].ts, who: 'user', text: SRC[0].text }, { id: 'r2', ts: SRC[1].ts, who: 'jarvis', text: SRC[1].text }].filter(h => h.text.includes(q) && (who === 'all' || (who === 'user') === (h.who === 'user')));
       return reply({ words: [q], days: hits.length ? [{ day: '2026-10-02', hits }] : [], total: hits.length, truncated: false, since: iso('2026-09-01', '00:00') });
+    }
+    if (rest === '/places') return reply({ places: S.places, changes: S.pchanges });
+    if (rest === '/places/undo') {
+      const c = S.pchanges.find(x => x.id === body.change_id); if (!c) return reply({ detail: 'no such change' }, 404);
+      if (!c.undoable) return reply({ detail: 'A later change touched this place' }, 409);
+      S.places = S.places.filter(x => x.id !== c.place_id); if (c.before) S.places.push({ ...c.snap });
+      S.pchanges.forEach(x => { if (x.place_id === c.place_id) x.undoable = false; });
+      S.pchanges.unshift({ id: `c${++S.seq}`, ts: new Date().toISOString(), origin: 'page', op: 'undo', place_id: c.place_id, name: (c.before ?? c.after).name, before: c.after, after: c.before, undoable: true });
+      return reply({ ok: true, place: c.snap, change: S.pchanges[0] });
+    }
+    if (method === 'POST' && (m = rest.match(/^\/places\/(\w+)$/))) {
+      const p = S.places.find(x => x.id === m[1]); if (!p) return reply({ detail: 'no such place' }, 404);
+      if (body.name && S.places.some(x => x.id !== p.id && x.name === body.name)) return reply({ detail: `another place is already called ${body.name}` }, 400);
+      const before = { name: p.name, role: p.role }, snap = { ...p };
+      if (body.forget) S.places = S.places.filter(x => x !== p); else Object.assign(p, { name: body.name ?? p.name, role: body.role ?? p.role });
+      S.pchanges.forEach(x => { if (x.place_id === p.id) x.undoable = false; });
+      S.pchanges.unshift({ id: `c${++S.seq}`, ts: new Date().toISOString(), origin: 'page', op: body.forget ? 'forget' : 'rename', place_id: p.id, name: p.name, before, after: body.forget ? null : { name: p.name, role: p.role }, undoable: true, snap });
+      return reply({ ok: true, place: p, change: S.pchanges[0] });
     }
     if (rest === '/days') return reply(dayCards());
     if (rest === '/day/edit') { DAYS[body.day] = { ...DAYS[body.day], kind: 'user', sections: Object.fromEntries(Object.entries(body.sections).map(([k, v]) => [k, v.filter(Boolean)])) }; return reply({ ok: true }); }
@@ -223,6 +250,61 @@ try {
   check('6000 posts /cap and the strip says it applies after a restart', JSON.stringify(sent('/cap').at(-1)?.body) === '{"max_chars":6000}' && (await strip()).includes('restart'));
   await shot('09-limit');
 
+  // Places: order, facts, rename, role, forget, undo, the merged changes, the empty state
+  const names = () => texts('.mem-place-n'), row = id => page.locator(`.mem-place[data-id="${id}"]`);
+  await page.locator('.mem-chip', { hasText: 'Kept' }).click(); await settle(500);
+  check('the Places chip shows how many places are kept', (await page.locator('.mem-chip', { hasText: 'Places' }).textContent()) === 'Places5');
+  await page.locator('.mem-chip', { hasText: 'Places' }).click(); await settle(700);
+  check('home first, then school, then the rest by days in the last 4 weeks, each with its role tag', (await names()).join('|') === 'HomeHome|CampusSchool|LibraryOther|GymOther|DentistOther');
+  const facts = await texts('.mem-place-b small');
+  check('the grey line reads days, last visit (as that day) and usual stay, and drops what is missing', facts[0] === '25 days in the last 4 weeks · last 10/9 · usually 10 h' && facts[2] === '6 days in the last 4 weeks · last 10/8 · usually 40 min');
+  check('zero days says not visited in the last 4 weeks and keeps the last visit', facts.includes('Not visited in the last 4 weeks · last 9/2'));
+  check('a place with an address only says it will be located next time, with the address under it', facts.includes('Address only, located next time you’re there') && facts.includes('12 Main St'));
+  await row('p2').locator('.mem-place-h').click(); await settle(600);
+  check('a row opens in place with its name in a field and the three roles', (await row('p2').locator('.mem-place-in').inputValue()) === 'Library' && (await row('p2').locator('.mem-chip').allTextContents()).join('|') === 'Home|School|Other'
+    && (await row('p2').locator('.mem-chip[aria-pressed="true"]').textContent()) === 'Other');
+  await shot('11-places');
+  await row('p2').locator('.mem-place-in').fill('xx'); await page.keyboard.press('Escape'); await settle(600);
+  check('Esc cancels: nothing is posted, the row closes and the name is back when it reopens', sent('/places/p2').length === 0 && (await row('p2').locator('.mem-place-h').getAttribute('aria-expanded')) === 'false');
+  await row('p2').locator('.mem-place-h').click(); await settle(500);
+  check('the field is back to the real name', (await row('p2').locator('.mem-place-in').inputValue()) === 'Library');
+  await row('p2').locator('.mem-place-in').fill('Reading room'); await row('p2').locator('.mem-place-in').press('Enter'); await settle(700);
+  check('Enter posts the new name, the list shows it and the strip says Renamed', JSON.stringify(sent('/places/p2').at(-1)?.body) === '{"name":"Reading room"}' && (await names()).includes('Reading roomOther') && (await strip()).includes('Renamed to Reading room'));
+  await page.locator('.ad .toast button').click(); await settle(700);
+  check('Undo in the strip posts the returned change id to /places/undo and the old name returns', JSON.stringify(sent('/places/undo').at(-1)?.body) === `{"change_id":"c${S.seq - 1}"}` && (await names()).includes('LibraryOther'));
+  check('the row stays open after a change, with the restored name in the field', (await row('p2').locator('.mem-place-in').inputValue()) === 'Library');
+  await row('p2').locator('.mem-chip', { hasText: 'School' }).click(); await settle(700);
+  check('a role switch posts the role, the row moves under Home and the strip says so', JSON.stringify(sent('/places/p2').at(-1)?.body) === '{"role":"school"}' && (await names()).slice(0, 3).join('|') === 'HomeHome|CampusSchool|LibrarySchool' && (await strip()).includes('Library is now School'));
+  await page.locator('.ad .toast button').click(); await settle(700);
+  check('and Undo puts the role back', (await names()).includes('LibraryOther'));
+  await row('p3').locator('.mem-place-h').click(); await settle(500);
+  await row('p3').locator('.mem-place-in').fill('Dentist'); await row('p3').locator('.mem-place-in').press('Enter'); await settle(600);
+  check('a name clash (400) shows the server’s words inline in the row', (await row('p3').locator('.mem-err').textContent()) === 'another place is already called Dentist');
+  await row('p3').locator('.mem-place-in').press('Escape'); await settle(500);
+  await row('p4').locator('.mem-place-h').click(); await settle(500);
+  const forget = row('p4').locator('.mem-act.is-del'), before = sent('/places/p4').length;
+  await forget.click(); await settle(300);
+  check('Forget asks for a second click and posts nothing yet', (await forget.textContent()) === 'Click again to forget' && sent('/places/p4').length === before);
+  await forget.click(); await settle(700);
+  check('the second click posts forget, the row leaves and the chip counts 4', JSON.stringify(sent('/places/p4').at(-1)?.body) === '{"forget":true}' && (await count('.mem-place')) === 4 && (await page.locator('.mem-chip', { hasText: 'Places' }).textContent()) === 'Places4' && (await strip()).includes('Forgot Dentist'));
+  await page.locator('.ad .toast button').click(); await settle(700);
+  check('Undo brings the forgotten place back', (await count('.mem-place')) === 5 && (await names()).includes('DentistOther'));
+  await page.locator('.mem-chip', { hasText: 'Changes' }).click(); await settle(800);
+  const vt = await texts('.mem-ver-t');
+  check('place changes sit in the timeline with the core ones, newest first, tagged Place, with where they came from', (await count('.mem-ver[data-kind="place"]')) === 7 && (await texts('.mem-ver')).at(0).includes('Took back a change to Dentist') && (await texts('.mem-ver[data-kind="place"] .mem-tag')).every(x => x === 'Place')
+    && (await texts('.mem-ver[data-kind="place"] .mem-ver-s')).some(x => x.includes('you, on this page')) && (await texts('.mem-ver[data-kind="place"] .mem-ver-s')).some(x => x.includes('Jarvis')));
+  check('they describe the op: saved, renamed A → B, role changed, forgot, took back', ['Saved Home', 'Renamed Library → Reading room', 'Library: Other → School', 'Forgot Dentist'].every(x => vt.some(v => v.startsWith(x))));
+  check('a place change sorts by time against the versions (the 10/4 save lies above the 10/3 night pass)', vt.findIndex(v => v.startsWith('Saved Home')) < vt.findIndex(v => v.startsWith('Night pass')));
+  check('only the newest change of a place has an Undo', (await count('.mem-ver[data-kind="place"] > .mem-act')) === 3 && (await page.locator('.mem-ver[data-kind="place"]', { hasText: 'Saved Home' }).locator('.mem-act').count()) === 1
+    && (await page.locator('.mem-ver[data-kind="place"]', { hasText: 'Forgot Dentist' }).locator('.mem-act').count()) === 0);
+  await shot('12-places-changes');
+  await page.locator('.mem-ver[data-kind="place"]', { hasText: 'Saved Home' }).locator('.mem-act').click(); await settle(700);
+  check('Undo on a place change posts /places/undo for that change and says it was taken back', JSON.stringify(sent('/places/undo').at(-1)?.body) === '{"change_id":"c0"}' && (await strip()).includes('Taken back') && (await texts('.mem-ver-t'))[0].startsWith('Took back a change to Home'));
+  S.places = []; S.pchanges = []; await page.reload(); await page.locator('.ad [data-block="memory"] .fill').click(); await settle(900);
+  await page.locator('.mem-chip', { hasText: 'Places' }).click(); await settle(600);
+  check('no places says how to add one', (await texts('.mem-pane .mem-empty')).join('').includes('No place is kept yet. Tell her “remember this is …”'));
+  S = fresh();
+
   // Reduced motion
   await page.locator('.mem-chip', { hasText: 'Kept' }).click(); await page.emulateMedia({ reducedMotion: 'reduce' }); await settle(300);
   check('reduced motion turns the fold transition off', await page.evaluate(() => getComputedStyle(document.querySelector('.mem-fold')).transitionDuration) === '0s');
@@ -232,6 +314,11 @@ try {
   await page.reload(); await page.locator('.ad [data-block="memory"] .fill').click(); await settle(900);
   check('in Chinese the chips and tags read 记着的 / 日摘要 / 改动 and 新 / 改 / 过时', (await texts('.mem-chip')).join('|').startsWith('记着的') && (await texts('.mem-ent .mem-tag')).join('|') === '新|改|过时' && (await page.locator('.mem-search input').getAttribute('placeholder')) === '搜你说过的每一句');
   await shot('10-zh');
+  await page.locator('.mem-chip', { hasText: '地点' }).click(); await settle(600);
+  const zhFacts = await texts('.mem-place-b small');
+  check('in Chinese the places read 家 / 学校 / 其他 with 近 4 周去了 N 天 · 上次 · 一般待 N 分钟 and the address-only line', (await names()).join('|') === 'Home家|Campus学校|Library其他|Gym其他|Dentist其他'
+    && zhFacts[0] === '近 4 周去了 25 天 · 上次 10/9 · 一般待 10 小时' && zhFacts.includes('近 4 周没去过 · 上次 9/2') && zhFacts.includes('只有地址，下次到那儿时定位'));
+  await shot('13-places-zh');
   check('no unhandled renderer errors', errors.length === 0);
   writeFileSync(path.join(dir, 'checks.json'), JSON.stringify({ checks, errors, posts }, null, 2));
   console.log(`Memory page: ${checks.length} checks passed`);

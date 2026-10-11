@@ -9,8 +9,8 @@ import './memory-page.css';
 
 // The Dashboard's memory page (ADR 0154): what Jarvis keeps about you, where each line came from, and the means to correct it.
 // Six screens: the kept notes (with last night's changes on top), one note opened, one note edited, a search over every word said,
-// the day summaries, and the change log with its undo. Every write is a row in the daemon's core memory versions; the page only asks.
-export type Tab = 'items' | 'days' | 'changes';
+// the day summaries, the kept places (ADR 0234), and the change log with its undo. Every write is a row in the daemon's core memory versions; the page only asks.
+export type Tab = 'items' | 'days' | 'places' | 'changes';
 export type Who = 'all' | 'user' | 'jarvis';
 export type MemView = { k: 'item'; id: string; morph?: { from: string; to: string } } | { k: 'edit'; id: string } | { k: 'convo'; day: string; around?: string };
 export type MemNav = { tab: Tab; query: string; who: Who; stack: MemView[] };
@@ -32,12 +32,19 @@ type Card = { day: string; ts: string; kind: 'model' | 'verbatim' | 'user'; reco
 type DayDetail = { day: string; ts: string; kind: Card['kind']; records: number; sections?: Record<'topics' | 'decisions' | 'unfinished', string[]>; lines?: string[] };
 type Version = { id: string; ts: string; origin: string; kind: string; day: string | null; current: boolean; undoable: boolean; chars: number; edited: number; moved: number;
   counts: { add: number; chg: number; old: number }; lines: { tag: 'add' | 'chg' | 'old'; text: string }[]; more: number };
+type Role = 'home' | 'school' | 'other';
+type Place = { id: string; name: string; role: Role; has_centre?: boolean; address?: string | null; days_28?: number; last_visit?: string | null; median_stay_min?: number | null };
+type PlaceState = { name?: string; role?: Role } | null;
+type PlaceChange = { id: string; ts: string; origin: string; op: 'save' | 'rename' | 'forget' | 'undo'; name: string | null; before: PlaceState; after: PlaceState; undoable: boolean };
+type Placed = { places: Place[]; changes: PlaceChange[] };
 type DayRecords = { day: string; total: number; offset: number; records: { id: string; ts: string; who: Quote['who']; text: string }[] };
 
 const SECTION_EN: Record<string, string> = { 关于你: 'About you', 偏好: 'Preferences', 常提到的人: 'People', 正在做的事: 'Working on', 定下来的规矩: 'Rules', 承诺和待办: 'Commitments' };
 const sectionName = (lang: Lang, zh: string) => lang === 'zh' ? zh : SECTION_EN[zh] ?? zh;
 const DAY_HEADS: [keyof NonNullable<DayDetail['sections']>, L][] = [['topics', ['What we talked about', '聊了什么']], ['decisions', ['What you decided', '你说定的']], ['unfinished', ['Not finished', '没做完']]];
 const ITEM_MAX = 400;
+const ROLE: [Role, L][] = [['home', ['Home', '家']], ['school', ['School', '学校']], ['other', ['Other', '其他']]];
+const ORIGIN: Record<string, L> = { model: ['Jarvis', '她'], page: ['you, on this page', '你在这页上'], settings: ['settings', '设置'], user: ['you', '你'] };
 
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const dur = (ms: number) => reduced.matches ? 0 : ms;
@@ -79,8 +86,8 @@ function Fold({ gone = false, open = true, children, className }: { gone?: boole
 
 type Acts = {
   port: string; rev: number; lang: Lang; t: (l: L) => string; busy: boolean;
-  run: <T>(path: string, body: unknown) => Promise<T | null>; push: (view: MemView) => void;
-  tab: (tab: Tab) => void; undo: (version: string) => Promise<void>; toast: (text: string, version?: string) => void;
+  run: <T>(path: string, body: unknown) => Promise<T | null>; push: (view: MemView) => void; refresh: () => void; notify: (text: string, undo?: () => void) => void;
+  tab: (tab: Tab) => void; undo: (version: string) => Promise<void>; undoPlace: (change: string) => Promise<void>; toast: (text: string, version?: string) => void;
 };
 
 export function MemoryPage({ port, overview, nav, setNav, notify }: {
@@ -93,11 +100,13 @@ export function MemoryPage({ port, overview, nav, setNav, notify }: {
   const root = useRef<HTMLDivElement>(null);
 
   const refresh = () => { setRev(n => n + 1); overview.reload(); };
-  const undo = async (version: string) => {
-    try { await api(port, '/undo', { version }); notify(t(['Taken back', '撤回了'])); }
+  const takeBack = async (path: string, body: unknown) => {
+    try { await api(port, path, body); notify(t(['Taken back', '撤回了'])); }
     catch (e) { notify(e instanceof Refused ? e.message : t(['Couldn’t take that back.', '没能撤回。'])); }
     refresh();
   };
+  const undo = (version: string) => takeBack('/undo', { version });
+  const undoPlace = (change: string) => takeBack('/places/undo', { change_id: change });
   const toast = (text: string, version?: string) => notify(text, version ? () => void undo(version) : undefined);
   const run = async <T,>(path: string, body: unknown): Promise<T | null> => {
     setBusy(true);
@@ -105,7 +114,7 @@ export function MemoryPage({ port, overview, nav, setNav, notify }: {
     catch (e) { notify(e instanceof Refused && e.status !== 502 ? e.message : t(['That didn’t go through. Try again.', '没成功，请再试一次。'])); return null; }
     finally { setBusy(false); }
   };
-  const acts: Acts = { port, rev, lang, t, busy, run, undo, toast,
+  const acts: Acts = { port, rev, lang, t, busy, run, undo, undoPlace, toast, refresh, notify,
     push: view => setNav(n => ({ ...n, stack: [...n.stack, view] })), tab: tab => setNav(n => ({ ...n, tab, stack: [], query: '' })) };
 
   // A screen pushed on top comes in from the right, a screen revealed by going back from the left; the page is still while it happens.
@@ -145,6 +154,7 @@ function Main({ o, nav, setNav, a }: { o: MemoryOverview; nav: MemNav; setNav: (
     return () => window.removeEventListener('keydown', key);
   }, []);
   const searching = nav.query !== '';
+  const places = useGet<Placed>(a.port, '/places', a.rev);
   return <>
     <div className="mem-search" onClick={() => grabFocus(input.current)}>
       <MagnifyingGlass size={14} weight="bold"/>
@@ -157,9 +167,10 @@ function Main({ o, nav, setNav, a }: { o: MemoryOverview; nav: MemNav; setNav: (
       <div className="mem-chips" role="group" aria-label={t(['Show', '显示'])}>
         <button className="mem-chip" aria-pressed={nav.tab === 'items'} onClick={() => a.tab('items')}>{t(['Kept', '记着的'])}<em>{o.items}</em></button>
         <button className="mem-chip" aria-pressed={nav.tab === 'days'} onClick={() => a.tab('days')}>{t(['Days', '日摘要'])}<em>{o.days}</em></button>
+        <button className="mem-chip" aria-pressed={nav.tab === 'places'} onClick={() => a.tab('places')}>{t(['Places', '地点'])}{places.data && <em>{places.data.places.length}</em>}</button>
         <button className="mem-chip" aria-pressed={nav.tab === 'changes'} onClick={() => a.tab('changes')}>{t(['Changes', '改动'])}</button>
       </div>
-      <div className="mem-pane" key={nav.tab}>{nav.tab === 'items' ? <Items o={o} a={a}/> : nav.tab === 'days' ? <Days a={a}/> : <Changes o={o} a={a}/>}</div>
+      <div className="mem-pane" key={nav.tab}>{nav.tab === 'items' ? <Items o={o} a={a}/> : nav.tab === 'days' ? <Days a={a}/> : nav.tab === 'places' ? <Places r={places} a={a}/> : <Changes o={o} a={a} places={places.data?.changes ?? []}/>}</div>
     </>}
   </>;
 }
@@ -429,7 +440,62 @@ function DayBody({ c, a }: { c: Card; a: Acts }) {
   </div>;
 }
 
-// ——— 6 · changes ———
+// ——— 6 · places ———
+const facts = (p: Place, t: (l: L) => string) => {
+  if (p.has_centre === false) return t(['Address only, located next time you’re there', '只有地址，下次到那儿时定位']);
+  const n = p.days_28, stay = p.median_stay_min;
+  return [n == null ? '' : n ? t([`${n} day${n > 1 ? 's' : ''} in the last 4 weeks`, `近 4 周去了 ${n} 天`]) : t(['Not visited in the last 4 weeks', '近 4 周没去过']),
+    p.last_visit ? t([`last ${md(p.last_visit)}`, `上次 ${md(p.last_visit)}`]) : '', !stay ? '' : stay >= 90 ? t([`usually ${Math.round(stay / 60)} h`, `一般待 ${Math.round(stay / 60)} 小时`]) : t([`usually ${stay} min`, `一般待 ${stay} 分钟`])].filter(Boolean).join(' · ');
+};
+
+function Places({ r, a }: { r: { data: Placed | null; error: boolean }; a: Acts }) {
+  const { t } = a;
+  const [open, setOpen] = useState<string | null>(null);
+  if (!r.data) return <p className="mem-empty">{r.error ? t(['Couldn’t read the places.', '地点读不出来。']) : t(['Reading the places…', '正在读地点…'])}</p>;
+  if (!r.data.places.length) return <p className="mem-empty">{t(['No place is kept yet. Tell her “remember this is …” where you are.', '还没有记住的地点。在某个地方跟她说「记住这里是…」就行。'])}</p>;
+  const rank = (p: Place) => ROLE.findIndex(([k]) => k === p.role);
+  const list = [...r.data.places].sort((x, y) => rank(x) - rank(y) || (y.days_28 ?? 0) - (x.days_28 ?? 0));
+  return <div className="mem-rows">{list.map(p => <PlaceRow key={p.id} p={p} open={open === p.id} toggle={() => setOpen(o => o === p.id ? null : p.id)} a={a}/>)}</div>;
+}
+
+function PlaceRow({ p, open, toggle, a }: { p: Place; open: boolean; toggle: () => void; a: Acts }) {
+  const { t } = a;
+  const [name, setName] = useState(p.name), [err, setErr] = useState(''), [sure, setSure] = useState(false), [working, setWorking] = useState(false);
+  useEffect(() => setName(p.name), [p.name, open]);
+  useEffect(() => { if (!open) { setErr(''); setSure(false); } }, [open]);
+  const send = async (body: object, say: L) => {
+    setErr(''); setWorking(true);
+    try {
+      const r = await api<{ change: { id: string } | null }>(a.port, `/places/${encodeURIComponent(p.id)}`, body);
+      a.refresh(); a.notify(t(say), r.change ? () => void a.undoPlace(r.change!.id) : undefined);
+    } catch (e) { setErr(e instanceof Refused && e.status !== 502 ? e.message : t(['That didn’t go through. Try again.', '没成功，请再试一次。'])); }
+    finally { setWorking(false); }
+  };
+  const clean = name.trim();
+  return <div className="mem-place" data-open={open ? '' : undefined} data-id={p.id}>
+    <button className="mem-row mem-place-h" aria-expanded={open} onClick={toggle}>
+      <span className="mem-place-b">
+        <span className="mem-place-n">{p.name}<em className="mem-tag">{t(ROLE.find(([k]) => k === p.role)?.[1] ?? ['Other', '其他'])}</em></span>
+        <small>{facts(p, t)}</small>
+        {p.has_centre === false && p.address && <small className="mem-place-addr">{p.address}</small>}
+      </span><CaretRight size={11} weight="bold"/></button>
+    <Fold open={open}><div className="mem-place-x">
+      <input className="mem-place-in" aria-label={t(['Rename', '改名'])} autoComplete="off" spellCheck={false} value={name} disabled={working} onPointerDown={focusWindow} onChange={e => setName(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Escape') { e.stopPropagation(); toggle(); }
+          else if (e.key === 'Enter' && e.nativeEvent.isComposing) e.preventDefault();
+          else if (e.key === 'Enter') { e.preventDefault(); if (clean && clean !== p.name) void send({ name: clean }, [`Renamed to ${clean}`, `改名为「${clean}」`]); }
+        }}/>
+      <div className="mem-secpick" role="group" aria-label={t(['Role', '角色'])}>{ROLE.map(([k, l]) => <button key={k} className="mem-chip is-small" aria-pressed={k === p.role} disabled={working}
+        onClick={() => k !== p.role && void send({ role: k }, [`${p.name} is now ${l[0]}`, `「${p.name}」改成了${l[1]}`])}>{t(l)}</button>)}</div>
+      <div className="mem-acts"><button className="mem-act is-del" disabled={working} onBlur={() => setSure(false)}
+        onClick={() => sure ? void send({ forget: true }, [`Forgot ${p.name}`, `忘掉了「${p.name}」`]) : setSure(true)}><Trash size={12} weight="bold"/>{sure ? t(['Click again to forget', '再点一次确认忘掉']) : t(['Forget', '忘掉'])}</button></div>
+      {err && <p className="mem-err" role="alert">{err}</p>}
+    </div></Fold>
+  </div>;
+}
+
+// ——— 7 · changes ———
 function title(v: Version, t: (l: L) => string): string {
   const n = (c: number, en: string, zh: string) => c ? [t([`${en} ${c}`, `${zh} ${c} 条`])] : [];
   if (v.kind === 'nightly') return v.day ? t([`Night pass · ${md(v.day)}`, `夜里整理 ${md(v.day)}`]) : t(['Night pass', '夜里整理']);
@@ -441,21 +507,37 @@ function title(v: Version, t: (l: L) => string): string {
   const parts = [...n(v.edited, 'edited', '改了'), ...n(v.moved, 'moved', '挪了'), ...(v.edited || v.moved ? [] : n(v.counts.chg, 'changed', '改了')), ...n(v.counts.old, 'deleted', '删了'), ...(v.kind === 'user' ? n(v.counts.add, 'kept', '留着了') : [])];
   return parts.length ? t(['You ', '你']) + parts.join(t([', ', '，'])) : t(['You changed something', '你改了一处']);
 }
+function placeText(c: PlaceChange, t: (l: L) => string): string {
+  const n = c.name ?? '', b = c.before, f = c.after, role = (k?: Role) => t(ROLE.find(([x]) => x === k)?.[1] ?? ['?', '?']);
+  if (c.op === 'forget') return t([`Forgot ${n}`, `忘掉了「${n}」`]);
+  if (c.op === 'undo') return t([`Took back a change to ${n}`, `撤回了对「${n}」的改动`]);
+  if (c.op === 'save') return t([`Saved ${n}`, `记住了「${n}」`]);
+  const parts = [...b?.name !== f?.name ? [t([`Renamed ${b?.name} → ${f?.name}`, `「${b?.name}」改名为「${f?.name}」`])] : [],
+    ...b?.role !== f?.role ? [t([`${n}: ${role(b?.role)} → ${role(f?.role)}`, `「${n}」${role(b?.role)} → ${role(f?.role)}`])] : []];
+  return parts.join(t(['; ', '；'])) || t([`Edited ${n}`, `改了「${n}」`]);
+}
 const LINE_TAG: Record<'add' | 'chg' | 'old', [string, L]> = { add: ['add', ['New', '新']], chg: ['chg', ['Edited', '改']], old: ['old', ['Gone', '过时']] };
 
-function Changes({ o, a }: { o: MemoryOverview; a: Acts }) {
+function Changes({ o, a, places }: { o: MemoryOverview; a: Acts; places: PlaceChange[] }) {
   const { t, lang } = a;
   const r = useGet<{ versions: Version[]; total: number }>(a.port, '/versions', a.rev), [pending, setPending] = useState<string | null>(null);
+  // Place changes and core-memory versions share one timeline, newest first.
+  const rows = [...(r.data?.versions ?? []).map(v => ({ ts: v.ts, v })), ...places.map(c => ({ ts: c.ts, c }))].sort((x, y) => Date.parse(y.ts) - Date.parse(x.ts));
   return <>
     {!r.data ? <p className="mem-empty">{r.error ? t(['Couldn’t read the changes.', '改动读不出来。']) : t(['Reading the changes…', '正在读改动…'])}</p>
-      : <ol className="mem-vers">{r.data.versions.map(v => <li className="mem-ver" key={v.id} data-kind={v.kind} data-now={v.current ? '' : undefined}>
+      : <ol className="mem-vers">{rows.map(row => 'c' in row ? <li className="mem-ver" key={row.c.id} data-kind="place">
+        <i className="mem-dot"/>
+        <div className="mem-ver-b"><span className="mem-ver-t">{placeText(row.c, t)}<em className="mem-tag">{t(['Place', '地点'])}</em></span>
+          <span className="mem-ver-s"><time>{stamp(row.c.ts, lang)}</time> · {t(ORIGIN[row.c.origin] ?? [row.c.origin, row.c.origin])}</span></div>
+        {row.c.undoable && <button className="mem-act" disabled={pending !== null || a.busy} aria-label={`${t(['Undo', '撤回'])}: ${placeText(row.c, t)}`} onClick={async () => { setPending(row.c.id); try { await a.undoPlace(row.c.id); } finally { setPending(null); } }}><ArrowCounterClockwise size={11} weight="bold"/>{t(['Undo', '撤回'])}</button>}
+      </li> : (v => <li className="mem-ver" key={v.id} data-kind={v.kind} data-now={v.current ? '' : undefined}>
         <i className={`mem-dot ${v.origin === 'user' ? 'is-you' : ''}`}/>
         <div className="mem-ver-b"><span className="mem-ver-t">{title(v, t)}{v.current && <em className="mem-tag is-now">{t(['Now', '现在'])}</em>}</span>
           <span className="mem-ver-s"><time>{stamp(v.ts, lang)}</time></span>
           {v.lines.length > 0 && <div className="mem-ver-l">{v.lines.map((l, i) => <div className="mem-vl" key={i}><span className={`mem-tag is-${l.tag}`}>{t(LINE_TAG[l.tag][1])}</span><span>{l.text}</span></div>)}
             {v.more > 0 && <small>{t([`and ${v.more} more`, `还有 ${v.more} 条`])}</small>}</div>}</div>
         {v.undoable && <button className="mem-act" disabled={pending !== null || a.busy} aria-label={`${t(['Undo', '撤回'])}: ${title(v, t)}`} onClick={async () => { setPending(v.id); try { await a.undo(v.id); } finally { setPending(null); } }}><ArrowCounterClockwise size={11} weight="bold"/>{t(['Undo', '撤回'])}</button>}
-      </li>)}</ol>}
+      </li>)(row.v))}</ol>}
     <Cap o={o} a={a}/>
   </>;
 }
