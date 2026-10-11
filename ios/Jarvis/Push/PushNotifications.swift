@@ -8,6 +8,7 @@ import UserNotifications
 
 enum PushShape {
     static let waitingThread = "waiting"
+    static let rideThread = "ride"
 
     /// the categories of what waits on him
     enum Waiting: String, CaseIterable {
@@ -108,12 +109,14 @@ final class PushNotifications: NSObject, UNUserNotificationCenterDelegate {
     func install() {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
-        center.setNotificationCategories(PushAction.categories())
+        center.setNotificationCategories(PushAction.categories().union(RideAction.categories()))
     }
 
     /// While the app is open it polls what waits, so a waiting item already on screen as a card is not shown again as a banner.
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         let content = notification.request.content
+        // a ride push while the app is open is a card, not a banner
+        if content.threadIdentifier == PushShape.rideThread, let ride = RidePush(content) { Waiting.shared.showRide(ride); return [] }
         guard content.threadIdentifier == PushShape.waitingThread, let w = PushShape.Waiting(rawValue: content.categoryIdentifier) else { return [.banner, .list, .sound] }
         await Waiting.shared.poll()      // looks once more, so an item asked this second is seen
         return Waiting.shared.cards.contains { $0.kind == w.cardKind } ? [] : [.banner, .list, .sound]
@@ -123,9 +126,12 @@ final class PushNotifications: NSObject, UNUserNotificationCenterDelegate {
         let content = response.notification.request.content
         if let action = PushAction(rawValue: response.actionIdentifier) {
             if let failure = await PushAnswer.perform(action, body: content.body) { await Self.tell(failure) }
+        } else if let action = RideAction(rawValue: response.actionIdentifier), let ride = RidePush(content) {
+            if let failure = await action.perform(ride) { await Self.tell(failure) }
         } else if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
             if let url = PushShape.url(content.userInfo) { await UIApplication.shared.open(url) }
             else if content.threadIdentifier == PushShape.waitingThread { Self.openCards() }
+            else if content.threadIdentifier == PushShape.rideThread, let ride = RidePush(content) { Waiting.shared.showRide(ride); Self.openCards() }      // the card is there to answer
         }
     }
 

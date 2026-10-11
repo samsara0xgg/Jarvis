@@ -18,6 +18,7 @@ enum CardAnswer: Equatable {
     case claude(String)                // a held Claude Code prompt: allow, always or deny
     case acknowledge                   // a notice: dismissed
     case plugin(String)                // a plugin sign-in: connect or cancel
+    case ride(String)                  // a bus ride's question or warning (Ride.swift): board, not or end
     case openLogin                     // the plugin's sign-in link, opened on this phone: no request
 
     func request(for card: WaitingCard, filled: [String: String] = [:]) -> (path: String, body: [String: Any])? {
@@ -31,6 +32,7 @@ enum CardAnswer: Equatable {
         case .claude(let decision): return ("/inherent/claude-requests/\(id)", ["decision": decision])
         case .acknowledge: return ("/inherent/notices/\(id)", ["action": "dismissed"])
         case .plugin(let operation): return ("/inherent/plugins/action", ["operation": operation, "data": ["request_id": id]])
+        case .ride(let action): return ("/inherent/ride", ["action": action, action == "end" ? "ride_id" : "candidate_id": id])
         case .openLogin: return nil
         }
     }
@@ -42,7 +44,7 @@ struct CardAction: Equatable {
 }
 
 struct WaitingCard: Identifiable, Equatable {
-    enum Kind: String { case confirmation, clarification, notice, plugin, claude }
+    enum Kind: String { case confirmation, clarification, notice, plugin, claude, ride }
     let id: String                     // kind and the brain's id: ids of different kinds may coincide
     let kind: Kind
     let brainId: String
@@ -209,6 +211,8 @@ final class Waiting {
     @ObservationIgnored private var round = 0
     @ObservationIgnored private var firstSeen: [String: Date] = [:]
     @ObservationIgnored private var awaitingLogin: Set<String> = []
+    /// The ride push shown as a card while the app is open. The brain's waiting list does not hold it, so it is added to every look until answered or gone.
+    @ObservationIgnored private var ride: RidePush?
 
     // MARK: asking
 
@@ -234,10 +238,27 @@ final class Waiting {
     /// One look at what waits. A failure leaves what is on screen as it was; the next round asks again.
     @MainActor func poll() async {
         guard let data = try? await BrainLink.shared.call({ try await BrainClient.waiting(bases: $0, token: $1) }), let new = WaitingCards.parse(data) else { return }
+        await dropStaleRide()
         apply(new)
     }
 
-    private func apply(_ new: [WaitingCard]) {
+    /// A ride push arrived while the app is open: it is a card like the others, with the same two buttons.
+    func showRide(_ push: RidePush) {
+        ride = push
+        apply(cards.filter { $0.kind != .ride })
+    }
+
+    /// The question or warning may have been answered elsewhere (the Live Activity, the other phone, the Mac): the brain is asked what ride there is before the card stays.
+    private func dropStaleRide() async {
+        guard let r = ride, let data = try? await BrainLink.shared.call({ try await BrainClient.ride(bases: $0, token: $1) }),
+              let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        let riding = (o["ride"] as? [String: Any])?["ride_id"] as? String
+        // a warning is for the ride it names; a question is moot once he is on any ride
+        if r.kind == .alight ? riding != r.id : riding != nil { ride = nil }
+    }
+
+    private func apply(_ fetched: [WaitingCard]) {
+        let new = fetched + (ride.map { [$0.card] } ?? [])
         let ids = Set(new.map(\.id)), now = Cal.now()
         for id in ids where firstSeen[id] == nil { firstSeen[id] = now }
         firstSeen = firstSeen.filter { ids.contains($0.key) }
@@ -267,6 +288,7 @@ final class Waiting {
                 if card.kind == .plugin {
                     if answer == .plugin("connect") { awaitingLogin.insert(card.id) }
                 } else {
+                    if card.kind == .ride { ride = nil }
                     cards.removeAll { $0.id == card.id }; version += 1
                 }
                 if card.kind == .notice { BrainLink.shared.opened() }      // the day's reminder is acknowledged now: ask for the days again

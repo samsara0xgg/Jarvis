@@ -1,5 +1,6 @@
 import UIKit
 import SwiftUI
+import UserNotifications
 
 // What touches, time and her talking do to the dial. A port of the prototype's flows, touch handling, per-frame step and detail panel.
 
@@ -578,6 +579,22 @@ extension StarEngine {
             guard let e = EV.first(where: { $0.card?.kind.rawValue == kind }) else { return }
             setLevel(0); openId = e.id; rowKey = ""; panelKey = ""; seek(e.t)
             if name.hasPrefix("抽屉") { openPanel() }
+        // the bus ride's push arriving while the app is open, with made-up ids and words: `骑行:board` or `骑行:alight` opens its card under the dial, `骑行抽屉:board` with the panel open
+        case _ where name.hasPrefix("骑行"):
+            let board = name.hasSuffix("board")
+            let json = board ? #"{"ride":{"kind":"board","candidate_id":"Cdebug01","route":"32"}}"# : #"{"ride":{"kind":"alight","ride_id":"Rdebug01"}}"#
+            let c = UNMutableNotificationContent()
+            c.title = board ? "上 32 路了吗？" : "快到站了"; c.body = board ? "32 路，下一站 光华路" : "下一站 国贸，准备下车"
+            c.userInfo = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [AnyHashable: Any] ?? [:]
+            guard let push = RidePush(c) else { return }
+            MainActor.assumeIsolated { Waiting.shared.showRide(push) }
+            let waits = MainActor.assumeIsolated { Waiting.shared.events(merging: []) }
+            for e in waits { e.born = -1e9 }
+            EV.append(contentsOf: waits)
+            setLevel(0)
+            guard let e = waits.first else { return }
+            openId = e.id; rowKey = ""; panelKey = ""; seek(e.t)
+            if name.hasPrefix("骑行抽屉") { openPanel() }
         case "放大镜": lensTh = -0.6; lensGoal = 1
         case "打字": ui.typing = true; ui.chipsOn = true
         default: runTalkScene(name)

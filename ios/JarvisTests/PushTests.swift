@@ -1,4 +1,5 @@
 import XCTest
+import UserNotifications
 @testable import Jarvis
 
 /// What the phone tells the brain about its APNs tokens (docs/spec.html `POST /inherent/device/push`).
@@ -146,5 +147,47 @@ final class LiveActivityTests: XCTestCase {
         let data = try JSONEncoder().encode(State(state: "dnd", nextText: "a", nextAtMs: 5))
         let o = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary)
         XCTAssertEqual(o, ["state": "dnd", "next_text": "a", "next_at_ms": 5])
+    }
+}
+
+/// The bus ride's two pushes (docs/spec.html `POST /inherent/ride`): buttons by category, and the ids come from `userInfo`, never from the words.
+final class RidePushTests: XCTestCase {
+    private func content(title: String = "上 32 路了吗？", body: String = "32 路，下一站 光华路", _ ride: [String: Any]) -> UNNotificationContent {
+        let c = UNMutableNotificationContent()
+        c.title = title; c.body = body; c.userInfo = ["ride": ride]
+        return c
+    }
+
+    func testTheCategoriesCarryTheButtonsAndNeedNoUnlock() {
+        let byId = Dictionary(uniqueKeysWithValues: RideAction.categories().map { ($0.identifier, $0.actions) })
+        XCTAssertEqual(Set(byId.keys), ["ride_board", "ride_alight"])
+        XCTAssertEqual(byId["ride_board"]?.map(\.title), ["不是", "上车了"])
+        XCTAssertEqual(byId["ride_alight"]?.map(\.title), ["下车了"])
+        for a in byId.values.joined() { XCTAssertTrue(a.options.isEmpty, "background, no unlock: " + a.identifier) }
+    }
+
+    func testEachButtonPostsItsActionWithTheIdOfWhatItAnswers() throws {
+        let board = try XCTUnwrap(RidePush(content(["kind": "board", "candidate_id": "C1", "route": "32"])))
+        let alight = try XCTUnwrap(RidePush(content(["kind": "alight", "ride_id": "R1"])))
+        func req(_ a: RideAction, _ p: RidePush) -> (String, NSDictionary)? { a.answer.request(for: p.card).map { ($0.path, $0.body as NSDictionary) } }
+        XCTAssertEqual(req(.board, board)?.0, "/inherent/ride")
+        XCTAssertEqual(req(.board, board)?.1, ["action": "board", "candidate_id": "C1"])
+        XCTAssertEqual(req(.not, board)?.1, ["action": "not", "candidate_id": "C1"])
+        XCTAssertEqual(req(.end, alight)?.1, ["action": "end", "ride_id": "R1"])
+    }
+
+    func testTheCardShowsTheQuestionAndTheSameButtonsAsTheNotification() throws {
+        let card = try XCTUnwrap(RidePush(content(["kind": "board", "candidate_id": "C1", "route": "32"]))).card
+        XCTAssertEqual(card.kind, .ride)
+        XCTAssertEqual(card.title, "上 32 路了吗？")
+        XCTAssertEqual(card.meta, "32 路，下一站 光华路")
+        XCTAssertEqual(card.actions.map(\.label), ["不是", "上车了"])
+        XCTAssertEqual(try XCTUnwrap(RidePush(content(["kind": "alight", "ride_id": "R1"]))).card.actions.map(\.label), ["下车了"])
+    }
+
+    func testAPushWithoutItsIdIsNotARidePush() {
+        XCTAssertNil(RidePush(content(["kind": "board"])))
+        XCTAssertNil(RidePush(content(["kind": "alight", "candidate_id": "C1"])), "a warning names the ride, not a question")
+        XCTAssertNil(RidePush(content(["kind": "other", "ride_id": "R1"])))
     }
 }
