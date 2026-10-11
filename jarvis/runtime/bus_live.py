@@ -7,34 +7,45 @@ export (a zip of about 16 MB), so that is kept under the runtime root and fetche
 day; only the two small lookups a match needs (trip -> route number, stop -> position) are built,
 once, on the first refresh. Google and BC Transit spell stop names differently, so a stop is found
 by position: every GTFS stop within ``STOP_RADIUS_M`` of where Google put it.
+
+A followed ride (ADR 0224) reads the same export and the VehiclePositions feed
+(``vehicleupdates.pb``, about 13 KB): :meth:`BusLive.vehicles` for the buses,
+:meth:`BusLive.trip_stops` for one trip's stops with their scheduled times and
+:meth:`BusLive.predicted` for the live arrivals of a trip.
 """
 
 from __future__ import annotations
 
 import csv
 import io
-import math
 import shutil
 import sys
 import time
 import urllib.request
 import zipfile
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final
+from zoneinfo import ZoneInfo
 
 from google.transit import gtfs_realtime_pb2
+
+from jarvis.shared.geo import metres
+from jarvis.state.ride_progress import StopTime, Vehicle
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
 FEED_URL: Final = "https://bct.tmix.se/gtfs-realtime/tripupdates.pb?operatorIds=48"
+VEHICLES_URL: Final = "https://bct.tmix.se/gtfs-realtime/vehicleupdates.pb?operatorIds=48"
 STATIC_URL: Final = "https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=48"
 STATIC_MAX_AGE_S: Final = 24 * 3600
 STOP_RADIUS_M: Final = 40.0
 MATCH_WINDOW_MS: Final = 10 * 60_000
 _FEED_TIMEOUT_S: Final = 10.0
 _STATIC_TIMEOUT_S: Final = 120.0
-_EARTH_M: Final = 6_371_000.0
+_ZONE: Final = ZoneInfo("America/Vancouver")
+_TRIPS_KEPT: Final = 20
 
 
 def _fetch_feed() -> bytes:
@@ -43,19 +54,16 @@ def _fetch_feed() -> bytes:
     return data
 
 
+def _fetch_vehicles() -> bytes:
+    with urllib.request.urlopen(VEHICLES_URL, timeout=_FEED_TIMEOUT_S) as reply:  # noqa: S310 - fixed https URL.
+        data: bytes = reply.read()
+    return data
+
+
 def _download_static(dest: Path) -> None:
     reply = urllib.request.urlopen(STATIC_URL, timeout=_STATIC_TIMEOUT_S)  # noqa: S310
     with reply, dest.open("wb") as out:
         shutil.copyfileobj(reply, out)
-
-
-def _metres(a: tuple[float, float], b: tuple[float, float]) -> float:
-    """Great-circle distance in metres; at 40 m the flat-earth shortcut would do, this is exact."""
-    p1, p2 = math.radians(a[0]), math.radians(b[0])
-    h = math.sin((p2 - p1) / 2) ** 2 + (
-        math.cos(p1) * math.cos(p2) * math.sin(math.radians(b[1] - a[1]) / 2) ** 2
-    )
-    return 2 * _EARTH_M * math.asin(math.sqrt(h))
 
 
 class BusLive:
@@ -67,12 +75,19 @@ class BusLive:
         *,
         feed: Callable[[], bytes] = _fetch_feed,
         download: Callable[[Path], None] = _download_static,
+        vehicles: Callable[[], bytes] = _fetch_vehicles,
     ) -> None:
-        """``cache_dir`` holds the static zip; ``feed`` and ``download`` are the network calls."""
+        """``cache_dir`` holds the static zip.
+
+        ``feed`` (trip updates), ``vehicles`` (positions) and ``download`` (the export) are the
+        network calls.
+        """
         self._zip = cache_dir / "bctransit-gtfs.zip"
-        self._feed, self._download = feed, download
+        self._feed, self._download, self._vehicles = feed, download, vehicles
         self._trips: dict[str, str] | None = None
         self._stops: dict[str, tuple[float, float]] = {}
+        self._names: dict[str, str] = {}
+        self._trip_cache: dict[tuple[str, str | None], list[StopTime]] = {}
 
     def departure(
         self,
@@ -116,6 +131,95 @@ class BusLive:
         later = [(live, trip) for _, trip, live in found if live > line]
         return (min(later)[1], min(later)[0]) if later else None
 
+    def vehicles(self) -> list[Vehicle]:
+        """Every bus in the VehiclePositions feed (ADR 0224), with its route number.
+
+        The route is the static export's number for the trip, else the head of the feed's own
+        ``route_id`` (``14-VIC`` is the 14). Network and feed errors propagate.
+        """
+        feed = gtfs_realtime_pb2.FeedMessage()
+        feed.ParseFromString(self._vehicles())
+        try:
+            trips: dict[str, str] = self._lookups()
+        except Exception:  # noqa: BLE001 - the feed's own route id still names the route.
+            trips = {}
+        found: list[Vehicle] = []
+        for entity in feed.entity:
+            one = entity.vehicle
+            if not (
+                entity.HasField("vehicle") and one.HasField("trip") and one.HasField("position")
+            ):
+                continue
+            trip = one.trip
+            found.append(Vehicle(
+                vehicle_id=one.vehicle.id or entity.id,
+                trip_id=trip.trip_id,
+                route=trips.get(trip.trip_id) or trip.route_id.split("-")[0],
+                lat=one.position.latitude,
+                lng=one.position.longitude,
+                at_ms=(one.timestamp or feed.header.timestamp) * 1000,
+                stop_id=one.stop_id or None,
+                stop_seq=(
+                    one.current_stop_sequence if one.HasField("current_stop_sequence") else None
+                ),
+                status=one.current_status if one.HasField("current_status") else None,
+                start_date=trip.start_date or None,
+            ))
+        return found
+
+    def stop_name(self, stop_id: str) -> str | None:
+        """The name of a stop in the static export, once it has been read; else None."""
+        return self._names.get(stop_id) or None
+
+    def trip_stops(self, trip_id: str, service_date: str | None = None) -> list[StopTime]:
+        """The stops of a trip in order, with their scheduled times on ``service_date``.
+
+        ``service_date`` is ``YYYYMMDD`` (the feed's ``start_date``); today when None. The
+        timetable is read from the static export by one pass over its stop times, and the last
+        few trips are kept. Errors propagate.
+        """
+        key = (trip_id, service_date)
+        if key in self._trip_cache:
+            return self._trip_cache[key]
+        self._lookups()
+        day = (
+            datetime.strptime(service_date, "%Y%m%d").replace(tzinfo=_ZONE)
+            if service_date
+            else datetime.now(_ZONE).replace(hour=0, minute=0, second=0, microsecond=0)
+        )
+        found: list[StopTime] = []
+        with zipfile.ZipFile(self._zip) as archive:
+            for row in _rows(archive, "stop_times.txt"):
+                if row["trip_id"] != trip_id or row["stop_id"] not in self._stops:
+                    continue
+                clock = row["arrival_time"] or row["departure_time"]
+                h, m, sec = (int(part) for part in clock.split(":"))
+                at = day + timedelta(hours=h, minutes=m, seconds=sec)
+                lat, lng = self._stops[row["stop_id"]]
+                found.append(StopTime(
+                    int(row["stop_sequence"]), row["stop_id"], self._names[row["stop_id"]],
+                    lat, lng, int(at.timestamp() * 1000),
+                ))
+        found.sort(key=lambda s: s.seq)
+        if len(self._trip_cache) >= _TRIPS_KEPT:
+            self._trip_cache.clear()
+        self._trip_cache[key] = found
+        return found
+
+    @staticmethod
+    def predicted(feed: gtfs_realtime_pb2.FeedMessage, trip_id: str) -> dict[str, int]:
+        """The live arrival (epoch ms) at each stop of ``trip_id`` that ``feed`` predicts."""
+        out: dict[str, int] = {}
+        for entity in feed.entity:
+            update = entity.trip_update
+            if not entity.HasField("trip_update") or update.trip.trip_id != trip_id:
+                continue
+            for one in update.stop_time_update:
+                event = one.arrival if one.arrival.time else one.departure
+                if event.time:
+                    out[one.stop_id] = event.time * 1000
+        return out
+
     def _stop_times(
         self,
         route: str,
@@ -125,7 +229,7 @@ class BusLive:
     ) -> list[tuple[int, str, int]]:
         """Each bus on ``route`` at ``stop`` as ``(distance from around_ms, trip, live ms)``."""
         trips = self._lookups()
-        near = {sid for sid, at in self._stops.items() if _metres(stop, at) <= STOP_RADIUS_M}
+        near = {sid for sid, at in self._stops.items() if metres(stop, at) <= STOP_RADIUS_M}
         feed = feed if feed is not None else self.snapshot()
         found: list[tuple[int, str, int]] = []
         for entity in feed.entity:
@@ -167,10 +271,11 @@ class BusLive:
                 row["trip_id"]: routes.get(row["route_id"], "")
                 for row in _rows(archive, "trips.txt")
             }
-            self._stops = {
-                row["stop_id"]: (float(row["stop_lat"]), float(row["stop_lon"]))
-                for row in _rows(archive, "stops.txt")
-            }
+            self._stops = {}
+            self._names = {}
+            for row in _rows(archive, "stops.txt"):
+                self._stops[row["stop_id"]] = (float(row["stop_lat"]), float(row["stop_lon"]))
+                self._names[row["stop_id"]] = (row.get("stop_name") or "").strip()
         return self._trips
 
     def _fresh(self) -> bool:
