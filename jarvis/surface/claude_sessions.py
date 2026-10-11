@@ -81,6 +81,7 @@ _ATTACHED = re.compile(r'@"([^"]+)"|@(\S+)')
 _WAKE_MESSAGE = re.compile(r"<message\b([^>]*)>(.*?)</message>", re.DOTALL)
 _CITED = re.compile(r'<cited\b[^>]*\bauthor="user"[^>]*>(.*?)</cited>', re.DOTALL)
 _NOTE = re.compile(r"<note\b[^>]*>(.*?)</note>", re.DOTALL)
+_ENVELOPE = re.compile(r"<(?:wake|relay)\b")
 _SENTENCE = re.compile(r"(?<=[.!?])\s|(?<=[\u3002\uff01\uff1f])|\n")
 # Process names (lowercase prefix) that host a terminal session, innermost first wins.
 _TERMINALS = (
@@ -199,7 +200,7 @@ def _opening_title(path: Path) -> str:
         if not isinstance(entry, dict) or entry.get("type") != "user" or entry.get("isSidechain"):
             continue
         origin = entry.get("origin")
-        if entry.get("isMeta") or (isinstance(origin, dict) and origin.get("kind") != "human"):
+        if isinstance(origin, dict) and origin.get("kind") != "human":
             continue
         message = entry.get("message")
         content = message.get("content") if isinstance(message, dict) else None
@@ -208,7 +209,13 @@ def _opening_title(path: Path) -> str:
                 str(block.get("text") or "") for block in content
                 if isinstance(block, dict) and block.get("type") == "text"
             )
-        if isinstance(content, str) and (title := _prompt_title(content)):
+        if not isinstance(content, str):
+            continue
+        # Remote Control injects the wake and relay envelopes as meta entries; other meta
+        # entries (command output, caveats) are not his words.
+        if entry.get("isMeta") and not _ENVELOPE.match(content.lstrip()):
+            continue
+        if title := _prompt_title(content):
             return title
     return ""
 
@@ -222,7 +229,7 @@ def read_transcript(path: Path) -> dict[str, Any]:
     """
     out: dict[str, Any] = {
         "prompt": "", "branch": "", "tool": "", "last_message": "", "tail": "", "said": [],
-        "title": _opening_title(path),
+        "title": "",
     }
     with path.open("rb") as fh:
         size = fh.seek(0, 2)
@@ -243,7 +250,7 @@ def read_transcript(path: Path) -> dict[str, Any]:
         if entry.get("type") == "last-prompt" and not out["prompt"]:
             out["prompt"] = _short(entry.get("lastPrompt"))
             raw = entry.get("lastPrompt")
-            out["title"] = out["title"] or _prompt_title(raw if isinstance(raw, str) else "")
+            out["title"] = _prompt_title(raw if isinstance(raw, str) else "")
         if entry.get("type") == "assistant" and not answered:
             tool, text = _newest_blocks(entry)
             out["tool"] = out["tool"] or tool
@@ -449,6 +456,8 @@ class ClaudeSessions:
         self._at = -REFRESH_S
         self._board: dict[str, Any] = {"sessions": [], "error": None}
         self._transcripts: dict[Path, tuple[int, dict[str, Any]]] = {}
+        # The title each transcript's opening gives, once found.
+        self._openings: dict[Path, str] = {}
         # Claude Desktop's session files: path -> (mtime, CLI session id, title).
         self._desktop: dict[Path, tuple[int, str, str]] = {}
         self._reply_lock = threading.Lock()
@@ -572,7 +581,15 @@ class ClaudeSessions:
             }
         cached = self._transcripts.get(path)
         if cached is None or cached[0] != mtime_ns:
-            cached = self._transcripts[path] = (mtime_ns, read_transcript(path))
+            tx = read_transcript(path)
+            # A session's opening never changes: read once from the head of what can be a
+            # transcript of many megabytes, then kept; the last prompt stands in until then.
+            if path not in self._openings:
+                opening = _opening_title(path)
+                if opening:
+                    self._openings[path] = opening
+            tx["title"] = self._openings.get(path) or tx["title"]
+            cached = self._transcripts[path] = (mtime_ns, tx)
         return cached[1]
 
     def _desktop_titles(self) -> dict[str, str]:
@@ -693,5 +710,6 @@ class ClaudeSessions:
                 }
             )
         self._transcripts = {p: v for p, v in self._transcripts.items() if p.stem in seen}
+        self._openings = {p: v for p, v in self._openings.items() if p.stem in seen}
         rows.sort(key=lambda r: r["updated_ms"], reverse=True)
         return {"sessions": rows, "error": None, "extra": extra}

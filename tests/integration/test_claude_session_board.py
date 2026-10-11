@@ -351,13 +351,19 @@ def test_a_session_is_named_as_claude_desktop_names_it(
     }
     for sid, prompt in prompts.items():
         entries: list[dict[str, Any]] = [  # Claude Code keeps 200 characters
-            {"type": "last-prompt", "lastPrompt": prompt[:200]},
+            # A relayed session's last prompt is a later turn, not what it is about.
+            {"type": "last-prompt", "lastPrompt": "可以" if "<relay" in prompt else prompt[:200]},
         ]
         if sid != "s-woken":
             entries = [
-                {"type": "user", "message": {"role": "user", "content": [
-                    {"type": "text", "text": prompt},
-                ]}},
+                # Remote Control injects envelopes as meta entries with no origin.
+                {"type": "user", "isMeta": sid.startswith(("s-relayed", "s-cited")),
+                 "origin": None, "message": {"role": "user", "content": [
+                     {"type": "text", "text": prompt},
+                 ]}},
+                {"type": "user", "isMeta": True, "message": {"role": "user", "content": (
+                    "<local-command-stdout>a caveat</local-command-stdout>"
+                )}},
                 {"type": "user", "message": {"role": "user", "content": [
                     {"type": "tool_result", "content": "ok"},
                 ]}},
@@ -365,7 +371,7 @@ def test_a_session_is_named_as_claude_desktop_names_it(
             ]
         else:  # the whole envelope is only in the opening user entry, after a spawn line
             entries = [
-                {"type": "user", "message": {"role": "user", "content": (
+                {"type": "user", "isMeta": True, "message": {"role": "user", "content": (
                     '<wake reason="spawn"><message from="system" role="initiator">'
                     "Thread session started</message></wake>"
                 )}},
