@@ -10,8 +10,9 @@ extension StarEngine {
     func trouble(_ text: String) { note(text); Haptic.notify(.warning) }
     func clearNote() { brainNote = nil; brainNoteUntil = 0 }
 
-    /// His words and everything attached go to the brain: each file up first, then the words with their ids. Anything that goes wrong is said on the status line and
-    /// leaves the words and the files where they were, so he can take the refused one off and send again. Once the brain has taken the turn, her answer is waited for.
+    /// His words and everything attached go to the brain: his line shows at once, each file goes up first, then the words with their ids. Anything that goes wrong
+    /// takes his line back, says why on the status line and leaves the words and the files where they were, so he can take the refused one off and send again.
+    /// Once the brain has taken the turn, her answer is waited for.
     func sendToBrain(_ words: String) {
         let text = words.trimmingCharacters(in: .whitespacesAndNewlines), items = ui.attach.items
         if (text.isEmpty && items.isEmpty) || sendingToBrain { return }
@@ -22,51 +23,61 @@ extension StarEngine {
         note("正在发给她…", for: 120_000)
         let shown = text.isEmpty ? AttachModel.caption(items) : text, pics = SentPics.items(items)
         if talk != nil { interrupt() }
-        run { @MainActor ok in
+        run { ok in
+            // after the interrupt's own end of the talk (queued before this): his line, and the field empty for the next one
+            self.beginTalk()
+            self.talk = "listen"
+            let his = self.addTurn(his: true, shown, pics: pics)
+            if self.ui.text == words { self.ui.text = "" }
+            func fail(_ m: String) {
+                self.sendingToBrain = false
+                self.ui.liveTurns.removeAll { $0.id == his }
+                if self.ui.text.isEmpty { self.ui.text = words }
+                if self.talk == "listen" { self.talk = nil; self.lingerFrom(nowMs()) }
+                self.trouble(m)
+            }
+            // her answer is the first row of hers past the newest one now: asked while the files go up
+            async let latest = Conversation.shared.latestSeq()
             let seq: Int?
             do {
                 var ids: [String] = []
                 for part in try await AttachUpload.parts(items, photos: self.ui.attach.photos) {
                     let up = try await BrainLink.shared.call { try await BrainClient.upload(part, bases: $0, token: $1) }
-                    guard let id = up.id else { self.sendingToBrain = false; return self.trouble(AttachUpload.refusal(status: up.status, name: part.name)) }
+                    guard let id = up.id else { return fail(AttachUpload.refusal(status: up.status, name: part.name)) }
                     ids.append(id)
                 }
                 StallLog.mark("send: files up")
-                seq = await Conversation.shared.latestSeq()      // her answer is the first row of hers past this one
+                seq = await latest
                 StallLog.mark("send: latest seq")
                 let status = try await BrainLink.shared.call { try await BrainClient.submit(text, attachments: ids, about: about, bases: $0, token: $1) }
                 guard status == 200 else {
-                    self.sendingToBrain = false
                     // the host takes the item whole or refuses the turn: say so, and leave the chip for him to take off
-                    return self.trouble(status == 404 ? "文件过期了，再发一次" : status == 422 && about != nil ? "她没接住上面的那一项，去掉它再发" : AttachUpload.refusal(status: status, name: ""))
+                    return fail(status == 404 ? "文件过期了，再发一次" : status == 422 && about != nil ? "她没接住上面的那一项，去掉它再发" : AttachUpload.refusal(status: status, name: ""))
                 }
             } catch let e as AttachUpload.Refused {
-                self.sendingToBrain = false; return self.trouble(e.message)
+                return fail(e.message)
             } catch let e as BrainError {
-                self.sendingToBrain = false; return self.trouble(e.message)
+                return fail(e.message)
             } catch {
-                self.sendingToBrain = false; return self.trouble(BrainError.refused.message)
+                return fail(BrainError.refused.message)
             }
             StallLog.mark("send: taken")
             for it in self.ui.attach.take() { AttachTemp.discard(it.url) }
-            self.ui.text = ""
             self.sendingToBrain = false
-            guard let seq else { return self.note("发给她了", for: 4000) }       // no conversation to read her answer from
+            guard let seq else { self.talk = nil; self.lingerFrom(nowMs()); return self.note("发给她了", for: 4000) }       // no conversation to read her answer from
             self.clearNote()
             SentPics.pending = pics
-            try await self.brainTalk(ok, shown: shown, pics: pics, after: seq)
+            try await self.brainTalk(ok, after: seq)
         }
     }
 
-    /// Her side of a typed turn: his line shown, her thinking look, then her words as they land in the conversation. A lead-in ("我上网查查") is shown and the answer waited for.
-    @MainActor private func brainTalk(_ ok: Ok, shown: String, pics: [SentItem], after seq: Int) async throws {
-        beginTalk(base: seq)
-        talk = "listen"; addTurn(his: true, shown, pics: pics)
+    /// Her side of a typed turn the brain took: her thinking look, then her words as they land in the conversation. A lead-in ("我上网查查") is shown and the answer waited for.
+    @MainActor private func brainTalk(_ ok: Ok, after seq: Int) async throws {
         sound(.heard, 1); expr = "31"; try await nap(520, ok)
         sound(.think, 1); expr = "30"
         var last = seq, deadline = nowMs() + 90_000, said = false
         while nowMs() < deadline {
-            try await nap(1000, ok)
+            try await nap(500, ok)
             let rows = await Conversation.shared.rows(after: last)
             try ok.check()
             if !SentPics.pending.isEmpty, let his = rows.first(where: { $0.isHis }) { SentPics.byRow[his.seq] = SentPics.pending; SentPics.pending = [] }
