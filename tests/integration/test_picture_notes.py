@@ -273,11 +273,18 @@ def test_later_history_carries_the_note_and_the_front_is_byte_stable(world: Worl
     world.notes.run_due()
     after = render_context(world.memory.db_path, exclude_id="").history
 
-    assert after[: len(before) - 1] == before[:-1]
-    assert after[-1]["role"] == "assistant"
-    assert after[-1]["content"].startswith(before[-1]["content"])
-    assert f"[Picture note · image IMG_1.png · id {picture[:8]}]" in after[-1]["content"]
+    header = f"[Picture note · image IMG_1.png · id {picture[:8]}]"
+    assert after[: len(before)] == before
+    assert after[-1]["role"] == "user"
+    assert after[-1]["content"].startswith(header)
     assert "He said it is udon." in after[-1]["content"]
+
+    world.turn("谢谢", "不客气。")
+    later = render_context(world.memory.db_path, exclude_id="").history
+    assert later[: len(before)] == before
+    assert all(header not in turn["content"] for turn in later if turn["role"] == "assistant"), (
+        "a note is context from his side, never her own words"
+    )
 
 
 def _tool_context(root: Path) -> Any:  # noqa: ANN401

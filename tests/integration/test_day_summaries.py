@@ -217,14 +217,17 @@ def test_a_short_day_is_kept_word_for_word_without_a_model_call(tmp_path: Path) 
         [
             (_rid(2, 1), _stamp(2, 9), "allen", "早"),
             (_rid(2, 2), _stamp(2, 9, 1), "jarvis", "早上好"),
+            (_rid(2, 3), _stamp(2, 9, 2), "picture_note", "[Picture note]\n一碗面"),
         ],
     )
     summariser = _Summariser()
     outcomes = _schedule(tmp_path, summariser).write(TODAY)
-    assert outcomes[_day(2).isoformat()].startswith("verbatim (2 records")
+    assert outcomes[_day(2).isoformat()].startswith("verbatim (3 records")
     assert summariser.asked == []
     entry = _stored(path)[_day(2).isoformat()][-1]
-    assert entry.endswith("09:00 user: 早\n09:01 assistant: 早上好")
+    assert entry.endswith(
+        "09:00 user: 早\n09:01 assistant: 早上好\n09:02 picture note: [Picture note]\n一碗面",
+    ), "a picture's note is neither of them speaking (ADR 0223)"
 
 
 def test_the_schedule_is_off_without_a_block_or_an_at() -> None:

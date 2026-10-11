@@ -27,6 +27,7 @@ from jarvis.runtime.ledger import LedgerContext, run_day_prose
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import (
+    PICTURE_NOTE_SOURCE,
     MemorySettings,
     append_day_summary,
     day_records,
@@ -75,6 +76,13 @@ class DaySummarySettings:
         return cls(at=at, preset=preset, prompt=prompt.strip(), max_chars=size)
 
 
+def _speaker(source: str) -> str:
+    """Who a verbatim line is from: him, her, or a picture's note (ADR 0223), which is neither."""
+    if source == "allen":
+        return "user"
+    return "picture note" if source == PICTURE_NOTE_SOURCE else "assistant"
+
+
 def write_day_summary(
     day: str,
     *,
@@ -92,10 +100,7 @@ def write_day_summary(
         return "no records"
     input_chars = sum(len(text) for _, _, _, text in records)
     if input_chars < VERBATIM_UNDER_CHARS:
-        lines = [
-            f"{ts[11:16]} {'user' if source == 'allen' else 'assistant'}: {text}"
-            for _, ts, source, text in records
-        ]
+        lines = [f"{ts[11:16]} {_speaker(source)}: {text}" for _, ts, source, text in records]
         summary = "\n".join([f"## {day} (the whole day, word for word)", *lines])
         append_day_summary(
             memory.db_path,

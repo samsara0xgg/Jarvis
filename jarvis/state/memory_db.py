@@ -663,7 +663,7 @@ def _append_records(
     """Each record as its message: as sent when kept, else its words, a day marker on a new day."""
     marked_day = None
     for record_id, ts, source, text in shown:
-        role = "user" if source == "allen" else "assistant"
+        role = history_role(source)
         day = datetime.fromisoformat(ts).date()
         as_sent = sent.get(record_id)
         if as_sent is not None:
@@ -686,9 +686,9 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
 
     ``profile`` (the rendered core memory) goes to the system prompt. ``history`` is the
     current summary (if any) as a ``user`` message, then one message per record after its
-    anchor and on or after ``since``: ``allen`` rows are ``user``, every
-    other source is ``assistant``, and adjacent rows of one role join into
-    one message. Records carry their words only (ADR 0044): no timestamp or
+    anchor and on or after ``since``, in the role :func:`history_role` gives its source
+    (his words and picture notes ``user``, the rest ``assistant``); adjacent rows of one role
+    join into one message. Records carry their words only (ADR 0044): no timestamp or
     source label, which the model copied into its answers; the first
     ``user`` row of each day opens with a day marker (``[9月24日 周四]`` /
     ``[Thursday, September 24]``, in the language setting). A row with a
@@ -847,6 +847,16 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
 
 PICTURE_NOTE_SOURCE: Final = "picture_note"
 """The source of a picture's note (ADR 0223): memory, never part of what was said."""
+
+
+def history_role(source: str) -> str:
+    """The prompt-history role of a record from ``source``.
+
+    His words are ``user``, and so is a picture's note: it is context about his picture, and as
+    ``assistant`` the model took it for words of its own and copied its header. Every other
+    source is ``assistant``.
+    """
+    return "user" if source in ("allen", PICTURE_NOTE_SOURCE) else "assistant"
 
 CONVERSATION_PAGE_BYTES = 512 * 1024
 """The most text one page of :func:`conversation_rows` carries (UTF-8 bytes), one row at least."""
