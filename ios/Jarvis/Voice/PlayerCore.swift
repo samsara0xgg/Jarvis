@@ -346,7 +346,14 @@ final class PlayerCore: @unchecked Sendable {
         let activeBefore = activeGen.load(ordering: .acquiring)
         let held = heldGen.load(ordering: .acquiring)
         if activeBefore >= 0 && activeBefore == held {
-            // Held while a barge-in is judged: silence, and her place kept.
+            // Held while a barge-in is judged: silence, and her place kept. A DISCARD is still applied and acked now: the host judges
+            // his words a turn, discards her and waits half a second for the ack; one held back until the hold ended came too late over
+            // Tailscale, and the host shut the answer lane for good (12:29 PT, no answer after he spoke over her).
+            let seq = discardSeq.load(ordering: .acquiring)
+            if seq != s.pointee.appliedDiscardSeq {
+                s.pointee.readIdx = max(s.pointee.readIdx, discardBefore.load(ordering: .acquiring))
+                s.pointee.appliedDiscardSeq = seq
+            }
             emitDeclick(out, frames)
             s.pointee.fadeIn = held
             return
@@ -532,6 +539,12 @@ func demoPlayerCore() {
     let starts = out.compactMap { o -> Int64? in if case .report(let r) = o, r.generation == 4 { return r.start } else { return nil } }
     assert(starts.first == 3200, "the discarded 0..<3200 is skipped: \(starts)")
     assert(out.contains(.discardAck(9)))
+    // held while his words over her are judged: the host's discard is still acked at once, and what it drops never plays
+    p.ingest(.active(6)); p.ingest(.pcm(generation: 6, start: 0, samples: tone)); render()
+    p.ingest(.hold(6)); p.ingest(.discard(10))
+    render(); assert(p.drain().contains(.discardAck(10)), "a held player acks the discard")
+    assert(p.ringEmpty, "the discarded audio is gone")
+    p.ingest(.hold(-1))
     // samples of another generation than the active one play as a declick, then silence
     p.ingest(.active(5)); render(); assert(block.dropFirst(kDeclickSamples).allSatisfy { $0 == 0 })
 }
