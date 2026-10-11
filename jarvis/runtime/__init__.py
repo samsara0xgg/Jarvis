@@ -194,6 +194,7 @@ from jarvis.runtime.push import Push
 from jarvis.runtime.reminders import Reminders
 from jarvis.runtime.rides import RIDE_LINE_CHARS, RIDE_LINE_PREFIX, Rides
 from jarvis.runtime.settings import REPLY_LINES, SETUP_VOICES, Settings, apply_settings
+from jarvis.runtime.settings_owner import SettingsDrift, check_own
 from jarvis.runtime.setup import write_setting
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.whereabouts import Whereabouts
@@ -422,6 +423,18 @@ def _listen(config: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]
         msg = "runtime: runtime.listen_hosts must be plain host names, no wildcards"
         raise RuntimeBootstrapError(msg)
     return tuple(raw["listen_addresses"]), tuple(raw["listen_hosts"])
+
+
+def _settings_drift(
+    hub: TerminalHub | None, paths: RuntimePaths, config: Mapping[str, Any],
+) -> SettingsDrift | None:
+    """ADR 0227: a brain warns of device keys in its own files and hears its terminals' settings."""
+    if hub is None:
+        return None
+    check_own("brain", paths.settings, paths.root)
+    drift = SettingsDrift(paths.root, paths.settings, config)
+    hub.on_settings = drift.on_report
+    return drift
 
 
 def _for_role(config: dict[str, Any], role: Role) -> dict[str, Any]:
@@ -715,6 +728,8 @@ class JarvisRuntime:
     listen_hosts: tuple[str, ...] = ()
     # ADR 0170: where a brain's device-bound tool calls go. None unless ``role`` is ``brain``.
     terminal_hub: TerminalHub | None = None
+    # ADR 0227: what a brain's terminals report of their own settings files, and the owner's answer.
+    settings_drift: SettingsDrift | None = None
     # ADR 0197, 0207: where a paired phone's events are appended.
     phone_events: BrainEvents | None = None
     # ADR 0211: the pictures and text files a phone sends with a turn or a share.
@@ -2725,6 +2740,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     phone_events = BrainEvents(conn) if role == "brain" or listen_addresses else None
     terminal_hub = TerminalHub(events=phone_events) if role == "brain" else None
     device = None if terminal_hub is None else terminal_hub.call
+    settings_drift = _settings_drift(terminal_hub, paths, full_config)
     moment = _moment(full_config, config_path, memory.db_path, device)
     # ADR 0068: refuse a memory.db a newer Jarvis wrote before anything writes to it.
     open_memory_db(memory.db_path).close()
@@ -2990,6 +3006,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         listen_addresses=listen_addresses,
         listen_hosts=listen_hosts,
         terminal_hub=terminal_hub,
+        settings_drift=settings_drift,
         phone_events=phone_events,
         attachments=attachments,
         picture_notes=(

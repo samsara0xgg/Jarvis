@@ -88,8 +88,6 @@ _DEFAULTS: dict[str, Any] = {
     "core_memory_max_chars": 4000, **_BOARD_DEFAULTS,
 }
 _DEVICES = {"output_device": "output", "input_device": "input"}
-# The keys a terminal that serves the UI answers itself: its own microphone and speaker (ADR 0183).
-DEVICE_KEYS = frozenset(_DEVICES)
 _RANGES = {
     "wake_threshold": (0.80, 0.99),
     "tts_volume": (0.3, 1.0),
@@ -182,6 +180,26 @@ def _get(config: Mapping[str, Any], path: tuple[str, ...]) -> Any:  # noqa: ANN4
     for part in path:
         node = node.get(part) if isinstance(node, dict) else None
     return node
+
+
+def saved_paths(root: Path) -> dict[str, Any]:
+    """The page store's valid entries as ``{"realtime.wake_threshold": 0.9, ...}`` config paths."""
+    return {".".join(PATHS[key]): value for key, value in _saved(root).items()}
+
+
+def put_paths(root: Path, values: Mapping[str, Any]) -> dict[str, Any]:
+    """Save the page-managed config paths in ``values`` to the page store; answer the others.
+
+    A page-managed path whose value the page would not accept is dropped, as the page refuses it.
+    """
+    keys = {".".join(path): key for key, path in PATHS.items()}
+    stored = {
+        keys[path]: value for path, value in values.items()
+        if path in keys and _valid(keys[path], value)
+    }
+    if stored:
+        write_private_json(root / SETTINGS_FILE, {**_saved(root), **stored})
+    return {path: value for path, value in values.items() if path not in keys}
 
 
 def apply_settings(config: Mapping[str, Any], root: Path) -> dict[str, Any]:

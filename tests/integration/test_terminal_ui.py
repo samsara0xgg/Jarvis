@@ -39,7 +39,7 @@ from websockets.sync.client import connect as ws_connect
 from jarvis.cli import main
 from jarvis.deployment.night_power import MacPower
 from jarvis.runtime.night_run import NightRun, NightSettings
-from jarvis.runtime.settings import DEVICE_KEYS, Settings
+from jarvis.runtime.settings import Settings
 from jarvis.runtime.terminal import _DeviceSettings, _run, _Speaking, _Ui, bind_ui
 from jarvis.state.device_tokens import (
     device_name_for_token,
@@ -78,7 +78,7 @@ from tests.integration.test_terminal_voice import (
 from tests.integration.test_voice_file_replay import _write_wav
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
 
 DEVICE_TOKEN = "device-token-for-the-tests"  # noqa: S105 — a fixture, not a secret
 LOCAL = "http://127.0.0.1"
@@ -559,16 +559,19 @@ def test_the_mic_and_speech_switches_act_here_and_the_rest_of_controls_is_the_br
         assert not controls.mic_muted
 
 
-def test_settings_keep_the_brains_page_and_this_machines_audio_choices(tmp_path: Path) -> None:
-    """The two device choices are saved here and shown here; every other change is the brain's."""
+def test_each_settings_key_goes_to_its_owner(tmp_path: Path) -> None:
+    """Device keys are saved and shown here, brain keys go to the brain, shared keys to both."""
     settings = Settings(
         tmp_path, {"realtime": {"input_device": "Mic A"}},
         lambda kind: ["Mic A", "Mic B"] if kind == "input" else ["Speaker 1"],
         lambda kind: "Mic B" if kind == "input" else "Speaker 1",
     )
-    device = Device(settings=_DeviceSettings(settings))
-    assert _DeviceSettings(settings).keys == DEVICE_KEYS
-    with _rig(tmp_path, device) as rig:
+    own = _DeviceSettings(settings)
+    assert {"input_device", "output_device", "wake_threshold", "final_asr_language", "timesink",
+            "board_light", "keep_audio"} <= own.keys
+    assert not own.keys & {"tts_voice", "reply_language", "core_memory_max_chars"}
+    assert own.shared == {"keep_audio", "audio_days"}
+    with _rig(tmp_path, Device(settings=own)) as rig:
         page = rig.get("/inherent/settings").json()
         assert page["values"]["tts_voice"] == "Warm Bestie"  # the brain's
         assert page["values"]["input_device"] == "Mic A"  # this machine's
@@ -577,14 +580,17 @@ def test_settings_keep_the_brains_page_and_this_machines_audio_choices(tmp_path:
         assert page["defaults"]["input_device"] == "Mic B"
         assert page["restart_pending"] is False
 
-        mixed = rig.post("/inherent/settings", json={
-            "changes": {"input_device": "Mic B", "tts_voice": "Sweet Lady"},
-        }).json()
+        mixed = rig.post("/inherent/settings", json={"changes": {
+            "input_device": "Mic B", "wake_threshold": 0.9, "keep_audio": False,
+            "tts_voice": "Sweet Lady",
+        }}).json()
         assert mixed["values"]["tts_voice"] == "Sweet Lady"
         assert mixed["values"]["input_device"] == "Mic B"
         assert mixed["restart_pending"] is True  # a device is applied when this terminal restarts
         assert [json.loads(one["body"]) for one in rig.brain.requests("/inherent/settings")
-                if one["method"] == "POST"] == [{"changes": {"tts_voice": "Sweet Lady"}}]
+                if one["method"] == "POST"] == [
+            {"changes": {"keep_audio": False, "tts_voice": "Sweet Lady"}},
+        ]
 
         before = len(rig.brain.seen)
         only = rig.post("/inherent/settings", json={"changes": {"output_device": "Speaker 1"}})
@@ -596,7 +602,39 @@ def test_settings_keep_the_brains_page_and_this_machines_audio_choices(tmp_path:
         assert bad.status_code == 400
         assert "No such mic" in bad.json()["detail"]
     saved = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
-    assert saved == {"input_device": "Mic B", "output_device": "Speaker 1"}
+    assert saved == {
+        "input_device": "Mic B", "wake_threshold": 0.9, "keep_audio": False,
+        "output_device": "Speaker 1",
+    }
+
+
+def test_the_answer_to_a_settings_notice_goes_to_the_brain_then_clears_the_brain_keys_here(
+    tmp_path: Path,
+) -> None:
+    """Only a choice the brain took makes the terminal release its brain-owned copies."""
+    released: list[int] = []
+
+    def release(mark: int) -> Callable[[], list[str]]:
+        def run() -> list[str]:
+            released.append(mark)
+            return []
+
+        return run
+
+    with _rig(tmp_path, Device(release=release(1))) as rig:
+        for body in ({"action": "seen"}, {"action": "feedback", "reaction": "dismissed"}):
+            assert rig.post("/inherent/notices/settings-macbook", json=body).status_code == 200
+        assert released == []
+        choose = {"action": "feedback", "reaction": "device"}
+        assert rig.post("/inherent/notices/settings-macbook", json=choose).status_code == 200
+        assert released == [1]
+        assert len(rig.brain.requests("/inherent/notices/settings-macbook")) == 3
+        # a reminder's or a mail's notice is forwarded as it is, whatever it carries
+        rig.post("/inherent/notices/reminder-1", json=choose)
+        assert released == [1]
+    with _rig(tmp_path, Device(release=release(2)), brain_up=False) as rig:
+        assert rig.post("/inherent/notices/settings-macbook", json=choose).status_code == 503
+    assert released == [1]
 
 
 def test_without_a_device_the_settings_and_controls_are_the_brains(tmp_path: Path) -> None:

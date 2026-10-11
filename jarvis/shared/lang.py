@@ -339,6 +339,15 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "reminder.line": {"zh": "提醒：{text}", "en": "Reminder: {text}"},
     "reminder.late_minutes": {"zh": "（晚了 {n} 分钟）", "en": " ({n} minutes late)"},
     "reminder.late_hours": {"zh": "（晚了 {n} 小时）", "en": " ({n} hours late)"},
+    # ADR 0227: the notice that asks which side's settings to keep when a terminal's files and the
+    # brain's differ.
+    "settings.drift.title": {"zh": "设置不一致", "en": "Settings differ"},
+    "settings.drift.line": {
+        "zh": "{device} 上有 {n} 项设置和大脑上的不同：{keys}",
+        "en": "{n} setting(s) on {device} differ from the brain's: {keys}",
+    },
+    "settings.drift.device": {"zh": "用电脑上的", "en": "Use this computer's"},
+    "settings.drift.brain": {"zh": "用大脑上的", "en": "Use the brain's"},
     # ADR 0210: the titles of the pushes to his phone when something waits for him.
     "push.confirmation": {"zh": "等你确认", "en": "Waiting for your OK"},
     "push.question": {"zh": "有个问题等你回答", "en": "A question for you"},

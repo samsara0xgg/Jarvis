@@ -1476,6 +1476,12 @@ class ViewRequest(BaseModel):
     rows: list[ViewRow] = Field(default_factory=list, max_length=50)
 
 
+def _notices_for(body: dict[str, Any], reader: str) -> dict[str, Any]:
+    """``body`` with only the notices ``reader`` may be shown: its own and those of no device."""
+    shown = [one for one in body.get("notices", []) if _for_reader(one, reader) is not None]
+    return {**body, "notices": shown}
+
+
 def _no_notices() -> dict[str, Any]:
     """The ``GET /inherent/notices`` body of a daemon with nothing to show."""
     return {"notices": [], "audio_private": False, "hold": None, "departure": None}
@@ -1666,9 +1672,9 @@ def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C90
         notices_read = deps.notices_read
 
         @app.get("/inherent/notices")
-        async def notices() -> dict[str, Any]:
+        async def notices(request: Request) -> dict[str, Any]:
             """``{notices, audio_private, hold}``: the job-mail alerts a client may show now."""
-            return await _home_call(notices_read())
+            return _notices_for(await _home_call(notices_read()), _reader(deps, request))
 
     if deps.moment_read is not None:
         moment_read = deps.moment_read
@@ -2909,7 +2915,9 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
             return _for_reader(found, _reader(deps, request))
 
         async def notices() -> dict[str, Any]:
-            return _no_notices() if deps.notices_read is None else await deps.notices_read()
+            if deps.notices_read is None:
+                return _no_notices()
+            return _notices_for(await deps.notices_read(), _reader(deps, request))
 
         async def plugin_request() -> dict[str, Any] | None:
             if deps.plugin_read is None or deps.plugin_authorize is None:

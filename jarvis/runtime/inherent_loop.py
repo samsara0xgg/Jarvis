@@ -103,6 +103,7 @@ if TYPE_CHECKING:
     from jarvis.runtime.reminders import Reminders
     from jarvis.runtime.rides import Rides
     from jarvis.runtime.settings import Settings
+    from jarvis.runtime.settings_owner import SettingsDrift
     from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent, Wave1FeatureFlags, Wave4ResponseFlags
     from jarvis.state.committed_event_bus import CommittedEventBus
@@ -298,6 +299,7 @@ from jarvis.surface.phone_link import PhoneHub
 from jarvis.surface.phone_player import PHONE_SAMPLE_RATE_HZ, PhoneAudioStreamPlayer
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.repo_observer import RepoObserver
+from jarvis.surface.terminal_link import SETTINGS_NOTICE
 from jarvis.surface.timesink_observer import TimesinkHead, TimesinkObserver
 from jarvis.surface.usage_observer import (
     KEYED_SERVICES,
@@ -5435,6 +5437,55 @@ def _notice_deps(
     }
 
 
+_IDLE_POLL_S = 5.0
+_restarting: set[asyncio.Task[None]] = set()
+
+
+async def _restart_when_idle(idle: Callable[[], bool]) -> None:
+    """ADR 0227: restart once no conversation or speech is going on; checked every few seconds."""
+    while not idle():  # noqa: ASYNC110 — idle is a plain predicate, there is no event for it.
+        await asyncio.sleep(_IDLE_POLL_S)
+    LOGGER.info("settings: restarting to take in the settings the owner chose")
+    _restart_soon()
+
+
+def _settings_notice_deps(
+    deps: dict[str, Any], drift: SettingsDrift | None, idle: Callable[[], bool],
+) -> dict[str, Any]:
+    """ADR 0227: the settings-differ cards of the terminals, served and answered beside the rest.
+
+    Choosing the terminal's values writes them to this brain's files, which a restart brings in:
+    it waits for ``idle`` (no conversation, nothing playing) and happens only where a supervisor
+    brings the daemon back.
+    """
+    if drift is None:
+        return deps
+    mail_read, mail_act = deps.get("notices_read"), deps.get("notice_act")
+
+    async def read() -> dict[str, Any]:
+        body: dict[str, Any] = (
+            await mail_read() if mail_read is not None
+            else {"notices": [], "audio_private": False, "hold": None, "departure": None}
+        )
+        return {**body, "notices": [*await asyncio.to_thread(drift.notices), *body["notices"]]}
+
+    async def act(notice_id: str, action: str, reaction: str | None) -> None:
+        if not notice_id.startswith(SETTINGS_NOTICE):
+            if mail_act is None:
+                msg = f"no such notice: {notice_id}"
+                raise LookupError(msg)
+            await mail_act(notice_id, action, reaction)
+        elif await asyncio.to_thread(drift.act, notice_id, action, reaction):
+            if spawned_by_agent():
+                task = asyncio.create_task(_restart_when_idle(idle), name="settings_restart")
+                _restarting.add(task)
+                task.add_done_callback(_restarting.discard)
+            else:
+                LOGGER.warning("settings: restart Jarvis to take in the settings just saved")
+
+    return {**deps, "notices_read": read, "notice_act": act}
+
+
 def _alert_deps(
     db: Path, quiet: Callable[[], str], moment: Moment | None,
     output: Callable[..., dict[str, Any]],
@@ -7266,14 +7317,20 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             mail_trash=None if mail_home is None else functools.partial(_mail_trash, mail_home),
             view_set=None if runtime.view is None else runtime.view.set,
             **_draft_deps(runtime, mail_home),
-            **_notice_deps(
-                runtime.job_mail, runtime.reminders, runtime.moment,
-                alerts=(
-                    _alert_deps(
-                        runtime.memory.db_path, lambda: controls.quiet, runtime.moment,
-                        runtime.sound_output,
-                    )
-                    if spend is not None and runtime.memory is not None else None
+            **_settings_notice_deps(
+                _notice_deps(
+                    runtime.job_mail, runtime.reminders, runtime.moment,
+                    alerts=(
+                        _alert_deps(
+                            runtime.memory.db_path, lambda: controls.quiet, runtime.moment,
+                            runtime.sound_output,
+                        )
+                        if spend is not None and runtime.memory is not None else None
+                    ),
+                ),
+                runtime.settings_drift,
+                lambda: not controls.conversation and not (
+                    shared_ducker.active or shared_ducker.outputting
                 ),
             ),
             moment_read=(

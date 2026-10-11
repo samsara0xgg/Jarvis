@@ -99,7 +99,8 @@ from jarvis.runtime.inherent_loop import (
 )
 from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.night_watch import NightWatch
-from jarvis.runtime.settings import DEVICE_KEYS, Settings, apply_settings
+from jarvis.runtime.settings import Settings, apply_settings
+from jarvis.runtime.settings_owner import check_own, page_keys, release, terminal_report
 from jarvis.shared import ActionRequest
 from jarvis.shared.realtime_trace import configure_realtime_trace_jsonl
 from jarvis.state import device_reads, job_time, ledger, timesink, timesink_moment
@@ -724,12 +725,17 @@ class _Ui:
     runtime_root: Path
 
 
+_OWN_PAGE_KEYS = page_keys("device", "both", "machine")
+_SHARED_PAGE_KEYS = page_keys("both")
+
+
 @dataclass(frozen=True)
 class _DeviceSettings:
-    """This machine's microphone and speaker choices, as the Settings page keeps them."""
+    """This machine's part of the Settings page: the keys it owns, and the ones both sides read."""
 
     settings: Settings
-    keys: frozenset[str] = DEVICE_KEYS
+    keys: frozenset[str] = _OWN_PAGE_KEYS
+    shared: frozenset[str] = _SHARED_PAGE_KEYS
 
     def read(self) -> dict[str, Any]:
         return self.settings.read()
@@ -809,6 +815,7 @@ def _ui_device(
             )
         ),
         restart=_restart_soon if spawned_by_terminal_agent() else None,
+        release=functools.partial(release, ui.runtime_root / "settings.yaml", ui.runtime_root),
         dictation=None if speaking is None else lambda: _dictation_of(speech()),
         speaks=lambda: speech().pipeline is not None,
         night=night,
@@ -818,7 +825,7 @@ def _ui_device(
 async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
     base_url: str, token: str, *, tools: frozenset[str], execute: Execute,
     watched: _Watched | None, speaking: _Speaking | None = None, ui: _Ui | None = None,
-    night: NightRun | None = None,
+    night: NightRun | None = None, settings: Mapping[str, Any] | None = None,
 ) -> None:
     """The link, and beside it the observers, the voice and the UI when there is anything to run."""
     outbox = EventOutbox() if watched is not None or speaking is not None else None
@@ -855,6 +862,7 @@ async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
     try:
         await run_terminal_client(
             base_url, token, tools=tools, execute=execute, events=outbox, voice=speech.link,
+            settings=settings,
         )
     finally:
         if nights is not None:
@@ -921,10 +929,9 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     """
     if config_path is None:
         config_path = _locate_repo_root(Path(__file__).parent) / _DEFAULT_CONFIG_FILENAME
+    settings_yaml = runtime_root / "settings.yaml"
     try:
-        config = apply_settings(
-            _load_full_config(config_path, runtime_root / "settings.yaml"), runtime_root,
-        )
+        config = apply_settings(_load_full_config(config_path, settings_yaml), runtime_root)
         _install_open_path(config)
         configured_repos = _observer_repo_paths(config)
         configured_store = _timesink_db_path(config)
@@ -934,6 +941,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     except (RuntimeBootstrapError, ValueError) as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")
         return 1
+    check_own("terminal", settings_yaml, runtime_root)
     ui = None
     if serve_ui is not None:
         try:
@@ -987,7 +995,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
         asyncio.run(_run(
             base_url, token, tools=tools, execute=execute, watched=watched,
             speaking=_Speaking(config, runtime_root, config_path.parent) if voice else None,
-            ui=ui, night=night,
+            ui=ui, night=night, settings=terminal_report(settings_yaml, runtime_root),
         ))
     except TerminalRefusedError as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")

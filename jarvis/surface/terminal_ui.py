@@ -42,7 +42,12 @@ from jarvis.surface.inherent_server import (
     register_night_routes,
     require_local_key,
 )
-from jarvis.surface.terminal_link import MAX_FRAME_CHARS, TERMINAL_PATH
+from jarvis.surface.terminal_link import (
+    MAX_FRAME_CHARS,
+    SETTINGS_CHOICES,
+    SETTINGS_NOTICE,
+    TERMINAL_PATH,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
@@ -72,11 +77,16 @@ DEVICE_ROUTES: Final[Mapping[tuple[str, str], str]] = {
     ),
     ("POST", "/inherent/dictation/stop"): "answered: finishes that recording",
     ("GET", "/inherent/settings"): (
-        "merged: the brain's page with this machine's microphone and speaker choices"
+        "merged: the brain's page with the values of the keys this machine owns (ADR 0227)"
     ),
     ("POST", "/inherent/settings"): (
-        "merged: those two choices are saved here and applied at this terminal's restart; the "
-        "rest of the changes go to the brain"
+        "merged: each changed key goes to its owner. The keys this machine owns are saved here "
+        "and applied at this terminal's restart; the brain's go to the brain; those both read "
+        "go to both"
+    ),
+    ("POST", "/inherent/notices/{notice_id}"): (
+        "merged: forwarded to the brain; the answer to a settings-differ notice (ADR 0227) also "
+        "takes the brain-owned keys out of this machine's own files once the brain took it"
     ),
     ("GET", "/inherent/night"): (
         "answered: the night run of this Mac, which the terminal holds awake and dark; the "
@@ -114,11 +124,16 @@ _DROPPED_RESPONSE_HEADERS: Final = frozenset(
 
 
 class DeviceSettings(Protocol):
-    """This machine's own part of the Settings page: its microphone and speaker choices."""
+    """This machine's part of the Settings page: the keys it owns, and the ones both read."""
 
     @property
     def keys(self) -> frozenset[str]:
-        """The Settings keys that are this machine's own."""
+        """The Settings keys saved here: this machine's own, and those both sides read."""
+        ...
+
+    @property
+    def shared(self) -> frozenset[str]:
+        """The part of ``keys`` the brain reads too, so a change goes to the brain as well."""
         ...
 
     def read(self) -> dict[str, Any]:
@@ -147,6 +162,8 @@ class Device:
     """Whether this machine's own media actor plays the brain's answers."""
     night: NightRoutes | None = None
     """This Mac's night run; ``None`` leaves ``/inherent/night`` a 404, as on a brain."""
+    release: Callable[[], list[str]] | None = None
+    """Takes the brain-owned keys out of this machine's own files (ADR 0227); ``None``: nothing."""
 
 
 @dataclass
@@ -435,7 +452,10 @@ def _register_device_routes(app: FastAPI, brain: Brain, device: Device) -> None:
         if own is None:
             return await _forward(request, brain)
         mine = {key: value for key, value in req.changes.items() if key in own.keys}
-        rest = {key: value for key, value in req.changes.items() if key not in own.keys}
+        rest = {
+            key: value for key, value in req.changes.items()
+            if key not in own.keys or key in own.shared
+        }
         if mine:
             try:
                 await asyncio.to_thread(own.update, mine)
@@ -469,6 +489,30 @@ def _register_device_routes(app: FastAPI, brain: Brain, device: Device) -> None:
         return JSONResponse(state)
 
 
+def _register_notice_route(app: FastAPI, brain: Brain, device: Device) -> None:
+    @app.post("/inherent/notices/{notice_id}")
+    async def notice_action(notice_id: str, request: Request) -> Response:
+        if device.release is None or not notice_id.startswith(SETTINGS_NOTICE):
+            return await _forward(request, brain)
+        body = await request.body()
+        try:
+            answer = await brain.call("POST", request.url.path, _json_body(body))
+        except httpx.TransportError:
+            return _unreachable()
+        reaction = _json_body(body).get("reaction")
+        if answer.status_code == httpx.codes.OK and reaction in SETTINGS_CHOICES:
+            await asyncio.to_thread(device.release)
+        return _passed(answer)
+
+
+def _json_body(body: bytes) -> dict[str, Any]:
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _json(answer: httpx.Response) -> dict[str, Any] | None:
     try:
         body = answer.json()
@@ -485,7 +529,9 @@ def _with_devices(answer: httpx.Response, own: DeviceSettings) -> Response:
     mine = own.read()
     for part in ("values", "options", "defaults"):
         if isinstance(page.get(part), dict) and isinstance(mine.get(part), dict):
-            page[part].update({key: mine[part][key] for key in own.keys if key in mine[part]})
+            page[part].update({
+                key: mine[part][key] for key in own.keys - own.shared if key in mine[part]
+            })
     page["restart_pending"] = bool(page.get("restart_pending")) or bool(mine["restart_pending"])
     return JSONResponse(page)
 
@@ -500,6 +546,7 @@ def create_ui_app(
     """The app a terminal serves on loopback; ``authorize`` is the daemon's local-key check."""
     app = FastAPI(title="Jarvis terminal UI", docs_url=None, redoc_url=None, openapi_url=None)
     _register_device_routes(app, brain, device)
+    _register_notice_route(app, brain, device)
     _register_socket(app, brain, broadcaster, device)
 
     @app.api_route("/{path:path}", methods=_METHODS)

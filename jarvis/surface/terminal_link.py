@@ -3,7 +3,7 @@
 A terminal connects outward to the brain's ``/terminal/ws`` with its device token, says which
 tools it can run, and then answers calls. Every frame is one JSON text message::
 
-    terminal -> brain   {"type": "hello", "tools": ["read_file", ...]}
+    terminal -> brain   {"type": "hello", "tools": ["read_file", ...], "settings": {...}}
     brain -> terminal   {"type": "ready", "device": "<paired name>"}
     brain -> terminal   {"type": "call", "id": "<hex>", "tool": "...",
                          "arguments": {...}, "target_entity_ref": "file:..." | null}
@@ -15,6 +15,10 @@ tools it can run, and then answers calls. Every frame is one JSON text message::
     both ways           {"type": "row" | "tts", ...}   a voice terminal's speech, see terminal_voice
     terminal -> brain   {"type": "ask", ...}    a voice terminal's listening, see terminal_listen
     brain -> terminal   {"type": "reply", ...}  its answer
+
+A hello's ``settings`` (optional, ADR 0227) is the brain-side settings the terminal's own files
+set, as ``{"observer.usage.enabled": true, ...}``; the brain compares them with its own and asks
+the owner, on that terminal's companion, which to keep.
 
 Results are data: the brain reads ``output`` as a JSON object and nothing in it is run. This
 module holds the brain's side (:class:`TerminalHub`, :func:`serve_terminal`) and the terminal's
@@ -60,9 +64,15 @@ MAX_FRAME_CHARS: Final = 8 * 1024 * 1024
 """One frame's cap: a 4 MiB screenshot is ~5.6 MB of base64."""
 _MAX_ERROR_CHARS: Final = 2000
 _MAX_TOOL_NAME_CHARS: Final = 64
+_MAX_SETTINGS: Final = 200
+_MAX_SETTING_CHARS: Final = 2000
 _RECONNECT_FIRST_S: Final = 1.0
 _RECONNECT_LAST_S: Final = 30.0
 _REFUSED_STATUSES: Final = frozenset({401, 403})
+SETTINGS_NOTICE: Final = "settings-"
+"""The id prefix of the notice that asks which side's settings to keep (ADR 0227)."""
+SETTINGS_CHOICES: Final = ("device", "brain")
+"""The two answers, sent as the reaction of ``POST /inherent/notices/{id}``."""
 
 type Execute = Callable[[str, Mapping[str, Any], str | None], dict[str, Any]]
 """The terminal's runner: a blocking call that returns ``{"ok": True, "output": {...}}`` or
@@ -101,6 +111,8 @@ class TerminalHub:
         self.events = events
         self.on_hello: Callable[[str, frozenset[str]], None] | None = None
         """Told each hello's device name and declared tools (ADR 0225); set by the runtime."""
+        self.on_settings: Callable[[str, Mapping[str, Any]], None] | None = None
+        """Told the settings a hello reports, when it reports any (ADR 0227); set by the runtime."""
         self.voice: BrainVoice | None = None
         """What speaks to a voice terminal (ADR 0172); set once the brain can synthesize."""
         self.listening: BrainListening | None = None
@@ -116,6 +128,7 @@ class TerminalHub:
         send: Callable[[str], Coroutine[Any, Any, None]],
         *,
         voice: bool = False,
+        settings: Mapping[str, Any] | None = None,
     ) -> _Link:
         """Register a terminal that just said hello; call from the loop that owns ``send``."""
         link = _Link(name, tools, asyncio.get_running_loop(), send, voice=voice)
@@ -129,6 +142,11 @@ class TerminalHub:
                 self.on_hello(name, tools)
             except Exception:  # a bookkeeping fault must not drop the socket
                 LOGGER.exception("terminal %s: remembering its declared tools failed", name)
+        if settings is not None and self.on_settings is not None:
+            try:
+                self.on_settings(name, settings)
+            except Exception:  # a bookkeeping fault must not drop the socket
+                LOGGER.exception("terminal %s: comparing its settings failed", name)
         return link
 
     def detach(self, link: _Link) -> None:
@@ -290,6 +308,18 @@ class _Hello:
     tools: frozenset[str]
     voice: bool
     rows_after: int | None
+    settings: dict[str, Any] | None = None
+
+
+def _parse_settings(raw: object) -> dict[str, Any] | None:
+    """A hello's ``settings`` if it is a small mapping of key paths to values, else ``None``."""
+    if not isinstance(raw, dict) or len(raw) > _MAX_SETTINGS:
+        return None
+    if not all(isinstance(key, str) and 0 < len(key) <= _MAX_SETTING_CHARS for key in raw):
+        return None
+    if len(json.dumps(raw, ensure_ascii=False)) > _MAX_SETTINGS * _MAX_SETTING_CHARS:
+        return None
+    return raw
 
 
 def _parse_hello(text: str) -> _Hello | None:
@@ -309,7 +339,7 @@ def _parse_hello(text: str) -> _Hello | None:
         return None
     if after is not None and (type(after) is not int or after < 0):
         return None
-    return _Hello(frozenset(tools), voice, after)
+    return _Hello(frozenset(tools), voice, after, _parse_settings(frame.get("settings")))
 
 
 async def serve_terminal(hub: TerminalHub, ws: WebSocket, name: str) -> None:
@@ -328,7 +358,7 @@ async def serve_terminal(hub: TerminalHub, ws: WebSocket, name: str) -> None:
         with contextlib.suppress(RuntimeError):
             await ws.close(code=1008)
         return
-    link = hub.attach(name, hello.tools, ws.send_text, voice=hello.voice)
+    link = hub.attach(name, hello.tools, ws.send_text, voice=hello.voice, settings=hello.settings)
     streaming: asyncio.Task[None] | None = None
     try:
         streaming = await _greet(hub, link, ws, hello)
@@ -519,10 +549,12 @@ async def run_terminal_client(  # noqa: PLR0913 — one keyword per thing a term
     execute: Execute,
     events: EventOutbox | None = None,
     voice: VoiceLink | None = None,
+    settings: Mapping[str, Any] | None = None,
 ) -> None:
     """Hold a connection to the brain's ``/terminal/ws`` forever, answering its calls.
 
-    With ``events`` it also sends the observers' events queued there and takes the brain's acks.
+    With ``settings`` its hello also reports them (ADR 0227). With ``events`` it also sends the
+    observers' events queued there and takes the brain's acks.
     With ``voice`` it declares that this terminal speaks and carries its speech frames.
 
     Reconnects with a doubling wait (1 s up to 30 s) whenever the link drops or the brain is
@@ -544,6 +576,8 @@ async def run_terminal_client(  # noqa: PLR0913 — one keyword per thing a term
                 additional_headers={"Authorization": f"Bearer {token}"},
             ) as ws:
                 hello: dict[str, Any] = {"type": "hello", "tools": sorted(tools)}
+                if settings is not None:
+                    hello["settings"] = dict(settings)
                 if voice is not None:
                     hello.update(voice.hello())
                 await ws.send(json.dumps(hello))
