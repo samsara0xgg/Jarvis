@@ -76,6 +76,9 @@ targets:
         excludes: ["Info.plist"]
       - Jarvis/Voice/TalkIntent.swift       # the control's button names the app's intent
       - Jarvis/Push/JarvisActivity.swift    # the Live Activity's shape, started by the app and drawn here
+      - Jarvis/Lifelog/LifelogStore.swift   # the recording switch, in the App Group's defaults, for the control's value
+      - Jarvis/Lifelog/LifelogIntents.swift # the control's switch and the Live Activity's 暂停; run in the app, not here
+      - Jarvis/Lifelog/LifelogActivityAttributes.swift   # the recording's Live Activity shape
       - path: Jarvis/Resources/Fonts        # the app's faces, for the Live Activity
         excludes: ["README.md"]
     info:
@@ -85,9 +88,14 @@ targets:
         UIAppFonts: [InstrumentSerif-Regular.ttf, IBMPlexMono-Regular.ttf, IBMPlexMono-Medium.ttf]
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: Config/JarvisWidgets.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.yilunshi.jarvis]    # the control reads the recording switch there
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.yilunshi.jarvis.widgets
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WIDGET_EXTENSION"   # the intents have no recorder here
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: YES
         SKIP_INSTALL: YES

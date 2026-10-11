@@ -1,7 +1,9 @@
 import AVFoundation
 
 /// The one AVAudioEngine: microphone in and her voice out. Both go through the voice-processing unit so its echo canceller hears
-/// what she plays and he can talk over her. Speaker by default.
+/// what she plays and he can talk over her. Speaker by default. While it runs it also owns the microphone for the day's recording
+/// (LifelogMic): the recorder's own engine is stopped first and the tap feeds the same piece; when it stops, the recorder takes the
+/// session and the microphone back instead of the session being let go.
 final class VoiceAudio {
     private(set) var core: PlayerCore?
     private var source: AVAudioSourceNode?
@@ -34,9 +36,10 @@ final class VoiceAudio {
     func start() async throws {
         guard !running else { return }
         await withCheckedContinuation { c in sessionQueue.async { c.resume() } }   // a stop still letting go of the session finishes first
+        await LifelogMic.shared.voiceStarting()            // the recorder's own engine stops (its piece stays open) before this one is built
         Sound.shared.suspend()                             // one owner of the session: the UI cues' engine is stopped first
         var started = false
-        defer { if !started { Sound.shared.resume() } }
+        defer { if !started { Sound.shared.resume(); LifelogMic.shared.voiceStopped() } }
         let s = AVAudioSession.sharedInstance()
         try s.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try s.setActive(true)
@@ -84,6 +87,7 @@ final class VoiceAudio {
         tapFormat = inFmt
         input.installTap(onBus: 0, bufferSize: 2048, format: inFmt) { [weak self] buf, _ in
             guard let mono = monoFloat(buf) else { return }
+            LifelogWriter.shared.feed(mono)                 // the day's recording goes on through the conversation (mono, voice-processed)
             self?.onMic?(mono, Self.level(mono))
         }
         engine.prepare()
@@ -115,7 +119,8 @@ final class VoiceAudio {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
             if let source { engine.detach(source) }
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            // the recorder, if the switch is on, takes the session and the microphone over; otherwise the session is let go
+            if !LifelogMic.shared.voiceStopped() { try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
             Sound.shared.resume()
         }
     }

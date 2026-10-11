@@ -67,6 +67,28 @@ final class SettingsModel {
         }
     }
 
+    // 随身录音: the recorder holds the switch; the line under it is the day's total and what waits for Wi-Fi
+    var lifelogOn: Bool {
+        get {
+            access(keyPath: \.lifelogOn)
+            return MainActor.assumeIsolated { LifelogRecorder.shared.recording }
+        }
+        set { withMutation(keyPath: \.lifelogOn) { MainActor.assumeIsolated { LifelogRecorder.shared.setOn(newValue) } } }
+    }
+    /// 今天录了 1 小时 12 分 · 3 段待传
+    @MainActor func lifelogLine(now: Date = Date()) -> String {
+        let r = LifelogRecorder.shared, u = LifelogUploader.shared
+        let open = r.recording ? r.pieceStartedAt.map { max(0, now.timeIntervalSince($0)) } ?? 0 : 0
+        var parts = [Self.recordedText(ms: LifelogStore.closedTodayMs + Int64(open * 1000))]
+        if u.needsRepair { parts.append("需要重新配对才能上传") } else if u.waiting > 0 { parts.append("\(u.waiting) 段待传") }
+        return parts.joined(separator: " · ")
+    }
+    static func recordedText(ms: Int64) -> String {
+        let m = Int(ms / 60_000)
+        if m < 1 { return "今天还没录" }
+        return m < 60 ? "今天录了 \(m) 分" : "今天录了 \(m / 60) 小时 \(m % 60) 分"
+    }
+
     // 通知
     var notices = [Switch(title: "等你点头的事"), Switch(title: "提醒"), Switch(title: "她主动说的话")]
     var quietHours = "23:00 – 07:30"

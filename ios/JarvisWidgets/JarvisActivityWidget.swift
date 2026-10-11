@@ -5,7 +5,7 @@ import WidgetKit
 // Her state and the next reminder, on the lock screen and in the Dynamic Island, in the app's night sky. The content comes from the brain's pushes
 // (JarvisActivityAttributes); a tap opens the app as it is (he may have come to type), and only 「轻点说话」 opens jarvis://talk, which starts listening.
 
-private enum Night {
+enum Night {
     static let bg = Color(red: 14 / 255, green: 15 / 255, blue: 30 / 255)
     static let ink = Color(red: 238 / 255, green: 240 / 255, blue: 251 / 255)
     static let muted = Color(red: 196 / 255, green: 204 / 255, blue: 238 / 255).opacity(0.62)
@@ -15,10 +15,10 @@ private enum Night {
 }
 
 // the app's faces, bundled in this extension too; the system's own when they did not load
-private func serif(_ size: CGFloat) -> Font {
+func serif(_ size: CGFloat) -> Font {
     UIFont(name: "Instrument Serif", size: size) != nil ? .custom("Instrument Serif", size: size) : .system(size: size, design: .serif)
 }
-private func mono(_ size: CGFloat) -> Font {
+func mono(_ size: CGFloat) -> Font {
     UIFont(name: "IBMPlexMono-Medium", size: size) != nil ? .custom("IBMPlexMono-Medium", size: size) : .system(size: size, weight: .medium, design: .monospaced)
 }
 

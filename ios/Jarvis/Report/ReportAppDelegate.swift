@@ -22,6 +22,7 @@ final class ReportAppDelegate: NSObject, UIApplicationDelegate {
         PushNotifications.shared.install()
         // paired: permission (the first time) and the APNs token, which iOS issues again at each launch
         Task { await PushRegistry.shared.start() }
+        LifelogRecorder.shared.resume()                     // closes what a kill left open; records on if the switch is on
         return true
     }
 
@@ -32,5 +33,11 @@ final class ReportAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         // only the error's code: nothing here may carry a token
         NSLog("push: registering with APNs failed (%ld)", (error as NSError).code)
+    }
+
+    /// iOS relaunched the app for the lifelog upload session (a piece finished while the app was not running).
+    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
+        guard identifier == LifelogUploader.sessionID else { return completionHandler() }
+        LifelogUploader.shared.handleBackgroundEvents(completion: completionHandler)
     }
 }

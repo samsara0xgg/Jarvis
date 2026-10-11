@@ -73,6 +73,7 @@ final class Sound {
             warmedUp = true
             warmUp.async { for other in SoundCue.allCases { _ = self.buffer(for: other) } }
         }
+        if LifelogMic.play(buffer, gain: gain) { return }   // the day's recording holds the session: the cue goes through its engine
         guard prepareEngine() else { return }
         let now = ProcessInfo.processInfo.systemUptime
         // A free voice, else the one closest to finishing its tail (a voice is cut, never stacked beyond four).

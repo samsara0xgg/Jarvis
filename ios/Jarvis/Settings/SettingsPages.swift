@@ -52,6 +52,14 @@ struct SettingsMainPage: View {
             SetSection(header: "手机感知", footer: "这些只发给你自己的大脑，随时可以关。") {
                 ForEach($model.senses) { $s in SwitchRow(title: s.title, detail: s.detail, isOn: $s.isOn) }
             }
+            SetSection(header: "随身录音", footer: "只在 Wi-Fi 下上传。") {
+                SwitchRow(title: "随身录音", isOn: $model.lifelogOn)
+                TimelineView(.periodic(from: .now, by: 30)) { t in
+                    Text(model.lifelogLine(now: t.date)).font(.subheadline)
+                        .foregroundStyle(LifelogUploader.shared.needsRepair ? SetColor.faint : SetColor.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 11)
+                }
+            }
             SetSection(header: "通知") {
                 ForEach($model.notices) { $s in SwitchRow(title: s.title, detail: s.detail, isOn: $s.isOn) }
                 NavRow(label: "免打扰时段", detail: model.quietHours)
@@ -68,7 +76,7 @@ struct SettingsMainPage: View {
         }
         .padding(.top, 14)
         .padding(.bottom, 56)
-        .onChange(of: isCurrent, initial: true) { _, now in if now { BrainLink.shared.ping() } }
+        .onChange(of: isCurrent, initial: true) { _, now in if now { BrainLink.shared.ping(); LifelogUploader.shared.refresh() } }
     }
 
     private var hero: some View {
