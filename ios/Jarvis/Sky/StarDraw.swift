@@ -307,9 +307,12 @@ extension StarEngine {
         if b <= a { return }
         let stepM = 5 * max(1, z * 0.72)
         // the thread is cut into runs of one look: how bright it is by distance (vq) and nearness (zq), and what he was doing (colour, brightness)
-        struct Run { let path = CGMutablePath(); let cls: Int, vq: Int, zq: Int, glow: Bool, col: RGB, lum: Double }
+        struct Run { let path = CGMutablePath(); let cls: Int, vq: Int, zq: Int, col: RGB, lum: Double }
         var runs: [Run] = []
         var open = false
+        // the glow is not cut into runs: each short piece of the thread takes its own share of it, so it fades in and out along the thread instead of starting in a block
+        var glows: [(from: CGPoint, to: CGPoint, col: RGB, a: Double, zq: Int)] = []
+        var last = CGPoint.zero, lastG = 0.0
         var m = a
         while true {
             if m > b { m = b }
@@ -321,12 +324,15 @@ extension StarEngine {
             }
             let x = PX, y = PY, v = visT(m) * fog()
             let vq = min(3, Int((v * 4).rounded(.down))), zq = cam == nil || PS < 1.3 ? 0 : PS < 2.3 ? 1 : 2
-            let (col, lum) = toneAt(m), glow = cls == 2 || lum > 1.3
-            if let r = runs.last, open, r.cls == cls, r.vq == vq, r.zq == zq, r.glow == glow, abs(r.col.r - col.r) + abs(r.col.g - col.g) + abs(r.col.b - col.b) < 18, abs(r.lum - lum) < 0.12 {
+            let (col, lum) = toneAt(m)
+            let g = max(cls == 0 ? 0 : smooth(0.3, 0.5, ac), smooth(1.15, 1.45, lum)), pt = CGPoint(x: x, y: y)
+            if open { glows.append((last, pt, col, min(1, 0.1 * min(v, 0.9) * lum) * (g + lastG) / 2, zq)) }
+            last = pt; lastG = g
+            if let r = runs.last, open, r.cls == cls, r.vq == vq, r.zq == zq, abs(r.col.r - col.r) + abs(r.col.g - col.g) + abs(r.col.b - col.b) < 18, abs(r.lum - lum) < 0.12 {
                 r.path.addLine(to: CGPoint(x: x, y: y))
             } else {
                 if open { runs[runs.count - 1].path.addLine(to: CGPoint(x: x, y: y)) }
-                let r = Run(cls: cls, vq: vq, zq: zq, glow: glow, col: col, lum: lum)
+                let r = Run(cls: cls, vq: vq, zq: zq, col: col, lum: lum)
                 r.path.move(to: CGPoint(x: x, y: y))
                 runs.append(r); open = true
             }
@@ -336,19 +342,21 @@ extension StarEngine {
         let WK: [Double] = [1, 1.7, 2.6]
         c.setAlpha(1); c.setLineJoin(.round)
         c.setBlendMode(.plusLighter)                  // the moving parts glow a little
-        for r in runs where r.glow {
-            c.setStrokeColor(r.col.cg(min(1, 0.1 * (Double(r.vq) + 0.5) / 4 * r.lum))); c.setLineWidth(5 * WK[r.zq]); c.setLineDash(phase: 0, lengths: [])
-            c.addPath(r.path); c.strokePath()
+        c.setLineCap(.butt); c.setLineDash(phase: 0, lengths: [])
+        for s in glows where s.a > 0.003 {
+            c.setStrokeColor(s.col.cg(s.a)); c.setLineWidth(5 * WK[s.zq])
+            c.beginPath(); c.move(to: s.from); c.addLine(to: s.to); c.strokePath()
         }
         c.setBlendMode(.normal)
         for r in runs {
             let v = (Double(r.vq) + 0.5) / 4, wk = WK[r.zq]
             c.setLineDash(phase: 0, lengths: r.cls == 0 ? [CGFloat(1.1 * wk), CGFloat(3.4 * wk)] : [])
+            c.setLineCap(r.cls == 0 ? .round : .butt)      // runs meet end to end: a round cap would double the alpha at each joint and string the thread with beads
             c.setStrokeColor(r.col.cg(min(1, (r.cls == 0 ? 0.34 : r.cls == 1 ? 0.46 : 0.8) * v * r.lum)))
             c.setLineWidth((r.cls == 2 ? 1.5 : 1.15) * wk * clamp(1 + 0.5 * (r.lum - 1), 0.85, 1.25))
             c.addPath(r.path); c.strokePath()
         }
-        c.setLineDash(phase: 0, lengths: [])
+        c.setLineDash(phase: 0, lengths: []); c.setLineCap(.round)
         rideDots(c, a, b)
         if b == Trev && visT(b) > 0.05 && P(R_YOU + amp * actAt(b), ang(b)) {       // where you are now
             let v = visT(b) * fog(), s = cam != nil ? clamp(PS, 0.5, 2) : 1
