@@ -38,7 +38,7 @@ final class VoiceSession {
     private var wake = false
 
     /// Where the host is and the token that proves this phone; the pairing owns both.
-    @ObservationIgnored var endpoint: () -> (base: URL, token: String)? = { nil } { didSet { connectEarly() } }
+    @ObservationIgnored var endpoint: () -> (base: URL, token: String)? = { nil } { didSet { prewarm() } }
 
     // MARK: timings
 
@@ -76,6 +76,7 @@ final class VoiceSession {
     @ObservationIgnored private var linkTask: Task<Void, Never>?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
     @ObservationIgnored private var assetsReady = false
+    @ObservationIgnored private var modelsCheck: Task<String?, Never>?
     @ObservationIgnored private var assetsTriedAt = -60.0      // `now` of the last model install try, so a missing model is retried at most once a minute
     @ObservationIgnored private var missingNote: String?       // what listening keeps saying while one language's model is not installed
     @ObservationIgnored private var preparing = false
@@ -119,7 +120,7 @@ final class VoiceSession {
     private init() {
         foreground = UIApplication.shared.applicationState != .background
         hop(UIApplication.didEnterBackgroundNotification) { $0.foreground = false; $0.refreshArming() }
-        hop(UIApplication.willEnterForegroundNotification) { $0.foreground = true; $0.refreshArming(); $0.connectEarly() }
+        hop(UIApplication.willEnterForegroundNotification) { $0.foreground = true; $0.refreshArming(); $0.prewarm() }
         hop(UIApplication.didBecomeActiveNotification) { if TalkRequest.pending { $0.requestTalk() } }
         hop(TalkRequest.notification) { $0.requestTalk() }
         audio.onMic = { [weak self, feed] buf, level in
@@ -135,11 +136,14 @@ final class VoiceSession {
         if TalkRequest.pending { requestTalk() }
     }
 
-    /// The line to the host is opened as the app comes on screen, not at his first words: over Tailscale it has taken 13-15 s to
-    /// connect, and a say waits for it. It stays open while the app is on screen, which is also what the host reads as "the app is
-    /// open" (ADR 0210).
-    private func connectEarly() {
-        if foreground, endpoint() != nil { ensureLink() }
+    /// What a tap would wait for, made ready as the app comes on screen. The line to the host: over Tailscale it has taken 13-15 s to
+    /// connect, and a say waits for it; it stays open while the app is on screen, which is also what the host reads as "the app is
+    /// open" (ADR 0210). The speech models, when the microphone is already allowed (asking is left to his tap). Not the microphone:
+    /// it is on only in voice mode.
+    private func prewarm() {
+        guard foreground else { return }
+        if endpoint() != nil { ensureLink() }
+        if #available(iOS 26, *), !assetsReady, AVAudioApplication.shared.recordPermission == .granted { Task { _ = await checkModels() } }
     }
 
     private func hop(_ name: Notification.Name, _ body: @escaping @MainActor (VoiceSession) -> Void) {
@@ -211,18 +215,7 @@ final class VoiceSession {
         let heard = await AVAudioApplication.requestRecordPermission()
         VoiceTrace.note("microphone permission \(heard ? "granted" : "refused")")
         if !heard { errorText = "没有麦克风权限"; return false }
-        if !assetsReady && now - assetsTriedAt >= 60 {
-            assetsTriedAt = now
-            guard SpeechTranscriber.isAvailable else { errorText = "这台设备不能在本地识别语音"; return false }
-            modelProgress = 0
-            defer { modelProgress = nil }
-            do {
-                let missing = try await DualRecognizer.ensureAssets { p in Task { @MainActor in VoiceSession.shared.modelProgress = p } }
-                assetsReady = missing.isEmpty
-                missingNote = missing.first?.modelMissingText
-                if let note = missingNote { errorText = note }
-            } catch { errorText = "语言模型没装好：\(error.localizedDescription)"; return false }
-        }
+        if let e = await checkModels() { errorText = e; return false }
         do {
             try await audio.start()
             VoiceTrace.note("audio engine started")
@@ -232,6 +225,29 @@ final class VoiceSession {
             errorText = "麦克风还没准备好，再点一次"; return false
         } catch { errorText = "打不开麦克风：\(error.localizedDescription)"; return false }
         return true
+    }
+
+    /// The speech models, checked (and fetched if missing) at most once a minute until they are there. A reason when speech cannot run here;
+    /// a missing language is only `missingNote`, shown as he starts.
+    @available(iOS 26, *)
+    private func checkModels() async -> String? {
+        if let running = modelsCheck { return await running.value }
+        guard !assetsReady, now - assetsTriedAt >= 60 else { return nil }
+        assetsTriedAt = now
+        let t = Task { @MainActor () -> String? in
+            guard SpeechTranscriber.isAvailable else { return "这台设备不能在本地识别语音" }
+            modelProgress = 0
+            defer { modelProgress = nil }
+            do {
+                let missing = try await DualRecognizer.ensureAssets { p in Task { @MainActor in VoiceSession.shared.modelProgress = p } }
+                assetsReady = missing.isEmpty
+                missingNote = missing.first?.modelMissingText
+                return nil
+            } catch { return "语言模型没装好：\(error.localizedDescription)" }
+        }
+        modelsCheck = t
+        defer { modelsCheck = nil }
+        return await t.value
     }
 
     private func ensureLink() {
@@ -261,7 +277,7 @@ final class VoiceSession {
         dropSegment()
         audio.stop()
         tickTask?.cancel(); tickTask = nil
-        if !foreground { linkTask?.cancel(); linkTask = nil; link?.disconnect(); link = nil }   // on screen it stays: see connectEarly
+        if !foreground { linkTask?.cancel(); linkTask = nil; link?.disconnect(); link = nil }   // on screen it stays: see prewarm
         inputLevel = 0; outputLevel = 0
     }
 
