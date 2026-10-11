@@ -43,6 +43,10 @@ class Trip:
     stop_lat: float | None
     stop_lng: float | None
     to: str
+    # Where the first bus lets him off, from Google's answer (ADR 0224); None when it had none.
+    alight_stop: str | None = None
+    alight_lat: float | None = None
+    alight_lng: float | None = None
 
     @property
     def first_route(self) -> str:
@@ -89,6 +93,9 @@ def _trip(raw: dict[str, Any], tid: str) -> Trip:
         None if lat is None else float(lat),
         None if lng is None else float(lng),
         str(raw["to"]),
+        raw.get("alight_stop"),
+        raw.get("alight_lat"),
+        raw.get("alight_lng"),
     )
 
 

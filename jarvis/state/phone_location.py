@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.state.event_log import MAC_NODE, turn_origin
+from jarvis.state.ride_progress import Fix
 
 if TYPE_CHECKING:
     import sqlite3
@@ -28,6 +29,16 @@ _LATEST_SQL: Final = (
     "json_extract(payload_json, '$.departed_at_ms'), json_extract(payload_json, '$.arrived_at_ms')"
     ") ELSE ts_epoch_ms END AS at_ms FROM events WHERE type IN (?, ?) "
     "ORDER BY at_ms DESC, id DESC LIMIT 1"
+)
+
+
+_FIXES_SQL: Final = (
+    "SELECT payload_json, ts_epoch_ms, ingestion_node FROM events WHERE type = ? "
+    "AND ts_epoch_ms >= ? ORDER BY ts_epoch_ms ASC, id ASC"
+)
+_MOTION_SQL: Final = (
+    "SELECT payload_json FROM events WHERE type = 'phone.motion_observed' AND ts_epoch_ms >= ? "
+    "ORDER BY ts_epoch_ms DESC, id DESC LIMIT 50"
 )
 
 
@@ -102,3 +113,50 @@ def read_phone_here(conn: sqlite3.Connection, *, now_ms: int | None = None) -> d
     if fix.place is not None:
         reading["place"] = fix.place
     return reading
+
+
+def fixes_since(conn: sqlite3.Connection, since_ms: int) -> list[Fix]:
+    """The phones' location fixes timed at or after ``since_ms``, oldest first (ADR 0224).
+
+    A fix is at the event's own time, which the phone sets; a visit is not a fix.
+    """
+    found: list[Fix] = []
+    for raw, at_ms, node in conn.execute(_FIXES_SQL, (LOCATION_EVENT, since_ms)):
+        payload: dict[str, Any] = json.loads(raw)
+        found.append(Fix(
+            int(at_ms), float(payload["lat"]), float(payload["lng"]),
+            float(payload["accuracy_m"]), str(node),
+        ))
+    return found
+
+
+def motion_now(conn: sqlite3.Connection, since_ms: int) -> str | None:
+    """The activity of the newest motion segment that began at or after ``since_ms``, or None.
+
+    Segments of low confidence are passed over. Newest means the latest start.
+    """
+    best: tuple[int, str] | None = None
+    for (raw,) in conn.execute(_MOTION_SQL, (since_ms - 60_000,)):
+        payload: dict[str, Any] = json.loads(raw)
+        started = int(payload["started_at_ms"])
+        if started >= since_ms and payload["confidence"] != "low" and (
+            best is None or started > best[0]
+        ):
+            best = (started, str(payload["activity"]))
+    return None if best is None else best[1]
+
+
+def visit_position(conn: sqlite3.Connection, words: str) -> tuple[float, float] | None:
+    """Where the phone last put him at a place whose name holds ``words`` (any case), or None."""
+    escaped = words.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = f"%{escaped}%"
+    row = conn.execute(
+        "SELECT payload_json FROM events WHERE type = ? "
+        "AND lower(json_extract(payload_json, '$.place')) LIKE ? ESCAPE '\\' "
+        "ORDER BY ts_epoch_ms DESC, id DESC LIMIT 1",
+        (VISIT_EVENT, like),
+    ).fetchone()
+    if row is None:
+        return None
+    payload: dict[str, Any] = json.loads(row[0])
+    return float(payload["lat"]), float(payload["lng"])

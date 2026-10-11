@@ -26,9 +26,10 @@ if TYPE_CHECKING:
 _FILE: Final = "push-tokens.json"
 ENVIRONMENTS: Final = ("sandbox", "production")
 Environment = Literal["sandbox", "production"]
-Kind = Literal["device", "live_activity"]
+Kind = Literal["device", "live_activity", "ride_start", "ride_activity"]
 _TOKEN: Final = re.compile(r"[0-9a-fA-F]{32,512}")
-_KEYS: Final = frozenset({"device_token", "environment", "live_activity_token"})
+_OPTIONAL: Final = ("live_activity_token", "ride_start_token", "ride_activity_token")
+_KEYS: Final = frozenset({"device_token", "environment", *_OPTIONAL})
 # One lock for the file: the route writes on the loop thread, a 410 drops on a worker thread.
 _LOCK: Final = threading.Lock()
 
@@ -39,18 +40,26 @@ class RegistrationError(ValueError):
 
 @dataclass(frozen=True)
 class Registration:
-    """What one device registered; ``live_activity_token`` is ``None`` while no activity runs."""
+    """What one device registered; an activity token is ``None`` while no activity runs.
+
+    ``live_activity_token`` is her state's activity (ADR 0210). ``ride_start_token`` is the
+    push-to-start token of the ride activity type, and ``ride_activity_token`` the running ride
+    activity's own update token (ADR 0224).
+    """
 
     device_token: str
     environment: Environment
     live_activity_token: str | None = None
+    ride_start_token: str | None = None
+    ride_activity_token: str | None = None
 
 
-def parse_registration(body: object) -> tuple[Registration, bool]:
-    """The registration in ``body`` and whether it carries ``live_activity_token`` at all.
+def parse_registration(body: object) -> tuple[Registration, frozenset[str]]:
+    """The registration in ``body`` and which of the optional tokens it carries at all.
 
-    ``device_token`` and ``environment`` are required. ``live_activity_token`` absent leaves the
-    stored one as it is, ``null`` clears it, a string sets it. Tokens are hex; they are lowered.
+    ``device_token`` and ``environment`` are required. Each of ``live_activity_token``,
+    ``ride_start_token`` and ``ride_activity_token`` absent leaves the stored one as it is,
+    ``null`` clears it, a string sets it. Tokens are hex; they are lowered.
 
     Raises:
         RegistrationError: not an object, a missing, unknown or mistyped key, or a token that is
@@ -67,13 +76,11 @@ def parse_registration(body: object) -> tuple[Registration, bool]:
         msg = 'environment is "sandbox" or "production"'
         raise RegistrationError(msg)
     device = _token(body.get("device_token"), "device_token")
-    carried = "live_activity_token" in body
-    live = body.get("live_activity_token")
-    return Registration(
-        device,
-        environment,
-        None if live is None else _token(live, "live_activity_token"),
-    ), carried
+    carried = frozenset(name for name in _OPTIONAL if name in body)
+    optional = {
+        name: None if body.get(name) is None else _token(body[name], name) for name in carried
+    }
+    return Registration(device, environment, **optional), carried
 
 
 def _token(value: object, name: str) -> str:
@@ -95,26 +102,29 @@ def _read(root: Path) -> dict[str, dict[str, Any]]:
 def _row(raw: object) -> Registration | None:
     if not isinstance(raw, dict):
         return None
-    device, environment, live = (
-        raw.get("device_token"), raw.get("environment"), raw.get("live_activity_token"),
-    )
+    device, environment = raw.get("device_token"), raw.get("environment")
     if not (isinstance(device, str) and environment in ENVIRONMENTS):
         return None
-    return Registration(device, environment, live if isinstance(live, str) else None)
+    optional = {name: raw[name] for name in _OPTIONAL if isinstance(raw.get(name), str)}
+    return Registration(device, environment, **optional)
 
 
-def register(root: Path, name: str, new: Registration, *, live_carried: bool = True) -> None:
-    """Keep ``new`` as ``name``'s registration; unless ``live_carried``, the live token stays."""
+def register(
+    root: Path, name: str, new: Registration, *, carried: frozenset[str] = frozenset(_OPTIONAL),
+) -> None:
+    """Keep ``new`` as ``name``'s registration; an optional token not in ``carried`` stays."""
     with _LOCK:
         rows = _read(root)
         kept = _row(rows.get(name))
-        live = new.live_activity_token
-        if not live_carried and kept is not None and kept.environment == new.environment:
-            live = kept.live_activity_token
+        same = kept is not None and kept.environment == new.environment
+        tokens = {
+            field: getattr(kept if field not in carried and same else new, field)
+            for field in _OPTIONAL
+        }
         rows[name] = {
             "device_token": new.device_token,
             "environment": new.environment,
-            "live_activity_token": live,
+            **tokens,
             "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         }
         write_private_json(root / _FILE, {"devices": rows})
@@ -126,8 +136,8 @@ def register_body(root: Path, name: str, body: object) -> None:
     Raises:
         RegistrationError: see :func:`parse_registration`.
     """
-    new, live_carried = parse_registration(body)
-    register(root, name, new, live_carried=live_carried)
+    new, carried = parse_registration(body)
+    register(root, name, new, carried=carried)
 
 
 def registrations(root: Path) -> dict[str, Registration]:
@@ -144,10 +154,10 @@ def drop_token(root: Path, name: str, kind: Kind) -> None:
         raw = rows.get(name)
         if not isinstance(raw, dict):
             return
-        if kind == "live_activity":
-            raw["live_activity_token"] = None
-        else:
+        if kind == "device":
             del rows[name]
+        else:
+            raw[f"{kind}_token"] = None
         write_private_json(root / _FILE, {"devices": rows})
 
 
