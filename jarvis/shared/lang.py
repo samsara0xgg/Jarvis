@@ -353,6 +353,16 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "；也可以坐 {route} 路 {departs}",
         "en": "; or the {route} at {departs}",
     },
+    # ADR 0224: a followed bus ride. The question he can answer from the lock screen, and the
+    # warning one stop before his.
+    "ride.ask_title": {"zh": "上 {route} 路了吗？", "en": "Did you board the {route}?"},
+    "ride.ask_body": {"zh": "{route} 路，下一站 {stop}", "en": "Route {route}, next stop {stop}"},
+    "ride.ask_body_plain": {"zh": "{route} 路就在你身边", "en": "Route {route} is right with you"},
+    "ride.warn_title": {"zh": "快到站了", "en": "Almost there"},
+    "ride.warn_body": {
+        "zh": "下一站 {stop} 就是你的站，准备下车",
+        "en": "Next stop is yours, {stop}: get ready",
+    },
     # ADR 0093: the night run's spoken lines; its cards show the times.
     "night.started": {
         "zh": "好，挂到{until}。{seconds}秒后熄屏，晚安。",

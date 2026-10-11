@@ -838,7 +838,7 @@ def test_send_carries_the_url_the_category_and_the_thread(world: World) -> None:
     {"url": "no scheme"}, {"url": "x:" + "a" * 2000}, {"category": ""}, {"thread": "t" * 65},
 ])
 def test_a_message_that_cannot_be_a_push_is_the_callers_error_and_sends_nothing(
-    world: World, bad: dict[str, str],
+    world: World, bad: dict[str, Any],
 ) -> None:
     """A message that cannot be a push is the callers error and sends nothing."""
     with pytest.raises(ValueError, match=r"url|category|thread"):

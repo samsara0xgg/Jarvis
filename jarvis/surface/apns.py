@@ -89,7 +89,8 @@ class PushMessage:
 
     ``url`` is what a tap opens; ``category`` names the app's action set; ``thread`` groups
     notifications in the notification center. ``sound`` off makes it a silent banner, and
-    ``time_sensitive`` lets it through Focus.
+    ``time_sensitive`` lets it through Focus. ``data`` rides beside ``aps`` as the app's own keys
+    (a ride question carries its id there, ADR 0224).
     """
 
     title: str
@@ -99,6 +100,7 @@ class PushMessage:
     thread: str | None = None
     sound: bool = True
     time_sensitive: bool = False
+    data: Mapping[str, Any] | None = None
 
 
 def _clip(text: str, limit: int) -> str:
@@ -108,11 +110,11 @@ def _clip(text: str, limit: int) -> str:
 def alert_payload(message: PushMessage) -> bytes:
     """The JSON body of an ``alert`` push: ``aps`` with the alert, sound, thread and category.
 
-    ``url`` rides beside ``aps`` as the app's own key.
+    ``url`` and each key of ``data`` ride beside ``aps`` as the app's own keys.
 
     Raises:
-        ValueError: ``url`` has no scheme or is over :data:`MAX_URL`, or ``category`` or
-            ``thread`` is empty or over :data:`MAX_LABEL`.
+        ValueError: ``url`` has no scheme or is over :data:`MAX_URL`, ``category`` or
+            ``thread`` is empty or over :data:`MAX_LABEL`, or ``data`` names ``aps``.
     """
     aps: dict[str, Any] = {"alert": {"title": _clip(message.title, MAX_TITLE),
                                      "body": _clip(message.body, MAX_BODY)}}
@@ -127,6 +129,11 @@ def alert_payload(message: PushMessage) -> bytes:
                 raise ValueError(msg)
             aps[key] = value
     payload: dict[str, Any] = {"aps": aps}
+    if message.data:
+        if "aps" in message.data or "url" in message.data:
+            msg = "data may not name aps or url"
+            raise ValueError(msg)
+        payload.update(message.data)
     if message.url is not None:
         scheme, found, _ = message.url.partition(_SCHEME_END)
         if not (found and scheme.isascii() and scheme.isalpha()) or len(message.url) > MAX_URL:
@@ -142,6 +149,44 @@ def activity_payload(content_state: Mapping[str, Any], now_s: int) -> bytes:
         {"aps": {"timestamp": now_s, "event": "update", "content-state": dict(content_state)}},
         ensure_ascii=False, separators=(",", ":"),
     ).encode()
+
+
+RIDE_ATTRIBUTES_TYPE: Final = "RideAttributes"
+"""The Swift type name of the ride's ``ActivityAttributes`` (ADR 0224); a start push names it."""
+_END_LINGER_S: Final = 120
+
+
+def ride_activity_payload(
+    event: str,
+    content_state: Mapping[str, Any],
+    now_s: int,
+    *,
+    attributes: Mapping[str, Any] | None = None,
+    alert: tuple[str, str] | None = None,
+) -> bytes:
+    """The body of the ride Live Activity's ``start``, ``update`` or ``end`` push (ADR 0224).
+
+    ``start`` (sent to the push-to-start token) carries the attributes and their type name;
+    ``end`` keeps the activity on screen two minutes more; ``alert`` is ``(title, body)`` and
+    makes the update buzz.
+
+    Raises:
+        ValueError: ``event`` is none of the three, or a start has no attributes.
+    """
+    if event not in {"start", "update", "end"}:
+        msg = "event is start, update or end"
+        raise ValueError(msg)
+    aps: dict[str, Any] = {"timestamp": now_s, "event": event, "content-state": dict(content_state)}
+    if event == "start":
+        if attributes is None:
+            msg = "a start needs attributes"
+            raise ValueError(msg)
+        aps |= {"attributes-type": RIDE_ATTRIBUTES_TYPE, "attributes": dict(attributes)}
+    if event == "end":
+        aps["dismissal-date"] = now_s + _END_LINGER_S
+    if alert is not None:
+        aps["alert"] = {"title": _clip(alert[0], MAX_TITLE), "body": _clip(alert[1], MAX_BODY)}
+    return json.dumps({"aps": aps}, ensure_ascii=False, separators=(",", ":")).encode()
 
 
 def load_signing_key(pem: bytes) -> ec.EllipticCurvePrivateKey:
@@ -250,6 +295,19 @@ class ApnsClient:
             activity_token, environment, label, "liveactivity",
             f"{self._bundle_id}.push-type.liveactivity",
             activity_payload(content_state, int(self._clock())), priority=5, expiration=0,
+        )
+
+    def send_ride(
+        self, token: str, environment: str, payload: bytes, *, label: str, priority: int,
+    ) -> Outcome:
+        """Send a ride Live Activity push (:func:`ride_activity_payload`) to ``token``.
+
+        ``token`` is the push-to-start token for a start and the activity's own for the rest.
+        Priority 5 does not count against the hourly budget; 10 is for the one-stop warning.
+        """
+        return self._post(
+            token, environment, label, "liveactivity", f"{self._bundle_id}.push-type.liveactivity",
+            payload, priority=priority, expiration=0,
         )
 
     def _post(  # noqa: PLR0913 — one APNs header each.

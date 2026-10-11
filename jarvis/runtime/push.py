@@ -13,7 +13,9 @@ module decides. Four things push, each by its own rule:
   Mac, and a held request is pushed once he leaves it while it still waits (ADR 0218);
 - whatever another feature wants him to see (:meth:`Push.send`);
 - the running Live Activity's content (:meth:`Push.poll`), when her state or the next reminder
-  changed.
+  changed;
+- the ride Live Activity (:meth:`Push.ride_activity`), which the ride follower starts, updates and
+  ends (ADR 0224).
 
 A push that fails is logged without its text and never tried again. A host with no key
 configured pushes nothing and says so once at boot.
@@ -43,6 +45,7 @@ from jarvis.surface.apns import (
     PushMessage,
     alert_payload,
     load_signing_key,
+    ride_activity_payload,
 )
 
 if TYPE_CHECKING:
@@ -158,25 +161,34 @@ class Push:
 
     # --- what callers use -------------------------------------------------------------
 
-    def send(
+    def send(  # noqa: PLR0913 - the notification, plus keywords for the app's own keys and filters.
         self,
         title: str,
         body: str,
         url: str | None = None,
         category: str | None = None,
         thread: str | None = None,
+        *,
+        data: Mapping[str, Any] | None = None,
+        device: str | None = None,
+        time_sensitive: bool = False,
+        sound: bool = True,
     ) -> int:
         """Push a notification to every registered phone; returns how many took it.
 
-        ``url`` is what tapping it opens (an Uber deep link, say). Blocks for the network, so a
-        coroutine calls it through ``asyncio.to_thread``. Any quiet level is the caller's to
-        honour. Pushes nothing, and returns 0, until a key is configured.
+        ``url`` is what tapping it opens (an Uber deep link, say). ``data`` rides beside ``aps``
+        as the app's own keys, and ``device`` limits the push to that one phone. Blocks for the
+        network, so a coroutine calls it through ``asyncio.to_thread``. Any quiet level is the
+        caller's to honour. Pushes nothing, and returns 0, until a key is configured.
 
         Raises:
-            ValueError: ``url`` is not a link with a scheme, or ``category`` or ``thread`` is
-                empty or over 64 characters.
+            ValueError: ``url`` is not a link with a scheme, ``category`` or ``thread`` is
+                empty or over 64 characters, or ``data`` names ``aps`` or ``url``.
         """
-        return self._deliver(PushMessage(title, body, url, category, thread))
+        return self._deliver(
+            PushMessage(title, body, url, category, thread, sound, time_sensitive, data),
+            skip=lambda name: device is not None and name != device,
+        )
 
     def reminder(self, line: str) -> int:
         """Push a fired reminder's line, whatever the quiet level (ADR 0179)."""
@@ -327,6 +339,56 @@ class Push:
             # Marked before it goes: a failed update waits for the next change, it is not retried.
             self._activity[name] = (str(token), wire)
             self._send_one(name, "live_activity", state)
+
+    def ride_activity(  # noqa: PLR0913 - the phone, the event, its two states and the buzz.
+        self,
+        device: str | None,
+        event: str,
+        attributes: Mapping[str, Any],
+        content: Mapping[str, Any],
+        *,
+        urgent: bool = False,
+        alert: tuple[str, str] | None = None,
+    ) -> bool:
+        """Start, update or end the ride Live Activity on ``device``'s phone (any when None).
+
+        A start goes to the phone's push-to-start token (unless an activity already runs there,
+        when it is an update); an update or an end goes to the running activity's own token, and
+        an end forgets it. ``urgent`` sends at priority 10, else 5 (ADR 0224). Returns whether
+        APNs took it on any phone; nothing is retried.
+        """
+        names = [device] if device else list(push_tokens.registrations(self._root))
+        sent = [self._ride_one(n, event, attributes, content, urgent=urgent, alert=alert)
+                for n in names]
+        return any(sent)
+
+    def _ride_one(  # noqa: PLR0913
+        self, name: str, event: str, attributes: Mapping[str, Any], content: Mapping[str, Any],
+        *, urgent: bool, alert: tuple[str, str] | None,
+    ) -> bool:
+        one = push_tokens.registrations(self._root).get(name)
+        if self._client is None or one is None:
+            return False
+        if event == "start" and one.ride_activity_token:
+            event = "update"
+        starting = event == "start"
+        token = one.ride_start_token if starting else one.ride_activity_token
+        if token is None:
+            return False
+        try:
+            outcome = self._client.send_ride(
+                token, one.environment,
+                ride_activity_payload(
+                    event, content, int(self.clock()), attributes=attributes, alert=alert,
+                ),
+                label=name, priority=10 if urgent else 5,
+            )
+        except Exception as exc:  # noqa: BLE001 — a push must never take its caller down.
+            LOGGER.warning("push: to %s failed (%s)", name, type(exc).__name__)
+            return False
+        if outcome is Outcome.UNREGISTERED or (outcome is Outcome.SENT and event == "end"):
+            push_tokens.drop_token(self._root, name, "ride_start" if starting else "ride_activity")
+        return outcome is Outcome.SENT
 
     # --- delivery ---------------------------------------------------------------------
 
