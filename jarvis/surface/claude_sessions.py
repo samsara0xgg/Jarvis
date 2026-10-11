@@ -9,6 +9,12 @@ tail of the transcript ``~/.claude/projects/*/<sessionId>.jsonl`` (last
 prompt, branch, current tool, last answer). Nothing is installed into Claude
 Code. ``GET /inherent/claude-sessions`` serves :meth:`ClaudeSessions.read`.
 
+A row's title is the name he sees in Claude Desktop when it has one: Desktop keeps it in
+``~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json`` (``title``, keyed by
+``cliSessionId``), and a session it spawned for a project thread carries the thread's title there.
+Then ``claude agents``' own name, unless it is the generic "from a project" name or an
+auto-made slug (``projects-3e``); then his first prompt; then the folder.
+
 On a brain (ADR 0170) these files are the owner's Mac's, so the board is asked of the connected
 terminal, which runs :meth:`ClaudeSessions.raw`, :meth:`~ClaudeSessions.conversation` and
 :meth:`~ClaudeSessions.reply` itself; what needs a model (whether a finished turn asks Allen
@@ -57,6 +63,11 @@ _PASTED = re.compile(r"<pasted_content[^>]*>.*?</pasted_content[^>]*>", re.DOTAL
 # A hidden attach shows its first screen in about 0.2 s; the input box takes a little longer.
 _ATTACH_S = 3.0
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_DESKTOP_SESSIONS = Path("Library") / "Application Support" / "Claude" / "claude-code-sessions"
+# What Claude Desktop and ``claude agents`` call a remote-control session before it has a title.
+_UNNAMED = frozenset({"remote control session (from a project)", "session"})
+# Claude Code's own made-up name for an unnamed session: words, then a short hex tail.
+_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{2,4}(?:-[0-9a-f]{2})?")
 # Process names (lowercase prefix) that host a terminal session, innermost first wins.
 _TERMINALS = (
     ("zellij", "zellij"),
@@ -82,6 +93,14 @@ def _iso_ms(value: object) -> int:
         return int(dt.datetime.fromisoformat(str(value)).timestamp() * 1000)
     except ValueError:
         return 0
+
+
+def _named(name: object) -> str:
+    """``name`` as a title, or "" when it is a placeholder or a made-up slug."""
+    text = _short(name)
+    if text.lower() in _UNNAMED or _SLUG.fullmatch(text):
+        return ""
+    return text
 
 
 def _project(cwd: str) -> str:
@@ -360,6 +379,8 @@ class ClaudeSessions:
         self._at = -REFRESH_S
         self._board: dict[str, Any] = {"sessions": [], "error": None}
         self._transcripts: dict[Path, tuple[int, dict[str, Any]]] = {}
+        # Claude Desktop's session files: path -> (mtime, CLI session id, title).
+        self._desktop: dict[Path, tuple[int, str, str]] = {}
         self._reply_lock = threading.Lock()
 
     def read(self) -> dict[str, Any]:
@@ -483,6 +504,26 @@ class ClaudeSessions:
             cached = self._transcripts[path] = (mtime_ns, read_transcript(path))
         return cached[1]
 
+    def _desktop_titles(self) -> dict[str, str]:
+        """Claude Desktop's title for each CLI session id it knows; a file is re-read on change."""
+        seen: dict[Path, tuple[int, str, str]] = {}
+        for path in (self._home / _DESKTOP_SESSIONS).rglob("local_*.json"):
+            try:
+                mtime_ns = path.stat().st_mtime_ns
+            except OSError:
+                continue
+            cached = self._desktop.get(path)
+            if cached is None or cached[0] != mtime_ns:
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    data = None
+                data = data if isinstance(data, dict) else {}
+                cached = (mtime_ns, str(data.get("cliSessionId") or ""), _named(data.get("title")))
+            seen[path] = cached
+        self._desktop = seen
+        return {sid: title for _, sid, title in seen.values() if sid and title}
+
     def _job(self, job_id: object) -> dict[str, Any]:
         try:
             state = json.loads(
@@ -517,6 +558,7 @@ class ClaudeSessions:
             ]
         )
         projects = self._home / ".claude" / "projects"
+        titles = self._desktop_titles()
         rows: list[ClaudeSession] = []
         extra: dict[str, dict[str, Any]] = {}
         seen: set[str] = set()
@@ -552,7 +594,10 @@ class ClaudeSessions:
                     if agent.get("kind") == "background"
                     else "",
                     "phase": phase,
-                    "title": _short(agent.get("name")) or tx["prompt"] or _project(cwd),
+                    "title": titles.get(agent["sessionId"])
+                    or _named(agent.get("name"))
+                    or tx["prompt"]
+                    or _project(cwd),
                     "project": _project(cwd),
                     "branch": tx["branch"],
                     "cwd": cwd,

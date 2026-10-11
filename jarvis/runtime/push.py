@@ -32,7 +32,6 @@ import stat
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import lang
@@ -50,6 +49,7 @@ from jarvis.surface.apns import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+    from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -221,9 +221,11 @@ class Push:
         level = self.quiet()
         if level in _QUIET_HELD:
             return False
+        # ADR 0232: the card's kind and id ride beside ``aps``, so a tap opens that card and an
+        # action answers it on the card's own route.
         message = PushMessage(
             lang.t(_WAITING_TITLES[kind]), text, category=kind, thread="waiting",
-            sound=level != _QUIET_SILENT,
+            sound=level != _QUIET_SILENT, data={"card": {"kind": kind, "id": item_id}},
         )
 
         def skip(name: str) -> bool:
@@ -232,16 +234,16 @@ class Push:
         return self._deliver(message, skip=skip) > 0
 
     def claude_request(
-        self, tool: str, cwd: str, request_id: str, still_waiting: Callable[[], bool],
+        self, tool: str, session: str, request_id: str, still_waiting: Callable[[], bool],
     ) -> None:
         """A permission prompt is held for him (called on the loop); the push goes off-thread.
 
-        It goes now if he is away from the Mac, else from the watcher once he leaves while
-        ``still_waiting()`` (ADR 0218).
+        ``session`` is the session's name as he sees it (ADR 0232). It goes now if he is away
+        from the Mac, else from the watcher once he leaves while ``still_waiting()`` (ADR 0218).
         """
         if self._client is None:
             return
-        text = f"{tool} · {Path(cwd).name}" if cwd else tool
+        text = f"{session} · {tool}" if session else tool
         with self._lock:
             self._prompts[request_id] = (text, still_waiting)
         self._pool.submit(self._safely, self._follow_prompts)

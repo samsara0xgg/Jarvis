@@ -566,7 +566,7 @@ def test_a_waiting_confirmation_pushes_once_and_what_was_waiting_at_boot_is_not_
     assert request["body"] == {"aps": {
         "alert": {"title": lang.t("push.confirmation"), "body": "Send the draft to Dana?"},
         "sound": "default", "thread-id": "waiting", "category": "confirmation",
-    }}
+    }, "card": {"kind": "confirmation", "id": "C1"}}
     assert request["headers"]["apns-priority"] == "10"
 
 
@@ -620,13 +620,17 @@ def test_an_ask_card_pushes_and_a_card_closed_or_expired_before_the_poll_does_no
         "title": lang.t("push.question"), "body": "Which stop?",
     }
     assert request["body"]["aps"]["category"] == "question"
+    assert request["body"]["card"] == {"kind": "question", "id": "Q1"}  # ADR 0232
 
 
 def test_a_claude_code_permission_request_pushes_once(world: World) -> None:
     """A claude code permission request pushes once."""
     async def hold() -> None:
         hooks = ClaudeHooks(lambda: "off", world.push.claude_request)
-        hooks.merge({"sessions": []})  # a companion is reading the board
+        hooks.merge({"sessions": [  # a companion is reading the board
+            {"session_id": "S1", "title": "手机麦克风没准备好", "phase": "working",
+             "updated_ms": 0},
+        ]})
         async def gone() -> bool:
             return False
         task = asyncio.create_task(hooks.permission(
@@ -643,9 +647,12 @@ def test_a_claude_code_permission_request_pushes_once(world: World) -> None:
     asyncio.run(hold())
     [request] = world.requests()
     assert request["body"]["aps"]["alert"] == {
-        "title": lang.t("push.claude"), "body": "Bash · Jarvis",  # never the command
+        "title": lang.t("push.claude"), "body": "手机麦克风没准备好 · Bash",  # never the command
     }
     assert request["body"]["aps"]["category"] == "claude"
+    # ADR 0232: the push names its card, which is answered on its own route.
+    assert request["body"]["card"]["kind"] == "claude"
+    assert len(request["body"]["card"]["id"]) == 16
 
 
 class PhoneHost:
@@ -786,8 +793,8 @@ def test_a_held_claude_request_waits_while_he_is_at_the_mac_and_follows_him_off_
     world.push.at_mac = lambda: at_mac[0]
     world.push.poll()
     waiting = {"R1": True, "R2": True}
-    world.push.claude_request("Bash", "/Users/a/Projects", "R1", lambda: waiting["R1"])
-    world.push.claude_request("Edit", "/Users/a/Projects", "R2", lambda: waiting["R2"])
+    world.push.claude_request("Bash", "记忆层", "R1", lambda: waiting["R1"])
+    world.push.claude_request("Edit", "记忆层", "R2", lambda: waiting["R2"])
     world.settle()
     world.push.poll()
     assert world.requests() == []  # he is at the Mac: the notch has it
@@ -798,15 +805,16 @@ def test_a_held_claude_request_waits_while_he_is_at_the_mac_and_follows_him_off_
     world.push.poll()
     [request] = world.requests()
     assert request["body"]["aps"]["alert"] == {
-        "title": lang.t("push.claude"), "body": "Bash · Projects",
+        "title": lang.t("push.claude"), "body": "记忆层 · Bash",
     }
+    assert request["body"]["card"] == {"kind": "claude", "id": "R1"}
 
 
 def test_a_claude_request_held_while_he_is_away_pushes_at_once(world: World) -> None:
     """Away from the Mac, the hold itself pushes, as before (ADR 0210), without a poll."""
-    world.push.claude_request("Bash", "/Users/a/Jarvis", "R1", lambda: True)
+    world.push.claude_request("Bash", "Jarvis", "R1", lambda: True)
     world.settle()
-    assert [r["body"]["aps"]["alert"]["body"] for r in world.requests()] == ["Bash · Jarvis"]
+    assert [r["body"]["aps"]["alert"]["body"] for r in world.requests()] == ["Jarvis · Bash"]
     world.push.poll()
     world.push.poll()
     assert len(world.requests()) == 1

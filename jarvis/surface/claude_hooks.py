@@ -117,8 +117,10 @@ class ClaudeHooks:
     ) -> None:
         """Nothing held, nothing marked, no companion reading yet; ``quiet`` reads the level.
 
-        ``on_request(tool, cwd, request_id, waiting)`` is called when a prompt is held for him
-        (ADR 0210); ``waiting()`` says, from any thread, whether it still waits (ADR 0218).
+        ``on_request(tool, session, request_id, waiting)`` is called when a prompt is held for him
+        (ADR 0210); ``session`` is the session's title on the board, or its folder before the
+        board listed it (ADR 0232); ``waiting()`` says, from any thread, whether it still waits
+        (ADR 0218).
         ``prompt_log`` is where each prompt is counted; ``None`` counts nothing.
         """
         self._quiet = quiet or (lambda: "off")
@@ -127,6 +129,8 @@ class ClaudeHooks:
         self._held: dict[str, _Held] = {}
         self._compacting: set[str] = set()
         self._stopped: dict[str, tuple[str, int]] = {}
+        # Each session's title as the board last named it, for the push that says one waits.
+        self._titles: dict[str, str] = {}
         self._read_at = -LISTENER_S
 
     def event(self, payload: dict[str, Any]) -> None:
@@ -173,7 +177,9 @@ class ClaudeHooks:
         if self._on_request is not None:
             try:
                 self._on_request(
-                    held.tool, held.cwd, held.id,
+                    held.tool,
+                    self._titles.get(held.session_id) or Path(held.cwd).name,
+                    held.id,
                     lambda: held.id in self._held and not held.answer.done(),
                 )
             except Exception:  # noqa: BLE001 — telling his phone must not release the prompt.
@@ -251,6 +257,7 @@ class ClaudeHooks:
         """The board with each session's held prompt, compacting and stopped marks laid on."""
         self._read_at = time.monotonic()
         rows = {r["session_id"]: r for r in board.get("sessions", [])}
+        self._titles = {sid: str(r.get("title") or "") for sid, r in rows.items()}
         now_ms = int(time.time() * 1000)
         for held in list(self._held.values()):
             row = rows.get(held.session_id)

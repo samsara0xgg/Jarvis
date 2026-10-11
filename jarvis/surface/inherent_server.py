@@ -663,7 +663,7 @@ class InherentDeps:
     # ``POST /inherent/device/push``; it raises ``RegistrationError`` for a body it refuses.
     # Needs ``device_name``. ``None`` leaves the route unregistered (404).
     push_register: Callable[[str, object], None] | None = None
-    # ADR 0210: ``(tool, cwd, request_id, waiting) -> None``, called on the loop when a Claude
+    # ADR 0210: ``(tool, session, request_id, waiting) -> None``, called on the loop when a Claude
     # Code permission prompt is held for him, so the host can push that it waits; ``waiting()``
     # says from any thread whether it still does (ADR 0218).
     claude_request: Callable[[str, str, str, Callable[[], bool]], None] | None = None

@@ -305,3 +305,52 @@ def test_agent_marks_are_one_file_every_surface_shares(tmp_path: Path) -> None:
     assert (marks["b"]["parked_ms"] > 0, marks["b"].get("archived_ms")) == (True, None)
     assert marks["c"]["archived_ms"] > 0
     assert oct(path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_a_session_is_named_as_claude_desktop_names_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A project thread's title from Desktop wins; placeholders and slugs give way to the prompt."""
+    names = {
+        "s-thread": "Remote Control session (from a project)",
+        "s-slug": "projects-3e",
+        "s-plain": "Remote Control session (from a project)",
+        "s-named": "boooob ui",
+    }
+    bin_dir = _home(tmp_path, [
+        {"sessionId": sid, "kind": "interactive", "status": "busy", "name": name,
+         "cwd": f"{tmp_path}/Projects", "startedAt": NOW_MS}
+        for sid, name in names.items()
+    ])
+    project = tmp_path / ".claude" / "projects" / "-x-jarvis"
+    for sid in ("s-slug", "s-plain"):
+        (project / f"{sid}.jsonl").write_text(
+            json.dumps({"type": "last-prompt", "lastPrompt": f"what {sid} was asked"}),
+        )
+    desktop = (tmp_path / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
+               / "org" / "project")
+    desktop.mkdir(parents=True)
+    for i, (sid, title) in enumerate((
+        ("s-thread", "手机麦克风没准备好"),
+        ("s-plain", "Remote Control session (from a project)"),
+    )):
+        (desktop / f"local_{i}.json").write_text(json.dumps(
+            {"cliSessionId": sid, "title": title, "titleSource": "auto"}, ensure_ascii=False,
+        ))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    client = TestClient(
+        create_app(InherentDeps(
+            submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True
+        ))
+    )
+
+    rows = {r["session_id"]: r["title"] for r in client.get("/inherent/claude-sessions").json()[
+        "sessions"]}
+
+    assert rows == {
+        "s-thread": "手机麦克风没准备好",
+        "s-slug": "what s-slug was asked",
+        "s-plain": "what s-plain was asked",
+        "s-named": "boooob ui",
+    }
