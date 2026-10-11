@@ -21,7 +21,7 @@ final class VoiceAudio {
 
     var bufferFrames: Int { Int(AVAudioSession.sharedInstance().ioBufferDuration * Double(core?.sampleRate ?? 48_000)) }
 
-    /// The microphone had no usable format within a second (a headset switching over, another app holding it).
+    /// The microphone had no usable format within 3 s (a headset switching over, another app holding it).
     struct NotReady: Error {}
 
     init() {
@@ -44,23 +44,28 @@ final class VoiceAudio {
             VoiceTrace.note("category is \(s.category.rawValue) after setting playAndRecord; setting it again")
             try s.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         }
-        // A fresh engine each time, built on the session as it is now: the one kept from launch was seen on the phone with a 0 Hz
-        // input that never recovered, so every tap failed.
-        engine = AVAudioEngine()
-        let input = engine.inputNode
-        try input.setVoiceProcessingEnabled(true)          // changes the input format: read it only after this
-        // installTap with a 0 Hz or 0-channel format raises an exception Swift cannot catch: wait up to 1 s for the route instead
-        var inFmt = input.outputFormat(forBus: 0)
-        for attempt in 0...10 {
-            let r = s.currentRoute
-            VoiceTrace.note("mic attempt \(attempt): input available \(s.isInputAvailable), \(Int(inFmt.sampleRate)) Hz \(inFmt.channelCount) ch, "
-                + "in \(r.inputs.map { "\($0.portType.rawValue) \($0.portName)" }), out \(r.outputs.map(\.portType.rawValue)), "
-                + "\(s.category.rawValue)/\(s.mode.rawValue)")
-            if s.isInputAvailable && inFmt.sampleRate > 0 && inFmt.channelCount > 0 { break }
-            if attempt == 10 { throw NotReady() }
-            try await Task.sleep(nanoseconds: 100_000_000)
-            inFmt = input.outputFormat(forBus: 0)
+        // A fresh engine each time, built on the session as it is now: one built while the route was still settling (just after
+        // launch, with navigation holding the audio) kept a 0 Hz input that never recovered, so a dead one is built again, 3 tries
+        // of 1 s. installTap with a 0 Hz or 0-channel format raises an exception Swift cannot catch, hence the wait.
+        var inFmt = AVAudioFormat()
+        ready: for build in 0..<3 {
+            engine = AVAudioEngine()
+            try engine.inputNode.setVoiceProcessingEnabled(true)   // changes the input format: read it only after this
+            for attempt in 0...10 {
+                inFmt = engine.inputNode.outputFormat(forBus: 0)
+                let ok = s.isInputAvailable && inFmt.sampleRate > 0 && inFmt.channelCount > 0
+                if ok || attempt == 0 || attempt == 10 {
+                    let r = s.currentRoute
+                    VoiceTrace.note("mic engine \(build) attempt \(attempt): input available \(s.isInputAvailable), \(Int(inFmt.sampleRate)) Hz \(inFmt.channelCount) ch, "
+                        + "in \(r.inputs.map { "\($0.portType.rawValue) \($0.portName)" }), out \(r.outputs.map(\.portType.rawValue)), "
+                        + "\(s.category.rawValue)/\(s.mode.rawValue)")
+                }
+                if ok { break ready }
+                if attempt < 10 { try await Task.sleep(nanoseconds: 100_000_000) }
+            }
+            if build == 2 { throw NotReady() }
         }
+        let input = engine.inputNode
         let rate = engine.outputNode.outputFormat(forBus: 0).sampleRate
         let fmt = AVAudioFormat(standardFormatWithSampleRate: rate > 0 ? rate : 48_000, channels: 1)!
         let core = PlayerCore(sampleRate: Int(fmt.sampleRate))
