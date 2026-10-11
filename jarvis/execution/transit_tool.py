@@ -849,7 +849,7 @@ def _sensible(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def build_transit_tool(  # noqa: PLR0913 - the key, places, two readers, offers, live.
     api_key: str | None,
-    places: Mapping[str, str],
+    places: Callable[[], Mapping[str, str]],
     here: Callable[[], Mapping[str, Any]] | None = None,
     *,
     phone_here: Callable[[], Mapping[str, Any]] | None = None,
@@ -858,15 +858,16 @@ def build_transit_tool(  # noqa: PLR0913 - the key, places, two readers, offers,
 ) -> tuple[Tool, ...]:
     """``transit`` over Google Routes; none without a key.
 
-    ``places`` maps ``home`` and ``school`` to an address or ``lat,lng``; a missing one makes
-    that word a tool error rather than a guess. ``here`` reads this Mac's location when asked
-    (ADR 0194) and ``phone_here`` the phone's last report (ADR 0198), whose age the result then
-    says; with both, a turn a phone opened gets the phone's (ADR 0212), and the description says
-    so. A failed read is a tool error telling the model to ask where the user is. ``offers``
-    is where each answer leaves its options for the chat card (ADR 0205); the runtime shares
-    it with the routes that pin them. ``bus_live`` is BC Transit's live departure of a route at
-    a stop near ``(lat, lng)`` around an epoch ms (the runtime wires it, as it does ``here``);
-    when it answers, a named route's ``departs`` and ``spare_min`` use it.
+    ``places`` reads, at each call, the kept ``home`` and ``school`` as an address or ``lat,lng``
+    (ADR 0234); a missing one makes that word a tool error rather than a guess. ``here`` reads
+    this Mac's location when asked (ADR 0194) and ``phone_here`` the phone's last report
+    (ADR 0198), whose age the result then says; with both, a turn a phone opened gets the
+    phone's (ADR 0212), and the description says so. A failed read is a tool error telling the
+    model to ask where the user is. ``offers`` is where each answer leaves its options for the
+    chat card (ADR 0205); the runtime shares it with the routes that pin them. ``bus_live`` is
+    BC Transit's live departure of a route at a stop near ``(lat, lng)`` around an epoch ms (the
+    runtime wires it, as it does ``here``); when it answers, a named route's ``departs`` and
+    ``spare_min`` use it.
     """
     if not api_key:
         return ()
@@ -877,14 +878,15 @@ def build_transit_tool(  # noqa: PLR0913 - the key, places, two readers, offers,
         if not origin.strip() or not destination.strip():
             msg = "origin and destination are both required"
             raise ToolError(msg, code="invalid_argument")
-        start, start_label = _waypoint(origin, places, here, phone_here, ctx)
-        end, end_label = _waypoint(destination, places, here, phone_here, ctx)
+        saved = places()
+        start, start_label = _waypoint(origin, saved, here, phone_here, ctx)
+        end, end_label = _waypoint(destination, saved, here, phone_here, ctx)
         now = _now()
         wanted = re.sub(r"[^0-9A-Za-z]", "", str(args.get("route") or ""))
         try:
             answer, options, hits, modes = _search(api_key, start, end, args, wanted, now)
         except ToolError as exc:
-            retry = _with_city(end, places) if exc.code == "not_found" else None
+            retry = _with_city(end, saved) if exc.code == "not_found" else None
             if retry is None:
                 raise
             end = retry

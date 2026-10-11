@@ -128,7 +128,7 @@ class _World:
         self.local_now = NOW
         self.registry = build_default_registry(
             transit_api_key="not-a-key",
-            transit_places={"home": "48.48,-123.38"},
+            transit_places=lambda: {"home": "48.48,-123.38"},
             transit_offers=self.offers,
         )
         self.lifecycle = ActionLifecycle()
@@ -306,7 +306,7 @@ def test_the_tool_refuses_a_past_leave_time_and_a_bus_before_it(world: _World) -
 
 def test_the_tool_is_quiet_and_model_only() -> None:
     """The tool is quiet and model only."""
-    registry = build_default_registry(transit_api_key="not-a-key", transit_places={})
+    registry = build_default_registry(transit_api_key="not-a-key", transit_places=dict)
     (definition,) = (d for d in registry.get_definitions() if d.name == "pin_departure")
     assert definition.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
     assert definition.risk_level == "L1"
@@ -548,7 +548,7 @@ def test_a_stale_offer_or_row_pins_nothing(world: _World) -> None:
 
 def test_the_description_no_longer_asks_to_pin() -> None:
     """The card offers the pin; the model pins only when he asks by voice."""
-    registry = build_default_registry(transit_api_key="not-a-key", transit_places={})
+    registry = build_default_registry(transit_api_key="not-a-key", transit_places=dict)
     descriptions = {d.name: d.description for d in registry.get_definitions()}
     assert "ask him" not in descriptions["transit"]
     assert "Do not ask whether to pin" in descriptions["transit"]

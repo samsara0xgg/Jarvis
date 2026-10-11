@@ -10,12 +10,14 @@ registrations (ADR 0210), and the phone's latest place report (ADR 0197). Nothin
 at the Mac is the moment's (ADR 0161); :meth:`Whereabouts.at_mac` reads it for the card routing of
 ADR 0218, off the turn.
 
-Facts only: what she makes of them is hers.
+Facts only: what she makes of them is hers. One line is a note to her, shown once per spot: the
+unnamed spot he keeps going back to, when his phone puts him in it (ADR 0234).
 """
 
 from __future__ import annotations
 
 import contextlib
+import logging
 import socket
 import sys
 import time
@@ -23,18 +25,28 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from jarvis.execution.location_tool import describe_age
-from jarvis.state import device_tokens, push_tokens, terminal_tools
+from jarvis.state import device_tokens, places, push_tokens, terminal_tools
 from jarvis.state.event_log import MAC_NODE, turn_origin
 from jarvis.state.phone_location import latest_phone_fix
 
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable
+    from datetime import tzinfo
 
     from jarvis.runtime.moment import Moment
     from jarvis.surface.terminal_link import TerminalHub
 
+LOGGER = logging.getLogger(__name__)
+
 WHERE_PREFIX: Final = "Where you run:"
+ASK_FIX_MAX_AGE_MS: Final = 15 * 60_000
+"""How fresh the phone's fix must be for him to count as at a spot."""
+ASK_PLACE_LINE: Final = (
+    "[Place] He is at a spot he has been to on {n} days in the last 4 weeks (last {date}). "
+    "It has no name. If the moment suits, you may ask him once, in passing, what it is. "
+    "This note is not shown again."
+)
 
 
 def _host() -> str:
@@ -49,11 +61,20 @@ def _host() -> str:
 class Whereabouts:
     """The host's one reading of "now"; every method is safe to call from any thread."""
 
-    def __init__(self, root: Path, hub: TerminalHub | None, moment: Moment | None) -> None:
-        """``hub`` is the brain's terminal table (``None`` on a Mac running alone)."""
+    def __init__(
+        self, root: Path, hub: TerminalHub | None, moment: Moment | None,
+        *, memory_db: Path | None = None, zone: tzinfo | None = None,
+    ) -> None:
+        """``hub`` is the brain's terminal table (``None`` on a Mac running alone).
+
+        ``memory_db`` and ``zone`` (the one days are cut in) let :meth:`lines` tell her of a spot
+        to ask about; without them it never does.
+        """
         self._root = root
         self._hub = hub
         self._moment = moment
+        self._memory_db = memory_db
+        self._zone = zone
         self._host = _host() if hub is not None else ""
         # Wired by the daemon: whether a device has its ``/phone/ws`` socket open now (ADR 0209).
         self.phone_open: Callable[[str], bool] = lambda _device: False
@@ -67,7 +88,10 @@ class Whereabouts:
         return self._moment is not None and self._moment.facts().get("presence") == "active"
 
     def lines(self, conn: sqlite3.Connection) -> tuple[str, ...]:
-        """This turn's lines for the state block: the devices there are and the phone's place."""
+        """This turn's lines for the state block: the devices there are and the phone's place.
+
+        A spot he keeps going back to adds its note, once (ADR 0234).
+        """
         terminals = self._terminals()
         paired = [name for name, _ in device_tokens.paired_devices(self._root)]
         kind = self._kind(terminals)
@@ -75,6 +99,7 @@ class Whereabouts:
             self._devices_line([*terminals, *(n for n in paired if n not in terminals)], kind,
                                terminals),
             self._place_line(conn),
+            self._ask_line(conn),
         ]
         return tuple(line for line in found if line)
 
@@ -149,3 +174,20 @@ class Whereabouts:
         if fix.left:
             return f"His phone last reported him leaving {fix.place}, {age} ago."
         return f"His phone last put him at {fix.place}, {age} ago."
+
+    def _ask_line(self, conn: sqlite3.Connection) -> str | None:
+        """The note about an unnamed spot he is at now, once; it never fails the other lines."""
+        if self._memory_db is None or self._zone is None:
+            return None
+        try:
+            fix = latest_phone_fix(conn)
+            now_ms = int(self.clock() * 1000)
+            if fix is None or fix.left or now_ms - fix.at_ms > ASK_FIX_MAX_AGE_MS:
+                return None
+            spot = places.ask_once(self._memory_db, conn, (fix.lat, fix.lng), now_ms, self._zone)
+        except Exception:  # the other lines are worth more than this one.
+            LOGGER.exception("whereabouts: the unnamed-spot note failed, skipped")
+            return None
+        if spot is None:
+            return None
+        return ASK_PLACE_LINE.format(n=spot.facts.days_28, date=spot.facts.last_visit)

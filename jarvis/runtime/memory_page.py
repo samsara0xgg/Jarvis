@@ -7,11 +7,17 @@ file keeps for the core memory note.
 
 from __future__ import annotations
 
+import time
+from contextlib import closing
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.state import memory_page
+from jarvis.state import memory_page, places
+from jarvis.state.daily_report import resolve_zone
+from jarvis.state.event_log import open_runtime_event_log
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from datetime import tzinfo
     from pathlib import Path
 
     from jarvis.runtime.settings import Settings
@@ -19,14 +25,30 @@ if TYPE_CHECKING:
 DEFAULT_CAP: Final[int] = 4000
 
 
+def _written(written: places.Written) -> dict[str, Any]:
+    """A place write as the page reads it: the place and the change that holds it."""
+    place = places.place_view(written.place, None)
+    return {"ok": True, "place": place, "change": written.change_id}
+
+
 class MemoryPage:
     """The routes' callables, each blocking; the server runs them off the loop."""
 
-    def __init__(self, path: Path, settings: Settings | None, *, history_since: str) -> None:
-        """Bind the store, the Settings file and the ISO time the history starts at."""
+    def __init__(
+        self, path: Path, settings: Settings | None, *, history_since: str,
+        event_log: Path | None = None, zone: tzinfo | None = None,
+    ) -> None:
+        """Bind the store, the Settings file and the ISO time the history starts at.
+
+        ``event_log`` (his phone's stays) and ``zone`` (the one days are cut in) give the places
+        their facts (ADR 0234); without a log they have none.
+        """
         self._path = path
         self._settings = settings
         self._since = history_since
+        self._event_log = event_log
+        self._zone = zone or resolve_zone(None, None)[1]
+        self.clock: Callable[[], float] = time.time
 
     def _cap(self) -> tuple[int, int]:
         return self._settings.core_memory_cap() if self._settings else (DEFAULT_CAP, DEFAULT_CAP)
@@ -102,3 +124,29 @@ class MemoryPage:
     ) -> dict[str, Any]:
         """One day's conversation, a page at a time."""
         return memory_page.day_records(self._path, day, around=around, offset=offset, limit=limit)
+
+    def places(self) -> dict[str, Any]:
+        """The places he keeps with their facts, and the latest changes (ADR 0234)."""
+        now = int(self.clock() * 1000)
+        seen = []
+        if self._event_log is not None:
+            with closing(open_runtime_event_log(self._event_log)) as conn:
+                seen = places.read_stays(conn, now, self._zone)
+        return places.overview(self._path, seen, now, self._zone)
+
+    def place_edit(
+        self, place_id: str, name: str | None, role: str | None, *, forget: bool,
+    ) -> dict[str, Any]:
+        """Rename a kept place, change its role, or forget it; ValueError names a refusal."""
+        if forget:
+            if name is not None or role is not None:
+                msg = "forget takes nothing else"
+                raise ValueError(msg)
+            written = places.forget(self._path, place_id, origin="page")
+        else:
+            written = places.edit(self._path, place_id, name=name, role=role, origin="page")
+        return _written(written)
+
+    def place_undo(self, change_id: str) -> dict[str, Any]:
+        """Take back one place change; refused when a later one touched the same place."""
+        return _written(places.undo(self._path, change_id, origin="page"))

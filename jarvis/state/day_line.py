@@ -9,7 +9,8 @@ Each source folds on its own and a source that raises leaves its items out (:fun
 
 - ``phone``: stays from ``phone.visit_observed``, moves from ``phone.motion_observed`` and sleep
   from ``phone.health_observed`` (ADR 0197), read in one query from two days before the window and
-  folded by :mod:`jarvis.state.phone_day`, whose rules the ledger counts by too;
+  folded by :mod:`jarvis.state.phone_day`, whose rules the ledger counts by too; a stay inside a
+  place he keeps (ADR 0234) also carries it as ``kept_place``;
 - ``reminders``: the fold of ADR 0179;
 - ``rides``: the bus rides he was on (ADR 0224); one replaces the phone's generic automotive
   ``move`` for the span it covers;
@@ -42,7 +43,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.state import departures, picture_notes, reminders, timesink
+from jarvis.state import departures, picture_notes, places, reminders, timesink
 from jarvis.state import rides as ride_state
 from jarvis.state.attachments import Attachments
 from jarvis.state.ledger import CALL_FLOOR_S, TOP_FLOOR_S, window_activity
@@ -160,7 +161,7 @@ def fold_day(
     are not items but the day's ``labels``.
     """
     folds: tuple[tuple[str, Source], ...] = (
-        ("phone", _phone_items),
+        ("phone", lambda db, first, last, now: _phone_items(db, sources, first, last, now)),
         ("reminders", _reminder_items),
         ("rides", _ride_items),
         ("mac", lambda _conn, first, last, now: _mac_items(sources, first, last, now)),
@@ -552,14 +553,21 @@ def _picture_items(
 
 
 def _phone_items(
-    conn: sqlite3.Connection, window_start: int, window_end: int, now_ms: int,
+    conn: sqlite3.Connection, sources: DaySources, window_start: int, window_end: int, now_ms: int,
 ) -> list[dict[str, Any]]:
-    """Stays, moves and sleep: one read of the phone's rows, folded by kind."""
+    """Stays, moves and sleep: one read of the phone's rows, folded by kind.
+
+    A stay inside a place he keeps carries it as ``kept_place`` (ADR 0234).
+    """
     rows = read_rows(conn, window_start - LOOKBACK_MS)
     held = stays(rows.visits)
+    kept = [] if sources.memory_db is None else places.read_kept(sources.memory_db)
     spans = [*held, *phone_moves(rows.motions, held, now_ms), *sleeps(rows.health)]
-    return [
-        {
+    items: list[dict[str, Any]] = []
+    for span in spans:
+        if not _overlaps(span.start, span.end, window_start, window_end):
+            continue
+        item = {
             "id": span.origin[1],
             "lane": "you",
             "kind": span.kind,
@@ -568,6 +576,9 @@ def _phone_items(
             "state": _state(span.start, span.end, now_ms),
             **span.fields,
         }
-        for span in spans
-        if _overlaps(span.start, span.end, window_start, window_end)
-    ]
+        if span.kind == "stay" and (
+            inside := places.containing(kept, span.fields["lat"], span.fields["lng"])
+        ):
+            item["kept_place"] = {"id": inside.id, "name": inside.name, "role": inside.role}
+        items.append(item)
+    return items

@@ -31,6 +31,7 @@ from jarvis.decision.day_prose import (
 )
 from jarvis.decision.llm import failure_reason
 from jarvis.shared import lang
+from jarvis.state import places
 from jarvis.state.day_line import DayLine, DaySources, day_window, fold_day
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.ledger import (
@@ -179,6 +180,7 @@ class LedgerContext:
             with self._lock:  # the warm thread and the turn share one computation
                 key = (
                     today, day_end, notes_stamp(self.sources),
+                    places.stamp(self.sources.memory_db),  # the stays are named by his places
                     phone_stamp(
                         self.sources, midnight,
                         days=self.settings.full_days + self.settings.compact_days,

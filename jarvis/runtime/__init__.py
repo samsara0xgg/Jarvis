@@ -219,6 +219,7 @@ from jarvis.shared.realtime_trace import (
 )
 from jarvis.state import device_reads
 from jarvis.state import picture_notes as note_records
+from jarvis.state import places as place_state
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME, Attachments, marker
 from jarvis.state.authorized_dispatch_outbox import (
     ConfirmationRevalidationError,
@@ -236,6 +237,7 @@ from jarvis.state.event_log import (
 from jarvis.state.ledger import LedgerSources, TerminalScreen
 from jarvis.state.memory_db import (
     MemorySettings,
+    PlacesBlock,
     SessionSettings,
     append_record,
     open_memory_db,
@@ -719,6 +721,8 @@ class JarvisRuntime:
     # ADR 0201: the day, week and job-hunt blocks of the prompt, from his own data. None = off
     # (no ``ledger:`` block, or no memory store).
     ledger: LedgerContext | None = None
+    # ADR 0234: the ``[Places he keeps]`` block after ``[About the user]``. None = hand-assembled.
+    places_block: PlacesBlock | None = None
     # ADR 0156: where sound would come out now, for the notices' ``audio_private`` and the job
     # mail; on a brain (ADR 0170) the output of the terminal that plays.
     sound_output: Callable[..., dict[str, Any]] = audio_output.current_output
@@ -1439,9 +1443,11 @@ def _here_location(role: str) -> Callable[[], dict[str, Any]] | None:
 
 
 def _transit_places(config: Mapping[str, Any]) -> dict[str, str]:
-    """``transit.home`` and ``transit.school`` (an address or ``lat,lng``) for the `transit` tool.
+    """``transit.home`` and ``transit.school`` (an address or ``lat,lng``), read once at boot.
 
-    An unset ``home`` falls back to the ``home.weather`` latitude and longitude (ADR 0189).
+    They are copied into the places table by :func:`jarvis.state.places.migrate_settings`
+    (ADR 0234); after that the table is where `transit` and the rides read them. An unset
+    ``home`` falls back to the ``home.weather`` latitude and longitude (ADR 0189).
     """
     block = config.get("transit")
     saved = block if isinstance(block, Mapping) else {}
@@ -1520,6 +1526,18 @@ def _turn_device(runtime: JarvisRuntime, turn_id: str) -> str | None:
     except Exception:  # a producer must never fail a turn.
         LOGGER.exception("live context: the turn's device could not be read, skipped")
         return None
+
+
+def _places_block(
+    memory_db: Path, event_log: Path, zone: tzinfo, now: datetime,
+) -> str:
+    """ADR 0234: the ``[Places he keeps]`` block of the system prompt; never fails the turn."""
+    try:
+        with contextlib.closing(open_runtime_event_log(event_log)) as conn:
+            return place_state.prompt_block(memory_db, conn, int(now.timestamp() * 1000), zone)
+    except Exception:  # a prompt block must never fail a turn.
+        LOGGER.exception("places: the prompt block failed, left out")
+        return ""
 
 
 def _whereabouts_lines(runtime: JarvisRuntime) -> tuple[str, ...]:
@@ -2765,6 +2783,10 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     moment = _moment(full_config, config_path, memory.db_path, device)
     # ADR 0068: refuse a memory.db a newer Jarvis wrote before anything writes to it.
     open_memory_db(memory.db_path).close()
+    local_zone = resolve_zone(None, _work_state_timezone(full_config))[1]
+    # ADR 0234: home and school move out of the settings into the places table, once.
+    place_state.migrate_settings(memory.db_path, _transit_places(full_config))
+    kept_places = partial(place_state.home_school, memory.db_path)
     session = SessionSettings.from_config(full_config.get("session"))
     work_state = WorkStateService(
         event_log_path=paths.event_log,
@@ -2844,8 +2866,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         pricing_path=repo_root / "data" / "pricing.json",
         account_cost=wave1_features.exactly_once_cost_accounting,
     )
-    rides = Rides(paths.event_log, bus_live, places=_transit_places(full_config),
-                  offers=transit_offers)  # ADR 0224
+    rides = Rides(paths.event_log, bus_live, places=kept_places, offers=transit_offers)  # ADR 0224
     registry = build_default_registry(
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
@@ -2856,13 +2877,14 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         voice_settings=voice_settings,
         weather_lookup=weather_lookup(_home_weather(full_config)),
         transit_api_key=os.environ.get("GOOGLE_MAPS_API_KEY", "").strip(),
-        transit_places=_transit_places(full_config),
+        transit_places=kept_places,
         transit_offers=transit_offers,
         here_location=_here_location(role),
         here_phone=partial(_phone_here, paths.event_log),
         bus_live=_live_departure(bus_live),
         ride_control=rides.control(),
         highlight_marker=_highlight_marks(full_config, memory, paths, device).mark,
+        local_zone=local_zone,
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
@@ -3091,7 +3113,9 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         job_mail=job_mail,
         moment=moment,
         push=Push.from_config(full_config, paths.root, paths.event_log),
-        whereabouts=Whereabouts(paths.root, terminal_hub, moment),
+        whereabouts=Whereabouts(
+            paths.root, terminal_hub, moment, memory_db=memory.db_path, zone=local_zone,
+        ),
         reminders=reminders,
         rides=rides,
         voice_words=_voice_words(full_config, config_path, jev_log),
@@ -3108,6 +3132,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         voice_settings=voice_settings,
         daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config, terminal_hub),
         ledger=_ledger(full_config, memory, paths.event_log, device, attachments.directory),
+        places_block=partial(_places_block, memory.db_path, paths.event_log, local_zone),
         sound_output=output,
     )
 
@@ -3152,6 +3177,7 @@ def _warm_next_prefix(  # noqa: PLR0913 — the next turn's request: client, pro
                 context=runtime.session.context,
                 raw_max_chars=runtime.session.context_raw_max_chars,
                 ledger=runtime.ledger,
+                places=runtime.places_block,
             ).history
             with contextlib.closing(
                 open_runtime_event_log(runtime.runtime_paths.event_log),
@@ -4313,6 +4339,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             context=runtime.session.context,
             raw_max_chars=runtime.session.context_raw_max_chars,
             ledger=runtime.ledger,
+            places=runtime.places_block,
         )
         if memory is not None
         else None

@@ -60,6 +60,9 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     "jarvis/execution/path_resolver.py": frozenset({"_TRAILING_NOUN_RE", "_CONNECTIVE_CHAR"}),
     # The ask card (ADR 0066) refuses fields whose model-written labels ask for a secret.
     "jarvis/execution/tools.py": frozenset({"_ASK_SECRET_RE"}),
+    # `save_place`'s description (ADR 0234) names a Chinese sentence as an example of what Allen
+    # says when he names a place.
+    "jarvis/execution/place_tools.py": frozenset({"SAVE_DESCRIPTION"}),
     # Typlus's polish prompt (ADR 0058) names the Chinese phantoms the recognizer emits
     # and Chinese dictations that must not be answered, as the words the model will read.
     "jarvis/runtime/dictation.py": frozenset({"POLISH_PROMPT", "COMMAND_PROMPT"}),

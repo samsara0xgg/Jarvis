@@ -361,7 +361,7 @@ def test_a_mac_running_alone_keeps_the_wording_of_adr_0194() -> None:
     """Without the phone flag the description and the label are the Mac's, as before."""
     fix = {"lat": 48.46, "lng": -123.31, "accuracy_m": 40.4, "place": "Ring Rd, Saanich"}
     registry = build_default_registry(
-        transit_api_key="k", transit_places={}, here_location=lambda: fix,
+        transit_api_key="k", transit_places=dict, here_location=lambda: fix,
     )
     where = next(d for d in registry.get_definitions() if d.name == "where_am_i")
     transit = next(d for d in registry.get_definitions() if d.name == "transit")
@@ -404,8 +404,8 @@ def _open_turn(conn: sqlite3.Connection, turn_id: str, opening: Opening) -> None
 def _both(log: Path) -> Any:  # noqa: ANN401
     """The registry of a Mac that also hears a phone: both readers, as the runtime wires them."""
     registry = build_default_registry(
-        transit_api_key="test-key-not-real", transit_places={}, here_location=lambda: dict(MAC_FIX),
-        here_phone=partial(_phone_here, log),
+        transit_api_key="test-key-not-real", transit_places=dict,
+        here_location=lambda: dict(MAC_FIX), here_phone=partial(_phone_here, log),
     )
     return {d.name: d for d in registry.get_definitions()}
 
@@ -555,7 +555,7 @@ def test_the_descriptions_name_the_sources_the_host_has(tmp_path: Path) -> None:
         assert "this Mac" in text
         assert "500 m" in text
     phone_only = build_default_registry(
-        transit_api_key="k", transit_places={}, here_phone=partial(_phone_here, log),
+        transit_api_key="k", transit_places=dict, here_phone=partial(_phone_here, log),
     )
     for definition in phone_only.get_definitions():
         if definition.name in {"where_am_i", "transit"}:

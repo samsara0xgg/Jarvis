@@ -13,7 +13,8 @@ once count once). A working day starts at the first run of activity that ends af
 at the last run that begins before 05:00 the next morning; a run is activity separated from the next
 by less than four hours. The phone's numbers are cut at the local midnight like the active time,
 and a night's sleep belongs to the day he woke; its stays and sleep are folded by
-:mod:`jarvis.state.phone_day`, the rules the day line (ADR 0199) serves. Only the day's "The day"
+:mod:`jarvis.state.phone_day`, the rules the day line (ADR 0199) serves; a stay inside a place he
+keeps is named by it (ADR 0234), any other by the phone's string. Only the day's "The day"
 prose line, which the decision layer writes once a night from these numbers, is model-made
 (ADR 0201).
 """
@@ -35,7 +36,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 from urllib.parse import parse_qsl, urlsplit
 
-from jarvis.state import device_reads, phone_day, reminders, timesink
+from jarvis.state import device_reads, phone_day, places, reminders, timesink
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
 
@@ -352,6 +353,12 @@ def _health_totals(events: Iterable[Event], metric: str) -> list[tuple[int, int,
     return [(start, end, value) for (start, end), value in latest.items()]
 
 
+def _stay_name(fields: dict[str, Any], held: list[places.Place]) -> str:
+    """The place a stay is named by: the one he keeps that holds it (ADR 0234), else the phone's."""
+    kept = places.containing(held, fields["lat"], fields["lng"])
+    return kept.name if kept else " ".join(str(fields.get("place", "")).split())
+
+
 class _Phone:
     """The phone's days: stays, sleep, steps and workouts folded once, read by local day."""
 
@@ -375,13 +382,16 @@ class _Phone:
                 rows = phone_day.read_rows(
                     conn, int(since.timestamp() * 1000) - phone_day.LOOKBACK_MS,
                 )
-            found._fold(src.zone, rows, as_of)
+            found._fold(src.zone, rows, as_of, places.read_kept(src.memory_db))
         except Exception:
             LOGGER.exception("ledger: the phone rows could not be read; the text goes without them")
             return cls()
         return found
 
-    def _fold(self, zone: tzinfo, rows: phone_day.PhoneRows, as_of: datetime) -> None:
+    def _fold(
+        self, zone: tzinfo, rows: phone_day.PhoneRows, as_of: datetime,
+        held: list[places.Place],
+    ) -> None:
         def moment(ms: float) -> datetime:
             return datetime.fromtimestamp(ms / 1000, zone)
 
@@ -392,7 +402,7 @@ class _Phone:
                     (moment(block.start), up, float(block.fields["minutes"])),
                 )
         for stay in phone_day.stays(rows.visits):
-            place = " ".join(str(stay.fields.get("place", "")).split())
+            place = _stay_name(stay.fields, held)
             left = as_of if stay.end is None else min(moment(stay.end), as_of)
             if place and moment(stay.start) < left:
                 for day, begin, stop in _slices(moment(stay.start), left, zone):

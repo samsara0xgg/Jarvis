@@ -184,7 +184,8 @@ class World:
         )
         self.offers = TransitOffers()
         self.rides = Rides(
-            self.paths.event_log, self.live, places={"home": "48.5,-123.4"}, offers=self.offers,
+            self.paths.event_log, self.live, places=lambda: {"home": "48.5,-123.4"},
+            offers=self.offers,
         )
         self.rides.now = lambda: datetime.fromtimestamp(self.clock_ms / 1000, UTC)
         self.rides.defer = lambda call: call()

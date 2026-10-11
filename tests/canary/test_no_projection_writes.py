@@ -69,6 +69,9 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # ADR 0146: the versions of the user's core memory, derived from records and
     # `remember` calls, appended by their one L2 owner.
     "jarvis/state/core_memory.py": frozenset({"core_memory"}),
+    # ADR 0234: the places he keeps (the view), their versions and the spots already asked
+    # about, in memory.db; each write appends a change and updates the view in one transaction.
+    "jarvis/state/places.py": frozenset({"places", "place_changes", "place_prompts"}),
     # ADR 0019: which Codex threads this daemon opened (parent action, child
     # thread, open|closed). Topology, not a projection of events.
     "jarvis/state/worker_edges.py": frozenset({"worker_edges"}),
@@ -102,6 +105,8 @@ _L2_OPERATIONAL_UPDATES: dict[str, frozenset[str]] = {
     "jarvis/state/input_submission_inbox.py": frozenset({"input_submission_receipts"}),
     # ADR 0019: an edge moves from open to closed exactly once.
     "jarvis/state/worker_edges.py": frozenset({"worker_edges"}),
+    # ADR 0234: a kept place is renamed or re-roled in the view; the change log keeps the old one.
+    "jarvis/state/places.py": frozenset({"places"}),
     # ADR 0155: a mail is retyped or hidden, an alert moves pending -> shown -> done, and a
     # decision's delivery and feedback are filled in as they happen; an application row is edited
     # by Allen (ADR 0177).
@@ -126,6 +131,8 @@ _L2_OPERATIONAL_DELETES: dict[str, str] = {
     "jarvis/state/picture_notes.py": (
         "DELETE FROM records WHERE source = ? AND id NOT IN (SELECT upto_record_id FROM summaries)"
     ),
+    # ADR 0234: forgetting a place takes it out of the view; place_changes keeps what it was.
+    "jarvis/state/places.py": "DELETE FROM places WHERE id = ?",
 }
 
 

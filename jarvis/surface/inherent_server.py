@@ -439,6 +439,17 @@ class MemoryRoutes(Protocol):
     ) -> dict[str, Any]:
         """One day's conversation, a page at a time."""
 
+    def places(self) -> dict[str, Any]:
+        """The places he keeps with their facts, and the latest changes (ADR 0234)."""
+
+    def place_edit(
+        self, place_id: str, name: str | None, role: str | None, *, forget: bool,
+    ) -> dict[str, Any]:
+        """Rename a kept place, change its role, or forget it."""
+
+    def place_undo(self, change_id: str) -> dict[str, Any]:
+        """Take back one place change."""
+
 
 class NightRoutes(Protocol):
     """ADR 0093 night run (``jarvis.runtime.night_run.NightRun``); every call may block briefly."""
@@ -1446,6 +1457,20 @@ class MemoryCapRequest(BaseModel):
     max_chars: int
 
 
+class MemoryPlaceRequest(BaseModel):
+    """Body of ``POST /inherent/memory/places/{id}`` (ADR 0234): a new name, role, or ``forget``."""
+
+    name: str | None = Field(default=None, max_length=80)
+    role: str | None = Field(default=None, max_length=20)
+    forget: bool = False
+
+
+class MemoryPlaceUndoRequest(BaseModel):
+    """Body of ``POST /inherent/memory/places/undo``: the change to take back."""
+
+    change_id: str = Field(min_length=1, max_length=80)
+
+
 class MemoryDayEditRequest(BaseModel):
     """Body of ``POST /inherent/memory/day/edit``: the lines under each heading of one day."""
 
@@ -1565,6 +1590,23 @@ def _register_memory_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: 
     async def memory_cap(req: MemoryCapRequest) -> dict[str, Any]:
         """Save the note's character cap in settings; the nightly gate reads it at the next boot."""
         return await _memory_call(functools.partial(page.set_cap, req.max_chars))
+
+    @app.get("/inherent/memory/places")
+    async def memory_places() -> dict[str, Any]:
+        """The places he keeps with their facts, and the latest changes (ADR 0234)."""
+        return await _memory_call(page.places)
+
+    @app.post("/inherent/memory/places/undo", status_code=200)
+    async def memory_places_undo(req: MemoryPlaceUndoRequest) -> dict[str, Any]:
+        """Take back a place change; 409 when a later one touched the same place."""
+        return await _memory_call(functools.partial(page.place_undo, req.change_id))
+
+    @app.post("/inherent/memory/places/{place_id}", status_code=200)
+    async def memory_place(place_id: str, req: MemoryPlaceRequest) -> dict[str, Any]:
+        """Rename a kept place, change its role, or forget it."""
+        return await _memory_call(
+            functools.partial(page.place_edit, place_id, req.name, req.role, forget=req.forget),
+        )
 
     @app.get("/inherent/memory/search")
     async def memory_search(

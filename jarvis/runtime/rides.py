@@ -144,17 +144,18 @@ class Rides:
         event_log: Path,
         live: BusLive | None = None,
         *,
-        places: Mapping[str, str] | None = None,
+        places: Callable[[], Mapping[str, str]] | None = None,
         offers: TransitOffers | None = None,
     ) -> None:
         """``live`` is BC Transit's feeds (without it a ride is only what he declares).
 
-        ``places`` is the saved ``home`` and ``school`` as ``lat,lng`` and ``offers`` what the
-        last ``transit`` answer said about where his bus lets him off; both only help find his stop.
+        ``places`` reads the kept ``home`` and ``school`` as ``lat,lng`` at each use (ADR 0234) and
+        ``offers`` is what the last ``transit`` answer said about where his bus lets him off; both
+        only help find his stop.
         """
         self._path = event_log
         self.live = live
-        self._places = places or {}
+        self._places: Callable[[], Mapping[str, str]] = places or dict
         self._offers = offers
         self.now: Callable[[], datetime] = lambda: datetime.now(UTC)
         # Wired by the daemon (ADR 0210); until then nothing is pushed.
@@ -480,7 +481,7 @@ class Rides:
 
     def _place(self, conn: sqlite3.Connection, words: str) -> tuple[float, float] | None:
         """A named place's position: his saved places, else somewhere his phone put him by name."""
-        saved = self._places.get(words.strip().casefold())
+        saved = self._places().get(words.strip().casefold())
         if saved:
             lat, _, lng = saved.partition(",")
             with contextlib.suppress(ValueError):

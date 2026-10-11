@@ -2,8 +2,9 @@
 
 One standalone SQLite file (``memory.db``), deliberately separate from the
 runtime Event Log so the runtime can be rewritten without touching it.
-Append-only: rows are never updated or deleted. The user's lasting facts are
-``core_memory`` versions (ADR 0146); the legacy ``profile`` table is read once, to
+Append-only: rows are never updated or deleted, except ``places`` (ADR 0234), the current
+view of the places he keeps beside its append-only ``place_changes`` log. The user's lasting
+facts are ``core_memory`` versions (ADR 0146); the legacy ``profile`` table is read once, to
 migrate it into the first version. Every writer opens its own
 short-lived connection, so callers on any thread can write without sharing
 state.
@@ -104,13 +105,42 @@ CREATE TABLE IF NOT EXISTS core_memory (
     changes  TEXT NOT NULL,
     chars    INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS places (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    role       TEXT NOT NULL,
+    lat        REAL,
+    lng        REAL,
+    radius_m   INTEGER NOT NULL,
+    address    TEXT,
+    origin     TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS place_changes (
+    id       TEXT PRIMARY KEY,
+    ts       TEXT NOT NULL,
+    origin   TEXT NOT NULL,
+    op       TEXT NOT NULL,
+    place_id TEXT NOT NULL,
+    before   TEXT,
+    after    TEXT
+);
+CREATE INDEX IF NOT EXISTS place_changes_place ON place_changes (place_id);
+CREATE TABLE IF NOT EXISTS place_prompts (
+    id       TEXT PRIMARY KEY,
+    lat      REAL NOT NULL,
+    lng      REAL NOT NULL,
+    shown_at TEXT NOT NULL
+);
 """
 
 # ``PRAGMA user_version`` (ADR 0068). 0 is a file from before the stamp, same
 # schema as 1; a file above this was written by a newer Jarvis and is refused.
-# ``sent``, ``day_summaries``, ``core_memory`` and ``day_highlight_marks`` are additive: an older
-# opener ignores them, so they need no new version. So are the ``day_prose`` columns ``line``,
-# ``highlights`` and ``draft`` (ADR 0235), which :func:`open_memory_db` adds to a table made before.
+# ``sent``, ``day_summaries``, ``core_memory``, ``day_highlight_marks`` and the places tables
+# (ADR 0234) are additive: an older opener ignores them, so they need no new version. So are the
+# ``day_prose`` columns ``line``, ``highlights`` and ``draft`` (ADR 0235), which
+# :func:`open_memory_db` adds to a table made before.
 SCHEMA_VERSION: Final[int] = 1
 DEFAULT_SEARCH_LIMIT: Final[int] = 20
 # ``session.context`` value for ADR 0149's history layout; anything else is the rolling summary.
@@ -252,6 +282,8 @@ class SessionSettings:
 # ADR 0201: (now, the last record's time) -> (the text that follows the core memory, the text that
 # follows the time line).
 Ledger = Callable[[datetime, datetime | None], tuple[str, str]]
+# ADR 0234: now -> the ``[Places he keeps]`` block, "" when none is kept.
+PlacesBlock = Callable[[datetime], str]
 
 
 class MemoryContext(NamedTuple):
@@ -714,7 +746,7 @@ def _append_records(
 def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
     path: Path, *, exclude_id: str, since: str = "", now: datetime | None = None,
     recent: int = 0, context: str = "rolling", raw_max_chars: int = 40000,
-    ledger: Ledger | None = None,
+    ledger: Ledger | None = None, places: PlacesBlock | None = None,
 ) -> MemoryContext:
     """Render the decision-path prompt blocks in one consistent read.
 
@@ -742,6 +774,9 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
     ``ledger`` (ADR 0201) is asked, with the same ``now`` and the time of the last record, for
     the text that follows the core memory in ``profile`` and the text that follows the time line
     in ``now``.
+
+    ``places`` (ADR 0234) is asked for the ``[Places he keeps]`` block, which follows the core
+    memory ahead of the ledger's text.
     """
     moment = now or local_now()
     with closing(open_memory_db(path)) as conn:
@@ -764,6 +799,9 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
             "SELECT ts FROM records WHERE id != ? ORDER BY rowid DESC LIMIT 1", (exclude_id,),
         ).fetchone()
     profile_block = "\n".join(["[About the user]", *profile]) if profile else ""
+    profile_block = "\n\n".join(
+        part for part in (profile_block, "" if places is None else places(moment)) if part
+    )
     turns: list[dict[str, str]] = []
     if day_head:
         _append_turn(turns, "user", day_head[1])
@@ -1313,6 +1351,7 @@ __all__ = [
     "Ledger",
     "MemoryContext",
     "MemorySettings",
+    "PlacesBlock",
     "Record",
     "SessionSettings",
     "VerbatimStats",

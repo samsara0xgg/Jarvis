@@ -105,7 +105,7 @@ def _call(
     registry = build_default_registry(
         bus_live=bus_live,
         transit_api_key=FAKE_KEY,
-        transit_places=PLACES if places is None else places,
+        transit_places=lambda: PLACES if places is None else places,
         here_location=here,
     )
     (definition,) = (d for d in registry.get_definitions() if d.name == tool)
@@ -190,11 +190,9 @@ def test_any_other_text_goes_to_google_as_an_address_and_now_sends_no_time(
 def test_the_tool_is_gated_on_the_key_and_is_a_quiet_up_front_read_only_model_tool() -> None:
     """No key, no tool; with one it is on the menu up front, L1, no confirmation, no wait line."""
     assert "transit" not in {d.name for d in build_default_registry().get_definitions()}
-    assert "transit" not in {
-        d.name
-        for d in build_default_registry(transit_api_key="", transit_places=PLACES).get_definitions()
-    }
-    registry = build_default_registry(transit_api_key=FAKE_KEY, transit_places=PLACES)
+    keyless = build_default_registry(transit_api_key="", transit_places=lambda: PLACES)
+    assert "transit" not in {d.name for d in keyless.get_definitions()}
+    registry = build_default_registry(transit_api_key=FAKE_KEY, transit_places=lambda: PLACES)
     (definition,) = (d for d in registry.get_definitions() if d.name == "transit")
     assert definition.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
     assert definition.read_only
@@ -283,7 +281,7 @@ def test_here_without_a_reading_is_a_tool_error_that_says_to_ask_and_sends_nothi
 
 def test_the_description_makes_here_the_default_origin() -> None:
     """The model is told the origin is always 'here', never a guessed saved place."""
-    registry = build_default_registry(transit_api_key=FAKE_KEY, transit_places=PLACES)
+    registry = build_default_registry(transit_api_key=FAKE_KEY, transit_places=lambda: PLACES)
     (definition,) = (d for d in registry.get_definitions() if d.name == "transit")
     assert "origin is always 'here'" in definition.description
     assert "never guess his start" in definition.description
@@ -690,7 +688,7 @@ def test_a_saved_place_or_a_second_miss_is_not_retried(monkeypatch: pytest.Monke
 
 def test_the_description_teaches_the_named_bus_and_the_misheard_number() -> None:
     """route, the verdicts, 'one call', no invented target, and speech-recognition mishearing."""
-    registry = build_default_registry(transit_api_key=FAKE_KEY, transit_places=PLACES)
+    registry = build_default_registry(transit_api_key=FAKE_KEY, transit_places=lambda: PLACES)
     (definition,) = (d for d in registry.get_definitions() if d.name == "transit")
     text = definition.description
     needles = (

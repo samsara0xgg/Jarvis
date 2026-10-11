@@ -93,6 +93,7 @@ from jarvis.state.projections import (
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Sequence
+    from datetime import tzinfo
 
     from jarvis.execution.highlight_tool import HighlightMarker
     from jarvis.execution.mail_draft_tool import DraftStore
@@ -4065,13 +4066,14 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
     device_link: DeviceLink | None = None,
     weather_lookup: Callable[[], Mapping[str, Any]] | None = None,
     transit_api_key: str | None = None,
-    transit_places: Mapping[str, str] | None = None,
+    transit_places: Callable[[], Mapping[str, str]] | None = None,
     transit_offers: TransitOffers | None = None,
     here_location: Callable[[], Mapping[str, Any]] | None = None,
     here_phone: Callable[[], Mapping[str, Any]] | None = None,
     bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
     ride_control: RideControl | None = None,
     highlight_marker: HighlightMarker | None = None,
+    local_zone: tzinfo | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -4147,7 +4149,9 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
             `None` (no location configured) leaves `weather` off the menu.
         transit_api_key: ADR 0189 — the Google Routes key (`GOOGLE_MAPS_API_KEY`, resolved
             by the runtime); empty or `None` leaves `transit` off the menu.
-        transit_places: the saved `home` and `school` for `transit` (an address or `lat,lng`).
+        transit_places: reads the kept `home` and `school` for `transit` at each call (an
+            address or `lat,lng`; ADR 0234).
+        local_zone: the zone `places` counts days in (`None`: the machine's).
         transit_offers: where `transit` leaves its options for the chat card (ADR 0205).
         here_location: ADR 0194 — one fresh read of this Mac's location (`lat`, `lng`,
             `accuracy_m`, optional `place`); gives `transit` its `here` and registers
@@ -4320,6 +4324,7 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
     from jarvis.execution.mail_draft_tool import build_mail_draft_tool  # noqa: PLC0415
     from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.picture_tool import build_picture_tool  # noqa: PLC0415 — same cycle.
+    from jarvis.execution.place_tools import build_place_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.ride_tool import build_ride_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.transit_tool import build_transit_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.voice_tools import build_voice_tool  # noqa: PLC0415 — same cycle.
@@ -4331,8 +4336,9 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
         *build_voice_tool(voice_settings),
         *build_weather_tool(weather_lookup),
         *build_picture_tool(vision_client, memory_db_path),
+        *(() if memory_db_path is None else build_place_tools(memory_db_path, local_zone)),
         *build_transit_tool(
-            transit_api_key, transit_places or {}, here_location, phone_here=here_phone,
+            transit_api_key, transit_places or dict, here_location, phone_here=here_phone,
             offers=transit_offers, bus_live=bus_live,
         ),
         *build_where_tool(here_location, here_phone),

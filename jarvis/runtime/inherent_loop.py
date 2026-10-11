@@ -7425,6 +7425,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     window_memory.db_path,
                     runtime.settings,
                     history_since=runtime.session.history_since,
+                    event_log=runtime.runtime_paths.event_log,
+                    zone=resolve_zone(None, _work_state_timezone(runtime.config))[1],
                 )
             ),
             brief_read=(
