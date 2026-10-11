@@ -583,6 +583,7 @@ extension StarEngine {
             setLevel(-1); fs.value = t; fs.velocity = 0; goal = t; mode = .idle
         case "星环": runRingScene(near: nil)
         case "星环旧": runRingScene(near: nil, old: true)
+        case "星环家": runRingScene(near: nil, home: true)
         case _ where name.hasPrefix("星环近@"): runRingScene(near: String(name.dropFirst(4)))
         case "一周": setLevel(1)
         case "一个月": setLevel(2)

@@ -216,10 +216,10 @@ extension StarEngine {
         for (_, e) in paths { c.setLineWidth(e.1); c.setStrokeColor(RGB.dial.cg(e.2)); c.addPath(e.0); c.strokePath() }
     }
 
-    /// a word set along the dial, its top toward her
-    func tangent(_ c: CGContext, _ s: Sprite, _ t: Double, _ r: Double, _ a: Double, _ scale: Double) {
+    /// a word set along the dial, its top toward her (`upright`: on the upper half it is turned over, top away from her, so it always reads the right way up, as on a clock face)
+    func tangent(_ c: CGContext, _ s: Sprite, _ t: Double, _ r: Double, _ a: Double, _ scale: Double, upright: Bool = false) {
         if a < 0.01 { return }
-        let an = ang(t), x = CX + r * cos(an), y = CY + r * sin(an), ro = an - Double.pi / 2
+        let an = ang(t), x = CX + r * cos(an), y = CY + r * sin(an), ro = an - Double.pi / 2 + (upright && sin(an) < 0 ? Double.pi : 0)
         c.saveGState(); c.translateBy(x: x, y: y); c.rotate(by: ro); c.scaleBy(x: scale, y: scale)
         c.setAlpha(min(1, a)); blit(c, s.img, -s.w / 2, -s.h / 2, s.w, s.h)
         c.restoreGState()
