@@ -894,9 +894,13 @@ def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None
     # A typed turn on the spoken route is asked for the same reply as a spoken one (ADR 0181).
     if channel not in SPOKEN_CHANNELS and not (channel == TYPED_CHANNEL and on_spoken_route):
         return "Channel: text"
+    # A typed turn answered aloud still says it was typed: its words are exact, not heard.
+    line = "Channel: voice"
+    if channel == TYPED_CHANNEL:
+        line += " (typed, so these are his exact words)"
     if route is not None and on_spoken_route and ctx.record_sent_message is None:
-        return f"Channel: voice\n{spoken_reply_note(structured=route.structured)}"
-    return "Channel: voice"
+        return f"{line}\n{spoken_reply_note(structured=route.structured)}"
+    return line
 
 
 _ABOUT_TAILS: Final[Mapping[str, str]] = {
