@@ -1,6 +1,6 @@
 # ADR 0211 — A phone sends pictures, files and shares, and the conversation model reads the pictures itself
 
-**Status:** Accepted
+**Status:** Superseded-by-0223
 **Date:** 2026-10-10
 **Supersedes:** none
 
