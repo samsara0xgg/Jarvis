@@ -58,27 +58,34 @@ struct TalkRowView: View, Equatable {
 
     private var plain: some View {
         words.font(.system(size: row.leadIn ? 15 : 18)).lineSpacing(row.leadIn ? 3 : 5)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .tint(amber).frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// her words with each character at its own brightness while she says them: runs of one brightness are one piece of text
-    private var words: Text {
-        let base = row.leadIn ? muted : ink.opacity(0.92)
-        guard row.alphas.count == row.text.count, row.alphas.contains(where: { $0 < 1 }) else { return Text(row.text).foregroundStyle(base) }
-        var out = AttributedString()
-        let chars = Array(row.text)
-        var i = 0
-        while i < chars.count {
-            var j = i
-            while j < chars.count && row.alphas[j] == row.alphas[i] { j += 1 }
-            var run = AttributedString(String(chars[i..<j]))
-            run.foregroundColor = Color.white.opacity(row.alphas[i])
-            out += run
-            i = j
-        }
-        return Text(out)
-    }
+    private var words: Text { herText(row.text, base: row.leadIn ? muted : ink.opacity(0.92), alphas: row.alphas) }
 }
+
+/// Her words as styled text: links in amber and underlined, tapped they open in the browser. With `alphas` each character has its own brightness; the marks
+/// (`**`, `[…](…)`) are not characters of the text shown, so the brightness is read at the same place along the text.
+func styledWords(_ s: String, base: Color, alphas: [Double] = []) -> AttributedString {
+    var a = AnswerText.linked(s)
+    let n = a.characters.count, dim = !alphas.isEmpty && alphas.count == s.count && alphas.contains { $0 < 1 }
+    func alpha(_ k: Int) -> Double { dim ? alphas[min(alphas.count - 1, k * alphas.count / max(n, 1))] : 1 }
+    var k = 0
+    for run in Array(a.runs) {
+        let link = run.link != nil
+        var lo = run.range.lowerBound
+        while lo < run.range.upperBound {
+            var hi = a.characters.index(after: lo), j = k + 1
+            while hi < run.range.upperBound && alpha(j) == alpha(k) { hi = a.characters.index(after: hi); j += 1 }
+            a[lo..<hi].foregroundColor = link ? amber.opacity(alpha(k)) : dim ? Color.white.opacity(alpha(k)) : base
+            if link { a[lo..<hi].underlineStyle = .single }
+            lo = hi; k = j
+        }
+    }
+    return a
+}
+func herText(_ s: String, base: Color, alphas: [Double] = []) -> Text { Text(styledWords(s, base: base, alphas: alphas)) }
 
 /// What he has open, over the first row of the talk: the star's mark, its title and time, and a × to take it off. While it shows, every turn tells the brain what "it" is (ADR 0214).
 struct AboutChip: View {
@@ -151,24 +158,20 @@ struct AnswerView: View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, b in block(b) }
         }
-        .tint(AT.pale)
+        .tint(amber)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func inline(_ s: String) -> AttributedString {
-        (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
     }
 
     @ViewBuilder private func block(_ b: AnswerBlock) -> some View {
         switch b {
-        case .paragraph(let s): Text(inline(s)).font(.system(size: 18)).lineSpacing(5).foregroundStyle(ink.opacity(0.92))
-        case .heading(let s): Text(inline(s)).font(.system(size: 17, weight: .semibold)).foregroundStyle(ink).padding(.top, 4)
+        case .paragraph(let s): herText(s, base: ink.opacity(0.92)).font(.system(size: 18)).lineSpacing(5)
+        case .heading(let s): herText(s, base: ink).font(.system(size: 17, weight: .semibold)).padding(.top, 4)
         case .list(let items):
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, it in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(it.marker).font(it.marker == "•" ? .system(size: 18) : AT.mono(15)).foregroundStyle(muted).frame(minWidth: 22, alignment: .trailing)
-                        Text(inline(it.text)).font(.system(size: 18)).lineSpacing(5).foregroundStyle(ink.opacity(0.92))
+                        herText(it.text, base: ink.opacity(0.92)).font(.system(size: 18)).lineSpacing(5)
                     }
                 }
             }
@@ -184,7 +187,7 @@ struct AnswerView: View {
                 ForEach(Array(rows.enumerated()), id: \.offset) { r, cells in
                     GridRow {
                         ForEach(Array(cells.enumerated()), id: \.offset) { _, c in
-                            Text(c).font(AT.mono(13)).foregroundStyle(r == 0 ? ink : ink.opacity(0.8)).fixedSize()
+                            herText(c, base: r == 0 ? ink : ink.opacity(0.8)).font(AT.mono(13)).fixedSize()
                         }
                     }
                     if r == 0 { Color.white.opacity(0.14).frame(height: 0.5) }
@@ -459,6 +462,16 @@ struct TalkPanel: View {
                 }
             }
             .onChange(of: ui.panelOpen) { _, on in if on { pos.scrollTo(edge: .bottom) } }
+            // his line going out and her reply coming in each take him to the bottom and back to following, wherever he had scrolled, the panel open or shut.
+            // Rows leaving (the talk handed over to the conversation, a failed send) are not new rows: the place stays.
+            .onChange(of: ui.liveTurns.count) { old, new in
+                guard new > old else { return }
+                follow = true
+                if !probe.following {
+                    probe.following = true
+                    DispatchQueue.main.async { probe.following = false; pos.scrollTo(edge: .bottom) }
+                }
+            }
             .overlay(alignment: .bottomTrailing) {
                 let show = ui.panelOpen && !follow
                 Button { follow = true; withAnimation(.easeOut(duration: 0.25)) { pos.scrollTo(edge: .bottom) } } label: {

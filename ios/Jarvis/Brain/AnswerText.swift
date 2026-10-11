@@ -20,7 +20,34 @@ enum AnswerText {
             let rest = reply[open.upperBound...]
             region = String(rest[..<(rest.range(of: "</voice>")?.lowerBound ?? rest.endIndex)])
         }
-        return visible(region).replacingOccurrences(of: "\\*\\*|`", with: "", options: .regularExpression)
+        return visible(region)
+            .replacingOccurrences(of: "\\[([^\\]]*)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)             // a link says its title
+            .replacingOccurrences(of: "https?://[!-~]*[A-Za-z0-9/_#=&%~-]", with: "", options: .regularExpression)         // a bare address is not read out
+            .replacingOccurrences(of: "\\*\\*|`", with: "", options: .regularExpression)
+    }
+
+    /// Her words with inline marks read (`**bold**`, `[title](url)`) and every address marked as a link: the ones written as links, and bare `http(s)://` or `www.` ones
+    /// the system finds (a file name like `main.py` is not an address). Code ticks keep their text as it is.
+    static func linked(_ s: String) -> AttributedString {
+        var a = (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
+        // the parser finds bare addresses too, and reads on through Chinese words as if they were part of one: those links are found again below
+        for r in Array(a.runs) {
+            guard let u = r.link?.absoluteString.removingPercentEncoding else { continue }
+            let t = String(a[r.range].characters)
+            if u == t || u == "http://" + t { a[r.range].link = nil }
+        }
+        let plain = String(a.characters)
+        let found = (try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue))?.matches(in: plain, range: NSRange(plain.startIndex..., in: plain)) ?? []
+        for m in found {
+            // an address ends at the first character that is not ASCII
+            guard let r = Range(m.range, in: plain), plain[r].contains("://") || plain[r].hasPrefix("www.") else { continue }
+            let text = plain[r].prefix { $0.isASCII }.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:!?)"))
+            guard let url = URL(string: text.contains("://") ? text : "http://" + text),
+                  let lo = AttributedString.Index(r.lowerBound, within: a), let hi = AttributedString.Index(plain.index(r.lowerBound, offsetBy: text.count), within: a),
+                  !a[lo..<hi].runs.contains(where: { $0.link != nil || $0.inlinePresentationIntent?.contains(.code) == true }) else { continue }
+            a[lo..<hi].link = url
+        }
+        return a
     }
 
     /// A line before the answer: it has a voice part and no document, so more follows.
