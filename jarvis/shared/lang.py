@@ -993,6 +993,8 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "step.weather.done": {"zh": "查了天气", "en": "checked the weather"},
     "step.place": {"zh": "看位置", "en": "Checking where you are"},
     "step.place.done": {"zh": "看了位置", "en": "checked where you are"},
+    "step.places": {"zh": "查常去的地方", "en": "Checking your places"},
+    "step.places.done": {"zh": "查了常去的地方", "en": "checked your places"},
     "step.reminder": {"zh": "处理提醒", "en": "Working on reminders"},
     "step.reminder.done": {"zh": "处理了提醒", "en": "worked on reminders"},
     "step.memo": {"zh": "处理备忘", "en": "Working on memos"},
