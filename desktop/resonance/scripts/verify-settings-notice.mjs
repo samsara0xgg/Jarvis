@@ -100,12 +100,78 @@ try {
   await gone();
   notices = [notice(['onboarded', 'language', 'llm.provider'])];
   await shows();
+  await page.waitForTimeout(700); // Esc is ignored until the card has faded in (checkVisibility)
   await page.keyboard.press('Escape'); await gone();
   check('Esc sends dismissed', of('settings-macbook').at(-1) === '{"action":"feedback","reaction":"dismissed"}');
   notices = [notice(['onboarded', 'llm.provider'])];
   await shows();
   await card().locator('.nc-dismiss').click(); await gone();
   check('the × sends dismissed', of('settings-macbook').at(-1) === '{"action":"feedback","reaction":"dismissed"}');
+
+  // (f) a card that arrives while a hold keeps it off the screen (the Claude app in front): the island shows it as waiting and lists it,
+  // nothing is sent, and it comes up by itself once the hold lifts; a held card can also be brought up from the list, or cleared there.
+  const counts = () => page.evaluate(() => document.querySelector('.notch')?.dataset.counts ?? '');
+  const waitCounts = (re, ms = 9000) => page.waitForFunction(re => new RegExp(re).test(document.querySelector('.notch')?.dataset.counts ?? ''), re.source, { timeout: ms });
+  const listRow = id => page.locator(`.notch-drop .a-sec[data-sec="turn"] .a-row[data-glow="${id}"]`);
+  // The pointer sweeps slowly along the wing, right of the notch, until the island's list opens under it.
+  const hover = async () => {
+    await page.evaluate(() => window.__cursor({ x: 20, y: 500 })); await page.waitForTimeout(500);
+    for (let x = 410; x < 560 && !await page.locator('.notch-drop.is-open').count(); x += 6) { await page.evaluate(x => window.__cursor({ x, y: 10 }), x); await page.waitForTimeout(60); }
+    await page.waitForSelector('.notch-drop.is-open', { timeout: 3000 });
+  };
+  await page.evaluate(() => window.__front(true));
+  notices = [notice(['onboarded', 'held.one'], 'settings-held')]; restart = undefined;
+  await waitCounts(/turn1/);
+  await page.waitForTimeout(1200);
+  check('held in Claude: the island counts it as waiting on his turn', /turn1/.test(await counts()));
+  check('held in Claude: no card is on screen and nothing was sent', await page.locator('.notch-note.is-open .nc').count() === 0 && of('settings-held').length === 0);
+  await hover();
+  await listRow('settings-held').waitFor({ timeout: 5000 });
+  check('held in Claude: the list names it with its line', /Settings differ/.test(await listRow('settings-held').innerText()) && /held\.one/.test(await listRow('settings-held').innerText()));
+  await page.screenshot({ path: path.join(dir, 'settings-held-list.png'), clip: { x: 0, y: 0, width: 640, height: 360 } });
+  await page.evaluate(() => window.__front(false));
+  await shows();
+  check('the hold lifts: the card comes up, and the waiting mark is gone', /held\.one/.test(await card().innerText()) && !/turn\d/.test(await counts()));
+  await page.waitForTimeout(700); await page.keyboard.press('Escape'); await gone();
+  check('Esc on it sends dismissed', of('settings-held').at(-1) === '{"action":"feedback","reaction":"dismissed"}');
+  // the list brings a held card up while he is still in Claude, with its own choices; the row's ✕ dismisses it unseen.
+  await page.evaluate(() => window.__front(true));
+  notices = [notice(['onboarded', 'held.two'], 'settings-held')];
+  await waitCounts(/turn1/); await hover();
+  await listRow('settings-held').evaluate(el => el.click()); // the panel is still springing: a plain click waits for it to be stable
+  await shows();
+  check('the list row brings the held card up in Claude', /held\.two/.test(await card().innerText()));
+  await card().locator('.btn', { hasText: "Use the brain's" }).click();
+  await page.waitForSelector('.notch-note.is-open .nc-settings .nc-ok');
+  check('answering it posts the choice', of('settings-held').at(-1) === '{"action":"feedback","reaction":"brain"}');
+  await gone(); await waitCounts(/^(?!.*turn)/);
+  notices = [notice(['onboarded', 'held.three'], 'settings-held')];
+  await waitCounts(/turn1/); await hover();
+  await listRow('settings-held').locator('.a-acts [role="button"]').evaluate(el => el.click());
+  await waitCounts(/^(?!.*turn)/);
+  check('the row\'s ✕ sends dismissed and clears the mark', of('settings-held').at(-1) === '{"action":"feedback","reaction":"dismissed"}' && !/turn\d/.test(await counts()));
+  await page.evaluate(() => window.__front(false));
+
+  // (g) settled elsewhere: the daemon stops listing a card, so it leaves the queue (held in Claude) and the screen, and nothing is posted.
+  const before = posts.length;
+  await page.evaluate(() => window.__front(true));
+  notices = [notice(['onboarded', 'gone.one'], 'settings-gone')];
+  await waitCounts(/turn1/);
+  notices = [];
+  await waitCounts(/^(?!.*turn)/);
+  await page.evaluate(() => window.__front(false));
+  await page.waitForTimeout(1200);
+  check('a held card the daemon stops listing disappears, and nothing is posted', await page.locator('.notch-note.is-open .nc').count() === 0 && posts.length === before);
+  notices = [notice(['onboarded', 'gone.two'], 'settings-gone')];
+  await shows();
+  notices = [];
+  await gone();
+  check('the card on screen closes when the daemon stops listing it, and nothing is posted', posts.length === before);
+  notices = [notice(['onboarded', 'gone.three'], 'settings-gone')];
+  await shows();
+  check('a changed set of keys still comes back afterwards', /gone\.three/.test(await card().innerText()));
+  notices = [];
+  await gone();
 
   check('no page errors', errors.length === 0);
   if (errors.length) console.log(errors);

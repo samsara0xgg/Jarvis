@@ -50,7 +50,8 @@ export type JobNotice = JobItem & { id: string; kind: 'mail' | 'digest'; title: 
 export type SettingsNotice = { id: string; kind: 'settings'; title: string; line?: string; keys?: string[]; choices?: { id: string; label: string }[] };
 // ADR 0187: a glow is a job-mail alert at level `glow`, the lightest one that reaches Allen. It is one more amber point in the wing's turn
 // group, never a card and never a cue, so it skips the queue, the quiet level and the moment hold (only the wing's dnd freeze keeps it back).
-export type Glow = { id: string; title: string; line: string; at?: number };
+// `card` is a settings notice (ADR 0227) kept from the island by a hold: its row opens the card and its ✕ dismisses it.
+export type Glow = { id: string; title: string; line: string; at?: number; card?: boolean };
 const isJob = (n: Notice): n is Notice & { kind: 'mail' | 'jobs' } => n.kind === 'mail' || n.kind === 'jobs';
 // ADR 0179: a reminder Allen set rides the job-mail notice, but no quiet level, call or away hold keeps it back, and it rings even on speakers.
 const isReminder = (n: { kind: string; job?: JobItem }) => n.kind === 'mail' && n.job?.mail_kind === 'reminder';
@@ -62,6 +63,8 @@ export const cardTell = (port: string | null, cid: string | undefined, body: Rec
 const short = (text?: string) => (text ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
 const mint = (kind: string, id: string) => `${kind}:${id}:${Date.now()}`;
 export const needs = (n: Notice) => n.kind === 'req' || n.kind === 'wait';
+// A settings notice (ADR 0227) has no session but is as much a card Allen owes an answer: it waits on the island's list while a hold keeps it off screen.
+const waits = (n: Notice) => needs(n) || n.kind === 'settings';
 // ADR 0153: from `no-pop` up the island shows no card and no name pop.
 const noCards = (quiet: Quiet) => quiet === 'no-pop' || quiet === 'dnd';
 export const ended = (state: AgentState) => state === 'done' || state === 'err';
@@ -226,14 +229,14 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
       for (const n of taken) n.held ??= { by, at };
       s.held = [...taken, ...s.held]; s.queue = mine ? [mine, ...reminders] : reminders; s.folded = []; if (!mine) s.forced = ''; bump();
     } else if (s.held.length) {
-      const rank = (n: Notice) => needs(n) ? 0 : toneOf(n) === 'error' ? 1 : 2, at = performance.now();
+      const rank = (n: Notice) => waits(n) ? 0 : toneOf(n) === 'error' ? 1 : 2, at = performance.now();
       // One entry per session, the most important of what it did; two or more of them make one digest, one is just shown.
       const items = [...new Map(s.held.filter(n => !s.parked.has(n.id)).sort((a, b) => rank(a) - rank(b) || a.at - b.at).reverse().map(n => [n.id, n])).values()].sort((a, b) => rank(a) - rank(b) || a.at - b.at);
       s.held = [];
       if (items.length === 1) s.queue.push(items[0]);
       else if (items.length) {
         // The asks stay on the island's list, so a row in the digest can bring its card up.
-        s.folded.push(...items.filter(needs));
+        s.folded.push(...items.filter(waits));
         s.queue.push({ kind: 'digest', key: `digest:${at}`, id: '', at, items, cid: mint('digest', String(Date.now())), held: items.flatMap(n => n.held ?? []).sort((a, b) => a.at - b.at)[0] });
       }
       bump();
@@ -322,6 +325,12 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
           s.departure = isDeparture(departure) && departure.id !== s.departureGone ? departure : null;
           for (const n of jobs) if ((n.kind === 'mail' || n.kind === 'digest') && n.level !== 'glow') arrive({ kind: n.kind === 'mail' ? 'mail' : 'jobs', id: n.id, job: n });
           for (const n of rows) if (n.kind === 'settings') arrive({ kind: 'settings', id: n.id, notice: n });
+          // One the daemon no longer lists was settled elsewhere: it leaves the queue, the list and the screen, and nothing is sent. An answer in flight keeps its card.
+          if (route === '/inherent/notices' && Array.isArray(notices)) {
+            const gone = (n: Notice) => n.kind === 'settings' && !rows.some(r => r.id === n.id) && !card(n).ok && !card(n).pending;
+            s.queue = s.queue.filter(n => !gone(n)); s.folded = s.folded.filter(n => !gone(n)); s.held = s.held.filter(n => !gone(n));
+            if (s.forced && !s.queue.some(n => n.key === s.forced)) s.forced = '';
+          }
           bump();
         }
       } catch { if (route === '/inherent/notices') audio.current = false; miss(); /* daemon away: nothing new may sound; the next tick retries */ }
@@ -525,16 +534,19 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   // even while the island is held.
   const focus = (id: string) => {
     if (s.queue[0]?.id !== id) acted([id]);
-    const f = s.folded.findIndex(n => n.id === id && needs(n)), q = s.queue.findIndex(n => n.id === id && needs(n));
+    const f = s.folded.findIndex(n => n.id === id && waits(n)), q = s.queue.findIndex(n => n.id === id && waits(n));
     if (f >= 0) s.queue.unshift(...s.folded.splice(f, 1));
     else if (q > 0) s.queue.unshift(...s.queue.splice(q, 1));
     else if (q < 0) { const a = live.current.byId.get(id); if (a?.request) s.queue.unshift({ key: `req:${id}:${performance.now()}`, id, at: performance.now(), cid: `req:${a.request.id}`, kind: 'req', req: a.request }); }
     s.forced = s.queue[0]?.id === id ? s.queue[0].key : '';
     bump();
   };
+  // Settings notices a hold keeps off the screen are marks on the wing and rows on its list, as a glow is.
+  const kept: Glow[] = [...s.queue, ...s.folded].filter((n): n is Notice & { kind: 'settings' } => n.kind === 'settings' && n !== current)
+    .map(n => ({ id: n.id, title: n.notice.title, line: n.notice.line ?? '', card: true }));
   return { current, count: s.queue.filter(needs).length, peek: s.peek, openedAt: s.openedAt, over: s.over, card: current ? card(current) : null,
     unread: s.unread as ReadonlySet<string>, archived: s.archived as ReadonlySet<string>, parked: s.parked as ReadonlyMap<string, number>,
-    glows: s.glows.filter(g => !s.glowGone.has(g.id)), leaveGlow, departure: s.departure, leaveDeparture, setDeparture, read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, settle, rate, acted, focus, bump };
+    glows: [...kept, ...s.glows.filter(g => !s.glowGone.has(g.id))], leaveGlow, departure: s.departure, leaveDeparture, setDeparture, read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, settle, rate, acted, focus, bump };
 }
 
 // ---------- what waited ----------
@@ -545,14 +557,14 @@ export function DigestCard({ n, agents, lang, look, card, onOpen, onAnswer, onRa
   onRate: (reaction: string, text: string) => void; onChange: () => void;
 }) {
   const byId = new Map(agents.map(a => [a.id, a]));
-  const line = (m: Notice): [MarkState, string] => needs(m) ? ['wait', tr(lang, ['Needs you', '要你回答'])]
+  const line = (m: Notice): [MarkState, string] => waits(m) ? ['wait', tr(lang, ['Needs you', '要你回答'])]
     : m.kind === 'pop' && m.ids.every(id => byId.get(id)?.state === 'err') ? ['err', tr(lang, ['Stopped on an error', '出错停了'])] : ['done', tr(lang, ['Finished', '做完了'])];
   return <div className="nc nc-digest">
     <div className="nc-bar"><span className="nc-label"><i/>{tr(lang, [`${n.items.length} things while you were away`, `你不在时有 ${n.items.length} 件事`])}</span></div>
     <ul className="nc-away">{n.items.map(m => {
-      const a = byId.get(m.id) ?? (m.kind === 'pop' ? byId.get(m.ids[0]) : undefined), [state, what] = line(m);
-      return <li key={m.key}><button type="button" className="nc-away-row" onClick={() => { if (needs(m)) onAnswer(m.id); else if (a) onOpen(a); }}>
-        <AgentMark look={look} state={state} id={m.id} size={12}/><b>{a?.title ?? tr(lang, ['A session', '一个会话'])}</b><span>{what}</span></button></li>;
+      const a = byId.get(m.id) ?? (m.kind === 'pop' ? byId.get(m.ids[0]) : undefined), [state, what] = line(m), title = m.kind === 'settings' ? m.notice.title : a?.title;
+      return <li key={m.key}><button type="button" className="nc-away-row" onClick={() => { if (waits(m)) onAnswer(m.id); else if (a) onOpen(a); }}>
+        <AgentMark look={look} state={state} id={m.id} size={12}/><b>{title ?? tr(lang, ['A session', '一个会话'])}</b><span>{what}</span></button></li>;
     })}</ul>
     <RateRow card={card} level={card.level ?? 'card'} lang={lang} onRate={onRate} onChange={onChange}/>
   </div>;
