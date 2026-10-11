@@ -845,6 +845,9 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
     return _assemble()
 
 
+PICTURE_NOTE_SOURCE: Final = "picture_note"
+"""The source of a picture's note (ADR 0223): memory, never part of what was said."""
+
 CONVERSATION_PAGE_BYTES = 512 * 1024
 """The most text one page of :func:`conversation_rows` carries (UTF-8 bytes), one row at least."""
 
@@ -853,6 +856,8 @@ def conversation_rows(
     path: Path, *, since: str = "", after: int = 0, before: int = 0, limit: int = 200,
 ) -> tuple[list[dict[str, object]], bool]:
     """A page of records for the conversation window, oldest first, each with its ``seq``.
+
+    Picture notes (:data:`PICTURE_NOTE_SOURCE`) are memory, not speech, so they are left out.
 
     ``after`` is the ``seq`` (rowid) the client already holds: the rows past it, still under the
     floor. ``before`` is the ``seq`` of its oldest row: the newest ``limit`` rows older than it,
@@ -865,8 +870,8 @@ def conversation_rows(
     are under the floor).
     """
     limit = max(1, limit)
-    clauses: list[str] = []
-    params: list[object] = []
+    clauses = ["source <> ?"]
+    params: list[object] = [PICTURE_NOTE_SOURCE]
     if after:
         clauses.append("rowid > ?")
         params.append(after)
@@ -901,7 +906,8 @@ def conversation_rows(
         # Older than the page's first row (the last read, else the cursor), under the floor or
         # not; an empty default page asks whether there is any row.
         probe = conn.execute(
-            "SELECT 1 FROM records WHERE ? IS NULL OR rowid < ? LIMIT 1", (last, last),
+            "SELECT 1 FROM records WHERE source <> ? AND (? IS NULL OR rowid < ?) LIMIT 1",
+            (PICTURE_NOTE_SOURCE, last, last),
         ).fetchone()
         return rows, probe is not None
 

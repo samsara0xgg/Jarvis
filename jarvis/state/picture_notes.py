@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Final
 
 from jarvis.shared import lang
 from jarvis.state.attachments import short_id
-from jarvis.state.memory_db import append_record, open_memory_db
+from jarvis.state.memory_db import PICTURE_NOTE_SOURCE, append_record, open_memory_db
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -28,8 +28,8 @@ if TYPE_CHECKING:
 
     from jarvis.state.attachments import AttachmentRef
 
-SOURCE: Final = "picture_note"
-"""The record source; history shows every source but his own as the assistant's side."""
+SOURCE: Final = PICTURE_NOTE_SOURCE
+"""The record source; the conversation window leaves it out, the prompt history keeps it."""
 NOTE_MAX_CHARS: Final = 700
 """A note is short: what the picture shows, its text, and what he said about it."""
 

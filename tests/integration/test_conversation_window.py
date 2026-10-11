@@ -38,6 +38,8 @@ ROWS = (
         "<voice>\n明天多云。\n</voice>\n<document>\n最高 18 度。\n</document>",
     ),
     ("live:s1:jarvis_live:1", "2026-09-15T02:50:12-07:00", "jarvis_live", "记得带伞。"),
+    # Memory, not speech (ADR 0223): it must never reach the window, at any seq or page edge.
+    ("picture-note:p1", "2026-09-15T02:55:00-07:00", "picture_note", "[Picture note]\n一把伞"),
 )
 
 
@@ -64,7 +66,11 @@ def test_rows_follow_the_cursor_and_the_history_floor(tmp_path: Path) -> None:
     assert [row["id"] for row in conversation_rows(db, since=SINCE, after=3)[0]] == [
         "live:s1:jarvis_live:1",
     ]
-    assert conversation_rows(db, since=SINCE, after=4) == ([], False)
+    assert conversation_rows(db, since=SINCE, after=4) == ([], False), "the note at seq 5 is hidden"
+    assert conversation_rows(db, since="", before=5)[0][-1]["id"] == "live:s1:jarvis_live:1"
+    assert [row["id"] for row in conversation_rows(db, since="", limit=500)[0]] == [
+        "old-1", "new-1", "new-2", "live:s1:jarvis_live:1",
+    ]
     short, more = conversation_rows(db, since=SINCE, limit=2)
     assert [row["id"] for row in short] == ["new-2", "live:s1:jarvis_live:1"], (
         "the newest page is the last rows, still oldest first"
@@ -75,6 +81,11 @@ def test_rows_follow_the_cursor_and_the_history_floor(tmp_path: Path) -> None:
     everything, more = conversation_rows(db, since="")
     assert everything[0]["id"] == "old-1"
     assert not more
+
+    only_note = tmp_path / "note.db"
+    with open_memory_db(only_note) as conn, conn:
+        conn.execute("INSERT INTO records (id, ts, source, text) VALUES (?, ?, ?, ?)", ROWS[-1])
+    assert conversation_rows(only_note, since="") == ([], False), "a note alone is no history"
 
 
 def test_http_route_answers_rows_past_the_cursor(tmp_path: Path) -> None:
