@@ -13,7 +13,10 @@ Each source folds on its own and a source that raises leaves its items out (:fun
 - ``reminders``: the fold of ADR 0179;
 - ``mac``: work blocks and calls from TimeSink, read through the ledger's own loading
   (:func:`jarvis.state.ledger.window_activity`) so the numbers are the ones she is told;
-- ``talks``: his conversations with her, from the records of his in memory.db.
+- ``talks``: his conversations with her, from the records of his in memory.db;
+- ``pictures``: each picture he sent her, at the time of the turn it came with and with the stay
+  that covers that time, and its note once written (ADR 0223). With no memory store and no
+  attachment store it has nothing to read and says nothing in ``missing``.
 
 A source whose store is not there (no TimeSink path or file, no memory store) is not an error: it
 is named in ``missing`` without a log line. The thresholds below belong to the code, not to
@@ -22,6 +25,7 @@ settings.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections import defaultdict
@@ -29,7 +33,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.state import reminders, timesink
+from jarvis.state import picture_notes, reminders, timesink
+from jarvis.state.attachments import Attachments
 from jarvis.state.ledger import CALL_FLOOR_S, TOP_FLOOR_S, window_activity
 from jarvis.state.phone_day import LOOKBACK_MS, read_rows, sleeps, stays
 from jarvis.state.phone_day import moves as phone_moves
@@ -60,6 +65,9 @@ BLOCK_REACH_MS: Final = 24 * 60 * _MINUTE_MS
 """How far either side of the window the Mac and his talks are read, so a block or a talk that
 crosses a midnight is found whole; one that runs on longer than this is cut where it was read."""
 
+PICTURE_TURN_EVENTS: Final = ("surface.user_intent", "utterance.received")
+"""The rows that open a turn and name the files sent with it."""
+
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 _NO_PROJECT: Final = frozenset({"none", ""})
 
@@ -74,6 +82,7 @@ class DaySources:
     timesink: Path | None = None
     memory_db: Path | None = None
     terminal: TerminalScreen | None = None  # a brain's ``timesink``: the terminal's store
+    attachments: Path | None = None  # where his pictures are kept (ADR 0223)
 
 
 class _NotConnected(Exception):  # noqa: N818 — a source's answer, not an error
@@ -134,6 +143,7 @@ def fold_day(
         ("reminders", _reminder_items),
         ("mac", lambda _conn, first, last, now: _mac_items(sources, first, last, now)),
         ("talks", lambda _conn, first, last, now: _talk_items(sources, first, last, now)),
+        ("pictures", lambda db, first, last, now: _picture_items(db, sources, first, last, now)),
     )
     items: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -334,6 +344,51 @@ def _talk_items(
         for run in talks
         if _overlaps(run[0], run[-1], window_start, window_end)
     ]
+
+
+# --- the pictures he sent ------------------------------------------------------------------
+
+
+def _picture_items(
+    conn: sqlite3.Connection, sources: DaySources, window_start: int, window_end: int, now_ms: int,
+) -> list[dict[str, Any]]:
+    """A point in his lane for each picture sent with a turn that started in the window (0223)."""
+    sent: dict[str, int] = {}
+    for at, raw in conn.execute(
+        "SELECT ts_epoch_ms, payload_json FROM events WHERE type IN (?, ?) "
+        "AND ts_epoch_ms >= ? AND ts_epoch_ms < ? "
+        "AND json_extract(payload_json, '$.attachments') IS NOT NULL ORDER BY id",
+        (*PICTURE_TURN_EVENTS, window_start, window_end),
+    ):
+        for one in json.loads(raw).get("attachments") or []:
+            sent.setdefault(str(one), int(at))
+    if not sent:
+        return []
+    notes = {} if sources.memory_db is None else picture_notes.bodies(sources.memory_db, sent)
+    store = None if sources.attachments is None else Attachments(sources.attachments)
+    shown = {
+        one: at for one, at in sent.items()
+        if one in notes or (store is not None and getattr(store.get(one), "kind", "") == "image")
+    }
+    held = stays(read_rows(conn, window_start - LOOKBACK_MS).visits) if shown else []
+    items: list[dict[str, Any]] = []
+    for one, at in shown.items():
+        item: dict[str, Any] = {
+            "id": f"picture-{one}",
+            "lane": "you",
+            "kind": "picture",
+            "start_ms": at,
+            "end_ms": at,
+            "state": _state(at, at, now_ms),
+            "attachment": one,
+        }
+        if one in notes:
+            item["note"] = notes[one]
+        here = next((s for s in held if s.start <= at and (s.end is None or at < s.end)), None)
+        if here is not None:
+            item.update(here.fields)
+        items.append(item)
+    return items
 
 
 # --- the phone -----------------------------------------------------------------------------
