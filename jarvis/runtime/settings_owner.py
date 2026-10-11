@@ -342,19 +342,15 @@ class SettingsDrift:
             asked = row.get(_ASKED)
             if not row.get("open") or not isinstance(asked, dict) or not asked:
                 continue
-            line = lang.t("settings.drift.line", device=device, n=len(asked), keys=_names(asked))
             out.append({
                 "id": f"{SETTINGS_NOTICE}{device}",
-                "kind": "mail",
+                "kind": "settings",
                 "title": lang.t("settings.drift.title"),
-                "line": line,
+                "line": lang.t(
+                    "settings.drift.line", device=device, n=len(asked), keys=_names(asked),
+                ),
                 "level": "card",
-                "text": line,
                 "at": row.get("at", ""),
-                "company": "",
-                "role": "",
-                "event_at": None,
-                "mail_kind": "settings",
                 "device": device,
                 "keys": sorted(asked),
                 "choices": [

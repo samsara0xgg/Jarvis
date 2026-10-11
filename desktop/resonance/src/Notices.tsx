@@ -24,7 +24,7 @@ import './notices.css';
 // away, as TimeSink saw it) holds the same way as no-pop: arrivals wait in `held`, no card, no sound, and come up as one
 // digest (or the one card) when it ends; his own clicks still bring a card up. Unknown, unreachable or stale (a call over
 // 3 h) holds nothing.
-const POP_MS = 5000, DIGEST_MS = 30_000, FOLD_MS = 30_000, REMIND_MS = 600_000, TOGETHER_MS = 1500, CONFIRM_MS = 850;
+const POP_MS = 5000, DIGEST_MS = 30_000, FOLD_MS = 30_000, REMIND_MS = 600_000, TOGETHER_MS = 1500, CONFIRM_MS = 850, SETTLED_MS = 3500;
 // ADR 0163: a call is believed for at most 3 h; an unanswered poll keeps the last word for two more ticks.
 export type MomentHold = 'call' | 'away' | null;
 export const CALL_HOLD_CAP_MS = 3 * 3_600_000, HOLD_MISSES = 3;
@@ -40,10 +40,14 @@ export type Notice = Base & (
   | { kind: 'digest'; items: Notice[] }
   // Job mail (ADR 0155), from GET /inherent/notices: one mail, and what waited while the level was no-pop or dnd.
   | { kind: 'mail'; job: JobNotice }
-  | { kind: 'jobs'; job: JobNotice });
+  | { kind: 'jobs'; job: JobNotice }
+  // A terminal's settings differ from the brain's (ADR 0227), from GET /inherent/notices: two choices, answered on the card.
+  | { kind: 'settings'; notice: SettingsNotice });
 // The daemon's notice as it arrives; it has already applied the quiet level. `level`: card (silent), card_sound or speak (both with her cue).
 export type JobItem = { id?: string; title?: string; line?: string; company?: string; role?: string; at?: string; event_at?: string | null; event_text?: string | null; mail_kind?: string; count?: number };
 export type JobNotice = JobItem & { id: string; kind: 'mail' | 'digest'; title: string; line?: string; level?: string; link?: 'jobs'; items?: JobItem[] };
+// The daemon's settings notice: what differs, and the choices to put on the card (`id` is the reaction POST /inherent/notices/{id} takes).
+export type SettingsNotice = { id: string; kind: 'settings'; title: string; line?: string; keys?: string[]; choices?: { id: string; label: string }[] };
 // ADR 0187: a glow is a job-mail alert at level `glow`, the lightest one that reaches Allen. It is one more amber point in the wing's turn
 // group, never a card and never a cue, so it skips the queue, the quiet level and the moment hold (only the wing's dnd freeze keeps it back).
 export type Glow = { id: string; title: string; line: string; at?: number };
@@ -173,7 +177,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   // It says whether the cue was allowed to sound (the quiet level, her switches and the output), which is the level a card was shown at.
   const sound = (n: Notice, gain = 1) => {
     const reminder = isReminder(n);
-    if (live.current.moment && !reminder) return false;
+    if (live.current.moment && !reminder || n.kind === 'settings') return false;
     if (isJob(n) && n.job.level !== 'card_sound' && n.job.level !== 'speak') return false;
     const now = performance.now();
     if (now - s.soundAt <= TOGETHER_MS) return false;
@@ -239,6 +243,14 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   // One ask is one card: the session and what it says (ADR 0153).
   const askKey = (n: { kind: string; id: string; req?: AgentRequest; line?: string }) => `${n.id}|${n.req ? requestLine(n.req) : n.line}`;
   const arrive = (a: Arrival) => {
+    // A settings notice (ADR 0227) is taken in like job mail, once for each set of differing keys, so a changed set comes back.
+    if (a.kind === 'settings') {
+      const k = `${a.id}|${(a.notice.keys ?? []).join(',')}`;
+      if (holdBy() || s.jobIds.has(k)) return;
+      s.jobIds.add(k); const now = performance.now();
+      s.queue.push({ ...a, key: `settings:${k}:${now}`, at: now } as Notice);
+      return;
+    }
     // Job mail waits in the queue like any card (`hold`, in Claude); at no-pop and dnd it is not taken in, the daemon keeps it.
     if (a.kind === 'mail' || a.kind === 'jobs') {
       if (holdBy() && !isReminder(a) || s.jobIds.has(a.id)) return;
@@ -301,13 +313,15 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
         if (r.status === 404) { word(null); takeGlows([]); s.departure = null; bump(); return; }
         if (!r.ok) { if (route === '/inherent/notices') audio.current = false; miss(); }
         if (r.ok && !stop) {
-          const { notices, audio_private, hold, departure } = await r.json() as { notices?: JobNotice[]; audio_private?: boolean; hold?: unknown; departure?: unknown };
+          const { notices, audio_private, hold, departure } = await r.json() as { notices?: (JobNotice | SettingsNotice)[]; audio_private?: boolean; hold?: unknown; departure?: unknown };
           if (route === '/inherent/notices') audio.current = typeof audio_private === 'boolean' ? audio_private : undefined;
           word(hold);
           const rows = (Array.isArray(notices) ? notices : []).filter(n => typeof n.id === 'string' && typeof n.title === 'string');
-          takeGlows(rows.filter(n => n.level === 'glow'));
+          const jobs = rows.filter((n): n is JobNotice => n.kind !== 'settings');
+          takeGlows(jobs.filter(n => n.level === 'glow'));
           s.departure = isDeparture(departure) && departure.id !== s.departureGone ? departure : null;
-          for (const n of rows) if ((n.kind === 'mail' || n.kind === 'digest') && n.level !== 'glow') arrive({ kind: n.kind === 'mail' ? 'mail' : 'jobs', id: n.id, job: n });
+          for (const n of jobs) if ((n.kind === 'mail' || n.kind === 'digest') && n.level !== 'glow') arrive({ kind: n.kind === 'mail' ? 'mail' : 'jobs', id: n.id, job: n });
+          for (const n of rows) if (n.kind === 'settings') arrive({ kind: 'settings', id: n.id, notice: n });
           bump();
         }
       } catch { if (route === '/inherent/notices') audio.current = false; miss(); /* daemon away: nothing new may sound; the next tick retries */ }
@@ -446,7 +460,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   const dismiss = () => {
     const n = s.queue[0];
     if (!n) return;
-    if (isJob(n)) { if (!card(n).ok) tell(port, n.id, { action: 'feedback', reaction: 'dismissed' }); return next(); }
+    if (isJob(n) || n.kind === 'settings') { if (!card(n).ok) tell(port, n.id, { action: 'feedback', reaction: 'dismissed' }); return next(); }
     if (!card(n).rated) react(n, 'dismissed');
     if (!needs(n)) return next();
     s.queue.shift(); s.dismissed.add(askKey(n)); s.forced = ''; bump();
@@ -458,8 +472,8 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   const ok = current ? card(current).ok : '', rating = !!current && !!card(current).rating && !card(current).rated;
   const size = current?.kind === 'pop' ? current.ids.length : 0;
   useEffect(() => {
-    // A reminder stays until Allen dismisses it (ADR 0179).
-    if (!current || hover || ok || rating || isReminder(current)) return;
+    // A reminder stays until Allen dismisses it (ADR 0179), and so does the settings question (ADR 0227).
+    if (!current || hover || ok || rating || isReminder(current) || current.kind === 'settings') return;
     // A pop the pointer has been on goes 1.5 s after it leaves.
     const t = setTimeout(() => needs(current) ? fold() : next(), needs(current) ? FOLD_MS : current.kind === 'digest' || isJob(current) ? DIGEST_MS : s.touched === current.key ? 1500 : POP_MS);
     return () => clearTimeout(t);
@@ -474,6 +488,22 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
     if (isJob(n)) tell(port, n.id, { action: 'feedback', reaction }); else { s.reacted.add(`${n.cid}|${reaction}`); cardTell(port, n.cid, { action: 'feedback', reaction }); }
     if (!needs(n)) { c.ok = text; later(CONFIRM_MS, () => { if (s.queue[0] === n) next(); }); }
     bump();
+  };
+  // ADR 0227: the choice on a settings card is the reaction of POST /inherent/notices/{id}; the answer says whether the daemon will restart.
+  const settle = async (n: Notice & { kind: 'settings' }, choice: string) => {
+    const c = card(n);
+    if (c.ok || c.pending || !port) return;
+    c.pending = true; c.error = ''; bump();
+    try {
+      const r = await postRoute(port, `/inherent/notices/${encodeURIComponent(n.id)}`, { action: 'feedback', reaction: choice }) as { restart?: string };
+      c.ok = choice === 'brain' ? t(['Kept the brain’s settings', '保留了大脑上的设置'])
+        : r.restart === 'idle' ? t(['Saved. It restarts once Jarvis is idle', '已保存，等她空下来就重启'])
+        : r.restart === 'manual' ? t(['Saved. Restart Jarvis to apply it', '已保存，重启 Jarvis 后生效'])
+        : t(['Saved', '已保存']);
+      cue('send');
+      later(SETTLED_MS, () => { if (s.queue[0] === n) next(); });
+    } catch { c.error = t(['Could not send your choice. Try again.', '没能发出你的选择，请再试一次。']); }
+    finally { c.pending = false; bump(); }
   };
   const resolve = async (n: Notice & { kind: 'req' }, text: string, body: Parameters<typeof answer>[1]) => {
     const c = card(n);
@@ -504,7 +534,7 @@ export function useNotices({ port, poll, agents, hold, moment, onMoment, quiet, 
   };
   return { current, count: s.queue.filter(needs).length, peek: s.peek, openedAt: s.openedAt, over: s.over, card: current ? card(current) : null,
     unread: s.unread as ReadonlySet<string>, archived: s.archived as ReadonlySet<string>, parked: s.parked as ReadonlyMap<string, number>,
-    glows: s.glows.filter(g => !s.glowGone.has(g.id)), leaveGlow, departure: s.departure, leaveDeparture, setDeparture, read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, rate, acted, focus, bump };
+    glows: s.glows.filter(g => !s.glowGone.has(g.id)), leaveGlow, departure: s.departure, leaveDeparture, setDeparture, read, archive, park, unpark, setHover, hovering: hover, next, fold, dismiss, back, resolve, settle, rate, acted, focus, bump };
 }
 
 // ---------- what waited ----------
@@ -591,6 +621,23 @@ export function MailNotice({ n, card, lang, onDismiss, onRate, onChange }: {
     {job.line && <p className="nc-what">{job.line}</p>}
     {(chips.length > 0 || event) && <div className="nc-tags">{chips.map((c, i) => <span key={i} className="tagc">{c}</span>)}{event && <span className="tagc">{tr(lang, reminder ? ['Due', '时间'] : ['Event', '日程'])} {event}</span>}</div>}
     {!reminder && <RateRow card={card} level={level} lang={lang} onRate={onRate} onChange={onChange}/>}
+  </div>;
+}
+
+// ADR 0227: the brain and a terminal disagree on some settings. The card names them and offers the two ways out; nothing changes until one is pressed.
+export function SettingsCard({ n, card, lang, onDismiss, onChoose }: {
+  n: Notice & { kind: 'settings' }; card: Card; lang: Lang; onDismiss: () => void; onChoose: (choice: string) => void;
+}) {
+  const root = useRef<HTMLDivElement>(null), { notice } = n, choices = Array.isArray(notice.choices) ? notice.choices : [];
+  useEscape(root, !card.ok, onDismiss, n.key);
+  return <div ref={root} className="nc nc-mail nc-settings">
+    <div className="nc-bar"><span className="nc-label is-other"><i/>{tr(lang, ['Settings', '设置'])}</span>
+      <button type="button" className="nc-x nc-dismiss" aria-label={tr(lang, ['Dismiss', '关掉'])} title={tr(lang, ['Dismiss', '关掉'])} onClick={onDismiss}><X size={14}/></button></div>
+    <p className="nc-mail-t">{notice.title}</p>
+    {notice.line && <p className="nc-what">{notice.line}</p>}
+    {card.ok ? <p className="nc-ok"><Check size={14} weight="bold"/><span>{card.ok}</span></p>
+      : <div className="nc-choice">{choices.map(c => <button key={c.id} type="button" className="btn btn-ghost" disabled={!!card.pending} onClick={() => onChoose(c.id)}>{c.label}</button>)}</div>}
+    {card.error && <p className="r-why" role="alert">{card.error}</p>}
   </div>;
 }
 

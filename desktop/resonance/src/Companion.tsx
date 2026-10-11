@@ -14,7 +14,7 @@ import { usePlugins } from './PluginPanel';
 import { isMarkLook } from './AgentMarks';
 import { answerRequest, type Agent, type ShownAgent } from './agents';
 import { answerStartrail, markStartrail, useStartrail } from './startrail';
-import { CardRate, DigestCard, JobsDigestCard, MailNotice, NoticeCard, RateRow, cardTell, ended, noticeCue, useNotices, type Glow, type MomentHold } from './Notices';
+import { CardRate, DigestCard, JobsDigestCard, MailNotice, NoticeCard, RateRow, SettingsCard, cardTell, ended, noticeCue, useNotices, type Glow, type MomentHold } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { Notch, type Kind as MarkGroup, type NotchNote } from './Notch';
 import { TripCard, tripLink, useTripNote } from './TripCards';
@@ -345,7 +345,7 @@ export function Companion() {
   // came up under the pointer a moment ago, and not while the pointer is on the card.
   const away = useRef(() => undefined as void);
   away.current = () => {
-    if (notice && notice.kind !== 'pop' && !notices.hovering && performance.now() - notices.openedAt > 800) notices.dismiss();
+    if (notice && notice.kind !== 'pop' && notice.kind !== 'settings' && !notices.hovering && performance.now() - notices.openedAt > 800) notices.dismiss();
     if (!notices.hovering) busCards.away();
   };
   useEffect(() => window.jarvis?.onMouseDown?.(() => { away.current(); outside.current(); }), []);
@@ -841,6 +841,8 @@ export function Companion() {
       rate: <RateRow card={notices.card!} level={notices.card?.level ?? 'card'} lang={companion.lang} onChange={notices.bump} onRate={(reaction, text) => notices.rate(notice, reaction, text)}/> }
     : notice.kind === 'mail' ? { key: notice.key, id: notice.id, onClose: notices.dismiss,
       card: <MailNotice key={notice.key} n={notice} card={notices.card!} lang={companion.lang} onDismiss={notices.dismiss} onChange={notices.bump} onRate={(reaction, text) => notices.rate(notice, reaction, text)}/> }
+    : notice.kind === 'settings' ? { key: notice.key, id: notice.id, onClose: notices.dismiss,
+      card: <SettingsCard key={notice.key} n={notice} card={notices.card!} lang={companion.lang} onDismiss={notices.dismiss} onChoose={choice => void notices.settle(notice, choice)}/> }
     : notice.kind === 'jobs' ? { key: notice.key, id: notice.id, onClose: notices.dismiss, card: <JobsDigestCard key={notice.key} n={notice} card={notices.card!} lang={companion.lang} onDismiss={notices.dismiss} onOpen={openJobs} onChange={notices.bump} onRate={(reaction, text) => notices.rate(notice, reaction, text)}/> }
     : notice.kind === 'digest' ? { key: notice.key, onClose: notices.dismiss, card: <DigestCard key={notice.key} n={notice} agents={agents} lang={companion.lang} look={wardrobe.marks} card={notices.card!} onOpen={jump} onAnswer={notices.focus} onChange={notices.bump} onRate={(reaction, text) => notices.rate(notice, reaction, text)}/> }
     : { key: notice.key, id: notice.id, onClose: notices.dismiss,
