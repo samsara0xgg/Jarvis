@@ -234,6 +234,7 @@ final class StreamProbe {
     var asked = false                   // a page is being asked for
     var scrolled = false                // the page came and the stream was sent to the anchor: from here its place is corrected
     var pinY = 0.0, pinUntil = 0.0      // where the anchor is kept, and until when: the lazy stack's heights firm up as the rows are laid out
+    var following = false               // a scroll to the bottom is on its way
 }
 
 /// where the panel's top edge is: held by a finger, or at one of its two places
@@ -426,7 +427,12 @@ struct TalkPanel: View {
             .onScrollPhaseChange { _, phase in byHand = phase == .interacting || phase == .decelerating }
             .onScrollGeometryChange(for: Double.self) { g in (max(0, g.contentSize.height + g.contentInsets.bottom - g.visibleRect.maxY) * 2).rounded() / 2 } action: { _, away in
                 follow = PanelRules.follows(was: follow, byHand: byHand, away: away)
-                if follow && away > 0.5 { pos.scrollTo(edge: .bottom) }
+                // on the next turn of the run loop, at most one at a time: a scroll from inside this action made a long history's lazy stack
+                // estimate its height again, which called the action again, and the main thread never got out (the app froze, then was killed)
+                if follow && away > 0.5 && !probe.following {
+                    probe.following = true
+                    DispatchQueue.main.async { probe.following = false; pos.scrollTo(edge: .bottom) }
+                }
             }
             .onChange(of: ui.panelOpen) { _, on in if on { pos.scrollTo(edge: .bottom) } }
             .overlay(alignment: .bottomTrailing) {
