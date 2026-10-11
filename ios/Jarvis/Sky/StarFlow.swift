@@ -86,7 +86,9 @@ extension StarEngine {
 
     // MARK: flows
 
-    func run(_ fn: @escaping (Ok) async throws -> Void) {
+    /// A flow, on the main actor like everything else that touches the engine and the UI: a nonisolated async closure runs on the cooperative pool, and a flow
+    /// run there wrote `ui` beside SwiftUI and the display link (and trapped on the first haptic, which asserts the main actor).
+    func run(_ fn: @escaping @MainActor (Ok) async throws -> Void) {
         gen += 1
         let my = gen
         Task { @MainActor in
@@ -364,7 +366,7 @@ extension StarEngine {
 
     // MARK: talking to her
 
-    func talkFlow(_ ok: Ok, _ sc: Talk, _ held: Gate?, _ typed: Bool, pics: [SentItem] = []) async throws {
+    @MainActor func talkFlow(_ ok: Ok, _ sc: Talk, _ held: Gate?, _ typed: Bool, pics: [SentItem] = []) async throws {
         beginTalk()
         talk = "listen"
         var his = typed ? addTurn(his: true, sc.q, pics: pics) : nil
@@ -403,7 +405,7 @@ extension StarEngine {
         lingerFrom(nowMs())
     }
     /// the day again: the sky turns from last night to now, and each star lights as it reaches the meridian
-    func replayFlow(_ ok: Ok, _ sc: Talk) async throws {
+    @MainActor func replayFlow(_ ok: Ok, _ sc: Talk) async throws {
         expr = "37"; qGoal = 0; openId = nil
         let a = 10.0, b = nowT(), dur2 = 10500.0, t1 = nowMs()
         mode = .script; byHand = false; replay = true; script = a; prevRev = a
