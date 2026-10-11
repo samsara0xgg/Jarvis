@@ -86,8 +86,15 @@ final class StallLog: NSObject, MXMetricManagerSubscriber, @unchecked Sendable {
 
     private func write(_ s: String) {
         Self.log.notice("\(s, privacy: .public)")
+        append(s, to: Self.file)
+    }
+
+    /// A line of another of the app's stories to its own file under Library/Caches, kept the same way (the voice: `voice.log`).
+    static func append(_ s: String, to name: String) { shared.append(s, to: caches.appendingPathComponent(name)) }
+
+    private func append(_ s: String, to f: URL) {
         locked {
-            let fm = FileManager.default, f = Self.file
+            let fm = FileManager.default
             if let n = (try? fm.attributesOfItem(atPath: f.path))?[.size] as? Int, n > 100_000 {
                 let old = f.deletingPathExtension().appendingPathExtension("1.log")
                 try? fm.removeItem(at: old); try? fm.moveItem(at: f, to: old)
