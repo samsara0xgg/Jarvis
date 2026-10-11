@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Final
 from jarvis.decision.core_memory import build_core_memory_messages, check_core_memory, day_labels
 from jarvis.decision.core_memory_review import ReviewFailed, review_changes
 from jarvis.decision.cost_guard import CostRecorder
+from jarvis.state import places
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import (
     MemorySettings,
@@ -125,6 +126,7 @@ def consolidate_day(  # noqa: PLR0913 — the day, the store, the knobs, the cli
             doc=base.doc,
             day_summary=summaries[0][1] if summaries else "",
             records=records,
+            places=places.names_block(memory.db_path),
         ),
         system=settings.prompt,
         tools=None,

@@ -42,6 +42,9 @@ from jarvis.state.memory_page import Conflict
 from jarvis.state.phone_location import VISIT_EVENT
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
+from tests.integration.test_core_memory import _Consolidator, _days, _schedule
+from tests.integration.test_day_summaries import TODAY as CORE_TODAY
+from tests.integration.test_day_summaries import _day
 from tests.integration.test_flat_tool_dispatch import _Fixture, _request
 from tests.integration.test_ledger import NOW as LEDGER_NOW
 from tests.integration.test_ledger import ZONE as LEDGER_ZONE
@@ -904,4 +907,22 @@ def test_the_tables_and_the_nightly_prompt_are_what_the_decision_names(tmp_path:
     assert prompt.rstrip().endswith(
         "- Places he keeps are listed in [Places he keeps]. "
         "Do not add or keep items that only restate a place's name or location.",
+    )
+
+
+def test_the_nightly_consolidator_reads_the_places_he_keeps(tmp_path: Path) -> None:
+    """The sentence added to its prompt points at a block its input carries (ADR 0234)."""
+    path = tmp_path / "memory.db"
+    _days(path, 2)
+    model = _Consolidator()
+    _schedule(tmp_path, model).write(CORE_TODAY)
+    assert "[Places he keeps]" not in model.inputs[_day(2).isoformat()]  # none kept: no block
+
+    places.save(path, name="gym", lat=48.0, lng=-123.0, role="other", origin="model")
+    places.save(path, name="home", lat=48.01, lng=-123.0, role="home", origin="settings")
+    _days(path, 1)
+    _schedule(tmp_path, model).write(CORE_TODAY)
+    assert "[Current core memory]\n" in model.inputs[_day(1).isoformat()]
+    assert "\n\n[Places he keeps]\ngym · other\nhome · home\n\n[Summary of " in (
+        model.inputs[_day(1).isoformat()]
     )

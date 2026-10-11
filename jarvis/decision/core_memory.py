@@ -45,12 +45,18 @@ def build_core_memory_messages(
     doc: core_memory.Doc,
     day_summary: str,
     records: Sequence[tuple[str, str, str, str]],
+    places: str = "",
 ) -> list[dict[str, Any]]:
-    """The one user message the consolidator sees: core memory, the day's summary, its records."""
+    """The one user message the consolidator sees: core memory, the day's summary, its records.
+
+    ``places`` is the ``[Places he keeps]`` block (ADR 0234), so the consolidator can leave out
+    items that only restate a kept place; empty when none is kept.
+    """
     lines = [
         "[Current core memory]",
         core_memory.numbered(doc),
         "",
+        *([places, ""] if places else []),
         f"[Summary of {day}]",
         day_summary or "(none)",
         "",

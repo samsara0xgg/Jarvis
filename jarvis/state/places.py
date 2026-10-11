@@ -614,6 +614,18 @@ def overview(path: Path, seen: Sequence[Span], now_ms: int, zone: tzinfo) -> dic
 # --- what reads them ------------------------------------------------------------------------
 
 
+def names_block(path: Path) -> str:
+    """``[Places he keeps]`` with each place's name and role alone; empty when none is kept.
+
+    The nightly core-memory pass reads it to leave out items that only restate a kept place. It
+    needs no counts, so it reads no stays.
+    """
+    held = read_kept(path)
+    if not held:
+        return ""
+    return "\n".join(["[Places he keeps]", *(f"{one.name} · {one.role}" for one in held)])
+
+
 def prompt_block(path: Path, events: sqlite3.Connection, now_ms: int, zone: tzinfo) -> str:
     """The ``[Places he keeps]`` block of the system prompt; empty when none is kept.
 
