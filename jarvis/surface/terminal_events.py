@@ -192,6 +192,13 @@ class BrainEvents:
             raise ValueError(str(exc)) from exc
         return uid
 
+    def has_phone_say(self, device: str, utterance_id: str) -> bool:
+        """Whether this ``say`` was already recorded (ADR 0228), so a resend can skip its checks."""
+        row = self._conn.execute(
+            "SELECT 1 FROM events WHERE event_uid = ?", (_say_uid(device, utterance_id),),
+        ).fetchone()
+        return row is not None
+
     def record_phone_say(  # noqa: PLR0913 - the fields of one `say` frame
         self,
         device: str,
@@ -234,7 +241,7 @@ class BrainEvents:
             raise ValueError(msg)
         checked_about = None if about is None else clean_about(about)
         turn_id = phone_turn_id(device, utterance_id)
-        uid = uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"say\0{device}\0{utterance_id}").hex
+        uid = _say_uid(device, utterance_id)
         if self._conn.execute("SELECT 1 FROM events WHERE event_uid = ?", (uid,)).fetchone():
             return turn_id
         payload: dict[str, Any] = {"transcript": text, "turn_id": turn_id}
@@ -327,6 +334,10 @@ class BrainEvents:
             ack = self.record(device, frame, size, phone_events.PHONE_EVENT_TYPES)
             acks.append(_ack(frame["event_uid"], "retry") if ack is None else ack)
         return acks
+
+
+def _say_uid(device: str, utterance_id: str) -> str:
+    return uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"say\0{device}\0{utterance_id}").hex
 
 
 def phone_turn_id(device: str, utterance_id: str) -> str:

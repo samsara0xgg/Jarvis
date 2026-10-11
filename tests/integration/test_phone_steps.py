@@ -361,6 +361,29 @@ def test_a_say_the_store_or_the_frame_check_refuses_opens_no_turn(
             phone.close()
 
 
+def test_a_resent_say_whose_files_expired_is_answered_with_its_turn(tmp_path: Path) -> None:
+    """(a) The turn exists, so the resend gets its `said`; a new say naming the file is refused."""
+    with _Host(tmp_path) as host:
+        file_id = host.upload(b"notes\n", "notes.txt")
+        phone = host.phone()
+        try:
+            phone.say("u-exp", "read this", spoken=False, attachments=[file_id])
+            turn = phone.wait_text("said")["turn_id"]
+            path = host.store.path(file_id)
+            assert path is not None
+            path.unlink()  # the retention sweep, as far as the store can tell
+            phone.say("u-exp", "read this", spoken=False, attachments=[file_id])
+            phone.wait_until(lambda: len(_frames(phone, "said")) == 2, "the resend got no said")
+            assert _frames(phone, "said")[1]["turn_id"] == turn
+            assert not _frames(phone, "error")
+            assert len(host.intents()) == 1
+            phone.say("u-new", "read this", spoken=False, attachments=[file_id])
+            assert phone.wait_text("error")["code"] == "attachment_refused"
+            assert len(host.intents()) == 1
+        finally:
+            phone.close()
+
+
 def test_a_host_without_a_store_refuses_files_and_still_takes_words(tmp_path: Path) -> None:
     """(a) No store: files are refused with their own code, plain words still pass."""
     with _Host(tmp_path, files=False) as host:

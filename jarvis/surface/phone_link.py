@@ -527,9 +527,12 @@ def _say(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
 async def _record_with_files(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
     """A typed ``say`` with files is a turn once the store has vouched for them (ADR 0228).
 
-    The store is read on a worker thread, so the receive loop never blocks on the disk.
+    The store is read on a worker thread, so the receive loop never blocks on the disk; a say
+    already recorded is not checked again.
     """
-    if hub.check_attachments is not None:
+    if hub.check_attachments is not None and not hub.events.has_phone_say(
+        conn.device, say.utterance_id,
+    ):  # a resend of a recorded say is answered with its turn, whatever became of the files
         try:
             await asyncio.to_thread(hub.check_attachments, say.attachments)
         except AttachmentRefused as exc:
