@@ -318,6 +318,7 @@ def test_a_session_is_named_as_claude_desktop_names_it(
         "s-named": "boooob ui",
         "s-file": "session",
         "s-mixed": "session",
+        "s-woken": "Remote Control session (from a project)",
     }
     bin_dir = _home(tmp_path, [
         {"sessionId": sid, "kind": "interactive", "status": "busy", "name": name,
@@ -330,6 +331,11 @@ def test_a_session_is_named_as_claude_desktop_names_it(
         "s-plain": "what s-plain was asked",
         "s-file": '@"/Users/a/.claude/uploads/x/plan v2.md"',
         "s-mixed": "@/Users/a/shot.png 这张图里哪里不对",
+        "s-woken": (
+            '<wake reason="mention" current-time="2026-10-11T18:00:00Z">\n  <project id="p">\n'
+            '    <message trigger="true" from="human" id="m1">看下手机为什么没声音</message>\n'
+            '  </project>\n  <system-note>complete</system-note>\n</wake>'
+        ),
     }
     for sid, prompt in prompts.items():
         (project / f"{sid}.jsonl").write_text(
@@ -363,4 +369,5 @@ def test_a_session_is_named_as_claude_desktop_names_it(
         "s-named": "boooob ui",
         "s-file": "plan v2.md",
         "s-mixed": "这张图里哪里不对",
+        "s-woken": "看下手机为什么没声音",
     }

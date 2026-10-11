@@ -14,7 +14,8 @@ A row's title is the name he sees in Claude Desktop when it has one: Desktop kee
 ``cliSessionId``), and a session it spawned for a project thread carries the thread's title there.
 Then ``claude agents``' own name, unless it is the generic "from a project" name or an
 auto-made slug (``projects-3e``); then his last prompt with its ``@file`` references dropped (the
-files' names when that is all it says); then the folder.
+files' names when that is all it says), and for a project thread's session the words of the
+message that woke it rather than the wake envelope around them; then the folder.
 
 On a brain (ADR 0170) these files are the owner's Mac's, so the board is asked of the connected
 terminal, which runs :meth:`ClaudeSessions.raw`, :meth:`~ClaudeSessions.conversation` and
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import datetime as dt
 import fcntl
+import html
 import json
 import os
 import pty
@@ -71,6 +73,9 @@ _UNNAMED = frozenset({"remote control session (from a project)", "session"})
 _SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{2,4}(?:-[0-9a-f]{2})?")
 # A file he attached, as Claude Code writes it into the prompt: @"/path with spaces" or @/path.
 _ATTACHED = re.compile(r'@"([^"]+)"|@(\S+)')
+# A project thread's session is prompted with a wake envelope; the person's words are the body of
+# its triggering message (or of its last message when none is marked).
+_WAKE_MESSAGE = re.compile(r"<message\b([^>]*)>(.*?)</message>", re.DOTALL)
 # Process names (lowercase prefix) that host a terminal session, innermost first wins.
 _TERMINALS = (
     ("zellij", "zellij"),
@@ -108,6 +113,10 @@ def _named(name: object) -> str:
 
 def _prompt_title(prompt: str) -> str:
     """A prompt as a title: its words without attached-file paths, else the files' names."""
+    if prompt.lstrip().startswith("<wake"):
+        found = _WAKE_MESSAGE.findall(prompt)
+        triggered = [body for attrs, body in found if 'trigger="true"' in attrs]
+        prompt = html.unescape((triggered or [body for _, body in found] or [""])[-1])
     words = _short(_ATTACHED.sub(" ", prompt))
     if words:
         return words
