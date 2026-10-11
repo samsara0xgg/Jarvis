@@ -6,30 +6,38 @@ enum RingScene { static var on = false }
 
 extension StarEngine {
     /// `-scene 星环 -fakeNow 2026-10-11T20:30`: an invented day on his thread, as if the brain had served it (sleep, a morning work block, a walk, a bus ride,
-    /// an afternoon exercise walk, a call, an evening work block). `星环近@08:40` is the near view resting at that time. Made-up data only.
-    func runRingScene(near: String?) {
+    /// an afternoon exercise walk, a call, an evening work block), with the places he keeps and what the newer brain adds to them.
+    /// `星环近@08:40` is the near view resting at that time; `星环旧` is the same day as the old brain served it, without the new fields. Made-up data only.
+    func runRingScene(near: String?, old: Bool = false) {
         RingScene.on = true
         switchWorld(real: true)
-        let cal = Cal.cur, base = cal.origin.timeIntervalSince1970 * 1000
+        let cal = Cal.cur, base = cal.origin.timeIntervalSince1970 * 1000, nowM = nowT()
         func ms(_ minute: Double) -> Int64 { Int64(base + minute * 60_000) }
         var items: [[String: Any]] = []
+        /// a span of the past: it is cut at now, and one that has not begun is left out
         func add(_ kind: String, _ from: Double, _ to: Double, _ more: [String: Any] = [:]) {
-            var o: [String: Any] = ["id": "ring-\(items.count)", "lane": "you", "kind": kind, "state": "done", "start_ms": ms(from), "end_ms": ms(to)]
+            if from > nowM { return }
+            var o: [String: Any] = ["id": "ring-\(items.count)", "lane": "you", "kind": kind, "state": to <= nowM ? "done" : "now", "start_ms": ms(from)]
+            if to <= nowM { o["end_ms"] = ms(to) } else { o["end_ms"] = NSNull() }
             o.merge(more) { $1 }
+            if old { o["kept_place"] = nil }
             items.append(o)
         }
+        func kept(_ id: String, _ name: String, _ role: String) -> [String: Any] { ["id": id, "name": name, "role": role] }
         add("sleep", 0, 430, ["minutes": 430])
-        add("stay", 430, 510, ["place": "Home"])
+        add("stay", 430, 510, ["place": "12 Example St, Town", "kept_place": kept("p-home", "Home", "home")])
         add("move", 510, 525, ["activity": "walking"])
         add("ride", 525, 558, ["route": "12", "board_stop": "Stop A", "alight_stop": "Stop B"])
-        add("stay", 558, 1020, ["place": "Office"])
+        add("stay", 558, 775, ["place": "Science Hall, Campus Rd", "kept_place": kept("p-campus", "Campus", "school")])
         add("work", 575, 700, ["active_s": 6600, "projects": [["name": "Project A", "seconds": 6600]]])
-        add("move", 780, 850, ["activity": "walking"])
+        add("move", 775, 850, ["activity": "walking"])
+        add("stay", 850, 960, ["place": "The Cafe, Main St", "kept_place": kept("p-cafe", "Cafe", "other")])
         add("call", 900, 925, ["app": "Phone"])
+        add("stay", 960, 1020, ["place": "Corner Library, 3 Example Ave"])
         add("move", 1020, 1040, ["activity": "walking"])
-        add("stay", 1040, 1230, ["place": "Home"])
+        add("stay", 1040, 1440, ["place": "12 Example St, Town", "kept_place": kept("p-home", "Home", "home")])
         add("work", 1100, 1210, ["active_s": 3000, "projects": [["name": "Project B", "seconds": 3000]]])
-        let reply: [String: Any] = ["date": cal.iso(0), "tz": "UTC", "start_ms": ms(0), "end_ms": ms(DAY), "now_ms": ms(1230), "items": items, "missing": [String]()]
+        let reply: [String: Any] = ["date": cal.iso(0), "tz": "UTC", "start_ms": ms(0), "end_ms": ms(DAY), "now_ms": ms(nowM), "items": items, "missing": [String]()]
         guard let data = try? JSONSerialization.data(withJSONObject: reply), let day = try? JSONDecoder().decode(DayReply.self, from: data) else { return }
         EV = RealDay.shared.rebuild([cal.iso(0): day], now: nowT())
         for e in EV { e.born = -1e9 }

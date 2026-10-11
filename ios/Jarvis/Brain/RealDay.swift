@@ -15,6 +15,9 @@ final class RealDay {
     private var tints: [Tint] = []
     /// the bus rides so far, for the dots where he got on and off (`end` is nil while he is still on)
     private(set) var rides: [(start: Double, end: Double?)] = []
+    /// where he stayed, as a faint wash behind the ring; `t1` nil while he is still there (it runs to now). Built once per load of the days.
+    struct Wash { let t0: Double, t1: Double?, col: RGB, a: Double, name: String?, kept: Bool }
+    private(set) var washes: [Wash] = []
     private var items: [DayItem] = []
     private var actCache: [Int: DayAct] = [:]
     private var today = 0
@@ -29,6 +32,7 @@ final class RealDay {
         actCache = [:]
         segs = items.compactMap { seg($0, cal, now) }
         tints = items.compactMap { tint($0, cal, now) }
+        washes = items.compactMap { wash($0, cal, now) }
         rides = items.filter { $0.kind == "ride" && $0.lane == "you" && cal.t(ms: $0.start_ms) <= now }
             .map { (cal.t(ms: $0.start_ms), $0.end_ms.map(cal.t(ms:))) }
         return items.compactMap { star($0, cal, now) }
@@ -50,7 +54,7 @@ final class RealDay {
         var note: String?
         switch i.kind {
         case "stay":
-            let place = i.place.flatMap { $0.isEmpty ? nil : $0 }
+            let place = i.placeLabel
             title = place.map { "在\($0)" } ?? "停留"; s = place.map { fit($0, 8) } ?? "停留"; src = "定位"
             meta = when + (t1 == nil ? "" : " · " + durText(Int((d ?? 0).rounded())))
         case "move":
@@ -139,10 +143,21 @@ final class RealDay {
         case "ride":        // the brain swaps an automotive move for this: the thread runs on through it
             return Seg(t0: t0, t1: t1, key: "~公交上", level: 0.36, prio: 4)
         case "stay":
-            let p = i.place.flatMap { $0.isEmpty ? nil : $0 }
+            let p = i.placeLabel
             return Seg(t0: t0, t1: t1, key: p.map { "~在\($0)" } ?? "~停留", level: 0.12, prio: 1)
         default: return nil
         }
+    }
+
+    private func wash(_ i: DayItem, _ cal: Cal, _ now: Double) -> Wash? {
+        guard i.lane == "you", i.kind == "stay" else { return nil }
+        let t0 = cal.t(ms: i.start_ms)
+        if t0 > now { return nil }
+        let t1 = i.end_ms.map(cal.t(ms:)), n = i.ringName
+        if let k = i.kept_place {
+            return Wash(t0: t0, t1: t1, col: PlaceTint.colour(role: k.role, id: k.id), a: PlaceTint.kept, name: n?.name, kept: true)
+        }
+        return Wash(t0: t0, t1: t1, col: .ink, a: PlaceTint.plain, name: n?.name, kept: false)
     }
 
     private func tint(_ i: DayItem, _ cal: Cal, _ now: Double) -> Tint? {

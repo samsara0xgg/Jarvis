@@ -83,6 +83,13 @@ struct DayItem: Decodable {
     let minutes: Double?, active_s: Double?, turns: Int?
     let fired: Bool?, acknowledged: Bool?
     let projects: [Top]?, apps: [Top]?
+    /// a stay inside a place he keeps (spec: `kept_place`); `place` stays the phone's own words
+    let kept_place: KeptPlace?
+}
+
+struct KeptPlace: Decodable, Equatable {
+    let id: String, name: String
+    let role: String?           // home, school or other
 }
 
 /// Every call tries the brain's addresses in order with a short timeout, and says what went wrong in the owner's words.

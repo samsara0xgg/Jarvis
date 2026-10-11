@@ -109,8 +109,10 @@ extension StarEngine {
         if baseOff { frame(c) }
         c.setLineCap(.round)
         if cam != nil { sunBand(c) }
+        placeWash(c)                        // where he was, behind everything
         ticks(c)
         numerals(c)                         // close up they go down before the names, so the names keep out of their way
+        placeNames(c)
         arcs(c); trace(c, now); constellations(c); events(c, now)
         nowMark(c)
         if ls.value > 0.02 && cam == nil { lensMark(c) }
@@ -619,6 +621,17 @@ extension StarEngine {
             blit(c, conicRing(size: CGSize(width: w, height: h), scale: spr.px, center: CGPoint(x: cx, y: cy), radius: MR + 1.2, width: 1.6, startAngle: -Double.pi / 2, stops: stops), 0, 0, w, h)
             ring(MR - 1.5, .dial, today ? 0.3 : 0.13, 0.6)
             ring(MR * 0.5, .dial, 0.1, 0.6)
+            if d <= 0 && Cal.cur.real {                              // where he stayed: the faint wash of each stay, as on the big dial
+                let lo = Double(d) * DAY
+                c.setBlendMode(.plusLighter); c.setLineCap(.butt); c.setLineWidth(7)
+                for w in RealDay.shared.washes {
+                    let m0 = max(w.t0 - lo, 0), m1 = min((w.t1 ?? nT) - lo, DAY)
+                    if m1 <= m0 { continue }
+                    c.setStrokeColor(w.col.cg(w.a * 1.6))
+                    c.beginPath(); c.addArc(center: CGPoint(x: cx, y: cy), radius: MR * 0.62, startAngle: a(m0), endAngle: a(m1), clockwise: false); c.strokePath()
+                }
+                c.setBlendMode(.normal); c.setLineCap(.round)
+            }
             if d <= 0 {                                              // the path you walked, rising where you moved
                 let end = today ? nT - Double(floorDay(nT)) * DAY : DAY
                 var m = 0.0, last = CGPoint.zero
