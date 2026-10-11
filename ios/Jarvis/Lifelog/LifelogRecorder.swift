@@ -1,4 +1,5 @@
 import AVFoundation
+import CallKit
 import Foundation
 import Observation
 import UIKit
@@ -326,15 +327,25 @@ final class LifelogMic: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + 10) { [self] in retrying = false; reconcile() }
     }
 
-    /// The built-in microphone, its data source that does stereo, held as in a portrait phone.
+    /// The built-in microphone, its data source that does stereo, held as in a portrait phone. Only when the built-in microphone is
+    /// already the input and no other app's audio is on: a headset, or another app's call, keeps the route it has.
     private static func preferStereoBuiltIn(_ s: AVAudioSession) {
-        guard let mic = s.availableInputs?.first(where: { $0.portType == .builtInMic }) else { return }
-        try? s.setPreferredInput(mic)
-        if let ds = mic.dataSources?.first(where: { $0.supportedPolarPatterns?.contains(.stereo) == true }) {
-            try? ds.setPreferredPolarPattern(.stereo)
-            try? mic.setPreferredDataSource(ds)
+        guard s.currentRoute.inputs.first?.portType == .builtInMic, !s.isOtherAudioPlaying else {
+            lifelogNote("stereo not asked for: input \(s.currentRoute.inputs.map(\.portType.rawValue)), other audio \(s.isOtherAudioPlaying)")
+            return
         }
-        try? s.setPreferredInputOrientation(.portrait)
+        guard let mic = s.availableInputs?.first(where: { $0.portType == .builtInMic }) else { return lifelogNote("stereo: no built-in microphone listed") }
+        let sources = mic.dataSources ?? []
+        lifelogNote("stereo: sources \(sources.map { "\($0.dataSourceName) \($0.supportedPolarPatterns?.map(\.rawValue) ?? [])" })")
+        guard let ds = sources.first(where: { $0.supportedPolarPatterns?.contains(.stereo) == true }) else { return }
+        do {
+            try s.setPreferredInput(mic)
+            try ds.setPreferredPolarPattern(.stereo)
+            try mic.setPreferredDataSource(ds)
+            try s.setPreferredInputOrientation(.portrait)
+            try s.setPreferredInputNumberOfChannels(min(2, s.maximumInputNumberOfChannels))
+        } catch { lifelogNote("stereo: \(error.localizedDescription)") }
+        lifelogNote("stereo: \(s.inputNumberOfChannels) ch of \(s.maximumInputNumberOfChannels), \(ds.dataSourceName) \(ds.selectedPolarPattern?.rawValue ?? "-")")
     }
 }
 
@@ -346,6 +357,7 @@ final class LifelogRecorder {
     /// when the piece being written began (its first sample)
     private(set) var pieceStartedAt: Date?
     @ObservationIgnored private var interrupted = false
+    @ObservationIgnored private let calls = CallWatch()
 
     private init() {
         LifelogWriter.shared.onPiece = { d in
@@ -357,27 +369,44 @@ final class LifelogRecorder {
         let nc = NotificationCenter.default
         nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { n in
             let began = (n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.began.rawValue
+            lifelogNote("interruption \(began ? "began" : "ended") \(n.userInfo ?? [:])")
             // resumes whether or not the system says it should: he wants the day recorded
             MainActor.assumeIsolated { LifelogRecorder.shared.interrupted = began; LifelogRecorder.shared.apply() }
+        }
+        // A call (the phone, or an app's through CallKit, as Discord's voice) pauses the recording, its microphone and session left alone;
+        // its end resumes it even if no interruption-ended notice comes.
+        calls.onChange = { inCall in
+            lifelogNote("call \(inCall ? "started" : "ended")")
+            LifelogRecorder.shared.apply()
         }
         nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { _ in
             LifelogWriter.shared.close()
             LifelogMic.shared.kick(restart: true)
         }
-        nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in LifelogMic.shared.kick() }
+        // an interruption whose end never came (another app let the microphone go without saying so): tried again when he opens the app
+        nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                let r = LifelogRecorder.shared
+                if r.interrupted, !r.calls.inCall { lifelogNote("app opened during an interruption: trying again"); r.interrupted = false; r.apply() }
+                else { LifelogMic.shared.kick() }
+            }
+        }
         nc.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: nil) { _ in LifelogWriter.shared.closeSync() }
     }
 
     /// The switch. Turning on asks for the microphone the first time; refused, it stays off.
-    func setOn(_ on: Bool) {
+    func setOn(_ on: Bool) { Task { await turn(on) } }
+
+    /// `setOn` that returns once the switch, the microphone and the Live Activity are settled: an intent awaits it, because iOS lets
+    /// the Live Activity start only while the intent runs.
+    func turn(_ on: Bool) async {
+        lifelogNote("switch \(on ? "on" : "off")")
         guard on else { LifelogStore.isOn = false; apply(); return }
-        Task {
-            var granted = AVAudioApplication.shared.recordPermission == .granted
-            if !granted { granted = await AVAudioApplication.requestRecordPermission() }
-            if !granted { lifelogNote("microphone permission refused") }
-            LifelogStore.isOn = granted
-            apply()
-        }
+        var granted = AVAudioApplication.shared.recordPermission == .granted
+        if !granted { granted = await AVAudioApplication.requestRecordPermission() }
+        if !granted { lifelogNote("microphone permission refused") }
+        LifelogStore.isOn = granted
+        apply()
     }
 
     /// At launch (also a relaunch after the app was killed): pieces left open are closed, and recording goes on if the switch is on.
@@ -392,10 +421,11 @@ final class LifelogRecorder {
 
     private func apply() {
         let on = LifelogStore.isOn
-        let live = on && !interrupted
+        let paused = interrupted || calls.inCall
+        let live = on && !paused
         LifelogWriter.shared.setAccepting(live)
         if !live { LifelogWriter.shared.close() }
-        LifelogMic.shared.set(on: on, interrupted: interrupted)
+        LifelogMic.shared.set(on: on, interrupted: paused)
         let changed = live != recording
         recording = live
         if changed { LifelogActivity.sync() }
@@ -404,3 +434,20 @@ final class LifelogRecorder {
 
 /// Library/Caches/lifelog.log, with the uploader's lines
 func lifelogNote(_ s: String) { StallLog.append("lifelog: \(s)", to: "lifelog.log") }
+
+/// Whether a call is up (the phone, FaceTime, or an app's call through CallKit); `onChange` on the main thread.
+private final class CallWatch: NSObject, CXCallObserverDelegate {
+    private let observer = CXCallObserver()
+    var onChange: (@MainActor (Bool) -> Void)?
+    var inCall: Bool { observer.calls.contains { !$0.hasEnded } }
+
+    override init() {
+        super.init()
+        observer.setDelegate(self, queue: .main)
+    }
+
+    func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
+        let now = inCall
+        MainActor.assumeIsolated { onChange?(now) }
+    }
+}

@@ -1,5 +1,6 @@
 import ActivityKit
 import Foundation
+import UIKit
 import WidgetKit
 
 /// The recording's Live Activity (the Dynamic Island mark): started, updated and ended to match the recorder.
@@ -19,9 +20,12 @@ enum LifelogActivity {
         if let a = all.first(where: { $0.activityState == .active }) {
             if abs(a.content.state.since.timeIntervalSince(state.since)) > 2 { Task { await a.update(.init(state: state, staleDate: nil)) } }
             for extra in all where extra.id != a.id { Task { await extra.end(nil, dismissalPolicy: .immediate) } }
-        } else if ActivityAuthorizationInfo().areActivitiesEnabled {
+        } else if !ActivityAuthorizationInfo().areActivitiesEnabled {
+            LifelogUploader.log("live activity not started: Live Activities are off for Jarvis")
+        } else {
             do {
-                _ = try ActivityKit.Activity.request(attributes: LifelogActivityAttributes(), content: .init(state: state, staleDate: nil), pushType: nil)
+                let a = try ActivityKit.Activity.request(attributes: LifelogActivityAttributes(), content: .init(state: state, staleDate: nil), pushType: nil)
+                LifelogUploader.log("live activity started \(a.id.prefix(8)), app \(UIApplication.shared.applicationState.rawValue)")
             } catch {
                 // iOS ends an activity after about 8 hours and only lets the app start one from the foreground or an intent
                 LifelogUploader.log("live activity could not start (\(type(of: error)))")

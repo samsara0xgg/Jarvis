@@ -20,7 +20,7 @@ struct LifelogToggleIntent: SetValueIntent, AudioRecordingIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         #if !WIDGET_EXTENSION
-        LifelogRecorder.shared.setOn(value)
+        await LifelogRecorder.shared.turn(value)
         #endif
         return .result()
     }
@@ -34,7 +34,7 @@ struct LifelogPauseIntent: LiveActivityIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         #if !WIDGET_EXTENSION
-        LifelogRecorder.shared.setOn(false)
+        await LifelogRecorder.shared.turn(false)
         #endif
         return .result()
     }
