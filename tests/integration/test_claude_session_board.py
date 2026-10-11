@@ -321,6 +321,7 @@ def test_a_session_is_named_as_claude_desktop_names_it(
         "s-woken": "Remote Control session (from a project)",
         "s-relayed": "Remote Control session (from a project)",
         "s-cited": "Remote Control session (from a project)",
+        "s-thread-named": "Remote Control session (from a project)",
     }
     bin_dir = _home(tmp_path, [
         {"sessionId": sid, "kind": "interactive", "status": "busy", "name": name,
@@ -348,6 +349,10 @@ def test_a_session_is_named_as_claude_desktop_names_it(
             '<relay from="coordinator" session="s">\n  <cited author="user">手机推送收不到'
             "</cited>\n  <note>Look into it.</note>\n</relay>"
         ),
+        "s-thread-named": (
+            '<relay from="coordinator" session="s">\n  <note>You are the Mac worker for the '
+            'thread "让她懂你". Read the draft first.</note>\n</relay>'
+        ),
     }
     for sid, prompt in prompts.items():
         entries: list[dict[str, Any]] = [  # Claude Code keeps 200 characters
@@ -357,7 +362,7 @@ def test_a_session_is_named_as_claude_desktop_names_it(
         if sid != "s-woken":
             entries = [
                 # Remote Control injects envelopes as meta entries with no origin.
-                {"type": "user", "isMeta": sid.startswith(("s-relayed", "s-cited")),
+                {"type": "user", "isMeta": sid.startswith(("s-relayed", "s-cited", "s-thread")),
                  "origin": None, "message": {"role": "user", "content": [
                      {"type": "text", "text": prompt},
                  ]}},
@@ -415,4 +420,5 @@ def test_a_session_is_named_as_claude_desktop_names_it(
         "s-woken": "看下手机为什么没声音",
         "s-relayed": "Deploy main to the Pi and check the titles.",
         "s-cited": "手机推送收不到",
+        "s-thread-named": "让她懂你",
     }

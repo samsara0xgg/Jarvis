@@ -16,8 +16,9 @@ Then ``claude agents``' own name, unless it is the generic "from a project" name
 auto-made slug (``projects-3e``); then the session's opening message, which is what it is about
 and does not change turn by turn (its ``@file`` references dropped, the files' names when that is
 all it says, and for a project thread's session the words of the message that woke it rather than
-the wake envelope around them, and for one a coordinator started, his own words it quotes or
-else the first sentence of its note); then his last prompt the same way; then the folder.
+the wake envelope around them, and for one a coordinator started, the thread its note names,
+else his own words it quotes, else the note's first sentence); then his last prompt the same
+way; then the folder.
 
 On a brain (ADR 0170) these files are the owner's Mac's, so the board is asked of the connected
 terminal, which runs :meth:`ClaudeSessions.raw`, :meth:`~ClaudeSessions.conversation` and
@@ -82,6 +83,8 @@ _WAKE_MESSAGE = re.compile(r"<message\b([^>]*)>(.*?)</message>", re.DOTALL)
 _CITED = re.compile(r'<cited\b[^>]*\bauthor="user"[^>]*>(.*?)</cited>', re.DOTALL)
 _NOTE = re.compile(r"<note\b[^>]*>(.*?)</note>", re.DOTALL)
 _ENVELOPE = re.compile(r"<(?:wake|relay)\b")
+# The project thread a coordinator's note names, as it quotes it: thread "…" or thread 「…」.
+_THREAD_NAMED = re.compile(r'\bthread\s+(?:"([^"\n]{1,80})"|\u300c([^\u300d\n]{1,80})\u300d)')
 _SENTENCE = re.compile(r"(?<=[.!?])\s|(?<=[\u3002\uff01\uff1f])|\n")
 # Process names (lowercase prefix) that host a terminal session, innermost first wins.
 _TERMINALS = (
@@ -131,10 +134,14 @@ def _prompt_title(prompt: str) -> str:
     elif "<relay" in prompt:
         cited = _CITED.findall(prompt)
         note = _NOTE.findall(prompt)
-        if cited:
+        said = html.unescape(note[0]).strip() if note else ""
+        named = _THREAD_NAMED.search(said)
+        if named:  # the thread's own name is how he knows the session
+            prompt = named.group(1) or named.group(2)
+        elif cited:
             prompt = html.unescape(cited[-1])
         else:
-            prompt = _SENTENCE.split(html.unescape(note[0]).strip(), maxsplit=1)[0] if note else ""
+            prompt = _SENTENCE.split(said, maxsplit=1)[0]
     words = _short(_ATTACHED.sub(" ", prompt))
     if words:
         return words
