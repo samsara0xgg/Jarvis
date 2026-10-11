@@ -316,6 +316,8 @@ def test_a_session_is_named_as_claude_desktop_names_it(
         "s-slug": "projects-3e",
         "s-plain": "Remote Control session (from a project)",
         "s-named": "boooob ui",
+        "s-file": "session",
+        "s-mixed": "session",
     }
     bin_dir = _home(tmp_path, [
         {"sessionId": sid, "kind": "interactive", "status": "busy", "name": name,
@@ -323,9 +325,15 @@ def test_a_session_is_named_as_claude_desktop_names_it(
         for sid, name in names.items()
     ])
     project = tmp_path / ".claude" / "projects" / "-x-jarvis"
-    for sid in ("s-slug", "s-plain"):
+    prompts = {
+        "s-slug": "what s-slug was asked",
+        "s-plain": "what s-plain was asked",
+        "s-file": '@"/Users/a/.claude/uploads/x/plan v2.md"',
+        "s-mixed": "@/Users/a/shot.png 这张图里哪里不对",
+    }
+    for sid, prompt in prompts.items():
         (project / f"{sid}.jsonl").write_text(
-            json.dumps({"type": "last-prompt", "lastPrompt": f"what {sid} was asked"}),
+            json.dumps({"type": "last-prompt", "lastPrompt": prompt}, ensure_ascii=False),
         )
     desktop = (tmp_path / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
                / "org" / "project")
@@ -353,4 +361,6 @@ def test_a_session_is_named_as_claude_desktop_names_it(
         "s-slug": "what s-slug was asked",
         "s-plain": "what s-plain was asked",
         "s-named": "boooob ui",
+        "s-file": "plan v2.md",
+        "s-mixed": "这张图里哪里不对",
     }

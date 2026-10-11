@@ -352,6 +352,7 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "push.confirmation": {"zh": "等你确认", "en": "Waiting for your OK"},
     "push.question": {"zh": "有个问题等你回答", "en": "A question for you"},
     "push.claude": {"zh": "Claude Code 请求许可", "en": "Claude Code asks permission"},
+    "push.plugin": {"zh": "点一下登录，连上这个 App", "en": "Tap to log in and connect"},
     # ADR 0200: the reminder a pinned bus trip rings at its leave time; the stop name is the model's.
     "departure.go": {
         "zh": "该出门了，{route} 路 {departs} 在 {stop} 上车",

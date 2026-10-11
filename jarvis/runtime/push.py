@@ -17,7 +17,8 @@ module decides. Four things push, each by its own rule:
 - the ride Live Activity (:meth:`Push.ride_activity`), which the ride follower starts, updates and
   ends (ADR 0224).
 
-A push that fails is logged without its text and never tried again. A host with no key
+Every alert is logged with its outcome, category and card id, never its text; one that fails
+is never tried again. A host with no key
 configured pushes nothing and says so once at boot.
 """
 
@@ -67,6 +68,7 @@ _WAITING_TITLES: Final = {
     "confirmation": "push.confirmation",
     "question": "push.question",
     "claude": "push.claude",
+    "plugin": "push.plugin",
 }
 _CLOSERS: Final = {
     "confirmation.accepted": "confirmation_id",
@@ -116,6 +118,9 @@ class Push:
         self.next_reminder: Callable[[], tuple[str, int] | None] = lambda: None
         # Whether he is at the Mac now (ADR 0218); called off the loop. Unknown is away.
         self.at_mac: Callable[[], bool] = lambda: False
+        # ADR 0232: ``(request id, app name, device that asked)`` while an app's login link
+        # waits for him, or ``None``.
+        self.plugin_login: Callable[[], tuple[str, str, str | None] | None] = lambda: None
         self._lock = threading.Lock()
         self._remembered: dict[str, None] = {}
         # Held Claude Code requests not pushed yet: id -> (text, whether it still waits).
@@ -198,7 +203,9 @@ class Push:
         )
 
     def waiting(self, kind: str, item_id: str, text: str, device: str | None = None) -> bool:
-        """Push that ``kind`` (``confirmation``, ``question`` or ``claude``) waits; once per item.
+        """Push that ``kind`` (``confirmation``, ``question``, ``claude`` or ``plugin``) waits.
+
+        Once per item.
 
         ``device`` is the one whose turn asked it (ADR 0218): only that phone is pushed, and a
         computer never is. With no device, it goes to the phones only while he is away from the
@@ -279,6 +286,9 @@ class Push:
             return
         for kind, item_id, text, device in self._new_waiting():
             self.waiting(kind, item_id, text, device)
+        login = self.plugin_login()
+        if login is not None:
+            self.waiting("plugin", *login)
         self._follow_prompts()
         self._update_activity()
 
@@ -429,6 +439,14 @@ class Push:
             return 0
         if outcome is Outcome.UNREGISTERED:
             push_tokens.drop_token(self._root, name, kind)
+        if isinstance(what, PushMessage):
+            # Every alert leaves a line, so whether his phone got one can be read back later;
+            # never its text or token. A card's id says which card it was (ADR 0232).
+            card = (what.data or {}).get("card")
+            LOGGER.info(
+                "push: %s to %s, %s%s", outcome.name.lower(), name, what.category or "alert",
+                f" {card.get('id')}" if isinstance(card, dict) else "",
+            )
         return int(outcome is Outcome.SENT)
 
     @staticmethod

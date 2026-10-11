@@ -27,7 +27,7 @@ from jarvis.runtime.plugin_catalog import (
 )
 from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.shared.lang import t
-from jarvis.state.event_log import append_event_in_transaction, open_runtime_event_log
+from jarvis.state.event_log import MAC_NODE, append_event_in_transaction, open_runtime_event_log
 from jarvis.state.plugin_settings import PluginSettings
 
 if TYPE_CHECKING:
@@ -50,7 +50,7 @@ _LATEST_INPUT_SQL = (
     "AND COALESCE(json_extract(payload_json, '$.channel'), '') != 'plugin_resume'"
 )
 _ORIGIN_SQL = (
-    "SELECT id, event_uid, payload_json FROM events "
+    "SELECT id, event_uid, payload_json, ingestion_node FROM events "
     "WHERE type IN ('surface.user_intent', 'utterance.received') "
     "AND correlation_id = ? ORDER BY id DESC LIMIT 1"
 )
@@ -212,6 +212,17 @@ class PluginConnections:
                 request["auth_url"] = self._auth_url
             return {"plugins": [self._public(n) for n in sorted(self.packages)], "request": request}
 
+    def login_waiting(self) -> tuple[str, str, str | None] | None:
+        """ADR 0232: ``(request id, app name, device that asked)`` while a login link waits."""
+        with self._lock:
+            request = self._request
+            if request is None or request["state"] != "authorizing" or not self._auth_url:
+                return None
+            plugin_id = str(request["plugin_id"])
+            package = self.packages.get(plugin_id)
+            name = package.public()["name"] if package is not None else plugin_id
+            return str(request["id"]), str(name), request.get("_device")
+
     def icon(self, plugin_id: str) -> str | None:
         """One plugin's logo, fetched once per desktop session instead of every poll."""
         package = self.packages.get(plugin_id)
@@ -304,6 +315,9 @@ class PluginConnections:
                         "_transcript": str(data.get("transcript", "")),
                         "_record_id": str(data.get("record_id") or origin[1]),
                         "_origin_channel": data.get("plugin_origin_channel", data.get("channel")),
+                        # ADR 0232: the login link is pushed to the phone that asked; ``mac``
+                        # is this host's own default row, not a device (ADR 0212).
+                        "_device": None if origin[3] in (None, MAC_NODE) else str(origin[3]),
                     }
                 )
             if self._request["state"] == "offered" and self._needs_no_typed_credential(plugin_id):

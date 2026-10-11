@@ -43,9 +43,12 @@ def test_the_login_link_is_in_the_request_only_while_it_waits_and_the_brain_open
     try:
         request_id = _open(service, "oauth")
         assert "auth_url" not in service.read()["request"]
+        assert service.login_waiting() is None  # nothing to log in to yet
         service.action("connect", {"request_id": request_id})
         waiting = _wait(service, "authorizing")
         link = waiting["auth_url"]
+        # ADR 0232: what the push says waits; a panel-opened request names no device.
+        assert service.login_waiting() == (request_id, "oauth", None)
         assert "/authorize" in link
         assert service.action("reopen", {"request_id": request_id})["request"]["auth_url"] == link
         assert opened == []
@@ -53,6 +56,7 @@ def test_the_login_link_is_in_the_request_only_while_it_waits_and_the_brain_open
             assert response.status == 200
         done = _wait(service, "ready")
         assert "auth_url" not in done
+        assert service.login_waiting() is None
         shown = json.dumps(service.read())
         assert "access_token" not in shown
         assert "refresh_token" not in shown

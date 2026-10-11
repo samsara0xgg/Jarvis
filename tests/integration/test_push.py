@@ -820,6 +820,32 @@ def test_a_claude_request_held_while_he_is_away_pushes_at_once(world: World) -> 
     assert len(world.requests()) == 1
 
 
+
+def test_an_apps_login_link_goes_once_to_the_phone_that_asked_and_never_to_a_computer(
+    world: World, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ADR 0232: the login card names its request; a Mac's ask stays on the Mac."""
+    caplog.set_level(logging.INFO, logger="jarvis.runtime.push")
+    login: list[tuple[str, str, str | None] | None] = [("P1", "Notion", "phone")]
+    world.push.plugin_login = lambda: login[0]
+    world.push.poll()
+    world.push.poll()
+    [request] = world.requests()
+    assert request["body"]["aps"]["alert"] == {"title": lang.t("push.plugin"), "body": "Notion"}
+    assert request["body"]["aps"]["category"] == "plugin"
+    assert request["body"]["card"] == {"kind": "plugin", "id": "P1"}
+    # The send is logged with its card, never its text, so delivery can be read back.
+    assert "push: sent to phone, plugin P1" in caplog.text
+    assert "Notion" not in caplog.text
+
+    login[0] = ("P2", "Linear", "macbook")  # asked on the Mac: its panel has the link
+    world.push.poll()
+    login[0] = ("P3", "Linear", None)  # opened from a panel while he sits at the Mac
+    world.push.at_mac = lambda: True
+    world.push.poll()
+    assert len(world.requests()) == 1
+
+
 # --- the generic send ------------------------------------------------------------------------
 
 

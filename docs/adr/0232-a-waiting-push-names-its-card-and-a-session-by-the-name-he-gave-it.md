@@ -18,8 +18,11 @@
   session in `~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json`
   (`title`, keyed by `cliSessionId`). For a session spawned for a project thread it is the thread's
   title. 82 of 114 such sessions had a real title there; the rest kept the generic name.
+- An app's login link (ADR 0202) was never pushed: asked for from the phone, it waited in a panel
+  he could not see.
+- A successful push left no trace, so whether his phone got one could not be read back.
 - The owner asked on 2026-10-11 that these sessions show the names he gave them, and agreed that
-  waiting cards be answerable on the phone.
+  waiting cards, and logging in to an app, be done on the phone.
 
 ## Decision
 
@@ -33,7 +36,14 @@ title Claude Desktop shows him.
   from `claude agents`, unless it is the generic remote-control name or a slug of words ending in
   a short hex tail; the first prompt; the folder.
 - A Claude Code permission push reads "session title · tool". Before the board has listed the
-  session, the title is its folder. The tool's input is still never sent.
+  session, the title is its folder. The tool's input is still never sent. A prompt used as a title
+  drops the paths of files he attached, or is their names when it says nothing else.
+- While an app's login link waits, a `plugin` push names the app, with the request's id as its
+  card. It follows ADR 0218: only to the phone whose turn asked, never to a computer, and when no
+  turn asked (a panel), only while he is away from the Mac. The app opens `auth_url` from the
+  `plugin_request` of `GET /inherent/waiting`.
+- Every alert sent logs one line with its outcome, device, category and card id, never its text
+  or token.
 
 ## Alternatives rejected
 

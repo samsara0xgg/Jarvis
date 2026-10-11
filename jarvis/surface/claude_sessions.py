@@ -13,7 +13,8 @@ A row's title is the name he sees in Claude Desktop when it has one: Desktop kee
 ``~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json`` (``title``, keyed by
 ``cliSessionId``), and a session it spawned for a project thread carries the thread's title there.
 Then ``claude agents``' own name, unless it is the generic "from a project" name or an
-auto-made slug (``projects-3e``); then his first prompt; then the folder.
+auto-made slug (``projects-3e``); then his last prompt with its ``@file`` references dropped (the
+files' names when that is all it says); then the folder.
 
 On a brain (ADR 0170) these files are the owner's Mac's, so the board is asked of the connected
 terminal, which runs :meth:`ClaudeSessions.raw`, :meth:`~ClaudeSessions.conversation` and
@@ -68,6 +69,8 @@ _DESKTOP_SESSIONS = Path("Library") / "Application Support" / "Claude" / "claude
 _UNNAMED = frozenset({"remote control session (from a project)", "session"})
 # Claude Code's own made-up name for an unnamed session: words, then a short hex tail.
 _SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{2,4}(?:-[0-9a-f]{2})?")
+# A file he attached, as Claude Code writes it into the prompt: @"/path with spaces" or @/path.
+_ATTACHED = re.compile(r'@"([^"]+)"|@(\S+)')
 # Process names (lowercase prefix) that host a terminal session, innermost first wins.
 _TERMINALS = (
     ("zellij", "zellij"),
@@ -101,6 +104,14 @@ def _named(name: object) -> str:
     if text.lower() in _UNNAMED or _SLUG.fullmatch(text):
         return ""
     return text
+
+
+def _prompt_title(prompt: str) -> str:
+    """A prompt as a title: its words without attached-file paths, else the files' names."""
+    words = _short(_ATTACHED.sub(" ", prompt))
+    if words:
+        return words
+    return _short(", ".join(Path(a or b).name for a, b in _ATTACHED.findall(prompt)))
 
 
 def _project(cwd: str) -> str:
@@ -596,7 +607,7 @@ class ClaudeSessions:
                     "phase": phase,
                     "title": titles.get(agent["sessionId"])
                     or _named(agent.get("name"))
-                    or tx["prompt"]
+                    or _prompt_title(tx["prompt"])
                     or _project(cwd),
                     "project": _project(cwd),
                     "branch": tx["branch"],

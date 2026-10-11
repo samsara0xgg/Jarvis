@@ -7723,6 +7723,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 # ADR 0218: a request, or a card no turn asked, goes to the phone only away from
                 # the Mac.
                 push.at_mac = runtime.whereabouts.at_mac
+            if runtime.plugin_connections is not None:
+                # ADR 0232: an app's login link goes to the phone that asked for it.
+                push.plugin_login = runtime.plugin_connections.login_waiting
             if runtime.reminders is not None:
                 runtime.reminders.push = push.reminder
                 push.next_reminder = runtime.reminders.next_due
