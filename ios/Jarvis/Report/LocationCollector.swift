@@ -112,6 +112,7 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
 
     /// Motion history says what he is doing now (`Reporter.movement`).
     func motion(_ now: Activity?) {
+        note("motion says \(String(describing: now)), updating \(updating)")
         switch now {
         case .walking, .running, .cycling, .automotive: enterMoving(activity: now)
         case .stationary: if moving { exitUpdates() }
@@ -121,7 +122,14 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
 
     // MARK: Authorization
 
+    /// States only, never a coordinate: to the unified log and to Library/Caches/location.log, so what kept location on can be read from the phone.
+    private func note(_ s: String) {
+        log.info("\(s, privacy: .public)")
+        StallLog.append(s, to: "location.log")
+    }
+
     private func authorizationChanged() {
+        note("authorization \(manager.authorizationStatus.rawValue), full accuracy \(manager.accuracyAuthorization == .fullAccuracy)")
         switch manager.authorizationStatus {
         case .notDetermined:
             manager.requestWhenInUseAuthorization()
@@ -207,7 +215,7 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
         guard region.identifier == Self.fenceID else { return }
         let hold = MainActor.assumeIsolated { BackgroundHold.begin("jarvis.location.fence") }
         Task { @MainActor in
-            self.log.info("left the rest fence")
+            self.note("left the rest fence")
             self.enterMoving()
             hold.end()
         }
@@ -305,7 +313,7 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
         // Background updates only with Always: with "while using" iOS would add its blue bar for them.
         manager.allowsBackgroundLocationUpdates = manager.authorizationStatus == .authorizedAlways
         manager.startUpdatingLocation()
-        log.info("updates started, moving \(self.moving)")
+        note("updates started, moving \(moving), activity \(String(describing: activity)), background \(manager.allowsBackgroundLocationUpdates)")
         // No CLBackgroundActivitySession: it puts the location badge in the Dynamic Island for the whole trip. Always plus
         // allowsBackgroundLocationUpdates keeps the app running through it without one.
         watchMotion()
@@ -324,7 +332,7 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
         moving = false
         activity = nil
         manager.stopUpdatingLocation()
-        log.info("updates stopped")
+        note("updates stopped")
         manager.allowsBackgroundLocationUpdates = false
         motionManager.stopActivityUpdates()
         if let t = thinned, let last = lastSent, t.distance(from: last) >= LocationTuning.minSeparation { report(t) }
@@ -383,7 +391,7 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
         region.notifyOnEntry = false
         region.notifyOnExit = true
         manager.startMonitoring(for: region)
-        log.info("rest fence armed")
+        note("rest fence armed")
     }
 
     private func removeRestFence() {
