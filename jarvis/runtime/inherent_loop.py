@@ -99,6 +99,7 @@ if TYPE_CHECKING:
     from jarvis.runtime.home import Home
     from jarvis.runtime.job_mail import JobMail
     from jarvis.runtime.moment import Moment
+    from jarvis.runtime.picture_notes import PictureNotes
     from jarvis.runtime.reminders import Reminders
     from jarvis.runtime.settings import Settings
     from jarvis.runtime.work_state import WorkStateService
@@ -6439,8 +6440,14 @@ def _submit_as_device(
     )
 
 
-def _keep_share(event_log_path: Path, fields: dict[str, Any]) -> str:
-    """ADR 0211: keep a share he did not ask about as one ``user.shared`` event; its id."""
+def _keep_share(
+    event_log_path: Path, fields: dict[str, Any], *, picture_notes: PictureNotes | None = None,
+) -> str:
+    """ADR 0211: keep a share he did not ask about as one ``user.shared`` event; its id.
+
+    A saved picture is queued for its note at once (ADR 0223); if that is lost, the note is
+    found again from the event.
+    """
     share_id = uuid.uuid4().hex
     inner_conn = open_runtime_event_log(event_log_path)
     try:
@@ -6452,6 +6459,8 @@ def _keep_share(event_log_path: Path, fields: dict[str, Any]) -> str:
     finally:
         with contextlib.suppress(sqlite3.Error):
             inner_conn.close()
+    if picture_notes is not None and fields.get("attachments"):
+        picture_notes.submit_saved(fields["attachments"], str(fields.get("note") or ""))
     return share_id
 
 
@@ -6659,7 +6668,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             _submit_with_attachments, runtime.runtime_paths.event_log,
         )
         submit_as_device = functools.partial(_submit_as_device, runtime.runtime_paths.event_log)
-        share_callable = functools.partial(_keep_share, runtime.runtime_paths.event_log)
+        share_callable = functools.partial(
+            _keep_share, runtime.runtime_paths.event_log, picture_notes=runtime.picture_notes,
+        )
 
         # ADR-0005 §12 pre-flight + voice subsystem wiring. Any failure
         # downgrades the daemon to text-only — text path must stay
@@ -7617,6 +7628,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     name="day_summary_schedule",
                 ),
             )
+        if runtime.picture_notes is not None:
+            runtime.picture_notes.start()  # recovers the notes still owed, then runs the queue
         watchers.append(asyncio.create_task(
             _data_sweep_task(_media_dirs(runtime), logs_dir(runtime.runtime_paths.root)),
             name="data_sweep",

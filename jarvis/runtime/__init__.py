@@ -2990,6 +2990,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
                 memory_db=memory.db_path,
                 store=attachments,
                 vision=vision_client,
+                event_log=paths.event_log,
                 pinned_language=str(full_config.get("reply_language", "follow")),
             )
         ),

@@ -106,8 +106,29 @@ def _words_of(text: str) -> str:
     return "\n".join(kept).strip()
 
 
-def last_words(path: Path, before_record_id: str) -> str:
+def answer_after(path: Path, record_id: str) -> str:
+    """Her answer to the turn of ``record_id``: her records up to his next turn, else ``""``."""
+    if not path.is_file():
+        return ""
+    with closing(open_memory_db(path)) as conn:
+        rows = conn.execute(
+            "SELECT source, text FROM records WHERE rowid > "
+            "(SELECT rowid FROM records WHERE id = ?) ORDER BY rowid LIMIT 20",
+            (record_id,),
+        ).fetchall()
+    said: list[str] = []
+    for source, text in rows:
+        if source == "allen":
+            break
+        if source in ("jarvis", "jarvis_live"):
+            said.append(str(text))
+    return "\n".join(said)
+
+
+def last_words(path: Path, before_record_id: str | None) -> str:
     """The words of his latest earlier turn that had any, else ``""``.
+
+    ``None`` looks through all his records, newest first.
 
     An attachment-only turn is answered in the language of these, never of the filler sentence
     the program wrote in its place (ADR 0223).
@@ -117,8 +138,9 @@ def last_words(path: Path, before_record_id: str) -> str:
     with closing(open_memory_db(path)) as conn:
         rows = conn.execute(
             "SELECT text FROM records WHERE source = 'allen' AND rowid < "
-            "(SELECT rowid FROM records WHERE id = ?) ORDER BY rowid DESC LIMIT ?",
-            (before_record_id, _LAST_WORDS_SCAN),
+            "COALESCE((SELECT rowid FROM records WHERE id = ?), "
+            "CASE WHEN ? IS NULL THEN 9223372036854775807 END) ORDER BY rowid DESC LIMIT ?",
+            (before_record_id, before_record_id, _LAST_WORDS_SCAN),
         ).fetchall()
     return next((words for (text,) in rows if (words := _words_of(str(text)))), "")
 

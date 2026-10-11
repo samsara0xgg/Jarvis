@@ -216,7 +216,7 @@ class Attachments:
 
         ``None`` when nothing, or more than one file, answers (ADR 0223).
         """
-        wanted = wanted.strip().lower()
+        wanted = wanted.strip().lower().removeprefix("picture-")  # a day-line item's id
         if not self.directory.is_dir():
             return None
         if wanted == LATEST:
