@@ -98,8 +98,10 @@ final class Sound {
         if engine?.isRunning == true { return true }
         if engine == nil {
             let session = AVAudioSession.sharedInstance()
-            // .ambient follows the silent switch and mixes with other audio; a category someone else set is left alone.
-            if session.category == .soloAmbient { try? session.setCategory(.ambient) }
+            // .ambient follows the silent switch and mixes with other audio. The voice leaves its playAndRecord/voiceChat category behind
+            // when it lets the session go; a cue activating that again took the audio from a phone call he was on. The voice suspends
+            // the cues while it owns the session, so here the category is always the cues' own.
+            if session.category != .ambient { try? session.setCategory(.ambient) }
             try? session.setActive(true)
             let e = AVAudioEngine()
             // The engine stops itself on a route or format change; rebuild on the next play.
