@@ -64,7 +64,7 @@ final class VoiceSession {
     @ObservationIgnored private var rec: AnyObject?                 // a DualRecognizer (iOS 26)
     @ObservationIgnored private var segment = 0
     @ObservationIgnored private var herWords = ""          // what she said lately (rows' text), for telling her echo from him
-    @ObservationIgnored private var judgedOverHer = ""     // the start of this segment's text already judged echo or a nod
+    @ObservationIgnored private var judgedOverHer = ""     // the start of this segment's text already judged her echo
     @ObservationIgnored private var overHer: OverHer?
     @ObservationIgnored private var ducked = false
     @ObservationIgnored private var waitUntil = 0.0       // listening is held open until then after 「等一下」
@@ -312,7 +312,8 @@ final class VoiceSession {
         let v = judgeOverHer(text, hers: herRecent(since: now), judged: judgedOverHer)
         if v != overHer { overHer = v; VoiceTrace.note("over her: \(v) (\(afterJudged(text, judgedOverHer).count) chars)") }
         switch v {
-        case .echo, .backchannel: judgedOverHer = text; duck(false)
+        case .echo: judgedOverHer = text; duck(false)
+        case .backchannel: duck(false)                      // kept: a nod that his words go on from is the start of what he says
         case .tooShort: break                                // her voice stays as it is (yilun 2026-10-10: no ducking)
         case .barge: if inputLevel < bargeLevel { break } else if hostJudges, !awaitingSaid { holdHer() } else { bargeIn() }   // a follow-up still with the host: a plain barge-in
         }
