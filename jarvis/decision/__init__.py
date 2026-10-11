@@ -924,6 +924,10 @@ _ABOUT_TAILS: Final[Mapping[str, str]] = {
         "then cancel this id."
     ),
     "event": "read it by this id with the calendar tool before changing it.",
+    "picture": (
+        "It is a picture he sent; its note is in the conversation, and look_at_picture "
+        "takes this id to look at it again."
+    ),
 }
 _ABOUT_DAY_TAIL: Final[str] = "It is a fact of his day, not something to change."
 

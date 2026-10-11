@@ -15,7 +15,7 @@ import unicodedata
 from typing import Any, Final
 
 ABOUT_KINDS: Final = (
-    "reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk",
+    "reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture",
 )
 """What the phone may have open: a reminder, an Outlook event, a task, or a day-line item."""
 MAX_ID_CHARS: Final = 256
