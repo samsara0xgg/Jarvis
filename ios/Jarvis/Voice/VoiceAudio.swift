@@ -122,15 +122,17 @@ final class VoiceAudio {
             },
             // the hardware changed and the engine stopped itself. One comes right after every start, as voice processing settles:
             // with the microphone's format unchanged the graph is still good and is started again; otherwise it is stale and goes.
-            nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
-                guard let self else { return }
-                let f = engine.inputNode.outputFormat(forBus: 0)
-                if f.sampleRate == tapFormat?.sampleRate, f.channelCount == tapFormat?.channelCount, (try? engine.start()) != nil {
-                    VoiceTrace.note("engine configuration changed: started again at \(Int(f.sampleRate)) Hz")
-                    return
+            // Restarting can block like stopping does, so it runs on the session queue, after any stop already queued there.
+            nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self, engine, tapFormat, sessionQueue] _ in
+                sessionQueue.async {
+                    let f = engine.inputNode.outputFormat(forBus: 0)
+                    if f.sampleRate == tapFormat?.sampleRate, f.channelCount == tapFormat?.channelCount, (try? engine.start()) != nil {
+                        VoiceTrace.note("engine configuration changed: started again at \(Int(f.sampleRate)) Hz")
+                        return
+                    }
+                    VoiceTrace.note("engine configuration changed: microphone now \(Int(f.sampleRate)) Hz \(f.channelCount) ch, stopping")
+                    DispatchQueue.main.async { MainActor.assumeIsolated { if let self, self.engine === engine { self.teardown(interrupted: false) } } }
                 }
-                VoiceTrace.note("engine configuration changed: microphone now \(Int(f.sampleRate)) Hz \(f.channelCount) ch, stopping")
-                MainActor.assumeIsolated { self.teardown(interrupted: false) }
             },
             nc.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] n in
                 guard let self, let core else { return }
