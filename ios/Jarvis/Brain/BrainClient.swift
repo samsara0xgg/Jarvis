@@ -57,6 +57,8 @@ struct DayReply: Decodable {
     /// her one sentence about the day, and the items she or he marked as what mattered; absent from a brain that does not serve them yet
     let line: DayLine?
     let highlights: [Highlight]
+    /// the all-day events of the day
+    let labels: [DayLabel]
 
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: Keys.self)
@@ -70,9 +72,10 @@ struct DayReply: Decodable {
         items = try c.decode([Lossy<DayItem>].self, forKey: .items).compactMap(\.value)
         // what is new is optional, and one value that cannot be read costs only itself
         line = (try? c.decodeIfPresent(DayLine.self, forKey: .line)) ?? nil
+        labels = ((try? c.decodeIfPresent([Lossy<DayLabel>].self, forKey: .labels)) ?? nil)?.compactMap(\.value) ?? []
         highlights = ((try? c.decodeIfPresent([Lossy<Highlight>].self, forKey: .highlights)) ?? nil)?.compactMap(\.value) ?? []
     }
-    private enum Keys: String, CodingKey { case date, tz, start_ms, end_ms, now_ms, items, missing, line, highlights }
+    private enum Keys: String, CodingKey { case date, tz, start_ms, end_ms, now_ms, items, missing, line, highlights, labels }
     private struct Lossy<T: Decodable>: Decodable {
         let value: T?
         init(from d: Decoder) { value = try? T(from: d) }
@@ -84,6 +87,12 @@ struct DayLine: Decodable, Equatable {
     let text: String
     let draft: Bool?
     let written_at: String?
+}
+
+/// An all-day event, which is not an item but a name for the day
+struct DayLabel: Decodable, Equatable {
+    let title: String
+    let source: String?
 }
 
 /// An item that mattered that day: `id` is an item of the day, `by` is "her" or "him"
@@ -104,6 +113,9 @@ struct DayItem: Decodable {
     let projects: [Top]?, apps: [Top]?
     /// a stay inside a place he keeps (spec: `kept_place`); `place` stays the phone's own words
     let kept_place: KeptPlace?
+    /// an Outlook event or a pinned bus departure (kinds `event` and `departure`): the title ("route · stop" for a bus), and where and when the bus goes
+    let title: String?, route: String?, board_stop: String?, to: String?
+    let leave_at_ms: Int64?
 }
 
 struct KeptPlace: Decodable, Equatable {

@@ -112,7 +112,7 @@ final class StarEngine {
     /// the first conversation row the stream lists (nil: the newest page, which slides as rows come). Held while the panel is open, so a row coming in at the
     /// bottom takes nothing away above what he reads; a page earlier each time he scrolls to the top; the newest page again a moment after the panel shuts.
     var streamFrom: Int?
-    var dateD: Int?
+    var dateD: Int?, dateEpoch = -1
     weak var herDrive: HerDrive?
     var endEditing: (() -> Void)?
     #if DEBUG

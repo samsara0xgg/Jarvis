@@ -45,7 +45,7 @@ extension StarEngine {
     func placeWash(_ c: CGContext) {
         let washes = RealDay.shared.washes
         if washes.isEmpty { return }
-        let step = 60 * max(1, z), crowd = 1 / max(1, z * 0.7)       // zoomed out, several days lie on top of each other: each is fainter
+        let step = 60 * max(1, z), crowd = (cam == nil ? 1 : 0.7) / max(1, z * 0.7)       // zoomed out, several days lie on top of each other: each is fainter
         c.setBlendMode(.plusLighter); c.setAlpha(1)
         for w in washes {
             guard let (end, a0, a1) = washSpan(w) else { continue }
@@ -55,7 +55,7 @@ extension StarEngine {
                 var v = visT(mid)
                 if cam != nil, P(R_YOU, ang(mid)) { v *= fog() }
                 if v >= 0.02 {
-                    for L in Self.washLayers {
+                    for L in Self.washLayers where cam == nil || L.r0 > R_HER + 20 {      // close up the wide layer would be a slab; the narrow ones read as haze
                         let inset = min(L.inset, (end - w.t0) / 4)
                         let ts = s <= w.t0 ? s + inset : s, te = e >= end ? e - inset : e
                         if te <= ts || !sector(c, L.r0, L.r1, ang(ts), ang(te)) { continue }

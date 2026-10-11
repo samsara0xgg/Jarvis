@@ -21,6 +21,7 @@ final class RealDay {
     /// her sentence about each day (by day number), and the items that mattered (by item id)
     private var lines: [Int: String] = [:]
     private var spots: [String: Highlight] = [:]
+    private var allDay: [Int: [String]] = [:]
     private var items: [DayItem] = []
     private var actCache: [Int: DayAct] = [:]
     private var today = 0
@@ -29,18 +30,20 @@ final class RealDay {
     func rebuild(_ days: [String: DayReply], now: Double) -> [Ev] {
         let cal = Cal.cur
         var byId: [String: DayItem] = [:]
-        lines = [:]; spots = [:]
+        lines = [:]; spots = [:]; allDay = [:]
         for r in days.values.sorted(by: { $0.now_ms < $1.now_ms }) {
             for i in r.items { byId[i.id] = i }
             if let t = r.line?.text.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty { lines[floorDay(cal.t(ms: r.start_ms))] = t }
             for h in r.highlights { spots[h.id] = h }
+            allDay[floorDay(cal.t(ms: r.start_ms))] = r.labels.map { $0.title.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         }
         items = byId.values.sorted { ($0.start_ms, $0.id) < ($1.start_ms, $1.id) }
         today = floorDay(now)
         actCache = [:]
         segs = items.compactMap { seg($0, cal, now) }
         tints = items.compactMap { tint($0, cal, now) }
-        washes = items.compactMap { wash($0, cal, now) }
+        // an old brain names no place of his: then the dial is as it always was, with no wash and no names. Once any stay is in a kept place, the others get the neutral haze.
+        washes = items.contains { $0.kept_place != nil } ? items.compactMap { wash($0, cal, now) } : []
         rides = items.filter { $0.kind == "ride" && $0.lane == "you" && cal.t(ms: $0.start_ms) <= now }
             .map { (cal.t(ms: $0.start_ms), $0.end_ms.map(cal.t(ms:))) }
         return items.compactMap { star($0, cal, now) }
@@ -48,6 +51,11 @@ final class RealDay {
 
     /// her sentence about day `d`, if the brain served one
     func line(_ d: Int) -> String? { lines[d] }
+    /// the all-day events of day `d` for the top row: the first title cut to fit, and how many more
+    func dayLabel(_ d: Int) -> String? {
+        guard let t = allDay[d], let first = t.first else { return nil }
+        return fit(first, t.count > 1 ? 4 : 5.5) + (t.count > 1 ? " +\(t.count - 1)" : "")
+    }
 
     // MARK: item -> star
 
@@ -93,6 +101,16 @@ final class RealDay {
             let n = i.turns ?? 1, topic = TalkTopics.shared.topic(i.id)
             title = topic ?? (n <= 1 ? "你对我说了一句话" : "和你说了 \(n) 句话"); s = topic.map { fit($0, 8) } ?? "对话"; src = nil
             meta = topic == nil ? when : dayPrefix(t0, now) + clock(t0) + " · 和你说了 \(n) 句"
+        case "event":
+            let name = i.title.flatMap { $0.isEmpty ? nil : $0 } ?? "日程"
+            title = name; s = fit(name, 9); src = "日历"
+            meta = when + (t1 == nil ? "" : " · " + durText(Int((d ?? 0).rounded())))
+        case "departure":
+            let name = i.title.flatMap { $0.isEmpty ? nil : $0 } ?? i.route.map { "\($0) 路" } ?? "发车"
+            title = name; s = fit(name, 9); src = "公交"
+            meta = "发车 " + when + (i.leave_at_ms.map { " · " + clock(cal.t(ms: $0)) + " 出门" } ?? "")
+            note = [i.board_stop.map { "在\($0)上车" }, i.to.map { "去\($0)" }].compactMap { $0 }.joined(separator: " · ")
+            if note?.isEmpty == true { note = nil }
         case "reminder":
             let text = i.text ?? "提醒"
             title = "提醒：\(text)"; s = fit(text, 8); src = nil
@@ -107,6 +125,7 @@ final class RealDay {
         let e = Ev(i.id, t0, lane, st, title, meta, d: d, s: s, src: src, note: note)
         e.live = true
         e.kind = i.kind; e.startMs = i.start_ms
+        if i.kind == "departure" { e.mag = 0.8 }       // a small star: it is a moment, not a stretch
         if let h = spots[i.id] {            // it mattered: a bigger star with a glow in what he was doing, named as it was marked
             e.mag = 1.65; e.s = fit(h.label, 10)
             e.spot = RingTone.of(i.kind, activity: i.activity)?.tone.col ?? (i.lane == "her" ? .dial : .lit)

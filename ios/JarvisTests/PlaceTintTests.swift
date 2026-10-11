@@ -48,4 +48,26 @@ final class PlaceTintTests: XCTestCase {
         // FNV-1a of "a", a published value: the pick does not depend on the launch
         XCTAssertEqual(PlaceTint.fnv("a"), 0xE40C292C)
     }
+
+    func testTheDialIsWashedOnlyOnceTheBrainServesKeptPlaces() throws {
+        func day(_ kept: String) throws -> DayReply {
+            let b = Int64(Cal.cur.origin.timeIntervalSince1970 * 1000)
+            let a = #"{"id": "a", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(b + 3_600_000), "end_ms": \#(b + 7_200_000), "place": "Corner Library, 3 Example Ave"\#(kept)}"#
+            let c = #"{"id": "b", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(b + 8_000_000), "end_ms": \#(b + 12_000_000), "place": "Elsewhere"}"#
+            let j = #"{"date": "2026-10-11", "tz": "UTC", "start_ms": \#(b), "end_ms": \#(b + 86_400_000), "now_ms": \#(b + 50_000_000), "missing": [], "items": [\#(a), \#(c)]}"#
+            return try JSONDecoder().decode(DayReply.self, from: Data(j.utf8))
+        }
+        defer { _ = RealDay.shared.rebuild([:], now: 0) }
+        _ = RealDay.shared.rebuild(["d": try day("")], now: 900)
+        XCTAssertTrue(RealDay.shared.washes.isEmpty, "an old brain: the dial as it was")
+        _ = RealDay.shared.rebuild(["d": try day(#", "kept_place": {"id": "p1", "name": "Library", "role": "other"}"#)], now: 900)
+        let w = RealDay.shared.washes
+        XCTAssertEqual(w.count, 2)
+        XCTAssertEqual(w[0].name, "Library")
+        XCTAssertTrue(w[0].kept)
+        XCTAssertEqual(w[1].col, .ink, "a stay he has no name for is a neutral haze")
+        XCTAssertLessThan(w[1].a, w[0].a)
+        XCTAssertFalse(w[1].kept)
+        XCTAssertEqual(w[1].name, "Elsewhere")
+    }
 }

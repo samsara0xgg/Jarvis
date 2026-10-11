@@ -55,6 +55,7 @@ struct LiveTurn: Identifiable, Equatable {
 final class StarUI {
     // the top row
     var dateText = "10月8日 周四"
+    var dateLabel: String?             // an all-day event of that day, after the date
     var topTime = ""                    // the time the dial points at, beside the date; on show while a talk is
     var level = 0                       // -1 近, 0 日, 1 周, 2 月
     var camE = 0.0                      // how far the near view has come in, 0...1; the grabber leaves the road as it does

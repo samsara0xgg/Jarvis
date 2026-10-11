@@ -117,7 +117,8 @@ struct StarChrome: View {
     private var topRow: some View {
         HStack(spacing: 8) {
             HStack(spacing: 0) {
-                Text(ui.dateText).font(.system(size: 15, weight: .semibold)).foregroundStyle(ink).lineLimit(1)
+                Text(ui.dateText).font(.system(size: 15, weight: .semibold)).foregroundStyle(ink).lineLimit(1).layoutPriority(1)
+                if let l = ui.dateLabel, !ui.talking { Text(" · " + l).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).fixedSize() }      // short enough to fit beside the date; the talk's time takes its place
                 Text("  " + ui.topTime).font(monoF(14)).foregroundStyle(ink).lineLimit(1)
                     .opacity(ui.talking ? 1 : 0).animation(.easeOut(duration: 0.25), value: ui.talking)
             }

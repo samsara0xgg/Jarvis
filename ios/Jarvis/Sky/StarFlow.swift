@@ -548,7 +548,12 @@ extension StarEngine {
         put(\.level, Int(clamp(qGoal.rounded(), -1, 2)))
         put(\.camE, camE)
         let dd = floorDay(F)
-        if dd != dateD { dateD = dd; let (mo, da) = dateOf(dd); ui.dateText = "\(mo)月\(da)日 \(dayName(dd))"; askDays() }
+        if dd != dateD || epoch != dateEpoch {      // the date, and the day's all-day events when the days change
+            if dd != dateD { dateD = dd; askDays() }
+            dateEpoch = epoch
+            let (mo, da) = dateOf(dd)
+            put(\.dateText, "\(mo)月\(da)日 \(dayName(dd))"); put(\.dateLabel, Cal.cur.real ? RealDay.shared.dayLabel(dd) : nil)
+        }
         stepTalk(now)
         let ms: MicState = !ui.text.trimmingCharacters(in: .whitespaces).isEmpty ? .send : talk != nil ? .on : .mic
         put(\.mic, ms)

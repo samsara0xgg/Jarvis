@@ -183,7 +183,7 @@ final class BrainLink {
 
     /// Which sources the brain could not read for this day, as the screen says it ("Mac 没连上"); nil when nothing is missing.
     func missingNote(_ date: String) -> String? {
-        let names = ["phone": "手机", "reminders": "提醒", "mac": "Mac", "talks": "对话"]
+        let names = ["phone": "手机", "reminders": "提醒", "mac": "Mac", "talks": "对话", "calendar": "日历", "departures": "公交"]
         let m = (days[date]?.missing ?? []).compactMap { names[$0] }
         return m.isEmpty ? nil : m.joined(separator: "、") + " 没连上"
     }

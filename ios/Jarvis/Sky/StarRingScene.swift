@@ -14,11 +14,11 @@ extension StarEngine {
         let cal = Cal.cur, base = cal.origin.timeIntervalSince1970 * 1000, nowM = nowT()
         func ms(_ minute: Double) -> Int64 { Int64(base + minute * 60_000) }
         var items: [[String: Any]] = []
-        /// a span of the past: it is cut at now, and one that has not begun is left out
-        @discardableResult func add(_ kind: String, _ from: Double, _ to: Double, _ more: [String: Any] = [:]) -> String? {
-            if from > nowM { return nil }
-            var o: [String: Any] = ["id": "ring-\(items.count)", "lane": "you", "kind": kind, "state": to <= nowM ? "done" : "now", "start_ms": ms(from)]
-            if to <= nowM { o["end_ms"] = ms(to) } else { o["end_ms"] = NSNull() }
+        /// a span of the past: it is cut at now, and one that has not begun is left out (`ahead`: a planned one, which is what the calendar and the pin bring)
+        @discardableResult func add(_ kind: String, _ from: Double, _ to: Double, _ more: [String: Any] = [:], ahead: Bool = false) -> String? {
+            if from > nowM && !ahead { return nil }
+            var o: [String: Any] = ["id": "ring-\(items.count)", "lane": "you", "kind": kind, "state": to <= nowM ? "done" : from <= nowM ? "now" : "next", "start_ms": ms(from)]
+            if to <= nowM || ahead { o["end_ms"] = ms(to) } else { o["end_ms"] = NSNull() }
             o.merge(more) { $1 }
             if old { o["kept_place"] = nil }
             items.append(o)
@@ -40,6 +40,10 @@ extension StarEngine {
         add("work", 1100, 1210, ["active_s": 3000, "projects": [["name": "Project B", "seconds": 3000]]])
         var extra: [String: Any] = [:]
         if !old {
+            add("event", 600, 650, ["id": "event-3f9a1c2b7d10", "title": "Lecture"], ahead: true)
+            add("event", nowM + 90, nowM + 150, ["id": "event-a07be4419c2d", "title": "Study group"], ahead: true)
+            add("departure", nowM + 45, nowM + 45, ["id": "departure-1", "title": "12 · Stop A", "route": "12", "board_stop": "Stop A", "to": "Downtown", "leave_at_ms": ms(nowM + 35)], ahead: true)
+            extra["labels"] = [["title": "Open Day", "source": "calendar"]]
             let marks: [(String?, String, String)] = [(focus, "Deep work", "her"), (call, "Long call", "her"), (walk, "Walk in the sun", "him")]
             extra["highlights"] = marks.compactMap { id, label, by in id.map { ["id": $0, "label": label, "by": by] } }
             extra["line"] = ["text": "今天走了不少路，下午在咖啡馆待得最久。晚上早点休息。", "draft": true, "written_at": "2026-10-11T15:30:00+00:00"]
