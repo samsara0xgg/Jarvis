@@ -8,6 +8,7 @@ struct JarvisApp: App {
     @State private var wasBackground = false
 
     init() {
+        StallLog.shared.start()
         for n in ["InstrumentSerif-Regular", "IBMPlexMono-Regular", "IBMPlexMono-Medium"] {
             if let u = Bundle.main.url(forResource: n, withExtension: "ttf") { CTFontManagerRegisterFontsForURL(u as CFURL, .process, nil) }
         }
@@ -24,6 +25,7 @@ struct JarvisApp: App {
             }
             .onChange(of: phase) { _, p in
                 // the brain's days are asked for again when the app comes back from the background (not on a timer)
+                StallLog.mark("phase \(p)")
                 if p == .background { wasBackground = true }
                 else if p == .active && wasBackground { wasBackground = false; BrainLink.shared.opened() }
                 // what waits on him is asked for every few seconds, only while the app is on screen

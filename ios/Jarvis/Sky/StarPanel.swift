@@ -375,6 +375,7 @@ struct TalkPanel: View {
     /// `fade` is the strip under the last row where rows scrolled out of view melt away; the last row itself rests above it
     private func stream(top: Double, bottom: Double, fade: Double, open: Double) -> some View {
         let days = TalkStream.compose(ui.convDays, live: ui.liveTurns, about: ui.about, cal: Cal.cur.cal, now: Date())
+        let _ = StallLog.count("compose")
         // under the dial the previous round shows dimmer over the newest one; with the panel open every row shows in full.
         // Those rounds are in the last two days: read only them, not the whole history on every frame of her talk.
         let tail = days.suffix(2).flatMap(\.rows)
@@ -433,7 +434,7 @@ struct TalkPanel: View {
                 // estimate its height again, which called the action again, and the main thread never got out (the app froze, then was killed)
                 if follow && away > 0.5 && !probe.following {
                     probe.following = true
-                    DispatchQueue.main.async { probe.following = false; pos.scrollTo(edge: .bottom) }
+                    DispatchQueue.main.async { probe.following = false; StallLog.count("follow"); pos.scrollTo(edge: .bottom) }
                 }
             }
             .onChange(of: ui.panelOpen) { _, on in if on { pos.scrollTo(edge: .bottom) } }

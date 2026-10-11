@@ -442,6 +442,7 @@ extension StarEngine {
     func send(_ text0: String, reply: String? = nil, pics: [SentItem] = []) {
         let text = text0.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { return }
+        StallLog.mark("send \(text.count)ch")
         if reply == nil && BrainLink.shared.hasToken { return sendToBrain(text) }       // paired: the brain answers, not the demo
         ui.text = ""       // the keyboard stays, as in a chat
         let t = nowT()
@@ -458,6 +459,7 @@ extension StarEngine {
         run { ok in try await self.talkFlow(ok, sc, nil, true, pics: pics) }
     }
     func micTap() {
+        StallLog.mark("micTap voice=\(voiceState) talk=\(talk ?? "-")")
         if !ui.text.trimmingCharacters(in: .whitespaces).isEmpty { return send(ui.text) }
         endEditing?()
         // a talk that is still on (her typed answer, a scripted one) gives way, then the mic starts: a tap is never only a dismiss

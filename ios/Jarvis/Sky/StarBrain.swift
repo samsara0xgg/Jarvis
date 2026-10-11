@@ -31,7 +31,9 @@ extension StarEngine {
                     guard let id = up.id else { self.sendingToBrain = false; return self.trouble(AttachUpload.refusal(status: up.status, name: part.name)) }
                     ids.append(id)
                 }
+                StallLog.mark("send: files up")
                 seq = await Conversation.shared.latestSeq()      // her answer is the first row of hers past this one
+                StallLog.mark("send: latest seq")
                 let status = try await BrainLink.shared.call { try await BrainClient.submit(text, attachments: ids, about: about, bases: $0, token: $1) }
                 guard status == 200 else {
                     self.sendingToBrain = false
@@ -45,6 +47,7 @@ extension StarEngine {
             } catch {
                 self.sendingToBrain = false; return self.trouble(BrainError.refused.message)
             }
+            StallLog.mark("send: taken")
             for it in self.ui.attach.take() { AttachTemp.discard(it.url) }
             self.ui.text = ""
             self.sendingToBrain = false

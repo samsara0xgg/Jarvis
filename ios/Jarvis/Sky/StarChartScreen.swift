@@ -71,7 +71,7 @@ struct StarChrome: View {
             AttachOverlay(model: ui.attach, kbLift: ui.kbLift)
         }
         .frame(width: W, height: H, alignment: .topLeading)
-        .onChange(of: focused) { _, f in ui.typing = f; if f { engine.openPanel() } else { engine.closePanel() } }     // the panel comes with the keyboard and goes with it
+        .onChange(of: focused) { _, f in StallLog.mark(f ? "keyboard up" : "keyboard down"); ui.typing = f; if f { engine.openPanel() } else { engine.closePanel() } }     // the panel comes with the keyboard and goes with it
         .onChange(of: phase) { _, p in
             // away for five minutes, it comes back to the star chart as it was first opened
             if p == .background { leftAt = Date() }
@@ -79,6 +79,7 @@ struct StarChrome: View {
         }
         .onAppear {
             engine.endEditing = { focused = false }
+            StallLog.context = { [engine] in engine.stallContext() }
             #if DEBUG
             engine.beginEditing = { focused = true }
             #endif

@@ -52,6 +52,7 @@ extension StarEngine {
     }
     func setTurn(_ id: Int?, text: String? = nil, alphas: [Double]? = nil, growing: Bool? = nil) {
         guard let id, let i = ui.liveTurns.lastIndex(where: { $0.id == id }) else { return }
+        StallLog.count("setTurn")
         if let growing, ui.liveTurns[i].growing != growing { ui.liveTurns[i].growing = growing }
         if let text, ui.liveTurns[i].text != text { ui.liveTurns[i].text = text; if !ui.liveTurns[i].his { openForWritten(text) } }
         if let alphas, ui.liveTurns[i].alphas != alphas { ui.liveTurns[i].alphas = alphas }
@@ -155,6 +156,7 @@ extension StarEngine {
         wake()
         if auto { autoOpenSpent = true }
         guard !ui.panelOpen else { return }
+        StallLog.mark("panel open")
         if !quiet { sound(.open, 0.7); Haptic.selection() }
         ui.panelOpen = true; panelSince = nowMs()
         if BrainLink.shared.hasToken { Task { @MainActor in await Conversation.shared.refresh() } }
@@ -165,6 +167,7 @@ extension StarEngine {
         wake()
         if ui.talking { autoOpenSpent = true }      // he closed it during this talk: it does not open itself again
         if ui.typing { endEditing?() }              // the panel goes with the keyboard, and the keyboard with the panel
+        StallLog.mark("panel close")
         if !quiet { sound(.close, 0.7); Haptic.selection() }
         ui.panelOpen = false; panelSince = nowMs()
     }
@@ -189,6 +192,13 @@ extension StarEngine {
     }
     /// the app came back after a long time away: the star chart as it was first opened, on now
     func comeBack() { setLevel(0); goBack() }
+
+    /// what the app is in, for a stall line: counts and states, no words
+    func stallContext() -> String {
+        let rows = MainActor.assumeIsolated { Conversation.shared.rows.count }
+        return "rows=\(rows) days=\(ui.convDays.count) live=\(ui.liveTurns.count) panel=\(ui.panelOpen ? 1 : 0) typing=\(ui.typing ? 1 : 0) talking=\(ui.talking ? 1 : 0)"
+            + " talk=\(talk ?? "-") voice=\(voiceState) sending=\(sendingToBrain ? 1 : 0) level=\(ui.level) chip=\(ui.chipOpen ? 1 : 0) kb=\(Int(ui.kbLift))"
+    }
 
     /// The conversation by day, rebuilt only when it, the talk's start or whether a talk is on show changed; and the live rows go once the conversation has them.
     func updateStream() {
@@ -301,6 +311,17 @@ extension StarEngine {
                 Conversation.shared.fakeOlder = { first in ConversationPage(rows: rows(max(1, first - 40)...(first - 1)), hasMore: first - 40 > 1) }
             }
             openPanel(quiet: true)
+        case "long":
+            // a long history (`-historyN`, 900 by default) with a written answer every tenth row: the panel, the keyboard and the voice over it
+            setLevel(0)
+            let n0 = UserDefaults.standard.integer(forKey: "historyN"), n = n0 > 0 ? max(10, n0) : 900, cal = Cal.cur.cal, now = Date()
+            let doc = "<voice>好的。</voice><document>## 清单\n- 第一件事，写得长一些好让这一行换行\n- 第二件事\n\n| 列 | 值 |\n|---|---|\n| a | 1 |\n| b | 2 |</document>"
+            let rows = (1...n).map { i in
+                let c = now.addingTimeInterval(-Double(n - i) * 9 * 60)
+                return ConversationRow(seq: i, source: i % 2 == 1 ? "allen" : "jarvis", ts: TalkStream.dayId(c, cal) + "T" + TalkStream.clock(c, cal) + ":00",
+                                       text: i % 2 == 1 ? "第 \(i) 行，他说的话，有时候长一点，比如问一下明天几点出门" : i % 10 == 0 ? doc : "<voice>第 \(i) 行，她的回答。九点二十出门，坐 32 路，路上三十二分钟。</voice>")
+            }
+            MainActor.assumeIsolated { Conversation.shared.debugSet(rows) }
         case "typing", "typingWaiting", "typingChipOpen", "typingGrow", "typingScrolled", "typingDismiss":
             // the keyboard is the real one: the field is focused, and the panel comes up with it
             setLevel(0)

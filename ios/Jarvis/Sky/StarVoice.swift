@@ -51,6 +51,7 @@ extension StarEngine {
         put(\.voiceNote, v.progress.map { "正在下载中英文识别模型 \(Int(($0 * 100).rounded()))%" } ?? (now - voiceErrAt < 8000 ? v.error : nil) ?? (now < brainNoteUntil ? brainNote : nil))
         if v.state != voiceState {
             let was = voiceState
+            StallLog.mark("voice \(was)->\(v.state)")
             wake()
             if was == .idle && talk != nil { interrupt() }      // a scripted talk in progress is over (voiceState is still idle: the session is left alone)
             voiceState = v.state; voiceAt = now
