@@ -59,6 +59,7 @@ class FakePhone:
         speed: float = 1.0,
         clock_offset_ns: int = DEFAULT_CLOCK_OFFSET_NS,
         report_overlap: int = 0,
+        ack_delay_s: float = 0.0,
     ) -> None:
         # The proxy variables of a sandbox must not carry a socket to a private address.
         self.ws = connect(
@@ -69,6 +70,8 @@ class FakePhone:
         self.speed = speed
         self.clock_offset_ns = clock_offset_ns
         self.report_overlap = report_overlap  # samples each later REPORT starts before the last end
+        self.ack_delay_s = ack_delay_s  # a DISCARD is applied and acknowledged this late
+        self.discard_at = 0.0
         self.heard: list[np.ndarray] = []  # everything the renderer played, in order
         self.last_played_at = time.monotonic()
         self.lock = threading.Condition()
@@ -126,11 +129,13 @@ class FakePhone:
 
     def say(
         self, utterance_id: str, text: str, *, spoken: bool, attachments: list[str] | None = None,
+        over_her: bool = False,
     ) -> None:
         self.send({
             "type": "say", "utterance_id": utterance_id, "text": text, "spoken": spoken,
             "language": "en", "confidence": 0.9,
             **({"attachments": attachments} if attachments else {}),
+            **({"over_her": True} if over_her else {}),
         })
 
     def wait_text(self, kind: str, timeout_s: float = 10.0, *, after: int = 0) -> dict[str, Any]:
@@ -194,6 +199,7 @@ class FakePhone:
             elif kind == DISCARD:
                 (self.discard_seq,) = struct.unpack("<Q", body)
                 self.discard_before = self.written
+                self.discard_at = time.monotonic()
                 self.order.append(("discard", self.discard_seq))
             elif kind == HOLD:
                 (self.held_generation,) = struct.unpack("<q", body)
@@ -225,7 +231,10 @@ class FakePhone:
             reports: list[tuple[int, int, int]] = []
             ack: int | None = None
             with self.lock:
-                if self.discard_seq > self.acked_seq:
+                if (
+                    self.discard_seq > self.acked_seq
+                    and now - self.discard_at >= self.ack_delay_s
+                ):
                     self._apply_discard()
                     ack = self.discard_seq
                 reports = [] if self.held_locally else self._play(due)

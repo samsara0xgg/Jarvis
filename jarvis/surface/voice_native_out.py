@@ -164,6 +164,13 @@ class FramedAudioStreamPlayer(AudioStreamPlayer):
     """
 
     _ACK_WAIT_S = 0.05
+    _LATE_ACK_SETTLES = False
+    """Whether a discard not acknowledged within ``_ACK_WAIT_S`` settles from the reports in hand.
+
+    The helper acks one render callback after the DISCARD, so a late ack is a busy actor, retried.
+    A peer across a network may ack later than the actor's settle window, and one that never
+    settles closes the actor's lane for good (:mod:`jarvis.surface.phone_player`).
+    """
     max_pcm_frame_samples = _MAX_PCM_FRAME_SAMPLES
     """Most samples one PCM frame carries."""
 
@@ -277,14 +284,16 @@ class FramedAudioStreamPlayer(AudioStreamPlayer):
         media actor yields to its other tasks on ``None``, and a response task
         that reads the tombstone in that window ends its own turn as a failure
         before the interrupt's terminal commits.  ``None`` is the bounded answer
-        for an ack that is slower than that; a dead helper never acks, so it
-        freezes at once.
+        for an ack that is slower than that, unless ``_LATE_ACK_SETTLES``; a dead
+        helper never acks, so it freezes at once.
         """
         mirror = self._mirror
         if expected_playback_generation_id in self._tombstoned_generations:
             deadline = time.monotonic() + self._ACK_WAIT_S
             while mirror.acked_seq < mirror.discard_seq and self.is_running:
                 if time.monotonic() >= deadline:
+                    if self._LATE_ACK_SETTLES:
+                        break
                     return None
                 time.sleep(0.0005)
         return super().settle_interrupted_generation(

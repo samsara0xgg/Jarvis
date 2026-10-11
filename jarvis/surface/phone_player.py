@@ -27,6 +27,13 @@ length prefix (the message is the frame). The layouts are ADR 0129's
 PCM16 samples are at the rate of the host's ``ready`` frame (32 kHz, MiniMax's own rate, so
 nothing is resampled). Type 1 (float32 PCM) is never sent to a phone.
 
+**Discard (ADR 0236).** An interruption freezes the heard prefix at the phone's DISCARD_ACK when
+it comes within 0.3 s, and otherwise at the reports already in. A phone that heard Allen held its
+output and sent its reports before it said so, so those are complete; a stop that reaches a phone
+still playing may count a round trip less than it played, never more. Without this a late ack
+left the interruption unsettled and the media actor closed its lane: every later answer on the
+connection ended unsaid.
+
 **Clock.** The phone stamps READY's ``clock_ns``, every REPORT's ``callback_ns`` and every
 ``ping`` with its own monotonic clock. The ledger compares reports with ``time.monotonic_ns()``
 on the host, so a report is mapped by an offset ``host - phone`` before it is written. Each of
@@ -86,6 +93,11 @@ class PhoneAudioStreamPlayer(FramedAudioStreamPlayer):
     """
 
     max_pcm_frame_samples = _PHONE_PCM_FRAME_SAMPLES
+    # ADR 0236: the ack is a network round trip away (about 80 ms over a Tailscale relay, ADR
+    # 0172), and a phone holding its output may not answer before it renders again. Waited for
+    # within the media actor's half-second settle window, then settled from the reports in hand.
+    _ACK_WAIT_S = 0.3
+    _LATE_ACK_SETTLES = True
 
     def __init__(
         self,

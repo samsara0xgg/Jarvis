@@ -262,11 +262,11 @@ class _Host:
 
     def phone(
         self, *, token: str | None = None, voice: bool = True, speed: float = 1.0,
-        report_overlap: int = 0,
+        report_overlap: int = 0, ack_delay_s: float = 0.0,
     ) -> FakePhone:
         return FakePhone(
             self.url, token or self.token, voice=voice, speed=speed,
-            report_overlap=report_overlap,
+            report_overlap=report_overlap, ack_delay_s=ack_delay_s,
         ).start()
 
     # -- the log
@@ -483,6 +483,55 @@ def test_a_barge_in_is_a_discard_and_the_heard_prefix_freezes_after_the_phones_a
             assert interrupted["heard_text"] == first
             assert host.barges == ["iphone"]
             assert "surface.playback_completed" not in host.playback("R-long")
+        finally:
+            phone.close()
+
+
+def test_a_turn_said_over_her_to_a_phone_that_acks_late_stops_her_and_the_next_answer_plays(
+    tmp_path: Path,
+) -> None:
+    """(e) across a network: a late DISCARD_ACK settles from the reports in hand.
+
+    As on 2026-10-11: the phone held before any of her audio played, sent the words over her,
+    and the host judged them a turn; the phone's acknowledgement then took longer than a local
+    renderer's. The interruption is still recorded, and the next answer reaches the phone.
+    """
+    with _Host(tmp_path) as host:
+        phone = host.phone(ack_delay_s=1.0)
+        try:
+            phone.hello()
+            phone.send_ready()
+            phone.say("u-first", "tell me a story", spoken=True)
+            first_turn = phone.wait_text("said")["turn_id"]
+            phone.hold_output()  # he speaks again before she is heard
+            _answer(host.log, first_turn, "R-first", ["Once upon a time.", " There was more."])
+            phone.wait_until(lambda: bool(phone.pcm_samples), "the first answer was never sent")
+
+            with phone.lock:
+                seen = len(phone.texts)
+            phone.say("u-second", "actually what about tomorrow", spoken=True, over_her=True)
+            said = phone.wait_text("said", after=seen)
+            assert said["verdict"] == "turn"
+            second_turn = said["turn_id"]
+            _wait_for(
+                lambda: "surface.playback_interrupted" in host.playback("R-first"),
+                "the interruption was never settled",
+            )
+            [interrupted] = host.types("surface.playback_interrupted")
+            assert interrupted["reason"] == "barge_in"
+            assert interrupted["heard_text"] == ""  # nothing of it was played
+
+            _answer(host.log, second_turn, "R-second", "Tomorrow is clear.")
+            _wait_for(
+                lambda: "surface.playback_completed" in host.playback("R-second"),
+                "the next answer was never played",
+                timeout_s=20,
+            )
+            assert not host.types("surface.playback_lane_isolated")
+            with phone.lock:
+                assert len(phone.pcm_samples) == 2, phone.pcm_samples
+                second_generation = max(phone.pcm_samples)
+                assert phone.played_per_generation[second_generation] > 0
         finally:
             phone.close()
 
@@ -851,3 +900,4 @@ def test_the_phones_token_reads_the_question_slot_like_every_route(tmp_path: Pat
     assert client.get(
         "/inherent/clarification", headers=_bearer_header(local_key(root)),
     ).status_code == 401, "the local key is not for a remote peer"
+
