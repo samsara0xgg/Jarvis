@@ -585,6 +585,8 @@ extension StarEngine {
         case "星环旧": runRingScene(near: nil, old: true)
         case "星环家": runRingScene(near: nil, home: true)
         case _ where name.hasPrefix("星环近@"): runRingScene(near: String(name.dropFirst(4)))
+        case _ where name.hasPrefix("星环家近@"): runRingScene(near: String(name.dropFirst(5)), home: true)
+        case _ where name.hasPrefix("星环家半@"): runRingScene(near: String(name.dropFirst(5)), home: true, level: -0.5)       // half way between the day and the near view
         case "一周": setLevel(1)
         case "一个月": setLevel(2)
         case "确认": setLevel(0); if let e = byId("thanks") { openId = e.id; rowKey = ""; seek(e.t) }

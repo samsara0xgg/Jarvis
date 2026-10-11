@@ -12,19 +12,29 @@ extension StarEngine {
     private static let washNameR = 118.0
     private static let washHalf = 16.0, washSigma = 6.5, washPeak = 4.6
     private static let washR0 = R_YOU - washHalf, washR1 = R_YOU + washHalf
-    private static var washGradients: [RGB: CGGradient] = [:]
+    /// the band's cross-section as (radius, colour) stops from washR0 to washR1: gaussian on his lane, nothing at both edges (shared by the flat and the near drawing)
+    private static func washStops(_ col: RGB) -> [(Double, CGColor)] {
+        func gauss(_ r: Double) -> Double { exp(-pow((r - R_YOU) / washSigma, 2) / 2) }
+        let floorV = max(gauss(washR0), gauss(washR1))
+        return (0...16).map { i in
+            let r = washR0 + (washR1 - washR0) * Double(i) / 16
+            return (r, col.cg(i == 0 || i == 16 ? 0 : max(0, (gauss(r) - floorV) / (1 - floorV))))
+        }
+    }
+    private static var washGradients: [RGB: CGGradient] = [:], washLinear: [RGB: CGGradient] = [:]
+    /// as a gradient from the pole outwards (one per colour)
     private static func washGradient(_ col: RGB) -> CGGradient {
         if let g = washGradients[col] { return g }
-        let lo = washR0, hi = washR1, sigma = washSigma
-        func gauss(_ r: Double) -> Double { exp(-pow((r - R_YOU) / sigma, 2) / 2) }
-        let floorV = max(gauss(lo), gauss(hi))
-        var stops: [(CGFloat, CGColor)] = [(0, col.cg(0))]
-        for i in 0...16 {
-            let r = lo + (hi - lo) * Double(i) / 16
-            stops.append((CGFloat(r / hi), col.cg(i == 0 || i == 16 ? 0 : max(0, (gauss(r) - floorV) / (1 - floorV)))))
-        }
+        let stops = [(CGFloat(0), col.cg(0))] + washStops(col).map { (CGFloat($0.0 / washR1), $0.1) }
         let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: stops.map { $0.1 } as CFArray, locations: stops.map { $0.0 })!
         washGradients[col] = g
+        return g
+    }
+    /// the same cross-section across the band's width, 0 at its inner edge to 1 at its outer (the near view draws the band as strips of this)
+    private static func washAcross(_ col: RGB) -> CGGradient {
+        if let g = washLinear[col] { return g }
+        let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: washStops(col).map { $0.1 } as CFArray, locations: washStops(col).map { CGFloat(($0.0 - washR0) / (washR1 - washR0)) })!
+        washLinear[col] = g
         return g
     }
 
@@ -35,17 +45,23 @@ extension StarEngine {
         return a1 > a0 ? (end, a0, a1) : nil
     }
 
+    /// how far into its stay's feathering the wash is at t: 0 at both ends, 1 in the middle
+    private static func washProfile(_ w: RealDay.Wash, _ end: Double, _ fIn: Double, _ fOut: Double, _ t: Double) -> Double {
+        smooth(0, 1, (t - w.t0) / fIn) * smooth(0, 1, (end - t) / fOut)
+    }
+
     /// The wash of each stay, like the haze of the sky: a thin glow in the place's hue along his lane that fades to nothing on both sides, and along the dial in at the start and out
-    /// at the end of the stay. It is cut into slices that each take a share of the strength, which the additive blend makes seamless. Close up there is no wash, only the names.
+    /// at the end of the stay. It is cut into slices that each take a share of the strength, which the additive blend makes seamless. Close up it is the same band seen through the camera (`placeWashNear`).
     func placeWash(_ c: CGContext) {
         let washes = RealDay.shared.washes
-        if washes.isEmpty || cam != nil { return }
+        if washes.isEmpty { return }
+        if cam != nil { placeWashNear(c, washes); return }
         let step = 32 * max(1, z), crowd = 1 / max(1, z * 0.7)       // zoomed out, several days lie on top of each other: each is fainter
         c.setBlendMode(.plusLighter); c.setAlpha(1)
         for w in washes {
             guard let (end, a0, a1) = washSpan(w) else { continue }
             let dur = end - w.t0, fIn = min(Self.washFeather, dur * 0.45), fOut = min(w.t1 == nil ? Self.washFeatherOpen : Self.washFeather, dur * 0.45)
-            func profile(_ t: Double) -> Double { smooth(0, 1, (t - w.t0) / fIn) * smooth(0, 1, (end - t) / fOut) }
+            let profile = { (t: Double) in Self.washProfile(w, end, fIn, fOut, t) }
             var cuts: [Double] = [a0, a1]
             let n = Int(Self.washSlices)
             for j in 1..<n { cuts.append(w.t0 + fIn * Double(j) / Self.washSlices); cuts.append(end - fOut * Double(j) / Self.washSlices) }
@@ -61,6 +77,40 @@ extension StarEngine {
                 c.closePath(); c.clip()
                 c.setAlpha(al)
                 c.drawRadialGradient(Self.washGradient(w.col), startCenter: CGPoint(x: CX, y: CY), startRadius: 0, endCenter: CGPoint(x: CX, y: CY), endRadius: Self.washR1, options: [])
+                c.restoreGState()
+            }
+        }
+        c.setBlendMode(.normal)
+    }
+
+    /// The same band, seen close up through the camera: the same strength, cross-section and feathering as above, as short strips along his lane that each take the strength at their
+    /// middle. A strip is clipped to its four corners and filled across its width from the shared cross-section, so the band widens and thins with the perspective by itself and has no edge.
+    /// Where the view is turning from flat to close, the camera is nearly overhead, so this meets the flat drawing.
+    private func placeWashNear(_ c: CGContext, _ washes: [RealDay.Wash]) {
+        let crowd = 1 / max(1, z * 0.7), r0 = Self.washR0, r1 = Self.washR1
+        let screen = CGRect(x: -40, y: MAP_Y - 40, width: W + 80, height: MAP_H + 80)
+        c.setBlendMode(.plusLighter); c.setAlpha(1)
+        for w in washes {
+            guard let (end, a0, a1) = washSpan(w) else { continue }
+            let dur = end - w.t0, fIn = min(Self.washFeather, dur * 0.45), fOut = min(w.t1 == nil ? Self.washFeatherOpen : Self.washFeather, dur * 0.45)
+            let grad = Self.washAcross(w.col)
+            var t = a0
+            while t < a1 {
+                guard P(R_YOU, ang(t)) else { t += 2; continue }
+                let dt = clamp(4 / (max(PS, 0.3) * k * R_YOU), 0.5, 6), t2 = min(t + dt, a1), tm = (t + t2) / 2       // about 4 pt of the band per strip
+                defer { t = t2 }
+                let al = w.a * Self.washPeak * Self.washProfile(w, end, fIn, fOut, tm) * visT(tm) * crowd
+                if al < 0.002 { continue }
+                var q: [CGPoint] = []
+                for (tt, r) in [(t, r0), (t2, r0), (t2, r1), (t, r1)] {
+                    guard P(r, ang(tt)) else { break }
+                    q.append(CGPoint(x: PX, y: PY))
+                }
+                if q.count < 4 || !screen.contains(q[0]) && !screen.contains(q[2]) && !screen.contains(q[1]) && !screen.contains(q[3]) { continue }
+                c.saveGState()
+                c.beginPath(); c.move(to: q[0]); q.dropFirst().forEach { c.addLine(to: $0) }; c.closePath(); c.clip()
+                c.setAlpha(al)
+                c.drawLinearGradient(grad, start: CGPoint(x: (q[0].x + q[1].x) / 2, y: (q[0].y + q[1].y) / 2), end: CGPoint(x: (q[2].x + q[3].x) / 2, y: (q[2].y + q[3].y) / 2), options: [])
                 c.restoreGState()
             }
         }

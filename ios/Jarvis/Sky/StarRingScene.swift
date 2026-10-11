@@ -7,9 +7,9 @@ enum RingScene { static var on = false }
 extension StarEngine {
     /// `-scene 星环 -fakeNow 2026-10-11T20:30`: an invented day on his thread, as if the brain had served it (sleep, a morning work block, a walk, a bus ride,
     /// an afternoon exercise walk, a call, an evening work block), with the places he keeps and what the newer brain adds to them.
-    /// `星环近@08:40` is the near view resting at that time; `星环旧` is the same day as the old brain served it, without the new fields.
+    /// `星环近@08:40` is the near view resting at that time (`星环家近@` and `星环家半@`, half way in, the same for the home day); `星环旧` is the same day as the old brain served it, without the new fields.
     /// `星环家` is a day spent in one kept place: at home since last evening with no departure, and several work blocks on one project (two of them marked). Made-up data only.
-    func runRingScene(near: String?, old: Bool = false, home: Bool = false) {
+    func runRingScene(near: String?, old: Bool = false, home: Bool = false, level: Double = -1) {
         RingScene.on = true
         switchWorld(real: true)
         let cal = Cal.cur, base = cal.origin.timeIntervalSince1970 * 1000, nowM = nowT()
@@ -74,7 +74,8 @@ extension StarEngine {
             let hm = w.split(separator: ":").compactMap { Double($0) }
             guard hm.count == 2 else { return }
             let t = Double(floorDay(nowT())) * DAY + hm[0] * 60 + hm[1]
-            setLevel(-1); fs.value = t; fs.velocity = 0; goal = t; mode = .idle
+            if level == -1 { setLevel(-1) } else { qGoal = level; qs.value = level; qs.velocity = 0; wake() }
+            fs.value = t; fs.velocity = 0; goal = t; mode = .idle
         }
     }
 }
