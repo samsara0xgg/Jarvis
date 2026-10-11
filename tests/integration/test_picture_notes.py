@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 import zipfile
 from contextlib import closing
 from dataclasses import replace
@@ -41,6 +42,7 @@ from jarvis.runtime.picture_notes import (
     PictureNotes,
 )
 from jarvis.shared import lang
+from jarvis.shared.about import clean_about
 from jarvis.state import picture_notes as note_records
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME, Attachments
 from jarvis.state.day_line import DaySources, fold_day
@@ -107,16 +109,21 @@ class World:
         )
         self.vision = _Vision()
         self.clock = _Clock()
-        self.notes = PictureNotes(
-            memory_db=self.memory.db_path, store=self.store, vision=self.vision,
-            clock=self.clock, threaded=False,
-        )
+        self.event_log = base.runtime_paths.event_log
+        self.notes = self.restart()
         self.runtime: JarvisRuntime = replace(
             base, memory=self.memory, attachments=self.store, picture_notes=self.notes,
         )
         self.seen: list[DecideContext] = []
         self._monkeypatch = monkeypatch
         self._turns = 0
+
+    def restart(self) -> PictureNotes:
+        """A fresh note worker over the same stores: what a restarted daemon starts with."""
+        return PictureNotes(
+            memory_db=self.memory.db_path, store=self.store, vision=self.vision,
+            event_log=self.event_log, clock=self.clock, threaded=False,
+        )
 
     def turn(self, said: str, answer: str, pictures: tuple[str, ...] = ()) -> None:
         """Drive one whole turn: his intent in the log, a scripted answer, the records written."""
@@ -239,9 +246,10 @@ def test_a_failed_read_is_retried_once_then_given_up_without_raising(world: Worl
 def test_the_queue_is_bounded_and_a_gone_picture_costs_no_request(world: World) -> None:
     """A full queue drops the new job; a file already swept is skipped without a model call."""
     picture = world.picture()
-    for _ in range(MAX_PENDING):
-        assert world.notes.submit("r", [picture], "", "")
+    for n in range(MAX_PENDING):
+        assert world.notes.submit("r", [f"{n:032x}"], "", "")
     assert world.notes.submit("r", [picture], "", "") is False
+    assert world.notes.submit("r", [f"{0:032x}"], "", ""), "a picture already waiting adds nothing"
     for stored in world.store.directory.iterdir():
         stored.unlink()
     world.clock.now += WINDOW_S
@@ -249,6 +257,7 @@ def test_the_queue_is_bounded_and_a_gone_picture_costs_no_request(world: World) 
     assert world.notes.run_due() == 0
     assert world.vision.calls == []
     assert world.notes.pending() == 0
+    assert world.notes.recover() == 0, "a picture that is gone is owed nothing"
 
 
 # --- history, recall and the second look ---------------------------------------------------------
@@ -472,3 +481,113 @@ def test_the_day_line_without_the_pictures_source_stores_is_what_it_was(world: W
 
     assert [i for i in line.items if i["kind"] == "picture"] == []
     assert "pictures" not in line.missing
+
+
+# --- a restart loses nothing ---------------------------------------------------------------
+
+
+def test_a_restart_between_the_turn_and_the_note_loses_nothing_and_writes_once(
+    world: World,
+) -> None:
+    """What is owed is derived from the log and memory.db, so a fresh queue finds it."""
+    picture = world.picture()
+    world.turn(WORDS, ANSWER, (picture,))
+    world.turn(CORRECTION, "原来是乌冬面。")
+    assert world.notes.pending() == 1
+
+    after = world.restart()
+    assert after.pending() == 0
+    assert after.recover() == 1
+    assert after.run_due() == 1
+
+    (call,) = world.vision.calls
+    assert f'"{WORDS}"' in call["question"]
+    assert ANSWER in call["question"], "her answer is read back from the records"
+    assert CORRECTION in call["question"]
+    assert after.recover() == 0, "owed once, then never"
+    assert world.restart().recover() == 0
+    assert world.notes.run_due() == 0, "the old process wakes up: it finds the note and stops"
+    assert len(world.vision.calls) == 1
+    assert [s for _, s, _ in world.records()].count("picture_note") == 1
+
+
+def test_a_recovered_job_keeps_the_rest_of_its_window(world: World) -> None:
+    """With no next turn the restarted queue waits out the window, not less and not more."""
+    picture = world.picture()
+    world.turn(WORDS, ANSWER, (picture,))
+
+    after = world.restart()
+    assert after.recover(min_age_s=WINDOW_S) == 0, "a turn still being answered is left alone"
+    assert after.recover() == 1
+    world.clock.now += WINDOW_S - 5
+    assert after.run_due() == 0
+    world.clock.now += 6
+    assert after.run_due() == 1
+
+
+def test_only_the_last_day_is_owed(world: World) -> None:
+    """A picture from a turn older than a day is not recovered (the tool still reads it)."""
+    world.turn(WORDS, ANSWER, (world.picture(),))
+    late = PictureNotes(
+        memory_db=world.memory.db_path, store=world.store, vision=world.vision,
+        event_log=world.event_log, clock=world.clock, threaded=False,
+        wall=lambda: time.time() + 25 * 3600,
+    )
+
+    assert late.recover() == 0
+    assert world.restart().recover() == 1
+
+
+# --- a saved picture ---------------------------------------------------------------------------
+
+
+def test_a_saved_picture_gets_a_note_with_no_turn_and_the_day_line_shows_it(
+    world: World,
+) -> None:
+    """Queued at once when saved, found again after a restart; the note carries his words."""
+    live, lost = world.picture(), world.picture("IMG_2.png")
+    inherent_loop._keep_share(  # noqa: SLF001
+        world.event_log, {"kind": "image", "attachments": [live], "note": "for later"},
+        picture_notes=world.notes,
+    )
+    inherent_loop._keep_share(  # noqa: SLF001
+        world.event_log, {"kind": "image", "attachments": [lost]},
+    )
+
+    assert world.notes.run_due() == 1
+    (call,) = world.vision.calls
+    assert "saved this picture from another app" in call["question"]
+    assert 'His note with it: "for later"' in call["question"]
+    assert "Her answer" not in call["question"]
+    assert call["path"] == world.store.path(live)
+
+    after = world.restart()
+    assert after.recover() == 1, "the one that was never queued is found from its event"
+    assert after.run_due() == 1
+    assert "He wrote no note." in world.vision.calls[1]["question"]
+    assert world.restart().recover() == 0
+    assert [s for _, s, _ in world.records()] == ["picture_note", "picture_note"]
+
+    log = world.runtime.conn
+    now = int(time.time() * 1000)
+    items = fold_day(
+        log, now - 3_600_000, now + 3_600_000, now,
+        DaySources(UTC, None, world.memory.db_path, None, world.store.directory),
+    ).items
+    shown = {i["attachment"]: i for i in items if i["kind"] == "picture"}
+    assert set(shown) == {live, lost}
+    assert shown[live]["note"] == "A plate of noodles."
+
+
+def test_the_phone_can_say_this_one_about_a_picture(world: World) -> None:
+    """``picture`` is an about kind, its day-line id is a valid about id, and the tool takes it."""
+    picture = world.picture()
+
+    assert clean_about({"kind": "picture", "id": f"picture-{picture}"}) == {
+        "kind": "picture", "id": f"picture-{picture}",
+    }
+    with pytest.raises(ValueError, match=r"about\.kind"):
+        clean_about({"kind": "photo", "id": "x"})
+    ref = world.store.find(f"picture-{picture}")
+    assert ref is not None
+    assert ref.id == picture
