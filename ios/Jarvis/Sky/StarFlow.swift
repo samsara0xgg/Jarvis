@@ -460,7 +460,8 @@ extension StarEngine {
     func micTap() {
         if !ui.text.trimmingCharacters(in: .whitespaces).isEmpty { return send(ui.text) }
         endEditing?()
-        if talk != nil && voiceState == .idle { interrupt() } else { micVoice() }
+        // a talk that is still on (her typed answer, a scripted one) gives way, then the mic starts: a tap is never only a dismiss
+        if talk != nil && voiceState == .idle { interrupt(); run { _ in self.micVoice() } } else { micVoice() }
     }
 
     // MARK: every frame
