@@ -152,7 +152,7 @@ class FakePhone:
             return [f for f in self.texts if f.get("type") == "row"]
 
     def steps(self) -> list[dict[str, Any]]:
-        """The ``step`` frames received so far (ADR 0228), in arrival order."""
+        """The ``step`` frames received so far (ADR 0231), in arrival order."""
         with self.lock:
             return [f for f in self.texts if f.get("type") == "step"]
 

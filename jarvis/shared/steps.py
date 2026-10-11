@@ -1,4 +1,4 @@
-"""ADR 0228: the steps of her turn, as the phone shows them, folded from the action rows.
+"""ADR 0231: the steps of her turn, as the phone shows them, folded from the action rows.
 
 A step is one tool call, seen as a fixed label from the language table (``step.<kind>``) plus, for
 a few tools, a short detail taken from the call's arguments. No model writes either. The fold is

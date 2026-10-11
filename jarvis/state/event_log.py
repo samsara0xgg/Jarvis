@@ -2046,7 +2046,7 @@ _STEP_COLUMNS: Final = (
 
 
 def turn_action_events(conn: sqlite3.Connection, turn_ids: Iterable[str]) -> list[Event]:
-    """What the steps of ``turn_ids`` are folded from (ADR 0228), in append order.
+    """What the steps of ``turn_ids`` are folded from (ADR 0231), in append order.
 
     Each turn's proposed, running and ending rows, by the indexed turn id, and the terminal rows
     of the actions it proposed: those carry only the ``action_id``, so they are read through the

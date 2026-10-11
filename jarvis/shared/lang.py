@@ -974,7 +974,7 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "tool_status.mail": {"zh": "正在查看你的邮件…", "en": "Checking your mail..."},
     "tool_status.notion": {"zh": "正在搜索 Notion…", "en": "Searching Notion..."},
     "tool_status.generic": {"zh": "正在处理…", "en": "Working on it..."},
-    # ADR 0228: what one step of her turn is called on the phone: a short label while the tool
+    # ADR 0231: what one step of her turn is called on the phone: a short label while the tool
     # runs and a past-tense phrase for the line under her answer, one pair per kind of work.
     "step.web": {"zh": "上网搜", "en": "Searching the web"},
     "step.web.done": {"zh": "搜了网页", "en": "searched the web"},

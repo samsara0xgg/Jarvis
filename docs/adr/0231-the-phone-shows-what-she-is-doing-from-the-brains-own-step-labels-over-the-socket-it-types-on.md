@@ -1,4 +1,4 @@
-# ADR 0228 — The phone shows what she is doing from the brain's own step labels, over the socket it types on
+# ADR 0231 — The phone shows what she is doing from the brain's own step labels, over the socket it types on
 
 **Status:** Accepted
 **Date:** 2026-10-11

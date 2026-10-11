@@ -3277,7 +3277,7 @@ class _PhoneCursor:
 
 
 class _PhoneStepCursor:
-    """One phone's place in the action rows: the ``step`` frames of the turns it opened (ADR 0228).
+    """One phone's place in the action rows: the ``step`` frames of the turns it opened (ADR 0231).
 
     The proposal of an action names its turn, so only a proposal is checked against the device
     (:meth:`_PhoneCursor.mine`); the fold ignores every later row of an action it never kept.
@@ -3320,7 +3320,7 @@ class _PhoneRows:
 
 
 def _add_steps(event_log: Path, rows: list[dict[str, object]]) -> None:
-    """ADR 0228: put the steps of the turn on each of her answers in a page of the conversation.
+    """ADR 0231: put the steps of the turn on each of her answers in a page of the conversation.
 
     Her answer's record id is its ``surface.response_emitted`` row's uid, whose turn ran the
     tools. A log that cannot be read leaves the page without steps, never without rows.

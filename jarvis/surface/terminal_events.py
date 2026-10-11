@@ -193,7 +193,7 @@ class BrainEvents:
         return uid
 
     def has_phone_say(self, device: str, utterance_id: str) -> bool:
-        """Whether this ``say`` was already recorded (ADR 0228), so a resend can skip its checks."""
+        """Whether this ``say`` was already recorded (ADR 0231), so a resend can skip its checks."""
         row = self._conn.execute(
             "SELECT 1 FROM events WHERE event_uid = ?", (_say_uid(device, utterance_id),),
         ).fetchone()
@@ -220,7 +220,7 @@ class BrainEvents:
         event uid and the turn id derive from it and ``device``, so the same utterance sent
         again writes nothing and returns the first one's turn id. ``about`` is the item the
         phone has open (ADR 0214); checked by :func:`jarvis.shared.about.clean_about` and kept on
-        the opening row, in either branch, only when given. ``attachments`` (ADR 0228) are the ids
+        the opening row, in either branch, only when given. ``attachments`` (ADR 0231) are the ids
         of the files typed words came with, already checked by the store; they ride the typed
         row as ``POST /inherent/submit`` writes them, and spoken words take none.
 

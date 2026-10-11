@@ -43,7 +43,7 @@ included, rides there and is never spoken; the phone reads the slot's current ca
 probe. The final ``surface.response_emitted`` carries the written part (``document_text``,
 ``written_apart``) and the times the answer refers to (``times``).
 
-**Steps (ADR 0228).** ``step`` is one tool call of a turn this device opened, voice or typed: it
+**Steps (ADR 0231).** ``step`` is one tool call of a turn this device opened, voice or typed: it
 goes out with ``state: "running"`` when the tool starts and again, with the same ``step`` number,
 as ``done`` or ``failed`` with ``ended_ms`` set. ``step`` counts from 1 in the order the tools
 started; ``tool`` is the tool's name; ``label`` is a fixed line of the language table, with a short
@@ -168,7 +168,7 @@ class PhoneRows(Protocol):
 
 
 class StepCursor(Protocol):
-    """A place in the action rows of one device's turns (ADR 0228)."""
+    """A place in the action rows of one device's turns (ADR 0231)."""
 
     def poll(self) -> tuple[int, list[tuple[int, dict[str, Any]]]]:
         """``(highest id seen, [(id of the row it came from, step frame)])``, advancing."""
@@ -195,7 +195,7 @@ class PhoneHub:
     these words just now. It blocks and runs on a worker thread; true answers a spoken ``say``
     with ``elsewhere`` and records nothing.
 
-    ``check_attachments(ids)`` (ADR 0228) is the store's check of the files a typed ``say``
+    ``check_attachments(ids)`` (ADR 0231) is the store's check of the files a typed ``say``
     names, as ``POST /inherent/submit`` makes it: it returns, or raises
     :class:`~jarvis.state.attachments.AttachmentRefused`. It blocks and runs on a worker thread;
     ``None`` is a host that takes no attachments.
@@ -525,7 +525,7 @@ def _say(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
 
 
 async def _record_with_files(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
-    """A typed ``say`` with files is a turn once the store has vouched for them (ADR 0228).
+    """A typed ``say`` with files is a turn once the store has vouched for them (ADR 0231).
 
     The store is read on a worker thread, so the receive loop never blocks on the disk; a say
     already recorded is not checked again.

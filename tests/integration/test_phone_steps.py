@@ -1,4 +1,4 @@
-"""ADR 0228: typed turns with files over the phone socket, live steps, and the steps summary.
+"""ADR 0231: typed turns with files over the phone socket, live steps, and the steps summary.
 
 Acceptance checks against a real uvicorn server with the real ``/phone/ws`` route, the real
 ``_PhoneRows`` cursors over a real event log, the real attachment store and the real
