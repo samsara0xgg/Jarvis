@@ -16,7 +16,8 @@ Then ``claude agents``' own name, unless it is the generic "from a project" name
 auto-made slug (``projects-3e``); then the session's opening message, which is what it is about
 and does not change turn by turn (its ``@file`` references dropped, the files' names when that is
 all it says, and for a project thread's session the words of the message that woke it rather than
-the wake envelope around them); then his last prompt the same way; then the folder.
+the wake envelope around them, and for one a coordinator started, his own words it quotes or
+else the first sentence of its note); then his last prompt the same way; then the folder.
 
 On a brain (ADR 0170) these files are the owner's Mac's, so the board is asked of the connected
 terminal, which runs :meth:`ClaudeSessions.raw`, :meth:`~ClaudeSessions.conversation` and
@@ -74,9 +75,13 @@ _UNNAMED = frozenset({"remote control session (from a project)", "session"})
 _SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{2,4}(?:-[0-9a-f]{2})?")
 # A file he attached, as Claude Code writes it into the prompt: @"/path with spaces" or @/path.
 _ATTACHED = re.compile(r'@"([^"]+)"|@(\S+)')
-# A project thread's session is prompted with a wake envelope; the person's words are the body of
-# its triggering message (or of its last message when none is marked).
+# A project thread's session is prompted with a wake envelope; his words are the body of a message
+# a human sent, the one that triggered the turn first. A coordinator's relay quotes his words in
+# ``<cited author="user">`` and otherwise carries its own ``<note>``.
 _WAKE_MESSAGE = re.compile(r"<message\b([^>]*)>(.*?)</message>", re.DOTALL)
+_CITED = re.compile(r'<cited\b[^>]*\bauthor="user"[^>]*>(.*?)</cited>', re.DOTALL)
+_NOTE = re.compile(r"<note\b[^>]*>(.*?)</note>", re.DOTALL)
+_SENTENCE = re.compile(r"(?<=[.!?])\s|(?<=[。！？])|\n")
 # Process names (lowercase prefix) that host a terminal session, innermost first wins.
 _TERMINALS = (
     ("zellij", "zellij"),
@@ -115,10 +120,20 @@ def _named(name: object) -> str:
 def _prompt_title(prompt: str) -> str:
     """A prompt as a title: its words without attached-file paths, else the files' names."""
     if "<wake" in prompt:
-        found = _WAKE_MESSAGE.findall(prompt)
-        triggered = [body for attrs, body in found if 'trigger="true"' in attrs]
-        # No message in it (a spawn, a relay): no words of his, so no title from it.
-        prompt = html.unescape((triggered or [body for _, body in found] or [""])[-1])
+        human = [
+            (attrs, body) for attrs, body in _WAKE_MESSAGE.findall(prompt)
+            if 'from="human"' in attrs
+        ]
+        triggered = [body for attrs, body in human if 'trigger="true"' in attrs]
+        # Only a harness line (a spawn): no words of his, so no title from it.
+        prompt = html.unescape((triggered or [body for _, body in human] or [""])[-1])
+    elif "<relay" in prompt:
+        cited = _CITED.findall(prompt)
+        note = _NOTE.findall(prompt)
+        if cited:
+            prompt = html.unescape(cited[-1])
+        else:
+            prompt = _SENTENCE.split(html.unescape(note[0]).strip(), maxsplit=1)[0] if note else ""
     words = _short(_ATTACHED.sub(" ", prompt))
     if words:
         return words

@@ -319,6 +319,8 @@ def test_a_session_is_named_as_claude_desktop_names_it(
         "s-file": "session",
         "s-mixed": "session",
         "s-woken": "Remote Control session (from a project)",
+        "s-relayed": "Remote Control session (from a project)",
+        "s-cited": "Remote Control session (from a project)",
     }
     bin_dir = _home(tmp_path, [
         {"sessionId": sid, "kind": "interactive", "status": "busy", "name": name,
@@ -338,13 +340,35 @@ def test_a_session_is_named_as_claude_desktop_names_it(
             '    <message trigger="true" from="human" id="m1">看下手机为什么没声音</message>\n'
             '  </project>\n  <system-note>complete</system-note>\n</wake>'
         ),
+        "s-relayed": (
+            '<relay from="coordinator" session="s" reason="spawn">\n  <note>\n'
+            "      Deploy main to the Pi and check the titles. No test turns.\n  </note>\n</relay>"
+        ),
+        "s-cited": (
+            '<relay from="coordinator" session="s">\n  <cited author="user">手机推送收不到'
+            "</cited>\n  <note>Look into it.</note>\n</relay>"
+        ),
     }
     for sid, prompt in prompts.items():
         entries: list[dict[str, Any]] = [  # Claude Code keeps 200 characters
             {"type": "last-prompt", "lastPrompt": prompt[:200]},
         ]
-        if sid == "s-woken":  # the whole envelope is only in the opening user entry
+        if sid != "s-woken":
             entries = [
+                {"type": "user", "message": {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                ]}},
+                {"type": "user", "message": {"role": "user", "content": [
+                    {"type": "tool_result", "content": "ok"},
+                ]}},
+                *entries,
+            ]
+        else:  # the whole envelope is only in the opening user entry, after a spawn line
+            entries = [
+                {"type": "user", "message": {"role": "user", "content": (
+                    '<wake reason="spawn"><message from="system" role="initiator">'
+                    "Thread session started</message></wake>"
+                )}},
                 {"type": "user", "message": {"role": "user", "content": [
                     {"type": "text", "text": '@"/u/.claude/uploads/x/1-image.png" ' + prompt},
                 ]}},
@@ -383,4 +407,6 @@ def test_a_session_is_named_as_claude_desktop_names_it(
         "s-file": "plan v2.md",
         "s-mixed": "这张图里哪里不对",
         "s-woken": "看下手机为什么没声音",
+        "s-relayed": "Deploy main to the Pi and check the titles.",
+        "s-cited": "手机推送收不到",
     }
