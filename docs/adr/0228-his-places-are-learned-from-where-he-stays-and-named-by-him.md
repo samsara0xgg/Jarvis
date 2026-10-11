@@ -1,6 +1,6 @@
 # ADR 0228 — His places are learned from where he stays and named by him
 
-**Status:** Accepted
+**Status:** Superseded-by-0234
 **Date:** 2026-10-11
 **Supersedes:** none
 

@@ -1,6 +1,6 @@
 # ADR 0229 — She picks the day's highlights and tells him the day in one line
 
-**Status:** Accepted
+**Status:** Superseded-by-0235
 **Date:** 2026-10-11
 **Supersedes:** none
 

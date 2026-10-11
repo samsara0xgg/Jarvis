@@ -1,6 +1,6 @@
-# ADR 0231 — Places he keeps going back to are found from his stays, with how often
+# ADR 0233 — Places he keeps going back to are found from his stays, with how often
 
-**Status:** Accepted
+**Status:** Superseded-by-0234
 **Date:** 2026-10-11
 **Supersedes:** none
 
