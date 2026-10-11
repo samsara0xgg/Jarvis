@@ -759,7 +759,7 @@ class InherentDeps:
     # and the job ledger with its delete. ``None`` leaves the routes unregistered (404): the
     # daemon wires them only while ``job_mail.enabled``. A LookupError is 404, a ValueError 400.
     notices_read: Callable[[], Awaitable[dict[str, Any]]] | None = None
-    notice_act: Callable[[str, str, str | None], Awaitable[None]] | None = None
+    notice_act: Callable[[str, str, str | None], Awaitable[str | None]] | None = None
     # ADR 0203: the notch's trip cards (pin an offered option, next bus, undo an unpin). ``None``
     # leaves the route unregistered (404); a LookupError is 404.
     departure_act: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
@@ -1688,10 +1688,16 @@ def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C90
         notice_act = deps.notice_act
 
         @app.post("/inherent/notices/{notice_id}", status_code=200)
-        async def notice_action(notice_id: str, req: NoticeActionRequest) -> dict[str, bool]:
-            """Mark a notice seen or record Allen's reaction; a digest id covers its alerts."""
-            await _home_call(notice_act(notice_id, req.action, req.reaction))
-            return {"ok": True}
+        async def notice_action(
+            notice_id: str, req: NoticeActionRequest,
+        ) -> dict[str, bool | str]:
+            """Mark a notice seen or record Allen's reaction; a digest id covers its alerts.
+
+            A settings notice (ADR 0227) that took the terminal's values answers ``restart``:
+            ``idle`` (the daemon restarts once voice is quiet) or ``manual`` (restart it).
+            """
+            restart = await _home_call(notice_act(notice_id, req.action, req.reaction))
+            return {"ok": True, **({"restart": restart} if restart else {})}
 
     if deps.card_act is not None:
         card_act = deps.card_act

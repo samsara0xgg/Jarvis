@@ -136,7 +136,7 @@ from jarvis.decision.response_run import (
     start_response_run,
 )
 from jarvis.deployment import data, inherent_v2_token_matches, models, rotate_inherent_v2_token
-from jarvis.deployment.launchd import logs_dir, repo_root, spawned_by_agent
+from jarvis.deployment.launchd import logs_dir, repo_root, supervised
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
 from jarvis.execution.tools import SCREEN_ARTIFACTS_DIRNAME, live_action_ids
@@ -5469,19 +5469,22 @@ def _settings_notice_deps(
         )
         return {**body, "notices": [*await asyncio.to_thread(drift.notices), *body["notices"]]}
 
-    async def act(notice_id: str, action: str, reaction: str | None) -> None:
+    async def act(notice_id: str, action: str, reaction: str | None) -> str | None:
         if not notice_id.startswith(SETTINGS_NOTICE):
             if mail_act is None:
                 msg = f"no such notice: {notice_id}"
                 raise LookupError(msg)
             await mail_act(notice_id, action, reaction)
-        elif await asyncio.to_thread(drift.act, notice_id, action, reaction):
-            if spawned_by_agent():
-                task = asyncio.create_task(_restart_when_idle(idle), name="settings_restart")
-                _restarting.add(task)
-                task.add_done_callback(_restarting.discard)
-            else:
-                LOGGER.warning("settings: restart Jarvis to take in the settings just saved")
+            return None
+        if not await asyncio.to_thread(drift.act, notice_id, action, reaction):
+            return None
+        if not supervised():
+            LOGGER.warning("settings: restart Jarvis to take in the settings just saved")
+            return "manual"
+        task = asyncio.create_task(_restart_when_idle(idle), name="settings_restart")
+        _restarting.add(task)
+        task.add_done_callback(_restarting.discard)
+        return "idle"
 
     return {**deps, "notices_read": read, "notice_act": act}
 
@@ -5673,7 +5676,7 @@ def _fetch_models_then_restart(
             progress.failed = True
             LOGGER.exception("models: download failed; voice stays off until the next boot")
             return
-        if spawned_by_agent():
+        if supervised():
             LOGGER.info("models: ready; restarting so voice comes up")
             loop.call_soon_threadsafe(_restart_soon)
         else:
@@ -5683,7 +5686,10 @@ def _fetch_models_then_restart(
 
 
 def _restart_soon() -> None:
-    """``POST /inherent/restart``: TERM ourselves once the answer is out; KeepAlive respawns us."""
+    """``POST /inherent/restart``: TERM ourselves once the answer is out.
+
+    launchd's KeepAlive or systemd's ``Restart=always`` (ADR 0227) brings us back.
+    """
     asyncio.get_running_loop().call_later(0.5, os.kill, os.getpid(), signal.SIGTERM)
 
 
@@ -7198,7 +7204,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 config=runtime.config,
                 tts_endpoint=knobs.tts_primary_endpoint,
                 tts_model=knobs.tts_model,
-                restart=_restart_soon if spawned_by_agent() else None,
+                restart=_restart_soon if supervised() else None,
                 voice_models=model_fetch,
             )
 
@@ -7375,12 +7381,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 None if runtime.settings is None or brain
                 else functools.partial(asyncio.to_thread, respeaker_board.status)
             ),
-            restart=_restart_soon if spawned_by_agent() else None,
+            restart=_restart_soon if supervised() else None,
             data_export=functools.partial(asyncio.to_thread, _export_data, runtime),
             data_clear=functools.partial(asyncio.to_thread, _clear_media, runtime),
             data_erase=(
                 functools.partial(_erase_data, runtime.runtime_paths.root)
-                if spawned_by_agent() else None
+                if supervised() else None
             ),
             claude_sessions_read=_claude_sessions_served(runtime),
             agent_marks_path=runtime.runtime_paths.root / "agent-marks.json",

@@ -246,6 +246,8 @@ def test_the_card_rides_the_notice_routes_and_restarts_only_when_idle(tmp_path: 
     async def mail_act(notice_id: str, action: str, reaction: str | None) -> None:
         seen.append(f"{notice_id}:{action}:{reaction}")
 
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("JARVIS_LAUNCHD_AGENT", raising=False)
     deps = _settings_notice_deps(
         {"notices_read": mail_read, "notice_act": mail_act}, drift, lambda: True,
     )
@@ -269,6 +271,10 @@ def test_a_real_terminals_hello_reaches_the_brains_drift_over_the_socket(tmp_pat
     drift = SettingsDrift(tmp_path, tmp_path / "settings.yaml", CONFIG)
     with _Brain(tmp_path) as brain:
         brain.hub.on_settings = drift.on_report
+    # taking the terminal's values needs a restart, which only a supervised daemon does by itself
+    drift.on_report("macbook", {"observer.usage.enabled": True})
+    outcome = asyncio.run(deps["notice_act"](f"{SETTINGS_NOTICE}macbook", "feedback", "device"))
+    assert outcome == "manual"
         loop = asyncio.new_event_loop()
         task: list[asyncio.Task[None]] = []
 
@@ -288,3 +294,20 @@ def test_a_real_terminals_hello_reaches_the_brains_drift_over_the_socket(tmp_pat
             loop.call_soon_threadsafe(lambda: task and task[0].cancel())
             thread.join(timeout=10)
     assert drift.notices()[0]["keys"] == ["observer.usage.enabled"]
+
+
+def test_a_restart_is_offered_under_systemd_and_the_unit_restarts_on_a_clean_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """INVOCATION_ID (systemd) counts as supervised; SIGTERM is a clean exit, so `always`."""
+    from pathlib import Path  # noqa: PLC0415
+
+    from jarvis.deployment.launchd import supervised  # noqa: PLC0415
+
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("JARVIS_LAUNCHD_AGENT", raising=False)
+    assert supervised() is False
+    monkeypatch.setenv("INVOCATION_ID", "0123456789abcdef")
+    assert supervised() is True
+    unit = (Path(__file__).parents[2] / "jarvis/deployment/systemd/jarvis-brain.service")
+    assert "\nRestart=always\n" in unit.read_text(encoding="utf-8")

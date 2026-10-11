@@ -12,8 +12,10 @@
 #   env            0600, one `NAME=value` line per API key; the daemon reads it itself
 #                  (fill-only, no systemd quoting), so the unit carries no secret.
 #
-# The repo is expected at ~/Jarvis with its virtualenv (`uv sync --frozen`) beside it. The
-# daemon listens on 127.0.0.1:8006 only. Logs go to the journal: `journalctl --user -u jarvis-brain`.
+# The repo is expected at ~/jarvis-brain with its virtualenv (`uv sync --frozen --inexact`)
+# beside it. The daemon listens on 127.0.0.1:8006 only. Logs go to the journal:
+# `journalctl --user -u jarvis-brain`. After a change to an installed unit, copy it again, then
+# `systemctl --user daemon-reload && systemctl --user restart jarvis-brain`.
 
 [Unit]
 Description=Jarvis brain
@@ -26,11 +28,13 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-WorkingDirectory=%h/Jarvis
+WorkingDirectory=%h/jarvis-brain
 Environment=JARVIS_RUNTIME_ROOT=%h/.jarvis
-ExecStart=%h/Jarvis/.venv/bin/python -m jarvis serve
+ExecStart=%h/jarvis-brain/.venv/bin/python -m jarvis serve
 UMask=0077
-Restart=on-failure
+# always, not on-failure: the Settings page's restart and a chosen settings change (ADR 0227) end
+# the daemon with SIGTERM, which systemd counts as a clean stop. `systemctl stop` is still a stop.
+Restart=always
 RestartSec=10
 # 2: another daemon holds this runtime root's lock. 3: memory.db or the event log was written
 # by a newer Jarvis. Starting again changes neither.

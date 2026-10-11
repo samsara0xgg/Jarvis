@@ -299,6 +299,17 @@ def spawned_by_agent() -> bool:
     return os.environ.get(AGENT_ENV_MARKER) == AGENT_LABEL
 
 
+def supervised() -> bool:
+    """True iff something brings this process back when it ends (ADR 0227).
+
+    On the Mac that is the LaunchAgent (:func:`spawned_by_agent`). On the brain's Linux host it is
+    systemd, which puts ``INVOCATION_ID`` in the environment of every service it starts and of
+    nothing a person runs in a shell. Every restart a daemon offers itself is gated on this; the
+    plist-specific uses of :func:`spawned_by_agent` are not.
+    """
+    return spawned_by_agent() or bool(os.environ.get("INVOCATION_ID"))
+
+
 def spawned_by_terminal_agent() -> bool:
     """True iff this process was exec'd by the terminal LaunchAgent (ADR 0183).
 
@@ -1097,6 +1108,7 @@ __all__ = [
     "spawned_by_agent",
     "spawned_by_terminal_agent",
     "status",
+    "supervised",
     "terminal_plist_path",
     "terminal_service_target",
     "uninstall",
