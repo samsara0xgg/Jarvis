@@ -13,9 +13,10 @@ A row's title is the name he sees in Claude Desktop when it has one: Desktop kee
 ``~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json`` (``title``, keyed by
 ``cliSessionId``), and a session it spawned for a project thread carries the thread's title there.
 Then ``claude agents``' own name, unless it is the generic "from a project" name or an
-auto-made slug (``projects-3e``); then his last prompt with its ``@file`` references dropped (the
-files' names when that is all it says), and for a project thread's session the words of the
-message that woke it rather than the wake envelope around them; then the folder.
+auto-made slug (``projects-3e``); then the session's opening message, which is what it is about
+and does not change turn by turn (its ``@file`` references dropped, the files' names when that is
+all it says, and for a project thread's session the words of the message that woke it rather than
+the wake envelope around them); then his last prompt the same way; then the folder.
 
 On a brain (ADR 0170) these files are the owner's Mac's, so the board is asked of the connected
 terminal, which runs :meth:`ClaudeSessions.raw`, :meth:`~ClaudeSessions.conversation` and
@@ -167,6 +168,36 @@ def _said_at(entry: dict[str, Any]) -> float | None:
     return ms / 1000 if ms else None
 
 
+def _opening_title(path: Path) -> str:
+    """The title the session's first message gives, read from the transcript's head; "" if none.
+
+    Claude Code keeps only 200 characters of a ``last-prompt``, which a wake envelope fills
+    before his words, so the whole user entry is read instead.
+    """
+    with path.open("rb") as fh:
+        lines = fh.read(_TAIL_BYTES).decode("utf-8", "replace").splitlines()
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "user" or entry.get("isSidechain"):
+            continue
+        origin = entry.get("origin")
+        if entry.get("isMeta") or (isinstance(origin, dict) and origin.get("kind") != "human"):
+            continue
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            content = " ".join(
+                str(block.get("text") or "") for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        if isinstance(content, str) and (title := _prompt_title(content)):
+            return title
+    return ""
+
+
 def read_transcript(path: Path) -> dict[str, Any]:
     """Last prompt, branch, current tool and last answer from the transcript tail.
 
@@ -176,7 +207,7 @@ def read_transcript(path: Path) -> dict[str, Any]:
     """
     out: dict[str, Any] = {
         "prompt": "", "branch": "", "tool": "", "last_message": "", "tail": "", "said": [],
-        "title": "",
+        "title": _opening_title(path),
     }
     with path.open("rb") as fh:
         size = fh.seek(0, 2)
@@ -196,9 +227,8 @@ def read_transcript(path: Path) -> dict[str, Any]:
             out["branch"] = entry["gitBranch"]
         if entry.get("type") == "last-prompt" and not out["prompt"]:
             out["prompt"] = _short(entry.get("lastPrompt"))
-            # Titled from the whole prompt: a wake envelope's words come after its first 160.
             raw = entry.get("lastPrompt")
-            out["title"] = _prompt_title(raw if isinstance(raw, str) else "")
+            out["title"] = out["title"] or _prompt_title(raw if isinstance(raw, str) else "")
         if entry.get("type") == "assistant" and not answered:
             tool, text = _newest_blocks(entry)
             out["tool"] = out["tool"] or tool

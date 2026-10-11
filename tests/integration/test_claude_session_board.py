@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi.testclient import TestClient
 
@@ -340,8 +340,19 @@ def test_a_session_is_named_as_claude_desktop_names_it(
         ),
     }
     for sid, prompt in prompts.items():
+        entries: list[dict[str, Any]] = [  # Claude Code keeps 200 characters
+            {"type": "last-prompt", "lastPrompt": prompt[:200]},
+        ]
+        if sid == "s-woken":  # the whole envelope is only in the opening user entry
+            entries = [
+                {"type": "user", "message": {"role": "user", "content": [
+                    {"type": "text", "text": '@"/u/.claude/uploads/x/1-image.png" ' + prompt},
+                ]}},
+                {"type": "user", "message": {"role": "user", "content": "可以"}},
+                *entries,
+            ]
         (project / f"{sid}.jsonl").write_text(
-            json.dumps({"type": "last-prompt", "lastPrompt": prompt}, ensure_ascii=False),
+            "\n".join(json.dumps(e, ensure_ascii=False) for e in entries),
         )
     desktop = (tmp_path / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
                / "org" / "project")
