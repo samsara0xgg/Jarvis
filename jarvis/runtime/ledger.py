@@ -130,7 +130,10 @@ class LedgerContext:
         """
         def keep() -> None:
             while True:
-                self._standing(now())
+                try:
+                    self._standing(now())
+                except Exception:  # the next minute tries again; a turn still builds it if needed
+                    LOGGER.exception("ledger: keeping the standing text warm failed")
                 _time.sleep(_KEEP_WARM_S)
 
         threading.Thread(target=keep, name="jarvis-ledger-warm", daemon=True).start()
