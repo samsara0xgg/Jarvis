@@ -59,18 +59,12 @@ final class AnswerTextTests: XCTestCase {
         XCTAssertEqual(AnswerText.spoken("<voice>网址是https://example.com/a很好</voice>"), "网址是很好")
     }
 
-    func testLinksAreAmberAndUnderlinedAndEveryCharacterKeepsItsBrightness() {
-        let text = "好 [链接](https://example.com) 呢"                       // more characters written than shown: the marks
-        let alphas = (0..<text.count).map { $0 == 0 ? 1.0 : 0.3 }
+    func testLinksAreAmberAndUnderlined() {
         let amber = Color(red: 1, green: 217 / 255, blue: 176 / 255)
-        let plain = styledWords(text, base: .white)
-        for r in plain.runs { XCTAssertEqual(r.foregroundColor, r.link == nil ? .white : amber.opacity(1)); XCTAssertEqual(r.underlineStyle != nil, r.link != nil) }
-        let a = styledWords(text, base: .white, alphas: alphas)
+        let a = styledWords("好 [链接](https://example.com) 呢", base: .white)
         XCTAssertEqual(String(a.characters), "好 链接 呢")
-        XCTAssertEqual(a.runs.first?.foregroundColor, Color.white.opacity(1))
-        XCTAssertEqual(a.runs.last?.foregroundColor, Color.white.opacity(0.3))
-        XCTAssertEqual(a.runs.first { $0.link != nil }?.foregroundColor, amber.opacity(0.3))
-        XCTAssertEqual(styledWords("好", base: .white, alphas: [0.5]).runs.first?.foregroundColor, Color.white.opacity(0.5))
+        for r in a.runs { XCTAssertEqual(r.foregroundColor, r.link == nil ? .white : amber); XCTAssertEqual(r.underlineStyle != nil, r.link != nil) }
+        XCTAssertNotNil(a.runs.first { $0.link != nil })
     }
 
     // MARK: the blocks of a written answer

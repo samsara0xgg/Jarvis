@@ -43,28 +43,28 @@ extension StarEngine {
         if !on { lingerFrom(nowMs()) }
     }
 
-    @discardableResult func addTurn(his: Bool, _ text: String, alphas: [Double] = [], pics: [SentItem] = [], leadIn: Bool = false, growing: Bool = false, steps: StepsInfo? = nil) -> Int {
+    @discardableResult func addTurn(his: Bool, _ text: String, reveal: Reveal? = nil, pics: [SentItem] = [], leadIn: Bool = false, growing: Bool = false, steps: StepsInfo? = nil) -> Int {
         // her first words take the place of the typing line, in the same row, so nothing moves
         if !his, let id = statusTurn {
             statusTurn = nil
             if let i = ui.liveTurns.lastIndex(where: { $0.id == id }) {
-                ui.liveTurns[i].text = text; ui.liveTurns[i].alphas = alphas; ui.liveTurns[i].leadIn = leadIn; ui.liveTurns[i].steps = steps; ui.liveTurns[i].status = nil
+                ui.liveTurns[i].text = text; ui.liveTurns[i].reveal = reveal; ui.liveTurns[i].leadIn = leadIn; ui.liveTurns[i].steps = steps; ui.liveTurns[i].status = nil
                 openForWritten(text)
                 return id
             }
         }
         turnSeq += 1
-        let t = LiveTurn(id: turnSeq, his: his, text: text, alphas: alphas, pics: pics, leadIn: leadIn, growing: growing, steps: steps)
+        let t = LiveTurn(id: turnSeq, his: his, text: text, reveal: reveal, pics: pics, leadIn: leadIn, growing: growing, steps: steps)
         withAnimation(.easeOut(duration: 0.25)) { ui.liveTurns.append(t) }
         if !his { openForWritten(text) }
         return turnSeq
     }
-    func setTurn(_ id: Int?, text: String? = nil, alphas: [Double]? = nil, growing: Bool? = nil) {
+    func setTurn(_ id: Int?, text: String? = nil, reveal: Reveal? = nil, growing: Bool? = nil) {
         guard let id, let i = ui.liveTurns.lastIndex(where: { $0.id == id }) else { return }
         StallLog.count("setTurn")
         if let growing, ui.liveTurns[i].growing != growing { ui.liveTurns[i].growing = growing }
         if let text, ui.liveTurns[i].text != text { ui.liveTurns[i].text = text; if !ui.liveTurns[i].his { openForWritten(text) } }
-        if let alphas, ui.liveTurns[i].alphas != alphas { ui.liveTurns[i].alphas = alphas }
+        if let reveal, ui.liveTurns[i].reveal != reveal { ui.liveTurns[i].reveal = reveal }
     }
 
     /// a document, a list, a table or code needs room: the panel opens by itself, once per talk
@@ -72,23 +72,23 @@ extension StarEngine {
         if ui.talking && !ui.panelOpen && !autoOpenSpent && AnswerBlocks.isRich(text) { openPanel(auto: true) }
     }
 
-    /// Her words in a row of their own, brightening as they are said. A long answer is said faster, so reading it does not take minutes.
+    /// Her words in a row of their own, laid out whole and lit a word at a time (`Reveal`): `cps` words a second, else a steady pace that is quicker for a long answer.
     @discardableResult func startSay(_ text: String, cps: Double? = nil, delay: Double = 0, leadIn: Bool = false, steps: StepsInfo? = nil) -> Say {
         finishSay()
         if !leadIn { Haptic.impact(.soft) }
-        let s = Say(text, cps: cps ?? max(12, Double(text.count) / 10), delay: delay)
+        let n = Reveal.count(String(AnswerText.linked(text).characters)), every = cps.map { 1 / $0 } ?? Reveal.stagger(n)
+        let s = Say(text, cps: Double(text.count) / (Double(max(n, 1)) * every), delay: delay)
         speaking = s
-        speakId = addTurn(his: false, text, alphas: s.alphas(nowMs()), leadIn: leadIn, steps: steps)
+        speakId = addTurn(his: false, text, reveal: .timed(n, from: Date.timeIntervalSinceReferenceDate + delay / 1000, every: every), leadIn: leadIn, steps: steps)
         return s
     }
     func finishSay() {
         speaking?.stop(); speaking = nil
-        setTurn(speakId, alphas: []); speakId = nil
+        speakId = nil
     }
 
-    /// every frame: the saying row brightens, and a talk nobody touches goes
+    /// every frame: a talk nobody touches goes
     func stepTalk(_ now: Double) {
-        if let s = speaking { setTurn(speakId, alphas: s.alphas(now).map { ($0 * 16).rounded() / 16 }) }       // sixteenths: a character's fade is a few redraws, not one per frame
         if ui.talking && talk == nil && voiceState == .idle && !lingerHold && now > lingerUntil { ui.talking = false; rowKey = ""; setAbout(nil); aboutDropped = nil }
         put(\.topTime, clock(F))
         syncStatus()
@@ -151,7 +151,26 @@ extension StarEngine {
         if !his.isEmpty { if let id = vHis { setTurn(id, text: his, growing: listening) } else { vHis = addTurn(his: true, his, growing: listening) } }
         // he is done and she has not said a word: the typing line, under his
         if v.state == .thinking, v.reply.isEmpty, vHis != nil, vHer == nil { showStatus() }
-        if !listening && !v.reply.isEmpty { if let id = vHer { setTurn(id, text: v.reply) } else { vHer = addTurn(his: false, v.reply); Haptic.impact(.soft) } }
+        if !listening && !v.reply.isEmpty { sayHers(v.reply, of: v.full.isEmpty ? v.reply : v.full) }
+    }
+
+    /// Her row holds the whole answer from her first words and her voice lights it: `reply` is how far she has got (Voice/VoiceSession), the words it has started are said from now.
+    private func sayHers(_ reply: String, of full: String) {
+        if vHerKey != [reply, full] {           // the count only changes with the texts, and counting reads the marks
+            vHerKey = [reply, full]
+            vHerSaid = Reveal.said(String(AnswerText.linked(reply).characters).count, in: Reveal.words(String(AnswerText.linked(full).characters)))
+        }
+        let i = vHer.flatMap { id in ui.liveTurns.lastIndex(where: { $0.id == id }) }
+        var r = i.flatMap { ui.liveTurns[$0].reveal } ?? Reveal(voiced: true)
+        r.say(vHerSaid, at: Date.timeIntervalSinceReferenceDate)
+        if let id = vHer { setTurn(id, text: full, reveal: r) } else { vHer = addTurn(his: false, full, reveal: r); Haptic.impact(.soft) }
+    }
+
+    /// Her voice is done with this row. What she did not get to say (she was stopped, or he spoke over her) is not on show: the row ends where she did.
+    func closeHers() {
+        guard let id = vHer, let i = ui.liveTurns.lastIndex(where: { $0.id == id }), let r = ui.liveTurns[i].reveal,
+              r.at.count < Reveal.count(String(AnswerText.linked(ui.liveTurns[i].text).characters)) else { return }
+        ui.liveTurns[i].text = vHerKey.first ?? ""; ui.liveTurns[i].reveal = nil
     }
 
     /// A voice answer can have more written than spoken: once the conversation has the row, her row shows what is written.
@@ -162,7 +181,7 @@ extension StarEngine {
             guard id == talkId, let row = Conversation.shared.rows.last(where: { !$0.isHis && !$0.isLeadIn && $0.seq > talkBase }),
                   let i = ui.liveTurns.lastIndex(where: { !$0.his && !$0.leadIn }) else { return }
             let shown = AnswerText.visible(row.text)
-            if !shown.isEmpty && ui.liveTurns[i].text != shown { ui.liveTurns[i].text = shown; ui.liveTurns[i].alphas = [] }
+            if !shown.isEmpty && ui.liveTurns[i].text != shown { ui.liveTurns[i].text = shown; ui.liveTurns[i].reveal = nil }
             ui.liveTurns[i].steps = row.steps ?? MainActor.assumeIsolated { StatusBoard.shared.info }
         }
     }
@@ -291,6 +310,7 @@ extension StarEngine {
                     self.addTurn(his: false, "好，我帮你把周二上午十点占上。")
                 }
             }
+        case "reveal": runRevealScene()
         case "steps", "stepsDots", "stepsStep", "stepsDone", "stepsOpen": runStepsScene(name)
         case "open":
             setLevel(0)

@@ -7,7 +7,7 @@ import Observation
 /// the session's values the sky needs, read once a frame (DEBUG `-voiceScene` hands in made-up ones)
 struct VoiceShot {
     var state = VoiceSession.State.idle
-    var partial = "", transcript = "", reply = ""
+    var partial = "", transcript = "", reply = "", full = ""      // `full`: all of her answer, of which `reply` is what she has said
     var input = 0.0, output = 0.0
     var error: String?
     var progress: Double?
@@ -20,7 +20,7 @@ extension StarEngine {
         #endif
         return MainActor.assumeIsolated {
             let v = VoiceSession.shared
-            return VoiceShot(state: v.state, partial: v.partial, transcript: v.transcript, reply: AnswerText.visible(v.reply),
+            return VoiceShot(state: v.state, partial: v.partial, transcript: v.transcript, reply: AnswerText.visible(v.reply), full: AnswerText.visible(v.fullReply),
                              input: v.inputLevel, output: v.outputLevel, error: v.errorText, progress: v.modelProgress)
         }
     }
@@ -56,9 +56,9 @@ extension StarEngine {
             if was == .idle && talk != nil { interrupt() }      // a scripted talk in progress is over (voiceState is still idle: the session is left alone)
             voiceState = v.state; voiceAt = now
             if was == .idle { captureAbout(); beginTalk() }
-            if v.state == .listening { dropStatus(); vHis = nil; vHer = nil; vShown = 0; vShownAt = now; Haptic.impact(.light) }     // a new utterance of the session: its words are new rows
+            if v.state == .listening { dropStatus(); closeHers(); vHis = nil; vHer = nil; vShown = 0; vShownAt = now; Haptic.impact(.light) }     // a new utterance of the session: its words are new rows
             else if v.state == .idle {
-                voiceRows(v, now)
+                voiceRows(v, now); closeHers()
                 talk = nil; endTalk()                           // no `end` cue: the microphone may still be open
                 adoptWritten()
                 return nil
@@ -91,8 +91,8 @@ extension StarEngine {
             case "listening": v.state = .listening; v.partial = String(ask.prefix(6 * (1 + Int((now - t0) / 1000)))); v.input = 0.3 + 0.7 * voiceLevel(now / 1000 * 1.3)
             case "thinking": v.state = .thinking; v.transcript = ask
             case "waiting": v.state = .speaking; v.transcript = "有消息吗"; v.reply = "有一件事要问你。"; v.output = voiceLevel(now / 1000)
-            case "speaking": v.state = .speaking; v.transcript = ask; v.reply = String(short.prefix(Int((now - t0) / 120))); v.output = voiceLevel(now / 1000)
-            case "speakingLong": v.state = .speaking; v.transcript = ask; v.reply = String(answer.prefix(Int((now - t0) / 90))); v.output = voiceLevel(now / 1000)
+            case "speaking": v.state = .speaking; v.transcript = ask; v.reply = String(short.prefix(Int((now - t0) / 120))); v.full = short; v.output = voiceLevel(now / 1000)
+            case "speakingLong": v.state = .speaking; v.transcript = ask; v.reply = String(answer.prefix(Int((now - t0) / 90))); v.full = answer; v.output = voiceLevel(now / 1000)
             case "error": v.error = "没有麦克风权限"
             case "download": v.progress = 0.43
             default: break

@@ -25,6 +25,7 @@ final class VoiceSession {
     private(set) var partial = ""
     private(set) var transcript = ""
     private(set) var reply = ""
+    var fullReply: String { answer }       // all her words so far, of which `reply` is how far her voice has got
     private(set) var inputLevel = 0.0
     private(set) var outputLevel = 0.0
     private(set) var language = VoiceLang.zh

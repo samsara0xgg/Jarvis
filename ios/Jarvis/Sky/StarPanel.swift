@@ -68,35 +68,22 @@ struct TalkRowView: View, Equatable {
     }
 
     private var plain: some View {
-        words.font(.system(size: row.leadIn ? 15 : 18)).lineSpacing(row.leadIn ? 3 : 5)
+        RevealText(text: styledWords(row.text, base: row.leadIn ? muted : ink.opacity(0.92)), reveal: row.reveal)
+            .font(.system(size: row.leadIn ? 15 : 18)).lineSpacing(row.leadIn ? 3 : 5)
             .tint(amber).frame(maxWidth: .infinity, alignment: .leading)
     }
-
-    /// her words with each character at its own brightness while she says them: runs of one brightness are one piece of text
-    private var words: Text { herText(row.text, base: row.leadIn ? muted : ink.opacity(0.92), alphas: row.alphas) }
 }
 
-/// Her words as styled text: links in amber and underlined, tapped they open in the browser. With `alphas` each character has its own brightness; the marks
-/// (`**`, `[…](…)`) are not characters of the text shown, so the brightness is read at the same place along the text.
-func styledWords(_ s: String, base: Color, alphas: [Double] = []) -> AttributedString {
+/// Her words as styled text: links in amber and underlined, tapped they open in the browser.
+func styledWords(_ s: String, base: Color) -> AttributedString {
     var a = AnswerText.linked(s)
-    let n = a.characters.count, dim = !alphas.isEmpty && alphas.count == s.count && alphas.contains { $0 < 1 }
-    func alpha(_ k: Int) -> Double { dim ? alphas[min(alphas.count - 1, k * alphas.count / max(n, 1))] : 1 }
-    var k = 0
     for run in Array(a.runs) {
-        let link = run.link != nil
-        var lo = run.range.lowerBound
-        while lo < run.range.upperBound {
-            var hi = a.characters.index(after: lo), j = k + 1
-            while hi < run.range.upperBound && alpha(j) == alpha(k) { hi = a.characters.index(after: hi); j += 1 }
-            a[lo..<hi].foregroundColor = link ? amber.opacity(alpha(k)) : dim ? Color.white.opacity(alpha(k)) : base
-            if link { a[lo..<hi].underlineStyle = .single }
-            lo = hi; k = j
-        }
+        a[run.range].foregroundColor = run.link != nil ? amber : base
+        if run.link != nil { a[run.range].underlineStyle = .single }
     }
     return a
 }
-func herText(_ s: String, base: Color, alphas: [Double] = []) -> Text { Text(styledWords(s, base: base, alphas: alphas)) }
+func herText(_ s: String, base: Color) -> Text { Text(styledWords(s, base: base)) }
 
 /// What he has open, over the first row of the talk: the star's mark, its title and time, and a × to take it off. While it shows, every turn tells the brain what "it" is (ADR 0214).
 struct AboutChip: View {

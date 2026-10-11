@@ -36,14 +36,6 @@ final class Say {
     func finished() async { await task?.value }
     func stop() { stopped = true; task?.cancel() }
     var speaking: Bool { i < chars.count && !stopped && !"，。！？；：,.!?".contains(chars[max(0, i - 1)]) }
-    func alphas(_ now: Double) -> [Double] {
-        (0..<chars.count).map { j in
-            if stopped { return 1 }
-            if litAt[j] < 0 { return 0.32 }
-            let k = clamp((now - litAt[j]) / 350, 0, 1)
-            return 0.32 + 0.68 * (k * k * (3 - 2 * k))
-        }
-    }
 }
 
 /// a one-shot gate for "held" (the finger on her is still down)

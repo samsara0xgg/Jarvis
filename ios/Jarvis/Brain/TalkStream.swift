@@ -7,7 +7,7 @@ struct TalkRow: Identifiable, Equatable {
     let id: String                      // `c<seq>` of the conversation, `l<n>` of the live talk
     var his: Bool
     var text: String
-    var alphas: [Double] = []
+    var reveal: Reveal?
     var pics: [SentItem] = []
     var leadIn = false
     var growing = false
@@ -71,7 +71,7 @@ enum TalkStream {
         return group(rows, days, cal: cal, now: now)
     }
     static func row(_ t: LiveTurn) -> TalkRow {
-        TalkRow(id: "l\(t.id)", his: t.his, text: t.text, alphas: t.alphas, pics: t.pics, leadIn: t.leadIn, growing: t.growing, at: t.at.timeIntervalSince1970, current: true, card: t.card, status: t.status, steps: t.steps)
+        TalkRow(id: "l\(t.id)", his: t.his, text: t.text, reveal: t.reveal, pics: t.pics, leadIn: t.leadIn, growing: t.growing, at: t.at.timeIntervalSince1970, current: true, card: t.card, status: t.status, steps: t.steps)
     }
 
     /// `rows` after `days`: each row joins the last day when it is on that day, and the time goes above a row after a long gap or a new day

@@ -36,12 +36,12 @@ struct SentItem: Identifiable, Equatable {
     nonisolated static func items(_ items: [AttachItem]) -> [SentItem] { items.map { SentItem(image: $0.kind == .photo ? $0.thumbnail : nil, title: $0.kind == .photo ? "" : $0.title) } }
 }
 
-/// One row of the talk on show under the dial: his words or hers, as they are said. `alphas` brightens her words one character at a time while they are being said (empty: all lit).
+/// One row of the talk on show under the dial: his words or hers, as they are said. `reveal` lights her words one at a time while they are being said (nil: all lit).
 struct LiveTurn: Identifiable, Equatable {
     let id: Int
     var his: Bool
     var text: String
-    var alphas: [Double] = []
+    var reveal: Reveal?
     var pics: [SentItem] = []           // what he sent with the words
     var leadIn = false                  // a line before the answer ("我上网查查"): more follows
     var growing = false                 // his words still coming in (the recognizer's partial)
