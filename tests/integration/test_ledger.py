@@ -576,6 +576,37 @@ def test_a_brains_ledger_reads_its_terminals_timesink_and_equals_one_machines(
     assert screen.misses == 0
 
 
+def test_a_turn_never_waits_on_the_terminal_for_a_read_it_already_knows(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A cold ask waits; a new minute gets the kept answer at once, a background ask replaces it."""
+    delay, asked = [0.3], list[str]()
+
+    def link(op: str, arguments: Any, target: str | None) -> dict[str, Any]:  # noqa: ANN401
+        del op, target
+        asked.append(arguments["args"]["as_of"])
+        time.sleep(delay[0])
+        return {"result": f"answer@{arguments['args']['as_of']}"}
+
+    screen = TerminalScreen(link)
+    caplog.set_level("INFO", logger="jarvis.state.ledger")
+    began = time.monotonic()
+    assert screen.read("ledger_submissions", as_of="m1") == "answer@m1"
+    assert time.monotonic() - began >= 0.3  # nothing known: waits
+    assert any("terminal read ledger_submissions took" in r.message for r in caplog.records)
+    delay[0] = 3.0  # a slow terminal from here on
+    began = time.monotonic()
+    assert screen.read("ledger_submissions", as_of="m2") == "answer@m1"  # new minute: kept one
+    assert screen.read("ledger_submissions", as_of="m3") == "answer@m1"  # one refresh in flight
+    assert time.monotonic() - began < 0.5
+    deadline = time.monotonic() + 10
+    while screen.read("ledger_submissions", as_of="m2") != "answer@m2":
+        assert time.monotonic() < deadline
+        time.sleep(0.1)
+    assert asked == ["m1", "m2"]  # m3 asked nothing; the refresh replaced the answer
+    assert screen.misses == 0
+
+
 def test_without_a_terminal_or_a_path_the_ledgers_timesink_parts_are_empty_not_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

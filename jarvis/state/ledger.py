@@ -93,40 +93,89 @@ _RECORD_ID: Final[re.Pattern[str]] = re.compile(r"\s*\[record_id=[^\]]*\]")
 
 
 _TERMINAL_TTL_S: Final[float] = 60.0
+# ponytail: the newest kept answer is served up to 30 minutes old while a background ask replaces
+# it; one ceiling for every read, a per-fn age if some read ever needs fresher.
+_TERMINAL_STALE_S: Final[float] = 1800.0
+_MOVING_ARGS: Final[frozenset[str]] = frozenset({"as_of", "hi"})  # the window's far end: now
+_ReadKey = tuple[str, tuple[tuple[str, str], ...]]
 
 
 class TerminalScreen:
     """A brain's TimeSink reads for the ledger (ADR 0170): the terminal runs them on its own store.
 
     A turn asks every render, and one wide window is megabytes of spans, so an answer, or a
-    failure, is kept for a minute. Nothing is raised: a terminal that is away, slow past the
-    link's timeout or too old to know the read gives ``None`` and the part is empty, as with no
-    store. :attr:`misses` counts the asks that were given ``None``, so a caller can tell that what
-    it just built was built without the terminal.
+    failure, is kept for a minute. A turn never waits on the Mac when it already knows an answer
+    to the same read from the last half hour (the same ``fn`` and arguments but for ``as_of`` and
+    ``hi``, which move with the clock): it gets that at once and one background ask per read
+    replaces it for the next turn. Only a read with nothing known waits. Nothing is raised: a
+    terminal that is away, slow past the link's timeout or too old to know the read gives ``None``
+    and the part is empty, as with no store. :attr:`misses` counts the asks that were given
+    ``None``, so a caller can tell that what it just built was built without the terminal.
     """
 
     def __init__(self, device: DeviceLink) -> None:
         """Bind the brain's link to its terminal."""
         self._device = device
-        self._lock = threading.Lock()
-        self._kept: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[float, Any]] = {}
+        self._lock = threading.Lock()  # the dicts, the set and ``misses``
+        self._ask_lock = threading.Lock()  # a turn and the prefix warm share one cold ask
+        self._kept: dict[_ReadKey, tuple[float, Any]] = {}  # exact asks, for a minute
+        self._known: dict[_ReadKey, tuple[float, Any]] = {}  # newest answer per read, half an hour
+        self._refreshing: set[_ReadKey] = set()
         self.misses = 0
 
     def read(self, fn: str, **args: str) -> Any:  # noqa: ANN401 — the reader's JSON.
-        """The terminal's ``fn`` result, from the last minute when asked the same, else None."""
-        key = (fn, tuple(sorted(args.items())))
-        with self._lock:  # a turn and the prefix warm share one ask
+        """The terminal's ``fn`` result: a kept one at once, else asked and waited for."""
+        items = tuple(sorted(args.items()))
+        key = (fn, items)
+        fixed = (fn, tuple(item for item in items if item[0] not in _MOVING_ARGS))
+        with self._lock:
             now = _clock.monotonic()
             self._kept = {k: v for k, v in self._kept.items() if now - v[0] < _TERMINAL_TTL_S}
-            if key not in self._kept:
-                try:
-                    found = device_reads.ask(self._device, device_reads.TIMESINK_READ, fn, **args)
-                except DailyError as exc:
-                    LOGGER.warning("ledger: the terminal's TimeSink read %s failed: %s", fn, exc)
-                    found = None
-                self._kept[key] = (now, found)
-            self.misses += self._kept[key][1] is None
-            return self._kept[key][1]
+            self._known = {k: v for k, v in self._known.items() if now - v[0] < _TERMINAL_STALE_S}
+            hit, known = self._kept.get(key), self._known.get(fixed)
+            if hit is not None and hit[1] is not None:
+                return hit[1]
+            if known is not None:  # a failed ask (hit) is not repeated until its minute is up
+                if hit is None and fixed not in self._refreshing:
+                    self._refreshing.add(fixed)
+                    threading.Thread(
+                        target=self._refresh, args=(key, fixed, args), daemon=True,
+                        name="jarvis-ledger-terminal-refresh",
+                    ).start()
+                return known[1]
+            if hit is not None:
+                self.misses += 1
+                return None
+        with self._ask_lock:
+            with self._lock:
+                hit = self._kept.get(key)
+            found = hit[1] if hit is not None else self._ask_and_keep(key, fixed, args)
+            with self._lock:
+                self.misses += found is None
+            return found
+
+    def _refresh(self, key: _ReadKey, fixed: _ReadKey, args: dict[str, str]) -> None:
+        try:
+            self._ask_and_keep(key, fixed, args)
+        finally:
+            with self._lock:
+                self._refreshing.discard(fixed)
+
+    def _ask_and_keep(self, key: _ReadKey, fixed: _ReadKey, args: dict[str, str]) -> Any:  # noqa: ANN401 — the reader's JSON.
+        fn = key[0]
+        began = _clock.monotonic()
+        try:
+            found = device_reads.ask(self._device, device_reads.TIMESINK_READ, fn, **args)
+        except DailyError as exc:
+            LOGGER.warning("ledger: the terminal's TimeSink read %s failed: %s", fn, exc)
+            found = None
+        done = _clock.monotonic()
+        LOGGER.info("ledger: terminal read %s took %d ms", fn, (done - began) * 1000)
+        with self._lock:
+            self._kept[key] = (done, found)
+            if found is not None:
+                self._known[fixed] = (done, found)
+        return found
 
 
 @dataclass(frozen=True)
