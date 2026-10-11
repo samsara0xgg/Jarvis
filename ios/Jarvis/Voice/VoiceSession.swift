@@ -96,6 +96,7 @@ final class VoiceSession {
     @ObservationIgnored private var rowsDone = false                // surface.response_emitted of the answer arrived
     @ObservationIgnored private var rowsDoneAt = 0.0
     @ObservationIgnored private var audioStarted = false
+    @ObservationIgnored private var tracedGen: Int64 = -1                // the last generation whose audio was traced
     @ObservationIgnored private var audioClosed = false             // ACTIVE(-1) after her last PCM16: the host saw it all presented
     // the host's side of this connection
     @ObservationIgnored private var hostVoice = true
@@ -637,6 +638,13 @@ final class VoiceSession {
         case .step: break                                   // the board has it (PhoneLink)
         case .audio(let f):
             audio.core?.ingest(f)
+            // what the host streams, once per change, so a turn whose answer never plays shows which side dropped it
+            switch f {
+            case .active(let g): VoiceTrace.note("player: active \(g)\(audio.core == nil ? " (no player)" : "")")
+            case .discard(let q): VoiceTrace.note("player: discard \(q)")
+            case .pcm(let g, _, _) where g != tracedGen: tracedGen = g; VoiceTrace.note("player: first audio of \(g), turn \(currentTurn ?? "none"), state \(state)")
+            default: break
+            }
             switch f {
             case .pcm where currentTurn != nil || awaitingSaid: audioStarted = true; audioClosed = false; lastActivityAt = now
             case .active(-1) where audioStarted: audioClosed = true
@@ -720,7 +728,7 @@ final class VoiceSession {
             let quietAfter = commandSaid == .stop || commandSaid == .wait || commandSaid == .goodnight
             if rowsDone {
                 if !audioStarted {
-                    if t - rowsDoneAt > noAudioAfterText { replyFinished() }
+                    if t - rowsDoneAt > noAudioAfterText { VoiceTrace.note("her words came with no audio: shown only"); replyFinished() }
                 } else if core.ringEmpty, audioClosed {
                     replyFinished()
                 } else if core.ringEmpty, core.lastAudioNs > 0, t - Double(core.lastAudioNs) / 1e9 > audioFallback {
