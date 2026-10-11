@@ -81,7 +81,7 @@ _ATTACHED = re.compile(r'@"([^"]+)"|@(\S+)')
 _WAKE_MESSAGE = re.compile(r"<message\b([^>]*)>(.*?)</message>", re.DOTALL)
 _CITED = re.compile(r'<cited\b[^>]*\bauthor="user"[^>]*>(.*?)</cited>', re.DOTALL)
 _NOTE = re.compile(r"<note\b[^>]*>(.*?)</note>", re.DOTALL)
-_SENTENCE = re.compile(r"(?<=[.!?])\s|(?<=[。！？])|\n")
+_SENTENCE = re.compile(r"(?<=[.!?])\s|(?<=[\u3002\uff01\uff1f])|\n")
 # Process names (lowercase prefix) that host a terminal session, innermost first wins.
 _TERMINALS = (
     ("zellij", "zellij"),
