@@ -304,49 +304,72 @@ extension StarEngine {
         let sp = span(), a = max(F - sp, TRACE0), b = min(F + sp, Trev)
         if b <= a { return }
         let stepM = 5 * max(1, z * 0.72)
-        var paths = [CGMutablePath?](repeating: nil, count: 36)
-        var prev = -1, lx = 0.0, ly = 0.0
+        // the thread is cut into runs of one look: how bright it is by distance (vq) and nearness (zq), and what he was doing (colour, brightness)
+        struct Run { let path = CGMutablePath(); let cls: Int, vq: Int, zq: Int, glow: Bool, col: RGB, lum: Double }
+        var runs: [Run] = []
+        var open = false
         var m = a
         while true {
             if m > b { m = b }
             let ac = actAt(m), kd = kindAt(m), cls = isQuiet(kd) ? 0 : ac > 0.4 ? 2 : 1
             if !P(R_YOU + amp * ac - (cls == 0 ? 1.2 : 0), ang(m)) {
-                prev = -1
+                open = false
                 if m >= b { break }
                 m += stepM; continue
             }
             let x = PX, y = PY, v = visT(m) * fog()
-            let key = (cls * 4 + min(3, Int((v * 4).rounded(.down)))) * 3 + (cam == nil || PS < 1.3 ? 0 : PS < 2.3 ? 1 : 2)
-            if key != prev {
-                if prev >= 0 { paths[prev]!.addLine(to: CGPoint(x: x, y: y)) }
-                if paths[key] == nil { paths[key] = CGMutablePath() }
-                paths[key]!.move(to: CGPoint(x: prev >= 0 ? lx : x, y: prev >= 0 ? ly : y))
+            let vq = min(3, Int((v * 4).rounded(.down))), zq = cam == nil || PS < 1.3 ? 0 : PS < 2.3 ? 1 : 2
+            let (col, lum) = toneAt(m), glow = cls == 2 || lum > 1.3
+            if let r = runs.last, open, r.cls == cls, r.vq == vq, r.zq == zq, r.glow == glow, abs(r.col.r - col.r) + abs(r.col.g - col.g) + abs(r.col.b - col.b) < 18, abs(r.lum - lum) < 0.12 {
+                r.path.addLine(to: CGPoint(x: x, y: y))
+            } else {
+                if open { runs[runs.count - 1].path.addLine(to: CGPoint(x: x, y: y)) }
+                let r = Run(cls: cls, vq: vq, zq: zq, glow: glow, col: col, lum: lum)
+                r.path.move(to: CGPoint(x: x, y: y))
+                runs.append(r); open = true
             }
-            paths[key]!.addLine(to: CGPoint(x: x, y: y)); lx = x; ly = y; prev = key
             if m >= b { break }
             m += stepM
         }
         let WK: [Double] = [1, 1.7, 2.6]
         c.setAlpha(1); c.setLineJoin(.round)
         c.setBlendMode(.plusLighter)                  // the moving parts glow a little
-        for i in 24..<36 {
-            guard let p = paths[i] else { continue }
-            c.setStrokeColor(RGB.warm.cg(0.1 * (Double(((i / 3) & 3)) + 0.5) / 4)); c.setLineWidth(5 * WK[i % 3]); c.setLineDash(phase: 0, lengths: [])
-            c.addPath(p); c.strokePath()
+        for r in runs where r.glow {
+            c.setStrokeColor(r.col.cg(min(1, 0.1 * (Double(r.vq) + 0.5) / 4 * r.lum))); c.setLineWidth(5 * WK[r.zq]); c.setLineDash(phase: 0, lengths: [])
+            c.addPath(r.path); c.strokePath()
         }
         c.setBlendMode(.normal)
-        for i in 0..<36 {
-            guard let p = paths[i] else { continue }
-            let j = i / 3, cls = j >> 2, v = (Double(j & 3) + 0.5) / 4, wk = WK[i % 3]
-            c.setLineDash(phase: 0, lengths: cls == 0 ? [CGFloat(1.1 * wk), CGFloat(3.4 * wk)] : [])
-            c.setStrokeColor(RGB.lit.cg((cls == 0 ? 0.34 : cls == 1 ? 0.46 : 0.8) * v)); c.setLineWidth((cls == 2 ? 1.5 : 1.15) * wk)
-            c.addPath(p); c.strokePath()
+        for r in runs {
+            let v = (Double(r.vq) + 0.5) / 4, wk = WK[r.zq]
+            c.setLineDash(phase: 0, lengths: r.cls == 0 ? [CGFloat(1.1 * wk), CGFloat(3.4 * wk)] : [])
+            c.setStrokeColor(r.col.cg(min(1, (r.cls == 0 ? 0.34 : r.cls == 1 ? 0.46 : 0.8) * v * r.lum)))
+            c.setLineWidth((r.cls == 2 ? 1.5 : 1.15) * wk * clamp(1 + 0.5 * (r.lum - 1), 0.85, 1.25))
+            c.addPath(r.path); c.strokePath()
         }
         c.setLineDash(phase: 0, lengths: [])
+        rideDots(c, a, b)
         if b == Trev && visT(b) > 0.05 && P(R_YOU + amp * actAt(b), ang(b)) {       // where you are now
             let v = visT(b) * fog(), s = cam != nil ? clamp(PS, 0.5, 2) : 1
             c.setBlendMode(.plusLighter); spr.glow(c, .warm, PX, PY, 11 * s, 0.85 * v); c.setBlendMode(.normal)
             c.setAlpha(v); c.setFillColor(CGColor(srgbRed: 1, green: 250 / 255, blue: 240 / 255, alpha: 1)); fillCircle(c, PX, PY, 1.9 * s); c.setAlpha(1)
+        }
+    }
+
+    /// a hollow dot where he got on a bus, a filled one where he got off
+    private func rideDots(_ c: CGContext, _ a: Double, _ b: Double) {
+        guard Cal.cur.real else { return }
+        let s = cam != nil ? clamp(PS, 0.5, 2) : 1
+        for ride in RealDay.shared.rides {
+            for (t, filled) in [(ride.start, false), (ride.end ?? -1e9, true)] where t >= a && t <= b {
+                guard P(R_YOU + amp * actAt(t), ang(t)) else { continue }
+                let v = visT(t) * fog(); if v < 0.05 { continue }
+                if filled {
+                    c.setFillColor(RGB.lit.cg(0.9 * v)); fillCircle(c, PX, PY, 1.9 * s)
+                } else {
+                    c.setStrokeColor(RGB.lit.cg(0.9 * v)); c.setLineWidth(0.9 * s)
+                    c.strokeEllipse(in: CGRect(x: PX - 1.9 * s, y: PY - 1.9 * s, width: 3.8 * s, height: 3.8 * s))
+                }
+            }
         }
     }
 
@@ -597,17 +620,20 @@ extension StarEngine {
             ring(MR - 1.5, .dial, today ? 0.3 : 0.13, 0.6)
             ring(MR * 0.5, .dial, 0.1, 0.6)
             if d <= 0 {                                              // the path you walked, rising where you moved
-                let end = today ? nT - Double(floorDay(nT)) * DAY : DAY, p = CGMutablePath(), pd = CGMutablePath()
-                var m = 0.0
+                let end = today ? nT - Double(floorDay(nT)) * DAY : DAY
+                var m = 0.0, last = CGPoint.zero
+                c.setLineCap(.butt)
                 while m <= end {
-                    let t = Double(d) * DAY + m, r = MR * 0.74 + 3.4 * actAt(t), an = a(m), x = cx + r * cos(an), y = cy + r * sin(an), sl = isQuiet(kindAt(t))
-                    let pt = CGPoint(x: x, y: y)
-                    if sl { if m != 0 { pd.addLine(to: pt) } else { pd.move(to: pt) }; p.move(to: pt) }
-                    else { if m != 0 { p.addLine(to: pt) } else { p.move(to: pt) }; pd.move(to: pt) }
+                    let t = Double(d) * DAY + m, r = MR * 0.74 + 3.4 * actAt(t), an = a(m), pt = CGPoint(x: cx + r * cos(an), y: cy + r * sin(an))
+                    let (col, lum) = toneAt(t)
+                    if m != 0 {
+                        c.setStrokeColor(col.cg(min(1, (isQuiet(kindAt(t)) ? 0.22 : 0.62) * lum))); c.setLineWidth(isQuiet(kindAt(t)) ? 0.7 : 0.9)
+                        c.beginPath(); c.move(to: last); c.addLine(to: pt); c.strokePath()
+                    }
+                    last = pt
                     m += 10
                 }
-                c.setStrokeColor(RGB.lit.cg(0.62)); c.setLineWidth(0.9); c.addPath(p); c.strokePath()
-                c.setStrokeColor(RGB.lit.cg(0.22)); c.setLineWidth(0.7); c.addPath(pd); c.strokePath()
+                c.setLineCap(.round)
             }
             let now = nowMs()
             let evs: [MiniEv] = monthDays(d) ?? EV.filter { floorDay($0.t) == d && $0.born <= now }.map { MiniEv(t: $0.t - Double(d) * DAY, lane: $0.lane, st: $0.st, star: ($0.mag ?? 1) > 1.2) }

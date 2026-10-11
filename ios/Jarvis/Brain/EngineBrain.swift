@@ -5,6 +5,9 @@ import Foundation
 extension StarEngine {
     /// every frame: a few integer compares unless the brain changed something
     func syncBrain() {
+        #if DEBUG
+        if RingScene.on { return }          // `-scene 星环`: the made-up day stays
+        #endif
         let b = BrainLink.shared
         if b.hasToken != Cal.cur.real { switchWorld(real: b.hasToken) }
         guard Cal.cur.real else { return }

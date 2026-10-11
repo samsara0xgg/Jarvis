@@ -152,22 +152,32 @@ private func plan(_ d: Int) -> [Seg] {
     return s
 }
 
-struct DayAct { var act: [Double]; var kind: [Int]; var pal = KINDS }
+/// `col` and `lum` are what he was doing at each sample (`RingTone`); empty in the sample world, whose ring is plain `.lit`
+struct DayAct { var act: [Double]; var kind: [Int]; var pal = KINDS; var col: [RGB] = []; var lum: [Double] = [] }
 private var actCache: [Int: DayAct] = [:]
 /// the ring's edges softened: two box passes
 func smoothAct(_ o: DayAct) -> DayAct {
-    let N = o.act.count
-    var a = o.act
-    for _ in 0..<2 {
-        var b = [Double](repeating: 0, count: N)
-        for i in 0..<N {
-            var s = 0.0, n = 0.0
-            for j in -2...2 { let q = i + j; if q >= 0 && q < N { s += a[q]; n += 1 } }
-            b[i] = s / n
+    func box(_ x: [Double]) -> [Double] {
+        var a = x
+        for _ in 0..<2 {
+            var b = [Double](repeating: 0, count: a.count)
+            for i in a.indices {
+                var s = 0.0, n = 0.0
+                for j in -2...2 { let q = i + j; if q >= 0 && q < a.count { s += a[q]; n += 1 } }
+                b[i] = s / n
+            }
+            a = b
         }
-        a = b
+        return a
     }
-    return DayAct(act: a, kind: o.kind, pal: o.pal)
+    var r = o
+    r.act = box(o.act)
+    if !o.col.isEmpty {                 // colours blend where what he was doing changes
+        let (cr, cg, cb) = (box(o.col.map(\.r)), box(o.col.map(\.g)), box(o.col.map(\.b)))
+        r.col = o.col.indices.map { RGB(cr[$0], cg[$0], cb[$0]) }
+        r.lum = box(o.lum)
+    }
+    return r
 }
 func dayAct(_ d: Int) -> DayAct {
     if Cal.cur.real { return RealDay.shared.act(d) }
@@ -189,6 +199,13 @@ func clearActCache() { actCache = [:] }
 func actAt(_ t: Double) -> Double {
     let d = floorDay(t), x = (t - Double(d) * DAY) / 5, i = min(287, Int(x.rounded(.down))), o = dayAct(d)
     return o.act[i] + (o.act[i + 1] - o.act[i]) * (x - Double(i))
+}
+/// the colour and brightness of the thread at minute t
+func toneAt(_ t: Double) -> (col: RGB, lum: Double) {
+    let d = floorDay(t), x = (t - Double(d) * DAY) / 5, i = min(287, Int(x.rounded(.down))), o = dayAct(d)
+    if o.col.isEmpty { return (.lit, 1) }
+    let k = x - Double(i), a = o.col[i], b = o.col[i + 1]
+    return (RGB(lerp(a.r, b.r, k), lerp(a.g, b.g, k), lerp(a.b, b.b, k)), lerp(o.lum[i], o.lum[i + 1], k))
 }
 func kindAt(_ t: Double) -> String {
     let d = floorDay(t), o = dayAct(d)

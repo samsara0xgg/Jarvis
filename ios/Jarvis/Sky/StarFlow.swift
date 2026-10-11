@@ -582,6 +582,8 @@ extension StarEngine {
             guard hm.count == 2 else { return }
             let t = Double(day) * DAY + hm[0] * 60 + hm[1]
             setLevel(-1); fs.value = t; fs.velocity = 0; goal = t; mode = .idle
+        case "星环": runRingScene(near: nil)
+        case _ where name.hasPrefix("星环近@"): runRingScene(near: String(name.dropFirst(4)))
         case "一周": setLevel(1)
         case "一个月": setLevel(2)
         case "确认": setLevel(0); if let e = byId("thanks") { openId = e.id; rowKey = ""; seek(e.t) }

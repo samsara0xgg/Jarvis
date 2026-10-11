@@ -10,6 +10,11 @@ final class RealDay {
     /// the ring's pieces, in engine minutes: what you were doing, so the trace can rise where you moved
     private struct Seg { let t0: Double, t1: Double, key: String, level: Double, prio: Int }
     private var segs: [Seg] = []
+    /// what he was doing, in the same minutes: the colour and brightness of his thread (`RingTone`)
+    private struct Tint { let t0: Double, t1: Double, tone: RingTone, prio: Int }
+    private var tints: [Tint] = []
+    /// the bus rides so far, for the dots where he got on and off (`end` is nil while he is still on)
+    private(set) var rides: [(start: Double, end: Double?)] = []
     private var items: [DayItem] = []
     private var actCache: [Int: DayAct] = [:]
     private var today = 0
@@ -23,6 +28,9 @@ final class RealDay {
         today = floorDay(now)
         actCache = [:]
         segs = items.compactMap { seg($0, cal, now) }
+        tints = items.compactMap { tint($0, cal, now) }
+        rides = items.filter { $0.kind == "ride" && $0.lane == "you" && cal.t(ms: $0.start_ms) <= now }
+            .map { (cal.t(ms: $0.start_ms), $0.end_ms.map(cal.t(ms:))) }
         return items.compactMap { star($0, cal, now) }
     }
 
@@ -128,6 +136,8 @@ final class RealDay {
             let (name, _) = Self.moves[i.activity ?? ""] ?? ("移动", "")
             let level = ["walking": 0.8, "running": 0.95, "cycling": 0.8, "automotive": 0.36][i.activity ?? ""] ?? 0.5
             return Seg(t0: t0, t1: t1, key: "~" + name, level: level, prio: 2)
+        case "ride":        // the brain swaps an automotive move for this: the thread runs on through it
+            return Seg(t0: t0, t1: t1, key: "~公交上", level: 0.36, prio: 4)
         case "stay":
             let p = i.place.flatMap { $0.isEmpty ? nil : $0 }
             return Seg(t0: t0, t1: t1, key: p.map { "~在\($0)" } ?? "~停留", level: 0.12, prio: 1)
@@ -135,21 +145,34 @@ final class RealDay {
         }
     }
 
+    private func tint(_ i: DayItem, _ cal: Cal, _ now: Double) -> Tint? {
+        guard i.lane == "you" else { return nil }
+        let t0 = cal.t(ms: i.start_ms)
+        if t0 > now { return nil }
+        let t1 = i.end_ms.map(cal.t(ms:)) ?? now
+        guard let (tone, prio) = RingTone.of(i.kind, activity: i.activity, active: i.active_s, span: (t1 - t0) * 60) else { return nil }
+        return Tint(t0: t0, t1: t1, tone: tone, prio: prio)
+    }
+
     /// Where you were and how much you moved, every five minutes of day `d`. Gaps in what the phone reported stay gaps.
     func act(_ d: Int) -> DayAct {
         if let a = actCache[d] { return a }
         let N = 289
         var raw = [Double](repeating: 0, count: N), kind = [Int](repeating: 0, count: N), pal = ["gap"]
-        let lo = Double(d) * DAY, near = segs.filter { $0.t1 > lo - 1 && $0.t0 < lo + DAY }
+        var col = [RGB](repeating: RingTone.none.col, count: N), lum = [Double](repeating: RingTone.none.lum, count: N)
+        let lo = Double(d) * DAY, near = segs.filter { $0.t1 > lo - 1 && $0.t0 < lo + DAY }, nearTints = tints.filter { $0.t1 > lo - 1 && $0.t0 < lo + DAY }
         for i in 0..<N {
             let t = lo + min(Double(i * 5), DAY - 1)
+            var tb: Tint?
+            for s in nearTints where s.t0 <= t && t < s.t1 && s.prio > (tb?.prio ?? 0) { tb = s }
+            if let tb { col[i] = tb.tone.col; lum[i] = tb.tone.lum }
             var best: Seg?
             for s in near where s.t0 <= t && t < s.t1 && s.prio > (best?.prio ?? 0) { best = s }
             guard let b = best else { continue }
             if let k = pal.firstIndex(of: b.key) { kind[i] = k } else { pal.append(b.key); kind[i] = pal.count - 1 }
             raw[i] = b.level
         }
-        var a = smoothAct(DayAct(act: raw, kind: kind))
+        var a = smoothAct(DayAct(act: raw, kind: kind, col: col, lum: lum))
         a.pal = pal
         actCache[d] = a
         return a
