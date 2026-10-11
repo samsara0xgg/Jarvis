@@ -213,6 +213,7 @@ from jarvis.shared.realtime_trace import (
     record_realtime_trace,
 )
 from jarvis.state import device_reads
+from jarvis.state import picture_notes as note_records
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME, Attachments, marker
 from jarvis.state.authorized_dispatch_outbox import (
     ConfirmationRevalidationError,
@@ -4391,6 +4392,11 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             service_tier=_voice_service_tier(runtime.config, user_intent_event),
             read_attachments=(
                 None if runtime.attachments is None else runtime.attachments.load_many
+            ),
+            last_words=(
+                note_records.last_words(memory.db_path, memory_exclude_id)
+                if memory is not None and user_intent_event.payload.get("attachments")
+                else ""
             ),
         )
 

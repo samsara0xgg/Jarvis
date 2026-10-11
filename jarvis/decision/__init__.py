@@ -111,7 +111,7 @@ from jarvis.shared import (
     llm_io_log,
 )
 from jarvis.shared.about import clean_about, prompt_title
-from jarvis.shared.lang import action, letter_to, reply_language, t
+from jarvis.shared.lang import action, is_filler, letter_to, reply_language, t
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.shared.realtime import AlreadyConsumed, Wave1FeatureFlags, stable_authorization_identity
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
@@ -699,6 +699,9 @@ class DecideContext:
     # ADR 0211: reads the stored files a phone attached to a turn (one entry per id, ``None``
     # for one that has expired). ``None`` (the default) attaches nothing.
     read_attachments: Callable[[Sequence[str]], list[LoadedAttachment | None]] | None = None
+    # ADR 0223: the words of his latest earlier turn that had any. A turn that came with files
+    # and no words of its own is answered in this one's language.
+    last_words: str = ""
 
 
 @dataclass(frozen=True)
@@ -1289,7 +1292,10 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
     Returns:
         Frozen :class:`DecideResult`.
     """
-    scratch = _Scratch(lang=reply_language(trigger.payload.get("transcript"), ctx.reply_language))
+    heard = trigger.payload.get("transcript")
+    if trigger.payload.get("attachments") and is_filler(heard):
+        heard = ctx.last_words  # ADR 0223: the filler sentence is in the process language
+    scratch = _Scratch(lang=reply_language(heard, ctx.reply_language))
     packet = assemble_packet(trigger, ctx.conn, ctx.read_snapshot)
     policy = effective_policy(_allowed_tool_surface(ctx.tool_registry))
 
