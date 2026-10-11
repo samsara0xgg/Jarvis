@@ -45,25 +45,27 @@ final class VoiceAudio {
             try s.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         }
         // A fresh engine each time, built on the session as it is now: one built while the route was still settling (just after
-        // launch, with navigation holding the audio) kept a 0 Hz input that never recovered, so a dead one is built again, 3 tries
-        // of 1 s. installTap with a 0 Hz or 0-channel format raises an exception Swift cannot catch, hence the wait.
+        // launch, with navigation holding the audio, and the first one after the session goes active) kept a 0 Hz input that never
+        // recovered, while one built a moment later had 48 kHz at once (phone, 12:29 PT: 1 s lost on the dead one). So a dead one is
+        // built again after 0.3 s, for about 3 s in all. installTap with a 0 Hz or 0-channel format raises an exception Swift cannot
+        // catch, hence the wait.
         var inFmt = AVAudioFormat()
-        ready: for build in 0..<3 {
+        ready: for build in 0..<8 {
             engine = AVAudioEngine()
             try engine.inputNode.setVoiceProcessingEnabled(true)   // changes the input format: read it only after this
-            for attempt in 0...10 {
+            for attempt in 0...3 {
                 inFmt = engine.inputNode.outputFormat(forBus: 0)
                 let ok = s.isInputAvailable && inFmt.sampleRate > 0 && inFmt.channelCount > 0
-                if ok || attempt == 0 || attempt == 10 {
+                if ok || (attempt == 0 && build == 0) || (attempt == 3 && build == 7) {
                     let r = s.currentRoute
                     VoiceTrace.note("mic engine \(build) attempt \(attempt): input available \(s.isInputAvailable), \(Int(inFmt.sampleRate)) Hz \(inFmt.channelCount) ch, "
                         + "in \(r.inputs.map { "\($0.portType.rawValue) \($0.portName)" }), out \(r.outputs.map(\.portType.rawValue)), "
                         + "\(s.category.rawValue)/\(s.mode.rawValue)")
                 }
                 if ok { break ready }
-                if attempt < 10 { try await Task.sleep(nanoseconds: 100_000_000) }
+                if attempt < 3 { try await Task.sleep(nanoseconds: 100_000_000) }
             }
-            if build == 2 { throw NotReady() }
+            if build == 7 { throw NotReady() }
         }
         let input = engine.inputNode
         let rate = engine.outputNode.outputFormat(forBus: 0).sampleRate
