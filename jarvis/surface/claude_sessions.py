@@ -113,9 +113,10 @@ def _named(name: object) -> str:
 
 def _prompt_title(prompt: str) -> str:
     """A prompt as a title: its words without attached-file paths, else the files' names."""
-    if prompt.lstrip().startswith("<wake"):
+    if "<wake" in prompt:
         found = _WAKE_MESSAGE.findall(prompt)
         triggered = [body for attrs, body in found if 'trigger="true"' in attrs]
+        # No message in it (a spawn, a relay): no words of his, so no title from it.
         prompt = html.unescape((triggered or [body for _, body in found] or [""])[-1])
     words = _short(_ATTACHED.sub(" ", prompt))
     if words:
@@ -175,6 +176,7 @@ def read_transcript(path: Path) -> dict[str, Any]:
     """
     out: dict[str, Any] = {
         "prompt": "", "branch": "", "tool": "", "last_message": "", "tail": "", "said": [],
+        "title": "",
     }
     with path.open("rb") as fh:
         size = fh.seek(0, 2)
@@ -194,6 +196,9 @@ def read_transcript(path: Path) -> dict[str, Any]:
             out["branch"] = entry["gitBranch"]
         if entry.get("type") == "last-prompt" and not out["prompt"]:
             out["prompt"] = _short(entry.get("lastPrompt"))
+            # Titled from the whole prompt: a wake envelope's words come after its first 160.
+            raw = entry.get("lastPrompt")
+            out["title"] = _prompt_title(raw if isinstance(raw, str) else "")
         if entry.get("type") == "assistant" and not answered:
             tool, text = _newest_blocks(entry)
             out["tool"] = out["tool"] or tool
@@ -518,6 +523,7 @@ class ClaudeSessions:
         if path is None:
             return {
                 "prompt": "", "branch": "", "tool": "", "last_message": "", "tail": "", "said": [],
+                "title": "",
             }
         cached = self._transcripts.get(path)
         if cached is None or cached[0] != mtime_ns:
@@ -616,7 +622,7 @@ class ClaudeSessions:
                     "phase": phase,
                     "title": titles.get(agent["sessionId"])
                     or _named(agent.get("name"))
-                    or _prompt_title(tx["prompt"])
+                    or tx["title"]
                     or _project(cwd),
                     "project": _project(cwd),
                     "branch": tx["branch"],

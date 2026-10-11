@@ -332,7 +332,9 @@ def test_a_session_is_named_as_claude_desktop_names_it(
         "s-file": '@"/Users/a/.claude/uploads/x/plan v2.md"',
         "s-mixed": "@/Users/a/shot.png 这张图里哪里不对",
         "s-woken": (
-            '<wake reason="mention" current-time="2026-10-11T18:00:00Z">\n  <project id="p">\n'
+            '<wake reason="mention" current-time="2026-10-11T18:00:00Z">\n'
+            f'  <project id="chan_{"0" * 40}" type="project">\n'
+            f'    <thread ts="cmsg_{"1" * 60}">\n'  # the words start well past 160 characters
             '    <message trigger="true" from="human" id="m1">看下手机为什么没声音</message>\n'
             '  </project>\n  <system-note>complete</system-note>\n</wake>'
         ),
