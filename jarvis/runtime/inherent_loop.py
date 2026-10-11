@@ -101,6 +101,7 @@ if TYPE_CHECKING:
     from jarvis.runtime.moment import Moment
     from jarvis.runtime.picture_notes import PictureNotes
     from jarvis.runtime.reminders import Reminders
+    from jarvis.runtime.rides import Rides
     from jarvis.runtime.settings import Settings
     from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent, Wave1FeatureFlags, Wave4ResponseFlags
@@ -5380,6 +5381,11 @@ async def _serve_day(  # noqa: PLR0913 — the route's stores, its zone, the ter
     )
 
 
+async def _ride_act(rides: Rides, body: dict[str, Any]) -> dict[str, Any]:
+    """``POST /inherent/ride`` (ADR 0224): his answer to the boarding question, off the loop."""
+    return await asyncio.to_thread(rides.act, body)
+
+
 def _notice_deps(
     job_mail: JobMail | None, reminders: Reminders | None, moment: Moment | None,
     alerts: dict[str, Any] | None = None,
@@ -7356,6 +7362,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 if runtime.listen_addresses
                 else None
             ),
+            ride_act=None if runtime.rides is None else functools.partial(_ride_act, runtime.rides),
+            ride_read=None if runtime.rides is None else functools.partial(
+                asyncio.to_thread, runtime.rides.view,
+            ),
             claude_request=None if runtime.push is None else runtime.push.claude_request,
             claude_prompt_log=runtime.runtime_paths.root / "claude-prompts.jsonl",
             device_name=(
@@ -7576,6 +7586,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             reminders.may_speak = lambda: not controls.speech_muted and not controls.conversation
             reminders.say = functools.partial(_say_reminder, runtime)
             watchers.append(asyncio.create_task(reminders.run(), name="reminders"))
+        if runtime.rides is not None:
+            # ADR 0224: the bus ride follower; it fetches a feed only while there is a reason.
+            watchers.append(asyncio.create_task(runtime.rides.run(), name="rides"))
         if runtime.push is not None and runtime.push.enabled:
             # ADR 0210: a fired reminder pushes at any quiet level; waiting cards follow the level.
             push = runtime.push
@@ -7591,6 +7604,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             if runtime.reminders is not None:
                 runtime.reminders.push = push.reminder
                 push.next_reminder = runtime.reminders.next_due
+            if runtime.rides is not None:
+                runtime.rides.push = push
             watchers.append(asyncio.create_task(push.run(), name="push"))
         if runtime.night is not None:
             # ADR 0093: the night run mutes after the goodnight line, never under a wake capture.

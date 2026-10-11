@@ -92,7 +92,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from starlette.background import BackgroundTask
 from starlette.datastructures import Address, Headers
 from starlette.datastructures import UploadFile as FormFile
@@ -763,6 +763,11 @@ class InherentDeps:
     # ADR 0203: the notch's trip cards (pin an offered option, next bus, undo an unpin). ``None``
     # leaves the route unregistered (404); a LookupError is 404.
     departure_act: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
+    # ADR 0224: the followed bus ride. ``ride_act`` takes his answer to the boarding question (or
+    # ends the ride) and ``ride_read`` is the ride now. ``None`` leaves the routes unregistered
+    # (404); a LookupError from ``ride_act`` is 404.
+    ride_act: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
+    ride_read: Callable[[], Awaitable[dict[str, Any] | None]] | None = None
     # ADR 0160: the same feedback for every other proactive card the client raises, by card id.
     # ``None`` leaves the route unregistered (404); a LookupError is 404, a ValueError 400.
     card_act: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
@@ -1375,6 +1380,21 @@ class DepartureRequest(BaseModel):
     trip_id: str = Field(default="", max_length=60)
 
 
+class RideRequest(BaseModel):
+    """Body of ``POST /inherent/ride`` (ADR 0224): board or not on a question, or end the ride."""
+
+    action: Literal["board", "not", "end"]
+    candidate_id: str = Field(default="", max_length=40)
+    ride_id: str = Field(default="", max_length=40)
+
+    @model_validator(mode="after")
+    def _needs_its_id(self) -> RideRequest:
+        if self.action != "end" and not self.candidate_id:
+            msg = "candidate_id is required to answer the question"
+            raise ValueError(msg)
+        return self
+
+
 class CardActionRequest(BaseModel):
     """Body of ``POST /inherent/cards/{id}`` (ADR 0160): ``seen`` with a snapshot, or feedback."""
 
@@ -1621,6 +1641,23 @@ def _register_departure_route(app: FastAPI, deps: InherentDeps) -> None:
     async def departure(req: DepartureRequest) -> dict[str, Any]:
         """``{departure, reason}``: the pin now served, and why an action changed nothing."""
         return await _home_call(departure_act(req.model_dump()))
+
+
+def _register_ride_routes(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0224: ``GET`` the ride now, ``POST`` his answer to the boarding question or its end."""
+    if deps.ride_act is None or deps.ride_read is None:
+        return
+    ride_act, ride_read = deps.ride_act, deps.ride_read
+
+    @app.get("/inherent/ride")
+    async def ride_now() -> dict[str, Any]:
+        """``{ride}``: the ride he is on with its progress, or ``null``."""
+        return {"ride": await _home_call(ride_read())}
+
+    @app.post("/inherent/ride", status_code=200)
+    async def ride(req: RideRequest) -> dict[str, Any]:
+        """``{ride, reason}``: the ride now, and why the answer changed nothing (or ``null``)."""
+        return await _home_call(ride_act(req.model_dump()))
 
 
 def _register_job_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C901 â€” one closed route table.
@@ -2804,6 +2841,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
     _register_mail_page_routes(app, deps)
     _register_job_routes(app, deps)
     _register_departure_route(app, deps)
+    _register_ride_routes(app, deps)
     _register_memory_routes(app, deps)
     _register_data_routes(app, deps)
     _register_setup_routes(app, deps)

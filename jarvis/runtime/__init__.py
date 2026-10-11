@@ -192,6 +192,7 @@ from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.runtime.projects import ProjectsService
 from jarvis.runtime.push import Push
 from jarvis.runtime.reminders import Reminders
+from jarvis.runtime.rides import RIDE_LINE_CHARS, RIDE_LINE_PREFIX, Rides
 from jarvis.runtime.settings import REPLY_LINES, SETUP_VOICES, Settings, apply_settings
 from jarvis.runtime.setup import write_setting
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
@@ -688,6 +689,8 @@ class JarvisRuntime:
     reminders: Reminders | None = None
     # ADR 0210: the pushes to his paired phone; pushes nothing until a key is configured.
     push: Push | None = None
+    # ADR 0224: the bus ride follower; its loop runs while there is a watch or a ride.
+    rides: Rides | None = None
     # ADR 0217: the device each turn came from, the devices there are, where the phone put him.
     whereabouts: Whereabouts | None = None
     # ADR 0052: the Settings page's file. None = hand-assembled.
@@ -1509,6 +1512,7 @@ def _live_lines(producers: tuple[Callable[[], str | None], ...]) -> tuple[str, .
                 DRAFT_LINE_CHARS if line.startswith(DRAFT_LINE_PREFIX)
                 else VIEW_LINE_CHARS if line.startswith(VIEW_LINE_PREFIX)
                 else SHARES_LINE_CHARS if line.startswith(SHARES_LINE_PREFIX)
+                else RIDE_LINE_CHARS if line.startswith(RIDE_LINE_PREFIX)
                 else _LIVE_LINE_CHARS
             )
             lines.append(line[:limit])
@@ -2803,6 +2807,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         pricing_path=repo_root / "data" / "pricing.json",
         account_cost=wave1_features.exactly_once_cost_accounting,
     )
+    rides = Rides(paths.event_log, bus_live, places=_transit_places(full_config),
+                  offers=transit_offers)  # ADR 0224
     registry = build_default_registry(
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
@@ -2818,6 +2824,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         here_location=_here_location(role),
         here_phone=partial(_phone_here, paths.event_log),
         bus_live=_live_departure(bus_live),
+        ride_control=rides.control(),
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
@@ -3033,6 +3040,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         mail_drafts=mail_drafts,
         ambient=ambient,
         live_context=(
+            rides.line,
             *(() if view is None else (view.line,)),
             *(() if mail_drafts is None else (mail_drafts.line,)),
             voice_cues.line,
@@ -3046,6 +3054,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         push=Push.from_config(full_config, paths.root, paths.event_log),
         whereabouts=Whereabouts(paths.root, terminal_hub, moment),
         reminders=reminders,
+        rides=rides,
         voice_words=_voice_words(full_config, config_path, jev_log),
         oneshot=_jev_oneshot(
             full_config, config_path, jev_log, tier0_table, _event_emitter(paths.event_log),
