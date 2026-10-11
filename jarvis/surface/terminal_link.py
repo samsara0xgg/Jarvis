@@ -99,6 +99,8 @@ class TerminalHub:
         """Start with no terminal connected; ``events`` is where their observers' events go."""
         self._call_timeout_s = call_timeout_s
         self.events = events
+        self.on_hello: Callable[[str, frozenset[str]], None] | None = None
+        """Told each hello's device name and declared tools (ADR 0225); set by the runtime."""
         self.voice: BrainVoice | None = None
         """What speaks to a voice terminal (ADR 0172); set once the brain can synthesize."""
         self.listening: BrainListening | None = None
@@ -122,6 +124,11 @@ class TerminalHub:
             for tool in tools:
                 self._last_name[tool] = name
         LOGGER.info("terminal %s connected, runs %s", name, sorted(tools))
+        if self.on_hello is not None:
+            try:
+                self.on_hello(name, tools)
+            except Exception:  # a bookkeeping fault must not drop the socket
+                LOGGER.exception("terminal %s: remembering its declared tools failed", name)
         return link
 
     def detach(self, link: _Link) -> None:
@@ -173,12 +180,21 @@ class TerminalHub:
         """Run ``tool`` on the most recently connected terminal that declared it.
 
         Raises:
-            DeviceCallError: no such terminal, no answer in time, the terminal went away
-                mid-call, or the terminal reported a failure (its own code and message).
+            DeviceCallError: no terminal connected (``device_not_connected``), none of the
+                connected ones declared the tool (``device_lacks_tool``, naming them), no answer
+                in time, the terminal went away mid-call, or the terminal reported a failure
+                (its own code and message).
         """
         with self._lock:
             link = next((item for item in reversed(self._links) if tool in item.tools), None)
             label = self._last_name.get(tool, "the terminal")
+            present = sorted({item.name for item in self._links})
+        if link is None and present:
+            msg = (
+                f"{' and '.join(present)} {'is' if len(present) == 1 else 'are'} connected but "
+                f"{'does' if len(present) == 1 else 'do'} not offer {tool}"
+            )
+            raise DeviceCallError(msg, code="device_lacks_tool")
         if link is None:
             msg = f"{label} is not connected right now, so {tool} cannot run"
             raise DeviceCallError(msg, code="device_not_connected")

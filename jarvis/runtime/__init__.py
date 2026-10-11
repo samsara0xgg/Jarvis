@@ -146,7 +146,9 @@ from jarvis.execution.tools import (
     DEFAULT_WEB_TIMEOUT_S,
     ActionLifecycle,
     ReadOnlyToolRegistry,
+    Tool,
     ToolContext,
+    ToolDefinition,
     ToolRegistry,
     VisionClient,
     build_default_registry,
@@ -155,7 +157,7 @@ from jarvis.execution.tools import (
 )
 from jarvis.execution.transit_tool import TransitOffers, first_leave_ms
 from jarvis.execution.workers import Workers, make_worker_tools
-from jarvis.runtime import audio_output
+from jarvis.runtime import audio_output, device_tools
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.daily_report import (
     PLAN_SERVER,
@@ -362,7 +364,8 @@ class TriggerWaitTimeout(RuntimeError):  # noqa: N818 — Day-1 vocabulary keeps
 Role = Literal["all", "brain"]
 
 # What the brain forces off whatever the user's files say: each of these reads or
-# drives this machine's own devices, files or apps, and a terminal owns those.
+# drives this machine's own devices, files or apps, and a terminal owns those. The vault and
+# the open_path bookmarks are the terminal's alone (ADR 0225): `None` replaces a whole block.
 _BRAIN_OVERRIDES: Final[dict[str, Any]] = {
     "observer": {
         "repos": [],
@@ -370,7 +373,7 @@ _BRAIN_OVERRIDES: Final[dict[str, Any]] = {
     },
     "realtime": {"ambient_sounds": False, "gpt_live": {"enabled": False}},
     "daily_report": {"codex_sessions": False},
-    "tools": {"workers": {"enabled": False}},
+    "tools": {"workers": {"enabled": False}, "obsidian": {"vault_root": ""}, "open_path": None},
 }
 
 
@@ -426,12 +429,26 @@ def _on_menu(table: Tier0Table, registry: ToolRegistry, role: Role) -> Tier0Tabl
     """The Tier 0 rows the registry can serve.
 
     A brain holds only the tools its role builds; a row naming another would fail the boot's
-    cross-check, so it is dropped (ADR 0170). The night-run tools are held, as proxies.
+    cross-check, so it is dropped (ADR 0170). The night-run tools are held, as proxies. A device
+    tool no terminal has declared yet is held too (ADR 0225): its row waits on the menu.
     """
     if role != "brain":
         return table
-    held = {tool.name for tool in registry.get_definitions()}
+    held = {tool.name for tool in (*registry.get_definitions(), *registry.device_catalogue())}
     return tuple(row for row in table if row.tool_name in held)
+
+
+def _regex_router_tools(registry: ToolRegistry) -> tuple[ToolDefinition | Tool, ...]:
+    """What Tier 0 rows may name: the menu's, and a brain's device tools no terminal declared yet.
+
+    A row that waits for its terminal (ADR 0225) must not fail the boot's cross-check.
+    """
+    return tuple({
+        tool.name: tool
+        for tool in (*registry.for_caller(CallerPrincipal.REGEX_ROUTER),
+                     *registry.device_catalogue())
+        if CallerPrincipal.REGEX_ROUTER in tool.allowed_callers
+    }.values())
 
 
 def _no_audio_devices(_kind: str) -> list[str]:
@@ -2788,6 +2805,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         screen_max_width_px=screen_max_width_px,
         device_link=device,
     )
+    # ADR 0225: a brain's menu offers what the paired terminals declared, before any is here.
+    device_tools.follow_terminals(terminal_hub, paths.root, registry)
     workers = _register_workers(registry, paths, full_config)
     _register_dashboard_tool(registry, view)
     plugin_connections = PluginConnections(
@@ -2804,7 +2823,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     tier0_path = config_path.parent / "tier0_patterns.yaml"
     try:
         tier0_table = _on_menu(load_tier0_table(tier0_path), registry, role)
-        regex_router_tools = registry.for_caller(CallerPrincipal.REGEX_ROUTER)
+        regex_router_tools = _regex_router_tools(registry)
         validate_tier0_table(
             tier0_table,
             allowed_tool_names=frozenset(t.name for t in regex_router_tools),

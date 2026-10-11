@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Final
 
 from jarvis.state.plugin_settings import write_private_json
 from jarvis.state.push_tokens import remove_device as remove_push_tokens
+from jarvis.state.terminal_tools import forget as forget_terminal_tools
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -87,7 +88,7 @@ def pair_device(root: Path, name: str) -> str:
 
 
 def unpair_device(root: Path, name: str) -> None:
-    """Revoke ``name``'s token and forget the push tokens it registered (ADR 0210).
+    """Revoke ``name``'s token and forget its push tokens (ADR 0210) and declared tools (0225).
 
     Raises:
         DeviceTokenError: ``name`` is not paired.
@@ -99,6 +100,7 @@ def unpair_device(root: Path, name: str) -> None:
     del rows[name]
     write_private_json(root / _FILE, {"devices": rows})
     remove_push_tokens(root, name)
+    forget_terminal_tools(root, name)
 
 
 def paired_devices(root: Path) -> list[tuple[str, str]]:

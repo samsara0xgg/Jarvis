@@ -5152,6 +5152,17 @@ def _claude_sessions_read(config: Mapping[str, Any]) -> bool:
     return isinstance(sessions, Mapping) and sessions.get("enabled") is True
 
 
+def _claude_sessions_served(runtime: JarvisRuntime) -> bool:
+    """Whether the Agents page and the Claude hooks routes answer on this daemon.
+
+    A brain has no sessions of its own and ignores its own setting (ADR 0225): it serves the page
+    whenever a terminal can connect, and the terminal's setting decides what is read.
+    """
+    if runtime.role == "brain":
+        return bool(runtime.listen_addresses)
+    return _claude_sessions_read(runtime.config)
+
+
 def _usage_observer_block(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """Return ``observer.usage`` when ``enabled: true``; None means off."""
     block = config.get("observer")
@@ -7289,9 +7300,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 functools.partial(_erase_data, runtime.runtime_paths.root)
                 if spawned_by_agent() else None
             ),
-            # A brain has no sessions of its own: with no terminal able to connect, none to show.
-            claude_sessions_read=_claude_sessions_read(runtime.config)
-            and (runtime.role != "brain" or bool(runtime.listen_addresses)),
+            claude_sessions_read=_claude_sessions_served(runtime),
             agent_marks_path=runtime.runtime_paths.root / "agent-marks.json",
             plugin_read=runtime.plugin_connections.read if runtime.plugin_connections else None,
             plugin_action=runtime.plugin_connections.action if runtime.plugin_connections else None,

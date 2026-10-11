@@ -3453,6 +3453,8 @@ class ToolRegistry:
         self._tools: dict[str, ToolDefinition | Tool] = {}
         self._lock = threading.RLock()
         self._confirmation_dispatch_outbox = confirmation_dispatch_outbox
+        self._device_catalogue: dict[str, tuple[ToolDefinition | Tool, str]] = {}
+        self._offered_device_tools: frozenset[str] = frozenset()
 
     def register(self, tool_def: ToolDefinition | Tool) -> None:
         """Register a ToolDefinition. Raises DuplicateToolError on re-register.
@@ -3472,17 +3474,51 @@ class ToolRegistry:
         with self._lock:
             return tuple(self._tools.values())
 
-    def replace_group(self, previous: frozenset[str], tools: tuple[Tool, ...]) -> None:
-        """Atomically publish a runtime-owned plugin group, preserving other tools."""
+    def replace_group(
+        self, previous: frozenset[str], tools: tuple[ToolDefinition | Tool, ...],
+    ) -> None:
+        """Atomically publish a runtime-owned group of tools, preserving other tools."""
         with self._lock:
             names = [tool.name for tool in tools]
             if len(set(names)) != len(names) or (set(names) & (self._tools.keys() - previous)):
-                msg = "plugin tools collide with another registered tool"
+                msg = "a published tool group collides with another registered tool"
                 raise DuplicateToolError(msg)
             self._tools = {
                 **{name: tool for name, tool in self._tools.items() if name not in previous},
                 **{tool.name: tool for tool in tools},
             }
+
+    def set_device_tools(
+        self, catalogue: Mapping[str, tuple[ToolDefinition | Tool, str]],
+    ) -> None:
+        """ADR 0225: the device tools a brain may offer, each with the terminal operation it needs.
+
+        Nothing is published until :meth:`offer_device_tools`; a tool already offered is
+        withdrawn, so the menu always follows the catalogue it was last given.
+        """
+        with self._lock:
+            self.replace_group(self._offered_device_tools, ())
+            self._device_catalogue = dict(catalogue)
+            self._offered_device_tools = frozenset()
+
+    def device_catalogue(self) -> tuple[ToolDefinition | Tool, ...]:
+        """Every device tool this registry can offer, offered or not."""
+        with self._lock:
+            return tuple(tool for tool, _ in self._device_catalogue.values())
+
+    def offer_device_tools(self, declared: frozenset[str]) -> None:
+        """ADR 0225: offer exactly the catalogue tools whose operation is in ``declared``.
+
+        A no-op when that set is what is offered already, so the menu (and the prompt prefix
+        cached with it) changes only when a terminal's declarations do.
+        """
+        with self._lock:
+            wanted = tuple(tool for tool, op in self._device_catalogue.values() if op in declared)
+            names = frozenset(tool.name for tool in wanted)
+            if names == self._offered_device_tools:
+                return
+            self.replace_group(self._offered_device_tools, wanted)
+            self._offered_device_tools = names
 
     def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolDefinition | Tool, ...]:
         """Return only the tools `caller_principal` is allowed to dispatch."""
@@ -3942,6 +3978,20 @@ def write_file_handler(  # noqa: PLR0911 — one linear resolve/validate/mode/wr
 
 # --- Default registry assembly ----------------------------------------------
 
+def _runs_on_terminal(
+    _action_request: ActionRequest,
+    _conn: sqlite3.Connection,
+    _runtime_paths: RuntimePathsLike,
+    _lifecycle: ActionLifecycle,
+) -> RawResult:
+    """ADR 0225: the handler of a device tool a brain builds without its terminal's settings.
+
+    `_device_proxy` replaces it, so it is never run; a brain cannot reach this machine's.
+    """
+    msg = "this tool runs on a terminal, not here"
+    raise RuntimeError(msg)
+
+
 def _device_proxy(original: ToolDefinition | Tool, link: DeviceLink) -> ToolDefinition | Tool:
     """ADR 0170: `original` with its handler swapped for one that runs the call on a terminal.
 
@@ -4024,7 +4074,8 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             D7, `tools.obsidian.vault_root`). `None` registers no
             `search_notes`, so nothing touches a folder the user never
             named; a hand-built test registry can point this at a
-            `tmp_path` fixture instead.
+            `tmp_path` fixture instead. Ignored with a `device_link`: the
+            terminal's vault is the one searched (ADR 0225).
         web_search_max_results: `tools.web.search_max_results` (ADR-0011
             D7) — the `web_search` default absent a request argument.
         web_search_provider: `tools.web.search_provider` — which backend
@@ -4076,9 +4127,11 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             registers no memory tool.
         device_link: ADR 0170 — the brain's link to its terminal. Every tool that
             acts on the machine it runs on (`open_path`, `search_notes`, `read_file`,
-            `read_clipboard`, `open_url`, `screen_look`, `write_file`) is then
-            registered, in the same place and with the same definition, as a proxy
-            that runs the call there. `None` (one machine) registers them as they are.
+            `read_clipboard`, `open_url`, `screen_look`, `write_file`, the night-run
+            tools) is then built, with the same definition, as a proxy that runs the
+            call there, and held in the registry's device catalogue; the menu gets the
+            ones its terminals declare (ADR 0225, `ToolRegistry.offer_device_tools`).
+            `None` (one machine) registers them as they are.
             The activity tools (`query_activity`, `read_activity`, `save_*`) stay as they
             are too, but ask the terminal for what they read of TimeSink and git.
         weather_lookup: ADR 0188 — the home's weather read (`home.weather`);
@@ -4098,15 +4151,21 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             a route `transit` is asked about.
     """
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
+    # ADR 0225: a brain builds every device tool, whatever its own settings say, and keeps them
+    # as a catalogue; `offer_device_tools` puts on the menu those its terminals declare.
+    device_catalogue: dict[str, tuple[ToolDefinition | Tool, str]] = {}
 
     def register_device_tool(device_tool: ToolDefinition | Tool) -> None:
-        registry.register(
-            device_tool if device_link is None else _device_proxy(device_tool, device_link)
-        )
+        if device_link is None:
+            registry.register(device_tool)
+        else:
+            device_catalogue[device_tool.name] = (
+                _device_proxy(device_tool, device_link), device_tool.name,
+            )
 
     registry.register(get_current_time)
     register_device_tool(open_path)
-    if obsidian_vault_root is not None:
+    if obsidian_vault_root is not None or device_link is not None:
         register_device_tool(
             ToolDefinition(
                 name="search_notes",
@@ -4119,7 +4178,11 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
                 risk_level="L0",
                 result_semantics="observation",
                 input_schema=_SEARCH_NOTES_INPUT_SCHEMA,
-                handler=_make_search_notes_handler(obsidian_vault_root),
+                handler=(
+                    _make_search_notes_handler(obsidian_vault_root)
+                    if obsidian_vault_root is not None
+                    else _runs_on_terminal
+                ),
                 read_only=True,
                 requires_entity=False,
                 requires_confirmation=False,
@@ -4194,12 +4257,13 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         )
     )
     # Already link-aware: the terminal captures, this process describes (ADR 0170).
-    registry.register(
-        _make_screen_look(
-            vision_client=vision_client, max_width_px=screen_max_width_px,
-            device_link=device_link,
-        )
+    screen_look = _make_screen_look(
+        vision_client=vision_client, max_width_px=screen_max_width_px, device_link=device_link,
     )
+    if device_link is None:
+        registry.register(screen_look)
+    else:
+        device_catalogue[screen_look.name] = (screen_look, "screen_capture")  # ADR 0225
     register_device_tool(
         ToolDefinition(
             name="write_file",
@@ -4258,6 +4322,8 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         registry.register(conversation_tool)
     for draft_tool in build_mail_draft_tool(mail_drafts):
         registry.register(draft_tool)
+    if device_link is not None:
+        registry.set_device_tools(device_catalogue)
     return registry
 
 

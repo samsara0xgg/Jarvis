@@ -69,12 +69,15 @@ def test_the_default_role_is_all_and_the_brain_runs_no_device_tool_itself(
 
         assert brain.role == "brain"
         held = {t.name for t in brain.tool_registry.get_definitions()}
-        assert held >= NIGHT_TOOLS  # proxies: the run is the terminal's (ADR 0192)
         assert brain.terminal_hub is not None
-        assert DEVICE_TOOLS - {"search_notes"} <= held  # no vault named: no search_notes
+        # ADR 0225: a device tool is on the menu once a paired terminal declares it; they are
+        # proxies, the run being the terminal's (ADR 0192). None has declared yet.
+        assert not (DEVICE_TOOLS | NIGHT_TOOLS) & held
+        catalogue = {t.name for t in brain.tool_registry.device_catalogue()}
+        assert catalogue >= DEVICE_TOOLS | NIGHT_TOOLS
         assert {"create_memo", "remember", "web_fetch", "ask_user"} <= _menu(brain)
         assert brain.night is None
-        assert {row.tool_name for row in brain.tier0_table} <= held
+        assert {row.tool_name for row in brain.tier0_table} <= held | catalogue
         observer = brain.config["observer"]
         assert observer["timesink"]["enabled"] is False
         assert observer["repos"] == []

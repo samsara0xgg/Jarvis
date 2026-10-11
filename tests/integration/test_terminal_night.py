@@ -44,6 +44,7 @@ def test_a_brain_starts_and_ends_the_night_on_its_terminal(tmp_path: Path) -> No
         assert _declared(held) >= NIGHT_TOOLS
         execute = make_executor(held)
         brain = build_default_registry(device_link=_link_to(execute), obsidian_vault_root=None)
+        brain.offer_device_tools(frozenset(NIGHT_TOOLS))  # the terminal declared them (ADR 0225)
         assert {t.name for t in brain.get_definitions()} >= NIGHT_TOOLS
 
         started = _dispatch(brain, tmp_path, "start_night_run", {"hours": 1})
@@ -69,6 +70,7 @@ def test_a_brain_without_its_terminal_says_the_device_is_not_there(tmp_path: Pat
         raise DeviceCallError(message, code="device_not_connected")
 
     brain = build_default_registry(device_link=nobody, obsidian_vault_root=None)
+    brain.offer_device_tools(frozenset(NIGHT_TOOLS))
     result = _dispatch(brain, tmp_path, "start_night_run", {})
     assert result.error == "device_not_connected"
 

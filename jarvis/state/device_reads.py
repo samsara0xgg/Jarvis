@@ -38,7 +38,9 @@ NOT_CONNECTED: Final = (
     "Activity on the owner's device (app and screen data, git commits) is unavailable: the "
     "device is not connected to this brain right now."
 )
-_TRANSPORT: Final = frozenset({"device_not_connected", "device_disconnected", "device_timeout"})
+_TRANSPORT: Final = frozenset(
+    {"device_not_connected", "device_lacks_tool", "device_disconnected", "device_timeout"},
+)
 
 
 class DeviceUnavailable(DailyError):  # noqa: N818 — a DailyError the readers may degrade on.

@@ -36,6 +36,7 @@ from jarvis.cli import main
 from jarvis.deployment.night_power import MacPower
 from jarvis.execution import tools as tools_module
 from jarvis.execution.tools import (
+    TERMINAL_TOOL_NAMES,
     ActionLifecycle,
     ToolRegistry,
     build_default_registry,
@@ -158,13 +159,19 @@ def _ok(output: dict[str, Any]) -> Callable[[dict[str, Any], _FakeTerminal], dic
     return lambda _frame, _terminal: {"ok": True, "output": output}
 
 
+def _offering(registry: ToolRegistry) -> ToolRegistry:
+    """The brain's registry with every device tool offered, as when a full terminal has declared."""
+    registry.offer_device_tools(TERMINAL_TOOL_NAMES)
+    return registry
+
+
 def _brain_registry(
     hub: TerminalHub, root: Path, vision: _FakeVision | None = None,
 ) -> ToolRegistry:
-    return build_default_registry(
+    return _offering(build_default_registry(
         device_link=hub.call, obsidian_vault_root=root / "vault",
         vision_client=vision,
-    )
+    ))
 
 
 def _on_a_thread(scenario: Callable[[], Any]) -> Any:  # noqa: ANN401 — the scenario's result
@@ -181,15 +188,20 @@ def test_the_brains_device_tools_are_proxies_with_the_one_machine_definitions(
     """Same names, order, descriptions, schemas, risk and flags; only the handler is another."""
     night = NightRun(tmp_path / "night.db", NightSettings(), MacPower())
     own = build_default_registry(obsidian_vault_root=tmp_path / "vault", night=night)
-    brain = _brain_registry(TerminalHub(), tmp_path)
-    mine, theirs = own.get_definitions(), brain.get_definitions()
-    assert [t.name for t in theirs] == [t.name for t in mine]
-    assert {t.name for t in theirs} >= DEVICE
-    for a, b in zip(mine, theirs, strict=True):
+    brain = build_default_registry(device_link=TerminalHub().call, obsidian_vault_root=None)
+    mine = {t.name: t for t in own.get_definitions()}
+    held = [t.name for t in brain.get_definitions()]
+    # ADR 0225: the device tools wait in the catalogue; the rest of the menu is the same, in order.
+    assert held == [name for name in mine if name not in DEVICE | PROXIED]
+    theirs = {t.name: t for t in brain.device_catalogue()}
+    assert set(theirs) >= DEVICE
+    assert set(theirs) == DEVICE | PROXIED
+    for name, b in theirs.items():
+        a = mine[name]
         assert {f.name: getattr(a, f.name) for f in dataclasses.fields(a) if f.name != "handler"} \
             == {f.name: getattr(b, f.name) for f in dataclasses.fields(b) if f.name != "handler"}
         # A closure is rebuilt per registry, so compare what each handler is, not identity.
-        assert (a.handler.__qualname__ == b.handler.__qualname__) == (a.name not in PROXIED)
+        assert (a.handler.__qualname__ == b.handler.__qualname__) == (name not in PROXIED)
 
 
 def test_one_machine_registers_the_device_tools_as_they_were(tmp_path: Path) -> None:
@@ -301,7 +313,8 @@ def test_a_terminal_that_did_not_declare_the_tool_is_not_asked(tmp_path: Path) -
         return result, terminal
 
     result, terminal = _on_a_thread(scenario)
-    assert result.error == "device_not_connected"
+    assert result.error == "device_lacks_tool"  # ADR 0225: a terminal is here, it just lacks it
+    assert "macbook is connected but does not offer open_url" in (result.tool_output or "")
     assert terminal.calls == []
 
 
@@ -476,9 +489,9 @@ def test_screen_look_on_a_brain_describes_what_the_terminal_captured(tmp_path: P
         calls.append((tool, arguments, entity))
         return _shot()
 
-    registry = build_default_registry(
+    registry = _offering(build_default_registry(
         device_link=link, vision_client=vision, obsidian_vault_root=None,
-    )
+    ))
     result = _dispatch(registry, tmp_path, "screen_look", {"question": " what is open? "})
     assert result.error is None
     assert calls == [("screen_capture", {}, None)]
@@ -504,9 +517,9 @@ def test_a_screenshot_that_is_not_a_png_within_the_cap_never_reaches_vision(
 ) -> None:
     """A malformed or oversize reply is a plain error; the model is never called."""
     vision = _FakeVision()
-    registry = build_default_registry(
+    registry = _offering(build_default_registry(
         device_link=lambda *_: reply, vision_client=vision, obsidian_vault_root=None,
-    )
+    ))
     result = _dispatch(registry, tmp_path, "screen_look", {})
     assert result.error == "screen_capture_failed"
     assert vision.calls == []
