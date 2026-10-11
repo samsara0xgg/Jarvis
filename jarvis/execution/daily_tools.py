@@ -47,7 +47,8 @@ _DESCRIPTIONS = {
     ),
     "recall": (
         "What was said in a day or range [from,to), in time order: first the summary of each "
-        "past day in the range (written each night; today has none), then one line per record "
+        "past day in the range (written each night; today has none), with that day's one line "
+        "to him and its highlights (label and time) when it has them, then one line per record "
         "(time, speaker, text; long answers are cut and name the record id for read_records). "
         "from/to: bare date (local midnight) or ISO time with offset; to defaults to one day "
         "after from. Use it for 'what did we talk about on <date>' instead of paging "

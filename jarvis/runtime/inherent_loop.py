@@ -207,6 +207,7 @@ from jarvis.shared.steps import EVENT_TYPES as STEP_EVENT_TYPES
 from jarvis.shared.steps import StepFold
 from jarvis.state import picture_notes, quiet_mode
 from jarvis.state.daily_report import resolve_zone
+from jarvis.state.day_highlights import day_notes
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.departures import ID_PREFIX as PIN_PREFIX
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
@@ -5413,7 +5414,9 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
     talks) and ``timesink`` (his Mac) are the configured stores or None; the ``ledger:`` block
     does not gate them, and a store that is not there leaves its source in ``missing``. On a
     brain ``terminal`` is his Mac's TimeSink. ``calendar`` reads his Outlook through Graph
-    (``Home.calendar``, ADR 0230) and holds this worker thread while it waits.
+    (``Home.calendar``, ADR 0230) and holds this worker thread while it waits. ``line`` and
+    ``highlights`` (ADR 0235) are the day's line to him and its marked items, read from
+    ``memory_db``.
     """
     zone_name, zone = resolve_zone(None, configured)
     on = datetime.fromtimestamp(now_ms / 1000, zone).date() if day is None else day
@@ -5421,6 +5424,7 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
     with contextlib.closing(open_runtime_event_log(event_log)) as conn:
         sources = DaySources(zone, timesink, memory_db, terminal, attachments, calendar)
         line = fold_day(conn, start_ms, end_ms, now_ms, sources)
+    told, highlights = day_notes(memory_db, on.isoformat(), line.items, zone)
     return {
         "date": on.isoformat(),
         "tz": zone_name,
@@ -5430,6 +5434,8 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
         "items": line.items,
         "labels": line.labels,
         "missing": line.missing,
+        "line": told,
+        "highlights": highlights,
     }
 
 

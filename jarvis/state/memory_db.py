@@ -30,7 +30,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Final, NamedTuple
+from typing import Any, Final, NamedTuple
 
 from jarvis.shared import lang
 from jarvis.state import NewerDataError, core_memory
@@ -79,7 +79,20 @@ CREATE TABLE IF NOT EXISTS day_prose (
     text         TEXT NOT NULL,
     model        TEXT,
     input_chars  INTEGER NOT NULL,
-    output_chars INTEGER NOT NULL
+    output_chars INTEGER NOT NULL,
+    line         TEXT,
+    highlights   TEXT,
+    draft        INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS day_highlight_marks (
+    id         TEXT PRIMARY KEY,
+    day        TEXT NOT NULL,
+    item_id    TEXT NOT NULL,
+    "on"       INTEGER NOT NULL,
+    label      TEXT,
+    ts         TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    start_ms   INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS core_memory (
     id       TEXT PRIMARY KEY,
@@ -95,8 +108,9 @@ CREATE TABLE IF NOT EXISTS core_memory (
 
 # ``PRAGMA user_version`` (ADR 0068). 0 is a file from before the stamp, same
 # schema as 1; a file above this was written by a newer Jarvis and is refused.
-# ``sent``, ``day_summaries`` and ``core_memory`` are additive: an older opener ignores them,
-# so they need no new version.
+# ``sent``, ``day_summaries``, ``core_memory`` and ``day_highlight_marks`` are additive: an older
+# opener ignores them, so they need no new version. So are the ``day_prose`` columns ``line``,
+# ``highlights`` and ``draft`` (ADR 0235), which :func:`open_memory_db` adds to a table made before.
 SCHEMA_VERSION: Final[int] = 1
 DEFAULT_SEARCH_LIMIT: Final[int] = 20
 # ``session.context`` value for ADR 0149's history layout; anything else is the rolling summary.
@@ -303,9 +317,29 @@ def open_memory_db(path: Path) -> sqlite3.Connection:
         conn.close()
         raise NewerDataError(path.name, found, SCHEMA_VERSION)
     conn.executescript(_SCHEMA)
+    _add_day_prose_columns(conn)
     if found < SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return conn
+
+
+# The columns ADR 0235 added to ``day_prose``, as appended to a table made before them.
+_DAY_PROSE_COLUMNS: Final[tuple[tuple[str, str], ...]] = (
+    ("line", "TEXT"), ("highlights", "TEXT"), ("draft", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
+def _add_day_prose_columns(conn: sqlite3.Connection) -> None:
+    """Add the ADR 0235 columns to a ``day_prose`` that lacks them."""
+    have = {row[1] for row in conn.execute("PRAGMA table_info(day_prose)")}
+    for column, declared in _DAY_PROSE_COLUMNS:
+        if column in have:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE day_prose ADD COLUMN {column} {declared}")
+        except sqlite3.OperationalError:
+            if column not in {row[1] for row in conn.execute("PRAGMA table_info(day_prose)")}:
+                raise  # not a second opener that added it first
 
 
 _NAME_LINE: Final[tuple[str, str]] = ("The user's name is ", ".")
@@ -1069,7 +1103,7 @@ def append_day_summary(  # noqa: PLR0913 — the row's columns, all required.
     return summary_id
 
 
-def append_day_prose(  # noqa: PLR0913 — the row's columns, all required.
+def append_day_prose(  # noqa: PLR0913 — the row's columns, all required but the line.
     path: Path,
     *,
     day: str,
@@ -1077,22 +1111,152 @@ def append_day_prose(  # noqa: PLR0913 — the row's columns, all required.
     model: str,
     input_chars: int,
     output_chars: int,
+    line: str | None = None,
+    highlights: Sequence[Mapping[str, object]] = (),
 ) -> str:
-    """Append one day's "The day" line (ADR 0201), return its id; a day's latest row is current."""
+    """Append one day's "The day" line (ADR 0201), return its id; a day's latest row is current.
+
+    ``line`` and ``highlights`` (ADR 0235) are the night's one sentence to him and her picks, kept
+    in the same row. A row without a ``line`` leaves the day's last draft as its line.
+    """
     prose_id = f"day-prose:{day}:{uuid.uuid4().hex}"
     with closing(open_memory_db(path)) as conn, conn:
         conn.execute(
-            "INSERT INTO day_prose (id, day, ts, text, model, input_chars, output_chars) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (prose_id, day, iso_seconds(local_now()), text, model, input_chars, output_chars),
+            "INSERT INTO day_prose "
+            "(id, day, ts, text, model, input_chars, output_chars, line, highlights) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                prose_id, day, iso_seconds(local_now()), text, model, input_chars, output_chars,
+                line, None if line is None else json.dumps(list(highlights), ensure_ascii=False),
+            ),
         )
     return prose_id
 
 
+def append_day_draft(  # noqa: PLR0913 — the row's columns, all required.
+    path: Path,
+    *,
+    day: str,
+    line: str,
+    highlights: Sequence[Mapping[str, object]],
+    model: str,
+    input_chars: int,
+    output_chars: int,
+) -> str:
+    """Append a draft of a day still under way (ADR 0235): its line and picks, no "The day" text.
+
+    A draft is not prose: :func:`prose_days` and the ledger skip it, so it never stops the night's
+    row from being written, and that row's line replaces it.
+    """
+    draft_id = f"day-draft:{day}:{uuid.uuid4().hex}"
+    with closing(open_memory_db(path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO day_prose "
+            "(id, day, ts, text, model, input_chars, output_chars, line, highlights, draft) "
+            "VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, 1)",
+            (
+                draft_id, day, iso_seconds(local_now()), model, input_chars, output_chars, line,
+                json.dumps(list(highlights), ensure_ascii=False),
+            ),
+        )
+    return draft_id
+
+
 def prose_days(path: Path) -> set[str]:
-    """The local days that already have a "The day" line."""
+    """The local days that already have a "The day" line; a draft (ADR 0235) is not one."""
     with closing(open_memory_db(path)) as conn:
-        return {str(day) for (day,) in conn.execute("SELECT DISTINCT day FROM day_prose")}
+        return {
+            str(day)
+            for (day,) in conn.execute("SELECT DISTINCT day FROM day_prose WHERE draft = 0")
+        }
+
+
+def last_draft_at(path: Path, day: str) -> datetime | None:
+    """When the newest draft of ``day`` was written, else None."""
+    with closing(open_memory_db(path)) as conn:
+        row = conn.execute(
+            "SELECT ts FROM day_prose WHERE day = ? AND draft = 1 ORDER BY rowid DESC LIMIT 1",
+            (day,),
+        ).fetchone()
+    return None if row is None else datetime.fromisoformat(row[0])
+
+
+class DayLineRow(NamedTuple):
+    """The current line of a day (ADR 0235); its picks are ``{"id", "label", "start_ms"}``."""
+
+    line: str
+    highlights: list[dict[str, Any]]
+    draft: bool
+    written_at: str
+
+
+def latest_day_lines(
+    conn: sqlite3.Connection, first_day: str, last_day: str,
+) -> dict[str, DayLineRow]:
+    """The newest row that carries a line, of each day in ``[first_day, last_day]``.
+
+    A night's row whose line was dropped by the gates carries none, so the draft before it stays.
+    """
+    rows = conn.execute(
+        "SELECT day, line, highlights, draft, ts FROM day_prose "
+        "WHERE line IS NOT NULL AND day >= ? AND day <= ? ORDER BY day, rowid",
+        (first_day, last_day),
+    ).fetchall()
+    return {  # a later row of the same day replaces the earlier one
+        str(day): DayLineRow(str(line), json.loads(picks or "[]"), bool(draft), str(ts))
+        for day, line, picks, draft, ts in rows
+    }
+
+
+class HighlightMark(NamedTuple):
+    """What he said about one item of a day (ADR 0235); ``kind`` and ``start_ms`` are the item's."""
+
+    item_id: str
+    on: bool
+    label: str | None
+    kind: str
+    start_ms: int
+
+
+def append_highlight_mark(  # noqa: PLR0913 — the row's columns, all required.
+    path: Path,
+    *,
+    day: str,
+    item_id: str,
+    on: bool,
+    label: str | None,
+    kind: str,
+    start_ms: int,
+) -> str:
+    """Append his marking (``on``) or unmarking of an item of ``day``; the latest per item wins."""
+    mark_id = f"highlight-mark:{day}:{uuid.uuid4().hex}"
+    with closing(open_memory_db(path)) as conn, conn:
+        conn.execute(
+            'INSERT INTO day_highlight_marks (id, day, item_id, "on", label, ts, kind, start_ms) '
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (mark_id, day, item_id, int(on), label, iso_seconds(local_now()), kind, start_ms),
+        )
+    return mark_id
+
+
+def latest_highlight_marks(
+    conn: sqlite3.Connection, first_day: str, last_day: str,
+) -> dict[str, list[HighlightMark]]:
+    """His newest mark of each item, by day, for the days in ``[first_day, last_day]``."""
+    rows = conn.execute(
+        'SELECT day, item_id, "on", label, kind, start_ms FROM day_highlight_marks '
+        "WHERE day >= ? AND day <= ? ORDER BY rowid",
+        (first_day, last_day),
+    ).fetchall()
+    newest: dict[tuple[str, str], HighlightMark] = {}
+    for day, item_id, on, label, kind, start_ms in rows:  # a later mark of an item replaces
+        newest[(str(day), str(item_id))] = HighlightMark(
+            str(item_id), bool(on), label, str(kind), int(start_ms),
+        )
+    marks: dict[str, list[HighlightMark]] = {}
+    for (day, _item), mark in newest.items():
+        marks.setdefault(day, []).append(mark)
+    return marks
 
 
 def latest_day_summaries(
@@ -1144,14 +1308,18 @@ __all__ = [
     "DAY_SUMMARIES_CONTEXT",
     "DEFAULT_SEARCH_LIMIT",
     "CompactionRange",
+    "DayLineRow",
+    "HighlightMark",
     "Ledger",
     "MemoryContext",
     "MemorySettings",
     "Record",
     "SessionSettings",
     "VerbatimStats",
+    "append_day_draft",
     "append_day_prose",
     "append_day_summary",
+    "append_highlight_mark",
     "append_nightly_core_memory",
     "append_record",
     "append_summary",
@@ -1161,7 +1329,10 @@ __all__ = [
     "current_core_memory",
     "day_records",
     "iso_seconds",
+    "last_draft_at",
+    "latest_day_lines",
     "latest_day_summaries",
+    "latest_highlight_marks",
     "local_now",
     "open_memory_db",
     "pending_days",

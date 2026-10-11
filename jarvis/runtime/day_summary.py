@@ -7,6 +7,8 @@ through. Each day is one call on a dedicated client pinned to ``day_summary.pres
 run in a thread off the loop; L3 builds the input and gates the answer, L2 appends
 the row. A rejected or failed day stores nothing and is picked up again on the next
 run; it never stops the days after it.
+
+The same poll drafts today's line and highlights through the day (ADR 0235, :class:`DayDrafts`).
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.day_summary import build_day_summary_messages, check_day_summary
 from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.runtime.core_memory import CoreMemorySettings, run_core_memory
-from jarvis.runtime.ledger import LedgerContext, run_day_prose
+from jarvis.runtime.ledger import DayDrafts, LedgerContext, ProseSettings, run_day_prose
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import (
@@ -208,6 +210,7 @@ class DaySummarySchedule:
         self._review: SurrogateRoute | None = None
         self._ledger = ledger
         self._prose_client: LLMClient | None = None
+        self._drafts: DayDrafts | None = None
         self._poll_s = poll_s
         self._client: LLMClient | None = None
         self._core_client: LLMClient | None = None
@@ -244,12 +247,10 @@ class DaySummarySchedule:
             return
         prose = self._ledger.settings.prose
         try:
-            if self._prose_client is None:
-                self._prose_client = build_compact_client(self._llm_config, prose.preset)
             prose_outcomes = run_day_prose(
                 self._ledger.sources,
                 prose,
-                self._prose_client,
+                self._prose_client_for(prose),
                 event_log_path=self._event_log_path,
                 pricing_table=self._pricing_table,
                 today=today,
@@ -258,6 +259,30 @@ class DaySummarySchedule:
             LOGGER.exception("day_prose: run for %s failed", today)
             return
         LOGGER.info("day_prose: %s -> %s", today, prose_outcomes)
+
+    def _prose_client_for(self, prose: ProseSettings) -> LLMClient:
+        """The client pinned to the prose preset, built on first use."""
+        if self._prose_client is None:
+            self._prose_client = build_compact_client(self._llm_config, prose.preset)
+        return self._prose_client
+
+    def draft(self, now: datetime) -> str:
+        """Today's line and highlights (ADR 0235), when the day line changed and 30 minutes passed.
+
+        Blocking; the loop runs it in a thread. A draft that fails leaves the previous one, and
+        never fails the summaries.
+        """
+        if self._ledger is None or self._ledger.settings.prose is None:
+            return "off"
+        prose = self._ledger.settings.prose
+        if prose.draft_prompt is None:
+            return "off"
+        if self._drafts is None:
+            self._drafts = DayDrafts(
+                self._ledger.sources, prose, self._prose_client_for(prose),
+                event_log_path=self._event_log_path, pricing_table=self._pricing_table,
+            )
+        return self._drafts.tick(now)
 
     def _consolidate(self, settings: CoreMemorySettings, today: date) -> None:
         """Core memory over the days just summarised; its failure never fails the summaries."""
@@ -290,14 +315,20 @@ class DaySummarySchedule:
         while True:
             await asyncio.sleep(self._poll_s)
             today = self.due(local_now())
-            if today is None:
-                continue
+            if today is not None:
+                try:
+                    outcomes = await asyncio.to_thread(self.write, today)
+                except Exception:
+                    LOGGER.exception("day_summary: scheduled run for %s failed", today)
+                else:
+                    LOGGER.info("day_summary: scheduled %s -> %s", today, outcomes)
             try:
-                outcomes = await asyncio.to_thread(self.write, today)
+                drafted = await asyncio.to_thread(self.draft, local_now())
             except Exception:
-                LOGGER.exception("day_summary: scheduled run for %s failed", today)
-                continue
-            LOGGER.info("day_summary: scheduled %s -> %s", today, outcomes)
+                LOGGER.exception("day_draft: the check failed")
+            else:
+                if drafted.startswith(("landed", "rejected", "failed")):
+                    LOGGER.info("day_draft: %s", drafted)
 
 
 __all__ = [

@@ -3,7 +3,9 @@
 :class:`LedgerContext` is the callable ``render_context`` asks for the day, week and job-hunt
 blocks. The standing blocks are one text per local day, cached here; the per-turn blocks are
 recomputed each call. It never raises: a ledger that fails costs the turn its blocks, not the
-turn. :func:`run_day_prose` is the one model call of the ledger, run from the nightly schedule.
+turn. :func:`run_day_prose` is the one model call of the ledger, run from the nightly schedule; it
+also writes the day's line and highlights (ADR 0235), which :class:`DayDrafts` drafts through the
+day.
 """
 
 from __future__ import annotations
@@ -17,11 +19,19 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from functools import partial
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.decision.cost_guard import CostRecorder
-from jarvis.decision.day_prose import build_day_prose_messages, check_day_prose
+from jarvis.decision.day_prose import (
+    DayAnswer,
+    build_day_draft_messages,
+    build_day_prose_messages,
+    day_items_text,
+    parse_day_answer,
+)
 from jarvis.decision.llm import failure_reason
+from jarvis.shared import lang
+from jarvis.state.day_line import DayLine, DaySources, day_window, fold_day
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.ledger import (
     DAY_STARTS_AT,
@@ -37,20 +47,27 @@ from jarvis.state.ledger import (
     today_text,
 )
 from jarvis.state.memory_db import (
+    append_day_draft,
     append_day_prose,
+    last_draft_at,
     latest_day_summaries,
     open_memory_db,
     prose_days,
 )
+from jarvis.state.picture_notes import last_words
 
 if TYPE_CHECKING:
+    import sqlite3
     from pathlib import Path
 
-    from jarvis.decision.llm import LLMClient
+    from jarvis.decision.llm import ChatResult, LLMClient
 
 LOGGER = logging.getLogger(__name__)
 
 KIND: Final[str] = "day_prose"
+DRAFT_KIND: Final[str] = "day_draft"
+DRAFT_EVERY: Final[timedelta] = timedelta(minutes=30)
+"""A draft of today's line waits this long after the last one (ADR 0235)."""
 _DEFAULT_PRESET: Final[str] = "gpt6-luna-flex"
 _DEFAULT_DAYS: Final[int] = 7
 _DEFAULT_MAX_CHARS: Final[int] = 800
@@ -61,6 +78,11 @@ _KEEP_WARM_S: Final[float] = 60.0
 _TRANSIENT: Final[frozenset[str]] = frozenset({"rate_limited", "network", "timeout"})
 
 
+def _text(value: object) -> str | None:
+    """``value`` stripped when it is a non-blank string, else None."""
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 @dataclass(frozen=True)
 class ProseSettings:
     """The ``ledger.prose:`` block."""
@@ -69,6 +91,8 @@ class ProseSettings:
     prompt: str
     days: int = _DEFAULT_DAYS
     max_chars: int = _DEFAULT_MAX_CHARS
+    draft_prompt: str | None = None  # none: no drafts of today's line (ADR 0235)
+    reply_language: str = "follow"  # the top-level setting: the language the line is written in
 
 
 @dataclass(frozen=True)
@@ -80,8 +104,11 @@ class LedgerSettings:
     prose: ProseSettings | None = None
 
     @classmethod
-    def from_config(cls, raw: object) -> LedgerSettings | None:
-        """The settings, or None (ledger off) when the block is absent or not enabled."""
+    def from_config(cls, raw: object, reply_language: str = "follow") -> LedgerSettings | None:
+        """The settings, or None (ledger off) when the block is absent or not enabled.
+
+        ``reply_language`` is the top-level setting, which the line of a day is written in.
+        """
         if not isinstance(raw, Mapping) or raw.get("enabled") is not True:
             return None
 
@@ -94,12 +121,15 @@ class LedgerSettings:
         prose: ProseSettings | None = None
         if isinstance(block, Mapping):
             prompt, preset = block.get("prompt"), block.get("preset")
+            draft = block.get("draft_prompt")
             if isinstance(prompt, str) and prompt.strip():
                 prose = ProseSettings(
                     preset=preset if isinstance(preset, str) and preset else _DEFAULT_PRESET,
                     prompt=prompt.strip(),
                     days=_count(block.get("days"), _DEFAULT_DAYS),
                     max_chars=_count(block.get("max_chars"), _DEFAULT_MAX_CHARS),
+                    draft_prompt=_text(draft),
+                    reply_language=reply_language,
                 )
             else:
                 LOGGER.warning("ledger.prose needs a prompt; no day prose is written")
@@ -206,11 +236,21 @@ def _transient(exc: BaseException) -> bool:
     return False
 
 
-def _ask(  # noqa: PLR0913 — the day, its input, the knobs, the client and two seams.
-    day: str, messages: list[dict[str, str]], settings: ProseSettings, client: LLMClient,
-    cost_recorder: CostRecorder, sleep: Callable[[float], None],
-) -> tuple[str | None, str]:
-    """``(text, "")`` for ``day`` once an answer passes the gate, else ``(None, why)``.
+def _read(
+    result: ChatResult, *, max_chars: int, starts: Mapping[str, int], with_prose: bool,
+) -> DayAnswer | str:
+    """:func:`parse_day_answer` of a model's result."""
+    return parse_day_answer(
+        result.text, result.finish_reason, max_chars, starts, with_prose=with_prose,
+    )
+
+
+def _ask(  # noqa: PLR0913 — the day, its input, the prompt, the gate, the client and two seams.
+    day: str, messages: list[dict[str, Any]], system: str,
+    read: Callable[[ChatResult], DayAnswer | str], client: LLMClient,
+    cost_recorder: CostRecorder, sleep: Callable[[float], None], kind: str,
+) -> tuple[DayAnswer | None, str]:
+    """``(answer, "")`` for ``day`` once an answer passes the gate ``read``, else ``(None, why)``.
 
     A transient error is asked again (the last one raises); a rejected answer once.
     """
@@ -219,21 +259,37 @@ def _ask(  # noqa: PLR0913 — the day, its input, the knobs, the client and two
         for attempt in range(_ATTEMPTS):
             try:
                 result = cost_recorder.chat(
-                    client, messages=messages, system=settings.prompt, tools=None,
-                    tool_choice=None, kind=KIND, turn_id=None,
+                    client, messages=messages, system=system, tools=None,
+                    tool_choice=None, kind=kind, turn_id=None,
                 )
                 break
             except Exception as exc:
                 if attempt == _ATTEMPTS - 1 or not _transient(exc):
                     raise
-                LOGGER.warning("day_prose: %s try %d failed (%s); retrying", day, attempt + 1, exc)
+                LOGGER.warning("%s: %s try %d failed (%s); retrying", kind, day, attempt + 1, exc)
                 sleep(_BACKOFF_S[min(attempt, len(_BACKOFF_S) - 1)])
-        found = check_day_prose(result.text, result.finish_reason, settings.max_chars)
-        if found is None:
-            return (result.text or "").strip(), ""
+        found = read(result)
+        if isinstance(found, DayAnswer):
+            return found, ""
         reason = found
-        LOGGER.warning("day_prose: %s rejected (%s)", day, found)
+        LOGGER.warning("%s: %s rejected (%s)", kind, day, found)
     return None, reason
+
+
+def fold_local_day(
+    conn: sqlite3.Connection, sources: LedgerSources, day: date, now: datetime,
+) -> DayLine:
+    """The day line of ``day`` as of ``now``, folded as ``GET /inherent/day`` folds it."""
+    start_ms, end_ms = day_window(day, sources.zone)
+    day_sources = DaySources(
+        sources.zone, sources.timesink, sources.memory_db, sources.terminal, sources.attachments,
+    )
+    return fold_day(conn, start_ms, end_ms, int(now.timestamp() * 1000), day_sources)
+
+
+def line_language(sources: LedgerSources, pinned: str) -> str:
+    """The English name of the language the line is written in: the pinned one, else his words'."""
+    return lang.language_name(lang.reply_language(last_words(sources.memory_db, None), pinned))
 
 
 def run_day_prose(  # noqa: PLR0913 — the sources, the knobs, the client and the accounting seam.
@@ -246,15 +302,19 @@ def run_day_prose(  # noqa: PLR0913 — the sources, the knobs, the client and t
     today: date,
     sleep: Callable[[float], None] = _time.sleep,
 ) -> dict[str, str]:
-    """Write "The day" for each of the last ``settings.days`` complete days that has none.
+    """Write "The day", its line and its highlights for each of the last complete days without.
 
-    Oldest first; an empty day is skipped. Blocking (one LLM call per day). A failed or rejected
-    day stores nothing, is logged and does not stop the next one.
+    The last ``settings.days`` days, oldest first; an empty day is skipped, and a day with only
+    drafts (ADR 0235) still has none. Blocking (one LLM call per day). A failed or rejected day
+    stores nothing, is logged and does not stop the next one. A line or highlight that fails its
+    gates is dropped whole and the prose is stored without it.
     """
     outcomes: dict[str, str] = {}
     done = prose_days(sources.memory_db)
+    now = datetime.now(sources.zone)
     with closing(open_runtime_event_log(event_log_path)) as conn:
         cost_recorder = CostRecorder(conn, pricing_table=pricing_table)
+        language = line_language(sources, settings.reply_language)
         for ago in range(settings.days, 0, -1):
             day = today - timedelta(days=ago)
             key = day.isoformat()
@@ -268,28 +328,130 @@ def run_day_prose(  # noqa: PLR0913 — the sources, the knobs, the client and t
                 with closing(open_memory_db(sources.memory_db)) as db:
                     found = latest_day_summaries(db, key, key)
                 numbers = day_numbers_text(sources, day, nxt)
+                items = fold_local_day(conn, sources, day, now).items
+                starts = {str(item["id"]): int(item["start_ms"]) for item in items}
                 messages = build_day_prose_messages(
-                    key, numbers, found[0][1] if found else None,
-                    day_report(sources, day, datetime.now(sources.zone)),
+                    key, numbers, found[0][1] if found else None, day_report(sources, day, now),
+                    day_items_text(items, sources.zone), language,
                 )
-                text, why = _ask(key, messages, settings, client, cost_recorder, sleep)
-                if text is None:
+                answer, why = _ask(
+                    key, messages, settings.prompt,
+                    partial(_read, max_chars=settings.max_chars, starts=starts, with_prose=True),
+                    client, cost_recorder, sleep, KIND,
+                )
+                if answer is None:
                     outcomes[key] = f"rejected ({why})"
                     continue
+                text = answer.prose or ""
                 append_day_prose(
                     sources.memory_db, day=key, text=text, model=client.model,
                     input_chars=len(str(messages[0]["content"])), output_chars=len(text),
+                    line=answer.line, highlights=answer.highlights,
                 )
-                outcomes[key] = f"landed ({len(text)} chars)"
+                dropped = "" if answer.line else f"; line dropped: {answer.dropped}"
+                outcomes[key] = f"landed ({len(text)} chars{dropped})"
             except Exception:
                 LOGGER.exception("day_prose: %s failed; nothing stored", key)
                 outcomes[key] = "failed"
     return outcomes
 
 
+class DayDrafts:
+    """Today's line and highlights, drafted again when the day line has changed (ADR 0235).
+
+    One draft at most every :data:`DRAFT_EVERY`, and only when the items differ from those of the
+    last draft in their ids, states or end times. A draft that fails or is rejected leaves the
+    previous one in place and is not tried again until the interval has passed. :meth:`tick` takes
+    the clock as an argument and blocks on the model, so the schedule runs it in a thread.
+    """
+
+    def __init__(  # noqa: PLR0913 — the sources, the knobs, the client and the accounting seam.
+        self,
+        sources: LedgerSources,
+        settings: ProseSettings,
+        client: LLMClient,
+        *,
+        event_log_path: Path,
+        pricing_table: Mapping[str, Mapping[str, float]],
+        sleep: Callable[[float], None] = _time.sleep,
+    ) -> None:
+        """Bind the sources, the knobs and the client; nothing is read until the first tick."""
+        self._sources = sources
+        self._settings = settings
+        self._client = client
+        self._event_log_path = event_log_path
+        self._pricing_table = pricing_table
+        self._sleep = sleep
+        self._day: date | None = None
+        self._seen: tuple[tuple[object, ...], ...] | None = None  # the last landed draft's items
+        self._tried: datetime | None = None  # the last draft attempt of this day, landed or not
+
+    def tick(self, now: datetime) -> str:
+        """Draft today's line if it is due; what happened, in one phrase.
+
+        ``waiting`` (the last draft is under 30 minutes old), ``no items``, ``unchanged``, or the
+        outcome of a draft: ``landed (...)``, ``rejected (...)`` or ``failed``.
+        """
+        if self._settings.draft_prompt is None:
+            return "off"
+        sources = self._sources
+        day = now.astimezone(sources.zone).date()
+        key = day.isoformat()
+        if day != self._day:  # a new day starts with no draft
+            self._day, self._seen, self._tried = day, None, None
+        last = self._tried if self._tried is not None else last_draft_at(sources.memory_db, key)
+        if last is not None and now - last < DRAFT_EVERY:
+            return "waiting"
+        with closing(open_runtime_event_log(self._event_log_path)) as conn:
+            items = fold_local_day(conn, sources, day, now).items
+            if not items:
+                return "no items"
+            seen = tuple((item["id"], item["state"], item["end_ms"]) for item in items)
+            if seen == self._seen:
+                return "unchanged"
+            self._tried = now
+            landed, outcome = self._draft(conn, key, now, items)
+        if landed:
+            self._seen = seen
+        return outcome
+
+    def _draft(
+        self, conn: sqlite3.Connection, key: str, now: datetime, items: list[dict[str, Any]],
+    ) -> tuple[bool, str]:
+        """Ask for the draft of ``key`` and store it: ``(landed, outcome)``."""
+        sources, settings = self._sources, self._settings
+        starts = {str(item["id"]): int(item["start_ms"]) for item in items}
+        messages = build_day_draft_messages(
+            key, now.astimezone(sources.zone).strftime("%H:%M"),
+            day_items_text(items, sources.zone), line_language(sources, settings.reply_language),
+        )
+        try:
+            answer, why = _ask(
+                key, messages, settings.draft_prompt or "",
+                partial(_read, max_chars=settings.max_chars, starts=starts, with_prose=False),
+                self._client, CostRecorder(conn, pricing_table=self._pricing_table),
+                self._sleep, DRAFT_KIND,
+            )
+        except Exception:
+            LOGGER.exception("day_draft: %s failed; the previous draft stands", key)
+            return False, "failed"
+        if answer is None or answer.line is None:
+            return False, f"rejected ({why})"
+        append_day_draft(
+            sources.memory_db, day=key, line=answer.line, highlights=answer.highlights,
+            model=self._client.model, input_chars=len(str(messages[0]["content"])),
+            output_chars=len(answer.line),
+        )
+        return True, f"landed ({len(answer.highlights)} highlights)"
+
+
 __all__ = [
+    "DRAFT_EVERY",
+    "DayDrafts",
     "LedgerContext",
     "LedgerSettings",
     "ProseSettings",
+    "fold_local_day",
+    "line_language",
     "run_day_prose",
 ]

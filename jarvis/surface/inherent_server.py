@@ -1629,7 +1629,7 @@ def _register_day_route(app: FastAPI, deps: InherentDeps) -> None:
 
     @app.get("/inherent/day")
     async def day(on: Annotated[str | None, Query(alias="date")] = None) -> dict[str, Any]:
-        """``{date, tz, start_ms, end_ms, now_ms, items, labels, missing}`` of ``?date=``."""
+        """``{date, tz, start_ms, end_ms, now_ms, items, labels, missing, line, highlights}``."""
         try:
             wanted = None if on is None else parse_day(on)
         except ValueError as exc:

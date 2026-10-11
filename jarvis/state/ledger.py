@@ -184,6 +184,8 @@ class LedgerSources:
     """Where the ledger reads, and the zone its days are cut in.
 
     ``terminal`` stands in for ``timesink`` on a brain, whose TimeSink is its terminal's.
+    ``attachments`` is where his pictures are kept, for the day line the line and highlights
+    of a day are written from (ADR 0235).
     """
 
     memory_db: Path
@@ -191,6 +193,7 @@ class LedgerSources:
     timesink: Path | None
     zone: tzinfo
     terminal: TerminalScreen | None = None
+    attachments: Path | None = None
 
 
 class _Span(NamedTuple):
@@ -843,11 +846,16 @@ def _day_summaries(src: LedgerSources, as_of: datetime) -> dict[str, str]:
 
 
 def _day_prose(src: LedgerSources, as_of: datetime) -> dict[str, str]:
-    """The newest "The day" line of each day, as of ``as_of``; none before the table exists."""
+    """The newest "The day" line of each day, as of ``as_of``; none before the table exists.
+
+    A draft (ADR 0235) holds no prose and is not read.
+    """
     out: dict[str, str] = {}
     with closing(sqlite3.connect(f"file:{src.memory_db}?mode=ro", uri=True)) as conn:
         try:
-            rows = conn.execute("SELECT day,ts,text FROM day_prose ORDER BY day,ts").fetchall()
+            rows = conn.execute(
+                "SELECT day,ts,text FROM day_prose WHERE draft = 0 ORDER BY day,ts",
+            ).fetchall()
         except sqlite3.Error:
             return out
     for day, ts, text in rows:
@@ -1352,13 +1360,14 @@ def _job_hunt(data: _Data) -> str:
 def notes_stamp(src: LedgerSources) -> tuple[str, str]:
     """The newest ``ts`` of the day summaries and of the "The day" lines; "" for none or no table.
 
-    Changes exactly when :func:`standing_text` has a new note to show, so it keys a cache.
+    Changes exactly when :func:`standing_text` has a new note to show, so it keys a cache. A draft
+    of the day's line (ADR 0235) is no note: it lands every half hour and moves nothing here.
     """
     newest: list[str] = []
     with closing(sqlite3.connect(f"file:{src.memory_db}?mode=ro", uri=True)) as conn:
-        for table in ("day_summaries", "day_prose"):
+        for table, where in (("day_summaries", "1"), ("day_prose", "draft = 0")):
             try:
-                row = conn.execute(f"SELECT MAX(ts) FROM {table}").fetchone()  # noqa: S608 — fixed names
+                row = conn.execute(f"SELECT MAX(ts) FROM {table} WHERE {where}").fetchone()  # noqa: S608 — fixed names
             except sqlite3.Error:
                 row = None
             newest.append(str(row[0]) if row and row[0] else "")

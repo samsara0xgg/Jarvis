@@ -7,6 +7,7 @@ Each check feeds known rows and asserts the text the program computes from them.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from contextlib import closing
@@ -345,6 +346,11 @@ class _Writer:
         )
 
 
+def _answer(prose: str) -> str:
+    """What the prose preset answers (ADR 0235): the prose, a one-sentence line, no highlights."""
+    return json.dumps({"prose": prose, "line": "A day, told in a line.", "highlights": []})
+
+
 def _run(
     src: LedgerSources, writer: _Writer, days: int, sleeps: list[float],
 ) -> dict[str, str]:
@@ -367,7 +373,9 @@ def test_run_day_prose_retries_skips_and_stores_one_row_per_day(tmp_path: Path) 
     """A timeout is retried; days with a line or no activity are skipped."""
     src = _world(tmp_path)  # 10-06 already has a line; 10-04 has no activity at all
     timeout = openai.APITimeoutError(request=httpx.Request("POST", "http://invalid.test"))
-    writer = _Writer([timeout, "Gamma wrote back. Not much else.", "A short Wednesday."])
+    writer = _Writer([
+        timeout, _answer("Gamma wrote back. Not much else."), _answer("A short Wednesday."),
+    ])
     sleeps: list[float] = []
     outcomes = _run(src, writer, 4, sleeps)
     assert outcomes == {
@@ -394,25 +402,34 @@ def test_run_day_prose_retries_skips_and_stores_one_row_per_day(tmp_path: Path) 
 def test_run_day_prose_stores_nothing_for_a_rejected_or_failed_day(tmp_path: Path) -> None:
     """Twice rejected or a hard error stores nothing and the next day still runs."""
     src = _world(tmp_path)
-    writer = _Writer(["## A heading", "- a bullet", RuntimeError("boom"), "Wednesday was quiet."])
+    writer = _Writer([
+        _answer("## A heading"), _answer("- a bullet"), RuntimeError("boom"),
+        _answer("Wednesday was quiet."),
+    ])
     outcomes = _run(src, writer, 3, [])  # 10-05 rejected twice, 10-07 fails, but 10-06 has a line
     assert outcomes["2026-10-05"] == "rejected (contains markdown headings or bullets)"
     assert outcomes["2026-10-07"] == "failed"
     assert _rows(src) == {"2026-10-06": ["He shipped the ledger and went to bed."]}
-    again = _run(src, _Writer(["Gamma wrote back.", "Wednesday was quiet."]), 3, [])
+    redo = _Writer([_answer("Gamma wrote back."), _answer("Wednesday was quiet.")])
+    again = _run(src, redo, 3, [])
     assert [again[k].split(" ")[0] for k in sorted(again)] == ["landed", "landed"]
 
 
 def test_day_prose_input_and_gate() -> None:
     """The three input sections, the report trim and each reason the gate rejects."""
     long_report = "r" * 5000
-    content = build_day_prose_messages("2026-10-07", "NUM", None, long_report)[0]["content"]
+    content = build_day_prose_messages(
+        "2026-10-07", "NUM", None, long_report, "ITEMS", "English",
+    )[0]["content"]
     assert content.index("NUMBERS (computed by the program):\nNUM") < content.index(
         "DAY SUMMARY (conversation with the assistant):\n(none yet)",
     )
-    assert content.endswith("DAILY WORK REPORT (excerpt):\n" + "r" * 2600)
-    no_report = build_day_prose_messages("d", "n", "s", None)[0]["content"]
-    assert no_report.endswith("DAILY WORK REPORT (excerpt):\n(none yet)")
+    assert content.endswith(
+        "DAILY WORK REPORT (excerpt):\n" + "r" * 2600
+        + "\n\nDAY LINE ITEMS (id | kind | local time | facts):\nITEMS\n\nLINE LANGUAGE: English",
+    )
+    no_report = build_day_prose_messages("d", "n", "s", None, "", "English")[0]["content"]
+    assert "DAILY WORK REPORT (excerpt):\n(none yet)\n\nDAY LINE ITEMS" in no_report
     assert check_day_prose("Two plain sentences. Here.", "stop", 100) is None
     assert check_day_prose("  ", "stop", 100) == "empty"
     assert check_day_prose("cut", "length", 100) == "cut off by the output limit"

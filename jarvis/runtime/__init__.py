@@ -180,6 +180,7 @@ from jarvis.runtime.dashboard import (
 )
 from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.runtime.departures import Departures
+from jarvis.runtime.highlight_marks import HighlightMarks
 from jarvis.runtime.home import Home, mail_body, mail_summarizer, weather_lookup
 from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
@@ -225,6 +226,7 @@ from jarvis.state.authorized_dispatch_outbox import (
 )
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.daily_report import resolve_zone
+from jarvis.state.day_line import DaySources
 from jarvis.state.event_log import (
     emit_event,
     iter_events_for_turn,
@@ -1292,21 +1294,40 @@ def _timesink_db_path(full_config: Mapping[str, Any]) -> Path | None:
 
 def _ledger(
     full_config: Mapping[str, Any], memory: MemorySettings | None, event_log: Path,
-    device: DeviceLink | None = None,
+    device: DeviceLink | None = None, attachments: Path | None = None,
 ) -> LedgerContext | None:
     """ADR 0201: the one ledger both prompt renders ask; None without a ``ledger:`` block.
 
-    On a brain (``device``, ADR 0170) its TimeSink is the terminal's.
+    On a brain (``device``, ADR 0170) its TimeSink is the terminal's. ``attachments`` is where his
+    pictures are kept, which the day line of ADR 0235 reads.
     """
-    settings = LedgerSettings.from_config(full_config.get("ledger"))
+    settings = LedgerSettings.from_config(
+        full_config.get("ledger"), str(full_config.get("reply_language", "follow")),
+    )
     if settings is None or memory is None:
         return None
     zone = resolve_zone(None, _work_state_timezone(full_config))[1]
     sources = LedgerSources(
         memory.db_path, event_log, _timesink_db_path(full_config), zone,
-        None if device is None else TerminalScreen(device),
+        None if device is None else TerminalScreen(device), attachments,
     )
     return LedgerContext(sources, settings)
+
+
+def _highlight_marks(
+    full_config: Mapping[str, Any], memory: MemorySettings, paths: RuntimePaths,
+    device: DeviceLink | None,
+) -> HighlightMarks:
+    """ADR 0235: what `mark_highlight` does, over the same day line `GET /inherent/day` folds."""
+    zone = resolve_zone(None, _work_state_timezone(full_config))[1]
+    return HighlightMarks(
+        paths.event_log,
+        DaySources(
+            zone, _timesink_db_path(full_config), memory.db_path,
+            None if device is None else TerminalScreen(device),
+            paths.artifacts_root / ATTACHMENTS_DIRNAME,
+        ),
+    )
 
 
 _FALLBACK_TIMESINK_POLL_INTERVAL_S: Final[float] = 300.0
@@ -2841,6 +2862,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         here_phone=partial(_phone_here, paths.event_log),
         bus_live=_live_departure(bus_live),
         ride_control=rides.control(),
+        highlight_marker=_highlight_marks(full_config, memory, paths, device).mark,
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
@@ -3085,7 +3107,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         night=night,
         voice_settings=voice_settings,
         daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config, terminal_hub),
-        ledger=_ledger(full_config, memory, paths.event_log, device),
+        ledger=_ledger(full_config, memory, paths.event_log, device, attachments.directory),
         sound_output=output,
     )
 

@@ -21,7 +21,12 @@ from jarvis.state.daily_contract import (
     timestamp,
     window,
 )
-from jarvis.state.memory_db import latest_day_summaries
+from jarvis.state.day_highlights import clock_text, merge_highlights
+from jarvis.state.memory_db import (
+    latest_day_lines,
+    latest_day_summaries,
+    latest_highlight_marks,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -112,11 +117,34 @@ _ASSISTANT_CUT = 150
 _USER_CUT = 3000
 
 
+def _told(conn: sqlite3.Connection, first_day: str, last_day: str) -> dict[str, dict[str, Any]]:
+    """What the day line says of each day (ADR 0235): its ``line`` and its ``highlights``.
+
+    A highlight is ``{"label", "time"}`` with his marks over hers, as the day line shows them.
+    A store from before ADR 0235 has neither.
+    """
+    try:
+        lines = latest_day_lines(conn, first_day, last_day)
+        marks = latest_highlight_marks(conn, first_day, last_day)
+    except sqlite3.Error:
+        return {}
+    told: dict[str, dict[str, Any]] = {}
+    for day in set(lines) | set(marks):
+        row = lines.get(day)
+        picks = merge_highlights([] if row is None else row.highlights, marks.get(day, []), None)
+        told[day] = {
+            **({} if row is None else {"line": row.line}),
+            **({"highlights": [{"label": h.label, "time": clock_text(h.start_ms, None)}
+                               for h in picks]} if picks else {}),
+        }
+    return told
+
+
 def recall(path: Path | None, args: dict[str, Any]) -> dict[str, Any]:
     """The summaries of the days in [from, to), then compact time-ordered lines.
 
-    The summaries ride the first page and count against its budget, so a page never
-    outgrows the result cap.
+    A summary carries its day's line to him and highlights when it has them. The summaries ride
+    the first page and count against its budget, so a page never outgrows the result cap.
     """
     start, end = day_window(args)
     binding = fingerprint(
@@ -132,7 +160,10 @@ def recall(path: Path | None, args: dict[str, Any]) -> dict[str, Any]:
         first_day = start.astimezone().date()
         last_day = (end - timedelta(microseconds=1)).astimezone().date()
         found_days = latest_day_summaries(conn, first_day.isoformat(), last_day.isoformat())
-    summaries = [{"day": day, "summary": summary} for day, summary in found_days]
+        told = _told(conn, first_day.isoformat(), last_day.isoformat())
+    summaries = [
+        {"day": day, "summary": summary, **told.get(day, {})} for day, summary in found_days
+    ]
     lines = []
     for record_id, ts, source, text in rows:
         if not start <= timestamp(ts) < end:

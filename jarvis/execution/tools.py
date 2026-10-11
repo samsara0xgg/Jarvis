@@ -94,6 +94,7 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Sequence
 
+    from jarvis.execution.highlight_tool import HighlightMarker
     from jarvis.execution.mail_draft_tool import DraftStore
     from jarvis.execution.night_tools import NightControl
     from jarvis.execution.ride_tool import RideControl
@@ -4070,6 +4071,7 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
     here_phone: Callable[[], Mapping[str, Any]] | None = None,
     bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
     ride_control: RideControl | None = None,
+    highlight_marker: HighlightMarker | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -4159,6 +4161,8 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
         ride_control: ADR 0224 — what the runtime does when the model says he is heading out,
             has boarded, gets off at a stop, or is off the bus; registers the four ride tools.
             `None` leaves them off the menu.
+        highlight_marker: ADR 0235 — what the runtime does to mark or unmark an item of a day's
+            timeline as a highlight; registers `mark_highlight`. `None` leaves it off the menu.
     """
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
     # ADR 0225: a brain builds every device tool, whatever its own settings say, and keeps them
@@ -4311,6 +4315,7 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
         registry.register(state_tool)
     for report_tool in build_daily_report_tool(daily_report_run):
         registry.register(report_tool)
+    from jarvis.execution.highlight_tool import build_highlight_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.location_tool import build_where_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.mail_draft_tool import build_mail_draft_tool  # noqa: PLC0415
     from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
@@ -4332,6 +4337,7 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
         ),
         *build_where_tool(here_location, here_phone),
         *build_ride_tools(ride_control),
+        *build_highlight_tool(highlight_marker),
     ):
         registry.register(conversation_tool)
     for draft_tool in build_mail_draft_tool(mail_drafts):
