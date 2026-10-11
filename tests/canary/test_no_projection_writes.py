@@ -119,6 +119,15 @@ def _allowed_insert(rel_path: str, table: str) -> bool:
     return normalized in _L2_OPERATIONAL_INSERTS.get(rel_path, frozenset())
 
 
+# ADR 0223: the notes of the pictures he sent go when the pictures are erased, the one DELETE
+# memory.db allows. The literal is pinned, so no other delete from records passes.
+_L2_OPERATIONAL_DELETES: dict[str, str] = {
+    "jarvis/state/picture_notes.py": (
+        "DELETE FROM records WHERE source = ? AND id NOT IN (SELECT upto_record_id FROM summaries)"
+    ),
+}
+
+
 # One-shot schema-migration backfills are the single sanctioned UPDATE:
 # they run inside `_migrate_schema_v0_to_v1`'s EXCLUSIVE transaction with
 # the `events_no_update` trigger dropped, and every such literal must be
@@ -143,6 +152,15 @@ def _allowed_migration_update(rel_path: str, source: str, table: str) -> bool:
         and table.lower() == "events"
         and source.lstrip().startswith(_MIGRATION_MARKER)
     )
+
+
+def _allowed_write(rel_path: str, source: str, kind: str, table: str) -> bool:
+    """Whether this one statement is an allowlisted write of its L2 owner."""
+    if kind == "INSERT":
+        return _allowed_insert(rel_path, table)
+    if kind == "UPDATE":
+        return _allowed_migration_update(rel_path, source, table)
+    return source == _L2_OPERATIONAL_DELETES.get(rel_path)
 
 
 def _is_trigger_ddl(source: str) -> bool:
@@ -205,9 +223,7 @@ def test_no_projection_writes() -> None:
                 if classified is None:
                     continue
                 kind, table = classified
-                if kind == "INSERT" and _allowed_insert(rel, table):
-                    continue
-                if kind == "UPDATE" and _allowed_migration_update(rel, value, table):
+                if _allowed_write(rel, value, kind, table):
                     continue
                 violations.append(
                     _format_violation(rel, getattr(node, "lineno", 0), kind, table)

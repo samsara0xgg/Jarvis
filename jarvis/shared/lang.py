@@ -81,6 +81,20 @@ def reply_language(heard: object, pinned: str = "follow") -> Language | None:
     return None
 
 
+_FILLER_KEYS: Final = ("attach.no_words", "share.default_note")
+
+
+def is_filler(text: object) -> bool:
+    """Whether ``text`` is a sentence the program put in a turn in place of his words (ADR 0223).
+
+    Written in the process language, it says nothing about the language he speaks, so no
+    language check reads it.
+    """
+    return isinstance(text, str) and any(
+        text.strip() == TEXT[key][one] for key in _FILLER_KEYS for one in LANGUAGES
+    )
+
+
 def language_name(lang: Language | None = None) -> str:
     """The language's English name, for telling a model what to write in."""
     return {"zh": "Simplified Chinese", "en": "English"}[lang or _current]

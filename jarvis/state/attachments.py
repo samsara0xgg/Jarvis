@@ -37,6 +37,9 @@ MAX_UPLOAD_BODY_BYTES: Final = MAX_IMAGE_BYTES + 64 * 1024
 """The largest multipart body worth reading: one file plus its framing."""
 
 _ID: Final = re.compile(r"[0-9a-f]{32}")
+_ID_PREFIX: Final = re.compile(r"[0-9a-f]{8,32}")
+LATEST: Final = "latest"
+"""What ``find`` takes for the newest stored picture."""
 _NAME_UNSAFE: Final = re.compile(r"[^A-Za-z0-9._-]+")
 _NAME_CHARS: Final = 60
 
@@ -87,6 +90,11 @@ class LoadedAttachment:
 def valid_id(value: object) -> bool:
     """Whether ``value`` is the shape of an attachment id."""
     return isinstance(value, str) and _ID.fullmatch(value) is not None
+
+
+def short_id(attachment_id: str) -> str:
+    """The first 8 digits of an id: enough for ``Attachments.find``, short in a note's header."""
+    return attachment_id[:8]
 
 
 def _image_kind(data: bytes) -> tuple[str, str] | None:
@@ -194,10 +202,34 @@ class Attachments:
             return None
         return next(self.directory.glob(f"{attachment_id}__*"), None)
 
+    def path(self, attachment_id: str) -> Path | None:
+        """Where the stored file is, or ``None`` when it is gone or never was."""
+        return self._path_of(attachment_id)
+
     def get(self, attachment_id: str) -> AttachmentRef | None:
         """The stored file's description, or ``None`` when it is gone or never was."""
         path = self._path_of(attachment_id)
         return None if path is None else _ref_of(path)
+
+    def find(self, wanted: str) -> AttachmentRef | None:
+        """A stored picture by its id, by an unambiguous prefix of 8+ hex digits, or ``latest``.
+
+        ``None`` when nothing, or more than one file, answers (ADR 0223).
+        """
+        wanted = wanted.strip().lower()
+        if not self.directory.is_dir():
+            return None
+        if wanted == LATEST:
+            files = sorted(
+                (p for p in self.directory.iterdir() if p.is_file()),
+                key=lambda p: p.stat().st_mtime, reverse=True,
+            )
+            refs = (_ref_of(p) for p in files)
+            return next((r for r in refs if r is not None and r.kind == "image"), None)
+        if _ID_PREFIX.fullmatch(wanted) is None:
+            return None
+        hits = list(self.directory.glob(f"{wanted}*__*"))
+        return _ref_of(hits[0]) if len(hits) == 1 else None
 
     def load(self, attachment_id: str) -> LoadedAttachment | None:
         """The file read for a request, or ``None`` when it is gone."""
