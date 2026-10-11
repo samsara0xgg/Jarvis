@@ -11,6 +11,8 @@ Each source folds on its own and a source that raises leaves its items out (:fun
   from ``phone.health_observed`` (ADR 0197), read in one query from two days before the window and
   folded by :mod:`jarvis.state.phone_day`, whose rules the ledger counts by too;
 - ``reminders``: the fold of ADR 0179;
+- ``rides``: the bus rides he was on (ADR 0224); one replaces the phone's generic automotive
+  ``move`` for the span it covers;
 - ``mac``: work blocks and calls from TimeSink, read through the ledger's own loading
   (:func:`jarvis.state.ledger.window_activity`) so the numbers are the ones she is told;
 - ``talks``: his conversations with her, from the records of his in memory.db;
@@ -34,6 +36,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.state import picture_notes, reminders, timesink
+from jarvis.state import rides as ride_state
 from jarvis.state.attachments import Attachments
 from jarvis.state.ledger import CALL_FLOOR_S, TOP_FLOOR_S, window_activity
 from jarvis.state.phone_day import LOOKBACK_MS, read_rows, sleeps, stays
@@ -141,6 +144,7 @@ def fold_day(
     folds: tuple[tuple[str, Source], ...] = (
         ("phone", _phone_items),
         ("reminders", _reminder_items),
+        ("rides", _ride_items),
         ("mac", lambda _conn, first, last, now: _mac_items(sources, first, last, now)),
         ("talks", lambda _conn, first, last, now: _talk_items(sources, first, last, now)),
         ("pictures", lambda db, first, last, now: _picture_items(db, sources, first, last, now)),
@@ -155,6 +159,7 @@ def fold_day(
         except Exception:
             LOGGER.exception("day line: the %s source could not be read", name)
             missing.append(name)
+    items = _without_ridden_moves(items, now_ms)
     items.sort(key=lambda item: (item["start_ms"], item["id"]))
     return DayLine(items, missing)
 
@@ -204,6 +209,50 @@ def _reminder_items(
             "acknowledged": one.acknowledged,
         })
     return items
+
+
+# --- the bus rides -------------------------------------------------------------------------
+
+
+def _ride_items(
+    conn: sqlite3.Connection, window_start: int, window_end: int, now_ms: int,
+) -> list[dict[str, Any]]:
+    """Each bus ride in the window, in the lane of him: route, stops, how it began and ended."""
+    return [
+        {
+            "id": one.ride_id,
+            "lane": "you",
+            "kind": "ride",
+            "start_ms": one.started_at_ms,
+            "end_ms": one.ended_at_ms,
+            "state": _state(one.started_at_ms, one.ended_at_ms, now_ms),
+            "route": one.route,
+            "board_stop": one.board_stop,
+            "alight_stop": one.alight_stop,
+            "source": one.source,
+            "ended_reason": one.end_reason,
+            "credit": "BC Transit" if one.trip_id else None,
+        }
+        for one in ride_state.fold(conn, window_start - ride_state.LOOKBACK_MS)
+        if _overlaps(one.started_at_ms, one.ended_at_ms, window_start, window_end)
+    ]
+
+
+def _without_ridden_moves(items: list[dict[str, Any]], now_ms: int) -> list[dict[str, Any]]:
+    """Drop the automotive moves that a ride covers for at least half of their span (ADR 0224)."""
+    spans = [(i["start_ms"], now_ms if i["end_ms"] is None else i["end_ms"])
+             for i in items if i["kind"] == "ride"]
+    if not spans:
+        return items
+
+    def ridden(move: dict[str, Any]) -> bool:
+        start, end = move["start_ms"], now_ms if move["end_ms"] is None else move["end_ms"]
+        shared = sum(max(0, min(end, b) - max(start, a)) for a, b in spans)
+        return move["kind"] == "move" and move.get("activity") == "automotive" and (
+            2 * shared >= end - start
+        )
+
+    return [i for i in items if not ridden(i)]
 
 
 # --- the Mac and her conversations ---------------------------------------------------------
