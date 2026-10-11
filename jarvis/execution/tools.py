@@ -96,6 +96,7 @@ if TYPE_CHECKING:
 
     from jarvis.execution.mail_draft_tool import DraftStore
     from jarvis.execution.night_tools import NightControl
+    from jarvis.execution.ride_tool import RideControl
     from jarvis.execution.transit_tool import TransitOffers
     from jarvis.shared import Event
     from jarvis.shared.device_link import DeviceLink
@@ -4040,7 +4041,7 @@ def _device_proxy(original: ToolDefinition | Tool, link: DeviceLink) -> ToolDefi
     return replace(original, handler=handler)
 
 
-def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
+def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
     *,
     obsidian_vault_root: Path | None = DEFAULT_OBSIDIAN_VAULT_ROOT,
     web_search_max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS,
@@ -4068,6 +4069,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     here_location: Callable[[], Mapping[str, Any]] | None = None,
     here_phone: Callable[[], Mapping[str, Any]] | None = None,
     bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
+    ride_control: RideControl | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -4154,6 +4156,9 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             (ADR 0212). Both tools say which they read.
         bus_live: the live departure (epoch ms) of a route at a stop position around a time, for
             a route `transit` is asked about.
+        ride_control: ADR 0224 — what the runtime does when the model says he is heading out,
+            has boarded, gets off at a stop, or is off the bus; registers the four ride tools.
+            `None` leaves them off the menu.
     """
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
     # ADR 0225: a brain builds every device tool, whatever its own settings say, and keeps them
@@ -4310,6 +4315,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     from jarvis.execution.mail_draft_tool import build_mail_draft_tool  # noqa: PLC0415
     from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.picture_tool import build_picture_tool  # noqa: PLC0415 — same cycle.
+    from jarvis.execution.ride_tool import build_ride_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.transit_tool import build_transit_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.voice_tools import build_voice_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.weather_tool import build_weather_tool  # noqa: PLC0415 — same cycle.
@@ -4325,6 +4331,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             offers=transit_offers, bus_live=bus_live,
         ),
         *build_where_tool(here_location, here_phone),
+        *build_ride_tools(ride_control),
     ):
         registry.register(conversation_tool)
     for draft_tool in build_mail_draft_tool(mail_drafts):

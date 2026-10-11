@@ -406,6 +406,25 @@ def _first_board(route: Mapping[str, Any]) -> tuple[tuple[str, str], tuple[float
     return None
 
 
+def _first_alight(
+    route: Mapping[str, Any],
+) -> tuple[tuple[str, str], tuple[str, float, float]] | None:
+    """Where the first bus lets him off, keyed like :func:`_first_board`, when Google placed it."""
+    for leg in route.get("legs", ()):
+        for step in leg.get("steps", ()):
+            if detail := step.get("transitDetails"):
+                line, stops = detail.get("transitLine", {}), detail["stopDetails"]
+                found = stops.get("arrivalStop", {}).get("location", {}).get("latLng")
+                if not found:
+                    return None
+                key = (line.get("nameShort") or line.get("name", "?"),
+                       stops["departureStop"]["name"])
+                where = (stops["arrivalStop"]["name"], float(found["latitude"]),
+                         float(found["longitude"]))
+                return key, where
+    return None
+
+
 def _today(value: object, field: str) -> datetime:
     """``HH:MM`` as a local time today, or a tool error naming the field."""
     try:
@@ -457,6 +476,9 @@ class TransitOffers:
     def __init__(self) -> None:
         """Start with no answer."""
         self.stops: dict[tuple[str, str], tuple[float, float]] = {}
+        # Where each option's first bus lets him off (name, lat, lng), same key (ADR 0224).
+        self.alights: dict[tuple[str, str], tuple[str, float, float]] = {}
+        self.to = ""
         self._id = ""
         self._rows: list[dict[str, Any]] = []
 
@@ -466,6 +488,7 @@ class TransitOffers:
         Returns the card's trip: ``{offer_id, to, options}``, one row per option.
         """
         self._id = "offer-" + uuid.uuid4().hex[:8]
+        self.to = to
         self._rows = [
             {
                 "index": i,
@@ -488,6 +511,28 @@ class TransitOffers:
             msg = "that offer is gone"
             raise LookupError(msg)
         return mine[0]
+
+    def remember(self, answer: Mapping[str, Any]) -> None:
+        """Keep each route's first stop and where its first bus lets him off (ADR 0224)."""
+        self.stops.clear()
+        self.alights.clear()
+        for found in map(_first_board, answer.get("routes", ())):
+            if found:
+                self.stops[found[0]] = found[1]
+        for dropped in map(_first_alight, answer.get("routes", ())):
+            if dropped:
+                self.alights[dropped[0]] = dropped[1]
+
+    def alight_for(
+        self, route: str, destination: str | None = None,
+    ) -> tuple[str, float, float] | None:
+        """Where the last answer lets him off the bus ``route``, if it was asked for that place.
+
+        ``destination`` None accepts the last answer whatever it was for.
+        """
+        if destination and destination.strip().casefold() != self.to.casefold():
+            return None
+        return next((where for (num, _), where in self.alights.items() if num == route), None)
 
     def later(
         self, route: str, board_stop: str, after: datetime,
@@ -566,6 +611,7 @@ def trip_of(  # noqa: PLR0913 — one keyword per trip field.
     arrive_at: str,
     to: str,
     stop: tuple[float, float] | None,
+    alight: tuple[str, float, float] | None = None,
 ) -> departures.Trip:
     """A trip to pin, checked: its leave time not past (a minute's grace), its bus after it."""
     if leave < _now() - _PIN_PAST_GRACE:
@@ -584,6 +630,9 @@ def trip_of(  # noqa: PLR0913 — one keyword per trip field.
         None if stop is None else stop[0],
         None if stop is None else stop[1],
         to,
+        None if alight is None else alight[0],
+        None if alight is None else alight[1],
+        None if alight is None else alight[2],
     )
 
 
@@ -732,6 +781,7 @@ def pin_offered(
             arrive_at=row["arrive_at"],
             to=row["to"],
             stop=offers.stops.get((first, row["board_stop"])),
+            alight=offers.alights.get((first, row["board_stop"])),
         )
         pin = departures.active(conn, _now_ms())
         if add and pin is not None and pin.offer_id == offer_id:
@@ -769,6 +819,7 @@ def _pin_departure(
                 arrive_at=arrive,
                 to=str(one.get("destination", "")).strip().lower()[:60],
                 stop=offers.stops.get((route.split("→")[0].strip(), board_stop)),
+                alight=offers.alights.get((route.split("→")[0].strip(), board_stop)),
             )
         )
     return pin_trips(
@@ -839,10 +890,7 @@ def build_transit_tool(  # noqa: PLR0913 - the key, places, two readers, offers,
             end = retry
             end_label = retry["address"]
             answer, options, hits, modes = _search(api_key, start, end, args, wanted, now)
-        offers.stops.clear()
-        for found in map(_first_board, answer.get("routes", ())):
-            if found:
-                offers.stops[found[0]] = found[1]
+        offers.remember(answer)
         # The card offers only buses he can still catch: a missed one is in the answer, not a row.
         catchable = [o for o in options if o["spare_min"] > -_EASY_SPARE_MIN]
         if catchable:
