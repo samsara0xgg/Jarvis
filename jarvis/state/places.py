@@ -5,7 +5,8 @@ that appends a change (the place before and after, as JSON) and updates the view
 can be listed and taken back like a core memory version (ADR 0154); an undo is itself a change
 and is refused with :class:`~jarvis.state.memory_page.Conflict` when a later change touched the
 same place. A place holds the name he gave, a role, a centre and radius that never move (or an
-address alone until he is there) and where it came from.
+address alone until its centre is found, from the address once or where he is; ADR 0237) and
+where it came from.
 
 Facts are never stored: :func:`tally` counts them from the phone's stays (ADR 0197) each time.
 Stays within :data:`SPOT_RADIUS_M` of a spot's running centre form that spot, in time order. A
@@ -49,7 +50,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 ROLES: Final[tuple[str, ...]] = ("home", "school", "other")
-ORIGINS: Final[tuple[str, ...]] = ("user", "model", "settings", "page")
+ORIGINS: Final[tuple[str, ...]] = ("user", "model", "settings", "page", "geocoder")
 DEFAULT_RADIUS_M: Final[int] = 120
 RADIUS_RANGE: Final[tuple[int, int]] = (50, 800)
 NAME_CHARS: Final[int] = 40
@@ -355,6 +356,44 @@ def forget(path: Path, place_id: str, *, origin: str) -> Written:
         before = _one(conn, place_id)
         done = _append(conn, op="forget", origin=origin, before=before, after=None, now=now)
         return Written(before, done)
+
+
+def unlocated(path: Path) -> list[Place]:
+    """Kept places with an address and no centre that no geocoder change has touched (ADR 0237).
+
+    Read without creating anything; none when the file or table is not there.
+    """
+    try:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
+            rows = conn.execute(
+                f"SELECT {_COLUMNS} FROM places WHERE lat IS NULL AND address IS NOT NULL "  # noqa: S608
+                "AND id NOT IN (SELECT place_id FROM place_changes WHERE origin = 'geocoder') "
+                "ORDER BY rowid",
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    return [_place(row) for row in rows]
+
+
+def locate(path: Path, place_id: str, *, lat: float, lng: float) -> Written:
+    """Give a place kept as an address the centre found for it, as origin ``geocoder`` (ADR 0237).
+
+    A place that has a centre by now (he named it on the spot) is left as it is. A point inside a
+    kept place's circle is refused unless this place's circle is smaller, as :func:`save` does.
+    """
+    _centre(lat, lng)
+    now = iso_seconds(local_now())
+    with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
+        before = _one(conn, place_id)
+        if before.lat is not None:
+            return Written(before, None)
+        inside = containing(kept(conn), lat, lng)
+        if inside is not None and before.radius_m >= inside.radius_m:
+            msg = f"that point is inside “{inside.name}” ({inside.id})"
+            raise ValueError(msg)
+        after = replace(before, lat=lat, lng=lng, updated_at=now)
+        done = _append(conn, op="locate", origin="geocoder", before=before, after=after, now=now)
+        return Written(after, done)
 
 
 def _one(conn: sqlite3.Connection, place_id: str) -> Place:

@@ -126,6 +126,7 @@ from jarvis.deployment.launchd import logs_dir
 from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
 from jarvis.deployment.night_power import MacPower
 from jarvis.execution.dashboard_tool import build_dashboard_tool
+from jarvis.execution.geocode import Unplaced, geocode
 from jarvis.execution.job_ledger_tool import (
     build_job_ledger_tool,
     build_record_application_tool,
@@ -1458,6 +1459,33 @@ def _transit_places(config: Mapping[str, Any]) -> dict[str, str]:
     return places
 
 
+def _locate_places(db_path: Path, api_key: str) -> None:
+    """ADR 0237: give each place kept as an address the point Google gives it, once.
+
+    A place is asked about until a geocoder change touches it; one that fails stays an address
+    and is asked again at the next boot. The log names the place, never its address or the key.
+    """
+    for one in place_state.unlocated(db_path):
+        if one.address is None:
+            continue
+        try:
+            lat, lng = geocode(one.address, api_key)
+            written = place_state.locate(db_path, one.id, lat=lat, lng=lng)
+        except (Unplaced, LookupError, ValueError, sqlite3.Error) as exc:
+            LOGGER.warning("place %r not located: %s", one.name, exc)
+            continue
+        if written.change_id is not None:
+            LOGGER.info("place %r located from its address", one.name)
+
+
+def _start_locating_places(db_path: Path, api_key: str) -> None:
+    """Run :func:`_locate_places` in the background when there is a key and a place to locate."""
+    if api_key and place_state.unlocated(db_path):
+        threading.Thread(
+            target=_locate_places, args=(db_path, api_key), name="jarvis-place-locate", daemon=True,
+        ).start()
+
+
 def _dashboard_switch(config: Mapping[str, Any], name: str) -> bool:
     """``dashboard.<name>.enabled``: off unless true."""
     block = config.get("dashboard")
@@ -2786,6 +2814,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     local_zone = resolve_zone(None, _work_state_timezone(full_config))[1]
     # ADR 0234: home and school move out of the settings into the places table, once.
     place_state.migrate_settings(memory.db_path, _transit_places(full_config))
+    maps_key = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
+    _start_locating_places(memory.db_path, maps_key)
     kept_places = partial(place_state.home_school, memory.db_path)
     session = SessionSettings.from_config(full_config.get("session"))
     work_state = WorkStateService(
@@ -2876,7 +2906,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         night=night,
         voice_settings=voice_settings,
         weather_lookup=weather_lookup(_home_weather(full_config)),
-        transit_api_key=os.environ.get("GOOGLE_MAPS_API_KEY", "").strip(),
+        transit_api_key=maps_key,
         transit_places=kept_places,
         transit_offers=transit_offers,
         here_location=_here_location(role),

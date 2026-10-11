@@ -12,8 +12,12 @@ was there, so the facts the program must count are plain arithmetic over that ta
 
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
+import urllib.error
+import urllib.parse
+import urllib.request
 from contextlib import closing
 from datetime import datetime, time, timedelta
 from functools import partial
@@ -28,7 +32,7 @@ from fastapi.testclient import TestClient
 
 from jarvis.execution import place_tools, transit_tool
 from jarvis.execution.tools import build_default_registry
-from jarvis.runtime import _places_block, _transit_places
+from jarvis.runtime import _locate_places, _places_block, _transit_places
 from jarvis.runtime.inherent_loop import _read_day
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
 from jarvis.runtime.memory_page import MemoryPage
@@ -477,6 +481,135 @@ def test_a_place_that_came_as_an_address_gets_its_centre_when_he_is_there(world:
         "1 Example Campus Way", "school", "settings",
     )
     assert [r["op"] for r in world.rows("place_changes")] == ["save", "save"]
+
+
+# --- located from the address (ADR 0237) ----------------------------------------------------
+
+ADDRESS = "1 Example Campus Way"
+
+
+def found_at(lat: float, lng: float, precision: str = "ROOFTOP") -> dict[str, Any]:
+    """One Geocoding result at ``lat, lng``."""
+    return {"geometry": {"location": {"lat": lat, "lng": lng}, "location_type": precision}}
+
+
+def google(
+    monkeypatch: pytest.MonkeyPatch, answer: dict[str, Any] | Exception,
+) -> list[dict[str, str]]:
+    """Serve ``answer`` to every Geocoding request; returns each request's query parameters."""
+    asked: list[dict[str, str]] = []
+
+    def urlopen(request: urllib.request.Request, *, timeout: float) -> io.BytesIO:
+        url = urllib.parse.urlsplit(request.full_url)
+        assert (url.scheme, url.netloc, url.path) == (
+            "https", "maps.googleapis.com", "/maps/api/geocode/json",
+        )
+        assert timeout > 0
+        asked.append(dict(urllib.parse.parse_qsl(url.query)))
+        if isinstance(answer, Exception):
+            raise answer
+        return io.BytesIO(json.dumps(answer).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    return asked
+
+
+def test_a_place_kept_as_an_address_is_located_once_and_his_stays_there_become_its(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One request per place; the centre is a versioned change; undoing it does not ask again."""
+    places.migrate_settings(world.db, {"school": ADDRESS})
+    assert world.call("places", {})["kept"][0]["days_28"] == 0
+    asked = google(monkeypatch, {"status": "OK", "results": [found_at(GYM.lat, GYM.lng)]})
+    _locate_places(world.db, FAKE_KEY)
+    assert asked == [{"address": ADDRESS, "key": FAKE_KEY}]
+    (school,) = world.kept()
+    assert (school.lat, school.lng, school.address) == (GYM.lat, GYM.lng, ADDRESS)
+    assert (school.name, school.role, school.origin) == ("school", "school", "settings")
+    assert [(r["op"], r["origin"]) for r in world.rows("place_changes")] == [
+        ("save", "settings"), ("locate", "geocoder"),
+    ]
+    assert places.home_school(world.db) == {"school": f"{GYM.lat},{GYM.lng}"}
+    kept = world.call("places", {})["kept"]
+    assert [(k["name"], k["has_centre"], k["days_28"], k["days_84"]) for k in kept] == [
+        ("school", True, 11, 17),
+    ]
+    _locate_places(world.db, FAKE_KEY)  # located: nothing left to ask about
+    assert len(asked) == 1
+    located = world.rows("place_changes")[-1]["id"]
+    places.undo(world.db, located, origin="page")
+    assert world.kept()[0].lat is None
+    _locate_places(world.db, FAKE_KEY)  # once per place: taken back, it waits for him there
+    assert len(asked) == 1
+
+
+@pytest.mark.parametrize(
+    ("answer", "said"),
+    [
+        (
+            {"status": "REQUEST_DENIED", "error_message": "This API is not activated."},
+            "status REQUEST_DENIED: This API is not activated.",
+        ),
+        ({"status": "ZERO_RESULTS", "results": []}, "status ZERO_RESULTS"),
+        ({"status": "OK", "results": [found_at(48.07, -123.0)] * 2}, "2 results"),
+        (
+            {"status": "OK", "results": [found_at(48.07, -123.0, "APPROXIMATE")]},
+            "only an approximate match",
+        ),
+        (
+            urllib.error.HTTPError(
+                f"https://maps.googleapis.com/maps/api/geocode/json?key={FAKE_KEY}", 403,
+                "Forbidden", {}, None,  # type: ignore[arg-type]
+            ),
+            "HTTP 403",
+        ),
+        (urllib.error.URLError(f"no route to ?key={FAKE_KEY}"), "URLError"),
+    ],
+    ids=["denied", "nothing", "two", "approximate", "http", "network"],
+)
+def test_an_address_google_cannot_place_stays_an_address_and_is_asked_again_next_boot(
+    world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    answer: dict[str, Any] | Exception, said: str,
+) -> None:
+    """Nothing is written; the warning names the place and why, never the address or the key."""
+    places.migrate_settings(world.db, {"school": ADDRESS})
+    asked = google(monkeypatch, answer)
+    with caplog.at_level("INFO", logger="jarvis.runtime"):
+        _locate_places(world.db, FAKE_KEY)
+    assert [r.getMessage() for r in caplog.records] == [f"place 'school' not located: {said}"]
+    assert FAKE_KEY not in caplog.text
+    assert ADDRESS not in caplog.text
+    assert world.kept()[0].lat is None
+    assert [r["op"] for r in world.rows("place_changes")] == ["save"]
+    _locate_places(world.db, FAKE_KEY)
+    assert len(asked) == 2
+
+
+def test_locating_leaves_a_centre_he_gave_first_and_will_not_land_inside_a_kept_circle(
+    world: World,
+) -> None:
+    """He named it on the spot before the answer came; or the point is a kept place's already."""
+    places.migrate_settings(world.db, {"school": ADDRESS})
+    (school,) = world.kept()
+    places.save(world.db, name="school", lat=48.07, lng=-123.0, origin="user")
+    assert places.unlocated(world.db) == []
+    unchanged = places.locate(world.db, school.id, lat=48.5, lng=-123.5)
+    assert unchanged.change_id is None
+    assert (unchanged.place.lat, unchanged.place.lng) == (48.07, -123.0)
+    places.forget(world.db, school.id, origin="user")
+    with pytest.raises(LookupError):
+        places.locate(world.db, school.id, lat=48.5, lng=-123.5)
+
+    fresh = World(world.tmp / "again")
+    try:
+        places.migrate_settings(fresh.db, {"school": ADDRESS})
+        places.save(fresh.db, name="gym", lat=GYM.lat, lng=GYM.lng, origin="user")
+        (school,) = (p for p in fresh.kept() if p.role == "school")
+        with pytest.raises(ValueError, match="inside “gym”"):
+            places.locate(fresh.db, school.id, lat=GYM.lat, lng=GYM.lng + 0.0001)
+        assert [r["op"] for r in fresh.rows("place_changes")] == ["save", "save"]
+    finally:
+        fresh.fx.close()
 
 
 # --- versions and undo -----------------------------------------------------------------------
