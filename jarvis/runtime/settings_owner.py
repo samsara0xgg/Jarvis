@@ -14,7 +14,7 @@ one notice for the terminal's companion when they differ, and acts only on the o
 
 from __future__ import annotations
 
-import copy
+import io
 import json
 import logging
 import re
@@ -24,6 +24,9 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import yaml
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.util import load_yaml_guess_indent
 
 from jarvis.runtime.settings import PATHS, SETTINGS_FILE, put_paths, saved_paths
 from jarvis.shared import lang
@@ -32,7 +35,7 @@ from jarvis.state.plugin_settings import write_private_json
 from jarvis.surface.terminal_link import SETTINGS_CHOICES, SETTINGS_NOTICE
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
     from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
@@ -88,6 +91,7 @@ _MAX_REPORTED: Final = 200
 _MAX_VALUE_CHARS: Final = 2000  # the same caps terminal_link holds a hello's settings to
 _BRAIN_SIDE: Final = frozenset({"brain", "both"})
 _ASKED: Final = "asked"
+_YAML_WIDTH: Final = 4096  # never re-wrap a long line of the owner's
 _LISTED: Final = 6  # key names a log line or a card line spells out
 
 
@@ -183,9 +187,25 @@ def _backup(path: Path) -> None:
         shutil.copy2(path, path.with_name(f"{path.name}.bak-{stamp}"))
 
 
-def _write_yaml(path: Path, data: Mapping[str, Any]) -> None:
+def _edit_yaml(path: Path, edit: Callable[[dict[str, Any]], None]) -> None:
+    """Apply ``edit`` to the file's round-trip tree and write it back, after a backup.
+
+    Comments, key order, quoting and indentation of every line ``edit`` leaves alone stay as the
+    owner wrote them.
+    """
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    tree, indent, seq_offset = load_yaml_guess_indent(text) if text.strip() else (None, 2, 0)
+    tree = CommentedMap() if tree is None else tree
+    edit(tree)
+    writer = YAML()
+    writer.preserve_quotes = True
+    writer.width = _YAML_WIDTH
+    writer.indent(mapping=indent or 2, sequence=indent or 2, offset=seq_offset or 0)
+    out = io.StringIO()
+    writer.dump(tree, out)
+    _backup(path)
     staged = path.with_suffix(".yaml.tmp")
-    staged.write_text(yaml.safe_dump(dict(data), allow_unicode=True, sort_keys=False), "utf-8")
+    staged.write_text(out.getvalue(), encoding="utf-8")
     staged.replace(path)
 
 
@@ -224,13 +244,14 @@ def release(settings_yaml: Path, root: Path) -> list[str]:
     removed key names.
     """
     gone = sorted(path for path in user_paths(settings_yaml, root) if owner_of(path) == "brain")
-    tree = _yaml(settings_yaml)
-    in_yaml = [path for path in gone if path in _flat(tree)]
+    in_yaml = [path for path in gone if path in _flat(_yaml(settings_yaml))]
     if in_yaml:
-        _backup(settings_yaml)
-        for path in in_yaml:
-            _drop(tree, path)
-        _write_yaml(settings_yaml, tree)
+
+        def drop(tree: dict[str, Any]) -> None:
+            for path in in_yaml:
+                _drop(tree, path)
+
+        _edit_yaml(settings_yaml, drop)
     page = root / SETTINGS_FILE
     saved = _read_json(page)
     kept = {key: value for key, value in saved.items() if _page_owner(key) != "brain"}
@@ -372,11 +393,12 @@ class SettingsDrift:
         }
         rest = put_paths(self._root, wanted)
         if rest:
-            tree = copy.deepcopy(_yaml(self._yaml))
-            for path, value in rest.items():
-                _set(tree, path, value)
-            _backup(self._yaml)
-            _write_yaml(self._yaml, tree)
+
+            def put(tree: dict[str, Any]) -> None:
+                for path, value in rest.items():
+                    _set(tree, path, value)
+
+            _edit_yaml(self._yaml, put)
         if wanted:
             LOGGER.info("settings: took the terminal's values for %s", _names(wanted))
         return bool(wanted)

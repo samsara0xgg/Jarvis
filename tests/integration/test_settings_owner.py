@@ -172,7 +172,8 @@ def test_choosing_the_terminals_values_writes_the_brains_files_after_a_backup(
 ) -> None:
     """Plain values land in the brain's yaml or page store; secrets are never copied."""
     yaml_path = tmp_path / "settings.yaml"
-    yaml_path.write_text("language: en\nobserver:\n  poll_interval_s: 30\n", encoding="utf-8")
+    original = "# my notes\nlanguage: en  # kept\nobserver:\n  poll_interval_s: 30  # seconds\n"
+    yaml_path.write_text(original, encoding="utf-8")
     drift = SettingsDrift(tmp_path, yaml_path, CONFIG)
     drift.on_report("macbook", {
         "observer.usage.enabled": True, "keep_audio": 1, "llm.x.api_key": PRESENT,
@@ -186,9 +187,11 @@ def test_choosing_the_terminals_values_writes_the_brains_files_after_a_backup(
         "language": "en",
         "observer": {"poll_interval_s": 30, "usage": {"enabled": True}},
     }
-    assert [p.read_text(encoding="utf-8") for p in tmp_path.glob("settings.yaml.bak-*")] == [
-        "language: en\nobserver:\n  poll_interval_s: 30\n",
-    ]
+    # only the touched keys changed: every comment and line the owner wrote is still there
+    written = yaml_path.read_text(encoding="utf-8").splitlines()
+    assert all(line in written for line in original.splitlines())
+    backups = [p.read_text(encoding="utf-8") for p in tmp_path.glob("settings.yaml.bak-*")]
+    assert backups == [original]
     # a page key goes to the page store, where the page would have put it; a secret is never copied
     page = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
     assert page == {"audio_days": 30}
@@ -212,11 +215,12 @@ def test_choosing_the_brains_values_changes_no_file_and_the_terminal_releases_it
 
     mac = tmp_path / "mac"
     mac.mkdir()
-    (mac / "settings.yaml").write_text(yaml.safe_dump({
-        "observer": {"usage": {"enabled": True}, "repos": ["~/x"]},
-        "llm": {"presets": {"luna": {"model": "m"}}, "provider": "openai"},
-        "onboarded": "2026-10-10",
-    }), encoding="utf-8")
+    (mac / "settings.yaml").write_text(
+        "# the Mac's own\nobserver:\n  usage:\n    enabled: true  # on purpose\n"
+        "  repos:\n  - ~/x\nllm:\n  presets:\n    luna:\n      model: m\n  provider: openai\n"
+        "onboarded: '2026-10-10'\n",
+        encoding="utf-8",
+    )
     (mac / "settings.json").write_text(
         json.dumps({"tts_voice": "Chinese (Mandarin)_Sweet_Lady", "wake_threshold": 0.9}),
         encoding="utf-8",
@@ -231,11 +235,19 @@ def test_choosing_the_brains_values_changes_no_file_and_the_terminal_releases_it
     assert json.loads((mac / "settings.json").read_text(encoding="utf-8")) == {
         "wake_threshold": 0.9,
     }
+    assert (mac / "settings.yaml").read_text(encoding="utf-8") == (
+        "# the Mac's own\nobserver:\n  usage:\n    enabled: true  # on purpose\n"
+        "  repos:\n  - ~/x\n"
+    )  # comments and indentation kept, and the emptied llm block is gone
     assert len(list(mac.glob("settings.*.bak-*"))) == 2
 
 
-def test_the_card_rides_the_notice_routes_and_restarts_only_when_idle(tmp_path: Path) -> None:
+def test_the_card_rides_the_notice_routes_and_says_when_a_restart_is_needed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The card is served beside the others, and its answer reaches the drift, not job mail."""
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("JARVIS_LAUNCHD_AGENT", raising=False)
     drift = SettingsDrift(tmp_path, tmp_path / "settings.yaml", CONFIG)
     drift.on_report("macbook", {"observer.usage.enabled": True})
     seen: list[str] = []
@@ -246,8 +258,6 @@ def test_the_card_rides_the_notice_routes_and_restarts_only_when_idle(tmp_path: 
     async def mail_act(notice_id: str, action: str, reaction: str | None) -> None:
         seen.append(f"{notice_id}:{action}:{reaction}")
 
-    monkeypatch.delenv("INVOCATION_ID", raising=False)
-    monkeypatch.delenv("JARVIS_LAUNCHD_AGENT", raising=False)
     deps = _settings_notice_deps(
         {"notices_read": mail_read, "notice_act": mail_act}, drift, lambda: True,
     )
@@ -261,6 +271,10 @@ def test_the_card_rides_the_notice_routes_and_restarts_only_when_idle(tmp_path: 
     assert asyncio.run(run()) == [f"{SETTINGS_NOTICE}macbook", "reminder-1"]
     assert seen == ["reminder-1:seen:None"]
     assert drift.notices() == []
+    # taking the terminal's values needs a restart, which only a supervised daemon does by itself
+    drift.on_report("macbook", {"observer.usage.enabled": True})
+    outcome = asyncio.run(deps["notice_act"](f"{SETTINGS_NOTICE}macbook", "feedback", "device"))
+    assert outcome == "manual"
 
 
 def test_a_real_terminals_hello_reaches_the_brains_drift_over_the_socket(tmp_path: Path) -> None:
@@ -271,10 +285,6 @@ def test_a_real_terminals_hello_reaches_the_brains_drift_over_the_socket(tmp_pat
     drift = SettingsDrift(tmp_path, tmp_path / "settings.yaml", CONFIG)
     with _Brain(tmp_path) as brain:
         brain.hub.on_settings = drift.on_report
-    # taking the terminal's values needs a restart, which only a supervised daemon does by itself
-    drift.on_report("macbook", {"observer.usage.enabled": True})
-    outcome = asyncio.run(deps["notice_act"](f"{SETTINGS_NOTICE}macbook", "feedback", "device"))
-    assert outcome == "manual"
         loop = asyncio.new_event_loop()
         task: list[asyncio.Task[None]] = []
 
