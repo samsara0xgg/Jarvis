@@ -49,6 +49,8 @@ protocol VoiceLink: AnyObject {
 final class WebSocketVoiceLink: VoiceLink {
     static let path = "/phone/ws"
     static let pingEvery: UInt64 = 3_000_000_000
+    /// how long a say waits for the connection before it is given up, unsent
+    static let connectWait = 20.0
 
     let events: AsyncStream<LinkEvent>
     private let out: AsyncStream<LinkEvent>.Continuation
@@ -60,6 +62,9 @@ final class WebSocketVoiceLink: VoiceLink {
     private var generation = 0                       // which connection a late callback belongs to
     private var pending: [String: (c: CheckedContinuation<(turnId: String?, verdict: String), Error>, frame: PhoneFrame)] = [:]
     private var pingTask: Task<Void, Never>?
+    private var ready = false                        // the host answered hello: a say sent now is read at once
+    private var openedAt = 0.0
+    private var stopped = 0                          // barges and cancels so far: a say still waiting for the connection is dropped by one
 
     init(endpoint: @escaping () -> (base: URL, token: String)?) {
         self.endpoint = endpoint
@@ -87,6 +92,7 @@ final class WebSocketVoiceLink: VoiceLink {
         let t = urlSession.webSocketTask(with: req)
         VoiceTrace.note("ws opening \(url.scheme ?? "")://\(url.host ?? ""):\(url.port.map(String.init) ?? "")\(url.path)")
         task = t
+        openedAt = Date().timeIntervalSince1970
         generation += 1
         let mine = generation
         t.resume()
@@ -104,6 +110,7 @@ final class WebSocketVoiceLink: VoiceLink {
         pingTask?.cancel(); pingTask = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        ready = false
         generation += 1
         for (_, p) in pending { p.c.resume(throwing: why) }
         pending = [:]
@@ -140,7 +147,10 @@ final class WebSocketVoiceLink: VoiceLink {
 
     private func handle(_ f: HostFrame) {
         switch f {
-        case .ready(let d, let v, let r, let j): out.yield(.ready(device: d, voice: v, sampleRate: r, judges: j))
+        case .ready(let d, let v, let r, let j):
+            ready = true
+            VoiceTrace.note("ws ready \(Int((Date().timeIntervalSince1970 - openedAt) * 1000)) ms after opening")
+            out.yield(.ready(device: d, voice: v, sampleRate: r, judges: j))
         case .said(let u, let turn, let verdict): VoiceTrace.note("ws said frame: \(verdict)"); pending.removeValue(forKey: u)?.c.resume(returning: (turn, verdict))
         case .row(let r): out.yield(.row(r))
         case .pong: break
@@ -165,7 +175,13 @@ final class WebSocketVoiceLink: VoiceLink {
     func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
              about: [String: Any]?, timeout: Double) async throws -> (turnId: String?, verdict: String) {
         if task == nil { connect() }
-        guard task != nil else { throw LinkError.notConnected }
+        // Not sent before the host is there: a say queued on a socket still connecting reached the host after the phone had given
+        // up on it, and opened a turn nobody was waiting for. The answer's clock starts once it is sent.
+        let waitUntil = Date().timeIntervalSince1970 + Self.connectWait, stoppedAt = stopped
+        while !ready {
+            guard task != nil, stopped == stoppedAt, Date().timeIntervalSince1970 < waitUntil else { throw LinkError.notConnected }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
         let frame = PhoneFrame.say(utteranceId: utteranceId, text: text, language: language?.code, confidence: confidence, spoken: spoken,
                                    overHer: overHer, conversation: conversation,
                                    about: about.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) })
@@ -179,8 +195,8 @@ final class WebSocketVoiceLink: VoiceLink {
         }
     }
 
-    func barge() { sendText(.barge) }
-    func cancel() { sendText(.cancel) }
+    func barge() { stopped += 1; sendText(.barge) }
+    func cancel() { stopped += 1; sendText(.cancel) }
 
     func send(_ frames: [PlayerOut]) {
         guard let task else { return }

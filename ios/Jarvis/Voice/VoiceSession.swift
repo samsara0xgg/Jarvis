@@ -38,7 +38,7 @@ final class VoiceSession {
     private var wake = false
 
     /// Where the host is and the token that proves this phone; the pairing owns both.
-    @ObservationIgnored var endpoint: () -> (base: URL, token: String)? = { nil }
+    @ObservationIgnored var endpoint: () -> (base: URL, token: String)? = { nil } { didSet { connectEarly() } }
 
     // MARK: timings
 
@@ -119,7 +119,7 @@ final class VoiceSession {
     private init() {
         foreground = UIApplication.shared.applicationState != .background
         hop(UIApplication.didEnterBackgroundNotification) { $0.foreground = false; $0.refreshArming() }
-        hop(UIApplication.willEnterForegroundNotification) { $0.foreground = true; $0.refreshArming() }
+        hop(UIApplication.willEnterForegroundNotification) { $0.foreground = true; $0.refreshArming(); $0.connectEarly() }
         hop(UIApplication.didBecomeActiveNotification) { if TalkRequest.pending { $0.requestTalk() } }
         hop(TalkRequest.notification) { $0.requestTalk() }
         audio.onMic = { [weak self, feed] buf, level in
@@ -133,6 +133,13 @@ final class VoiceSession {
             if !interrupted { self.refreshArming() }
         }
         if TalkRequest.pending { requestTalk() }
+    }
+
+    /// The line to the host is opened as the app comes on screen, not at his first words: over Tailscale it has taken 13-15 s to
+    /// connect, and a say waits for it. It stays open while the app is on screen, which is also what the host reads as "the app is
+    /// open" (ADR 0210).
+    private func connectEarly() {
+        if foreground, endpoint() != nil { ensureLink() }
     }
 
     private func hop(_ name: Notification.Name, _ body: @escaping @MainActor (VoiceSession) -> Void) {
@@ -254,8 +261,7 @@ final class VoiceSession {
         dropSegment()
         audio.stop()
         tickTask?.cancel(); tickTask = nil
-        linkTask?.cancel(); linkTask = nil
-        link?.disconnect(); link = nil
+        if !foreground { linkTask?.cancel(); linkTask = nil; link?.disconnect(); link = nil }   // on screen it stays: see connectEarly
         inputLevel = 0; outputLevel = 0
     }
 
