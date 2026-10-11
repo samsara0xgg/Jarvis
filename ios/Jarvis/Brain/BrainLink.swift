@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 /// The phone's link to the brain: whether it is paired, whether the brain answers, and the days it has served.
 /// Everything here is read and written on the main thread (the UI and the engine's frame step); the network runs in `BrainClient`.
@@ -29,24 +30,44 @@ final class BrainLink {
 
     @ObservationIgnored private var token: String?
     @ObservationIgnored private var bases: [URL] = []
+    /// the address that answered the claim: the daemon that issued the token. The QR can list others (a Mac on the tailnet) whose guard does not know it. Nil for a pairing made before it was kept, until a day is served.
+    @ObservationIgnored private var issuer: URL?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var fetched: [String: Int] = [:]      // date -> the generation it was served in
     @ObservationIgnored private var inFlight: Set<String> = []
     @ObservationIgnored private var failedAt: [String: Date] = [:]
-    @ObservationIgnored private let defaults = BrainStore.defaults
+    @ObservationIgnored private let defaults: UserDefaults
 
     private typealias Key = BrainStore.Key
 
-    private init() {
-        BrainStore.adopt()
-        if let t = Keychain.get(Key.token), let a = defaults.stringArray(forKey: Key.addresses) {
-            let urls = a.compactMap(URL.init(string:))
-            if !urls.isEmpty {
-                token = t; bases = urls; hasToken = true
-                deviceName = defaults.string(forKey: Key.device)
-                state = .paired(Self.host(urls[0]))
-            }
+    private convenience init() { self.init(defaults: BrainStore.defaults) }
+    /// `pairing` stands in for what the Keychain and the defaults hold; a test gives it, the app reads the stores.
+    init(defaults: UserDefaults, pairing: (token: String, bases: [URL], issuer: URL?)? = nil) {
+        self.defaults = defaults
+        if let p = pairing {
+            token = p.token; bases = p.bases; issuer = p.issuer; hasToken = true; state = .paired(Self.host(p.bases[0]))
+        } else {
+            BrainStore.adopt(into: defaults)
+            loadStored()
         }
+    }
+
+    /// Take the pairing the Keychain and the defaults hold, if there is one and none is held yet.
+    @discardableResult private func loadStored() -> Bool {
+        guard !hasToken, let t = Keychain.get(Key.token), let a = defaults.stringArray(forKey: Key.addresses) else { return false }
+        let urls = a.compactMap(URL.init(string:))
+        if urls.isEmpty { return false }
+        token = t; bases = urls; hasToken = true
+        issuer = defaults.string(forKey: Key.issuer).flatMap(URL.init(string:))
+        deviceName = defaults.string(forKey: Key.device)
+        state = .paired(Self.host(urls[0]))
+        return true
+    }
+
+    /// The app came to the foreground. A process started in the background (a location wake, a push) can run before the Keychain and the shared defaults
+    /// are readable and find no pairing; it looks again, so the owner is not left in the prototype until the next launch.
+    func reloadIfUnpaired() {
+        if state != .pairing, loadStored() { dataVersion += 1; openTick += 1; Waiting.shared.start() }
     }
 
     var isOnline: Bool { if case .paired = state { return true }; return false }
@@ -78,13 +99,20 @@ final class BrainLink {
 
     static func host(_ u: URL) -> String { u.port.map { "\(u.host ?? ""):\($0)" } ?? (u.host ?? "") }
 
-    /// A call under this phone's token. When the brain answers 401 it has unpaired this phone: what it gave is dropped, as when a day is refused.
+    /// A call under this phone's token. When the guard refuses the token, `settle` decides whether the brain really unpaired this phone.
     @MainActor func call<T>(_ body: (_ bases: [URL], _ token: String) async throws -> T) async throws -> T {
         guard hasToken, let tok = token else { throw BrainError.revoked }
-        do { return try await body(bases, tok) } catch let e as BrainError {
-            if e == .revoked { forget(e.message) }
-            throw e
-        }
+        let bases = self.bases
+        do { return try await body(bases, tok) } catch { throw await settle(error, token: tok) }
+    }
+
+    /// The one place a refused token unpairs the phone. A refusal is not trusted alone (a proxy, a brain mid-restart): the brain is asked once more under the
+    /// same token, on the daemon that issued it, and only a second refusal forgets the pairing. Otherwise the pairing stays and the caller sees an ordinary failure.
+    @MainActor func settle(_ error: Error, token tok: String) async -> Error {
+        guard let e = error as? BrainError, e == .revoked else { return error }
+        let probe = issuer.map { [$0] } ?? bases
+        if await BrainClient.tokenRefused(bases: probe, token: tok), token == tok { BrainClient.trace("forget: the issuing brain refused the token twice"); forget(e.message); return e }
+        return BrainError.refused
     }
 
     // MARK: pairing
@@ -100,8 +128,8 @@ final class BrainLink {
                 // the addresses the brain gave, the one that answered first
                 let all = [got.base] + link.brain.filter { $0 != got.base }
                 defaults.set(all.map(\.absoluteString), forKey: Key.addresses)
-                defaults.set(got.device, forKey: Key.device)
-                token = got.token; bases = all; hasToken = true; deviceName = got.device
+                defaults.set(got.device, forKey: Key.device); defaults.set(got.base.absoluteString, forKey: Key.issuer)
+                token = got.token; bases = all; issuer = got.base; hasToken = true; deviceName = got.device
                 days = [:]; fetched = [:]; failedAt = [:]; generation += 1
                 state = .paired(Self.host(got.base))
                 dataVersion += 1; openTick += 1      // the days on screen are asked for under the new token
@@ -117,8 +145,8 @@ final class BrainLink {
     /// The brain no longer knows this phone: drop what it gave and show the prototype again.
     func forget(_ message: String? = nil) {
         Keychain.delete(Key.token)
-        defaults.removeObject(forKey: Key.addresses); defaults.removeObject(forKey: Key.device)
-        token = nil; bases = []; hasToken = false; deviceName = nil; latencyMs = nil
+        defaults.removeObject(forKey: Key.addresses); defaults.removeObject(forKey: Key.device); defaults.removeObject(forKey: Key.issuer)
+        token = nil; bases = []; issuer = nil; hasToken = false; deviceName = nil; latencyMs = nil
         days = [:]; fetched = [:]; failedAt = [:]; inFlight = []
         state = message.map { .error($0) } ?? .unpaired
         dataVersion += 1
@@ -145,25 +173,27 @@ final class BrainLink {
                     for d in chunk {
                         g.addTask { (d, await Result { try await BrainClient.day(d, bases: bases, token: tok) }) }
                     }
-                    for await (d, r) in g { apply(d, r, gen) }
+                    for await (d, r) in g { await apply(d, r, gen) }
                 }
             }
         }
     }
 
-    private func apply(_ date: String, _ r: Result<(reply: DayReply, base: URL, ms: Int), Error>, _ gen: Int) {
+    @MainActor private func apply(_ date: String, _ r: Result<(reply: DayReply, base: URL, ms: Int), Error>, _ gen: Int) async {
         inFlight.remove(date)
-        guard hasToken else { return }
+        guard hasToken, let tok = token else { return }
         switch r {
         case .success(let ok):
             days[date] = ok.reply; fetched[date] = gen; failedAt[date] = nil
             latencyMs = ok.ms
+            if issuer == nil { issuer = ok.base; defaults.set(ok.base.absoluteString, forKey: Key.issuer) }      // a served day proves this daemon knows the token
             if ok.base != bases.first { bases = [ok.base] + bases.filter { $0 != ok.base }; defaults.set(bases.map(\.absoluteString), forKey: Key.addresses) }
             state = .paired(Self.host(ok.base))
             dataVersion += 1
         case .failure(let e):
             failedAt[date] = Date()
-            if let b = e as? BrainError, b == .revoked { forget(b.message) } else { state = .error((e as? BrainError)?.message ?? BrainError.refused.message) }
+            let seen = await settle(e, token: tok)
+            if hasToken { state = .error((seen as? BrainError)?.message ?? BrainError.refused.message) }      // a forgotten pairing already set its own message
         }
     }
 
@@ -200,5 +230,14 @@ final class BrainLink {
 private extension Result where Failure == Error {
     init(_ body: () async throws -> Success) async {
         do { self = .success(try await body()) } catch { self = .failure(error) }
+    }
+}
+
+/// Why the pairing was or was not dropped: one line each to the unified log and to Library/Caches/pairing.log. Never the token.
+enum PairingTrace {
+    private static let log = Logger(subsystem: "com.yilunshi.jarvis", category: "pairing")
+    static func note(_ s: String) {
+        log.notice("\(s, privacy: .public)")
+        StallLog.append(s, to: "pairing.log")
     }
 }

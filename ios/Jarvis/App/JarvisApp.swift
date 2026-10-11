@@ -9,6 +9,7 @@ struct JarvisApp: App {
 
     init() {
         StallLog.shared.start()
+        BrainClient.trace = PairingTrace.note
         for n in ["InstrumentSerif-Regular", "IBMPlexMono-Regular", "IBMPlexMono-Medium"] {
             if let u = Bundle.main.url(forResource: n, withExtension: "ttf") { CTFontManagerRegisterFontsForURL(u as CFURL, .process, nil) }
         }
@@ -29,7 +30,7 @@ struct JarvisApp: App {
                 if p == .background { wasBackground = true }
                 else if p == .active && wasBackground { wasBackground = false; BrainLink.shared.opened() }
                 // what waits on him is asked for every few seconds, only while the app is on screen
-                if p == .active { Waiting.shared.start(); PushRegistry.shared.retryIfNeeded(); JarvisActivity.shared.start() } else { Waiting.shared.stop() }
+                if p == .active { BrainLink.shared.reloadIfUnpaired(); Waiting.shared.start(); PushRegistry.shared.retryIfNeeded(); JarvisActivity.shared.start() } else { Waiting.shared.stop() }
             }
     }
 }

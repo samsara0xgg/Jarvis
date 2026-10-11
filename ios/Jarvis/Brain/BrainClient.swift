@@ -133,9 +133,9 @@ enum BrainClient {
         c.httpCookieStorage = nil
         return URLSession(configuration: c)
     }
-    private static let session = makeSession(request: 4, resource: 8)
+    nonisolated(unsafe) static var session = makeSession(request: 4, resource: 8)      // var so a test can put a stub under it
     /// for the calls that wait on the brain: a picture going up, a question whose answer takes up to 25 s
-    private static let slowSession = makeSession(request: 40, resource: 60)
+    nonisolated(unsafe) static var slowSession = makeSession(request: 40, resource: 60)
 
     /// A tailnet address: the CGNAT range Tailscale hands out, a MagicDNS name, or a bare name that only MagicDNS can resolve.
     static func isTailnet(_ u: URL) -> Bool {
@@ -169,7 +169,10 @@ enum BrainClient {
                 switch status {
                 case 200...299: return Reply(data: data, base: base, ms: ms)
                 case _ where also.contains(status): return Reply(data: data, base: base, ms: ms, status: status)
-                case 401: throw unauthorized
+                case 401:
+                    let guarded = token == nil || isGuardRefusal(data)
+                    trace("401 \(method) \(path) from \(base.host ?? "?"):\(base.port ?? 0) detail=\(detail(data) ?? "none") auth=\(token != nil ? "yes" : "no") -> \(guarded ? "token refused" : "route refusal")")
+                    throw guarded ? unauthorized : .refused
                 case 400, 404: note(.notOpen)
                 default: note(.refused)
                 }
@@ -180,6 +183,26 @@ enum BrainClient {
             }
         }
         throw worst ?? .unreachable(tailnet: false)
+    }
+
+    /// The brain's auth guard answers an unknown token `{"detail":"unauthorized"}`. A route that has its own rule (`"desktop authorization required"`)
+    /// also answers 401 to a good token, which says nothing about the pairing. A body that is missing or unreadable counts as the guard's.
+    static func isGuardRefusal(_ body: Data) -> Bool { detail(body).map { $0 == "unauthorized" } ?? true }
+
+    private static func detail(_ body: Data) -> String? {
+        ((try? JSONSerialization.jsonObject(with: body)) as? [String: Any])?["detail"] as? String
+    }
+
+    /// One line to the app's on-device log (set by the app; the share extension logs nothing). Never the token.
+    nonisolated(unsafe) static var trace: (String) -> Void = { _ in }
+
+    /// True only if the brain refuses this token at its guard: `GET /inherent/waiting`, open to every paired device, asked across the bases.
+    /// A failed probe (unreachable, a route refusal, a 200) is not a refusal of the token.
+    static func tokenRefused(bases: [URL], token: String) async -> Bool {
+        let refused: Bool
+        do { _ = try await send("GET", "/inherent/waiting", bases: bases, token: token, unauthorized: .revoked); refused = false } catch { refused = (error as? BrainError) == .revoked }
+        trace("probe GET /inherent/waiting on \(bases.map { "\($0.host ?? "?"):\($0.port ?? 0)" }.joined(separator: ",")) -> \(refused ? "token refused again" : "token not refused")")
+        return refused
     }
 
     /// Trade the code for this phone's token (`POST /inherent/devices/claim`, open without a token). The first base that answers fixes the address.

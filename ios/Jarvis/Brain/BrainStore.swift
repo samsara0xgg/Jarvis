@@ -7,7 +7,7 @@ enum BrainStore {
     /// the App Group's defaults; the app's own when the group is not signed in (a build without the entitlement keeps working, only the extension cannot see it)
     static let defaults = UserDefaults(suiteName: group) ?? .standard
 
-    enum Key { static let addresses = "brain.addresses", device = "brain.device", token = "brain.token" }
+    enum Key { static let addresses = "brain.addresses", device = "brain.device", token = "brain.token", issuer = "brain.issuer" }
 
     /// Before the App Group existed the addresses and the phone's name were in the app's standard defaults: moved once, so a phone paired earlier stays paired.
     static func adopt(from old: UserDefaults = .standard, into new: UserDefaults = defaults) {
