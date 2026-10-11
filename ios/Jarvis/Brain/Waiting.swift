@@ -70,7 +70,10 @@ enum WaitingCards {
         if let c = o["clarification"] as? [String: Any], let id = c["id"] as? String { cards.append(clarification(c, id)) }
         for r in (o["claude_requests"] as? [[String: Any]]) ?? [] { if let id = r["id"] as? String { cards.append(claude(r, id)) } }
         if let p = o["plugin_request"] as? [String: Any], let id = p["id"] as? String, let c = plugin(p, id) { cards.append(c) }
-        for n in ((o["notices"] as? [String: Any])?["notices"] as? [[String: Any]]) ?? [] { if let id = n["id"] as? String { cards.append(notice(n, id)) } }
+        // job mail and reminders ("mail", "digest"); any other kind (the terminal-settings card, ADR 0227) has choices a phone does not draw, so it is skipped, not shown as mail
+        for n in ((o["notices"] as? [String: Any])?["notices"] as? [[String: Any]]) ?? [] where ["mail", "digest", nil].contains(n["kind"] as? String) {
+            if let id = n["id"] as? String { cards.append(notice(n, id)) }
+        }
         return cards
     }
 

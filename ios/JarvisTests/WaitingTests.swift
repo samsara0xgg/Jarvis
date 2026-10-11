@@ -11,6 +11,11 @@ final class WaitingTests: XCTestCase {
         XCTAssertNil(WaitingCards.parse(Data("[]".utf8)), "not an answer of the route")
     }
 
+    func testANoticeOfAnUnknownKindIsSkippedAndTheRestStillShow() {
+        let json = #"{"notices": {"notices": [{"id": "settings:mac", "kind": "settings", "title": "两台机器的设置不一样", "line": "n", "device": "mac", "keys": ["a.b"], "choices": [{"id": "device", "label": "用 Mac 的"}]}, {"id": "rem1", "kind": "mail", "title": "给 Mia 回电话", "line": "晚了 5 分钟", "mail_kind": "reminder"}, {"id": "d1", "kind": "digest", "title": "两封求职邮件", "line": "x"}, {"id": "n2", "kind": "future-kind", "title": "?"}], "audio_private": false, "hold": null, "departure": null}}"#
+        XCTAssertEqual(cards(json).map(\.brainId), ["rem1", "d1"])
+    }
+
     func testAMailDraftIsSentOrCancelledOnTheConfirmationRoute() throws {
         let c = try XCTUnwrap(cards(#"{"confirmation": {"id": "c1", "tool": "mcp__gmail__gmail_send", "action": "发这封邮件", "source": "gmail", "letter": true, "args": {"to": ["rachel@x.com", "li@x.com"], "subject": "谢谢", "body": "Hi Rachel", "content_sha256": "ab"}}}"#).first)
         XCTAssertEqual(c.kind, .confirmation)
