@@ -3,7 +3,7 @@ import SwiftUI
 import WidgetKit
 
 // Her state and the next reminder, on the lock screen and in the Dynamic Island, in the app's night sky. The content comes from the brain's pushes
-// (JarvisActivityAttributes); a tap opens jarvis://talk, which starts listening.
+// (JarvisActivityAttributes); a tap opens the app as it is (he may have come to type), and only 「轻点说话」 opens jarvis://talk, which starts listening.
 
 private enum Night {
     static let bg = Color(red: 14 / 255, green: 15 / 255, blue: 30 / 255)
@@ -11,7 +11,7 @@ private enum Night {
     static let muted = Color(red: 196 / 255, green: 204 / 255, blue: 238 / 255).opacity(0.62)
     static let pale = Color(red: 238 / 255, green: 241 / 255, blue: 1)
     static let amber = Color(red: 1, green: 217 / 255, blue: 176 / 255)
-    static let talk = URL(string: "jarvis://talk")
+    static let talk = URL(string: "jarvis://talk")!
 }
 
 // the app's faces, bundled in this extension too; the system's own when they did not load
@@ -95,7 +95,6 @@ struct JarvisLiveActivity: Widget {
             LockScreen(state: context.state)
                 .activityBackgroundTint(Night.bg)
                 .activitySystemActionForegroundColor(Night.ink)
-                .widgetURL(Night.talk)
         } dynamicIsland: { context in
             let s = context.state
             return DynamicIsland {
@@ -108,8 +107,10 @@ struct JarvisLiveActivity: Widget {
                     HStack {
                         Text(s.nextText ?? "没有等着的提醒").font(.system(size: 14)).foregroundStyle(s.nextText == nil ? Night.muted : Night.ink.opacity(0.84)).lineLimit(1)
                         Spacer(minLength: 8)
-                        Label("轻点说话", systemImage: "waveform").font(.system(size: 13, weight: .medium)).foregroundStyle(Night.pale)
-                            .padding(.horizontal, 12).padding(.vertical, 6).background(Color.white.opacity(0.1), in: Capsule())
+                        Link(destination: Night.talk) {
+                            Label("轻点说话", systemImage: "waveform").font(.system(size: 13, weight: .medium)).foregroundStyle(Night.pale)
+                                .padding(.horizontal, 12).padding(.vertical, 6).background(Color.white.opacity(0.1), in: Capsule())
+                        }
                     }
                 }
             } compactLeading: {
@@ -119,7 +120,6 @@ struct JarvisLiveActivity: Widget {
             } minimal: {
                 Orb(state: s, size: 22)
             }
-            .widgetURL(Night.talk)
             .keylineTint(Night.amber)
         }
     }
