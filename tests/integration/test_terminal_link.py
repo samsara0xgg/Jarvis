@@ -127,7 +127,9 @@ class _FakeVision:
     def __init__(self) -> None:
         self.calls: list[tuple[Path, str | None, bytes]] = []
 
-    def describe_image(self, image_path: Path, *, question: str | None) -> str:
+    def describe_image(
+        self, image_path: Path, *, question: str | None, instructions: str | None = None,  # noqa: ARG002
+    ) -> str:
         self.calls.append((image_path, question, image_path.read_bytes()))
         return "a terminal window and a browser"
 

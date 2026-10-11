@@ -3128,8 +3128,13 @@ class VisionClient(Protocol):
     (ADR-0011 §5).
     """
 
-    def describe_image(self, image_path: Path, *, question: str | None) -> str:
-        """Return a text description of the image at `image_path`."""
+    def describe_image(
+        self, image_path: Path, *, question: str | None, instructions: str | None = None,
+    ) -> str:
+        """Return a text description of the image at `image_path`.
+
+        `instructions` replaces the screen-reading system prompt (ADR 0223: a picture he sent).
+        """
         ...
 
 
@@ -4304,6 +4309,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     from jarvis.execution.location_tool import build_where_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.mail_draft_tool import build_mail_draft_tool  # noqa: PLC0415
     from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
+    from jarvis.execution.picture_tool import build_picture_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.transit_tool import build_transit_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.voice_tools import build_voice_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.weather_tool import build_weather_tool  # noqa: PLC0415 — same cycle.
@@ -4313,6 +4319,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     for conversation_tool in (
         *build_voice_tool(voice_settings),
         *build_weather_tool(weather_lookup),
+        *build_picture_tool(vision_client, memory_db_path),
         *build_transit_tool(
             transit_api_key, transit_places or {}, here_location, phone_here=here_phone,
             offers=transit_offers, bus_live=bus_live,

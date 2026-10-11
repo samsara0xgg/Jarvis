@@ -37,6 +37,7 @@ import io
 import ipaddress
 import json
 import logging
+import mimetypes
 import os
 import re
 import shutil
@@ -185,6 +186,7 @@ from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.runtime.night_run import NightRun, night_settings
+from jarvis.runtime.picture_notes import PictureNotes
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.runtime.projects import ProjectsService
@@ -198,7 +200,7 @@ from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event, lang, llm_io_log
 from jarvis.shared.action_admission import bind_action_admission
 from jarvis.shared.device_link import DeviceCallError, DeviceLink
-from jarvis.shared.lang import language_name
+from jarvis.shared.lang import is_filler, language_name
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import (
     RESPONSE_CANCEL_REASONS,
@@ -604,6 +606,7 @@ class JarvisRuntime:
         phone_events: where a paired phone's events are appended (ADR 0197); ``None``
             unless the daemon is a brain or listens beyond loopback (ADR 0207).
         attachments: the store of files a phone sends with a turn or a share (ADR 0211).
+        picture_notes: the worker that writes a note for each picture after its turn (ADR 0223).
     """
 
     config: Mapping[str, Any]
@@ -713,6 +716,8 @@ class JarvisRuntime:
     phone_events: BrainEvents | None = None
     # ADR 0211: the pictures and text files a phone sends with a turn or a share.
     attachments: Attachments | None = None
+    # ADR 0223: writes the note of each picture after its turn. None without a vision preset.
+    picture_notes: PictureNotes | None = None
 
 
 @dataclass(frozen=True)
@@ -2260,17 +2265,22 @@ class _LLMVisionClient:
         self._llm_client = llm_client
         self._cost_recorder = cost_recorder
 
-    def describe_image(self, image_path: Path, *, question: str | None) -> str:
+    def describe_image(
+        self, image_path: Path, *, question: str | None, instructions: str | None = None,
+    ) -> str:
         """Send one image + optional question to the vision preset; return text.
 
+        ``instructions`` replaces the screen-reading system prompt (a picture he sent, ADR 0223).
         Raises `VisionCallError` — never the raw SDK/HTTP exception —
         on any failure (MUST-FIX 1a, ADR-0011 §12): see that class's
         docstring for why.
         """
-        data_url = "data:image/png;base64," + base64.b64encode(
+        mime = mimetypes.guess_type(image_path.name)[0] or "image/png"
+        data_url = f"data:{mime};base64," + base64.b64encode(
             image_path.read_bytes(),
         ).decode("ascii")
         prompt_text = question or "Describe what is currently on this screen."
+        system = instructions or _VISION_SYSTEM_PROMPT.format(language=language_name())
         messages: list[dict[str, Any]] = [
             {
                 "role": "user",
@@ -2284,13 +2294,13 @@ class _LLMVisionClient:
             if self._cost_recorder is None:
                 result = self._llm_client.chat(
                     messages=messages,
-                    system=_VISION_SYSTEM_PROMPT.format(language=language_name()),
+                    system=system,
                 )
             else:
                 result = self._cost_recorder.chat(
                     self._llm_client,
                     messages=messages,
-                    system=_VISION_SYSTEM_PROMPT.format(language=language_name()),
+                    system=system,
                     kind="vision",
                     turn_id=None,
                 )
@@ -2314,7 +2324,9 @@ class _RequestScopedVisionClient:
         self._event_log_path = event_log_path
         self._pricing = {} if pricing_path is None else load_pricing_table(pricing_path)
 
-    def describe_image(self, image_path: Path, *, question: str | None) -> str:
+    def describe_image(
+        self, image_path: Path, *, question: str | None, instructions: str | None = None,
+    ) -> str:
         """Perform one bounded request with its own SQLite connection."""
         client = self._factory.create(self._snapshot, response_id=new_response_id())
         with contextlib.ExitStack() as stack:
@@ -2325,7 +2337,7 @@ class _RequestScopedVisionClient:
                 )
                 recorder = CostRecorder(conn, pricing_table=self._pricing)
             return _LLMVisionClient(client, cost_recorder=recorder).describe_image(
-                image_path, question=question,
+                image_path, question=question, instructions=instructions,
             )
 
 
@@ -2784,6 +2796,13 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     )
     bus_live = BusLive(paths.root / "cache")
     transit_offers = TransitOffers()  # the rows `transit` leaves for the chat card (ADR 0205)
+    vision_client = _build_vision_client(
+        full_config,
+        vision_preset_name,
+        event_log_path=paths.event_log,
+        pricing_path=repo_root / "data" / "pricing.json",
+        account_cost=wave1_features.exactly_once_cost_accounting,
+    )
     registry = build_default_registry(
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
@@ -2807,13 +2826,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         web_fetch_max_bytes=web_fetch_max_bytes,
         web_fetch_max_text_bytes=web_fetch_max_text_bytes,
         web_timeout_s=web_timeout_s,
-        vision_client=_build_vision_client(
-            full_config,
-            vision_preset_name,
-            event_log_path=paths.event_log,
-            pricing_path=repo_root / "data" / "pricing.json",
-            account_cost=wave1_features.exactly_once_cost_accounting,
-        ),
+        vision_client=vision_client,
         screen_max_width_px=screen_max_width_px,
         device_link=device,
     )
@@ -2957,6 +2970,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
     )
     _register_mail_inbox(registry, home)
+    attachments = Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME)
     return JarvisRuntime(
         config=full_config,
         runtime_paths=paths,
@@ -2970,7 +2984,15 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         listen_hosts=listen_hosts,
         terminal_hub=terminal_hub,
         phone_events=phone_events,
-        attachments=Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME),
+        attachments=attachments,
+        picture_notes=(
+            None if vision_client is None else PictureNotes(
+                memory_db=memory.db_path,
+                store=attachments,
+                vision=vision_client,
+                pinned_language=str(full_config.get("reply_language", "follow")),
+            )
+        ),
         tier0_table=tier0_table,
         confirm_grammar_table=confirm_grammar_table,
         wave1_features=wave1_features,
@@ -3941,6 +3963,27 @@ def run_turn(
     )
 
 
+def _queue_picture_notes(
+    runtime: JarvisRuntime, event: Event, record_id: str, answer: str,
+) -> None:
+    """ADR 0223: when a turn that came with files ends, queue the notes of its pictures.
+
+    Off the turn's path and never raising into it: a failure here costs the notes only.
+    """
+    ids = event.payload.get("attachments")
+    if runtime.picture_notes is None or runtime.memory is None:
+        return
+    if not isinstance(ids, list) or not ids:
+        return
+    words = str(event.payload.get("transcript", ""))
+    try:
+        runtime.picture_notes.submit(
+            record_id, [str(one) for one in ids], "" if is_filler(words) else words, answer,
+        )
+    except Exception:
+        LOGGER.exception("picture notes: could not queue the notes of turn %s", record_id)
+
+
 _MAIL_GET: Final[str] = "mcp__gmail__gmail_get"
 
 
@@ -4254,6 +4297,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             committed_event_bus=runtime.committed_event_bus,
         )
     suspended = False
+    answered = ""  # the answer text, for the note of a picture sent with this turn (ADR 0223)
 
     def _run_cancelled() -> bool:
         """Return whether this turn's ResponseRun has been cancelled."""
@@ -4666,6 +4710,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             )
             if render_event.payload.get("written_apart") is True:
                 answer = f"{render_event.payload.get('voice_text', '')}\n\n{answer}"
+            answered = answer
             append_record(
                 memory.db_path,
                 record_id=render_event.event_uid,
@@ -4735,6 +4780,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             if run is not None and runtime.response_runs is not None:
                 runtime.response_runs.unregister(run.response_id)
             release_turn_actions(effective_turn_id)
+            _queue_picture_notes(runtime, user_intent_event, memory_exclude_id, answered)
 
 
 __all__ = [

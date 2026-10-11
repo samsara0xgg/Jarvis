@@ -199,7 +199,7 @@ from jarvis.shared.realtime import (
     new_response_id,
 )
 from jarvis.shared.realtime_trace import record_realtime_trace
-from jarvis.state import quiet_mode
+from jarvis.state import picture_notes, quiet_mode
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.departures import ID_PREFIX as PIN_PREFIX
@@ -5341,6 +5341,7 @@ def _draft_deps(runtime: JarvisRuntime, home: Home | None) -> dict[str, Any]:
 def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked and the clock.
     event_log: Path, configured: tzinfo | None, memory_db: Path | None, timesink: Path | None,
     day: date | None, now_ms: int, terminal: TerminalScreen | None = None,
+    attachments: Path | None = None,
 ) -> dict[str, Any]:
     """``GET /inherent/day`` (ADR 0199): the day asked for, or today in the owner's zone.
 
@@ -5354,7 +5355,7 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
     on = datetime.fromtimestamp(now_ms / 1000, zone).date() if day is None else day
     start_ms, end_ms = day_window(on, zone)
     with contextlib.closing(open_runtime_event_log(event_log)) as conn:
-        sources = DaySources(zone, timesink, memory_db, terminal)
+        sources = DaySources(zone, timesink, memory_db, terminal, attachments)
         line = fold_day(conn, start_ms, end_ms, now_ms, sources)
     return {
         "date": on.isoformat(),
@@ -5369,12 +5370,12 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
 
 async def _serve_day(  # noqa: PLR0913 — the route's stores, its zone, the terminal and the day.
     event_log: Path, configured: tzinfo | None, memory_db: Path | None, timesink: Path | None,
-    day: date | None, *, terminal: TerminalScreen | None = None,
+    day: date | None, *, terminal: TerminalScreen | None = None, attachments: Path | None = None,
 ) -> dict[str, Any]:
     """:func:`_read_day` off the loop thread, at the brain's clock."""
     return await asyncio.to_thread(
         _read_day, event_log, configured, memory_db, timesink, day, int(time.time() * 1000),
-        terminal,
+        terminal, attachments,
     )
 
 
@@ -5684,6 +5685,14 @@ async def _data_sweep_task(dirs: dict[Path, int | None], logs: Path) -> None:
         except OSError:
             LOGGER.exception("retention: sweep failed; next try in an hour")
         await asyncio.sleep(_DATA_SWEEP_INTERVAL_S)
+
+
+def _clear_media(runtime: JarvisRuntime) -> int:
+    """``POST /inherent/data/clear-recordings``: the files and the pictures' notes go (ADR 0223)."""
+    gone = data.clear_files(list(_media_dirs(runtime)))
+    if runtime.memory is not None:
+        picture_notes.delete_all(runtime.memory.db_path)
+    return gone
 
 
 def _export_data(runtime: JarvisRuntime) -> Path:
@@ -7218,6 +7227,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     None if runtime.terminal_hub is None
                     else TerminalScreen(runtime.terminal_hub.call)
                 ),
+                attachments=None if runtime.attachments is None else runtime.attachments.directory,
             ),
             today_read=(
                 None if runtime.home is None
@@ -7293,9 +7303,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             ),
             restart=_restart_soon if spawned_by_agent() else None,
             data_export=functools.partial(asyncio.to_thread, _export_data, runtime),
-            data_clear=functools.partial(
-                asyncio.to_thread, data.clear_files, list(_media_dirs(runtime)),
-            ),
+            data_clear=functools.partial(asyncio.to_thread, _clear_media, runtime),
             data_erase=(
                 functools.partial(_erase_data, runtime.runtime_paths.root)
                 if spawned_by_agent() else None
