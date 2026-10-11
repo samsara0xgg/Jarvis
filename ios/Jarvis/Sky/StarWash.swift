@@ -5,8 +5,9 @@ import CoreGraphics
 // The stays (and their colours and names) are built once when the days load (`RealDay.washes`); this only paints them.
 
 extension StarEngine {
-    /// how far a wash feathers in and out along the dial, in minutes (at most 0.45 of the stay): 90 minutes is over 20 degrees of the dial, so no end shows as an edge
-    private static let washFeather = 90.0, washFeatherOpen = 120.0, washSlices = 24.0
+    /// how far a wash feathers in and out along the dial, in minutes (at most 0.45 of the stay): 90 minutes is over 20 degrees of the dial, so no end shows as an edge.
+    /// A stay that has not ended (he is still there) stays at full strength up to now and is cut at now over only a few minutes: nothing is drawn into the future.
+    private static let washFeather = 90.0, washFeatherOpen = 10.0, washSlices = 24.0
     /// the wash's radial profile: a gaussian band on his lane, about 26 pt wide to where it is gone, nothing at both of its ends, as a gradient from the pole outwards (one per colour)
     /// the names go between her lane and his
     private static let washNameR = 118.0
@@ -97,7 +98,9 @@ extension StarEngine {
             var t = a0
             while t < a1 {
                 guard P(R_YOU, ang(t)) else { t += 2; continue }
-                let dt = clamp(4 / (max(PS, 0.3) * k * R_YOU), 0.5, 6), t2 = min(t + dt, a1), tm = (t + t2) / 2       // about 4 pt of the band per strip
+                var dt = clamp(4 / (max(PS, 0.3) * k * R_YOU), 0.5, 6)       // about 4 pt of the band per strip
+                if end - t < fOut + 6 { dt = min(dt, max(0.4, fOut / 10)) }       // finer where the stay ends
+                let t2 = min(t + dt, a1), tm = (t + t2) / 2
                 defer { t = t2 }
                 let al = w.a * Self.washPeak * Self.washProfile(w, end, fIn, fOut, tm) * visT(tm) * crowd
                 if al < 0.002 { continue }
