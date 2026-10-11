@@ -3,14 +3,14 @@ import CoreMotion
 import os
 
 /// The knobs of the adaptive mode, all here. Visits, significant changes and one rest geofence are always
-/// armed and cost next to nothing; standard updates run only while he moves (or just after the app opens),
-/// then stop by themselves.
+/// armed and cost next to nothing; standard updates run only while he moves, then stop by themselves. Opening the
+/// app starts nothing: he does not want the app on screen to be locating him.
 enum LocationTuning {
     /// While moving: GPS at its second-best accuracy, every fix delivered (`kCLDistanceFilterNone`); the thinning
     /// below decides what is sent, but it does not make the GPS cheaper. The battery cost of a trip is this.
     static let movingAccuracy: CLLocationAccuracy = kCLLocationAccuracyNearestTenMeters
     static let movingDistanceFilter: CLLocationDistance = kCLDistanceFilterNone
-    /// Updates running without proof that he moves (the app was just opened): Wi-Fi and cell positioning.
+    /// Updates running without proof that he moves (a visit's departure): Wi-Fi and cell positioning.
     static let watchAccuracy: CLLocationAccuracy = kCLLocationAccuracyHundredMeters
     static let watchDistanceFilter: CLLocationDistance = 50
     /// Standard updates stop after this long without a fix `idleRadius` away from the last one that counted.
@@ -73,7 +73,6 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
     private var anchor: CLLocation?   // last fix that counted as moving, for the idle timeout
     private var idle: Task<Void, Never>?
     private var rest: Task<Void, Never>?
-    private var session: CLBackgroundActivitySession?
     private var geocoded: (loc: CLLocation, place: String?)?
     private var geocodedAt: Date?
 
@@ -110,10 +109,6 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
     }
 
     func wake() async {}
-
-    /// The app came to the foreground: updates started now hold a keep-alive that updates started in the
-    /// background do not, so a trip that begins right after opening the app is followed from its first meter.
-    func appOpened() { startUpdates() }
 
     /// Motion history says what he is doing now (`Reporter.movement`).
     func motion(_ now: Activity?) {
@@ -295,7 +290,7 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
     }
 
     /// Starts standard updates if they are not running, applies the accuracy for the state, and (re)arms the
-    /// idle timeout. Without `moving` this is the watch the app opening starts.
+    /// idle timeout.
     private func startUpdates() {
         guard authorizedToTrack else { return }
         removeRestFence()
@@ -311,8 +306,8 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
         manager.allowsBackgroundLocationUpdates = manager.authorizationStatus == .authorizedAlways
         manager.startUpdatingLocation()
         log.info("updates started, moving \(self.moving)")
-        // Tied to this stretch of tracking: it keeps the app running through it, and is let go with it.
-        session = CLBackgroundActivitySession()
+        // No CLBackgroundActivitySession: it puts the location badge in the Dynamic Island for the whole trip. Always plus
+        // allowsBackgroundLocationUpdates keeps the app running through it without one.
         watchMotion()
     }
 
@@ -332,8 +327,6 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
         log.info("updates stopped")
         manager.allowsBackgroundLocationUpdates = false
         motionManager.stopActivityUpdates()
-        session?.invalidate()
-        session = nil
         if let t = thinned, let last = lastSent, t.distance(from: last) >= LocationTuning.minSeparation { report(t) }
         thinned = nil
         if let at = lastFix ?? lastSent { armRestFence(at: at) }

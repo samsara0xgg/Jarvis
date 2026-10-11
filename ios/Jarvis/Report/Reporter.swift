@@ -184,8 +184,6 @@ final class Reporter {
         let nc = NotificationCenter.default
         nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
             Task { @MainActor in
-                // Updates started in the foreground are kept alive in the background, so this comes first.
-                (Reporter.shared.collectors[.location]?.first as? LocationCollector)?.appOpened()
                 await Reporter.shared.wake()
             }
         }
