@@ -15,13 +15,14 @@ extension StarEngine {
         func ms(_ minute: Double) -> Int64 { Int64(base + minute * 60_000) }
         var items: [[String: Any]] = []
         /// a span of the past: it is cut at now, and one that has not begun is left out
-        func add(_ kind: String, _ from: Double, _ to: Double, _ more: [String: Any] = [:]) {
-            if from > nowM { return }
+        @discardableResult func add(_ kind: String, _ from: Double, _ to: Double, _ more: [String: Any] = [:]) -> String? {
+            if from > nowM { return nil }
             var o: [String: Any] = ["id": "ring-\(items.count)", "lane": "you", "kind": kind, "state": to <= nowM ? "done" : "now", "start_ms": ms(from)]
             if to <= nowM { o["end_ms"] = ms(to) } else { o["end_ms"] = NSNull() }
             o.merge(more) { $1 }
             if old { o["kept_place"] = nil }
             items.append(o)
+            return o["id"] as? String
         }
         func kept(_ id: String, _ name: String, _ role: String) -> [String: Any] { ["id": id, "name": name, "role": role] }
         add("sleep", 0, 430, ["minutes": 430])
@@ -29,15 +30,22 @@ extension StarEngine {
         add("move", 510, 525, ["activity": "walking"])
         add("ride", 525, 558, ["route": "12", "board_stop": "Stop A", "alight_stop": "Stop B"])
         add("stay", 558, 775, ["place": "Science Hall, Campus Rd", "kept_place": kept("p-campus", "Campus", "school")])
-        add("work", 575, 700, ["active_s": 6600, "projects": [["name": "Project A", "seconds": 6600]]])
-        add("move", 775, 850, ["activity": "walking"])
+        let focus = add("work", 575, 700, ["active_s": 6600, "projects": [["name": "Project A", "seconds": 6600]]])
+        let walk = add("move", 775, 850, ["activity": "walking"])
         add("stay", 850, 960, ["place": "The Cafe, Main St", "kept_place": kept("p-cafe", "Cafe", "other")])
-        add("call", 900, 925, ["app": "Phone"])
+        let call = add("call", 900, 925, ["app": "Phone"])
         add("stay", 960, 1020, ["place": "Corner Library, 3 Example Ave"])
         add("move", 1020, 1040, ["activity": "walking"])
         add("stay", 1040, 1440, ["place": "12 Example St, Town", "kept_place": kept("p-home", "Home", "home")])
         add("work", 1100, 1210, ["active_s": 3000, "projects": [["name": "Project B", "seconds": 3000]]])
-        let reply: [String: Any] = ["date": cal.iso(0), "tz": "UTC", "start_ms": ms(0), "end_ms": ms(DAY), "now_ms": ms(nowM), "items": items, "missing": [String]()]
+        var extra: [String: Any] = [:]
+        if !old {
+            let marks: [(String?, String, String)] = [(focus, "Deep work", "her"), (call, "Long call", "her"), (walk, "Walk in the sun", "him")]
+            extra["highlights"] = marks.compactMap { id, label, by in id.map { ["id": $0, "label": label, "by": by] } }
+            extra["line"] = ["text": "今天走了不少路，下午在咖啡馆待得最久。晚上早点休息。", "draft": true, "written_at": "2026-10-11T15:30:00+00:00"]
+        }
+        var reply: [String: Any] = ["date": cal.iso(0), "tz": "UTC", "start_ms": ms(0), "end_ms": ms(DAY), "now_ms": ms(nowM), "items": items, "missing": [String]()]
+        reply.merge(extra) { $1 }
         guard let data = try? JSONSerialization.data(withJSONObject: reply), let day = try? JSONDecoder().decode(DayReply.self, from: data) else { return }
         EV = RealDay.shared.rebuild([cal.iso(0): day], now: nowT())
         for e in EV { e.born = -1e9 }

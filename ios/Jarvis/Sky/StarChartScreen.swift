@@ -163,6 +163,10 @@ struct StarChrome: View {
             .gesture(panelDrag(engine, $pull, opens: true, tap: false))
             Text(ui.dayText).font(monoF(12)).tracking(1.2).foregroundStyle(muted).lineLimit(1).padding(.top, 12)
                 .opacity(ui.kbLift > 80 ? 0 : 1)
+            if let line = ui.dayLine {
+                Text(line).font(.system(size: 14)).lineSpacing(2).foregroundStyle(ink).lineLimit(2).padding(.top, 7)
+                    .opacity(ui.kbLift > 80 ? 0 : 1)
+            }
             Group {
                 if ui.showSum { sum } else { rowList(ui.rows, hint: ui.emptyHint) }
             }

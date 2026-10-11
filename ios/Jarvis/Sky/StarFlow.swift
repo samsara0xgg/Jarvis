@@ -318,6 +318,7 @@ extension StarEngine {
         let fast = abs(omegaS) > 1.2 && lensT == nil && v != "month", hold = fast && rowKey != ""
         if fast != detFast { detFast = fast; ui.detFast = fast }
         let nT = nowT(), d = floorDay(F), today = floorDay(nT)
+        if v != "day" { put(\.dayLine, nil) }
         if v == "month" {
             put(\.hm, monthName(dateOf(today).0)); put(\.tagText, nil); put(\.dayText, "\(Cal.cur.year) · 第 \(dateOf(today).1) 天")
             if rowKey != "month" {
@@ -360,6 +361,7 @@ extension StarEngine {
         if T <= Trev + 1 && T >= TRACE0 { let p = placeText(kindAt(T)); if !p.isEmpty { dt += " · \(p)" } }
         if Cal.cur.real, let n = BrainLink.shared.missingNote(Cal.cur.iso(dT)) { dt += " · \(n)" }
         put(\.dayText, dt)
+        put(\.dayLine, Cal.cur.real ? RealDay.shared.line(dT) : nil)
         var list = lensT != nil ? focusSet(T, win: 26 * z / lensM) : focusSet()
         if let oid = openId, let o = byId(oid), lensT == nil { list = [o] }
         let key = list.map { "\($0.id)\($0.st.rawValue)\($0.t > Trev ? "a" : "")" }.joined(separator: ",") + "|" + (openId ?? "") + "|\(epoch)"

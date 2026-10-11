@@ -64,6 +64,7 @@ final class StarUI {
     var hm = "21:14"
     var tagText: String? = "现在"
     var dayText = ""
+    var dayLine: String?                // her sentence about the day shown, under dayText
     var showBack = false
     var showSum = false
     var sumMain = ""

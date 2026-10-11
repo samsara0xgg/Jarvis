@@ -54,6 +54,9 @@ struct DayReply: Decodable {
     let now_ms: Int64
     let items: [DayItem]
     let missing: [String]
+    /// her one sentence about the day, and the items she or he marked as what mattered; absent from a brain that does not serve them yet
+    let line: DayLine?
+    let highlights: [Highlight]
 
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: Keys.self)
@@ -64,13 +67,29 @@ struct DayReply: Decodable {
         now_ms = try c.decode(Int64.self, forKey: .now_ms)
         missing = try c.decode([String].self, forKey: .missing)
         // one item the phone cannot read costs that item, not the day
-        items = try c.decode([Lossy].self, forKey: .items).compactMap(\.item)
+        items = try c.decode([Lossy<DayItem>].self, forKey: .items).compactMap(\.value)
+        // what is new is optional, and one value that cannot be read costs only itself
+        line = (try? c.decodeIfPresent(DayLine.self, forKey: .line)) ?? nil
+        highlights = ((try? c.decodeIfPresent([Lossy<Highlight>].self, forKey: .highlights)) ?? nil)?.compactMap(\.value) ?? []
     }
-    private enum Keys: String, CodingKey { case date, tz, start_ms, end_ms, now_ms, items, missing }
-    private struct Lossy: Decodable {
-        let item: DayItem?
-        init(from d: Decoder) { item = try? DayItem(from: d) }
+    private enum Keys: String, CodingKey { case date, tz, start_ms, end_ms, now_ms, items, missing, line, highlights }
+    private struct Lossy<T: Decodable>: Decodable {
+        let value: T?
+        init(from d: Decoder) { value = try? T(from: d) }
     }
+}
+
+/// Her sentence to him about the day (`line` of `GET /inherent/day`). `draft` is true while the day is still going; the screen shows both alike.
+struct DayLine: Decodable, Equatable {
+    let text: String
+    let draft: Bool?
+    let written_at: String?
+}
+
+/// An item that mattered that day: `id` is an item of the day, `by` is "her" or "him"
+struct Highlight: Decodable, Equatable {
+    let id: String, label: String
+    let by: String?
 }
 
 /// One item of a day (docs/spec.html, `GET /inherent/day`): the common fields plus whichever the kind carries.

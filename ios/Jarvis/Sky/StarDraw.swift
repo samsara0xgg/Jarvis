@@ -418,6 +418,7 @@ extension StarEngine {
             case .done: spr.glow(c, .done, e.x, e.y, 8 * m, 0.2 * v)
             case .next: break
             }
+            if let sp = e.spot { spr.glow(c, sp, e.x, e.y, 11 * m, 0.36 * v) }
             if e.focus || fh > 0 || openId == e.id { spr.glow(c, .white, e.x, e.y, (17 + 7 * fh) * m, ((openId == e.id ? 0.15 : 0.15 * calmK) + 0.34 * fh) * v) }
             if ig > 0 { spr.glow(c, .warm, e.x, e.y, (7 + 28 * (1 - ig)) * m, 0.95 * ig * ig * v) }
         }
@@ -430,21 +431,22 @@ extension StarEngine {
         // names of what is near the meridian (or under the lens) but not in focus, nearest first, never on top of each other
         var placed: [(Double, Double, Double, Double)] = []
         var cand: [(e: Ev, dist: Double, lm: Double)] = []
-        for e in list where e.s != nil && (!e.focus || lensOn) { cand.append((e, abs(e.t - F), lensOn ? magAt(e.t) : 1)) }
+        for e in list where e.s != nil && (!e.focus || lensOn || e.spot != nil) { cand.append((e, abs(e.t - F), lensOn ? magAt(e.t) : 1)) }
         cand.sort { (a: (e: Ev, dist: Double, lm: Double), b: (e: Ev, dist: Double, lm: Double)) -> Bool in
+            if (a.e.spot != nil) != (b.e.spot != nil) { return a.e.spot != nil }       // what mattered is named first, so it keeps its place
             if a.lm != b.lm { return a.lm > b.lm }
             return a.dist < b.dist
         }
         for item in cand {
             let e = item.e, dist = item.dist, lm = item.lm
-            var la = z > 2.6 ? 0 : e.v * smooth(14 * z, 34 * z, dist) * (1 - smooth(100 * z, 190 * z, dist)) * calmK
+            var la = z > 2.6 ? 0 : e.spot != nil ? e.v * calmK : e.v * smooth(14 * z, 34 * z, dist) * (1 - smooth(100 * z, 190 * z, dist)) * calmK
             if lensOn { la = max(la, e.v * ls.value * smooth(1.3, 2.2, lm)) }
             if la < 0.03 { continue }
             let r = e.r + (e.lane == .you ? 17 : -16), lx = CX + r * cos(e.an), ly = CY + r * sin(e.an)
             let w = spr.word(e.s!, .sans(500, 11), .ink, 11), box = (lx - w.w / 2 + 2, ly - 7, lx + w.w / 2 - 2, ly + 7)
             if placed.contains(where: { box.0 < $0.2 && box.2 > $0.0 && box.1 < $0.3 && box.3 > $0.1 }) { continue }
             placed.append(box)
-            c.setAlpha(0.62 * la); blit(c, w.img, lx - w.w / 2, ly - w.h / 2, w.w, w.h)
+            c.setAlpha((e.spot != nil ? 0.86 : 0.62) * la); blit(c, w.img, lx - w.w / 2, ly - w.h / 2, w.w, w.h)
         }
         c.setAlpha(1)
     }
@@ -484,7 +486,7 @@ extension StarEngine {
                 if b.0 < 4 || b.2 > W - 4 || b.1 < MAP_Y + 6 || b.3 > MAP_Y + MAP_H - 24 || hit(b, her) || numeralBoxes.contains(where: { hit(b, $0) })
                     || placed.contains(where: { hit(b, $0, 2, 1) }) || others.contains(where: { hit(b, ($0.0, $0.1, $0.0, $0.1), 3, 3) }) { continue }      // nor over another star
                 placed.append(b); hits.append((e.id, b))
-                c.setAlpha(st.alpha * la); blit(c, s.img, lx - s.w / 2, ly - s.h / 2, s.w, s.h)
+                c.setAlpha(min(1, st.alpha * (e.spot != nil ? 1.2 : 1)) * la); blit(c, s.img, lx - s.w / 2, ly - s.h / 2, s.w, s.h)
                 break
             }
         }

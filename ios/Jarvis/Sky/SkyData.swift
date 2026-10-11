@@ -29,6 +29,8 @@ final class Ev {
     var talkStart: Int64?
     /// the brain's item kind and start (ms), for telling it what is open (Brain/About)
     var kind: String?, startMs: Int64?
+    /// what mattered that day (Brain/RealDay): the colour of the soft glow round its bigger star
+    var spot: RGB?
     var born: Double = -1e9, flash: Double = -1e9, ign: Double = -1e9
     // what the last frame drew, for hit tests and trails
     var on = false, focus = false

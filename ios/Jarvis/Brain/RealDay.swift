@@ -18,6 +18,9 @@ final class RealDay {
     /// where he stayed, as a faint wash behind the ring; `t1` nil while he is still there (it runs to now). Built once per load of the days.
     struct Wash { let t0: Double, t1: Double?, col: RGB, a: Double, name: String?, kept: Bool }
     private(set) var washes: [Wash] = []
+    /// her sentence about each day (by day number), and the items that mattered (by item id)
+    private var lines: [Int: String] = [:]
+    private var spots: [String: Highlight] = [:]
     private var items: [DayItem] = []
     private var actCache: [Int: DayAct] = [:]
     private var today = 0
@@ -26,7 +29,12 @@ final class RealDay {
     func rebuild(_ days: [String: DayReply], now: Double) -> [Ev] {
         let cal = Cal.cur
         var byId: [String: DayItem] = [:]
-        for r in days.values.sorted(by: { $0.now_ms < $1.now_ms }) { for i in r.items { byId[i.id] = i } }
+        lines = [:]; spots = [:]
+        for r in days.values.sorted(by: { $0.now_ms < $1.now_ms }) {
+            for i in r.items { byId[i.id] = i }
+            if let t = r.line?.text.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty { lines[floorDay(cal.t(ms: r.start_ms))] = t }
+            for h in r.highlights { spots[h.id] = h }
+        }
         items = byId.values.sorted { ($0.start_ms, $0.id) < ($1.start_ms, $1.id) }
         today = floorDay(now)
         actCache = [:]
@@ -37,6 +45,9 @@ final class RealDay {
             .map { (cal.t(ms: $0.start_ms), $0.end_ms.map(cal.t(ms:))) }
         return items.compactMap { star($0, cal, now) }
     }
+
+    /// her sentence about day `d`, if the brain served one
+    func line(_ d: Int) -> String? { lines[d] }
 
     // MARK: item -> star
 
@@ -96,6 +107,10 @@ final class RealDay {
         let e = Ev(i.id, t0, lane, st, title, meta, d: d, s: s, src: src, note: note)
         e.live = true
         e.kind = i.kind; e.startMs = i.start_ms
+        if let h = spots[i.id] {            // it mattered: a bigger star with a glow in what he was doing, named as it was marked
+            e.mag = 1.65; e.s = fit(h.label, 10)
+            e.spot = RingTone.of(i.kind, activity: i.activity)?.tone.col ?? (i.lane == "her" ? .dial : .lit)
+        }
         if i.kind == "talk" { e.talkStart = i.start_ms }
         return e
     }
