@@ -112,6 +112,31 @@ final class PushNotificationTests: XCTestCase {
         XCTAssertEqual(PushAnswer.target(.deny, body: "AskUserQuestion · proj", in: q), .card(q[0]))
     }
 
+    func testAPushNamesItsCardBesideAps() throws {
+        func payload(_ card: String) throws -> [AnyHashable: Any] {
+            try XCTUnwrap(JSONSerialization.jsonObject(with: Data((#"{"aps": {"alert": {"title": "t", "body": "b"}, "thread-id": "waiting", "category": "claude"}"# + card + "}").utf8)) as? [AnyHashable: Any])
+        }
+        XCTAssertEqual(PushShape.cardId(try payload(#", "card": {"kind": "claude", "id": "r1"}"#)), "claude-r1")
+        XCTAssertEqual(PushShape.cardId(try payload(#", "card": {"kind": "confirmation", "id": "c1"}"#)), "confirmation-c1")
+        XCTAssertEqual(PushShape.cardId(try payload(#", "card": {"kind": "question", "id": "q1"}"#)), "clarification-q1", "the brain's question is the app's ask card")
+        XCTAssertNil(PushShape.cardId(try payload("")), "a push from before ADR 0232")
+        XCTAssertNil(PushShape.cardId(try payload(#", "card": {"kind": "reminder", "id": "x"}"#)))
+        XCTAssertNil(PushShape.cardId(try payload(#", "card": {"kind": "claude"}"#)))
+        XCTAssertNil(PushShape.cardId(try payload(#", "card": {"kind": "claude", "id": ""}"#)))
+        XCTAssertNil(PushShape.cardId(try payload(#", "card": "claude-r1""#)))
+    }
+
+    func testAButtonAnswersTheCardThePushNamesNotOneThatSaysTheSame() {
+        let two = cards(claude(bash + "," + bashOther))
+        XCTAssertEqual(PushAnswer.target(.allow, body: "星盘 · Bash", cardId: "claude-r2", in: two), .card(two[1]), "the body is a session title now; the id decides")
+        XCTAssertEqual(PushAnswer.target(.deny, body: "Bash · jarvis", cardId: "claude-r1", in: two), .card(two[0]))
+        XCTAssertEqual(PushAnswer.target(.allow, body: "", cardId: "claude-r9", in: two), .gone, "answered elsewhere meanwhile")
+        let c = cards(confirmation)
+        XCTAssertEqual(PushAnswer.target(.confirm, body: "", cardId: "confirmation-c1", in: c), .card(c[0]))
+        XCTAssertEqual(PushAnswer.target(.confirm, body: "", cardId: "claude-c1", in: c), .gone, "an id of another kind is not this card")
+        XCTAssertEqual(PushAnswer.target(.allow, body: "", cardId: "claude-r4", in: cards(claude(ask))), .ambiguous, "its card has no allow")
+    }
+
     func testTheUrlBesideApsIsWhatATapOpens() throws {
         let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(#"{"aps": {"alert": {"title": "Uber", "body": "车到了"}, "category": "ride"}, "url": "uber://?action=setPickup"}"#.utf8)) as? [AnyHashable: Any])
         XCTAssertEqual(PushShape.url(payload)?.absoluteString, "uber://?action=setPickup")

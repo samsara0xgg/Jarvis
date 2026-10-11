@@ -105,10 +105,11 @@ struct StarChrome: View {
         .sheet(isPresented: $ui.settingsOpen) { SettingsSheet(tuneNear: { ui.settingsOpen = false; engine.setLevel(-1); ui.tuning = true }) }
     }
 
-    /// a tap on a notification that waits on him: the panel, with what waits pinned
+    /// a tap on a notification that waits on him: the card it names under the dial, else the panel with what waits pinned
     private func openCards() {
         CardsRequest.pending = false
-        engine.openPanel()
+        if let id = CardsRequest.card { CardsRequest.card = nil; Task { await engine.openWaitingCard(id) } }
+        else { engine.openPanel() }
     }
 
     // MARK: the top row: the day you are looking at, the scale, settings

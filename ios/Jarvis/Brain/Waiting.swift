@@ -257,6 +257,11 @@ final class Waiting {
         if r.kind == .alight ? riding != r.id : riding != nil { ride = nil }
     }
 
+    #if DEBUG
+    /// a made-up list of what waits, for a scene on a phone that is not paired
+    func debugSet(_ cards: [WaitingCard]) { apply(cards) }
+    #endif
+
     private func apply(_ fetched: [WaitingCard]) {
         let new = fetched + (ride.map { [$0.card] } ?? [])
         let ids = Set(new.map(\.id)), now = Cal.now()

@@ -3,8 +3,7 @@ import UIKit
 import UserNotifications
 
 // What the brain pushes (docs/spec.html, the three shapes; jarvis/surface/apns.py `alert_payload`): an alert with an optional `url` beside `aps`, and the things that wait on him,
-// which are alerts with thread-id `waiting` and category `confirmation`, `question` or `claude`. They carry no item id: the text is the confirmation's sentence, the question,
-// or "tool · folder" for a Claude Code request. The Live Activity's content is handled by the system (JarvisActivity).
+// which are alerts with thread-id `waiting` and category `confirmation`, `question` or `claude`. Beside `aps` they carry `{"card": {"kind", "id"}}` (ADR 0232), the card the push is about. The Live Activity's content is handled by the system (JarvisActivity).
 
 enum PushShape {
     static let waitingThread = "waiting"
@@ -26,6 +25,12 @@ enum PushShape {
     static func url(_ userInfo: [AnyHashable: Any]) -> URL? {
         guard let s = userInfo["url"] as? String, s.count <= 1024, let u = URL(string: s), let scheme = u.scheme, !scheme.isEmpty else { return nil }
         return u
+    }
+
+    /// The waiting card a push names (`{"card": {"kind", "id"}}` beside `aps`), as `WaitingCard.id` writes it; nil for a push without one, with a kind the app does not know, or without an id.
+    static func cardId(_ userInfo: [AnyHashable: Any]) -> String? {
+        guard let o = userInfo["card"] as? [String: Any], let kind = (o["kind"] as? String).flatMap(Waiting.init), let id = o["id"] as? String, !id.isEmpty else { return nil }
+        return "\(kind.cardKind.rawValue)-\(id)"
     }
 }
 
@@ -64,22 +69,23 @@ enum PushAction: String, CaseIterable {
 enum PushAnswer {
     enum Target: Equatable { case gone, ambiguous, card(WaitingCard) }
 
-    /// The card a button answers. The push has no id, so the card is found by what it says and answered only when it is the one: a Claude request whose "tool · folder" is the
-    /// notification's text and no other waiting request says the same; the one confirmation or question that waits. Nothing waiting any more is `.gone`; anything unclear is `.ambiguous`.
-    static func target(_ action: PushAction, body: String, in cards: [WaitingCard]) -> Target {
+    /// The card a button answers: the one the push names. A push without a card id (sent before ADR 0232) is matched by what it says and answered only when it is the one: a Claude request
+    /// whose "tool · folder" is the notification's text and no other waiting request says the same; the one confirmation or question that waits. Nothing waiting any more is `.gone`; anything unclear is `.ambiguous`.
+    static func target(_ action: PushAction, body: String, cardId: String? = nil, in cards: [WaitingCard]) -> Target {
         var mine = cards.filter { $0.kind == action.category.cardKind }
-        if action.category == .claude { mine = mine.filter { $0.pushLine == body } }
+        if let cardId { mine = mine.filter { $0.id == cardId } }
+        else if action.category == .claude { mine = mine.filter { $0.pushLine == body } }
         guard let one = mine.first else { return .gone }
         guard mine.count == 1, one.actions.contains(where: { $0.answer == action.answer }) else { return .ambiguous }
         return .card(one)
     }
 
     /// Answers in the background. Returns the Chinese line to tell him when it did not go through; nil when it was sent or there was nothing left to answer.
-    @MainActor static func perform(_ action: PushAction, body: String) async -> String? {
+    @MainActor static func perform(_ action: PushAction, body: String, cardId: String?) async -> String? {
         do {
             let data = try await BrainLink.shared.call { try await BrainClient.waiting(bases: $0, token: $1) }
             guard let cards = WaitingCards.parse(data) else { return BrainError.garbled.message }
-            switch target(action, body: body, in: cards) {
+            switch target(action, body: body, cardId: cardId, in: cards) {
             case .gone: return nil
             case .ambiguous: return "有几件事在等你，打开 Jarvis 看一下"
             case .card(let card):
@@ -95,10 +101,11 @@ enum PushAnswer {
     }
 }
 
-/// A tap on a notification that waits on him: the cards are opened, now or when the screen is up.
+/// A tap on a notification that waits on him: the cards are opened, now or when the screen is up; `card` is the one the push names, if it names one.
 enum CardsRequest {
     static let notification = Notification.Name("com.yilunshi.jarvis.cards")
     nonisolated(unsafe) static var pending = false
+    nonisolated(unsafe) static var card: String?
 }
 
 @MainActor
@@ -119,23 +126,30 @@ final class PushNotifications: NSObject, UNUserNotificationCenterDelegate {
         if content.threadIdentifier == PushShape.rideThread, let ride = RidePush(content) { Waiting.shared.showRide(ride); return [] }
         guard content.threadIdentifier == PushShape.waitingThread, let w = PushShape.Waiting(rawValue: content.categoryIdentifier) else { return [.banner, .list, .sound] }
         await Waiting.shared.poll()      // looks once more, so an item asked this second is seen
-        return Waiting.shared.cards.contains { $0.kind == w.cardKind } ? [] : [.banner, .list, .sound]
+        let named = PushShape.cardId(content.userInfo)
+        return Waiting.shared.cards.contains { c in named.map { c.id == $0 } ?? (c.kind == w.cardKind) } ? [] : [.banner, .list, .sound]
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let content = response.notification.request.content
         if let action = PushAction(rawValue: response.actionIdentifier) {
-            if let failure = await PushAnswer.perform(action, body: content.body) { await Self.tell(failure) }
+            if let failure = await PushAnswer.perform(action, body: content.body, cardId: PushShape.cardId(content.userInfo)) { await Self.tell(failure) }
         } else if let action = RideAction(rawValue: response.actionIdentifier), let ride = RidePush(content) {
             if let failure = await action.perform(ride) { await Self.tell(failure) }
         } else if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
-            if let url = PushShape.url(content.userInfo) { await UIApplication.shared.open(url) }
-            else if content.threadIdentifier == PushShape.waitingThread { Self.openCards() }
-            else if content.threadIdentifier == PushShape.rideThread, let ride = RidePush(content) { Waiting.shared.showRide(ride); Self.openCards() }      // the card is there to answer
+            await Self.tapped(content)
         }
     }
 
-    private static func openCards() {
+    /// A tap on the notification itself.
+    static func tapped(_ content: UNNotificationContent) async {
+        if let url = PushShape.url(content.userInfo) { await UIApplication.shared.open(url) }
+        else if content.threadIdentifier == PushShape.waitingThread { openCards(card: PushShape.cardId(content.userInfo)) }
+        else if content.threadIdentifier == PushShape.rideThread, let ride = RidePush(content) { Waiting.shared.showRide(ride); openCards() }      // the card is there to answer
+    }
+
+    private static func openCards(card: String? = nil) {
+        CardsRequest.card = card
         CardsRequest.pending = true
         NotificationCenter.default.post(name: CardsRequest.notification, object: nil)
     }

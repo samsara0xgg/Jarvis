@@ -269,6 +269,19 @@ extension StarEngine {
         if openId != nil { seek(ev.d != nil && ev.st == .work ? F : ev.t) }
         herDrive?.herLookAt((0, 0.7), now: nowMs(), ms: 900)
     }
+    /// A tapped push names its card: it opens under the dial. One the app has not heard of yet is asked for first; one that is not waiting any more opens nothing (the app is just open).
+    @MainActor func openWaitingCard(_ id: String) async {
+        if !Waiting.shared.cards.contains(where: { $0.id == id }) { await Waiting.shared.poll() }
+        guard Waiting.shared.cards.contains(where: { $0.id == id }) else { return }
+        // the engine takes the cards in as stars on its next look, a quarter second at most
+        for _ in 0..<10 {
+            if let e = EV.first(where: { $0.card?.id == id }) {
+                closePanel(quiet: true); setLevel(0); openId = e.id; rowKey = ""; panelKey = ""; seek(e.t)
+                return
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
     func nextHint(_ T: Double) -> String {
         let now = nowMs()
         guard let n = EV.filter({ $0.t > T && $0.born <= now }).min(by: { $0.t < $1.t }) else { return "这段时间空着" }
@@ -595,6 +608,19 @@ extension StarEngine {
             guard let e = waits.first else { return }
             openId = e.id; rowKey = ""; panelKey = ""; seek(e.t)
             if name.hasPrefix("骑行抽屉") { openPanel() }
+        // a tap on a waiting push with made-up words and ids, through the same handler as the real one: `推送:claude`, `推送:confirmation`, `推送:question` open that card under the dial, `推送:gone` names one that is not waiting
+        case _ where name.hasPrefix("推送:"):
+            let kind = String(name.dropFirst(3)), gone = kind == "gone"
+            let json = #"{"confirmation": {"id": "Cdebug01", "tool": "t", "action": "发这封邮件", "source": "gmail", "args": {"to": ["a@x.com"]}}, "clarification": {"id": "Qdebug01", "question": "哪一天，几位？", "fields": [{"label": "哪一天", "choices": ["周五", "周六"]}]}, "claude_requests": [{"id": "Rdebug01", "tool": "Bash", "input": {"command": "npm test"}, "cwd": "/Users/a/Projects/jarvis", "always": "", "session_id": "s", "title": "星盘", "project": ""}]}"#
+            MainActor.assumeIsolated { Waiting.shared.debugSet(WaitingCards.parse(Data(json.utf8)) ?? []) }
+            let waits = MainActor.assumeIsolated { Waiting.shared.events(merging: []) }
+            for e in waits { e.born = -1e9 }
+            EV.append(contentsOf: waits)
+            setLevel(0)
+            let c = UNMutableNotificationContent()
+            c.threadIdentifier = PushShape.waitingThread
+            c.userInfo = ["card": ["kind": gone ? "claude" : kind, "id": gone ? "Rgone" : ["confirmation": "Cdebug01", "question": "Qdebug01"][kind] ?? "Rdebug01"]]
+            Task { @MainActor in await PushNotifications.tapped(c) }
         case "放大镜": lensTh = -0.6; lensGoal = 1
         case "打字": ui.typing = true; ui.chipsOn = true
         default: runTalkScene(name)
