@@ -660,6 +660,9 @@ class DecideContext:
     # ADR 0148: lines about what is going on around Allen right now, from the composition
     # root's producers (the Dashboard's open item first); each ends the state block.
     live_context: tuple[str, ...] = ()
+    # ADR 0226: the device that opened this turn as its channel line names it ("his phone
+    # (iphone)", "macbook, a computer", "this Mac"); ``None`` when it is not known.
+    turn_device: str | None = None
     # docs/plans/replay-as-sent-proposal.md: keeps this turn's own user
     # message, state block and words, as the first request sends it, so later
     # histories replay it verbatim. Set, the state block's header reads true
@@ -879,7 +882,7 @@ def spoken_reply_rules(*, structured: bool) -> str:
     As sent, repeated in every replayed voice message it would grow the history.
     """
     note = spoken_reply_note(structured=structured)
-    return f'When the program\'s state says "Channel: voice": {note}'
+    return f"For a turn the program's state says he spoke or typed: {note}"
 
 
 def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None:
@@ -888,16 +891,25 @@ def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None
     if not isinstance(channel, str) or not channel:
         return None
     if channel == "gpt_live":
-        return "Channel: voice (relayed by Live; the answer will be read aloud)"
+        return "This turn: spoken, relayed by Live; your answer is read aloud."
+    if channel not in SPOKEN_CHANNELS and channel != TYPED_CHANNEL:
+        return "Channel: text"
+    # ADR 0226: how it came in, from which device, and how the answer goes out, as one fact; the
+    # system prompt says once what spoken and typed words are. A typed turn takes the spoken route
+    # and the same reply shape, but is never played (ADR 0181).
+    device = ctx.turn_device
+    if channel == TYPED_CHANNEL:
+        line = (
+            f"This turn: typed on {device}; your answer is shown there, not read aloud."
+            if device else "This turn: typed; your answer is shown as text, not read aloud."
+        )
+    else:
+        line = (
+            f"This turn: spoken to {device}; your answer is read aloud there."
+            if device else "This turn: spoken; your answer is read aloud."
+        )
     route = ctx.routine_stream
     on_spoken_route = route is not None and route.context.route == "spoken"
-    # A typed turn on the spoken route is asked for the same reply as a spoken one (ADR 0181).
-    if channel not in SPOKEN_CHANNELS and not (channel == TYPED_CHANNEL and on_spoken_route):
-        return "Channel: text"
-    # A typed turn answered aloud still says it was typed: its words are exact, not heard.
-    line = "Channel: voice"
-    if channel == TYPED_CHANNEL:
-        line += " (typed, so these are his exact words)"
     if route is not None and on_spoken_route and ctx.record_sent_message is None:
         return f"{line}\n{spoken_reply_note(structured=route.structured)}"
     return line

@@ -1,5 +1,8 @@
 """此刻 (ADR 0217): the device a turn came from, the devices there are, where the phone put him.
 
+The device a turn came from is not a line of its own: :meth:`Whereabouts.origin` names it for the
+one line that says how the turn came in and how the answer goes out (ADR 0226).
+
 Worked out by code on the host from what it already holds: the turn's opening row (ADR 0212), the
 paired devices, the terminals connected now, the phones' conversation sockets (ADR 0209) and push
 registrations (ADR 0210), and the phone's latest place report (ADR 0197). Nothing in
@@ -20,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from jarvis.execution.location_tool import describe_age
-from jarvis.state import device_tokens, push_tokens
+from jarvis.state import device_tokens, push_tokens, terminal_tools
 from jarvis.state.event_log import MAC_NODE, turn_origin
 from jarvis.state.phone_location import latest_phone_fix
 
@@ -63,36 +66,54 @@ class Whereabouts:
         """
         return self._moment is not None and self._moment.facts().get("presence") == "active"
 
-    def lines(self, conn: sqlite3.Connection, turn_id: str) -> tuple[str, ...]:
-        """This turn's lines for the state block: where it came from, the devices, the place."""
-        terminals = {} if self._hub is None else {
-            name: (speaks, listens) for name, speaks, listens in self._hub.roster()
-        }
-        phones = set(push_tokens.registrations(self._root))
+    def lines(self, conn: sqlite3.Connection) -> tuple[str, ...]:
+        """This turn's lines for the state block: the devices there are and the phone's place."""
+        terminals = self._terminals()
         paired = [name for name, _ in device_tokens.paired_devices(self._root)]
-
-        def kind(name: str) -> str:
-            if name in terminals:
-                return "a computer"
-            return "his phone" if name in phones or self.phone_open(name) else ""
-
+        kind = self._kind(terminals)
         found = [
-            self._origin_line(turn_origin(conn, turn_id)[1], kind),
             self._devices_line([*terminals, *(n for n in paired if n not in terminals)], kind,
                                terminals),
             self._place_line(conn),
         ]
         return tuple(line for line in found if line)
 
-    def _origin_line(self, device: str | None, kind: Callable[[str], str]) -> str | None:
+    def origin(self, conn: sqlite3.Connection, turn_id: str) -> str | None:
+        """The device that opened ``turn_id``, as the channel line names it; ``None`` unknown.
+
+        ``his phone (iphone)``, ``macbook, a computer``, ``this Mac`` (a Mac running alone), or
+        a bare name. On a brain ``mac`` is the brain's own default row, not a device (ADR 0212).
+        """
+        device = turn_origin(conn, turn_id)[1]
         if device is None:
             return None
         if device == MAC_NODE:
-            # On a brain ``mac`` is the brain's own default, not a device (ADR 0212).
-            return None if self._hub is not None else "This turn came from this Mac, where you run."
-        what = kind(device)
-        named = f"{device}, {what}" if what else device
-        return f"This turn came from {named}; your answer goes back to that device."
+            return None if self._hub is not None else "this Mac"
+        what = self._kind(self._terminals())(device)
+        if what == "his phone":
+            return f"his phone ({device})"
+        return f"{device}, {what}" if what else device
+
+    def _terminals(self) -> dict[str, tuple[bool, bool]]:
+        return {} if self._hub is None else {
+            name: (speaks, listens) for name, speaks, listens in self._hub.roster()
+        }
+
+    def _kind(self, terminals: dict[str, tuple[bool, bool]]) -> Callable[[str], str]:
+        """Name a device's kind; nothing is claimed for an unknown one.
+
+        A computer is or was a terminal (connected, or declared tools); a phone registered push
+        or has its conversation open.
+        """
+        computers = set(terminals) | terminal_tools.declaring(self._root)
+        phones = set(push_tokens.registrations(self._root))
+
+        def kind(name: str) -> str:
+            if name in computers:
+                return "a computer"
+            return "his phone" if name in phones or self.phone_open(name) else ""
+
+        return kind
 
     def _devices_line(
         self, names: list[str], kind: Callable[[str], str],

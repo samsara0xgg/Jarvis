@@ -12,7 +12,7 @@ import socket
 import time
 from typing import TYPE_CHECKING, Any
 
-from jarvis.runtime import _whereabouts_lines, bootstrap_runtime_app
+from jarvis.runtime import _turn_device, _whereabouts_lines, bootstrap_runtime_app
 from jarvis.state.device_tokens import pair_device
 from jarvis.state.event_log import MAC_NODE, emit_event
 from jarvis.state.push_tokens import register_body
@@ -55,10 +55,10 @@ def _visit(runtime: Any, place: str | None, *, ago_ms: int, left: bool = False) 
 def test_a_mac_running_alone_names_itself_and_a_paired_phone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Its own turns came from "this Mac"; the phone's say so, with the phone in the list."""
+    """Its own turns came from "this Mac"; the phone's name the phone, also in the list."""
     mac = _runtime(tmp_path / "a", "assistant_name: Jarvis\n", monkeypatch)
     try:
-        assert _whereabouts_lines(mac, "T0")[0] in {
+        assert _whereabouts_lines(mac)[0] in {
             "Where you run: on this Mac.", "Where you run: on this machine.",
         }
         pair_device(mac.runtime_paths.root, "iphone")
@@ -67,12 +67,11 @@ def test_a_mac_running_alone_names_itself_and_a_paired_phone(
         })
         _turn(mac, "T1", MAC_NODE)
         _turn(mac, "T2", "iphone")
-        own, devices = _whereabouts_lines(mac, "T1")
-        assert own == "This turn came from this Mac, where you run."
+        (devices,) = _whereabouts_lines(mac)
         assert devices.endswith(". His devices: iphone, his phone, not connected now.")
-        assert _whereabouts_lines(mac, "T2")[0] == (
-            "This turn came from iphone, his phone; your answer goes back to that device."
-        )
+        assert _turn_device(mac, "T1") == "this Mac"
+        assert _turn_device(mac, "T2") == "his phone (iphone)"
+        assert _turn_device(mac, "T9") is None  # no opening row: nothing is claimed
     finally:
         mac.conn.close()
 
@@ -84,7 +83,7 @@ def test_a_brain_names_its_host_its_terminals_and_the_phone_with_its_socket(
     brain = _runtime(tmp_path / "b", "runtime:\n  role: brain\n", monkeypatch)
     try:
         host = socket.gethostname()
-        assert _whereabouts_lines(brain, "T0") == (f"Where you run: on the brain host {host}.",)
+        assert _whereabouts_lines(brain) == (f"Where you run: on the brain host {host}.",)
         for name in ("macbook", "iphone"):
             pair_device(brain.runtime_paths.root, name)
         _turn(brain, "T1", "macbook")
@@ -99,19 +98,15 @@ def test_a_brain_names_its_host_its_terminals_and_the_phone_with_its_socket(
 
         asyncio.run(connect())
         brain.whereabouts.phone_open = lambda device: device == "iphone"
-        origin, devices = _whereabouts_lines(brain, "T1")
-        assert origin == (
-            "This turn came from macbook, a computer; your answer goes back to that device."
-        )
+        (devices,) = _whereabouts_lines(brain)
         assert devices == (
             f"Where you run: on the brain host {host}. His devices: macbook, a computer, "
             "connected (speaks); iphone, his phone, its conversation is open."
         )
-        assert _whereabouts_lines(brain, "T2")[0] == (
-            "This turn came from iphone, his phone; your answer goes back to that device."
-        )
+        assert _turn_device(brain, "T1") == "macbook, a computer"
+        assert _turn_device(brain, "T2") == "his phone (iphone)"
         # `mac` on a brain is the brain's own default row, not a device: no origin is claimed.
-        assert _whereabouts_lines(brain, "T3") == (devices,)
+        assert _turn_device(brain, "T3") is None
     finally:
         brain.conn.close()
 
@@ -122,17 +117,17 @@ def test_the_phones_last_place_is_named_with_its_age_and_never_its_coordinates(
     """An arrival puts him there, a departure says he left, a nameless fix gives only its age."""
     brain = _runtime(tmp_path / "c", "runtime:\n  role: brain\n", monkeypatch)
     try:
-        assert len(_whereabouts_lines(brain, "T0")) == 1  # no report: no place line
+        assert len(_whereabouts_lines(brain)) == 1  # no report: no place line
         _visit(brain, "Home", ago_ms=2 * HOUR_MS)
-        assert _whereabouts_lines(brain, "T0")[-1] == "His phone last put him at Home, 2 h ago."
+        assert _whereabouts_lines(brain)[-1] == "His phone last put him at Home, 2 h ago."
         _visit(brain, "UVic", ago_ms=12 * 60_000, left=True)
-        assert _whereabouts_lines(brain, "T0")[-1] == (
+        assert _whereabouts_lines(brain)[-1] == (
             "His phone last reported him leaving UVic, 12 min ago."
         )
         _visit(brain, None, ago_ms=0)
-        last = _whereabouts_lines(brain, "T0")[-1]
+        last = _whereabouts_lines(brain)[-1]
         assert last == "His phone's last position report, under a minute ago, has no place name."
-        said = " ".join(_whereabouts_lines(brain, "T0"))
+        said = " ".join(_whereabouts_lines(brain))
         assert "48.46" not in said
         assert "123.31" not in said
     finally:

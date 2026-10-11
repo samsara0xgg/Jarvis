@@ -1466,12 +1466,23 @@ def _shares_line(event_log_path: Path) -> str | None:
         return shares_line(conn)
 
 
-def _whereabouts_lines(runtime: JarvisRuntime, turn_id: str) -> tuple[str, ...]:
-    """ADR 0217: this turn's device, the devices there are and the phone's place; never fails it."""
+def _turn_device(runtime: JarvisRuntime, turn_id: str) -> str | None:
+    """ADR 0226: the device that opened this turn, for its channel line; never fails it."""
+    if runtime.whereabouts is None:
+        return None
+    try:
+        return runtime.whereabouts.origin(runtime.conn, turn_id)
+    except Exception:  # a producer must never fail a turn.
+        LOGGER.exception("live context: the turn's device could not be read, skipped")
+        return None
+
+
+def _whereabouts_lines(runtime: JarvisRuntime) -> tuple[str, ...]:
+    """ADR 0217: the devices there are and the phone's place; never fails the turn."""
     if runtime.whereabouts is None:
         return ()
     try:
-        return runtime.whereabouts.lines(runtime.conn, turn_id)
+        return runtime.whereabouts.lines(runtime.conn)
     except Exception:  # a producer must never fail a turn.
         LOGGER.exception("live context: the whereabouts lines failed, skipped")
         return ()
@@ -4360,9 +4371,10 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             history=memory_context.history if memory_context is not None else (),
             time_note=memory_context.now if memory_context is not None else None,
             connected_apps=connected_apps,
+            turn_device=_turn_device(runtime, effective_turn_id),
             live_context=(
                 *_live_lines(runtime.live_context),
-                *_whereabouts_lines(runtime, effective_turn_id),
+                *_whereabouts_lines(runtime),
             ),
             record_sent_message=record_sent_message,
             cancellation_checkpoint=run.check_cancelled if run is not None else None,

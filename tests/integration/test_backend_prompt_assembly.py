@@ -73,7 +73,7 @@ HISTORY = (
 STATUS = (
     "[Current state | from the program, not the user's words]\n"
     "Time: 2026-09-21T15:37-07:00 Monday\n"
-    "Channel: voice\n"
+    "This turn: spoken; your answer is read aloud.\n"
 )
 LINE = "[Reply language for this turn: Chinese]"
 

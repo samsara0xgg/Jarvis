@@ -56,6 +56,12 @@ def forget(root: Path, device: str) -> None:
             write_private_json(root / _FILE, {"devices": rows})
 
 
+def declaring(root: Path) -> frozenset[str]:
+    """The devices with a remembered declaration: the paired terminals, computers (ADR 0226)."""
+    with _LOCK:
+        return frozenset(_read(root))
+
+
 def declared(root: Path, paired: Collection[str]) -> frozenset[str]:
     """Every name declared by a device in ``paired``; a row of any other device is dropped."""
     with _LOCK:

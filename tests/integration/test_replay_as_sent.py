@@ -62,7 +62,7 @@ def test_the_next_turn_starts_with_the_last_turns_request(tmp_path: Path) -> Non
     assert "Your reply is spoken aloud" in first["instructions"]
     sent = first["input"][-1]["content"]
     assert sent.startswith("[State when this was said | from the program")
-    assert "Channel: voice" in sent
+    assert "This turn: spoken" in sent
     assert "Your reply is spoken aloud" not in sent
     assert sent.endswith("你在吗\n\n[Reply language for this turn: Chinese]")
 
