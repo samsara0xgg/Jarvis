@@ -127,9 +127,17 @@ extension StarEngine {
     }
 
     /// The voice session's words as rows: his as he says them (then his line), hers as they come. A new utterance of the same session is new rows.
-    func voiceRows(_ v: VoiceShot) {
+    /// The recognizer hands his words over a few at a time, a few times a second; they are let in a character at a time, quicker the further
+    /// behind, so his bubble grows in a run rather than in jumps.
+    func voiceRows(_ v: VoiceShot, _ now: Double) {
         let listening = v.state == .listening
-        let his = (listening ? v.partial : v.transcript).trimmingCharacters(in: .whitespacesAndNewlines)
+        var his = (listening ? v.partial : v.transcript).trimmingCharacters(in: .whitespacesAndNewlines)
+        if listening {
+            let n = Double(his.count), dt = max(0, now - vShownAt) / 1000
+            vShownAt = now
+            vShown = min(n, vShown + dt * (14 + 8 * max(0, n - vShown)))
+            his = String(his.prefix(Int(vShown)))
+        }
         if !his.isEmpty { if let id = vHis { setTurn(id, text: his, growing: listening) } else { vHis = addTurn(his: true, his, growing: listening) } }
         if !listening && !v.reply.isEmpty { if let id = vHer { setTurn(id, text: v.reply) } else { vHer = addTurn(his: false, v.reply); Haptic.impact(.soft) } }
     }

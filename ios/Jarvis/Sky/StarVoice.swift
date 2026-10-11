@@ -56,9 +56,9 @@ extension StarEngine {
             if was == .idle && talk != nil { interrupt() }      // a scripted talk in progress is over (voiceState is still idle: the session is left alone)
             voiceState = v.state; voiceAt = now
             if was == .idle { captureAbout(); beginTalk() }
-            if v.state == .listening { vHis = nil; vHer = nil; Haptic.impact(.light) }     // a new utterance of the session: its words are new rows
+            if v.state == .listening { vHis = nil; vHer = nil; vShown = 0; vShownAt = now; Haptic.impact(.light) }     // a new utterance of the session: its words are new rows
             else if v.state == .idle {
-                voiceRows(v)
+                voiceRows(v, now)
                 talk = nil; endTalk()                           // no `end` cue: the microphone may still be open
                 adoptWritten()
                 return nil
@@ -71,7 +71,7 @@ extension StarEngine {
         expr = listening ? "35" : says ? "39" : now - voiceAt < 520 ? "31" : "30"
         hear = listening ? v.input : 0
         if hear > 0.55 && (sonar.isEmpty || now - sonar.last! > 360) { sonar.append(now) }
-        voiceRows(v)
+        voiceRows(v, now)
         return says ? v.output : nil
     }
 }

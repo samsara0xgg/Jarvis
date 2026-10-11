@@ -39,14 +39,12 @@ struct TalkRowView: View, Equatable {
         VStack(alignment: .trailing, spacing: 8) {
             if !row.pics.isEmpty { SentItemsRow(items: row.pics) }
             if !row.text.isEmpty {
-                // while his words still come in the bubble holds its width, so the part shown does not slide left with every chunk; it closes round them when he is done
+                // round his words from the right as they come in (the engine lets them in a character at a time)
                 HisText(text: row.text, live: row.current).font(.system(size: 16))
-                    .frame(maxWidth: row.growing ? .infinity : nil, alignment: .leading)
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .background(RoundedRectangle(cornerRadius: 18).fill(Color.white.opacity(0.08)))
                     .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.06), lineWidth: 0.5))
                     .frame(maxWidth: 300, alignment: .trailing)
-                    .animation(reduce ? nil : .easeOut(duration: 0.2), value: row.growing)
             }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
