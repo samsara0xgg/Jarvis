@@ -1151,26 +1151,42 @@ class _LocalKeyMiddleware:
         self.device_token_matches = device_token_matches
         self.open_claim = open_claim
 
-    def _allowed(self, scope: Scope) -> bool:
+    def _refusal(self, scope: Scope) -> str | None:
+        """Why the request is refused, or None when it may pass."""
         if scope["path"] == _HEALTH_PATH:
-            return True
+            return None
         if (
             self.open_claim
             and scope["type"] == "http"
             and scope["method"] == "POST"
             and scope["path"] == CLAIM_PATH
         ):
-            return True
+            return None
         header = Headers(scope=scope).get("authorization")
         if self.device_token_matches is not None and not _is_loopback_peer(
             Address(*scope["client"]) if scope.get("client") else None,
         ):
             token = _v2_presented_token(header)
-            return token is not None and self.device_token_matches(token)
-        return scope["path"] in _KEYLESS_PATHS or self.authorize(header)
+            if token is None:
+                return "no Authorization header" if header is None else "not a Bearer token"
+            return None if self.device_token_matches(token) else "no paired device holds the token"
+        if scope["path"] in _KEYLESS_PATHS or self.authorize(header):
+            return None
+        return "no Authorization header" if header is None else "not the local key"
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] in {"http", "websocket"} and not self._allowed(scope):
+        refusal = (
+            self._refusal(scope) if scope["type"] in {"http", "websocket"} else None
+        )
+        if refusal is not None:
+            # Never the header's value: method, path, peer and why are enough to tell a stale
+            # token from a request that went out without one, or to another daemon.
+            client = scope.get("client")
+            LOGGER.warning(
+                "refused %s %r from %s: %s",
+                scope.get("method", "WS"), scope["path"], client[0] if client else "a local socket",
+                refusal,
+            )
             if scope["type"] == "websocket":
                 await WebSocketClose(code=1008)(scope, receive, send)
             else:

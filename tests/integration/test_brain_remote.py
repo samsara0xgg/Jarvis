@@ -213,6 +213,34 @@ def test_revoking_a_device_takes_effect_without_a_restart(
     assert client.get("/inherent/conversation", headers=headers).status_code == 401
 
 
+def test_every_refusal_is_logged_with_why_and_never_the_token(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A phone that loses its pairing over a 401 can be traced from the brain's log alone."""
+    client, key, _ = _remote(tmp_path)
+    token = _pair(tmp_path, "phone", capsys)
+    host = {"Host": "jarvis"}
+    with caplog.at_level("WARNING", logger="jarvis.surface.inherent_server"):
+        for headers in (
+            {},
+            {"Authorization": token},
+            {"Authorization": f"Bearer {key}"},
+            {"Authorization": f"Bearer {token}"},
+        ):
+            client.get("/inherent/conversation", headers={**headers, **host})
+        assert _run(capsys, "unpair", "phone", "--runtime-root", str(tmp_path))[0] == 0
+        stale = {"Authorization": f"Bearer {token}", **host}
+        client.post("/inherent/plugins/action", headers=stale)
+    assert [r.getMessage() for r in caplog.records] == [
+        f"refused GET '/inherent/conversation' from {REMOTE}: no Authorization header",
+        f"refused GET '/inherent/conversation' from {REMOTE}: not a Bearer token",
+        f"refused GET '/inherent/conversation' from {REMOTE}: no paired device holds the token",
+        f"refused POST '/inherent/plugins/action' from {REMOTE}: no paired device holds the token",
+    ]
+    assert token not in caplog.text
+    assert key not in caplog.text
+
+
 def test_a_remote_peer_is_held_to_the_host_allowlist(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
