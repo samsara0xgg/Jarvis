@@ -1598,5 +1598,7 @@ def test_today_is_where_the_owner_is_not_where_the_server_clock_is(tmp_path: Pat
     body = _read_day(log, ZoneInfo(VANCOUVER), None, None, None, now_ms)
     assert (body["date"], body["tz"], body["now_ms"]) == ("2026-10-09", VANCOUVER, now_ms)
     assert (body["start_ms"], body["end_ms"]) == day_window(date(2026, 10, 9), ZoneInfo(VANCOUVER))
-    assert set(body) == {"date", "tz", "start_ms", "end_ms", "now_ms", "items", "missing"}
+    assert set(body) == {
+        "date", "tz", "start_ms", "end_ms", "now_ms", "items", "labels", "missing",
+    }
     assert (body["items"], body["missing"]) == ([], ["mac", "talks"])  # no store was given

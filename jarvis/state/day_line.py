@@ -18,24 +18,31 @@ Each source folds on its own and a source that raises leaves its items out (:fun
 - ``talks``: his conversations with her, from the records of his in memory.db;
 - ``pictures``: each picture he sent her, at the time of the turn it came with and with the stay
   that covers that time, and its note once written (ADR 0223). With no memory store and no
-  attachment store it has nothing to read and says nothing in ``missing``.
+  attachment store it has nothing to read and says nothing in ``missing``;
+- ``calendar``: his Outlook events, read through the reader the runtime injects
+  (:attr:`DaySources.calendar`), in his lane with state ``next`` until they start (ADR 0230); an
+  all-day event is a label of the day (:attr:`DayLine.labels`), not an item;
+- ``departures``: the bus trips he pinned (ADR 0204), each a point at its departure time, from the
+  pin as the log held it at the end of the day; the reminder that rings for a trip on the line is
+  left out, the departure stands for it.
 
 A source whose store is not there (no TimeSink path or file, no memory store) is not an error: it
-is named in ``missing`` without a log line. The thresholds below belong to the code, not to
-settings.
+is named in ``missing`` without a log line; so is a calendar that is not connected. The
+thresholds below belong to the code, not to settings.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.state import picture_notes, reminders, timesink
+from jarvis.state import departures, picture_notes, reminders, timesink
 from jarvis.state import rides as ride_state
 from jarvis.state.attachments import Attachments
 from jarvis.state.ledger import CALL_FLOOR_S, TOP_FLOOR_S, window_activity
@@ -51,6 +58,7 @@ if TYPE_CHECKING:
     from jarvis.state.ledger import ActivitySpan, TerminalScreen
 
     type Source = Callable[[sqlite3.Connection, int, int, int], list[dict[str, Any]]]
+    type CalendarRead = Callable[[int, int, int], list[dict[str, Any]]]
 
 LOGGER = logging.getLogger(__name__)
 
@@ -86,6 +94,11 @@ class DaySources:
     memory_db: Path | None = None
     terminal: TerminalScreen | None = None  # a brain's ``timesink``: the terminal's store
     attachments: Path | None = None  # where his pictures are kept (ADR 0223)
+    # ``(window_start_ms, window_end_ms, now_ms)`` to his calendar's events (ADR 0230), each
+    # ``{id, title, start, end}`` with aware ISO times and ``all_day`` on an all-day one. It
+    # raises LookupError when no calendar is connected and any other error when it cannot be
+    # read. None: no calendar to read, and nothing said in ``missing``.
+    calendar: CalendarRead | None = None
 
 
 class _NotConnected(Exception):  # noqa: N818 — a source's answer, not an error
@@ -94,10 +107,14 @@ class _NotConnected(Exception):  # noqa: N818 — a source's answer, not an erro
 
 @dataclass(frozen=True)
 class DayLine:
-    """The items of one window, sorted by start then id, and the sources that could not be read."""
+    """The items of one window, sorted by start then id, and the sources that could not be read.
+
+    ``labels`` are what the day carries without a stretch of time: ``{title, source}``.
+    """
 
     items: list[dict[str, Any]]
     missing: list[str]
+    labels: list[dict[str, str]] = field(default_factory=list)
 
 
 def parse_day(text: str) -> date:
@@ -139,7 +156,8 @@ def fold_day(
     """Every item that overlaps ``[start_ms, end_ms)``, as of ``now_ms``.
 
     A source that has no store is named in ``missing``; one that raises is logged, and named too.
-    Either contributes nothing.
+    Either contributes nothing. A source may return rows of kind ``label`` (an all-day event): they
+    are not items but the day's ``labels``.
     """
     folds: tuple[tuple[str, Source], ...] = (
         ("phone", _phone_items),
@@ -148,6 +166,8 @@ def fold_day(
         ("mac", lambda _conn, first, last, now: _mac_items(sources, first, last, now)),
         ("talks", lambda _conn, first, last, now: _talk_items(sources, first, last, now)),
         ("pictures", lambda db, first, last, now: _picture_items(db, sources, first, last, now)),
+        ("calendar", lambda _conn, first, last, now: _calendar_items(sources, first, last, now)),
+        ("departures", _departure_items),
     )
     items: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -159,9 +179,13 @@ def fold_day(
         except Exception:
             LOGGER.exception("day line: the %s source could not be read", name)
             missing.append(name)
+    labels = [
+        {"title": row["title"], "source": "calendar"} for row in items if row["kind"] == "label"
+    ]
+    items = _without_pin_rings([row for row in items if row["kind"] != "label"])
     items = _without_ridden_moves(items, now_ms)
     items.sort(key=lambda item: (item["start_ms"], item["id"]))
-    return DayLine(items, missing)
+    return DayLine(items, missing, labels)
 
 
 def _state(start: int, end: int | None, now_ms: int) -> str:
@@ -253,6 +277,90 @@ def _without_ridden_moves(items: list[dict[str, Any]], now_ms: int) -> list[dict
         )
 
     return [i for i in items if not ridden(i)]
+
+
+# --- the calendar and the pinned departures ------------------------------------------------
+
+
+def _calendar_items(
+    sources: DaySources, window_start: int, window_end: int, now_ms: int,
+) -> list[dict[str, Any]]:
+    """His Outlook events in his lane, and a ``label`` row for each all-day one (ADR 0230).
+
+    The id is a short hash of the Graph event id, which is a long opaque token.
+    """
+    read = sources.calendar
+    if read is None:
+        return []
+    try:
+        events = read(window_start, window_end, now_ms)
+    except (KeyError, IndexError):  # a malformed answer is a fault, which is logged
+        raise
+    except LookupError:  # no microsoft connection: the usual state of a brain without Outlook
+        raise _NotConnected from None
+    rows: list[dict[str, Any]] = []
+    for event in events:
+        start = _ms(datetime.fromisoformat(event["start"]))
+        end = _ms(datetime.fromisoformat(event["end"]))
+        if not _overlaps(start, end, window_start, window_end):
+            continue
+        if event.get("all_day"):
+            rows.append({"kind": "label", "title": str(event["title"])})
+            continue
+        rows.append({
+            "id": f"event-{hashlib.sha256(str(event['id']).encode()).hexdigest()[:12]}",
+            "lane": "you",
+            "kind": "event",
+            "start_ms": start,
+            "end_ms": end,
+            "state": _state(start, end, now_ms),
+            "title": str(event["title"]),
+        })
+    return rows
+
+
+def _departure_items(
+    conn: sqlite3.Connection, window_start: int, window_end: int, now_ms: int,
+) -> list[dict[str, Any]]:
+    """Each trip of the pin that leaves in the window, in his lane, as a point at its departure.
+
+    The pin is the one the log held at the end of the window, so a past day shows what was pinned
+    then. Each row carries ``_rings``, the reminders that rang for the trip, for
+    :func:`_without_pin_rings`.
+    """
+    pin = departures.current(conn, until_ms=window_end)
+    if pin is None:
+        return []
+    return [
+        {
+            "id": f"departure-{trip.tid}",
+            "lane": "you",
+            "kind": "departure",
+            "start_ms": trip.departs_at_ms,
+            "end_ms": trip.departs_at_ms,
+            "state": _state(trip.departs_at_ms, trip.departs_at_ms, now_ms),
+            "title": f"{trip.route} · {trip.board_stop}",
+            "route": trip.route,
+            "board_stop": trip.board_stop,
+            "to": trip.to,
+            "leave_at_ms": trip.leave_at_ms,
+            "_rings": [one for one, tid in pin.rings.items() if tid == trip.tid],
+        }
+        for trip in pin.trips
+        if window_start <= trip.departs_at_ms < window_end
+    ]
+
+
+def _without_pin_rings(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop each reminder that rings for a departure on the line, and the ``_rings`` markers.
+
+    The pin's alarm is an ordinary reminder (ADR 0204); the departure stands for it (ADR 0230).
+    """
+    rung: set[str] = set()
+    for item in items:
+        if item["kind"] == "departure":
+            rung.update(item.pop("_rings"))
+    return [item for item in items if item["kind"] != "reminder" or item["id"] not in rung]
 
 
 # --- the Mac and her conversations ---------------------------------------------------------

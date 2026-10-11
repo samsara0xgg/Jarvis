@@ -12,6 +12,7 @@ import html
 import json
 import logging
 import re
+import threading
 import urllib.request
 from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta, timezone
@@ -62,6 +63,11 @@ _WMO_WORDS = {
     96: "thunderstorm with hail", 99: "thunderstorm with heavy hail",
 }
 """WMO weather codes as Open-Meteo documents them, in the words the model says aloud."""
+CALENDAR_TTL_TODAY_MS: Final = 5 * 60_000
+"""How long the day line keeps today's Graph read (ADR 0230): his plans change during the day."""
+CALENDAR_TTL_OTHER_MS: Final = 30 * 60_000
+"""How long it keeps any other day's read: those days move slowly, and a phone scrubbing the ring
+back and forth should not ask Graph for each swipe."""
 _ID_SEP = "|"
 """A to-do's id is ``<list id>|<task id>``; Graph ids are base64 and never hold a bar."""
 MAIL_SERVER = "gmail"
@@ -272,6 +278,8 @@ class Home:
         self._archived_junk: set[str] = set()
         self._kept: set[str] = set()
         self._letters: dict[str, dict[str, str]] = {}
+        self._calendar_lock = threading.Lock()
+        self._calendar: dict[tuple[int, int], tuple[int, list[dict[str, Any]]]] = {}
 
     def _servers(self, server: str = PLAN_SERVER) -> McpServers:
         """The live client of ``server``; LookupError (the routes' 404) when it is not connected."""
@@ -284,16 +292,9 @@ class Home:
         """Today's calendar, every open to-do and the weather; a weather failure only drops it."""
         servers = self._servers()
         start = datetime.combine(datetime.now(self._zone).date(), time(), self._zone)
-        view = {
-            "startDateTime": start.isoformat(),
-            "endDateTime": (start + timedelta(days=1)).isoformat(),
-            "select": "id,subject,start,end,isAllDay,isCancelled",
-            "fetchAllPages": True,
-        }
         events = [
             _event(one, self._zone)
-            for one in _graph(servers, "get-calendar-view", view)
-            if not one.get("isCancelled")
+            for one in _calendar_view(servers, start, start + timedelta(days=1))
         ]
         todos = []
         for one in _graph(servers, "list-todo-task-lists", {"fetchAllPages": True}):
@@ -304,6 +305,43 @@ class Home:
                 if task.get("status") != "completed"
             ]
         return {"events": events, "todos": todos, "weather": self._weather()}
+
+    def calendar(self, start_ms: int, end_ms: int, now_ms: int) -> list[dict[str, Any]]:
+        """The calendar's events of ``[start_ms, end_ms)`` as ``today()`` words them (ADR 0230).
+
+        An all-day event also holds ``end``, the local midnight after its last day. The day line
+        asks this on a worker thread. A read is kept per window: ``CALENDAR_TTL_TODAY_MS`` when
+        ``now_ms`` is inside the window, ``CALENDAR_TTL_OTHER_MS`` otherwise. A failed read is not
+        kept.
+
+        Raises:
+            LookupError: the ``microsoft`` server is not connected.
+            ToolError: Graph or the server did not answer, or answered with an error.
+        """
+        key = (start_ms, end_ms)
+        ttl = CALENDAR_TTL_TODAY_MS if start_ms <= now_ms < end_ms else CALENDAR_TTL_OTHER_MS
+        with self._calendar_lock:
+            held = self._calendar.get(key)
+        if held is not None and 0 <= now_ms - held[0] < ttl:
+            return held[1]
+        events = []
+        for one in _calendar_view(
+            self._servers(),
+            datetime.fromtimestamp(start_ms / 1000, self._zone),
+            datetime.fromtimestamp(end_ms / 1000, self._zone),
+        ):
+            row = _event(one, self._zone)
+            if row.get("all_day"):
+                last = date.fromisoformat(str(one["end"]["dateTime"])[:10])
+                row["end"] = datetime.combine(last, time(), self._zone).isoformat()
+            events.append(row)
+        with self._calendar_lock:
+            self._calendar = {
+                k: v for k, v in self._calendar.items()
+                if 0 <= now_ms - v[0] < CALENDAR_TTL_OTHER_MS
+            }
+            self._calendar[key] = (now_ms, events)
+        return events
 
     def _weather(self) -> dict[str, Any] | None:
         if self._weather_at is None:
@@ -535,6 +573,17 @@ def _letter(message: Mapping[str, Any]) -> dict[str, str]:
         "subject": str(message.get("subject") or ""),
         "received": received,
     }
+
+
+def _calendar_view(servers: McpServers, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    """Graph's events of ``[start, end)``, the cancelled ones left out."""
+    view = {
+        "startDateTime": start.isoformat(),
+        "endDateTime": end.isoformat(),
+        "select": "id,subject,start,end,isAllDay,isCancelled",
+        "fetchAllPages": True,
+    }
+    return [one for one in _graph(servers, "get-calendar-view", view) if not one.get("isCancelled")]
 
 
 def _event(event: Mapping[str, Any], zone: tzinfo) -> dict[str, Any]:

@@ -107,6 +107,7 @@ if TYPE_CHECKING:
     from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent, Wave1FeatureFlags, Wave4ResponseFlags
     from jarvis.state.committed_event_bus import CommittedEventBus
+    from jarvis.state.day_line import CalendarRead
     from jarvis.state.voice_settings import VoiceSettings
     from jarvis.surface.ambient_sounds import AmbientSounds
     from jarvis.surface.codex_sessions import CodexSession
@@ -5403,7 +5404,7 @@ def _draft_deps(runtime: JarvisRuntime, home: Home | None) -> dict[str, Any]:
 def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked and the clock.
     event_log: Path, configured: tzinfo | None, memory_db: Path | None, timesink: Path | None,
     day: date | None, now_ms: int, terminal: TerminalScreen | None = None,
-    attachments: Path | None = None,
+    attachments: Path | None = None, calendar: CalendarRead | None = None,
 ) -> dict[str, Any]:
     """``GET /inherent/day`` (ADR 0199): the day asked for, or today in the owner's zone.
 
@@ -5411,13 +5412,14 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
     log is read on a connection of its own, so this runs on a worker thread. ``memory_db`` (his
     talks) and ``timesink`` (his Mac) are the configured stores or None; the ``ledger:`` block
     does not gate them, and a store that is not there leaves its source in ``missing``. On a
-    brain ``terminal`` is his Mac's TimeSink.
+    brain ``terminal`` is his Mac's TimeSink. ``calendar`` reads his Outlook through Graph
+    (``Home.calendar``, ADR 0230) and holds this worker thread while it waits.
     """
     zone_name, zone = resolve_zone(None, configured)
     on = datetime.fromtimestamp(now_ms / 1000, zone).date() if day is None else day
     start_ms, end_ms = day_window(on, zone)
     with contextlib.closing(open_runtime_event_log(event_log)) as conn:
-        sources = DaySources(zone, timesink, memory_db, terminal, attachments)
+        sources = DaySources(zone, timesink, memory_db, terminal, attachments, calendar)
         line = fold_day(conn, start_ms, end_ms, now_ms, sources)
     return {
         "date": on.isoformat(),
@@ -5426,6 +5428,7 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
         "end_ms": end_ms,
         "now_ms": now_ms,
         "items": line.items,
+        "labels": line.labels,
         "missing": line.missing,
     }
 
@@ -5433,11 +5436,12 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
 async def _serve_day(  # noqa: PLR0913 — the route's stores, its zone, the terminal and the day.
     event_log: Path, configured: tzinfo | None, memory_db: Path | None, timesink: Path | None,
     day: date | None, *, terminal: TerminalScreen | None = None, attachments: Path | None = None,
+    calendar: CalendarRead | None = None,
 ) -> dict[str, Any]:
     """:func:`_read_day` off the loop thread, at the brain's clock."""
     return await asyncio.to_thread(
         _read_day, event_log, configured, memory_db, timesink, day, int(time.time() * 1000),
-        terminal, attachments,
+        terminal, attachments, calendar,
     )
 
 
@@ -7361,6 +7365,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     else TerminalScreen(runtime.terminal_hub.call)
                 ),
                 attachments=None if runtime.attachments is None else runtime.attachments.directory,
+                calendar=None if runtime.home is None else runtime.home.calendar,
             ),
             today_read=(
                 None if runtime.home is None

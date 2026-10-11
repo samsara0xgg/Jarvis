@@ -61,13 +61,17 @@ def new_tid() -> str:
 
 @dataclass
 class Departure:
-    """The pin: its trips, the ring (one reminder, for the trip ``ring_tid``) and its offer."""
+    """The pin: its trips, the ring (one reminder, for the trip ``ring_tid``) and its offer.
+
+    ``rings`` is every reminder the pin has had, by id, with the trip it was for.
+    """
 
     pin_id: str
     reminder_id: str
     ring_tid: str
     trips: list[Trip] = field(default_factory=list)
     offer_id: str | None = None
+    rings: dict[str, str] = field(default_factory=dict)
 
     def catchable(self, now_ms: int) -> list[Trip]:
         """The trips whose bus has not left (leave time plus the walk), earliest leave first."""
@@ -99,10 +103,15 @@ def _trip(raw: dict[str, Any], tid: str) -> Trip:
     )
 
 
-def current(conn: sqlite3.Connection) -> Departure | None:
-    """The pin as the log leaves it (not yet checked against the clock), or None."""
+def current(conn: sqlite3.Connection, *, until_ms: int | None = None) -> Departure | None:
+    """The pin as the log leaves it (not yet checked against the clock), or None.
+
+    ``until_ms`` folds only the events up to that instant: the pin as it stood then.
+    """
     found: Departure | None = None
     for event in iter_events_of_types(conn, TYPES):
+        if until_ms is not None and event.ts_epoch_ms > until_ms:
+            continue
         payload = event.payload
         if event.type == "departure.pinned":
             # A pin from before ADR 0204 has its one trip's fields at the top.
@@ -115,6 +124,7 @@ def current(conn: sqlite3.Connection) -> Departure | None:
                 trips,
                 None if offer is None else str(offer),
             )
+            found.rings[found.reminder_id] = found.ring_tid
             continue
         if found is None or found.pin_id != payload["pin_id"]:
             continue
@@ -123,6 +133,7 @@ def current(conn: sqlite3.Connection) -> Departure | None:
             continue
         found.reminder_id = str(payload["reminder_id"])
         found.ring_tid = str(payload.get("ring", found.ring_tid))
+        found.rings[found.reminder_id] = found.ring_tid
         if event.type == "departure.trip_added":
             found.trips.append(_trip(payload["trip"], new_tid()))
         elif event.type == "departure.trip_removed":
