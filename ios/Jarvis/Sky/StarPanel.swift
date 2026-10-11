@@ -235,6 +235,8 @@ final class StreamProbe {
     var scrolled = false                // the page came and the stream was sent to the anchor: from here its place is corrected
     var pinY = 0.0, pinUntil = 0.0      // where the anchor is kept, and until when: the lazy stack's heights firm up as the rows are laid out
     var following = false               // a scroll to the bottom is on its way
+    var pinning = false                 // a scroll that puts the anchor back is on its way
+    var away = 0.0                      // how far the stream is from its bottom
 }
 
 /// where the panel's top edge is: held by a finger, or at one of its two places
@@ -362,7 +364,14 @@ struct TalkPanel: View {
         }
         guard id == probe.anchor else { return }
         probe.y = y
-        if probe.scrolled && !probe.touching && abs(y - probe.pinY) > 1 { pos.scrollTo(y: probe.offset + y - probe.pinY) }
+        // on the next turn of the run loop, one at a time: a scroll from inside a geometry action makes the lazy stack lay out again, which calls the action again
+        if probe.scrolled && !probe.touching && abs(y - probe.pinY) > 1 && !probe.pinning {
+            probe.pinning = true
+            DispatchQueue.main.async {
+                probe.pinning = false
+                if let y = probe.y, !probe.touching, abs(y - probe.pinY) > 1 { pos.scrollTo(y: probe.offset + y - probe.pinY) }
+            }
+        }
     }
 
     /// The page came in above the anchor: the stream goes to it (a lazy stack lays the rows out on the way, so the place is right), then `moved` sets it back where it was.
@@ -412,7 +421,11 @@ struct TalkPanel: View {
             }
             .contentMargins(.bottom, fade, for: .scrollContent)
             .id(ui.chipOpen)         // a lazy stack resized under it loses its place now and then: opening or folding the chip starts the list again, at the bottom
-            .defaultScrollAnchor(.bottom)
+            // It starts at the bottom, and rows fewer than its height sit at the bottom. Not anchored to the bottom as sizes change: that kept the lazy stack
+            // laying out forever when the keyboard went down and the panel shut with a talk on show (the app froze, reproduced every time in the
+            // simulator; 2026-10-11). Keeping to the bottom as sizes change is `follow`'s.
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(.bottom, for: .alignment)
             .scrollPosition($pos)
             .coordinateSpace(name: "stream")
             // At the top of a panel that has been open a moment, at rest, with older rows at the brain: ask for the page before. Not while the finger or its glide is still moving the list: a scroll made then would be undone.
@@ -427,12 +440,22 @@ struct TalkPanel: View {
             }
             // Kept to the bottom while he has not scrolled up: opening, the keyboard, a new row and a growing answer all change the size of the rows or of the window,
             // and then the distance to the bottom grows without him (PanelRules.follows). Past 80 pt of his own scrolling the ↓ button stands in for the jump.
-            .onScrollPhaseChange { _, phase in byHand = phase == .interacting || phase == .decelerating }
+            .onScrollPhaseChange { _, phase in
+                let was = byHand
+                byHand = phase == .interacting || phase == .decelerating
+                // his finger let go within 80 pt of the bottom: it eases back down. Only after his own scroll, and on the next turn of the run loop:
+                // a scroll's own end is a phase change too, and a scroll made here at once can end at once
+                if was && !byHand && follow && probe.away > 0.5 {
+                    DispatchQueue.main.async { if follow && !byHand && probe.away > 0.5 { withAnimation(.easeOut(duration: 0.25)) { pos.scrollTo(edge: .bottom) } } }
+                }
+            }
             .onScrollGeometryChange(for: Double.self) { g in (max(0, g.contentSize.height + g.contentInsets.bottom - g.visibleRect.maxY) * 2).rounded() / 2 } action: { _, away in
                 follow = PanelRules.follows(was: follow, byHand: byHand, away: away)
+                probe.away = away
                 // on the next turn of the run loop, at most one at a time: a scroll from inside this action made a long history's lazy stack
                 // estimate its height again, which called the action again, and the main thread never got out (the app froze, then was killed)
-                if follow && away > 0.5 && !probe.following {
+                // never under his finger or its glide: pulled back to the bottom while within 80 pt of it, he could not scroll up at all
+                if follow && away > 0.5 && !byHand && !probe.following {
                     probe.following = true
                     DispatchQueue.main.async { probe.following = false; StallLog.count("follow"); pos.scrollTo(edge: .bottom) }
                 }
