@@ -65,8 +65,8 @@ BLOCK_REACH_MS: Final = 24 * 60 * _MINUTE_MS
 """How far either side of the window the Mac and his talks are read, so a block or a talk that
 crosses a midnight is found whole; one that runs on longer than this is cut where it was read."""
 
-PICTURE_TURN_EVENTS: Final = ("surface.user_intent", "utterance.received")
-"""The rows that open a turn and name the files sent with it."""
+PICTURE_TURN_EVENTS: Final = ("surface.user_intent", "utterance.received", "user.shared")
+"""The rows that name files he sent: the row that opens a turn, or a saved share."""
 
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 _NO_PROJECT: Final = frozenset({"none", ""})
@@ -352,10 +352,10 @@ def _talk_items(
 def _picture_items(
     conn: sqlite3.Connection, sources: DaySources, window_start: int, window_end: int, now_ms: int,
 ) -> list[dict[str, Any]]:
-    """A point in his lane for each picture sent with a turn that started in the window (0223)."""
+    """A point in his lane for each picture sent in the window, with a turn or saved (0223)."""
     sent: dict[str, int] = {}
     for at, raw in conn.execute(
-        "SELECT ts_epoch_ms, payload_json FROM events WHERE type IN (?, ?) "
+        "SELECT ts_epoch_ms, payload_json FROM events WHERE type IN (?, ?, ?) "
         "AND ts_epoch_ms >= ? AND ts_epoch_ms < ? "
         "AND json_extract(payload_json, '$.attachments') IS NOT NULL ORDER BY id",
         (*PICTURE_TURN_EVENTS, window_start, window_end),
