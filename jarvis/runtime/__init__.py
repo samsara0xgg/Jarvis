@@ -196,7 +196,7 @@ from jarvis.runtime.push import Push
 from jarvis.runtime.reminders import Reminders
 from jarvis.runtime.rides import RIDE_LINE_CHARS, RIDE_LINE_PREFIX, Rides
 from jarvis.runtime.settings import REPLY_LINES, SETUP_VOICES, Settings, apply_settings
-from jarvis.runtime.settings_owner import SettingsDrift, check_own
+from jarvis.runtime.settings_owner import SettingsDrift, check_own, page_keys
 from jarvis.runtime.setup import write_setting
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.whereabouts import Whereabouts
@@ -3157,6 +3157,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             full_config,
             _no_audio_devices if role == "brain" else _audio_devices,
             _no_default_audio_device if role == "brain" else _default_audio_device,
+            owned=page_keys("brain", "both") if role == "brain" else None,
         ),
         night=night,
         voice_settings=voice_settings,

@@ -201,3 +201,18 @@ def test_voice_volume_scales_what_the_device_plays() -> None:
     player._tapped_callback(out, 1024, None, None)  # noqa: SLF001 — PortAudio's entry point.
     assert np.allclose(out[:, 0], 0.4)
     assert np.allclose(heard[0], 0.4)
+
+
+def test_only_the_keys_a_process_reads_can_leave_a_restart_pending(tmp_path: Path) -> None:
+    """A brain forces gpt_live off; an old saved ``true`` for it must not nag for a restart."""
+    (tmp_path / "settings.json").write_text(json.dumps({"gpt_live": True}))
+    boot = {"realtime": {"gpt_live": {"enabled": False}}}  # what the brain's overrides leave
+
+    def pending(owned: frozenset[str] | None) -> bool:
+        settings = Settings(
+            tmp_path, boot, DEVICES.__getitem__, DEFAULT_DEVICES.get, owned=owned,
+        )
+        return bool(settings.read()["restart_pending"])
+
+    assert pending(None) is True
+    assert pending(frozenset({"tts_voice"})) is False

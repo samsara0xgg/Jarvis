@@ -223,12 +223,19 @@ class Settings:
         config: Mapping[str, Any],
         devices: Callable[[str], list[str]],
         default_device: Callable[[str], str | None] = lambda _kind: None,
+        owned: frozenset[str] | None = None,
     ) -> None:
-        """Bind the runtime root, the merged boot config, the device lister and default's name."""
+        """Bind the runtime root, the merged boot config, the device lister and default's name.
+
+        ``owned`` are the keys this process reads (ADR 0227); only they can leave a restart
+        pending, since a key it never reads, or forces off, would otherwise never settle.
+        ``None`` means all.
+        """
         self._root = root
         self._config = config
         self._devices = devices
         self._default_device = default_device
+        self._owned = owned
         # What this process runs with: the boot values, and a device picked
         # since when a voice chain took it live.
         self._booted = {
@@ -263,7 +270,11 @@ class Settings:
             },
             # What "System default" is right now, for the page to name (None: unknown).
             "defaults": {key: self._default_device(kind) for key, kind in _DEVICES.items()},
-            "restart_pending": any(value != self._booted[key] for key, value in saved.items()),
+            "restart_pending": any(
+                value != self._booted[key]
+                for key, value in saved.items()
+                if self._owned is None or key in self._owned
+            ),
         }
 
     def update(self, changes: Mapping[str, Any]) -> dict[str, Any]:

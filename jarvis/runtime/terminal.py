@@ -811,7 +811,10 @@ def _ui_device(
         settings=(
             None if speaking is None
             else _DeviceSettings(
-                Settings(ui.runtime_root, ui.config, _audio_devices, _default_audio_device),
+                Settings(
+                    ui.runtime_root, ui.config, _audio_devices, _default_audio_device,
+                    owned=_OWN_PAGE_KEYS,
+                ),
             )
         ),
         restart=_restart_soon if spawned_by_terminal_agent() else None,
