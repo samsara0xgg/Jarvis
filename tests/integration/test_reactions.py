@@ -553,3 +553,17 @@ def test_every_phone_gets_every_reaction_and_said_names_the_record(tmp_path: Pat
         finally:
             mine.close()
             other.close()
+
+
+def test_the_turn_after_a_reaction_only_answer_is_not_told_that_one_was_interrupted(
+    tmp_path: Path,
+) -> None:
+    """An answer of only a reaction is an answer: the next turn's state says nothing of it."""
+    with _Peer([[("final_answer", f"<react>{THUMB}</react>")], [("final_answer", "好。")]]) as peer:
+        runtime = memory_world(tmp_path, peer.url)
+        turn(runtime, "我到家了", "cli_stdin", "T-first")
+        turn(runtime, "晚饭吃什么", "cli_stdin", "T-second")
+
+    sent = json.dumps(peer.requests[1][1]["input"], ensure_ascii=False)
+    assert "晚饭吃什么" in sent
+    assert "interrupted" not in sent

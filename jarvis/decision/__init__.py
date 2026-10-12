@@ -125,6 +125,7 @@ from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.shared.realtime import AlreadyConsumed, Wave1FeatureFlags, stable_authorization_identity
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
 from jarvis.shared.text import is_english, truncate_utf8
+from jarvis.state import reactions
 from jarvis.state.authorized_dispatch_outbox import (
     AuthorizedDispatchAlreadyStarted,
     ConfirmationRevalidationError,
@@ -1037,8 +1038,19 @@ def _last_spoken_voice(packet: SituationPacket) -> str | None:
     return None
 
 
+def _answered_by_reaction(conn: sqlite3.Connection, input_event_uid: str) -> bool:
+    """Whether she reacted to this message herself (ADR 0256), which can be all her answer was.
+
+    The program's eyes do not count: they are put on a message before it is answered.
+    """
+    mine = reactions.current(conn, [input_event_uid]).get(input_event_uid, {})
+    return mine.get(reactions.JARVIS, reactions.EYES) != reactions.EYES
+
+
 def _previous_answer_line(
-    packet: SituationPacket, in_flight: frozenset[str] = frozenset(),
+    packet: SituationPacket,
+    in_flight: frozenset[str] = frozenset(),
+    reacted: Callable[[str], bool] = lambda _uid: False,
 ) -> str | None:
     """Where the last spoken answer stopped, or None when it was heard whole.
 
@@ -1046,8 +1058,9 @@ def _previous_answer_line(
     validates. Turns that got no answer, such as a half-sentence dropped
     for the one after it, are looked past: the cut answer before them is
     still the last thing Allen heard. So are turns another run is still
-    answering (``in_flight``). Only the facts go in; whether to continue or
-    take up the new words is the model's call.
+    answering (``in_flight``), and turns she answered with a reaction alone (``reacted``, given
+    the uid of the message). Only the facts go in; whether to continue or take up the new words
+    is the model's call.
     """
     history = packet.conversation_history
     turns = history.turns if history is not None else ()
@@ -1069,7 +1082,7 @@ def _previous_answer_line(
             if prefix is not None and not prefix.submitted_samples and not prefix.complete:
                 continue  # A later answer that never started cannot hide the last audible one.
             break
-        if finals and not lines:
+        if finals and not lines and not reacted(turn.input_event_uid):
             lines.append("Previous turn: interrupted before it was answered")
     return "\n".join(lines) or None
 
@@ -1170,7 +1183,11 @@ def _current_status_block(packet: SituationPacket, ctx: DecideContext) -> str | 
             _interaction_line(packet, ctx),
             _about_line(packet),
             ctx.connected_apps,
-            _previous_answer_line(packet, frozenset(turn.turn_id for turn in earlier)),
+            _previous_answer_line(
+                packet,
+                frozenset(turn.turn_id for turn in earlier),
+                functools.partial(_answered_by_reaction, ctx.conn),
+            ),
             _turns_in_flight_line(earlier),
             format_pending_confirmation_note(packet),
             format_pending_clarification_note(packet),
