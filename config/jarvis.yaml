@@ -1122,8 +1122,8 @@ realtime:
   input:
     intent_pump: true
     queue_capacity: 8
-    # ADR 0251: 深层通道的任务也占一个，所以是 3：它在后台跑的时候，他还能说话、对话还能被回答。
-    max_concurrent_turns: 3
+    # 深层通道的任务（ADR 0251）另有一个自己的 worker，不占这里的；这里只管他说的和打的。
+    max_concurrent_turns: 2
   # GPT-Live (ADR-0016).  `enabled`
   # only registers the controller behind POST /inherent/controls
   # {"live": "start"|"stop"}; nothing connects until that request

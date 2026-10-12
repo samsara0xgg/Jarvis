@@ -29,6 +29,9 @@ TASK_MAX_CHARS: Final = 1500
 later turn's state block while the task runs."""
 LOST_AFTER_S: Final = 30 * 60
 """A deep turn with no end row this long after it began is lost (a crash writes none)."""
+DEFAULT_DEADLINE_S: Final = 20 * 60
+"""How long a deep run may work before it is stopped with the timeout notice. It is checked before
+each request, so the run ends by this plus one request's timeout: under :data:`LOST_AFTER_S`."""
 DEFAULT_MAX_TOOL_ITERATIONS: Final = 60
 DEFAULT_LIVE_WINDOW_S: Final = 120
 
@@ -62,7 +65,7 @@ class DeepConfigError(ValueError):
 
 @dataclass(frozen=True)
 class DeepSettings:
-    """``llm.deep``: the preset a deep turn runs on, its step cap, how recent "live" is.
+    """``llm.deep``: the preset, step cap, deadline and live window of a deep turn.
 
     ``request`` matches the imperative phrases that hand a sentence over without a model.
     """
@@ -70,6 +73,7 @@ class DeepSettings:
     preset: str
     max_tool_iterations: int = DEFAULT_MAX_TOOL_ITERATIONS
     live_window_s: int = DEFAULT_LIVE_WINDOW_S
+    deadline_s: int = DEFAULT_DEADLINE_S
     request: re.Pattern[str] | None = None
 
 
@@ -88,6 +92,14 @@ _AND_THEN = re.compile(
     r"然后|接着|之后|再帮|再给|顺便|并且|而且|以及|还有|同时|and then|and also|after that|also",
     re.IGNORECASE,
 )
+
+
+def _deadline(block: Mapping[str, Any]) -> int:
+    deadline = _positive(block, "deadline_s", DEFAULT_DEADLINE_S)
+    if deadline >= LOST_AFTER_S:
+        msg = f"llm.deep.deadline_s must be under {LOST_AFTER_S}: a longer run reads as lost"
+        raise DeepConfigError(msg)
+    return deadline
 
 
 def _request_pattern(block: Mapping[str, Any]) -> re.Pattern[str] | None:
@@ -130,6 +142,7 @@ def load_deep_settings(llm: Mapping[str, Any]) -> DeepSettings | None:
         preset=preset,
         max_tool_iterations=_positive(block, "max_tool_iterations", DEFAULT_MAX_TOOL_ITERATIONS),
         live_window_s=_positive(block, "live_window_s", DEFAULT_LIVE_WINDOW_S),
+        deadline_s=_deadline(block),
         request=_request_pattern(block),
     )
 

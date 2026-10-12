@@ -34,11 +34,13 @@
   held in memory, so a restart does not forget a task. A task is over at `turn.ended`, `turn.failed`,
   `response.cancelled` or `response.failed` (boot reconciliation closes a cut-short run that way); a
   task with none of them for 30 minutes is taken as lost, because a crash writes none.
-- **A stop or a restart ends a run with a word.** At shutdown the runtime cancels the token of every
-  run that ignores interruption, so a graceful stop waits for no deep run. At boot, after
-  reconciliation closed the run as `daemon_restart`, each deep task that had begun and has no
-  `turn.ended` or `turn.failed` gets a `turn.failed` and the failure notice: the intent pump never
-  drives a begun turn again, so nothing else would.
+- **A run has a deadline, and a stop or a restart ends it with a word.** The run stops at its next
+  request or tool call once `llm.deep.deadline_s` (1200) has passed, so it ends within that plus one
+  request timeout, under the 30 minutes; the failure notice below says "timeout". At shutdown the
+  runtime cancels the token of every run that ignores interruption, so a graceful stop waits for no
+  deep run. At boot, after reconciliation closed the run as `daemon_restart`, each deep task that had
+  begun and has no `turn.ended` or `turn.failed` gets a `turn.failed` and the failure notice: the
+  intent pump never drives a begun turn again, so nothing else would.
 - **The deep turn runs on the `llm.deep.preset` preset.** The shipped one is `sonnet-deep`:
   `claude-sonnet-5-5`, `reasoning_effort: high`, 16384 output tokens, a 300 second request timeout
   (a `timeout_s` key on a preset overrides `llm.timeout_s`), and the unstructured spoken route of
@@ -93,7 +95,8 @@
   tool and no forced hand-over. A block naming a preset that is not in
   `llm.presets`, or a non-positive number, fails boot. The shipped `config/jarvis.yaml` sets it on,
   so it needs the Anthropic key the preset names; a missing key is the failure notice above, not a
-  silent hang. `realtime.input.max_concurrent_turns` is 3 so a running deep task leaves two workers.
+  silent hang. The deep task has a worker of its own beside `realtime.input.max_concurrent_turns`
+  (2): the pump keeps a queue for the deep channel, so a running task takes none of his workers.
 - **Wiring** lives in `runtime/`: `jarvis/decision/deep.py` holds the settings, rules, live check
   and forced hit; `jarvis/execution/deep_tool.py` the tool and the registry view;
   `jarvis/runtime/deep_lane.py` the hand-over, busy check and failure notice. The state layer adds
@@ -121,11 +124,11 @@
 ## Consequences
 
 - A heavy ask costs the voice lane one tool call and one sentence, then runs on the Sonnet preset
-  for as long as it needs, up to 40 tool iterations and 300 seconds a request. Each deep run is
-  billed to the Anthropic key, which is a new standing cost; `scripts/tool_exam.py` stubs
+  for as long as it needs, up to 40 tool iterations, 300 seconds a request and 20 minutes in all.
+  Each deep run is billed to the Anthropic key, which is a new standing cost; `scripts/tool_exam.py` stubs
   `think_deeper` as "started, the result comes later" so the exam does not spend it.
-- A deep run occupies one of the three turn workers for its whole duration. A fourth concurrent
-  turn waits for a worker.
+- A deep run occupies the deep worker for its whole duration, so a second task waits behind a
+  busy refusal, not a queue; his ordinary turns keep their two workers.
 - A deep turn that was claimed but had not begun when the daemon restarts is driven after the
   restart from its opening row. One that had begun is not driven again: it ends with the failure
   notice at boot, and the voice lane can start it afresh.

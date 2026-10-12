@@ -122,6 +122,7 @@ from jarvis.decision.commentary import (
     commentary_speech_text,
     lead_in_speech_text,
 )
+from jarvis.decision.deep import deep_turn
 from jarvis.decision.gates import ResponsePlan, pre_emit_gate
 from jarvis.decision.llm import failure_reason
 from jarvis.decision.pre_route import TYPED_CHANNEL
@@ -1516,6 +1517,27 @@ async def _waiting_turn_watcher(
         waiting.clear()
 
 
+class _TurnQueue(asyncio.Queue[Event | WaitingTurn]):
+    """The pump's queue; deep tasks (ADR 0251) go to a queue of their own, with their own worker.
+
+    A deep run lasts minutes, so it must not hold one of the ``max_concurrent_turns`` workers
+    his ordinary turns share, and those workers must not pick it up.
+    """
+
+    def __init__(self, maxsize: int, *, deep_lane: bool) -> None:
+        super().__init__(maxsize)
+        self.deep: asyncio.Queue[Event | WaitingTurn] = asyncio.Queue(maxsize)
+        self._deep_lane = deep_lane
+
+    async def put(self, item: Event | WaitingTurn) -> None:
+        event = item.intent if isinstance(item, WaitingTurn) else item
+        target = self.deep if self._deep_lane and deep_turn(event) else None
+        if target is None:
+            await super().put(item)
+        else:
+            await target.put(item)
+
+
 async def _start_intent_pump(
     runtime: JarvisRuntime,
     *,
@@ -1534,7 +1556,7 @@ async def _start_intent_pump(
             "earlier utterances are history and are never replayed",
             boot.adoption_row_id,
         )
-    queue: asyncio.Queue[Event | WaitingTurn] = asyncio.Queue(maxsize=queue_capacity)
+    queue = _TurnQueue(queue_capacity, deep_lane=runtime.deep is not None)
     dispatched: set[str] = set()
     waiting: dict[str, WaitingTurn] = {}
     tasks = [
@@ -1553,6 +1575,10 @@ async def _start_intent_pump(
         asyncio.create_task(_intent_worker(runtime, queue, waiting), name=f"intent_worker_{index}")
         for index in range(max_concurrent_turns)
     )
+    if runtime.deep is not None:
+        tasks.append(asyncio.create_task(
+            _intent_worker(runtime, queue.deep, waiting), name="intent_worker_deep",
+        ))
     tasks.append(asyncio.create_task(
         _waiting_turn_watcher(runtime, queue, waiting, poll_interval_s=poll_interval_s),
         name="waiting_turn_watcher",

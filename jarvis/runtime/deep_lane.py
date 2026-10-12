@@ -22,11 +22,31 @@ from jarvis.state.turn_overlap import open_deep_turn
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Callable
 
     from jarvis.shared import Event
     from jarvis.state.committed_event_bus import CommittedEventBus
 
 LOGGER = logging.getLogger(__name__)
+
+
+def with_deadline(
+    checkpoint: Callable[[str], None] | None, deadline_s: float,
+) -> Callable[[str], None]:
+    """``checkpoint`` (a cancelled run raises) that raises ``TimeoutError`` after ``deadline_s``.
+
+    The pump's catch-all turns the raise into the timeout notice (:meth:`DeepLane.failed`).
+    """
+    stop_at = time.monotonic() + deadline_s
+
+    def check(where: str) -> None:
+        if checkpoint is not None:
+            checkpoint(where)
+        if time.monotonic() > stop_at:
+            msg = f"the deep task ran past its {deadline_s:.0f} s deadline {where}"
+            raise TimeoutError(msg)
+
+    return check
 
 
 class DeepLane:

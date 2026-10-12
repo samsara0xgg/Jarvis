@@ -121,8 +121,8 @@ def failure_reason(exc: BaseException) -> FailureReason:  # noqa: PLR0911 — on
             return "rate_limited"
         if isinstance(seen, anthropic.BadRequestError) and "credit balance" in str(seen):
             return "quota"
-        if isinstance(seen, openai.APITimeoutError | anthropic.APITimeoutError):  # before the bases
-            return "timeout"
+        if isinstance(seen, TimeoutError | openai.APITimeoutError | anthropic.APITimeoutError):
+            return "timeout"  # before the connection bases
         if isinstance(seen, openai.APIConnectionError | anthropic.APIConnectionError):
             return "network"
         seen = seen.__cause__ or seen.__context__

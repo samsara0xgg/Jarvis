@@ -186,7 +186,7 @@ from jarvis.runtime.dashboard import (
     ViewState,
 )
 from jarvis.runtime.decision_state import DecisionStateCache
-from jarvis.runtime.deep_lane import DeepLane
+from jarvis.runtime.deep_lane import DeepLane, with_deadline
 from jarvis.runtime.departures import Departures
 from jarvis.runtime.highlight_marks import HighlightMarks
 from jarvis.runtime.home import Home, mail_body, mail_summarizer, mail_text, weather_lookup
@@ -4592,6 +4592,9 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             if connected_apps is not None:
                 turn_system_prompt += "\n\n" + connected_apps
                 connected_apps = None
+        checkpoint: Callable[[str], None] | None = run.check_cancelled if run is not None else None
+        if deep_task and runtime.deep is not None:  # ADR 0251: a task may not run for ever
+            checkpoint = with_deadline(checkpoint, runtime.deep.settings.deadline_s)
         decide_ctx = DecideContext(
             conn=runtime.conn,
             runtime_paths=runtime.runtime_paths,
@@ -4659,7 +4662,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 *_whereabouts_lines(runtime),
             ),
             record_sent_message=record_sent_message,
-            cancellation_checkpoint=run.check_cancelled if run is not None else None,
+            cancellation_checkpoint=checkpoint,
             request_admission=(
                 partial(run.admit_request, runtime.conn) if run is not None else None
             ),

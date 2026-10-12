@@ -821,6 +821,57 @@ def test_a_stop_leaves_ordinary_runs_alone(tmp_path: Path) -> None:
         assert lane.runtime.response_runs.open_runs() == ()
 
 
+def test_a_task_that_runs_past_its_deadline_ends_with_the_timeout_notice(tmp_path: Path) -> None:
+    """The deadline is under the lost mark; the run stops at its next request and says so."""
+    with _Peer() as peer:
+        lane = _Lane(tmp_path, peer, deadline_s=1)
+        peer.then("fast", *_HAND_OFF)
+        lane.drive(lane.say(_TASK))
+        task = lane.deep_intent()
+        peer.then("deep", ("hold", ("call", "mail", {"q": "求职"})), ("say", _ANSWER))
+        held = _Held(lane, peer, task)
+        time.sleep(1.3)
+        held.finish()
+        assert isinstance(held.error, TimeoutError)
+        assert len(peer.requests["deep"]) == 1
+        _fail_turn(lane.runtime, intent_event=task, exc=held.error)
+        notice = lane.deep_intent()
+        assert notice.payload["deep_failure"] == "timeout"
+        lane.drive(notice)
+        assert lane.answer(notice.payload["turn_id"])["text"] == f"你让我仔细查的那件事没查成。{lang.t('failure.timeout', lang='zh')}"
+
+
+def test_a_running_deep_task_does_not_take_a_worker_from_his_ordinary_turns(tmp_path: Path) -> None:
+    """With one ordinary worker, a sentence of his is still answered while the task is held."""
+    with _Peer() as peer:
+        lane = _Lane(tmp_path, peer)
+        peer.then("fast", *_HAND_OFF, ("say", "三点。"))
+        peer.then("deep", ("hold", ("say", _ANSWER)))
+
+        async def body() -> None:
+            tasks = await _start_intent_pump(lane.runtime, poll_interval_s=0.01, queue_capacity=8, max_concurrent_turns=1)
+            try:
+                lane.say(_TASK)
+                for _ in range(500):
+                    await asyncio.sleep(0.01)
+                    if peer.requests["deep"]:
+                        break
+                assert peer.requests["deep"], "the task did not start"
+                lane.say("现在几点")
+                for _ in range(500):
+                    await asyncio.sleep(0.01)
+                    if len(lane.rows("turn.ended")) == 2:
+                        break
+                assert [r["turn_id"] for r in lane.rows("turn.ended")] == ["T1", "T2"]  # T2 answered; the task still runs
+            finally:
+                peer.release.set()
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        asyncio.run(body())
+
+
 # --- the turn's guards still apply in the deep run ---------------------------------------------
 
 
@@ -907,6 +958,8 @@ def test_a_write_the_deep_run_wants_still_waits_on_its_card(
         ({"preset": "missing"}, DeepConfigError),
         ({"preset": "deep", "max_tool_iterations": 0}, DeepConfigError),
         ({"preset": "deep", "live_window_s": "soon"}, DeepConfigError),
+        ({"preset": "deep", "deadline_s": 1800}, DeepConfigError),
+        ({"preset": "deep", "deadline_s": 0}, DeepConfigError),
         ({"preset": "deep", "on_words": "("}, DeepConfigError),
         ({"preset": "deep", "on_words": ""}, DeepConfigError),
         ({"preset": "deep", "max_tool_iterations": True}, DeepConfigError),
