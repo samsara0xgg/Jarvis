@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 
 WROTE = TurnCall("keep", read_only=False, ok=True)
 WRITE_FAILED = TurnCall("keep", read_only=False, ok=False)
+WRITE = TurnCall("keep", read_only=False, ok=True)
 READ = TurnCall("recall", read_only=True, ok=True)
 DID, CHECK, LOOKED = "did it", "will check", "looked it up"
 
@@ -103,6 +104,9 @@ DID, CHECK, LOOKED = "did it", "will check", "looked it up"
         ("<voice>面试是周二下午一点。</voice><document>- 已设置两个提醒</document>", [], None),
         ('{"spoken":"面试是周二下午一点。","written":"提醒：已设置两个提醒"}', [], None),
         ("<voice>好，记下了。</voice><document>- 回家修手机发烫</document>", [], DID),
+        # Handing a task to the deep lane (ADR 0251) did nothing the answer can claim.
+        ("好，已经记下了。", [TurnCall("think_deeper", read_only=False, ok=True)], DID),
+        ("好，已经记下了。", [TurnCall("think_deeper", read_only=False, ok=True), WRITE], None),
         ('{"spoken":"已记下：周六吃饭。","written":""}', [], DID),
         # "On screen" is true when the answer carries its written part.
         ('{"spoken":"时间我写在屏幕上了。","written":"- 10:00 产品会"}', [], None),
