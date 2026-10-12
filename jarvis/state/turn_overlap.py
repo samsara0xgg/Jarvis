@@ -75,13 +75,18 @@ def turns_in_flight(
 
 
 def any_turn_in_flight(conn: sqlite3.Connection, *, since_ms: int) -> bool:
-    """Whether a turn started from Allen's words at or after ``since_ms`` is not yet over."""
+    """Whether a turn started from Allen's words at or after ``since_ms`` is not yet over.
+
+    A deep task (ADR 0251) is not his words: it must not hold conversation mode or the daemon
+    busy, so it is not counted here (:func:`turns_in_flight` still names it).
+    """
     return (
         conn.execute(
             f"""
             SELECT 1 FROM events s JOIN events t ON t.event_uid = s.source_event_id
             WHERE s.type = 'turn.started' AND s.ts_epoch_ms >= ?
               AND t.type IN ({", ".join("?" * len(_INPUT_TYPES))})
+              AND COALESCE(json_extract(t.payload_json, '$.channel'), '') != ?
               AND NOT EXISTS (
                 SELECT 1 FROM events e
                 WHERE e.type IN ({", ".join("?" * len(_TURN_CLOSED_TYPES))})
@@ -91,7 +96,7 @@ def any_turn_in_flight(conn: sqlite3.Connection, *, since_ms: int) -> bool:
               )
             LIMIT 1
             """,  # noqa: S608 - only placeholders are interpolated
-            (since_ms, *_INPUT_TYPES, *_TURN_CLOSED_TYPES),
+            (since_ms, *_INPUT_TYPES, DEEP_CHANNEL, *_TURN_CLOSED_TYPES),
         ).fetchone()
         is not None
     )

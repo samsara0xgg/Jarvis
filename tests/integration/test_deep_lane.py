@@ -49,7 +49,7 @@ from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log, turn_origin
 from jarvis.state.input_claim import claim_input_once
 from jarvis.state.memory_db import MemorySettings
-from jarvis.state.turn_overlap import open_deep_turn
+from jarvis.state.turn_overlap import any_turn_in_flight, open_deep_turn, turns_in_flight
 from tests.canary._helpers import repo_root
 from tests.integration.test_wave4a_response_run import _realtime_config
 
@@ -564,6 +564,36 @@ def test_a_barge_in_leaves_a_running_deep_task_alone_and_still_answers(tmp_path:
         worker.join(10)
         assert lane.answer(task.payload["turn_id"])["text"]
         assert lane.rows("response.cancelled") == []
+
+
+# --- a running task does not hold the daemon busy -------------------------------------------------
+
+
+def test_a_running_deep_task_is_named_to_later_turns_but_does_not_hold_the_daemon_busy(tmp_path: Path) -> None:
+    """Conversation mode and the idle check read any_turn_in_flight: the task must not count there."""
+    with _Peer() as peer:
+        lane = _Lane(tmp_path, peer)
+        peer.then("fast", *_HAND_OFF)
+        lane.drive(lane.say(_TASK))
+        task = lane.deep_intent()
+        peer.then("deep", ("hold", ("say", _ANSWER)))
+        worker = threading.Thread(
+            target=_drive_turn_in_worker_thread, args=(lane.runtime,), kwargs={"user_intent_event": task},
+        )
+        worker.start()
+        try:
+            for _ in range(500):
+                if peer.requests["deep"]:
+                    break
+                time.sleep(0.01)
+            assert peer.requests["deep"], "the deep run did not start"
+            assert any_turn_in_flight(lane.conn, since_ms=0) is False
+            later = lane.say("几点了")
+            named = turns_in_flight(lane.conn, trigger_event_uid=later.event_uid, since_ms=0)
+            assert [turn.turn_id for turn in named] == [task.payload["turn_id"]]
+        finally:
+            peer.release.set()
+            worker.join(10)
 
 
 # --- the turn's guards still apply in the deep run ---------------------------------------------
