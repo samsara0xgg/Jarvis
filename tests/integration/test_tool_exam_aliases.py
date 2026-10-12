@@ -22,6 +22,11 @@ ALIASES = {
     "mcp__gmail__gmail_search": "mail",
     "mcp__gmail__gmail_get": "mail",
 }
+SCHEDULE = {
+    "mcp__microsoft__get-calendar-view": "my_schedule",
+    "mcp__microsoft__list-todo-task-lists": "my_schedule",
+    "mcp__microsoft__list-todo-tasks": "my_schedule",
+}
 REQUEST: dict[str, Any] = {"messages": [{"role": "user", "content": "x"}]}
 
 
@@ -42,6 +47,15 @@ def _line(name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
          (False, "FAIL(mail)")),
         ({"ok": ["text"], "bad": ["mcp__gmail__gmail_get"]}, ("mail", {"read": "m1"}), None,
          (False, "FAIL(mail)")),
+        # The three Microsoft reads folded into my_schedule (ADR 0248).
+        ({"ok": ["mcp__microsoft__get-calendar-view"]}, ("my_schedule", {"date": "tomorrow"}),
+         SCHEDULE, (True, "pass")),
+        ({"ok": ["mcp__microsoft__list-todo-tasks"]}, ("my_schedule", {}), SCHEDULE,
+         (True, "pass")),
+        ({"ok": ["mcp__microsoft__get-calendar-view"]}, ("my_schedule", {}), None,
+         (False, "FAIL(my_schedule)")),
+        ({"ok": ["text"], "bad": ["mcp__microsoft__get-calendar-view"]}, ("my_schedule", {}),
+         SCHEDULE, (False, "FAIL(my_schedule)")),
         # A name the file does not mention is read as it is.
         ({"ok": ["weather"]}, ("weather", {}), ALIASES, (True, "pass")),
         ({"ok": ["weather"]}, ("mail", {}), ALIASES, (False, "FAIL(mail)")),

@@ -28,7 +28,7 @@ from jarvis.runtime.home import Home
 from jarvis.shared import ActionRequest, CallerPrincipal, steps
 from jarvis.state import departures, reminders
 from jarvis.state.event_log import open_event_log
-from scripts import tool_exam
+from scripts import tool_exam, tool_exam_steps
 from tests.integration.test_home_routes import _Connections
 
 if TYPE_CHECKING:
@@ -715,5 +715,14 @@ def test_the_booted_runtime_has_the_tool_and_reports_microsoft_not_connected(
             out["summary"]
         )
         assert out["read"] == ["reminders"]
+        # The multi-step exam stubs it with the same honesty: no calendar was read.
+        classes = tool_exam_steps.classify(runtime.tool_registry)
+        assert classes["my_schedule"] == "stub"
+        tool_exam_steps._apply_stubs(runtime.tool_registry, classes)  # noqa: SLF001
+        stubbed = _dispatch(
+            runtime.tool_registry, runtime.conn, runtime.runtime_paths, {"date": "tomorrow"},
+        )
+        assert stubbed["summary"].startswith("Could not read his calendar and his to-dos (sandbox")
+        assert stubbed["read"] == []
     finally:
         runtime.conn.close()

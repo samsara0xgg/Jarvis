@@ -79,7 +79,7 @@ REPO = Path(__file__).resolve().parent.parent
 _DBS = ("mac_events.db", "memory.db")
 _RESULT_CHARS = 2000
 _LATE_TOOLS = (  # registered after the MCP group
-    "job_ledger", "record_application", "mail", "conversation", "my_day",
+    "job_ledger", "record_application", "mail", "conversation", "my_day", "my_schedule",
 )
 
 # --- the tool classification (decided per handler; the run refuses an unclassified tool) -------
@@ -102,12 +102,17 @@ SANDBOX_WRITE = frozenset({
     "show_on_dashboard",  # its push goes to a recorder
 })
 STUB = frozenset({
+    "my_schedule",  # the sandbox has no Microsoft connection, like its stand-in Microsoft tools
     "open_url", "open_path", "read_file", "write_file", "read_clipboard", "screen_look",
     "start_night_run", "end_night_run", "refresh_work_state", "daily_work_report", "set_voice",
     "write_mail_draft", "open_plugin", "disable_plugin", "remove_plugin",
 })
 _STUB_NOTE = {"stubbed": True, "note": "sandbox: not run"}
 _MICROSOFT_NOTE = {"value": [], "note": "sandbox: calendar not connected"}
+_SCHEDULE_NOTE = {
+    "summary": "Could not read his calendar and his to-dos (sandbox: Microsoft is not connected).",
+    "items": [], "more": False, "read": [], "missing": ["sandbox: Microsoft is not connected"],
+}
 
 
 def classify(registry: ToolRegistry) -> dict[str, str]:
@@ -184,7 +189,11 @@ def _add_microsoft(runtime: JarvisRuntime, recorded: Path) -> None:
 
 def _stub(tool: Tool | ToolDefinition) -> Tool | ToolDefinition:
     """``tool`` with its handler replaced by a fixed result; schema, risk and flags are kept."""
-    note = _MICROSOFT_NOTE if tool.name.startswith("mcp__microsoft__") else _STUB_NOTE
+    note: dict[str, Any] = _STUB_NOTE
+    if tool.name.startswith("mcp__microsoft__"):
+        note = _MICROSOFT_NOTE
+    elif tool.name == "my_schedule":
+        note = _SCHEDULE_NOTE
     return _device_proxy(tool, lambda *_: dict(note))
 
 
