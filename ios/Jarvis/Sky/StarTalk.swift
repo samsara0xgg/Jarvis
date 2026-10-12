@@ -77,6 +77,7 @@ extension StarEngine {
     /// Her words in a row of their own, laid out whole and lit a word at a time (`Reveal`): `cps` words a second, else a steady pace that is quicker for a long answer.
     @discardableResult func startSay(_ text: String, cps: Double? = nil, delay: Double = 0, leadIn: Bool = false, steps: StepsInfo? = nil) -> Say {
         finishSay()
+        if text.isEmpty { return Say("") }       // nothing to say is no row (a row of no height would still take its gap)
         if !leadIn { Haptic.impact(.soft) }
         let n = Reveal.count(String(AnswerText.linked(text).characters)), every = cps.map { 1 / $0 } ?? Reveal.stagger(n)
         let s = Say(text, cps: Double(text.count) / (Double(max(n, 1)) * every), delay: delay)

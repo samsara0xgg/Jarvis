@@ -328,6 +328,20 @@ final class TurnStatusTests: XCTestCase {
         XCTAssertEqual(e.ui.liveTurns.count, 2, "nothing to drop once she has spoken")
     }
 
+    @MainActor func testAnEmptyReplyAddsNoRowAndKeepsTheTypingLineForTheFallback() {
+        let e = StarEngine()
+        e.beginTalk(base: 0)
+        e.addTurn(his: true, "x")
+        e.showStatus()
+        e.startSay(AnswerText.visible("<voice></voice>"))
+        XCTAssertEqual(e.ui.liveTurns.count, 2, "no row for nothing")
+        XCTAssertNotNil(e.ui.liveTurns[1].status)
+        XCTAssertNil(e.speaking)
+        e.startSay("好")
+        XCTAssertEqual(e.ui.liveTurns[1].text, "好")
+        e.finishSay()
+    }
+
     @MainActor func testATurnThatEndsWithoutAWordTakesTheTypingLineAwayAndTheBoardSaysItsLineNow() {
         let e = StarEngine()
         e.beginTalk(base: 0)

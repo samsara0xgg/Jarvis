@@ -108,10 +108,11 @@ extension StarEngine {
                 continue
             }
             last = rows.last?.seq ?? last
-            for r in hers.dropLast() { addTurn(his: false, AnswerText.visible(r.text), leadIn: r.isLeadIn, steps: r.isLeadIn ? nil : r.steps) }
+            for r in hers.dropLast() where !AnswerText.visible(r.text).isEmpty { addTurn(his: false, AnswerText.visible(r.text), leadIn: r.isLeadIn, steps: r.isLeadIn ? nil : r.steps) }
             // the steps under the answer: the brain's own summary of the turn, or what the line saw of them until the conversation has it
-            startSay(AnswerText.visible(row.text), leadIn: row.isLeadIn, steps: row.isLeadIn ? nil : row.steps ?? StatusBoard.shared.info)
-            expr = "39"; talk = "speak"; said = true
+            let words = AnswerText.visible(row.text)
+            startSay(words, leadIn: row.isLeadIn, steps: row.isLeadIn ? nil : row.steps ?? StatusBoard.shared.info)
+            if !words.isEmpty { expr = "39"; talk = "speak"; said = true }          // an empty reply is not an answer: the fallback line still stands
             if row.isLeadIn { showStatus(); deadline = nowMs() + 25_000; continue }          // more follows (the steps she takes meanwhile show in a line of their own): it is waited for while this is read
             break
         }
