@@ -19,7 +19,7 @@ from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
 _EFFORTS: Final[frozenset[str]] = frozenset({"low", "medium", "high", "xhigh", "max"})
 _BAD_ID: Final[re.Pattern[str]] = re.compile(r"[^a-zA-Z0-9_-]")
@@ -81,6 +81,73 @@ def files_headers(body: Mapping[str, Any]) -> dict[str, str]:
             if block.get("type") == "image" and block.get("source", {}).get("type") == "file":
                 return {"anthropic-beta": FILES_BETA}
     return {}
+
+
+type StaleFiles = Callable[[Sequence[str]], tuple[Mapping[str, str], Callable[[], None]]]
+"""ADR 0255: file ids the API did not accept -> (fallback text for each, ``commit``).
+
+The text stands in for the picture's block (``""``: leave it out) for the one retry; ``commit``
+is called once that retry has been answered, and forgets the ids."""
+
+_stale_files: StaleFiles | None = None
+_NOT_ACCEPTED: Final[frozenset[tuple[int, str]]] = frozenset(
+    {(404, "not_found_error"), (403, "permission_error")},
+)
+"""(HTTP status, error type) the API answers when a request names a file it cannot read."""
+
+
+def set_stale_files_handler(handler: StaleFiles | None) -> None:
+    """Install what answers a request rejected over a file id (the runtime owns the files)."""
+    global _stale_files  # noqa: PLW0603 — one handler per process, like the thinking blocks above
+    _stale_files = handler
+
+
+def _file_ids(body: Mapping[str, Any]) -> list[str]:
+    found: dict[str, None] = {}
+    for message in body.get("messages") or ():
+        content = message.get("content")
+        for block in content if isinstance(content, list) else ():
+            source = block.get("source") if block.get("type") == "image" else None
+            if isinstance(source, dict) and source.get("type") == "file":
+                found[str(source["file_id"])] = None
+    return list(found)
+
+
+def repair_stale_files(
+    exc: BaseException, body: Mapping[str, Any],
+) -> tuple[dict[str, Any], Callable[[], None]] | None:
+    """The request to send once more, and what to call when it is answered, or ``None``.
+
+    Only for a rejection that the status and error type say is about something not found or not
+    accessible, on a request that names files. The ids the error names are the stale ones; when it
+    names none, every file of the request is treated as stale. The pictures are replaced by their
+    fallback text, so the retry carries marker and note, as history did before ADR 0255.
+    """
+    ids = _file_ids(body)
+    detail = getattr(exc, "body", None)
+    error = detail.get("error") if isinstance(detail, dict) else None
+    kind = error.get("type") if isinstance(error, dict) else None
+    if (
+        _stale_files is None or not ids
+        or (getattr(exc, "status_code", None), kind) not in _NOT_ACCEPTED
+    ):
+        return None
+    stale = [one for one in ids if one in str(detail)] or ids
+    texts, commit = _stale_files(stale)
+    messages = copy.deepcopy(list(body["messages"]))
+    for message in messages:
+        if not isinstance(message.get("content"), list):
+            continue
+        blocks: list[dict[str, Any]] = []
+        for block in message["content"]:
+            source = block.get("source") if block.get("type") == "image" else None
+            if isinstance(source, dict) and source.get("file_id") in stale:
+                if texts.get(source["file_id"]):
+                    blocks.append({"type": "text", "text": texts[source["file_id"]]})
+            else:
+                blocks.append(block)
+        message["content"] = blocks
+    return {**body, "messages": messages}, commit
 
 
 def _user_blocks(content: object) -> list[dict[str, Any]]:

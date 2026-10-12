@@ -19,11 +19,12 @@ import threading
 import time
 from typing import TYPE_CHECKING, Final
 
+from jarvis.state import picture_notes as note_records
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import link_attachments, linked_attachment_ids
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
     from jarvis.decision.llm import LLMClient
@@ -81,9 +82,13 @@ RETRY_AFTER_S: Final = 600.0
 class PictureFiles:
     """The Files API copies of the history pictures: made on first need, made on first need."""
 
-    def __init__(self, store: Attachments, *, clock: Callable[[], float] = time.monotonic) -> None:
-        """``store`` keeps the file ids; ``clock`` is monotonic seconds."""
+    def __init__(
+        self, store: Attachments, *, memory_db: Path | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """``store`` keeps the file ids; ``memory_db`` holds the notes; ``clock`` is monotonic."""
         self._store = store
+        self._memory_db = memory_db
         self._clock = clock
         self._lock = threading.Lock()
         self._failed: dict[str, float] = {}
@@ -120,6 +125,38 @@ class PictureFiles:
                 return None
             self._store.set_file_id(attachment_id, file_id)
             return file_id
+
+    def stale(self, file_ids: Sequence[str]) -> tuple[dict[str, str], Callable[[], None]]:
+        """File ids the API would not read: their pictures' notes, and what forgets the ids.
+
+        The note stands in for the picture in the one request that is retried (marker and note,
+        as before ADR 0255). The ids are forgotten, with a pause before the picture is uploaded
+        again, only once that retry has been answered: a rejection that was about something
+        else must not cost valid ids, and their uploaded copies with them.
+        """
+        by_file = {file_id: one for one, file_id in self._store.file_ids().items()}
+        pictures = {file_id: by_file[file_id] for file_id in file_ids if file_id in by_file}
+        notes = {
+            file_id: text for file_id, one in pictures.items()
+            if self._memory_db is not None
+            and (text := note_records.note_text(self._memory_db, one)) is not None
+        }
+
+        def forget() -> None:
+            with self._lock:
+                for one in pictures.values():
+                    self._store.forget_file_id(one)
+                    self._failed[one] = self._clock() + RETRY_AFTER_S
+            LOGGER.warning(
+                "pictures: dropped %d file ids the API could not read; those pictures ride as "
+                "words and are uploaded again later", len(pictures),
+            )
+
+        LOGGER.warning(
+            "pictures: the API rejected %d file ids; retrying the request with words",
+            len(file_ids),
+        )
+        return notes, forget
 
     def release(self, client: LLMClient | None, *, everything: bool = False) -> int:
         """Delete the Files API copies of the pictures whose file is gone; how many went.

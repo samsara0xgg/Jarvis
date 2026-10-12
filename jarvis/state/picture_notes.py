@@ -71,6 +71,18 @@ def bodies(path: Path, attachment_ids: Iterable[str]) -> dict[str, str]:
     return {ids[str(rid)]: str(text).partition("\n")[2] for rid, text in rows}
 
 
+def note_text(path: Path, attachment_id: str) -> str | None:
+    """The whole record of a picture's note, header line included, or ``None`` without one."""
+    if not path.is_file():
+        return None
+    with closing(open_memory_db(path)) as conn:
+        row = conn.execute(
+            "SELECT text FROM records WHERE source = ? AND id = ?",
+            (SOURCE, note_id(attachment_id)),
+        ).fetchone()
+    return None if row is None else str(row[0])
+
+
 def body_by_prefix(path: Path, prefix: str) -> str | None:
     """The note of the one picture whose id starts with ``prefix`` (8+ hex digits), if any."""
     prefix = prefix.strip().lower()

@@ -35,7 +35,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 
-from jarvis.decision.llm_anthropic import files_headers, remember_thinking, request_fields
+from jarvis.decision.llm_anthropic import (
+    files_headers,
+    remember_thinking,
+    repair_stale_files,
+    request_fields,
+)
 from jarvis.decision.llm_io import stream_openai, warm_openai
 from jarvis.decision.llm_stream import LLMStreamHandle, StreamNormalizer
 from jarvis.shared import llm_io_log
@@ -265,6 +270,46 @@ def _empty_metadata() -> dict[str, Any]:
         "cache_read_tokens": None,
         "cache_write_tokens": None,
     }
+
+
+def _create_message(client: Any, kwargs: dict[str, Any]) -> Any:  # noqa: ANN401 — SDK types
+    """``messages.create``; a file id the API cannot read is retried once as words (ADR 0255)."""
+    try:
+        return client.messages.create(**kwargs, extra_headers=files_headers(kwargs) or None)
+    except Exception as exc:
+        repaired = repair_stale_files(exc, kwargs)
+        if repaired is None:
+            raise
+        retry, commit = repaired
+    response = client.messages.create(**retry, extra_headers=files_headers(retry) or None)
+    commit()
+    return response
+
+
+async def _anthropic_events(
+    options: dict[str, Any], body: dict[str, Any],
+) -> AsyncIterator[Mapping[str, Any]]:
+    """One Anthropic stream's chunks; a file id the API cannot read is retried once as words.
+
+    Only a request rejected before its first chunk is retried (ADR 0255). The ids that retry
+    dropped are forgotten once it has been answered.
+    """
+    commit = None
+    for attempt in (0, 1):
+        answered = False
+        try:
+            async for chunk in stream_openai(options, body, responses=False, provider="anthropic"):
+                if not answered and commit is not None:
+                    commit()
+                answered = True
+                yield chunk
+        except Exception as exc:
+            repaired = None if attempt or answered else repair_stale_files(exc, body)
+            if repaired is None:
+                raise
+            body, commit = repaired
+        else:
+            return
 
 
 class LLMClient:
@@ -722,7 +767,7 @@ class LLMClient:
             async for chunk in stream_openai(options, body, responses=responses):
                 yield chunk
         else:
-            async for chunk in stream_openai(options, body, responses=False, provider="anthropic"):
+            async for chunk in _anthropic_events(options, body):
                 yield chunk
 
     # ---- fresh-context contextmanager (ADR-0002 Step 9) ---------------
@@ -1185,7 +1230,7 @@ class LLMClient:
             streaming=False,
             measurement_semantics="immediately_before_sdk_call_not_network_send",
         )
-        response = client.messages.create(**kwargs, extra_headers=files_headers(kwargs) or None)
+        response = _create_message(client, kwargs)
 
         usage = getattr(response, "usage", None)
         self._last_metadata["provider"] = "anthropic"

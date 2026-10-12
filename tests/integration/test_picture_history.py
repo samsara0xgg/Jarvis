@@ -12,6 +12,9 @@ No network: the Files API is a recording fake.
 - the request the Anthropic adapter builds names the file and sends the Files API beta header;
 - the rows of ``GET /inherent/conversation`` list his files and carry his words alone, and
   ``GET /inherent/attachments/{id}`` returns the stored bytes to a paired device, 404 once gone;
+- a request the API rejects over a file id it cannot read is sent once more with the pictures as
+  marker and note, the ids are forgotten only when that retry is answered, and a rejection about
+  anything else is neither retried nor costs an id;
 - the uploaded copy goes with its file: at the retention sweep, on clearing the recordings and on
   erasing everything, and a delete that fails is tried again at the next sweep.
 """
@@ -32,7 +35,12 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from jarvis.decision.llm import LLMClient
-from jarvis.decision.llm_anthropic import FILES_BETA, files_headers, request_fields
+from jarvis.decision.llm_anthropic import (
+    FILES_BETA,
+    files_headers,
+    request_fields,
+    set_stale_files_handler,
+)
 from jarvis.runtime import inherent_loop, picture_files
 from jarvis.runtime.picture_files import RETRY_AFTER_S, PictureFiles
 from jarvis.state import picture_notes as note_records
@@ -671,3 +679,174 @@ def test_without_an_attachment_store_the_file_route_does_not_exist(tmp_path: Pat
     d = _daemon(tmp_path, wired=False)
 
     assert d.remote.get(f"/inherent/attachments/{'a' * 32}", headers=d.auth()).status_code == 404
+
+
+# --- a file id the API cannot read ---------------------------------------------------------------
+
+
+class _Answers(http.server.BaseHTTPRequestHandler):
+    """A local /v1/messages: rejects what ``reject`` says, answers the rest, records the bodies."""
+
+    bodies: list[dict[str, Any]] = []  # noqa: RUF012 — shared with the test that arms it
+    rule: list[Any] = []  # noqa: RUF012 — [(body) -> (status, error type, message) or None]
+
+    def do_POST(self) -> None:
+        """Answer one request."""
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.bodies.append(body)
+        refused = self.rule[0](body) if self.rule else None
+        if refused is not None:
+            status, kind, message = refused
+            raw = json.dumps({"type": "error", "error": {"type": kind, "message": message}})
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw.encode())))
+            self.end_headers()
+            self.wfile.write(raw.encode())
+            return
+        frames = _reply({"type": "text", "text": "ok"}, stop="end_turn")
+        if body.get("stream"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            for frame in frames:
+                self.wfile.write(f"event: {frame['type']}\ndata: {json.dumps(frame)}\n\n".encode())
+            return
+        message = json.dumps({
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "m",
+            "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn",
+            "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 1},
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(message)))
+        self.end_headers()
+        self.wfile.write(message)
+
+    def log_message(self, *_args: object) -> None:
+        """Keep the test output quiet."""
+
+
+@pytest.fixture
+def api(monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: ANN401
+    """The local peer and a client on it; the stale-file handler is cleared afterwards."""
+    monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
+    from tests.integration.test_anthropic_adaptation import _preset  # noqa: PLC0415
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Answers)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    _Answers.bodies = []
+    _Answers.rule = []
+    client = _preset("")
+    client._base_url = f"http://127.0.0.1:{server.server_port}"  # noqa: SLF001
+    yield client
+    server.shutdown()
+    set_stale_files_handler(None)
+
+
+def pictured(world: World, *names: str) -> tuple[PictureFiles, list[dict[str, Any]], list[str]]:
+    """History with the pictures riding, the store that holds their ids, and their ids."""
+    files = PictureFiles(world.store, memory_db=world.memory.db_path)
+    ids = [send(world, name) for name in names]
+    history = render(world, files, FilesClient())
+    set_stale_files_handler(files.stale)
+    return files, [*history, {"role": "user", "content": "and now?"}], ids
+
+
+def not_found() -> Any:  # noqa: ANN401
+    """A peer rule: 404 not_found_error for any request that names a file."""
+    return lambda body: (
+        (404, "not_found_error", "file not found") if "file_id" in json.dumps(body) else None
+    )
+
+
+async def stream(client: LLMClient, messages: list[dict[str, Any]]) -> list[Any]:
+    """The events of one streamed request."""
+    handle = client.stream_events(on_settled=lambda _d: None, messages=messages, system="S")
+    return [event async for event in handle.events()]
+
+
+def test_a_rejected_file_id_is_retried_once_as_marker_and_note_and_then_forgotten(
+    world: World, api: LLMClient, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The turn is answered; the picture rode as words for that request, and its id is gone."""
+    files, messages, (picture,) = pictured(world, "IMG_1.png")
+    _Answers.rule = [not_found()]
+
+    events = asyncio.run(stream(api, messages))
+
+    first, second = _Answers.bodies
+    assert first["messages"][0]["content"][1]["source"] == {"type": "file", "file_id": "file_001"}
+    blocks = second["messages"][0]["content"]
+    assert [block["type"] for block in blocks] == ["text", "text"]
+    assert blocks[1]["text"].startswith("[Picture note · image IMG_1.png")
+    assert "note of IMG_1.png" in blocks[1]["text"]
+    assert "file_001" not in json.dumps(second)
+    assert any(getattr(event, "text", "") == "ok" for event in events)
+    assert world.store.file_id(picture) is None
+    assert "pictures: dropped 1 file ids" in caplog.text
+    assert "pictures: the API rejected 1 file ids" in caplog.text
+    resolve = files.resolver(FilesClient())
+    assert resolve is not None
+    assert resolve(picture) is None, "not uploaded again at once"
+
+
+def test_only_the_ids_the_error_names_are_replaced(world: World, api: LLMClient) -> None:
+    """The error says which file; the other picture keeps riding."""
+    _, messages, (old, fresh) = pictured(world, "IMG_1.png", "IMG_2.png")
+    named = world.store.file_id(old)
+    kept = world.store.file_id(fresh)
+    assert named is not None
+    assert kept is not None
+    _Answers.rule = [lambda body: (
+        (404, "not_found_error", f"File not found: {named}") if named in json.dumps(body) else None
+    )]
+
+    asyncio.run(stream(api, messages))
+
+    _, retry = _Answers.bodies
+    assert named not in json.dumps(retry)
+    assert kept in json.dumps(retry)
+    assert world.store.file_id(fresh) == kept
+    assert world.store.file_id(old) is None
+
+
+def test_a_rejection_about_something_else_is_not_retried_and_costs_no_id(
+    world: World, api: LLMClient,
+) -> None:
+    """A 400, and a 404 that the words do not cure (the second request fails the same way)."""
+    _, messages, (picture,) = pictured(world, "IMG_1.png")
+    _Answers.rule = [lambda _body: (400, "invalid_request_error", "bad request")]
+    asyncio.run(stream(api, messages))
+    assert len(_Answers.bodies) == 1
+    assert world.store.file_id(picture) is not None
+
+    _Answers.bodies.clear()
+    _Answers.rule = [lambda _body: (404, "not_found_error", "model: nope")]
+    asyncio.run(stream(api, messages))
+    assert len(_Answers.bodies) == 2, "tried once more as words, then given up"
+    assert world.store.file_id(picture) is not None, "the retry failed too: not the cause"
+
+
+def test_a_request_without_files_is_never_retried(world: World, api: LLMClient) -> None:
+    """Nothing to drop, so a 404 is just an error."""
+    pictured(world, "IMG_1.png")
+    _Answers.rule = [lambda _body: (404, "not_found_error", "model: nope")]
+
+    asyncio.run(stream(api, [{"role": "user", "content": "hi"}]))
+
+    assert len(_Answers.bodies) == 1
+
+
+def test_the_unstreamed_call_retries_the_same_way(world: World, api: LLMClient) -> None:
+    """``chat`` is the other way a request leaves; same rule."""
+    _, messages, (picture,) = pictured(world, "IMG_1.png")
+    _Answers.rule = [not_found()]
+
+    answer = api.chat(messages=messages, system="S")
+
+    assert answer.text == "ok"
+    assert len(_Answers.bodies) == 2
+    assert "file_001" not in json.dumps(_Answers.bodies[1])
+    assert world.store.file_id(picture) is None

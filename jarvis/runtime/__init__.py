@@ -77,6 +77,7 @@ from jarvis.decision.confirm_grammar import ConfirmGrammarConfigError, load_conf
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.jev_oneshot import TOOL_GROUPS, JevOneShot
 from jarvis.decision.llm import LLMClient
+from jarvis.decision.llm_anthropic import set_stale_files_handler
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.mail_reply import MailReply
 from jarvis.decision.moment import FIELDS as MOMENT_FIELDS
@@ -3108,6 +3109,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     _register_schedule(registry, home, local_zone)
     plugin_connections.refresh_search()  # ADR 0247: every built-in tool is registered now
     attachments = Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME)
+    picture_files = PictureFiles(attachments, memory_db=memory.db_path)
+    set_stale_files_handler(picture_files.stale)  # ADR 0255
     # ADR 0249: his next calendar items, read in the background through ``my_schedule``'s read.
     calendar_next = CalendarCache(
         partial(upcoming_events, home.graph, local_zone, limit=KEPT), speakable.now,
@@ -3127,7 +3130,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         settings_drift=settings_drift,
         phone_events=phone_events,
         attachments=attachments,
-        picture_files=PictureFiles(attachments),
+        picture_files=picture_files,
         picture_notes=(
             None if vision_client is None else PictureNotes(
                 memory_db=memory.db_path,
