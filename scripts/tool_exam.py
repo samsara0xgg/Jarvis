@@ -20,8 +20,11 @@ definitions (``{mcp__server__tool: {name, description, input_schema}}``) a live 
 list, which an offline run cannot ask for. An optional ``tool-aliases.json`` next to the cases maps
 a tool name the cases still use to the name that replaced it (``{"mail_inbox": "mail"}``): ``score``
 reads the names in ``ok``, ``bad`` and ``args_must_not`` through it, so a merged tool is judged
-without editing the cases. An ``args_must_not`` rule keeps the old tool's argument names, so it
-trips only on a call that still uses them. An optional ``prompt-patches.json`` (``[{old, new}]``)
+without editing the cases. The file is shared by runs made on different checkouts, so an alias
+applies to a run only when its replacement is in the tools of the ``menu`` line that precedes that
+run in the results file (a run with no menu line before it is read through every alias). An
+``args_must_not`` rule keeps the old tool's argument names, so it trips only on a call that still
+uses them. An optional ``prompt-patches.json`` (``[{old, new}]``)
 rewrites the logged system prompt the way this checkout's prompt reads (see :func:`patched`).
 
 ``run --guards`` applies the decision loop's two turn guards (ADR 0240, the same code) to the first
@@ -92,7 +95,7 @@ from jarvis.state.ledger import LedgerSources
 from scripts.replay_decision import _client, replay_once
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Collection, Mapping, Sequence
 
     from jarvis.decision.llm import LLMClient
 
@@ -486,6 +489,15 @@ def load_aliases(cases: Path) -> dict[str, str]:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
+def usable_aliases(
+    aliases: Mapping[str, str], menu: Collection[str] | None,
+) -> dict[str, str]:
+    """The aliases whose replacement was offered on ``menu``; all of them when none was recorded."""
+    if menu is None:
+        return dict(aliases)
+    return {old: new for old, new in aliases.items() if new in menu}
+
+
 def judge(
     first: Mapping[str, Any], line: Mapping[str, Any], request: Mapping[str, Any],
     aliases: Mapping[str, str] | None = None,
@@ -623,16 +635,22 @@ def cmd_score(args: argparse.Namespace) -> int:
     """``score``: the pass table, timings and cost of a results file."""
     cases = {c["id"]: c for c in json.loads(args.cases.read_text(encoding="utf-8"))}
     runs: Runs = defaultdict(list)
+    menu: frozenset[str] | None = None  # the tools of the menu line the next runs followed
     for text in args.results.read_text(encoding="utf-8").splitlines():
         line = json.loads(text) if text.strip() else {}
-        if line.get("kind") == "run" and line["case"] in cases:
-            runs[line["case"], line["preset"]].append(line)
+        if line.get("kind") == "menu":
+            menu = frozenset(line["tools"])
+        elif line.get("kind") == "run" and line["case"] in cases:
+            runs[line["case"], line["preset"]].append({**line, "_menu": menu})
     for lines in runs.values():
         lines.sort(key=lambda one: one["run"])
     presets = sorted({p for _, p in runs})
     aliases = load_aliases(args.cases)
     verdicts: Verdicts = {
-        key: [judge(first, line, cases[key[0]]["request"], aliases) for line in lines]
+        key: [
+            judge(first, line, cases[key[0]]["request"], usable_aliases(aliases, line["_menu"]))
+            for line in lines
+        ]
         for key, lines in runs.items()
         if (first := (cases[key[0]].get("expect") or {}).get("first"))
     }

@@ -108,3 +108,57 @@ def test_score_judges_an_unedited_case_with_the_alias_file(
     assert "inbox  'anything for me?'  p[FAIL]: FAIL(mail)" in score()
     (tmp_path / "tool-aliases.json").write_text(json.dumps(ALIASES), encoding="utf-8")
     assert "inbox  'anything for me?'  p[PASS]: pass" in score()
+
+
+@pytest.mark.parametrize(
+    ("menu", "kept"),
+    [
+        (None, ALIASES),  # no menu line before the run: every alias
+        (["mail", "weather"], ALIASES),  # the replacement was offered
+        (["mail_inbox", "weather"], {}),  # a run made before the merge: the old names stand
+        ([], {}),
+    ],
+)
+def test_an_alias_applies_only_when_its_replacement_was_on_the_menu(
+    menu: list[str] | None, kept: dict[str, str],
+) -> None:
+    """The alias file is shared by branches; a menu without the new tool leaves old names alone."""
+    assert tool_exam.usable_aliases(ALIASES, menu) == kept
+
+
+def test_score_reads_each_run_through_the_aliases_of_the_menu_line_before_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """One file with two menus: a run before the merge keeps old names, one after maps them."""
+    cases = tmp_path / "cases.json"
+    cases.write_text(json.dumps([
+        {"id": "a", "said": "any mail?", "request": REQUEST, "tags": [],
+         "expect": {"first": {"ok": ["mail_inbox"]}}},
+        {"id": "b", "said": "any mail now?", "request": REQUEST, "tags": [],
+         "expect": {"first": {"ok": ["mail_inbox"]}}},
+    ]), encoding="utf-8")
+    (tmp_path / "tool-aliases.json").write_text(json.dumps(ALIASES), encoding="utf-8")
+
+    def run(case: str, name: str) -> dict[str, Any]:
+        return {
+            "kind": "run", "case": case, "preset": "p", "run": 0, "model": "m",
+            "first_token_s": 0.5, "total_s": 1.0, "text": "", "finish_reason": "stop",
+            "calls": [{"name": name, "args": {}}], "usage": None, "error": None,
+        }
+
+    lines = [
+        {"kind": "menu", "tools": ["mail_inbox", "weather"], "chars": 1},
+        run("a", "mail_inbox"),
+        {"kind": "menu", "tools": ["mail", "weather"], "chars": 1},
+        run("b", "mail"),
+    ]
+    results = tmp_path / "results.jsonl"
+    results.write_text("".join(json.dumps(one) + "\n" for one in lines), encoding="utf-8")
+    tool_exam.cmd_score(argparse.Namespace(results=results, cases=cases))
+    out = capsys.readouterr().out
+    assert "a  'any mail?'  p[PASS]: pass" in out  # old menu: mail_inbox still expected and called
+    assert "b  'any mail now?'  p[PASS]: pass" in out  # new menu: mail_inbox read as mail
+    lines[1] = run("a", "mail")  # the same call under the old menu is the wrong tool
+    results.write_text("".join(json.dumps(one) + "\n" for one in lines), encoding="utf-8")
+    tool_exam.cmd_score(argparse.Namespace(results=results, cases=cases))
+    assert "a  'any mail?'  p[FAIL]: FAIL(mail)" in capsys.readouterr().out
