@@ -45,18 +45,18 @@ extension StarEngine {
         if !on { lingerFrom(nowMs()) }
     }
 
-    @discardableResult func addTurn(his: Bool, _ text: String, reveal: Reveal? = nil, pics: [SentItem] = [], leadIn: Bool = false, growing: Bool = false, steps: StepsInfo? = nil) -> Int {
+    @discardableResult func addTurn(his: Bool, _ text: String, reveal: Reveal? = nil, pics: [SentItem] = [], leadIn: Bool = false, growing: Bool = false, steps: StepsInfo? = nil, recordId: String? = nil) -> Int {
         // her first words take the place of the typing line, in the same row, so nothing moves
         if !his, let id = statusTurn {
             statusTurn = nil
             if let i = ui.liveTurns.lastIndex(where: { $0.id == id }) {
-                ui.liveTurns[i].text = text; ui.liveTurns[i].reveal = reveal; ui.liveTurns[i].leadIn = leadIn; ui.liveTurns[i].steps = steps; ui.liveTurns[i].status = nil
+                ui.liveTurns[i].text = text; ui.liveTurns[i].reveal = reveal; ui.liveTurns[i].leadIn = leadIn; ui.liveTurns[i].steps = steps; ui.liveTurns[i].status = nil; ui.liveTurns[i].recordId = recordId
                 openForWritten(text)
                 return id
             }
         }
         turnSeq += 1
-        let t = LiveTurn(id: turnSeq, his: his, text: text, reveal: reveal, pics: pics, leadIn: leadIn, growing: growing, steps: steps)
+        let t = LiveTurn(id: turnSeq, his: his, text: text, reveal: reveal, pics: pics, leadIn: leadIn, growing: growing, steps: steps, recordId: recordId)
         withAnimation(.easeOut(duration: 0.25)) { ui.liveTurns.append(t) }
         if !his { openForWritten(text) }
         return turnSeq
@@ -75,14 +75,14 @@ extension StarEngine {
     }
 
     /// Her words in a row of their own, laid out whole and lit a word at a time (`Reveal`): `cps` words a second, else a steady pace that is quicker for a long answer.
-    @discardableResult func startSay(_ text: String, cps: Double? = nil, delay: Double = 0, leadIn: Bool = false, steps: StepsInfo? = nil) -> Say {
+    @discardableResult func startSay(_ text: String, cps: Double? = nil, delay: Double = 0, leadIn: Bool = false, steps: StepsInfo? = nil, recordId: String? = nil) -> Say {
         finishSay()
         if text.isEmpty { return Say("") }       // nothing to say is no row (a row of no height would still take its gap)
         if !leadIn { Haptic.impact(.soft) }
         let n = Reveal.count(String(AnswerText.linked(text).characters)), every = cps.map { 1 / $0 } ?? Reveal.stagger(n)
         let s = Say(text, cps: Double(text.count) / (Double(max(n, 1)) * every), delay: delay)
         speaking = s
-        speakId = addTurn(his: false, text, reveal: .timed(n, from: Date.timeIntervalSinceReferenceDate + delay / 1000, every: every), leadIn: leadIn, steps: steps)
+        speakId = addTurn(his: false, text, reveal: .timed(n, from: Date.timeIntervalSinceReferenceDate + delay / 1000, every: every), leadIn: leadIn, steps: steps, recordId: recordId)
         return s
     }
     func finishSay() {
@@ -301,6 +301,7 @@ extension StarEngine {
         switch name {
         case "rest": setLevel(0)
         case "pictures": runPicturesScene()
+        case "reactions", "reactionsBar", "reactionsBarHis", "reactionsLive": runReactionsScene(name)
         case "talkAfter", "twoRounds":
             // a talk that starts after a conversation (the last round of it shows dimmer), and, for twoRounds, a second round of the same talk
             setLevel(0)

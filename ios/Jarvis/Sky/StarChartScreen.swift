@@ -69,6 +69,7 @@ struct StarChrome: View {
             if ui.tuning && ui.level == -1 { NearTune(engine: engine, done: { ui.tuning = false }) }
             composer
             AttachOverlay(model: ui.attach, kbLift: ui.kbLift)
+            TapbackOverlay(engine: engine, ui: ui).animation(.easeOut(duration: 0.15), value: ui.tapback != nil)
         }
         .frame(width: W, height: H, alignment: .topLeading)
         .onChange(of: focused) { _, f in StallLog.mark(f ? "keyboard up" : "keyboard down"); ui.typing = f; if f { engine.openPanel() } else { engine.closePanel() } }     // the panel comes with the keyboard and goes with it

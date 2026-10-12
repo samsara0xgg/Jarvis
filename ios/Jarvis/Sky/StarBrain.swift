@@ -42,6 +42,7 @@ extension StarEngine {
             self.beginTalk(base: Conversation.shared.rows.last?.seq ?? 0)
             self.talk = "listen"
             let his = self.addTurn(his: true, shown, pics: pics)
+            var record: String?                 // the conversation record of his line, which the host's `said` names (ADR 0256)
             StatusBoard.shared.begin(utterance: utterance)
             self.showStatus()
             if self.ui.text == words { self.ui.text = "" }
@@ -70,7 +71,9 @@ extension StarEngine {
                 if fresh, let seq, self.talkId == mine { self.talkBase = max(self.talkBase, seq) }
                 StallLog.mark("send: latest seq")
                 switch await PhoneLink.shared.sendTyped(utterance: utterance, text: text, attachments: ids, about: about?.json) {
-                case .taken: break
+                case .taken(_, let id):
+                    record = id
+                    if let id, let i = self.ui.liveTurns.firstIndex(where: { $0.id == his }) { self.ui.liveTurns[i].recordId = id }
                 case .refused(let m): return fail(m)
                 case .useSubmit:
                     let status = try await BrainLink.shared.call { try await BrainClient.submit(text, attachments: ids, about: about, bases: $0, token: $1) }
@@ -92,7 +95,7 @@ extension StarEngine {
             self.sendingToBrain = false
             guard let seq else { self.talk = nil; self.lingerFrom(nowMs()); return self.note("发给她了", for: 4000) }       // no conversation to read her answer from
             self.clearNote()
-            try await self.brainTalk(ok, after: seq, utterance: utterance)
+            try await self.brainTalk(ok, after: seq, utterance: utterance, record: record)
         }
     }
 
@@ -110,10 +113,11 @@ extension StarEngine {
     }
 
     /// Her side of a typed turn the brain took: her thinking look, then her words as they land in the conversation. A lead-in ("我上网查查") is shown and the answer waited for.
-    @MainActor private func brainTalk(_ ok: Ok, after seq: Int, utterance: String) async throws {
+    /// `record` is the conversation record of his line: a reaction of hers on it, other than the program's eyes, is her whole answer (ADR 0256).
+    @MainActor private func brainTalk(_ ok: Ok, after seq: Int, utterance: String, record: String?) async throws {
         sound(.heard, 1); expr = "31"; try await nap(520, ok)
         sound(.think, 1); expr = "30"
-        var last = seq, deadline = nowMs() + 90_000, said = false, failed = false
+        var last = seq, deadline = nowMs() + 90_000, said = false, failed = false, reacted = false
         while nowMs() < deadline {
             try await nap(500, ok)
             let rows = await Conversation.shared.rows(after: last)
@@ -121,20 +125,24 @@ extension StarEngine {
             let hers = rows.filter { !$0.isHis }
             guard let row = hers.last else {
                 if StatusBoard.shared.failed(utterance: utterance) { failed = true; break }         // the host failed the turn: no answer is coming
+                if Reactions.shared.answered(record) { reacted = true; break }                      // she reacted and wrote nothing: no text row is coming either
                 continue
             }
             last = rows.last?.seq ?? last
-            for r in hers.dropLast() where !AnswerText.visible(r.text).isEmpty { addTurn(his: false, AnswerText.visible(r.text), leadIn: r.isLeadIn, steps: r.isLeadIn ? nil : r.steps) }
+            for r in hers.dropLast() where !AnswerText.visible(r.text).isEmpty { addTurn(his: false, AnswerText.visible(r.text), leadIn: r.isLeadIn, steps: r.isLeadIn ? nil : r.steps, recordId: r.id.isEmpty ? nil : r.id) }
             // the steps under the answer: the brain's own summary of the turn, or what the line saw of them until the conversation has it
             let words = AnswerText.visible(row.text)
-            startSay(words, leadIn: row.isLeadIn, steps: row.isLeadIn ? nil : row.steps ?? StatusBoard.shared.info)
+            startSay(words, leadIn: row.isLeadIn, steps: row.isLeadIn ? nil : row.steps ?? StatusBoard.shared.info, recordId: row.id.isEmpty ? nil : row.id)
             if !words.isEmpty { expr = "39"; talk = "speak"; said = true }          // an empty reply is not an answer: the fallback line still stands
             if row.isLeadIn { showStatus(); deadline = nowMs() + 25_000; continue }          // more follows (the steps she takes meanwhile show in a line of their own): it is waited for while this is read
             break
         }
-        if failed { showFailed() }
-        else if !said { addTurn(his: false, "她还在想，回答会在今天的对话里。"); talk = "speak"; expr = nil }
-        else { await speaking?.finished(); try ok.check(); finishSay() }
+        switch WaitEnd.of(failed: failed, said: said, reacted: reacted) {
+        case .failed: showFailed()
+        case .fallback: addTurn(his: false, "她还在想，回答会在今天的对话里。"); talk = "speak"; expr = nil
+        case .quiet: break                      // her answer is the reaction on his line; `endTalk` takes the typing line away
+        case .spoke: await speaking?.finished(); try ok.check(); finishSay()
+        }
         endTalk()
         if failed { lingerUntil = nowMs() + Self.lingerFailed }
         await Conversation.shared.refresh()

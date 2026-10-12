@@ -22,6 +22,8 @@ struct TalkRowView: View, Equatable {
     var retry: () -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var reduce
     static func == (a: Self, b: Self) -> Bool { a.row == b.row && a.stepsOpen == b.stepsOpen }
+    /// her words end this far short of the row's edge, with or without a reaction on them, so a badge on their corner never covers a character and no line wraps differently for it
+    private static let badgeRoom = 20.0
 
     var body: some View {
         if let a = row.about { AboutChip(about: a, drop: dropAbout) } else if let c = row.card { cardRow(c) } else if row.his { bubble } else { hers }
@@ -68,6 +70,7 @@ struct TalkRowView: View, Equatable {
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .background(RoundedRectangle(cornerRadius: 18).fill(Color.white.opacity(0.08)))
                     .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.06), lineWidth: 0.5))
+                    .overlay(alignment: .topLeading) { ReactionBadges(reactions: row.reactions, his: true) }
                     .frame(maxWidth: 300, alignment: .trailing)
             }
         }
@@ -76,14 +79,40 @@ struct TalkRowView: View, Equatable {
 
     @ViewBuilder private var her: some View {
         let blocks = AnswerBlocks.parse(row.text)
-        if blocks.contains(where: { if case .paragraph = $0 { false } else { true } }) { AnswerView(blocks: blocks) }       // written: shown at once, laid out as it is
-        else { plain }
+        if blocks.contains(where: { if case .paragraph = $0 { false } else { true } }) {
+            AnswerView(blocks: blocks).padding(.trailing, Self.badgeRoom).overlay(alignment: .topTrailing) { ReactionBadges(reactions: row.reactions, his: false) }       // written: shown at once, laid out as it is
+        } else { plain }
     }
 
     private var plain: some View {
         RevealText(text: styledWords(row.text, base: row.leadIn ? muted : ink.opacity(0.92)), reveal: row.reveal)
             .font(.system(size: row.leadIn ? 15 : 18)).lineSpacing(row.leadIn ? 3 : 5)
-            .tint(amber).frame(maxWidth: .infinity, alignment: .leading)
+            .tint(amber).padding(.trailing, Self.badgeRoom)
+            .overlay(alignment: .topTrailing) { ReactionBadges(reactions: row.reactions, his: false) }       // on the words' own width, not the row's
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The reactions on a message, small round bubbles on its top corner on the side toward the other speaker (his on her words, hers on his), as iMessage puts them.
+/// They are an overlay: they take no room, so a row's height is the same with and without them.
+struct ReactionBadges: View {
+    let reactions: RowReactions
+    let his: Bool                                   // the message is his
+
+    var body: some View {
+        // the other speaker's first, so it is the one at the corner
+        let list: [(by: String, emoji: String)] = (his ? ["jarvis", "allen"] : ["allen", "jarvis"]).compactMap { by in reactions[by].map { (by, $0) } }
+        if !list.isEmpty {
+            HStack(spacing: -7) {
+                ForEach(his ? list : Array(list.reversed()), id: \.by) { r in
+                    Text(r.emoji).font(.system(size: 14)).frame(minWidth: 26, minHeight: 26)
+                        .background(Circle().fill(navy).overlay(Circle().fill(Color.white.opacity(r.by == "allen" ? 0.16 : 0.1))))
+                        .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 0.5))
+                        .accessibilityElement(children: .ignore).accessibilityLabel("\(r.by == "allen" ? "你" : "她")回了 \(r.emoji)")
+                }
+            }
+            .offset(x: his ? -12 : 6, y: -13).allowsHitTesting(false)
+        }
     }
 }
 
@@ -400,7 +429,7 @@ struct TalkPanel: View {
 
     /// `fade` is the strip under the last row where rows scrolled out of view melt away; the last row itself rests above it
     private func stream(top: Double, bottom: Double, fade: Double, open: Double) -> some View {
-        let days = TalkStream.compose(ui.convDays, live: ui.liveTurns, about: ui.about, cal: Cal.cur.cal, now: Date())
+        let days = TalkStream.compose(ui.convDays, live: ui.liveTurns, about: ui.about, overlay: Reactions.shared.overlay, cal: Cal.cur.cal, now: Date())
         let _ = StallLog.count("compose")
         // under the dial the previous round shows dimmer over the newest one; with the panel open every row shows in full.
         // Those rounds are in the last two days: read only them, not the whole history on every frame of her talk.
@@ -420,7 +449,7 @@ struct TalkPanel: View {
                                 .id(r.id)
                                 .onGeometryChange(for: Double.self) { $0.frame(in: .named("stream")).minY } action: { moved(r.id, to: $0) }
                                 .transition(reduce ? .opacity : .opacity.combined(with: .offset(y: 6)))
-                                .contextMenu { if let t = TalkStream.copyText(r) { Button("拷贝", systemImage: "doc.on.doc") { UIPasteboard.general.string = t } } }
+                                .modifier(RowPress(row: r, engine: engine))
                             }
                         } header: {
                             // no day headers while he types: the keyboard leaves no room for them

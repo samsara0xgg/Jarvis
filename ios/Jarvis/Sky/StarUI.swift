@@ -58,6 +58,7 @@ struct LiveTurn: Identifiable, Equatable {
     var status: StatusLine?             // not words yet: she is typing, or working on a step (Brain/TurnStatus); her first words take this row
     var steps: StepsInfo?               // what she did to answer, for the small line under it
     var failed = false                  // the turn failed: "没答出来" in her place, and a button to send the same words again
+    var recordId: String?               // the conversation record of these words, once the brain has said which (ADR 0256): a row without one cannot be reacted to
     var at = Date()
 }
 
@@ -94,6 +95,8 @@ final class StarUI {
     var convDays: [TalkDay] = []        // the conversation of record, by day (Brain/TalkStream)
     var olderMore = false               // the brain has rows older than the first one listed
     var scrollTo: String?               // a row of the stream the panel is asked to show
+    var tapback: TalkRow?               // the row whose reactions bar is up (Sky/StarTapback)
+    var tapbackPicker = false           // the bar is asking for any emoji, with the system keyboard
     // talking
     var talking = false                 // a talk is on show: while it lasts and for a while after her last word
     var liveTurns: [LiveTurn] = []

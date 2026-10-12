@@ -19,6 +19,8 @@ struct TalkRow: Identifiable, Equatable {
     var status: StatusLine?             // not words yet: the typing dots or the step she is on, in her place
     var steps: StepsInfo?               // what she did to answer: the small line under her words
     var failed = false                  // her turn failed: `text` says so, and a button sends the same words again
+    var recordId: String?               // the conversation record of these words, which a reaction names; a live row has it once the brain has told (ADR 0256)
+    var reactions = RowReactions()      // his and hers on this message, with the frames since the conversation was read
 }
 
 struct TalkDay: Identifiable, Equatable {
@@ -50,9 +52,28 @@ enum TalkStream {
             // a spoken line before his next words was the whole answer; only one that more of hers follows (or may follow) is a lead-in
             let leadIn = r.isLeadIn && !(i + 1 < rows.count && rows[i + 1].isHis)
             out.append(TalkRow(id: "c\(r.seq)", his: r.isHis, text: text, pics: r.isHis ? SentPics.items(r.attachments) : [], leadIn: leadIn, at: at.timeIntervalSince1970,
-                               steps: r.isHis || leadIn ? nil : r.steps))
+                               steps: r.isHis || leadIn ? nil : r.steps, recordId: r.id.isEmpty ? nil : r.id, reactions: r.reactions))
         }
         return group(out, [], cal: cal, now: now)
+    }
+
+    /// A message he can put a reaction on: it has a record id and is words or pictures, not a card, the typing line, a failure or the chip.
+    static func reactable(_ r: TalkRow) -> Bool {
+        r.recordId != nil && r.status == nil && r.card == nil && r.about == nil && !r.failed && (!r.text.isEmpty || !r.pics.isEmpty)
+    }
+
+    /// The days with the frames since the conversation was read laid over each row's reactions
+    static func reacted(_ days: [TalkDay], _ overlay: ReactionOverlay) -> [TalkDay] {
+        if overlay.isEmpty { return days }
+        return days.map { day in
+            var day = day
+            for i in day.rows.indices {
+                guard let id = day.rows[i].recordId else { continue }
+                let merged = overlay.merged(day.rows[i].reactions, target: id)
+                if merged != day.rows[i].reactions { day.rows[i].reactions = merged }
+            }
+            return day
+        }
     }
 
     /// What 拷贝 copies from a row: the words as they read, without markup; nil for a row with no words (the typing line, a card, the chip, a failure)
@@ -72,14 +93,14 @@ enum TalkStream {
     }
 
     /// The days with the live talk after them, under today's date.
-    static func compose(_ days: [TalkDay], live: [LiveTurn], about: About? = nil, cal: Calendar, now: Date) -> [TalkDay] {
-        if live.isEmpty { return days }
+    static func compose(_ days: [TalkDay], live: [LiveTurn], about: About? = nil, overlay: ReactionOverlay = ReactionOverlay(), cal: Calendar, now: Date) -> [TalkDay] {
+        if live.isEmpty { return reacted(days, overlay) }
         var rows = live.map(row)
         if let about { rows.insert(TalkRow(id: "about", his: false, text: about.title, at: rows[0].at, current: true, about: about), at: 0) }
-        return group(rows, days, cal: cal, now: now)
+        return reacted(group(rows, days, cal: cal, now: now), overlay)
     }
     static func row(_ t: LiveTurn) -> TalkRow {
-        TalkRow(id: "l\(t.id)", his: t.his, text: t.text, reveal: t.reveal, pics: t.pics, leadIn: t.leadIn, growing: t.growing, at: t.at.timeIntervalSince1970, current: true, card: t.card, status: t.status, steps: t.steps, failed: t.failed)
+        TalkRow(id: "l\(t.id)", his: t.his, text: t.text, reveal: t.reveal, pics: t.pics, leadIn: t.leadIn, growing: t.growing, at: t.at.timeIntervalSince1970, current: true, card: t.card, status: t.status, steps: t.steps, failed: t.failed, recordId: t.recordId)
     }
 
     /// `rows` after `days`: each row joins the last day when it is on that day, and the time goes above a row after a long gap or a new day
