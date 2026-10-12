@@ -34,6 +34,9 @@ Its limits:
 - The Cost API is asked with `ANTHROPIC_ADMIN_KEY`, else the brain's own
   `ANTHROPIC_API_KEY`, only in a request header. A refusal is kept as `official_error`
   (the HTTP status) and not retried for an hour; no key is ever stored or logged.
+- The key reaches the brain the way OpenAI's does: pasted under Settings, Accounts, checked
+  by listing one model, and kept in the brain's own store (the Keychain, or the `env` file
+  on the Pi), so no key passes through a chat or a command line.
 - No balance is shown.
 
 ## Alternatives rejected

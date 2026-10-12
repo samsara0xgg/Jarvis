@@ -39,6 +39,7 @@ KEY_ENVS: Final[dict[str, str]] = {
     "openai": "OPENAI_API_KEY",
     "minimax": "MINIMAX_API_KEY",
     "tavily": "TAVILY_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
 }
 _TIMEOUT_S: Final[float] = 20.0
 _MAX_NAME: Final[int] = 40
@@ -52,6 +53,7 @@ _FIRST_LINE_PROMPT: Final[str] = (
     " works and you are ready. Reply with that sentence only."
 )
 _TAVILY_SEARCH: Final[str] = "https://api.tavily.com/search"
+_ANTHROPIC_MODELS: Final[str] = "https://api.anthropic.com/v1/models?limit=1"
 
 
 class SetupError(ValueError):
@@ -244,6 +246,8 @@ class Setup:
             )
         elif provider == "minimax":
             answer = self._check_minimax(key)
+        elif provider == "anthropic":
+            answer = self._check_anthropic(key)
         else:
             answer = self._check_tavily(key)
         # Only a key the service accepted counts: connect (and, for OpenAI, a real answer).
@@ -380,6 +384,17 @@ class Setup:
         """connect: one one-result search (it uses one Tavily credit)."""
         try:
             _post_json(_TAVILY_SEARCH, key, {"query": "Jarvis", "max_results": 1})
+        except Exception as exc:  # noqa: BLE001 — shown as the row's reason.
+            return {"checks": [_check("connect", reason=_http_reason(exc))]}
+        return {"checks": [_check("connect")]}
+
+    def _check_anthropic(self, key: str) -> dict[str, Any]:
+        """connect: list one model, which costs nothing and says whether the key works."""
+        request = urllib.request.Request(  # noqa: S310 — fixed https endpoint.
+            _ANTHROPIC_MODELS, headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+        )
+        try:
+            urllib.request.urlopen(request, timeout=_TIMEOUT_S).close()  # noqa: S310
         except Exception as exc:  # noqa: BLE001 — shown as the row's reason.
             return {"checks": [_check("connect", reason=_http_reason(exc))]}
         return {"checks": [_check("connect")]}

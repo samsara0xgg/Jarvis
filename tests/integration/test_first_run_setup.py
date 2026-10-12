@@ -8,11 +8,13 @@ model call is given.
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import stat
 import subprocess
 import sys
+import urllib.error
 from contextlib import closing
 from typing import TYPE_CHECKING, Any
 
@@ -75,7 +77,7 @@ def test_a_fresh_install_is_a_first_run_until_done(tmp_path: Path) -> None:
     fresh = client.get("/inherent/setup").json()
     assert fresh["first_run"] is True
     assert (fresh["name"], fresh["assistant_name"], fresh["language"]) == (None, "Jarvis", "zh")
-    assert fresh["keys"] == {"openai": "missing", "minimax": "missing", "tavily": "missing"}
+    assert fresh["keys"] == dict.fromkeys(KEY_ENVS, "missing")
     assert fresh["features"]["reply_voice"] == {"on": False, "reason": "minimax_missing"}
     assert fresh["features"]["live_voice"] == {"on": False, "reason": "openai_missing"}
     assert fresh["voice_models"] == {"state": "ready", "done": 0, "total": 0}
@@ -117,7 +119,7 @@ def test_bad_requests_are_400_and_never_echo_the_key(tmp_path: Path) -> None:
     client = _client(_setup(tmp_path))
     pasted = "sk-proj-SECRET-do-not-echo"
     for route, body in (
-        ("/inherent/setup/key", {"provider": "anthropic", "key": pasted}),
+        ("/inherent/setup/key", {"provider": "azure", "key": pasted}),
         ("/inherent/setup/key", {"provider": "openai", "key": ""}),
         ("/inherent/setup/name", {"name": "x" * 41}),
         ("/inherent/setup/name", {"name": "two\nlines"}),
@@ -168,6 +170,36 @@ def test_a_key_is_kept_only_when_connect_and_chat_pass(
     status = client.get("/inherent/setup").json()
     assert status["keys"]["openai"] == "ok"
     assert status["features"]["live_voice"] == {"on": True, "reason": None}
+
+
+def test_an_anthropic_key_is_kept_only_when_anthropic_lists_models_with_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check lists one model with the key in a header; only an accepted key is saved."""
+    saved: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        runtime_setup, "save_key", lambda _root, name, key: saved.append((name, key)),
+    )
+    seen: list[str] = []
+    refuse = True
+
+    def urlopen(request: Any, timeout: float) -> Any:  # noqa: ANN401
+        del timeout
+        seen.append(request.get_header("X-api-key"))
+        if refuse:
+            raise urllib.error.HTTPError(request.full_url, 401, "no", None, None)  # type: ignore[arg-type]
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(runtime_setup.urllib.request, "urlopen", urlopen)
+    client = _client(_setup(tmp_path))
+    body = {"provider": "anthropic", "key": " sk-ant-x "}
+    assert client.post("/inherent/setup/key", json=body).json()["ok"] is False
+    assert saved == []
+    assert client.get("/inherent/setup").json()["keys"]["anthropic"] == "missing"
+    refuse = False
+    assert client.post("/inherent/setup/key", json=body).json()["ok"] is True
+    assert saved == [("ANTHROPIC_API_KEY", "sk-ant-x")]
+    assert seen == ["sk-ant-x", "sk-ant-x"]
 
 
 def _status_error(cls: type[openai.APIStatusError], status: int, body: object) -> BaseException:

@@ -53,7 +53,7 @@ const SKIN_BG: Record<Skin, string> = {
 
 // The API keys Jarvis runs on: GET /inherent/setup says whether each is ok, missing or refused; POST
 // /inherent/setup/key tests a pasted one and keeps it in the Keychain only when it works. Jarvis reads keys at boot.
-type Provider = 'openai' | 'minimax' | 'tavily';
+type Provider = 'openai' | 'minimax' | 'tavily' | 'anthropic';
 export type AccountKeyDrafts = Partial<Record<Provider, string>>;
 type Setup = { keys: Record<Provider, 'ok' | 'missing' | 'bad'> };
 const WHY: Record<string, L> = {
@@ -286,6 +286,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, pairAsk = 0, ctl, a
       { id: 'key-openai', name: ['OpenAI API key', 'OpenAI API 密钥'], note: ['Required: every answer uses it', '必填，所有回答都靠它'], ctl: keyCtl('openai') },
       { id: 'key-minimax', name: ['MiniMax API key', 'MiniMax API 密钥'], note: ['Her speaking voice; without it she only types', '她说话的声音；不填就只打字'], ctl: keyCtl('minimax') },
       { id: 'key-tavily', name: ['Tavily API key', 'Tavily API 密钥'], note: ['Web search', '上网搜索'], ctl: keyCtl('tavily') },
+      { id: 'key-anthropic', name: ['Anthropic API key', 'Anthropic API 密钥'], note: ['Optional: Claude models, and their spend on the Usage page', '选填：用 Claude 模型，用量页也靠它看花费'], ctl: keyCtl('anthropic') },
       ...accounts.map(a => ({ id: a.name, name: [a.name, a.name] as L, ctl: { k: 'info', text: a.text, tone: a.ok ? 'ok' : 'warn' } as Ctl })),
       { id: 'plugins', name: ['Plugins', '插件'], ctl: { k: 'act', label: ['Open', '打开'], run: onPlugins } },
     ] },
