@@ -11,6 +11,10 @@ module decides. Four things push, each by its own rule:
   a silent banner at ``quiet``, nothing from ``no-pop`` up. A card goes only to the device whose
   turn asked it; a Claude Code request, or a card no turn asked, only while he is away from the
   Mac, and a held request is pushed once he leaves it while it still waits (ADR 0218);
+- the result of a task the deep lane ran for him (ADR 0251) that was left as a card because he was
+  no longer talking with her: to the phone whose turn handed it over, else to the phones while he
+  is away from the Mac; one that was spoken, or that stopped at a confirmation card (which has
+  its own push), pushes nothing;
 - whatever another feature wants him to see (:meth:`Push.send`);
 - the running Live Activity's content (:meth:`Push.poll`), when her state or the next reminder
   changed;
@@ -37,7 +41,12 @@ from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import lang
 from jarvis.state import push_tokens
-from jarvis.state.event_log import iter_events_after, open_runtime_event_log, turn_origin
+from jarvis.state.event_log import (
+    DEEP_CHANNEL,
+    iter_events_after,
+    open_runtime_event_log,
+    turn_origin,
+)
 from jarvis.surface.apns import (
     ApnsClient,
     Outcome,
@@ -49,6 +58,7 @@ from jarvis.surface.apns import (
 )
 
 if TYPE_CHECKING:
+    import sqlite3
     from collections.abc import Callable, Mapping
     from pathlib import Path
 
@@ -60,6 +70,8 @@ KEY_ENV: Final = "APNS_AUTH_KEY"
 POLL_S: Final = 5.0
 # One Live Activity line is a glance, not a paragraph.
 _ACTIVITY_TEXT: Final = 80
+# A deep result's push says its first sentence, not the result.
+_DEEP_TEXT: Final = 120
 # Items remembered as pushed or skipped, so one is never pushed twice while it is on the card.
 _REMEMBERED: Final = 500
 _QUIET_SILENT: Final = "quiet"
@@ -69,6 +81,7 @@ _WAITING_TITLES: Final = {
     "question": "push.question",
     "claude": "push.claude",
     "plugin": "push.plugin",
+    "deep": "push.deep",
 }
 _CLOSERS: Final = {
     "confirmation.accepted": "confirmation_id",
@@ -203,7 +216,7 @@ class Push:
         )
 
     def waiting(self, kind: str, item_id: str, text: str, device: str | None = None) -> bool:
-        """Push that ``kind`` (``confirmation``, ``question``, ``claude`` or ``plugin``) waits.
+        """Push that something of ``kind`` waits for him (a card, a request, a deep result).
 
         Once per item.
 
@@ -321,6 +334,10 @@ class Push:
                         str(payload["question"]), None,
                         turn_origin(conn, str(turn_id))[1] if turn_id else None,
                     ))
+                elif event.type == "surface.response_emitted" and (
+                    deep := self._deep_card(conn, payload)
+                ):
+                    asked.append(deep)
                 elif (field := _CLOSERS.get(event.type)) and field in payload:
                     closed.add(str(payload[field]))
         now_ms = int(self.clock() * 1000)
@@ -328,6 +345,29 @@ class Push:
             (kind, item_id, text, device) for kind, item_id, text, expires, device in asked
             if item_id not in closed and (expires is None or expires > now_ms)
         ]
+
+    def _deep_card(
+        self, conn: sqlite3.Connection, payload: Mapping[str, Any],
+    ) -> tuple[str, str, str, int | None, str | None] | None:
+        """The push for a deep task's result left as a card (ADR 0251), or ``None``.
+
+        The phone whose turn handed it over is the device; a computer's turn has none, so any
+        phone gets it while he is away from the Mac. A task that stopped at a confirmation card
+        is that card's push, not this one.
+        """
+        turn_id = str(payload.get("turn_id", ""))
+        channel, node = turn_origin(conn, turn_id)
+        if channel != DEEP_CHANNEL or payload.get("attention_channel") != "badge_card":
+            return None
+        if conn.execute(
+            "SELECT 1 FROM events WHERE type = 'confirmation.requested' "
+            "AND json_extract(correlation_json, '$.turn_id') = ?",
+            (turn_id,),
+        ).fetchone():
+            return None
+        said = str(payload.get("voice_text") or payload.get("text") or "")[:_DEEP_TEXT]
+        phone = node if node in push_tokens.registrations(self._root) else None
+        return "deep", turn_id, said, None, phone
 
     def _update_activity(self) -> None:
         """Send the Live Activity content to each running activity whose last send differs."""

@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 from jarvis.decision.attachment_parts import attachment_text, image_parts
 from jarvis.decision.confirm_grammar import ConfirmGrammarHit, match_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
+from jarvis.decision.deep import deep_line, deep_turn, forced_hit, live_conversation
 from jarvis.decision.gates import (
     AttentionChannel,
     GateOutcome,
@@ -139,11 +140,13 @@ if TYPE_CHECKING:
     import sqlite3
 
     from jarvis.decision.confirm_grammar import ConfirmGrammarTable
+    from jarvis.decision.deep import DeepSettings
     from jarvis.decision.llm import ChatResult, LLMClient
     from jarvis.decision.llm_stream import LLMStreamHandle
     from jarvis.decision.packet import SnapshotReader
     from jarvis.decision.pre_route import RoutineStreamRoute, StreamCorrection
     from jarvis.decision.stream_sentences import SemanticCandidate
+    from jarvis.decision.think_mode import ThinkMode
     from jarvis.decision.tier0 import Tier0Hit, Tier0Table
     from jarvis.shared import AuthorizationLease, RiskLevel
     from jarvis.shared.lang import Language
@@ -691,6 +694,10 @@ class DecideContext:
     # a turn is told which earlier ones are still being answered, and a turn
     # Allen spoke past opens its answer by pointing back at his question.
     slow_results: bool = False
+    # ADR 0251: ``llm.deep`` when this run has a deep lane, and the ``llm.think`` words that hand
+    # a sentence of his to it without a model request. None for both leaves the lane off.
+    deep: DeepSettings | None = None
+    deep_words: ThinkMode | None = None
     # The ``reply_language`` setting: "en" or "zh" pins the language of the
     # spoken form (ADR 0045), "follow" leaves it to Allen's words this turn.
     reply_language: str = "follow"
@@ -906,6 +913,8 @@ _MISHEARD: Final = (
 
 def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None:
     """How this turn reached Jarvis, or None when the trigger carries no channel."""
+    if deep_turn(packet.trigger_event):
+        return deep_line()
     channel = packet.trigger_event.payload.get("channel")
     if not isinstance(channel, str) or not channel:
         return None
@@ -1101,13 +1110,21 @@ def _earlier_turns_in_flight(
     packet: SituationPacket, ctx: DecideContext,
 ) -> tuple[TurnInFlight, ...]:
     """The user's earlier turns another run is still answering (the switch on)."""
-    if not ctx.slow_results:
-        return ()
+    if not ctx.slow_results or deep_turn(packet.trigger_event):
+        return ()  # a deep task is not waiting on his earlier question: it carries it
     return turns_in_flight(
         ctx.conn,
         trigger_event_uid=packet.trigger_event.event_uid,
         since_ms=_now_epoch_ms() - _IN_FLIGHT_WINDOW_MS,
     )
+
+
+_IN_FLIGHT_WORDS_MAX: Final[int] = 200
+
+
+def _short(words: str) -> str:
+    """A deep task (ADR 0251) is written out in full; the line naming it needs only its start."""
+    return words if len(words) <= _IN_FLIGHT_WORDS_MAX else words[:_IN_FLIGHT_WORDS_MAX] + "…"
 
 
 def _turns_in_flight_line(earlier: tuple[TurnInFlight, ...]) -> str | None:
@@ -1116,7 +1133,7 @@ def _turns_in_flight_line(earlier: tuple[TurnInFlight, ...]) -> str | None:
         return None
     now_ms = _now_epoch_ms()
     asked = "; ".join(
-        f'"{turn.words}" (asked {max(0, now_ms - turn.asked_ms) // 1000} s ago)'
+        f'"{_short(turn.words)}" (asked {max(0, now_ms - turn.asked_ms) // 1000} s ago)'
         for turn in earlier
     )
     return (
@@ -1462,6 +1479,19 @@ def _handle_utterance(
     return _run_model_path(packet, policy, ctx, scratch)
 
 
+def _deep_failed_line(trigger: Event, lang: Language | None) -> str:
+    """ADR 0251: the one fixed sentence that says a deep task did not finish, and why if known."""
+    reason = trigger.payload.get("deep_failure")
+    why = t(f"failure.{reason}", lang=lang) if reason in _DEEP_WHY else ""
+    return t("deep.failed", lang=lang, why=why).strip()
+
+
+_DEEP_WHY: Final[frozenset[str]] = frozenset(
+    {"missing_key", "unauthorized", "model_denied", "quota", "rate_limited", "network", "timeout"},
+)
+"""The failure reasons whose line reads true after "that did not finish"; ``error`` says nothing."""
+
+
 def _run_instant_route(
     packet: SituationPacket,
     policy: EffectivePolicy,
@@ -1474,7 +1504,11 @@ def _run_instant_route(
     only sent here; the model's request goes out at once and its first output
     waits for Jev (:func:`_settle_surrogate`). Everywhere else Jev is asked first.
     """
-    hit = tier_0_match(packet, ctx.tier0_table)
+    if deep_turn(packet.trigger_event) and packet.trigger_event.payload.get("deep_failure"):
+        # ADR 0251: the notice that a deep task did not finish is one fixed sentence.
+        line = _deep_failed_line(packet.trigger_event, scratch.lang)
+        return _finalize_response(line, packet, ctx, scratch)
+    hit = _deep_words_hit(packet, ctx) or tier_0_match(packet, ctx.tier0_table)
     if hit is not None:
         return _run_tier0_path(hit, packet, policy, ctx, scratch)
     pending = _start_surrogate(packet, ctx, scratch.turn_id)
@@ -1487,6 +1521,18 @@ def _run_instant_route(
     action = pending.action()
     _record_surrogate(pending, ctx, scratch, accepted=action is not None)
     return _act_on_surrogate(action, packet, policy, ctx, scratch) if action else None
+
+
+def _deep_words_hit(packet: SituationPacket, ctx: DecideContext) -> Tier0Hit | None:
+    """ADR 0251: his sentence holds a think word, so it goes to the deep lane without a model.
+
+    A deep turn's own task never does: the words it carries are the lane's, not his.
+    """
+    trigger = packet.trigger_event
+    if ctx.deep is None or ctx.deep_words is None or deep_turn(trigger):
+        return None
+    sentence = ctx.deep_words.sentence(ctx.conn, trigger)
+    return None if sentence is None else forced_hit(sentence)
 
 
 class _SurrogateTookTurn(Exception):  # noqa: N818 — a signal, not an error
@@ -3500,6 +3546,7 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     # suppression set (`jarvis.runtime.inherent_loop._TTS_SILENT_CHANNELS`)
     # — the question must be spoken, not swallowed.
     attention = _confirmation_attention_override(scratch, attention)
+    attention = _deep_attention(packet, ctx, attention)
 
     # ADR 0040: only the model's own answer that will be spoken gets a spoken
     # form, never a Tier 0 read-back (quoted tool output), fixed L3 text or a
@@ -3526,6 +3573,22 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
         turn_id=scratch.turn_id,
         attention_channel=attention,
     )
+
+
+def _deep_attention(
+    packet: SituationPacket, ctx: DecideContext, attention: AttentionChannel,
+) -> AttentionChannel:
+    """ADR 0251: a deep answer is spoken only while he is still talking with her, else a card.
+
+    The question of a confirmation card it stopped at goes the same way: spoken to a room he
+    has left helps nobody, and the card itself stays on the screen.
+    """
+    if not deep_turn(packet.trigger_event) or attention not in ("voice_notify", "ask_confirm"):
+        return attention
+    window_s = ctx.deep.live_window_s if ctx.deep is not None else 0
+    if window_s and live_conversation(ctx.conn, now_ms=_now_epoch_ms(), window_s=window_s):
+        return attention
+    return "badge_card"
 
 
 def _confirmation_attention_override(

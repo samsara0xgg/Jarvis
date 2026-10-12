@@ -212,6 +212,7 @@ from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.departures import ID_PREFIX as PIN_PREFIX
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
 from jarvis.state.event_log import (
+    DEEP_CHANNEL,
     MAC_NODE,
     PHONE_VOICE_CHANNEL,
     confirmation_device,
@@ -2619,7 +2620,9 @@ def _make_cancel_voice_runs(
                 (turn_id,),
             )
         ]
-        return bool(channels) and not any(channel in _TTS_SILENT_CHANNELS for channel in channels)
+        # ADR 0251: a deep task is no answer being written for the speaker; an exit leaves it.
+        silent = _TTS_SILENT_CHANNELS | {DEEP_CHANNEL}
+        return bool(channels) and not any(channel in silent for channel in channels)
 
     def _cancel_voice_runs() -> None:
         if registry is None:  # pragma: no cover - wiring pairs the two flags
