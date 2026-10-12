@@ -53,8 +53,8 @@ phrases; a sentence that asks is not a claim. A guard that acts is written as a
   written, and on the spoken route after its first sentences are heard; it can
   only reject or rewrite words. The 29 runs lacked a call, which only another
   request can supply.
-- **Send the answer back every time it claims.** The note allows "already done
-  earlier or cannot be done", so a second claim after it is a considered answer;
+- **Send the answer back every time it claims.** The note allows "no tool can do
+  it, or it was done in an earlier turn", so a second claim after it is a considered answer;
   each further bounce is a paid request and, spoken, another answer after the
   last.
 

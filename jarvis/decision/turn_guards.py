@@ -61,8 +61,9 @@ def repeated_call(calls: Sequence[TurnCall], name: str, key: str) -> str | None:
 # What the model is told when its answer says it did, or will do, what no call did.
 UNBACKED_NOTE: Final[str] = (
     "[From the program, not the user's words] Your answer says you {said}, but no tool call "
-    "did that this turn. If it should be done, call the tool now. If it was already done "
-    "earlier or cannot be done, say so plainly in one short sentence."
+    "did that this turn, so it has not happened. Do it now: call the tool, then answer from "
+    "its result, without asking him first. Only if no tool can do it, or it was done in an "
+    "earlier turn, say so plainly in one short sentence."
 )
 
 # An answer that says something was saved, remembered, set, sent, shown or cancelled. It reads
