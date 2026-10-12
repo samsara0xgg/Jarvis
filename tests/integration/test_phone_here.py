@@ -6,14 +6,14 @@ Acceptance checks, each against a real event log:
   a visit at its departure (else its arrival), the latest time wins, the later row on a tie, any
   device, no age cutoff, no report at all;
 - the whole path: a batch posted to ``/inherent/device/events`` is what ``here`` reads;
-- on a brain booted for real, `where_am_i` and `transit`'s `here` say the fix is the phone's last
+- on a brain booted for real, `where_am_i` and `bus`'s `here` say the fix is the phone's last
   report with its age and accuracy, read from a tool's own thread; with no report, or a log that
   cannot be read, they are a tool error that tells the model to ask;
 - the age in words, and a Mac running alone keeping the wording of ADR 0194;
 - one host with both readers (ADR 0212), as a table of the turn's opening row to the reading it
   gets: a phone's spoken or typed turn reads the phone, the Mac's own turn reads the Mac, a phone
   turn before any report falls back to the Mac and says so, and a brain reads the phone for every
-  turn; the same for the `transit` origin, and for the descriptions the model is shown;
+  turn; the same for the `bus` start, and for the descriptions the model is shown;
 - the HTTP routes a phone uses (`submit`, `ask`, `share`) write the turn's opening row under the
   device's name, and the Mac's own key writes it under the Mac's.
 """
@@ -279,7 +279,7 @@ def _on_a_tool_thread(
 
     def run() -> dict[str, Any]:
         conn = sqlite3.connect(event_log)
-        try:  # The transit card (ADR 0205) is written through the call's own connection.
+        try:  # The bus card (ADR 0205) is written through the call's own connection.
             ctx = SimpleNamespace(conn=conn, action_id="A1")
             return dict(definition.handler(args, ctx))
         finally:
@@ -289,23 +289,28 @@ def _on_a_tool_thread(
         return pool.submit(run).result()
 
 
-def test_on_a_brain_where_am_i_and_transit_here_say_it_is_the_phones_last_report(
+def _words(definition: Any) -> str:  # noqa: ANN401 - a tool definition of either kind.
+    """Everything the model reads of a tool: its description and its argument descriptions."""
+    return str(definition.description) + json.dumps(definition.input_schema)
+
+
+def test_on_a_brain_where_am_i_and_bus_here_say_it_is_the_phones_last_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Both tools exist on a brain on any machine and read the log from a tool's own thread.
 
-    They carry the report's age and accuracy; transit starts the trip from the reported position.
+    They carry the report's age and accuracy; bus starts the trip from the reported position.
     """
     seen = _serve(monkeypatch)
-    # A direct call has no `action.running` event to link the transit card to.
+    # A direct call has no `action.running` event to link the bus card to.
     monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
     brain = _brain(tmp_path, monkeypatch)
     try:
-        where, transit = _tool(brain, "where_am_i"), _tool(brain, "transit")
-        for definition in (where, transit):
-            assert "phone" in definition.description
-            assert "500 m" in definition.description
-            assert "Mac" not in definition.description
+        where, bus = _tool(brain, "where_am_i"), _tool(brain, "bus")
+        for definition in (where, bus):
+            assert "phone" in _words(definition)
+            assert "Mac" not in _words(definition)
+        assert "500 m" in where.description
         assert where.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
         assert where.read_only
         assert not where.requires_confirmation
@@ -316,7 +321,7 @@ def test_on_a_brain_where_am_i_and_transit_here_say_it_is_the_phones_last_report
         with pytest.raises(ToolError, match=r"no phone has reported a location.*ask the user"):
             call(where, {})
         with pytest.raises(ToolError, match="no phone has reported a location") as error:
-            call(transit, {"origin": "here", "destination": "Mayfair Mall"})
+            call(bus, {"to": "Mayfair Mall"})
         assert error.value.code == "location_unavailable"
         assert seen == []
 
@@ -333,7 +338,7 @@ def test_on_a_brain_where_am_i_and_transit_here_say_it_is_the_phones_last_report
         assert "the phone's last report 12 min ago, accurate to about 120 m" in got["note"]
         assert "has not moved far since" in got["note"]
 
-        trip = call(transit, {"origin": "here", "destination": "Mayfair Mall"})
+        trip = call(bus, {"to": "Mayfair Mall"})
         place = GOOD[LOCATION]["place"]
         assert trip["from"] == f"here (the phone's last report 12 min ago, {place}, ±120 m)"
         assert trip["to"] == "Mayfair Mall"
@@ -364,10 +369,10 @@ def test_a_mac_running_alone_keeps_the_wording_of_adr_0194() -> None:
         transit_api_key="k", transit_places=dict, here_location=lambda: fix,
     )
     where = next(d for d in registry.get_definitions() if d.name == "where_am_i")
-    transit = next(d for d in registry.get_definitions() if d.name == "transit")
+    bus = next(d for d in registry.get_definitions() if d.name == "bus")
     assert "read from this Mac (he carries it)" in where.description
-    assert "his location, read from this Mac, which he carries." in transit.description
-    assert "phone" not in where.description + transit.description
+    assert "his location, read from this Mac, which he carries." in _words(bus)
+    assert "phone" not in where.description + _words(bus)
     mac_reading = dict(where.handler({}, None))  # type: ignore[arg-type,call-arg,misc]
     assert mac_reading["source"] == "this Mac"
 
@@ -486,7 +491,7 @@ def test_an_action_outside_any_turn_is_the_macs(tmp_path: Path) -> None:
     assert got["source"] == "this Mac"
 
 
-def test_transit_here_starts_from_the_device_the_turn_came_from(
+def test_bus_here_starts_from_the_device_the_turn_came_from(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The origin of the request and the label follow the turn: phone, Mac, or the fallback."""
@@ -495,15 +500,15 @@ def test_transit_here_starts_from_the_device_the_turn_came_from(
     log = tmp_path / "events.db"
     conn = open_event_log(log)
     try:
-        transit = _both(log)["transit"]
-        trip = {"origin": "here", "destination": "Mayfair Mall"}
+        bus = _both(log)["bus"]
+        trip = {"to": "Mayfair Mall"}
         _open_turn(conn, "TM", MAC_TYPED)
         _open_turn(conn, "TP", PHONE_SPOKEN)
         origins = []
 
         def go(turn: str) -> str:
             seen.clear()
-            label = str(_in_turn(conn, turn, transit, trip)["from"])
+            label = str(_in_turn(conn, turn, bus, trip)["from"])
             latlng = json.loads(seen[0][0].data)["origin"]["location"]["latLng"]
             origins.append((latlng["latitude"], latlng["longitude"]))
             return label
@@ -549,17 +554,17 @@ def test_the_descriptions_name_the_sources_the_host_has(tmp_path: Path) -> None:
     """Both devices: both are named, briefly; one device: only that one, as before."""
     log = tmp_path / "events.db"
     both = _both(log)
-    for definition in (both["where_am_i"], both["transit"]):
-        text = definition.description
+    for definition in (both["where_am_i"], both["bus"]):
+        text = _words(definition)
         assert "phone" in text
         assert "this Mac" in text
-        assert "500 m" in text
+    assert "500 m" in both["where_am_i"].description
     phone_only = build_default_registry(
         transit_api_key="k", transit_places=dict, here_phone=partial(_phone_here, log),
     )
     for definition in phone_only.get_definitions():
-        if definition.name in {"where_am_i", "transit"}:
-            assert "Mac" not in definition.description
+        if definition.name in {"where_am_i", "bus"}:
+            assert "Mac" not in _words(definition)
     assert len(both["where_am_i"].description) < 1.3 * len(
         next(d for d in phone_only.get_definitions() if d.name == "where_am_i").description,
     )

@@ -1,6 +1,6 @@
 # ADR 0189 — The bus times are read by one model tool, from Google Routes
 
-**Status:** Accepted
+**Status:** Superseded-by-0245
 **Date:** 2026-10-06
 **Supersedes:** none
 

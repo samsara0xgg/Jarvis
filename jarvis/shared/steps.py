@@ -52,6 +52,8 @@ _KIND: Final[dict[str, str]] = {
     "screen_look": "screen",
     "screen_capture": "screen",
     "look_at_picture": "picture",
+    "bus": "transit",
+    # The six tools `bus` replaced (ADR 0245): turns already in the log still name them.
     "transit": "transit",
     "pin_departure": "ride",
     "watch_for_boarding": "ride",
@@ -88,14 +90,20 @@ _KIND: Final[dict[str, str]] = {
     "record_application": "jobs",
     "show_on_dashboard": "dashboard",
 }
+_RIDE_ARGUMENTS: Final = frozenset({"pin", "ride", "get_off"})
 _HIDDEN: Final = frozenset(
     {"tool_search", "get_current_time", "ask_user", "close_question", "withdraw_card"},
 )
 """Plumbing and cards: a call to one of these is not a step he would name."""
 
 
-def kind(tool: str) -> str:
-    """The language-table kind of a tool: ``step.<kind>`` names it; ``generic`` is no kind."""
+def kind(tool: str, arguments: object = None) -> str:
+    """The language-table kind of a tool: ``step.<kind>`` names it; ``generic`` is no kind.
+
+    ``bus`` is a ride when the call pins, rides or sets a stop, else a transit look (ADR 0245).
+    """
+    if tool == "bus" and _RIDE_ARGUMENTS & _arguments(arguments).keys():
+        return "ride"
     if known := _KIND.get(tool):
         return known
     parts = tool.split("__")
@@ -122,7 +130,7 @@ def _text(arguments: dict[str, Any], key: str) -> str:
 
 
 def _place(arguments: dict[str, Any]) -> str:
-    where = _text(arguments, "destination").strip()
+    where = (_text(arguments, "destination") or _text(arguments, "to")).strip()
     if not where:
         return ""
     key = f"step.place.{where.lower()}"
@@ -166,7 +174,7 @@ def _arguments(raw: object) -> dict[str, Any]:
 
 def label(tool: str, arguments: object = None) -> str:
     """The step's label: its table name, then `` · `` and the detail when the kind has one."""
-    which = kind(tool)
+    which = kind(tool, arguments)
     if which == "generic":
         return lang.t("tool_status.generic")
     name = lang.t(f"step.{which}")
@@ -174,9 +182,9 @@ def label(tool: str, arguments: object = None) -> str:
     return f"{name}{_SEP}{detail}" if detail else name
 
 
-def phrase(tool: str) -> str:
+def phrase(tool: str, arguments: object = None) -> str:
     """The step in the past tense, for the line under her answer."""
-    return lang.t(f"step.{kind(tool)}.done")
+    return lang.t(f"step.{kind(tool, arguments)}.done")
 
 
 @dataclass(frozen=True)
@@ -250,7 +258,7 @@ class StepFold:
                 n,
                 tool,
                 label(tool, arguments),
-                phrase(tool),
+                phrase(tool, arguments),
                 "running",
                 event.ts_epoch_ms,
                 None,

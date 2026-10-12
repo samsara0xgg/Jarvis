@@ -570,6 +570,16 @@ def test_the_conversation_row_of_her_answer_carries_the_steps_read_from_the_log(
         ),
         ("transit", {}, "Checking transit", "查公交"),
         (
+            "bus",
+            {"to": "Library"},
+            "Checking transit \u00b7 to Library",
+            "查公交 \u00b7 去 Library",
+        ),
+        ("bus", {}, "Checking transit", "查公交"),
+        ("bus", {"pin": [1]}, "Following the bus", "跟进公交"),
+        ("bus", {"ride": "start", "route": "28"}, "Following the bus", "跟进公交"),
+        ("bus", {"get_off": "Fir Lane"}, "Following the bus", "跟进公交"),
+        (
             "mcp__microsoft__get-calendar-view",
             {
                 "startDateTime": "2026-10-11T00:00:00-07:00",

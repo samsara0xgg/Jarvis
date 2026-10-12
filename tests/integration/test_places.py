@@ -993,15 +993,15 @@ def test_the_settings_are_copied_once_and_transit_and_the_rides_read_the_table(
     assert places.migrate_settings(world.db, {"home": "48.9,-123.9", "school": "x"}) == []
     assert [p.role for p in world.kept()] == ["school"]
     places.save(world.db, name="home", lat=48.0, lng=-123.0, role="home", origin="user")
-    # `transit` reads home and school from the table at each call.
+    # `bus` reads home and school from the table at each call.
     seen = _serve(monkeypatch)
     monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
     registry = build_default_registry(
         transit_api_key=FAKE_KEY, transit_places=partial(places.home_school, world.db),
     )
-    (transit,) = (d for d in registry.get_definitions() if d.name == "transit")
+    (transit,) = (d for d in registry.get_definitions() if d.name == "bus")
     ctx = SimpleNamespace(conn=world.conn, action_id="A1")
-    transit.handler({"origin": "home", "destination": "school"}, ctx)  # type: ignore[arg-type,call-arg,misc]
+    transit.handler({"from": "home", "to": "school"}, ctx)  # type: ignore[arg-type,call-arg,misc]
     sent = _body(seen)
     assert sent["origin"] == {"location": {"latLng": {"latitude": 48.0, "longitude": -123.0}}}
     assert sent["destination"] == {"address": "Example Campus, Example City"}
@@ -1009,7 +1009,7 @@ def test_the_settings_are_copied_once_and_transit_and_the_rides_read_the_table(
     places.forget(world.db, school.id, origin="user")
     places.save(world.db, name="school", lat=48.5, lng=-123.5, role="school", origin="user")
     seen.clear()
-    transit.handler({"origin": "home", "destination": "school"}, ctx)  # type: ignore[arg-type,call-arg,misc]
+    transit.handler({"from": "home", "to": "school"}, ctx)  # type: ignore[arg-type,call-arg,misc]
     sent = _body(seen)
     assert sent["destination"] == {"location": {"latLng": {"latitude": 48.5, "longitude": -123.5}}}
     # The rides find his stop from the same table.

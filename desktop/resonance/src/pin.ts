@@ -44,7 +44,7 @@ export function pinStatus(d: DepTrip, t: T): string {
   return m > 0 ? t([`Live · ${m} min late`, `实时 · 晚 ${m} 分`]) : m < 0 ? t([`Live · ${-m} min early`, `实时 · 早 ${-m} 分`]) : t(['On time', '准点']);
 }
 
-// ADR 0205: the bus card in the conversation, the `trip` of the ask card a `transit` answer puts up: one row per option (`index` is what a click sends back with
+// ADR 0205: the bus card in the conversation, the `trip` of the ask card a `bus` plan puts up: one row per option (`index` is what a click sends back with
 // `offer_id`; the pinned trip's id is `offer_id-index`), and how long the other ways take.
 export type OfferRow = { index: number; route: string; board_stop: string; leave_at: string; departs: string; arrive_at: string; to: string };
 export type Way = { minutes: number; km: number };

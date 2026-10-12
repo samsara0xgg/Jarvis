@@ -19,7 +19,7 @@ _DESCRIPTION: Final = (
     " is without calling it. Call it only when his question depends on where he is right now:"
     " 'where am I', what he is doing or just did away from the computer, what is nearby,"
     " places, food or shops near him, how far something is from here. For bus trips use"
-    " transit with origin 'here' instead. If it returns an error, say so and ask him where he"
+    " bus instead (it starts from here). If it returns an error, say so and ask him where he"
     " is."
 )
 
@@ -37,7 +37,7 @@ _PHONE_DESCRIPTION: Final = (
     " it. Call it only when his question depends on where he is right now: 'where am I', what"
     " he is doing or just did away from the computer, what is nearby, places, food or shops"
     " near him, how far"
-    " something is from here. For bus trips use transit with origin 'here' instead. If it"
+    " something is from here. For bus trips use bus instead (it starts from here). If it"
     " returns an error, no phone has reported a location: say so and ask him where he is."
 )
 
@@ -50,7 +50,7 @@ _BOTH_DESCRIPTION: Final = (
     " calling it. Call it only when his question depends on where he is right now: 'where am"
     " I', what he is doing or just did away from the computer, what is nearby, places, food or"
     " shops near him, how"
-    " far something is from here. For bus trips use transit with origin 'here' instead. If it"
+    " far something is from here. For bus trips use bus instead (it starts from here). If it"
     " returns an error, say so and ask him where he is."
 )
 

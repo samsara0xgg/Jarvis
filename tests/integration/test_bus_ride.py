@@ -299,11 +299,13 @@ class World:
             ride_act=act, ride_read=read,
         )))
 
-    def tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Dispatch one ride tool through the real registry, as the model would."""
-        registry = build_default_registry(ride_control=self.rides.control())
+    def tool(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch one `bus` call through the real registry, as the model would."""
+        registry = build_default_registry(
+            ride_control=self.rides.control(), transit_offers=self.offers,
+        )
         request = ActionRequest(
-            action_id=f"A-{name}-{self.clock_ms}", tool_name=name, target_entity_ref=None,
+            action_id=f"A-bus-{self.clock_ms}", tool_name="bus", target_entity_ref=None,
             caller_principal=CallerPrincipal.JARVIS_LLM, risk_level="L1", arguments=args,
             authorization_lease=None, run_id=None, turn_id=None,
         )
@@ -335,7 +337,7 @@ def _board_said(world: World) -> Bus:
     # The last transit answer for the harbour said the 7 lets him off at Fir Lane.
     world.offers.to = "harbour"
     world.offers.alights[("7", "Alder St")] = ("Fir Lane", STOPS[5][2], LNG)
-    assert world.tool("start_ride", {"route": "7", "destination": "Harbour"})["started"]
+    assert world.tool({"ride": "start", "route": "7", "to": "Harbour"})["started"]
     return bus
 
 
@@ -415,11 +417,11 @@ def test_not_boarded_ends_the_question_and_the_trip_is_not_asked_again(world: Wo
 def test_a_said_watch_asks_about_any_route_and_a_said_start_ends_the_asking(
     world: World,
 ) -> None:
-    """watch_for_boarding watches every route; a ride he starts himself gets no question."""
+    """ride=watch watches every route; a ride he starts himself gets no question."""
     bus = Bus("v9", "T9a", "9", at("17:05"))
     world.buses = [bus]
     world.clock_ms = at("17:02")
-    assert world.tool("watch_for_boarding", {"destination": "the harbour"})["watching"]
+    assert world.tool({"ride": "watch", "to": "the harbour"})["watching"]
     (watched,) = world.events("ride.watched")
     assert watched["destination"] == "the harbour"
     assert watched["until_ms"] == at("17:02") + 45 * 60_000
@@ -427,7 +429,7 @@ def test_a_said_watch_asks_about_any_route_and_a_said_start_ends_the_asking(
     (offer,) = world.events("ride.candidate_offered")
     assert offer["route"] == "9"
     # He says he is on it before tapping: the ride is his, the watch is over, nothing more is sent.
-    world.tool("start_ride", {"route": "9", "destination": "the harbour"})
+    world.tool({"ride": "start", "route": "9", "to": "the harbour"})
     assert world.ride() is not None
     pushes = len(world.apns.alerts)
     world.run(300, world.with_bus(bus))
@@ -443,9 +445,9 @@ def test_a_said_attempt_that_found_no_ride_quiets_the_question_for_five_minutes(
     a = Bus("v1", "T7a", "7", at("17:05"))
     b = Bus("v2", "T7b", "7", at("17:05") + 8_000, dx=0.0004)
     world.buses = [a, b]
-    world.tool("watch_for_boarding", {"destination": "campus"})
+    world.tool({"ride": "watch", "to": "campus"})
     world.fix(*world.with_bus(a)(world.clock_ms))
-    assert world.tool("start_ride", {"route": "7"})["ambiguous"] is True
+    assert world.tool({"ride": "start", "route": "7"})["ambiguous"] is True
     world.run(240, world.with_bus(a))
     assert world.events("ride.candidate_offered") == []
     assert world.ride() is None
@@ -458,7 +460,7 @@ def test_a_watch_runs_out_and_a_quiet_phone_is_not_asked(world: World) -> None:
     bus = Bus("v1", "T7a", "7", at("17:05"))
     world.buses = [bus]
     world.clock_ms = at("17:00")
-    world.tool("watch_for_boarding", {"destination": "campus"})
+    world.tool({"ride": "watch", "to": "campus"})
     world.push.quiet = lambda: "no-pop"
     world.run(420, world.with_bus(bus))
     assert len(world.events("ride.candidate_offered")) == 1
@@ -479,7 +481,7 @@ def test_a_said_start_takes_the_bus_nearest_his_last_fix(world: World) -> None:
     far = Bus("v2", "T7b", "7", at("17:06") + 120_000)  # 700 m behind
     world.buses = [near, far]
     world.fix(*world.with_bus(near)(world.clock_ms))
-    done = world.tool("start_ride", {"route": "7", "destination": "Fir Lane"})
+    done = world.tool({"ride": "start", "route": "7", "to": "Fir Lane"})
     assert (done["started"], done["route"], done["source"]) == (True, "7", "said")
     (started,) = world.events("ride.started")
     assert (started["vehicle_id"], started["trip_id"]) == ("v1", "T7a")
@@ -496,13 +498,13 @@ def test_two_equally_near_buses_are_candidates_and_the_choice_starts_the_ride(
     b = Bus("v2", "T7b", "7", at("17:05") + 8_000, dx=0.0004)  # 50 m aside, a few metres behind
     world.buses = [a, b]
     world.fix(*world.with_bus(a)(world.clock_ms))
-    answer = world.tool("start_ride", {"route": "7"})
+    answer = world.tool({"ride": "start", "route": "7"})
     assert answer["started"] is False
     assert answer["ambiguous"] is True
     assert {c["vehicle_id"] for c in answer["candidates"]} == {"v1", "v2"}
     assert all({"route", "next_stop", "distance_m"} <= c.keys() for c in answer["candidates"])
     assert world.ride() is None
-    chosen = world.tool("start_ride", {"route": "7", "vehicle_id": "v2"})
+    chosen = world.tool({"ride": "start", "route": "7", "vehicle_id": "v2"})
     assert chosen["started"] is True
     assert world.events("ride.started")[0]["vehicle_id"] == "v2"
 
@@ -512,7 +514,7 @@ def test_a_said_start_with_no_bus_near_is_a_tool_error_that_says_to_ask(world: W
     world.clock_ms = at("17:30")
     world.buses = [Bus("v1", "T7a", "7", at("17:05"))]  # long gone to the end of the line
     world.fix(48.6, LNG)
-    out = world.tool("start_ride", {"route": "7"})
+    out = world.tool({"ride": "start", "route": "7"})
     assert out.get("code") == "no_vehicle"
     assert "ask him" in json.dumps(out)
     assert world.ride() is None
@@ -524,7 +526,7 @@ def test_a_said_start_with_a_pin_and_no_fix_uses_the_pinned_trip(world: World) -
     world.clock_ms = at("17:06")
     bus = Bus("v1", "T7a", "7", at("17:05"))
     world.buses = [bus]
-    out = world.tool("start_ride", {})
+    out = world.tool({"ride": "start"})
     assert (out["started"], out["source"]) == (True, "pin")
     (started,) = world.events("ride.started")
     assert (started["trip_id"], started["pin_tid"], started["alight_stop"]) == (
@@ -569,12 +571,12 @@ def test_a_late_bus_moves_the_arrival_from_the_trip_updates(world: World) -> Non
 
 
 def test_the_unknown_stop_is_asked_once_and_set_by_a_tool(world: World) -> None:
-    """Without a destination she is told to ask once; set_ride_stop then fixes it."""
+    """Without a destination she is told to ask once; bus(get_off=...) then fixes it."""
     world.clock_ms = at("17:07")
     bus = Bus("v1", "T7a", "7", at("17:05"))
     world.buses = [bus]
     world.fix(*world.with_bus(bus)(world.clock_ms))
-    done = world.tool("start_ride", {"route": "7"})
+    done = world.tool({"ride": "start", "route": "7"})
     assert done["alight_known"] is False
     first = world.rides.line()
     assert first is not None
@@ -582,14 +584,62 @@ def test_the_unknown_stop_is_asked_once_and_set_by_a_tool(world: World) -> None:
     second = world.rides.line()
     assert second is not None
     assert "ask him once" not in second  # asked once per ride
-    ambiguous = world.tool("set_ride_stop", {"stop": "e"})  # Dogwood, Elm, Fir, Hazel...
+    ambiguous = world.tool({"get_off": "e"})  # Dogwood, Elm, Fir, Hazel...
     assert ambiguous["set"] is False
     assert "Elm Cres" in ambiguous["candidates"]
-    set_it = world.tool("set_ride_stop", {"stop": "Gum"})
+    set_it = world.tool({"get_off": "Gum"})
     assert (set_it["set"], set_it["alight_stop"]) == (True, "Gum St")
     assert world.events("ride.alight_set")[0]["alight_stop"] == "Gum St"
-    nothing = world.tool("set_ride_stop", {"stop": "Zebra"})
+    nothing = world.tool({"get_off": "Zebra"})
     assert nothing.get("code") == "no_such_stop"
+
+
+def test_bus_with_no_arguments_is_how_the_ride_is_going_and_without_one_the_times(
+    world: World,
+) -> None:
+    """ADR 0245: on a ride the answer is the ride (next stop, his stop, arrival); off it, none."""
+    out = world.tool({})
+    assert out["code"] == "unavailable"  # no ride, and this world has no Google key
+    bus = _board_said(world)
+    world.run(30, world.with_bus(bus))
+    out = world.tool({})
+    assert out["summary"].startswith("On the 7 from Cedar Ave; next stop ")
+    assert "He gets off at Fir Lane:" in out["summary"]
+    assert "about 5:10 pm" in out["summary"]
+    assert "No live bus position" not in out["summary"]
+    assert {"ride_id", "eta_ms", "started_at_ms", "note"}.isdisjoint(out)
+    assert out["credit"] == "BC Transit"
+    world.tool({"ride": "end"})
+    assert world.tool({})["code"] == "unavailable"
+
+
+def test_a_ride_starts_from_the_option_the_last_list_numbered(world: World) -> None:
+    """`ride=start, option=1` is that option's first bus and its destination, nothing copied."""
+    world.clock_ms = at("17:07")
+    bus = Bus("v1", "T7a", "7", at("17:05"))
+    world.buses = [bus]
+    world.fix(*world.with_bus(bus)(world.clock_ms))
+    nothing = world.tool({"ride": "start", "option": 1})
+    assert nothing["code"] == "no_plan"
+    option = {
+        "leave_at": "17:02", "arrive_at": "17:20", "legs": [
+            {"route": "7", "board_stop": "Alder St", "departs": "17:05"},
+        ],
+    }
+    world.offers.keep([option], "harbour")
+    world.offers.alights[("7", "Alder St")] = ("Fir Lane", STOPS[5][2], LNG)
+    started = world.tool({"ride": "start", "option": 1})
+    assert started["started"] is True
+    assert started["alight_stop"] == "Fir Lane"
+    (event,) = world.events("ride.started")
+    assert (event["route"], event["trip_id"], event["alight_stop"]) == ("7", "T7a", "Fir Lane")
+    again = world.tool({"ride": "start", "option": 1})
+    assert again["already_riding"] is True
+    assert again["summary"].startswith("Already following this ride; nothing changed.")
+    assert len(world.events("ride.started")) == 1
+    missing = world.tool({"ride": "end"})
+    assert missing["ended"] is True
+    assert world.tool({"ride": "start", "option": 4})["code"] == "not_found"
 
 
 def test_the_ride_survives_a_restart(world: World) -> None:
@@ -703,11 +753,11 @@ def test_passing_his_stop_and_walking_ends_the_ride(world: World) -> None:
 
 
 def test_he_says_so_through_the_tool_and_the_route(world: World) -> None:
-    """end_ride ends it; so does POST action=end; both ways write the reason 'said'."""
+    """ride=end ends it; so does POST action=end; both ways write the reason 'said'."""
     _board_said(world)
-    assert world.tool("end_ride", {})["ended"] is True
+    assert world.tool({"ride": "end"})["ended"] is True
     assert _ended(world)["reason"] == "said"
-    assert world.tool("end_ride", {})["ended"] is False
+    assert world.tool({"ride": "end"})["ended"] is False
     _board_said(world)
     ride = world.ride()
     assert ride is not None
@@ -741,7 +791,7 @@ def test_the_end_closes_the_live_activity_and_forgets_its_token(world: World) ->
         "device_token": DEVICE_TOKEN, "environment": "sandbox",
         "ride_activity_token": ACTIVITY_TOKEN,
     })
-    world.tool("end_ride", {})
+    world.tool({"ride": "end"})
     last = world.apns.rides[-1]
     assert (last.token, last.body["event"], last.body["content-state"]["phase"]) == (
         ACTIVITY_TOKEN, "end", "ended",

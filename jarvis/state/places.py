@@ -181,7 +181,7 @@ def containing(places: Iterable[Place], lat: float, lng: float) -> Place | None:
 
 
 def home_school(path: Path) -> dict[str, str]:
-    """The kept home and school as `transit` and the rides read them: ``lat,lng``, else the address.
+    """The kept home and school as `bus` reads them: ``lat,lng``, else the address.
 
     Read at each call. When two places share a role the newer one is the one he means.
     """

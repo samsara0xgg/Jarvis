@@ -4,7 +4,7 @@ There is no pins table: the pin is the newest ``departure.pinned`` event, change
 ``departure.trip_added``, ``departure.trip_removed`` and ``departure.updated`` events (a trip's
 live times) and ended by ``departure.unpinned``. A pin holds up to ``MAX_TRIPS`` trips, so two lines
 a few minutes apart can both stay; a pin written before that holds one trip in its own fields and
-is folded as a set of one. The tool (``pin_departure``), the cards, the daemon's refresh and the
+is folded as a set of one. The tool (``bus(pin=...)``), the cards, the daemon's refresh and the
 notice routes read the same fold.
 """
 

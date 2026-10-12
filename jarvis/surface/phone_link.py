@@ -20,7 +20,7 @@ a newer one replaces the older (the older is closed with code 4000).
                      "verdict": "turn"}
     host -> phone   {"type": "row", "event_type": "surface.response_chunk",
                      "event_uid": "<32 hex>", "payload": {...}, "ts_epoch_ms": 1700000000000}
-    host -> phone   {"type": "step", "turn_id": "T...", "step": 1, "tool": "transit",
+    host -> phone   {"type": "step", "turn_id": "T...", "step": 1, "tool": "bus",
                      "label": "...", "state": "running", "started_ms": 1700000000000,
                      "ended_ms": null}
     phone -> host   {"type": "barge"}                     it heard Allen over her voice, held

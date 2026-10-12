@@ -1425,7 +1425,7 @@ def _phone_here(event_log_path: Path) -> dict[str, Any]:
 
 
 def _live_departure(live: BusLive) -> Callable[[str, tuple[float, float], int], int | None]:
-    """BC Transit's live departure (epoch ms) of a route at a stop, for the `transit` tool."""
+    """BC Transit's live departure (epoch ms) of a route at a stop, for the `bus` tool."""
     def departure(route: str, stop: tuple[float, float], around_ms: int) -> int | None:
         found = live.departure(route, stop, around_ms)
         return found[1] if found else None
@@ -1434,7 +1434,7 @@ def _live_departure(live: BusLive) -> Callable[[str, tuple[float, float], int], 
 
 
 def _here_location(role: str) -> Callable[[], dict[str, Any]] | None:
-    """This Mac's location for `transit` and `where_am_i`, read on demand (ADR 0194).
+    """This Mac's location for `bus` and `where_am_i`, read on demand (ADR 0194).
 
     None in the `brain` role, which has no Mac to read, and off macOS. Every role also gets the
     phone's last report (`_phone_here`, ADR 0198); which one answers is decided per turn
@@ -1449,7 +1449,7 @@ def _transit_places(config: Mapping[str, Any]) -> dict[str, str]:
     """``transit.home`` and ``transit.school`` (an address or ``lat,lng``), read once at boot.
 
     They are copied into the places table by :func:`jarvis.state.places.migrate_settings`
-    (ADR 0234); after that the table is where `transit` and the rides read them. An unset
+    (ADR 0234); after that the table is where `bus` reads them. An unset
     ``home`` falls back to the ``home.weather`` latitude and longitude (ADR 0189).
     """
     block = config.get("transit")
@@ -2902,7 +2902,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         if _ambient_sounds(full_config) else None
     )
     bus_live = BusLive(paths.root / "cache")
-    transit_offers = TransitOffers()  # the rows `transit` leaves for the chat card (ADR 0205)
+    transit_offers = TransitOffers()  # the list `bus` keeps, and its chat card rows (ADR 0205)
     vision_client = _build_vision_client(
         full_config,
         vision_preset_name,

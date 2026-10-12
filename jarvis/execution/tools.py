@@ -92,10 +92,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from datetime import tzinfo
 
+    from jarvis.execution.bus_tool import RideControl
     from jarvis.execution.highlight_tool import HighlightMarker
     from jarvis.execution.mail_draft_tool import DraftStore
     from jarvis.execution.night_tools import NightControl
-    from jarvis.execution.ride_tool import RideControl
     from jarvis.execution.transit_tool import TransitOffers
     from jarvis.shared import Event
     from jarvis.shared.device_link import DeviceLink
@@ -3913,23 +3913,24 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         weather_lookup: ADR 0188 — the home's weather read (`home.weather`);
             `None` (no location configured) leaves `weather` off the menu.
         transit_api_key: ADR 0189 — the Google Routes key (`GOOGLE_MAPS_API_KEY`, resolved
-            by the runtime); empty or `None` leaves `transit` off the menu.
-        transit_places: reads the kept `home` and `school` for `transit` at each call (an
+            by the runtime); empty or `None` leaves `bus` unable to read times (and off the
+            menu altogether without a `ride_control`).
+        transit_places: reads the kept `home` and `school` for `bus` at each call (an
             address or `lat,lng`; ADR 0234).
         local_zone: the zone `places` counts days in (`None`: the machine's).
-        transit_offers: where `transit` leaves its options for the chat card (ADR 0205).
+        transit_offers: where `bus` leaves its options, for the chat card (ADR 0205) and `pin`.
         here_location: ADR 0194 — one fresh read of this Mac's location (`lat`, `lng`,
-            `accuracy_m`, optional `place`); gives `transit` its `here` and registers
+            `accuracy_m`, optional `place`); gives `bus` its `here` and registers
             `where_am_i`. `None` leaves both off unless `here_phone` is given.
         here_phone: ADR 0198 — one read of the phone's last report (it also returns `age_s`
             and `device`). Without `here_location` (a brain) it is every turn's `here`; with
             both, a turn a paired phone opened gets it and the Mac's own turn gets the Mac's
             (ADR 0212). Both tools say which they read.
         bus_live: the live departure (epoch ms) of a route at a stop position around a time, for
-            a route `transit` is asked about.
+            a route `bus` is asked about.
         ride_control: ADR 0224 — what the runtime does when the model says he is heading out,
-            has boarded, gets off at a stop, or is off the bus; registers the four ride tools.
-            `None` leaves them off the menu.
+            has boarded, gets off at a stop, or is off the bus, and how his ride is going; gives
+            `bus` its `ride` and `get_off`. `None` leaves them out of its answers.
         highlight_marker: ADR 0235 — what the runtime does to mark or unmark an item of a day's
             timeline as a highlight; registers `mark_highlight`. `None` leaves it off the menu.
     """
@@ -4077,6 +4078,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         registry.register(state_tool)
     for report_tool in build_daily_report_tool(daily_report_run):
         registry.register(report_tool)
+    from jarvis.execution.bus_tool import build_bus_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.highlight_tool import build_highlight_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.keep_tool import build_keep_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.location_tool import build_where_tool  # noqa: PLC0415 — same cycle.
@@ -4084,8 +4086,6 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.picture_tool import build_picture_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.place_tools import build_place_tools  # noqa: PLC0415 — same cycle.
-    from jarvis.execution.ride_tool import build_ride_tools  # noqa: PLC0415 — same cycle.
-    from jarvis.execution.transit_tool import build_transit_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.voice_tools import build_voice_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.weather_tool import build_weather_tool  # noqa: PLC0415 — same cycle.
 
@@ -4097,12 +4097,11 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         *build_weather_tool(weather_lookup),
         *build_picture_tool(vision_client, memory_db_path),
         *(() if memory_db_path is None else build_place_tools(memory_db_path, local_zone)),
-        *build_transit_tool(
+        *build_bus_tool(
             transit_api_key, transit_places or dict, here_location, phone_here=here_phone,
-            offers=transit_offers, bus_live=bus_live,
+            offers=transit_offers, bus_live=bus_live, control=ride_control,
         ),
         *build_where_tool(here_location, here_phone),
-        *build_ride_tools(ride_control),
         *build_highlight_tool(highlight_marker),
     ):
         registry.register(conversation_tool)

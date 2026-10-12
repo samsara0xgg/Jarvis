@@ -11,14 +11,14 @@ reason:
   the bus; the trip passed his stop and his motion is walking or still; he said so; fifteen minutes
   past the trip's scheduled end).
 - **A boarding watch is on** (a pinned trip within ten minutes of leaving, or the model's
-  ``watch_for_boarding`` after he said he is heading out): when two consecutive phone fixes are
+  ``bus(ride="watch")`` after he said he is heading out): when two consecutive phone fixes are
   within 60 m of one bus and move with it, ask him once, by notification, whether he boarded.
 - **Neither**: forget the vehicle history and return.
 
 He starts a ride by tapping the notification's button (:meth:`Rides.act`) or by saying so
-(``start_ride``); it is never inferred. When the feed fails the ride falls back to the timetable
-and says ``stale``. Everything runs off the event loop; the one thing read on it is :meth:`line`,
-from a snapshot the ticks keep.
+(``bus(ride="start")``); it is never inferred. When the feed fails the ride falls back to the
+timetable and says ``stale``. Everything runs off the event loop; the one thing read on it is
+:meth:`line`, from a snapshot the ticks keep.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
-from jarvis.execution.ride_tool import RideControl
+from jarvis.execution.bus_tool import RideControl
 from jarvis.execution.tools import ToolError
 from jarvis.shared import lang
 from jarvis.shared.geo import metres
@@ -75,7 +75,7 @@ PIN_LEAD_MS: Final = 10 * _MIN_MS
 PIN_AFTER_MS: Final = 15 * _MIN_MS
 """... until this long after, since he is only seen moving with the bus once it has left."""
 WATCH_MS: Final = 45 * _MIN_MS
-"""How long ``watch_for_boarding`` looks for him."""
+"""How long ``bus(ride="watch")`` looks for him."""
 FIX_WINDOW_MS: Final = 4 * _MIN_MS
 FIX_FRESH_MS: Final = 2 * _MIN_MS
 """The newest of the two fixes that show him moving with a bus is no older than this."""
@@ -150,7 +150,7 @@ class Rides:
         """``live`` is BC Transit's feeds (without it a ride is only what he declares).
 
         ``places`` reads the kept ``home`` and ``school`` as ``lat,lng`` at each use (ADR 0234) and
-        ``offers`` is what the last ``transit`` answer said about where his bus lets him off; both
+        ``offers`` is what the last ``bus`` plan said about where his bus lets him off; both
         only help find his stop.
         """
         self._path = event_log
@@ -305,11 +305,11 @@ class Rides:
     # --- starting ---------------------------------------------------------------------
 
     def control(self) -> RideControl:
-        """The four model tools' callables."""
-        return RideControl(self.watch, self.start, self.set_stop, self.end)
+        """The ``bus`` tool's callables."""
+        return RideControl(self.watch, self.start, self.set_stop, self.end, self.status)
 
     def watch(self, destination: str) -> dict[str, Any]:
-        """``watch_for_boarding``: look for him boarding, any route, for ``WATCH_MS``."""
+        """``bus(ride="watch")``: look for him boarding, any route, for ``WATCH_MS``."""
         now = self._now_ms()
         with self._lock, contextlib.closing(self._open()) as conn:
             if folded.active(conn, now) is not None:
@@ -322,7 +322,7 @@ class Rides:
     def start(
         self, route: str | None, destination: str | None, vehicle_id: str | None,
     ) -> dict[str, Any]:
-        """``start_ride``: he said he boarded; find the bus and begin, or return the candidates."""
+        """``bus(ride="start")``: he boarded; find the bus and begin, or return the candidates."""
         now = self._now_ms()
         with self._lock, contextlib.closing(self._open()) as conn:
             self._said_ms = now
@@ -399,8 +399,8 @@ class Rides:
                  "distance_m": round(d)}
                 for (d, _, v), name in zip(near, names, strict=True)
             ],
-            "note": "two buses are about equally near him: ask which one, then call start_ride"
-                    " again with that vehicle_id",
+            "note": "two buses are about equally near him: ask which one, then call"
+                    " bus(ride='start') again with that vehicle_id",
         }
 
     def _pin_for(self, conn: sqlite3.Connection, route: str | None, now: int) -> pins.Trip | None:
@@ -546,7 +546,7 @@ class Rides:
         return {"ride": self.view(), "reason": None}
 
     def end(self) -> dict[str, Any]:
-        """``end_ride``: he says he is off the bus."""
+        """``bus(ride="end")``: he says he is off the bus."""
         now = self._now_ms()
         with self._lock, contextlib.closing(self._open()) as conn:
             ride = folded.active(conn, now)
@@ -556,7 +556,7 @@ class Rides:
         return {"ended": True, "route": ride.route}
 
     def set_stop(self, words: str) -> dict[str, Any]:
-        """``set_ride_stop``: the stop he gets off at, by its name or a place."""
+        """``bus(get_off=...)``: the stop he gets off at, by its name or a place."""
         now = self._now_ms()
         with self._lock, contextlib.closing(self._open()) as conn:
             ride = folded.active(conn, now)
@@ -572,7 +572,7 @@ class Rides:
             if len({h.name for h in hits}) > 1:
                 return {"set": False, "ambiguous": True,
                         "candidates": sorted({h.name for h in hits})[:5],
-                        "note": "ask which stop he means, then call set_ride_stop again"}
+                        "note": "ask which stop he means, then call bus(get_off=...) again"}
             if hits:
                 stop = hits[0]
                 folded.write_alight(conn, ride.ride_id, stop=stop.name, stop_id=stop.stop_id,
@@ -743,6 +743,13 @@ class Rides:
             "credit": CREDIT if ride.trip_id else None,
         }
 
+    def status(self) -> dict[str, Any] | None:
+        """The ride in force now, read from the log (``bus`` with no arguments); None if none."""
+        now = self._now_ms()
+        with self._lock, contextlib.closing(self._open()) as conn:
+            ride = folded.active(conn, now)
+        return None if ride is None else self._describe(ride)
+
     def view(self) -> dict[str, Any] | None:
         """The ride now, as ``GET /inherent/ride`` serves it; None when he is not on one."""
         snap = self._snap
@@ -770,7 +777,7 @@ class Rides:
             else:
                 self._asked_stop.add(ride.ride_id)
                 text += (" His stop is unknown: ask him once where he gets off, then call"
-                         " set_ride_stop.")
+                         " bus(get_off=<stop>).")
         else:
             text += f" His stop: {ride.alight_stop}"
             if prog is not None and prog.eta_ms is not None:

@@ -756,7 +756,7 @@ class PendingClarification:
             it was dismissed (counted anew from the dismissal). The one being
             handled is already appended, so the first one sees 1. They do not
             close the card (ADR 0206).
-        trip: A `transit` answer's rows and modes (ADR 0205): the card is a bus
+        trip: A `bus` plan's rows and modes (ADR 0205): the card is a bus
             card, not a question.
     """
 

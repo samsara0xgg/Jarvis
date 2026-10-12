@@ -90,7 +90,7 @@ class Departures:
     ) -> None:
         """``live`` is BC Transit's feed; without it the pin keeps Google's times.
 
-        ``offers`` is what ``transit`` left for the chat card's rows (ADR 0205).
+        ``offers`` is what ``bus`` left for the chat card's rows (ADR 0205).
         """
         self._path = event_log
         self.live = live

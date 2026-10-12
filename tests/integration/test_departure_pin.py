@@ -52,13 +52,18 @@ STOP = (48.4600, -123.3100)
 LAT_LNG = {"latitude": STOP[0], "longitude": STOP[1]}
 
 
+def minutes_between(first: str, second: str) -> int:
+    """Whole minutes from the first local time to the second."""
+    return int((_local(second) - _local(first)).total_seconds() // 60)
+
+
 def _local(hhmm: str) -> datetime:
     clock = datetime.strptime(hhmm, "%H:%M").time()  # noqa: DTZ007
     return datetime.combine(NOW.date(), clock, tzinfo=ZONE)
 
 
-def _google(depart: str = "17:05", route: str = "28") -> dict[str, Any]:
-    """One Google route: a 3 min walk, one bus whose first stop carries its position."""
+def _google(depart: str = "17:05", route: str = "28", walk: int = 3) -> dict[str, Any]:
+    """One Google route: a ``walk`` min walk, one bus whose first stop carries its position."""
     at = _local(depart).astimezone(UTC)
     return {
         "routes": [
@@ -66,7 +71,7 @@ def _google(depart: str = "17:05", route: str = "28") -> dict[str, Any]:
                 "legs": [
                     {
                         "steps": [
-                            {"staticDuration": "180s", "travelMode": "WALK"},
+                            {"staticDuration": f"{walk * 60}s", "travelMode": "WALK"},
                             {
                                 "staticDuration": "900s",
                                 "travelMode": "TRANSIT",
@@ -190,15 +195,21 @@ class _World:
         self.local_now = _local(hhmm)
         self.clock = self.local_now.astimezone(UTC)
 
-    def look_up(self) -> None:
-        self.call("transit", {"origin": "home", "destination": "Mayfair Mall"})
+    def look_up(self, to: str = "home") -> None:
+        self.call("bus", {"from": "Mayfair Mall", "to": to})
 
-    def pin(self, leave: str = "17:02", departs: str = "17:05", **more: str) -> dict[str, Any]:
-        args = {
-            "leave_at": leave, "route": "28", "board_stop": "Shelbourne at Pear",
-            "departs": departs, "arrive_at": "17:20", "destination": "Home", **more,
-        }
-        return self.call("pin_departure", args)
+    def pin(self, leave: str | None = None, departs: str | None = None) -> dict[str, Any]:
+        """Option 1 of the last list; with times, of a fresh list of one bus leaving then.
+
+        The result carries the pin's id, read from the log (the tool does not say ids).
+        """
+        if leave or departs:
+            walk = minutes_between(leave or "17:02", departs or "17:05")
+            self.google = _google(departs or "17:05", walk=walk)
+            self.look_up()
+        made = self.call("bus", {"pin": [1]})
+        pins = self.events("departure.pinned")
+        return {**made, "pin_id": pins[-1]["pin_id"]} if pins else made
 
     def pending(self) -> list[reminder_state.Reminder]:
         return reminder_state.pending(self.conn)
@@ -293,29 +304,74 @@ def test_unpinning_from_the_notch_cancels_the_ring(world: _World) -> None:
     assert again.status_code == 200
 
 
-def test_the_tool_refuses_a_past_leave_time_and_a_bus_before_it(world: _World) -> None:
-    """The tool refuses a past leave time and a bus before it."""
-    assert world.pin(leave="16:58")["code"] == "time_in_past"
-    assert world.pin(leave="17:06", departs="17:05")["code"] == "invalid_argument"
-    assert world.pin(leave="soon")["code"] == "invalid_argument"
+def test_the_tool_refuses_a_past_leave_time_and_an_option_the_list_lacks(world: _World) -> None:
+    """A listed option whose leave time has gone, and a number the list has not got, pin nothing."""
+    world.pin(leave="16:50", departs="17:05")  # a list of one whose leave time is 10 min gone
+    gone = world.call("bus", {"pin": [1]})
+    assert gone["code"] == "time_in_past"
+    assert "Option 1 (leave 4:50 pm) is already past" in gone["error"]
+    assert "bus(to=...)" in gone["error"]
+    unknown = world.call("bus", {"pin": [4]})
+    assert unknown["code"] == "not_found"
+    assert "There is no option 4: the last list has option 1" in unknown["error"]
+    assert world.call("bus", {"pin": [1, 2, 3, 4]})["code"] == "invalid_arguments"
+    assert world.call("bus", {"pin": ["soon"]})["code"] == "invalid_arguments"
+    assert world.call("bus", {"pin": [1], "to": "home"})["code"] == "invalid_arguments"
     assert world.events("departure.pinned") == []
     assert world.pending() == []
     # A minute late still rings at the next tick.
     assert world.pin(leave="16:59", departs="17:05")["pinned"]
 
 
-def test_the_tool_is_quiet_and_model_only() -> None:
-    """The tool is quiet and model only."""
+def test_a_pin_before_any_list_says_to_ask_for_the_times_first(tmp_path: Path) -> None:
+    """No `bus(to=...)` yet in this process: the error names the call to make."""
+    paths = bootstrap_runtime(tmp_path)
+    conn = open_event_log(paths.event_log)
     registry = build_default_registry(transit_api_key="not-a-key", transit_places=dict)
-    (definition,) = (d for d in registry.get_definitions() if d.name == "pin_departure")
+    request = ActionRequest(
+        action_id="A1", tool_name="bus", target_entity_ref=None,
+        caller_principal=CallerPrincipal.JARVIS_LLM, risk_level="L1", arguments={"pin": [1]},
+        authorization_lease=None, run_id=None, turn_id=None,
+    )
+    lifecycle = ActionLifecycle()
+    lifecycle.register("A1")
+    lifecycle.transition("A1", "authorized")
+    out = json.loads(registry.dispatch(request, conn, paths, lifecycle).slots[0].tool_output or "")
+    conn.close()
+    assert out["code"] == "no_plan"
+    assert "ask for the times first with bus(to=...)" in out["error"]
+
+
+def test_pinning_the_same_option_twice_pins_once_and_rings_once(world: _World) -> None:
+    """A repeat is answered 'already pinned': no second event, no second reminder."""
+    first = world.pin()
+    assert first["pinned"] is True
+    assert first["already_pinned"] is False
+    assert first["summary"].startswith("Pinned on the notch: the 28 from Shelbourne at Pear")
+    (ring,) = world.pending()
+    again = world.pin()
+    assert again["already_pinned"] is True
+    assert again["summary"].startswith("Already pinned, nothing changed: the 28 from")
+    assert again["pin_id"] == first["pin_id"]
+    assert len(world.events("departure.pinned")) == 1
+    assert world.pending() == [ring]
+    # A different bus is a new pin.
+    other = world.pin(leave="17:10", departs="17:13")
+    assert other["already_pinned"] is False
+    assert len(world.events("departure.pinned")) == 2
+
+
+def test_the_tool_is_quiet_and_model_only() -> None:
+    """The tool is quiet and model only; `pin` is asked for by voice, never offered."""
+    registry = build_default_registry(transit_api_key="not-a-key", transit_places=dict)
+    (definition,) = (d for d in registry.get_definitions() if d.name == "bus")
     assert definition.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
     assert definition.risk_level == "L1"
     assert not definition.requires_confirmation
-    assert _dispatch_key("pin_departure") is None
-    assert "ONLY when he asks" in definition.description
-    assert "pin_departure" not in {
-        d.name for d in build_default_registry().get_definitions()
-    }
+    assert _dispatch_key("bus") is None
+    assert "Only when he asks" in definition.input_schema["properties"]["pin"]["description"]
+    assert "bus" not in {d.name for d in build_default_registry().get_definitions()}
+    assert not {"pin_departure", "transit"} & {d.name for d in registry.get_definitions()}
 
 
 def _late(world: _World, minutes: int = 3) -> None:
@@ -447,7 +503,7 @@ def test_the_static_export_is_downloaded_once_a_day(tmp_path: Path) -> None:
 def _answer(world: _World, *legs: tuple[str, str]) -> None:
     """The next ``transit`` answer has one option per ``(first bus departs, route)``."""
     world.google = {"routes": [r for at, route in legs for r in _google(at, route)["routes"]]}
-    world.look_up()
+    world.look_up("Mayfair Mall")
 
 
 def _slot(world: _World) -> PendingClarification:
@@ -546,14 +602,15 @@ def test_a_stale_offer_or_row_pins_nothing(world: _World) -> None:
     assert world.pending() == []
 
 
-def test_the_description_no_longer_asks_to_pin() -> None:
+def test_the_schema_does_not_ask_to_pin() -> None:
     """The card offers the pin; the model pins only when he asks by voice."""
     registry = build_default_registry(transit_api_key="not-a-key", transit_places=dict)
-    descriptions = {d.name: d.description for d in registry.get_definitions()}
-    assert "ask him" not in descriptions["transit"]
-    assert "Do not ask whether to pin" in descriptions["transit"]
-    assert "by voice" in descriptions["pin_departure"]
-    assert "says yes" not in descriptions["pin_departure"]
+    (definition,) = (d for d in registry.get_definitions() if d.name == "bus")
+    pin = definition.input_schema["properties"]["pin"]["description"]
+    assert "never offer" in pin
+    assert "already has a button per bus" in pin
+    assert "ask him" not in definition.description
+    assert "says yes" not in pin
 
 
 def test_next_bus_takes_a_later_option_of_the_last_answer(world: _World) -> None:
@@ -645,17 +702,11 @@ def test_the_served_pin_says_what_the_refresh_knows(world: _World) -> None:
 # --- ADR 0204: a set of trips -----------------------------------------------------------
 
 
-def _option(leave: str, departs: str, route: str = "28") -> dict[str, str]:
-    return {
-        "leave_at": leave, "route": route, "board_stop": "Shelbourne at Pear",
-        "departs": departs, "arrive_at": "17:30", "destination": "Home",
-    }
-
-
 def _pin_two(world: _World) -> dict[str, Any]:
-    """Two buses by voice: the 28 at 17:05 (leave 17:02) and at 17:15 (leave 17:12)."""
-    options = [_option("17:12", "17:15"), _option("17:02", "17:05")]
-    return world.call("pin_departure", {"options": options})
+    """Two buses by voice: the 28 at 17:15 (leave 17:12) and at 17:05 (leave 17:02)."""
+    _answer(world, ("17:05", "28"), ("17:15", "28"))
+    made = world.call("bus", {"pin": [2, 1]})
+    return {**made, "pin_id": world.events("departure.pinned")[-1]["pin_id"]}
 
 
 def _served(world: _World) -> dict[str, Any] | None:
@@ -712,10 +763,9 @@ def test_a_newer_answer_starts_a_new_set(world: _World) -> None:
 
 def test_three_trips_is_the_most(world: _World) -> None:
     """A fourth catchable trip is refused with ToolError full; the card says so in `reason`."""
-    world.call("pin_departure", {"options": [
-        _option("17:02", "17:05"), _option("17:12", "17:15"), _option("17:22", "17:25"),
-    ]})
-    assert world.call("pin_departure", {"options": [_option("17:02", "17:05")] * 4}).get("error")
+    _answer(world, ("17:05", "28"), ("17:10", "28"), ("17:15", "28"))
+    assert world.call("bus", {"pin": [1, 2, 3]})["pinned"]
+    assert world.call("bus", {"pin": [1, 2, 3, 4]})["code"] == "invalid_arguments"
     one = departures_state.current(world.conn)
     assert one is not None
     extra = transit_tool.trip_of(
@@ -790,9 +840,13 @@ def test_every_trip_is_refreshed_on_its_own(world: _World) -> None:
     assert ring.due_at_ms == int(_local("17:05").timestamp() * 1000)
     assert ring.text == "该出门了，28 路 17:08 在 Shelbourne at Pear 上车；也可以坐 28 路 17:17"
     # A trip whose stop has no position is stale alone.
-    world.call("pin_departure", {"options": [
-        _option("17:02", "17:05"), {**_option("17:12", "17:15"), "board_stop": "Nowhere"},
-    ]})
+    nowhere = _google("17:15")["routes"][0]
+    stop = nowhere["legs"][0]["steps"][1]["transitDetails"]["stopDetails"]["departureStop"]
+    stop["name"] = "Nowhere"
+    stop.pop("location")
+    world.google = {"routes": [*_google("17:05")["routes"], nowhere]}
+    world.look_up()
+    world.call("bus", {"pin": [1, 2]})
     world.reminders.tick()
     world.feed = _feed(("T28a", "S1", "17:05", 0))
     world.clock += timedelta(seconds=REFRESH_S)
@@ -885,12 +939,12 @@ def test_an_old_single_trip_pin_still_folds(world: _World, monkeypatch: pytest.M
     assert (_served(world) or {})["more"] == 1
 
 
-def test_voice_can_pin_several_options_and_one_set_of_fields_still_works(world: _World) -> None:
-    """`options` pins a set (one ring, all trips); the plain fields pin one trip as before."""
+def test_voice_can_pin_several_options_and_a_single_number_pins_one(world: _World) -> None:
+    """`pin=[2,1]` pins a set (one ring, all trips); `pin=[1]` pins one trip."""
     made = _pin_two(world)
     assert made["pinned"]
-    assert (made["leave_at"], made["departs"]) == ("17:02", "17:05")  # the earliest
-    assert [t["departs"] for t in made["trips"]] == ["17:15", "17:05"]
+    assert made["summary"].startswith("Pinned on the notch: the 28 from Shelbourne at Pear: leave")
+    assert [t["departs"] for t in made["trips"]] == ["5:15 pm", "5:05 pm"]
     (pinned,) = world.events("departure.pinned")
     assert pinned["offer_id"] is None
     assert len(pinned["trips"]) == 2
@@ -901,8 +955,10 @@ def test_voice_can_pin_several_options_and_one_set_of_fields_still_works(world: 
     (ring,) = world.pending()
     assert ring.due_at_ms == int(_local("17:10").timestamp() * 1000)
     # One bad option refuses the lot.
-    options = [_option("17:12", "17:15"), _option("16:00", "17:05")]
-    bad = world.call("pin_departure", {"options": options})
+    slow = _google("17:05", walk=7)["routes"][0]  # leave 16:58, gone
+    world.google = {"routes": [*_google("17:15")["routes"], slow]}
+    world.look_up()
+    bad = world.call("bus", {"pin": [1, 2]})
     assert bad["code"] == "time_in_past"
     assert (_served(world) or {})["departs"] == "17:13"
 
