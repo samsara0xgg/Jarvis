@@ -168,6 +168,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const quota = useUsage(port), codex = useCodexSessions(port), work = useWorkState(port), projects = useProjects(port, open), claudeRows = useClaudeSessions(port);
   const [page, setPage] = useState<Page | null>(null);
   const tokens = useTokenUsage(page === 'usage');
+  // Claude Code's cost from its own logs (main's ccusage run), today and this local month; none until the logs are read.
+  const code = (() => {
+    const n = new Date(), p2 = (x: number) => String(x).padStart(2, '0'), month = `${n.getFullYear()}-${p2(n.getMonth() + 1)}`, day = `${month}-${p2(n.getDate())}`;
+    const rows = tokens.data?.days.filter(d => d.agent === 'claude') ?? [];
+    return { logged: !!tokens.data, today: rows.filter(d => d.date === day).reduce((x, d) => x + d.cost, 0), month: rows.filter(d => d.date.startsWith(month)).reduce((x, d) => x + d.cost, 0) };
+  })();
   const [plugin, setPlugin] = useState<string | null>(null);
   // The Mail page: the letter open on it (null = the list) and the list's filter.
   const [letter, setLetter] = useState<Mail | null>(null), [mailFilter, setMailFilter] = useState<MailFilter>('all');
@@ -871,9 +877,9 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
         {codexUsage?.status === 'ok' ? <div className="bigrings">{(codexUsage.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at, new Date(), lang)} lang={lang}/>)}</div> : <p className="muted">{codexUsage?.error ?? t(['Not signed in to Codex', '没登录 Codex'])}</p>}</div>
       <div className="pg-sec"><div className="us-plan"><Account id="openai">OpenAI <em>API</em></Account>{openai?.status === 'ok' && <span className="meta">{t(['this month', '本月'])} {usd(openai.data.month_usd)}</span>}</div>
         {openai?.status === 'ok' ? <Spend total={openai.data.today_usd ?? 0} models={openai.data.by_model ?? []}/> : <p className="muted">{openai?.error ?? t(['Needs an admin key', '缺管理密钥'])}</p>}</div>
-      <div className="pg-sec"><div className="us-plan"><Account id="anthropic">Anthropic <em>API</em></Account>{anthropic?.status === 'ok' && <span className="meta">{t(['this month', '本月'])} {usd(anthropic.data.month_usd)}</span>}</div>
-        {anthropic?.status === 'ok' ? <><Spend total={anthropic.data.today_usd ?? 0} models={anthropic.data.by_model ?? []}/>
-          <p className="muted">{t(['Jarvis’s own calls only.', '只算 Jarvis 自己的调用。'])}{!!anthropic.data.unpriced_calls && t([` ${anthropic.data.unpriced_calls} calls have no price and are not counted.`, ` 有 ${anthropic.data.unpriced_calls} 次调用没有价格，没算进去。`])}</p></>
+      <div className="pg-sec"><div className="us-plan"><Account id="anthropic">Anthropic <em>API</em></Account>{anthropic?.status === 'ok' && <span className="meta">{t(['this month', '本月'])} {usd((anthropic.data.month_usd ?? 0) + code.month)}</span>}</div>
+        {anthropic?.status === 'ok' ? <><Spend total={(anthropic.data.today_usd ?? 0) + code.today} models={[...(anthropic.data.by_model ?? []), ...code.logged ? [{ model: 'Claude Code', today_usd: code.today }] : []]}/>
+          <p className="muted">{code.logged ? t(['Jarvis’s own calls, plus Claude Code from its logs at API rates.', 'Jarvis 自己的调用，加上 Claude Code（按本地日志、API 价折算）。']) : t(['Jarvis’s own calls only.', '只算 Jarvis 自己的调用。'])}{!!anthropic.data.unpriced_calls && t([` ${anthropic.data.unpriced_calls} calls have no price and are not counted.`, ` 有 ${anthropic.data.unpriced_calls} 次调用没有价格，没算进去。`])}</p></>
           : <p className="muted">{anthropic?.error ?? t(['Waiting for the brain', '等 brain 汇报'])}</p>}</div>
       <TokenSection state={tokens}/></div>
     </>,
