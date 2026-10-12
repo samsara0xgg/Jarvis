@@ -306,55 +306,64 @@ extension StarEngine {
         let sp = span(), a = max(F - sp, TRACE0), b = min(F + sp, Trev)
         if b <= a { return }
         let stepM = 5 * max(1, z * 0.72)
-        // the thread is cut into runs of one look: how bright it is by distance (vq) and nearness (zq), and what he was doing (colour, brightness)
-        struct Run { let path = CGMutablePath(); let cls: Int, vq: Int, zq: Int, col: RGB, lum: Double }
-        var runs: [Run] = []
-        var open = false
-        // the glow is not cut into runs: each short piece of the thread takes its own share of it, so it fades in and out along the thread instead of starting in a block
-        var glows: [(from: CGPoint, to: CGPoint, col: RGB, a: Double, zq: Int)] = []
-        var last = CGPoint.zero, lastG = 0.0
+        // the thread is cut into short pieces and each takes its own brightness, width and glow from its own distance and nearness, so nothing steps along it
+        struct Piece { let from: CGPoint, to: CGPoint, col: RGB, lum: Double, cls: Int, v: Double, wk: Double, g: Double, fresh: Bool }
+        var pieces: [Piece] = []
+        var open = false, fresh = true
+        var last = CGPoint.zero, lastG = 0.0, lastV = 0.0, lastWK = 1.0
         var m = a
         while true {
             if m > b { m = b }
             let ac = actAt(m), kd = kindAt(m), cls = isQuiet(kd) ? 0 : ac > 0.4 ? 2 : 1
             if !P(R_YOU + amp * ac - (cls == 0 ? 1.2 : 0), ang(m)) {
-                open = false
+                open = false; fresh = true
                 if m >= b { break }
                 m += stepM; continue
             }
             let x = PX, y = PY, v = visT(m) * fog()
-            let vq = min(3, Int((v * 4).rounded(.down))), zq = cam == nil || PS < 1.3 ? 0 : PS < 2.3 ? 1 : 2
+            let wk = cam == nil ? 1 : 1 + 1.6 * smooth(1, 2.6, PS)            // nearer is thicker, smoothly
             let (col, lum) = toneAt(m)
             let g = max(cls == 0 ? 0 : smooth(0.3, 0.5, ac), smooth(1.15, 1.45, lum)), pt = CGPoint(x: x, y: y)
-            if open { glows.append((last, pt, col, min(1, 0.1 * min(v, 0.9) * lum) * (g + lastG) / 2, zq)) }
-            last = pt; lastG = g
-            if let r = runs.last, open, r.cls == cls, r.vq == vq, r.zq == zq, abs(r.col.r - col.r) + abs(r.col.g - col.g) + abs(r.col.b - col.b) < 18, abs(r.lum - lum) < 0.12 {
-                r.path.addLine(to: CGPoint(x: x, y: y))
-            } else {
-                if open { runs[runs.count - 1].path.addLine(to: CGPoint(x: x, y: y)) }
-                let r = Run(cls: cls, vq: vq, zq: zq, col: col, lum: lum)
-                r.path.move(to: CGPoint(x: x, y: y))
-                runs.append(r); open = true
-            }
+            if open { pieces.append(Piece(from: last, to: pt, col: col, lum: lum, cls: cls, v: (v + lastV) / 2, wk: (wk + lastWK) / 2, g: (g + lastG) / 2, fresh: fresh)); fresh = false }
+            last = pt; lastG = g; lastV = v; lastWK = wk; open = true
             if m >= b { break }
             m += stepM
         }
-        let WK: [Double] = [1, 1.7, 2.6]
-        c.setAlpha(1); c.setLineJoin(.round)
-        c.setBlendMode(.plusLighter)                  // the moving parts glow a little
-        c.setLineCap(.butt); c.setLineDash(phase: 0, lengths: [])
-        for s in glows where s.a > 0.003 {
-            c.setStrokeColor(s.col.cg(s.a)); c.setLineWidth(5 * WK[s.zq])
+        c.setAlpha(1); c.setLineJoin(.round); c.setLineDash(phase: 0, lengths: [])
+        c.setBlendMode(.plusLighter)                  // the moving parts glow a little; toward the tail its width and light both fall
+        c.setLineCap(.butt)
+        for s in pieces where s.g > 0 {
+            let vv = min(s.v, 0.9) / 0.9, al = min(1, 0.09 * vv * vv * s.lum) * s.g
+            if al < 0.003 { continue }
+            c.setStrokeColor(s.col.cg(al)); c.setLineWidth(5 * s.wk * (0.35 + 0.65 * vv))
             c.beginPath(); c.move(to: s.from); c.addLine(to: s.to); c.strokePath()
         }
         c.setBlendMode(.normal)
-        for r in runs {
-            let v = (Double(r.vq) + 0.5) / 4, wk = WK[r.zq]
-            c.setLineDash(phase: 0, lengths: r.cls == 0 ? [CGFloat(1.1 * wk), CGFloat(3.4 * wk)] : [])
-            c.setLineCap(r.cls == 0 ? .round : .butt)      // runs meet end to end: a round cap would double the alpha at each joint and string the thread with beads
-            c.setStrokeColor(r.col.cg(min(1, (r.cls == 0 ? 0.34 : r.cls == 1 ? 0.46 : 0.8) * v * r.lum)))
-            c.setLineWidth((r.cls == 2 ? 1.5 : 1.15) * wk * clamp(1 + 0.5 * (r.lum - 1), 0.85, 1.25))
-            c.addPath(r.path); c.strokePath()
+        var u = 0.0                                   // how far along the quiet dots' pattern we are
+        for s in pieces {
+            let v = min(1, s.v), tw = 0.6 + 0.4 * v, al = (s.cls == 0 ? 0.34 : s.cls == 1 ? 0.46 : 0.8) * v * s.lum
+            if al < 0.004 { continue }
+            c.setStrokeColor(s.col.cg(min(1, al)))
+            let w = (s.cls == 2 ? 1.5 : 1.15) * s.wk * clamp(1 + 0.5 * (s.lum - 1), 0.85, 1.25) * tw
+            c.setLineWidth(w)
+            if s.cls != 0 {
+                c.setLineCap(.butt); c.beginPath(); c.move(to: s.from); c.addLine(to: s.to); c.strokePath()
+                continue
+            }
+            // quiet stretches are dots a little apart: one every 4.5 widths of thread, joined across pieces
+            let dx = s.to.x - s.from.x, dy = s.to.y - s.from.y, len = hypot(dx, dy)
+            if len < 0.01 { continue }
+            if s.fresh { u = 0 }
+            let period = 4.5 * s.wk, u1 = u + len / period
+            c.setLineCap(.round)
+            var k = u.rounded(.down) + 1
+            while k <= u1 {
+                let f = (k - u) / (u1 - u), hx = dx / len * 0.55 * s.wk, hy = dy / len * 0.55 * s.wk
+                let cx = s.from.x + dx * f, cy = s.from.y + dy * f
+                c.beginPath(); c.move(to: CGPoint(x: cx - hx, y: cy - hy)); c.addLine(to: CGPoint(x: cx + hx, y: cy + hy)); c.strokePath()
+                k += 1
+            }
+            u = u1
         }
         c.setLineDash(phase: 0, lengths: []); c.setLineCap(.round)
         rideDots(c, a, b)
