@@ -74,11 +74,13 @@
   `is_request` tests the whole of it. "我想一想", "I'll think it over" and "关灯，然后仔细查一下明天
   天气" are not forced; the voice model sees them with `think_deeper` on its menu and decides. A hit is
   a Tier 0 hit for `think_deeper` (`tier0.deep`, answered by the `spoken` of the hand-over).
-- **A failed task says so.** `drive_turn` catches a deep run's failure and `DeepLane.failed` writes a
-  second deep-channel intent that carries `deep_failure=<reason>`. `decide()` answers that notice with
-  one fixed sentence built from `failure_reason` (missing key, unauthorized, model denied, quota,
-  rate limited, network, timeout), which reaches him live or as a card like a result. A notice that
-  itself fails writes nothing more.
+- **A failed task says so.** Every way the deep turn can raise, `drive_turn` or not, ends in the
+  pump's catch-all, which writes `turn.failed` and then `DeepLane.failed`: a second deep-channel
+  intent that carries `deep_failure=<reason>`. `decide()` answers that notice with one fixed
+  sentence built from `failure_reason` (missing key, unauthorized, model denied, quota, rate
+  limited, network, timeout), which reaches him live or as a card like a result. Nothing is
+  written for a task whose answer already went out, or for a notice that itself fails. A notice
+  left as a card is pushed under its own title ("仔细查没查成"), not the result's.
 - **Progress uses the step labels** of ADR 0231 (`think_deeper` is the `deep` kind, "started" and
   "done" lines in `shared/lang.py`); commentary treats `think_deeper` as a quiet tool.
 - **The lane is off unless configured.** Without an `llm.deep` block there is no `think_deeper`

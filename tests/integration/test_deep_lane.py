@@ -42,7 +42,7 @@ from jarvis.runtime import (
 from jarvis.runtime.deep_lane import DeepLane
 from jarvis.runtime.inherent_loop import (
     _drive_turn_in_worker_thread,
-    _emit_turn_failed,
+    _fail_turn,
     _start_intent_pump,
 )
 from jarvis.shared import CallerPrincipal, lang
@@ -530,7 +530,7 @@ def test_a_deep_run_that_fails_says_so_plainly(tmp_path: Path, channel: str, att
         with pytest.raises(AuthenticationError) as raised:
             lane.drive(task)
         # The pump closes the failed turn with the error it saw; the lane is free again.
-        _emit_turn_failed(lane.conn, intent_event=task, exc=raised.value)
+        _fail_turn(lane.runtime, intent_event=task, exc=raised.value)
         assert open_deep_turn(lane.conn, since_ms=0) != task.payload["turn_id"]
         # The notice is a task of its own that answers in one sentence.
         notice = lane.deep_intent()
@@ -654,6 +654,63 @@ def test_a_running_deep_task_is_named_to_later_turns_but_does_not_hold_the_daemo
         finally:
             peer.release.set()
             worker.join(10)
+
+
+def test_a_task_that_fails_before_the_turn_can_catch_anything_still_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run could not even open: the pump's catch-all writes the notice, which is then delivered."""
+    import jarvis.runtime as runtime_module  # noqa: PLC0415 - only this test patches it
+
+    opened = runtime_module._start_drive_turn_response  # noqa: SLF001
+
+    def refuse_the_task(runtime: JarvisRuntime, **kwargs: Any) -> Any:  # noqa: ANN401
+        if kwargs["user_intent_event"].payload.get("channel") == "deep" and not kwargs["user_intent_event"].payload.get("deep_failure"):
+            msg = "scripted: the run could not open"
+            raise RuntimeError(msg)
+        return opened(runtime, **kwargs)
+
+    monkeypatch.setattr(runtime_module, "_start_drive_turn_response", refuse_the_task)
+    with _Peer() as peer:
+        lane = _Lane(tmp_path, peer)
+        peer.then("fast", *_HAND_OFF)
+
+        async def body() -> None:
+            tasks = await _start_intent_pump(lane.runtime, poll_interval_s=0.01, queue_capacity=8, max_concurrent_turns=3)
+            try:
+                lane.say(_TASK)
+                for _ in range(1000):
+                    await asyncio.sleep(0.01)
+                    if len(lane.rows("surface.response_emitted")) == 2:
+                        return
+                pytest.fail("the notice was not delivered")
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        asyncio.run(body())
+        task, notice = lane.deep_intent(nth=0), lane.deep_intent()
+        assert notice.payload["deep_failure"] == "error"
+        assert notice.payload["from_turn"] == task.payload["turn_id"]
+        assert [r["turn_id"] for r in lane.rows("turn.failed")] == [task.payload["turn_id"]]
+        assert lane.answer(notice.payload["turn_id"])["text"].startswith("你让我仔细查的那件事没查成")
+        assert peer.requests["deep"] == []
+
+
+def test_a_raise_after_the_answer_went_out_adds_no_notice(tmp_path: Path) -> None:
+    """A result that is already his is not followed by a notice that it was not found."""
+    with _Peer() as peer:
+        lane = _Lane(tmp_path, peer)
+        peer.then("fast", *_HAND_OFF)
+        peer.then("deep", *_DEEP_RUN)
+        lane.drive(lane.say(_TASK))
+        task = lane.deep_intent()
+        lane.drive(task)
+        assert lane.answer(task.payload["turn_id"])["text"]
+        _fail_turn(lane.runtime, intent_event=task, exc=RuntimeError("raised after the answer"))
+        assert lane.deep_intent() == task  # no notice was written
+        assert [r["turn_id"] for r in lane.rows("turn.failed")] == [task.payload["turn_id"]]
 
 
 # --- the turn's guards still apply in the deep run ---------------------------------------------

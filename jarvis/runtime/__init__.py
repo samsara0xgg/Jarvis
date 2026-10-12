@@ -4996,9 +4996,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         # The cancel caller already committed response.cancelled. Re-raise so
         # the daemon watcher can tell a cancelled turn from a failed one.
         raise
-    except Exception as exc:
-        if deep_task and runtime.deep is not None:
-            runtime.deep.failed(runtime.conn, user_intent_event, exc)  # ADR 0251: say so plainly
+    except Exception:
         if run is not None and terminalizer is not None:
             # The turn's own exception is the one the caller must see. A CAS
             # that cannot reach the log here leaves the run open, and the boot

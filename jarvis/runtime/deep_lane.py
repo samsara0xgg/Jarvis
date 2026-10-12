@@ -68,10 +68,18 @@ class DeepLane:
 
         The notice is a deep turn of its own that answers in one fixed sentence, so it reaches
         him the way a result does: spoken when he is still talking with her, else a card.
+        Nothing is owed for another turn, for the notice itself, or for a task whose answer
+        already went out (a raise after it would say "没查成" beside the result).
         """
-        if intent.payload.get("deep_failure"):
-            return  # the notice itself failed: nothing more is owed
+        if intent.payload.get("channel") != DEEP_CHANNEL or intent.payload.get("deep_failure"):
+            return
         try:
+            if conn.execute(
+                "SELECT 1 FROM events WHERE type = 'surface.response_emitted' "
+                "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1",
+                (intent.payload.get("turn_id"),),
+            ).fetchone():
+                return
             self._open(
                 conn,
                 task=str(intent.payload.get("transcript", "")),

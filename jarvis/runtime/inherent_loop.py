@@ -961,6 +961,17 @@ def _emit_turn_failed(
         LOGGER.exception("turn.failed could not be written for turn_id=%s", turn_id)
 
 
+def _fail_turn(runtime: JarvisRuntime, *, intent_event: Event, exc: BaseException) -> None:
+    """``turn.failed`` for ``intent_event``, and the notice a deep task owes him (ADR 0251).
+
+    Every way a turn can raise lands here, including the ones that raised before ``drive_turn``
+    could catch anything; the lane writes nothing for another turn or for one already answered.
+    """
+    _emit_turn_failed(runtime.conn, intent_event=intent_event, exc=exc)
+    if runtime.deep is not None:
+        runtime.deep.failed(runtime.conn, intent_event, exc)
+
+
 def _reconcile_open_responses_in_thread(
     event_log_path: Path,
     committed_event_bus: CommittedEventBus | None,
@@ -1149,11 +1160,7 @@ async def _user_intent_watcher(
                         ev.payload.get("turn_id"),
                         exc,
                     )
-                    _emit_turn_failed(
-                        runtime.conn,
-                        intent_event=ev,
-                        exc=exc,
-                    )
+                    _fail_turn(runtime, intent_event=ev, exc=exc)
             await asyncio.sleep(poll_interval_s)
     except asyncio.CancelledError:
         LOGGER.info("user_intent_watcher cancelled")
@@ -1370,9 +1377,7 @@ async def _intent_worker(
                     waiting[str(event.payload["turn_id"])] = checkpoint
             except TurnConnectionUnavailableError as exc:
                 if continuation is None or waiting is None:
-                    _emit_turn_failed(
-                        runtime.conn, intent_event=event, exc=exc,
-                    )
+                    _fail_turn(runtime, intent_event=event, exc=exc)
                 else:
                     # No driver finally ran: retain all response/action ownership
                     # and retry the same ready trigger without repeating dispatch.
@@ -1391,11 +1396,7 @@ async def _intent_worker(
                     event.payload.get("turn_id"),
                     exc,
                 )
-                _emit_turn_failed(
-                    runtime.conn,
-                    intent_event=event,
-                    exc=exc,
-                )
+                _fail_turn(runtime, intent_event=event, exc=exc)
             finally:
                 queue.task_done()
     except asyncio.CancelledError:
