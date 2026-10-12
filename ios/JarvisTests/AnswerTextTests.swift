@@ -37,14 +37,24 @@ final class AnswerTextTests: XCTestCase {
 
     func testAMarkdownLinkShowsItsTitleAndABareAddressIsALinkWithChineseAroundThem() {
         let a = AnswerText.linked("看[这篇文章](https://example.com/a?b=1)，或者 https://example.org/x/y，还有 www.example.net 都行。")
-        XCTAssertEqual(String(a.characters), "看这篇文章，或者 https://example.org/x/y，还有 www.example.net 都行。")
+        XCTAssertEqual(String(a.characters), "看这篇文章，或者 example.org，还有 example.net 都行。", "a bare address shows as its host")
         let l = links(a)
-        XCTAssertEqual(l.map(\.0), ["这篇文章", "https://example.org/x/y", "www.example.net"])
+        XCTAssertEqual(l.map(\.0), ["这篇文章", "example.org", "example.net"])
         XCTAssertEqual(l.map(\.1), ["https://example.com/a?b=1", "https://example.org/x/y", "http://www.example.net"])
     }
 
     func testAnAddressRightBeforeChineseWordsEndsWhereTheyStart() {
-        XCTAssertEqual(links(AnswerText.linked("详见https://example.com/a很好")).map(\.0), ["https://example.com/a"])
+        XCTAssertEqual(links(AnswerText.linked("详见https://example.com/a很好")).map(\.0), ["example.com"])
+        XCTAssertEqual(links(AnswerText.linked("详见https://example.com/a很好")).map(\.1), ["https://example.com/a"])
+    }
+
+    func testALongBareAddressShowsItsHostWithoutWwwAndStillOpensTheWholeAddress() {
+        let a = AnswerText.linked("订位在 https://www.laroux.ca/reservations/book?date=2026-10-16&size=4 ，电话 http://a.example.com:8080/x 也行")
+        XCTAssertEqual(String(a.characters), "订位在 laroux.ca ，电话 a.example.com 也行")
+        XCTAssertEqual(links(a).map(\.1), ["https://www.laroux.ca/reservations/book?date=2026-10-16&size=4", "http://a.example.com:8080/x"])
+        XCTAssertEqual(String(styledWords("见 https://www.laroux.ca/a", base: .white).characters), "见 laroux.ca")
+        XCTAssertEqual(links(AnswerText.linked("[订位页](https://www.laroux.ca/a)")).map(\.0), ["订位页"], "a written link keeps its title")
+        XCTAssertEqual(links(AnswerText.linked("**https://laroux.ca/a** 好")).map(\.0), ["laroux.ca"])
     }
 
     func testAFileNameACodeSpanAndAWrittenLinkAreNotLinkedTwiceOrAtAll() {

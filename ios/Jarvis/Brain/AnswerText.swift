@@ -27,7 +27,7 @@ enum AnswerText {
     }
 
     /// Her words with inline marks read (`**bold**`, `[title](url)`) and every address marked as a link: the ones written as links, and bare `http(s)://` or `www.` ones
-    /// the system finds (a file name like `main.py` is not an address). Code ticks keep their text as it is.
+    /// the system finds (a file name like `main.py` is not an address), which show as their host. Code ticks keep their text as it is.
     static func linked(_ s: String) -> AttributedString {
         var a = (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
         // the parser finds bare addresses too, and reads on through Chinese words as if they were part of one: those links are found again below
@@ -38,16 +38,26 @@ enum AnswerText {
         }
         let plain = String(a.characters)
         let found = (try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue))?.matches(in: plain, range: NSRange(plain.startIndex..., in: plain)) ?? []
-        for m in found {
+        for m in found.reversed() {          // last first: a shorter label moves what comes after it
             // an address ends at the first character that is not ASCII
             guard let r = Range(m.range, in: plain), plain[r].contains("://") || plain[r].hasPrefix("www.") else { continue }
             let text = plain[r].prefix { $0.isASCII }.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:!?)"))
             guard let url = URL(string: text.contains("://") ? text : "http://" + text),
                   let lo = AttributedString.Index(r.lowerBound, within: a), let hi = AttributedString.Index(plain.index(r.lowerBound, offsetBy: text.count), within: a),
                   !a[lo..<hi].runs.contains(where: { $0.link != nil || $0.inlinePresentationIntent?.contains(.code) == true }) else { continue }
-            a[lo..<hi].link = url
+            // a bare address shows as its host (a long one would wrap in the middle of a word) and opens the whole address
+            var piece = AttributedString(host(url) ?? text)
+            if let first = a[lo..<hi].runs.first { piece.mergeAttributes(first.attributes) }
+            piece.link = url
+            a.replaceSubrange(lo..<hi, with: piece)
         }
         return a
+    }
+
+    /// the address's host without `www.`, which is what a bare address shows as
+    private static func host(_ url: URL) -> String? {
+        guard let h = url.host, !h.isEmpty else { return nil }
+        return h.hasPrefix("www.") ? String(h.dropFirst(4)) : h
     }
 
     /// A line before the answer: it has a voice part and no document, so more follows.
