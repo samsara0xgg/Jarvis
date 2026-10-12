@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
+from jarvis.state.event_log import DEEP_CHANNEL
+
 if TYPE_CHECKING:
     import sqlite3
 
@@ -95,6 +97,31 @@ def any_turn_in_flight(conn: sqlite3.Connection, *, since_ms: int) -> bool:
     )
 
 
+def open_deep_turn(conn: sqlite3.Connection, *, since_ms: int) -> str | None:
+    """The id of the deep task (ADR 0251) handed over at or after ``since_ms`` and not yet over.
+
+    A task is over once its turn ended, failed or had its run cancelled. One stuck past
+    ``since_ms`` (a crash writes no end) stops counting, so it cannot block the next forever.
+    """
+    row = conn.execute(
+        f"""
+        SELECT json_extract(i.payload_json, '$.turn_id') FROM events i
+        WHERE i.type = 'surface.user_intent' AND i.ts_epoch_ms >= ?
+          AND json_extract(i.payload_json, '$.channel') = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM events e
+            WHERE e.type IN ({", ".join("?" * len(_TURN_CLOSED_TYPES))})
+              AND e.ts_epoch_ms >= i.ts_epoch_ms
+              AND json_extract(e.payload_json, '$.turn_id')
+                  = json_extract(i.payload_json, '$.turn_id')
+          )
+        ORDER BY i.id DESC LIMIT 1
+        """,  # noqa: S608 - only placeholders are interpolated
+        (since_ms, DEEP_CHANNEL, *_TURN_CLOSED_TYPES),
+    ).fetchone()
+    return None if row is None else str(row[0])
+
+
 # What a turn and its sound leave on the log: input, the turn's own rows, the answer,
 # and the playback rows (checkpoints keep coming for as long as it is speaking).
 _ACTIVITY_TYPES: Final[tuple[str, ...]] = (
@@ -127,14 +154,18 @@ def turn_activity_since(conn: sqlite3.Connection, *, since_ms: int) -> bool:
 
 
 def words_since(conn: sqlite3.Connection, *, trigger_event_uid: str) -> tuple[str, ...]:
-    """What Allen said or typed after this trigger, oldest first."""
+    """What Allen said or typed after this trigger, oldest first.
+
+    A task handed to the deep lane (ADR 0251) is not his words, so it is not here.
+    """
     rows = conn.execute(
         f"""
         SELECT json_extract(payload_json, '$.transcript') FROM events
         WHERE type IN ({", ".join("?" * len(_INPUT_TYPES))})
           AND id > (SELECT id FROM events WHERE event_uid = ?)
+          AND COALESCE(json_extract(payload_json, '$.channel'), '') != ?
         ORDER BY id
         """,  # noqa: S608 - only placeholders are interpolated
-        (*_INPUT_TYPES, trigger_event_uid),
+        (*_INPUT_TYPES, trigger_event_uid, DEEP_CHANNEL),
     ).fetchall()
     return tuple(words.strip() for (words,) in rows if isinstance(words, str) and words.strip())
