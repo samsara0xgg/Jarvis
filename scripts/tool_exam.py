@@ -17,7 +17,11 @@ with the same arguments, ``cursor_must_come_from_history`` fails a ``cursor`` no
 output gave, and ``must_mention`` regexes (one must match the answer or the call arguments)
 check that misheard words were understood. Next to it sits ``mcp-tools.json``: the MCP tool
 definitions (``{mcp__server__tool: {name, description, input_schema}}``) a live server would
-list, which an offline run cannot ask for.
+list, which an offline run cannot ask for. An optional ``tool-aliases.json`` next to the cases maps
+a tool name the cases still use to the name that replaced it (``{"mail_inbox": "mail"}``): ``score``
+reads the names in ``ok``, ``bad`` and ``args_must_not`` through it, so a merged tool is judged
+without editing the cases. An ``args_must_not`` rule keeps the old tool's argument names, so it
+trips only on a call that still uses them.
 
 ``run --guards`` applies the decision loop's two turn guards (ADR 0240, the same code) to the first
 response: a call identical to an earlier one in the request's history (with no write since) gets
@@ -442,17 +446,33 @@ def _trips(rule: Any, args: Any) -> bool:  # noqa: ANN401 - a substring list or 
     return any(s in raw for s in rule)
 
 
+def load_aliases(cases: Path) -> dict[str, str]:
+    """``tool-aliases.json`` beside ``cases`` (old tool name -> its replacement); {} if absent."""
+    path = cases.parent / "tool-aliases.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
 def judge(
     first: Mapping[str, Any], line: Mapping[str, Any], request: Mapping[str, Any],
+    aliases: Mapping[str, str] | None = None,
 ) -> tuple[bool, str]:
-    """Whether one run's first step satisfies ``expect.first``, and its short label."""
+    """Whether one run's first step satisfies ``expect.first``, and its short label.
+
+    The tool names in the expectation are read through ``aliases`` (see the module docstring).
+    """
+    named = (aliases or {}).get
+    ok = {named(n, n) for n in first["ok"]}
+    bad = {named(n, n) for n in first.get("bad", ())}
+    rules: dict[str, list[Any]] = defaultdict(list)
+    for tool_name, rule in (first.get("args_must_not") or {}).items():
+        rules[named(tool_name, tool_name)].append(rule)
     if line.get("error"):
         return False, f"ERR({str(line['error']).split(':')[0]})"
     calls = line.get("calls") or []
     names = [c["name"] for c in calls] or ["text"]
     hit = set(names)
     why = []
-    if hit & set(first.get("bad", ())) or not hit & set(first["ok"]):
+    if hit & bad or not hit & ok:
         why.append(",".join(dict.fromkeys(names)))
     if names == ["text"] and any(re.search(rx, line.get("text") or "") for rx in first.get(
         "text_must_not", (),
@@ -469,7 +489,7 @@ def judge(
         name, args = call["name"], call["args"]
         cursor = args.get("cursor") if isinstance(args, dict) else None
         tripped = []
-        if _trips((first.get("args_must_not") or {}).get(name, ()), args):
+        if any(_trips(rule, args) for rule in rules.get(name, ())):
             tripped.append(f"{name}~args")
         if first.get("no_identical_repeat") and {"name": name, "args": args} in earlier:
             tripped.append(f"repeat:{name}")
@@ -576,8 +596,9 @@ def cmd_score(args: argparse.Namespace) -> int:
     for lines in runs.values():
         lines.sort(key=lambda one: one["run"])
     presets = sorted({p for _, p in runs})
+    aliases = load_aliases(args.cases)
     verdicts: Verdicts = {
-        key: [judge(first, line, cases[key[0]]["request"]) for line in lines]
+        key: [judge(first, line, cases[key[0]]["request"], aliases) for line in lines]
         for key, lines in runs.items()
         if (first := (cases[key[0]].get("expect") or {}).get("first"))
     }
