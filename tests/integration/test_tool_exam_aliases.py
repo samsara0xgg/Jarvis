@@ -76,6 +76,25 @@ def test_two_rules_for_old_names_that_merged_both_apply() -> None:
     )
 
 
+def test_a_repeat_of_a_call_made_under_the_old_name_is_still_a_repeat() -> None:
+    """History holds `create_memo`; the same memo through `keep` is the repeat the case forbids."""
+    saved = {"text": "fix the emoji bug"}
+    request: dict[str, Any] = {"input": [
+        {"type": "function_call", "call_id": "c1", "name": "create_memo",
+         "arguments": json.dumps(saved)},
+        {"type": "function_call_output", "call_id": "c1", "output": "{}"},
+    ]}
+    expect = {"ok": ["text"], "no_identical_repeat": True}
+    aliases = {"create_memo": "keep"}
+    assert tool_exam.judge(expect, _line("keep", saved), request, aliases) == (
+        False, "FAIL(keep+repeat:keep)",
+    )
+    assert tool_exam.judge(expect, _line("keep", saved), request, None) == (False, "FAIL(keep)")
+    assert tool_exam.judge(expect, _line("keep", {"text": "other"}), request, aliases) == (
+        False, "FAIL(keep)",
+    )
+
+
 def test_load_aliases_reads_the_file_beside_the_cases_and_none_is_empty(tmp_path: Path) -> None:
     """The file is optional."""
     cases = tmp_path / "cases.json"

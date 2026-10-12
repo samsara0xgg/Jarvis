@@ -85,7 +85,7 @@ _LATE_TOOLS = (  # registered after the MCP group
 # --- the tool classification (decided per handler; the run refuses an unclassified tool) -------
 
 LIVE_READ = frozenset({
-    "get_current_time", "list_memos", "list_reminders", "search_records", "recall", "read_records",
+    "get_current_time", "kept", "search_records", "recall", "read_records",
     "query_activity", "read_activity", "search_knowledge", "get_briefing",
     "web_search", "web_fetch", "weather", "transit", "where_am_i", "places",
     "look_at_picture",  # calls the vision preset's model
@@ -95,8 +95,8 @@ LIVE_READ = frozenset({
     "search_notes",  # a device tool: device_not_connected on this host
 })
 SANDBOX_WRITE = frozenset({
-    "create_memo", "set_reminder", "cancel_reminder", "ask_user", "withdraw_card",
-    "close_question", "remember", "save_place", "forget_place", "save_knowledge",
+    "keep", "ask_user", "withdraw_card",
+    "close_question", "save_place", "forget_place", "save_knowledge",
     "save_briefing", "record_application", "mark_highlight", "pin_departure",
     "watch_for_boarding", "start_ride", "set_ride_stop", "end_ride",
     "show_on_dashboard",  # its push goes to a recorder

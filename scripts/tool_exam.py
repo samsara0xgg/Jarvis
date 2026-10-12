@@ -502,7 +502,8 @@ def judge(
 ) -> tuple[bool, str]:
     """Whether one run's first step satisfies ``expect.first``, and its short label.
 
-    The tool names in the expectation are read through ``aliases`` (see the module docstring).
+    The tool names in the expectation, and in the history a repeat is looked for in, are read
+    through ``aliases`` (see the module docstring).
     """
     named = (aliases or {}).get
     ok = {named(n, n) for n in first["ok"]}
@@ -529,6 +530,7 @@ def judge(
     ):
         why.append("missed")
     earlier, outputs = _history(request)
+    earlier = [{**one, "name": named(one["name"], one["name"])} for one in earlier]
     for call in calls:
         name, args = call["name"], call["args"]
         cursor = args.get("cursor") if isinstance(args, dict) else None
