@@ -233,13 +233,13 @@ struct StarChrome: View {
 
     /// the voice's one line, just over the composer: the model download, or what went wrong
     private var voiceNote: some View {
-        let on = ui.voiceNote != nil && !ui.typing
+        let on = ui.voiceNote != nil
         return Text(ui.voiceNote ?? "").font(monoF(12)).tracking(1.2).foregroundStyle(muted).lineLimit(1)
             .frame(width: W - 60, alignment: .leading)
             .opacity(on ? 1 : 0)
             .animation(.easeOut(duration: 0.3), value: on)
             .allowsHitTesting(false)
-            .offset(x: 30, y: 846 - ui.attach.rise)
+            .offset(x: 30, y: 846 - ui.attach.rise - ui.kbLift)
     }
     // MARK: the composer: type to her, or tap the mic. A + at the left, what is attached above the words, a field that grows to five lines.
 

@@ -296,7 +296,7 @@ extension StarEngine {
 
 #if DEBUG
 extension StarEngine {
-    /// `-scene open|failed|typing|typingWaiting|typingChipOpen|rest` (and the `steps…` ones of Sky/StarStatus.swift): the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
+    /// `-scene open|failed|typing|typingNote|typingWaiting|typingChipOpen|rest` (and the `steps…` ones of Sky/StarStatus.swift): the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
     func runTalkScene(_ name: String) {
         switch name {
         case "rest": setLevel(0)
@@ -411,7 +411,7 @@ extension StarEngine {
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) { round(0) }
             }
-        case "typing", "typingWaiting", "typingChipOpen", "typingGrow", "typingScrolled", "typingDismiss":
+        case "typing", "typingWaiting", "typingChipOpen", "typingGrow", "typingScrolled", "typingDismiss", "typingNote":
             // the keyboard is the real one: the field is focused, and the panel comes up with it
             setLevel(0)
             if name == "typing" { EV.removeAll { $0.st == .wait || $0.st == .work } }
@@ -425,6 +425,7 @@ extension StarEngine {
             let later = { (s: Double, f: @escaping () -> Void) in DispatchQueue.main.asyncAfter(deadline: .now() + s) { f() } }
             if name == "typingGrow" { later(3) { self.setTurn(hers, text: "周二上午十点和下午三点都空着。你想约哪一个？上午的话十点到十一点半我没有别的安排，下午三点之后有一个电话会。\n\n另外周三全天都有空，周四上午有一个面试，我建议避开。如果你想约得近一些，我可以先帮你把周二下午三点占住，等你确认以后再正式发给诊所，这样不会耽误你别的事。") } }
             if name == "typingScrolled" { later(3) { self.ui.scrollTo = "c1" }; later(5) { self.addTurn(his: false, "我在这里，你慢慢看。") } }
+            if name == "typingNote" { later(2) { self.trouble("文件过期了，再发一次") } }       // the status line over the composer, with the keyboard up
             if name == "typingDismiss" { later(4) { self.endEditing?() } }
             if name == "typingChipOpen" { later(3) { self.ui.chipOpen = true } }       // as a tap on the chip does
         default: break
