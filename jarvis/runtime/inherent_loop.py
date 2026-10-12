@@ -7182,6 +7182,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 return {"since": since, "rows": [], "has_more": False}
             rows, has_more = conversation_rows(
                 window_memory.db_path, since=since, after=after, before=before, limit=limit,
+                attachments=runtime.attachments,
             )
             _add_steps(runtime.runtime_paths.event_log, rows)
             return {"since": since, "rows": rows, "has_more": has_more}

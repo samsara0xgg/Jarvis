@@ -37,7 +37,7 @@ from jarvis.shared import lang
 from jarvis.state import NewerDataError, core_memory
 
 if TYPE_CHECKING:
-    from jarvis.state.attachments import AttachmentRef
+    from jarvis.state.attachments import AttachmentRef, Attachments
 
 _SCHEMA: Final[str] = """
 CREATE TABLE IF NOT EXISTS records (
@@ -1049,6 +1049,8 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
     return _assemble()
 
 
+_ATTACHED: Final = "[attached:"
+"""How the marker line of a record that came with files begins (``attachments.marker``)."""
 PICTURE_NOTE_SOURCE: Final = "picture_note"
 """The source of a picture's note (ADR 0223): memory, never part of what was said."""
 NOTE_ID_PREFIX: Final = "picture-note:"
@@ -1068,12 +1070,43 @@ CONVERSATION_PAGE_BYTES = 512 * 1024
 """The most text one page of :func:`conversation_rows` carries (UTF-8 bytes), one row at least."""
 
 
-def conversation_rows(
+def _his_words(text: str) -> str:
+    """His words of a record that came with files: no marker line, no filler (ADR 0255)."""
+    body, _, last = text.rpartition("\n")
+    if last.startswith(_ATTACHED):
+        text = body
+    return "" if lang.is_filler(text) else text
+
+
+def _attachment_rows(
+    conn: sqlite3.Connection, record_ids: Sequence[str], store: Attachments | None,
+) -> dict[str, list[dict[str, object]]]:
+    """Record id -> ``{id, kind, name, gone}`` of the files sent with it, in the order sent."""
+    found: dict[str, list[dict[str, object]]] = {}
+    for record_id, attachment_id, kind, name in conn.execute(
+        "SELECT record_id, attachment_id, kind, name FROM record_attachments "
+        "WHERE record_id IN (SELECT value FROM json_each(?)) ORDER BY record_id, pos",
+        (json.dumps(list(record_ids)),),
+    ):
+        found.setdefault(str(record_id), []).append({
+            "id": str(attachment_id), "kind": str(kind), "name": str(name),
+            "gone": store is None or store.get(str(attachment_id)) is None,
+        })
+    return found
+
+
+def conversation_rows(  # noqa: PLR0913 — the page's cursor and limits, all keyword-only.
     path: Path, *, since: str = "", after: int = 0, before: int = 0, limit: int = 200,
+    attachments: Attachments | None = None,
 ) -> tuple[list[dict[str, object]], bool]:
     """A page of records for the conversation window, oldest first, each with its ``seq``.
 
     Picture notes (:data:`PICTURE_NOTE_SOURCE`) are memory, not speech, so they are left out.
+
+    Each row of his (``source`` ``allen``) carries ``attachments``, the files that came with it
+    (``{id, kind, name, gone}``; ``gone`` when ``attachments``, the store, no longer holds the
+    file). When it has any, its ``text`` is his words alone: the marker line and the filler the
+    program wrote for an attachment-only turn are left out (ADR 0255).
 
     ``after`` is the ``seq`` (rowid) the client already holds: the rows past it, still under the
     floor. ``before`` is the ``seq`` of its oldest row: the newest ``limit`` rows older than it,
@@ -1106,15 +1139,25 @@ def conversation_rows(
         fetched = conn.execute(sql, params).fetchall()
         rows: list[dict[str, object]] = []
         used, last = 0, before or None
+        sent = _attachment_rows(
+            conn, [str(rid) for _, rid, _, source, _ in fetched[:limit] if source == "allen"],
+            attachments,
+        )
         for seq, rid, ts, source, text in fetched[:limit]:
             plain = _plain(str(text))
+            files = sent.get(str(rid), []) if source == "allen" else None
+            if files:
+                plain = _his_words(plain)
             used += len(plain.encode())
             if rows and used > CONVERSATION_PAGE_BYTES:
                 break
-            rows.append(
-                {"seq": int(seq), "id": str(rid), "ts": str(ts), "source": str(source),
-                 "text": plain},
-            )
+            row: dict[str, object] = {
+                "seq": int(seq), "id": str(rid), "ts": str(ts), "source": str(source),
+                "text": plain,
+            }
+            if files is not None:
+                row["attachments"] = files
+            rows.append(row)
             last = int(seq)
         if after:
             return rows, len(rows) < len(fetched)

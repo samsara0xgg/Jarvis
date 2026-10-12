@@ -2433,6 +2433,17 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
             """ADR 0211: one picture or text file from a phone, kept until it ages out."""
             return await _upload_attachment(deps, attachment_store, request)
 
+        @app.get("/inherent/attachments/{attachment_id}")
+        async def read_attachment(attachment_id: str) -> Response:
+            """ADR 0255: a stored file's bytes, while it is kept; 404 once swept or never there."""
+            ref = attachment_store.get(attachment_id)
+            path = attachment_store.path(attachment_id)
+            if ref is None or path is None:
+                raise HTTPException(status_code=404, detail="the attachment is gone or unknown")
+            return FileResponse(
+                path, media_type=ref.mime, headers={"X-Content-Type-Options": "nosniff"},
+            )
+
     if deps.share_callable is not None:
         share_callable = deps.share_callable
 

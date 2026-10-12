@@ -10,6 +10,8 @@ No network: the Files API is a recording fake.
 - a gone file, a failed upload and a preset that is not Anthropic's keep the marker and the note,
   and the parts are byte-identical from one render to the next;
 - the request the Anthropic adapter builds names the file and sends the Files API beta header;
+- the rows of ``GET /inherent/conversation`` list his files and carry his words alone, and
+  ``GET /inherent/attachments/{id}`` returns the stored bytes to a paired device, 404 once gone;
 - the uploaded copy goes with its file: at the retention sweep, on clearing the recordings and on
   erasing everything, and a delete that fails is tried again at the next sweep.
 """
@@ -34,14 +36,16 @@ from jarvis.decision.llm_anthropic import FILES_BETA, files_headers, request_fie
 from jarvis.runtime import inherent_loop, picture_files
 from jarvis.runtime.picture_files import RETRY_AFTER_S, PictureFiles
 from jarvis.state import picture_notes as note_records
+from jarvis.state.device_tokens import unpair_device
 from jarvis.state.memory_db import (
     HISTORY_PICTURES,
     append_record,
+    conversation_rows,
     link_attachments,
     render_context,
 )
 from tests.integration.test_anthropic_adaptation import _reply, _run
-from tests.integration.test_phone_attachments import PNG, _daemon, _turn
+from tests.integration.test_phone_attachments import NOTES, PNG, _daemon, _turn
 from tests.integration.test_picture_notes import ANSWER, FILLER_EN, WORDS, World
 
 if TYPE_CHECKING:
@@ -577,3 +581,93 @@ def test_the_files_api_is_refused_on_a_client_that_is_not_anthropics() -> None:
     with pytest.raises(ValueError, match="Files API"):
         RealClient("openai").upload_file("x.png", PNG, "image/png")
 
+
+
+# --- the device API ------------------------------------------------------------------------------
+
+
+def test_his_rows_list_his_files_and_carry_his_words_alone(world: World) -> None:
+    """No marker line, no filler; a swept file is listed as gone; her rows have no files."""
+    kept = send(world, "IMG_1.png", "什么菜?")
+    swept = send(world, "IMG_2.png", FILLER_EN)
+    world.store.path(swept).unlink()  # type: ignore[union-attr]
+    append_record(world.memory.db_path, record_id="old", source="allen",
+                  text="before the link\n[attached: image old.jpg]")
+    append_record(world.memory.db_path, record_id="plain", source="allen", text="谢谢")
+
+    rows, _ = conversation_rows(world.memory.db_path, attachments=world.store)
+
+    by_id = {str(row["id"]): row for row in rows}
+    pictured = [row for row in rows if row["source"] == "allen" and row["attachments"]]
+    assert [(r["text"], r["attachments"]) for r in pictured] == [
+        ("什么菜?", [{"id": kept, "kind": "image", "name": "IMG_1.png", "gone": False}]),
+        ("", [{"id": swept, "kind": "image", "name": "IMG_2.png", "gone": True}]),
+    ]
+    assert by_id["old"]["text"] == "before the link\n[attached: image old.jpg]"
+    assert by_id["old"]["attachments"] == []
+    assert by_id["plain"]["attachments"] == []
+    assert all("attachments" not in row for row in rows if row["source"] == "jarvis")
+    assert "picture_note" not in {row["source"] for row in rows}
+
+
+def test_what_the_model_sees_is_unchanged_by_the_rows_stripping(world: World) -> None:
+    """History keeps the marker line and the filler as the record holds them."""
+    send(world, "IMG_1.png", FILLER_EN)
+
+    turn = render_context(world.memory.db_path, exclude_id="live").history[0]
+
+    assert FILLER_EN in str(turn["content"])
+    assert "[attached: image IMG_1.png]" in str(turn["content"])
+
+
+def test_a_paired_device_opens_a_stored_file_and_a_gone_one_is_a_404(tmp_path: Path) -> None:
+    """Bytes and type as stored; the same credentials as every other route."""
+    d = _daemon(tmp_path)
+    picture = d.upload(PNG, "IMG_1.png").json()["id"]
+    notes = d.upload(NOTES, "notes.txt").json()["id"]
+
+    image = d.remote.get(f"/inherent/attachments/{picture}", headers=d.auth())
+    text = d.remote.get(f"/inherent/attachments/{notes}", headers=d.auth())
+    local = d.loopback.get(
+        f"/inherent/attachments/{picture}", headers={"Authorization": f"Bearer {d.key}"},
+    )
+
+    assert (image.status_code, image.content, image.headers["content-type"]) == (
+        200, PNG, "image/png",
+    )
+    assert image.headers["x-content-type-options"] == "nosniff"
+    assert (text.status_code, text.content) == (200, NOTES)
+    assert text.headers["content-type"].startswith("text/plain")
+    assert local.status_code == 200
+    d.store.path(picture).unlink()  # type: ignore[union-attr]
+    for wanted in (picture, "f" * 32, "not-an-id", "../events.db"):
+        assert d.remote.get(
+            f"/inherent/attachments/{wanted}", headers=d.auth(),
+        ).status_code == 404, wanted
+
+
+def test_the_file_route_takes_the_credential_that_fits_the_peer_and_nothing_else(
+    tmp_path: Path,
+) -> None:
+    """Loopback: the local key. The tailnet: a paired device's token. Anything else is 401."""
+    d = _daemon(tmp_path)
+    picture = d.upload(PNG).json()["id"]
+    path = f"/inherent/attachments/{picture}"
+    wrong = {"Authorization": "Bearer nope"}
+    local = {"Authorization": f"Bearer {d.key}"}
+
+    assert [
+        d.remote.get(path).status_code, d.remote.get(path, headers=wrong).status_code,
+        d.remote.get(path, headers=local).status_code, d.loopback.get(path).status_code,
+        d.loopback.get(path, headers=wrong).status_code,
+        d.loopback.get(path, headers=d.auth()).status_code,
+    ] == [401] * 6
+    unpair_device(d.root, "iphone")
+    assert d.remote.get(path, headers=d.auth()).status_code == 401
+
+
+def test_without_an_attachment_store_the_file_route_does_not_exist(tmp_path: Path) -> None:
+    """Off like the upload route: 404 for a peer that is allowed in."""
+    d = _daemon(tmp_path, wired=False)
+
+    assert d.remote.get(f"/inherent/attachments/{'a' * 32}", headers=d.auth()).status_code == 404
