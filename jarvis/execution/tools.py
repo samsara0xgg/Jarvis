@@ -800,69 +800,63 @@ _CARD_TYPES: Final[tuple[str, ...]] = (
 
 @tool(
     description=(
-        "Take down the card waiting for the user's button without running its action. Use it "
-        "when the user tells you not to go ahead with it, or says it is wrong and you cannot "
-        "call its tool again with the right arguments yet. To change a card, call its tool "
-        "again instead: that replaces it. No arguments."
+        "Take down the card waiting on Allen's screen without running anything: your question "
+        "card (ask_user) once his words answered it or it no longer applies, or a tool's "
+        "confirmation card when he says not to go ahead or that it is wrong. To change a "
+        "confirmation card call its tool again instead: that replaces it. Leave a card up when "
+        "his words are about something else. No arguments; with no card waiting it does "
+        "nothing and says so."
     ),
     input_schema={"type": "object", "properties": {}, "required": []},
     allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
     risk_level="L1",
     read_only=False,
 )
-def withdraw_card(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """Reject the waiting card with rule ``card_withdrawn``; its action never runs."""
+def dismiss_card(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """Take down the waiting confirmation card (ADR 0075) and question card (ADR 0206), if any."""
+    down: list[str] = []
     slot = PendingConfirmations.from_events(iter_events_of_types(ctx.conn, _CARD_TYPES)).slot
-    if slot is None or not slot.is_live(int(time.time() * 1000)):
-        msg = "withdraw_card: no card is waiting"
-        raise ToolError(msg, code="no_card")
     turn_id = _turn_of(ctx.action_id)
-    try:
-        answer_confirmation_once(
-            ctx.conn,
-            confirmation_id=slot.confirmation_id,
-            accepted=False,
-            utterance_raw="",
-            grammar_rule_id="card_withdrawn",
-            correlation={"turn_id": turn_id} if turn_id else None,
-        )
-    except ConfirmationRevalidationError as exc:
-        msg = "withdraw_card: the card was answered or replaced just now"
-        raise ToolError(msg, code="no_card") from exc
-    return {"status": "withdrawn", "tool": slot.snapshot.get("tool_name", "")}
-
-
-@tool(
-    description=(
-        "Take down your question card (ask_user) that is still on screen. Use it when the "
-        "user's own words answered it, in the same step as carrying on with them, or when it "
-        "no longer applies. Leave it if their words are about something else. No arguments."
-    ),
-    input_schema={"type": "object", "properties": {}, "required": []},
-    allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-    risk_level="L1",
-    read_only=False,
-)
-def close_question(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """Close the waiting question card with `clarification.withdrawn` (ADR 0206)."""
-    slot = PendingClarification.from_events(
+    late = False
+    if slot is not None and slot.is_live(int(time.time() * 1000)):
+        try:
+            answer_confirmation_once(
+                ctx.conn,
+                confirmation_id=slot.confirmation_id,
+                accepted=False,
+                utterance_raw="",
+                grammar_rule_id="card_withdrawn",
+                correlation={"turn_id": turn_id} if turn_id else None,
+            )
+            down.append(f"the {slot.snapshot.get('tool_name', '')} confirmation card (not run)")
+        except ConfirmationRevalidationError:
+            late = True
+    question = PendingClarification.from_events(
         iter_events_of_types(ctx.conn, CLARIFICATION_EVENT_TYPES),
     )
-    if slot is None or not slot.waiting or slot.trip is not None:  # a bus card is no question
-        msg = "close_question: no question card is waiting"
-        raise ToolError(msg, code="no_card")
-    emit_event(
-        ctx.conn,
-        type="clarification.withdrawn",
-        payload={
-            "clarification_id": slot.clarification_id,
-            "turn_id": _turn_of(ctx.action_id) or "",
-            "action_id": ctx.action_id,
-        },
-        source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
-        correlation={"action_id": ctx.action_id},
-    )
-    return {"status": "closed", "question": slot.question}
+    # A bus card (ADR 0205) asks him nothing.
+    if question is not None and question.waiting and question.trip is None:
+        emit_event(
+            ctx.conn,
+            type="clarification.withdrawn",
+            payload={
+                "clarification_id": question.clarification_id,
+                "turn_id": turn_id or "",
+                "action_id": ctx.action_id,
+            },
+            source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
+            correlation={"action_id": ctx.action_id},
+        )
+        down.append(f'the question card "{question.question}"')
+    if down:
+        return {"summary": f"Took down {' and '.join(down)}.", "dismissed": down}
+    if late:
+        summary = (
+            "The card was answered or replaced a moment ago, so nothing was taken down; "
+            "do not tell him it was cancelled."
+        )
+        return {"summary": summary, "dismissed": []}
+    return {"summary": "No card is waiting; nothing to do.", "dismissed": []}
 
 
 # --- open_path handler --------------------------------------------------------
@@ -3808,6 +3802,12 @@ def _device_proxy(original: ToolDefinition | Tool, link: DeviceLink) -> ToolDefi
     return replace(original, handler=handler)
 
 
+_OFF_MENU_DAILY: Final[frozenset[str]] = frozenset(
+    {"save_briefing", "save_knowledge", "search_knowledge"},
+)
+"""ADR 0246: the daily-loop tools no turn needs by default; ``tool_search`` finds them."""
+
+
 def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
     *,
     obsidian_vault_root: Path | None = DEFAULT_OBSIDIAN_VAULT_ROOT,
@@ -3993,8 +3993,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     )
     register_device_tool(read_clipboard)
     registry.register(ask_user)
-    registry.register(withdraw_card)
-    registry.register(close_question)
+    registry.register(dismiss_card)
     if web_search_provider is not None:
         registry.register(
             _make_web_search(
@@ -4073,7 +4072,9 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     for daily_tool in build_daily_tools(
         memory_db_path, repos=observed_repos, timesink_path=timesink_db_path, device=device_link
     ):
-        registry.register(daily_tool)
+        registry.register(
+            replace(daily_tool, deferred=True) if daily_tool.name in _OFF_MENU_DAILY else daily_tool
+        )
     for state_tool in build_work_state_tool(work_state_refresh):
         registry.register(state_tool)
     for report_tool in build_daily_report_tool(daily_report_run):

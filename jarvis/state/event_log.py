@@ -1149,7 +1149,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("action_id", "trip"),
         schema_version=1,
     ),
-    # ADR 0206: she took the waiting card down (`close_question`) because his words
+    # ADR 0206: she took the waiting card down (`dismiss_card`) because his words
     # answered it or it no longer applied; unlike `surface.dismissed` it is not his close button.
     EventTypeSchema(
         event_type="clarification.withdrawn",

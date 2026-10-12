@@ -272,12 +272,22 @@ class PluginConnections:
             combined.sources.update(active.plugins.sources)
         return combined
 
+    def refresh_search(self) -> None:
+        """Index the built-in tools registered since the last publish (ADR 0246)."""
+        with self._lock:
+            self._publish()
+
     def _publish(self) -> None:
         all_tools = tuple(t for a in self._active.values() for t in a.tools)
+        # ADR 0246: built-in tools kept off the menu are found through tool_search too.
+        off_menu = tuple(
+            t for t in self.registry.get_definitions()
+            if isinstance(t, Tool) and t.deferred and t.name not in self._owned
+        )
         skills = self._skills()
         group = (
             *all_tools,
-            *build_tool_search(all_tools, skills.sources, self.registry.superseded),
+            *build_tool_search((*all_tools, *off_menu), skills.sources, self.registry.superseded),
             *build_read_skill(skills.skills),
         )
         self.registry.replace_group(self._owned, group)

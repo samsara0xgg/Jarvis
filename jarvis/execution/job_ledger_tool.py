@@ -130,6 +130,7 @@ def build_record_application_tool(
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",
             read_only=False,
+            deferred=True,  # ADR 0246: found through tool_search
         ),
     )
 

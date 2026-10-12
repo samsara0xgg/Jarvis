@@ -43,14 +43,17 @@ def plugin_panel_tools(
     disable: Callable[[str], dict[str, Any]],
     remove: Callable[[str], dict[str, Any]],
 ) -> tuple[Tool, ...]:
-    """Keep discovery available even when zero remote tools are connected."""
+    """Keep discovery available even when zero remote tools are connected.
+
+    All four stay off the model's menu until ``tool_search`` finds them (ADR 0246).
+    """
     return (
         Tool(
             name="list_plugins",
             description=(
                 "List available plugins, including disconnected plugins, their capabilities "
                 "and connection status. Use this when the user asks to connect an app or "
-                "when a named app is unavailable. tool_search only finds connected tools."
+                "when a named app is unavailable."
             ),
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
             handler=lambda _args, _ctx: catalog(),
@@ -58,6 +61,7 @@ def plugin_panel_tools(
             risk_level="L0",
             read_only=True,
             max_result_chars=24_000,
+            deferred=True,
         ),
         Tool(
             name="open_plugin",
@@ -92,6 +96,7 @@ def plugin_panel_tools(
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L0",
             read_only=True,
+            deferred=True,
         ),
         Tool(
             name="disable_plugin",
@@ -105,6 +110,7 @@ def plugin_panel_tools(
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",
             read_only=False,
+            deferred=True,
         ),
         Tool(
             name="remove_plugin",
@@ -119,5 +125,6 @@ def plugin_panel_tools(
             risk_level="L3",
             read_only=False,
             requires_confirmation=True,
+            deferred=True,
         ),
     )

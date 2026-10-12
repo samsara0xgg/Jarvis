@@ -92,7 +92,7 @@ _KIND: Final[dict[str, str]] = {
 }
 _RIDE_ARGUMENTS: Final = frozenset({"pin", "ride", "get_off"})
 _HIDDEN: Final = frozenset(
-    {"tool_search", "get_current_time", "ask_user", "close_question", "withdraw_card"},
+    {"tool_search", "get_current_time", "ask_user", "dismiss_card"},
 )
 """Plumbing and cards: a call to one of these is not a step he would name."""
 

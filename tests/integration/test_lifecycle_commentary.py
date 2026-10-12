@@ -223,7 +223,7 @@ def test_a_dispatch_says_the_line_of_what_the_tool_does(tool_name: str, key: str
     "tool_name",
     [
         "get_current_time", "ask_user", "start_night_run", "end_night_run", "keep",
-        "kept", "withdraw_card", "mcp__hue__hue_set_light", *sorted(CONFIRMED_TOOLS), None,
+        "kept", "dismiss_card", "mcp__hue__hue_set_light", *sorted(CONFIRMED_TOOLS), None,
     ],
 )
 def test_a_quiet_tool_says_nothing_at_dispatch(tool_name: str | None) -> None:

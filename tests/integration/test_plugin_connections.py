@@ -131,7 +131,8 @@ def test_connect_publishes_real_tools_skills_and_disable_removes_them(
             if t.name.startswith("mcp__")
         )
         service.action("disable", {"request_id": request_id})
-        assert {t.name for t in fixture.registry.get_definitions()} == PANEL_TOOLS
+        # The panel tools are kept off the menu (ADR 0246): tool_search stays to find them.
+        assert {t.name for t in fixture.registry.get_definitions()} == PANEL_TOOLS | {"tool_search"}
         assert service.skills_prompt() == ""
         assert service.connected_apps_line() is None
         assert (

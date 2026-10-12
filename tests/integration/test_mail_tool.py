@@ -527,7 +527,8 @@ def test_tool_search_in_the_shipped_registry_sends_gmail_reads_to_mail(tmp_path:
     handler = cast("Tool", search).handler
     out = dict(handler({"query": "gmail_search"}, cast("ToolContext", None)))
     # The write tool loads; both reads are found but not loaded, and the note names `mail`.
-    assert out["loaded_tools"] == ["mcp__gmail__gmail_send"]
+    assert "mcp__gmail__gmail_send" in out["loaded_tools"]
+    assert not {"mcp__gmail__gmail_search", "mcp__gmail__gmail_get"} & set(out["loaded_tools"])
     tail = "is replaced by mail, which is already in your tools: call"
     assert f"gmail_search {tail} mail(query=...)." in out["note"]
     assert f"gmail_get {tail} mail(read=<id>)." in out["note"]

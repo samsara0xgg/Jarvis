@@ -173,14 +173,21 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
     for tool in (
         *build_dashboard_tool((*PAGES, CLOSE), ViewState().present, SETTINGS_CATEGORIES),
         *plugin_panel_tools(dict, lambda *_: {}, lambda *_: {}, lambda *_: {}),
-        *group,
-        *build_tool_search(
-            group, {s: sources.get(s, f"mcp-{s}") for s in servers}, registry.superseded,
-        ),
         *build_job_ledger_tool(dict), *build_record_application_tool(lambda _fields: ""),
         *build_mail_tool(dict, lambda *_: {}, str, UTC),
         *build_conversation_tool(Path("memory.db"), UTC),
         *build_my_day_tool(LedgerSources(Path("memory.db"), Path("events.db"), None, UTC)),
+    ):
+        registry.register(tool)
+    # The runtime publishes the MCP group and tool_search once every built-in tool is registered
+    # (`PluginConnections.refresh_search`); tool_search also finds the built-ins kept off the menu.
+    off_menu = tuple(t for t in registry.get_definitions() if isinstance(t, Tool) and t.deferred)
+    for tool in (
+        *group,
+        *build_tool_search(
+            (*group, *off_menu), {s: sources.get(s, f"mcp-{s}") for s in servers},
+            registry.superseded,
+        ),
     ):
         registry.register(tool)
     return registry

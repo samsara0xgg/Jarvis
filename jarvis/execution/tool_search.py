@@ -9,6 +9,8 @@ for the rest of the turn. The search never runs a found tool.
 
 A deferred tool that a tool on the menu has taken over (``Tool.supersedes``, ADR 0242) is found
 but not loaded: the result says which tool to call instead. So is one the query names outright.
+A built-in tool kept off the menu (ADR 0246) is deferred the same way and listed by name in the
+tool's description.
 """
 
 from __future__ import annotations
@@ -75,6 +77,9 @@ def _tokens(text: str) -> list[str]:
         for t in _TOKEN.findall(text.lower())
         if t not in _STOP_WORDS
     ]
+
+
+_MCP_PREFIX: Final = "mcp__"
 
 
 def _source(tool_name: str) -> str:
@@ -164,18 +169,22 @@ def build_tool_search(
         return ()
     index = _Bm25([_search_text(t) for t in deferred])
     names = [t.name for t in deferred]
-    listed = sorted({_source(n) for n in names})
+    own = sorted(n for n in names if not n.startswith(_MCP_PREFIX))
+    listed = sorted({_source(n) for n in names if n.startswith(_MCP_PREFIX)})
     # A menu tool that took over some of a source's tools is named on that source's line, or
     # the model searches the source for what it can already call (exam 2026-10-12: gmail).
     taken: dict[str, list[str]] = {}
     for old, (_, how) in replaced().items():
         if old in names:
             taken.setdefault(_source(old), []).append(how)
-    source_lines = "\n".join(
+    lines = [
         f"- {s}: {sources.get(s, s)}"
         + (f" Already in your tools for it: {', '.join(taken[s])}." if s in taken else "")
         for s in listed
-    )
+    ]
+    if own:
+        lines.append(f"- Jarvis's own tools, not listed upfront: {', '.join(own)}")
+    source_lines = "\n".join(lines)
     loaded = sorted(t.name for t in tools if not t.deferred and _source(t.name) in listed)
     loaded_line = (
         f"Already available, call these directly and never search for them: {', '.join(loaded)}.\n"

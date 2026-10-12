@@ -115,7 +115,8 @@ def test_disable_plugin_needs_no_request_id_and_waits_for_a_busy_connection(
         assert any(t.name == "mcp__echo__echo" for t in fixture.registry.get_definitions())
         fixture.dispatch(_request("disable_plugin", "D1", arguments={"plugin_id": "echo"}))
         assert json.loads(_chain(fixture, "D1")["tool_output"])["enabled"] is False
-        assert {t.name for t in fixture.registry.get_definitions()} == PANEL_TOOLS
+        # The panel tools are kept off the menu (ADR 0246): tool_search stays to find them.
+        assert {t.name for t in fixture.registry.get_definitions()} == PANEL_TOOLS | {"tool_search"}
         settings = json.loads((fixture.paths.root / "plugin-settings.json").read_text())
         assert settings["echo"]["enabled"] is False
 

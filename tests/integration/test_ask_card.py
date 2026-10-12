@@ -15,7 +15,7 @@ import pytest
 
 from jarvis.decision.packet import assemble_packet, format_pending_clarification_note
 from jarvis.execution import tools
-from jarvis.execution.tools import ToolError, build_default_registry
+from jarvis.execution.tools import build_default_registry
 from jarvis.runtime.inherent_loop import _FRAGMENT_CARD_HOLD_MS, _visible_ask_card
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from jarvis.state.memory_db import remember_fact, render_context
@@ -94,7 +94,7 @@ def test_a_filled_in_card_closes_and_its_answer_turn_hears_what_it_answers(
 _STILL_UP = (
     f"When this turn began, your card {_ASKED} was still on screen. "
     "If the user's words answer it, carry on with them "
-    "and take it down with close_question in the same step; if it no longer applies, take it "
+    "and take it down with dismiss_card in the same step; if it no longer applies, take it "
     "down; otherwise leave it."
 )
 
@@ -158,51 +158,53 @@ def test_a_card_he_spoke_over_and_then_closed_tells_the_next_turn_it_went_unansw
 
 
 def _take_down(conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
-    """Run `close_question` as the dispatcher would, for action A1."""
+    """Run `dismiss_card` as the dispatcher would, for action A1."""
     monkeypatch.setattr(tools, "_get_running_event_uid", lambda *_: None)
     (definition,) = (
-        d for d in build_default_registry().get_definitions() if d.name == "close_question"
+        d for d in build_default_registry().get_definitions() if d.name == "dismiss_card"
     )
     ctx = SimpleNamespace(conn=conn, action_id="A1")
     return dict(definition.handler({}, ctx))  # type: ignore[arg-type,call-arg,misc]
 
 
-def test_close_question_takes_the_card_down_and_the_next_turn_hears_no_close_note(
+_NOTHING = {"summary": "No card is waiting; nothing to do.", "dismissed": []}
+
+
+def test_dismiss_card_takes_the_question_down_and_the_next_turn_hears_no_close_note(
     conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """ADR 0206: her take-down closes the card, and is not his close, so no note says so."""
     _ask(conn, "Q1")
     _says(conn, "T1")
-    assert _take_down(conn, monkeypatch) == {"status": "closed", "question": _QUESTION}
+    assert _take_down(conn, monkeypatch) == {
+        "summary": f'Took down the question card "{_QUESTION}".',
+        "dismissed": [f'the question card "{_QUESTION}"'],
+    }
     closed = _card(conn)
     assert (closed.waiting, closed.dismissed, closed.just_dismissed) == (False, False, False)
     assert _visible_ask_card(conn, _asked_at(conn) + _FRAGMENT_CARD_HOLD_MS) is None
     assert _note(conn, _says(conn, "T2")) is None
 
 
-def test_close_question_errors_when_no_question_card_waits(
+def test_dismiss_card_with_no_question_waiting_is_no_error_and_says_nothing_was_done(
     conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Nothing asked, taken down, closed by him, or a bus card: each is code no_card."""
-    def refused() -> str:
-        with pytest.raises(ToolError) as caught:
-            _take_down(conn, monkeypatch)
-        return caught.value.code
-
-    assert refused() == "no_card"
+    """Nothing asked, taken down, closed by him, or a bus card: each says so and each repeats."""
+    assert _take_down(conn, monkeypatch) == _NOTHING
     _ask(conn, "Q1")
     _take_down(conn, monkeypatch)
-    assert refused() == "no_card"
+    assert _take_down(conn, monkeypatch) == _NOTHING
+    assert _take_down(conn, monkeypatch) == _NOTHING  # a third call is the same, not an error
     _ask(conn, "Q2")
     emit_event(
         conn, type="surface.dismissed", payload={"turn_id": "T-ask", "clarification_id": "Q2"},
     )
-    assert refused() == "no_card"
+    assert _take_down(conn, monkeypatch) == _NOTHING
     emit_event(conn, type="clarification.requested", payload={
         "clarification_id": "Q3", "question": "mall", "fields": [], "turn_id": "T-ask",
         "trip": {"offer_id": "Q3", "to": "mall", "options": [], "modes": {}},
     })
-    assert refused() == "no_card"
+    assert _take_down(conn, monkeypatch) == _NOTHING
 
 
 def test_a_newer_ask_replaces_the_card_and_a_stale_close_is_ignored(

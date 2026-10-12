@@ -325,7 +325,7 @@ class _WithdrawingClient(_ScriptedClient):
     def chat(self, **kwargs: Any) -> ChatResult:  # noqa: ANN401 - forwards the stub's keywords
         result = super().chat(**kwargs)
         if len(self.offered) in {3, 5}:  # the first model call of turns T2 and T4
-            call = ToolCall(call_id="w", name="withdraw_card", arguments_json="{}")
+            call = ToolCall(call_id="w", name="dismiss_card", arguments_json="{}")
             return dataclasses.replace(
                 result, text=None, tool_calls=(call,), finish_reason="tool_calls",
             )
@@ -337,7 +337,7 @@ def test_the_model_takes_the_card_down_when_allen_says_not_to_send(
 ) -> None:
     """ADR 0075: 撤销吧 rejects the card as ``card_withdrawn``; its button then runs nothing.
 
-    Asked again with no card waiting, the tool fails, so the model cannot claim it took one down.
+    Asked again with no card waiting, the result says nothing was taken down and is no error.
     """
     llm = _WithdrawingClient()
     ctx = _context(tmp_path, servers, llm)
@@ -345,22 +345,51 @@ def test_the_model_takes_the_card_down_when_allen_says_not_to_send(
         assert _say(ctx, "用 add 工具算 17 加 25", "T1") == ASK
         card = _rows(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
         _say(ctx, "OK撤销吧，不发了。", "T2")  # noqa: RUF001 — Allen's words, 2026-09-26 23:33
-        assert "To take it down without running it, call withdraw_card." in llm.seen[2]
+        assert "To take it down without running it, call dismiss_card." in llm.seen[2]
         rejected = _rows(ctx.conn, "confirmation.rejected")
         assert [(r["confirmation_id"], r["grammar_rule_id"]) for r in rejected] == [
             (card, "card_withdrawn"),
         ]
         assert json.loads(_rows(ctx.conn, "action.result_observed")[-1]["tool_output"]) == {
-            "status": "withdrawn", "tool": "mcp__echo__add",
+            "summary": "Took down the mcp__echo__add confirmation card (not run).",
+            "dismissed": ["the mcp__echo__add confirmation card (not run)"],
         }
         assert _press(ctx, {"confirmation_id": card, "decision": "accept"}, "T3") == (
             "这张卡已经处理过或被换掉了，没有执行。"  # noqa: RUF001 — the fixed Chinese stale line.
         )
         _say(ctx, "撤销吧", "T4")
-        assert _rows(ctx.conn, "action.result_observed")[-1]["error"] == "no_card"
+        last = _rows(ctx.conn, "action.result_observed")[-1]
+        assert "error" not in last  # nothing waiting is not a failure to retry
+        assert json.loads(last["tool_output"]) == {
+            "summary": "No card is waiting; nothing to do.", "dismissed": [],
+        }
         assert "A card is waiting" not in llm.seen[-1]
         proposed = _rows(ctx.conn, "action.proposed")
         assert [r["tool_name"] for r in proposed].count("mcp__echo__add") == 1  # never run
+    finally:
+        ctx.conn.close()
+
+
+def test_dismiss_card_takes_down_a_confirmation_and_a_question_card_together(
+    tmp_path: Path, servers: McpServers
+) -> None:
+    """ADR 0246: with both cards up one call takes both down, and neither action runs."""
+    ctx = _context(tmp_path, servers, _WithdrawingClient())
+    try:
+        assert _say(ctx, "用 add 工具算 17 加 25", "T1") == ASK
+        emit_event(ctx.conn, type="clarification.requested", payload={
+            "clarification_id": "Q1", "question": "Which one?", "turn_id": "T1",
+            "fields": [{"label": "which", "choices": ["a", "b"]}],
+        })
+        _say(ctx, "撤销吧", "T2")
+        out = json.loads(_rows(ctx.conn, "action.result_observed")[-1]["tool_output"])
+        assert out["dismissed"] == [
+            "the mcp__echo__add confirmation card (not run)", 'the question card "Which one?"',
+        ]
+        assert [r["grammar_rule_id"] for r in _rows(ctx.conn, "confirmation.rejected")] == [
+            "card_withdrawn",
+        ]
+        assert len(_rows(ctx.conn, "clarification.withdrawn")) == 1
     finally:
         ctx.conn.close()
 

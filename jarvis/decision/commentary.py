@@ -92,8 +92,7 @@ _QUIET_TOOLS: Final = (
     "save_place",
     "forget_place",
     "mark_highlight",
-    "withdraw_card",
-    "close_question",
+    "dismiss_card",
     "show_on_dashboard",
     "mcp__hue__",
 )

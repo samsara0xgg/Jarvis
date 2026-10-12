@@ -204,7 +204,7 @@ def format_pending_confirmation_note(
         "You cannot run or authorize it yourself; only the user's button or direct answer "
         "counts. To change it, or when the user asks you to go ahead with it, call the same "
         "tool again with the arguments it should have: that replaces the card and asks once more. "
-        "To take it down without running it, call withdraw_card."
+        "To take it down without running it, call dismiss_card."
     )
 
 
@@ -242,7 +242,7 @@ def format_pending_clarification_note(packet: SituationPacket) -> str | None:
         return (
             f"When this turn began, your card “{slot.question}” ({labels}) was still on screen. "
             "If the user's words "
-            "answer it, carry on with them and take it down with close_question in the same "
+            "answer it, carry on with them and take it down with dismiss_card in the same "
             "step; if it no longer applies, take it down; otherwise leave it."
         )
     if slot.just_dismissed:
