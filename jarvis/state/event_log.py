@@ -285,7 +285,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("confidence",),
         schema_version=1,
     ),
-    # ADR 0239 — a turn guard acted: a call the model repeated was answered with a note
+    # ADR 0240 — a turn guard acted: a call the model repeated was answered with a note
     # instead of running (`repeat`, with its `tool`), or its answer said something no call did
     # and went back once (`unbacked`, with what it `said`).
     EventTypeSchema(

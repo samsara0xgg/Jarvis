@@ -1,4 +1,4 @@
-"""Two guards on a model turn's own loop (ADR 0239): a call it repeats, an answer no call backs.
+"""Two guards on a model turn's own loop (ADR 0240): a call it repeats, an answer no call backs.
 
 Pure functions over the turn's calls so the decision loops and the tool exam judge the same
 way. ``repeated_call`` answers a call identical to an earlier one in the turn; ``unbacked_said``

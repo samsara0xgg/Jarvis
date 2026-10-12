@@ -1,4 +1,4 @@
-"""ADR 0239: ``tool_exam run --guards`` applies the loop's guards to a first response.
+"""ADR 0240: ``tool_exam run --guards`` applies the loop's guards to a first response.
 
 Runs ``scripts.tool_exam._one`` with a scripted ``replay_once`` (no provider is called) over
 both request shapes the exam replays, Responses ``input`` items and chat ``messages``, and

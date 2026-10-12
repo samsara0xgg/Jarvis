@@ -19,7 +19,7 @@ check that misheard words were understood. Next to it sits ``mcp-tools.json``: t
 definitions (``{mcp__server__tool: {name, description, input_schema}}``) a live server would
 list, which an offline run cannot ask for.
 
-``run --guards`` applies the decision loop's two turn guards (ADR 0239, the same code) to the first
+``run --guards`` applies the decision loop's two turn guards (ADR 0240, the same code) to the first
 response: a call identical to an earlier one in the request's history (with no write since) gets
 the repeat note as its result, or an answer no call backs gets the program's note; either way one
 more request follows, exactly as the runtime would send it, and that one is the step judged. The
@@ -27,7 +27,7 @@ result line keeps both steps (``guarded``: kind, first calls, first text, first 
 ``score`` marks such runs ``(g)``. A response that mixes repeats with a call that would run is
 left unguarded: that call's result is not known here.
 
-A logged request is sent as production would build it for each preset (ADR 0240): a preset that
+A logged request is sent as production would build it for each preset (ADR 0241): a preset that
 says ``spoken_structured: false`` gets the unstructured spoken note and no text format, any other
 preset the structured note and the schema; the note is swapped in the request's instructions, so
 a logged request whose note is an older text is left as logged (``run`` prints how many of each).
@@ -195,7 +195,7 @@ def _with_system(request: Mapping[str, Any], extra: str) -> dict[str, Any]:
 
 
 def structured_presets(config: Path, presets: Sequence[str]) -> dict[str, bool]:
-    """Per preset: whether production gives its spoken turns the structured reply (ADR 0240)."""
+    """Per preset: whether production gives its spoken turns the structured reply (ADR 0241)."""
     factory = LLMSessionFactory(yaml.safe_load(config.read_text(encoding="utf-8"))["llm"])
     return {name: factory.snapshot(name).spoken_structured for name in presets}
 

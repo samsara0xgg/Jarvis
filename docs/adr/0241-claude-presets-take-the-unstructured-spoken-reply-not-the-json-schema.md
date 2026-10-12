@@ -1,4 +1,4 @@
-# ADR 0240 — Claude presets take the unstructured spoken reply, not the JSON schema
+# ADR 0241 — Claude presets take the unstructured spoken reply, not the JSON schema
 
 **Status:** Accepted
 **Date:** 2026-10-11

@@ -1,4 +1,4 @@
-"""ADR 0239: a call the model repeats is not run again; an answer no call backs goes back once.
+"""ADR 0240: a call the model repeats is not run again; an answer no call backs goes back once.
 
 Two acceptance checks. The first reads the guards' pure functions over a table of (answer,
 calls) pairs, Chinese and English, the evidence phrases and the plain talk that must not trip

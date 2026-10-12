@@ -71,7 +71,7 @@ class LLMPresetSnapshot:
     api: str | None = None
     # The preset's own lines after the system prompt (ADR 0220).
     system_note: str | None = None
-    # False: a spoken-route turn on this preset takes the unstructured reply (ADR 0240).
+    # False: a spoken-route turn on this preset takes the unstructured reply (ADR 0241).
     spoken_structured: bool = True
 
 

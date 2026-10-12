@@ -45,7 +45,7 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     "jarvis/decision/voice_words.py": frozenset({"_CRITERIA"}),
     # A coding agent's final paragraph asks Allen when it holds a full-width question mark too.
     "jarvis/decision/turn_end_asks.py": frozenset({"_asks_text"}),
-    # An answer that says it saved or will look something up is read by its words (ADR 0239).
+    # An answer that says it saved or will look something up is read by its words (ADR 0240).
     "jarvis/decision/turn_guards.py": frozenset(
         {"_DID", "_WILL", "_SENTENCE_END", "_QUESTION", "_SCREEN"},
     ),

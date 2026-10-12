@@ -402,7 +402,7 @@ def test_the_request_carries_the_schema_only_when_the_switch_is_on(
         assert result.response_plan.text == compose_envelope("今天有一个会。", "- 10:00 产品会")
 
 
-# ---- a preset that is not structured (ADR 0240) -------------------------------
+# ---- a preset that is not structured (ADR 0241) -------------------------------
 
 
 @pytest.mark.parametrize("spoken_structured", [False, None, True])

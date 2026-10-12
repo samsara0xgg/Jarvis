@@ -475,7 +475,7 @@ class ToolDefinitionLike(Protocol):
 
     @property
     def read_only(self) -> bool:
-        """The tool changes nothing durable (ADR 0239 reads it to tell a repeat from a retry)."""
+        """The tool changes nothing durable (ADR 0240 reads it to tell a repeat from a retry)."""
         ...
 
 
@@ -793,10 +793,10 @@ class _Scratch:
     # The language this turn's fixed lines are written in: his words' (or the pinned
     # reply language); None keeps the system language (no words, e.g. a card button).
     lang: Language | None = None
-    # ADR 0239: the calls this turn ran or was refused, in order; a call identical to one
+    # ADR 0240: the calls this turn ran or was refused, in order; a call identical to one
     # of them is not run again.
     calls: list[TurnCall] = field(default_factory=list)
-    # ADR 0239: the turn's one bounce of an answer no call backs has been used.
+    # ADR 0240: the turn's one bounce of an answer no call backs has been used.
     unbacked_bounced: bool = False
 
 
@@ -1623,7 +1623,7 @@ def _run_model_path(
 def _guard_fired(
     ctx: DecideContext, scratch: _Scratch, guard: Literal["repeat", "unbacked"], **detail: str,
 ) -> None:
-    """Record that a turn guard (ADR 0239) acted, so the log can count it."""
+    """Record that a turn guard (ADR 0240) acted, so the log can count it."""
     scratch.events.append(
         emit_event(
             ctx.conn,
@@ -1653,7 +1653,7 @@ def _bounce_unbacked(  # noqa: PLR0913 - the loop's handles plus the answer and 
     *,
     last_request: bool,
 ) -> bool:
-    """Send a turn-ending answer back once when no call this turn backs what it says (ADR 0239).
+    """Send a turn-ending answer back once when no call this turn backs what it says (ADR 0240).
 
     True means the model's answer and the program's note are on ``messages`` and the loop
     runs one more request. Never on the request the budget allows last (the budget's own
@@ -2166,7 +2166,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
     key = call_key(arguments)
     repeated = repeated_call(scratch.calls, name, key)
     if tool_def is None or repeated is not None:
-        # Unknown tool from LLM, or a call it already made this turn (ADR 0239): inject a
+        # Unknown tool from LLM, or a call it already made this turn (ADR 0240): inject a
         # tool-result message saying so and let the loop continue (the LLM should adapt).
         messages.append(
             _tool_result_message(

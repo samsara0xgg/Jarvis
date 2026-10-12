@@ -1,4 +1,4 @@
-# ADR 0239 — A repeated call is not run again, and an answer no call backs goes back once
+# ADR 0240 — A repeated call is not run again, and an answer no call backs goes back once
 
 **Status:** Accepted
 **Date:** 2026-10-11

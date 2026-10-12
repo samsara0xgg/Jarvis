@@ -92,7 +92,7 @@ llm:
       reasoning_effort: medium
       # 收图：图片转成 Anthropic 的 image 块（ADR 0211）。
       images: true
-      # ADR 0240：说话那一路不带 {spoken, written} 的 JSON 格式，用无格式的回复说明。
+      # ADR 0241：说话那一路不带 {spoken, written} 的 JSON 格式，用无格式的回复说明。
       # 2026-10-11 同样 80 个真实决策点各 3 次（medium）：带格式 53/80 个 3 次全过（182/240），
       # 去掉格式 63/80（203/240）；带格式时典型失败是整个回复只有“我查一下…”就结束。
       spoken_structured: false
@@ -111,7 +111,7 @@ llm:
       context_length: 1000000
       reasoning_effort: high
       images: true
-      # 同 haiku（ADR 0240）；这个档位没单独重放过。
+      # 同 haiku（ADR 0241）；这个档位没单独重放过。
       spoken_structured: false
       system_note: *haiku_note
     # 后台工作（工作状态、项目归类、截屏读图、对话摘要……）想改走 Anthropic 时指向它，
@@ -134,7 +134,7 @@ llm:
       context_length: 1000000
       reasoning_effort: low
       images: true
-      # 同 haiku（ADR 0240）：同一批 80 个决策点，Sonnet 5.5 带格式 59/80 个 3 次全过。
+      # 同 haiku（ADR 0241）：同一批 80 个决策点，Sonnet 5.5 带格式 59/80 个 3 次全过。
       spoken_structured: false
     # context_length：模型窗口（token）。session.compact_at_context_ratio
     # 按它算压缩门槛；决策预设缺了它就永远不压缩。
@@ -937,7 +937,7 @@ realtime:
     # JSON schema {spoken, written}: the spoken line is streamed and said as
     # written, the written part (lists, times, links) is for the screen only,
     # shown under the spoken line.  A preset that says spoken_structured: false
-    # (the Claude presets, ADR 0240) takes the unstructured reply instead.
+    # (the Claude presets, ADR 0241) takes the unstructured reply instead.
     spoken_streaming:
       enabled: false
       first_clause_chars: 0

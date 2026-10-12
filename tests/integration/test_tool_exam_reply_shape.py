@@ -1,4 +1,4 @@
-"""ADR 0240: the tool exam sends a logged request in the spoken reply shape its preset gets.
+"""ADR 0241: the tool exam sends a logged request in the spoken reply shape its preset gets.
 
 No provider is called: ``scripts.tool_exam`` rewrites the request's note and text format from the
 real ``config/jarvis.yaml`` (through the factory production uses), and prints how many it changed.
