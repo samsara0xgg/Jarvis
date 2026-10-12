@@ -2,7 +2,7 @@
 
 There is no reminders table: a reminder is a ``reminder.scheduled`` event, and what became of
 it is whichever of ``reminder.cancelled``, ``reminder.fired`` and ``reminder.acknowledged``
-followed. ``set_reminder`` (L4) and the daemon's tick (runtime) read the same fold.
+followed. ``keep`` (L4) and the daemon's tick (runtime) read the same fold.
 """
 
 from __future__ import annotations

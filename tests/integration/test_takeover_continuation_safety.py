@@ -60,7 +60,7 @@ def test_cancel_wins_against_late_provider_tool_batch(
         return ChatResult(
             text=None,
             tool_calls=(
-                ToolCall(call_id="memo-call", name="list_memos", arguments_json="{}"),
+                ToolCall(call_id="memo-call", name="kept", arguments_json="{}"),
             ),
             finish_reason="tool_calls",
             input_tokens=10,

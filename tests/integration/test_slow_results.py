@@ -235,7 +235,7 @@ def test_two_turns_at_once_answer_their_own_words(
     """
     outputs = [
         [("final_answer", "明天晴，二十度。")],
-        [("commentary", "我看一下你的备忘录。"), ("call", "list_memos")],
+        [("commentary", "我看一下你的备忘录。"), ("call", "kept")],
         [("final_answer", "对了，备忘录查到了：你还没有记过。")],
     ]
     with _FirstHeldPeer(outputs) as peer:

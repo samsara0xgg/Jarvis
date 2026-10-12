@@ -925,8 +925,8 @@ def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None
 
 _ABOUT_TAILS: Final[Mapping[str, str]] = {
     "reminder": (
-        "list_reminders has its full text; to move it, set the new one first, "
-        "then cancel this id."
+        'kept(kind="reminder") has its full text; to move it, keep the new one first, '
+        "then keep(cancel=<this id>)."
     ),
     "event": "read it by this id with the calendar tool before changing it.",
     "picture": (

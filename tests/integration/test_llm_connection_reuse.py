@@ -117,7 +117,7 @@ def _wait_for(predicate: Any, timeout: float = 5.0) -> None:  # noqa: ANN401 —
 
 def test_a_tool_turns_requests_share_one_connection(tmp_path: Path) -> None:
     """The request after a tool call rides the first request's connection."""
-    outputs = [[("commentary", "我看一下。"), ("call", "list_memos")], [("final_answer", "没有。")]]
+    outputs = [[("commentary", "我看一下。"), ("call", "kept")], [("final_answer", "没有。")]]
     reset_realtime_trace()
     with _KeepAlivePeer(outputs) as peer:
         runtime = _spoken_runtime(tmp_path, peer.url)

@@ -596,6 +596,8 @@ def test_the_conversation_row_of_her_answer_carries_the_steps_read_from_the_log(
         ("mcp__notion__notion-search", {"query": "plans"}, "Searching Notion", "搜 Notion"),
         ("mcp__hue__set_light", {"on": True}, "Controlling the lights", "控制灯"),
         ("remember", {"text": "a secret"}, "Saving a note", "记下来"),
+        ("keep", {"text": "a secret"}, "Saving a note", "记下来"),
+        ("kept", {}, "Working on memos", "处理备忘"),
         ("read_file", {"path": "/home/x/y"}, "Working with a file", "处理文件"),
         ("set_reminder", {"text": "call mum"}, "Working on reminders", "处理提醒"),
         ("where_am_i", {}, "Checking where you are", "看位置"),

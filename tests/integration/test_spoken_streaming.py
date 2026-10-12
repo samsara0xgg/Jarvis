@@ -248,13 +248,13 @@ def test_the_first_clause_is_said_before_the_first_sentence_ends(
 def test_the_line_before_a_call_rides_its_proposal_and_never_streams(tmp_path: Path) -> None:
     """The ``commentary`` line goes to ``action.proposed`` and back to the model, not a chunk."""
     answer = "你还没有记过备忘录。"
-    outputs = [[("commentary", _LINE), ("call", "list_memos")], [("final_answer", answer)]]
+    outputs = [[("commentary", _LINE), ("call", "kept")], [("final_answer", answer)]]
     with _Peer(outputs) as peer:
         runtime = _spoken_runtime(tmp_path, peer.url)
         result = _drive(runtime, _spoken(runtime.conn, "turn-call", "我记过什么"))
     conn = runtime.conn
     (proposed,) = _payloads(conn, "action.proposed")
-    assert (proposed["tool_name"], proposed["lead_in"]) == ("list_memos", _LINE)
+    assert (proposed["tool_name"], proposed["lead_in"]) == ("kept", _LINE)
     assert [payload["text"] for payload in _payloads(conn, "surface.response_chunk")] == [answer]
     assert result.response_plan.text == answer
     assert len(peer.requests) == 2

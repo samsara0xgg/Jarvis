@@ -354,12 +354,12 @@ def test_a_stream_cut_in_spoken_keeps_only_the_unescaped_prefix(tmp_path: Path) 
 def test_a_tool_call_comes_first_and_the_schema_answer_after_its_result(tmp_path: Path) -> None:
     """Both requests carry the schema; no line before the call; then the schema answer."""
     answer = _reply("你还没有记过备忘录。", "")
-    outputs = [[("call", "list_memos")], [("final_answer", answer)]]
+    outputs = [[("call", "kept")], [("final_answer", answer)]]
     with _Peer(outputs) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
         result = _drive(runtime, _spoken(runtime.conn, "turn-call", "我记过什么"))
     (proposed,) = _payloads(runtime.conn, "action.proposed")
-    assert proposed["tool_name"] == "list_memos"
+    assert proposed["tool_name"] == "kept"
     assert not proposed.get("lead_in")
     assert len(peer.requests) == 2
     assert [body["text"] for _path, body in peer.requests] == [{"format": SPOKEN_REPLY_FORMAT}] * 2
@@ -411,7 +411,7 @@ def test_a_preset_chooses_the_reply_shape_of_every_request_of_its_turn(
 ) -> None:
     """Both requests (the call, then the answer after its result) carry one shape, the preset's."""
     answer = "你还没有记过备忘录。"
-    with _Peer([[("call", "list_memos")], [("final_answer", answer)]]) as peer:
+    with _Peer([[("call", "kept")], [("final_answer", answer)]]) as peer:
         runtime = _preset_runtime(tmp_path, peer.url, spoken_structured=spoken_structured)
         result = _drive(runtime, _spoken(runtime.conn, "turn-p", "我记过什么"))
     assert len(peer.requests) == 2
@@ -457,7 +457,7 @@ def test_a_spoken_turn_stops_at_the_voice_cap_and_wraps_up_in_the_spoken_shape(
     cap = 2
     said, details = "查到两封。还有些没查完。", "- 邮件一\n- 邮件二"
     wrap_up = _reply(said, details)
-    outputs = [[("call", "list_memos")]] * cap + [[("final_answer", wrap_up)]]
+    outputs = [[("call", "kept")]] * cap + [[("final_answer", wrap_up)]]
     with _Peer(outputs) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
         llm = {"max_tool_iterations": 40, "max_tool_iterations_voice": cap}

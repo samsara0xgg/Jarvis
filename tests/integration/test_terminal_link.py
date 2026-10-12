@@ -627,7 +627,7 @@ def test_the_runner_executes_the_real_handlers_and_reports_their_results(
 def test_the_runner_refuses_what_it_did_not_declare(tmp_path: Path) -> None:
     """A tool off the declared set (a web tool, write_file) never runs on a terminal."""
     execute = make_executor(_terminal_registry(tmp_path))
-    for tool in ("web_fetch", "write_file", "create_memo", "search_notes", "nope"):
+    for tool in ("web_fetch", "write_file", "keep", "search_notes", "nope"):
         reply = execute(tool, {}, None)
         assert (reply["ok"], reply["code"]) == (False, "unknown_tool")
 

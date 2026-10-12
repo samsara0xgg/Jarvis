@@ -52,7 +52,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
@@ -74,16 +74,13 @@ from jarvis.shared import (
 from jarvis.shared.action_admission import action_admission_guard
 from jarvis.shared.device_link import DeviceCallError
 from jarvis.shared.text import truncate_utf8
-from jarvis.state import reminders as reminder_state
 from jarvis.state.authorized_dispatch_outbox import (
     ConfirmationRevalidationError,
     admit_authorized_dispatch,
     answer_confirmation_once,
 )
-from jarvis.state.core_memory import SECTIONS as CORE_MEMORY_SECTIONS
 from jarvis.state.event_log import emit_event, iter_events_of_types
 from jarvis.state.lifecycle_terminal import terminalize_action
-from jarvis.state.memory_db import remember_fact
 from jarvis.state.projections import (
     CLARIFICATION_EVENT_TYPES,
     PendingClarification,
@@ -635,208 +632,7 @@ def get_current_time(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, A
     }
 
 
-# --- memo inbox (create_memo / list_memos) -----------------------------------
-
-_MEMO_MAX_CHARS: Final[int] = 2000
-
-
-@tool(
-    description=(
-        "Save a short memo to the user's memo inbox for later review. "
-        "Use when the user asks to jot something down or keep a note of it. "
-        "A memo never notifies the user at a time: it is not a reminder, so never "
-        "say a reminder was set when only a memo was saved. To notify the user at a "
-        "time, call set_reminder instead."
-    ),
-    input_schema={
-        "type": "object",
-        "properties": {
-            "text": {
-                "type": "string",
-                "description": (
-                    "Memo text. It is read later, so write a relative day or time "
-                    "(tomorrow, Friday, next week) as the date it means, e.g. "
-                    "Demo on Friday, 2 October 2026."
-                ),
-            },
-        },
-        "required": ["text"],
-    },
-    allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM}),
-    risk_level="L1",
-    read_only=False,
-)
-def create_memo(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """Append one memo to the event log (`memo.captured`).
-
-    Primary caller is the Tier 0 ``note_capture`` row (``/note ...``);
-    the L2 event IS the memo store — ``list_memos`` folds it back.
-    """
-    text = str(args.get("text", "")).strip()[:_MEMO_MAX_CHARS]
-    if not text:
-        msg = "create_memo: text is empty"
-        raise ToolError(msg, code="empty_text")
-    memo_event = emit_event(
-        ctx.conn,
-        type="memo.captured",
-        payload={"text": text, "action_id": ctx.action_id},
-        source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
-        correlation={"action_id": ctx.action_id},
-    )
-    return {"memo_event_uid": memo_event.event_uid, "text": text}
-
-
-@tool(
-    description="List every saved memo, oldest first, with capture time. No arguments.",
-    input_schema={"type": "object", "properties": {}, "required": []},
-    allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM}),
-    risk_level="L0",
-    read_only=True,
-)
-def list_memos(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """Fold every `memo.captured` event into a numbered, dated list."""
-    lines: list[str] = []
-    for event in iter_events_of_types(ctx.conn, ("memo.captured",)):
-        stamp = datetime.fromtimestamp(event.ts_epoch_ms / 1000).astimezone()
-        lines.append(f"{len(lines) + 1}. [{stamp:%m-%d %H:%M}] {event.payload.get('text', '')}")
-    return {"count": len(lines), "rendered": "\n".join(lines) if lines else lang.t("memo.none")}
-
-
-# --- reminders (set_reminder / list_reminders / cancel_reminder) — ADR 0179 --------
-
-_REMINDER_MAX_CHARS: Final[int] = 500
-_REMINDER_PAST_GRACE: Final[timedelta] = timedelta(minutes=1)
-_REMINDER_HORIZON: Final[timedelta] = timedelta(days=366)
-
-
-def _reminder_when(due: datetime) -> str:
-    """The due time as the owner hears it: the spoken date, then the spoken clock."""
-    return f"{lang.spoken_date(due)} {lang.spoken_time(due)}"
-
-
-@tool(
-    description=(
-        "Set a reminder: Jarvis speaks and shows a card at the given time, at any "
-        "quiet level. This is the ONLY way to notify the user at a time; a memo, a "
-        "calendar event or a to-do never does. `at` is the absolute local time with its "
-        "UTC offset (ISO 8601, e.g. 2026-10-06T15:30:00-07:00), taken from the current "
-        "time in the state line. For a lead time (30 minutes before a 4 PM meeting) "
-        "compute the time to ring yourself (3:30 PM). Confirm to the user the due time "
-        "this tool returns, not the one you computed."
-    ),
-    input_schema={
-        "type": "object",
-        "properties": {
-            "at": {
-                "type": "string",
-                "description": "When to ring: ISO 8601 with a UTC offset, in the future.",
-            },
-            "text": {
-                "type": "string",
-                "description": "What to remind about, short, as it should be read out.",
-            },
-        },
-        "required": ["at", "text"],
-    },
-    allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-    risk_level="L1",
-    read_only=False,
-)
-def set_reminder(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """Append one ``reminder.scheduled`` event; the daemon's tick fires it (ADR 0179)."""
-    text = str(args.get("text", "")).strip()[:_REMINDER_MAX_CHARS]
-    if not text:
-        msg = "set_reminder: text is empty"
-        raise ToolError(msg, code="empty_text")
-    try:
-        due = datetime.fromisoformat(str(args.get("at", "")).strip())
-    except ValueError:
-        msg = "set_reminder: at must be an ISO 8601 time such as 2026-10-06T15:30:00-07:00"
-        raise ToolError(msg, code="invalid_time") from None
-    if due.tzinfo is None:
-        msg = "set_reminder: at has no UTC offset; give the local time with its offset"
-        raise ToolError(msg, code="missing_offset")
-    due = due.astimezone()
-    now = datetime.now().astimezone()
-    if due < now - _REMINDER_PAST_GRACE:
-        msg = f"set_reminder: {due.isoformat(timespec='seconds')} is in the past"
-        raise ToolError(msg, code="time_in_past")
-    if due > now + _REMINDER_HORIZON:
-        msg = "set_reminder: more than a year ahead"
-        raise ToolError(msg, code="too_far_ahead")
-    reminder_id = reminder_state.schedule(
-        ctx.conn,
-        due=due,
-        text=text,
-        action_id=ctx.action_id,
-        source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
-    )
-    return {
-        "reminder_id": reminder_id,
-        "due_at": due.isoformat(timespec="seconds"),
-        "due_spoken": _reminder_when(due),
-        "text": text,
-    }
-
-
-@tool(
-    description=(
-        "List the reminders still waiting to ring (set with set_reminder), soonest "
-        "first, with their ids. No arguments."
-    ),
-    input_schema={"type": "object", "properties": {}, "required": []},
-    allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-    risk_level="L0",
-    read_only=True,
-)
-def list_reminders(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """Fold the log into the pending reminders."""
-    waiting = reminder_state.pending(ctx.conn)
-    lines = [
-        f"{one.reminder_id}  {_reminder_when(datetime.fromisoformat(one.due_at_local))}  {one.text}"
-        for one in waiting
-    ]
-    return {
-        "count": len(waiting),
-        "reminders": [
-            {"reminder_id": one.reminder_id, "due_at": one.due_at_local, "text": one.text}
-            for one in waiting
-        ],
-        "rendered": "\n".join(lines) if lines else lang.t("reminder.none"),
-    }
-
-
-@tool(
-    description=(
-        "Cancel a reminder that has not rung yet, by the reminder_id that set_reminder "
-        "or list_reminders gave."
-    ),
-    input_schema={
-        "type": "object",
-        "properties": {"reminder_id": {"type": "string"}},
-        "required": ["reminder_id"],
-    },
-    allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-    risk_level="L1",
-    read_only=False,
-)
-def cancel_reminder(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """Append ``reminder.cancelled``; a reminder that already rang or is unknown is an error."""
-    reminder_id = str(args.get("reminder_id", "")).strip()
-    one = reminder_state.fold(ctx.conn).get(reminder_id)
-    if one is None or not one.pending:
-        msg = f"cancel_reminder: no waiting reminder {reminder_id!r}"
-        raise ToolError(msg, code="no_such_reminder")
-    reminder_state.cancel(
-        ctx.conn,
-        reminder_id,
-        action_id=ctx.action_id,
-        source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
-    )
-    return {"reminder_id": reminder_id, "text": one.text}
-
-
-# --- ask card (ask_user) and kept facts (remember) — ADR 0066 ------------------
+# --- ask card (ask_user) — ADR 0066 ------------------
 
 _ASK_MAX_FIELDS: Final[int] = 4
 _ASK_TEXT_MAX_CHARS: Final[int] = 200
@@ -1067,54 +863,6 @@ def close_question(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]
         correlation={"action_id": ctx.action_id},
     )
     return {"status": "closed", "question": slot.question}
-
-
-def _make_remember(memory_db_path: Path) -> Tool:
-    """Bind memory.db into `remember`, the model's writer for [About the user]."""
-
-    def remember(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
-        topic = str(args.get("topic", "")).strip()[:_ASK_LABEL_MAX_CHARS]
-        fact = str(args.get("fact", "")).strip()[:_ASK_TEXT_MAX_CHARS]
-        if not topic or not fact:
-            msg = "remember: topic and fact are both required"
-            raise ToolError(msg, code="invalid_argument")
-        section = args.get("section")
-        if section is not None and section not in CORE_MEMORY_SECTIONS:
-            msg = f"remember: section must be one of {', '.join(CORE_MEMORY_SECTIONS)}"
-            raise ToolError(msg, code="invalid_argument")
-        remember_fact(memory_db_path, topic, fact, section)
-        return {"remembered": f"{topic}: {fact}"}
-
-    return Tool(
-        name="remember",
-        description=(
-            "Keep a lasting fact about the user in [About the user], which you see at the "
-            "start of every conversation: an address, a dietary need, a preference they "
-            "state. Use it only when the user explicitly asks you to remember something "
-            "(remember this, don't forget, keep this in mind). Do not call it on your own "
-            "judgement: lasting facts are picked up by the nightly consolidation from the "
-            "day's records, and today's words are already in the history. What the user is "
-            "doing, eating or where they are right now is never a remember. A fact under a "
-            "topic you used before replaces the old one. It is filed under a "
-            f"section: {', '.join(CORE_MEMORY_SECTIONS)} (default {CORE_MEMORY_SECTIONS[0]})."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "topic": {
-                    "type": "string",
-                    "description": "Short topic in the user's language, e.g. delivery address.",
-                },
-                "fact": {"type": "string", "description": "The fact, in the user's words."},
-                "section": {"type": "string", "enum": list(CORE_MEMORY_SECTIONS)},
-            },
-            "required": ["topic", "fact"],
-        },
-        handler=remember,
-        allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-        risk_level="L1",
-        read_only=False,
-    )
 
 
 # --- open_path handler --------------------------------------------------------
@@ -4060,7 +3808,7 @@ def _device_proxy(original: ToolDefinition | Tool, link: DeviceLink) -> ToolDefi
     return replace(original, handler=handler)
 
 
-def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
+def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
     *,
     obsidian_vault_root: Path | None = DEFAULT_OBSIDIAN_VAULT_ROOT,
     web_search_max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS,
@@ -4243,16 +3991,9 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
         )
     )
     register_device_tool(read_clipboard)
-    registry.register(create_memo)
-    registry.register(list_memos)
-    registry.register(set_reminder)
-    registry.register(list_reminders)
-    registry.register(cancel_reminder)
     registry.register(ask_user)
     registry.register(withdraw_card)
     registry.register(close_question)
-    if memory_db_path is not None:
-        registry.register(_make_remember(memory_db_path))
     if web_search_provider is not None:
         registry.register(
             _make_web_search(
@@ -4337,6 +4078,7 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
     for report_tool in build_daily_report_tool(daily_report_run):
         registry.register(report_tool)
     from jarvis.execution.highlight_tool import build_highlight_tool  # noqa: PLC0415 — same cycle.
+    from jarvis.execution.keep_tool import build_keep_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.location_tool import build_where_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.mail_draft_tool import build_mail_draft_tool  # noqa: PLC0415
     from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
@@ -4350,6 +4092,7 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
     for night_tool in build_night_tools(night, remote=device_link is not None):
         register_device_tool(night_tool)  # a brain's run is its terminal's
     for conversation_tool in (
+        *build_keep_tools(memory_db_path, local_zone),
         *build_voice_tool(voice_settings),
         *build_weather_tool(weather_lookup),
         *build_picture_tool(vision_client, memory_db_path),
@@ -4442,11 +4185,7 @@ __all__ = [
     "UnknownToolError",
     "VisionClient",
     "build_default_registry",
-    "cancel_reminder",
-    "create_memo",
     "get_current_time",
-    "list_memos",
-    "list_reminders",
     "live_action_ids",
     "make_screen_capture",
     "open_path",
@@ -4455,7 +4194,6 @@ __all__ = [
     "read_file_handler",
     "register_live_action",
     "release_turn_actions",
-    "set_reminder",
     "tool",
     "tool_error",
     "tool_result",

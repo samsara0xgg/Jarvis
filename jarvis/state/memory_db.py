@@ -375,20 +375,28 @@ def _add_day_prose_columns(conn: sqlite3.Connection) -> None:
 
 
 _NAME_LINE: Final[tuple[str, str]] = ("The user's name is ", ".")
+_FACT_TOPIC_CHARS: Final[int] = 40
 
 
-def _keep_item(
+def _keep_item(  # noqa: PLR0913 — the version's inputs, all keyword-only.
     path: Path,
     *,
     topic: str,
     text: str,
     section: str | None,
     origin: str,
-) -> None:
-    """Append a core-memory version that keeps ``text`` under ``topic`` (ADR 0146)."""
+    only_new: bool = False,
+) -> bool:
+    """Append a core-memory version that keeps ``text`` under ``topic`` (ADR 0146).
+
+    ``only_new`` writes nothing when an item already says exactly ``text``. Whether a version
+    was written.
+    """
     now = local_now()
     with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
         base = core_memory.current(conn, iso_seconds(now))
+        if only_new and any(item["text"] == text for _, item, _ in core_memory.listing(base.doc)):
+            return False
         doc, change = core_memory.remember(
             base.doc,
             topic=topic,
@@ -405,6 +413,7 @@ def _keep_item(
             changes=[change],
             now=iso_seconds(now),
         )
+    return True
 
 
 def set_user_name(path: Path, name: str) -> None:
@@ -425,6 +434,22 @@ def remember_fact(path: Path, topic: str, fact: str, section: str | None = None)
     ``[About the user]`` lines. A new topic goes to the end of ``section`` (default: 关于你).
     """
     _keep_item(path, topic=topic, text=f"{topic}: {fact}", section=section, origin="remember")
+
+
+def keep_fact(path: Path, text: str, topic: str | None = None) -> bool:
+    """Keep ``text`` in core memory as ``remember_fact`` does; False when it is there already.
+
+    With a ``topic`` the item reads ``topic: text`` and replaces the one of that topic. Without,
+    the item is ``text`` alone and its topic is its first words, so only the same text matches.
+    """
+    return _keep_item(
+        path,
+        topic=topic or text[:_FACT_TOPIC_CHARS],
+        text=f"{topic}: {text}" if topic else text,
+        section=None,
+        origin="remember",
+        only_new=True,
+    )
 
 
 def current_core_memory(path: Path) -> core_memory.Version:
@@ -1369,6 +1394,7 @@ __all__ = [
     "current_core_memory",
     "day_records",
     "iso_seconds",
+    "keep_fact",
     "last_draft_at",
     "latest_day_lines",
     "latest_day_summaries",

@@ -44,7 +44,7 @@ class _StubRuntimePaths:
 
 
 class _ToolHungryClient:
-    """Proposes list_memos on every request that offers tools; answers otherwise."""
+    """Proposes kept on every request that offers tools; answers otherwise."""
 
     def __init__(self, *, answer: str | None, fail_without_tools: bool = False) -> None:
         self._answer = answer
@@ -81,7 +81,7 @@ class _ToolHungryClient:
             # Different arguments each time: an identical repeat is not run (ADR 0240).
             call = ToolCall(
                 call_id=f"call{len(self.calls)}",
-                name="list_memos",
+                name="kept",
                 arguments_json=json.dumps({"page": len(self.calls)}),
             )
             return self._result(None, (call,))

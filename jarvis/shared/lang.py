@@ -330,12 +330,10 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "en": "Opening {opened_name} in VS Code.",
     },
     "tier0.note_captured": {"zh": "已录入。", "en": "Noted."},
-    "tier0.note_list": {"zh": "{rendered}", "en": "{rendered}"},
+    "tier0.note_list": {"zh": "{summary}", "en": "{summary}"},
     "tier0.night": {"zh": "{spoken}", "en": "{spoken}"},
-    "memo.none": {"zh": "还没有备忘录。", "en": "No memos yet."},
     # ADR 0179: owner-set reminders. The line is spoken and is the card's text; ``late`` is
     # appended to it when the reminder fired after its time (a restart or a sleeping Mac).
-    "reminder.none": {"zh": "没有待响的提醒。", "en": "No reminders waiting."},
     "reminder.line": {"zh": "提醒：{text}", "en": "Reminder: {text}"},
     "reminder.late_minutes": {"zh": "（晚了 {n} 分钟）", "en": " ({n} minutes late)"},
     "reminder.late_hours": {"zh": "（晚了 {n} 小时）", "en": " ({n} hours late)"},

@@ -72,7 +72,7 @@ class _RecordingClient:
     ) -> ChatResult:
         first = not self.live
         self.live.append(str(messages[-1]["content"]))
-        calls = (ToolCall(call_id="call1", name="list_memos", arguments_json="{}"),)
+        calls = (ToolCall(call_id="call1", name="kept", arguments_json="{}"),)
         use_tool = self.call_a_tool and first
         return ChatResult(
             text=None if use_tool else "Okay.",

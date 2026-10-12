@@ -1182,7 +1182,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         schema_version=1,
     ),
     # Memo inbox: one durable row per `/note ...` capture. The list view is
-    # a fold over this type (`list_memos`); there is no separate projection.
+    # a fold over this type (`kept`); there is no separate projection.
     EventTypeSchema(
         event_type="memo.captured",
         owner_layer="L4",

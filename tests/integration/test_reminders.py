@@ -77,7 +77,10 @@ class _World:
 
     def set(self, minutes: float, text: str = "和 employer 一对一") -> dict[str, Any]:
         at = (self.start + timedelta(minutes=minutes)).astimezone().isoformat(timespec="seconds")
-        return self.call("set_reminder", {"at": at, "text": text})
+        return self.call("keep", {"kind": "reminder", "at": at, "text": text})
+
+    def waiting(self) -> list[dict[str, Any]]:
+        return list(self.call("kept", {"kind": "reminder"})["items"])
 
     def fired(self) -> list[dict[str, Any]]:
         return [dict(e.payload) for e in iter_events_of_types(self.conn, ("reminder.fired",))]
@@ -107,13 +110,12 @@ def world(tmp_path: Path) -> Iterator[_World]:
 def test_set_list_fire_once_with_card_and_one_spoken_line(world: _World) -> None:
     """Set -> pending -> not yet due -> due fires once, one line and a silent card."""
     made = world.set(30)
-    assert made["reminder_id"].startswith("reminder-")
-    assert made["due_at"] == (world.start + timedelta(minutes=30)).astimezone().isoformat(
+    assert made["id"].startswith("reminder-")
+    assert made["at"] == (world.start + timedelta(minutes=30)).astimezone().isoformat(
         timespec="seconds"
     )
-    assert made["due_spoken"]
-    listed = world.call("list_reminders", {})
-    assert [r["reminder_id"] for r in listed["reminders"]] == [made["reminder_id"]]
+    assert made["summary"].startswith("Reminder set for ")
+    assert [r["id"] for r in world.waiting()] == [made["id"]]
 
     world.clock = world.start + timedelta(minutes=29)
     assert world.reminders.tick() == 0
@@ -123,13 +125,13 @@ def test_set_list_fire_once_with_card_and_one_spoken_line(world: _World) -> None
     assert world.reminders.tick() == 1
     assert world.said == ["提醒：和 employer 一对一"]
     (fired,) = world.fired()
-    assert (fired["reminder_id"], fired["delivered"]) == (made["reminder_id"], "speak")
+    assert (fired["reminder_id"], fired["delivered"]) == (made["id"], "speak")
     assert fired["late_ms"] == 10_000
 
     client = world.app()
     (card,) = client.get("/inherent/notices").json()["notices"]
     assert (card["id"], card["level"], card["title"]) == (
-        made["reminder_id"],
+        made["id"],
         "card",
         "和 employer 一对一",
     )
@@ -138,7 +140,7 @@ def test_set_list_fire_once_with_card_and_one_spoken_line(world: _World) -> None
     assert world.reminders.tick() == 0  # exactly once
     assert len(world.said) == 1
     assert len(world.fired()) == 1
-    assert world.call("list_reminders", {})["count"] == 0
+    assert world.waiting() == []
 
     assert (
         client.post(f"/inherent/notices/{card['id']}", json={"action": "seen"}).status_code == 200
@@ -154,40 +156,41 @@ def test_set_list_fire_once_with_card_and_one_spoken_line(world: _World) -> None
     )
 
 
-def test_cancel_prevents_firing_and_unknown_or_fired_ids_are_errors(world: _World) -> None:
-    """A cancelled reminder never rings; cancelling one that rang or never existed is an error."""
+def test_cancel_prevents_firing_and_only_an_unknown_id_is_an_error(world: _World) -> None:
+    """A cancelled reminder never rings; cancelling twice or after it rang changes nothing."""
     kept, dropped = world.set(10, "keep"), world.set(10, "drop")
-    assert world.call("cancel_reminder", {"reminder_id": dropped["reminder_id"]})["text"] == "drop"
+    cancelled = world.call("keep", {"cancel": dropped["id"]})
+    assert cancelled["summary"].startswith("Cancelled the reminder for ")
+    assert cancelled["text"] == "drop"
     world.clock = world.start + timedelta(minutes=11)
     assert world.reminders.tick() == 1
     assert world.said == ["Reminder: keep"]
-    assert world.call("cancel_reminder", {"reminder_id": dropped["reminder_id"]})["code"] == (
-        "no_such_reminder"
-    )
-    assert world.call("cancel_reminder", {"reminder_id": kept["reminder_id"]})["code"] == (
-        "no_such_reminder"
-    )
-    assert world.call("cancel_reminder", {"reminder_id": "reminder-zzz"})["code"] == (
-        "no_such_reminder"
-    )
+    again = world.call("keep", {"cancel": dropped["id"]})
+    assert again["summary"].startswith("Already cancelled, nothing changed")
+    rang = world.call("keep", {"cancel": kept["id"]})
+    assert rang["summary"].startswith("It already rang, so there is nothing to cancel")
+    unknown = world.call("keep", {"cancel": "reminder-zzz"})
+    assert unknown["code"] == "not_found"
+    assert 'kept(kind="reminder")' in unknown["error"]
 
 
-def test_set_reminder_refuses_a_bad_time(world: _World) -> None:
-    """No offset, the past, more than a year ahead, not a time, no text: nothing is scheduled."""
-    naive = (world.start + timedelta(hours=1)).astimezone().replace(tzinfo=None).isoformat()
-    past = (world.start - timedelta(minutes=5)).isoformat()
-    far = (world.start + timedelta(days=400)).isoformat()
+def test_keep_refuses_a_bad_time(world: _World) -> None:
+    """The past, more than a year ahead, not a time, a bare date, no text: nothing is scheduled."""
+    local = world.start.astimezone()
+    past = (local - timedelta(minutes=5)).isoformat()
+    far = (local + timedelta(days=400)).isoformat()
     for at, code in (
-        (naive, "missing_offset"),
         (past, "time_in_past"),
         (far, "too_far_ahead"),
         ("soon", "invalid_time"),
+        ("tomorrow 9am", "invalid_time"),
+        (local.date().isoformat(), "invalid_time"),
     ):
-        assert world.call("set_reminder", {"at": at, "text": "x"})["code"] == code
-    assert world.call("set_reminder", {"at": world.start.isoformat(), "text": " "})["code"] == (
-        "empty_text"
-    )
-    assert world.call("list_reminders", {})["count"] == 0
+        refused = world.call("keep", {"kind": "reminder", "at": at, "text": "x"})
+        assert refused["code"] == code, at
+    blank = world.call("keep", {"kind": "reminder", "at": world.start.isoformat(), "text": " "})
+    assert blank["code"] == "empty_text"
+    assert world.waiting() == []
 
 
 def test_a_reminder_missed_while_down_fires_late_and_says_so(world: _World) -> None:
@@ -264,12 +267,14 @@ def test_spoken_on_speakers_too_and_a_card_with_sound_when_not_allowed(world: _W
     assert levels == {"on speakers": "card", "while muted": "card_sound"}
 
 
-def test_the_tools_are_the_llms_only_and_set_reminder_is_the_clock() -> None:
-    """Only the model calls them, and a memo points to set_reminder for a time."""
+def test_keep_and_kept_are_the_only_reminder_tools_on_the_menu() -> None:
+    """The model and the Tier 0 router reach them; the six tools they replace are gone."""
     registry = build_default_registry()
     menu = {t.name for t in registry.for_caller(CallerPrincipal.JARVIS_LLM)}
-    assert {"set_reminder", "list_reminders", "cancel_reminder", "create_memo"} <= menu
     router = {t.name for t in registry.for_caller(CallerPrincipal.REGEX_ROUTER)}
-    assert not router & {"set_reminder", "list_reminders", "cancel_reminder"}
-    memo = next(t for t in registry.get_definitions() if t.name == "create_memo")
-    assert "set_reminder" in memo.description
+    old = {
+        "create_memo", "list_memos", "set_reminder", "list_reminders", "cancel_reminder",
+        "remember",
+    }
+    assert {"keep", "kept"} <= menu & router
+    assert not (menu | router | {t.name for t in registry.get_definitions()}) & old

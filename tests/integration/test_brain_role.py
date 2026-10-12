@@ -75,7 +75,7 @@ def test_the_default_role_is_all_and_the_brain_runs_no_device_tool_itself(
         assert not (DEVICE_TOOLS | NIGHT_TOOLS) & held
         catalogue = {t.name for t in brain.tool_registry.device_catalogue()}
         assert catalogue >= DEVICE_TOOLS | NIGHT_TOOLS
-        assert {"create_memo", "remember", "web_fetch", "ask_user"} <= _menu(brain)
+        assert {"keep", "kept", "web_fetch", "ask_user"} <= _menu(brain)
         assert brain.night is None
         assert {row.tool_name for row in brain.tier0_table} <= held | catalogue
         observer = brain.config["observer"]

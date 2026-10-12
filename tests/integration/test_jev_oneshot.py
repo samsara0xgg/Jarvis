@@ -295,14 +295,14 @@ def test_every_proposed_tool_is_noted_next_to_the_prediction(tmp_path: Path) -> 
     lines.say(tool_group=("calendar_todo_read", 0.9))
     lines.oneshot.begin("T1", "今天有什么安排", "", False, False)  # noqa: FBT003
     lines.oneshot.note_tool("T1", "mcp__microsoft__get-calendar-view", {"top": 15})
-    lines.oneshot.note_tool("T1", "list_memos", {})
-    lines.oneshot.note_tool("T-typed", "list_memos", {})  # no voice line: nothing to pair
+    lines.oneshot.note_tool("T1", "kept", {})
+    lines.oneshot.note_tool("T-typed", "kept", {})  # no voice line: nothing to pair
     assert [
         (row["ref"], row["tool"], row["args"], row["group"], row["confidence"])
         for row in lines.lines("tool")
     ] == [
         ("T1", "mcp__microsoft__get-calendar-view", '{"top": 15}', "calendar_todo_read", 0.9),
-        ("T1", "list_memos", "{}", "calendar_todo_read", 0.9),
+        ("T1", "kept", "{}", "calendar_todo_read", 0.9),
     ]
     assert lines.emitted == []  # 0.9 is under the bar: the line is not said, the tool is noted
 
@@ -404,7 +404,7 @@ def test_a_tool_the_spoken_model_proposes_is_noted_with_the_group_jev_predicted(
     tmp_path: Path, jev: _Jev,  # noqa: F811
 ) -> None:
     """Real spoken stream, one request shared: the dataset pairs group and the tool called."""
-    outputs = [[("call", "list_memos")], [("final_answer", "好。")]]
+    outputs = [[("call", "kept")], [("final_answer", "好。")]]
     words = "看一下我的便签"
     with _Peer(outputs) as peer:
         runtime = _spoken_runtime(tmp_path, peer.url)
@@ -422,7 +422,7 @@ def test_a_tool_the_spoken_model_proposes_is_noted_with_the_group_jev_predicted(
     assert jev.requests == []
     [row] = lines.lines("tool")
     assert (row["ref"], row["tool"], row["group"], row["confidence"]) == (
-        "turn-a", "list_memos", "records_notes", 0.97,
+        "turn-a", "kept", "records_notes", 0.97,
     )
     assert lines.emitted == []  # records_notes has no line
 

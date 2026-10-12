@@ -65,7 +65,7 @@ def test_an_accepted_choice_stops_the_held_request_and_shows_nothing_of_it(
     """Tier 0's answer comes long before the model's first event; none of the model's shows."""
     jev.delay_s = 0.8  # the client needs a moment to reach the peer; the deadline is longer here
     text = _reply(_ANSWER, "details") if structured else _ANSWER
-    outputs = [[("call", "list_memos")], [("final_answer", text)]]
+    outputs = [[("call", "kept")], [("final_answer", text)]]
     with _Peer(outputs, first_event_delay_s=4.0) as peer:
         runtime = _runtime(tmp_path, peer.url, jev, structured=structured, timeout_ms=2000)
         started = time.monotonic()
@@ -116,12 +116,12 @@ def test_a_tool_call_waits_for_jevs_decision(tmp_path: Path, jev: _Jev) -> None:
     """The model asks for a tool at once; nothing is dispatched until Jev has answered."""
     jev.choice = "none"
     jev.delay_s = 0.3
-    outputs = [[("call", "list_memos")], [("final_answer", _ANSWER)]]
+    outputs = [[("call", "kept")], [("final_answer", _ANSWER)]]
     with _Peer(outputs) as peer:
         runtime = _runtime(tmp_path, peer.url, jev)
         _drive(runtime, _spoken(runtime.conn, "turn-t", _WORDS))
     conn = runtime.conn
-    assert [p["tool_name"] for p in _payloads(conn, "action.proposed")] == ["list_memos"]
+    assert [p["tool_name"] for p in _payloads(conn, "action.proposed")] == ["kept"]
     assert _row_id(runtime, "route.surrogate_decided") < _row_id(runtime, "action.proposed")
     assert _decided(runtime)["latency_ms"] >= 300
 

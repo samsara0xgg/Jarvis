@@ -51,8 +51,8 @@ if TYPE_CHECKING:
 
     from jarvis.decision.llm_stream import LLMStreamEvent
 
-WROTE = TurnCall("create_memo", read_only=False, ok=True)
-WRITE_FAILED = TurnCall("create_memo", read_only=False, ok=False)
+WROTE = TurnCall("keep", read_only=False, ok=True)
+WRITE_FAILED = TurnCall("keep", read_only=False, ok=False)
 READ = TurnCall("recall", read_only=True, ok=True)
 DID, CHECK = "did it", "will check"
 
@@ -127,10 +127,10 @@ def test_a_long_answer_that_mentions_a_lookup_is_an_answer() -> None:
 
 RECALL = TurnCall("recall", read_only=True, ok=True, key="a")
 RECALL_FAILED = TurnCall("recall", read_only=True, ok=False, key="a")
-LISTED = TurnCall("list_memos", read_only=True, ok=True)
-MEMO_A = TurnCall("create_memo", read_only=False, ok=True, key="a")
-MEMO_X = TurnCall("create_memo", read_only=False, ok=True, key="x")
-MEMO_X_FAILED = TurnCall("create_memo", read_only=False, ok=False, key="x")
+LISTED = TurnCall("kept", read_only=True, ok=True)
+MEMO_A = TurnCall("keep", read_only=False, ok=True, key="a")
+MEMO_X = TurnCall("keep", read_only=False, ok=True, key="x")
+MEMO_X_FAILED = TurnCall("keep", read_only=False, ok=False, key="x")
 
 
 @pytest.mark.parametrize(
@@ -145,7 +145,7 @@ MEMO_X_FAILED = TurnCall("create_memo", read_only=False, ok=False, key="x")
         ([RECALL, MEMO_X_FAILED], "recall", "a", REPEATED_CALL),  # it failed, nothing changed
         ([RECALL, LISTED], "recall", "a", REPEATED_CALL),  # a read changes nothing
         ([MEMO_A, RECALL], "recall", "a", REPEATED_CALL),  # the write came before the read
-        ([MEMO_A], "create_memo", "a", REPEATED_CALL),  # the same memo again
+        ([MEMO_A], "keep", "a", REPEATED_CALL),  # the same memo again
     ],
 )
 def test_the_repeat_table(
@@ -272,25 +272,25 @@ def _batch(
     return result.response_plan.text, conn
 
 
-MEMO = ("create_memo", {"text": "明天开会"})
+MEMO = ("keep", {"text": "明天开会"})
 
 
 def test_an_identical_repeat_is_not_run_and_gets_the_note(tmp_path: Path) -> None:
     """(a) The same read twice in a turn: one run, and the second call's result is the note."""
-    model = _ScriptedModel(("list_memos", {}), ("list_memos", {}), "没有备忘。")
+    model = _ScriptedModel(("kept", {}), ("kept", {}), "没有备忘。")
     text, conn = _batch(tmp_path, model)
     try:
         assert text == "没有备忘。"
         assert _count(conn, "action.result_observed") == 1
         assert _tool_texts(model.requests[-1][0])[1] == REPEATED_CALL
-        assert _guards(conn) == [{"turn_id": "T_guard", "guard": "repeat", "tool": "list_memos"}]
+        assert _guards(conn) == [{"turn_id": "T_guard", "guard": "repeat", "tool": "kept"}]
     finally:
         conn.close()
 
 
 def test_a_repeat_of_a_call_that_failed_names_the_fix(tmp_path: Path) -> None:
     """The same failing call again is refused with the note that says to change what failed."""
-    empty = ("create_memo", {"text": ""})
+    empty = ("keep", {"text": ""})
     model = _ScriptedModel(empty, empty, "没记成。")
     _, conn = _batch(tmp_path, model)
     try:
@@ -303,7 +303,7 @@ def test_a_repeat_of_a_call_that_failed_names_the_fix(tmp_path: Path) -> None:
 
 
 def test_the_same_memo_twice_is_saved_once(tmp_path: Path) -> None:
-    """A write repeated unchanged (create_memo, the same text) is refused too."""
+    """A write repeated unchanged (keep, the same text) is refused too."""
     model = _ScriptedModel(MEMO, MEMO, "记好了。")
     _, conn = _batch(tmp_path, model)
     try:
@@ -316,7 +316,7 @@ def test_the_same_memo_twice_is_saved_once(tmp_path: Path) -> None:
 
 def test_a_repeat_after_a_write_runs(tmp_path: Path) -> None:
     """(b) list, write, list: the second list may differ, so it runs."""
-    model = _ScriptedModel(("list_memos", {}), MEMO, ("list_memos", {}), "有一条。")
+    model = _ScriptedModel(("kept", {}), MEMO, ("kept", {}), "有一条。")
     _, conn = _batch(tmp_path, model)
     try:
         assert _count(conn, "action.result_observed") == 3
@@ -358,7 +358,7 @@ def test_the_bounce_happens_once_a_turn(tmp_path: Path) -> None:
 
 def test_an_announced_lookup_goes_back_and_the_lookup_follows(tmp_path: Path) -> None:
     """「我查一下」 and no call: the note says it will check; the model then looks."""
-    model = _ScriptedModel("我查一下。", ("list_memos", {}), "还没有备忘。")
+    model = _ScriptedModel("我查一下。", ("kept", {}), "还没有备忘。")
     text, conn = _batch(tmp_path, model)
     try:
         assert text == "还没有备忘。"
@@ -370,7 +370,7 @@ def test_an_announced_lookup_goes_back_and_the_lookup_follows(tmp_path: Path) ->
 
 def test_no_bounce_when_the_budget_wraps_the_turn_up(tmp_path: Path) -> None:
     """(e) The budget's own no-tool answer is final, claim or not."""
-    wrapped = _ScriptedModel(("list_memos", {"n": 1}), ("list_memos", {"n": 2}), "记下了。")
+    wrapped = _ScriptedModel(("kept", {"n": 1}), ("kept", {"n": 2}), "记下了。")
     text, conn = _batch(tmp_path, wrapped, budget=2)
     try:
         assert text == "记下了。"
@@ -383,7 +383,7 @@ def test_no_bounce_when_the_budget_wraps_the_turn_up(tmp_path: Path) -> None:
 
 def test_no_bounce_on_the_last_request_the_budget_allows(tmp_path: Path) -> None:
     """There is no request left to run after a note, so the answer stands."""
-    last = _ScriptedModel(("list_memos", {}), "记下了。")
+    last = _ScriptedModel(("kept", {}), "记下了。")
     text, conn = _batch(tmp_path, last, budget=2)
     try:
         assert text == "记下了。"

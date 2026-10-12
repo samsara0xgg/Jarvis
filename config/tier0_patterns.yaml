@@ -78,17 +78,17 @@
   template: tier0.opening_in_vscode
 # Memo inbox slash commands. Both skip the LLM: `/note` captures the
 # rest of the line verbatim (the Shift+Return voice path arrives already
-# prefixed by the daemon), `/notelist` renders the whole inbox — its
-# payload IS the answer, so the row raises the spoken-preview cap.
+# prefixed by the daemon), `/notelist` reads back what `kept` finds (the newest eight, ADR 0244)
+# — its summary IS the answer, so the row raises the spoken-preview cap.
 - id: note_capture
   pattern: "^/note\\s+(.+)$"
-  tool: create_memo
+  tool: keep
   args:
     text: "$1"
   template: tier0.note_captured
 - id: note_list
   pattern: "^/notelist$"
-  tool: list_memos
+  tool: kept
   template: tier0.note_list
   max_spoken_bytes: 20000
 # ADR 0093: the night run, said the way the owner says it. Any other length or an

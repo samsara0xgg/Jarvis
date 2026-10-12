@@ -627,9 +627,9 @@ def test_knowledge_search_pages_one_ranked_snapshot(daily: DailyHarness) -> None
 
 
 def test_write_tools_say_writes_need_an_explicit_request(daily: DailyHarness) -> None:
-    """ADR 0146: during conversation the model writes memory only when the user asks."""
-    described = {t.name: t.description for t in daily.tools if isinstance(t, Tool)}
-    remember, save = described["remember"], described["save_knowledge"]
-    assert "only when the user explicitly asks" in remember
-    assert "never a remember" in remember
-    assert "unless the user explicitly asks" in save
+    """ADR 0146: during conversation the model files a fact only when he states it or asks."""
+    described = {t.name: t for t in daily.tools if isinstance(t, Tool)}
+    kind = described["keep"].input_schema["properties"]["kind"]["description"]
+    assert "he states or asks you to remember" in kind
+    assert "never what he is doing" in kind
+    assert "unless the user explicitly asks" in described["save_knowledge"].description

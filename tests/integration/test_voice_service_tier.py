@@ -241,7 +241,7 @@ def test_every_request_of_a_spoken_stream_turn_carries_the_tier(
     """The first request and the follow-up after the tool call both send it, and are billed so."""
     monkeypatch.setattr(llm_module, "_is_openai_host", lambda _url: True)  # peer is localhost
     answer = "你还没有记过备忘录。"
-    outputs = [[("commentary", "我看一下。"), ("call", "list_memos")], [("final_answer", answer)]]
+    outputs = [[("commentary", "我看一下。"), ("call", "kept")], [("final_answer", answer)]]
     with _Peer(outputs) as peer:
         runtime = _tiered(_spoken_runtime(tmp_path, peer.url), "priority")
         _drive(runtime, _spoken(runtime.conn, "turn-tier", "我记过什么"))

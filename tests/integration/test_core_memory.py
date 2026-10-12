@@ -168,22 +168,25 @@ def daily(tmp_path: Path) -> Iterator[DailyHarness]:
         harness.fx.close()
 
 
-def test_the_remember_tool_takes_an_optional_section(daily: DailyHarness) -> None:
-    """The schema offers the six sections; a bad one is refused and writes nothing."""
-    tool = next(t for t in daily.tools if t.name == "remember")
-    schema = tool.input_schema
-    assert schema["properties"]["section"]["enum"] == list(core_memory.SECTIONS)
-    assert schema["required"] == ["topic", "fact"]
-    assert all(section in tool.description for section in core_memory.SECTIONS)
+def test_keep_writes_a_fact_and_says_so(daily: DailyHarness) -> None:
+    """kind=fact files a line in core memory; a topic replaces its item, the same text nothing."""
+    tool = next(t for t in daily.tools if t.name == "keep")
+    assert tool.input_schema["properties"]["kind"]["enum"] == ["memo", "reminder", "fact"]
 
-    assert daily.call("remember", {"topic": "老板", "fact": "Sam", "section": "常提到的人"}) == {
-        "remembered": "老板: Sam",
-    }
-    daily.call("remember", {"topic": "口味", "fact": "辣"})
-    assert _items(daily.memory) == {"关于你": ["口味: 辣"], "常提到的人": ["老板: Sam"]}
-    refused = daily.call("remember", {"topic": "x", "fact": "y", "section": "nowhere"})
-    assert refused["code"] == "invalid_argument"
+    saved = daily.call("keep", {"kind": "fact", "topic": "老板", "text": "Sam"})
+    assert saved["summary"] == 'Saved to long-term memory: "老板: Sam".'
+    daily.call("keep", {"kind": "fact", "text": "口味 辣"})  # no topic: the text alone
+    assert _items(daily.memory) == {"关于你": ["老板: Sam", "口味 辣"]}
+
+    again = daily.call("keep", {"kind": "fact", "topic": "老板", "text": "Sam"})
+    assert again["summary"] == 'Already in long-term memory, nothing new: "老板: Sam".'
     assert len(_versions(daily.memory)) == 3  # migration + two writes
+
+    daily.call("keep", {"kind": "fact", "topic": "老板", "text": "Tom"})  # the topic is replaced
+    assert _items(daily.memory) == {"关于你": ["老板: Tom", "口味 辣"]}
+    too_long = daily.call("keep", {"kind": "fact", "text": "x" * 300})
+    assert too_long["code"] == "too_long"
+    assert len(_versions(daily.memory)) == 4
 
 
 # --- the nightly pass ---------------------------------------------------------

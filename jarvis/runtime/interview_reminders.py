@@ -235,7 +235,7 @@ class InterviewReminders:
         due: datetime,
         text: str,
     ) -> None:
-        """Write one ``reminder.scheduled`` event, the same payload ``set_reminder`` writes."""
+        """Write one ``reminder.scheduled`` event, the payload ``keep`` writes for a reminder."""
         local = due.astimezone(ZoneInfo(self.zone))
         epoch_ms = int(due.timestamp() * 1000)
         emit_event(
