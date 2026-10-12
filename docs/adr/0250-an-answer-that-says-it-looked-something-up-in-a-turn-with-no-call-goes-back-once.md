@@ -25,6 +25,8 @@ looked something up and the turn made no call at all: a lookup verb done (「查
 "I checked", "I looked it up"), a look at one of his own stores (「看了一下你的日历」, "I looked
 through your inbox"), "according to your calendar", or his calendar said to be clear or to hold
 something. A question, a denial and a sentence that cites the program's state are not claims.
+When the state block this turn carries the calendar line of ADR 0249 ("Next on his calendar"),
+what his calendar holds is backed and passes; saying it was looked up never is.
 
 ## Alternatives rejected
 
@@ -35,6 +37,10 @@ something. A question, a denial and a sentence that cites the program's state ar
 - **Send back any answer with no call that names a store of his.** Plain talk names them all day
   ("你的日历有点乱", "your calendar app is open"); the table has rows of that kind, none of which a
   name-only rule lets through.
+- **Count the calendar line as a lookup, so "I checked your calendar" passes when it is in view.**
+  The line is the next two items as last read; saying "I checked" reports an act the turn did not
+  make, and the exam's 「我查了你的默认日历」 was that sentence. The table keeps it as a row that
+  bounces with the line present.
 - **Leave it to the prompt.** The prompt already carries both halves of the rule, and the exam's
   answers came with it.
 - **Judge whether the answer is true.** Nothing in the loop knows what his calendar holds; the one
@@ -43,8 +49,10 @@ something. A question, a denial and a sentence that cites the program's state ar
 ## Consequences
 
 - The phrase list stays closed, as in ADR 0240: a lookup claimed in other words passes.
-- An answer that reads the calendar line of ADR 0249 back as "your calendar shows ..." is sent back
-  once and the model calls the calendar tool; saying "you have the dentist at 3:30" does not.
+- With the calendar line in view, "your calendar is clear" passes though the line holds only two
+  items and cannot show a clear day: the guard trusts that the line was read, not that it suffices.
+  The decision loop reads the line from this turn's live context; the tool exam reads it from the
+  last state block in the logged request, so a log from before the line existed never has it.
 - A claim of a lookup made in an earlier turn is sent back once too, and the note lets the model say
   it was done earlier. The turn then costs one more request.
 - A turn with any call, even a refused one, is never sent back for this case.

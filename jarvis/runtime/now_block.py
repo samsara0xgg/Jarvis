@@ -13,6 +13,7 @@ from collections.abc import Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING, Final, NamedTuple
 
+from jarvis.decision.turn_guards import CALENDAR_LINE
 from jarvis.execution import speakable
 from jarvis.execution.my_day_tool import work_state_now
 from jarvis.shared.about import prompt_title
@@ -25,7 +26,8 @@ if TYPE_CHECKING:
 LINE_CHARS: Final = 200
 """One line's cap; the two lines together stay near 400 characters."""
 DOING_PREFIX: Final = "Doing now"
-CALENDAR_PREFIX: Final = "Next on his calendar"
+CALENDAR_PREFIX: Final = CALENDAR_LINE
+"""The turn guards (ADR 0250) read this line as backing what the answer says of his calendar."""
 OLDEST_ANALYSIS: Final = timedelta(hours=12)
 """An analysis older than this says nothing about now, so the block leaves it to ``my_day``."""
 _TITLE_CHARS: Final = 40

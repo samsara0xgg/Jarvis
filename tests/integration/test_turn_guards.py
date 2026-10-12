@@ -36,6 +36,7 @@ from jarvis.decision.turn_guards import (
     REPEATED_FAILED,
     UNBACKED_NOTE,
     TurnCall,
+    calendar_in_view,
     repeated_call,
     unbacked_claim,
     unbacked_said,
@@ -171,6 +172,65 @@ def test_a_long_answer_that_mentions_a_lookup_is_an_answer() -> None:
     assert unbacked_said(text, []) is None
 
 
+CAL_LINE = 'Next on his calendar (read 4 minutes ago): 3:30 pm "Dentist".'
+
+
+@pytest.mark.parametrize(
+    ("text", "seen", "expected"),
+    [
+        # What his calendar holds is backed when the block carries the line, not otherwise.
+        ("Your calendar is clear tomorrow.", True, None),
+        ("Your calendar is clear tomorrow.", False, LOOKED),
+        ("你的日历明天是空的。", True, None),
+        ("你的日历明天是空的。", False, LOOKED),
+        ("根据你的日历，下午三点半有牙医。", True, None),
+        ("根据你的日历，下午三点半有牙医。", False, LOOKED),
+        ("You have nothing on your calendar tomorrow.", True, None),
+        ("You have nothing on your calendar tomorrow.", False, LOOKED),
+        ("According to your calendar, the dentist is at 3:30.", True, None),
+        ("According to your calendar, the dentist is at 3:30.", False, LOOKED),
+        ("日历上没有安排。", True, None),
+        ("日历上没有安排。", False, LOOKED),
+        # The block is not a lookup: saying one was made still needs a call.
+        ("我查了日历，明天没有安排。", True, LOOKED),
+        ("我查了日历，明天没有安排。", False, LOOKED),
+        ("看了一下你的日历，下午三点半有牙医。", True, LOOKED),
+        ("I checked your calendar and you are free.", True, LOOKED),
+        ("I looked through your inbox, nothing new.", True, LOOKED),
+        ("已经查过了，没有新邮件。", True, LOOKED),
+        # Plain talk and the other two cases are unchanged by the line.
+        ("我看了一下你说的这个想法，挺不错的。", True, None),
+        ("记下了", True, DID),
+        ("我查一下", True, CHECK),
+    ],
+)
+def test_the_calendar_line_backs_what_his_calendar_holds_and_nothing_else(
+    text: str, seen: bool, expected: str | None,  # noqa: FBT001 - a parametrized table cell
+) -> None:
+    """Calendar contents pass with the line in view; an explicit lookup claim still bounces."""
+    assert unbacked_said(text, [], calendar_seen=seen) == expected
+    note = unbacked_claim(text, [], calendar_seen=seen)
+    assert note == (None if expected is None else UNBACKED_NOTE.format(said=expected))
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (CAL_LINE, True),
+        (f"Time: 2026-10-12T09:00-07:00 Monday\nDoing now (as of 5 min ago): X.\n{CAL_LINE}", True),
+        ("Doing now (as of 5 minutes ago, at 9:00 am): Writing.", False),
+        ("", False),
+        # Only the line itself: his calendar named in another line is not it.
+        ('Dashboard: he has "Next on his calendar (x)" open.', False),
+        ("Pending reminders (1): call about Next on his calendar (later)", False),
+        ("Next on his calendar", False),  # no reading in brackets: not the producer's line
+    ],
+)
+def test_the_calendar_line_is_found_only_as_a_line_of_its_own(state: str, expected: bool) -> None:  # noqa: FBT001
+    """The state block's own line starts with the heading and the age bracket."""
+    assert calendar_in_view(state) is expected
+
+
 RECALL = TurnCall("recall", read_only=True, ok=True, key="a")
 RECALL_FAILED = TurnCall("recall", read_only=True, ok=False, key="a")
 LISTED = TurnCall("kept", read_only=True, ok=True)
@@ -287,6 +347,7 @@ def _notes(messages: Sequence[dict[str, Any]], said: str) -> list[dict[str, Any]
 
 def _context(
     conn: sqlite3.Connection, tmp_path: Path, llm: object, budget: int,
+    live_context: tuple[str, ...] = (),
 ) -> DecideContext:
     paths = _StubRuntimePaths(
         event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts"
@@ -300,11 +361,12 @@ def _context(
         llm_client=cast("LLMClient", llm),
         system_prompt="stub system prompt",
         max_tool_iterations=budget,
+        live_context=live_context,
     )
 
 
 def _batch(
-    tmp_path: Path, model: _ScriptedModel, *, budget: int = 8,
+    tmp_path: Path, model: _ScriptedModel, *, budget: int = 8, live_context: tuple[str, ...] = (),
 ) -> tuple[str, sqlite3.Connection]:
     conn = open_event_log(tmp_path / "events.db")
     trigger = emit_event(
@@ -313,7 +375,7 @@ def _batch(
         payload={"transcript": "把明天开会记一下", "turn_id": "T_guard"},
         correlation={"turn_id": "T_guard"},
     )
-    result = decide(trigger, _context(conn, tmp_path, model, budget))
+    result = decide(trigger, _context(conn, tmp_path, model, budget, live_context))
     assert result.response_plan is not None
     return result.response_plan.text, conn
 
@@ -435,6 +497,40 @@ def test_a_lookup_claimed_after_a_real_call_is_not_sent_back(tmp_path: Path) -> 
         assert text == "我查了，还没有备忘。"
         assert len(model.requests) == 2
         assert _count(conn, "turn.guard_fired") == 0
+    finally:
+        conn.close()
+
+
+def test_a_calendar_answer_the_block_backs_is_not_sent_back(tmp_path: Path) -> None:
+    """With the calendar line in this turn's state, 「你的日历下午是空的」 stands with no call."""
+    model = _ScriptedModel("你的日历明天是空的。")
+    text, conn = _batch(tmp_path, model, live_context=(CAL_LINE,))
+    try:
+        assert text == "你的日历明天是空的。"
+        assert len(model.requests) == 1
+        assert _count(conn, "turn.guard_fired") == 0
+    finally:
+        conn.close()
+
+
+def test_the_same_answer_without_the_line_goes_back(tmp_path: Path) -> None:
+    """No calendar line in the state: the claim is unbacked and the lookup follows the note."""
+    model = _ScriptedModel("你的日历明天是空的。", ("kept", {}), "没有。")
+    _, conn = _batch(tmp_path, model)
+    try:
+        assert _notes(model.requests[1][0], LOOKED)
+        assert _count(conn, "action.result_observed") == 1
+    finally:
+        conn.close()
+
+
+def test_saying_the_calendar_was_checked_goes_back_even_with_the_line(tmp_path: Path) -> None:
+    """The block is not a lookup: 「我查了日历」 with no call is sent back whatever is in view."""
+    model = _ScriptedModel("我查了日历，三点半有牙医。", ("kept", {}), "好。")
+    _, conn = _batch(tmp_path, model, live_context=(CAL_LINE,))
+    try:
+        assert _notes(model.requests[1][0], LOOKED)
+        assert _guards(conn) == [{"turn_id": "T_guard", "guard": "unbacked", "said": LOOKED}]
     finally:
         conn.close()
 

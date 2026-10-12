@@ -49,7 +49,7 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     # (ADR 0240, ADR 0250).
     "jarvis/decision/turn_guards.py": frozenset(
         {"_DID", "_WILL", "_SENTENCE_END", "_QUESTION", "_SCREEN", "_STORE_ZH", "_CALENDAR_ZH",
-         "_WHEN_ZH", "_LOOKED", "_CITES"},
+         "_WHEN_ZH", "_ACT", "_CONTENT", "_CITES"},
     ),
     "jarvis/decision/stream_gate.py": frozenset({"routine_stream_policy"}),
     "jarvis/decision/stream_risk.py": frozenset(

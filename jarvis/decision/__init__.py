@@ -105,6 +105,7 @@ from jarvis.decision.tier0 import render_tier0_response
 from jarvis.decision.turn_guards import (
     UNBACKED_NOTE,
     TurnCall,
+    calendar_in_view,
     call_key,
     repeated_call,
     unbacked_said,
@@ -1664,7 +1665,9 @@ def _bounce_unbacked(  # noqa: PLR0913 - the loop's handles plus the answer and 
     """
     if scratch.unbacked_bounced or last_request or ctx.stream_correction is not None:
         return False
-    said = unbacked_said(answer, scratch.calls)
+    said = unbacked_said(
+        answer, scratch.calls, calendar_seen=calendar_in_view("\n".join(ctx.live_context)),
+    )
     if said is None:
         return False
     scratch.unbacked_bounced = True

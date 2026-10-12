@@ -96,20 +96,35 @@ _STORE_ZH: Final = "日历|日程|行程|邮件|邮箱|收件箱|提醒|备忘�
 _STORE_EN: Final = "calendar|schedule|inbox|e-?mails?|mail|reminders?|notes|memos?|records|messages"
 _CALENDAR_ZH: Final = "日历|日程|行程"
 _WHEN_ZH: Final = "(?:[今明后]天|[这本下]周|周[一二三四五六日末]|[上下]午|晚上|目前|现在)*"
-_LOOKED: Final = re.compile(
+# The act of looking: the block is not a lookup, so these need a call whatever the block holds.
+_ACT: Final = (
     "(?<!没)(?<!未)(?<!不)(?<!没有)(?:查看|查询|查|搜索|搜|检索|翻查)(?:了|过(?!去)|到)"
     f"|(?<!没)(?<!未)(?<!不)(?<!没有)[看翻读](?:了|过)(?:一下|一遍|下)?你?的?(?:默认)?(?:{_STORE_ZH})"
-    f"|[根按]据你的(?:{_CALENDAR_ZH})"
-    f"|你?的?(?:{_CALENDAR_ZH})[里上中]?{_WHEN_ZH}(?:是空的|空着|显示|写着|没有|没安排|有(?!点))"
     r"|\bI(?:'ve| have)?(?: just| already)? (?:checked(?! out\b)|looked (?:it |that |this )?up"
     r"|looked into|searched|pulled up|gone through|went through)\b"
     rf"|\bI(?:'ve| have)?(?: just| already)? looked (?:at|through|over|in) (?:your|his) "
     rf"(?:{_STORE_EN})\b"
+)
+# What his calendar holds, said as fact: backed when the state block carries the calendar line.
+_CONTENT: Final = (
+    f"[根按]据你的(?:{_CALENDAR_ZH})"
+    f"|你?的?(?:{_CALENDAR_ZH})[里上中]?{_WHEN_ZH}(?:是空的|空着|显示|写着|没有|没安排|有(?!点))"
     r"|\b(?:according to|based on) your (?:calendar|schedule)\b"
     r"|\byour (?:calendar|schedule) (?:is|are|looks?|shows?|says?|has|had|lists?)\b"
-    r"|\b(?:nothing|no \w+) (?:on|in) your (?:calendar|schedule)\b",
-    re.IGNORECASE,
+    r"|\b(?:nothing|no \w+) (?:on|in) your (?:calendar|schedule)\b"
 )
+_LOOKED_ACT: Final = re.compile(_ACT, re.IGNORECASE)
+_LOOKED: Final = re.compile(f"{_ACT}|{_CONTENT}", re.IGNORECASE)
+CALENDAR_LINE: Final = "Next on his calendar"
+"""How the state block's calendar line begins (ADR 0249); its producer is in the runtime layer."""
+_CALENDAR_LINE: Final = re.compile(rf"^{CALENDAR_LINE} \(", re.MULTILINE)
+
+
+def calendar_in_view(state: str) -> bool:
+    """Whether a turn's state block carries the calendar line, so it backs what it says."""
+    return _CALENDAR_LINE.search(state) is not None
+
+
 # A sentence that cites the program's own state is not a claim of a lookup.
 _CITES: Final = re.compile(
     r"\b(?:state|status) (?:line|block)\b|\bthe (?:program|block)\b"
@@ -144,14 +159,17 @@ def _spoken(text: str) -> tuple[str, bool]:
 
 
 def unbacked_said(
-    text: str, calls: Sequence[TurnCall],
+    text: str, calls: Sequence[TurnCall], *, calendar_seen: bool = False,
 ) -> Literal["did it", "will check", "looked it up"] | None:
     """What a turn-ending answer claims that no call this turn did, or None.
 
     ``"did it"``: it says something was saved, set, sent or shown and no non-read-only call
     succeeded. ``"will check"``: it only announces a lookup and the turn made no call at all.
     ``"looked it up"``: it says it checked, or says what his calendar holds, and the turn made
-    no call at all; a sentence citing the program's state is not such a claim.
+    no call at all; a sentence citing the program's state is not such a claim. With
+    ``calendar_seen`` (the turn's state block carries the calendar line, see
+    :func:`calendar_in_view`) what his calendar holds is backed, and only the act of looking
+    (「我查了」, "I checked") still needs a call.
     """
     said, written = _spoken(text)
     asserted = [s for s in _SENTENCE_END.split(said) if s.strip() and not _QUESTION.search(s)]
@@ -160,12 +178,15 @@ def unbacked_said(
         return "did it"
     if not calls and len(said) <= _PROMISE_MAX_CHARS and any(_WILL.search(s) for s in asserted):
         return "will check"
-    if not calls and any(_LOOKED.search(s) and not _CITES.search(s) for s in asserted):
+    looked = _LOOKED_ACT if calendar_seen else _LOOKED
+    if not calls and any(looked.search(s) and not _CITES.search(s) for s in asserted):
         return "looked it up"
     return None
 
 
-def unbacked_claim(text: str, calls: Sequence[TurnCall]) -> str | None:
+def unbacked_claim(
+    text: str, calls: Sequence[TurnCall], *, calendar_seen: bool = False,
+) -> str | None:
     """The note to send for an answer no call backs, or None."""
-    said = unbacked_said(text, calls)
+    said = unbacked_said(text, calls, calendar_seen=calendar_seen)
     return None if said is None else UNBACKED_NOTE.format(said=said)

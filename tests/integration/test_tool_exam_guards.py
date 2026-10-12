@@ -11,12 +11,12 @@ import asyncio
 import json
 from typing import TYPE_CHECKING, Any, cast
 
+import pytest
+
 from jarvis.decision.turn_guards import REPEATED_CALL, UNBACKED_NOTE
 from scripts import tool_exam
 
 if TYPE_CHECKING:
-    import pytest
-
     from jarvis.decision.llm import LLMClient
 
 READ_ONLY = {"job_ledger": True, "create_memo": False}
@@ -148,6 +148,54 @@ def test_a_claimed_lookup_with_no_call_gets_the_note_in_responses_shape(
     assert line["guarded"]["kind"] == "unbacked"
     assert line["guarded"]["first_text"] == claim
     assert line["calls"] == [{"name": "job_ledger", "args": {}}]
+
+
+CAL_LINE = 'Next on his calendar (read 4 minutes ago): 3:30 pm "Dentist".'
+STATE = "[Current state | from the program, not the user's words]"
+SENT = "[State when this was said | from the program, not the user's words]"
+
+
+def _with_state(*lines: str, shape: str = "chat", older: str = "") -> dict[str, Any]:
+    """A request whose live user message carries a state block of these lines (ADR 0249)."""
+    live = {"role": "user", "content": "\n".join([STATE, *lines]) + f"\n\n明天呢\n\n{LANGUAGE}"}
+    history = [{"role": "user", "content": older}] if older else []
+    if shape == "responses":
+        return {"input": [*history, live], "instructions": "stub"}
+    return {"messages": [{"role": "system", "content": "stub"}, *history, live]}
+
+
+@pytest.mark.parametrize("shape", ["chat", "responses"])
+@pytest.mark.parametrize(
+    ("answer", "lines", "guarded"),
+    [
+        # The calendar line backs what his calendar holds, and only that.
+        ("你的日历明天是空的。", (CAL_LINE,), False),
+        ("你的日历明天是空的。", ("Doing now (as of 5 min ago): X.",), True),
+        ("你的日历明天是空的。", (), True),  # a log from before the line existed
+        ("我查了日历，明天没有安排。", (CAL_LINE,), True),  # noqa: RUF001 - Chinese comma
+        ("Your calendar is clear tomorrow.", (CAL_LINE,), False),
+        ("I checked your calendar and you are free.", (CAL_LINE,), True),
+    ],
+)
+def test_the_exam_reads_the_calendar_line_in_the_logged_request(
+    monkeypatch: pytest.MonkeyPatch, shape: str, answer: str, lines: tuple[str, ...],
+    guarded: bool,  # noqa: FBT001 - a parametrized table cell
+) -> None:
+    """Chat and Responses shapes: the guard sees the line the way the decision loop does."""
+    request = _with_state(*lines, shape=shape)
+    line, sent = _run(monkeypatch, request, _answer(answer), _answer("没有。"))
+    assert ("guarded" in line) is guarded
+    assert len(sent) == (2 if guarded else 1)
+
+
+def test_a_calendar_line_in_an_earlier_replayed_block_backs_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only this turn's block counts: a replayed one in the history is an older reading."""
+    older = f"{SENT}\n{CAL_LINE}\n\n昨天呢"
+    request = _with_state("Doing now (as of 5 min ago): X.", older=older)
+    line, _ = _run(monkeypatch, request, _answer("你的日历明天是空的。"), _answer("没有。"))
+    assert line["guarded"]["kind"] == "unbacked"
 
 
 def test_an_answer_backed_by_a_call_and_a_plain_answer_are_one_step(

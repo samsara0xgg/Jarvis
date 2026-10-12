@@ -78,7 +78,13 @@ from jarvis.decision import (
 )
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.policy import effective_policy, surface_for
-from jarvis.decision.turn_guards import TurnCall, call_key, repeated_call, unbacked_claim
+from jarvis.decision.turn_guards import (
+    TurnCall,
+    calendar_in_view,
+    call_key,
+    repeated_call,
+    unbacked_claim,
+)
 from jarvis.deployment import load_env_file
 from jarvis.execution.conversation_tool import build_conversation_tool
 from jarvis.execution.dashboard_tool import build_dashboard_tool
@@ -294,6 +300,25 @@ async def _step(
 _LANGUAGE_LINE = re.compile(r"\[Reply language for this turn: [^\]]+\]")
 
 
+_STATE_HEADER = re.compile(r"\[(?:Current state|State when this was said) \| from the program")
+
+
+def _state_block(request: Mapping[str, Any]) -> str:
+    """The text of the request's last user message that carries a state block, else "".
+
+    That is the turn's own block: earlier ones replayed in the history come before it. A
+    request logged before the calendar line existed has none, so no calendar claim is backed.
+    """
+    for item in reversed(request["input"] if "input" in request else request["messages"]):
+        content = item.get("content") if item.get("role") == "user" else None
+        text = content if isinstance(content, str) else "\n".join(
+            str(part.get("text", "")) for part in content or () if isinstance(part, dict)
+        )
+        if _STATE_HEADER.search(text):
+            return text
+    return ""
+
+
 def _key(args: Any) -> str:  # noqa: ANN401 - a parsed argument object, or the raw text of one
     return call_key(args) if isinstance(args, dict) else str(args)
 
@@ -359,7 +384,7 @@ def _guard(
         if all(notes):  # one that would run has a result this exam cannot give
             return "repeat", _continued(request, text, calls, [str(n) for n in notes], None)
         return None
-    note = unbacked_claim(text, turn)
+    note = unbacked_claim(text, turn, calendar_seen=calendar_in_view(_state_block(request)))
     return None if note is None else ("unbacked", _continued(request, text, [], [], note))
 
 
