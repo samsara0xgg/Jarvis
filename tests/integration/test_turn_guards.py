@@ -98,6 +98,15 @@ DID, CHECK = "did it", "will check"
         ("提醒你，下午三点有会", [], None),
         ("备忘录里有3条", [READ], None),
         ("已经发现了问题", [], None),
+        # Only what he hears counts: the screen part may list what already exists.
+        ("<voice>面试是周二下午一点。</voice><document>- 已设置两个提醒</document>", [], None),
+        ('{"spoken":"面试是周二下午一点。","written":"提醒：已设置两个提醒"}', [], None),
+        ("<voice>好，记下了。</voice><document>- 回家修手机发烫</document>", [], DID),
+        ('{"spoken":"已记下：周六吃饭。","written":""}', [], DID),
+        # "On screen" is true when the answer carries its written part.
+        ('{"spoken":"时间我写在屏幕上了。","written":"- 10:00 产品会"}', [], None),
+        ("<voice>I've put the list on screen.</voice><document>- one</document>", [], None),
+        ("I've put the findings on screen.", [], DID),
         ("我看你是累了", [], None),
         ("我找到了", [], None),
         ("", [], None),

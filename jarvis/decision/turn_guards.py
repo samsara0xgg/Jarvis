@@ -91,6 +91,27 @@ _SENTENCE_END: Final = re.compile(r"(?<=[.!?。！？\n])")  # noqa: RUF001 - fu
 _QUESTION: Final = re.compile(r"[?？]\s*$|吗")  # noqa: RUF001 - fullwidth question mark
 # "Only announces": a longer answer says something besides the lookup.
 _PROMISE_MAX_CHARS: Final[int] = 100
+# The screen part lists what exists ("已设置两个提醒" after a read of his day); only the
+# spoken part is what he is told was done (replay 2026-10-11: the written part bounced a
+# correct answer about an interview and its reminders).
+_DOCUMENT: Final = re.compile(r"<document>.*?(?:</document>|$)", re.DOTALL)
+# "The times are on screen" is true when the answer has a written part: the screen shows it.
+_SCREEN: Final = re.compile(r"屏幕|\bscreen\b", re.IGNORECASE)
+
+
+def _spoken(text: str) -> tuple[str, bool]:
+    """What he hears of an answer, and whether it also has a written part for the screen.
+
+    What he hears is the JSON reply's ``spoken``, or the text minus its ``<document>``.
+    """
+    try:
+        reply = json.loads(text)
+    except ValueError:
+        reply = None
+    if isinstance(reply, dict) and isinstance(reply.get("spoken"), str):
+        return str(reply["spoken"]).strip(), bool(str(reply.get("written") or "").strip())
+    spoken = _DOCUMENT.sub("", text)
+    return spoken.strip(), spoken != text
 
 
 def unbacked_said(
@@ -101,9 +122,10 @@ def unbacked_said(
     ``"did it"``: it says something was saved, set, sent or shown and no non-read-only call
     succeeded. ``"will check"``: it only announces a lookup and the turn made no call at all.
     """
-    said = text.strip()
+    said, written = _spoken(text)
     asserted = [s for s in _SENTENCE_END.split(said) if s.strip() and not _QUESTION.search(s)]
-    if not any(c.ok and not c.read_only for c in calls) and any(_DID.search(s) for s in asserted):
+    claims = [s for s in asserted if _DID.search(s) and not (written and _SCREEN.search(s))]
+    if claims and not any(c.ok and not c.read_only for c in calls):
         return "did it"
     if not calls and len(said) <= _PROMISE_MAX_CHARS and any(_WILL.search(s) for s in asserted):
         return "will check"
