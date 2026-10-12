@@ -40,11 +40,17 @@ when no deep lane is configured.
   `claude-sonnet-5-5`, `reasoning_effort: high`, 16384 output tokens, a 300 second request timeout
   (a `timeout_s` key on a preset overrides `llm.timeout_s`), and the unstructured spoken route of
   ADR 0241. The step cap is `llm.deep.max_tool_iterations` (40), where the voice lane keeps its own per-turn cap.
-- **The deep turn sees every tool but two.** `DeepToolRegistry` wraps the registry for that turn: the
-  deferred tools are on the menu, since the turn has no `tool_search`, except those a menu tool
-  supersedes (ADR 0242); `think_deeper` and `tool_search` are not offered and refuse to dispatch.
-  `read_skill` stays. A tool that asks first still ends in its card (ADR 0062); the task stops at
-  that card and the result says so.
+- **The deep turn sees the tools that read, or that ask first.** `DeepToolRegistry` wraps the
+  registry for that turn and offers a tool only when it is read-only or requires his confirmation:
+  nobody watches the turn, so a write that does not ask (`keep`, `save_*`, `forget_place`,
+  `dismiss_card`, `set_voice`, `open_url`, `open_path`, `write_mail_draft`, the night runs, a
+  plugin tool without an approval) is not on its menu and refuses to dispatch. `ask_user` (no one
+  answers), `open_plugin` (its resume would run the task text again as a voice-lane turn) and
+  `show_on_dashboard` (it flips the page on his screen while he is elsewhere) are hidden by name,
+  as are `think_deeper` and `tool_search`; there is no allowlist of exceptions. The deferred tools
+  are on the menu, since the turn has no `tool_search`, except those a menu tool supersedes
+  (ADR 0242). `read_skill` stays. A tool that asks first still ends in its card (ADR 0062); the
+  task stops at that card and the result says so.
 - **The turn is told what it is.** `DEEP_RULES` is appended to its system prompt and the state
   block says the turn is a handed-over task. The rules ask for `<voice>` of at most three sentences
   that first say what the answer answers, and a `<document>` that opens with a line naming it and

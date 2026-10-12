@@ -16,6 +16,7 @@ import sqlite3
 import threading
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self
 
 import pytest
@@ -29,8 +30,8 @@ from jarvis.decision.response_run import ResponseRunRegistry
 from jarvis.decision.think_mode import load_think_mode
 from jarvis.decision.turn_guards import REPEATED_CALL
 from jarvis.deployment import bootstrap_runtime
-from jarvis.execution.deep_tool import DESCRIPTION, build_deep_tool
-from jarvis.execution.tools import ActionLifecycle, Tool, ToolRegistry
+from jarvis.execution.deep_tool import DESCRIPTION, DeepToolRegistry, build_deep_tool
+from jarvis.execution.tools import ActionLifecycle, Tool, ToolRegistry, UnknownToolError
 from jarvis.runtime import (
     JarvisRuntime,
     _wave4_response_flags,
@@ -532,6 +533,33 @@ def test_a_deep_run_that_fails_says_so_plainly(tmp_path: Path, channel: str, att
         assert len(peer.requests["deep"]) == 2
         assert lane.rows("surface.response_emitted", task.payload["turn_id"]) == []
         assert peer.unused() == {"fast": 0, "deep": 0}
+
+
+# --- the deep view of the real menu ----------------------------------------------------------------
+
+_WRITES = (
+    "keep", "save_knowledge", "save_briefing", "save_place", "forget_place", "dismiss_card",
+    "mark_highlight", "set_voice", "start_night_run", "end_night_run", "open_url", "open_path",
+    "write_mail_draft", "record_application", "refresh_work_state", "disable_plugin", "bus",
+)
+
+
+def test_the_deep_view_of_the_real_menu_offers_only_what_reads_or_asks_first(tmp_path: Path) -> None:
+    """Nobody watches the turn: no write without his card, no question, no plugin resume, no page flip."""
+    from scripts import tool_exam  # noqa: PLC0415 - this test and the next only
+
+    recorded = tmp_path / "mcp-tools.json"
+    recorded.write_text("{}", encoding="utf-8")
+    config = yaml.safe_load((repo_root() / "config/jarvis.yaml").read_text())
+    view = DeepToolRegistry(tool_exam._exam_registry(config, recorded))  # noqa: SLF001
+    seen = view.for_caller(CallerPrincipal.JARVIS_LLM)
+    offered = {t.name for t in seen}
+    assert all(t.read_only or t.requires_confirmation for t in seen)
+    assert not offered & {"think_deeper", "tool_search", "ask_user", "open_plugin", "show_on_dashboard", *_WRITES}
+    assert {"mail", "job_ledger", "my_schedule", "my_day", "web_search", "list_plugins", "remove_plugin", "search_knowledge"} <= offered
+    for name in ("keep", "ask_user", "open_plugin"):
+        with pytest.raises(UnknownToolError):
+            view.dispatch(SimpleNamespace(tool_name=name), None, None, None)  # type: ignore[arg-type]
 
 
 # --- a barge-in does not reach the deep task ------------------------------------------------------

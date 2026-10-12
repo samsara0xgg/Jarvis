@@ -53,6 +53,21 @@ DESCRIPTION: Final = (
 )
 
 
+_HIDDEN: Final = frozenset({
+    NAME, SEARCH_NAME,
+    "ask_user",  # nobody is there to answer: the turn ends on a question instead of its result
+    "open_plugin",  # its resume would run the task text again as a voice-lane plugin turn
+    "show_on_dashboard",  # read-only, but it flips the page on his screen while he is elsewhere
+})
+"""What the deep turn never sees, beyond the writes (ADR 0251). An exception to the write rule
+would be an explicit name here or in an allowlist; there is none."""
+
+
+def _offered(tool: Any) -> bool:  # noqa: ANN401 - Tool or ToolDefinition, both carry the flags
+    """Whether the deep turn may use ``tool``: it only reads, or it asks him first (ADR 0062)."""
+    return tool.name not in _HIDDEN and (tool.read_only or tool.requires_confirmation)
+
+
 class DeepHandOff(Protocol):
     """The runtime's deep lane (``jarvis.runtime.deep_lane.DeepLane``)."""
 
@@ -92,8 +107,9 @@ class DeepToolRegistry:
     """The registry as the deep turn sees it (ADR 0251).
 
     Every deferred tool is on the menu, since the turn has no ``tool_search``; the ones a menu
-    tool supersedes stay off (ADR 0242). ``think_deeper`` and ``tool_search`` are not offered
-    and refuse to dispatch.
+    tool supersedes stay off (ADR 0242). Nobody watches the turn, so it only gets the tools that
+    read or that ask him first (a card, ADR 0062), never ``_HIDDEN``. What the menu leaves off
+    also refuses to dispatch.
     """
 
     def __init__(self, inner: ToolRegistry) -> None:
@@ -101,12 +117,11 @@ class DeepToolRegistry:
         self._inner = inner
 
     def _view(self, tools: tuple[Any, ...]) -> tuple[Any, ...]:
-        hidden = {NAME, SEARCH_NAME}
         superseded = self._inner.superseded()
         return tuple(
             replace(tool, deferred=False) if tool.deferred else tool
             for tool in tools
-            if tool.name not in hidden and not (tool.deferred and tool.name in superseded)
+            if _offered(tool) and not (tool.deferred and tool.name in superseded)
         )
 
     def get_definitions(self) -> tuple[ToolDefinition | Tool, ...]:
@@ -124,8 +139,8 @@ class DeepToolRegistry:
         runtime_paths: RuntimePathsLike,
         lifecycle: ActionLifecycle,
     ) -> RawResultBundle:
-        """Forward a dispatch of a tool this view offers; refuse the two it hides."""
-        if action_request.tool_name in {NAME, SEARCH_NAME}:
+        """Forward a dispatch of a tool this view offers; refuse every other."""
+        if action_request.tool_name not in {t.name for t in self.get_definitions()}:
             msg = f"unknown tool: {action_request.tool_name!r} (deep view)"
             raise UnknownToolError(msg)
         return self._inner.dispatch(action_request, conn, runtime_paths, lifecycle)
