@@ -1,0 +1,396 @@
+r"""Tool exam: replay logged decision requests and score whether the FIRST step uses the right tool.
+
+    .venv/bin/python -m scripts.tool_exam run --cases CASES.json --presets haiku,luna,sonnet \
+        --runs 3 --out RESULTS.jsonl [--only id1,id2] [--system-append FILE] [--concurrency 6]
+    .venv/bin/python -m scripts.tool_exam score RESULTS.jsonl --cases CASES.json
+
+``CASES.json`` is private conversation data and lives outside the repo
+(``~/.jarvis/evals/tool-exam/cases.json``): a list of ``{id, said, request, tags, expect?}`` where
+``request`` is a logged decision request (``kind: decision``, Responses or chat shape) and
+``expect.first`` is ``{ok, bad, text_must_not?, args_must_not?}``: ``ok`` names tools (or
+``"text"``, a spoken answer with no tool) that pass, ``bad`` names fail even next to an ok one,
+``text_must_not`` regexes fail a no-tool answer, ``args_must_not`` maps a tool to substrings its
+raw arguments must not hold. Next to it sits ``mcp-tools.json``: the MCP tool definitions
+(``{mcp__server__tool: {name, description, input_schema}}``) a live server would list, which an
+offline run cannot ask for.
+
+``run`` sends each case through ``LLMClient.stream_events`` as ``replay_decision`` does, but with
+the tool menu THIS checkout would offer the decision model (see :func:`offered_tools`), not the
+tools the log recorded, so a merged or renamed tool is exam-visible at once. Keys come from the
+environment, then the runtime root's saved keys; none is printed. Results are appended to
+``--out``, one JSON line per case x preset x run after one ``menu`` line.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import math
+import os
+import re
+import statistics
+import sys
+import tempfile
+from collections import defaultdict
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, TextIO
+from unittest.mock import MagicMock
+
+import yaml
+
+from jarvis.decision import _tool_menu
+from jarvis.decision.policy import effective_policy, surface_for
+from jarvis.deployment import load_env_file
+from jarvis.execution.dashboard_tool import build_dashboard_tool
+from jarvis.execution.job_ledger_tool import build_job_ledger_tool, build_record_application_tool
+from jarvis.execution.mail_inbox_tool import build_mail_inbox_tool
+from jarvis.execution.plugin_panel import plugin_panel_tools
+from jarvis.execution.tool_search import build_tool_search
+from jarvis.execution.tools import Tool, ToolContext, ToolRegistry, build_default_registry
+from jarvis.runtime.dashboard import CLOSE, PAGES, SETTINGS_CATEGORIES, ViewState
+from jarvis.runtime.plugin_catalog import read_package
+from jarvis.shared import CallerPrincipal
+from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
+from scripts.replay_decision import _client, replay_once
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping, Sequence
+
+    from jarvis.decision.llm import LLMClient
+
+REPO = Path(__file__).resolve().parent.parent
+_SECRET = re.compile(r"(sk-|key-|Bearer\s)[\w.-]{8,}")
+_P90 = 0.9
+
+
+def _unreachable(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+    msg = "tool_exam offers tools to the model; it never runs one"
+    raise RuntimeError(msg)
+
+
+def _mcp_tools(recorded: Path, always_loaded: frozenset[str]) -> list[Tool]:
+    """Tool stand-ins for the recorded MCP definitions; ``deferred`` follows the config."""
+    return [
+        Tool(
+            name=name, description=one["description"], input_schema=one["input_schema"],
+            handler=_unreachable, allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+            risk_level="L0", read_only=True, deferred=name not in always_loaded,
+        )
+        for name, one in json.loads(recorded.read_text(encoding="utf-8")).items()
+    ]
+
+
+def _plugin_sources() -> dict[str, str]:
+    """Server -> its repo plugin's description, as ``PluginConnections`` hands ``tool_search``."""
+    sources: dict[str, str] = {}
+    for directory in sorted((REPO / "plugins").iterdir()):
+        try:
+            package = read_package(directory)
+        except (OSError, ValueError, TypeError):
+            continue
+        for server in package.servers:
+            sources[server] = str(package.manifest.get("description") or package.plugin_id)
+    return sources
+
+
+def offered_tools(config: Mapping[str, Any], recorded_mcp: Path) -> list[dict[str, Any]]:
+    """The tool menu this checkout offers the decision model, rebuilt offline.
+
+    The same registry the runtime assembles (``build_default_registry`` with a brain's device
+    tools offered, then ``show_on_dashboard``, the plugin panel, the MCP tools with
+    ``tool_search`` over the deferred ones, the job and mail readers), every dependency a
+    harmless stand-in, then the decision loop's own filter and projection (``surface_for`` and
+    ``_tool_menu`` over the Collaborate policy). Registration order is the runtime's, since the
+    menu's order is part of the request.
+    """
+    tools = config.get("tools") or {}
+    always = frozenset((tools.get("mcp") or {}).get("always_loaded") or ())
+    stub: Any = MagicMock()
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        registry = build_default_registry(
+            obsidian_vault_root=base, web_search_provider="tavily", web_search_api_key="x",
+            vision_client=stub, memory_db_path=base / "memory.db",
+            timesink_db_path=base / "timesink.db", work_state_refresh=stub, night=stub,
+            voice_settings=stub, mail_drafts=stub, weather_lookup=dict, transit_api_key="x",
+            transit_places=lambda: {"home": "home"}, transit_offers=stub, here_location=dict,
+            here_phone=dict, bus_live=lambda *_: None, ride_control=stub, highlight_marker=stub,
+            device_link=lambda *_: {},
+        )
+    # A brain's terminals declare every operation here (ADR 0225): offer the whole catalogue.
+    registry.offer_device_tools(frozenset(op for _, op in registry._device_catalogue.values()))  # noqa: SLF001
+    group = _mcp_tools(recorded_mcp, always)
+    sources = _plugin_sources()
+    group.sort(key=lambda one: one.name.split("__")[1] not in sources)  # plugin servers load first
+    servers = {one.name.split("__")[1] for one in group}
+    for tool in (
+        *build_dashboard_tool((*PAGES, CLOSE), ViewState().present, SETTINGS_CATEGORIES),
+        *plugin_panel_tools(dict, lambda *_: {}, lambda *_: {}, lambda *_: {}),
+        *group,
+        *build_tool_search(group, {s: sources.get(s, f"mcp-{s}") for s in servers}),
+        *build_job_ledger_tool(dict), *build_record_application_tool(lambda _fields: ""),
+        *build_mail_inbox_tool(dict),
+    ):
+        registry.register(tool)
+    return _menu(registry)
+
+
+def _menu(registry: ToolRegistry) -> list[dict[str, Any]]:
+    policy = effective_policy({
+        who: frozenset(t.name for t in registry.for_caller(who)) for who in CallerPrincipal
+    })
+    return _tool_menu(surface_for(policy, registry, CallerPrincipal.JARVIS_LLM), ())
+
+
+def _menu_chars(menu: Sequence[Mapping[str, Any]]) -> int:
+    return sum(len(t["description"]) + len(json.dumps(t["input_schema"])) for t in menu)
+
+
+def _with_system(request: Mapping[str, Any], extra: str) -> dict[str, Any]:
+    """``request`` with ``extra`` appended to its instructions (Responses) or system message."""
+    out = dict(request)
+    if not extra:
+        return out
+    if "input" in request:
+        out["instructions"] = f"{request.get('instructions') or ''}\n\n{extra}"
+    else:
+        first, *rest = request["messages"]
+        out["messages"] = [{**first, "content": f"{first['content']}\n\n{extra}"}, *rest]
+    return out
+
+
+def _calls(raw: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    calls = []
+    for call in raw:
+        try:
+            args: Any = json.loads(call["arguments"] or "{}")
+        except ValueError:
+            args = call["arguments"]
+        calls.append({"name": call["name"], "args": args})
+    return calls
+
+
+async def _one(
+    client: LLMClient, request: Mapping[str, Any], catalog: Mapping[str, Any],
+    base: Mapping[str, Any],
+) -> dict[str, Any]:
+    try:
+        got = await replay_once(client, request, catalog)
+    except Exception as exc:  # noqa: BLE001 - one failed request must not stop the exam
+        return {**base, "error": f"{type(exc).__name__}: {_SECRET.sub('***', str(exc))[:300]}"}
+    return {
+        **base, "first_token_s": got["first_token_s"], "total_s": got["total_s"],
+        "text": got["text"], "calls": _calls(got["tool_calls"]),
+        "finish_reason": got["finish_reason"], "usage": got["usage"], "error": got["error"],
+    }
+
+
+async def _run(args: argparse.Namespace, menu: list[dict[str, Any]]) -> None:
+    config = args.config
+    clients = {name: _client(config, name) for name in args.presets}
+    cases = json.loads(args.cases.read_text(encoding="utf-8"))
+    if args.only:
+        cases = [c for c in cases if c["id"] in args.only]
+    catalog = {t["name"]: t for t in menu}
+    extra = args.system_append.read_text(encoding="utf-8").strip() if args.system_append else ""
+    gate = asyncio.Semaphore(args.concurrency)
+    total = len(cases) * len(clients) * args.runs
+    done = 0
+
+    async def job(case: dict[str, Any], preset: str, run: int, out: TextIO) -> None:
+        nonlocal done
+        request = {**_with_system(case["request"], extra), "tools": list(catalog)}
+        base = {"kind": "run", "case": case["id"], "preset": preset, "run": run,
+                "model": clients[preset].model}
+        async with gate:
+            line = await _one(clients[preset], request, catalog, base)
+        out.write(json.dumps(line, ensure_ascii=False) + "\n")
+        out.flush()
+        done += 1
+        names = ",".join(c["name"] for c in line.get("calls", ())) or "text"
+        sys.stderr.write(
+            f"[{done}/{total}] {case['id']} {preset}#{run} -> {line['error'] or names} "
+            f"({line.get('first_token_s') or '-'}s)\n",
+        )
+
+    with args.out.open("a", encoding="utf-8") as out:
+        out.write(json.dumps({
+            "kind": "menu", "at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "tools": list(catalog), "chars": _menu_chars(menu),
+            "system_append": bool(extra),
+        }) + "\n")
+        await asyncio.gather(*(
+            job(case, preset, run, out)
+            for case in cases for preset in clients for run in range(args.runs)
+        ))
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """``run``: replay the cases against the presets and append the results."""
+    root = Path(os.environ.get("JARVIS_RUNTIME_ROOT") or Path.home() / ".jarvis")
+    load_env_file(root.expanduser())  # fill-only; the values are never read here
+    config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    menu = offered_tools(config, args.cases.parent / "mcp-tools.json")
+    sys.stdout.write(
+        f"menu: {len(menu)} tools, {_menu_chars(menu)} description+schema chars\n"
+        f"{' '.join(t['name'] for t in menu)}\n",
+    )
+    sys.stdout.flush()
+    asyncio.run(_run(args, menu))
+    return 0
+
+
+def judge(first: Mapping[str, Any], line: Mapping[str, Any]) -> tuple[bool, str]:
+    """Whether one run's first step satisfies ``expect.first``, and its short label."""
+    if line.get("error"):
+        return False, f"ERR({str(line['error']).split(':')[0]})"
+    calls = line.get("calls") or []
+    names = [c["name"] for c in calls] or ["text"]
+    hit = set(names)
+    why = []
+    if hit & set(first.get("bad", ())) or not hit & set(first["ok"]):
+        why.append(",".join(names))
+    if names == ["text"] and any(re.search(rx, line.get("text") or "") for rx in first.get(
+        "text_must_not", (),
+    )):
+        why.append("text~rule")
+    for call in calls:
+        subs = (first.get("args_must_not") or {}).get(call["name"], ())
+        raw = call["args"] if isinstance(call["args"], str) else json.dumps(
+            call["args"], ensure_ascii=False,
+        )
+        if any(s in raw for s in subs):
+            why.append(f"{call['name']}~args")
+    return (not why), ("pass" if not why else f"FAIL({'+'.join(why)})")
+
+
+def _seen(line: Mapping[str, Any]) -> str:
+    """A run's first-step tool names, for a case nobody scored."""
+    return str(line["error"]).split(":")[0] if line.get("error") else (
+        ",".join(c["name"] for c in line.get("calls") or ()) or "text"
+    )
+
+
+def _percentile(values: Sequence[float], fraction: float) -> float:
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(fraction * len(ordered)) - 1)]
+
+
+def _cost(lines: Sequence[Mapping[str, Any]], table: Mapping[str, Any]) -> str:
+    total, unpriced = 0.0, 0
+    for line in lines:
+        usage = line.get("usage")
+        if not usage or usage["input"] is None or usage["output"] is None:
+            continue
+        one = compute_cost_usd(
+            line["model"], usage["input"], usage["output"], usage["cache_read"],
+            usage["cache_write"], dict(table),
+        )
+        if one is None:
+            unpriced += 1
+        else:
+            total += one
+    return f"${total:.4f}" + (f" ({unpriced} unpriced)" if unpriced else "")
+
+
+Runs = dict[tuple[str, str], list[dict[str, Any]]]
+Verdicts = dict[tuple[str, str], list[tuple[bool, str]]]
+
+
+def _cells(
+    presets: Sequence[str], case_id: str, make: Callable[[str], str], have: Mapping[Any, Any],
+) -> str:
+    return " | ".join(make(p) for p in presets if (case_id, p) in have)
+
+
+def _summary(
+    presets: Sequence[str], runs: Runs, verdicts: Verdicts, table: Mapping[str, Any],
+) -> list[str]:
+    out = [f"{'preset':8s} {'passed':>8s} {'first-token med/p90 s':>22s}  cost", ""]
+    for preset in presets:
+        mine = [line for (_, p), ls in runs.items() if p == preset for line in ls]
+        scored = [v for (_, p), v in verdicts.items() if p == preset]
+        firsts = [line["first_token_s"] for line in mine if line.get("first_token_s")]
+        passed = f"{sum(all(ok for ok, _ in v) for v in scored)}/{len(scored)}"
+        timing = (f"{statistics.median(firsts):.2f} / {_percentile(firsts, _P90):.2f}"
+                  if firsts else "n/a")
+        out.append(f"{preset:8s} {passed:>8s} {timing:>22s}  "
+                   f"{_cost(mine, table)} ({len(mine)} runs)")
+    return out
+
+
+def _case_lines(
+    cases: Mapping[str, Any], presets: Sequence[str], runs: Runs, verdicts: Verdicts,
+) -> list[str]:
+    out = ["", "scored cases:"]
+    for case_id, case in cases.items():
+        if any((case_id, p) in verdicts for p in presets):
+            def mark(p: str, case_id: str = case_id) -> str:
+                got = verdicts[case_id, p]
+                return (f"{p}[{'PASS' if all(ok for ok, _ in got) else 'FAIL'}]: "
+                        + " ".join(label for _, label in got))
+            out.append(f"  {case_id}  {case['said'][:24]!r}  "
+                       + _cells(presets, case_id, mark, verdicts))
+    unscored = [c for c in cases.values()
+                if "expect" not in c and any((c["id"], p) in runs for p in presets)]
+    if unscored:
+        out += ["", "unscored (run only, first-step tools):"]
+        for case in unscored:
+            def seen(p: str, case_id: str = case["id"]) -> str:
+                return f"{p}: " + " ".join(_seen(line) for line in runs[case_id, p])
+            out.append(f"  {case['id']}  {case['said'][:24]!r}  "
+                       + _cells(presets, case["id"], seen, runs))
+    return out
+
+
+def cmd_score(args: argparse.Namespace) -> int:
+    """``score``: the pass table, timings and cost of a results file."""
+    cases = {c["id"]: c for c in json.loads(args.cases.read_text(encoding="utf-8"))}
+    runs: Runs = defaultdict(list)
+    for text in args.results.read_text(encoding="utf-8").splitlines():
+        line = json.loads(text) if text.strip() else {}
+        if line.get("kind") == "run" and line["case"] in cases:
+            runs[line["case"], line["preset"]].append(line)
+    for lines in runs.values():
+        lines.sort(key=lambda one: one["run"])
+    presets = sorted({p for _, p in runs})
+    verdicts: Verdicts = {
+        key: [judge(first, line) for line in lines] for key, lines in runs.items()
+        if (first := (cases[key[0]].get("expect") or {}).get("first"))
+    }
+    out = _summary(presets, runs, verdicts, load_pricing_table(REPO / "data" / "pricing.json"))
+    out += _case_lines(cases, presets, runs, verdicts)
+    errors = [line for lines in runs.values() for line in lines if line.get("error")]
+    if errors:
+        out += ["", "errors (count as failures):"]
+        out += [f"  {e['case']} {e['preset']}#{e['run']}: {e['error']}" for e in errors]
+    sys.stdout.write("\n".join(out) + "\n")
+    return 0
+
+
+def main() -> int:
+    """Parse arguments and run the subcommand."""
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    run = sub.add_parser("run")
+    run.add_argument("--cases", type=Path, required=True)
+    run.add_argument("--presets", type=lambda s: s.split(","), required=True)
+    run.add_argument("--runs", type=int, default=1)
+    run.add_argument("--out", type=Path, required=True)
+    run.add_argument("--only", type=lambda s: s.split(","))
+    run.add_argument("--config", type=Path, default=REPO / "config" / "jarvis.yaml")
+    run.add_argument("--system-append", type=Path)
+    run.add_argument("--concurrency", type=int, default=6)
+    run.set_defaults(func=cmd_run)
+    score = sub.add_parser("score")
+    score.add_argument("results", type=Path)
+    score.add_argument("--cases", type=Path, required=True)
+    score.set_defaults(func=cmd_score)
+    args = parser.parse_args()
+    return int(args.func(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
