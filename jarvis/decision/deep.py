@@ -172,7 +172,7 @@ def load_deep_settings(llm: Mapping[str, Any]) -> DeepSettings | None:
 
 def deep_turn(trigger: Event) -> bool:
     """Whether ``trigger`` opens a deep task rather than words of his."""
-    return trigger.type == "surface.user_intent" and trigger.payload.get("channel") == DEEP_CHANNEL
+    return trigger.payload.get("channel") == DEEP_CHANNEL
 
 
 def deep_line() -> str:
