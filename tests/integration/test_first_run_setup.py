@@ -184,6 +184,7 @@ def test_an_anthropic_key_is_kept_only_when_anthropic_lists_models_with_it(
     seen: list[str] = []
     urls: list[str] = []
     refuse = True
+    status = 401
 
     def urlopen(request: Any, timeout: float) -> Any:  # noqa: ANN401
         del timeout
@@ -194,7 +195,7 @@ def test_an_anthropic_key_is_kept_only_when_anthropic_lists_models_with_it(
                 {"error": {"type": "authentication_error", "message": "bad key sk-ant-zzz"}},
             ).encode()
             raise urllib.error.HTTPError(  # type: ignore[arg-type]
-                request.full_url, 401, "no", None, io.BytesIO(says),
+                request.full_url, status, "no", None, io.BytesIO(says),
             )
         return io.BytesIO(b"{}")
 
@@ -204,6 +205,7 @@ def test_an_anthropic_key_is_kept_only_when_anthropic_lists_models_with_it(
     refused = client.post("/inherent/setup/key", json=body).json()
     assert refused["ok"] is False
     assert refused["checks"][0]["says"] == "authentication_error: bad key sk-ant-…"
+    assert refused["checks"][0]["reason"] == "unauthorized"
     assert saved == []
     assert client.get("/inherent/setup").json()["keys"]["anthropic"] == "missing"
     refuse = False
@@ -212,6 +214,10 @@ def test_an_anthropic_key_is_kept_only_when_anthropic_lists_models_with_it(
     assert seen[:2] == ["sk-ant-x", "sk-ant-x"]
 
     usage = {"provider": "anthropic_usage", "key": "sk-ant-org"}
+    refuse, status = True, 403  # a real key on an account that may not read cost
+    forbidden = client.post("/inherent/setup/key", json=usage).json()
+    assert (forbidden["ok"], forbidden["checks"][0]["reason"]) == (False, "forbidden")
+    refuse = False
     assert client.post("/inherent/setup/key", json=usage).json()["ok"] is True
     assert saved[-1] == ("ANTHROPIC_ADMIN_KEY", "sk-ant-org")
     assert "cost_report" in urls[-1]

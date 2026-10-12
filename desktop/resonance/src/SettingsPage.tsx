@@ -58,6 +58,7 @@ export type AccountKeyDrafts = Partial<Record<Provider, string>>;
 type Setup = { keys: Record<Provider, 'ok' | 'missing' | 'bad'> };
 const WHY: Record<string, L> = {
   unauthorized: ['The service rejected this key (401). Check it was copied in full.', '服务拒绝了这个密钥（401），看看是不是少复制了一截。'],
+  forbidden: ['The key is valid, but this account isn’t allowed to do this (403).', '密钥是对的，但这个账户没有这项权限（403）。'],
   model_denied: ['This key can’t use the model Jarvis needs. Allow it in the provider’s dashboard.', '这个密钥用不了 Jarvis 要的模型，去服务商后台打开模型权限。'],
   quota: ['This account is out of credit.', '这个账户没有额度了。'],
   rate_limited: ['Too many requests. Wait a minute and try again.', '请求太多了，等一分钟再试。'],

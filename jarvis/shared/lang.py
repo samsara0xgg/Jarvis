@@ -1046,6 +1046,10 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "en": "The model service rejected the key (401). It may be mistyped or revoked;"
         " replace it in Settings.",
     },
+    "failure.forbidden": {
+        "zh": "密钥是对的，但这个账户没有这项权限（403）。",
+        "en": "The key is valid, but this account isn't allowed to do this (403).",
+    },
     "failure.model_denied": {
         "zh": "这个密钥没有使用这个模型的权限。",
         "en": "This key is not allowed to use this model.",

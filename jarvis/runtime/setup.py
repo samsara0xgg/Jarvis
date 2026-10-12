@@ -49,7 +49,7 @@ _MAX_NAME: Final[int] = 40
 _MAX_PREVIEW: Final[int] = 200
 _MAX_KEY: Final[int] = 512
 # Reasons that say the key itself is no good (not the network or a busy server).
-_BAD_KEY: Final[frozenset[str]] = frozenset({"unauthorized", "quota", "model_denied"})
+_BAD_KEY: Final[frozenset[str]] = frozenset({"unauthorized", "forbidden", "quota", "model_denied"})
 _FIRST_LINE_PROMPT: Final[str] = (
     "You are {assistant}, a personal assistant that lives on the user's Mac. {who}"
     "In one short, warm sentence in {language}, greet the user{by_name}, say this API key"
@@ -129,7 +129,8 @@ def _anthropic_says(exc: BaseException) -> str:
 def _http_reason(exc: BaseException) -> str:
     """Why a plain HTTP call failed, in :func:`failure_reason`'s words."""
     if isinstance(exc, urllib.error.HTTPError):
-        return {401: "unauthorized", 403: "unauthorized", 429: "rate_limited"}.get(
+        # 403: the key is real but the account may not do this (an individual org reading cost).
+        return {401: "unauthorized", 403: "forbidden", 429: "rate_limited"}.get(
             exc.code, "quota" if exc.code in (402, 432, 433) else "error",  # Tavily's plan limits.
         )
     if isinstance(exc, TimeoutError) or "timed out" in str(exc):

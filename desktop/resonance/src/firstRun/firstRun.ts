@@ -81,7 +81,7 @@ type Lang = 'zh' | 'en';
 type Perm = 'mic' | 'screen' | 'auto' | 'notify';
 type PermState = '' | 'ok' | 'relaunch' | 'asked' | 'later';
 type Conn = 'notion' | 'ms' | 'web';
-type Reason = 'unauthorized' | 'model_denied' | 'quota' | 'rate_limited' | 'network' | 'timeout' | 'missing_key';
+type Reason = 'unauthorized' | 'forbidden' | 'model_denied' | 'quota' | 'rate_limited' | 'network' | 'timeout' | 'missing_key';
 const TX = {
   zh: {
     tag: '住在你 Mac 上的助手', go: '开始', goHint: '或者按回车', skipIntro: '跳过动画', quit: '退出', radec: '赤经 {ra}   赤纬 {dec}',
@@ -95,6 +95,7 @@ const TX = {
     rows4: ['连上 OpenAI', '对话', '深度任务', '实时语音'], first: '她用这把 key 说的第一句话', secs: '{s} 秒',
     why4: {
       unauthorized: '{p} 拒绝了这个 key（401）。看看是不是少复制了一截，或者新建一个再贴。',
+      forbidden: 'key 是对的，但 {p} 不让这个账户做这件事（403）。去 {p} 后台看看这个 key 的权限。',
       model_denied: '这个 key 用不了“{row}”要的模型。在 {p} 后台给这个项目打开模型权限，再测一次。',
       quota: '这个账户没有额度了。去 {p} 充值后再测一次。',
       rate_limited: '{p} 说请求太多了，等一分钟再测。',
@@ -133,6 +134,7 @@ const TX = {
     rows4: ['Reach OpenAI', 'Chat', 'Deep tasks', 'Live voice'], first: 'First words with this key', secs: '{s} s',
     why4: {
       unauthorized: '{p} rejected this key (401). Check that it was copied in full, or create a new one and paste it.',
+      forbidden: 'The key is valid, but {p} won’t let this account do this (403). Check the key’s permissions in the {p} dashboard.',
       model_denied: 'This key can’t use the model “{row}” needs. Allow it for this project in the {p} dashboard, then test again.',
       quota: 'This account is out of credit. Top it up at {p}, then test again.',
       rate_limited: '{p} says too many requests. Wait a minute and test again.',
