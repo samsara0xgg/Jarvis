@@ -76,6 +76,7 @@ from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.policy import effective_policy, surface_for
 from jarvis.decision.turn_guards import TurnCall, call_key, repeated_call, unbacked_claim
 from jarvis.deployment import load_env_file
+from jarvis.execution.conversation_tool import build_conversation_tool
 from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.job_ledger_tool import build_job_ledger_tool, build_record_application_tool
 from jarvis.execution.mail_tool import build_mail_tool
@@ -172,6 +173,7 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
         ),
         *build_job_ledger_tool(dict), *build_record_application_tool(lambda _fields: ""),
         *build_mail_tool(dict, lambda *_: {}, str, UTC),
+        *build_conversation_tool(Path("memory.db"), UTC),
     ):
         registry.register(tool)
     return registry

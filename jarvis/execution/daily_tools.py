@@ -130,6 +130,9 @@ _RESULT_CAP = 16384
 _ACTIVITY_RESULT_CAP = ACTIVITY_PAGE_BUDGET + 16384
 _RESULT_CAPS = {"query_activity": _ACTIVITY_RESULT_CAP, "recall": RECALL_PAGE_BUDGET + 4096}
 _WRITES = frozenset({"save_knowledge", "save_briefing"})
+_OFF_MENU = frozenset({"search_records", "recall", "read_records"})
+"""Read through `conversation` now (ADR 0242). Still registered, so a call already logged and the
+checks that dispatch them by name run as before, but deferred: the model is not offered them."""
 _WORK_STATE_DESCRIPTION = (
     "Investigate and update the user's persisted current work state. Call this when they ask "
     "what they are doing now, what they did today so far, or how something discussed earlier is "
@@ -301,6 +304,7 @@ def build_daily_tools(
             risk_level="L1" if name in _WRITES else "L0",
             read_only=name not in _WRITES,
             max_result_chars=_RESULT_CAPS.get(name, _RESULT_CAP),
+            deferred=name in _OFF_MENU,
         )
         for name, description in _DESCRIPTIONS.items()
         if memory_path is not None or name not in _RECORD_READERS

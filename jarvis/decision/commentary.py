@@ -115,6 +115,7 @@ _TOOL_LINES: Final = (
     ("screen_look", "commentary.tool.screen"),
     ("search_records", "commentary.tool.records"),
     ("recall", "commentary.tool.records"),
+    ("conversation", "commentary.tool.records"),
     ("mcp__gmail__", "commentary.tool.mail"),
     ("mail", "commentary.tool.mail"),
     ("mcp__microsoft__", "commentary.tool.calendar"),

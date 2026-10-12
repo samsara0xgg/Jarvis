@@ -71,6 +71,7 @@ _KIND: Final[dict[str, str]] = {
     "list_memos": "memo",
     "remember": "remember",
     "search_records": "records",
+    "conversation": "records",
     "search_notes": "records",
     "read_file": "file",
     "write_file": "file",

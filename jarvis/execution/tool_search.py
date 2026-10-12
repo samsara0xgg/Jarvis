@@ -8,7 +8,7 @@ a search returns the best names under
 for the rest of the turn. The search never runs a found tool.
 
 A deferred tool that a tool on the menu has taken over (``Tool.supersedes``, ADR 0241) is found
-but not loaded: the result says which tool to call instead.
+but not loaded: the result says which tool to call instead. So is one the query names outright.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ DEFAULT_LIMIT: Final[int] = 8
 _K1: Final[float] = 1.2
 _B: Final[float] = 0.75
 _TOKEN: Final = re.compile(r"[a-z0-9]+|[一-鿿]")
+_NAME_PART: Final = re.compile(r"[^a-z0-9]+")
 
 _DESCRIPTION: Final = (
     "# Tool discovery\n\n"
@@ -132,6 +133,16 @@ def _no_replacements() -> dict[str, tuple[str, str]]:
     return {}
 
 
+def _mentions(query: str, swapped: Mapping[str, tuple[str, str]]) -> list[str]:
+    """The superseded names a query spells out whole (``search_records``, ``search records``).
+
+    A tool that is not in the search index (a built-in kept registered but deferred) is found
+    only this way.
+    """
+    flat = f"_{_NAME_PART.sub('_', query.lower()).strip('_')}_"
+    return [old for old in swapped if f"_{old.rsplit('__', 1)[-1].lower()}_" in flat]
+
+
 def build_tool_search(
     tools: Sequence[Tool],
     sources: Mapping[str, str],
@@ -176,7 +187,7 @@ def build_tool_search(
         notes = [
             f"{name.rsplit('__', 1)[-1]} is replaced by {swapped[name][0]}, which is already in "
             f"your tools: call {swapped[name][1]}."
-            for name in found
+            for name in dict.fromkeys([*found, *_mentions(query, swapped)])
             if name in swapped
         ]
         hits = [name for name in found if name not in swapped]

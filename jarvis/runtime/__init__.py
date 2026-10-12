@@ -125,6 +125,7 @@ from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.deployment.launchd import logs_dir
 from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
 from jarvis.deployment.night_power import MacPower
+from jarvis.execution.conversation_tool import build_conversation_tool
 from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.geocode import Unplaced, geocode
 from jarvis.execution.job_ledger_tool import (
@@ -1797,6 +1798,12 @@ def _register_mail(registry: ToolRegistry, home: Home, zone: tzinfo) -> None:
         registry.register(tool)
 
 
+def _register_conversation(registry: ToolRegistry, memory_db: Path, zone: tzinfo) -> None:
+    """``conversation`` (ADR 0242): his words and hers, searched, summarized by day, opened."""
+    for tool in build_conversation_tool(memory_db, zone):
+        registry.register(tool)
+
+
 def _turn_end_asks(
     config: Mapping[str, Any], config_path: Path, log: JevLog | None = None,
 ) -> TurnEndAsks | None:
@@ -3067,6 +3074,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
     )
     _register_mail(registry, home, local_zone)
+    _register_conversation(registry, memory.db_path, local_zone)
     attachments = Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME)
     return JarvisRuntime(
         config=full_config,
