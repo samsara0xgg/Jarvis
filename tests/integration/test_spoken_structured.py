@@ -341,7 +341,7 @@ def test_a_tool_call_comes_first_and_the_schema_answer_after_its_result(tmp_path
 
 def test_text_that_is_not_the_schema_is_read_as_it_would_be_without_it(tmp_path: Path) -> None:
     """Plain words and the old envelope both go through the splitter, as today."""
-    tagged = "<voice>我看一下。</voice><document>- 10:00 产品会</document>"
+    tagged = "<voice>今天有一个会。</voice><document>- 10:00 产品会</document>"
     with _Peer([[("final_answer", "我能听见你。")]]) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
         plain = _drive(runtime, _spoken(runtime.conn, "turn-plain", "你好"))
@@ -349,7 +349,7 @@ def test_text_that_is_not_the_schema_is_read_as_it_would_be_without_it(tmp_path:
     with _Peer([[("final_answer", tagged)]]) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
         enveloped = _drive(runtime, _spoken(runtime.conn, "turn-tags", "今天有什么安排"))
-    assert enveloped.response_plan.text == compose_envelope("我看一下。", "- 10:00 产品会")
+    assert enveloped.response_plan.text == compose_envelope("今天有一个会。", "- 10:00 产品会")
     emitted = _payloads(runtime.conn, "surface.response_emitted")[-1]  # the first turn's is above
     assert "written_apart" not in emitted  # the old envelope's document is the whole answer
 
@@ -359,7 +359,7 @@ def test_the_request_carries_the_schema_only_when_the_switch_is_on(
     tmp_path: Path, *, structured: bool,
 ) -> None:
     """Off: today's body and today's note, byte for byte what spoken streaming sent."""
-    answer = "<voice>我看一下。</voice><document>- 10:00 产品会</document>"
+    answer = "<voice>今天有一个会。</voice><document>- 10:00 产品会</document>"
     with _Peer([[("final_answer", answer)]]) as peer:
         runtime = _structured_runtime(tmp_path, peer.url, structured=structured)
         result = _drive(runtime, _spoken(runtime.conn, "turn-sw", "今天有什么安排"))
@@ -371,7 +371,7 @@ def test_the_request_carries_the_schema_only_when_the_switch_is_on(
     else:
         assert "text" not in body
         assert "<voice></voice>" in note
-        assert result.response_plan.text == compose_envelope("我看一下。", "- 10:00 产品会")
+        assert result.response_plan.text == compose_envelope("今天有一个会。", "- 10:00 产品会")
 
 
 # ---- the tool budget of a spoken turn (ADR 0178) -----------------------------

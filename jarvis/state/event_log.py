@@ -285,6 +285,17 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("confidence",),
         schema_version=1,
     ),
+    # ADR 0239 — a turn guard acted: a call the model repeated was answered with a note
+    # instead of running (`repeat`, with its `tool`), or its answer said something no call did
+    # and went back once (`unbacked`, with what it `said`).
+    EventTypeSchema(
+        event_type="turn.guard_fired",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("turn_id", "guard"),
+        optional_payload=("tool", "said"),
+        schema_version=1,
+    ),
     EventTypeSchema(
         event_type="utterance.received",
         owner_layer="L5",

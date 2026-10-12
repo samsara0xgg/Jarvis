@@ -102,6 +102,13 @@ from jarvis.decision.surrogate_route import (
     offered,
 )
 from jarvis.decision.tier0 import render_tier0_response
+from jarvis.decision.turn_guards import (
+    UNBACKED_NOTE,
+    TurnCall,
+    call_key,
+    repeated_call,
+    unbacked_said,
+)
 from jarvis.shared import (
     ActionRequest,
     CallerPrincipal,
@@ -466,6 +473,11 @@ class ToolDefinitionLike(Protocol):
         """ADR 0062: a call puts up a card and waits for Allen's button."""
         ...
 
+    @property
+    def read_only(self) -> bool:
+        """The tool changes nothing durable (ADR 0239 reads it to tell a repeat from a retry)."""
+        ...
+
 
 class ResolvedEntityLike(Protocol):
     """One resolved non-task entity handed back by the injected resolver.
@@ -781,18 +793,11 @@ class _Scratch:
     # The language this turn's fixed lines are written in: his words' (or the pinned
     # reply language); None keeps the system language (no words, e.g. a card button).
     lang: Language | None = None
-    # History reads already answered this turn, as (tool, arguments); a repeat is not run again.
-    history_reads: set[tuple[str, str]] = field(default_factory=set)
-
-
-# Reads of saved history: within one turn the same arguments give the same result, so a
-# repeat is answered from the earlier one (live 2026-10-06: recall twice, identical).
-_HISTORY_READS: Final[frozenset[str]] = frozenset(
-    {"recall", "search_records", "read_records", "get_briefing", "search_knowledge"}
-)
-_REPEATED_READ: Final[str] = json.dumps(
-    {"note": "You already made this exact call this turn; its result is above. Use it."}
-)
+    # ADR 0239: the calls this turn ran or was refused, in order; a call identical to one
+    # of them is not run again.
+    calls: list[TurnCall] = field(default_factory=list)
+    # ADR 0239: the turn's one bounce of an answer no call backs has been used.
+    unbacked_bounced: bool = False
 
 
 _STATUS_HEADER: Final[str] = "[Current state | from the program, not the user's words]"
@@ -1615,6 +1620,58 @@ def _run_model_path(
             _record_surrogate(pending, ctx, scratch, accepted=False)
 
 
+def _guard_fired(
+    ctx: DecideContext, scratch: _Scratch, guard: Literal["repeat", "unbacked"], **detail: str,
+) -> None:
+    """Record that a turn guard (ADR 0239) acted, so the log can count it."""
+    scratch.events.append(
+        emit_event(
+            ctx.conn,
+            type="turn.guard_fired",
+            payload={"turn_id": scratch.turn_id, "guard": guard, **detail},
+            correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
+        ),
+    )
+
+
+def _repeat_refused(
+    ctx: DecideContext, scratch: _Scratch, name: str, repeated: str | None,
+) -> str:
+    """The tool result for a call that is not run: the repeat's note, else "unknown tool"."""
+    if repeated is None:
+        return json.dumps({"error": f"unknown tool: {name}"})
+    _guard_fired(ctx, scratch, "repeat", tool=name)
+    return repeated
+
+
+def _bounce_unbacked(  # noqa: PLR0913 - the loop's handles plus the answer and whether a request is left
+    answer: str,
+    ctx: DecideContext,
+    scratch: _Scratch,
+    messages: list[dict[str, Any]],
+    language_line: str | None,
+    *,
+    last_request: bool,
+) -> bool:
+    """Send a turn-ending answer back once when no call this turn backs what it says (ADR 0239).
+
+    True means the model's answer and the program's note are on ``messages`` and the loop
+    runs one more request. Never on the request the budget allows last (the budget's own
+    answer follows it), and never on a correction run, whose exposed prefix is fixed.
+    """
+    if scratch.unbacked_bounced or last_request or ctx.stream_correction is not None:
+        return False
+    said = unbacked_said(answer, scratch.calls)
+    if said is None:
+        return False
+    scratch.unbacked_bounced = True
+    _guard_fired(ctx, scratch, "unbacked", said=said)
+    messages.append(_assistant_text_message(answer))
+    messages.append({"role": "user", "content": UNBACKED_NOTE.format(said=said)})
+    _add_reply_language_note(messages, language_line)
+    return True
+
+
 def _run_tool_use_loop(
     packet: SituationPacket,
     policy: EffectivePolicy,
@@ -1712,6 +1769,12 @@ def _run_tool_use_loop(
             packet = assemble_packet(packet.trigger_event, ctx.conn, ctx.read_snapshot)
             _add_reply_language_note(messages, language_line)
             late_noted = late_noted or _add_late_answer_note(messages, packet, ctx)
+            continue
+
+        if _bounce_unbacked(
+            chat_result.text or "", ctx, scratch, messages, language_line,
+            last_request=iteration >= ctx.max_tool_iterations,
+        ):
             continue
 
         # LLM returned text -> finalize via Pre-emit Gate.
@@ -2100,17 +2163,15 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
 
     # 1. Tool definition lookup.
     tool_def = _find_tool_def(ctx.tool_registry, name)
-    read_key = (name, json.dumps(arguments, sort_keys=True)) if name in _HISTORY_READS else None
-    repeated = read_key in scratch.history_reads
-    if tool_def is None or repeated:
-        # Unknown tool from LLM, or a history read it already made: inject a
+    key = call_key(arguments)
+    repeated = repeated_call(scratch.calls, name, key)
+    if tool_def is None or repeated is not None:
+        # Unknown tool from LLM, or a call it already made this turn (ADR 0239): inject a
         # tool-result message saying so and let the loop continue (the LLM should adapt).
         messages.append(
             _tool_result_message(
                 call_id=call_id,
-                content=_REPEATED_READ
-                if repeated
-                else json.dumps({"error": f"unknown tool: {name}"}),
+                content=_repeat_refused(ctx, scratch, name, repeated),
             )
         )
         return "continue"
@@ -2242,6 +2303,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
     if gate_outcome != "pass":
         # Refuse / confirm — inject a tool result explaining the refusal
         # and let the LLM adapt. Day-1 scenario should not hit this.
+        scratch.calls.append(TurnCall(name, tool_def.read_only, ok=False, key=key))
         messages.append(
             _tool_result_message(
                 call_id=call_id,
@@ -2313,7 +2375,9 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
     loaded = primary_slot.payload.get("loaded_tools") if primary_slot.error is None else None
     if isinstance(loaded, list):
         scratch.loaded_tools.update(str(n) for n in loaded)
-    scratch.history_reads.update([read_key] if read_key and primary_slot.error is None else [])
+    scratch.calls.append(
+        TurnCall(name, tool_def.read_only, ok=primary_slot.error is None, key=key),
+    )
 
     # 7. Append the tool result back into the messages list so the LLM
     #    can see it on the next iteration.
@@ -3020,6 +3084,12 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
             messages.append({"role": "assistant", "content": reply.text, "phase": "commentary"})
             continued = True
             continue
+        # A line with no answer was given its one more request above; an answer is checked here.
+        if _bounce_unbacked(
+            reply.answer.strip(), ctx, scratch, messages, language_line,
+            last_request=iteration >= ctx.max_tool_iterations,
+        ):
+            continue  # what it said is already spoken; the next answer is spoken after it
         if not reply.answer.strip():
             speaker.feed(reply.text)  # its line was all it said, so that is the answer
         return _finish_spoken(packet, ctx, route, speaker, scratch)

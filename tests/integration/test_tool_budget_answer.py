@@ -78,8 +78,11 @@ class _ToolHungryClient:
     ) -> ChatResult:
         self.calls.append({"tools": tools, "tool_choice": tool_choice, "last": messages[-1]})
         if tools:
+            # Different arguments each time: an identical repeat is not run (ADR 0239).
             call = ToolCall(
-                call_id=f"call{len(self.calls)}", name="list_memos", arguments_json="{}"
+                call_id=f"call{len(self.calls)}",
+                name="list_memos",
+                arguments_json=json.dumps({"page": len(self.calls)}),
             )
             return self._result(None, (call,))
         if self._fail:
