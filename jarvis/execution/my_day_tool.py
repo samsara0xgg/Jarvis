@@ -27,7 +27,8 @@ from jarvis.state.work_state import current_state
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
-    from datetime import date
+    from datetime import date, tzinfo
+    from pathlib import Path
 
 _DESCRIPTION: Final = (
     "Use for what Allen did or is doing: now, a day, a span of days or one project; what was "
@@ -139,6 +140,50 @@ def _right(state: Mapping[str, Any]) -> str:
     return f" Right now (as of {state['as_of']}): {state['text']}.{note}"
 
 
+def work_state_now(
+    event_log: Path, zone: tzinfo, now: datetime, *, within: timedelta | None = None,
+) -> dict[str, Any] | None:
+    """What the latest work-state analysis says he is doing, and how old that is.
+
+    ``now`` is the analysis's claim about the present, made only from screen data seen
+    shortly before it; without one the analysis covered the day but names no current
+    activity, and says so rather than passing a past activity off as the present. The state
+    block of every turn (ADR 0249) reads it here too, so it and ``my_day`` give one answer;
+    with ``within`` an analysis older than that is None there.
+    """
+    today = now.astimezone(zone).date()
+    with closing(open_runtime_event_log(event_log)) as conn:
+        item = current_state(conn)
+    if item is None:
+        return None
+    claim = item.get("now")
+    claim = claim if isinstance(claim, dict) and claim.get("text") else None
+    try:
+        stamp = str((claim or {}).get("as_of") or item["analyzed_at"])
+        seen = _aware(datetime.fromisoformat(stamp))
+    except (KeyError, ValueError):
+        return None
+    if within is not None and now - seen > within:
+        return None
+    local = seen.astimezone(zone)
+    at = (
+        speakable.clock(local) if local.date() == today
+        else speakable.when(seen, now, zone)
+    )
+    found: dict[str, Any] = {"as_of": f"{speakable.age(seen, now)}, at {at}"}
+    if claim is None:
+        found["covered"] = [
+            speakable.cut(str(one["text"]), 160)
+            for one in (item.get("activities") or ())[:3] if one.get("text")
+        ]
+        return found
+    found["text"] = speakable.cut(str(claim["text"]), 240).rstrip(".")
+    found["basis"] = claim.get("basis", "inferred")
+    if now - seen > _STALE:
+        found["stale"] = "this analysis is old and may not describe the present"
+    return found
+
+
 def _gone(missing: Sequence[str]) -> str:
     """What could not be read, as a sentence for the end of a summary."""
     if not missing:
@@ -201,42 +246,6 @@ class _MyDay:
     ) -> Figures:
         return window_figures(self._src, first, last, now, about=about)
 
-    def _state(self, now: datetime, today: date) -> dict[str, Any] | None:
-        """What the latest work-state analysis says he is doing, and how old that is.
-
-        ``now`` is the analysis's claim about the present, made only from screen data seen
-        shortly before it; without one the analysis covered the day but names no current
-        activity, and says so rather than passing a past activity off as the present.
-        """
-        with closing(open_runtime_event_log(self._src.event_log)) as conn:
-            item = current_state(conn)
-        if item is None:
-            return None
-        claim = item.get("now")
-        claim = claim if isinstance(claim, dict) and claim.get("text") else None
-        try:
-            stamp = str((claim or {}).get("as_of") or item["analyzed_at"])
-            seen = _aware(datetime.fromisoformat(stamp))
-        except (KeyError, ValueError):
-            return None
-        local = seen.astimezone(self._src.zone)
-        at = (
-            speakable.clock(local) if local.date() == today
-            else speakable.when(seen, now, self._src.zone)
-        )
-        found: dict[str, Any] = {"as_of": f"{speakable.age(seen, now)}, at {at}"}
-        if claim is None:
-            found["covered"] = [
-                speakable.cut(str(one["text"]), 160)
-                for one in (item.get("activities") or ())[:3] if one.get("text")
-            ]
-            return found
-        found["text"] = speakable.cut(str(claim["text"]), 240).rstrip(".")
-        found["basis"] = claim.get("basis", "inferred")
-        if now - seen > _STALE:
-            found["stale"] = "this analysis is old and may not describe the present"
-        return found
-
     def _today(self, now: datetime, today: date) -> dict[str, Any]:
         figures = self._figures(today, today, now)
         day = figures.days[0]
@@ -244,7 +253,7 @@ class _MyDay:
         clock = speakable.clock(now.astimezone(self._src.zone))
         stamp = f"{today:%a} {clock}"
         head = _headline(fields, sum(day.commits.values()))
-        state = self._state(now, today)
+        state = work_state_now(self._src.event_log, self._src.zone, now)
         if day.bounds:
             started = day.bounds[0]
             fields["since"] = speakable.clock(started) + (
@@ -451,4 +460,4 @@ def build_my_day_tool(
     )
 
 
-__all__ = ["build_my_day_tool"]
+__all__ = ["build_my_day_tool", "work_state_now"]

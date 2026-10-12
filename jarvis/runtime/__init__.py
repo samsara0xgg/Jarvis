@@ -125,6 +125,7 @@ from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.deployment.launchd import logs_dir
 from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
 from jarvis.deployment.night_power import MacPower
+from jarvis.execution import speakable
 from jarvis.execution.conversation_tool import build_conversation_tool
 from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.geocode import Unplaced, geocode
@@ -191,6 +192,7 @@ from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.runtime.night_run import NightRun, night_settings
+from jarvis.runtime.now_block import CalendarRead, calendar_line, doing_now_line
 from jarvis.runtime.picture_notes import PictureNotes
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
@@ -3100,6 +3102,9 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     _register_schedule(registry, home, local_zone)
     plugin_connections.refresh_search()  # ADR 0247: every built-in tool is registered now
     attachments = Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME)
+    # ADR 0249 wiring point: the reader of his next calendar items (the ``my_schedule`` tool's
+    # cache) goes here. With None the state block has no calendar line.
+    calendar_next: CalendarRead | None = None
     return JarvisRuntime(
         config=full_config,
         runtime_paths=paths,
@@ -3169,6 +3174,9 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             voice_cues.line,
             *(() if ambient is None else (ambient.line,)),
             partial(_shares_line, paths.event_log),
+            # ADR 0249: what he is doing now, then his next calendar items, each with its age.
+            partial(doing_now_line, paths.event_log, local_zone, speakable.now),
+            partial(calendar_line, calendar_next, local_zone, speakable.now),
         ),
         voice_cues=voice_cues,
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
