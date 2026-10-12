@@ -126,7 +126,7 @@ from jarvis.decision.commentary import (
 )
 from jarvis.decision.gates import ResponsePlan, pre_emit_gate
 from jarvis.decision.llm import failure_reason
-from jarvis.decision.pre_route import TYPED_CHANNEL
+from jarvis.decision.pre_route import TYPED_CHANNEL, typed_turn
 from jarvis.decision.response_run import (
     ResponseCancelledError,
     ResponseCancelRequest,
@@ -271,7 +271,7 @@ from jarvis.state.projections import (
 from jarvis.state.push_tokens import register_body
 from jarvis.state.reminders import ID_PREFIX
 from jarvis.state.trigger_consumption import trigger_was_consumed
-from jarvis.state.turn_overlap import any_turn_in_flight
+from jarvis.state.turn_overlap import any_turn_in_flight, turns_in_flight
 from jarvis.state.turn_steps import answer_steps
 from jarvis.surface import (
     respeaker_board,
@@ -1299,6 +1299,39 @@ async def _intent_pump_watcher(
         raise
 
 
+_SEEN_WINDOW_MS: Final = 5 * 60 * 1000
+"""A turn started longer ago than this is the supervisor's, not one he is still waiting on."""
+
+
+def _mark_seen(event_log_path: Path, event: Event) -> None:
+    """ADR 0256: eyes on a message he typed while another of his turns is being answered.
+
+    The program puts them, at once, on the message's record (written when its turn is driven);
+    the model is not involved and nothing removes them. A log that cannot be written is only
+    logged: the turn goes on without the mark.
+    """
+    if not typed_turn(event):
+        return
+    conn = open_runtime_event_log(event_log_path)
+    try:
+        if turns_in_flight(
+            conn,
+            trigger_event_uid=event.event_uid,
+            since_ms=int(time.time() * 1000) - _SEEN_WINDOW_MS,
+        ):
+            reactions.emit(
+                conn,
+                target=str(event.payload.get("record_id") or event.event_uid),
+                by=reactions.JARVIS,
+                emoji=reactions.EYES,
+            )
+    except sqlite3.Error:
+        LOGGER.warning("intent_pump: could not mark %s as seen", event.event_uid, exc_info=True)
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+
 async def _offer_intent(
     runtime: JarvisRuntime,
     queue: asyncio.Queue[Event | WaitingTurn],
@@ -1317,6 +1350,7 @@ async def _offer_intent(
         return
     if isinstance(turn_id, str):
         dispatched.add(turn_id)
+    await asyncio.to_thread(_mark_seen, runtime.runtime_paths.event_log, event)
     await queue.put(event)
     record_realtime_trace(
         "intent_queue_accepted",

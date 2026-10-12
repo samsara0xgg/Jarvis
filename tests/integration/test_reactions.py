@@ -19,26 +19,37 @@ No network and no model: the reply is scripted.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
-from typing import TYPE_CHECKING
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from jarvis.runtime import inherent_loop
 from jarvis.shared.emoji import is_single_emoji
 from jarvis.state import reactions
-from jarvis.state.event_log import open_event_log
+from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.memory_db import (
+    MemorySettings,
     append_record,
     conversation_rows,
     message_record,
     render_context,
 )
+from tests.integration.test_spoken_streaming import (
+    _fixture_key,  # noqa: F401 - the autouse fixture the peer needs
+    _Peer,
+    _spoken_runtime,
+)
+from tests.integration.test_wire_routine_streaming import _drive, _rows
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
+
+    from jarvis.shared import Event
 
 GOOD_EMOJI = (
     "\U0001f44d",
@@ -205,3 +216,146 @@ def test_reaction_lines_are_never_rows_and_messages_carry_what_is_on_them(
     ]
     after, _ = conversation_rows(memory, after=rows[-1]["seq"])  # type: ignore[arg-type]
     assert after == [], "the lines past the cursor are hidden too"
+
+
+# --- her reaction through the turn driver -------------------------------------------------------
+
+THUMB = "\U0001f44d"
+EYES = reactions.EYES
+
+
+def reaction_events(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """The payload of every conversation.reaction, oldest first."""
+    return [
+        json.loads(str(payload))
+        for (payload,) in conn.execute(
+            "SELECT payload_json FROM events WHERE type = 'conversation.reaction' ORDER BY id",
+        )
+    ]
+
+
+def memory_world(tmp_path: Path, url: str) -> Any:  # noqa: ANN401 - JarvisRuntime
+    """A spoken-route runtime on a localhost peer, with a memory.db."""
+    runtime = _spoken_runtime(tmp_path, url)
+    return replace(
+        runtime,
+        memory=MemorySettings(
+            db_path=tmp_path / "memory.db", audio_dir=tmp_path / "audio",
+        ),
+    )
+
+
+def turn(runtime: Any, said: str, channel: str, turn_id: str) -> Event:  # noqa: ANN401
+    """Drive one whole turn of words on ``channel``; the opening event."""
+    intent = emit_event(
+        runtime.conn,
+        type="surface.user_intent",
+        payload={"transcript": said, "turn_id": turn_id, "channel": channel},
+        correlation={"turn_id": turn_id},
+    )
+    _drive(runtime, intent)
+    return intent
+
+
+def test_a_typed_reply_that_is_only_her_reaction_leaves_one_line_and_no_text_row(
+    tmp_path: Path,
+) -> None:
+    """History shows she reacted; the conversation shows no empty answer from her."""
+    with _Peer([[("final_answer", f"<react>{THUMB}</react>")]]) as peer:
+        runtime = memory_world(tmp_path, peer.url)
+        intent = turn(runtime, "我到家了", "cli_stdin", "T-typed")
+    memory = tmp_path / "memory.db"
+
+    assert [(rid, source) for rid, source, _ in lines(memory)] == [
+        (intent.event_uid, "allen"),
+        (f"reaction:{_rows(runtime.conn, 'surface.response_emitted')[0][4]}", "jarvis_reaction"),
+    ]
+    assert lines(memory)[1][2] == f"[You reacted {THUMB}]"
+    assert reaction_events(runtime.conn) == [
+        {"target": intent.event_uid, "by": "jarvis", "emoji": THUMB},
+    ]
+    assert _rows(runtime.conn, "turn.failed", "response.failed") == []
+    assert len(_rows(runtime.conn, "turn.ended", "response.completed")) == 2
+    rows, _ = conversation_rows(memory)
+    assert [row["source"] for row in rows] == ["allen"]
+    assert [turn_["role"] for turn_ in render_context(memory, exclude_id="live").history] == [
+        "user", "assistant",
+    ]
+
+
+def test_a_typed_reply_with_words_and_a_tag_keeps_the_words_and_adds_the_line(
+    tmp_path: Path,
+) -> None:
+    """The row has the words alone; her reaction comes after it, in her role."""
+    with _Peer([[("final_answer", f"到家就好。<react>{THUMB}</react>")]]) as peer:
+        runtime = memory_world(tmp_path, peer.url)
+        intent = turn(runtime, "我到家了", "cli_stdin", "T-both")
+
+    got = lines(tmp_path / "memory.db")
+    assert [(source, text) for _, source, text in got] == [
+        ("allen", "我到家了"),
+        ("jarvis", "到家就好。"),
+        ("jarvis_reaction", f"[You reacted {THUMB}]"),
+    ]
+    assert reaction_events(runtime.conn)[0]["target"] == intent.event_uid
+
+
+def test_a_spoken_reply_that_is_only_a_tag_keeps_the_empty_answer_it_always_had(
+    tmp_path: Path,
+) -> None:
+    """Nothing new is invented for a spoken turn: an empty answer row, and the reaction."""
+    with _Peer([[("final_answer", f"<react>{THUMB}</react>")]]) as peer:
+        runtime = memory_world(tmp_path, peer.url)
+        turn(runtime, "我到家了", "inherent_ptt", "T-spoken")
+
+    assert [(source, text) for _, source, text in lines(tmp_path / "memory.db")] == [
+        ("allen", "我到家了"), ("jarvis", ""), ("jarvis_reaction", f"[You reacted {THUMB}]"),
+    ]
+    assert len(reaction_events(runtime.conn)) == 1
+
+
+def test_a_reply_without_the_tag_writes_no_reaction(tmp_path: Path) -> None:
+    """The ordinary turn writes no event and no line."""
+    with _Peer([[("final_answer", "到家就好。")]]) as peer:
+        runtime = memory_world(tmp_path, peer.url)
+        turn(runtime, "我到家了", "cli_stdin", "T-plain")
+
+    assert [source for _, source, _ in lines(tmp_path / "memory.db")] == ["allen", "jarvis"]
+    assert reaction_events(runtime.conn) == []
+
+
+# --- the program's eyes -------------------------------------------------------------------------
+
+
+def typed(conn: sqlite3.Connection, n: int, channel: str = "cli_stdin") -> Event:
+    """One message of his, arrived."""
+    return emit_event(
+        conn,
+        type="surface.user_intent",
+        payload={"transcript": f"m{n}", "turn_id": f"T{n}", "channel": channel},
+        correlation={"turn_id": f"T{n}"},
+    )
+
+
+def test_a_typed_message_that_arrives_mid_turn_gets_the_eyes_and_nothing_else_does(
+    tmp_path: Path,
+) -> None:
+    """Only a typed message with an unfinished turn of his before it; nothing removes them."""
+    log = tmp_path / "events.db"
+    conn = open_event_log(log)
+    first, second, spoken = typed(conn, 1), typed(conn, 2), typed(conn, 3, "inherent_ptt")
+    for event in (first, second, spoken):
+        assert inherent_loop._claim_intent_in_thread(log, event)  # noqa: SLF001
+        inherent_loop._mark_seen(log, event)  # noqa: SLF001
+    assert reaction_events(conn) == [{"target": second.event_uid, "by": "jarvis", "emoji": EYES}]
+
+    for turn_id in ("T1", "T2", "T3"):  # all answered
+        emit_event(conn, type="turn.ended", payload={
+            "turn_id": turn_id, "final_response_hash": "h", "consumed_trigger_event_uid": "x",
+        })
+    late = typed(conn, 4)
+    inherent_loop._claim_intent_in_thread(log, late)  # noqa: SLF001
+    inherent_loop._mark_seen(log, late)  # noqa: SLF001
+    assert len(reaction_events(conn)) == 1, "no turn of his was in flight"
+    assert reactions.current(conn, [second.event_uid]) == {second.event_uid: {"jarvis": EYES}}
+    conn.close()

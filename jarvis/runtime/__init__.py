@@ -225,7 +225,7 @@ from jarvis.shared.realtime_trace import (
     configure_realtime_trace_jsonl,
     record_realtime_trace,
 )
-from jarvis.state import device_reads
+from jarvis.state import device_reads, reactions
 from jarvis.state import picture_notes as note_records
 from jarvis.state import places as place_state
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME, AttachmentRef, Attachments, marker
@@ -4127,6 +4127,22 @@ def run_turn(
     )
 
 
+def _record_reaction(
+    runtime: JarvisRuntime, memory_db: Path, target: str, emoji: str, answer: Event,
+) -> None:
+    """ADR 0256: put her ``emoji`` on his message ``target``; the answer's uid keeps a retry to one.
+
+    The reply is already out, so a reaction that cannot be written is logged, not raised.
+    """
+    try:
+        reactions.jarvis_reacts(
+            runtime.conn, memory_db, target=target, emoji=emoji,
+            record_id=f"reaction:{answer.event_uid}",
+        )
+    except Exception:
+        LOGGER.exception("drive_turn: could not write her reaction to %s", target)
+
+
 def _queue_picture_notes(
     runtime: JarvisRuntime, event: Event, record_id: str, answer: str,
 ) -> None:
@@ -4670,6 +4686,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         iterations = continuation.iterations if continuation is not None else 0
         streamed = False
         written_apart = False
+        reaction: str | None = None  # ADR 0256: her <react> on the message that opened the turn
         last_gate_event_uid: str | None = None
 
         while response_plan is None and iterations < max_iterations:
@@ -4732,6 +4749,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 final_attention_channel = result.attention_channel
                 streamed = result.route in {"casual_or_explanatory", "spoken"}
                 written_apart = result.written_apart
+                reaction = result.reaction
                 last_gate_event_uid = result.last_gate_event_uid
                 break
 
@@ -4914,12 +4932,19 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             if render_event.payload.get("written_apart") is True:
                 answer = f"{render_event.payload.get('voice_text', '')}\n\n{answer}"
             answered = answer
-            append_record(
-                memory.db_path,
-                record_id=render_event.event_uid,
-                source="jarvis",
-                text=answer,
+            # ADR 0256: a typed reply that is only her reaction has no words to keep as a row.
+            reaction_only = (
+                reaction is not None and not answer.strip() and typed_turn(user_intent_event)
             )
+            if not reaction_only:
+                append_record(
+                    memory.db_path,
+                    record_id=render_event.event_uid,
+                    source="jarvis",
+                    text=answer,
+                )
+            if reaction is not None and not card_button:
+                _record_reaction(runtime, memory.db_path, memory_exclude_id, reaction, render_event)
             if (
                 runtime.response_flags.prefix_warm
                 and run is not None
