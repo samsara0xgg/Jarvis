@@ -95,6 +95,27 @@ final class AnswerTextTests: XCTestCase {
         ])
     }
 
+    func testNestedItemsKeepTheirLevelWhateverTheStepOfTheIndent() {
+        XCTAssertEqual(AnswerBlocks.parse("- 一\n  - 一a\n    - 一a1\n  - 一b\n- 二"), [.list([
+            .init(marker: "•", text: "一"), .init(marker: "•", text: "一a", level: 1), .init(marker: "•", text: "一a1", level: 2),
+            .init(marker: "•", text: "一b", level: 1), .init(marker: "•", text: "二"),
+        ])])
+        XCTAssertEqual(AnswerBlocks.parse("1. 首页\n    - 图一\n    - 图二\n2. 简历"), [.list([
+            .init(marker: "1.", text: "首页"), .init(marker: "•", text: "图一", level: 1), .init(marker: "•", text: "图二", level: 1), .init(marker: "2.", text: "简历"),
+        ])])
+        XCTAssertEqual(AnswerBlocks.parse("  - 缩进开头\n  - 同级"), [.list([.init(marker: "•", text: "缩进开头"), .init(marker: "•", text: "同级")])], "the first item is level 0 wherever it starts")
+        XCTAssertEqual(AnswerBlocks.parse("- 甲\n\n  - 乙"), [.list([.init(marker: "•", text: "甲")]), .list([.init(marker: "•", text: "乙")])], "a list that was closed starts again")
+    }
+
+    func testQuotesAndRulesAreBlocksAndTheirMarksAreGone() {
+        XCTAssertEqual(AnswerBlocks.parse("前言\n> 引用第一行\n>第二行\n>> 再深一层\n后话"), [.paragraph("前言"), .quote("引用第一行\n第二行\n再深一层"), .paragraph("后话")])
+        for rule in ["---", "***", "___", "- - -", " ----- "] { XCTAssertEqual(AnswerBlocks.parse("上\n\(rule)\n下"), [.paragraph("上"), .rule, .paragraph("下")], rule) }
+        XCTAssertEqual(AnswerBlocks.parse("* 一\n* 二"), [.list([.init(marker: "•", text: "一"), .init(marker: "•", text: "二")])], "a bullet is not a rule")
+        XCTAssertEqual(AnswerBlocks.parse("**粗**\n--"), [.paragraph("**粗**\n--")], "too short for a rule")
+        XCTAssertEqual(AnswerBlocks.parse("```\n---\n> x\n```"), [.code("---\n> x")], "inside code they are code")
+        XCTAssertTrue(AnswerBlocks.isRich("> 引用"))
+    }
+
     func testFencedCodeKeepsItsLinesAndAnOpenFenceIsStillCode() {
         XCTAssertEqual(AnswerBlocks.parse("看这段：\n```swift\nlet a = 1\n  let b = 2\n```\n就这样"),
                        [.paragraph("看这段："), .code("let a = 1\n  let b = 2"), .paragraph("就这样")])

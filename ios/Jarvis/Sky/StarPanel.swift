@@ -184,8 +184,13 @@ struct AnswerView: View {
                         Text(it.marker).font(it.marker == "•" ? .system(size: 18) : AT.mono(15)).foregroundStyle(muted).frame(minWidth: 22, alignment: .trailing)
                         herText(it.text, base: ink.opacity(0.92)).font(.system(size: 18)).lineSpacing(5)
                     }
+                    .padding(.leading, 20 * Double(min(it.level, 3)))
                 }
             }
+        case .quote(let s):
+            herText(s, base: muted).font(.system(size: 17)).lineSpacing(5)
+                .padding(.leading, 14).overlay(alignment: .leading) { Capsule().fill(Color.white.opacity(0.22)).frame(width: 3) }
+        case .rule: Color.white.opacity(0.14).frame(height: 0.5)
         case .code(let s): mono(s)
         case .table(let rows): table(rows)
         }

@@ -66,24 +66,35 @@ enum AnswerText {
 
 /// One block of a written answer.
 enum AnswerBlock: Equatable {
-    struct Item: Equatable { let marker: String; let text: String }
+    struct Item: Equatable { let marker: String; let text: String; var level = 0 }        // `level`: how far it is nested under the item before it
     case paragraph(String)
     case heading(String)
     case list([Item])                   // marker `•` or the number as written (`1.`)
     case code(String)
     case table([[String]])              // the header first; the `---` row is dropped
+    case quote(String)                  // `>` lines, the marks dropped
+    case rule                           // `---`, `***` or `___`
 }
 
-/// A written answer is markdown, but only as far as the brain writes it: paragraphs, `#` headings, `-` `*` `•` and `1.` lists, fenced code and `|` tables.
+/// A written answer is markdown, but only as far as the brain writes it: paragraphs, `#` headings, `-` `*` `•` and `1.` lists (nested by their indent), `>` quotes,
+/// rules, fenced code and `|` tables.
 /// Inline bold, italic, code and links are left to `AttributedString(markdown:)`.
 enum AnswerBlocks {
     static func parse(_ text: String) -> [AnswerBlock] {
         var out: [AnswerBlock] = []
-        var para: [String] = [], list: [AnswerBlock.Item] = [], table: [[String]] = []
+        var para: [String] = [], list: [AnswerBlock.Item] = [], table: [[String]] = [], quote: [String] = []
+        var indents: [Int] = []             // the indents of the list levels open now
+        /// the nesting of an item indented by `indent`: one level more than the nearest shallower item, whatever the step (2 spaces, 4, a tab)
+        func level(_ indent: Int) -> Int {
+            while let last = indents.last, last > indent { indents.removeLast() }
+            if indents.last != indent { indents.append(indent) }
+            return indents.count - 1
+        }
         func flush() {
             if !para.isEmpty { out.append(.paragraph(para.joined(separator: "\n"))); para = [] }
             if !list.isEmpty { out.append(.list(list)); list = [] }
             if !table.isEmpty { out.append(.table(table)); table = [] }
+            if !quote.isEmpty { out.append(.quote(quote.joined(separator: "\n"))); quote = [] }
         }
         var code: [String]?
         for raw in text.components(separatedBy: "\n") {
@@ -95,6 +106,7 @@ enum AnswerBlocks {
             }
             if code != nil { code!.append(line); continue }
             if t.isEmpty { flush(); continue }
+            if t.firstMatch(#"^([-*_])(\s*\1){2,}$"#) != nil { flush(); out.append(.rule); continue }
             if let h = t.firstMatch(#"^#{1,6}\s+(.*)$"#) { flush(); out.append(.heading(h[1])); continue }
             if t.hasPrefix("|") {
                 if table.isEmpty { flush() }
@@ -105,10 +117,12 @@ enum AnswerBlocks {
                 table.append(cells)
                 continue
             }
-            if let m = t.firstMatch(#"^[-*•]\s+(.*)$"#) { if list.isEmpty { flush() }; list.append(.init(marker: "•", text: m[1])); continue }
-            if let m = t.firstMatch(#"^(\d+[.)])\s+(.*)$"#) { if list.isEmpty { flush() }; list.append(.init(marker: m[1], text: m[2])); continue }
-            if !list.isEmpty && raw.hasPrefix(" ") { list[list.count - 1] = .init(marker: list.last!.marker, text: list.last!.text + "\n" + t); continue }
-            if !list.isEmpty || !table.isEmpty { flush() }
+            if let m = t.firstMatch(#"^>+\s?(.*)$"#) { if quote.isEmpty { flush() }; quote.append(m[1]); continue }
+            let indent = line.prefix { $0 == " " || $0 == "\t" }.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+            if let m = t.firstMatch(#"^[-*•]\s+(.*)$"#) { if list.isEmpty { flush(); indents = [] }; list.append(.init(marker: "•", text: m[1], level: level(indent))); continue }
+            if let m = t.firstMatch(#"^(\d+[.)])\s+(.*)$"#) { if list.isEmpty { flush(); indents = [] }; list.append(.init(marker: m[1], text: m[2], level: level(indent))); continue }
+            if !list.isEmpty && raw.hasPrefix(" ") { list[list.count - 1] = .init(marker: list.last!.marker, text: list.last!.text + "\n" + t, level: list.last!.level); continue }
+            if !list.isEmpty || !table.isEmpty || !quote.isEmpty { flush() }
             para.append(t)
         }
         if let c = code { out.append(.code(c.joined(separator: "\n"))) }       // a fence still open: the answer is still arriving

@@ -296,7 +296,7 @@ extension StarEngine {
 
 #if DEBUG
 extension StarEngine {
-    /// `-scene open|failed|typing|typingNote|typingWaiting|typingChipOpen|rest` (and the `steps…` ones of Sky/StarStatus.swift): the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
+    /// `-scene open|blocks|failed|typing|typingNote|typingWaiting|typingChipOpen|rest` (and the `steps…` ones of Sky/StarStatus.swift): the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
     func runTalkScene(_ name: String) {
         switch name {
         case "rest": setLevel(0)
@@ -313,6 +313,13 @@ extension StarEngine {
                     self.addTurn(his: false, "好，我帮你把周二上午十点占上。")
                 }
             }
+        case "blocks":
+            // nested items, a quote and a rule in a written answer, with a bare address
+            setLevel(0)
+            beginTalk(); lingerHold = true
+            addTurn(his: true, "订位的事怎么样了")
+            addTurn(his: false, "## 订位\n- 周五晚上\n  - 七点，四位\n    - 靠窗\n  - 八点\n- 周六\n\n> 他们说周五比较满，建议早点到。\n\n---\n\n订位页 https://www.laroux.ca/reservations/book?date=2026-10-16&size=4 现在能开。")
+            openPanel(quiet: true)
         case "failed":
             // a typed turn the brain failed: his line, and "没答出来" with 重试 in her place
             setLevel(0)
