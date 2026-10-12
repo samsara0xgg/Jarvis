@@ -1639,7 +1639,10 @@ def _repeat_refused(
 ) -> str:
     """The tool result for a call that is not run: the repeat's note, else "unknown tool"."""
     if repeated is None:
-        return json.dumps({"error": f"unknown tool: {name}"})
+        return json.dumps({
+            "error": f"unknown tool: {name}; call only a tool in your list, or find one with "
+            "tool_search"
+        })
     _guard_fired(ctx, scratch, "repeat", tool=name)
     return repeated
 

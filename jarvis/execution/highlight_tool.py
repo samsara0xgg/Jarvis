@@ -37,15 +37,18 @@ def build_highlight_tool(mark: HighlightMarker | None) -> tuple[Tool, ...]:
     def handle(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         day, at = args.get("day"), args.get("time")
         if not (isinstance(day, str) and isinstance(at, str)):
-            msg = "day and time are required"
+            msg = (
+                'mark_highlight: day (YYYY-MM-DD, "today" or "yesterday") and time (HH:MM) '
+                "are required"
+            )
             raise ToolError(msg, code="invalid_argument")
         on, label = args.get("on", True), args.get("label")
         if not isinstance(on, bool) or not (label is None or isinstance(label, str)):
-            msg = "on must be true or false, and label text"
+            msg = "mark_highlight: on must be true or false, and label must be text"
             raise ToolError(msg, code="invalid_argument")
         label = (label or "").strip() or None
         if label is not None and len(label) > LABEL_MAX_CHARS:
-            msg = f"label is over {LABEL_MAX_CHARS} characters"
+            msg = f"mark_highlight: label is over {LABEL_MAX_CHARS} characters; shorten it"
             raise ToolError(msg, code="invalid_argument")
         return mark(day, at, on, label)
 

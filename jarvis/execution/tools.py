@@ -509,7 +509,10 @@ def _observe(  # noqa: PLR0913 — the four handler arguments plus the definitio
         # The terminal row is the dispatcher's whatever the handler did.
         LOGGER.exception("tool %s raised", tool_def.name)
         error = "unexpected_error"
-        message = f"{tool_def.name}: unexpected {type(exc).__name__}: {exc}"
+        message = (
+            f"{tool_def.name} failed unexpectedly ({type(exc).__name__}: {exc}); "
+            "tell him it failed, and do not repeat the same call"
+        )
     if error is not None:
         tool_output = tool_result(_fit_result({"error": message, "code": error}, cap))
         payload = {"error": error}
@@ -648,10 +651,10 @@ _ASK_SECRET_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
-def _ask_text(value: object, name: str, limit: int) -> str:
+def _ask_text(value: object, name: str, limit: int, fix: str) -> str:
     text = value.strip() if isinstance(value, str) else ""
     if not text or len(text) > limit:
-        msg = f"ask_user: {name} must be 1-{limit} characters"
+        msg = f"ask_user: {name} must be 1-{limit} characters; {fix}"
         raise ToolError(msg, code="invalid_argument")
     return text
 
@@ -659,18 +662,24 @@ def _ask_text(value: object, name: str, limit: int) -> str:
 def _ask_field(raw: object) -> dict[str, Any]:
     """One card field as the companion draws it: label, choices, pre-filled value, remember."""
     if not isinstance(raw, Mapping):
-        msg = "ask_user: each field must be an object with a label"
+        msg = 'ask_user: each entry in fields must be an object, e.g. {"label": "delivery address"}'
         raise ToolError(msg, code="invalid_argument")
     field: dict[str, Any] = {
-        "label": _ask_text(raw.get("label"), "label", _ASK_LABEL_MAX_CHARS),
+        "label": _ask_text(
+            raw.get("label"), "label", _ASK_LABEL_MAX_CHARS,
+            "name the detail in a few words, e.g. delivery address",
+        ),
         "remember": raw.get("remember") is not False,
     }
     choices = raw.get("choices")
     if choices:
         if not isinstance(choices, list) or len(choices) not in _ASK_CHOICES:
-            msg = "ask_user: choices must list 2-6 options"
+            msg = "ask_user: choices must list 2-6 options; leave choices out for a typed answer"
             raise ToolError(msg, code="invalid_argument")
-        field["choices"] = [_ask_text(c, "a choice", _ASK_LABEL_MAX_CHARS) for c in choices]
+        field["choices"] = [
+            _ask_text(c, "a choice", _ASK_LABEL_MAX_CHARS, "shorten the option")
+            for c in choices
+        ]
     value = raw.get("value")
     if isinstance(value, str) and value.strip():
         field["value"] = value.strip()[:_ASK_TEXT_MAX_CHARS]
@@ -758,16 +767,21 @@ def _turn_of(action_id: str) -> str | None:
 )
 def ask_user(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """Put up the ask card (`clarification.requested`); a newer one replaces it."""
-    question = _ask_text(args.get("question"), "question", _ASK_TEXT_MAX_CHARS)
+    question = _ask_text(
+        args.get("question"), "question", _ASK_TEXT_MAX_CHARS, "make it one short sentence",
+    )
     raw_fields = args.get("fields")
     if not isinstance(raw_fields, list) or not 1 <= len(raw_fields) <= _ASK_MAX_FIELDS:
-        msg = f"ask_user: fields must list 1-{_ASK_MAX_FIELDS} details"
+        msg = (
+            f"ask_user: fields must list 1-{_ASK_MAX_FIELDS} details; ask for the rest in words "
+            "after he has answered"
+        )
         raise ToolError(msg, code="invalid_argument")
     fields = [_ask_field(raw) for raw in raw_fields]
     if _ASK_SECRET_RE.search(" ".join([question, *(f["label"] for f in fields)])):
         msg = (
             "ask_user: a card never asks for passwords, card numbers, codes or keys; "
-            "the user enters those on the site itself"
+            "tell him to enter those on the site itself"
         )
         raise ToolError(msg, code="secret_field")
     emit_event(
@@ -890,19 +904,19 @@ def _parse_open_path_args(arguments: Mapping[str, Any]) -> _OpenPathArgs:
     handler must defend here rather than let an unhandled exception strand
     the lifecycle at `running`.
     """
-    query = arguments["query"]
+    query = arguments.get("query")
     if not isinstance(query, str) or not query.strip():
-        msg = f"open_path: query must be a non-empty string (got {query!r})"
+        msg = f"query must be the spoken name of the file or folder to open (got {query!r})"
         raise TypeError(msg)
 
     target_kind = arguments.get("target_kind", _OPEN_PATH_DEFAULT_TARGET_KIND)
     if target_kind not in ("file", "folder", "any"):
-        msg = f"open_path: target_kind must be one of file/folder/any (got {target_kind!r})"
+        msg = f"target_kind must be one of: file, folder, any (got {target_kind!r})"
         raise TypeError(msg)
 
     app = arguments.get("app", _OPEN_PATH_DEFAULT_APP)
     if app not in ("default", "vscode"):
-        msg = f"open_path: app must be one of default/vscode (got {app!r})"
+        msg = f"app must be one of: default, vscode (got {app!r})"
         raise TypeError(msg)
 
     return _OpenPathArgs(query=query, target_kind=target_kind, app=app)
@@ -985,13 +999,16 @@ def open_path(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """
     try:
         parsed = _parse_open_path_args(args)
-    except (KeyError, TypeError) as exc:
+    except TypeError as exc:
         msg = f"open_path: {exc}"
         raise ToolError(msg, code="invalid_argument") from exc
 
     target = resolve_path_target(parsed.query, parsed.target_kind, ctx.conn)
     if target is None:
-        msg = f"open_path: no file/folder matched {parsed.query!r}"
+        msg = (
+            f"open_path: no file or folder matched {parsed.query!r}; ask him what it is called, "
+            "or try a shorter part of the name"
+        )
         raise ToolError(msg, code="target_not_found")
 
     argv, app_used = _build_open_argv(target.path, parsed.app)
@@ -1004,11 +1021,14 @@ def open_path(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        msg = f"open_path: subprocess failed to start: {exc}"
+        msg = f"open_path: macOS could not run open ({exc}); tell him it did not open"
         raise ToolError(msg, code="open_failed") from exc
     if proc.returncode != 0:
         stderr_tail = (proc.stderr or "").strip()[-_OUTPUT_TAIL_BYTES:]
-        msg = f"open_path: `open` exited {proc.returncode}: {stderr_tail}"
+        msg = (
+            f"open_path: macOS open failed (exit {proc.returncode}: {stderr_tail}); "
+            "tell him it did not open"
+        )
         raise ToolError(msg, code="open_failed")
 
     return {
@@ -1273,7 +1293,10 @@ def _make_search_notes_handler(vault_root: Path) -> ToolHandler:  # noqa: C901 �
                 action_id=action_id,
                 running_event_uid=running_event_uid,
                 code="invalid_argument",
-                message=f"search_notes: query must be a non-empty string (got {query!r})",
+                message=(
+                    "search_notes: query must be the words to look for in his notes "
+                    f"(got {query!r})"
+                ),
             )
 
         max_results = _SEARCH_NOTES_DEFAULT_MAX_RESULTS
@@ -1294,7 +1317,10 @@ def _make_search_notes_handler(vault_root: Path) -> ToolHandler:  # noqa: C901 �
         if not vault_root.is_dir():
             payload: dict[str, Any] = {
                 "results": [],
-                "note": f"vault root not found: {vault_root} (the vault may have been renamed)",
+                "note": (
+                    f"The notes folder {vault_root} does not exist (renamed or moved?); "
+                    "tell him his notes cannot be searched until that is fixed."
+                ),
             }
             return _emit_tool_observation(
                 conn=conn,
@@ -1417,7 +1443,7 @@ def read_file_handler(
             action_id=action_id,
             running_event_uid=running_event_uid,
             code="no_resolved_target",
-            message="read_file: no resolved target_entity_ref (the gate should have refused this)",
+            message="read_file: no file was resolved from that name; ask him which file he means",
         )
 
     path = Path(ref[len(_READ_FILE_ENTITY_PREFIX) :])
@@ -1428,7 +1454,10 @@ def read_file_handler(
             action_id=action_id,
             running_event_uid=running_event_uid,
             code="file_not_found",
-            message=f"read_file: {path} does not exist or is not a regular file",
+            message=(
+                f"read_file: {path} does not exist or is not a regular file; "
+                "ask him which file he means"
+            ),
         )
 
     try:
@@ -1442,7 +1471,7 @@ def read_file_handler(
             action_id=action_id,
             running_event_uid=running_event_uid,
             code="read_failed",
-            message=f"read_file: {exc}",
+            message=f"read_file: {path} could not be read ({exc}); tell him it failed",
         )
 
     if b"\x00" in prefix:
@@ -1452,7 +1481,7 @@ def read_file_handler(
             action_id=action_id,
             running_event_uid=running_event_uid,
             code="binary_file",
-            message=f"read_file: {path} looks binary, refusing to read it as text",
+            message=f"read_file: {path} is a binary file; tell him you can only read text files",
         )
 
     text, undelivered_bytes, lossy = truncate_utf8(prefix, total_bytes)
@@ -1503,11 +1532,14 @@ def read_clipboard(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        msg = f"read_clipboard: pbpaste failed to run: {exc}"
+        msg = f"read_clipboard: the clipboard could not be read ({exc}); tell him it failed"
         raise ToolError(msg, code="clipboard_read_failed") from exc
     if proc.returncode != 0:
         stderr_tail = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
-        msg = f"read_clipboard: pbpaste exited {proc.returncode}: {stderr_tail}"
+        msg = (
+            f"read_clipboard: the clipboard could not be read (exit {proc.returncode}: "
+            f"{stderr_tail}); tell him it failed"
+        )
         raise ToolError(msg, code="clipboard_read_failed")
     raw = proc.stdout or b""
     return {"content": raw.decode("utf-8", errors="replace"), "total_bytes": len(raw)}
@@ -2101,7 +2133,7 @@ def _make_web_search(
     def web_search(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         query = args.get("query")
         if not isinstance(query, str) or not query.strip():
-            msg = f"web_search: query must be a non-empty string (got {query!r})"
+            msg = f"web_search: query must be the words to search for (got {query!r})"
             raise ToolError(msg, code="invalid_argument")
         max_results = default_max_results
         max_results_arg = args.get("max_results")
@@ -2119,7 +2151,10 @@ def _make_web_search(
         except Exception as exc:
             # ddgs anti-bot churn and keyed 401/429 are routine (ADR-0011 §5):
             # name the backend, no in-handler retry.
-            msg = f"web_search: {provider_used} backend error: {exc}"
+            msg = (
+                f"web_search: the {provider_used} search did not answer ({exc}); tell him the "
+                "search failed, or try web_fetch on a page he names"
+            )
             raise ToolError(msg, code="web_search_backend_error") from exc
         # Naming the backend keeps the `_resolve_search_backend` degrade visible
         # in the event log instead of inferable.
@@ -2390,7 +2425,10 @@ def _fetch_url_backend(  # noqa: PLR0911 — one linear guard/canonicalize/fetch
             return _FetchOutcome(
                 ok=False,
                 error_code="ssrf_guard_refused",
-                error_message=f"web_fetch egress guard refused {current!r}: {reason}",
+                error_message=(
+                    f"web_fetch: {current!r} was refused ({reason}); only public http(s) "
+                    "pages can be fetched"
+                ),
             )
 
         normalized = _normalize_egress_url(current)
@@ -2401,7 +2439,7 @@ def _fetch_url_backend(  # noqa: PLR0911 — one linear guard/canonicalize/fetch
             return _FetchOutcome(
                 ok=False,
                 error_code="ssrf_guard_refused",
-                error_message=f"web_fetch: {current!r} passed the guard but would not canonicalize",
+                error_message=f"web_fetch: {current!r} is not a usable address; check the URL",
             )
 
         remaining_s = deadline - time.monotonic()
@@ -2410,8 +2448,8 @@ def _fetch_url_backend(  # noqa: PLR0911 — one linear guard/canonicalize/fetch
                 ok=False,
                 error_code="deadline_exceeded",
                 error_message=(
-                    f"web_fetch: exceeded the {timeout_s:g}s wall-clock budget "
-                    f"before hop {hops_followed + 1}"
+                    f"web_fetch: the page took longer than {timeout_s:g}s through its redirects; "
+                    "tell him it did not load, or try web_search"
                 ),
             )
 
@@ -2423,13 +2461,19 @@ def _fetch_url_backend(  # noqa: PLR0911 — one linear guard/canonicalize/fetch
             return _FetchOutcome(
                 ok=False,
                 error_code="deadline_exceeded",
-                error_message=f"web_fetch: exceeded the {timeout_s:g}s wall-clock budget",
+                error_message=(
+                    f"web_fetch: the page took longer than {timeout_s:g}s to load; tell him it "
+                    "did not load, or try web_search"
+                ),
             )
         except httpx.HTTPError as exc:
             return _FetchOutcome(
                 ok=False,
                 error_code="network_error",
-                error_message=f"web_fetch: {exc}",
+                error_message=(
+                    f"web_fetch: the page could not be fetched ({exc}); tell him, or try "
+                    "web_search for the same information"
+                ),
             )
 
         if hop.status_code in _REDIRECT_STATUS_CODES:
@@ -2437,14 +2481,18 @@ def _fetch_url_backend(  # noqa: PLR0911 — one linear guard/canonicalize/fetch
                 return _FetchOutcome(
                     ok=False,
                     error_code="network_error",
-                    error_message=f"web_fetch: {normalized!r} redirected with no Location header",
+                    error_message=(
+                        f"web_fetch: {normalized!r} redirected to nowhere; tell him the page is "
+                        "broken, or try web_search"
+                    ),
                 )
             if hops_followed >= max_redirects:
                 return _FetchOutcome(
                     ok=False,
                     error_code="too_many_redirects",
                     error_message=(
-                        f"web_fetch: exceeded {max_redirects} redirects starting from {url!r}"
+                        f"web_fetch: {url!r} redirected more than {max_redirects} times; "
+                        "try the address it ends at, or web_search"
                     ),
                 )
             hops_followed += 1
@@ -2608,7 +2656,7 @@ def _tavily_extract(url: str, *, api_key: str, timeout_s: float) -> dict[str, An
     results = data.get("results") or []
     if not results:
         failed = (data.get("failed_results") or [{}])[0]
-        msg = f"web_fetch: tavily could not extract {url}: {failed.get('error', 'unknown')}"
+        msg = f"web_fetch: Tavily could not read {url} ({failed.get('error', 'unknown')})"
         raise ToolError(msg, code="web_fetch_failed")
     return {
         "url": results[0].get("url") or url,
@@ -2639,7 +2687,7 @@ def _self_fetch(url: str, *, timeout_s: float, max_bytes: int) -> dict[str, Any]
     outcome = _fetch_url_backend(url, timeout_s=timeout_s, max_bytes=max_bytes)
     if not outcome.ok:
         raise ToolError(
-            outcome.error_message or "web_fetch: unknown failure",
+            outcome.error_message or "web_fetch: the page could not be fetched; tell him",
             code=outcome.error_code or "web_fetch_failed",
         )
     mime = (outcome.content_type or "").split(";", 1)[0].strip().lower()
@@ -2692,11 +2740,14 @@ def _make_web_fetch(
     def web_fetch(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         url = args.get("url")
         if not isinstance(url, str) or not url.strip():
-            msg = f"web_fetch: url must be a non-empty string (got {url!r})"
+            msg = f"web_fetch: url must be the page address, http or https (got {url!r})"
             raise ToolError(msg, code="invalid_argument")
         allowed, reason = validate_egress_url(url)
         if not allowed:
-            msg = f"web_fetch: {reason}"
+            msg = (
+                f"web_fetch: {url!r} was refused ({reason}); only public http(s) pages "
+                "can be fetched"
+            )
             raise ToolError(msg, code="ssrf_guard_refused")
         if extract_api_key:
             try:
@@ -2772,7 +2823,7 @@ def open_url_handler(  # noqa: PLR0911 — one linear validate/canonicalize/subp
                 action_id=action_id,
                 running_event_uid=running_event_uid,
                 code="invalid_argument",
-                message=f"open_url: url must be a non-empty string (got {url!r})",
+                message=f"open_url: url must be the page address, http or https (got {url!r})",
             )
 
         allowed, reason = validate_egress_url(url)
@@ -2783,7 +2834,10 @@ def open_url_handler(  # noqa: PLR0911 — one linear validate/canonicalize/subp
                 action_id=action_id,
                 running_event_uid=running_event_uid,
                 code="ssrf_guard_refused",
-                message=f"open_url egress guard refused {url!r}: {reason}",
+                message=(
+                    f"open_url: {url!r} was refused ({reason}); only public http(s) pages "
+                    "can be opened"
+                ),
             )
 
         normalized = _normalize_egress_url(url)
@@ -2797,7 +2851,7 @@ def open_url_handler(  # noqa: PLR0911 — one linear validate/canonicalize/subp
                 action_id=action_id,
                 running_event_uid=running_event_uid,
                 code="ssrf_guard_refused",
-                message=f"open_url: {url!r} passed the guard but would not canonicalize",
+                message=f"open_url: {url!r} is not a usable address; check the URL",
             )
 
         try:
@@ -2818,7 +2872,7 @@ def open_url_handler(  # noqa: PLR0911 — one linear validate/canonicalize/subp
                 action_id=action_id,
                 running_event_uid=running_event_uid,
                 code="open_failed",
-                message=f"open_url: subprocess failed to start: {exc}",
+                message=f"open_url: macOS could not run open ({exc}); tell him it did not open",
             )
 
         if proc.returncode != 0:
@@ -2829,7 +2883,10 @@ def open_url_handler(  # noqa: PLR0911 — one linear validate/canonicalize/subp
                 action_id=action_id,
                 running_event_uid=running_event_uid,
                 code="open_failed",
-                message=f"open_url: `open` exited {proc.returncode}: {stderr_tail}",
+                message=(
+                    f"open_url: macOS open failed (exit {proc.returncode}: {stderr_tail}); "
+                    "tell him it did not open"
+                ),
             )
 
         payload: dict[str, Any] = {"url": normalized}
@@ -2848,7 +2905,10 @@ def open_url_handler(  # noqa: PLR0911 — one linear validate/canonicalize/subp
             action_id=action_id,
             running_event_uid=running_event_uid,
             code="open_url_unexpected_error",
-            message=f"open_url: unexpected {type(exc).__name__}: {exc}",
+            message=(
+                f"open_url: failed unexpectedly ({type(exc).__name__}: {exc}); "
+                "tell him it did not open"
+            ),
         )
 
 
@@ -2996,7 +3056,7 @@ def _capture_screen(image_path: Path, max_width_px: int) -> None:
     try:
         capture_proc = _run_screencapture(image_path, timeout_s=_SCREEN_CAPTURE_TIMEOUT_S)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        msg = f"screen_look: screencapture failed to run: {exc}"
+        msg = f"screen_look: the screen could not be captured ({exc}); tell him it failed"
         raise ToolError(msg, code="screen_capture_start_failed") from exc
     if capture_proc.returncode != 0:
         # The cause of a non-zero exit is not determinable from here (TCC
@@ -3004,11 +3064,10 @@ def _capture_screen(image_path: Path, max_width_px: int) -> None:
         # Screen Recording only as the likely first-run cause.
         stderr_tail = (capture_proc.stderr or b"").decode("utf-8", errors="replace").strip()
         msg = (
-            f"screen_look: screencapture exited {capture_proc.returncode}"
-            f"{f': {stderr_tail}' if stderr_tail else ''}. If this is the "
-            f"first screen_look call, the likely cause is missing Screen "
-            f"Recording permission for {sys.executable} — System Settings → "
-            "Privacy; otherwise this is a genuine screencapture failure."
+            f"screen_look: the screen could not be captured (exit {capture_proc.returncode}"
+            f"{f': {stderr_tail}' if stderr_tail else ''}). On a first call the likely cause is "
+            f"missing Screen Recording permission for {sys.executable} (System Settings → "
+            "Privacy & Security); tell him which, or that it failed."
         )
         raise ToolError(msg, code="screen_capture_failed")
     if not image_path.is_file() or not _looks_like_png(image_path):
@@ -3017,7 +3076,7 @@ def _capture_screen(image_path: Path, max_width_px: int) -> None:
         # enough to name Screen Recording as the cause.
         msg = (
             f"screen_look: {_screen_recording_permission_message()} "
-            "(screencapture produced no image data)"
+            "(the capture produced no image); tell him to allow it, then ask again"
         )
         raise ToolError(msg, code="screen_recording_permission_denied")
 
@@ -3041,6 +3100,20 @@ def _capture_screen(image_path: Path, max_width_px: int) -> None:
         )
 
 
+_BLANK_BYTES_PER_PIXEL: Final[float] = 0.01
+"""A PNG of one flat colour (a sleeping display captures black) takes about 0.005 bytes a pixel;
+a screen with anything on it takes ten times that or more."""
+
+
+def _screen_is_blank(image_path: Path) -> bool:
+    """Whether the screenshot is one flat colour, judged from its size against its pixels."""
+    header = image_path.read_bytes()[:24]
+    if header[12:16] != b"IHDR":  # a PNG's first chunk holds its width and height
+        return False
+    pixels = int.from_bytes(header[16:20], "big") * int.from_bytes(header[20:24], "big")
+    return pixels > 0 and image_path.stat().st_size < pixels * _BLANK_BYTES_PER_PIXEL
+
+
 def _describe_screen(
     vision_client: VisionClient | None, image_path: Path, question: str | None,
 ) -> dict[str, Any]:
@@ -3054,16 +3127,16 @@ def _describe_screen(
     """
     if vision_client is None:
         msg = (
-            "screen_look: no vision client configured "
-            f"(llm.presets.vision missing or invalid); screenshot saved at {image_path}"
+            "screen_look: the screen was captured but no vision model is configured "
+            f"(llm.presets.vision); tell him you cannot describe it. Saved at {image_path}"
         )
         raise ToolError(msg, code="vision_unconfigured")
     try:
         description = vision_client.describe_image(image_path, question=question)
     except Exception as exc:  # degrades to an error; the screenshot is on disk regardless.
         msg = (
-            f"screen_look: vision call failed: {type(exc).__name__}: {exc}; "
-            f"screenshot saved at {image_path}"
+            "screen_look: the screen was captured but the vision model failed "
+            f"({type(exc).__name__}: {exc}); tell him it failed. Saved at {image_path}"
         )
         raise ToolError(msg, code="vision_call_failed") from exc
     return {"artifact_path": str(image_path), "description": description}
@@ -3081,15 +3154,15 @@ def _screenshot_from_device(link: DeviceLink) -> bytes:
         raise ToolError(str(exc), code=exc.code) from exc
     encoded = reply.get("image_b64")
     if not isinstance(encoded, str) or len(encoded) > SCREEN_CAPTURE_MAX_IMAGE_BYTES * 4 // 3 + 4:
-        msg = "screen_look: the terminal sent no usable screenshot"
+        msg = "screen_look: his computer sent no usable screenshot; tell him it failed"
         raise ToolError(msg, code="screen_capture_failed")
     try:
         image = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as exc:
-        msg = "screen_look: the terminal's screenshot is not valid base64"
+        msg = "screen_look: his computer's screenshot was garbled; tell him it failed"
         raise ToolError(msg, code="screen_capture_failed") from exc
     if len(image) > SCREEN_CAPTURE_MAX_IMAGE_BYTES or not image.startswith(_PNG_MAGIC):
-        msg = "screen_look: the terminal's screenshot is not a PNG within the size cap"
+        msg = "screen_look: his computer's screenshot was not a usable image; tell him it failed"
         raise ToolError(msg, code="screen_capture_failed")
     return image
 
@@ -3117,6 +3190,12 @@ def _make_screen_look(
             _capture_screen(image_path, max_width_px)
         else:
             image_path.write_bytes(_screenshot_from_device(device_link))
+        if _screen_is_blank(image_path):
+            msg = (
+                "screen_look: the screenshot is one flat colour, so the display is probably "
+                "asleep or locked; tell him you cannot see the screen until it is awake"
+            )
+            raise ToolError(msg, code="screen_blank")
         return _describe_screen(vision_client, image_path, question)
 
     return Tool(
@@ -3162,7 +3241,8 @@ def make_screen_capture(max_width_px: int) -> Tool:
         if len(image) > SCREEN_CAPTURE_MAX_IMAGE_BYTES:
             msg = (
                 f"screen_look: the screenshot is {len(image)} bytes, over the "
-                f"{SCREEN_CAPTURE_MAX_IMAGE_BYTES}-byte cap; lower tools.screen.max_width_px"
+                f"{SCREEN_CAPTURE_MAX_IMAGE_BYTES}-byte cap; tell him it failed "
+                "(lower tools.screen.max_width_px)"
             )
             raise ToolError(msg, code="screen_image_too_large")
         return {"image_b64": base64.b64encode(image).decode("ascii"), "bytes": len(image)}
@@ -3350,15 +3430,18 @@ class ToolRegistry:
         with self._lock:
             tool_def = self._tools.get(action_request.tool_name)
         if tool_def is None:
-            msg = f"unknown tool: {action_request.tool_name!r}"
+            msg = (
+                f"unknown tool: {action_request.tool_name!r}; call only a tool in your list, "
+                "or find one with tool_search"
+            )
             raise UnknownToolError(msg)
 
         if action_request.caller_principal not in tool_def.allowed_callers:
             allowed_names = sorted(c.value for c in tool_def.allowed_callers)
             msg = (
                 f"tool {tool_def.name!r} is not callable from "
-                f"caller_principal={action_request.caller_principal.value!r}. "
-                f"Allowed: {allowed_names!r}"
+                f"caller_principal={action_request.caller_principal.value!r}; "
+                f"allowed: {', '.join(allowed_names) or 'no caller'}"
             )
             raise CallerNotAllowedError(msg)
 

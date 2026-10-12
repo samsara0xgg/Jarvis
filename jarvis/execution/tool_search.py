@@ -195,11 +195,17 @@ def build_tool_search(
     def handle(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         query = str(args.get("query") or "").strip()
         if not query:
-            msg = "query must not be empty"
+            msg = (
+                "tool_search: query is empty; pass English keywords for the tool you need, "
+                'e.g. "plugin"'
+            )
             raise ToolError(msg, code="invalid_arguments")
-        limit = int(args.get("limit") or DEFAULT_LIMIT)
+        try:
+            limit = int(args.get("limit") or DEFAULT_LIMIT)
+        except (TypeError, ValueError):
+            limit = 0
         if limit <= 0:
-            msg = "limit must be greater than zero"
+            msg = f"tool_search: limit must be a whole number from 1 (default {DEFAULT_LIMIT})"
             raise ToolError(msg, code="invalid_arguments")
         found = [names[i] for i in index.top(query, limit)]
         swapped = replaced()

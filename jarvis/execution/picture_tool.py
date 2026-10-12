@@ -62,7 +62,10 @@ def build_picture_tool(
         wanted = str(args.get("picture", "")).strip()
         question = str(args.get("question", "")).strip()
         if not wanted or not question:
-            msg = "look_at_picture needs a picture and a question"
+            msg = (
+                'look_at_picture: picture (the id in its "[Picture note ... id XXXXXXXX]" line, '
+                'or "latest") and question are both required'
+            )
             raise ToolError(msg, code="bad_arguments")
         store = Attachments(ctx.runtime_paths.artifacts_root / ATTACHMENTS_DIRNAME)
         ref = store.find(wanted)
@@ -71,7 +74,10 @@ def build_picture_tool(
         try:
             answer = vision.describe_image(path, question=question, instructions=_INSTRUCTIONS)
         except Exception as exc:  # degrades to an error observation; the file is untouched.
-            msg = f"look_at_picture: vision call failed: {type(exc).__name__}: {exc}"
+            msg = (
+                f"look_at_picture: the picture could not be read just now "
+                f"({type(exc).__name__}: {exc}); tell him it failed"
+            )
             raise ToolError(msg, code="vision_call_failed") from exc
         return {"picture": short_id(ref.id), "answer": answer}
 

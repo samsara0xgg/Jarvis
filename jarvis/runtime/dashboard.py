@@ -269,11 +269,14 @@ class MailDrafts:
     def write(self, letter_id: str, text: str) -> int:
         """Jarvis replaces the body under the open letter; the revision. ValueError if refused."""
         if self._view.mail_id() != letter_id:
-            msg = "that letter is not open on the Dashboard"
+            msg = (
+                "that letter is not open on the Dashboard, so no draft can go under it; "
+                "give him the reply in words, or ask him to open the letter"
+            )
             raise ValueError(msg)
         text = text.strip()
         if not text or len(text) > DRAFT_CHARS:
-            msg = f"the draft must be 1 to {DRAFT_CHARS} characters"
+            msg = f"the draft must be 1 to {DRAFT_CHARS} characters; shorten it"
             raise ValueError(msg)
         before = self._drafts.get(letter_id)
         subject = None if before is None else before.subject

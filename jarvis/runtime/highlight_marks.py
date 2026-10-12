@@ -47,7 +47,7 @@ class HighlightMarks:
         sources = self._sources
         memory_db = sources.memory_db
         if memory_db is None:
-            msg = "there is no memory store to keep a mark in"
+            msg = "mark_highlight: marks cannot be kept right now (no memory store); tell him"
             raise ToolError(msg, code="no_store")
         now_ms = int(self._clock() * 1000)
         try:
@@ -55,12 +55,16 @@ class HighlightMarks:
             moment = datetime.combine(on_day, parse_clock(at), sources.zone)
             start_ms, end_ms = day_window(on_day, sources.zone)
         except ValueError as exc:
-            raise ToolError(str(exc), code="invalid_argument") from None
+            msg = f"mark_highlight: {exc}"
+            raise ToolError(msg, code="invalid_argument") from None
         with closing(open_runtime_event_log(self._event_log)) as conn:
             items = fold_day(conn, start_ms, end_ms, now_ms, sources).items
         item = covering(items, int(moment.timestamp()) * 1000, now_ms)
         if item is None:
-            msg = f"nothing on {on_day.isoformat()} covers {at}"
+            msg = (
+                f"mark_highlight: nothing on {on_day.isoformat()} covers {at}; "
+                "ask him for a time inside what he means"
+            )
             raise ToolError(msg, code="no_item")
         append_highlight_mark(
             memory_db, day=on_day.isoformat(), item_id=str(item["id"]), on=on, label=label,

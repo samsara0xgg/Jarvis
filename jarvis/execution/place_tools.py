@@ -59,16 +59,16 @@ def _integer(args: Mapping[str, Any], key: str) -> int | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int | float) or value != int(value):
-        msg = f"{key} must be a whole number"
+        msg = f"save_place: {key} must be a whole number of metres (got {value!r})"
         raise ToolError(msg, code="invalid_argument")
     return int(value)
 
 
-def _refused(exc: Exception) -> ToolError:
+def _refused(exc: Exception, tool: str) -> ToolError:
     """A refused write as the model reads it."""
-    if isinstance(exc, LookupError):
-        return ToolError(str(exc), code="not_found")
-    return ToolError(str(exc), code="invalid_argument")
+    code = "not_found" if isinstance(exc, LookupError) else "invalid_argument"
+    msg = f"{tool}: {exc}"
+    return ToolError(msg, code=code)
 
 
 class _PlaceTools:
@@ -103,7 +103,10 @@ class _PlaceTools:
         if where == "here":
             fix = latest_phone_fix(ctx.conn)
             if fix is None or now - fix.at_ms > FIX_MAX_AGE_MS:
-                msg = "his phone has not reported where he is in the last 30 minutes: ask him"
+                msg = (
+                    "save_place: his phone has not reported where he is in the last 30 minutes; "
+                    "ask him where the place is"
+                )
                 raise ToolError(msg, code="location_unavailable")
             return fix.lat, fix.lng
         seen = places.read_stays(ctx.conn, now, self._zone)
@@ -115,7 +118,10 @@ class _PlaceTools:
         name, where = str(args.get("name", "")).strip(), str(args.get("where", "")).strip()
         role = args.get("role")
         if not name or not where:
-            msg = "save_place: name and where are both required"
+            msg = (
+                "save_place: name (what he calls the place) and where ('here', or a spot or "
+                "place id from places) are both required"
+            )
             raise ToolError(msg, code="invalid_argument")
         radius = _integer(args, "radius_m")
         kind = None if role is None else str(role)
@@ -131,7 +137,7 @@ class _PlaceTools:
                     origin="model",
                 )
         except (LookupError, ValueError) as exc:
-            raise _refused(exc) from exc
+            raise _refused(exc, "save_place") from exc
         return {
             "kept": places.place_view(written.place, None),
             "unchanged": written.change_id is None,
@@ -140,7 +146,7 @@ class _PlaceTools:
     def forget(self, args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         which = str(args.get("place", "")).strip()
         if not which:
-            msg = "forget_place: place is required"
+            msg = "forget_place: place is required; pass a kept place's id or name from places"
             raise ToolError(msg, code="invalid_argument")
         found = next(
             (
@@ -150,12 +156,12 @@ class _PlaceTools:
             None,
         )
         if found is None:
-            msg = f"no kept place {which}"
+            msg = f"forget_place: no kept place {which!r}; call places to see what is kept"
             raise ToolError(msg, code="not_found")
         try:
             places.forget(self._db, found.id, origin="model")
         except (LookupError, ValueError) as exc:
-            raise _refused(exc) from exc
+            raise _refused(exc, "forget_place") from exc
         return {"forgotten": found.name}
 
 

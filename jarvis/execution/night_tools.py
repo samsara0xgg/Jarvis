@@ -71,7 +71,7 @@ def _clock(value: object) -> time | None:
         return None
     match = _CLOCK.match(str(value).strip())
     if match is None:
-        msg = "until must be a local time HH:MM"
+        msg = "start_night_run: until must be a local time HH:MM, e.g. 07:30, or left out"
         raise ToolError(msg, code="invalid_argument")
     return time(int(match.group(1)), int(match.group(2)))
 
@@ -85,7 +85,10 @@ def _hours(value: object) -> float | None:
     except ValueError:
         hours = -1.0
     if not MIN_HOURS <= hours <= MAX_HOURS:
-        msg = f"hours must be between {MIN_HOURS} and {MAX_HOURS:g}"
+        msg = (
+            f"start_night_run: hours must be between {MIN_HOURS} and {MAX_HOURS:g}, "
+            "or left out for the default length"
+        )
         raise ToolError(msg, code="invalid_argument")
     return hours
 
@@ -102,7 +105,10 @@ class _Elsewhere:
         raise ToolError(_ELSEWHERE, code="device_not_connected")
 
 
-_ELSEWHERE: Final = "the night run is held by the owner's device, which is not connected"
+_ELSEWHERE: Final = (
+    "the night run is held by the owner's device, which is not connected; tell him it "
+    "needs his computer to be connected"
+)
 
 
 def build_night_tools(

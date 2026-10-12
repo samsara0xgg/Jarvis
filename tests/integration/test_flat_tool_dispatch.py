@@ -185,8 +185,9 @@ def test_flat_tool_writes_the_same_terminal_row(tmp_path: Path) -> None:
         assert len(observed["tool_output"]) <= _CAP
         out = json.loads(observed["tool_output"])
         assert out["code"] == "unexpected_error"
-        assert out["error"].startswith("crashing_tool: unexpected RuntimeError: zzz")
+        assert out["error"].startswith("crashing_tool failed unexpectedly (RuntimeError: zzz")
         assert "…[omitted" in out["error"]
+        assert out["error"].endswith("do not repeat the same call")  # the way out survives the cut
         assert out["truncated"] is True
         assert bundle.slots[0].error == "unexpected_error"
 

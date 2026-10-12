@@ -32,7 +32,10 @@ def build_weather_tool(lookup: Callable[[], Mapping[str, Any]] | None) -> tuple[
         try:
             return dict(lookup())
         except Exception as exc:  # any failure is the model's cue to web_search.
-            msg = f"weather unavailable ({type(exc).__name__}); use web_search"
+            msg = (
+                f"weather: the forecast could not be read ({type(exc).__name__}); "
+                "use web_search, or tell him it is unavailable"
+            )
             raise ToolError(msg, code="network_error") from exc
 
     return (
