@@ -75,7 +75,7 @@ def test_tool_search_finds_each_and_the_description_names_them_all(
     assert wanted in found
     for name in OFF_MENU:
         assert name in search.description
-    assert "Jarvis's own tools, not listed upfront:" in search.description
+    assert "Jarvis's own background tools, not listed upfront" in search.description
 
 
 def test_a_tool_off_the_menu_is_still_dispatched_by_name(

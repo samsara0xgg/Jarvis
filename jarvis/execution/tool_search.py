@@ -183,7 +183,12 @@ def build_tool_search(
         for s in listed
     ]
     if own:
-        lines.append(f"- Jarvis's own tools, not listed upfront: {', '.join(own)}")
+        # Named so a search can find them, and said to be rare: Luna searched them for a note
+        # he asked her to keep (exam 2026-10-12, 3/3 on the emoji-feature case).
+        lines.append(
+            f"- Jarvis's own background tools, not listed upfront and rarely needed in "
+            f"conversation (what he asks you to note or remember is keep): {', '.join(own)}",
+        )
     source_lines = "\n".join(lines)
     loaded = sorted(t.name for t in tools if not t.deferred and _source(t.name) in listed)
     loaded_line = (
