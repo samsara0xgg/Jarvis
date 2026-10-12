@@ -26,7 +26,7 @@ from anthropic import AuthenticationError
 from jarvis.decision.deep import DEEP_RULES, DeepConfigError, is_request, load_deep_settings
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
-from jarvis.decision.response_run import ResponseRunRegistry
+from jarvis.decision.response_run import ResponseCancelledError, ResponseRunRegistry
 from jarvis.decision.think_mode import load_think_mode
 from jarvis.decision.tier0 import load_tier0_table
 from jarvis.decision.turn_guards import REPEATED_CALL
@@ -41,8 +41,11 @@ from jarvis.runtime import (
 )
 from jarvis.runtime.deep_lane import DeepLane
 from jarvis.runtime.inherent_loop import (
+    _cancel_background_runs,
     _drive_turn_in_worker_thread,
+    _fail_stalled_deep_tasks_in_thread,
     _fail_turn,
+    _reconcile_open_responses_in_thread,
     _start_intent_pump,
 )
 from jarvis.shared import CallerPrincipal, lang
@@ -51,7 +54,12 @@ from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log, turn_origin
 from jarvis.state.input_claim import claim_input_once
 from jarvis.state.memory_db import MemorySettings
-from jarvis.state.turn_overlap import any_turn_in_flight, open_deep_turn, turns_in_flight
+from jarvis.state.turn_overlap import (
+    any_turn_in_flight,
+    open_deep_turn,
+    stalled_deep_intents,
+    turns_in_flight,
+)
 from tests.canary._helpers import repo_root
 from tests.integration.test_wave4a_response_run import _realtime_config
 
@@ -711,6 +719,106 @@ def test_a_raise_after_the_answer_went_out_adds_no_notice(tmp_path: Path) -> Non
         _fail_turn(lane.runtime, intent_event=task, exc=RuntimeError("raised after the answer"))
         assert lane.deep_intent() == task  # no notice was written
         assert [r["turn_id"] for r in lane.rows("turn.failed")] == [task.payload["turn_id"]]
+
+
+# --- a restart, a stop and a deadline ----------------------------------------------------------------
+
+
+class _Held:
+    """A deep run driven on a thread against a peer that holds its first reply until released."""
+
+    def __init__(self, lane: _Lane, peer: _Peer, task: Event) -> None:
+        self.error: BaseException | None = None
+        self.peer = peer
+
+        def run() -> None:
+            try:
+                _drive_turn_in_worker_thread(lane.runtime, user_intent_event=task)
+            except BaseException as exc:  # noqa: BLE001 - handed to the test
+                self.error = exc
+
+        self._thread = threading.Thread(target=run)
+        self._thread.start()
+        for _ in range(500):
+            if peer.requests["deep"]:
+                return
+            time.sleep(0.01)
+        pytest.fail("the deep run did not start")
+
+    def finish(self) -> None:
+        self.peer.release.set()
+        self._thread.join(10)
+
+
+def _cut_short_by_a_restart(lane: _Lane, peer: _Peer) -> Event:
+    """A deep task stopped mid-run and closed by boot reconciliation, as a graceful restart leaves it."""
+    peer.then("fast", *_HAND_OFF)
+    lane.drive(lane.say(_TASK))
+    task = lane.deep_intent()
+    peer.then("deep", ("hold", ("call", "mail", {"q": "求职"})))
+    held = _Held(lane, peer, task)
+    _cancel_background_runs(lane.runtime)
+    held.finish()
+    closed = _reconcile_open_responses_in_thread(lane.runtime.runtime_paths.event_log, None)
+    assert closed == 1
+    assert [r["reason"] for r in lane.rows("response.failed")] == ["daemon_restart"]
+    return task
+
+
+def test_a_task_a_restart_closed_does_not_read_busy_and_boot_tells_him_it_did_not_finish(tmp_path: Path) -> None:
+    """The run is closed as daemon_restart with no turn row: the lane frees, and he is told once."""
+    with _Peer() as peer:
+        lane = _Lane(tmp_path, peer, cancel=True)
+        task = _cut_short_by_a_restart(lane, peer)
+        turn_id = task.payload["turn_id"]
+        assert open_deep_turn(lane.conn, since_ms=0) != turn_id
+        assert stalled_deep_intents(lane.conn, since_ms=0) == (task.event_uid,)
+
+        assert _fail_stalled_deep_tasks_in_thread(lane.runtime.runtime_paths.event_log, lane.runtime.deep) == 1  # type: ignore[arg-type]
+        assert [r["turn_id"] for r in lane.rows("turn.failed")] == [turn_id]
+        notice = lane.deep_intent()
+        assert (notice.payload["deep_failure"], notice.payload["from_turn"]) == ("error", turn_id)
+        lane.drive(notice)
+        assert lane.answer(notice.payload["turn_id"])["text"].startswith("你让我仔细查的那件事没查成")
+        # The next boot finds nothing more to close.
+        assert _fail_stalled_deep_tasks_in_thread(lane.runtime.runtime_paths.event_log, lane.runtime.deep) == 0  # type: ignore[arg-type]
+        assert lane.deep_intent() == notice
+
+
+def test_a_task_that_never_began_is_left_for_the_pump_to_drive(tmp_path: Path) -> None:
+    """Claimed or not, no run opened: boot recovery drives it, so boot reconciliation does not end it."""
+    with _Peer() as peer:
+        lane = _Lane(tmp_path, peer)
+        peer.then("fast", *_HAND_OFF)
+        lane.drive(lane.say(_TASK))
+        assert stalled_deep_intents(lane.conn, since_ms=0) == ()
+        assert lane.rows("turn.failed") == []
+
+
+def test_a_graceful_stop_cancels_the_running_deep_task_instead_of_waiting_it_out(tmp_path: Path) -> None:
+    """The token is set at shutdown: the run ends at its next request, which it never sends."""
+    with _Peer() as peer:
+        lane = _Lane(tmp_path, peer, cancel=True)
+        peer.then("fast", *_HAND_OFF)
+        lane.drive(lane.say(_TASK))
+        task = lane.deep_intent()
+        peer.then("deep", ("hold", ("call", "mail", {"q": "求职"})), ("say", _ANSWER))
+        held = _Held(lane, peer, task)
+        _cancel_background_runs(lane.runtime)
+        held.finish()
+        assert isinstance(held.error, ResponseCancelledError)
+        assert len(peer.requests["deep"]) == 1  # no second request after the stop
+        assert lane.rows("surface.response_emitted", task.payload["turn_id"]) == []
+        assert lane.ran == []
+
+
+def test_a_stop_leaves_ordinary_runs_alone(tmp_path: Path) -> None:
+    """Only a run that ignores interruption (the deep task) is cancelled by the shutdown helper."""
+    with _Peer() as peer:
+        lane = _Lane(tmp_path, peer, cancel=True)
+        _cancel_background_runs(lane.runtime)  # nothing open: nothing happens
+        assert lane.runtime.response_runs is not None
+        assert lane.runtime.response_runs.open_runs() == ()
 
 
 # --- the turn's guards still apply in the deep run ---------------------------------------------

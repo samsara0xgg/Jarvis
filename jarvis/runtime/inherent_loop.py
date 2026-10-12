@@ -96,6 +96,7 @@ if TYPE_CHECKING:
     from jarvis.decision.turn_end_asks import TurnEndAsks
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.runtime.dashboard import MailDrafts
+    from jarvis.runtime.deep_lane import DeepLane
     from jarvis.runtime.home import Home
     from jarvis.runtime.job_mail import JobMail
     from jarvis.runtime.moment import Moment
@@ -266,7 +267,7 @@ from jarvis.state.projections import (
 from jarvis.state.push_tokens import register_body
 from jarvis.state.reminders import ID_PREFIX
 from jarvis.state.trigger_consumption import trigger_was_consumed
-from jarvis.state.turn_overlap import any_turn_in_flight
+from jarvis.state.turn_overlap import any_turn_in_flight, stalled_deep_intents
 from jarvis.state.turn_steps import answer_steps
 from jarvis.surface import (
     respeaker_board,
@@ -1002,6 +1003,48 @@ def _reconcile_open_responses_in_thread(
         with contextlib.suppress(sqlite3.Error):
             conn.close()
     return len(events)
+
+
+_DEEP_RECONCILE_S: Final[int] = 24 * 3600
+
+
+def _fail_stalled_deep_tasks_in_thread(
+    event_log_path: Path, deep: DeepLane,
+) -> int:
+    """Close each deep task a restart cut short and tell him (ADR 0251); returns how many.
+
+    The run was closed as ``daemon_restart`` above and the pump never drives a begun turn again,
+    so without this the task has no end row and no word to him until its busy mark expires.
+    Runs on an ``asyncio.to_thread`` worker with its OWN connection, as the reconcilers around it.
+    """
+    conn = open_event_log(event_log_path)
+    closed = 0
+    try:
+        gone = RuntimeError("daemon_restart")
+        since_ms = int((time.time() - _DEEP_RECONCILE_S) * 1000)
+        for uid in stalled_deep_intents(conn, since_ms=since_ms):
+            intent = get_event(conn, uid)
+            if intent is not None:
+                _emit_turn_failed(conn, intent_event=intent, exc=gone)
+                deep.failed(conn, intent, gone)
+                closed += 1
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    return closed
+
+
+def _cancel_background_runs(runtime: JarvisRuntime) -> None:
+    """Cancel the runs that ignore interruption (the deep task, ADR 0251) so a stop need not wait.
+
+    Only the token is set: the run stops at its next request or tool call, writes nothing, and
+    boot reconciliation closes it and tells him.
+    """
+    if runtime.response_runs is None:
+        return
+    for run in runtime.response_runs.open_runs():
+        if run.interrupt_policy.generation_action == "continue":
+            run.cancellation_token.cancel(reason="daemon_shutdown", scope="generation")
 
 
 def _reconcile_open_playback_in_thread(
@@ -7056,6 +7099,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     "boot reconciliation closed %d open response run(s)",
                     closed_runs,
                 )
+        if runtime.deep is not None:
+            stalled = await asyncio.to_thread(
+                _fail_stalled_deep_tasks_in_thread, runtime.runtime_paths.event_log, runtime.deep,
+            )
+            if stalled:
+                LOGGER.info("boot reconciliation ended %d deep task(s) cut short", stalled)
 
         # ADR-0008 D9 / F23 — a previous process may have died holding a
         # repository: its action reached a canonical terminal but never wrote
@@ -7891,6 +7940,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             # Cancel/await watcher ownership before PortAudio teardown. A
             # provider thread may still exist, but the closed generation owns
             # no right to write or invoke fallback.
+            # ADR 0251: a deep run lasts minutes and a worker's cancel waits for its thread.
+            _cancel_background_runs(runtime)
             for w in watchers:
                 w.cancel()
             await asyncio.gather(*watchers, return_exceptions=True)

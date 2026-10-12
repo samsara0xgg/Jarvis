@@ -27,6 +27,11 @@ _TURN_CLOSED_TYPES: Final[tuple[str, str, str]] = (
 )
 
 
+# A deep task (ADR 0251) is also over once its run failed: boot reconciliation closes a run a
+# restart cut short with `response.failed` and writes no turn row.
+_DEEP_CLOSED_TYPES: Final[tuple[str, ...]] = (*_TURN_CLOSED_TYPES, "response.failed")
+
+
 @dataclass(frozen=True)
 class TurnInFlight:
     """An earlier turn of Allen's words that has no answer yet."""
@@ -105,8 +110,9 @@ def any_turn_in_flight(conn: sqlite3.Connection, *, since_ms: int) -> bool:
 def open_deep_turn(conn: sqlite3.Connection, *, since_ms: int) -> str | None:
     """The id of the deep task (ADR 0251) handed over at or after ``since_ms`` and not yet over.
 
-    A task is over once its turn ended, failed or had its run cancelled. One stuck past
-    ``since_ms`` (a crash writes no end) stops counting, so it cannot block the next forever.
+    A task is over once its turn ended or failed, or its run was cancelled or failed (a restart
+    closes the run that way). One stuck past ``since_ms`` (a crash writes no end) stops counting,
+    so it cannot block the next forever.
     """
     row = conn.execute(
         f"""
@@ -115,16 +121,48 @@ def open_deep_turn(conn: sqlite3.Connection, *, since_ms: int) -> str | None:
           AND json_extract(i.payload_json, '$.channel') = ?
           AND NOT EXISTS (
             SELECT 1 FROM events e
-            WHERE e.type IN ({", ".join("?" * len(_TURN_CLOSED_TYPES))})
+            WHERE e.type IN ({", ".join("?" * len(_DEEP_CLOSED_TYPES))})
               AND e.ts_epoch_ms >= i.ts_epoch_ms
               AND json_extract(e.payload_json, '$.turn_id')
                   = json_extract(i.payload_json, '$.turn_id')
           )
         ORDER BY i.id DESC LIMIT 1
         """,  # noqa: S608 - only placeholders are interpolated
-        (since_ms, DEEP_CHANNEL, *_TURN_CLOSED_TYPES),
+        (since_ms, DEEP_CHANNEL, *_DEEP_CLOSED_TYPES),
     ).fetchone()
     return None if row is None else str(row[0])
+
+
+def stalled_deep_intents(conn: sqlite3.Connection, *, since_ms: int) -> tuple[str, ...]:
+    """The ``event_uid`` of each deep task at or after ``since_ms`` that began and never ended.
+
+    A run opened (``response.started``) but the turn has no ``turn.ended`` or ``turn.failed``,
+    nor a cancelled run: a restart cut it short. The intent pump does not drive such a turn
+    again (it is past "accepted"), so this is the one that owes him a notice. A task that was
+    claimed but never began is not here: boot recovery still drives it.
+    """
+    rows = conn.execute(
+        f"""
+        SELECT i.event_uid FROM events i
+        WHERE i.type = 'surface.user_intent' AND i.ts_epoch_ms >= ?
+          AND json_extract(i.payload_json, '$.channel') = ?
+          AND EXISTS (
+            SELECT 1 FROM events r WHERE r.type = 'response.started'
+              AND json_extract(r.payload_json, '$.turn_id')
+                  = json_extract(i.payload_json, '$.turn_id')
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM events e
+            WHERE e.type IN ({", ".join("?" * len(_TURN_CLOSED_TYPES))})
+              AND e.ts_epoch_ms >= i.ts_epoch_ms
+              AND json_extract(e.payload_json, '$.turn_id')
+                  = json_extract(i.payload_json, '$.turn_id')
+          )
+        ORDER BY i.id
+        """,  # noqa: S608 - only placeholders are interpolated
+        (since_ms, DEEP_CHANNEL, *_TURN_CLOSED_TYPES),
+    ).fetchall()
+    return tuple(str(uid) for (uid,) in rows)
 
 
 # What a turn and its sound leave on the log: input, the turn's own rows, the answer,

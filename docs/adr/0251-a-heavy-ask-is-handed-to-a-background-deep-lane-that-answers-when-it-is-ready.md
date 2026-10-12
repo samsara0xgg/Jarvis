@@ -31,8 +31,14 @@
   rewriting of his ask plus what the conversation already established, up to 1500 characters.
 - **One deep task at a time.** `think_deeper` while a deep intent has no closing row returns
   `{started: false, reason: "busy", spoken}` and starts nothing. Busy is read from the event log, not
-  held in memory, so a restart does not forget a task; a task with no closing row for 30 minutes is
-  taken as lost, because a crash writes none.
+  held in memory, so a restart does not forget a task. A task is over at `turn.ended`, `turn.failed`,
+  `response.cancelled` or `response.failed` (boot reconciliation closes a cut-short run that way); a
+  task with none of them for 30 minutes is taken as lost, because a crash writes none.
+- **A stop or a restart ends a run with a word.** At shutdown the runtime cancels the token of every
+  run that ignores interruption, so a graceful stop waits for no deep run. At boot, after
+  reconciliation closed the run as `daemon_restart`, each deep task that had begun and has no
+  `turn.ended` or `turn.failed` gets a `turn.failed` and the failure notice: the intent pump never
+  drives a begun turn again, so nothing else would.
 - **The deep turn runs on the `llm.deep.preset` preset.** The shipped one is `sonnet-deep`:
   `claude-sonnet-5-5`, `reasoning_effort: high`, 16384 output tokens, a 300 second request timeout
   (a `timeout_s` key on a preset overrides `llm.timeout_s`), and the unstructured spoken route of
@@ -120,9 +126,9 @@
   `think_deeper` as "started, the result comes later" so the exam does not spend it.
 - A deep run occupies one of the three turn workers for its whole duration. A fourth concurrent
   turn waits for a worker.
-- A deep turn that has been claimed and is unfinished when the daemon restarts may be driven
-  again after the restart, from its opening row, and repeat read-only lookups. Writes still stop at
-  their cards. A task a crash left without a closing row stops counting as running after 30 minutes.
+- A deep turn that was claimed but had not begun when the daemon restarts is driven after the
+  restart from its opening row. One that had begun is not driven again: it ends with the failure
+  notice at boot, and the voice lane can start it afresh.
 - A result for a task that came from a phone's voice is delivered as a card and push to that
   phone, not spoken: the Mac does not play a phone's conversation (ADR 0218).
 - The UI shows the task text as a row of his on the deep channel, because the log shape is a user
