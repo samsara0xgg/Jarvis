@@ -7,16 +7,17 @@ r"""Tool exam: replay logged decision requests and score whether the FIRST step 
 ``CASES.json`` is private conversation data and lives outside the repo
 (``~/.jarvis/evals/tool-exam/cases.json``): a list of ``{id, said, request, tags, expect?}`` where
 ``request`` is a logged decision request (``kind: decision``, Responses or chat shape) and
-``expect.first`` is ``{ok, bad, text_must_not?, args_must_not?, no_identical_repeat?,
-cursor_must_come_from_history?, must_mention?}``: ``ok`` names tools (or ``"text"``, a spoken
-answer with no tool) that pass, ``bad`` names fail even next to an ok one, ``text_must_not``
-regexes fail a no-tool answer, ``args_must_not`` maps a tool to substrings its raw arguments
-must not hold, or to an ``{arg: value}`` dict that fails a call carrying all of those values
-(``"*"``: any value), ``no_identical_repeat`` fails a call the request's history already made
-with the same arguments, ``cursor_must_come_from_history`` fails a ``cursor`` no earlier tool
-output gave, and ``must_mention`` regexes (one must match the answer or the call arguments)
-check that misheard words were understood. Next to it sits ``mcp-tools.json``: the MCP tool
-definitions (``{mcp__server__tool: {name, description, input_schema}}``) a live server would
+``expect.first`` is ``{ok, bad, text_must_not?, args_must_not?, args_must?, no_identical_repeat?,
+cursor_must_come_from_history?, must_mention?}``: ``ok`` names tools (or ``"text"``, a spoken answer
+with no tool) that pass, ``bad`` names fail even next to an ok one, ``text_must_not`` regexes fail a
+no-tool answer, ``args_must_not`` maps a tool to substrings its raw arguments must not hold, or to
+an ``{arg: value}`` dict that fails a call carrying all of those values (``"*"``: any value),
+``args_must`` maps a tool to ``{arg: value}`` dicts of which a call must carry one (how a merged
+tool's ok use is told from its bad one), ``no_identical_repeat`` fails a call the request's history
+already made with the same arguments, ``cursor_must_come_from_history`` fails a ``cursor`` no
+earlier tool output gave, and ``must_mention`` regexes (one must match the answer or the call
+arguments) check that misheard words were understood. Next to it sits ``mcp-tools.json``: the MCP
+tool definitions (``{mcp__server__tool: {name, description, input_schema}}``) a live server would
 list, which an offline run cannot ask for. An optional ``tool-aliases.json`` next to the cases maps
 a tool name the cases still use to the name that replaced it (``{"mail_inbox": "mail"}``): ``score``
 reads the names in ``ok``, ``bad`` and ``args_must_not`` through it, so a merged tool is judged
@@ -511,6 +512,7 @@ def judge(
     rules: dict[str, list[Any]] = defaultdict(list)
     for tool_name, rule in (first.get("args_must_not") or {}).items():
         rules[named(tool_name, tool_name)].append(rule)
+    musts = {named(n, n): one for n, one in (first.get("args_must") or {}).items()}
     if line.get("error"):
         return False, f"ERR({str(line['error']).split(':')[0]})"
     calls = line.get("calls") or []
@@ -535,7 +537,9 @@ def judge(
         name, args = call["name"], call["args"]
         cursor = args.get("cursor") if isinstance(args, dict) else None
         tripped = []
-        if any(_trips(rule, args) for rule in rules.get(name, ())):
+        if any(_trips(rule, args) for rule in rules.get(name, ())) or (
+            name in musts and not any(_trips(one, args) for one in musts[name])
+        ):
             tripped.append(f"{name}~args")
         if first.get("no_identical_repeat") and {"name": name, "args": args} in earlier:
             tripped.append(f"repeat:{name}")

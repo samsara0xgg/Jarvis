@@ -202,6 +202,7 @@ BUS = dict.fromkeys(
     "bus",
 )
 NOT_A_PLAN = ['"ride"', '"pin"', '"get_off"']
+RIDE = [{"ride": "start"}, {"ride": "watch"}]
 
 
 @pytest.mark.parametrize(
@@ -221,6 +222,13 @@ NOT_A_PLAN = ['"ride"', '"pin"', '"get_off"']
          (True, "pass")),
         ({"ok": ["transit"], "args_must_not": {"transit": NOT_A_PLAN}},
          ("bus", {"ride": "end"}), (False, "FAIL(bus~args)")),
+        # args_must: a ride case passes only a call that starts or watches a ride.
+        ({"ok": ["start_ride", "text"], "args_must": {"bus": RIDE}}, ("bus", {"ride": "start"}),
+         (True, "pass")),
+        ({"ok": ["start_ride", "text"], "args_must": {"bus": RIDE}}, ("bus", {"to": "home"}),
+         (False, "FAIL(bus~args)")),
+        ({"ok": ["start_ride", "text"], "args_must": {"bus": RIDE}}, ("bus", {}),
+         (False, "FAIL(bus~args)")),
     ],
 )
 def test_the_six_bus_tools_read_as_bus(
