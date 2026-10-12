@@ -44,7 +44,8 @@ window and its file is kept. His devices can list it with his line and open it a
 - **Claude presets only.** On a preset whose provider is `anthropic`, the history message
   of his turn carries its pictures as image blocks after his words, in the same place the
   live turn had them. Other providers keep 0223's marker line.
-- **By file id.** A picture is uploaded to the Files API the first time a request needs it.
+- **By file id.** A picture is uploaded to the Files API in the background as soon as it is
+  saved, and one saved earlier is uploaded at start or the first time a request needs it.
   Its file id is kept next to the file, and every later request refers to it by that id.
   The live turn still sends the bytes inline, so a new picture never waits on an upload.
 - **The 20 newest.** At most the 20 newest pictures in the window ride as images. An older
@@ -83,8 +84,10 @@ window and its file is kept. His devices can list it with his line and open it a
 
 - Pictures now leave the house twice: once inline in the live turn, and once to the Files
   API, where they stay up to 30 days. `docs/spec.html#egress-table` gets that row.
-- Rendering history can now wait on an upload the first time a picture is in the window
-  without an id. A failed upload falls back to the marker and note for that request.
+- A picture's upload starts when it is saved, so the next turn normally finds its id; a render
+  waits for uploads still running at most 5 seconds in all, and a picture without an id by then,
+  or whose upload failed, rides as its marker and note for that request. A request the API
+  rejects over a file id it cannot read is sent once more the same way, and that id is dropped.
 - Moving the window boundary, or a picture dropping out of the 20, changes the prefix once.
   That costs one cache write.
 - Switching to a non-Claude preset silently loses the pictures in history.
