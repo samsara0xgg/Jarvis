@@ -9,6 +9,7 @@ model call is given.
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 import stat
@@ -189,13 +190,20 @@ def test_an_anthropic_key_is_kept_only_when_anthropic_lists_models_with_it(
         seen.append(request.get_header("X-api-key"))
         urls.append(request.full_url)
         if refuse:
-            raise urllib.error.HTTPError(request.full_url, 401, "no", None, None)  # type: ignore[arg-type]
+            says = json.dumps(
+                {"error": {"type": "authentication_error", "message": "bad key sk-ant-zzz"}},
+            ).encode()
+            raise urllib.error.HTTPError(  # type: ignore[arg-type]
+                request.full_url, 401, "no", None, io.BytesIO(says),
+            )
         return io.BytesIO(b"{}")
 
     monkeypatch.setattr(runtime_setup.urllib.request, "urlopen", urlopen)
     client = _client(_setup(tmp_path))
     body = {"provider": "anthropic", "key": " sk-ant-x "}
-    assert client.post("/inherent/setup/key", json=body).json()["ok"] is False
+    refused = client.post("/inherent/setup/key", json=body).json()
+    assert refused["ok"] is False
+    assert refused["checks"][0]["says"] == "authentication_error: bad key sk-ant-…"
     assert saved == []
     assert client.get("/inherent/setup").json()["keys"]["anthropic"] == "missing"
     refuse = False

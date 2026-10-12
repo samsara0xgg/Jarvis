@@ -114,6 +114,18 @@ def _post_json(url: str, key: str, body: Mapping[str, Any]) -> dict[str, Any]:
     return answer if isinstance(answer, dict) else {}
 
 
+def _anthropic_says(exc: BaseException) -> str:
+    """Anthropic's error body as ``type: message``, any key-shaped run masked; may be empty."""
+    if not isinstance(exc, urllib.error.HTTPError):
+        return ""
+    try:
+        error = json.loads(exc.read()).get("error") or {}
+        text = f"{error.get('type', '')}: {error.get('message', '')}".strip(": ")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return re.sub(r"sk-ant-\S+", "sk-ant-…", text)[:160]
+
+
 def _http_reason(exc: BaseException) -> str:
     """Why a plain HTTP call failed, in :func:`failure_reason`'s words."""
     if isinstance(exc, urllib.error.HTTPError):
@@ -405,7 +417,9 @@ class Setup:
         try:
             urllib.request.urlopen(request, timeout=_TIMEOUT_S).close()  # noqa: S310
         except Exception as exc:  # noqa: BLE001 — shown as the row's reason.
-            return {"checks": [_check("connect", reason=_http_reason(exc))]}
+            row = _check("connect", reason=_http_reason(exc))
+            says = _anthropic_says(exc)
+            return {"checks": [{**row, "says": says} if says else row]}
         return {"checks": [_check("connect")]}
 
     def check_at_boot(self) -> None:

@@ -466,9 +466,9 @@ function KeyField({ provider, name, port, lang, value: key, onChange: setKey, on
     try {
       const r = await fetch(`http://127.0.0.1:${port}/inherent/setup/key`, { method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ provider, key: key.trim() }), signal: AbortSignal.timeout(90_000) });
-      const answer = await r.json() as { ok?: boolean; checks?: { ok: boolean; reason?: string }[] };
+      const answer = await r.json() as { ok?: boolean; checks?: { ok: boolean; reason?: string; says?: string }[] };
       if (answer.ok) { setKey(''); onSaved(); }
-      else setWhy(t(WHY[answer.checks?.find(c => !c.ok)?.reason ?? ''] ?? WHY.error));
+      else { const bad = answer.checks?.find(c => !c.ok); setWhy(t(WHY[bad?.reason ?? ''] ?? WHY.error) + (bad?.says ? ` (${bad.says})` : '')); }
     } catch { setWhy(t(WHY.away)); }
     setBusy(false);
   };
