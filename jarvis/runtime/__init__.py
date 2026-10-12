@@ -3090,7 +3090,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             paths.artifacts_root / ATTACHMENTS_DIRNAME,
         ),
     )
-    plugin_connections.refresh_search()  # ADR 0246: every built-in tool is registered now
+    plugin_connections.refresh_search()  # ADR 0247: every built-in tool is registered now
     attachments = Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME)
     return JarvisRuntime(
         config=full_config,

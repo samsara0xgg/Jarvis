@@ -1,4 +1,4 @@
-"""ADR 0244: what he asks her to keep is one write, ``keep``; what she kept is one read, ``kept``.
+"""ADR 0245: what he asks her to keep is one write, ``keep``; what she kept is one read, ``kept``.
 
 The real tools run through ``ToolRegistry.dispatch`` onto a real event log and a real memory.db
 under a fixed clock (a Sunday evening in Victoria). Each check asserts the result the model
@@ -510,7 +510,7 @@ def test_a_model_that_saves_again_with_other_arguments_still_writes_one_row(
 
 
 def test_an_answer_that_claims_a_save_before_any_call_is_sent_back_to_keep(tmp_path: Path) -> None:
-    """ADR 0239 on the new tool: 「记下了」 with nothing kept goes back once, then keep runs."""
+    """ADR 0240 on the new tool: 「记下了」 with nothing kept goes back once, then keep runs."""
     model = _ScriptedModel("记下了。", ("keep", {"text": "明天是我生日"}), "好。")
     _, conn = _batch(tmp_path, model)
     try:

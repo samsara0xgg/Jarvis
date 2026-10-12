@@ -273,14 +273,14 @@ class PluginConnections:
         return combined
 
     def refresh_search(self) -> None:
-        """Index the built-in tools registered since the last publish (ADR 0246)."""
+        """Index the built-in tools registered since the last publish (ADR 0247)."""
         with self._lock:
             self._publish()
 
     def _publish(self) -> None:
         all_tools = tuple(t for a in self._active.values() for t in a.tools)
-        # ADR 0246: built-in tools kept off the menu are found through tool_search too, except
-        # the ones a menu tool took over (ADR 0241): those are found only by naming them.
+        # ADR 0247: built-in tools kept off the menu are found through tool_search too, except
+        # the ones a menu tool took over (ADR 0242): those are found only by naming them.
         taken = self.registry.superseded()
         off_menu = tuple(
             t for t in self.registry.get_definitions()

@@ -1,4 +1,4 @@
-# ADR 0244 — What he asks her to keep is one write, and what she kept is one read
+# ADR 0245 — What he asks her to keep is one write, and what she kept is one read
 
 **Status:** Accepted
 **Date:** 2026-10-11
@@ -22,7 +22,7 @@
 - The stores differ and stay as they are. A memo is a `memo.captured` event with no delete; a
   reminder is the `reminder.*` events ADR 0179's tick fires; a fact is a core-memory item
   (ADR 0146). Tier 0's `/note` and `/notelist` rows call the memo tools.
-- ADR 0239 refuses an identical call inside one turn, and only until another write succeeds.
+- ADR 0240 refuses an identical call inside one turn, and only until another write succeeds.
 - ADR 0146's amendment (2026-10-10): after 「不是麦当劳 我在吃莲香」 the model filed what he was
   eating as a lasting preference and saved it four times.
 - The repository has no parser for "tomorrow 9am".
@@ -55,7 +55,7 @@ doing, eating or where he is now: ADR 0146's amendment holds, worded in `kind`'s
 - **Parse "tomorrow 9am" in `at`.** It needs a parser the repository does not have, and a wrong
   guess is then confirmed as a time he did not mean; the result names the local time it
   understood, and a wrong or past `at` is refused with the current time and an example.
-- **Leave the repeat to ADR 0239.** It keys on exact arguments in one turn and lets a repeat run
+- **Leave the repeat to ADR 0240.** It keys on exact arguments in one turn and lets a repeat run
   after any other write; a changed `kind`, spacing, case or the next turn writes again.
 - **Delete a memo by id.** Memos are append-only events with no delete type; adding one changes
   the log's schema and the memory page for a request nobody made. `cancel` stays reminders-only.

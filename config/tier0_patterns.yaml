@@ -78,7 +78,7 @@
   template: tier0.opening_in_vscode
 # Memo inbox slash commands. Both skip the LLM: `/note` captures the
 # rest of the line verbatim (the Shift+Return voice path arrives already
-# prefixed by the daemon), `/notelist` reads back what `kept` finds (the newest eight, ADR 0244)
+# prefixed by the daemon), `/notelist` reads back what `kept` finds (the newest eight, ADR 0245)
 # — its summary IS the answer, so the row raises the spoken-preview cap.
 - id: note_capture
   pattern: "^/note\\s+(.+)$"

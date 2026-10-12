@@ -1,6 +1,6 @@
 # ADR 0075 — Jarvis takes a card down when Allen says not to go ahead
 
-**Status:** Superseded-by-0246
+**Status:** Superseded-by-0247
 **Date:** 2026-09-26
 **Supersedes:** none
 

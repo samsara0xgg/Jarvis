@@ -9,7 +9,7 @@ for the rest of the turn. The search never runs a found tool.
 
 A deferred tool that a tool on the menu has taken over (``Tool.supersedes``, ADR 0242) is found
 but not loaded: the result says which tool to call instead. So is one the query names outright.
-A built-in tool kept off the menu (ADR 0246) is deferred the same way and listed by name in the
+A built-in tool kept off the menu (ADR 0247) is deferred the same way and listed by name in the
 tool's description.
 """
 

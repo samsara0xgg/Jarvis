@@ -1,4 +1,4 @@
-# ADR 0245 — His bus is one tool, and the server remembers the last list and the ride
+# ADR 0246 — His bus is one tool, and the server remembers the last list and the ride
 
 **Status:** Accepted
 **Date:** 2026-10-11
@@ -23,7 +23,7 @@
   - "which stop do I get off at" and "get off at that stop": wrong tools and recall cursors
     that no result had given;
   - "I am on it" after being told which bus: `start_ride`, right.
-- A repeated identical call in a turn is refused (ADR 0239), so every intent needs arguments of
+- A repeated identical call in a turn is refused (ADR 0240), so every intent needs arguments of
   its own.
 
 ## Decision
@@ -60,7 +60,7 @@ unchanged.
 
 ## Consequences
 
-- `bus` is not read-only (it writes pins and rides). The turn guards (ADR 0239) count a
+- `bus` is not read-only (it writes pins and rides). The turn guards (ADR 0240) count a
   successful call, a times lookup included, as a write: an identical repeat after any `bus` call
   runs again, and an answer that says something was set is not sent back after a bare lookup. A
   live delegation limited to read-only tools (ADR 0016) no longer sees the bus times.

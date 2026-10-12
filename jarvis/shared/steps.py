@@ -53,7 +53,7 @@ _KIND: Final[dict[str, str]] = {
     "screen_capture": "screen",
     "look_at_picture": "picture",
     "bus": "transit",
-    # The six tools `bus` replaced (ADR 0245): turns already in the log still name them.
+    # The six tools `bus` replaced (ADR 0246): turns already in the log still name them.
     "transit": "transit",
     "pin_departure": "ride",
     "watch_for_boarding": "ride",
@@ -100,7 +100,7 @@ _HIDDEN: Final = frozenset(
 def kind(tool: str, arguments: object = None) -> str:
     """The language-table kind of a tool: ``step.<kind>`` names it; ``generic`` is no kind.
 
-    ``bus`` is a ride when the call pins, rides or sets a stop, else a transit look (ADR 0245).
+    ``bus`` is a ride when the call pins, rides or sets a stop, else a transit look (ADR 0246).
     """
     if tool == "bus" and _RIDE_ARGUMENTS & _arguments(arguments).keys():
         return "ride"

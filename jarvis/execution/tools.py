@@ -3888,7 +3888,7 @@ def _device_proxy(original: ToolDefinition | Tool, link: DeviceLink) -> ToolDefi
 _OFF_MENU_DAILY: Final[frozenset[str]] = frozenset(
     {"save_briefing", "save_knowledge", "search_knowledge"},
 )
-"""ADR 0246: the daily-loop tools no turn needs by default; ``tool_search`` finds them."""
+"""ADR 0247: the daily-loop tools no turn needs by default; ``tool_search`` finds them."""
 
 
 def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.

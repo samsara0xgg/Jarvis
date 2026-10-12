@@ -597,7 +597,7 @@ def test_the_unknown_stop_is_asked_once_and_set_by_a_tool(world: World) -> None:
 def test_bus_with_no_arguments_is_how_the_ride_is_going_and_without_one_the_times(
     world: World,
 ) -> None:
-    """ADR 0245: on a ride the answer is the ride (next stop, his stop, arrival); off it, none."""
+    """ADR 0246: on a ride the answer is the ride (next stop, his stop, arrival); off it, none."""
     out = world.tool({})
     assert out["code"] == "unavailable"  # no ride, and this world has no Google key
     bus = _board_said(world)

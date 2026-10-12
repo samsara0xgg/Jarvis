@@ -1,6 +1,6 @@
 """ADR 0189: the bus times from Google Routes, the offer they leave, and the pins made from it.
 
-The model reaches all of it through the one ``bus`` tool (``jarvis.execution.bus_tool``, ADR 0245).
+The model reaches all of it through the one ``bus`` tool (``jarvis.execution.bus_tool``, ADR 0246).
 """
 
 from __future__ import annotations

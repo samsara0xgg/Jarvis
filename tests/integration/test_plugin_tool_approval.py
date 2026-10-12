@@ -373,7 +373,7 @@ def test_the_model_takes_the_card_down_when_allen_says_not_to_send(
 def test_dismiss_card_takes_down_a_confirmation_and_a_question_card_together(
     tmp_path: Path, servers: McpServers
 ) -> None:
-    """ADR 0246: with both cards up one call takes both down, and neither action runs."""
+    """ADR 0247: with both cards up one call takes both down, and neither action runs."""
     ctx = _context(tmp_path, servers, _WithdrawingClient())
     try:
         assert _say(ctx, "用 add 工具算 17 加 25", "T1") == ASK

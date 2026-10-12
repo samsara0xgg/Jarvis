@@ -428,7 +428,7 @@ core_memory:
     - Return {"changes": []} when nothing lasting happened that day.
     - Places he keeps are listed in [Places he keeps]. Do not add or keep items that only restate a place's name or location.
 
-# ADR 0189, 0245 — the model's `bus` tool reads bus times from Google Routes when
+# ADR 0189, 0246 — the model's `bus` tool reads bus times from Google Routes when
 # GOOGLE_MAPS_API_KEY is set in the runtime env file.  The saved places are this user's own:
 # write them in settings.yaml, each an address or "lat,lng", for example
 # transit: {home: "<street address or lat,lng>", school: "<street address or lat,lng>"}.

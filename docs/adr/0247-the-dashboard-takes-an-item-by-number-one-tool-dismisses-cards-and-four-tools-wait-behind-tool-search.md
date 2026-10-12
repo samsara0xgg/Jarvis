@@ -1,4 +1,4 @@
-# ADR 0246 — The Dashboard takes an item by number, one tool dismisses cards, and four tools wait behind tool_search
+# ADR 0247 — The Dashboard takes an item by number, one tool dismisses cards, and four tools wait behind tool_search
 
 **Status:** Accepted
 **Date:** 2026-10-11
@@ -16,7 +16,7 @@
   state block already numbers those rows.
 - Two tools took a card down: `withdraw_card` for a confirmation (ADR 0075) and `close_question`
   for a question (ADR 0206). With no card waiting each failed, and the model repeated the call
-  (ADR 0239, `mem-churn-withdraw-card`). `cal-today-ask-user` and `cal-schedule-ask-user` show it
+  (ADR 0240, `mem-churn-withdraw-card`). `cal-today-ask-user` and `cal-schedule-ask-user` show it
   raising an `ask_user` card and closing it in the next call.
 - Four tools no turn needs by default are 5,456 characters of description and schema on the menu
   the exam rebuilds offline: `save_briefing`, `save_knowledge`, `search_knowledge`,
@@ -35,7 +35,7 @@
 page counted from 1, `dismiss_card` replaces `withdraw_card` and `close_question` and does
 nothing without an error when no card is waiting, and the four tools above are deferred, with
 `tool_search` indexing built-in deferred tools as it does MCP ones, except a built-in a menu tool
-took over (ADR 0241), which stays found only by naming it.
+took over (ADR 0242), which stays found only by naming it.
 
 Limits:
 

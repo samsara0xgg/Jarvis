@@ -1,4 +1,4 @@
-"""ADR 0245: his bus is one tool; the server remembers the list and the ride.
+"""ADR 0246: his bus is one tool; the server remembers the list and the ride.
 
 A scripted story against the real registry: Google Routes served by hand (no network), a ride
 follower that is a recorder with canned answers, a real event log for the pin and its reminder.

@@ -1,4 +1,4 @@
-"""ADR 0244: what he asks her to keep is one write, ``keep``; what she kept is one read, ``kept``.
+"""ADR 0245: what he asks her to keep is one write, ``keep``; what she kept is one read, ``kept``.
 
 ``keep`` writes the three stores the old tools did, with their side effects unchanged: a memo is a
 ``memo.captured`` event, a reminder a ``reminder.scheduled`` event the daemon's tick fires

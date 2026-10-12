@@ -1,6 +1,6 @@
 # ADR 0221 — A named bus is asked about directly and judged by spare minutes
 
-**Status:** Superseded-by-0245
+**Status:** Superseded-by-0246
 **Date:** 2026-10-10
 **Supersedes:** none
 

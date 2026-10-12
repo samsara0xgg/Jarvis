@@ -1,4 +1,4 @@
-"""ADR 0189, 0245: the model reads the bus times in one `bus` call, from a hand-built answer."""
+"""ADR 0189, 0246: the model reads the bus times in one `bus` call, from a hand-built answer."""
 
 from __future__ import annotations
 

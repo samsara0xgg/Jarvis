@@ -1,4 +1,4 @@
-"""ADR 0245: everything about his bus is one tool, `bus`, and the server remembers the rest.
+"""ADR 0246: everything about his bus is one tool, `bus`, and the server remembers the rest.
 
 It answers the questions the model used to spread over `transit`, `pin_departure`,
 `watch_for_boarding`, `start_ride`, `set_ride_stop` and `end_ride`: no arguments say how the ride he

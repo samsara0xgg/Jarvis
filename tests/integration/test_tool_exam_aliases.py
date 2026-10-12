@@ -234,5 +234,5 @@ RIDE = [{"ride": "start"}, {"ride": "watch"}]
 def test_the_six_bus_tools_read_as_bus(
     expect: dict[str, Any], call: tuple[str, dict[str, Any]], verdict: tuple[bool, str],
 ) -> None:
-    """The cases still name the six tools `bus` replaced (ADR 0245); the alias file maps them."""
+    """The cases still name the six tools `bus` replaced (ADR 0246); the alias file maps them."""
     assert tool_exam.judge(expect, _line(*call), REQUEST, BUS) == verdict

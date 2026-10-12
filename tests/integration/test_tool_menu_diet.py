@@ -1,4 +1,4 @@
-"""ADR 0246: tools kept off the voice menu stay found through tool_search and callable by name."""
+"""ADR 0247: tools kept off the voice menu stay found through tool_search and callable by name."""
 
 from __future__ import annotations
 

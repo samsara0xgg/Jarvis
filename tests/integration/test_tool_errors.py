@@ -1,4 +1,4 @@
-"""ADR 0246: a tool's error says what happened and the next step, and names the bad field.
+"""ADR 0247: a tool's error says what happened and the next step, and names the bad field.
 
 Each row is a call that fails and the words the model must be able to act on. The calls run the
 real handlers; nothing here reaches the network, the screen or a model.
