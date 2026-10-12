@@ -79,6 +79,7 @@ from jarvis.decision.packet import (
 )
 from jarvis.decision.policy import EffectivePolicy, effective_policy, surface_for
 from jarvis.decision.pre_route import SPOKEN_CHANNELS, TYPED_CHANNEL, spoken_turn, typed_turn
+from jarvis.decision.reaction_markup import ReactionFilter, split_reaction
 from jarvis.decision.response_run import ResponseCancelledError
 from jarvis.decision.stream_envelope import (
     EnvelopeTail,
@@ -745,6 +746,8 @@ class DecideResult:
             the run with its prefix hash and opens a correction run.
         written_apart: ADR 0114 — the plan's ``<document>`` is what its
             ``<voice>`` leaves out, not the whole answer.
+        reaction: ADR 0256 — the emoji of the first ``<react>`` the reply held, already cut
+            out of the plan's text; the runtime puts it on the message that opened the turn.
     """
 
     response_plan: ResponsePlan | None
@@ -756,6 +759,7 @@ class DecideResult:
     last_gate_event_uid: str | None = None
     stream_failure: StreamFinalizationFailure | None = None
     written_apart: bool = False
+    reaction: str | None = None
 
 
 # --- Internal scratch state for one decide() invocation --------------------
@@ -799,6 +803,8 @@ class _Scratch:
     calls: list[TurnCall] = field(default_factory=list)
     # ADR 0240: the turn's one bounce of an answer no call backs has been used.
     unbacked_bounced: bool = False
+    # ADR 0256: the first valid <react> emoji of the turn's replies.
+    reaction: str | None = None
 
 
 _STATUS_HEADER: Final[str] = "[Current state | from the program, not the user's words]"
@@ -1333,9 +1339,9 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
     # voice path must take the same handler. Without this widening,
     # every voice turn no-ops here and the watcher times out 5 s later.
     if trigger.type in ("surface.user_intent", "utterance.received"):
-        return _handle_utterance(packet, policy, ctx, scratch)
+        return _with_reaction(_handle_utterance(packet, policy, ctx, scratch), scratch)
     if trigger.type == "action.result_observed":
-        return _handle_result_observed(packet, policy, ctx, scratch)
+        return _with_reaction(_handle_result_observed(packet, policy, ctx, scratch), scratch)
     if trigger.type in ("action.timeout_assumed", "action.failed", "action.cancelled"):
         return _handle_action_terminal_failure(packet, policy, ctx, scratch)
 
@@ -1348,6 +1354,18 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
         turn_id=scratch.turn_id,
         attention_channel="silent_log",
     )
+
+
+def _with_reaction(result: DecideResult, scratch: _Scratch) -> DecideResult:
+    """ADR 0256: hand the reply's reaction, if it had one, to the runtime with the result."""
+    return replace(result, reaction=scratch.reaction) if scratch.reaction else result
+
+
+def _reply_text(text: str | None, scratch: _Scratch) -> str:
+    """A whole reply without its ``<react>`` tags; the first emoji found stays on the turn."""
+    clean, emoji = split_reaction(text or "")
+    scratch.reaction = scratch.reaction or emoji
+    return clean
 
 
 # --- surface.user_intent branch --------------------------------------------
@@ -1783,7 +1801,7 @@ def _run_tool_use_loop(
                 # per D4 "further L3 proposals in the same turn get the
                 # synthetic refuse result").
 
-            turn_ending_draft = _turn_ending_draft(scratch, chat_result.text)
+            turn_ending_draft = _turn_ending_draft(scratch, _reply_text(chat_result.text, scratch))
             if turn_ending_draft is not None:
                 return _finalize_response(turn_ending_draft, packet, ctx, scratch)
 
@@ -1794,15 +1812,16 @@ def _run_tool_use_loop(
             late_noted = late_noted or _add_late_answer_note(messages, packet, ctx)
             continue
 
+        answer_text = _reply_text(chat_result.text, scratch)
         if _bounce_unbacked(
-            chat_result.text or "", ctx, scratch, messages, language_line,
+            answer_text, ctx, scratch, messages, language_line,
             last_request=iteration >= ctx.max_tool_iterations,
         ):
             continue
 
         # LLM returned text -> finalize via Pre-emit Gate.
         return _finalize_response(
-            chat_result.text or "",
+            answer_text,
             packet,
             ctx,
             scratch,
@@ -1812,7 +1831,9 @@ def _run_tool_use_loop(
     # Tool budget spent. The answer gets its own request: one more call with no
     # tools, asked to sum up what the tool results already show (ADR 0030).
     LOGGER.warning("decide(): tool-use loop hit max_iterations=%d", ctx.max_tool_iterations)
-    answer = _answer_after_tool_budget(ctx, messages, scratch)
+    answer = _answer_after_tool_budget(
+        ctx, messages, scratch, reaction_ok=typed_turn(packet.trigger_event),
+    )
     return _finalize_response(
         answer,
         packet,
@@ -1850,13 +1871,16 @@ def _answer_after_tool_budget(
     ctx: DecideContext,
     messages: list[dict[str, Any]],
     scratch: _Scratch,
+    *,
+    reaction_ok: bool = False,
 ) -> str:
     """One no-tool request for the answer once the tool iterations are spent.
 
     The request rides the same cost guard, admission and cancellation checks
     as the loop's calls; a provider failure or an empty reply falls back to a
     fixed Chinese limitation instead of an internal English error. Cancellation
-    is never swallowed.
+    is never swallowed. ``reaction_ok`` (a typed turn, ADR 0256): an answer that is only a
+    ``<react>`` is the answer, not an empty one.
     """
     messages.append({"role": "user", "content": _TOOL_BUDGET_ANSWER_PROMPT})
     iteration = ctx.max_tool_iterations + 1
@@ -1882,7 +1906,11 @@ def _answer_after_tool_budget(
         _emit_cost_recorded(ctx, chat_result, kind="decision", turn_id=scratch.turn_id),
     )
     _check_response_cancelled(ctx, "after provider response")
-    return (chat_result.text or "").strip() or t("tool_budget.exhausted", lang=scratch.lang)
+    clean, emoji = split_reaction(chat_result.text or "")
+    scratch.reaction = scratch.reaction or emoji
+    if emoji is not None and reaction_ok:
+        return clean.strip()
+    return clean.strip() or t("tool_budget.exhausted", lang=scratch.lang)
 
 
 def _turn_ending_draft(scratch: _Scratch, llm_text: str | None) -> str | None:
@@ -2740,12 +2768,13 @@ def _stream_routine_text(
     speaker = _SegmentSpeaker(
         ctx, route, scratch, classifier=SegmentRiskClassifier(), gate_segments=gate_segments,
     )
+    react = ReactionFilter()
     failed: LLMResponseFailed | None = None
     try:
         for event in stream:
             _check_response_cancelled(ctx, "while streaming")
             if isinstance(event, LLMTextDelta):
-                speaker.feed(event.text)
+                speaker.feed(react.feed(event.text))
             elif isinstance(event, LLMResponseFailed):
                 failed = event
     finally:
@@ -2754,6 +2783,8 @@ def _stream_routine_text(
     if failed is not None:
         message = f"routine stream failed before completion ({failed.error_code})"
         raise RuntimeError(message)
+    speaker.feed(react.finish())
+    scratch.reaction = scratch.reaction or react.emoji
     tail = speaker.finish()
     return _StreamedText(
         prefix=speaker.prefix,
@@ -2981,9 +3012,10 @@ class _SpokenReply:
     text: str = ""
     answer: str = ""
     tool_calls: list[LLMToolCallCompleted] = field(default_factory=list)
+    reacted: bool = False  # ADR 0256: this request's reply held a valid <react>
 
 
-def _stream_spoken_request(  # noqa: C901, PLR0913 - one request, the turn's seams, one event switch
+def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913 - one request, the turn's seams, one event switch
     ctx: DecideContext,
     route: RoutineStreamRoute,
     speaker: _SegmentSpeaker,
@@ -3019,20 +3051,23 @@ def _stream_spoken_request(  # noqa: C901, PLR0913 - one request, the turn's sea
         stream.interrupt_when(pending.accepted_early)
     speaker.begin_request()
     reply = _SpokenReply()
+    line_react, answer_react = ReactionFilter(), ReactionFilter()  # ADR 0256: <react> is cut out
     failed: LLMResponseFailed | None = None
     try:
         for event in stream:
             _settle_surrogate(ctx, scratch)
             _check_response_cancelled(ctx, "while streaming")
             if isinstance(event, LLMTextDelta) and event.phase == "commentary":
-                if not reply.text:
+                shown = line_react.feed(event.text)
+                if shown and not reply.text:
                     record_realtime_trace("spoken_line_first_text", turn_id=scratch.turn_id)
-                reply.text += event.text
+                reply.text += shown
             elif isinstance(event, LLMTextDelta):
-                if not reply.answer:
+                shown = answer_react.feed(event.text)
+                if shown and not reply.answer:
                     record_realtime_trace("spoken_answer_first_text", turn_id=scratch.turn_id)
-                reply.answer += event.text
-                speaker.feed(event.text)
+                reply.answer += shown
+                speaker.feed(shown)
             elif isinstance(event, LLMToolCallCompleted):
                 if not reply.tool_calls:
                     record_realtime_trace(
@@ -3048,6 +3083,13 @@ def _stream_spoken_request(  # noqa: C901, PLR0913 - one request, the turn's sea
     if failed is not None:
         message = f"spoken stream failed before completion ({failed.error_code})"
         raise RuntimeError(message)
+    reply.text += line_react.finish()
+    if held := answer_react.finish():
+        reply.answer += held
+        speaker.feed(held)
+    emoji = line_react.emoji or answer_react.emoji
+    reply.reacted = emoji is not None
+    scratch.reaction = scratch.reaction or emoji
     return reply
 
 
@@ -3128,11 +3170,22 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
     except Exception:
         LOGGER.exception("decide(): answer request after the tool budget failed")
         reply = _SpokenReply()
+    _speak_budget_reply(speaker, reply, scratch, reaction_ok=typed_turn(packet.trigger_event))
+    return _finish_spoken(packet, ctx, route, speaker, scratch)
+
+
+def _speak_budget_reply(
+    speaker: _SegmentSpeaker, reply: _SpokenReply, scratch: _Scratch, *, reaction_ok: bool,
+) -> None:
+    """What the request after the tool budget adds to speech: its answer, its line, or a limit.
+
+    A typed turn whose reply is only a ``<react>`` (ADR 0256) is answered, so no limit is said.
+    """
     if not (reply.answer + reply.text).strip():
-        speaker.feed(t("tool_budget.exhausted", lang=scratch.lang))
+        if not (reply.reacted and reaction_ok):
+            speaker.feed(t("tool_budget.exhausted", lang=scratch.lang))
     elif not reply.answer.strip():
         speaker.feed(reply.text)
-    return _finish_spoken(packet, ctx, route, speaker, scratch)
 
 
 def _finish_spoken(  # noqa: PLR0913 - the turn's handles plus the ask that may end it
