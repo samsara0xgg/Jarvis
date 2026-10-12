@@ -7,18 +7,22 @@ r"""Tool exam: replay logged decision requests and score whether the FIRST step 
 ``CASES.json`` is private conversation data and lives outside the repo
 (``~/.jarvis/evals/tool-exam/cases.json``): a list of ``{id, said, request, tags, expect?}`` where
 ``request`` is a logged decision request (``kind: decision``, Responses or chat shape) and
-``expect.first`` is ``{ok, bad, text_must_not?, args_must_not?}``: ``ok`` names tools (or
-``"text"``, a spoken answer with no tool) that pass, ``bad`` names fail even next to an ok one,
-``text_must_not`` regexes fail a no-tool answer, ``args_must_not`` maps a tool to substrings its
-raw arguments must not hold. Next to it sits ``mcp-tools.json``: the MCP tool definitions
-(``{mcp__server__tool: {name, description, input_schema}}``) a live server would list, which an
-offline run cannot ask for.
+``expect.first`` is ``{ok, bad, text_must_not?, args_must_not?, no_identical_repeat?,
+cursor_must_come_from_history?}``: ``ok`` names tools (or ``"text"``, a spoken answer with no tool)
+that pass, ``bad`` names fail even next to an ok one, ``text_must_not`` regexes fail a no-tool
+answer, ``args_must_not`` maps a tool to substrings its raw arguments must not hold, or to an
+``{arg: value}`` dict that fails a call carrying all of those values (``"*"``: any value),
+``no_identical_repeat`` fails a call the request's history already made with the same arguments,
+``cursor_must_come_from_history`` fails a ``cursor`` no earlier tool output gave. Next to it sits
+``mcp-tools.json``: the MCP tool definitions (``{mcp__server__tool: {name, description,
+input_schema}}``) a live server would list, which an offline run cannot ask for.
 
 ``run`` sends each case through ``LLMClient.stream_events`` as ``replay_decision`` does, but with
 the tool menu THIS checkout would offer the decision model (see :func:`offered_tools`), not the
 tools the log recorded, so a merged or renamed tool is exam-visible at once. Keys come from the
 environment, then the runtime root's saved keys; none is printed. Results are appended to
-``--out``, one JSON line per case x preset x run after one ``menu`` line.
+``--out``, one JSON line per case x preset x run after one ``menu`` line. Run 0 of every case goes
+first and a case's later runs wait for it, so they read the prompt cache it wrote.
 """
 
 from __future__ import annotations
@@ -215,16 +219,17 @@ async def _run(args: argparse.Namespace, menu: list[dict[str, Any]]) -> None:
             f"({line.get('first_token_s') or '-'}s)\n",
         )
 
+    async def cell(case: dict[str, Any], preset: str, out: TextIO) -> None:
+        await job(case, preset, 0, out)  # writes the prompt cache runs 1.. read
+        await asyncio.gather(*(job(case, preset, run, out) for run in range(1, args.runs)))
+
     with args.out.open("a", encoding="utf-8") as out:
         out.write(json.dumps({
             "kind": "menu", "at": datetime.now(UTC).isoformat(timespec="seconds"),
             "tools": list(catalog), "chars": _menu_chars(menu),
             "system_append": bool(extra),
         }) + "\n")
-        await asyncio.gather(*(
-            job(case, preset, run, out)
-            for case in cases for preset in clients for run in range(args.runs)
-        ))
+        await asyncio.gather(*(cell(case, preset, out) for case in cases for preset in clients))
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -242,7 +247,31 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
-def judge(first: Mapping[str, Any], line: Mapping[str, Any]) -> tuple[bool, str]:
+def _history(request: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    """The request's earlier tool calls (as :func:`_calls` shapes them) and tool outputs."""
+    if "input" in request:  # Responses
+        items = request["input"]
+        calls = [one for one in items if one.get("type") == "function_call"]
+        outputs = [one["output"] for one in items if one.get("type") == "function_call_output"]
+        return _calls(calls), outputs
+    messages = request["messages"]  # chat
+    calls = [call["function"] for one in messages for call in one.get("tool_calls") or ()]
+    return _calls(calls), [one["content"] for one in messages if one["role"] == "tool"]
+
+
+def _trips(rule: Any, args: Any) -> bool:  # noqa: ANN401 - a substring list or an {arg: value} dict
+    """Whether a call's arguments break one ``args_must_not`` rule."""
+    if isinstance(rule, dict):
+        return isinstance(args, dict) and all(
+            k in args and (v == "*" or args[k] == v) for k, v in rule.items()
+        )
+    raw = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+    return any(s in raw for s in rule)
+
+
+def judge(
+    first: Mapping[str, Any], line: Mapping[str, Any], request: Mapping[str, Any],
+) -> tuple[bool, str]:
     """Whether one run's first step satisfies ``expect.first``, and its short label."""
     if line.get("error"):
         return False, f"ERR({str(line['error']).split(':')[0]})"
@@ -251,18 +280,26 @@ def judge(first: Mapping[str, Any], line: Mapping[str, Any]) -> tuple[bool, str]
     hit = set(names)
     why = []
     if hit & set(first.get("bad", ())) or not hit & set(first["ok"]):
-        why.append(",".join(names))
+        why.append(",".join(dict.fromkeys(names)))
     if names == ["text"] and any(re.search(rx, line.get("text") or "") for rx in first.get(
         "text_must_not", (),
     )):
         why.append("text~rule")
+    earlier, outputs = _history(request)
     for call in calls:
-        subs = (first.get("args_must_not") or {}).get(call["name"], ())
-        raw = call["args"] if isinstance(call["args"], str) else json.dumps(
-            call["args"], ensure_ascii=False,
-        )
-        if any(s in raw for s in subs):
-            why.append(f"{call['name']}~args")
+        name, args = call["name"], call["args"]
+        cursor = args.get("cursor") if isinstance(args, dict) else None
+        tripped = []
+        if _trips((first.get("args_must_not") or {}).get(name, ()), args):
+            tripped.append(f"{name}~args")
+        if first.get("no_identical_repeat") and {"name": name, "args": args} in earlier:
+            tripped.append(f"repeat:{name}")
+        # Quoted, so a truncated copy of a real cursor is no match.
+        if first.get("cursor_must_come_from_history") and cursor is not None and not any(
+            json.dumps(cursor) in out for out in outputs
+        ):
+            tripped.append(f"cursor:{name}")
+        why += [one for one in tripped if one not in why]
     return (not why), ("pass" if not why else f"FAIL({'+'.join(why)})")
 
 
@@ -357,7 +394,8 @@ def cmd_score(args: argparse.Namespace) -> int:
         lines.sort(key=lambda one: one["run"])
     presets = sorted({p for _, p in runs})
     verdicts: Verdicts = {
-        key: [judge(first, line) for line in lines] for key, lines in runs.items()
+        key: [judge(first, line, cases[key[0]]["request"]) for line in lines]
+        for key, lines in runs.items()
         if (first := (cases[key[0]].get("expect") or {}).get("first"))
     }
     out = _summary(presets, runs, verdicts, load_pricing_table(REPO / "data" / "pricing.json"))
