@@ -167,7 +167,7 @@ def _dictation(
     recordings: Path | None = None,
 ) -> tuple[Dictation, _Ingress]:
     config = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text())
-    client = polish_client(config["llm"], config["dictation"]["polish_preset"])
+    client = polish_client(config["llm"], "gpt56-terra")  # the OpenAI-shaped fake below
     client._openai_client = SimpleNamespace(  # noqa: SLF001 — provider fixture seam
         chat=SimpleNamespace(completions=provider), models=SimpleNamespace(retrieve=provider.warm),
     )

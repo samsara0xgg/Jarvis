@@ -22,13 +22,13 @@ llm:
   provider: openai
 
   # 对话平时用 default_preset。
-  default_preset: luna
+  default_preset: sonnet
 
   # ADR 0108 深想：Allen 说的这一句里出现 on_words 的词，只这一轮改用 preset（同一个模型，
   # 开思考）；下一句没有这些词就回到 default_preset。on_words 是正则，不分大小写
   # （不能叫 on：YAML 会读成真假）。
   think:
-    preset: luna-think
+    preset: sonnet-high
     on_words: "想想吧|想一想|你想想|帮我想想|好好想想|认真想想|仔细想想|think (it )?(over|through)|think hard"
 
   # 对话每次请求的上限（秒）与重试次数；不写就是 SDK 默认的 600 秒、重试 2 次。
@@ -123,9 +123,10 @@ llm:
       api_key_env: ANTHROPIC_API_KEY
       max_tokens: 16384
       reasoning_effort: medium
-    # Claude Sonnet 5.5，直连 Anthropic，只给测评和对比用（scripts/tool_exam.py），不是默认。
+    # Claude Sonnet 5.5，直连 Anthropic，默认对话用（ADR 0253）。
     # 自适应思考加 effort；Sonnet 5.5 不收 thinking disabled 和 budget_tokens，所以别写
-    # reasoning_effort: none，强制调工具的请求也别用它。价钱 $2/$10 每百万 token，缓存读 0.1 倍。
+    # reasoning_effort: none；强制调工具的请求由 LLMClient 改成 tool_choice auto，调用方
+    # 自己检查有没有调工具。价钱 $2/$10 每百万 token，缓存读 0.05 倍。
     sonnet:
       provider: anthropic
       model: claude-sonnet-5-5
@@ -135,6 +136,28 @@ llm:
       reasoning_effort: low
       images: true
       # 同 haiku（ADR 0241）：同一批 80 个决策点，Sonnet 5.5 带格式 59/80 个 3 次全过。
+      spoken_structured: false
+    # 深想一轮用的（llm.think.preset），也是日报（输入约 24 万 token，要 32768 输出；质量优先，不赶时间）：
+    # 同 sonnet，effort 开到 high；max_tokens 只是上限。
+    sonnet-high:
+      provider: anthropic
+      model: claude-sonnet-5-5
+      api_key_env: ANTHROPIC_API_KEY
+      max_tokens: 32768
+      context_length: 1000000
+      reasoning_effort: high
+      images: true
+      spoken_structured: false
+    # 要写得好的后台活：日摘要、账本散文、
+    # 核心记忆、对话压缩。同 sonnet，effort medium。
+    sonnet-medium:
+      provider: anthropic
+      model: claude-sonnet-5-5
+      api_key_env: ANTHROPIC_API_KEY
+      max_tokens: 32768
+      context_length: 1000000
+      reasoning_effort: medium
+      images: true
       spoken_structured: false
     # context_length：模型窗口（token）。session.compact_at_context_ratio
     # 按它算压缩门槛；决策预设缺了它就永远不压缩。
@@ -277,7 +300,7 @@ observer:
 # 一条分析流程，只在有新证据时调一次这里指定的预设；除非打开下面的 auto，
 # 后台从不调模型。
 work_state:
-  preset: gpt6-luna
+  preset: haiku-bg
   # ADR 0180: true = 主人在桌前时，前台 App 或网站变了就在后台重新分析一次
   # （每 5 分钟检查，至少每 30 分钟一次；离开、锁屏、休眠时不跑）。这会在主人
   # 没开口时把 App 名、窗口标题和屏幕文字发给上面的模型，所以出厂关，
@@ -290,7 +313,7 @@ work_state:
 # ADR 0024 — 每日工作报告：一整天的材料比当前状态大得多，想换更强的模型就
 # 单独指定；不配置就沿用 work_state.preset。
 daily_report:
-  preset: gpt6-sol
+  preset: sonnet-high
   # ADR 0101: the daemon writes the day before's report once a day, at the first
   # check after this local time (work_state.timezone); a conversation only reads
   # it. null = never written.
@@ -305,7 +328,7 @@ daily_report:
 # 超过 max_chars 或引用不存在的 record_id 就丢掉，下次再试。
 day_summary:
   at: "05:00"
-  preset: gpt6-luna-flex
+  preset: sonnet-medium
   max_chars: 3000
   prompt: |
     You are writing the summary of one day of conversation between the user and
@@ -352,7 +375,7 @@ ledger:
   full_days: 7
   compact_days: 7
   prose:
-    preset: gpt6-luna-flex
+    preset: sonnet-medium
     days: 7
     max_chars: 800
     prompt: |
@@ -378,7 +401,7 @@ ledger:
 # （op: dropped），Jev 调用失败按检查不过处理，整天不写、照常重试。不写 review_min_confidence = 不审。
 # review_model、review_timeout_ms 可选，缺省 typesafe/jev-1.13、10000。
 core_memory:
-  preset: gpt6-luna-flex
+  preset: sonnet-medium
   max_chars: 4000
   max_stale: 5
   review_min_confidence: 0.9
@@ -669,7 +692,7 @@ tools:
     editor_extensions: [md, py, txt, json, yaml, toml]
   screen:
     # screen_look 用哪个 llm.presets.* 做 vision 调用。
-    vision_preset: gpt6-luna
+    vision_preset: sonnet
     # 截图喂给 vision 模型前用 sips 缩到这个宽度以内（像素）。
     max_width_px: 1568
     # ADR 0067：超过这么多天的截图自动删除；null = 永久保留。
@@ -1079,7 +1102,7 @@ realtime:
   # key.  The session is billed per second: idle_close_s hangs up after that
   # long without transcript or audio activity, max_session_s is a hard cap.
   gpt_live:
-    enabled: true
+    enabled: false
     model: gpt-live-1
     voice: marin
     # The persona (frontend instructions in the official template's fixed
@@ -1328,7 +1351,7 @@ diagnostics:
 # Dictation (ADR 0058): the companion's typing tool. Recorded from the live mic,
 # heard by the voice path's SenseVoice, polished by this preset, never stored.
 dictation:
-  polish_preset: gpt56-terra
+  polish_preset: sonnet
   vocab_path: ~/.typlus/vocab.yaml   # 言字's word list, read on every dictation; absent = none
   # What local Whisper hears (ADR 0110): "" lets it tell each stretch's language, as
   # 言字 ships, and hear a clip under 4 s outside zh/en again as the likelier of the two
@@ -1371,7 +1394,7 @@ session:
   compact_at_context_ratio: 0.4   # verbatim history estimated over this share of the
                                   # decision preset's context_length is eligible
   verbatim_window_days: 7         # records younger than this survive a compaction verbatim
-  compact_preset: gpt6-luna-flex  # the summariser; rare and off the latency path
+  compact_preset: sonnet-medium  # the summariser; rare and off the latency path
   summary_max_chars: 20000        # a longer summary is rejected and nothing is stored; the prompt
                                   # asks for 9000, the rest is the margin the model overshoots by
                                   # (live 2026-09-14: deep wrote 4.5k-6.2k chars for 38k of history;

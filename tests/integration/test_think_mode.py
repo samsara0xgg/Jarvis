@@ -46,7 +46,10 @@ _LLM: dict[str, Any] = {
     "provider": "openai",
     "default_preset": "luna",
     # The shipped words, read as YAML the way the daemon reads them.
-    "think": yaml.safe_load((repo_root() / "config/jarvis.yaml").read_text())["llm"]["think"],
+    "think": {
+        **yaml.safe_load((repo_root() / "config/jarvis.yaml").read_text())["llm"]["think"],
+        "preset": "luna-think",  # the shipped words, this test's OpenAI-shaped presets
+    },
     "presets": {
         "luna": {**_PRESET, "reasoning_effort": "none"},
         "luna-think": {**_PRESET, "reasoning_effort": "medium", "api": "responses"},
