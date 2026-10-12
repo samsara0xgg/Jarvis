@@ -17,12 +17,14 @@ a newer one replaces the older (the older is closed with code 4000).
                      "over_her": true, "conversation": false,
                      "attachments": ["<id from POST /inherent/attachments>"]}
     host -> phone   {"type": "said", "utterance_id": "...", "turn_id": "T...",
-                     "verdict": "turn"}
+                     "verdict": "turn", "record_id": "<32 hex>"}
     host -> phone   {"type": "row", "event_type": "surface.response_chunk",
                      "event_uid": "<32 hex>", "payload": {...}, "ts_epoch_ms": 1700000000000}
     host -> phone   {"type": "step", "turn_id": "T...", "step": 1, "tool": "bus",
                      "label": "...", "state": "running", "started_ms": 1700000000000,
                      "ended_ms": null}
+    host -> phone   {"type": "reaction", "target": "<record id>", "by": "allen",
+                     "emoji": "<one emoji>" or null}
     phone -> host   {"type": "barge"}                     it heard Allen over her voice, held
                                                           its output, and asks the host to stop
                                                           (the older phone; see ``over_her``)
@@ -82,6 +84,16 @@ records a turn, once. A ``say`` with no flag is a turn: ``verdict`` is ``"turn"`
 host heard the words elsewhere first, which answers ``elsewhere`` flagged or not (ADR 0219);
 typed words are never checked.
 
+**Reactions (ADR 0256).** ``reaction`` is one change of an emoji on a message: ``target`` is the
+message's record id (the ``id`` of a row of ``GET /inherent/conversation``), ``by`` is ``allen`` or
+``jarvis``, ``emoji`` is null when it was taken off. Unlike rows and steps it goes to every
+connected phone, whichever device opened the turn, and in log order with them: his own taps on
+another device, her ``<react>`` at the end of a turn and the eyes the program puts on a message
+that arrived mid-turn. The newest frame per (``target``, ``by``) is the reaction now; the rows of
+the conversation carry the same as ``reactions``. ``said`` with ``verdict: "turn"`` carries
+``record_id``, the id the words will have as a message, so the phone can show a reaction on a line
+it has just sent before any row has come back.
+
 **Binary frames** carry the player protocol, one WebSocket message per frame:
 :mod:`jarvis.surface.phone_player` has the layouts. After ``ready`` with ``voice: true`` the
 phone sends READY (its audio session is up); the host speaks nothing before it.
@@ -111,7 +123,7 @@ from jarvis.shared import lang
 from jarvis.state.attachments import AttachmentRefused, valid_id
 from jarvis.surface import word_judge
 from jarvis.surface.phone_player import PHONE_SAMPLE_RATE_HZ, PhoneFrameError
-from jarvis.surface.terminal_events import phone_turn_id
+from jarvis.surface.terminal_events import phone_record_id, phone_turn_id
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -166,12 +178,22 @@ class PhoneRows(Protocol):
     def steps(self, device: str, after: int) -> StepCursor:
         """The ``step`` frames of the tools those turns ran, from the rows past ``after``."""
 
+    def reactions(self, after: int) -> ReactionCursor:
+        """The ``reaction`` frames of every reaction past ``after``, whichever device's turn."""
+
 
 class StepCursor(Protocol):
     """A place in the action rows of one device's turns (ADR 0231)."""
 
     def poll(self) -> tuple[int, list[tuple[int, dict[str, Any]]]]:
         """``(highest id seen, [(id of the row it came from, step frame)])``, advancing."""
+
+
+class ReactionCursor(Protocol):
+    """A place in the log's reaction events, which belong to no device (ADR 0256)."""
+
+    def poll(self) -> tuple[int, list[tuple[int, dict[str, Any]]]]:
+        """``(highest id seen, [(id of the event, reaction frame)])``, advancing."""
 
 
 type OpenVoice = Callable[[str, Callable[[bytes], bool]], Awaitable[PhoneVoice | None]]
@@ -382,9 +404,11 @@ async def _stream_rows(hub: PhoneHub, conn: _Connection) -> None:
     start = hub.rows.high_water()
     cursor = hub.rows.cursor(conn.device, start)
     steps = hub.rows.steps(conn.device, start)
+    reacted = hub.rows.reactions(start)
     while True:
         batch: list[tuple[int, Event]] = []
         stepped: list[tuple[int, dict[str, Any]]] = []
+        reactions: list[tuple[int, dict[str, Any]]] = []
         try:
             _after, batch = cursor.poll()
         except sqlite3.Error:
@@ -393,6 +417,10 @@ async def _stream_rows(hub: PhoneHub, conn: _Connection) -> None:
             _seen, stepped = steps.poll()
         except sqlite3.Error:
             LOGGER.exception("phone %s: reading its steps failed; retrying", conn.device)
+        try:
+            _seen, reactions = reacted.poll()
+        except sqlite3.Error:
+            LOGGER.exception("phone %s: reading the reactions failed; retrying", conn.device)
         frames = [
             (row_id, {
                 "type": "row", "event_type": event.type, "event_uid": event.event_uid,
@@ -400,7 +428,7 @@ async def _stream_rows(hub: PhoneHub, conn: _Connection) -> None:
             })
             for row_id, event in batch
         ]
-        for _row_id, frame in sorted([*frames, *stepped], key=lambda one: one[0]):
+        for _row_id, frame in sorted([*frames, *stepped, *reactions], key=lambda one: one[0]):
             conn.send_json(frame)
         await asyncio.sleep(POLL_INTERVAL_S)
 
@@ -604,7 +632,10 @@ def _record_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
     if turn_id not in conn.recent_turns:
         conn.recent_turns.append(turn_id)
     conn.send_json(
-        {"type": "said", "utterance_id": say.utterance_id, "turn_id": turn_id, "verdict": "turn"},
+        {
+            "type": "said", "utterance_id": say.utterance_id, "turn_id": turn_id,
+            "verdict": "turn", "record_id": phone_record_id(conn.device, say.utterance_id),
+        },
     )
 
 

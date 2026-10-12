@@ -3346,6 +3346,26 @@ class _PhoneStepCursor:
         return self._after, frames
 
 
+class _PhoneReactionCursor:
+    """The reaction events: every phone's, whichever device opened the turn (ADR 0256)."""
+
+    def __init__(self, conn: sqlite3.Connection, after: int) -> None:
+        self._conn = conn
+        self._after = after
+
+    def poll(self) -> tuple[int, list[tuple[int, dict[str, Any]]]]:
+        frames: list[tuple[int, dict[str, Any]]] = []
+        for row_id, event in _fetch_events_after(
+            self._conn, after_id=self._after, event_types=(reactions.EVENT,),
+        ):
+            self._after = max(self._after, row_id)
+            frames.append((row_id, {
+                "type": "reaction", "target": event.payload["target"],
+                "by": event.payload["by"], "emoji": event.payload["emoji"],
+            }))
+        return self._after, frames
+
+
 class _PhoneRows:
     """The host's answer rows by device, for :mod:`jarvis.surface.phone_link` (ADR 0209)."""
 
@@ -3360,6 +3380,9 @@ class _PhoneRows:
 
     def steps(self, device: str, after: int) -> _PhoneStepCursor:
         return _PhoneStepCursor(self._conn, after, device)
+
+    def reactions(self, after: int) -> _PhoneReactionCursor:
+        return _PhoneReactionCursor(self._conn, after)
 
 
 def _add_steps(event_log: Path, rows: list[dict[str, object]]) -> None:

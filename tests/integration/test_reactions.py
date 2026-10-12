@@ -22,6 +22,7 @@ from __future__ import annotations
 import functools
 import json
 import sqlite3
+import time
 from contextlib import closing
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -44,6 +45,7 @@ from jarvis.state.memory_db import (
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from tests.integration.test_phone_steps import _frames, _Host
 from tests.integration.test_spoken_streaming import (
     _fixture_key,  # noqa: F401 - the autouse fixture the peer needs
     _Peer,
@@ -504,3 +506,50 @@ def test_the_route_is_behind_the_same_credentials_as_the_rest(tmp_path: Path) ->
         post(d.loopback, {}), post(d.loopback, wrong),
     ] == [401] * 5
     assert d.react({"target": "u1"}).status_code == 422, "the emoji field is required, even null"
+
+
+# --- the phone socket ---------------------------------------------------------------------------
+
+
+def _three(phone: Any) -> bool:  # noqa: ANN401 - the fake phone
+    return len(_frames(phone, "reaction")) == 3
+
+
+def test_every_phone_gets_every_reaction_and_said_names_the_record(tmp_path: Path) -> None:
+    """A reaction frame reaches a phone that opened no turn; `said` carries the record id."""
+    with _Host(tmp_path) as host:
+        mine, other = host.phone(), host.phone(host.other_token)
+        try:
+            mine.say("u-typed", "我到家了", spoken=False)
+            said = mine.wait_text("said")
+            with closing(open_event_log(host.log)) as conn:
+                (intent_uid,) = [
+                    str(uid)
+                    for (uid,) in conn.execute(
+                        "SELECT event_uid FROM events WHERE type = 'surface.user_intent'",
+                    )
+                ]
+            assert said["record_id"] == intent_uid, "the id his message will have as a row"
+
+            append_record(host.memory, record_id=intent_uid, source="allen", text="我到家了")
+            append_record(host.memory, record_id="a1", source="jarvis", text="欢迎回来。")
+            with closing(open_event_log(host.log)) as conn:
+                reactions.allen_reacts(conn, host.memory, target="a1", emoji=THUMB)
+                reactions.emit(conn, target=intent_uid, by="jarvis", emoji=EYES)
+                reactions.allen_reacts(conn, host.memory, target="a1", emoji=None)
+            for phone in (mine, other):
+                phone.wait_until(
+                    functools.partial(_three, phone), "three reaction frames",
+                )
+                assert [
+                    (f["target"], f["by"], f["emoji"]) for f in _frames(phone, "reaction")
+                ] == [("a1", "allen", THUMB), (intent_uid, "jarvis", EYES), ("a1", "allen", None)]
+            assert not other.rows(), "the other phone opened no turn, so it has no rows"
+
+            late = host.phone()  # a phone that connects later reads the rows, not the past events
+            time.sleep(0.3)
+            assert _frames(late, "reaction") == []
+            late.close()
+        finally:
+            mine.close()
+            other.close()

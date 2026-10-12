@@ -32,7 +32,7 @@ from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
-from jarvis.surface.terminal_events import BrainEvents, phone_turn_id
+from jarvis.surface.terminal_events import BrainEvents, phone_record_id, phone_turn_id
 from tests.integration.test_phone_here import REMOTE
 
 if TYPE_CHECKING:
@@ -287,9 +287,10 @@ def test_an_unflagged_say_is_unchanged_plus_a_turn_verdict_and_typed_words_ignor
         typed = _say(ws, "a2", "别说了", spoken=False, over_her=True, conversation=True)
     assert spoken == {
         "type": "said", "utterance_id": "a1", "turn_id": phone_turn_id("iphone", "a1"),
-        "verdict": "turn",
+        "verdict": "turn", "record_id": phone_record_id("iphone", "a1"),
     }
     assert typed["verdict"] == "turn"
+    assert typed["record_id"] == phone_record_id("iphone", "a2")
     assert typed["turn_id"] == phone_turn_id("iphone", "a2")
     assert rig.calls == []
     assert rig.asked == []

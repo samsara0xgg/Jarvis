@@ -340,6 +340,11 @@ def _say_uid(device: str, utterance_id: str) -> str:
     return uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"say\0{device}\0{utterance_id}").hex
 
 
+def phone_record_id(device: str, utterance_id: str) -> str:
+    """The id of the message record a phone's ``say`` becomes: its event's uid (ADR 0256)."""
+    return _say_uid(device, utterance_id)
+
+
 def phone_turn_id(device: str, utterance_id: str) -> str:
     """The turn id a phone's ``say`` opens, from the device and utterance id alone (ADR 0209)."""
     key = f"{device}\0{utterance_id}"
