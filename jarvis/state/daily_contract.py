@@ -66,12 +66,10 @@ _REFS = {
     "maxItems": 20,
     "uniqueItems": True,
     "description": (
-        "Evidence references: record:<record_id>, event:<event_uid>, git:<repo path>:<sha>, "
-        "codex-session:<file path>, or the full timesink:<store>:<id>:<rev> / "
-        "timesink-capture:<store>:<id>:<rev> reference (read_activity returns it as "
-        "source_refs; a query_activity row ref s<id>:<rev> / c<id>:<rev> plus the page's "
-        "store gives the same). Short row refs and activity:... IDs are lookup keys, not "
-        "source references."
+        "Evidence references: record:<record_id> (the id conversation returns), "
+        "event:<event_uid>, git:<repo path>:<sha>, codex-session:<file path>, or a full "
+        "timesink:<store>:<id>:<rev> / timesink-capture:<store>:<id>:<rev> reference already "
+        "in hand. Short row refs and activity:... IDs are lookup keys, not source references."
     ),
 }
 _PROJECT = text_field(512, nullable=True)

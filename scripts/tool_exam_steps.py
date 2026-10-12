@@ -79,7 +79,7 @@ REPO = Path(__file__).resolve().parent.parent
 _DBS = ("mac_events.db", "memory.db")
 _RESULT_CHARS = 2000
 _LATE_TOOLS = (  # registered after the MCP group
-    "job_ledger", "record_application", "mail", "conversation",
+    "job_ledger", "record_application", "mail", "conversation", "my_day",
 )
 
 # --- the tool classification (decided per handler; the run refuses an unclassified tool) -------
@@ -90,7 +90,7 @@ LIVE_READ = frozenset({
     "web_search", "web_fetch", "weather", "transit", "where_am_i", "places",
     "look_at_picture",  # calls the vision preset's model
     "job_ledger", "mail",  # mail() rates unrated unread letters with Jev (OpenRouter)
-    "conversation",
+    "conversation", "my_day",
     "list_plugins", "tool_search", "read_skill",
     "search_notes",  # a device tool: device_not_connected on this host
 })

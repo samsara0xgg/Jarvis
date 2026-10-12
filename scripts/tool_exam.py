@@ -80,6 +80,7 @@ from jarvis.execution.conversation_tool import build_conversation_tool
 from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.job_ledger_tool import build_job_ledger_tool, build_record_application_tool
 from jarvis.execution.mail_tool import build_mail_tool
+from jarvis.execution.my_day_tool import build_my_day_tool
 from jarvis.execution.plugin_panel import plugin_panel_tools
 from jarvis.execution.tool_search import build_tool_search
 from jarvis.execution.tools import Tool, ToolContext, ToolRegistry, build_default_registry
@@ -87,6 +88,7 @@ from jarvis.runtime.dashboard import CLOSE, PAGES, SETTINGS_CATEGORIES, ViewStat
 from jarvis.runtime.plugin_catalog import read_package
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
+from jarvis.state.ledger import LedgerSources
 from scripts.replay_decision import _client, replay_once
 
 if TYPE_CHECKING:
@@ -174,6 +176,7 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
         *build_job_ledger_tool(dict), *build_record_application_tool(lambda _fields: ""),
         *build_mail_tool(dict, lambda *_: {}, str, UTC),
         *build_conversation_tool(Path("memory.db"), UTC),
+        *build_my_day_tool(LedgerSources(Path("memory.db"), Path("events.db"), None, UTC)),
     ):
         registry.register(tool)
     return registry

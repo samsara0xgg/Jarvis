@@ -358,6 +358,16 @@ def _log_identity(conn: sqlite3.Connection) -> str:
     return read_log_epoch(conn)
 
 
+def saved_briefing(conn: sqlite3.Connection, local_date: str) -> dict[str, Any] | None:
+    """The newest saved briefing of a local date, whatever its timezone; None when there is none."""
+    row = conn.execute(
+        "SELECT payload_json FROM events WHERE type='briefing.revised' "
+        "AND json_extract(payload_json,'$.item.local_date')=? ORDER BY id DESC LIMIT 1",
+        (local_date,),
+    ).fetchone()
+    return dict(json.loads(row[0])["item"]) if row else None
+
+
 def get_briefing(conn: sqlite3.Connection, args: dict[str, Any]) -> dict[str, Any]:
     """Read a saved version in chunks; saving does not imply delivery."""
     identity = _brief_key(args)

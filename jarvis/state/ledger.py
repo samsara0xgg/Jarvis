@@ -1700,6 +1700,104 @@ def window_activity(  # noqa: PLR0913 — the window, its zone and the three sou
     return Activity(spans, sorted(calls), talks)
 
 
+# ------------------------------------------------------------------ days as figures (ADR 0243)
+_PLACES_SHOWN: Final[int] = 5
+
+
+class DayFigures(NamedTuple):
+    """One local day of :func:`window_figures`; seconds are unions (two apps at once count once).
+
+    ``projects`` and ``apps`` hold every name with any time, project verdicts of "none" left out;
+    ``bounds`` is when the working day started and stopped (it may begin the evening before).
+    """
+
+    day: date
+    active: float
+    bounds: tuple[datetime, datetime] | None
+    projects: dict[str, float]
+    apps: dict[str, float]
+    calls: dict[str, float]
+    commits: Counter[str]
+    places: list[tuple[str, float]]
+
+
+class Figures(NamedTuple):
+    """What :func:`window_figures` read: a figure per day, what is inside ``about``, what failed.
+
+    ``inside`` is set only with ``about``: the documents, titles or apps the matching time went
+    to, longest first. ``missing`` is ``"terminal"`` (a brain asked its terminal for TimeSink and
+    got no answer) and/or ``"timesink"`` (this machine has no TimeSink store to read).
+    """
+
+    days: list[DayFigures]
+    inside: list[tuple[str, float]]
+    missing: list[str]
+
+
+def _inside(span: _Span) -> str:
+    """The name a span's time is counted under inside an ``about``: app and document or title."""
+    text = _trim(span.document or span.title, _PLACE_CHARS * 2)
+    if text:
+        return f"{span.app}: {text}"
+    return f"{span.app} ({span.project})" if span.project not in ("none", "") else span.app
+
+
+def window_figures(
+    src: LedgerSources, first: date, last: date, as_of: datetime, *, about: str = "",
+) -> Figures:
+    """The days ``first`` to ``last`` (local, both included) as figures, nothing rendered.
+
+    The numbers are the ledger's own (the prompt's "Last seven days" and "Today so far" print the
+    same ones): active time is the union of TimeSink spans, commits are the ones the Event Log saw
+    made that day, places are the phone's named stays. ``about`` keeps the spans whose app,
+    project, document or window title holds it (case folded), the calls of such an app and the
+    commits of such a repository; places are left out then. ``as_of`` is now.
+    """
+    zone = src.zone
+    begin = datetime.combine(first, time.min, zone)
+    cap = min(as_of, datetime.combine(last + timedelta(days=2), time.min, zone))
+    asked = src.terminal.misses if src.terminal is not None else 0
+    data = _Data(src, cap, begin - timedelta(days=1), phone_from=begin)
+    needle = about.casefold()
+
+    def holds(span: _Span) -> bool:
+        return any(needle in text.casefold() for text in (
+            span.app, span.project, span.document, span.title,
+        ))
+
+    days: list[DayFigures] = []
+    inside: list[_Span] = []
+    day = first
+    while day <= last:
+        start, stop = data.day(day)
+        spans = data.clip(start, stop)
+        if needle:
+            spans = [one for one in spans if holds(one)]
+            inside += spans
+        commits = data.commit_repos(start, stop)
+        calls = data.calls_seconds(start, stop)
+        if needle:
+            commits = Counter({k: v for k, v in commits.items() if needle in k.casefold()})
+            calls = {k: v for k, v in calls.items() if needle in k.casefold()}
+        stays = data.phone.stayed.get(day, {}) if not needle else {}
+        days.append(DayFigures(
+            day, data.active(spans), None if needle else data.bounds(day),
+            {k: v for k, v in data.seconds_by(spans, lambda s: s.project).items()
+             if k not in ("none", "")},
+            data.seconds_by(spans, lambda s: s.app), calls, commits,
+            _top({name: _merged(iv) for name, iv in stays.items()}, _PLACES_SHOWN),
+        ))
+        day += timedelta(days=1)
+    missing = []
+    if src.terminal is not None:
+        if src.terminal.misses > asked:
+            missing.append("terminal")
+    elif src.timesink is None or not src.timesink.is_file():
+        missing.append("timesink")
+    names = _top(data.seconds_by(inside, _inside), len(inside) or 1, 60.0)
+    return Figures(days, names, missing)
+
+
 __all__ = [
     "CALL_FLOOR_S",
     "DAY_STARTS_AT",
@@ -1707,6 +1805,8 @@ __all__ = [
     "Activity",
     "ActivityCall",
     "ActivitySpan",
+    "DayFigures",
+    "Figures",
     "LedgerSources",
     "TerminalScreen",
     "day_active",
@@ -1722,4 +1822,5 @@ __all__ = [
     "terminal_submissions",
     "today_text",
     "window_activity",
+    "window_figures",
 ]

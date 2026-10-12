@@ -135,6 +135,7 @@ from jarvis.execution.job_ledger_tool import (
 from jarvis.execution.mail_tool import build_mail_tool
 from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
 from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth, stdio_env
+from jarvis.execution.my_day_tool import build_my_day_tool
 from jarvis.execution.path_resolver import (
     FileTargetsConfigError,
     configure_file_targets,
@@ -1804,6 +1805,12 @@ def _register_conversation(registry: ToolRegistry, memory_db: Path, zone: tzinfo
         registry.register(tool)
 
 
+def _register_my_day(registry: ToolRegistry, sources: LedgerSources) -> None:
+    """``my_day`` (ADR 0243): today and what he does now, a day, a span, one project."""
+    for tool in build_my_day_tool(sources):
+        registry.register(tool)
+
+
 def _turn_end_asks(
     config: Mapping[str, Any], config_path: Path, log: JevLog | None = None,
 ) -> TurnEndAsks | None:
@@ -3075,6 +3082,14 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     )
     _register_mail(registry, home, local_zone)
     _register_conversation(registry, memory.db_path, local_zone)
+    _register_my_day(
+        registry,
+        LedgerSources(
+            memory.db_path, paths.event_log, _timesink_db_path(full_config), local_zone,
+            None if device is None else TerminalScreen(device),
+            paths.artifacts_root / ATTACHMENTS_DIRNAME,
+        ),
+    )
     attachments = Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME)
     return JarvisRuntime(
         config=full_config,

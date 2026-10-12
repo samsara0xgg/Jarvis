@@ -32,6 +32,14 @@ def clock(at: datetime) -> str:
     return f"{hour}:{at.minute:02d} {'am' if at.hour < _NOON else 'pm'}"
 
 
+def duration(seconds: float) -> str:
+    """``3h 40m``, ``2h``, ``45m`` (under half a minute rounds to ``0m``)."""
+    hours, minutes = divmod(round(seconds / _MINUTE), _MINUTE)
+    if hours:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    return f"{minutes}m"
+
+
 def day_name(day: date, today: date) -> str:
     """``today (Thu)``, ``yesterday (Wed)``, else ``Mon Sep 22`` (the year when not this one's)."""
     if (name := {0: "today", 1: "yesterday"}.get((today - day).days)) is not None:
