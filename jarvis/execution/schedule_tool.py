@@ -179,6 +179,16 @@ def _graph_time(stamp: Mapping[str, Any]) -> datetime:
     return datetime.fromisoformat(str(stamp["dateTime"])).replace(tzinfo=UTC)
 
 
+def _view(start: datetime, end: datetime) -> dict[str, Any]:
+    """The ``get-calendar-view`` arguments for ``[start, end)``: bounds with their own offset."""
+    return {
+        "startDateTime": start.isoformat(),
+        "endDateTime": end.isoformat(),
+        "select": _EVENT_FIELDS,
+        "fetchAllPages": True,
+    }
+
+
 def _trouble(exc: Exception, who: str) -> str:
     """Why a source was not read, as the model should relay it."""
     detail = speakable.cut(str(exc), _REASON_CHARS)
@@ -323,15 +333,9 @@ class _Schedule:
         return rows, read, missing
 
     def _events(self, window: _Window, now: datetime) -> list[_Row]:
-        view = {
-            "startDateTime": window.start.isoformat(),
-            "endDateTime": window.end.isoformat(),
-            "select": _EVENT_FIELDS,
-            "fetchAllPages": True,
-        }
         today = now.astimezone(self._zone).date()
         rows = []
-        for one in self._graph("get-calendar-view", view):
+        for one in self._graph("get-calendar-view", _view(window.start, window.end)):
             if one.get("isCancelled"):
                 continue
             what = speakable.cut(str(one.get("subject") or ""), _WHAT_CHARS) or "(no title)"
@@ -492,4 +496,30 @@ def build_schedule_tool(
     )
 
 
-__all__ = ["build_schedule_tool"]
+def upcoming_events(
+    graph: Callable[[str, Mapping[str, Any]], list[dict[str, Any]]],
+    zone: tzinfo,
+    now: datetime,
+    limit: int,
+) -> list[tuple[datetime, str]]:
+    """The next ``limit`` timed events from ``now`` to the end of tomorrow: ``(start, title)``.
+
+    The calendar read ``my_schedule`` makes (ADR 0248), for the state block's calendar line
+    (ADR 0249). An event that has begun, an all-day one and a cancelled one are not "next".
+
+    Raises:
+        LookupError: Microsoft is not connected.
+        ToolError: the server did not answer.
+        ValueError, TypeError, AttributeError: the answer is not Graph's JSON.
+    """
+    local = now.astimezone(zone)
+    view = _view(local.replace(microsecond=0), _midnight(local.date() + timedelta(days=2), zone))
+    found = sorted(
+        (_graph_time(one["start"]), speakable.cut(str(one.get("subject") or ""), _WHAT_CHARS))
+        for one in graph("get-calendar-view", view)
+        if not one.get("isCancelled") and not one.get("isAllDay")
+    )
+    return [(start, title or "(no title)") for start, title in found if start > now][:limit]
+
+
+__all__ = ["build_schedule_tool", "upcoming_events"]

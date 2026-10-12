@@ -59,9 +59,16 @@ ride and his place are not repeated.
   state is as it was when the words were said.
 - Past twelve hours the claim leaves the block, and a question about it goes to `my_day`, which
   says how old it is. Nothing here refreshes the analysis.
-- The calendar line does not exist until the composition root passes a reader; the place is marked
-  at `calendar_next` in `jarvis/runtime/__init__.py`. The reader must return at once, and its
-  items' titles are his calendar's words, shown quoted on one line.
+- The reader is `CalendarCache` (`jarvis/runtime/now_block.py`), a daemon watcher beside the
+  reminders and the rides: `my_schedule`'s `get-calendar-view` read (ADR 0248) over the rest of
+  today and tomorrow, the next three timed items, at start, every 15 minutes and again 2 minutes
+  after a read that failed. A turn only returns what it holds, so it adds no latency and makes no
+  call. When Microsoft is not connected or a read fails the reading is dropped and the line is
+  left out; it never says the calendar is clear. Its items' titles are his calendar's words,
+  shown quoted on one line.
+- An event added or moved after the last read shows at the next one, up to 15 minutes later, and
+  nothing refreshes the reading when the model writes the calendar; the line's age says how old
+  it is, and `my_schedule` reads just now. An all-day event is not offered as next.
 - An item that has begun is never offered as next, so a reading an hour old can leave the line
   empty; an item in progress is not shown either, as the reader gives no end time.
 - `my_day` and the block read the work state through one function, `work_state_now`, so the two

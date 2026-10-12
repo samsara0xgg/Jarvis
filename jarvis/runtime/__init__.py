@@ -143,7 +143,7 @@ from jarvis.execution.path_resolver import (
     resolve_write_target,
 )
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
-from jarvis.execution.schedule_tool import build_schedule_tool
+from jarvis.execution.schedule_tool import build_schedule_tool, upcoming_events
 from jarvis.execution.tools import (
     DEFAULT_SCREEN_MAX_WIDTH_PX,
     DEFAULT_WEB_FETCH_MAX_BYTES,
@@ -192,7 +192,7 @@ from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.runtime.night_run import NightRun, night_settings
-from jarvis.runtime.now_block import CalendarRead, calendar_line, doing_now_line
+from jarvis.runtime.now_block import KEPT, CalendarCache, calendar_line, doing_now_line
 from jarvis.runtime.picture_notes import PictureNotes
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
@@ -686,6 +686,8 @@ class JarvisRuntime:
     projects: ProjectsService | None = None
     # ADR 0051: the companion home's Today, mail and brief reads. None = hand-assembled.
     home: Home | None = None
+    # ADR 0249: the state block's calendar line reads this; its loop refreshes it. None = no line.
+    calendar_next: CalendarCache | None = None
     # ADR 0176: what the Dashboard shows (``dashboard.view.enabled``). None = off.
     view: ViewState | None = None
     # ADR 0147: the Dashboard's mail page's reply drafts (``dashboard.mail.enabled``, which
@@ -3102,9 +3104,10 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     _register_schedule(registry, home, local_zone)
     plugin_connections.refresh_search()  # ADR 0247: every built-in tool is registered now
     attachments = Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME)
-    # ADR 0249 wiring point: the reader of his next calendar items (the ``my_schedule`` tool's
-    # cache) goes here. With None the state block has no calendar line.
-    calendar_next: CalendarRead | None = None
+    # ADR 0249: his next calendar items, read in the background through ``my_schedule``'s read.
+    calendar_next = CalendarCache(
+        partial(upcoming_events, home.graph, local_zone, limit=KEPT), speakable.now,
+    )
     return JarvisRuntime(
         config=full_config,
         runtime_paths=paths,
@@ -3164,6 +3167,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         work_state_auto=_work_state_auto(full_config, config_path),
         projects=projects,
         home=home,
+        calendar_next=calendar_next,
         view=view,
         mail_drafts=mail_drafts,
         ambient=ambient,
