@@ -420,7 +420,7 @@ struct TalkPanel: View {
                                 .id(r.id)
                                 .onGeometryChange(for: Double.self) { $0.frame(in: .named("stream")).minY } action: { moved(r.id, to: $0) }
                                 .transition(reduce ? .opacity : .opacity.combined(with: .offset(y: 6)))
-                                .contextMenu { if r.status == nil { Button("拷贝", systemImage: "doc.on.doc") { UIPasteboard.general.string = r.text } } }
+                                .contextMenu { if let t = TalkStream.copyText(r) { Button("拷贝", systemImage: "doc.on.doc") { UIPasteboard.general.string = t } } }
                             }
                         } header: {
                             // no day headers while he types: the keyboard leaves no room for them

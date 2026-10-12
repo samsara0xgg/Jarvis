@@ -54,6 +54,17 @@ enum AnswerText {
         return a
     }
 
+    /// `s` as plain text, for copying: the marks are gone; a link keeps its address after its title, and a bare address (shown as its host) is the whole address
+    static func plain(_ s: String) -> String {
+        let a = linked(s)
+        return a.runs.map { r in
+            let t = String(a[r.range].characters)
+            guard let url = r.link else { return t }
+            let u = url.absoluteString
+            return t == u || t == host(url) ? u : "\(t) (\(u))"
+        }.joined()
+    }
+
     /// the address's host without `www.`, which is what a bare address shows as
     private static func host(_ url: URL) -> String? {
         guard let h = url.host, !h.isEmpty else { return nil }
@@ -128,6 +139,19 @@ enum AnswerBlocks {
         if let c = code { out.append(.code(c.joined(separator: "\n"))) }       // a fence still open: the answer is still arriving
         flush()
         return out
+    }
+
+    /// What the blocks show, as plain text for copying: no markup, a list keeps its markers and nesting, a table its cells apart by tabs.
+    static func plain(_ text: String) -> String {
+        parse(text).map { b -> String in
+            switch b {
+            case .paragraph(let s), .heading(let s), .quote(let s): AnswerText.plain(s)
+            case .list(let items): items.map { String(repeating: "  ", count: $0.level) + $0.marker + " " + AnswerText.plain($0.text) }.joined(separator: "\n")
+            case .code(let s): s
+            case .table(let rows): rows.map { $0.map(AnswerText.plain).joined(separator: "\t") }.joined(separator: "\n")
+            case .rule: "---"
+            }
+        }.joined(separator: "\n\n")
     }
 
     /// something besides plain paragraphs: it wants room, so the talk panel opens for it

@@ -55,6 +55,13 @@ enum TalkStream {
         return group(out, [], cal: cal, now: now)
     }
 
+    /// What 拷贝 copies from a row: the words as they read, without markup; nil for a row with no words (the typing line, a card, the chip, a failure)
+    static func copyText(_ r: TalkRow) -> String? {
+        guard r.status == nil, r.card == nil, r.about == nil, !r.failed else { return nil }
+        let t = r.his ? r.text : AnswerBlocks.plain(r.text)
+        return t.isEmpty ? nil : t
+    }
+
     /// How much of each row shows in the reading zone under the dial (the panel shut), by the order the rows are listed in: the newest round, from his last line on, in full; the round before it
     /// (from his line before that), dimmer; everything older not at all. Nothing shows until the talk has a row of its own, so the last round of the conversation does not flash up as the newest.
     static func reading(_ rows: [TalkRow]) -> [Double] {

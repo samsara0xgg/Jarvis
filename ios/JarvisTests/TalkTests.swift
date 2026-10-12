@@ -106,4 +106,14 @@ final class HisTextTests: XCTestCase {
         XCTAssertEqual(AttachField.clip(ok + "多")?.count, AttachField.maxChars)
         XCTAssertNil(AttachField.clip(String(repeating: "x", count: 121)), "the old 120 is gone")
     }
+
+    func testCopyingARowGivesItsWordsAsTheyReadAndNothingForARowWithoutWords() {
+        let hers = TalkRow(id: "c1", his: false, text: "**重点**：看[订位页](https://laroux.ca/a)，或 https://www.laroux.ca/b/c 。\n\n- 周五\n  - 七点\n\n| 日 | 事 |\n|---|---|\n| 五 | **会** |\n\n> 引用\n\n---\n\n```\nlet a = 1\n```")
+        XCTAssertEqual(TalkStream.copyText(hers), "重点：看订位页 (https://laroux.ca/a)，或 https://www.laroux.ca/b/c 。\n\n• 周五\n  • 七点\n\n日\t事\n五\t会\n\n引用\n\n---\n\nlet a = 1")
+        XCTAssertEqual(TalkStream.copyText(TalkRow(id: "c2", his: true, text: "我说 **不是** 标记")), "我说 **不是** 标记", "his words are what he typed")
+        XCTAssertNil(TalkStream.copyText(TalkRow(id: "l1", his: false, text: "", status: StatusLine())))
+        XCTAssertNil(TalkStream.copyText(TalkRow(id: "about", his: false, text: "", about: About(kind: "reminder", id: "r", title: "给 Mia 回电话", startMs: 0))))
+        XCTAssertNil(TalkStream.copyText(TalkRow(id: "l2", his: false, text: "没答出来", failed: true)))
+        XCTAssertNil(TalkStream.copyText(TalkRow(id: "l3", his: true, text: "")), "a line of pictures only")
+    }
 }
