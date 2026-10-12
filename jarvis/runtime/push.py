@@ -82,7 +82,10 @@ _WAITING_TITLES: Final = {
     "claude": "push.claude",
     "plugin": "push.plugin",
     "deep": "push.deep",
+    "deep_failed": "push.deep_failed",
 }
+# A kind that only retitles another: the phone's card, category and tap route stay the original's.
+_CARD_KIND: Final = {"deep_failed": "deep"}
 _CLOSERS: Final = {
     "confirmation.accepted": "confirmation_id",
     "confirmation.rejected": "confirmation_id",
@@ -243,9 +246,10 @@ class Push:
             return False
         # ADR 0232: the card's kind and id ride beside ``aps``, so a tap opens that card and an
         # action answers it on the card's own route.
+        card = _CARD_KIND.get(kind, kind)
         message = PushMessage(
-            lang.t(_WAITING_TITLES[kind]), text, category=kind, thread="waiting",
-            sound=level != _QUIET_SILENT, data={"card": {"kind": kind, "id": item_id}},
+            lang.t(_WAITING_TITLES[kind]), text, category=card, thread="waiting",
+            sound=level != _QUIET_SILENT, data={"card": {"kind": card, "id": item_id}},
         )
 
         def skip(name: str) -> bool:
@@ -367,7 +371,13 @@ class Push:
             return None
         said = str(payload.get("voice_text") or payload.get("text") or "")[:_DEEP_TEXT]
         phone = node if node in push_tokens.registrations(self._root) else None
-        return "deep", turn_id, said, None, phone
+        failed = conn.execute(
+            "SELECT 1 FROM events WHERE type = 'surface.user_intent' "
+            "AND json_extract(payload_json, '$.turn_id') = ? "
+            "AND json_extract(payload_json, '$.deep_failure') IS NOT NULL",
+            (turn_id,),
+        ).fetchone()
+        return "deep_failed" if failed else "deep", turn_id, said, None, phone
 
     def _update_activity(self) -> None:
         """Send the Live Activity content to each running activity whose last send differs."""

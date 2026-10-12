@@ -264,11 +264,15 @@ class World:
 
     def deep(
         self, turn_id: str, device: str, attention: str, said: str = "Three need a reply.",
+        failure: str | None = None,
     ) -> None:
         """A deep task (ADR 0251) handed over by ``device``'s turn, and the answer it left."""
         emit_event(
             self.log, type="surface.user_intent", ingestion_node=device,
-            payload={"transcript": "go through the mail", "turn_id": turn_id, "channel": "deep"},
+            payload={
+                "transcript": "go through the mail", "turn_id": turn_id, "channel": "deep",
+                **({"deep_failure": failure} if failure else {}),
+            },
             correlation={"turn_id": turn_id},
         )
         emit_event(self.log, type="surface.response_emitted", payload={
@@ -654,6 +658,18 @@ def test_a_deep_result_left_as_a_card_pushes_once_to_the_phone_that_handed_it_ov
         "sound": "default", "thread-id": "waiting", "category": "deep",
     }, "card": {"kind": "deep", "id": "D1"}}
     assert confirmation["body"]["card"] == {"kind": "confirmation", "id": "C3"}
+
+
+def test_the_notice_that_a_deep_task_failed_is_not_titled_as_its_result(world: World) -> None:
+    """ADR 0251: same card and tap route as a result, but it does not say the result is ready."""
+    world.push.poll()
+    world.deep("D1", "phone", "badge_card", "That did not finish.", failure="error")
+    world.push.poll()
+    [request] = world.requests()
+    assert request["body"]["aps"]["alert"]["title"] == lang.t("push.deep_failed")
+    assert lang.t("push.deep_failed") != lang.t("push.deep")
+    assert request["body"]["aps"]["category"] == "deep"
+    assert request["body"]["card"] == {"kind": "deep", "id": "D1"}
 
 
 def test_a_deep_result_for_a_task_handed_over_at_the_mac_follows_him_off_it(world: World) -> None:

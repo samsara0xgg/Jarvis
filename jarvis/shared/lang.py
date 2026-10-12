@@ -353,6 +353,7 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "push.claude": {"zh": "Claude Code 请求许可", "en": "Claude Code asks permission"},
     "push.plugin": {"zh": "点一下登录，连上这个 App", "en": "Tap to log in and connect"},
     "push.deep": {"zh": "仔细查的结果好了", "en": "The result you waited for"},
+    "push.deep_failed": {"zh": "仔细查没查成", "en": "The deep look did not finish"},
     # ADR 0200: the reminder a pinned bus trip rings at its leave time; the stop name is the model's.
     "departure.go": {
         "zh": "该出门了，{route} 路 {departs} 在 {stop} 上车",
