@@ -36,7 +36,10 @@ extension StarEngine {
             // a turn that failed leaves its rows (all of them when it is sent again) before the new ones
             let from = again?.his ?? .max
             self.ui.liveTurns.removeAll { $0.failed || $0.id >= from }
-            self.beginTalk()
+            // The talk's base is the newest row before his line. `beginTalk` would ask for it by itself, and that answer can come after the brain has stored his
+            // line (a slow link): his line would then be listed twice. The one asked below, before the words go, is used instead.
+            let fresh = !self.ui.talking, mine = self.talkId + 1
+            self.beginTalk(base: Conversation.shared.rows.last?.seq ?? 0)
             self.talk = "listen"
             let his = self.addTurn(his: true, shown, pics: pics)
             StatusBoard.shared.begin(utterance: utterance)
@@ -63,6 +66,7 @@ extension StarEngine {
                 }
                 StallLog.mark("send: files up")
                 seq = await latest
+                if fresh, let seq, self.talkId == mine { self.talkBase = max(self.talkBase, seq) }
                 StallLog.mark("send: latest seq")
                 switch await PhoneLink.shared.sendTyped(utterance: utterance, text: text, attachments: ids, about: about?.json) {
                 case .taken: break
