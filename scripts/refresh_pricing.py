@@ -112,6 +112,16 @@ TIER_ROWS: dict[str, dict[str, Any]] = {
         "supports_prompt_caching": True,
         "source": "Anthropic API docs (2026-10-10): prompts above 100K tokens.",
     },
+    "claude-sonnet-5-5": {
+        "litellm_id": "claude-sonnet-5-5",
+        "provider": "anthropic",
+        "input_per_1m": 2.0,
+        "output_per_1m": 10.0,
+        "cache_read_per_1m": 0.2,
+        "cache_write_per_1m": 2.5,
+        "supports_prompt_caching": True,
+        "source": "Anthropic API docs (2026-10-06): $2/$10, cache read 0.1x; 5-minute cache write 1.25x. No second rate card is known for long prompts.",
+    },
     "gpt-6-luna:fast": {
         "litellm_id": "gpt-6-luna",
         "provider": "openai",

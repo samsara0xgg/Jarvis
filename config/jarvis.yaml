@@ -117,6 +117,17 @@ llm:
       api_key_env: ANTHROPIC_API_KEY
       max_tokens: 16384
       reasoning_effort: medium
+    # Claude Sonnet 5.5，直连 Anthropic，只给测评和对比用（scripts/tool_exam.py），不是默认。
+    # 自适应思考加 effort；Sonnet 5.5 不收 thinking disabled 和 budget_tokens，所以别写
+    # reasoning_effort: none，强制调工具的请求也别用它。价钱 $2/$10 每百万 token，缓存读 0.1 倍。
+    sonnet:
+      provider: anthropic
+      model: claude-sonnet-5-5
+      api_key_env: ANTHROPIC_API_KEY
+      max_tokens: 16384
+      context_length: 1000000
+      reasoning_effort: low
+      images: true
     # context_length：模型窗口（token）。session.compact_at_context_ratio
     # 按它算压缩门槛；决策预设缺了它就永远不压缩。
     #
