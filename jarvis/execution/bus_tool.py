@@ -460,6 +460,14 @@ def build_bus_tool(  # noqa: PLR0913 - the key, places, two readers, offers, liv
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",
             read_only=False,
+            # The six old names are gone; a search that names one ("use transit") is told the
+            # call that took its place.
+            supersedes={
+                "transit": "bus(to=...)", "pin_departure": "bus(pin=[N])",
+                "watch_for_boarding": 'bus(ride="watch", to=...)',
+                "start_ride": 'bus(ride="start")', "set_ride_stop": "bus(get_off=<stop>)",
+                "end_ride": 'bus(ride="end")',
+            },
         ),
     )
 

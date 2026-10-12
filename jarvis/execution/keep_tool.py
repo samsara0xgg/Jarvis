@@ -30,7 +30,8 @@ _KEEP_DESCRIPTION: Final = (
     "Use for anything he wants noted, remembered or done later: 记一下, 记得, 回家修X, 顺便记录,"
     " 提醒我, 别忘了 (not calendar events). It is saved only when this returns: never answer"
     " 记下了 without calling it. Default: a memo for later (things to fix, buy, do, ideas)."
-    " kind=reminder with at (local time): he is reminded then. kind=fact: a lasting fact about"
+    " kind=reminder with at (local time) or in_minutes ('in 10 minutes'): he is reminded then."
+    " kind=fact: a lasting fact about"
     " him. cancel=<id> cancels a reminder. The same text twice is saved once. To read back, use"
     " kept."
 )
@@ -55,7 +56,17 @@ _KEEP_SCHEMA: Final[Mapping[str, Any]] = {
         },
         "at": {
             "type": "string",
-            "description": "reminder only: when to remind him, local time, e.g. 2026-10-12 15:00.",
+            "description": (
+                "reminder only: when to remind him, local time worked out from the time in your"
+                " state line, e.g. 2026-10-12 15:00."
+            ),
+        },
+        "in_minutes": {
+            "type": "integer",
+            "description": (
+                "reminder only, instead of at: for 'in 2 minutes' or 'in half an hour', the"
+                " minutes from now (2, 30)."
+            ),
         },
         "topic": {
             "type": "string",
@@ -167,6 +178,7 @@ class _Keeper:
     def keep(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         """Save, schedule or cancel what the arguments say; the result says which."""
         text, at, topic = _text(args, "text"), _text(args, "at"), _text(args, "topic")
+        at = self._in_minutes(args.get("in_minutes"), at)
         if cancel := _text(args, "cancel"):
             if text or at or topic:
                 msg = "keep: cancel=<id> stands alone; to keep something new, call keep without it"
@@ -188,6 +200,15 @@ class _Keeper:
         if kind == "fact":
             return self._fact(text, topic)
         return self._memo(text, ctx)
+
+    def _in_minutes(self, minutes: object, at: str) -> str:
+        """``at`` for a reminder ``minutes`` from now ("in 2 minutes"), else ``at`` as given."""
+        if minutes is None:
+            return at
+        if at or not isinstance(minutes, int) or isinstance(minutes, bool) or minutes < 1:
+            msg = "keep: in_minutes is a whole number of minutes from now (1 or more), not with at"
+            raise ToolError(msg, code="invalid_time")
+        return (self._clock() + timedelta(minutes=minutes)).astimezone(self._zone).isoformat()
 
     def _memo(self, text: str, ctx: ToolContext) -> dict[str, Any]:
         text = text[:_MEMO_CHARS]
@@ -437,6 +458,14 @@ def build_keep_tools(
             risk_level="L1",
             read_only=False,
             max_result_chars=_RESULT_CHARS,
+            # The six old names are gone; a search that names one (he still says them) is told
+            # which call took its place.
+            supersedes={
+                "create_memo": "keep(text=...)",
+                "set_reminder": 'keep(text=..., kind="reminder", at=... or in_minutes=...)',
+                "cancel_reminder": "keep(cancel=<id>)",
+                "remember": 'keep(text=..., kind="fact")',
+            },
         ),
         Tool(
             name="kept",
@@ -447,6 +476,9 @@ def build_keep_tools(
             risk_level="L0",
             read_only=True,
             max_result_chars=_RESULT_CHARS,
+            supersedes={
+                "list_memos": 'kept(kind="memo")', "list_reminders": 'kept(kind="reminder")',
+            },
         ),
     )
 

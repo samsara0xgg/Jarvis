@@ -110,7 +110,9 @@ def test_the_menu_entries_are_two_small_tools_with_the_owner_s_words() -> None:
         assert len(one.description) <= 600
         assert not one.deferred
         assert one.input_schema["additionalProperties"] is False
-    assert set(keep.input_schema["properties"]) == {"text", "kind", "at", "topic", "cancel"}
+    assert set(keep.input_schema["properties"]) == {
+        "text", "kind", "at", "in_minutes", "topic", "cancel",
+    }
     assert set(kept.input_schema["properties"]) == {"kind", "query", "page"}
     for phrase in ("记一下", "记得", "回家修", "提醒我", "别忘了", "saved only when this returns"):
         assert phrase in keep.description
@@ -139,7 +141,7 @@ def test_the_offline_menu_offers_keep_and_kept_in_place_of_the_six(tmp_path: Pat
         one["name"]: len(one["description"]) + len(json.dumps(one["input_schema"]))
         for one in menu if one["name"] in {"keep", "kept"}
     }
-    assert sizes["keep"] < 1400
+    assert sizes["keep"] < 1600
     assert sizes["kept"] < 700
 
 
@@ -208,6 +210,18 @@ def test_at_alone_means_a_reminder_and_an_offset_form_is_still_accepted(world: _
     offset = world.keep("standup", kind="reminder", at="2026-10-12T17:00:00+00:00")
     assert offset["at"] == "2026-10-12T10:00:00-07:00"
     assert world.count("reminder.scheduled") == 2
+
+
+def test_in_minutes_sets_a_reminder_that_many_minutes_from_now(world: _World) -> None:
+    """'Remind me in two minutes': no time to work out; the result names the minute it rings."""
+    made = world.keep("take Pola and Eva out", in_minutes=2)
+    assert made["kind"] == "reminder"
+    assert made["at"] == (NOW + timedelta(minutes=2)).astimezone(ZONE).isoformat(timespec="seconds")
+    assert made["summary"].startswith("Reminder set for today (Sun) 7:57 pm")
+    bad_ones = ({"in_minutes": 0}, {"in_minutes": "2"}, {"in_minutes": 2, "at": "2026-10-12 9:00"})
+    for bad in bad_ones:
+        assert world.call("keep", {"text": "x", **bad})["code"] == "invalid_time"
+    assert world.count("reminder.scheduled") == 1
 
 
 @pytest.mark.parametrize(
