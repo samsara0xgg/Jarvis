@@ -282,7 +282,7 @@ class Setup:
         else:
             answer = self._check_tavily(key)
         # Only a key the service accepted counts: connect (and, for OpenAI, a real answer).
-        must_pass = ("connect", "chat") if provider == "openai" else ("connect",)  # absent row: passes
+        must_pass = ("connect", "chat") if provider == "openai" else ("connect",)
         refused = [
             row["reason"] for row in answer["checks"] if row["id"] in must_pass and not row["ok"]
         ]
