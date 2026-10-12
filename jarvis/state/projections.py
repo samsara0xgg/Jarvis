@@ -43,7 +43,7 @@ from jarvis.state.conversation import (
     RefoldRequired,
     fold_conversation_history,
 )
-from jarvis.state.event_log import DEEP_CHANNEL, iter_events
+from jarvis.state.event_log import iter_events
 
 if TYPE_CHECKING:
     import sqlite3
@@ -689,11 +689,7 @@ def _fold_pending_confirmations(  # noqa: C901, PLR0912 - a flat one-branch-per-
         if evt.type == "confirmation.requested":
             slot = _pending_slot_from_requested(evt)
         elif evt.type in ("surface.user_intent", "utterance.received"):
-            # A task handed to the deep lane (ADR 0251) is not a word of his.
-            if (
-                slot is not None and slot.state == "pending"
-                and evt.payload.get("channel") != DEEP_CHANNEL
-            ):
+            if slot is not None and slot.state == "pending":
                 slot = replace(slot, utterances_since=slot.utterances_since + 1)
         elif evt.type == "confirmation.accepted":
             if (
@@ -833,10 +829,8 @@ def _fold_pending_clarification(
                     answered_labels=tuple(answers) if isinstance(answers, Mapping) else (),
                     utterances_since=0 if dismissed else slot.utterances_since,  # count anew
                 )
-        elif (
-            evt.type in ("surface.user_intent", "utterance.received")
-            and (not slot.closed or slot.dismissed)
-            and evt.payload.get("channel") != DEEP_CHANNEL  # not a word of his (ADR 0251)
+        elif evt.type in ("surface.user_intent", "utterance.received") and (
+            not slot.closed or slot.dismissed
         ):
             slot = replace(slot, utterances_since=slot.utterances_since + 1)
     return slot

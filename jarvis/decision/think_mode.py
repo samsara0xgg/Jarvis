@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.state.event_log import DEEP_CHANNEL, iter_events_of_types
+from jarvis.state.event_log import iter_events_of_types
 
 if TYPE_CHECKING:
     import sqlite3
@@ -45,32 +45,13 @@ class ThinkMode:
         events = _recent(conn, turn.ts_epoch_ms)
         return self.preset if self._holds_on_word(events, turn) else None
 
-    def sentence(self, conn: sqlite3.Connection, turn: Event) -> str | None:
-        """The whole sentence ``turn`` answers (ADR 0251); ``None`` if it is not his words.
-
-        A sentence Allen paused in arrives as several utterances (ADR 0074); they are joined.
-        """
-        if turn.type not in _USER_WORDS:
-            return None
-        words = self._sentence_words(_recent(conn, turn.ts_epoch_ms), turn)
-        said = (event.payload.get("transcript") for event in words)
-        return " ".join(w for w in said if isinstance(w, str))
-
     def status(self, conn: sqlite3.Connection) -> dict[str, Any]:
         """ADR 0108: ``GET /inherent/think``, the turn that is thinking now, or ``None``."""
         turn_id = self._thinking_turn(_recent(conn, int(time.time() * 1000)))
         return {"on": turn_id is not None, "on_words": self.on.pattern, "turn_id": turn_id}
 
     def _holds_on_word(self, events: list[Event], turn: Event) -> bool:
-        """An on-word in ``turn``'s words, or in an utterance ADR 0074 folded into it."""
-        return any(
-            isinstance(said := event.payload.get("transcript"), str) and self.on.search(said)
-            for event in self._sentence_words(events, turn)
-        )
-
-    @staticmethod
-    def _sentence_words(events: list[Event], turn: Event) -> list[Event]:
-        """``turn``'s words and those of the utterances ADR 0074 folded into it, oldest first.
+        """An on-word in ``turn``'s words, or in an utterance ADR 0074 folded into it.
 
         A sentence Allen paused in arrives as two utterances; the first one's answer is
         cancelled as ``superseded`` and the second turn answers both.
@@ -87,7 +68,10 @@ class ThinkMode:
         first = last
         while first > 0 and words[first - 1].payload.get("turn_id") in superseded:
             first -= 1
-        return words[first : last + 1]
+        return any(
+            isinstance(said := event.payload.get("transcript"), str) and self.on.search(said)
+            for event in words[first : last + 1]
+        )
 
     def _thinking_turn(self, events: list[Event]) -> str | None:
         """The newest turn's id when its sentence holds an on-word and a final run is still open."""
@@ -108,19 +92,14 @@ class ThinkMode:
 
 
 def _recent(conn: sqlite3.Connection, at_ms: int) -> list[Event]:
-    """Allen's words and every response's start and end in the ten minutes before ``at_ms``.
-
-    A task the deep lane runs (ADR 0251) carries his words but is not a sentence of his.
-    """
-    return [
-        event
-        for event in iter_events_of_types(
+    """Allen's words and every response's start and end in the ten minutes before ``at_ms``."""
+    return list(
+        iter_events_of_types(
             conn,
             (*_USER_WORDS, "response.started", *_TURN_END),
             since_epoch_ms=at_ms - _LOST_TURN_MS,
         )
-        if event.payload.get("channel") != DEEP_CHANNEL
-    ]
+    )
 
 
 def load_think_mode(llm: Mapping[str, Any]) -> ThinkMode | None:

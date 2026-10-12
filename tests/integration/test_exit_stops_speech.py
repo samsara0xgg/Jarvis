@@ -22,7 +22,7 @@ from jarvis.decision.response_run import (
     legacy_full_text_policy,
     start_response_run,
 )
-from jarvis.runtime import inherent_loop, make_barge_in_interrupt_callable
+from jarvis.runtime import inherent_loop
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.surface import voice_media
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -160,7 +160,6 @@ def _run(  # noqa: PLR0913 - one run's trigger, channel and turn
     trigger: str | None = "utterance.received",
     intent_channel: str = "inherent_wake",
     channel: str = "both",
-    ignore_barge_in: bool = False,
 ) -> ResponseRun:
     """An open, registered run whose turn Allen's words started (``trigger=None``: nobody's)."""
     event = emit_event(
@@ -183,10 +182,6 @@ def _run(  # noqa: PLR0913 - one run's trigger, channel and turn
         ),
         response_id=response_id,
         channel=channel,  # type: ignore[arg-type]
-        confirmed_playback=(
-            "ignore" if ignore_barge_in else "interrupt_expected_playback_generation"
-        ),
-        generation_action="continue" if ignore_barge_in else "cancel",
     )
     assert runtime.response_runs is not None
     runtime.response_runs.register(run)
@@ -207,14 +202,12 @@ def test_exit_cancels_every_open_run_that_would_speak_and_leaves_the_rest(
     _run(runtime, "R-typed", "T-typed", trigger="surface.user_intent", intent_channel="cli_stdin")
     _run(runtime, "R-document", "T-doc", channel="document")
     _run(runtime, "R-live", "T-live", trigger="surface.user_intent", intent_channel="gpt_live")
-    _run(runtime, "R-deep", "T-deep", trigger="surface.user_intent", intent_channel="deep")
     _run(runtime, "R-sweep", "T-sweep", trigger=None)
 
     inherent_loop._make_cancel_voice_runs(runtime)()  # noqa: SLF001
 
-    # A task handed to the deep lane (ADR 0251) is no answer being written for the speaker.
     assert {run.response_id for run in runtime.response_runs.open_runs()} == {
-        "R-document", "R-live", "R-sweep", "R-typed", "R-deep",
+        "R-document", "R-live", "R-sweep", "R-typed",
     }
     cancelled = {
         (row[0], row[1])
@@ -283,31 +276,3 @@ def test_a_run_still_generating_at_exit_never_reaches_the_speaker(tmp_path: Path
     assert runtime.response_runs.turn_stopped("T-RG")
     assert not runtime.response_runs.open_runs()
 
-
-
-def _cancel_reasons(runtime: JarvisRuntime) -> list[str]:
-    return [
-        row[0] for row in runtime.conn.execute(
-            "SELECT json_extract(payload_json, '$.reason') FROM events "
-            "WHERE type = 'response.cancelled'",
-        )
-    ]
-
-
-def test_a_barge_in_does_not_count_or_cancel_a_deep_task(tmp_path: Path) -> None:
-    """ADR 0251: a deep run is never what a barge-in interrupts, nor makes it ambiguous."""
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
-    _run(
-        runtime, "R-deep", "T-deep", trigger="surface.user_intent", intent_channel="deep",
-        ignore_barge_in=True,
-    )
-    assert make_barge_in_interrupt_callable(runtime)("conversation_speech") == "no_open_run"
-    assert _cancel_reasons(runtime) == []
-
-    _run(runtime, "R-voice", "T-voice")
-    assert make_barge_in_interrupt_callable(runtime)("conversation_speech") == "cancelled"
-    assert _cancel_reasons(runtime) == ["barge_in"]
-    assert runtime.response_runs is not None
-    runs = runtime.response_runs.open_runs()
-    live = [r.response_id for r in runs if not r.cancellation_token.is_cancelled]
-    assert live == ["R-deep"]

@@ -2100,9 +2100,6 @@ MAC_NODE: Final = "mac"
 PHONE_VOICE_CHANNEL: Final = "phone_voice"
 """ADR 0209: the channel of words a paired phone recognized and sent as text; spoken for L3."""
 
-DEEP_CHANNEL: Final = "deep"
-"""ADR 0251: the channel of a task the voice lane handed over; the runtime writes it, not him."""
-
 _SELECT_TURN_ORIGIN_SQL = (
     "SELECT json_extract(payload_json, '$.channel'), ingestion_node FROM events "
     "WHERE type IN ('surface.user_intent', 'utterance.received') "
@@ -2165,7 +2162,6 @@ def turn_intent_channel(conn: sqlite3.Connection, turn_id: str) -> str | None:
 
 
 __all__ = [
-    "DEEP_CHANNEL",
     "MAC_NODE",
     "PHONE_VOICE_CHANNEL",
     "CommittedEventBus",

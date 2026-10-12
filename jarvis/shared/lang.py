@@ -332,7 +332,6 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "tier0.note_captured": {"zh": "已录入。", "en": "Noted."},
     "tier0.note_list": {"zh": "{summary}", "en": "{summary}"},
     "tier0.night": {"zh": "{spoken}", "en": "{spoken}"},
-    "tier0.deep": {"zh": "{spoken}", "en": "{spoken}"},
     # ADR 0179: owner-set reminders. The line is spoken and is the card's text; ``late`` is
     # appended to it when the reminder fired after its time (a restart or a sleeping Mac).
     "reminder.line": {"zh": "提醒：{text}", "en": "Reminder: {text}"},
@@ -352,8 +351,6 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "push.question": {"zh": "有个问题等你回答", "en": "A question for you"},
     "push.claude": {"zh": "Claude Code 请求许可", "en": "Claude Code asks permission"},
     "push.plugin": {"zh": "点一下登录，连上这个 App", "en": "Tap to log in and connect"},
-    "push.deep": {"zh": "仔细查的结果好了", "en": "The result you waited for"},
-    "push.deep_failed": {"zh": "仔细查没查成", "en": "The deep look did not finish"},
     # ADR 0200: the reminder a pinned bus trip rings at its leave time; the stop name is the model's.
     "departure.go": {
         "zh": "该出门了，{route} 路 {departs} 在 {stop} 上车",
@@ -1033,28 +1030,11 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "step.lights": {"zh": "控制灯", "en": "Controlling the lights"},
     "step.lights.done": {"zh": "控制了灯", "en": "controlled the lights"},
     "step.generic.done": {"zh": "做了点事", "en": "did something"},
-    "step.deep": {"zh": "交给后台仔细查", "en": "Handing it to the deep lane"},
-    "step.deep.done": {"zh": "交给后台仔细查了", "en": "handed it to the deep lane"},
     "step.join": {"zh": "、", "en": ", "},
     "step.detail.to": {"zh": "去 {place}", "en": "to {place}"},
     "step.place.here": {"zh": "这里", "en": "here"},
     "step.place.home": {"zh": "家", "en": "home"},
     "step.place.school": {"zh": "学校", "en": "school"},
-    # ADR 0251: the deep lane. ``started`` and ``busy`` are what think_deeper says; ``failed``
-    # is the notice of a task that did not finish, ``why`` the failure line when the reason is
-    # worth saying. None of them may hold 完成 / done / verified (the Pre-emit Gate reads them).
-    "deep.started": {
-        "zh": "这个我得仔细查一下，查好了告诉你。",
-        "en": "I need to look into this properly. I'll tell you when I have it.",
-    },
-    "deep.busy": {
-        "zh": "我还在查上一件事，等我告诉你结果了再说这个。",
-        "en": "I'm still on the last one. Ask me again once I've told you about it.",
-    },
-    "deep.failed": {
-        "zh": "你让我仔细查的那件事没查成。{why}",
-        "en": "I couldn't get through what you asked me to look into. {why}",
-    },
     # Why a turn failed, one per llm.failure_reason; the desktop shows it in
     # place of an answer.
     "failure.missing_key": {

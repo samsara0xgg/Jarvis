@@ -262,24 +262,6 @@ class World:
             correlation={"turn_id": turn_id},
         )
 
-    def deep(
-        self, turn_id: str, device: str, attention: str, said: str = "Three need a reply.",
-        failure: str | None = None,
-    ) -> None:
-        """A deep task (ADR 0251) handed over by ``device``'s turn, and the answer it left."""
-        emit_event(
-            self.log, type="surface.user_intent", ingestion_node=device,
-            payload={
-                "transcript": "go through the mail", "turn_id": turn_id, "channel": "deep",
-                **({"deep_failure": failure} if failure else {}),
-            },
-            correlation={"turn_id": turn_id},
-        )
-        emit_event(self.log, type="surface.response_emitted", payload={
-            "turn_id": turn_id, "text": said, "voice_text": said, "document_text": "",
-            "attention_channel": attention, "delivered_via": [], "response_hash": "h",
-        }, correlation={"turn_id": turn_id})
-
     def settle(self) -> None:
         """Wait for what the sender handed its own thread."""
         self.push._pool.submit(lambda: None).result(5)  # noqa: SLF001 — one worker, in order
@@ -639,51 +621,6 @@ def test_an_ask_card_pushes_and_a_card_closed_or_expired_before_the_poll_does_no
     }
     assert request["body"]["aps"]["category"] == "question"
     assert request["body"]["card"] == {"kind": "question", "id": "Q1"}  # ADR 0232
-
-
-def test_a_deep_result_left_as_a_card_pushes_once_to_the_phone_that_handed_it_over(
-    world: World,
-) -> None:
-    """ADR 0251: a spoken result, and one that stopped at a confirmation card, push nothing."""
-    world.push.poll()
-    world.deep("D1", "phone", "badge_card")
-    world.deep("D2", "phone", "voice_notify", "spoken, so it was heard")
-    world.deep("D3", "phone", "badge_card", "ask first")
-    world.confirm("C3", text="Send the reply?", turn="D3")
-    world.push.poll()
-    world.push.poll()
-    [deep, confirmation] = world.requests()
-    assert deep["body"] == {"aps": {
-        "alert": {"title": lang.t("push.deep"), "body": "Three need a reply."},
-        "sound": "default", "thread-id": "waiting", "category": "deep",
-    }, "card": {"kind": "deep", "id": "D1"}}
-    assert confirmation["body"]["card"] == {"kind": "confirmation", "id": "C3"}
-
-
-def test_the_notice_that_a_deep_task_failed_is_not_titled_as_its_result(world: World) -> None:
-    """ADR 0251: same card and tap route as a result, but it does not say the result is ready."""
-    world.push.poll()
-    world.deep("D1", "phone", "badge_card", "That did not finish.", failure="error")
-    world.push.poll()
-    [request] = world.requests()
-    assert request["body"]["aps"]["alert"]["title"] == lang.t("push.deep_failed")
-    assert lang.t("push.deep_failed") != lang.t("push.deep")
-    assert request["body"]["aps"]["category"] == "deep"
-    assert request["body"]["card"] == {"kind": "deep", "id": "D1"}
-
-
-def test_a_deep_result_for_a_task_handed_over_at_the_mac_follows_him_off_it(world: World) -> None:
-    """ADR 0251: no phone is named, so it goes only while he is away from the Mac."""
-    world.push.poll()
-    world.push.at_mac = lambda: True
-    world.deep("D1", "mac", "badge_card")
-    world.push.poll()
-    assert world.requests() == []
-    world.push.at_mac = lambda: False
-    world.deep("D2", "mac", "badge_card", "the second")
-    world.push.poll()
-    [request] = world.requests()
-    assert request["body"]["card"] == {"kind": "deep", "id": "D2"}
 
 
 def test_a_claude_code_permission_request_pushes_once(world: World) -> None:

@@ -75,7 +75,6 @@ from jarvis.decision import (
 from jarvis.decision.attention import rule_judge_v1
 from jarvis.decision.confirm_grammar import ConfirmGrammarConfigError, load_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
-from jarvis.decision.deep import DEEP_RULES, DeepConfigError, deep_turn, load_deep_settings
 from jarvis.decision.jev_oneshot import TOOL_GROUPS, JevOneShot
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
@@ -129,7 +128,6 @@ from jarvis.deployment.night_power import MacPower
 from jarvis.execution import speakable
 from jarvis.execution.conversation_tool import build_conversation_tool
 from jarvis.execution.dashboard_tool import build_dashboard_tool
-from jarvis.execution.deep_tool import DeepToolRegistry, build_deep_tool
 from jarvis.execution.geocode import Unplaced, geocode
 from jarvis.execution.job_ledger_tool import (
     build_job_ledger_tool,
@@ -186,7 +184,6 @@ from jarvis.runtime.dashboard import (
     ViewState,
 )
 from jarvis.runtime.decision_state import DecisionStateCache
-from jarvis.runtime.deep_lane import DeepLane, with_deadline
 from jarvis.runtime.departures import Departures
 from jarvis.runtime.highlight_marks import HighlightMarks
 from jarvis.runtime.home import Home, mail_body, mail_summarizer, mail_text, weather_lookup
@@ -673,8 +670,6 @@ class JarvisRuntime:
     surrogate_route: SurrogateRoute | None = None
     # ADR 0108: `llm.think`, the words that make one turn think. None = never.
     think_mode: ThinkMode | None = None
-    # ADR 0251: `llm.deep`, the lane a heavy task is handed to. None = no `think_deeper`.
-    deep: DeepLane | None = None
     # ADR 0019: the resident codex app-server and the four worker tools bound
     # to it. None = a hand-assembled runtime without workers.
     workers: Workers | None = None
@@ -1066,34 +1061,6 @@ def _think_mode(llm_config: Mapping[str, Any], config_path: Path) -> ThinkMode |
     except ThinkModeConfigError as exc:
         msg = f"runtime: {config_path} {exc}"
         raise RuntimeBootstrapError(msg) from exc
-
-
-def _deep_lane(
-    llm_config: Mapping[str, Any],
-    config_path: Path,
-    full_config: Mapping[str, Any],
-    registry: ToolRegistry,
-    committed_event_bus: CommittedEventBus | None,
-) -> DeepLane | None:
-    """``llm.deep`` (ADR 0251) made live, with `think_deeper` on the voice lane's menu.
-
-    A broken block stops boot like a broken ``llm.think``.
-    """
-    try:
-        settings = load_deep_settings(llm_config)
-    except DeepConfigError as exc:
-        msg = f"runtime: {config_path} {exc}"
-        raise RuntimeBootstrapError(msg) from exc
-    if settings is None:
-        return None
-    lane = DeepLane(
-        settings,
-        reply_language=str(full_config.get("reply_language", "follow")),
-        committed_event_bus=committed_event_bus,
-    )
-    for tool in build_deep_tool(lane):
-        registry.register(tool)
-    return lane
 
 
 def _wave1_feature_flags(config: Mapping[str, Any]) -> Wave1FeatureFlags:
@@ -3079,7 +3046,6 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     llm_session_factory = (
         LLMSessionFactory(llm_config) if response_flags.response_run_lifecycle else None
     )
-    deep = _deep_lane(llm_config, config_path, full_config, registry, committed_event_bus)
     response_runs = (
         ResponseRunRegistry() if response_flags.independent_response_cancel else None
     )
@@ -3197,7 +3163,6 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
         tool_cues=tool_cues,
         think_mode=think_mode,
-        deep=deep,
         work_state=work_state,
         work_state_auto=_work_state_auto(full_config, config_path),
         projects=projects,
@@ -3323,18 +3288,6 @@ def _late_cancel_reason(registry: ResponseRunRegistry, run: ResponseRun) -> str 
     return None
 
 
-def _turn_preset(runtime: JarvisRuntime, user_intent_event: Event) -> str | None:
-    """The preset this turn runs on.
-
-    The deep lane's for its task (ADR 0251), the thinking one for a sentence holding a think
-    word (ADR 0108), else ``None`` (the default).
-    """
-    if runtime.deep is not None and deep_turn(user_intent_event):
-        return runtime.deep.settings.preset
-    think = runtime.think_mode
-    return think.preset_for(runtime.conn, user_intent_event) if think else None
-
-
 def _start_drive_turn_response(
     runtime: JarvisRuntime,
     *,
@@ -3362,8 +3315,9 @@ def _start_drive_turn_response(
         return None
 
     response_id = new_response_id()
-    deep = runtime.deep is not None and deep_turn(user_intent_event)
-    snapshot = runtime.llm_session_factory.snapshot(_turn_preset(runtime, user_intent_event))
+    think = runtime.think_mode
+    preset = think.preset_for(runtime.conn, user_intent_event) if think else None
+    snapshot = runtime.llm_session_factory.snapshot(preset)
     request_client = runtime.llm_session_factory.create(snapshot, response_id=response_id)
     policy = legacy_full_text_policy(
         evidence_snapshot_hash=evidence_snapshot_hash(runtime.conn),
@@ -3392,7 +3346,7 @@ def _start_drive_turn_response(
             turn_id=turn_id,
         )
         policy = spoken_stream_policy(context, preset_snapshot_hash=snapshot.snapshot_hash)
-    elif runtime.response_flags.routine_streaming and correction is None and not deep:
+    elif runtime.response_flags.routine_streaming and correction is None:
         packet = assemble_packet(user_intent_event, runtime.conn, _snapshot_reader(runtime))
         route = pre_route(
             packet,
@@ -3418,10 +3372,6 @@ def _start_drive_turn_response(
         committed_event_bus=runtime.committed_event_bus,
         corrects_response_id=correction.corrects_response_id if correction else None,
         route=route,
-        # ADR 0251: nothing is playing for a deep task, so a barge-in, a stop or a newer
-        # sentence of his has nothing of it to interrupt.
-        confirmed_playback="ignore" if deep else "interrupt_expected_playback_generation",
-        generation_action="continue" if deep else "cancel",
     )
     terminalizer = ResponseTerminalizer(
         lambda: runtime.conn,
@@ -3630,8 +3580,8 @@ def make_barge_in_interrupt_callable(
     run's own ``ResponseInterruptPolicy`` permits it.
 
     Returned strings beyond ``make_response_cancel_callable``'s own outcomes:
-    ``"no_open_run"``, ``"ambiguous_open_runs"``, ``"policy_generation_continue"``. A run
-    whose policy ignores confirmed playback is not counted at all.
+    ``"no_open_run"``, ``"ambiguous_open_runs"``, ``"policy_ignore"``,
+    ``"policy_generation_continue"``.
 
     ``only_turns`` (ADR 0209, 0219) narrows the target to the open runs of the turns it
     accepts: a device's barge-in interrupts that device's answer, whatever else is open.
@@ -3645,13 +3595,10 @@ def make_barge_in_interrupt_callable(
         # A commentary run for the same turn is legitimately open while the
         # final run waits on its action (ADR-0006 D8): counting it would make
         # every action-dispatching turn read as `ambiguous_open_runs`.
-        # A run that ignores barge-in (a deep task, ADR 0251) is not what he interrupted.
         open_runs = tuple(
             run
             for run in registry.open_runs()
-            if run.phase == "final"
-            and run.interrupt_policy.confirmed_playback != "ignore"
-            and (only_turns is None or only_turns(run.turn_id))
+            if run.phase == "final" and (only_turns is None or only_turns(run.turn_id))
         )
         if not open_runs:
             return "no_open_run"
@@ -3659,6 +3606,8 @@ def make_barge_in_interrupt_callable(
             return "ambiguous_open_runs"
         run = open_runs[0]
         policy = run.interrupt_policy
+        if policy.confirmed_playback != "interrupt_expected_playback_generation":
+            return "policy_ignore"
         if policy.generation_action != "cancel":
             return "policy_generation_continue"
         LOGGER.info(
@@ -4449,9 +4398,6 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         the events emitted.
     """
     effective_turn_id = str(user_intent_event.payload["turn_id"])
-    # ADR 0251: a task the voice lane handed over is not his words: no row of his, no sent-message
-    # record, and it runs on the deep preset with its own rules and tools.
-    deep_task = runtime.deep is not None and deep_turn(user_intent_event)
     record_realtime_trace(
         "intent_queue_accepted" if continuation is None else "turn_continuation_resumed",
         turn_id=effective_turn_id,
@@ -4472,10 +4418,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     surface_wrote_row = memory_exclude_id != user_intent_event.event_uid
     # ADR 0062: a card's button is Allen's act, not his words; it writes no row.
     card_button = isinstance(user_intent_event.payload.get("confirmation_decision"), Mapping)
-    if (
-        memory is not None and continuation is None and not surface_wrote_row
-        and not card_button and not deep_task
-    ):
+    if memory is not None and continuation is None and not surface_wrote_row and not card_button:
         audio_ref = user_intent_event.payload.get("audio_artifact_ref")
         append_record(
             memory.db_path,
@@ -4504,7 +4447,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     if memory is not None and runtime.session.replay_sent:
         record_sent_message = (
             (lambda _text: None)
-            if card_button or deep_task
+            if card_button
             else partial(record_sent, memory.db_path, memory_exclude_id)
         )
     # ADR-0008 Step 2 (Wave 4A) — open the durable ResponseRun before the
@@ -4573,8 +4516,6 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             if run is not None:
                 run.mark("generating")
         turn_system_prompt = runtime.system_prompt
-        if deep_task:
-            turn_system_prompt += "\n\n" + DEEP_RULES
         if runtime.plugin_connections is not None:
             turn_system_prompt += "\n\n" + runtime.plugin_connections.skills_prompt()
         connected_apps = (
@@ -4592,9 +4533,6 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             if connected_apps is not None:
                 turn_system_prompt += "\n\n" + connected_apps
                 connected_apps = None
-        checkpoint: Callable[[str], None] | None = run.check_cancelled if run is not None else None
-        if deep_task and runtime.deep is not None:  # ADR 0251: a task may not run for ever
-            checkpoint = with_deadline(checkpoint, runtime.deep.settings.deadline_s)
         decide_ctx = DecideContext(
             conn=runtime.conn,
             runtime_paths=runtime.runtime_paths,
@@ -4612,7 +4550,6 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                     user_intent_event.payload.get("channel") == "gpt_live"
                     or user_intent_event.payload.get("plugin_origin_channel") == "gpt_live"
                 )
-                else DeepToolRegistry(runtime.tool_registry) if deep_task
                 else runtime.tool_registry,
             ),
             lifecycle=cast("LifecycleLike", runtime.lifecycle),
@@ -4644,11 +4581,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # ADR-0012 §3 D4/V2 — confirmation TTL, config-overridable
             # via `confirmation.ttl_ms` so the live burn can shorten it.
             confirmation_ttl_ms=_confirmation_ttl_ms(runtime.config),
-            max_tool_iterations=(
-                runtime.deep.settings.max_tool_iterations
-                if deep_task and runtime.deep is not None
-                else _max_tool_iterations(runtime.config, user_intent_event)
-            ),
+            max_tool_iterations=_max_tool_iterations(runtime.config, user_intent_event),
             # ADR-0012 §3 D6 — answer-path grammar, threaded the same
             # way tier0_table is threaded.
             confirm_grammar_table=runtime.confirm_grammar_table,
@@ -4662,15 +4595,13 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 *_whereabouts_lines(runtime),
             ),
             record_sent_message=record_sent_message,
-            cancellation_checkpoint=checkpoint,
+            cancellation_checkpoint=run.check_cancelled if run is not None else None,
             request_admission=(
                 partial(run.admit_request, runtime.conn) if run is not None else None
             ),
             routine_stream=stream_route,
             read_snapshot=_snapshot_reader(runtime),
             slow_results=runtime.response_flags.slow_results,
-            deep=None if runtime.deep is None else runtime.deep.settings,
-            deep_words=runtime.think_mode if runtime.deep is not None else None,
             surrogate_route=runtime.surrogate_route,
             oneshot=runtime.oneshot,
             # The same boot value as the system prompt's reply-language line.
@@ -4962,7 +4893,6 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             if (
                 runtime.response_flags.prefix_warm
                 and run is not None
-                and not deep_task
                 and user_intent_event.payload.get("channel") != "gpt_live"
             ):
                 spoken = stream_route is not None and stream_route.context.route == "spoken"

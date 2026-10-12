@@ -82,7 +82,6 @@ _QUIET_TOOLS: Final = (
     "ask_user",
     "start_night_run",
     "end_night_run",
-    "think_deeper",
     "set_voice",
     "weather",
     "bus",

@@ -106,14 +106,9 @@ STUB = frozenset({
     "open_url", "open_path", "read_file", "write_file", "read_clipboard", "screen_look",
     "start_night_run", "end_night_run", "refresh_work_state", "daily_work_report", "set_voice",
     "write_mail_draft", "open_plugin", "disable_plugin", "remove_plugin",
-    "think_deeper",  # ADR 0251: it would start the deep lane's model run, and the exam is one turn
 })
 _STUB_NOTE = {"stubbed": True, "note": "sandbox: not run"}
 _MICROSOFT_NOTE = {"value": [], "note": "sandbox: calendar not connected"}
-_DEEP_NOTE = {
-    "started": True, "spoken": "这个我得仔细查一下，查好了告诉你。",  # noqa: RUF001 - his language
-    "note": "started, the result comes later",
-}
 _SCHEDULE_NOTE = {
     "summary": "Could not read his calendar and his to-dos (sandbox: Microsoft is not connected).",
     "items": [], "more": False, "read": [], "missing": ["sandbox: Microsoft is not connected"],
@@ -199,8 +194,6 @@ def _stub(tool: Tool | ToolDefinition) -> Tool | ToolDefinition:
         note = _MICROSOFT_NOTE
     elif tool.name == "my_schedule":
         note = _SCHEDULE_NOTE
-    elif tool.name == "think_deeper":
-        note = _DEEP_NOTE
     return _device_proxy(tool, lambda *_: dict(note))
 
 

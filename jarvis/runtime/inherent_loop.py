@@ -96,7 +96,6 @@ if TYPE_CHECKING:
     from jarvis.decision.turn_end_asks import TurnEndAsks
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.runtime.dashboard import MailDrafts
-    from jarvis.runtime.deep_lane import DeepLane
     from jarvis.runtime.home import Home
     from jarvis.runtime.job_mail import JobMail
     from jarvis.runtime.moment import Moment
@@ -122,7 +121,6 @@ from jarvis.decision.commentary import (
     commentary_speech_text,
     lead_in_speech_text,
 )
-from jarvis.decision.deep import deep_turn
 from jarvis.decision.gates import ResponsePlan, pre_emit_gate
 from jarvis.decision.llm import failure_reason
 from jarvis.decision.pre_route import TYPED_CHANNEL
@@ -214,7 +212,6 @@ from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.departures import ID_PREFIX as PIN_PREFIX
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
 from jarvis.state.event_log import (
-    DEEP_CHANNEL,
     MAC_NODE,
     PHONE_VOICE_CHANNEL,
     confirmation_device,
@@ -268,7 +265,7 @@ from jarvis.state.projections import (
 from jarvis.state.push_tokens import register_body
 from jarvis.state.reminders import ID_PREFIX
 from jarvis.state.trigger_consumption import trigger_was_consumed
-from jarvis.state.turn_overlap import any_turn_in_flight, stalled_deep_intents
+from jarvis.state.turn_overlap import any_turn_in_flight
 from jarvis.state.turn_steps import answer_steps
 from jarvis.surface import (
     respeaker_board,
@@ -963,17 +960,6 @@ def _emit_turn_failed(
         LOGGER.exception("turn.failed could not be written for turn_id=%s", turn_id)
 
 
-def _fail_turn(runtime: JarvisRuntime, *, intent_event: Event, exc: BaseException) -> None:
-    """``turn.failed`` for ``intent_event``, and the notice a deep task owes him (ADR 0251).
-
-    Every way a turn can raise lands here, including the ones that raised before ``drive_turn``
-    could catch anything; the lane writes nothing for another turn or for one already answered.
-    """
-    _emit_turn_failed(runtime.conn, intent_event=intent_event, exc=exc)
-    if runtime.deep is not None:
-        runtime.deep.failed(runtime.conn, intent_event, exc)
-
-
 def _reconcile_open_responses_in_thread(
     event_log_path: Path,
     committed_event_bus: CommittedEventBus | None,
@@ -1004,48 +990,6 @@ def _reconcile_open_responses_in_thread(
         with contextlib.suppress(sqlite3.Error):
             conn.close()
     return len(events)
-
-
-_DEEP_RECONCILE_S: Final[int] = 24 * 3600
-
-
-def _fail_stalled_deep_tasks_in_thread(
-    event_log_path: Path, deep: DeepLane,
-) -> int:
-    """Close each deep task a restart cut short and tell him (ADR 0251); returns how many.
-
-    The run was closed as ``daemon_restart`` above and the pump never drives a begun turn again,
-    so without this the task has no end row and no word to him until its busy mark expires.
-    Runs on an ``asyncio.to_thread`` worker with its OWN connection, as the reconcilers around it.
-    """
-    conn = open_event_log(event_log_path)
-    closed = 0
-    try:
-        gone = RuntimeError("daemon_restart")
-        since_ms = int((time.time() - _DEEP_RECONCILE_S) * 1000)
-        for uid in stalled_deep_intents(conn, since_ms=since_ms):
-            intent = get_event(conn, uid)
-            if intent is not None:
-                _emit_turn_failed(conn, intent_event=intent, exc=gone)
-                deep.failed(conn, intent, gone)
-                closed += 1
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
-    return closed
-
-
-def _cancel_background_runs(runtime: JarvisRuntime) -> None:
-    """Cancel the runs that ignore interruption (the deep task, ADR 0251) so a stop need not wait.
-
-    Only the token is set: the run stops at its next request or tool call, writes nothing, and
-    boot reconciliation closes it and tells him.
-    """
-    if runtime.response_runs is None:
-        return
-    for run in runtime.response_runs.open_runs():
-        if run.interrupt_policy.generation_action == "continue":
-            run.cancellation_token.cancel(reason="daemon_shutdown", scope="generation")
 
 
 def _reconcile_open_playback_in_thread(
@@ -1204,7 +1148,11 @@ async def _user_intent_watcher(
                         ev.payload.get("turn_id"),
                         exc,
                     )
-                    _fail_turn(runtime, intent_event=ev, exc=exc)
+                    _emit_turn_failed(
+                        runtime.conn,
+                        intent_event=ev,
+                        exc=exc,
+                    )
             await asyncio.sleep(poll_interval_s)
     except asyncio.CancelledError:
         LOGGER.info("user_intent_watcher cancelled")
@@ -1421,7 +1369,9 @@ async def _intent_worker(
                     waiting[str(event.payload["turn_id"])] = checkpoint
             except TurnConnectionUnavailableError as exc:
                 if continuation is None or waiting is None:
-                    _fail_turn(runtime, intent_event=event, exc=exc)
+                    _emit_turn_failed(
+                        runtime.conn, intent_event=event, exc=exc,
+                    )
                 else:
                     # No driver finally ran: retain all response/action ownership
                     # and retry the same ready trigger without repeating dispatch.
@@ -1440,7 +1390,11 @@ async def _intent_worker(
                     event.payload.get("turn_id"),
                     exc,
                 )
-                _fail_turn(runtime, intent_event=event, exc=exc)
+                _emit_turn_failed(
+                    runtime.conn,
+                    intent_event=event,
+                    exc=exc,
+                )
             finally:
                 queue.task_done()
     except asyncio.CancelledError:
@@ -1517,27 +1471,6 @@ async def _waiting_turn_watcher(
         waiting.clear()
 
 
-class _TurnQueue(asyncio.Queue[Event | WaitingTurn]):
-    """The pump's queue; deep tasks (ADR 0251) go to a queue of their own, with their own worker.
-
-    A deep run lasts minutes, so it must not hold one of the ``max_concurrent_turns`` workers
-    his ordinary turns share, and those workers must not pick it up.
-    """
-
-    def __init__(self, maxsize: int, *, deep_lane: bool) -> None:
-        super().__init__(maxsize)
-        self.deep: asyncio.Queue[Event | WaitingTurn] = asyncio.Queue(maxsize)
-        self._deep_lane = deep_lane
-
-    async def put(self, item: Event | WaitingTurn) -> None:
-        event = item.intent if isinstance(item, WaitingTurn) else item
-        target = self.deep if self._deep_lane and deep_turn(event) else None
-        if target is None:
-            await super().put(item)
-        else:
-            await target.put(item)
-
-
 async def _start_intent_pump(
     runtime: JarvisRuntime,
     *,
@@ -1556,7 +1489,7 @@ async def _start_intent_pump(
             "earlier utterances are history and are never replayed",
             boot.adoption_row_id,
         )
-    queue = _TurnQueue(queue_capacity, deep_lane=runtime.deep is not None)
+    queue: asyncio.Queue[Event | WaitingTurn] = asyncio.Queue(maxsize=queue_capacity)
     dispatched: set[str] = set()
     waiting: dict[str, WaitingTurn] = {}
     tasks = [
@@ -1575,10 +1508,6 @@ async def _start_intent_pump(
         asyncio.create_task(_intent_worker(runtime, queue, waiting), name=f"intent_worker_{index}")
         for index in range(max_concurrent_turns)
     )
-    if runtime.deep is not None:
-        tasks.append(asyncio.create_task(
-            _intent_worker(runtime, queue.deep, waiting), name="intent_worker_deep",
-        ))
     tasks.append(asyncio.create_task(
         _waiting_turn_watcher(runtime, queue, waiting, poll_interval_s=poll_interval_s),
         name="waiting_turn_watcher",
@@ -2690,9 +2619,7 @@ def _make_cancel_voice_runs(
                 (turn_id,),
             )
         ]
-        # ADR 0251: a deep task is no answer being written for the speaker; an exit leaves it.
-        silent = _TTS_SILENT_CHANNELS | {DEEP_CHANNEL}
-        return bool(channels) and not any(channel in silent for channel in channels)
+        return bool(channels) and not any(channel in _TTS_SILENT_CHANNELS for channel in channels)
 
     def _cancel_voice_runs() -> None:
         if registry is None:  # pragma: no cover - wiring pairs the two flags
@@ -7125,12 +7052,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     "boot reconciliation closed %d open response run(s)",
                     closed_runs,
                 )
-        if runtime.deep is not None:
-            stalled = await asyncio.to_thread(
-                _fail_stalled_deep_tasks_in_thread, runtime.runtime_paths.event_log, runtime.deep,
-            )
-            if stalled:
-                LOGGER.info("boot reconciliation ended %d deep task(s) cut short", stalled)
 
         # ADR-0008 D9 / F23 — a previous process may have died holding a
         # repository: its action reached a canonical terminal but never wrote
@@ -7966,8 +7887,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             # Cancel/await watcher ownership before PortAudio teardown. A
             # provider thread may still exist, but the closed generation owns
             # no right to write or invoke fallback.
-            # ADR 0251: a deep run lasts minutes and a worker's cancel waits for its thread.
-            _cancel_background_runs(runtime)
             for w in watchers:
                 w.cancel()
             await asyncio.gather(*watchers, return_exceptions=True)

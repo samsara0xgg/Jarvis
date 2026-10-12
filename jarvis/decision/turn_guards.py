@@ -174,9 +174,7 @@ def unbacked_said(
     said, written = _spoken(text)
     asserted = [s for s in _SENTENCE_END.split(said) if s.strip() and not _QUESTION.search(s)]
     claims = [s for s in asserted if _DID.search(s) and not (written and _SCREEN.search(s))]
-    # `think_deeper` (ADR 0251) is not read-only so the read-only view hides it, but it saves,
-    # sets, sends and shows nothing: handing a task over does not back "I saved it".
-    if claims and not any(c.ok and not c.read_only and c.name != "think_deeper" for c in calls):
+    if claims and not any(c.ok and not c.read_only for c in calls):
         return "did it"
     if not calls and len(said) <= _PROMISE_MAX_CHARS and any(_WILL.search(s) for s in asserted):
         return "will check"

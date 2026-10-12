@@ -90,7 +90,6 @@ _KIND: Final[dict[str, str]] = {
     "job_ledger": "jobs",
     "record_application": "jobs",
     "show_on_dashboard": "dashboard",
-    "think_deeper": "deep",
 }
 _RIDE_ARGUMENTS: Final = frozenset({"pin", "ride", "get_off"})
 _HIDDEN: Final = frozenset(

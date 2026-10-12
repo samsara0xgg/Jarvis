@@ -1,6 +1,6 @@
 # ADR 0251 — A heavy ask is handed to a background deep lane that answers when it is ready
 
-**Status:** Accepted
+**Status:** Superseded-by-0254
 **Date:** 2026-10-11
 **Supersedes:** none
 

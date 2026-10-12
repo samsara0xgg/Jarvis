@@ -129,8 +129,6 @@ class LLMSessionFactory:
         api = _optional_str(self._config.get("api"))
         system_note: str | None = None
         spoken_structured = True
-        raw_timeout = self._config.get("timeout_s")
-        raw_max_retries = self._config.get("max_retries")
 
         if resolved is not None:
             preset = presets.get(resolved)
@@ -151,9 +149,6 @@ class LLMSessionFactory:
             api = _optional_str(preset.get("api"))
             system_note = _optional_str(preset.get("system_note"))
             spoken_structured = preset.get("spoken_structured") is not False
-            # ADR 0251: a deep preset may wait longer than the voice lane's global limit.
-            raw_timeout = preset.get("timeout_s", raw_timeout)
-            raw_max_retries = preset.get("max_retries", raw_max_retries)
         elif preset_name is not None:
             msg = f"preset {preset_name!r} is not configured under llm.presets"
             raise UnknownRequestPresetError(msg)
@@ -166,11 +161,13 @@ class LLMSessionFactory:
             # Synthetic presets must retain the legacy flat-config fallback.
             api_key_env = "OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY"
 
+        raw_timeout = self._config.get("timeout_s")
         timeout_s = (
             float(raw_timeout)
             if isinstance(raw_timeout, (int, float)) and not isinstance(raw_timeout, bool)
             else None
         )
+        raw_max_retries = self._config.get("max_retries")
         max_retries = (
             int(raw_max_retries)
             if isinstance(raw_max_retries, int) and not isinstance(raw_max_retries, bool)
