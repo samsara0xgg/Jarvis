@@ -1,6 +1,6 @@
 # ADR 0223 — A picture he sends is remembered as words, and can be looked at again
 
-**Status:** Accepted
+**Status:** Superseded-by-0255
 **Date:** 2026-10-11
 **Supersedes:** 0211
 
