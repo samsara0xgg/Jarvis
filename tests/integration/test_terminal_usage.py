@@ -171,15 +171,16 @@ def test_the_brains_own_observer_reads_no_login_and_still_reads_with_its_keys(
     monkeypatch.setattr(usage_observer, "_codex_headers", no_codex)
     log = open_event_log(tmp_path / "brain.db")
     observer = UsageObserver(log, services=KEYED_SERVICES)
-    snapshots = observer.collect()
-    assert [s.service for s in snapshots] == list(KEYED_SERVICES)
+    snapshots = [*observer.collect(), *observer.observe_recorded()]
+    assert sorted(s.service for s in snapshots) == sorted(KEYED_SERVICES)
     assert asked == []
     assert providers.calls == [("api.deepseek.com", f"Bearer {DEEPSEEK_KEY}")]
     by_service = {s.service: s for s in snapshots}
     assert by_service["deepseek"].status == "ok"
     assert by_service["openai"].status == by_service["minimax"].status == "unconfigured"
-    # One machine keeps all five.
-    assert [s.service for s in UsageObserver(log).collect()] == list(SERVICES)
+    # One machine keeps them all.
+    every = UsageObserver(log)
+    assert sorted(s.service for s in [*every.collect(), *every.observe_recorded()]) == sorted(SERVICES)
 
 
 def test_a_brain_runs_the_keyed_half_and_a_one_machine_daemon_all_of_it(

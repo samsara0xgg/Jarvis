@@ -13,6 +13,7 @@ const ACCOUNT_PAGES: Record<string, string> = {
   claude: 'https://claude.ai/settings/usage',
   codex: 'https://chatgpt.com/codex/settings/usage',
   openai: 'https://platform.openai.com/settings/organization/billing/overview',
+  anthropic: 'https://platform.claude.com/settings/billing',
   deepseek: 'https://platform.deepseek.com/top_up',
   minimax: 'https://platform.minimax.io/user-center/payment/balance',
 };

@@ -5269,7 +5269,7 @@ async def _poll_usage_once(observer: UsageObserver) -> None:
         LOGGER.exception("usage_observer: collect failed; skipping cycle.")
         return
     try:
-        observer.emit(snapshots)
+        observer.emit([*snapshots, *observer.observe_recorded()])
     except Exception:  # an emit failure is logged, never fatal to the daemon.
         LOGGER.exception("usage_observer: emit failed; baselines unchanged.")
 

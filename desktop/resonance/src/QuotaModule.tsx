@@ -22,12 +22,14 @@ export type KeyRow = { key_id: string; name: string; today_tokens: number; month
 // ADR 0050: OpenAI reports no balance; with one recorded on the Usage page, balance_usd = it minus the spend since.
 export type OpenAIData = { today_usd: number; month_usd: number; by_model: SpendRow[]; by_key: KeyRow[];
   balance_usd?: number; balance_recorded_usd?: number; balance_recorded_at?: string | null };
+// The brain's own recorded Anthropic calls (ADR 0239): not the account's total; unpriced_calls = calls whose model has no price.
+export type AnthropicData = { today_usd: number; month_usd: number; by_model: SpendRow[]; unpriced_calls?: number };
 // One balance per currency DeepSeek holds (a CNY top-up sits beside the USD one).
 export type DeepSeekData = { balances: Record<string, number> };
 export type MiniMaxData = { balance: number };
 export type Usage = { services: {
   claude?: UsageService<ClaudeData>; codex?: UsageService<CodexData>; openai?: UsageService<OpenAIData>;
-  anthropic?: UsageService<Record<string, never>>; deepseek?: UsageService<DeepSeekData>; minimax?: UsageService<MiniMaxData>;
+  anthropic?: UsageService<AnthropicData>; deepseek?: UsageService<DeepSeekData>; minimax?: UsageService<MiniMaxData>;
 } };
 
 const demoAt = Date.now();
@@ -43,6 +45,8 @@ export const demoUsage: Usage = { services: {
   openai: { status: 'ok', observed_at_ms: demoAt, data: { today_usd: 0.84, month_usd: 12.6,
     by_model: [{ model: 'gpt-live-1', today_usd: 0.61, month_usd: 9.2 }, { model: 'gpt-5.4-mini', today_usd: 0.23, month_usd: 3.4 }],
     by_key: [{ key_id: 'k1', name: 'jarvis', today_tokens: 98_000, month_tokens: 1_240_000 }, { key_id: 'k2', name: 'typeless', today_tokens: 12_000, month_tokens: 310_000 }] } },
+  anthropic: { status: 'ok', observed_at_ms: demoAt, data: { today_usd: 0.31, month_usd: 4.2,
+    by_model: [{ model: 'claude-haiku-5-5', today_usd: 0.31, month_usd: 4.2 }] } },
   deepseek: { status: 'ok', observed_at_ms: demoAt, data: { balances: { USD: 8.46 } } },
   minimax: { status: 'ok', observed_at_ms: demoAt - 120_000, data: { balance: 15.36 } },
 } };
@@ -146,7 +150,11 @@ function Spend({ usage, provider }: { usage: Usage; provider?: 'openai' | 'anthr
     </>}
     {!provider && <div className="quota-divider"/>}
     {provider !== 'openai' && <><Head glyph="anthropic" name="Anthropic (API)" service={anthropic}/>
-    <p className="quota-note">{anthropic?.status === 'ok' ? '已配置' : '未配置'}<small>{anthropic?.error ?? '需要 Admin key'}</small></p></>}
+    {anthropic?.status === 'ok' ? <>
+      <div className="quota-stats"><div><small>今日</small><strong>{fmtUsd(anthropic.data.today_usd)}</strong></div><div><small>本月至今</small><strong>{fmtUsd(anthropic.data.month_usd)}</strong></div></div>
+      <div className="quota-table quota-content-enter"><span>模型</span><span>今日</span><span>本月</span>{(anthropic.data.by_model ?? []).map(r => <div key={r.model}><span>{r.model}</span><span>{fmtUsd(r.today_usd)}</span><span>{fmtUsd(r.month_usd)}</span></div>)}</div>
+      {!!anthropic.data.unpriced_calls && <p className="quota-note"><small>{anthropic.data.unpriced_calls} 次调用没有价格，未计入</small></p>}
+    </> : <p className="quota-note">{anthropic ? '同步异常' : '未配置'}<small>{anthropic?.error}</small></p>}</>}
   </>;
 }
 
@@ -166,7 +174,7 @@ function QuotaAccordion({ usage }: { usage: Usage | null }) {
   const [expanded, setExpanded] = useState<string[]>(['subscriptions']);
   const sections = [
     { id: 'subscriptions', label: '订阅额度', Icon: Stack, summary: `${[usage?.services.claude, usage?.services.codex].filter(s => s?.status === 'ok').length} 个订阅`, body: usage && <Subscriptions usage={usage}/> },
-    { id: 'spend', label: 'API 花费', Icon: ChartPie, summary: `OpenAI ${fmtUsd(usage?.services.openai?.data.today_usd)} 今日`, body: usage && <Spend usage={usage}/> },
+    { id: 'spend', label: 'API 花费', Icon: ChartPie, summary: `OpenAI ${fmtUsd(usage?.services.openai?.data.today_usd)} · Anthropic ${fmtUsd(usage?.services.anthropic?.data.today_usd)} 今日`, body: usage && <Spend usage={usage}/> },
     { id: 'balances', label: 'API 余额', Icon: Wallet, summary: `${[usage?.services.deepseek, usage?.services.minimax].filter(s => s?.status === 'ok').length} 个账户`, body: usage && <Balances usage={usage}/> },
   ];
   return <div className="quota-accordion">{sections.map(({ id, label, Icon, summary, body }) => <section key={id} className={`quota-fold ${expanded.includes(id) ? 'is-open' : ''}`}>

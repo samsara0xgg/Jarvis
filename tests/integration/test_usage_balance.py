@@ -142,3 +142,48 @@ def test_minimax_balance_can_no_longer_be_typed(tmp_path: Path) -> None:
     ):
         usage_observer.UsageObserver(conn).record_balance("minimax", 30.0)
     assert _balances(tmp_path / "events.db") == []
+
+
+def test_anthropic_spend_is_the_brains_recorded_anthropic_calls(tmp_path: Path) -> None:
+    """Today and month by model from ``cost.recorded``; other providers and months stay out."""
+    now = dt.datetime(2026, 10, 12, 15, tzinfo=dt.UTC).astimezone()
+    today_ms = int(now.timestamp() * 1000)
+    last_month_ms = int((now - dt.timedelta(days=20)).timestamp() * 1000)
+    earlier_ms = int((now - dt.timedelta(hours=now.hour + 1)).timestamp() * 1000)
+    with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
+        rows = [
+            (today_ms, "anthropic", "claude-haiku-5-5", 0.25, "provider_final"),
+            (earlier_ms, "anthropic", "claude-haiku-5-5", 0.5, "provider_final"),
+            (today_ms, "anthropic", "claude-sonnet-5-5", None, "provider_final"),
+            (today_ms, "anthropic", "claude-haiku-5-5", None, "unavailable"),
+            (today_ms, "openai", "gpt-5.6-luna", 9.0, "provider_final"),
+            (last_month_ms, "anthropic", "claude-haiku-5-5", 4.0, "provider_final"),
+        ]
+        for ts_ms, provider, model, cost, status in rows:
+            conn.execute(
+                "INSERT INTO events (event_uid, schema_version, ts_epoch_ms, type, payload_json) "
+                "VALUES (?, 1, ?, 'cost.recorded', ?)",
+                (
+                    f"u{ts_ms}{model}{cost}{status}",
+                    ts_ms,
+                    json.dumps(
+                        {
+                            "provider": provider,
+                            "model": model,
+                            "cost_usd": cost,
+                            "usage_status": status,
+                        }
+                    ),
+                ),
+            )
+        snapshot = usage_observer.recorded_spend(conn, "anthropic", now=now)
+    assert snapshot.service == "anthropic"
+    assert snapshot.status == "ok"
+    assert snapshot.data["today_usd"] == 0.25
+    assert snapshot.data["month_usd"] == 0.75
+    assert snapshot.data["by_model"][0] == {
+        "model": "claude-haiku-5-5",
+        "today_usd": 0.25,
+        "month_usd": 0.75,
+    }
+    assert snapshot.data["unpriced_calls"] == 1

@@ -517,8 +517,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   };
   const pluginsOn = Object.values(plugins).filter(p => p.state === 'on').length;
 
-  const { claude, codex: codexUsage, openai, deepseek, minimax } = quota.usage?.services ?? {};
-  const synced = Math.max(0, ...[claude, codexUsage, openai, deepseek, minimax].map(s => s?.observed_at_ms ?? 0));
+  const { claude, codex: codexUsage, openai, anthropic, deepseek, minimax } = quota.usage?.services ?? {};
+  const synced = Math.max(0, ...[claude, codexUsage, openai, anthropic, deepseek, minimax].map(s => s?.observed_at_ms ?? 0));
   const codexResets = codexUsage?.status === 'ok' ? codexUsage.data.reset_credits ?? 0 : 0;
   const balanceSaved = () => { notify(t(['Balance saved', '余额已保存'])); void quota.refresh(); };
   const askReset = () => {
@@ -718,7 +718,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const svc = (name: string, x: { status: string; error?: string | null } | undefined, ok: string): Account =>
     ({ name, ok: !x || x.status === 'ok', text: !x ? t(['Syncing…', '同步中…']) : x.status === 'ok' ? ok : x.error ?? t(['Not connected', '没连上']) });
   const signedIn = t(['Signed in', '已登录']), connected = t(['Connected', '已连接']);
-  const accounts: Account[] = [svc('Claude', claude, signedIn), svc('Codex', codexUsage, signedIn), svc('OpenAI', openai, connected), svc('DeepSeek', deepseek, connected), svc('MiniMax', minimax, connected)];
+  const accounts: Account[] = [svc('Claude', claude, signedIn), svc('Codex', codexUsage, signedIn), svc('OpenAI', openai, connected), svc('Anthropic', anthropic, connected), svc('DeepSeek', deepseek, connected), svc('MiniMax', minimax, connected)];
 
   // ADR 0176: what is on screen, told to the daemon: the page, its tab, the open item and the rows in screen order (ten at most, one line each).
   // Only titles go; a letter's body or a note's detail is read through the tool that owns it. Every change, and every 20 s while the panel is open.
@@ -871,6 +871,10 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
         {codexUsage?.status === 'ok' ? <div className="bigrings">{(codexUsage.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at, new Date(), lang)} lang={lang}/>)}</div> : <p className="muted">{codexUsage?.error ?? t(['Not signed in to Codex', '没登录 Codex'])}</p>}</div>
       <div className="pg-sec"><div className="us-plan"><Account id="openai">OpenAI <em>API</em></Account>{openai?.status === 'ok' && <span className="meta">{t(['this month', '本月'])} {usd(openai.data.month_usd)}</span>}</div>
         {openai?.status === 'ok' ? <Spend total={openai.data.today_usd ?? 0} models={openai.data.by_model ?? []}/> : <p className="muted">{openai?.error ?? t(['Needs an admin key', '缺管理密钥'])}</p>}</div>
+      <div className="pg-sec"><div className="us-plan"><Account id="anthropic">Anthropic <em>API</em></Account>{anthropic?.status === 'ok' && <span className="meta">{t(['this month', '本月'])} {usd(anthropic.data.month_usd)}</span>}</div>
+        {anthropic?.status === 'ok' ? <><Spend total={anthropic.data.today_usd ?? 0} models={anthropic.data.by_model ?? []}/>
+          <p className="muted">{t(['Jarvis’s own calls only.', '只算 Jarvis 自己的调用。'])}{!!anthropic.data.unpriced_calls && t([` ${anthropic.data.unpriced_calls} calls have no price and are not counted.`, ` 有 ${anthropic.data.unpriced_calls} 次调用没有价格，没算进去。`])}</p></>
+          : <p className="muted">{anthropic?.error ?? t(['Waiting for the brain', '等 brain 汇报'])}</p>}</div>
       <TokenSection state={tokens}/></div>
     </>,
     plugins: () => {
@@ -998,7 +1002,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
               <span className="text">{now ? now.claim : workView === null ? t(['Syncing…', '同步中…']) : t(['No recent activity observed', '最近没看到动静'])}</span>
             </button>,
             usage: () => <button className="fill" data-row="usage" aria-label={t(['Open Usage', '打开用量'])} onClick={e => openPage('usage', e.currentTarget.parentElement)}>
-              <span className="head"><span className="label">{t(['Usage', '用量'])}</span><span className="meta">{t(['OpenAI today', 'OpenAI 今天'])} <b>{usd(openai?.data.today_usd)}</b></span></span>
+              <span className="head"><span className="label">{t(['Usage', '用量'])}</span><span className="meta">{t(['OpenAI / Anthropic today', 'OpenAI / Anthropic 今天'])} <b>{usd(openai?.data.today_usd)}</b> / <b>{usd(anthropic?.data.today_usd)}</b></span></span>
               <span className="rings">
                 <UsageGroup lang={lang} name="Claude Max" plan={claude?.data.plan} ok={claude?.status === 'ok'} windows={(claude?.data.windows ?? []).slice(0, 3)} synced={!!quota.usage}/>
                 <span className="split"/>

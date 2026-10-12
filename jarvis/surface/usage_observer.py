@@ -12,6 +12,8 @@ Services and their sources (all verified live 2026-09-13):
   macOS Keychain item Claude Code writes, file fallback.
 - ``codex``    — ChatGPT ``wham/usage``; token from ``~/.codex/auth.json``.
 - ``openai``   — official org Costs + Usage APIs; needs ``OPENAI_ADMIN_KEY``.
+- ``anthropic`` — the brain's own ``cost.recorded`` rows for provider ``anthropic`` (Anthropic's
+  Cost API needs an organization admin key, so no key is read).
 - ``deepseek`` — official ``/user/balance``.
 - ``minimax``  — ``/account/query_balance``, undocumented; MiniMax's own
   ``mmx-cli`` reads the balance of an ``sk-api-`` key there (ADR 0065).
@@ -63,12 +65,12 @@ LOGGER = logging.getLogger("jarvis.surface.usage_observer")
 
 OBSERVER_ACTOR: Final[str] = "observer"
 EVENT_TYPE: Final[str] = "usage.state_observed"
-SERVICES: Final[tuple[str, ...]] = ("claude", "codex", "openai", "deepseek", "minimax")
+SERVICES: Final[tuple[str, ...]] = ("claude", "codex", "openai", "anthropic", "deepseek", "minimax")
 # ADR 0170: the two read a login on the owner's machine (Claude Code's and Codex's own); a
 # terminal observes them and pushes the events. The rest need provider keys, which stay where
 # the keys are, on the brain.
 DEVICE_SERVICES: Final[tuple[str, ...]] = ("claude", "codex")
-KEYED_SERVICES: Final[tuple[str, ...]] = ("openai", "deepseek", "minimax")
+KEYED_SERVICES: Final[tuple[str, ...]] = ("openai", "anthropic", "deepseek", "minimax")
 BALANCE_EVENT_TYPE: Final[str] = "usage.balance_recorded"
 # The services with no balance API, whose balance Allen records by hand.
 BALANCE_SERVICES: Final[tuple[str, ...]] = ("openai",)
@@ -604,6 +606,56 @@ def collect_openai(
     )
 
 
+# --- Anthropic API spend (the brain's own record) -------------------------
+
+
+_RECORDED_SPEND_SQL: Final[str] = (
+    "SELECT json_extract(payload_json, '$.model'), "
+    "SUM(CASE WHEN ts_epoch_ms >= ?2 THEN COALESCE(json_extract(payload_json, '$.cost_usd'), 0) "
+    "ELSE 0 END), "
+    "SUM(COALESCE(json_extract(payload_json, '$.cost_usd'), 0)), "
+    "SUM(json_extract(payload_json, '$.cost_usd') IS NULL "
+    "AND json_extract(payload_json, '$.usage_status') = 'provider_final') "
+    "FROM events WHERE type = 'cost.recorded' AND ts_epoch_ms >= ?1 "
+    "AND json_extract(payload_json, '$.provider') = ?3 GROUP BY 1"
+)
+
+
+def recorded_spend(
+    event_log: sqlite3.Connection, provider: str, *, now: dt.datetime | None = None
+) -> UsageSnapshot:
+    """Today / month-to-date USD by model that the brain recorded for ``provider``.
+
+    Same ``data`` shape as :func:`collect_openai`, minus the per-key tokens and balance. It counts
+    only this brain's calls, priced when recorded; ``unpriced_calls`` counts the month's calls
+    whose usage the provider reported but whose model had no price, so a missing rate shows up
+    instead of passing as $0. Runs on the connection's own thread; one range read of the month off
+    the ``(type, ts)`` index.
+    """
+    now = now or dt.datetime.now().astimezone()
+    month_ms = _local_month_start_s(now) * 1000
+    day_ms = int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()) * 1000
+    rows = event_log.execute(_RECORDED_SPEND_SQL, (month_ms, day_ms, provider)).fetchall()
+    rows.sort(key=lambda r: -r[2])
+    return UsageSnapshot(
+        provider,
+        "ok",
+        {
+            "today_usd": round(sum(r[1] for r in rows), 4),
+            "month_usd": round(sum(r[2] for r in rows), 4),
+            "by_model": [
+                {
+                    "model": str(r[0] or "other"),
+                    "today_usd": round(r[1], 4),
+                    "month_usd": round(r[2], 4),
+                }
+                for r in rows[:MAX_ROWS]
+            ],
+            "unpriced_calls": int(sum(r[3] for r in rows)),
+        },
+    )
+
+
 # --- DeepSeek --------------------------------------------------------------
 
 
@@ -794,6 +846,15 @@ class UsageObserver:
                 snapshots.append(snapshot)
         return snapshots
 
+    def observe_recorded(self) -> list[UsageSnapshot]:
+        """Spend read from the log itself (``anthropic``); on the loop thread that owns the log."""
+        if "anthropic" not in self._services:
+            return []
+        try:
+            return [recorded_spend(self._event_log, "anthropic")]
+        except Exception as exc:  # noqa: BLE001 - one service's row, never the cycle.
+            return [_error("anthropic", exc)]
+
     def emit(self, snapshots: list[UsageSnapshot]) -> list[Event]:
         """Append one ``usage.state_observed`` per *changed* service."""
         emitted: list[Event] = []
@@ -820,7 +881,7 @@ class UsageObserver:
 
     def poll_once(self) -> list[Event]:
         """Collect + emit synchronously; the runtime task splits the halves."""
-        return self.emit(self.collect())
+        return self.emit([*self.collect(), *self.observe_recorded()])
 
 
 __all__ = [
@@ -842,6 +903,7 @@ __all__ = [
     "collect_openai",
     "latest_usage",
     "recorded_balances",
+    "recorded_spend",
     "recover_baselines",
     "redeem_codex_reset",
 ]
