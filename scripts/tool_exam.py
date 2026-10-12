@@ -21,7 +21,8 @@ list, which an offline run cannot ask for. An optional ``tool-aliases.json`` nex
 a tool name the cases still use to the name that replaced it (``{"mail_inbox": "mail"}``): ``score``
 reads the names in ``ok``, ``bad`` and ``args_must_not`` through it, so a merged tool is judged
 without editing the cases. An ``args_must_not`` rule keeps the old tool's argument names, so it
-trips only on a call that still uses them.
+trips only on a call that still uses them. An optional ``prompt-patches.json`` (``[{old, new}]``)
+rewrites the logged system prompt the way this checkout's prompt reads (see :func:`patched`).
 
 ``run --guards`` applies the decision loop's two turn guards (ADR 0240, the same code) to the first
 response: a call identical to an earlier one in the request's history (with no write since) gets
@@ -372,6 +373,9 @@ async def _run(
     extra = args.system_append.read_text(encoding="utf-8").strip() if args.system_append else ""
     structured = structured_presets(config, args.presets)
     sys.stdout.write(shape_report(cases, structured) + "\n")
+    patches = load_patches(args.cases)
+    hits = sum(patched(c["request"], patches) != c["request"] for c in cases)
+    sys.stdout.write(f"prompt patches: {len(patches)}, applied to {hits}/{len(cases)} cases\n")
     sys.stdout.flush()
     gate = asyncio.Semaphore(args.concurrency)
     total = len(cases) * len(clients) * args.runs
@@ -379,7 +383,7 @@ async def _run(
 
     async def job(case: dict[str, Any], preset: str, run: int, out: TextIO) -> None:
         nonlocal done
-        shaped = spoken_reply_for(case["request"], structured=structured[preset])
+        shaped = spoken_reply_for(patched(case["request"], patches), structured=structured[preset])
         request = {**_with_system(shaped, extra), "tools": list(catalog)}
         base = {"kind": "run", "case": case["id"], "preset": preset, "run": run,
                 "model": clients[preset].model}
@@ -444,6 +448,29 @@ def _trips(rule: Any, args: Any) -> bool:  # noqa: ANN401 - a substring list or 
         )
     raw = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
     return any(s in raw for s in rule)
+
+
+def load_patches(cases: Path) -> list[dict[str, str]]:
+    """``prompt-patches.json`` beside ``cases``: ``[{old, new}]`` text the system prompt changed.
+
+    A logged request carries the system prompt of its day; a patch replays it as the checkout
+    would write it, so a tool rename and its prompt line are examined together. [] if absent.
+    """
+    path = cases.parent / "prompt-patches.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+
+
+def patched(request: Mapping[str, Any], patches: Sequence[Mapping[str, str]]) -> dict[str, Any]:
+    """``request`` with each patch applied to its instructions (Responses) or system message."""
+    out = dict(request)
+    for one in patches:
+        if "input" in out:
+            out["instructions"] = str(out.get("instructions") or "").replace(one["old"], one["new"])
+        elif out.get("messages") and out["messages"][0].get("role") == "system":
+            first, *rest = out["messages"]
+            text = str(first["content"]).replace(one["old"], one["new"])
+            out["messages"] = [{**first, "content": text}, *rest]
+    return out
 
 
 def load_aliases(cases: Path) -> dict[str, str]:
