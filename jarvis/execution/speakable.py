@@ -41,8 +41,8 @@ def duration(seconds: float) -> str:
 
 
 def day_name(day: date, today: date) -> str:
-    """``today (Thu)``, ``yesterday (Wed)``, else ``Mon Sep 22`` (the year when not this one's)."""
-    if (name := {0: "today", 1: "yesterday"}.get((today - day).days)) is not None:
+    """``today (Thu)``, ``yesterday (Wed)``, ``tomorrow (Fri)``, else ``Mon Sep 22`` (+ year)."""
+    if (name := {-1: "tomorrow", 0: "today", 1: "yesterday"}.get((today - day).days)) is not None:
         return f"{name} ({day:%a})"
     year = f" {day.year}" if day.year != today.year else ""
     return f"{day:%a %b} {day.day}{year}"

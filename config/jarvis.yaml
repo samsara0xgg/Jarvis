@@ -730,13 +730,11 @@ tools:
     # 会重新注册，已有的 token 照常刷新。
     # oauth_redirect_uri: https://jarvis.example.ts.net/oauth/callback
     # ADR 0127 — 这些工具（mcp__<server>__<tool>）不排在 tool_search 后面，
-    # 一开始就在模型的菜单上：日程、待办的读取，省掉搜索和 list-accounts
-    # 这类探路调用。名字对不上任何已连接的工具就什么也不做。邮件的读取是内置的
-    # mail 工具（ADR 0242），gmail_search / gmail_get 留在 tool_search 后面。
-    always_loaded:
-      - mcp__microsoft__get-calendar-view
-      - mcp__microsoft__list-todo-task-lists
-      - mcp__microsoft__list-todo-tasks
+    # 一开始就在模型的菜单上。名字对不上任何已连接的工具就什么也不做。出厂一个都
+    # 不列：邮件的读取是内置的 mail 工具（ADR 0242），日程、待办的读取是内置的
+    # my_schedule 工具（ADR 0248），原来的 MCP 读取留在 tool_search 后面，
+    # tool_search 找到它们时指向这两个内置工具。
+    always_loaded: []
     servers: {}
     # 例：
     # servers:

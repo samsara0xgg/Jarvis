@@ -86,6 +86,7 @@ from jarvis.execution.job_ledger_tool import build_job_ledger_tool, build_record
 from jarvis.execution.mail_tool import build_mail_tool
 from jarvis.execution.my_day_tool import build_my_day_tool
 from jarvis.execution.plugin_panel import plugin_panel_tools
+from jarvis.execution.schedule_tool import build_schedule_tool
 from jarvis.execution.tool_search import build_tool_search
 from jarvis.execution.tools import Tool, ToolContext, ToolRegistry, build_default_registry
 from jarvis.runtime.dashboard import CLOSE, PAGES, SETTINGS_CATEGORIES, ViewState
@@ -145,7 +146,7 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
 
     The same registry the runtime assembles (``build_default_registry`` with a brain's device
     tools offered, then ``show_on_dashboard``, the plugin panel, the MCP tools with
-    ``tool_search`` over the deferred ones, the job and mail readers), every dependency a
+    ``tool_search`` over the deferred ones, the job, mail and schedule readers), every dependency a
     harmless stand-in, then the decision loop's own filter and projection (``surface_for`` and
     ``_tool_menu`` over the Collaborate policy). Registration order is the runtime's, since the
     menu's order is part of the request.
@@ -177,6 +178,7 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
         *build_mail_tool(dict, lambda *_: {}, str, UTC),
         *build_conversation_tool(Path("memory.db"), UTC),
         *build_my_day_tool(LedgerSources(Path("memory.db"), Path("events.db"), None, UTC)),
+        *build_schedule_tool(lambda *_: [], UTC),
     ):
         registry.register(tool)
     # The runtime publishes the MCP group and tool_search once every built-in tool is registered

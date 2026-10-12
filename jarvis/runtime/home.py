@@ -348,6 +348,16 @@ class Home:
             self._calendar[key] = (now_ms, events)
         return events
 
+    def graph(self, tool: str, args: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """The ``value`` list of one read-only Microsoft tool: ``my_schedule``'s reads (ADR 0248).
+
+        Raises:
+            LookupError: the ``microsoft`` server is not connected.
+            ToolError: the server did not answer, or answered with an error.
+            ValueError: the answer is not Graph's JSON.
+        """
+        return _graph(self._servers(), tool, args)
+
     def _weather(self) -> dict[str, Any] | None:
         if self._weather_at is None:
             return None

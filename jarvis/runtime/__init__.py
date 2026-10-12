@@ -142,6 +142,7 @@ from jarvis.execution.path_resolver import (
     resolve_write_target,
 )
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
+from jarvis.execution.schedule_tool import build_schedule_tool
 from jarvis.execution.tools import (
     DEFAULT_SCREEN_MAX_WIDTH_PX,
     DEFAULT_WEB_FETCH_MAX_BYTES,
@@ -1811,6 +1812,12 @@ def _register_my_day(registry: ToolRegistry, sources: LedgerSources) -> None:
         registry.register(tool)
 
 
+def _register_schedule(registry: ToolRegistry, home: Home, zone: tzinfo) -> None:
+    """``my_schedule`` (ADR 0248): the calendar and to-dos Home reads, reminders, a pinned bus."""
+    for tool in build_schedule_tool(home.graph, zone):
+        registry.register(tool)
+
+
 def _turn_end_asks(
     config: Mapping[str, Any], config_path: Path, log: JevLog | None = None,
 ) -> TurnEndAsks | None:
@@ -3090,6 +3097,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             paths.artifacts_root / ATTACHMENTS_DIRNAME,
         ),
     )
+    _register_schedule(registry, home, local_zone)
     plugin_connections.refresh_search()  # ADR 0247: every built-in tool is registered now
     attachments = Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME)
     return JarvisRuntime(
