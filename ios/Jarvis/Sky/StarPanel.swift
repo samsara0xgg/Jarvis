@@ -19,6 +19,7 @@ struct TalkRowView: View, Equatable {
     var stepsOpen = false
     var dropAbout: () -> Void = {}
     var toggleSteps: () -> Void = {}
+    var retry: () -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var reduce
     static func == (a: Self, b: Self) -> Bool { a.row == b.row && a.stepsOpen == b.stepsOpen }
 
@@ -29,10 +30,22 @@ struct TalkRowView: View, Equatable {
     /// Her typing line, then her words in the same place (the line fades into them), and under them what she did to get there.
     private var hers: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let s = row.status { StatusRow(line: s).transition(.opacity) } else { her.transition(.opacity) }
+            if row.failed { failedRow } else if let s = row.status { StatusRow(line: s).transition(.opacity) } else { her.transition(.opacity) }
             if let info = row.steps, row.status == nil { StepsLine(info: info, open: stepsOpen, toggle: toggleSteps) }
         }
         .animation(.easeOut(duration: 0.2), value: row.status == nil)
+    }
+
+    /// her turn failed: it says so in her place, with a button that sends the same words again
+    private var failedRow: some View {
+        HStack(spacing: 12) {
+            Text(row.text).font(.system(size: 16)).foregroundStyle(muted)
+            Button(action: retry) {
+                Text("重试").font(.system(size: 14, weight: .semibold)).foregroundStyle(amber)
+                    .padding(.horizontal, 14).frame(minHeight: 32).background(Color.white.opacity(0.08), in: Capsule()).contentShape(Capsule())
+            }.buttonStyle(.plain)
+            Spacer(minLength: 0)
+        }
     }
 
     /// a card she put up while she talks: her question over its fields and buttons, in the glass box the pinned cards open into
@@ -396,7 +409,7 @@ struct TalkPanel: View {
                             ForEach(day.rows) { r in
                                 VStack(alignment: .leading, spacing: 6) {
                                     if let s = r.stamp { Text(s).font(AT.mono(11)).foregroundStyle(muted).frame(maxWidth: .infinity, alignment: r.his ? .trailing : .leading) }
-                                    TalkRowView(row: r, stepsOpen: ui.stepsOpen.contains(r.id), dropAbout: { engine.dropAbout() }, toggleSteps: { engine.toggleSteps(r.id) }).equatable()
+                                    TalkRowView(row: r, stepsOpen: ui.stepsOpen.contains(r.id), dropAbout: { engine.dropAbout() }, toggleSteps: { engine.toggleSteps(r.id) }, retry: { engine.sendAgain() }).equatable()
                                 }
                                 .opacity((shown[r.id] ?? 0) + (1 - (shown[r.id] ?? 0)) * open)
                                 .id(r.id)

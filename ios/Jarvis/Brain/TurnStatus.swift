@@ -72,6 +72,8 @@ struct TurnStatus: Equatable {
     private(set) var leadInAt: Double?
     private(set) var answerAt: Double?
     private(set) var endedAt: Double?
+    /// the host ended the turn with `response.failed`: there will be no answer
+    private(set) var failed = false
     private var waitLines = Set<String>()
     private var shown: Int?
     private var shownAt = 0.0
@@ -108,6 +110,7 @@ struct TurnStatus: Equatable {
         case "surface.response_emitted": if !lead { answerAt = answerAt ?? now; end(at: now) }
         case "response.cancelled", "response.failed":
             if let id = r.payload["response_id"] as? String, waitLines.contains(id) { return }
+            if r.eventType == "response.failed" { failed = true }
             end(at: now)
         default: break
         }
@@ -200,4 +203,7 @@ final class StatusBoard {
 
     /// the steps of the turn on show, for the line under her answer
     var info: StepsInfo? { turn?.info }
+
+    /// The host failed the turn sent as `utterance`.
+    func failed(utterance: String) -> Bool { turn?.utterance == utterance && turn?.failed == true }
 }

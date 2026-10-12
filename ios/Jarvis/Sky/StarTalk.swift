@@ -6,6 +6,8 @@ import SwiftUI
 extension StarEngine {
     /// how long a talk stays after her last word, and again after a finger lifts off its rows
     static let linger = 8000.0
+    /// a failed turn stays longer, so there is time to tap 重试
+    static let lingerFailed = 30_000.0
 
     /// A talk starts, or the next turn joins the one still on screen. `base` is the conversation's newest row before it, when the caller knows; else it is asked for.
     func beginTalk(base: Int? = nil) {
@@ -293,7 +295,7 @@ extension StarEngine {
 
 #if DEBUG
 extension StarEngine {
-    /// `-scene open|typing|typingWaiting|typingChipOpen|rest` (and the `steps…` ones of Sky/StarStatus.swift): the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
+    /// `-scene open|failed|typing|typingWaiting|typingChipOpen|rest` (and the `steps…` ones of Sky/StarStatus.swift): the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
     func runTalkScene(_ name: String) {
         switch name {
         case "rest": setLevel(0)
@@ -310,6 +312,13 @@ extension StarEngine {
                     self.addTurn(his: false, "好，我帮你把周二上午十点占上。")
                 }
             }
+        case "failed":
+            // a typed turn the brain failed: his line, and "没答出来" with 重试 in her place
+            setLevel(0)
+            debugConversation()
+            beginTalk(); lingerHold = true
+            addTurn(his: true, "帮我订周五晚上的位子")
+            showFailed()
         case "reveal": runRevealScene()
         case "steps", "stepsDots", "stepsStep", "stepsDone", "stepsOpen": runStepsScene(name)
         case "open":

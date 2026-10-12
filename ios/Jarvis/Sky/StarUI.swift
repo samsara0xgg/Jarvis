@@ -48,6 +48,7 @@ struct LiveTurn: Identifiable, Equatable {
     var card: WaitingCard?              // a card she put up, in the place of words
     var status: StatusLine?             // not words yet: she is typing, or working on a step (Brain/TurnStatus); her first words take this row
     var steps: StepsInfo?               // what she did to answer, for the small line under it
+    var failed = false                  // the turn failed: "没答出来" in her place, and a button to send the same words again
     var at = Date()
 }
 

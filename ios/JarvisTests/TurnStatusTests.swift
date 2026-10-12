@@ -217,6 +217,27 @@ final class TurnStatusTests: XCTestCase {
         XCTAssertNil(StatusBoard().line(), "no turn, no line")
     }
 
+    @MainActor func testOnlyAFailedResponseOfThisTurnMarksItFailed() {
+        let board = StatusBoard()
+        board.clock = { 1 }
+        board.begin(utterance: "u1")
+        board.bind(utterance: "u1", turn: "T1")
+        board.feed(.row(row("response.failed", ["response_id": "R9"], turn: "T2")))
+        XCTAssertFalse(board.failed(utterance: "u1"), "another turn's failure is not this one's")
+        board.feed(.row(row("surface.response_open", ["response_id": "R1", "phase": "commentary"])))
+        board.feed(.row(row("response.failed", ["response_id": "R1"])))
+        XCTAssertFalse(board.failed(utterance: "u1"), "the lead-in's own end is not the turn's")
+        board.feed(.row(row("response.failed", ["response_id": "R2", "reason": "turn_raised"])))
+        XCTAssertTrue(board.failed(utterance: "u1"))
+        XCTAssertFalse(board.failed(utterance: "u2"), "a failure is of the turn it was asked about")
+        let cancelled = StatusBoard()
+        cancelled.begin(utterance: "u3")
+        cancelled.bind(utterance: "u3", turn: "T3")
+        cancelled.feed(.row(row("response.cancelled", ["response_id": "R3"], turn: "T3")))
+        XCTAssertEqual(cancelled.turn?.phase, .over)
+        XCTAssertFalse(cancelled.failed(utterance: "u3"), "a cancel is not a failure")
+    }
+
     // MARK: the line to the host
 
     @MainActor private final class FakeLink: VoiceLink {

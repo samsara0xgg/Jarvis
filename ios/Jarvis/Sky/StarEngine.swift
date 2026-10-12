@@ -102,6 +102,7 @@ final class StarEngine {
     #endif
     // what he typed and attached on its way to the brain (Sky/StarBrain): the line over the composer, and whether a send is in flight
     var brainNote: String?, brainNoteUntil = 0.0, sendingToBrain = false
+    var sentTurn: SentTurn?         // the typed turn last taken by the brain, for a failed one to go again
     // the talk under the dial (Sky/StarTalk.swift): the row ids being written, the talk's start in the conversation, and when the talk goes if nobody touches it
     var turnSeq = 0, talkId = 0, talkBase = 0, speakId: Int?, vHis: Int?, vHer: Int?, vHerKey: [String] = [], vHerSaid = 0, vShown = 0.0, vShownAt = 0.0, lingerUntil = 0.0, lingerHold = false
     var statusTurn: Int?            // the live row standing in for her until her first words (Sky/StarStatus.swift)
