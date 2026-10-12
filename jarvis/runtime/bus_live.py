@@ -4,9 +4,10 @@ Google plans the trip; this reads what the bus is actually doing. The realtime f
 (GTFS-realtime ``TripUpdates``, about 30 s fresh, no key) says per trip and stop when the bus will
 leave and how far off its timetable that is. Its trips and stops are named by the static GTFS
 export (a zip of about 16 MB), so that is kept under the runtime root and fetched at most once a
-day; only the two small lookups a match needs (trip -> route number, stop -> position) are built,
-once, on the first refresh. Google and BC Transit spell stop names differently, so a stop is found
-by position: every GTFS stop within ``STOP_RADIUS_M`` of where Google put it.
+day, in the background once there is a copy; only the two small lookups a match needs (trip ->
+route number, stop -> position) are built, on the first refresh and again when a new export
+lands. Google and BC Transit spell stop names differently, so a stop is found by position: every
+GTFS stop within ``STOP_RADIUS_M`` of where Google put it.
 
 A followed ride (ADR 0224) reads the same export and the VehiclePositions feed
 (``vehicleupdates.pb``, about 13 KB): :meth:`BusLive.vehicles` for the buses,
@@ -20,6 +21,7 @@ import csv
 import io
 import shutil
 import sys
+import threading
 import time
 import urllib.request
 import zipfile
@@ -85,6 +87,8 @@ class BusLive:
         self._zip = cache_dir / "bctransit-gtfs.zip"
         self._feed, self._download, self._vehicles = feed, download, vehicles
         self._trips: dict[str, str] | None = None
+        self._loaded = 0.0  # the export's mtime the maps were built from
+        self._refreshing = threading.Lock()  # held while a background download runs
         self._stops: dict[str, tuple[float, float]] = {}
         self._names: dict[str, str] = {}
         self._trip_cache: dict[tuple[str, str | None], list[StopTime]] = {}
@@ -246,22 +250,19 @@ class BusLive:
         return found
 
     def _lookups(self) -> dict[str, str]:
-        """The trip -> route number map, building it (and the stop positions) on first use."""
-        if self._trips is not None and self._fresh():
+        """The trip -> route number map, building it (and the stop positions) from the export.
+
+        Only the first export is waited for. A day-old one still names the trips, so it answers
+        while the new one downloads in the background (inline, a bus answer once took 64 s); the
+        maps are rebuilt when the new file lands.
+        """
+        if not self._zip.exists():
+            self._refresh()
+        elif not self._fresh() and self._refreshing.acquire(blocking=False):
+            threading.Thread(target=self._refresh_then_release, daemon=True).start()
+        loaded = self._zip.stat().st_mtime
+        if self._trips is not None and loaded == self._loaded:
             return self._trips
-        if not self._fresh():
-            self._zip.parent.mkdir(parents=True, exist_ok=True)
-            part = self._zip.with_suffix(".part")
-            try:
-                self._download(part)
-                part.replace(self._zip)
-            except Exception:
-                part.unlink(missing_ok=True)
-                if not self._zip.exists():
-                    raise
-                # An old copy still names the trips; its age restarts, so a day without the
-                # export is the price of a failed download, not a retry every refresh.
-                self._zip.touch()
         with zipfile.ZipFile(self._zip) as archive:
             routes = {
                 row["route_id"]: sys.intern(row["route_short_name"].strip())
@@ -276,7 +277,29 @@ class BusLive:
             for row in _rows(archive, "stops.txt"):
                 self._stops[row["stop_id"]] = (float(row["stop_lat"]), float(row["stop_lon"]))
                 self._names[row["stop_id"]] = (row.get("stop_name") or "").strip()
+        self._loaded = loaded
         return self._trips
+
+    def _refresh(self) -> None:
+        """Download the export over the old copy; with no copy at all, a failure raises."""
+        self._zip.parent.mkdir(parents=True, exist_ok=True)
+        part = self._zip.with_suffix(".part")
+        try:
+            self._download(part)
+            part.replace(self._zip)
+        except Exception:
+            part.unlink(missing_ok=True)
+            if not self._zip.exists():
+                raise
+            # An old copy still names the trips; its age restarts, so a day without the
+            # export is the price of a failed download, not a retry every refresh.
+            self._zip.touch()
+
+    def _refresh_then_release(self) -> None:
+        try:
+            self._refresh()
+        finally:
+            self._refreshing.release()
 
     def _fresh(self) -> bool:
         return self._zip.exists() and time.time() - self._zip.stat().st_mtime < STATIC_MAX_AGE_S

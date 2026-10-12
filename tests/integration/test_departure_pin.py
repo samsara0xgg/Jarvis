@@ -12,6 +12,9 @@ from __future__ import annotations
 import dataclasses
 import io
 import json
+import os
+import threading
+import time
 import urllib.request
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -29,7 +32,7 @@ from jarvis.deployment import bootstrap_runtime
 from jarvis.execution import transit_tool
 from jarvis.execution.tools import ActionLifecycle, ToolError, build_default_registry
 from jarvis.execution.transit_tool import TransitOffers, live_card
-from jarvis.runtime.bus_live import BusLive
+from jarvis.runtime.bus_live import STATIC_MAX_AGE_S, BusLive
 from jarvis.runtime.departures import REFRESH_S, Departures
 from jarvis.runtime.inherent_loop import _notice_deps
 from jarvis.runtime.reminders import Reminders
@@ -495,6 +498,34 @@ def test_the_static_export_is_downloaded_once_a_day(tmp_path: Path) -> None:
     assert live.departure("28", STOP, around + 15 * 60_000) is None  # beyond ten minutes
     assert live.departure("12", STOP, around) is None  # that trip is not in the feed
     assert len(calls) == 1
+
+
+def test_a_day_old_export_answers_at_once_while_the_new_one_downloads(tmp_path: Path) -> None:
+    """A stale export is not waited on: it answers, and a new one replaces it in the background."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    old = cache / "bctransit-gtfs.zip"
+    _static(old)
+    stale = time.time() - STATIC_MAX_AGE_S - 60
+    os.utime(old, (stale, stale))
+    started, release = threading.Event(), threading.Event()
+
+    def download(part: Path) -> None:
+        started.set()
+        release.wait(5)
+        _static(part)
+
+    live = BusLive(cache, feed=lambda: _feed(("T28a", "S1", "17:05", 120)), download=download)
+    around = int(_local("17:05").timestamp() * 1000)
+    assert live.departure("28", STOP, around) == ("T28a", around + 120_000)
+    assert old.stat().st_mtime == stale  # answered from the old copy, download still held
+    assert started.wait(5)
+    release.set()
+    deadline = time.monotonic() + 5
+    while old.stat().st_mtime == stale and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert old.stat().st_mtime > stale
+    assert live.departure("28", STOP, around) == ("T28a", around + 120_000)
 
 
 # --- ADR 0203: the card under the notch ------------------------------------------------
