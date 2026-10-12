@@ -1,4 +1,4 @@
-# ADR 0246 — The Dashboard takes an item by number, one tool dismisses cards, and eight tools wait behind tool_search
+# ADR 0246 — The Dashboard takes an item by number, one tool dismisses cards, and four tools wait behind tool_search
 
 **Status:** Accepted
 **Date:** 2026-10-11
@@ -18,13 +18,14 @@
   for a question (ADR 0206). With no card waiting each failed, and the model repeated the call
   (ADR 0239, `mem-churn-withdraw-card`). `cal-today-ask-user` and `cal-schedule-ask-user` show it
   raising an `ask_user` card and closing it in the next call.
-- The menu the exam rebuilds offline held 56 tools and 53,078 characters of description and
-  schema. Eight tools no turn needs by default were 7,798 of them: `save_briefing`,
-  `save_knowledge`, `search_knowledge`, `list_plugins`, `open_plugin`, `disable_plugin`,
-  `remove_plugin`, `record_application`.
-- No code reaches those eight through the model's menu. The daily report writes its briefing
-  through `daily_store`, the Jobs ledger through `JobMail.add_application`, Settings through the
-  plugin routes, and a card's button re-dispatches by name. `ToolRegistry.dispatch` and the
+- Four tools no turn needs by default are 5,456 characters of description and schema on the menu
+  the exam rebuilds offline: `save_briefing`, `save_knowledge`, `search_knowledge`,
+  `record_application`.
+- No code reaches those four through the model's menu. The daily report writes its briefing
+  through `daily_store` and the Jobs ledger through `JobMail.add_application`. The plugin panel's
+  four tools (`list_plugins`, `open_plugin`, `disable_plugin`, `remove_plugin`, 2,168 characters)
+  are another case: `prompts/jarvis_v1.md` sends the model to them by name when he asks to connect
+  an app, and that is a direct flow, so they stay on the menu. `ToolRegistry.dispatch` and the
   decision loop's lookup ignore `deferred`; only the menu honours it.
 - `tool_search` (ADR 0034) indexed MCP tools only.
 
@@ -32,7 +33,7 @@
 
 `show_on_dashboard` takes `item=N`, the item's number among the rows the Dashboard shows on that
 page counted from 1, `dismiss_card` replaces `withdraw_card` and `close_question` and does
-nothing without an error when no card is waiting, and the eight tools above are deferred, with
+nothing without an error when no card is waiting, and the four tools above are deferred, with
 `tool_search` indexing built-in deferred tools as it does MCP ones.
 
 Limits:
@@ -43,8 +44,7 @@ Limits:
   returned, and both together is an error. A shut Dashboard he did not ask to open stays shut.
 - `dismiss_card` takes down the waiting confirmation card (its action never runs) and the
   waiting question card; with both up, both go. It cannot accept anything.
-- Deferring changes who may call a tool and what asks first for none of them: `remove_plugin`
-  still waits on its card.
+- Deferring changes who may call a tool and what asks first for none of them.
 
 ## Alternatives rejected
 
@@ -57,7 +57,10 @@ Limits:
   show the model reaching for the close tool unasked; two no-argument schemas on the menu (647
   characters) for one act leaves a name to pick wrongly, and ADR 0206's fear of one tool with two
   meanings did not hold: both acts take down a card and neither takes an argument.
-- **Offer the eight to background callers only.** No background caller dispatches them through
+- **Defer the plugin panel's four too.** Connecting an app by voice is two or three calls in a
+  row (`list_plugins`, then `open_plugin`), and the prompt names both; a deferred pair costs a
+  `tool_search` round before the first of them, to save 2,168 characters on a menu of 36,327.
+- **Offer the four to background callers only.** No background caller dispatches them through
   the model's menu; a new principal would guard a path nothing uses.
 - **Delete the unused tools.** Each has a live path: the Jobs tracker (ADR 0213), the plugin
   panel (ADR 0202), the daily report and knowledge store (ADR 0036).
@@ -65,8 +68,7 @@ Limits:
 ## Consequences
 
 - Using a deferred tool costs a `tool_search` round first, and only works if the model thinks to
-  search: the lines in `prompts/jarvis_v1.md` that send it to `list_plugins` and `open_plugin`
-  must say to find them with `tool_search`, and "I applied to Acme" needs a line for
+  search: "I applied to Acme" needs a line in `prompts/jarvis_v1.md` that sends it to
   `record_application`.
 - A search that shares a word with a deferred built-in loads it as well ("search" brings
   `search_knowledge`), and a loaded tool's schema rides the rest of the turn.
