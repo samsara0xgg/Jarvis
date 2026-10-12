@@ -59,6 +59,8 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
 - ``POST /inherent/attachments`` — ADR 0211; multipart ``file`` → ``{"id", "kind", "name", ...}``;
   ``POST /inherent/submit`` then takes ``"attachments": [id]``
 - ``POST /inherent/share``       — ADR 0211; a link, text or files from another app's share sheet
+- ``POST /inherent/reactions``   — ADR 0256; body ``{"target": <record id>, "emoji": <one emoji>
+  or null}`` puts his reaction on a message or takes it off; never starts a turn
 - ``PUT /inherent/lifelog/audio/{id}`` — ADR 0238; one piece of the phone's day recording, kept
 """
 
@@ -101,6 +103,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.websockets import WebSocketClose
 
 from jarvis.shared.about import clean_about
+from jarvis.shared.emoji import is_single_emoji
 from jarvis.shared.lang import language, t
 from jarvis.state.agent_marks import AgentMarks
 from jarvis.state.attachments import (
@@ -285,6 +288,13 @@ class ShareRequest(BaseModel):
     note: str = ""
     attachments: list[str] = Field(default_factory=list)
     ask: bool = False
+
+
+class ReactionRequest(BaseModel):
+    """Body of ``POST /inherent/reactions`` (ADR 0256): his emoji on one message, or none (null)."""
+
+    target: str
+    emoji: str | None
 
 
 class QuestionAnswerRequest(BaseModel):
@@ -654,6 +664,11 @@ class InherentDeps:
     # ADR 0214: ``about`` is the checked item the phone has open, or ``None`` (``submit`` only).
     submit_as_device: Callable[[str, str, Sequence[str], dict[str, Any] | None], str] | None = None
     share_callable: Callable[[dict[str, Any]], str] | None = None
+    # ADR 0256: ``reaction_set(target, emoji)`` puts his reaction on a message record (``None``
+    # takes it off), writes the line the model reads and the event, and raises ``LookupError``
+    # when the target is not a message of his or hers. It blocks and runs on a worker thread;
+    # ``None`` leaves ``POST /inherent/reactions`` unregistered.
+    reaction_set: Callable[[str, str | None], bool] | None = None
     cancel_response_callable: Callable[[str, str, str], str] | None = None
     # ``(turn_id, reason) -> outcome``: the same route's stop for a turn still
     # being thought about; wired with ``cancel_response_callable``.
@@ -2458,6 +2473,27 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
         async def share(req: ShareRequest, request: Request) -> dict[str, str]:
             """ADR 0211: a share from another app, as a turn (``ask``) or kept for later."""
             return await _share(deps, share_callable, req, _paired_device(deps, request))
+
+    if deps.reaction_set is not None:
+        reaction_set = deps.reaction_set
+
+        @app.post("/inherent/reactions", status_code=200)
+        async def react(req: ReactionRequest) -> dict[str, Any]:
+            """ADR 0256: his emoji on a message, or null to take it off; 400 for anything else.
+
+            The emoji is exactly one grapheme cluster with the emoji property. The target is the
+            id of a message record of his or hers: a row of ``GET /inherent/conversation`` that
+            is not mail or a picture note. The answer repeats what is on the message now.
+            """
+            if req.emoji is not None and not is_single_emoji(req.emoji):
+                raise HTTPException(
+                    status_code=400, detail="emoji must be exactly one emoji, or null",
+                )
+            try:
+                await asyncio.to_thread(reaction_set, req.target, req.emoji)
+            except LookupError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {"target": req.target, "by": "allen", "emoji": req.emoji}
 
     if deps.cancel_response_callable is not None:
         cancel_response_callable = deps.cancel_response_callable

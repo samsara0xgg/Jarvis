@@ -6735,6 +6735,21 @@ def _submit_as_device(
     )
 
 
+def _set_reaction(
+    event_log_path: Path, memory_db: Path, target: str, emoji: str | None,
+) -> bool:
+    """ADR 0256: his reaction on a message, or taken off; whether anything changed.
+
+    The line the model reads and the event are written here and no turn is started.
+    """
+    conn = open_runtime_event_log(event_log_path)
+    try:
+        return reactions.allen_reacts(conn, memory_db, target=target, emoji=emoji)
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+
 def _keep_share(
     event_log_path: Path, fields: dict[str, Any], *, picture_notes: PictureNotes | None = None,
 ) -> str:
@@ -7486,6 +7501,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             submit_attachments=submit_attachments,
             submit_as_device=submit_as_device,
             share_callable=share_callable,
+            reaction_set=(
+                None if runtime.memory is None
+                else functools.partial(
+                    _set_reaction, runtime.runtime_paths.event_log, runtime.memory.db_path,
+                )
+            ),
             broadcaster=broadcaster,
             usage_read=(
                 None if usage_observer is None else functools.partial(latest_usage, runtime.conn)

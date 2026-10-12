@@ -132,6 +132,7 @@ def _client(
             attachments=Attachments(tmp_path / "attachments"),
             submit_attachments=lambda _text, _ids: "T1",
             share_callable=lambda _fields: "S1",
+            reaction_set=lambda _target, _emoji: True,
         )
     )
     require_local_key(app, matches, **guard)
@@ -169,12 +170,12 @@ def _call(client: TestClient, route: str, headers: dict[str, str]) -> int:
 def test_the_route_table_is_the_one_this_test_walks(tmp_path: Any) -> None:  # noqa: ANN401
     """Pin the count, so a route added later is walked, not silently skipped.
 
-    72 HTTP method/path pairs, the four FastAPI docs pairs (GET and HEAD of
+    73 HTTP method/path pairs, the four FastAPI docs pairs (GET and HEAD of
     ``/openapi.json``, ``/docs``, ``/docs/oauth2-redirect``, ``/redoc``) and
     the ``/inherent/ws`` socket.
     """
     _, _, routes = _client(tmp_path)
-    assert len(routes) == 81, routes
+    assert len(routes) == 82, routes
 
 
 @pytest.mark.parametrize(

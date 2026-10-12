@@ -19,6 +19,7 @@ No network and no model: the reply is scripted.
 
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
 from contextlib import closing
@@ -26,10 +27,12 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 from jarvis.runtime import inherent_loop
 from jarvis.shared.emoji import is_single_emoji
 from jarvis.state import reactions
+from jarvis.state.device_tokens import device_token_matches, pair_device
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.memory_db import (
     MemorySettings,
@@ -38,6 +41,9 @@ from jarvis.state.memory_db import (
     message_record,
     render_context,
 )
+from jarvis.state.plugin_settings import local_key, local_key_matches
+from jarvis.surface.inherent_output import InherentBroadcaster
+from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from tests.integration.test_spoken_streaming import (
     _fixture_key,  # noqa: F401 - the autouse fixture the peer needs
     _Peer,
@@ -48,6 +54,8 @@ from tests.integration.test_wire_routine_streaming import _drive, _rows
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
+
+    from httpx2 import Response  # what the test client answers with
 
     from jarvis.shared import Event
 
@@ -221,6 +229,7 @@ def test_reaction_lines_are_never_rows_and_messages_carry_what_is_on_them(
 # --- her reaction through the turn driver -------------------------------------------------------
 
 THUMB = "\U0001f44d"
+FAMILY = "\U0001f468\u200d\U0001f469\u200d\U0001f467"
 EYES = reactions.EYES
 
 
@@ -359,3 +368,139 @@ def test_a_typed_message_that_arrives_mid_turn_gets_the_eyes_and_nothing_else_do
     assert len(reaction_events(conn)) == 1, "no turn of his was in flight"
     assert reactions.current(conn, [second.event_uid]) == {second.event_uid: {"jarvis": EYES}}
     conn.close()
+
+
+# --- POST /inherent/reactions -------------------------------------------------------------------
+
+REMOTE = "100.87.250.92"
+LOOPBACK = "127.0.0.1"
+
+
+class Daemon:
+    """The app behind the local key and a paired phone's token, on a real log and memory.db."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        """Seed one exchange, a mail and a picture note, and wire the real reaction callable."""
+        self.root = tmp_path / "root"
+        self.root.mkdir()
+        self.log = self.root / "events.db"
+        open_event_log(self.log).close()
+        self.memory = self.root / "memory.db"
+        for rid, source, text in (
+            ("u1", "allen", "明天去哪里吃饭好呢"),
+            ("a1", "jarvis", "去楼下那家面馆吧。"),
+            ("m1", "mail", "a letter"),
+            ("p1", "picture_note", "[Picture note]\na bus"),
+        ):
+            append_record(self.memory, record_id=rid, source=source, text=text)
+        self.turns: list[str] = []
+        deps = InherentDeps(
+            submit_callable=self._submit,
+            broadcaster=InherentBroadcaster(),
+            reaction_set=functools.partial(inherent_loop._set_reaction, self.log, self.memory),  # noqa: SLF001
+        )
+        app = create_app(deps)
+        self.key = local_key(self.root)
+        require_local_key(
+            app,
+            functools.partial(local_key_matches, self.key),
+            extra_hosts=[REMOTE],
+            device_token_matches=functools.partial(device_token_matches, self.root),
+        )
+        self.token = pair_device(self.root, "iphone")
+        self.remote = TestClient(app, base_url=f"http://{REMOTE}:8006", client=(REMOTE, 50000))
+        loopback = f"http://{LOOPBACK}:8006"
+        self.loopback = TestClient(app, base_url=loopback, client=(LOOPBACK, 50000))
+
+    def _submit(self, text: str) -> str:
+        self.turns.append(text)
+        return "T1"
+
+    def react(self, body: dict[str, Any]) -> Response:
+        """Post a reaction as the paired phone."""
+        return self.remote.post(
+            "/inherent/reactions", json=body, headers={"Authorization": f"Bearer {self.token}"},
+        )
+
+    def now(self) -> dict[str, dict[str, str]]:
+        """The reactions on the seeded messages now."""
+        with closing(open_event_log(self.log)) as conn:
+            return reactions.current(conn, ["u1", "a1"])
+
+
+def test_his_reaction_is_kept_replaced_and_taken_off_and_never_starts_a_turn(
+    tmp_path: Path,
+) -> None:
+    """Each change answers what is on the message, writes its line, and runs no turn."""
+    d = Daemon(tmp_path)
+
+    first = d.react({"target": "a1", "emoji": THUMB})
+    assert (first.status_code, first.json()) == (
+        200, {"target": "a1", "by": "allen", "emoji": THUMB},
+    )
+    assert d.react({"target": "a1", "emoji": "\u2764\ufe0f"}).status_code == 200
+    assert d.react({"target": "u1", "emoji": FAMILY}).is_success
+    assert d.now() == {"a1": {"allen": "\u2764\ufe0f"}, "u1": {"allen": FAMILY}}
+    assert d.react({"target": "a1", "emoji": None}).json()["emoji"] is None
+    assert d.react({"target": "a1", "emoji": None}).is_success, "nothing to take off is no error"
+
+    assert [text for _, source, text in lines(d.memory) if source == "allen_reaction"] == [
+        f"[He reacted {THUMB} to: «去楼下那家面馆吧。»]",
+        "[He reacted \u2764\ufe0f to: «去楼下那家面馆吧。»]",
+        f"[He reacted {FAMILY} to: «明天去哪里吃饭好呢»]",
+        "[He took back \u2764\ufe0f from: «去楼下那家面馆吧。»]",
+    ]
+    assert d.turns == []
+    with closing(open_event_log(d.log)) as conn:
+        assert _rows(conn, "surface.user_intent", "turn.started") == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"target": "u1", "emoji": "\U0001f44d\U0001f44d"},
+        {"target": "u1", "emoji": "hello"},
+        {"target": "u1", "emoji": ""},
+        {"target": "u1", "emoji": "1"},
+        {"target": "u1", "emoji": f" {THUMB}"},
+        {"target": "m1", "emoji": THUMB},
+        {"target": "p1", "emoji": THUMB},
+        {"target": "nope", "emoji": THUMB},
+    ],
+)
+def test_anything_but_one_emoji_on_a_message_is_a_400_and_writes_nothing(
+    tmp_path: Path, body: dict[str, Any],
+) -> None:
+    """Two emoji, words, nothing, a digit, a space, mail, a picture note and an unknown id."""
+    d = Daemon(tmp_path)
+    before = lines(d.memory)
+    assert d.react(body).status_code == 400
+    assert lines(d.memory) == before
+    assert d.now() == {}
+
+
+def test_a_reaction_line_cannot_itself_be_reacted_to(tmp_path: Path) -> None:
+    """The record a reaction left is not a message."""
+    d = Daemon(tmp_path)
+    d.react({"target": "u1", "emoji": THUMB})
+    (line_id, *_), = [row for row in lines(d.memory) if row[1] == "allen_reaction"]
+    assert d.react({"target": line_id, "emoji": THUMB}).status_code == 400
+
+
+def test_the_route_is_behind_the_same_credentials_as_the_rest(tmp_path: Path) -> None:
+    """The paired token from the tailnet and the local key on loopback; every other is 401."""
+    d = Daemon(tmp_path)
+    body = {"target": "u1", "emoji": THUMB}
+    local = {"Authorization": f"Bearer {d.key}"}
+    wrong = {"Authorization": "Bearer nope"}
+
+    def post(client: TestClient, headers: dict[str, str]) -> int:
+        return client.post("/inherent/reactions", json=body, headers=headers).status_code
+
+    assert post(d.remote, {"Authorization": f"Bearer {d.token}"}) == 200
+    assert post(d.loopback, local) == 200
+    assert [
+        post(d.remote, {}), post(d.remote, wrong), post(d.remote, local),
+        post(d.loopback, {}), post(d.loopback, wrong),
+    ] == [401] * 5
+    assert d.react({"target": "u1"}).status_code == 422, "the emoji field is required, even null"
