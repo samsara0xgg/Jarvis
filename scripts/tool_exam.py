@@ -88,6 +88,7 @@ from jarvis.decision.turn_guards import (
 from jarvis.deployment import load_env_file
 from jarvis.execution.conversation_tool import build_conversation_tool
 from jarvis.execution.dashboard_tool import build_dashboard_tool
+from jarvis.execution.deep_tool import build_deep_tool
 from jarvis.execution.job_ledger_tool import build_job_ledger_tool, build_record_application_tool
 from jarvis.execution.mail_tool import build_mail_tool
 from jarvis.execution.my_day_tool import build_my_day_tool
@@ -185,6 +186,7 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
         *build_conversation_tool(Path("memory.db"), UTC),
         *build_my_day_tool(LedgerSources(Path("memory.db"), Path("events.db"), None, UTC)),
         *build_schedule_tool(lambda *_: [], UTC),
+        *build_deep_tool(stub),  # ADR 0251: the runtime registers it last of the built-ins
     ):
         registry.register(tool)
     # The runtime publishes the MCP group and tool_search once every built-in tool is registered
