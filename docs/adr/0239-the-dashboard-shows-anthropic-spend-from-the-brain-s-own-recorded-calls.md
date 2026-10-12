@@ -25,7 +25,7 @@ The brain's usage observer emits an `anthropic` service whose snapshot is today'
 and the month's `cost.recorded` dollars for provider `anthropic`, by model, read
 from the log on the loop thread, in the same `usage.state_observed` shape as
 OpenAI's, and, when Anthropic's own Cost API answers for the brain's key, that
-answer as `official`, which the page then shows instead.
+answer as `official`, which the page shows as a separate whole-account line.
 
 Its limits:
 
@@ -41,8 +41,8 @@ Its limits:
 
 ## Alternatives rejected
 
-- **Only the Cost API** — an individual org may be refused, and then the row would
-  say nothing; the recorded calls are always there.
+- **Only the Cost API** — it counts every API use on the account, not just Jarvis's, and an
+  individual org may be refused; the recorded calls are always there and are Jarvis's alone.
 - **Convert the org to a team org for an admin key** — Anthropic documents no way
   back and no effect on credits or billing.
 - **Read the log inside the collector thread** — the connection is bound to the
@@ -50,7 +50,7 @@ Its limits:
 
 ## Consequences
 
-- Without `official` the figure is the brain's recorded spend, not the account's,
-  and undercounts anything else billed to the key.
+- The main figure is the brain's recorded spend, not the account's: it undercounts
+  failed or unrecorded calls, and the `official` line, when shown, includes other API use.
 - Adding an Anthropic model without a price row shows as `unpriced_calls`, not a
   wrong dollar figure.
