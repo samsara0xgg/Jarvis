@@ -223,6 +223,34 @@ def test_an_anthropic_key_is_kept_only_when_anthropic_lists_models_with_it(
     assert "cost_report" in urls[-1]
 
 
+def test_an_anthropic_default_needs_the_anthropic_key_not_the_openai_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Chat follows the default preset's provider: features and the boot check read its key."""
+    config = {
+        "llm": {"default_preset": "sonnet", "presets": {"sonnet": {
+            "provider": "anthropic", "model": "claude-sonnet-5-5"}}},
+        "realtime": {"gpt_live": {"enabled": False}},
+    }
+    setup = Setup(
+        root=tmp_path, settings_path=tmp_path / "settings.yaml", memory_path=tmp_path / "memory.db",
+        config=config, tts_endpoint="https://tts.invalid", tts_model="m", restart=None,
+        voice_models=Progress(),
+    )
+    assert setup.read()["features"]["chat"] == {"on": False, "reason": "anthropic_missing"}
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x")
+    assert setup.read()["features"]["chat"] == {"on": True, "reason": None}
+    seen: list[str] = []
+    monkeypatch.setattr(
+        runtime_setup.urllib.request, "urlopen",
+        lambda request, timeout: seen.append(request.get_header("X-api-key")) or io.BytesIO(b"{}"),
+    )
+    with caplog.at_level("WARNING"):
+        setup.check_at_boot()
+    assert seen == ["sk-ant-x"]
+    assert "OPENAI_API_KEY" not in caplog.text
+
+
 def _status_error(cls: type[openai.APIStatusError], status: int, body: object) -> BaseException:
     request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
     return cls("refused", response=httpx.Response(status, request=request), body=body)

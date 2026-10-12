@@ -196,17 +196,24 @@ class Setup:
             for one in SETUP_VOICES[lang.language()]
         ]
 
+    def _chat_provider(self) -> str:
+        """Whose key the conversation needs: the default preset's provider, else ``llm.provider``."""
+        llm = self._config.get("llm", {})
+        preset = llm.get("presets", {}).get(llm.get("default_preset"), {})
+        return "anthropic" if (preset.get("provider") or llm.get("provider")) == "anthropic" else "openai"
+
     def _features(self) -> dict[str, dict[str, Any]]:
         """What works with the keys there are, and why not when it does not."""
         keys = {provider: self._key_state(provider) for provider in KEY_ENVS}
         live = self._config.get("realtime", {}).get("gpt_live", {}).get("enabled") is True
+        chat = self._chat_provider()
 
         def feature(on: bool, reason: str | None) -> dict[str, Any]:  # noqa: FBT001
             return {"on": on, "reason": None if on else reason}
 
         search = keys["tavily"] == "ok" or bool(os.environ.get("EXA_API_KEY"))
         return {
-            "chat": feature(keys["openai"] == "ok", f"openai_{keys['openai']}"),
+            "chat": feature(keys[chat] == "ok", f"{chat}_{keys[chat]}"),
             "reply_voice": feature(keys["minimax"] == "ok", f"minimax_{keys['minimax']}"),
             "live_voice": feature(
                 live and keys["openai"] == "ok", "off" if not live else f"openai_{keys['openai']}",
@@ -260,6 +267,7 @@ class Setup:
                 key,
                 name=name,
                 assistant=assistant if isinstance(assistant, str) and assistant else None,
+                chat_call=self._chat_provider() == "openai",
             )
         elif provider == "minimax":
             answer = self._check_minimax(key)
@@ -273,7 +281,7 @@ class Setup:
         else:
             answer = self._check_tavily(key)
         # Only a key the service accepted counts: connect (and, for OpenAI, a real answer).
-        must_pass = ("connect", "chat") if provider == "openai" else ("connect",)
+        must_pass = ("connect", "chat") if provider == "openai" else ("connect",)  # an absent row passes
         refused = [
             row["reason"] for row in answer["checks"] if row["id"] in must_pass and not row["ok"]
         ]
@@ -345,6 +353,11 @@ class Setup:
                 self._config.get("daily_report", {}).get("preset"),
             )
         } - {None}
+        background = {
+            model for model in background
+            if next(p for p in presets.values() if p.get("model") == model).get("provider", "openai")
+            != "anthropic"
+        }
         live = self._config.get("realtime", {}).get("gpt_live", {}).get("model")
         return chat, background, live
 
@@ -424,14 +437,16 @@ class Setup:
         return {"checks": [_check("connect")]}
 
     def check_at_boot(self) -> None:
-        """Check the saved OpenAI and MiniMax keys (no tokens, one word of TTS); log what fails."""
-        for provider in ("openai", "minimax"):
+        """Check the saved chat-provider and MiniMax keys (no tokens, one word of TTS); log what fails."""
+        for provider in (self._chat_provider(), "minimax"):
             key = os.environ.get(KEY_ENVS[provider])
             if not key:
                 LOGGER.warning("setup: no %s key; %s", provider, KEY_ENVS[provider])
                 continue
             if provider == "openai":
                 rows = self._check_openai(key, name=None, assistant=None, chat_call=False)["checks"]
+            elif provider == "anthropic":
+                rows = self._check_anthropic(key, _ANTHROPIC_MODELS)["checks"]
             else:
                 rows = self._check_minimax(key)["checks"]
             failed = [row for row in rows if not row["ok"]]
