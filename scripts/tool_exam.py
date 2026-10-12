@@ -8,14 +8,16 @@ r"""Tool exam: replay logged decision requests and score whether the FIRST step 
 (``~/.jarvis/evals/tool-exam/cases.json``): a list of ``{id, said, request, tags, expect?}`` where
 ``request`` is a logged decision request (``kind: decision``, Responses or chat shape) and
 ``expect.first`` is ``{ok, bad, text_must_not?, args_must_not?, no_identical_repeat?,
-cursor_must_come_from_history?}``: ``ok`` names tools (or ``"text"``, a spoken answer with no tool)
-that pass, ``bad`` names fail even next to an ok one, ``text_must_not`` regexes fail a no-tool
-answer, ``args_must_not`` maps a tool to substrings its raw arguments must not hold, or to an
-``{arg: value}`` dict that fails a call carrying all of those values (``"*"``: any value),
-``no_identical_repeat`` fails a call the request's history already made with the same arguments,
-``cursor_must_come_from_history`` fails a ``cursor`` no earlier tool output gave. Next to it sits
-``mcp-tools.json``: the MCP tool definitions (``{mcp__server__tool: {name, description,
-input_schema}}``) a live server would list, which an offline run cannot ask for.
+cursor_must_come_from_history?, must_mention?}``: ``ok`` names tools (or ``"text"``, a spoken
+answer with no tool) that pass, ``bad`` names fail even next to an ok one, ``text_must_not``
+regexes fail a no-tool answer, ``args_must_not`` maps a tool to substrings its raw arguments
+must not hold, or to an ``{arg: value}`` dict that fails a call carrying all of those values
+(``"*"``: any value), ``no_identical_repeat`` fails a call the request's history already made
+with the same arguments, ``cursor_must_come_from_history`` fails a ``cursor`` no earlier tool
+output gave, and ``must_mention`` regexes (one must match the answer or the call arguments)
+check that misheard words were understood. Next to it sits ``mcp-tools.json``: the MCP tool
+definitions (``{mcp__server__tool: {name, description, input_schema}}``) a live server would
+list, which an offline run cannot ask for.
 
 ``run --guards`` applies the decision loop's two turn guards (ADR 0239, the same code) to the first
 response: a call identical to an earlier one in the request's history (with no write since) gets
@@ -397,6 +399,12 @@ def judge(
         "text_must_not", (),
     )):
         why.append("text~rule")
+    # Misheard words (ASR): the call arguments or the answer must carry what he meant.
+    said = (line.get("text") or "", json.dumps([c["args"] for c in calls], ensure_ascii=False))
+    if first.get("must_mention") and not any(
+        re.search(rx, part) for rx in first["must_mention"] for part in said
+    ):
+        why.append("missed")
     earlier, outputs = _history(request)
     for call in calls:
         name, args = call["name"], call["args"]
