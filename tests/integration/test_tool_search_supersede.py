@@ -114,3 +114,16 @@ def test_any_menu_tool_can_supersede_deferred_names() -> None:
         "note": "search_records is replaced by conversation, which is already in your tools: "
                 "call conversation(query=...).",
     }
+
+
+def test_the_description_names_the_menu_tool_on_its_source_line() -> None:
+    """The gmail line says mail is already in the tools, so the model does not search for it."""
+    registry = ToolRegistry()
+    registry.register(_mail())
+    (search,) = build_tool_search(_gmail(), {"gmail": "Gmail."}, registry.superseded)
+    line = next(one for one in search.description.splitlines() if one.startswith("- gmail:"))
+    assert line == (
+        "- gmail: Gmail. Already in your tools for it: mail(query=...), mail(read=<id>)."
+    )
+    (bare,) = build_tool_search(_gmail(), {"gmail": "Gmail."}, ToolRegistry().superseded)
+    assert "- gmail: Gmail.\n" in bare.description

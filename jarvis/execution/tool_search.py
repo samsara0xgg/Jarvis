@@ -165,7 +165,17 @@ def build_tool_search(
     index = _Bm25([_search_text(t) for t in deferred])
     names = [t.name for t in deferred]
     listed = sorted({_source(n) for n in names})
-    source_lines = "\n".join(f"- {s}: {sources.get(s, s)}" for s in listed)
+    # A menu tool that took over some of a source's tools is named on that source's line, or
+    # the model searches the source for what it can already call (exam 2026-10-12: gmail).
+    taken: dict[str, list[str]] = {}
+    for old, (_, how) in replaced().items():
+        if old in names:
+            taken.setdefault(_source(old), []).append(how)
+    source_lines = "\n".join(
+        f"- {s}: {sources.get(s, s)}"
+        + (f" Already in your tools for it: {', '.join(taken[s])}." if s in taken else "")
+        for s in listed
+    )
     loaded = sorted(t.name for t in tools if not t.deferred and _source(t.name) in listed)
     loaded_line = (
         f"Already available, call these directly and never search for them: {', '.join(loaded)}.\n"
