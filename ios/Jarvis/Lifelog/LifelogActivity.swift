@@ -18,13 +18,13 @@ enum LifelogActivity {
         }
         let state = LifelogActivityAttributes.ContentState(since: since(now: Date(), pieceStartedAt: recorder.pieceStartedAt))
         if let a = all.first(where: { $0.activityState == .active }) {
-            if abs(a.content.state.since.timeIntervalSince(state.since)) > 2 { Task { await a.update(.init(state: state, staleDate: nil)) } }
+            if abs(a.content.state.since.timeIntervalSince(state.since)) > 2 { Task { await a.update(.init(state: state, staleDate: nil, relevanceScore: 100)) } }
             for extra in all where extra.id != a.id { Task { await extra.end(nil, dismissalPolicy: .immediate) } }
         } else if !ActivityAuthorizationInfo().areActivitiesEnabled {
             LifelogUploader.log("live activity not started: Live Activities are off for Jarvis")
         } else {
             do {
-                let a = try ActivityKit.Activity.request(attributes: LifelogActivityAttributes(), content: .init(state: state, staleDate: nil), pushType: nil)
+                let a = try ActivityKit.Activity.request(attributes: LifelogActivityAttributes(), content: .init(state: state, staleDate: nil, relevanceScore: 100), pushType: nil)
                 LifelogUploader.log("live activity started \(a.id.prefix(8)), app \(UIApplication.shared.applicationState.rawValue)")
             } catch {
                 // iOS ends an activity after about 8 hours and only lets the app start one from the foreground or an intent

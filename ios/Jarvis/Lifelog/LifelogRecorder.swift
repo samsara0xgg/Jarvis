@@ -383,12 +383,17 @@ final class LifelogRecorder {
             LifelogWriter.shared.close()
             LifelogMic.shared.kick(restart: true)
         }
+        // the control run in the widget extension set the switch: follow it
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), nil, { _, _, _, _, _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { LifelogRecorder.shared.followSwitch() } }
+        }, LifelogSwitch.changedNote, nil, .deliverImmediately)
         // an interruption whose end never came (another app let the microphone go without saying so): tried again when he opens the app
         nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated {
                 let r = LifelogRecorder.shared
                 if r.interrupted, !r.calls.inCall { lifelogNote("app opened during an interruption: trying again"); r.interrupted = false; r.apply() }
-                else { LifelogMic.shared.kick() }
+                else { r.followSwitch() }
+                LifelogActivity.sync()                  // a Live Activity refused while the app was in the background can start now
             }
         }
         nc.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: nil) { _ in LifelogWriter.shared.closeSync() }
@@ -407,6 +412,14 @@ final class LifelogRecorder {
         if !granted { lifelogNote("microphone permission refused") }
         LifelogStore.isOn = granted
         apply()
+    }
+
+    /// The switch as the App Group has it now (the extension may have set it).
+    func followSwitch() {
+        if LifelogStore.isOn, AVAudioApplication.shared.recordPermission != .granted { LifelogStore.isOn = false }
+        lifelogNote("switch is \(LifelogStore.isOn ? "on" : "off") (followed)")
+        apply()
+        LifelogMic.shared.kick()
     }
 
     /// At launch (also a relaunch after the app was killed): pieces left open are closed, and recording goes on if the switch is on.
