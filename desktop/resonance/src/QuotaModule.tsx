@@ -23,7 +23,9 @@ export type KeyRow = { key_id: string; name: string; today_tokens: number; month
 export type OpenAIData = { today_usd: number; month_usd: number; by_model: SpendRow[]; by_key: KeyRow[];
   balance_usd?: number; balance_recorded_usd?: number; balance_recorded_at?: string | null };
 // The brain's own recorded Anthropic calls (ADR 0239): not the account's total; unpriced_calls = calls whose model has no price.
-export type AnthropicData = { today_usd: number; month_usd: number; by_model: SpendRow[]; unpriced_calls?: number };
+export type AnthropicData = { today_usd: number; month_usd: number; by_model: SpendRow[]; unpriced_calls?: number;
+  // Anthropic's own Cost API, when the key is allowed to read it; otherwise official_error says why.
+  official?: { today_usd: number; month_usd: number; by_model: SpendRow[] }; official_error?: string };
 // One balance per currency DeepSeek holds (a CNY top-up sits beside the USD one).
 export type DeepSeekData = { balances: Record<string, number> };
 export type MiniMaxData = { balance: number };

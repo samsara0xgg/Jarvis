@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import json
+import urllib.error
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -187,3 +188,43 @@ def test_anthropic_spend_is_the_brains_recorded_anthropic_calls(tmp_path: Path) 
         "month_usd": 0.75,
     }
     assert snapshot.data["unpriced_calls"] == 1
+
+
+def test_anthropic_official_cost_is_read_with_the_key_and_a_refusal_waits_an_hour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cents become dollars by model; a 403 leaves a short reason, no key, and is not retried."""
+    monkeypatch.delenv("ANTHROPIC_ADMIN_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    today = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT00:00:00Z")
+    asked: list[tuple[str, str]] = []
+    refuse = False
+
+    def answer(url: str, headers: Mapping[str, str], *, timeout_s: float) -> dict[str, Any]:
+        del timeout_s
+        asked.append((url, headers["x-api-key"]))
+        if refuse:
+            raise urllib.error.HTTPError(url, 403, "Forbidden", None, None)  # type: ignore[arg-type]
+        rows = [{"model": "claude-haiku-5-5", "amount": "250.5"}, {"model": None, "amount": "10"}]
+        return {"data": [{"starting_at": "2020-01-01T00:00:00Z", "results": rows[:1]},
+                         {"starting_at": today, "results": rows}]}
+
+    monkeypatch.setattr(usage_observer, "_get_json", answer)
+    with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
+        observer = usage_observer.UsageObserver(conn, services=("anthropic",))
+        observer.collect()
+        (snapshot,) = observer.observe_recorded()
+        official = snapshot.data["official"]
+        assert official["month_usd"] == 5.11
+        assert official["today_usd"] == 2.605
+        assert official["by_model"][0]["model"] == "claude-haiku-5-5"
+        assert asked[0][1] == "sk-ant-test-key"
+        assert "sk-ant" not in json.dumps(snapshot.data)
+
+        refuse, observer._official_retry_at = True, 0.0  # noqa: SLF001
+        observer.collect()
+        observer.collect()
+        (snapshot,) = observer.observe_recorded()
+    assert snapshot.data["official_error"] == "HTTP 403"
+    assert "official" not in snapshot.data
+    assert len(asked) == 2

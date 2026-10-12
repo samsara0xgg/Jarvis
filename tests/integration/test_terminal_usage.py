@@ -100,7 +100,10 @@ def providers(monkeypatch: pytest.MonkeyPatch) -> _Providers:
         "User-Agent": "codex-cli",
     })
     monkeypatch.setattr(usage_observer, "_get_json", fake.get)
-    for key in ("OPENAI_ADMIN_KEY", "DEEPSEEK_API_KEY", "MINIMAX_API_KEY"):
+    for key in (
+        "OPENAI_ADMIN_KEY", "DEEPSEEK_API_KEY", "MINIMAX_API_KEY", "ANTHROPIC_ADMIN_KEY",
+        "ANTHROPIC_API_KEY",
+    ):
         monkeypatch.delenv(key, raising=False)
     return fake
 
@@ -180,7 +183,8 @@ def test_the_brains_own_observer_reads_no_login_and_still_reads_with_its_keys(
     assert by_service["openai"].status == by_service["minimax"].status == "unconfigured"
     # One machine keeps them all.
     every = UsageObserver(log)
-    assert sorted(s.service for s in [*every.collect(), *every.observe_recorded()]) == sorted(SERVICES)
+    seen = [*every.collect(), *every.observe_recorded()]
+    assert sorted(s.service for s in seen) == sorted(SERVICES)
 
 
 def test_a_brain_runs_the_keyed_half_and_a_one_machine_daemon_all_of_it(

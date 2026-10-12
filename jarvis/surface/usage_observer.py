@@ -12,8 +12,8 @@ Services and their sources (all verified live 2026-09-13):
   macOS Keychain item Claude Code writes, file fallback.
 - ``codex``    — ChatGPT ``wham/usage``; token from ``~/.codex/auth.json``.
 - ``openai``   — official org Costs + Usage APIs; needs ``OPENAI_ADMIN_KEY``.
-- ``anthropic`` — the brain's own ``cost.recorded`` rows for provider ``anthropic`` (Anthropic's
-  Cost API needs an organization admin key, so no key is read).
+- ``anthropic`` — the brain's own ``cost.recorded`` rows for provider ``anthropic``, plus
+  Anthropic's Cost API (``official``) when its key allows it; an individual org may be refused.
 - ``deepseek`` — official ``/user/balance``.
 - ``minimax``  — ``/account/query_balance``, undocumented; MiniMax's own
   ``mmx-cli`` reads the balance of an ``sk-api-`` key there (ADR 0065).
@@ -656,6 +656,54 @@ def recorded_spend(
     )
 
 
+_ANTHROPIC_COSTS: Final[str] = "https://api.anthropic.com/v1/organizations/cost_report"
+_OFFICIAL_RETRY_S: Final[float] = 3600.0
+
+
+def collect_anthropic_official(
+    key: str, *, timeout_s: float, now: dt.datetime | None = None
+) -> dict[str, Any]:
+    """Anthropic's own Cost API for the month: today / month-to-date USD by model.
+
+    The key goes only in the request header. Anthropic accepts an admin key or a personal key not
+    scoped to a workspace; a refusal raises ``urllib.error.HTTPError``. Days are UTC buckets, as
+    OpenAI's are, and ``amount`` comes in cents.
+    """
+    now = (now or dt.datetime.now().astimezone()).astimezone(dt.UTC)
+    start = dt.datetime(now.year, now.month, 1, tzinfo=dt.UTC)
+    query = urllib.parse.urlencode(
+        [
+            ("starting_at", start.strftime("%Y-%m-%dT%H:%M:%SZ")),
+            ("limit", 31),
+            ("group_by[]", "description"),
+        ]
+    )
+    body = _get_json(
+        f"{_ANTHROPIC_COSTS}?{query}",
+        {"x-api-key": key, "anthropic-version": "2023-06-01"},
+        timeout_s=timeout_s,
+    )
+    today_start = now.strftime("%Y-%m-%dT00:00:00Z")
+    month: dict[str, float] = {}
+    today: dict[str, float] = {}
+    for bucket in body.get("data") or []:
+        for row in bucket.get("results") or []:
+            model = str(row.get("model") or row.get("description") or "other")
+            usd = float(row.get("amount") or 0) / 100
+            month[model] = month.get(model, 0.0) + usd
+            if bucket.get("starting_at") == today_start:
+                today[model] = today.get(model, 0.0) + usd
+    models = sorted(month, key=lambda m: -month[m])
+    return {
+        "today_usd": round(sum(today.values()), 4),
+        "month_usd": round(sum(month.values()), 4),
+        "by_model": [
+            {"model": m, "today_usd": round(today.get(m, 0.0), 4), "month_usd": round(month[m], 4)}
+            for m in models[:MAX_ROWS]
+        ],
+    }
+
+
 # --- DeepSeek --------------------------------------------------------------
 
 
@@ -793,6 +841,9 @@ class UsageObserver:
         self._emit_event = emit_event
         self._baselines: dict[str, UsageSnapshot] = {}
         self._balances: dict[str, RecordedBalance] = {}
+        # Anthropic's own figures, read off the loop thread and merged into the recorded row.
+        self._official: dict[str, Any] = {}
+        self._official_retry_at = 0.0
 
     def recover_baselines(self) -> dict[str, UsageSnapshot]:
         """Seed the baselines and recorded balances from the event log; call at startup."""
@@ -834,6 +885,7 @@ class UsageObserver:
             ("deepseek", collect_deepseek),
             ("minimax", collect_minimax),
         )
+        self._read_official(timeout_s)
         snapshots: list[UsageSnapshot] = []
         for service, collector in collectors:
             if service not in self._services:
@@ -846,12 +898,32 @@ class UsageObserver:
                 snapshots.append(snapshot)
         return snapshots
 
+    def _read_official(self, timeout_s: float) -> None:
+        """Ask Anthropic's Cost API with the admin key, else the API key; a refusal waits an hour.
+
+        What is kept is a figure or a short reason, never a credential.
+        """
+        key = (
+            os.environ.get("ANTHROPIC_ADMIN_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+        ).strip()
+        waiting = time.monotonic() < self._official_retry_at
+        if "anthropic" not in self._services or not key or waiting:
+            return
+        try:
+            self._official = {"official": collect_anthropic_official(key, timeout_s=timeout_s)}
+        except urllib.error.HTTPError as exc:  # the account may not allow it (individual org)
+            self._official = {"official_error": f"HTTP {exc.code}"}
+            self._official_retry_at = time.monotonic() + _OFFICIAL_RETRY_S
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            self._official = {"official_error": type(exc).__name__}
+
     def observe_recorded(self) -> list[UsageSnapshot]:
         """Spend read from the log itself (``anthropic``); on the loop thread that owns the log."""
         if "anthropic" not in self._services:
             return []
         try:
-            return [recorded_spend(self._event_log, "anthropic")]
+            recorded = recorded_spend(self._event_log, "anthropic")
+            return [UsageSnapshot("anthropic", "ok", {**recorded.data, **self._official})]
         except Exception as exc:  # noqa: BLE001 - one service's row, never the cycle.
             return [_error("anthropic", exc)]
 
@@ -896,6 +968,7 @@ __all__ = [
     "UsageConfig",
     "UsageObserver",
     "UsageSnapshot",
+    "collect_anthropic_official",
     "collect_claude",
     "collect_codex",
     "collect_deepseek",
