@@ -4,6 +4,22 @@ import Observation
 // Talking to the brain from the phone: pictures and files up (`POST /inherent/attachments`), words with them (`POST /inherent/submit`),
 // the conversation back (`GET /inherent/conversation`). The shapes are docs/spec.html (ADR 0211) and jarvis/surface/inherent_server.py.
 
+/// A file that came with a row of his (ADR 0255): `kind` is "image" or "text"; `gone` once the brain's 30 days are over and the file is swept.
+struct RowAttachment: Equatable {
+    let id: String
+    let kind: String
+    let name: String
+    var gone: Bool
+    var isImage: Bool { kind == "image" }
+
+    static func parse(_ r: [String: Any]) -> [RowAttachment] {
+        (r["attachments"] as? [[String: Any]] ?? []).compactMap { a in
+            guard let id = a["id"] as? String, !id.isEmpty else { return nil }
+            return RowAttachment(id: id, kind: (a["kind"] as? String) ?? "text", name: (a["name"] as? String) ?? "", gone: (a["gone"] as? Bool) ?? false)
+        }
+    }
+}
+
 /// One row of the conversation of record: `source` is "allen" for his words and anything else (the brain's own, mail she read to him) for hers.
 struct ConversationRow: Equatable {
     let seq: Int
@@ -11,6 +27,8 @@ struct ConversationRow: Equatable {
     let ts: String                     // local time as the brain wrote it, `2026-10-09T23:52:02`
     let text: String                   // with the voice and document markup: `AnswerText` reads it
     var steps: StepsInfo?              // what she did to answer, from the brain (ADR 0228); nil when no tool ran
+    var id = ""                        // the record's own id, stable; empty when the brain gave none
+    var attachments: [RowAttachment] = []      // what he sent with the words; his words alone are `text` then (empty for a turn of files only)
     var isHis: Bool { source == "allen" }
     /// a line she says before the answer comes (only a voice part): more is on its way
     var isLeadIn: Bool { !isHis && AnswerText.isLeadIn(text) }
@@ -20,7 +38,8 @@ struct ConversationRow: Equatable {
         guard let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let rows = o["rows"] as? [[String: Any]] else { return nil }
         return rows.compactMap { r in
             guard let seq = r["seq"] as? Int, let source = r["source"] as? String, let text = r["text"] as? String else { return nil }
-            return ConversationRow(seq: seq, source: source, ts: (r["ts"] as? String) ?? "", text: text, steps: StepsInfo.parse(r))
+            return ConversationRow(seq: seq, source: source, ts: (r["ts"] as? String) ?? "", text: text, steps: StepsInfo.parse(r),
+                                   id: (r["id"] as? String) ?? "", attachments: RowAttachment.parse(r))
         }
     }
 }
@@ -75,6 +94,12 @@ extension BrainClient {
     static func submit(_ text: String, attachments: [String], about: About? = nil, bases: [URL], token: String) async throws -> Int {
         let body = try submitBody(text, attachments: attachments, about: about)
         return try await send("POST", "/inherent/submit", body: body, also: [404, 422, 501], bases: bases, token: token, unauthorized: .revoked).status
+    }
+
+    /// `GET /inherent/attachments/{id}`: a stored file's bytes; `data` is nil on 404, the file being swept or never there (ADR 0255).
+    static func attachment(id: String, bases: [URL], token: String) async throws -> Data? {
+        let r = try await send("GET", "/inherent/attachments/\(id)", slow: true, also: [404], bases: bases, token: token, unauthorized: .revoked)
+        return r.status == 404 ? nil : r.data
     }
 
     static func conversationQuery(after: Int, before: Int, limit: Int) -> [URLQueryItem] {
