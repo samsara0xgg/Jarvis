@@ -52,6 +52,11 @@ those two calls.
   the last one is a sentence saying where the results end, not an error.
 - Trimming quoted replies and signatures looks for English markers only, and a trimmed message
   cannot show the text it quoted; a forwarded letter is never trimmed.
-- A `tool_search` hit on the Gmail server still loads `gmail_search` and `gmail_get` for that
-  turn (ADR 0056), and a settings file that sets `always_loaded` itself keeps them on the menu.
+- A tool on the menu names the deferred tools it has taken over (`Tool.supersedes`, each with how
+  to call the new one). `tool_search` still finds them, but loads none: its result leaves them
+  out of `loaded_tools` and its `note` says, for instance, that `gmail_search` is replaced by
+  `mail`, which is already in the model's tools. They are left out of ADR 0056's read-only
+  companions too, and Gmail's write tools load as before. A later merged tool declares its own
+  the same way; a deferred tool replaces nothing. A settings file that sets `always_loaded`
+  itself still keeps the Gmail reads on the menu.
 - The mail card reads the new tool's result as well as `gmail_get`'s.

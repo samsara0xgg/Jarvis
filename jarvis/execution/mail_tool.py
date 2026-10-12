@@ -365,6 +365,10 @@ def build_mail_tool(
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L0",
             read_only=True,
+            supersedes={
+                "mcp__gmail__gmail_search": "mail(query=...)",
+                "mcp__gmail__gmail_get": "mail(read=<id>)",
+            },
         ),
     )
 

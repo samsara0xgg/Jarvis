@@ -167,7 +167,9 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
         *build_dashboard_tool((*PAGES, CLOSE), ViewState().present, SETTINGS_CATEGORIES),
         *plugin_panel_tools(dict, lambda *_: {}, lambda *_: {}, lambda *_: {}),
         *group,
-        *build_tool_search(group, {s: sources.get(s, f"mcp-{s}") for s in servers}),
+        *build_tool_search(
+            group, {s: sources.get(s, f"mcp-{s}") for s in servers}, registry.superseded,
+        ),
         *build_job_ledger_tool(dict), *build_record_application_tool(lambda _fields: ""),
         *build_mail_tool(dict, lambda *_: {}, str, UTC),
     ):

@@ -512,3 +512,22 @@ def test_the_menu_offers_mail_and_not_the_three_tools_it_replaces(tmp_path: Path
     assert "mail" in names
     assert not names & {"mail_inbox", "mcp__gmail__gmail_search", "mcp__gmail__gmail_get"}
     assert "tool_search" in names  # the deferred Gmail tools are still found through it
+
+
+def test_tool_search_in_the_shipped_registry_sends_gmail_reads_to_mail(tmp_path: Path) -> None:
+    """ADR 0241: tool_search finds the Gmail reads, loads only the write tool, and names `mail`."""
+    recorded = tmp_path / "mcp-tools.json"
+    recorded.write_text(json.dumps({
+        name: {"name": name, "description": "d", "input_schema": {"type": "object"}}
+        for name in ("mcp__gmail__gmail_search", "mcp__gmail__gmail_get", "mcp__gmail__gmail_send")
+    }), encoding="utf-8")
+    config = yaml.safe_load((REPO / "config" / "jarvis.yaml").read_text(encoding="utf-8"))
+    registry = tool_exam._exam_registry(config, recorded)  # noqa: SLF001
+    search = next(one for one in registry.get_definitions() if one.name == "tool_search")
+    handler = cast("Tool", search).handler
+    out = dict(handler({"query": "gmail_search"}, cast("ToolContext", None)))
+    # The write tool loads; both reads are found but not loaded, and the note names `mail`.
+    assert out["loaded_tools"] == ["mcp__gmail__gmail_send"]
+    tail = "is replaced by mail, which is already in your tools: call"
+    assert f"gmail_search {tail} mail(query=...)." in out["note"]
+    assert f"gmail_get {tail} mail(read=<id>)." in out["note"]

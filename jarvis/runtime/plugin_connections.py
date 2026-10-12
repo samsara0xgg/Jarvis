@@ -277,7 +277,7 @@ class PluginConnections:
         skills = self._skills()
         group = (
             *all_tools,
-            *build_tool_search(all_tools, skills.sources),
+            *build_tool_search(all_tools, skills.sources, self.registry.superseded),
             *build_read_skill(skills.skills),
         )
         self.registry.replace_group(self._owned, group)

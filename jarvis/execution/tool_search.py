@@ -6,6 +6,9 @@ a search returns the best names under
 ``loaded_tools``, plus every read-only tool of the best match's server
 (ADR 0056), and the decision loop adds those tools to the model's tool list
 for the rest of the turn. The search never runs a found tool.
+
+A deferred tool that a tool on the menu has taken over (``Tool.supersedes``, ADR 0241) is found
+but not loaded: the result says which tool to call instead.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from jarvis.execution.tools import Tool, ToolContext, ToolError
 from jarvis.shared import CallerPrincipal
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
 TOOL_SEARCH_NAME: Final = "tool_search"
 DEFAULT_LIMIT: Final[int] = 8
@@ -125,7 +128,15 @@ class _Bm25:
         return [index for _, index in scored[:limit]]
 
 
-def build_tool_search(tools: Sequence[Tool], sources: Mapping[str, str]) -> tuple[Tool, ...]:
+def _no_replacements() -> dict[str, tuple[str, str]]:
+    return {}
+
+
+def build_tool_search(
+    tools: Sequence[Tool],
+    sources: Mapping[str, str],
+    replaced: Callable[[], Mapping[str, tuple[str, str]]] = _no_replacements,
+) -> tuple[Tool, ...]:
     """The ``tool_search`` tool over the deferred ``tools``; none when nothing is deferred.
 
     Only deferred tools are indexed and returned. A non-deferred tool of a listed
@@ -133,7 +144,9 @@ def build_tool_search(tools: Sequence[Tool], sources: Mapping[str, str]) -> tupl
     that the model searches for tools it can already call (ADR 0169).
 
     ``sources`` maps a source (an MCP server) to the description the model
-    reads in the tool's own description, as Codex lists its connectors.
+    reads in the tool's own description, as Codex lists its connectors. ``replaced`` is read at
+    each search (``ToolRegistry.superseded``): ``{deferred name: (tool on the menu, how to call
+    it)}``; a hit on one of those names is not loaded and the result says to call the other.
     """
     deferred = [t for t in tools if t.deferred]
     if not deferred:
@@ -158,7 +171,15 @@ def build_tool_search(tools: Sequence[Tool], sources: Mapping[str, str]) -> tupl
         if limit <= 0:
             msg = "limit must be greater than zero"
             raise ToolError(msg, code="invalid_arguments")
-        hits = [names[i] for i in index.top(query, limit)]
+        found = [names[i] for i in index.top(query, limit)]
+        swapped = replaced()
+        notes = [
+            f"{name.rsplit('__', 1)[-1]} is replaced by {swapped[name][0]}, which is already in "
+            f"your tools: call {swapped[name][1]}."
+            for name in found
+            if name in swapped
+        ]
+        hits = [name for name in found if name not in swapped]
         # ADR 0056: the best match's server brings all of its read-only tools. A search
         # there is often useless without the read that follows (gmail_search lists ids,
         # gmail_get reads one), and read-only tools run unasked, so loading them risks nothing.
@@ -167,8 +188,9 @@ def build_tool_search(tools: Sequence[Tool], sources: Mapping[str, str]) -> tupl
             name
             for name, tool in zip(names, deferred, strict=True)
             if tool.read_only and _source(name) == best and name not in hits
+            and name not in swapped
         ]
-        return {"loaded_tools": hits + reads}
+        return {"loaded_tools": hits + reads, **({"note": " ".join(notes)} if notes else {})}
 
     return (
         Tool(

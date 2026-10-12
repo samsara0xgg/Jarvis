@@ -51,7 +51,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
@@ -405,6 +405,10 @@ class Tool:
     requires_confirmation: bool = False
     max_result_chars: int = DEFAULT_MAX_RESULT_CHARS
     deferred: bool = False
+    supersedes: Mapping[str, str] = field(default_factory=dict)
+    """Deferred tools whose job this one now does, each with how to call this one instead
+    (``{"mcp__gmail__gmail_search": "mail(query=...)"}``). While this tool is on the menu,
+    ``tool_search`` loads none of them and says to call this one (ADR 0241)."""
 
 
 def tool(  # noqa: PLR0913 — one keyword per Tool field.
@@ -3481,6 +3485,19 @@ class ToolRegistry:
         """Return every registered tool, in registration order."""
         with self._lock:
             return tuple(self._tools.values())
+
+    def superseded(self) -> dict[str, tuple[str, str]]:
+        """``{old name: (new tool, how to call it)}`` for the tools on the menu that replace others.
+
+        A deferred tool replaces nothing: it is not in the model's tools to call instead.
+        """
+        with self._lock:
+            return {
+                old: (t.name, how)
+                for t in self._tools.values()
+                if isinstance(t, Tool) and not t.deferred
+                for old, how in t.supersedes.items()
+            }
 
     def replace_group(
         self, previous: frozenset[str], tools: tuple[ToolDefinition | Tool, ...],
