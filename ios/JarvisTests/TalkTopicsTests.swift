@@ -53,4 +53,21 @@ final class TalkTopicsTests: XCTestCase {
         await topics.ensure(["2026-10-09": reply])
         XCTAssertEqual(asked.count, 1, "the day's talks are as they were")
     }
+
+    func testATalkOpenedWithFilesAndNoWordsIsNamedByThem() {
+        XCTAssertEqual(TalkTopic.title(""), "照片", "the conversation serves his words alone: nothing is left of a turn of pictures")
+        XCTAssertEqual(TalkTopic.title("（只发来了附件）\n[attached: image a.jpg]"), "照片")
+        XCTAssertEqual(TalkTopic.title("[attached: image a.jpg, text b.md]"), "照片")
+        XCTAssertEqual(TalkTopic.title("(Sent with no words.)\n[attached: text notes.md]"), "文件")
+        XCTAssertEqual(TalkTopic.title("Jarvis, 这是什么\n[attached: image a.jpg]"), "这是什么", "his words win over the files")
+        XCTAssertEqual(TalkTopic.title("贾维斯"), "", "a wake word alone is still no topic")
+    }
+
+    func testTheTopicOfATalkThatBeganWithAPictureIsTheWordForIt() throws {
+        let day = #"{"records": [{"ts": "2026-10-09T18:12:04", "who": "user", "text": "（只发来了附件）\n[attached: image a.jpg]"}, {"ts": "2026-10-09T18:12:09", "who": "jarvis", "text": "<voice>这是一只猫。</voice>"}]}"#
+        let rows = try XCTUnwrap(RecordRow.parse(Data(day.utf8)))
+        let x = TalkTopic.first(rows, start: ms("2026-10-09T18:12:04"), end: nil, tz: tz)
+        XCTAssertEqual(x?.his, "照片")
+        XCTAssertEqual(x?.hers, "这是一只猫。")
+    }
 }

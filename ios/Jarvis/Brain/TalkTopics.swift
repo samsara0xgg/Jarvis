@@ -36,6 +36,21 @@ enum TalkTopic {
         return r.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// What to call a record of his: his words, or 照片 / 文件 when he sent files and no words. The brain's records may still end in the marker line (`[attached: image a.jpg, text b.md]`)
+    /// and, for a turn of files only, hold the program's filler (ADR 0255 serves his words alone on the conversation's rows; the day's records are read as they were written).
+    static func title(_ raw: String) -> String {
+        var body = raw.trimmingCharacters(in: .whitespacesAndNewlines), marker: String?
+        if let nl = body.lastIndex(of: "\n"), body[body.index(after: nl)...].hasPrefix("[attached:") { marker = String(body[body.index(after: nl)...]); body = String(body[..<nl]) }
+        else if body.hasPrefix("[attached:") { marker = body; body = "" }
+        body = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if body.isEmpty || fillers.contains(body) {
+            let parts = (marker ?? "").dropFirst("[attached:".count).split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            return parts.contains { $0.hasPrefix("text ") } && !parts.contains { $0.hasPrefix("image ") } ? "文件" : "照片"
+        }
+        return clean(body)
+    }
+    private static let fillers: Set<String> = ["（只发来了附件）", "(Sent with no words.)"]
+
     /// The first exchange of a talk that started at `start` (ms) and ended at `end`: his first utterance is the first of his records within 2 s of the start,
     /// else the first of his inside the range. Hers is the first record after it that is not his. Times are compared in `tz`, the zone the brain wrote them in.
     static func first(_ records: [RecordRow], start: Int64, end: Int64?, tz: TimeZone) -> (his: String, hers: String)? {
@@ -44,7 +59,7 @@ enum TalkTopic {
         let hi = end ?? start + 600_000
         let mine = records.enumerated().compactMap { i, r -> (Int, Int64)? in r.who == "user" ? ms(r).map { (i, $0) } : nil }
         guard let at = mine.first(where: { abs($0.1 - start) <= 2000 }) ?? mine.first(where: { $0.1 >= start && $0.1 <= hi }) else { return nil }
-        let his = clean(records[at.0].text)
+        let his = title(records[at.0].text)
         if his.isEmpty { return nil }
         let hers = records[(at.0 + 1)...].first { $0.who != "user" }.map { AnswerText.visible($0.text) } ?? ""
         return (his, hers)
