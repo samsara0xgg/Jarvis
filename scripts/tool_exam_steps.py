@@ -87,7 +87,7 @@ _LATE_TOOLS = (  # registered after the MCP group
 LIVE_READ = frozenset({
     "get_current_time", "kept", "search_records", "recall", "read_records",
     "query_activity", "read_activity", "search_knowledge", "get_briefing",
-    "web_search", "web_fetch", "weather", "transit", "where_am_i", "places",
+    "web_search", "web_fetch", "weather", "where_am_i", "places",
     "look_at_picture",  # calls the vision preset's model
     "job_ledger", "mail",  # mail() rates unrated unread letters with Jev (OpenRouter)
     "conversation", "my_day",
@@ -97,8 +97,8 @@ LIVE_READ = frozenset({
 SANDBOX_WRITE = frozenset({
     "keep", "ask_user", "withdraw_card",
     "close_question", "save_place", "forget_place", "save_knowledge",
-    "save_briefing", "record_application", "mark_highlight", "pin_departure",
-    "watch_for_boarding", "start_ride", "set_ride_stop", "end_ride",
+    "save_briefing", "record_application", "mark_highlight",
+    "bus",  # pins and rides write the sandbox; the times (to=...) read Google Routes LIVE
     "show_on_dashboard",  # its push goes to a recorder
 })
 STUB = frozenset({

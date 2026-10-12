@@ -195,3 +195,36 @@ def test_a_patch_rewrites_the_prompt_and_the_history_notes_alike() -> None:
         {"role": "system", "content": 'read it with mail(read=) "now"'},
         {"role": "user", "content": "[Earlier days · use conversation]\nhi"},
     ]}
+
+
+BUS = dict.fromkeys(
+    ("transit", "pin_departure", "watch_for_boarding", "start_ride", "set_ride_stop", "end_ride"),
+    "bus",
+)
+NOT_A_PLAN = ['"ride"', '"pin"', '"get_off"']
+
+
+@pytest.mark.parametrize(
+    ("expect", "call", "verdict"),
+    [
+        # Every old bus tool name is satisfied by a `bus` call.
+        ({"ok": ["pin_departure"]}, ("bus", {"pin": [1]}), (True, "pass")),
+        ({"ok": ["transit"]}, ("bus", {"to": "home"}), (True, "pass")),
+        # An ok ride tool next to a bad `transit` is the same tool twice: every bus call fails,
+        # so a case like that needs an argument rule before it can be scored.
+        ({"ok": ["start_ride", "text"], "bad": ["transit"]}, ("bus", {"ride": "start"}),
+         (False, "FAIL(bus)")),
+        # Where only a plan is right, the rules for what a plan is not say so.
+        ({"ok": ["transit"], "args_must_not": {"transit": NOT_A_PLAN}}, ("bus", {"to": "home"}),
+         (True, "pass")),
+        ({"ok": ["transit"], "args_must_not": {"transit": NOT_A_PLAN}}, ("bus", {}),
+         (True, "pass")),
+        ({"ok": ["transit"], "args_must_not": {"transit": NOT_A_PLAN}},
+         ("bus", {"ride": "end"}), (False, "FAIL(bus~args)")),
+    ],
+)
+def test_the_six_bus_tools_read_as_bus(
+    expect: dict[str, Any], call: tuple[str, dict[str, Any]], verdict: tuple[bool, str],
+) -> None:
+    """The cases still name the six tools `bus` replaced (ADR 0245); the alias file maps them."""
+    assert tool_exam.judge(expect, _line(*call), REQUEST, BUS) == verdict
