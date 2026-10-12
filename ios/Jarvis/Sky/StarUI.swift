@@ -22,18 +22,27 @@ struct ChipModel: Identifiable, Equatable { var id: String { text }; var kd: Kd;
 struct PinGroup: Identifiable, Equatable { var id: String; var name: String; var rows: [RowModel] }
 enum MicState { case mic, on, send }
 
-/// A picture or file he sent with his words: the picture's small copy, or the file's name. Shown with his line so he can see what went.
+/// A picture or file he sent with his words, as the talk shows it. A picture is told by its attachment id (the brain's name for it, known once it is up or from the conversation's row);
+/// `image` is the small copy this phone has in hand, drawn until the picture's own file is read.
 struct SentItem: Identifiable, Equatable {
-    let id = UUID()
+    let id: String
+    var attachment: String?
+    var isImage: Bool
+    var title: String               // a file's name
+    var gone = false                // the brain has swept it (ADR 0255)
     var image: UIImage?
-    var title: String
 }
 
-/// What he sent with a turn, kept by the number of his row in the conversation so the panel can show it with his line (until the app is closed).
-@MainActor enum SentPics {
-    static var byRow: [Int: [SentItem]] = [:]
-    static var pending: [SentItem] = []
-    nonisolated static func items(_ items: [AttachItem]) -> [SentItem] { items.map { SentItem(image: $0.kind == .photo ? $0.thumbnail : nil, title: $0.kind == .photo ? "" : $0.title) } }
+enum SentPics {
+    /// what he attached, as the live row of his line shows it
+    static func items(_ items: [AttachItem]) -> [SentItem] {
+        items.map { SentItem(id: UUID().uuidString, isImage: $0.kind == .photo, title: $0.kind == .photo ? "" : $0.title, image: $0.kind == .photo ? $0.thumbnail : nil) }
+    }
+
+    /// what the conversation's row of his says he sent
+    static func items(_ list: [RowAttachment]) -> [SentItem] {
+        list.map { SentItem(id: $0.id, attachment: $0.id, isImage: $0.isImage, title: $0.name, gone: $0.gone) }
+    }
 }
 
 /// One row of the talk on show under the dial: his words or hers, as they are said. `reveal` lights her words one at a time while they are being said (nil: all lit).

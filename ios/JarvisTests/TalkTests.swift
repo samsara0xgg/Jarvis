@@ -23,7 +23,7 @@ final class TalkTests: XCTestCase {
 
     func testTheStreamListsTheConversationByDayWithTheTimeAfterALongGap() throws {
         let rows = try XCTUnwrap(ConversationRow.parse(Data(ordered.utf8)))
-        let days = TalkStream.convDays(rows, pics: [:], cal: cal, now: date("2026-10-09T23:55:00"))
+        let days = TalkStream.convDays(rows, cal: cal, now: date("2026-10-09T23:55:00"))
         XCTAssertEqual(days.map(\.id), ["2026-10-08", "2026-10-09"])
         XCTAssertEqual(days.map(\.title), ["昨天", "今天"])
         XCTAssertEqual(days[0].rows.map(\.text), ["## 明天\n- 09:20 出门"], "her row shows the document alone")
@@ -38,7 +38,7 @@ final class TalkTests: XCTestCase {
 
     func testTheLiveTalkJoinsTodayAndKeepsItsRowsApart() throws {
         let rows = try XCTUnwrap(ConversationRow.parse(Data(ordered.utf8)))
-        let days = TalkStream.convDays(rows, pics: [:], cal: cal, now: date("2026-10-09T23:55:00"))
+        let days = TalkStream.convDays(rows, cal: cal, now: date("2026-10-09T23:55:00"))
         let live = [LiveTurn(id: 1, his: true, text: "再说一遍", at: date("2026-10-09T23:55:00")), LiveTurn(id: 2, his: false, text: "九点二十。", at: date("2026-10-09T23:55:05"))]
         let all = TalkStream.compose(days, live: live, cal: cal, now: date("2026-10-09T23:55:00"))
         XCTAssertEqual(all.count, 2)

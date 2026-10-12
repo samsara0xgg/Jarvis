@@ -274,7 +274,7 @@ extension StarEngine {
             }
             ui.liveTurns = []
         }
-        let days = TalkStream.convDays(listed, pics: MainActor.assumeIsolated { SentPics.byRow }, cal: Cal.cur.cal, now: Date())
+        let days = TalkStream.convDays(listed, cal: Cal.cur.cal, now: Date())
         if days != ui.convDays { ui.convDays = days }
     }
 

@@ -61,7 +61,7 @@ struct TalkRowView: View, Equatable {
 
     private var bubble: some View {
         VStack(alignment: .trailing, spacing: 8) {
-            if !row.pics.isEmpty { SentItemsRow(items: row.pics) }
+            if !row.pics.isEmpty { SentPicturesView(items: row.pics) }
             if !row.text.isEmpty {
                 // round his words from the right as they come in (the engine lets them in a character at a time)
                 HisText(text: row.text, live: row.current).font(.system(size: 16))

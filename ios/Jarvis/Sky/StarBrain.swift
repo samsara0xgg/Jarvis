@@ -29,7 +29,7 @@ extension StarEngine {
         if again == nil { captureAbout() }
         let about = again.map(\.about) ?? ui.about
         note("正在发给她…", for: 120_000)
-        let shown = again?.shown ?? (text.isEmpty ? AttachModel.caption(items) : text), pics = again?.pics ?? SentPics.items(items), utterance = UUID().uuidString
+        let shown = again?.shown ?? text, pics = again?.pics ?? SentPics.items(items), utterance = UUID().uuidString
         if talk != nil { interrupt() }
         run { ok in
             // after the interrupt's own end of the talk (queued before this): his line, and the field empty for the next one
@@ -59,10 +59,11 @@ extension StarEngine {
             let seq: Int?
             var ids = again?.ids ?? []
             do {
-                for part in try await AttachUpload.parts(items, photos: self.ui.attach.photos) {
+                for (k, part) in try await AttachUpload.parts(items, photos: self.ui.attach.photos).enumerated() {
                     let up = try await BrainLink.shared.call { try await BrainClient.upload(part, bases: $0, token: $1) }
                     guard let id = up.id else { return fail(AttachUpload.refusal(status: up.status, name: part.name)) }
                     ids.append(id)
+                    await self.keepPicture(items[k], id: id, row: his, at: k)
                 }
                 StallLog.mark("send: files up")
                 seq = await latest
@@ -86,13 +87,25 @@ extension StarEngine {
                 return fail(BrainError.refused.message)
             }
             StallLog.mark("send: taken")
-            self.sentTurn = SentTurn(words: text, shown: shown, ids: ids, pics: pics, about: about, his: his)
+            self.sentTurn = SentTurn(words: text, shown: shown, ids: ids, pics: self.ui.liveTurns.first { $0.id == his }?.pics ?? pics, about: about, his: his)
             for it in self.ui.attach.take() { AttachTemp.discard(it.url) }
             self.sendingToBrain = false
             guard let seq else { self.talk = nil; self.lingerFrom(nowMs()); return self.note("发给她了", for: 4000) }       // no conversation to read her answer from
             self.clearNote()
-            SentPics.pending = pics
             try await self.brainTalk(ok, after: seq, utterance: utterance)
+        }
+    }
+
+    /// A picture of his is up: this phone keeps the original it picked or took under the brain's id (off the main thread, before the temp copy goes), and his line in the talk
+    /// learns the id, so the picture there opens full screen at once. A library photo's original may come from iCloud: it is kept when it arrives.
+    @MainActor private func keepPicture(_ it: AttachItem, id: String, row: Int, at k: Int) async {
+        if let i = ui.liveTurns.firstIndex(where: { $0.id == row }), ui.liveTurns[i].pics.indices.contains(k) { ui.liveTurns[i].pics[k].attachment = id }
+        guard it.kind == .photo else { return }
+        if let small = it.thumbnail { PictureStore.shared.seed(id: id, image: small) }
+        if let url = it.url { await PictureStore.shared.keep(id: id, copying: url) }
+        else if let asset = it.assetID {
+            let photos = ui.attach.photos
+            Task { if let data = await photos.originalData(id: asset) { await PictureStore.shared.keep(id: id, data: data) } }
         }
     }
 
@@ -105,7 +118,6 @@ extension StarEngine {
             try await nap(500, ok)
             let rows = await Conversation.shared.rows(after: last)
             try ok.check()
-            if !SentPics.pending.isEmpty, let his = rows.first(where: { $0.isHis }) { SentPics.byRow[his.seq] = SentPics.pending; SentPics.pending = [] }
             let hers = rows.filter { !$0.isHis }
             guard let row = hers.last else {
                 if StatusBoard.shared.failed(utterance: utterance) { failed = true; break }         // the host failed the turn: no answer is coming

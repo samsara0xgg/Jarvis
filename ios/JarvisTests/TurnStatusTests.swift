@@ -362,7 +362,7 @@ final class TurnStatusTests: XCTestCase {
         let json = #"{"rows":[{"seq":1,"source":"allen","ts":"2026-10-11T09:00:00","text":"几点","steps":[{"label":"a","ms":1}]},{"seq":2,"source":"jarvis","ts":"2026-10-11T09:00:01","text":"<voice>我查查。</voice>","steps":[{"label":"a","ms":1000}]},{"seq":3,"source":"jarvis","ts":"2026-10-11T09:00:05","text":"九点。","steps":[{"label":"a","ms":4000}],"steps_ms":4000,"steps_summary":"查了公交"}]}"#
         let rows = try XCTUnwrap(ConversationRow.parse(Data(json.utf8)))
         var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "Asia/Shanghai")!
-        let days = TalkStream.convDays(rows, pics: [:], cal: cal, now: TalkStream.time("2026-10-11T09:01:00", cal)!)
+        let days = TalkStream.convDays(rows, cal: cal, now: TalkStream.time("2026-10-11T09:01:00", cal)!)
         XCTAssertEqual(days[0].rows.map { $0.steps?.summary }, [nil, nil, "查了公交"])
         let live = TalkStream.compose([], live: [LiveTurn(id: 1, his: false, text: "", status: StatusLine(label: "查公交", since: 3)), LiveTurn(id: 2, his: false, text: "好", steps: StepsInfo(summary: "x", totalMs: 1, list: []))], cal: cal, now: Date())
         XCTAssertEqual(live[0].rows.map { $0.status?.label }, ["查公交", nil])

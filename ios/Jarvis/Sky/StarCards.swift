@@ -78,26 +78,3 @@ struct WaitingCardView: View {
         }
     }
 }
-
-/// The pictures (small squares) and files (their names) he sent with a line
-struct SentItemsRow: View {
-    let items: [SentItem]
-    var side: CGFloat = 44
-    var body: some View {
-        HStack(spacing: 8) {
-            ForEach(items.prefix(4)) { it in
-                if let img = it.image {
-                    Image(uiImage: img).resizable().scaledToFill().frame(width: side, height: side).clipShape(RoundedRectangle(cornerRadius: 9))
-                        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
-                } else {
-                    HStack(spacing: 5) {
-                        Image(systemName: "doc").font(.system(size: 12))
-                        Text(it.title).font(.system(size: 12)).lineLimit(1)
-                    }
-                    .foregroundStyle(SetColor.ink.opacity(0.85)).padding(.horizontal, 10).frame(height: 28).frame(maxWidth: 150)
-                    .background(Color.white.opacity(0.1), in: Capsule())
-                }
-            }
-        }
-    }
-}
