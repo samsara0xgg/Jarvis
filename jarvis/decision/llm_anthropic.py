@@ -91,9 +91,10 @@ is called once that retry has been answered, and forgets the ids."""
 
 _stale_files: StaleFiles | None = None
 _NOT_ACCEPTED: Final[frozenset[tuple[int, str]]] = frozenset(
-    {(404, "not_found_error"), (403, "permission_error")},
+    {(404, "not_found_error"), (403, "permission_error"), (400, "invalid_request_error")},
 )
-"""(HTTP status, error type) the API answers when a request names a file it cannot read."""
+"""(HTTP status, error type) a request naming a file it cannot read may get. A 400 can have
+another cause; retrying it once as words costs at most a re-upload of the ids it forgets."""
 
 
 def set_stale_files_handler(handler: StaleFiles | None) -> None:

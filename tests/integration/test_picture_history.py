@@ -822,12 +822,12 @@ def test_only_the_ids_the_error_names_are_replaced(world: World, api: LLMClient)
 def test_a_rejection_about_something_else_is_not_retried_and_costs_no_id(
     world: World, api: LLMClient,
 ) -> None:
-    """A 400, and a 404 that the words do not cure (the second request fails the same way)."""
+    """A 400 and a 404 that the words do not cure (the second request fails the same way)."""
     _, messages, (picture,) = pictured(world, "IMG_1.png")
     _Answers.rule = [lambda _body: (400, "invalid_request_error", "bad request")]
     asyncio.run(stream(api, messages))
-    assert len(_Answers.bodies) == 1
-    assert world.store.file_id(picture) is not None
+    assert len(_Answers.bodies) == 2, "tried once more as words, then given up"
+    assert world.store.file_id(picture) is not None, "the retry failed too: not the cause"
 
     _Answers.bodies.clear()
     _Answers.rule = [lambda _body: (404, "not_found_error", "model: nope")]
