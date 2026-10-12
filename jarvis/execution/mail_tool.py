@@ -6,7 +6,7 @@ import html
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.utils import parseaddr, parsedate_to_datetime
 from typing import TYPE_CHECKING, Any, Final
@@ -25,9 +25,9 @@ _DESCRIPTION: Final = (
     "message says. It only reads; to reply use write_mail_draft. No arguments: his unread "
     "Primary mail with reply marks (yes = needs an answer) and importance (0-3), junk left out. "
     "query: search all mail (Gmail syntax or plain words), up to 8 results with sender, "
-    "subject, date and snippet, usually enough to answer; more=true with the same query gives "
-    "the next 8. read: a message id, opens that one message as plain text, only when he asks "
-    "what it says."
+    "subject, date and snippet, usually enough to answer; page=2 with the same query gives "
+    "results 9-16, page=3 17-24. read: a message id, opens that one message as plain text, "
+    "only when he asks what it says."
 )
 _SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
@@ -36,9 +36,9 @@ _SCHEMA: Final[Mapping[str, Any]] = {
             "type": "string",
             "description": "Search words or Gmail syntax, e.g. from:lee co-op newer_than:30d.",
         },
-        "more": {
-            "type": "boolean",
-            "description": "With the same query as the last search: its next 8 results.",
+        "page": {
+            "type": "integer",
+            "description": "With query: 2 gives results 9-16, 3 gives 17-24; omit for the first 8.",
         },
         "read": {
             "type": "string",
@@ -71,11 +71,11 @@ _QUOTE_FROM: Final = re.compile(
 
 @dataclass(frozen=True)
 class _Held:
-    """The last search: its words, the token of its next page and how many results it showed."""
+    """The last query: the token Gmail gave for each page reached and its last page once seen."""
 
     query: str = ""
-    token: str | None = None
-    shown: int = 0
+    tokens: dict[int, str | None] = field(default_factory=dict)
+    last: int | None = None
 
 
 def _now() -> datetime:
@@ -131,8 +131,6 @@ def _trim(body: str) -> tuple[str, bool]:
 
 def _found(query: str, seen: int, count: int, *, more: bool, total: object) -> str:
     """The line that opens a page of results: which of them these are, newest first."""
-    if not count:
-        return f'No messages match "{query}".'
     if not seen and not more:
         return f'{count} message{"" if count == 1 else "s"} match "{query}", newest first.'
     # Gmail's total is an estimate: it is named only when it is more than has been shown.
@@ -158,8 +156,21 @@ def _argument(args: Mapping[str, Any], name: str) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _page(args: Mapping[str, Any]) -> int:
+    """The page asked for: 1 when none is, else a whole number from 1."""
+    value = args.get("page")
+    if value is None:
+        return 1
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        msg = "mail: page must be a whole number, e.g. page=2 for results 9-16"
+        raise ToolError(msg, code="invalid_arguments")
+    return value
+
+
 class _Mail:
-    """The tool's handler: the overview, a search and the page after it, one message."""
+    """The tool's handler: the overview, a page of a search, one message."""
 
     def __init__(
         self,
@@ -180,17 +191,17 @@ class _Mail:
     def run(self, args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         """Dispatch on the arguments; a Gmail failure is worded for the model."""
         query, read = _argument(args, "query"), _argument(args, "read")
-        more = args.get("more") is True
-        if read and (query or more):
+        page = _page(args)
+        if read and (query or page > 1):
             msg = "mail: pass read=<id> alone, or query=..., not both"
             raise ToolError(msg, code="invalid_arguments")
-        if more and not query:
-            msg = "mail: more=true continues a search; pass the same query=... as that search"
+        if page > 1 and not query:
+            msg = "mail: page continues a search; pass the same query=... as that search"
             raise ToolError(msg, code="invalid_arguments")
         try:
             if read:
                 return self._read(read)
-            return self._search(query, more=more) if query else self._overview()
+            return self._search(query, page) if query else self._overview()
         except LookupError as exc:  # the home's "not connected".
             raise _failed(exc) from exc
         except ToolError as exc:
@@ -217,28 +228,54 @@ class _Mail:
             summary += f" ({', '.join(asking[:3])})"
         return {"summary": f"{summary}.", "unread": rows, "junk_left_out": len(letters) - len(kept)}
 
-    def _search(self, query: str, *, more: bool) -> dict[str, Any]:
-        """A page of ``_PAGE`` results, each with its headers and snippet read in parallel."""
+    def _search(self, query: str, page: int) -> dict[str, Any]:
+        """Page ``page`` of ``_PAGE`` results, each with its headers and snippet read in parallel.
+
+        Gmail's page tokens are held for the last query. A page not reached yet is walked to with
+        id-only searches from the furthest page held, page 1 for a query that is not held.
+        """
         with self._lock:
-            held = self._held
-        continuing = more and held.query == query
-        if continuing and held.token is None:
-            return {"summary": f'No more messages match "{query}".', "messages": [], "more": False}
-        seen = held.shown if continuing else 0
-        ask: dict[str, Any] = {"query": query, "maxResults": _PAGE}
-        if continuing:
-            ask["pageToken"] = held.token
-        found = self._gmail("gmail_search", ask)
-        ids = [str(one["id"]) for one in found.get("messages") or []]
-        heads = self._heads(ids)
-        token = str(found["nextPageToken"]) if found.get("nextPageToken") else None
+            held = self._held if self._held.query == query else _Held(query)
+        tokens, last = {1: None, **held.tokens}, held.last
+        at = max(n for n in tokens if n <= page)
+        while at < page and (last is None or page <= last):
+            found = self._gmail("gmail_search", self._ask(query, tokens[at]))
+            if not found.get("nextPageToken"):
+                last = at
+                break
+            at += 1
+            tokens[at] = str(found["nextPageToken"])
+        ids: list[str] = []
+        found = {}
+        if last is None or page <= last:
+            found = self._gmail("gmail_search", self._ask(query, tokens[page]))
+            ids = [str(one["id"]) for one in found.get("messages") or []]
+            if found.get("nextPageToken"):
+                tokens[page + 1] = str(found["nextPageToken"])
+            else:
+                last = page if ids or page == 1 else page - 1
         with self._lock:
-            self._held = _Held(query, token, seen + len(ids))
+            self._held = _Held(query, tokens, last)
+        if not ids and page > 1:
+            end = page - 1 if last is None else last
+            msg = f'There is no page {page} of "{query}"; its results end at page {end}.'
+            return {"summary": msg, "messages": [], "more": False}
         now = self._clock()
-        rows = [self._row(head, now) for head in heads]
-        more_left = token is not None
-        line = _found(query, seen, len(rows), more=more_left, total=found.get("resultSizeEstimate"))
-        return {"summary": line, "messages": rows, "more": more_left}
+        rows = [self._row(head, now) for head in self._heads(ids)]
+        more = last is None or page < last
+        if not rows:
+            return {"summary": f'No messages match "{query}".', "messages": [], "more": False}
+        line = _found(
+            query, (page - 1) * _PAGE, len(rows), more=more, total=found.get("resultSizeEstimate"),
+        )
+        return {"summary": line, "messages": rows, "more": more}
+
+    @staticmethod
+    def _ask(query: str, token: str | None) -> dict[str, Any]:
+        ask: dict[str, Any] = {"query": query, "maxResults": _PAGE}
+        if token:
+            ask["pageToken"] = token
+        return ask
 
     def _heads(self, ids: list[str]) -> list[dict[str, Any]]:
         if not ids:

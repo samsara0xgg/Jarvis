@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import pytest
 import yaml
 
+from jarvis.decision.turn_guards import REPEATED_CALL, TurnCall, call_key, repeated_call
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.mail_tool import build_mail_tool
 from jarvis.execution.tools import ActionLifecycle, Tool, ToolContext, ToolError, ToolRegistry
@@ -136,7 +137,7 @@ def test_the_tool_is_a_small_read_only_native_menu_entry() -> None:
     assert tool.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
     assert len(tool.description) <= 600
     assert tool.description.isascii()
-    assert set(tool.input_schema["properties"]) == {"query", "more", "read"}
+    assert set(tool.input_schema["properties"]) == {"query", "page", "read"}
     assert tool.input_schema["additionalProperties"] is False
 
 
@@ -178,7 +179,7 @@ def test_an_empty_inbox_says_so() -> None:
     assert result == {"summary": "No unread mail in Primary.", "unread": [], "junk_left_out": 0}
 
 
-def test_a_search_returns_eight_summarized_messages_and_more() -> None:
+def test_a_search_returns_eight_summarized_messages_and_a_more_flag() -> None:
     """One search, one parallel metadata read per hit; rows are short and carry no body."""
     box = _co_op()
     box.barrier = threading.Barrier(PAGE)  # all eight reads must be in flight together
@@ -198,30 +199,87 @@ def test_a_search_returns_eight_summarized_messages_and_more() -> None:
     assert len(json.dumps(result)) < 4000
 
 
-def test_more_continues_the_same_query_and_a_new_query_starts_over() -> None:
-    """The server holds the page token: more=true gets the rest, then nothing, no cursor shown."""
+def _twenty() -> _Mailbox:
+    """Twenty co-op letters: pages of eight, eight and four."""
+    messages = [_message(n) for n in range(1, 21)]
+    return _Mailbox(messages, {"co-op": [one["id"] for one in messages]})
+
+
+def test_page_two_continues_the_query_with_tokens_the_server_holds() -> None:
+    """page=2 is the rest of the same query; no cursor is shown, and the end is a sentence."""
     box = _co_op()
     tool = _mail(box)
     _call(tool, query="co-op")
-    second = _call(tool, query="co-op", more=True)
+    second = _call(tool, query="co-op", page=2)
     assert [one["id"] for one in second["messages"]] == ["m09", "m10", "m11"]
     assert second["more"] is False
     assert second["summary"] == 'Messages 9-11 for "co-op", newest first.'
     assert box.calls[-4][1] == {"query": "co-op", "maxResults": PAGE, "pageToken": "8"}
     assert "nextPageToken" not in json.dumps(second)
     calls = len(box.calls)
-    done = _call(tool, query="co-op", more=True)
-    assert done == {"summary": 'No more messages match "co-op".', "messages": [], "more": False}
-    assert len(box.calls) == calls  # nothing was asked of Gmail
-    # A different query is a new search, not an error, even with more=true.
+    done = _call(tool, query="co-op", page=3)
+    assert done == {
+        "summary": 'There is no page 3 of "co-op"; its results end at page 2.',
+        "messages": [], "more": False,
+    }
+    assert len(box.calls) == calls  # the end was already known: nothing was asked of Gmail
+
+
+def test_a_page_not_reached_yet_is_walked_to_with_id_only_searches() -> None:
+    """page=3 as the first call of a query: searches skip pages 1 and 2, only page 3 is read."""
+    box = _twenty()
+    tool = _mail(box)
+    third = _call(tool, query="co-op", page=3)
+    assert [one["id"] for one in third["messages"]] == ["m17", "m18", "m19", "m20"]
+    assert third["summary"] == 'Messages 17-20 for "co-op", newest first.'
+    assert third["more"] is False
+    assert [args.get("pageToken") for name, args in box.calls if name == "gmail_search"] == [
+        None, "8", "16",
+    ]
+    assert box.names().count("gmail_get") == 4  # headers of page 3 alone
+    # The tokens it passed are held: page 2 now costs its own search and reads, no walk.
+    box.calls.clear()
+    second = _call(tool, query="co-op", page=2)
+    assert [one["id"] for one in second["messages"]] == [f"m{n:02d}" for n in range(9, 17)]
+    assert second["more"] is True
+    assert box.names() == ["gmail_search"] + ["gmail_get"] * PAGE
+    assert box.calls[0][1]["pageToken"] == "8"
+
+
+def test_another_query_drops_the_held_pages() -> None:
+    """The tokens belong to the last query; a page of an earlier one is walked to again."""
+    box = _twenty()
     box.results["career fair"] = ["m03"]
-    fresh = _call(tool, query="career fair", more=True)
-    assert [one["id"] for one in fresh["messages"]] == ["m03"]
-    assert fresh["summary"] == '1 message match "career fair", newest first.'
-    assert "pageToken" not in box.calls[-2][1]
-    # And the old query is a new search too once another one has replaced it.
-    again = _call(tool, query="co-op", more=True)
-    assert [one["id"] for one in again["messages"]][:1] == ["m01"]
+    tool = _mail(box)
+    _call(tool, query="co-op", page=2)
+    _call(tool, query="career fair")
+    box.calls.clear()
+    again = _call(tool, query="co-op", page=2)
+    assert [one["id"] for one in again["messages"]][:1] == ["m09"]
+    assert [args.get("pageToken") for name, args in box.calls if name == "gmail_search"] == [
+        None, "8",
+    ]
+
+
+def test_a_page_past_the_end_is_a_sentence_not_an_error() -> None:
+    """The walk finds the last page: nothing is read, and the answer says where it ends."""
+    box = _co_op()
+    result = _call(_mail(box), query="co-op", page=9)
+    assert result == {
+        "summary": 'There is no page 9 of "co-op"; its results end at page 2.',
+        "messages": [], "more": False,
+    }
+    assert box.names() == ["gmail_search", "gmail_search"]
+
+
+def test_every_page_call_differs_from_the_last_for_the_repeat_guard() -> None:
+    """ADR 0239: page=3 is not a repeat of page=2, while asking for page=2 again is."""
+    turn = [
+        TurnCall(name="mail", read_only=True, ok=True, key=call_key({"query": "co-op"})),
+        TurnCall(name="mail", read_only=True, ok=True, key=call_key({"query": "co-op", "page": 2})),
+    ]
+    assert repeated_call(turn, "mail", call_key({"query": "co-op", "page": 3})) is None
+    assert repeated_call(turn, "mail", call_key({"query": "co-op", "page": 2})) == REPEATED_CALL
 
 
 def test_a_search_with_no_hits_says_so() -> None:
@@ -347,8 +405,12 @@ def test_an_unknown_id_names_the_next_step() -> None:
     ("arguments", "words"),
     [
         ({"read": "m01", "query": "x"}, "not both"),
-        ({"read": "m01", "more": True}, "not both"),
-        ({"more": True}, "pass the same query"),
+        ({"read": "m01", "page": 2}, "not both"),
+        ({"page": 2}, "pass the same query"),
+        ({"query": "x", "page": 0}, "whole number"),
+        ({"query": "x", "page": "2"}, "whole number"),
+        ({"query": "x", "page": True}, "whole number"),
+        ({"query": "x", "page": 2.5}, "whole number"),
     ],
 )
 def test_arguments_that_do_not_fit_together_are_refused_with_the_fix(
@@ -399,7 +461,7 @@ def test_only_gmail_s_read_tools_are_ever_called() -> None:
     tool = _mail(box)
     _call(tool)
     _call(tool, query="co-op")
-    _call(tool, query="co-op", more=True)
+    _call(tool, query="co-op", page=2)
     _call(tool, read="m01")
     assert set(box.names()) <= {"gmail_search", "gmail_get"}
 

@@ -23,8 +23,8 @@
 The model's mail is one read-only built-in tool, `mail`, on the menu from the first request:
 no arguments give the unread overview `mail_inbox` gave, `query` searches and returns up to 8
 messages with sender, subject, local time and snippet (headers read in parallel by the server,
-the next page held by the server and asked for with `more`), and `read` opens one message as
-clean text of at most 4000 characters. `mail_inbox` goes; `gmail_search` and `gmail_get` leave
+`page=2` the results 9-16 of the same query, Gmail's page tokens held by the server), and `read`
+opens one message as clean text of at most 4000 characters. `mail_inbox` goes; `gmail_search` and `gmail_get` leave
 `always_loaded` and stay deferred behind `tool_search`, and the tool reads Gmail only through
 those two calls.
 
@@ -36,6 +36,9 @@ those two calls.
 - **Wrap the Gmail tools so `gmail_search` returns headers.** It keeps `gmail_get`'s one-call-
   per-message habit and the separate overview, and the exam's two failing shapes stay: the loop
   and the redundant `tool_search`.
+- **A `more: true` flag for the next page.** Every page call then has the same arguments, and
+  the repeat guard (ADR 0239, `turn_guards.repeated_call`, keyed on name and arguments) answers
+  the third one with its repeat note instead of running it; a page number differs on each call.
 - **Separate `mail_search`, `mail_read` and the overview.** Three entries again, each with its
   own schema on every request, and the model chooses between them before it has seen a result;
   one tool moves that choice into an argument and takes two entries off the menu.
@@ -44,8 +47,9 @@ those two calls.
 
 - A search is one Gmail search plus up to eight parallel metadata reads instead of one call;
   Gmail's total is only an estimate and is named only when it exceeds what has been shown.
-- The held page belongs to the last search in the daemon's process: another query, or a restart,
-  ends `more`.
+- The page tokens belong to the last query in the daemon's process. A page of any other query,
+  or after a restart, is walked to with one id-only Gmail search per page skipped; a page past
+  the last one is a sentence saying where the results end, not an error.
 - Trimming quoted replies and signatures looks for English markers only, and a trimmed message
   cannot show the text it quoted; a forwarded letter is never trimmed.
 - A `tool_search` hit on the Gmail server still loads `gmail_search` and `gmail_get` for that
