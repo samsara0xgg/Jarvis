@@ -101,7 +101,7 @@ llm:
       system_note: &haiku_note |-
         # Working on this model
         - Any text you write is your final spoken answer and ends the turn at once; nothing runs after it. So when the answer depends on something a tool can look up (calendar, mail, memory, bus times, the web), your reply must be the tool call alone, with no text before it and never an empty answer. Words like "我查一下" or "let me check" as a reply are always wrong: they end the turn without checking.
-        - Before asking Allen for a detail, look for it first with recall or the calendar; ask him only when they come back empty.
+        - Before asking Allen for a detail, look for it first with conversation or the calendar; ask him only when they come back empty.
     # 深想一轮用的（llm.think.preset 指向它时）：同一个模型，effort 开到 high。
     haiku-think:
       provider: anthropic

@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 NOW = datetime(2026, 10, 3, 9, 0).astimezone()
 HEADER = (
     "[Earlier days · summaries only · for exact words, numbers or details of these or "
-    "older days use recall, search_records, read_records]"
+    "older days use conversation]"
 )
 BOUNDARY = (
     "[From 2026-10-01 00:00 on, every word said is below; before that only the summaries "
@@ -152,7 +152,7 @@ def test_over_the_cap_the_oldest_hide_in_blocks_of_fifty_and_the_cut_holds(
     assert "Earlier conversation" not in history(480)
     cut = history(300)  # 480 > 300 -> hide 50 (280 left) in one block
     assert "[Earlier conversation · 50 records before 2026-10-01T08:50:00" in cut
-    assert "use recall or search_records]" in cut
+    assert "use conversation]" in cut
     assert "x049" not in cut
     assert "x050" in cut
     assert "x119" in cut

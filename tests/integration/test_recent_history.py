@@ -77,7 +77,8 @@ def test_only_the_latest_records_show_and_a_note_says_where_the_rest_are(
         "role": "user",
         "content": (
             f"[Earlier conversation · 440 records before {first_ts} are not shown · "
-            f"find them with search_records (to={first_ts}), then read_records]\n"
+            "find them with conversation(query=...) or conversation(date=...), then "
+            "conversation(open=<id>)]\n"
             "[9月1日 周二]\n第440句"
         ),
     }

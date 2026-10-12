@@ -708,7 +708,7 @@ def _day_head(conn: sqlite3.Connection) -> tuple[date, str] | None:
     rows = latest_day_summaries(conn, days[-1], days[0])
     head = (
         "[Earlier days · summaries only · for exact words, numbers or details of these or "
-        "older days use recall, search_records, read_records]"
+        "older days use conversation]"
     )
     boundary = date.fromisoformat(days[0]) + timedelta(days=1)
     return boundary, "\n\n".join([head, *(summary for _, summary in rows)])
@@ -816,8 +816,8 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
             turns,
             "user",
             f"[Conversation summary · up to {current.anchor_ts} · look up exact wording, "
-            "numbers and agreement with read_records by record_id, or find a record "
-            "with search_records]\n"
+            "numbers and agreement with conversation(open=<record_id>), or find a "
+            "record with conversation(query=...)]\n"
             f"{current.summary}",
         )
     shown = [record for record in records if record[0] != exclude_id]
@@ -827,8 +827,9 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
         hidden = _hidden_records(len(shown), recent)
     if hidden:
         first_ts = shown[hidden][1]
-        where = "use recall or search_records" if day_head else (
-            f"find them with search_records (to={first_ts}), then read_records"
+        where = "use conversation" if day_head else (
+            "find them with conversation(query=...) or conversation(date=...), then "
+            "conversation(open=<id>)"
         )
         _append_turn(
             turns,

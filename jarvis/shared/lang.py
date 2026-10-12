@@ -826,10 +826,10 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     },
     "report.sources": {
         "zh": "- 共 {count} 个来源，正文按编号引用；其中前 {kept} 个另存为 source_refs（字段上限）；"
-        "用 read_activity / read_records 回查原文。",
+        "对话原文用 conversation(open=<id>) 回查。",
         "en": "- {count} sources, cited by number in the text; the first {kept} are also saved as"
-        " source_refs (the field's limit); look up the originals with read_activity /"
-        " read_records.",
+        " source_refs (the field's limit); look up a conversation original with"
+        " conversation(open=<id>).",
     },
     # The next day's calendar and To Do, written by the program (ADR 0036).
     "report.plan_unread": {"zh": "微软日历与待办：没有读取", "en": "Microsoft Calendar and To Do: not read"},

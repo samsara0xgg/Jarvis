@@ -156,8 +156,8 @@ def test_the_window_moving_folds_what_it_hid_once_and_the_prompt_has_no_gap(
     assert upto == "r0119"
     history = render_context(path, exclude_id="", recent=N).history
     assert history[0]["content"].startswith("[Conversation summary · up to ")
-    assert "search_records" in history[0]["content"]
-    assert "read_records" in history[0]["content"]
+    assert "conversation(open=<record_id>)" in history[0]["content"]
+    assert "conversation(query=...)" in history[0]["content"]
     assert summary in history[0]["content"]
     assert _said(history) == list(range(120, 150))
     assert "Earlier conversation" not in str(history)
