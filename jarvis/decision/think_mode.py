@@ -46,15 +46,15 @@ class ThinkMode:
         return self.preset if self._holds_on_word(events, turn) else None
 
     def sentence(self, conn: sqlite3.Connection, turn: Event) -> str | None:
-        """The sentence ``turn`` answers when it holds an on-word (ADR 0251), else ``None``.
+        """The whole sentence ``turn`` answers (ADR 0251); ``None`` if it is not his words.
 
         A sentence Allen paused in arrives as several utterances (ADR 0074); they are joined.
         """
         if turn.type not in _USER_WORDS:
             return None
         words = self._sentence_words(_recent(conn, turn.ts_epoch_ms), turn)
-        said = [w for event in words if isinstance(w := event.payload.get("transcript"), str)]
-        return " ".join(said) if any(self.on.search(w) for w in said) else None
+        said = (event.payload.get("transcript") for event in words)
+        return " ".join(w for w in said if isinstance(w, str))
 
     def status(self, conn: sqlite3.Connection) -> dict[str, Any]:
         """ADR 0108: ``GET /inherent/think``, the turn that is thinking now, or ``None``."""

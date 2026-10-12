@@ -2,10 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-10-11
-**Supersedes:** one clause of ADR 0108: when `llm.deep` is configured, a sentence with an
-`llm.think.on_words` word is handed to the deep lane instead of getting the think preset for its own
-turn. Everything else in ADR 0061 and ADR 0108 stands, and the think preset still serves a sentence
-when no deep lane is configured.
+**Supersedes:** none
 
 ## Context
 
@@ -67,10 +64,14 @@ when no deep lane is configured.
   from the utterance-count folds, and from the exit and barge-in cancellation (a spoken "stop" ends
   the voice lane's speech, not a running deep task). A later voice turn is told the task is running
   (the in-flight line, ADR 0107), with its text cut to 200 characters, and can say so.
-- **A think word forces the deep lane without a model request.** When `llm.deep` is set,
-  `ThinkMode` joins the sentence's transcripts and `forced_hit` returns a Tier 0 hit for
-  `think_deeper` (`tier0.deep`, answered by the `spoken` of the hand-over). "想想" and the new
-  on-words "仔细查" and "好好查" therefore always reach it, whatever the voice lane would have chosen.
+- **A request addressed to her forces the deep lane without a model request.** `llm.deep.on_words`
+  is its own list of imperative phrases ("仔细查", "好好查", "深入查", "dig deeper"), not the ADR 0108
+  think words, which still only give the voice lane's turn the think preset. A sentence is forced
+  when it starts with such a phrase (after at most an address like "请", "你", "帮我") and holds no
+  second command ("然后", "顺便", "and then"); `ThinkMode` joins the utterances of the sentence and
+  `is_request` tests the whole of it. "我想一想", "I'll think it over" and "关灯，然后仔细查一下明天
+  天气" are not forced; the voice model sees them with `think_deeper` on its menu and decides. A hit is
+  a Tier 0 hit for `think_deeper` (`tier0.deep`, answered by the `spoken` of the hand-over).
 - **A failed task says so.** `drive_turn` catches a deep run's failure and `DeepLane.failed` writes a
   second deep-channel intent that carries `deep_failure=<reason>`. `decide()` answers that notice with
   one fixed sentence built from `failure_reason` (missing key, unauthorized, model denied, quota,
@@ -79,7 +80,7 @@ when no deep lane is configured.
 - **Progress uses the step labels** of ADR 0231 (`think_deeper` is the `deep` kind, "started" and
   "done" lines in `shared/lang.py`); commentary treats `think_deeper` as a quiet tool.
 - **The lane is off unless configured.** Without an `llm.deep` block there is no `think_deeper`
-  tool and think words behave as in ADR 0108. A block naming a preset that is not in
+  tool and no forced hand-over. A block naming a preset that is not in
   `llm.presets`, or a non-positive number, fails boot. The shipped `config/jarvis.yaml` sets it on,
   so it needs the Anthropic key the preset names; a missing key is the failure notice above, not a
   silent hang. `realtime.input.max_concurrent_turns` is 3 so a running deep task leaves two workers.

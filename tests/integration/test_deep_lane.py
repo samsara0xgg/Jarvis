@@ -23,7 +23,7 @@ import pytest
 import yaml
 from anthropic import AuthenticationError
 
-from jarvis.decision.deep import DEEP_RULES, DeepConfigError, load_deep_settings
+from jarvis.decision.deep import DEEP_RULES, DeepConfigError, is_request, load_deep_settings
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.response_run import ResponseRunRegistry
@@ -201,8 +201,8 @@ def _llm(url: str, **deep: Any) -> dict[str, Any]:  # noqa: ANN401 — llm.deep 
     return {
         "provider": "openai", "default_preset": "fast", "timeout_s": 10, "max_retries": 0,
         "max_tool_iterations": 8,
-        "think": {"preset": "fast-think", "on_words": "想想吧|仔细查"},
-        "deep": {"preset": "deep", "max_tool_iterations": 6, "live_window_s": 120, **deep},
+        "think": {"preset": "fast-think", "on_words": "想想吧|想一想"},
+        "deep": {"preset": "deep", "max_tool_iterations": 6, "live_window_s": 120, "on_words": "仔细查|好好查", **deep},
         "presets": {
             "fast": {**fast, "reasoning_effort": "none"},
             "fast-think": {**fast, "reasoning_effort": "medium"},
@@ -442,18 +442,22 @@ def test_the_voice_lane_that_comes_later_knows_the_task_is_running(tmp_path: Pat
         assert not _has(latest, "went on to say")
 
 
-# --- think words force the deep lane ----------------------------------------------------------
+# --- a request addressed to her forces the deep lane ---------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("said", "forced"),
     [
-        ("想想吧 这周先做哪个项目", True),
         ("仔细查一下这个月为什么花了这么多钱", True),
+        ("帮我好好查一下这周的求职邮件", True),
+        ("想想吧 这周先做哪个项目", False),  # a think word is ADR 0108's, not a hand-over
+        ("我想一想再说", False),  # something he says about himself
+        ("等我好好查完再回你", False),  # not a request at her
+        ("关灯，然后仔细查一下明天天气", False),  # another command: the model decides
         ("现在几点", False),
     ],
 )
-def test_a_think_word_hands_his_sentence_over_without_asking_the_voice_model(
+def test_a_request_for_a_careful_look_hands_his_sentence_over_without_asking_the_voice_model(
     tmp_path: Path, said: str, forced: bool,  # noqa: FBT001 - pytest parameter
 ) -> None:
     """The word decides before any model is asked: the lane's own sentence, his words as the task."""
@@ -710,6 +714,8 @@ def test_a_write_the_deep_run_wants_still_waits_on_its_card(
         ({"preset": "missing"}, DeepConfigError),
         ({"preset": "deep", "max_tool_iterations": 0}, DeepConfigError),
         ({"preset": "deep", "live_window_s": "soon"}, DeepConfigError),
+        ({"preset": "deep", "on_words": "("}, DeepConfigError),
+        ({"preset": "deep", "on_words": ""}, DeepConfigError),
         ({"preset": "deep", "max_tool_iterations": True}, DeepConfigError),
         ({}, DeepConfigError),
     ],
@@ -740,9 +746,15 @@ def test_the_shipped_config_defines_a_deep_lane_that_waits_longer_than_the_voice
     assert (deep.timeout_s, voice.timeout_s) == (300.0, 30.0)  # the per-preset limit, then the global
     think = load_think_mode(llm)
     assert think is not None
-    assert [bool(think.on.search(said)) for said in ("想想吧", "仔细查一下这个月的花销", "几点了", "think it over")] == [
-        True, True, False, True,
-    ]
+    # ADR 0108's words are still only a thinking turn; ADR 0251's are requests addressed to her.
+    assert [bool(think.on.search(said)) for said in ("想想吧", "仔细查一下这个月的花销", "think it over")] == [True, False, True]
+    assert [
+        is_request(settings, said)
+        for said in (
+            "仔细查一下这个月的花销", "你帮我仔细查一下", "please dig deeper into this", "我想一想", "I'll think it over",
+            "好好查一下，然后关灯", "想想吧", "几点了",
+        )
+    ] == [True, True, True, False, False, False, False, False]
 
 
 # --- the whole path, through the pump ---------------------------------------------------------

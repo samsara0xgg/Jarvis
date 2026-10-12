@@ -40,6 +40,9 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
         {"_COMPLETION_WORDS", "_TITLE_TERM", "_BREAKS", "_REFS_TAIL", "_GROUP", "_SENTENCE_END",
          "_clip", "_status_of"}
     ),
+    # A sentence of his is a request to the deep lane (ADR 0251) when it starts with an address
+    # to her and holds no second command; both lists read his words.
+    "jarvis/decision/deep.py": frozenset({"_ADDRESSED", "_AND_THEN"}),
     "jarvis/decision/pre_route.py": frozenset({"_DEMONSTRATIVE_TASK_RE"}),
     # Jev's dismiss option names Chinese send-offs as examples of what Allen says.
     "jarvis/decision/voice_words.py": frozenset({"_CRITERIA"}),

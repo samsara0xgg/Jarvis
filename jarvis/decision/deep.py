@@ -1,14 +1,16 @@
 """L3 deep lane (ADR 0251): the turn the voice lane hands a heavy task to.
 
 A deep turn is a ``surface.user_intent`` on :data:`DEEP_CHANNEL` that the runtime writes when a
-voice turn calls ``think_deeper`` or its sentence holds an ``llm.think.on_words`` word. It runs
+voice turn calls ``think_deeper`` or his sentence is a request in ``llm.deep.on_words``. It runs
 through the same pump, ``drive_turn`` and ``decide()`` as every other turn; this module holds what
 differs for it: the settings, the rules it reads, whether he is still talking with her when it
 ends, and the Tier 0 hit that forces it.
 """
 
+# ruff: noqa: RUF001, RUF002 - his words carry fullwidth punctuation
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
@@ -60,11 +62,15 @@ class DeepConfigError(ValueError):
 
 @dataclass(frozen=True)
 class DeepSettings:
-    """``llm.deep``: the preset a deep turn runs on, its step cap, and how recent "live" is."""
+    """``llm.deep``: the preset a deep turn runs on, its step cap, how recent "live" is.
+
+    ``request`` matches the imperative phrases that hand a sentence over without a model.
+    """
 
     preset: str
     max_tool_iterations: int = DEFAULT_MAX_TOOL_ITERATIONS
     live_window_s: int = DEFAULT_LIVE_WINDOW_S
+    request: re.Pattern[str] | None = None
 
 
 def _positive(block: Mapping[str, Any], key: str, default: int) -> int:
@@ -73,6 +79,41 @@ def _positive(block: Mapping[str, Any], key: str, default: int) -> int:
         msg = f"llm.deep.{key} must be a positive whole number"
         raise DeepConfigError(msg)
     return value
+
+
+# What may stand before an on-word and still leave the sentence a request addressed to her.
+_ADDRESSED = r"(?:请|麻烦|你|给我|帮我|帮忙|please|can you|could you|would you)[,，\s]*"
+# A second command in the sentence: the model decides, since the word covers only one of them.
+_AND_THEN = re.compile(
+    r"然后|接着|之后|再帮|再给|顺便|并且|而且|以及|还有|同时|and then|and also|after that|also",
+    re.IGNORECASE,
+)
+
+
+def _request_pattern(block: Mapping[str, Any]) -> re.Pattern[str] | None:
+    words = block.get("on_words")
+    if words is None:
+        return None
+    if not isinstance(words, str) or not words:
+        msg = "llm.deep.on_words must be a non-empty regular expression"
+        raise DeepConfigError(msg)
+    try:
+        return re.compile(rf"\W*(?:{_ADDRESSED})*(?:{words})", re.IGNORECASE)
+    except re.error as exc:
+        msg = f"llm.deep.on_words is not a usable pattern: {exc}"
+        raise DeepConfigError(msg) from exc
+
+
+def is_request(settings: DeepSettings, sentence: str) -> bool:
+    """Whether ``sentence`` is, from its start, a phrase of ``llm.deep.on_words`` addressed to her.
+
+    "仔细查一下这个月的花销" is; "我想一想" and "关灯，然后仔细查一下明天天气" are not.
+    """
+    request = settings.request
+    return (
+        request is not None and request.match(sentence) is not None
+        and _AND_THEN.search(sentence) is None
+    )
 
 
 def load_deep_settings(llm: Mapping[str, Any]) -> DeepSettings | None:
@@ -89,6 +130,7 @@ def load_deep_settings(llm: Mapping[str, Any]) -> DeepSettings | None:
         preset=preset,
         max_tool_iterations=_positive(block, "max_tool_iterations", DEFAULT_MAX_TOOL_ITERATIONS),
         live_window_s=_positive(block, "live_window_s", DEFAULT_LIVE_WINDOW_S),
+        request=_request_pattern(block),
     )
 
 
@@ -128,7 +170,7 @@ def live_conversation(conn: sqlite3.Connection, *, now_ms: int, window_s: int) -
 
 
 def forced_hit(sentence: str) -> Tier0Hit:
-    """The Tier 0 hit that hands ``sentence`` (his words, with a think word) to the deep lane."""
+    """The Tier 0 hit that hands ``sentence`` (his words, a request for the deep lane) over."""
     return Tier0Hit(
         pattern_id="deep_words",
         tool_name="think_deeper",
@@ -146,6 +188,7 @@ __all__ = [
     "deep_line",
     "deep_turn",
     "forced_hit",
+    "is_request",
     "live_conversation",
     "load_deep_settings",
 ]

@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 from jarvis.decision.attachment_parts import attachment_text, image_parts
 from jarvis.decision.confirm_grammar import ConfirmGrammarHit, match_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
-from jarvis.decision.deep import deep_line, deep_turn, forced_hit, live_conversation
+from jarvis.decision.deep import deep_line, deep_turn, forced_hit, is_request, live_conversation
 from jarvis.decision.gates import (
     AttentionChannel,
     GateOutcome,
@@ -1524,15 +1524,15 @@ def _run_instant_route(
 
 
 def _deep_words_hit(packet: SituationPacket, ctx: DecideContext) -> Tier0Hit | None:
-    """ADR 0251: his sentence holds a think word, so it goes to the deep lane without a model.
+    """ADR 0251: his whole sentence is a request in ``llm.deep.on_words``: no model decides.
 
-    A deep turn's own task never does: the words it carries are the lane's, not his.
+    A deep turn's own task never is: the words it carries are the lane's, not his.
     """
     trigger = packet.trigger_event
     if ctx.deep is None or ctx.deep_words is None or deep_turn(trigger):
         return None
     sentence = ctx.deep_words.sentence(ctx.conn, trigger)
-    return None if sentence is None else forced_hit(sentence)
+    return forced_hit(sentence) if sentence and is_request(ctx.deep, sentence) else None
 
 
 class _SurrogateTookTurn(Exception):  # noqa: N818 — a signal, not an error

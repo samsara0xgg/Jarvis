@@ -29,17 +29,20 @@ llm:
   # （不能叫 on：YAML 会读成真假）。
   think:
     preset: sonnet-high
-    on_words: "想想吧|想一想|你想想|帮我想想|好好想想|认真想想|仔细想想|仔细查|好好查|think (it )?(over|through)|think hard"
+    on_words: "想想吧|想一想|你想想|帮我想想|好好想想|认真想想|仔细想想|think (it )?(over|through)|think hard"
 
   # ADR 0251 深层通道：对话这一路（gpt-6-luna，菜单 35 个工具）遇到要查很多东西再综合的事，
   # 调 think_deeper(task) 把它交给后台的深层通道，自己说一句“我得仔细查一下”就结束这一轮；
-  # 上面 think.on_words 里的词（想想吧、仔细查……）不经模型直接交过去。深层通道在 preset 上
+  # on_words 里是对她下的命令（从句首起算，前面只能有“请、你、帮我”这类称呼），整句是这样
+  # 一条命令时不经模型直接交过去；“我想一想”“关灯，然后仔细查……”不算，交给模型判断。
+  # 想想吧、仔细想想这些词仍然只是 llm.think 的那一轮（ADR 0108）。深层通道在 preset 上
   # 用完整工具集（含 deferred 的，没有 tool_search），上限 max_tool_iterations 次带工具的请求，
   # 到顶还会再发一次不带工具的请求来收尾。做完时，他还在和她语音对话（最近 live_window_s 秒内
   # 有 Mac 上的语音，且没有收到退下）就读出来，否则是一张卡片加推送。同一时间只跑一个。
   # 不写这一段就没有深层通道（也没有 think_deeper 这个工具）。
   deep:
     preset: sonnet-deep
+    on_words: "仔细查|好好查|认真查|深入查|仔细帮我查|仔细研究|好好研究|仔细调查|dig deep(er)?|(look into|investigate|research) .*(carefully|thoroughly)"
     max_tool_iterations: 40
     live_window_s: 120
 
