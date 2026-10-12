@@ -166,8 +166,12 @@ def _tool_choice(tool_choice: str | None) -> dict[str, str] | None:
     return {"type": "tool", "name": tool_choice}
 
 
+_ADAPTIVE_ONLY = ("claude-sonnet-5",)
+"""Model id prefixes that take adaptive thinking only: no ``thinking: disabled``, so no forced call."""
+
+
 def request_fields(  # noqa: PLR0913 — the request's whole variable part, named
-    *, messages: Sequence[Mapping[str, Any]], system: str,
+    *, model: str = "", messages: Sequence[Mapping[str, Any]], system: str,
     tools: Sequence[Mapping[str, Any]] | None, max_tokens: int,
     reasoning_effort: str | None, text_format: Mapping[str, Any] | None = None,
     tool_choice: str | None = None, cache: bool = True,
@@ -175,7 +179,9 @@ def request_fields(  # noqa: PLR0913 — the request's whole variable part, name
     """The /v1/messages fields for one request, from the preset's ``reasoning_effort``.
 
     ``none`` turns thinking off; ``minimal`` is ``low``; any other effort is adaptive
-    thinking at that effort. A forced tool call allows no thinking. ``cache`` marks the
+    thinking at that effort. A forced tool call allows no thinking, except on a model that
+    takes adaptive thinking only: there the call is left to ``auto`` and the caller checks
+    that a tool was called. ``cache`` marks the
     request for automatic prompt caching (the last block, tools -> system -> messages).
     """
     body: dict[str, Any] = {
@@ -185,6 +191,8 @@ def request_fields(  # noqa: PLR0913 — the request's whole variable part, name
     if tools:
         body["tools"] = to_tools(tools)
         forced = _tool_choice(tool_choice)
+        if forced and forced["type"] in {"any", "tool"} and model.startswith(_ADAPTIVE_ONLY):
+            forced = None
         if forced:
             body["tool_choice"] = forced
     effort = (reasoning_effort or "").lower()

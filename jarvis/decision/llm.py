@@ -682,7 +682,7 @@ class LLMClient:
             # Thinking, effort, structured output and caching come from the preset and the
             # call; ``responses`` and ``service_tier`` are OpenAI's and mean nothing here.
             body.update(request_fields(
-                messages=messages, system=system, tools=tools, max_tokens=max_tokens,
+                model=self._model, messages=messages, system=system, tools=tools, max_tokens=max_tokens,
                 reasoning_effort=self._reasoning_effort, text_format=text_format,
             ))
         if tier := self.request_tier(service_tier):
@@ -1147,7 +1147,8 @@ class LLMClient:
         kwargs: dict[str, Any] = {
             "model": self._model,
             **request_fields(
-                messages=messages, system=system, tools=tools, max_tokens=self._max_tokens,
+                model=self._model, messages=messages, system=system, tools=tools,
+                max_tokens=self._max_tokens,
                 reasoning_effort=self._reasoning_effort, tool_choice=tool_choice,
                 cache=bool(tools),
             ),
@@ -1264,7 +1265,8 @@ class LLMClient:
         kwargs: dict[str, Any] = {
             "model": self._model,
             **request_fields(
-                messages=messages, system=system, tools=tools, max_tokens=self._max_tokens,
+                model=self._model, messages=messages, system=system, tools=tools,
+                max_tokens=self._max_tokens,
                 reasoning_effort=self._reasoning_effort, cache=bool(tools),
             ),
         }

@@ -277,6 +277,41 @@ def test_chat_maps_tool_choice_images_and_the_whole_prompt(monkeypatch: pytest.M
     assert result.tool_calls[0].arguments_json == '{"a": 1}'
 
 
+def test_sonnet_forced_call_stays_auto_with_thinking_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sonnet 5.5 rejects thinking disabled: a required call goes out as auto, thinking adaptive."""
+    monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
+    sent: list[dict[str, Any]] = []
+
+    class _Messages:
+        def create(self, **kwargs: Any) -> Any:  # noqa: ANN401
+            sent.append(kwargs)
+            return SimpleNamespace(
+                id="msg_s", stop_reason="end_turn",
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1,
+                                      cache_read_input_tokens=0, cache_creation_input_tokens=0),
+                content=[SimpleNamespace(type="text", text="no call")], model_dump=dict,
+            )
+
+    client = LLMClient({
+        "provider": "openai",
+        "presets": {"sonnet": {
+            "provider": "anthropic", "model": "claude-sonnet-5-5",
+            "api_key_env": "HAIKU_FIXTURE_KEY", "max_tokens": 64,
+            "reasoning_effort": "medium", "base_url": "",
+        }},
+        "default_preset": "sonnet", "timeout_s": 5, "max_retries": 0,
+    })
+    client._anthropic_client = SimpleNamespace(messages=_Messages())  # noqa: SLF001
+    result = client.chat(
+        messages=[{"role": "user", "content": "x"}], system="S", tools=TOOLS,
+        tool_choice="report",
+    )
+    assert "tool_choice" not in sent[0]
+    assert sent[0]["thinking"] == {"type": "adaptive"}
+    assert sent[0]["output_config"] == {"effort": "medium"}
+    assert not result.tool_calls
+
+
 @pytest.mark.parametrize(("history", "expected"), [
     # first message is the user's; a trailing assistant text is nudged on (no prefill)
     ([{"role": "assistant", "content": "hi"}],
