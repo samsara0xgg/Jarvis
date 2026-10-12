@@ -640,6 +640,8 @@ class InherentDeps:
     # ``share_callable(fields)`` keeps a share that is not a turn and returns its id (``None``
     # leaves ``POST /inherent/share`` unregistered).
     attachments: Attachments | None = None
+    # ADR 0255: called with each picture the store has just taken, to start its upload.
+    attachment_saved: Callable[[AttachmentRef], None] | None = None
     # ADR 0238: the archive a paired phone's recordings of his day go to, at
     # ``PUT /inherent/lifelog/audio/{id}``. Needs ``device_name``; ``None`` leaves the route
     # unregistered (404).
@@ -2226,6 +2228,11 @@ async def _upload_attachment(
         ref = await asyncio.to_thread(attachments.save, data, name, images_ok=deps.images_ok)
     except AttachmentRefused as exc:
         raise _refusal(exc) from None
+    if deps.attachment_saved is not None and ref.kind == "image":
+        try:
+            deps.attachment_saved(ref)
+        except Exception:
+            LOGGER.exception("attachment %s: could not start its upload", ref.id[:8])
     return {"id": ref.id, "kind": ref.kind, "name": ref.name, "bytes": ref.size, "mime": ref.mime}
 
 

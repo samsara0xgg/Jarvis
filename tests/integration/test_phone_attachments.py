@@ -48,6 +48,7 @@ from jarvis.state.attachments import (
     ATTACHMENTS_DIRNAME,
     MAX_IMAGE_BYTES,
     MAX_UPLOAD_BODY_BYTES,
+    AttachmentRef,
     AttachmentRefused,
     Attachments,
 )
@@ -65,7 +66,7 @@ from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
     from httpx2 import Response  # what the test client answers with
 
@@ -203,7 +204,10 @@ class Daemon:
         return {"Authorization": f"Bearer {self.token}"}
 
 
-def _daemon(tmp_path: Path, *, images_ok: bool = True, wired: bool = True) -> Daemon:
+def _daemon(
+    tmp_path: Path, *, images_ok: bool = True, wired: bool = True,
+    saved: Callable[[AttachmentRef], None] | None = None,
+) -> Daemon:
     root = tmp_path / "root"
     root.mkdir()
     log = root / "events.db"
@@ -219,6 +223,7 @@ def _daemon(tmp_path: Path, *, images_ok: bool = True, wired: bool = True) -> Da
         submit_callable=submit_plain,
         broadcaster=InherentBroadcaster(),
         attachments=store if wired else None,
+        attachment_saved=saved,
         images_ok=images_ok,
         submit_attachments=functools.partial(inherent_loop._submit_with_attachments, log)  # noqa: SLF001
         if wired else None,

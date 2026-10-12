@@ -17,6 +17,7 @@ import json
 import logging
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING, Final
 
 from jarvis.state import picture_notes as note_records
@@ -77,54 +78,102 @@ def link_kept_pictures(
 
 RETRY_AFTER_S: Final = 600.0
 """A picture whose upload failed rides as words, and is not tried again for this long."""
+WAIT_S: Final = 5.0
+"""The most one request's history waits, in all, for uploads that are in flight."""
+_UPLOAD_WORKERS: Final = 2
 
 
 class PictureFiles:
-    """The Files API copies of the history pictures: made on first need, made on first need."""
+    """The Files API copies of the history pictures: uploaded in the background, read by id."""
 
     def __init__(
         self, store: Attachments, *, memory_db: Path | None = None,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = time.monotonic, wait_s: float = WAIT_S,
     ) -> None:
-        """``store`` keeps the file ids; ``memory_db`` holds the notes; ``clock`` is monotonic."""
+        """``store`` keeps the file ids; ``memory_db`` holds the notes; ``clock`` is monotonic.
+
+        ``wait_s`` is how long a request waits, in all, for uploads that are still running.
+        """
         self._store = store
         self._memory_db = memory_db
         self._clock = clock
+        self._wait_s = wait_s
         self._lock = threading.Lock()
         self._failed: dict[str, float] = {}
+        self._inflight: dict[str, Future[str | None]] = {}
+        self._pool: ThreadPoolExecutor | None = None
+
+    def start(self, client: LLMClient, attachment_id: str) -> Future[str | None] | None:
+        """Begin uploading a stored picture in the background; never blocks, never raises.
+
+        ``None`` when there is nothing to do: it has an id, was tried and failed a moment ago,
+        is gone, is not a picture, or ``client`` is not on an Anthropic preset. A picture already
+        uploading returns its running upload.
+        """
+        if client.provider != "anthropic" or self._store.file_id(attachment_id) is not None:
+            return None
+        with self._lock:
+            if running := self._inflight.get(attachment_id):
+                return running
+            if self._store.file_id(attachment_id) is not None:  # finished since the check above
+                return None
+            if self._clock() < self._failed.get(attachment_id, 0.0):
+                return None
+            ref = self._store.get(attachment_id)
+            if ref is None or ref.kind != "image":
+                return None
+            if self._pool is None:
+                self._pool = ThreadPoolExecutor(
+                    _UPLOAD_WORKERS, thread_name_prefix="jarvis-picture-upload",
+                )
+            future = self._pool.submit(self._upload, client, attachment_id)
+            self._inflight[attachment_id] = future
+            return future
+
+    def _upload(self, client: LLMClient, attachment_id: str) -> str | None:
+        try:
+            ref = self._store.get(attachment_id)
+            path = self._store.path(attachment_id)
+            if ref is None or path is None:
+                return None
+            file_id = client.upload_file(ref.name, path.read_bytes(), ref.mime)
+            self._store.set_file_id(attachment_id, file_id)
+        except Exception:  # noqa: BLE001 — a failed upload costs the picture, not the turn
+            LOGGER.warning(
+                "pictures: could not upload %s; it rides as words", attachment_id[:8],
+                exc_info=True,
+            )
+            with self._lock:
+                self._failed[attachment_id] = self._clock() + RETRY_AFTER_S
+            return None
+        finally:
+            with self._lock:
+                self._inflight.pop(attachment_id, None)
+        return file_id
 
     def resolver(self, client: LLMClient) -> Callable[[str], str | None] | None:
-        """Attachment id -> file id for a request on ``client``; ``None`` off Anthropic.
+        """Attachment id -> file id for one request on ``client``; ``None`` off Anthropic.
 
         Only a Claude preset takes a file id; any other provider keeps the marker and the note.
+        A picture with an id rides at once. One still uploading (or started now) is waited for,
+        for at most ``wait_s`` in all across the request's pictures; whatever is not there by
+        then rides as its marker and note for this request and is found ready by a later one.
         """
         if client.provider != "anthropic":
             return None
-        return lambda attachment_id: self._file_id(client, attachment_id)
+        deadline = time.monotonic() + self._wait_s
 
-    def _file_id(self, client: LLMClient, attachment_id: str) -> str | None:
-        if (known := self._store.file_id(attachment_id)) is not None:
-            return known
-        with self._lock:  # the warm-up and the next turn may ask for the same picture at once
+        def file_id(attachment_id: str) -> str | None:
             if (known := self._store.file_id(attachment_id)) is not None:
                 return known
-            if self._clock() < self._failed.get(attachment_id, 0.0):
-                return None
+            if (running := self.start(client, attachment_id)) is None:
+                return self._store.file_id(attachment_id)
             try:
-                ref = self._store.get(attachment_id)
-                path = self._store.path(attachment_id)
-                if ref is None or path is None or ref.kind != "image":
-                    return None
-                file_id = client.upload_file(ref.name, path.read_bytes(), ref.mime)
-            except Exception:  # noqa: BLE001 — a failed upload costs the picture, not the turn
-                LOGGER.warning(
-                    "pictures: could not upload %s; it rides as words", attachment_id[:8],
-                    exc_info=True,
-                )
-                self._failed[attachment_id] = self._clock() + RETRY_AFTER_S
+                return running.result(timeout=max(0.0, deadline - time.monotonic()))
+            except TimeoutError:
                 return None
-            self._store.set_file_id(attachment_id, file_id)
-            return file_id
+
+        return file_id
 
     def stale(self, file_ids: Sequence[str]) -> tuple[dict[str, str], Callable[[], None]]:
         """File ids the API would not read: their pictures' notes, and what forgets the ids.

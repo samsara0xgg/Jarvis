@@ -94,6 +94,7 @@ if TYPE_CHECKING:
 
     from jarvis.decision import ToolRegistryLike
     from jarvis.decision.llm import LLMClient
+    from jarvis.decision.llm_session import LLMSessionFactory
     from jarvis.decision.turn_end_asks import TurnEndAsks
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.runtime.dashboard import MailDrafts
@@ -107,6 +108,7 @@ if TYPE_CHECKING:
     from jarvis.runtime.settings_owner import SettingsDrift
     from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent, Wave1FeatureFlags, Wave4ResponseFlags
+    from jarvis.state.attachments import AttachmentRef
     from jarvis.state.committed_event_bus import CommittedEventBus
     from jarvis.state.day_line import CalendarRead
     from jarvis.state.voice_settings import VoiceSettings
@@ -249,11 +251,13 @@ from jarvis.state.input_submission_inbox import (
 from jarvis.state.ledger import TerminalScreen
 from jarvis.state.lifelog import DEFAULT_MIN_FREE_BYTES, LIFELOG_DIRNAME, Lifelog
 from jarvis.state.memory_db import (
+    HISTORY_PICTURES,
     MemorySettings,
     SessionSettings,
     append_record,
     brief_note,
     conversation_rows,
+    recent_image_ids,
     remember_fact,
     retention_days,
 )
@@ -5828,9 +5832,35 @@ def _link_pictures(runtime: JarvisRuntime) -> int:
         sent.get("retention_days", _ATTACHMENT_DAYS) if isinstance(sent, dict)
         else _ATTACHMENT_DAYS,
     )
-    return picture_files.link_kept_pictures(
+    linked = picture_files.link_kept_pictures(
         runtime.memory.db_path, runtime.runtime_paths.event_log, runtime.attachments, days=days,
     )
+    if runtime.picture_files is not None and (client := _upload_client(runtime)) is not None:
+        for attachment_id in recent_image_ids(runtime.memory.db_path, HISTORY_PICTURES):
+            runtime.picture_files.start(client, attachment_id)  # the backlog, newest first
+    return linked
+
+
+@functools.cache
+def _default_anthropic(factory: LLMSessionFactory) -> LLMClient | None:
+    return (
+        factory.create(factory.snapshot(None), response_id="pictures")
+        if factory.snapshot(None).provider == "anthropic" else None
+    )
+
+
+def _upload_client(runtime: JarvisRuntime) -> LLMClient | None:
+    """The client that uploads pictures: on the default preset, when that is Anthropic's."""
+    if runtime.llm_session_factory is not None:
+        return _default_anthropic(runtime.llm_session_factory)
+    return runtime.llm_client if runtime.llm_client.provider == "anthropic" else None
+
+
+def _start_upload(runtime: JarvisRuntime, ref: AttachmentRef) -> None:
+    """ADR 0255: a picture was just saved; upload it now so the next turn finds its id."""
+    client = _upload_client(runtime)
+    if runtime.picture_files is not None and client is not None:
+        runtime.picture_files.start(client, ref.id)
 
 
 def _files_client(runtime: JarvisRuntime) -> LLMClient | None:
@@ -7393,6 +7423,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         deps = InherentDeps(
             submit_callable=submit_callable,
             attachments=runtime.attachments,
+            attachment_saved=functools.partial(_start_upload, runtime),
             images_ok=images_ok,
             submit_attachments=submit_attachments,
             submit_as_device=submit_as_device,

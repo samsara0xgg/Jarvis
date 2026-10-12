@@ -567,6 +567,19 @@ def link_attachments(path: Path, record_id: str, refs: Sequence[AttachmentRef]) 
             _link(conn, record_id, refs)
 
 
+def recent_image_ids(path: Path, limit: int) -> list[str]:
+    """The ids of the pictures sent most recently, newest first (ADR 0255)."""
+    with closing(open_memory_db(path)) as conn:
+        return [
+            str(a) for (a,) in conn.execute(
+                "SELECT a.attachment_id FROM record_attachments a "
+                "JOIN records r ON r.id = a.record_id WHERE a.kind = 'image' "
+                "ORDER BY r.rowid DESC, a.pos DESC LIMIT ?",
+                (limit,),
+            )
+        ]
+
+
 def linked_attachment_ids(path: Path) -> set[str]:
     """The ids of every file some record is linked to."""
     with closing(open_memory_db(path)) as conn:

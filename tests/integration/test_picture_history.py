@@ -15,6 +15,9 @@ No network: the Files API is a recording fake.
 - a request the API rejects over a file id it cannot read is sent once more with the pictures as
   marker and note, the ids are forgotten only when that retry is answered, and a rejection about
   anything else is neither retried nor costs an id;
+- a picture is uploaded in the background the moment it is saved (and the newest ones at start),
+  a request waits for an upload still running for no more than a bound and then uses words, and
+  a backlog is never uploaded one after another inside a turn;
 - the uploaded copy goes with its file: at the retention sweep, on clearing the recordings and on
   erasing everything, and a delete that fails is tried again at the next sweep.
 """
@@ -30,6 +33,7 @@ import threading
 import time
 from contextlib import closing
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -137,12 +141,15 @@ class FilesClient(LLMClient):
             "presets": {"p": {"provider": provider, "model": "m", "max_tokens": 64}},
         })
         self.uploads: list[tuple[str, int, str]] = []
+        self.gate: threading.Event | None = None  # uploads wait here while it is set and clear
         self.deleted: list[str] = []
         self.failing = False
         self.failing_delete = False
 
     def upload_file(self, name: str, data: bytes, mime: str) -> str:
         """Record the upload; the id is the count so far, or fail when told to."""
+        if self.gate is not None:
+            self.gate.wait(10)
         if self.failing:
             msg = "files api down"
             raise RuntimeError(msg)
@@ -850,3 +857,140 @@ def test_the_unstreamed_call_retries_the_same_way(world: World, api: LLMClient) 
     assert len(_Answers.bodies) == 2
     assert "file_001" not in json.dumps(_Answers.bodies[1])
     assert world.store.file_id(picture) is None
+
+
+# --- uploads in the background -------------------------------------------------------------------
+
+
+def settle(files: PictureFiles) -> None:
+    """Wait for every upload that is running."""
+    for running in list(files._inflight.values()):  # noqa: SLF001
+        running.result(10)
+
+
+def test_a_saved_picture_starts_uploading_at_once_and_the_next_render_finds_its_id(
+    tmp_path: Path,
+) -> None:
+    """POST /inherent/attachments starts the upload; a picture only, once, and not a refusal."""
+    client = FilesClient()
+    holder: Any = SimpleNamespace(picture_files=None, llm_session_factory=None, llm_client=client)
+    d = _daemon(
+        tmp_path,
+        saved=lambda ref: inherent_loop._start_upload(holder, ref),  # noqa: SLF001
+    )
+    files = PictureFiles(d.store)
+    holder.picture_files = files
+
+    picture = d.upload(PNG, "IMG_1.png")
+    text = d.upload(NOTES, "notes.txt")
+    refused = d.upload(b"%PDF-1.7", "x.pdf")
+    settle(files)
+
+    assert (picture.status_code, text.status_code, refused.status_code) == (200, 200, 415)
+    assert client.uploads == [("IMG_1.png", len(PNG), "image/png")], "only the picture, only once"
+    assert d.store.file_id(picture.json()["id"]) == "file_001"
+
+
+def test_a_failing_start_never_fails_the_upload_route(tmp_path: Path) -> None:
+    """The picture is stored whatever happens to its head start."""
+    def broken(_ref: Any) -> None:  # noqa: ANN401
+        msg = "no pool"
+        raise RuntimeError(msg)
+
+    d = _daemon(tmp_path, saved=broken)
+
+    sent = d.upload(PNG, "IMG_1.png")
+
+    assert sent.status_code == 200
+    assert d.store.get(sent.json()["id"]) is not None
+
+
+def test_no_upload_starts_when_the_default_preset_is_not_anthropics(world: World) -> None:
+    """The head start is for Claude's Files API only."""
+    client = FilesClient("openai")
+    files = PictureFiles(world.store)
+    runtime: Any = SimpleNamespace(picture_files=files, llm_session_factory=None, llm_client=client)
+    picture = world.store.save(PNG, "IMG_1.png", images_ok=True)
+
+    inherent_loop._start_upload(runtime, picture)  # noqa: SLF001
+
+    assert not files._inflight  # noqa: SLF001
+    assert client.uploads == []
+
+
+def test_a_render_waits_for_a_running_upload_within_the_bound_and_uses_it(world: World) -> None:
+    """The upload finishes inside the wait: the picture rides in this very request."""
+    client = FilesClient()
+    client.gate = threading.Event()
+    files = PictureFiles(world.store, wait_s=5.0)
+    picture = send(world, "IMG_1.png")
+    assert files.start(client, picture) is not None
+    threading.Timer(0.2, client.gate.set).start()
+
+    history = render(world, files, client)
+
+    assert history[0]["content"][1] == {"type": "image_file", "file_id": "file_001"}
+
+
+def test_a_render_gives_up_on_a_slow_upload_after_the_bound_and_a_later_one_finds_it(
+    world: World,
+) -> None:
+    """Marker and note for that request; the upload carries on and is ready next time."""
+    client = FilesClient()
+    client.gate = threading.Event()
+    files = PictureFiles(world.store, wait_s=0.3)
+    send(world, "IMG_1.png")
+
+    began = time.monotonic()
+    history = render(world, files, client)
+    took = time.monotonic() - began
+
+    assert took < 3.0
+    assert isinstance(history[0]["content"], str)
+    assert "note of IMG_1.png" in texts(history)
+    client.gate.set()
+    settle(files)
+    assert render(world, files, client)[0]["content"][1]["type"] == "image_file"
+
+
+def test_a_backlog_is_never_uploaded_one_after_another_inside_a_turn(world: World) -> None:
+    """Five pictures without ids: the render waits once, in all, and the uploads go on behind it."""
+    client = FilesClient()
+    client.gate = threading.Event()
+    files = PictureFiles(world.store, wait_s=0.3)
+    for n in range(5):
+        send(world, f"IMG_{n}.png")
+
+    began = time.monotonic()
+    history = render(world, files, client)
+    took = time.monotonic() - began
+
+    assert took < 1.5, "one bound for the whole request, not one per picture"
+    assert all(isinstance(turn["content"], str) for turn in history)
+    client.gate.set()
+    settle(files)
+    deadline = time.monotonic() + 10
+    while len(client.uploads) < 5 and time.monotonic() < deadline:
+        settle(files)
+        time.sleep(0.01)
+    assert len(client.uploads) == 5
+    riding = [t for t in render(world, files, client) if isinstance(t["content"], list)]
+    assert len(riding) == 5
+
+
+def test_the_start_uploads_the_newest_twenty_in_the_background(world: World) -> None:
+    """The backfill: no render is waiting, no more than the window can use goes up."""
+    client = FilesClient()
+    world.runtime = replace(
+        world.runtime, llm_client=client, picture_files=PictureFiles(world.store),
+    )
+    ids = [send(world, f"IMG_{n:02d}.png") for n in range(HISTORY_PICTURES + 3)]
+
+    inherent_loop._link_pictures(world.runtime)  # noqa: SLF001
+    deadline = time.monotonic() + 10
+    while len(client.uploads) < HISTORY_PICTURES and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    uploaded_names = sorted(name for name, *_ in client.uploads)
+    assert uploaded_names == sorted(f"IMG_{n:02d}.png" for n in range(3, HISTORY_PICTURES + 3))
+    assert all(world.store.file_id(one) is None for one in ids[:3])
