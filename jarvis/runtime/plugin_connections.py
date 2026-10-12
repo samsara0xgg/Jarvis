@@ -279,10 +279,13 @@ class PluginConnections:
 
     def _publish(self) -> None:
         all_tools = tuple(t for a in self._active.values() for t in a.tools)
-        # ADR 0246: built-in tools kept off the menu are found through tool_search too.
+        # ADR 0246: built-in tools kept off the menu are found through tool_search too, except
+        # the ones a menu tool took over (ADR 0241): those are found only by naming them.
+        taken = self.registry.superseded()
         off_menu = tuple(
             t for t in self.registry.get_definitions()
             if isinstance(t, Tool) and t.deferred and t.name not in self._owned
+            and t.name not in taken
         )
         skills = self._skills()
         group = (

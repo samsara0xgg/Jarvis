@@ -34,7 +34,8 @@
 `show_on_dashboard` takes `item=N`, the item's number among the rows the Dashboard shows on that
 page counted from 1, `dismiss_card` replaces `withdraw_card` and `close_question` and does
 nothing without an error when no card is waiting, and the four tools above are deferred, with
-`tool_search` indexing built-in deferred tools as it does MCP ones.
+`tool_search` indexing built-in deferred tools as it does MCP ones, except a built-in a menu tool
+took over (ADR 0241), which stays found only by naming it.
 
 Limits:
 
@@ -59,7 +60,7 @@ Limits:
   meanings did not hold: both acts take down a card and neither takes an argument.
 - **Defer the plugin panel's four too.** Connecting an app by voice is two or three calls in a
   row (`list_plugins`, then `open_plugin`), and the prompt names both; a deferred pair costs a
-  `tool_search` round before the first of them, to save 2,168 characters on a menu of 36,327.
+  `tool_search` round before the first of them, to save 2,168 characters on a menu of 36,224.
 - **Offer the four to background callers only.** No background caller dispatches them through
   the model's menu; a new principal would guard a path nothing uses.
 - **Delete the unused tools.** Each has a live path: the Jobs tracker (ADR 0213), the plugin

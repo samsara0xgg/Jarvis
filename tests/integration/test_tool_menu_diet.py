@@ -117,5 +117,18 @@ def test_refresh_search_indexes_a_built_in_registered_after_the_last_publish(
         found: Any = search.handler({"query": "late note"}, cast("ToolContext", None))
         assert found["loaded_tools"] == ["late_note"]
         service.refresh_search()  # a second refresh changes nothing and does not collide
+        # A built-in a menu tool took over stays out of the index, as in the exam's registry.
+        fixture.registry.register(replace(late, name="old_note", description="Keep an old note."))
+        fixture.registry.register(
+            replace(late, name="new_note", deferred=False, supersedes={"old_note": "new_note()"}),
+        )
+        service.refresh_search()
+        current = cast(
+            "Tool", next(t for t in fixture.registry.get_definitions() if t.name == "tool_search"),
+        )
+        assert "old_note" not in current.description
+        named: Any = current.handler({"query": "old note"}, cast("ToolContext", None))
+        assert "old_note" not in named["loaded_tools"]
+        assert "call new_note()." in named["note"]
     finally:
         service.stop()

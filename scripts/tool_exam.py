@@ -181,7 +181,11 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
         registry.register(tool)
     # The runtime publishes the MCP group and tool_search once every built-in tool is registered
     # (`PluginConnections.refresh_search`); tool_search also finds the built-ins kept off the menu.
-    off_menu = tuple(t for t in registry.get_definitions() if isinstance(t, Tool) and t.deferred)
+    taken = registry.superseded()
+    off_menu = tuple(
+        t for t in registry.get_definitions()
+        if isinstance(t, Tool) and t.deferred and t.name not in taken
+    )
     for tool in (
         *group,
         *build_tool_search(
