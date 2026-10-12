@@ -51,7 +51,7 @@ declare global { interface Window { jarvis?: {
   openUrl?: (url: string) => Promise<boolean>;
   openLogin?: (url: string, requestId: string, again?: boolean) => Promise<boolean>;
   usageReset: (service: 'codex', requestId: string) => Promise<{ code: string; windows_reset: number }>;
-  usageBalance: (service: 'openai', usd: number) => Promise<{ recorded: boolean }>;
+  usageBalance: (service: 'openai' | 'anthropic', usd: number) => Promise<{ recorded: boolean }>;
   tokenUsage?: (refresh?: boolean) => Promise<TokenUsage>;
   plugins: (operation: string, data?: Record<string, unknown>) => Promise<PluginSnapshot>;
   layout: (mode: string, height: number, surface?: { x: number; y: number; width: number; height: number }) => void; focus: (enabled: boolean) => Promise<void>; hide: () => void; quit?: () => void; passthrough: (enabled: boolean) => void;

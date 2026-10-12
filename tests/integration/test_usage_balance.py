@@ -193,7 +193,7 @@ def test_anthropic_spend_is_the_brains_recorded_anthropic_calls(tmp_path: Path) 
 def test_anthropic_official_cost_is_read_with_the_key_and_a_refusal_waits_an_hour(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Cents become dollars by model; a 403 leaves a short reason, no key, and is not retried."""
+    """The key goes in a header; a 403 leaves a short reason, no key, and is not retried."""
     monkeypatch.delenv("ANTHROPIC_ADMIN_KEY", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
     today = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT00:00:00Z")
@@ -215,7 +215,6 @@ def test_anthropic_official_cost_is_read_with_the_key_and_a_refusal_waits_an_hou
         observer.collect()
         (snapshot,) = observer.observe_recorded()
         official = snapshot.data["official"]
-        assert official["month_usd"] == 5.11
         assert official["today_usd"] == 2.605
         assert official["by_model"][0]["model"] == "claude-haiku-5-5"
         assert asked[0][1] == "sk-ant-test-key"
@@ -228,3 +227,33 @@ def test_anthropic_official_cost_is_read_with_the_key_and_a_refusal_waits_an_hou
     assert snapshot.data["official_error"] == "HTTP 403"
     assert "official" not in snapshot.data
     assert len(asked) == 2
+
+
+def test_anthropic_balance_is_the_recording_minus_official_cost_since_its_utc_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The report starts at the earlier of the month and the recording's day."""
+    asked: list[str] = []
+
+    def answer(url: str, headers: Mapping[str, str], *, timeout_s: float) -> dict[str, Any]:
+        del headers, timeout_s
+        asked.append(url)
+
+        def row(cents: int) -> list[dict[str, str]]:
+            return [{"model": "claude-haiku-5-5", "amount": str(cents)}]
+
+        return {
+            "data": [
+                {"starting_at": "2026-09-26T00:00:00Z", "results": row(100)},
+                {"starting_at": "2026-10-01T00:00:00Z", "results": row(50)},
+            ]
+        }
+
+    monkeypatch.setattr(usage_observer, "_get_json", answer)
+    recorded = usage_observer.RecordedBalance(10.0, 1_790_424_000_000)  # 2026-09-26 12:00 UTC
+    data = usage_observer.collect_anthropic_official(
+        "k", timeout_s=1, now=dt.datetime(2026, 10, 2, 12, tzinfo=dt.UTC), balance=recorded,
+    )
+    assert "starting_at=2026-09-26T00%3A00%3A00Z" in asked[0]
+    assert data["balance_usd"] == 8.5
+    assert data["month_usd"] == 0.5

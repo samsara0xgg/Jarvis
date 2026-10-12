@@ -73,7 +73,7 @@ DEVICE_SERVICES: Final[tuple[str, ...]] = ("claude", "codex")
 KEYED_SERVICES: Final[tuple[str, ...]] = ("openai", "anthropic", "deepseek", "minimax")
 BALANCE_EVENT_TYPE: Final[str] = "usage.balance_recorded"
 # The services with no balance API, whose balance Allen records by hand.
-BALANCE_SERVICES: Final[tuple[str, ...]] = ("openai",)
+BALANCE_SERVICES: Final[tuple[str, ...]] = ("openai", "anthropic")
 MAX_BALANCE_USD: Final[float] = 1_000_000.0
 
 DEFAULT_HTTP_TIMEOUT_S: Final[float] = 15.0
@@ -661,16 +661,28 @@ _OFFICIAL_RETRY_S: Final[float] = 3600.0
 
 
 def collect_anthropic_official(
-    key: str, *, timeout_s: float, now: dt.datetime | None = None
+    key: str,
+    *,
+    timeout_s: float,
+    now: dt.datetime | None = None,
+    balance: RecordedBalance | None = None,
 ) -> dict[str, Any]:
-    """Anthropic's own Cost API for the month: today / month-to-date USD by model.
+    """Anthropic's own Cost API, the whole account: today / month USD by model, balance left.
+
+    The balance is the recorded one minus the cost since the start of its UTC day (the grain of
+    the report, so it errs low by at most a day). ponytail: one page of 31 days; a recording
+    older than that undercounts.
 
     The key goes only in the request header. Anthropic accepts an admin key or a personal key not
     scoped to a workspace; a refusal raises ``urllib.error.HTTPError``. Days are UTC buckets, as
     OpenAI's are, and ``amount`` comes in cents.
     """
     now = (now or dt.datetime.now().astimezone()).astimezone(dt.UTC)
-    start = dt.datetime(now.year, now.month, 1, tzinfo=dt.UTC)
+    month_start = dt.datetime(now.year, now.month, 1, tzinfo=dt.UTC)
+    recorded_day = month_start
+    if balance is not None:
+        recorded_day = dt.datetime.fromtimestamp(balance.at_ms // 1000 // 86_400 * 86_400, dt.UTC)
+    start = min(month_start, recorded_day)
     query = urllib.parse.urlencode(
         [
             ("starting_at", start.strftime("%Y-%m-%dT%H:%M:%SZ")),
@@ -684,17 +696,25 @@ def collect_anthropic_official(
         timeout_s=timeout_s,
     )
     today_start = now.strftime("%Y-%m-%dT00:00:00Z")
+    month_from = month_start.strftime("%Y-%m-%dT00:00:00Z")
+    recorded_from = recorded_day.strftime("%Y-%m-%dT00:00:00Z")
     month: dict[str, float] = {}
     today: dict[str, float] = {}
+    spent = 0.0
     for bucket in body.get("data") or []:
+        at = str(bucket.get("starting_at"))
         for row in bucket.get("results") or []:
             model = str(row.get("model") or row.get("description") or "other")
             usd = float(row.get("amount") or 0) / 100
-            month[model] = month.get(model, 0.0) + usd
-            if bucket.get("starting_at") == today_start:
+            if at >= month_from:
+                month[model] = month.get(model, 0.0) + usd
+            if at == today_start:
                 today[model] = today.get(model, 0.0) + usd
+            if at >= recorded_from:
+                spent += usd
     models = sorted(month, key=lambda m: -month[m])
     return {
+        **({} if balance is None else {"balance_usd": round(balance.usd - spent, 4)}),
         "today_usd": round(sum(today.values()), 4),
         "month_usd": round(sum(month.values()), 4),
         "by_model": [
@@ -910,7 +930,10 @@ class UsageObserver:
         if "anthropic" not in self._services or not key or waiting:
             return
         try:
-            self._official = {"official": collect_anthropic_official(key, timeout_s=timeout_s)}
+            official = collect_anthropic_official(
+                key, timeout_s=timeout_s, balance=self._balances.get("anthropic")
+            )
+            self._official = {"official": official}
         except urllib.error.HTTPError as exc:  # the account may not allow it (individual org)
             self._official = {"official_error": f"HTTP {exc.code}"}
             self._official_retry_at = time.monotonic() + _OFFICIAL_RETRY_S
@@ -923,7 +946,12 @@ class UsageObserver:
             return []
         try:
             recorded = recorded_spend(self._event_log, "anthropic")
-            return [UsageSnapshot("anthropic", "ok", {**recorded.data, **self._official})]
+            balance = self._balances.get("anthropic")
+            shown = {} if balance is None else {
+                "balance_recorded_usd": balance.usd,
+                "balance_recorded_at": _iso(balance.at_ms / 1000),
+            }
+            return [UsageSnapshot("anthropic", "ok", {**recorded.data, **shown, **self._official})]
         except Exception as exc:  # noqa: BLE001 - one service's row, never the cycle.
             return [_error("anthropic", exc)]
 

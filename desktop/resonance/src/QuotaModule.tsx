@@ -22,10 +22,11 @@ export type KeyRow = { key_id: string; name: string; today_tokens: number; month
 // ADR 0050: OpenAI reports no balance; with one recorded on the Usage page, balance_usd = it minus the spend since.
 export type OpenAIData = { today_usd: number; month_usd: number; by_model: SpendRow[]; by_key: KeyRow[];
   balance_usd?: number; balance_recorded_usd?: number; balance_recorded_at?: string | null };
-// The brain's own recorded Anthropic calls (ADR 0239): not the account's total; unpriced_calls = calls whose model has no price.
+// Anthropic's spend (ADR 0239): the brain's own recorded calls, and `official` for the whole account; unpriced_calls = calls whose model has no price.
 export type AnthropicData = { today_usd: number; month_usd: number; by_model: SpendRow[]; unpriced_calls?: number;
   // Anthropic's own Cost API, when the key is allowed to read it; otherwise official_error says why.
-  official?: { today_usd: number; month_usd: number; by_model: SpendRow[] }; official_error?: string };
+  official?: { today_usd: number; month_usd: number; by_model: SpendRow[]; balance_usd?: number }; official_error?: string;
+  balance_recorded_usd?: number; balance_recorded_at?: string | null };
 // One balance per currency DeepSeek holds (a CNY top-up sits beside the USD one).
 export type DeepSeekData = { balances: Record<string, number> };
 export type MiniMaxData = { balance: number };
@@ -48,7 +49,9 @@ export const demoUsage: Usage = { services: {
     by_model: [{ model: 'gpt-live-1', today_usd: 0.61, month_usd: 9.2 }, { model: 'gpt-5.4-mini', today_usd: 0.23, month_usd: 3.4 }],
     by_key: [{ key_id: 'k1', name: 'jarvis', today_tokens: 98_000, month_tokens: 1_240_000 }, { key_id: 'k2', name: 'typeless', today_tokens: 12_000, month_tokens: 310_000 }] } },
   anthropic: { status: 'ok', observed_at_ms: demoAt, data: { today_usd: 0.31, month_usd: 4.2,
-    by_model: [{ model: 'claude-haiku-5-5', today_usd: 0.31, month_usd: 4.2 }] } },
+    by_model: [{ model: 'claude-haiku-5-5', today_usd: 0.31, month_usd: 4.2 }],
+    official: { today_usd: 1.12, month_usd: 25.4, balance_usd: 179.4, by_model: [{ model: 'claude-sonnet-5-5', today_usd: 0.81, month_usd: 21.2 }, { model: 'claude-haiku-5-5', today_usd: 0.31, month_usd: 4.2 }] },
+    balance_recorded_usd: 179.63, balance_recorded_at: new Date(demoAt - 86_400_000).toISOString() } },
   deepseek: { status: 'ok', observed_at_ms: demoAt, data: { balances: { USD: 8.46 } } },
   minimax: { status: 'ok', observed_at_ms: demoAt - 120_000, data: { balance: 15.36 } },
 } };

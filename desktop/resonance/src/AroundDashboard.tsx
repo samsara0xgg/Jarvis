@@ -856,6 +856,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
         <div className="bal-card"><Account id="deepseek">DeepSeek</Account><b>{deepseek?.status === 'ok' ? balanceTotal(deepseek.data.balances) : '—'}</b></div>
         <Balance id="openai" name="OpenAI" left={openai?.status === 'ok' ? openai.data.balance_usd : undefined} since={openai?.data.balance_recorded_at} live={!!port} onSaved={balanceSaved}/>
         <div className="bal-card"><Account id="minimax">MiniMax</Account><b>{minimax?.status === 'ok' ? usd(minimax.data.balance) : '—'}</b></div>
+        <Balance id="anthropic" name="Anthropic" left={anthropic?.status === 'ok' ? anthropic.data.official?.balance_usd : undefined} since={anthropic?.data.balance_recorded_at} live={!!port} onSaved={balanceSaved}/>
       </div></div>
       <div className="pg-sec"><div className="us-plan"><Account id="claude">Claude Max <em>{claude?.data.plan}</em></Account>{claude?.status === 'ok' && claude.data.reset_credits !== undefined && <span className="meta">{resetsLeft(lang, claude.data.reset_credits, claude.data.reset_ends_at)}</span>}</div>
         {claude?.status === 'ok' ? <div className="bigrings">{(claude.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at, new Date(), lang)} lang={lang}/>)}</div> : <p className="muted">{claude?.error ?? t(['Not signed in to Claude Code', '没登录 Claude Code'])}</p>}</div>
@@ -871,10 +872,9 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
         {codexUsage?.status === 'ok' ? <div className="bigrings">{(codexUsage.data.windows ?? []).map(w => <Ring key={w.key} w={w} name={w.label} sub={fmtReset(w.resets_at, new Date(), lang)} lang={lang}/>)}</div> : <p className="muted">{codexUsage?.error ?? t(['Not signed in to Codex', '没登录 Codex'])}</p>}</div>
       <div className="pg-sec"><div className="us-plan"><Account id="openai">OpenAI <em>API</em></Account>{openai?.status === 'ok' && <span className="meta">{t(['this month', '本月'])} {usd(openai.data.month_usd)}</span>}</div>
         {openai?.status === 'ok' ? <Spend total={openai.data.today_usd ?? 0} models={openai.data.by_model ?? []}/> : <p className="muted">{openai?.error ?? t(['Needs an admin key', '缺管理密钥'])}</p>}</div>
-      <div className="pg-sec"><div className="us-plan"><Account id="anthropic">Anthropic <em>API</em></Account>{anthropic?.status === 'ok' && <span className="meta">{t(['this month', '本月'])} {usd(anthropic.data.month_usd)}</span>}</div>
-        {anthropic?.status === 'ok' ? <><Spend total={anthropic.data.today_usd ?? 0} models={anthropic.data.by_model ?? []}/>
-          <p className="muted">{t(['Jarvis’s own calls only.', '只算 Jarvis 自己的调用。'])}{!!anthropic.data.unpriced_calls && t([` ${anthropic.data.unpriced_calls} calls have no price and are not counted.`, ` 有 ${anthropic.data.unpriced_calls} 次调用没有价格，没算进去。`])}</p>
-          {anthropic.data.official && <p className="muted">{t([`Whole account, Anthropic’s figures: ${usd(anthropic.data.official.today_usd)} today, ${usd(anthropic.data.official.month_usd)} this month. It also counts other API use on the account.`, `整个账号（Anthropic 官方）：今天 ${usd(anthropic.data.official.today_usd)}，本月 ${usd(anthropic.data.official.month_usd)}。包括你在别处用 API 的花费。`])}</p>}</>
+      <div className="pg-sec"><div className="us-plan"><Account id="anthropic">Anthropic <em>API</em></Account>{anthropic?.status === 'ok' && <span className="meta">{t(['this month', '本月'])} {usd((anthropic.data.official ?? anthropic.data).month_usd)}</span>}</div>
+        {anthropic?.status === 'ok' ? <><Spend total={(anthropic.data.official ?? anthropic.data).today_usd ?? 0} models={(anthropic.data.official ?? anthropic.data).by_model ?? []}/>
+          <p className="muted">{anthropic.data.official ? t(['The whole account, from Anthropic: every API key, tests included.', '整个账号，Anthropic 官方数字：所有 API key 都算，测试的也在内。']) : t(['Only calls Jarvis recorded.', '只算 Jarvis 自己记下的调用。']) + (anthropic.data.official_error ? t([` The account total was refused (${anthropic.data.official_error}).`, ` 整个账号的总额被拒绝了（${anthropic.data.official_error}）。`]) : '')}{!anthropic.data.official && !!anthropic.data.unpriced_calls && t([` ${anthropic.data.unpriced_calls} calls have no price and are not counted.`, ` 有 ${anthropic.data.unpriced_calls} 次调用没有价格，没算进去。`])}</p></>
           : <p className="muted">{anthropic?.error ?? t(['Waiting for the brain', '等 brain 汇报'])}</p>}</div>
       <TokenSection state={tokens}/></div>
     </>,
@@ -1096,7 +1096,7 @@ function Spend({ total, models }: { total: number; models: { model: string; toda
 }
 // OpenAI reports no balance (ADR 0065): Allen types the one on its billing page and
 // the daemon subtracts what is spent after it, so the number shown is an estimate since then.
-function Balance({ id, name, left, since, live, onSaved }: { id: 'openai'; name: string; left?: number; since?: string | null; live: boolean; onSaved: () => void }) {
+function Balance({ id, name, left, since, live, onSaved }: { id: 'openai' | 'anthropic'; name: string; left?: number; since?: string | null; live: boolean; onSaved: () => void }) {
   const [{ lang }] = useCompanionSettings(), t = (l: L) => tr(lang, l);
   const [draft, setDraft] = useState<string | null>(null), [saving, setSaving] = useState(false), [error, setError] = useState('');
   const amount = Number(draft), valid = !!draft?.trim() && Number.isFinite(amount) && amount >= 0;
