@@ -6,8 +6,8 @@ import UIKit
 
 /// How a typed send ended.
 enum TypedSend: Equatable {
-    /// the host took the words as a turn; `turn` is its id (nil when it answered without one)
-    case taken(turn: String?)
+    /// the host took the words as a turn; `turn` is its id (nil when it answered without one), `record` the conversation record of the words (ADR 0256; nil from an older host)
+    case taken(turn: String?, record: String? = nil)
     /// this host cannot take the say (no socket, an older brain that refuses the fields): POST /inherent/submit instead
     case useSubmit
     /// the words did not go; the sentence says why
@@ -100,6 +100,7 @@ final class PhoneLink {
         switch e {
         case .ready: ready = true
         case .closed, .unpaired, .replaced: ready = false
+        case .reaction(let f): Reactions.shared.apply(f)
         default: break
         }
         board.feed(e)
@@ -109,7 +110,7 @@ final class PhoneLink {
     /// A say through the line. The board knows the turn from here: its steps, rows and end are kept while the host answers. Words that may not be a turn at all (his
     /// words over her, a follow-up) are a turn for the board only once the host says so.
     func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
-             about: [String: Any]?, attachments: [String] = [], timeout: Double) async throws -> (turnId: String?, verdict: String) {
+             about: [String: Any]?, attachments: [String] = [], timeout: Double) async throws -> SayResult {
         let l = ensure()
         let judged = overHer || conversation
         if !judged { board.begin(utterance: utteranceId) }
@@ -137,7 +138,7 @@ final class PhoneLink {
             do {
                 let r = try await say(utteranceId: utterance, text: text, language: nil, confidence: nil, spoken: false, overHer: false, conversation: false,
                                       about: about, attachments: attachments, timeout: timeout)
-                return .taken(turn: r.turnId)
+                return .taken(turn: r.turnId, record: r.recordId)
             } catch LinkError.timeout {
                 VoiceTrace.note("typed say unanswered: sent again")
                 continue

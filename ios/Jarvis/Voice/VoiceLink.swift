@@ -2,11 +2,16 @@ import Foundation
 
 // The phone's line to the host. The session talks to a VoiceLink; which one is behind it is decided by whether a pairing exists.
 
+/// The host's answer to a say: the turn id (nil unless the verdict is "turn"), the verdict, and the record id of typed words (ADR 0256)
+typealias SayResult = (turnId: String?, verdict: String, recordId: String?)
+
 enum LinkEvent: Sendable {
     case ready(device: String, voice: Bool, sampleRate: Int, judges: Bool)
     case row(RowFrame)
     /// one tool call of a turn this device opened, started or ended (ADR 0228)
     case step(StepFrame)
+    /// a reaction set or taken back on a message, by him or by her (ADR 0256)
+    case reaction(ReactionFrame)
     /// a frame for the player (from the host's binary messages)
     case audio(PlayerIn)
     /// an `error` frame the link does not handle itself (bad_ping, bad_frame, no_voice, interrupt_failed)
@@ -44,7 +49,7 @@ protocol VoiceLink: AnyObject {
     func disconnect()
     /// The host's answer to this utterance: the turn id (nil unless the verdict is "turn") and the verdict. `timeout` seconds without it throws `.timeout`.
     func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
-             about: [String: Any]?, attachments: [String], timeout: Double) async throws -> (turnId: String?, verdict: String)
+             about: [String: Any]?, attachments: [String], timeout: Double) async throws -> SayResult
     func barge()
     func cancel()
     /// what the player reports back (READY, REPORT, STATUS, DISCARD_ACK)
@@ -54,7 +59,7 @@ protocol VoiceLink: AnyObject {
 extension VoiceLink {
     /// a say with no files, as the voice sends it
     func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
-             about: [String: Any]?, timeout: Double) async throws -> (turnId: String?, verdict: String) {
+             about: [String: Any]?, timeout: Double) async throws -> SayResult {
         try await say(utteranceId: utteranceId, text: text, language: language, confidence: confidence, spoken: spoken, overHer: overHer,
                       conversation: conversation, about: about, attachments: [], timeout: timeout)
     }
@@ -77,7 +82,7 @@ final class WebSocketVoiceLink: VoiceLink {
     private var wanted = false
     private var backoff = 1.0
     private var generation = 0                       // which connection a late callback belongs to
-    private var pending: [String: (c: CheckedContinuation<(turnId: String?, verdict: String), Error>, frame: PhoneFrame)] = [:]
+    private var pending: [String: (c: CheckedContinuation<SayResult, Error>, frame: PhoneFrame)] = [:]
     private var pingTask: Task<Void, Never>?
     private var ready = false                        // the host answered hello: a say sent now is read at once
     private var openedAt = 0.0
@@ -168,9 +173,10 @@ final class WebSocketVoiceLink: VoiceLink {
             ready = true
             VoiceTrace.note("ws ready \(Int((Date().timeIntervalSince1970 - openedAt) * 1000)) ms after opening")
             out.yield(.ready(device: d, voice: v, sampleRate: r, judges: j))
-        case .said(let u, let turn, let verdict): VoiceTrace.note("ws said frame: \(verdict)"); pending.removeValue(forKey: u)?.c.resume(returning: (turn, verdict))
+        case .said(let u, let turn, let verdict, let rec): VoiceTrace.note("ws said frame: \(verdict)"); pending.removeValue(forKey: u)?.c.resume(returning: (turn, verdict, rec))
         case .row(let r): out.yield(.row(r))
         case .step(let f): out.yield(.step(f))
+        case .reaction(let f): out.yield(.reaction(f))
         case .pong: break
         case .error("retry", _):                      // the host could not write it down: send the same say again
             Task { [weak self, mine = generation] in
@@ -202,7 +208,7 @@ final class WebSocketVoiceLink: VoiceLink {
     }
 
     func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
-             about: [String: Any]?, attachments: [String], timeout: Double) async throws -> (turnId: String?, verdict: String) {
+             about: [String: Any]?, attachments: [String], timeout: Double) async throws -> SayResult {
         if task == nil { connect() }
         // Not sent before the host is there: a say queued on a socket still connecting reached the host after the phone had given
         // up on it, and opened a turn nobody was waiting for. The answer's clock starts once it is sent.

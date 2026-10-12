@@ -361,7 +361,7 @@ final class VoiceSession {
             // A pause cut his sentence: what he says right after his last words goes on from them (live 2026-10-10: 「我现在在。」|「往39路的地方走」).
             if heldAt - sayAt < continueWindow, !transcript.isEmpty, !typedTurn { text = transcript + text; VoiceTrace.note("held words go on from his last: joined") }
             VoiceTrace.note("judging over her: \(text.count) chars")
-            let r: (turnId: String?, verdict: String)
+            let r: SayResult
             do { r = try await PhoneLink.shared.say(utteranceId: id, text: text, language: lang, confidence: picked.confidence, spoken: true, overHer: true, conversation: false, about: AboutNow.current?.json, timeout: judgeTimeout) }
             catch {
                 guard seq == turnSeq, held else { return }
@@ -525,7 +525,7 @@ final class VoiceSession {
         VoiceTrace.note("say sent: \(text.count) chars, spoken \(spoken), lang \(lang?.rawValue ?? "none")\(conversation ? ", follow-up" : "")")
         Task {
             do {
-                var r: (turnId: String?, verdict: String)
+                var r: SayResult
                 do { r = try await PhoneLink.shared.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: conversation, about: AboutNow.current?.json, timeout: conversation ? judgeTimeout : 10) }
                 catch LinkError.timeout where conversation {
                     VoiceTrace.note("judge timed out: turn")
@@ -637,6 +637,7 @@ final class VoiceSession {
             sendReady()
         case .row(let r): handleRow(r)
         case .step: break                                   // the board has it (PhoneLink)
+        case .reaction: break                               // PhoneLink keeps them (Brain/Reactions)
         case .audio(let f):
             audio.core?.ingest(f)
             // what the host streams, once per change, so a turn whose answer never plays shows which side dropped it

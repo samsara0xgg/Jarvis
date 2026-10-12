@@ -56,7 +56,7 @@ if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "xlang" { xlang
         }
     }
     var rowTypes: [String] = [], rowText = "", rowTurns = Set<String>(), total = 0, frames = 0, loud = false
-    let (turn, verdict) = try await link.say(utteranceId: "u1", text: "你好 Jarvis", language: .zh, confidence: 0.9, spoken: true, overHer: false, conversation: false, about: nil, timeout: 10)
+    let (turn, verdict, _) = try await link.say(utteranceId: "u1", text: "你好 Jarvis", language: .zh, confidence: 0.9, spoken: true, overHer: false, conversation: false, about: nil, timeout: 10)
     let reader = Task { @MainActor in
         for await e in link.events {
             switch e {

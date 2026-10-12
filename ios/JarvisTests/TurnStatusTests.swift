@@ -243,13 +243,13 @@ final class TurnStatusTests: XCTestCase {
     @MainActor private final class FakeLink: VoiceLink {
         let events: AsyncStream<LinkEvent>
         let out: AsyncStream<LinkEvent>.Continuation
-        var outcomes: [Result<(turnId: String?, verdict: String), LinkError>]
+        var outcomes: [Result<SayResult, LinkError>]
         private(set) var says: [(id: String, files: [String])] = []
-        init(_ outcomes: [Result<(turnId: String?, verdict: String), LinkError>]) { self.outcomes = outcomes; (events, out) = AsyncStream.makeStream(of: LinkEvent.self) }
+        init(_ outcomes: [Result<SayResult, LinkError>]) { self.outcomes = outcomes; (events, out) = AsyncStream.makeStream(of: LinkEvent.self) }
         func connect() { out.yield(.ready(device: "phone", voice: true, sampleRate: kWireRate, judges: true)) }
         func disconnect() {}
         func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
-                 about: [String: Any]?, attachments: [String], timeout: Double) async throws -> (turnId: String?, verdict: String) {
+                 about: [String: Any]?, attachments: [String], timeout: Double) async throws -> SayResult {
             says.append((utteranceId, attachments))
             return try outcomes.removeFirst().get()
         }
@@ -258,7 +258,7 @@ final class TurnStatusTests: XCTestCase {
         func send(_ frames: [PlayerOut]) {}
     }
 
-    @MainActor private func line(_ outcomes: [Result<(turnId: String?, verdict: String), LinkError>]) -> (PhoneLink, FakeLink, StatusBoard) {
+    @MainActor private func line(_ outcomes: [Result<SayResult, LinkError>]) -> (PhoneLink, FakeLink, StatusBoard) {
         let fake = FakeLink(outcomes), board = StatusBoard()
         board.clock = { 1 }
         let link = PhoneLink(board: board, make: { _ in fake })
@@ -267,20 +267,20 @@ final class TurnStatusTests: XCTestCase {
     }
 
     @MainActor func testATypedSendThatTheHostTakesBindsTheBoardsTurn() async {
-        let (link, fake, board) = line([.success(("T9", "turn"))])
+        let (link, fake, board) = line([.success(("T9", "turn", nil))])
         let r = await link.sendTyped(utterance: "u1", text: "hi", attachments: ["f1"], about: nil)
-        XCTAssertEqual(r, .taken(turn: "T9"))
+        XCTAssertEqual(r, .taken(turn: "T9", record: nil))
         XCTAssertEqual(fake.says.map(\.files), [["f1"]])
         XCTAssertEqual(board.turn?.turn, "T9")
     }
 
     @MainActor func testASayThatGetsNoAnswerIsSentOnceMoreWithTheSameIdAndThenGivenUp() async {
-        let (link, fake, board) = line([.failure(.timeout), .success(("T9", "turn"))])
+        let (link, fake, board) = line([.failure(.timeout), .success(("T9", "turn", nil))])
         let r = await link.sendTyped(utterance: "u1", text: "hi", attachments: [], about: nil)
-        XCTAssertEqual(r, .taken(turn: "T9"))
+        XCTAssertEqual(r, .taken(turn: "T9", record: nil))
         XCTAssertEqual(fake.says.map(\.id), ["u1", "u1"], "the host knows a resent say by its id and answers the same turn")
         XCTAssertEqual(board.turn?.utterance, "u1")
-        let (link2, fake2, _) = line([.failure(.timeout), .failure(.timeout), .success(("T9", "turn"))])
+        let (link2, fake2, _) = line([.failure(.timeout), .failure(.timeout), .success(("T9", "turn", nil))])
         let r2 = await link2.sendTyped(utterance: "u1", text: "hi", attachments: [], about: nil)
         XCTAssertEqual(r2, .refused("Jarvis 没有回应"))
         XCTAssertEqual(fake2.says.count, 2, "once more, not forever")

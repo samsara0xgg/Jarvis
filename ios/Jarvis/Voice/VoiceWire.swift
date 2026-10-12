@@ -156,6 +156,11 @@ struct StepFrame: Equatable, Sendable {
     let turnId: String, step: Int, tool: String, label: String, state: State, startedMs: Int64, endedMs: Int64?
 }
 
+/// A reaction set or taken back on a message, by him (`allen`) or by her (`jarvis`); `emoji` is nil when it was taken back (ADR 0256). `target` is a conversation record id.
+struct ReactionFrame: Equatable, Sendable {
+    let target: String, by: String, emoji: String?
+}
+
 /// phone -> host
 enum PhoneFrame: Equatable, Sendable {
     case hello
@@ -207,10 +212,12 @@ enum PhoneFrame: Equatable, Sendable {
 enum HostFrame: Equatable, Sendable {
     /// judges: the host judges over-her and follow-up says (a `verdict` on every `said`); old hosts omit it
     case ready(device: String, voice: Bool, sampleRate: Int, judges: Bool)
-    /// verdict: turn | backchannel | unclear | echo | stop | wait | dismissed | quiet:<level>; turnId is nil unless it is a turn
-    case said(utteranceId: String, turnId: String?, verdict: String)
+    /// verdict: turn | backchannel | unclear | echo | stop | wait | dismissed | quiet:<level>; turnId is nil unless it is a turn;
+    /// recordId is the conversation record of his typed words, so a row of his can be reacted to before the conversation is read (ADR 0256; older hosts omit it)
+    case said(utteranceId: String, turnId: String?, verdict: String, recordId: String? = nil)
     case row(RowFrame)
     case step(StepFrame)
+    case reaction(ReactionFrame)
     case pong(tNs: Int64, hostNs: Int64)
     /// codes: bad_say, bad_ping, bad_frame, no_voice, retry (resend the same say), interrupt_failed; attachment_refused (the message is the store's sentence)
     /// and no_attachments (this host takes none) for a typed say with files
@@ -220,7 +227,10 @@ enum HostFrame: Equatable, Sendable {
         var o: [String: Any]
         switch self {
         case .ready(let d, let v, let r, let j): o = ["type": "ready", "device": d, "voice": v, "sample_rate": r, "judges": j]
-        case .said(let u, let t, let v): o = ["type": "said", "utterance_id": u, "turn_id": t ?? NSNull(), "verdict": v]
+        case .said(let u, let t, let v, let rec):
+            o = ["type": "said", "utterance_id": u, "turn_id": t ?? NSNull(), "verdict": v]
+            if let rec { o["record_id"] = rec }
+        case .reaction(let f): o = ["type": "reaction", "target": f.target, "by": f.by, "emoji": f.emoji ?? NSNull()]
         case .row(let r): o = ["type": "row", "event_type": r.eventType, "event_uid": r.eventUid, "payload": r.payload, "ts_epoch_ms": r.tsEpochMs]
         case .step(let f):
             o = ["type": "step", "turn_id": f.turnId, "step": f.step, "tool": f.tool, "label": f.label, "state": f.state.rawValue, "started_ms": f.startedMs,
@@ -239,7 +249,10 @@ enum HostFrame: Equatable, Sendable {
             self = .ready(device: d, voice: v, sampleRate: r, judges: o["judges"] as? Bool ?? false)
         case "said":
             guard let u = o["utterance_id"] as? String else { return nil }
-            self = .said(utteranceId: u, turnId: o["turn_id"] as? String, verdict: o["verdict"] as? String ?? "turn")
+            self = .said(utteranceId: u, turnId: o["turn_id"] as? String, verdict: o["verdict"] as? String ?? "turn", recordId: o["record_id"] as? String)
+        case "reaction":
+            guard let target = o["target"] as? String, !target.isEmpty, let by = o["by"] as? String else { return nil }
+            self = .reaction(ReactionFrame(target: target, by: by, emoji: (o["emoji"] as? String).flatMap { $0.isEmpty ? nil : $0 }))
         case "row":
             guard let t = o["event_type"] as? String, let u = o["event_uid"] as? String, let p = o["payload"] as? [String: Any],
                   let ts = (o["ts_epoch_ms"] as? NSNumber)?.int64Value else { return nil }
@@ -299,6 +312,12 @@ func demoVoiceWire() {
     assert(HostFrame(Data(#"{"type":"ready","device":"phone","voice":true,"sample_rate":32000}"#.utf8)) == .ready(device: "phone", voice: true, sampleRate: 32_000, judges: false))
     assert(HostFrame(Data(#"{"type":"said","utterance_id":"u1","turn_id":"T1"}"#.utf8)) == .said(utteranceId: "u1", turnId: "T1", verdict: "turn"))
     assert(HostFrame(Data(#"{"type":"said","utterance_id":"u1","turn_id":null,"verdict":"echo"}"#.utf8)) == .said(utteranceId: "u1", turnId: nil, verdict: "echo"))
+    // reactions (ADR 0256): set, taken back, and the record id on `said`
+    let rx: [HostFrame] = [.reaction(ReactionFrame(target: "r1", by: "jarvis", emoji: "\u{1F440}")), .reaction(ReactionFrame(target: "r1", by: "allen", emoji: nil)),
+                           .said(utteranceId: "u1", turnId: "T1", verdict: "turn", recordId: "rec9")]
+    for f in rx { assert(HostFrame(f.json) == f, "\(f)") }
+    assert(HostFrame(Data(#"{"type":"reaction","target":"r1","by":"jarvis"}"#.utf8)) == .reaction(ReactionFrame(target: "r1", by: "jarvis", emoji: nil)))
+    assert(HostFrame(Data(#"{"type":"reaction","by":"jarvis","emoji":"x"}"#.utf8)) == nil)
     // a step the phone cannot read is dropped, not guessed
     assert(HostFrame(Data(#"{"type":"step","turn_id":"T1","step":1,"label":"x","state":"paused"}"#.utf8)) == nil)
 }
