@@ -34,9 +34,11 @@
   held in memory, so a restart does not forget a task. A task is over at `turn.ended`, `turn.failed`,
   `response.cancelled` or `response.failed` (boot reconciliation closes a cut-short run that way); a
   task with none of them for 30 minutes is taken as lost, because a crash writes none.
-- **A run has a deadline, and a stop or a restart ends it with a word.** The run stops at its next
-  request or tool call once `llm.deep.deadline_s` (1200) has passed, so it ends within that plus one
-  request timeout, under the 30 minutes; the failure notice below says "timeout". At shutdown the
+- **A run has a deadline, and a stop or a restart ends it with a word.** The run starts no
+  further request or tool call once `llm.deep.deadline_s` (1200) has passed, but an answer that
+  arrives after it is kept. The worst case is the deadline plus one request with its retries
+  (`sonnet-deep`: 300 s, no retry); boot refuses a config where that sum is not at least two minutes
+  under the 30 minutes; the failure notice below says "timeout". At shutdown the
   runtime cancels the token of every run that ignores interruption, so a graceful stop waits for no
   deep run. At boot, after reconciliation closed the run as `daemon_restart`, each deep task that had
   begun and has no `turn.ended` or `turn.failed` gets a `turn.failed` and the failure notice: the
@@ -45,17 +47,18 @@
   `claude-sonnet-5-5`, `reasoning_effort: high`, 16384 output tokens, a 300 second request timeout
   (a `timeout_s` key on a preset overrides `llm.timeout_s`), and the unstructured spoken route of
   ADR 0241. The step cap is `llm.deep.max_tool_iterations` (40), where the voice lane keeps its own per-turn cap.
-- **The deep turn sees the tools that read, or that ask first.** `DeepToolRegistry` wraps the
-  registry for that turn and offers a tool only when it is read-only or requires his confirmation:
-  nobody watches the turn, so a write that does not ask (`keep`, `save_*`, `forget_place`,
-  `dismiss_card`, `set_voice`, `open_url`, `open_path`, `write_mail_draft`, the night runs, a
-  plugin tool without an approval) is not on its menu and refuses to dispatch. `ask_user` (no one
-  answers), `open_plugin` (its resume would run the task text again as a voice-lane turn) and
-  `show_on_dashboard` (it flips the page on his screen while he is elsewhere) are hidden by name,
-  as are `think_deeper` and `tool_search`; there is no allowlist of exceptions. The deferred tools
-  are on the menu, since the turn has no `tool_search`, except those a menu tool supersedes
-  (ADR 0242). `read_skill` stays. A tool that asks first still ends in its card (ADR 0062); the
-  task stops at that card and the result says so.
+- **The deep turn sees only the tools that read.** `DeepToolRegistry` wraps the registry for that
+  turn and offers a tool only when it is read-only. The deep lane researches; any write happens in
+  the voice lane after he hears the result. A tool that asks first is out too: its card would arrive
+  at a random moment, take the one confirmation slot from the voice lane (ADR 0062), and his next
+  "好" meant for that lane could fire the deep run's write. Everything that writes (`keep`,
+  `save_*`, `forget_place`, `dismiss_card`, `set_voice`, `open_url`, `open_path`, `write_mail_draft`,
+  the night runs, `remove_plugin`, an MCP tool that is not marked read-only) is not on its menu and
+  refuses to dispatch. `ask_user` (no one answers), `open_plugin` (its resume would run the task
+  text again as a voice-lane turn) and `show_on_dashboard` (it flips the page on his screen while
+  he is elsewhere) are hidden by name, as are `think_deeper` and `tool_search`; there is no
+  allowlist of exceptions. The deferred tools are on the menu, since the turn has no `tool_search`,
+  except those a menu tool supersedes (ADR 0242). `read_skill` stays.
 - **The turn is told what it is.** `DEEP_RULES` is appended to its system prompt and the state
   block says the turn is a handed-over task. The rules ask for `<voice>` of at most three sentences
   that first say what the answer answers, and a `<document>` that opens with a line naming it and
@@ -77,8 +80,9 @@
 - **A request addressed to her forces the deep lane without a model request.** `llm.deep.on_words`
   is its own list of imperative phrases ("仔细查", "好好查", "深入查", "dig deeper"), not the ADR 0108
   think words, which still only give the voice lane's turn the think preset. A sentence is forced
-  when it starts with such a phrase (after at most an address like "请", "你", "帮我") and holds no
-  second command ("然后", "顺便", "and then"); `ThinkMode` joins the utterances of the sentence and
+  when it starts with such a phrase (after at most an address like "请", "你", "帮我"), holds no
+  second command ("然后", "顺便", "and then") and does not ask whether it was done ("你仔细查了
+  吗？", a phrase followed by "了", an ending in 吗, 没有, 没 or a question mark); `ThinkMode` joins the utterances of the sentence and
   `is_request` tests the whole of it. "我想一想", "I'll think it over" and "关灯，然后仔细查一下明天
   天气" are not forced; the voice model sees them with `think_deeper` on its menu and decides. A hit is
   a Tier 0 hit for `think_deeper` (`tier0.deep`, answered by the `spoken` of the hand-over).

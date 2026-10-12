@@ -24,7 +24,7 @@ import yaml
 from anthropic import AuthenticationError
 
 from jarvis.decision.deep import DEEP_RULES, DeepConfigError, is_request, load_deep_settings
-from jarvis.decision.llm import LLMClient
+from jarvis.decision.llm import DeadlineExceeded, LLMClient, failure_reason
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.response_run import ResponseCancelledError, ResponseRunRegistry
 from jarvis.decision.think_mode import load_think_mode
@@ -51,7 +51,7 @@ from jarvis.runtime.inherent_loop import (
 from jarvis.shared import CallerPrincipal, lang
 from jarvis.shared.realtime import Wave1FeatureFlags, Wave5InputFlags
 from jarvis.state.committed_event_bus import CommittedEventBus
-from jarvis.state.event_log import emit_event, open_event_log, turn_origin
+from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.input_claim import claim_input_once
 from jarvis.state.memory_db import MemorySettings
 from jarvis.state.turn_overlap import (
@@ -88,8 +88,8 @@ _DEEP_RUN: tuple[Reply, ...] = (
     ("call", "calendar_find", {"day": "周五"}),
     ("say", _ANSWER),
 )
-# Every tool but the search and the hand-off, the deferred one on it, the superseded one off.
-_DEEP_MENU = ["mail", "calendar_find", "send_reply"]
+# The read-only tools but the search and the hand-off, the deferred one on it, the superseded one off.
+_DEEP_MENU = ["mail", "calendar_find"]
 _FAST_KEY = "DEEP_LANE_FAST_FIXTURE_KEY"
 _DEEP_KEY = "DEEP_LANE_DEEP_FIXTURE_KEY"
 
@@ -469,6 +469,9 @@ def test_the_voice_lane_that_comes_later_knows_the_task_is_running(tmp_path: Pat
         ("我想一想再说", False),  # something he says about himself
         ("等我好好查完再回你", False),  # not a request at her
         ("关灯，然后仔细查一下明天天气", False),  # another command: the model decides
+        ("你仔细查了吗？", False),  # asks whether it was done
+        ("你好好查查了没有", False),
+        ("仔细查了这周的邮件", False),  # says it was done
         ("现在几点", False),
     ],
 )
@@ -563,8 +566,8 @@ _WRITES = (
 )
 
 
-def test_the_deep_view_of_the_real_menu_offers_only_what_reads_or_asks_first(tmp_path: Path) -> None:
-    """Nobody watches the turn: no write without his card, no question, no plugin resume, no page flip."""
+def test_the_deep_view_of_the_real_menu_offers_only_what_reads(tmp_path: Path) -> None:
+    """Nobody watches the turn: no write at all, no question, no plugin resume, no page flip."""
     from scripts import tool_exam  # noqa: PLC0415 - this test and the next only
 
     recorded = tmp_path / "mcp-tools.json"
@@ -573,9 +576,10 @@ def test_the_deep_view_of_the_real_menu_offers_only_what_reads_or_asks_first(tmp
     view = DeepToolRegistry(tool_exam._exam_registry(config, recorded))  # noqa: SLF001
     seen = view.for_caller(CallerPrincipal.JARVIS_LLM)
     offered = {t.name for t in seen}
-    assert all(t.read_only or t.requires_confirmation for t in seen)
+    assert all(t.read_only for t in seen)
     assert not offered & {"think_deeper", "tool_search", "ask_user", "open_plugin", "show_on_dashboard", *_WRITES}
-    assert {"mail", "job_ledger", "my_schedule", "my_day", "web_search", "list_plugins", "remove_plugin", "search_knowledge"} <= offered
+    assert {"mail", "job_ledger", "my_schedule", "my_day", "web_search", "list_plugins", "search_knowledge"} <= offered
+    assert "remove_plugin" not in offered  # it asks first, and a card from here takes the voice lane's slot
     for name in ("keep", "ask_user", "open_plugin"):
         with pytest.raises(UnknownToolError):
             view.dispatch(SimpleNamespace(tool_name=name), None, None, None)  # type: ignore[arg-type]
@@ -832,13 +836,30 @@ def test_a_task_that_runs_past_its_deadline_ends_with_the_timeout_notice(tmp_pat
         held = _Held(lane, peer, task)
         time.sleep(1.3)
         held.finish()
-        assert isinstance(held.error, TimeoutError)
+        assert isinstance(held.error, DeadlineExceeded)
+        assert failure_reason(TimeoutError()) == "error"  # a stdlib timeout is still no model timeout
         assert len(peer.requests["deep"]) == 1
         _fail_turn(lane.runtime, intent_event=task, exc=held.error)
         notice = lane.deep_intent()
         assert notice.payload["deep_failure"] == "timeout"
         lane.drive(notice)
         assert lane.answer(notice.payload["turn_id"])["text"] == f"你让我仔细查的那件事没查成。{lang.t('failure.timeout', lang='zh')}"
+
+
+def test_an_answer_that_arrives_past_the_deadline_is_kept(tmp_path: Path) -> None:
+    """The deadline only stops a further request: a final answer that is late is still his."""
+    with _Peer() as peer:
+        lane = _Lane(tmp_path, peer, deadline_s=1)
+        peer.then("fast", *_HAND_OFF)
+        lane.drive(lane.say(_TASK))
+        task = lane.deep_intent()
+        peer.then("deep", ("hold", ("say", _ANSWER)))
+        held = _Held(lane, peer, task)
+        time.sleep(1.3)
+        held.finish()
+        assert held.error is None
+        assert _VOICE in lane.answer(task.payload["turn_id"])["text"]
+        assert lane.rows("turn.failed") == []
 
 
 def test_a_running_deep_task_does_not_take_a_worker_from_his_ordinary_turns(tmp_path: Path) -> None:
@@ -918,32 +939,23 @@ def test_the_deep_run_answers_when_its_step_cap_is_spent(tmp_path: Path) -> None
         assert lane.answer(lane.deep_intent().payload["turn_id"])["voice_text"].startswith("只查到两封")
 
 
-# --- a write still asks first ----------------------------------------------------------------
+# --- the deep lane researches; it does not write ----------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("channel", "attention"),
-    [("inherent_wake", "ask_confirm"), ("cli_stdin", "badge_card")],
-)
-def test_a_write_the_deep_run_wants_still_waits_on_its_card(
-    tmp_path: Path, channel: str, attention: str,
-) -> None:
-    """ADR 0062 holds: the run stops at the card, nothing is sent; the question is spoken only live."""
+def test_a_write_the_deep_run_asks_for_is_refused_and_no_card_is_raised(tmp_path: Path) -> None:
+    """Not on its menu, so the call is an unknown tool: nothing is sent, and no card takes the slot."""
     with _Peer() as peer:
         lane = _Lane(tmp_path, peer)
         peer.then("fast", *_HAND_OFF)
-        peer.then("deep", ("call", "send_reply", {"to": "腾讯", "body": "周五可以"}))
-        lane.drive(lane.say(_TASK, channel=channel))
+        peer.then("deep", ("call", "send_reply", {"to": "腾讯", "body": "周五可以"}), ("say", _ANSWER))
+        lane.drive(lane.say(_TASK))
         task = lane.deep_intent()
         lane.drive(task)
 
-        assert len(peer.requests["deep"]) == 1  # the loop ends at the card
-        assert lane.ran == []  # nothing was sent
-        (card,) = lane.rows("confirmation.requested")
-        assert card["action_snapshot"]["tool_name"] == "send_reply"
-        assert lane.answer(task.payload["turn_id"])["attention_channel"] == attention
-        # The card is the handing-over turn's device's: a phone's task asks on that phone.
-        assert turn_origin(lane.conn, task.payload["turn_id"]) == ("deep", "mac")
+        assert "send_reply" not in _names(peer.requests["deep"][0])
+        assert lane.ran == []
+        assert lane.rows("confirmation.requested") == []
+        assert lane.answer(task.payload["turn_id"])["text"]
 
 
 # --- configuration ---------------------------------------------------------------------------
@@ -968,7 +980,7 @@ def test_a_write_the_deep_run_wants_still_waits_on_its_card(
 )
 def test_llm_deep_is_read_strictly(block: Any, expected: Any) -> None:  # noqa: ANN401
     """Absent means no deep lane; a broken block stops the boot instead of half-working."""
-    llm: dict[str, Any] = {"presets": {"deep": {"model": "m"}}}
+    llm: dict[str, Any] = {"presets": {"deep": {"model": "m", "timeout_s": 60, "max_retries": 0}}}
     if block is not None:
         llm["deep"] = block
     if expected is DeepConfigError:
@@ -979,6 +991,27 @@ def test_llm_deep_is_read_strictly(block: Any, expected: Any) -> None:  # noqa: 
     assert (settings and (settings.preset, settings.max_tool_iterations, settings.live_window_s)) == (
         expected or None
     )
+
+
+@pytest.mark.parametrize(
+    ("timeout_s", "retries", "fits"),
+    [(300, 0, True), (300, 1, False), (None, None, False), (60, 2, True), (500, 0, False)],
+)
+def test_the_deadline_plus_one_request_with_its_retries_must_stay_under_the_lost_mark(
+    timeout_s: int | None, retries: int | None, fits: bool,  # noqa: FBT001 - pytest parameter
+) -> None:
+    """1200 s then one request: an unset timeout or retry count is the SDK's 600 s and 2 retries."""
+    preset: dict[str, Any] = {"model": "m"}
+    if timeout_s is not None:
+        preset["timeout_s"] = timeout_s
+    if retries is not None:
+        preset["max_retries"] = retries
+    llm = {"presets": {"deep": preset}, "deep": {"preset": "deep"}}
+    if fits:
+        assert load_deep_settings(llm) is not None
+    else:
+        with pytest.raises(DeepConfigError):
+            load_deep_settings(llm)
 
 
 def test_the_shipped_config_defines_a_deep_lane_that_waits_longer_than_the_voice_lane() -> None:

@@ -7,7 +7,7 @@ differs for it: the settings, the rules it reads, whether he is still talking wi
 ends, and the Tier 0 hit that forces it.
 """
 
-# ruff: noqa: RUF001, RUF002 - his words carry fullwidth punctuation
+# ruff: noqa: RUF001, RUF002, RUF003 - his words carry fullwidth punctuation
 from __future__ import annotations
 
 import re
@@ -30,8 +30,14 @@ later turn's state block while the task runs."""
 LOST_AFTER_S: Final = 30 * 60
 """A deep turn with no end row this long after it began is lost (a crash writes none)."""
 DEFAULT_DEADLINE_S: Final = 20 * 60
-"""How long a deep run may work before it is stopped with the timeout notice. It is checked before
-each request, so the run ends by this plus one request's timeout: under :data:`LOST_AFTER_S`."""
+"""How long a deep run may start more work before it is stopped with the timeout notice. It is
+checked before each request and tool call, never after a response (a late answer is kept), so the
+run ends by this plus one request with its retries: boot checks that sum stays under
+:data:`LOST_AFTER_S` with :data:`LOST_MARGIN_S` to spare."""
+LOST_MARGIN_S: Final = 120
+SDK_TIMEOUT_S: Final = 600
+SDK_RETRIES: Final = 2
+"""What the SDKs use when neither the preset nor ``llm`` sets a timeout or a retry count."""
 DEFAULT_MAX_TOOL_ITERATIONS: Final = 60
 DEFAULT_LIVE_WINDOW_S: Final = 120
 
@@ -48,8 +54,8 @@ said until you finish.
 - Every fact in your answer comes from a tool result this turn or from the conversation. Look
   again rather than guess, and say which part you could not find.
 - Do not narrate between steps. Text you write ends the turn and is your answer.
-- A tool that asks him first still shows him its card. A task that needs such a write stops at
-  that card.
+- You only have tools that read. Nothing can be saved, sent or changed from here: if the task
+  needs that, say what should be done in <document> and he will ask for it after he hears you.
 - Write the answer as <voice>...</voice><document>...</document>. In <voice>: at most three short
   sentences in his language; the first says what this answers, in the words he used for it, then
   the conclusion. In <document>: a first line naming what this answers, then the full result in
@@ -94,10 +100,18 @@ _AND_THEN = re.compile(
 )
 
 
-def _deadline(block: Mapping[str, Any]) -> int:
+def _deadline(block: Mapping[str, Any], llm: Mapping[str, Any], preset: Mapping[str, Any]) -> int:
+    """``deadline_s``, checked so it plus one request with every retry cannot read as lost."""
     deadline = _positive(block, "deadline_s", DEFAULT_DEADLINE_S)
-    if deadline >= LOST_AFTER_S:
-        msg = f"llm.deep.deadline_s must be under {LOST_AFTER_S}: a longer run reads as lost"
+    timeout = preset.get("timeout_s", llm.get("timeout_s", SDK_TIMEOUT_S))
+    retries = preset.get("max_retries", llm.get("max_retries", SDK_RETRIES))
+    worst = deadline + timeout * (retries + 1)
+    if worst > LOST_AFTER_S - LOST_MARGIN_S:
+        msg = (
+            f"llm.deep: deadline_s {deadline} plus one request ({timeout} s, {retries} retries) "
+            f"is {worst} s; it must stay under {LOST_AFTER_S - LOST_MARGIN_S} s or a live task "
+            "reads as lost"
+        )
         raise DeepConfigError(msg)
     return deadline
 
@@ -116,15 +130,24 @@ def _request_pattern(block: Mapping[str, Any]) -> re.Pattern[str] | None:
         raise DeepConfigError(msg) from exc
 
 
+# A question about something done, not a request: "你仔细查了吗？", "你好好查查了没有".
+_ASKS_IF_DONE = re.compile(r"(?:吗|嘛|呢|没有|没)\s*[?？。.!！]*$|[?？]\s*$")
+_DONE = re.compile(r"\S{0,2}了")
+
+
 def is_request(settings: DeepSettings, sentence: str) -> bool:
     """Whether ``sentence`` is, from its start, a phrase of ``llm.deep.on_words`` addressed to her.
 
-    "仔细查一下这个月的花销" is; "我想一想" and "关灯，然后仔细查一下明天天气" are not.
+    "仔细查一下这个月的花销" is; "我想一想", "你仔细查了吗？" and "关灯，然后仔细查一下明天天气"
+    are not.
     """
     request = settings.request
+    found = None if request is None else request.match(sentence)
     return (
-        request is not None and request.match(sentence) is not None
+        found is not None
         and _AND_THEN.search(sentence) is None
+        and _ASKS_IF_DONE.search(sentence) is None
+        and _DONE.match(sentence, found.end()) is None
     )
 
 
@@ -142,7 +165,7 @@ def load_deep_settings(llm: Mapping[str, Any]) -> DeepSettings | None:
         preset=preset,
         max_tool_iterations=_positive(block, "max_tool_iterations", DEFAULT_MAX_TOOL_ITERATIONS),
         live_window_s=_positive(block, "live_window_s", DEFAULT_LIVE_WINDOW_S),
-        deadline_s=_deadline(block),
+        deadline_s=_deadline(block, llm, presets[preset]),
         request=_request_pattern(block),
     )
 

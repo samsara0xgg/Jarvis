@@ -186,6 +186,8 @@ llm:
       reasoning_effort: high
       images: true
       timeout_s: 300
+      # 不重试：一次请求最长 300 秒，llm.deep.deadline_s（1200）加上它必须远小于 30 分钟。
+      max_retries: 0
       spoken_structured: false
     # context_length：模型窗口（token）。session.compact_at_context_ratio
     # 按它算压缩门槛；决策预设缺了它就永远不压缩。

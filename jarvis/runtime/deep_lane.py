@@ -15,7 +15,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from jarvis.decision.deep import LOST_AFTER_S, TASK_MAX_CHARS, DeepSettings
-from jarvis.decision.llm import failure_reason
+from jarvis.decision.llm import DeadlineExceeded, failure_reason
 from jarvis.shared import lang
 from jarvis.state.event_log import DEEP_CHANNEL, MAC_NODE, emit_event, turn_origin
 from jarvis.state.turn_overlap import open_deep_turn
@@ -33,18 +33,20 @@ LOGGER = logging.getLogger(__name__)
 def with_deadline(
     checkpoint: Callable[[str], None] | None, deadline_s: float,
 ) -> Callable[[str], None]:
-    """``checkpoint`` (a cancelled run raises) that raises ``TimeoutError`` after ``deadline_s``.
+    """``checkpoint`` (a cancelled run raises) that also stops further work past ``deadline_s``.
 
-    The pump's catch-all turns the raise into the timeout notice (:meth:`DeepLane.failed`).
+    Only a check made before more work raises :class:`DeadlineExceeded`; one made after a
+    response does not, so an answer that arrives late is kept. The pump's catch-all turns the
+    raise into the timeout notice (:meth:`DeepLane.failed`).
     """
     stop_at = time.monotonic() + deadline_s
 
     def check(where: str) -> None:
         if checkpoint is not None:
             checkpoint(where)
-        if time.monotonic() > stop_at:
+        if where.startswith("before") and time.monotonic() > stop_at:
             msg = f"the deep task ran past its {deadline_s:.0f} s deadline {where}"
-            raise TimeoutError(msg)
+            raise DeadlineExceeded(msg)
 
     return check
 

@@ -98,6 +98,10 @@ FailureReason = Literal[
 ]
 
 
+class DeadlineExceeded(Exception):  # noqa: N818 - a deadline, not an error type to catch broadly
+    """A deep task (ADR 0251) ran past ``llm.deep.deadline_s``; the only non-SDK "timeout"."""
+
+
 def failure_reason(exc: BaseException) -> FailureReason:  # noqa: PLR0911 — one per reason.
     """Why a model call failed, from ``exc`` or the exceptions it was raised from."""
     import anthropic  # noqa: PLC0415 — lazy SDK import (see module docstring)
@@ -121,7 +125,7 @@ def failure_reason(exc: BaseException) -> FailureReason:  # noqa: PLR0911 — on
             return "rate_limited"
         if isinstance(seen, anthropic.BadRequestError) and "credit balance" in str(seen):
             return "quota"
-        if isinstance(seen, TimeoutError | openai.APITimeoutError | anthropic.APITimeoutError):
+        if isinstance(seen, DeadlineExceeded | openai.APITimeoutError | anthropic.APITimeoutError):
             return "timeout"  # before the connection bases
         if isinstance(seen, openai.APIConnectionError | anthropic.APIConnectionError):
             return "network"

@@ -64,8 +64,12 @@ would be an explicit name here or in an allowlist; there is none."""
 
 
 def _offered(tool: Any) -> bool:  # noqa: ANN401 - Tool or ToolDefinition, both carry the flags
-    """Whether the deep turn may use ``tool``: it only reads, or it asks him first (ADR 0062)."""
-    return tool.name not in _HIDDEN and (tool.read_only or tool.requires_confirmation)
+    """Whether the deep turn may use ``tool``: it only reads.
+
+    A tool that asks first is out too: its card would arrive at a random moment, take the one
+    confirmation slot from the voice lane, and his next "好" for that lane would fire the write.
+    """
+    return tool.name not in _HIDDEN and tool.read_only
 
 
 class DeepHandOff(Protocol):
@@ -108,7 +112,7 @@ class DeepToolRegistry:
 
     Every deferred tool is on the menu, since the turn has no ``tool_search``; the ones a menu
     tool supersedes stay off (ADR 0242). Nobody watches the turn, so it only gets the tools that
-    read or that ask him first (a card, ADR 0062), never ``_HIDDEN``. What the menu leaves off
+    read, never ``_HIDDEN``. What the menu leaves off
     also refuses to dispatch.
     """
 
