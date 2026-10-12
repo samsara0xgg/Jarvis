@@ -162,3 +162,17 @@ def test_score_reads_each_run_through_the_aliases_of_the_menu_line_before_it(
     results.write_text("".join(json.dumps(one) + "\n" for one in lines), encoding="utf-8")
     tool_exam.cmd_score(argparse.Namespace(results=results, cases=cases))
     assert "a  'any mail?'  p[FAIL]: FAIL(mail)" in capsys.readouterr().out
+
+
+def test_a_patch_rewrites_the_prompt_and_the_history_notes_alike() -> None:
+    """A renamed tool is renamed in the system prompt and in the history notes that name it."""
+    request = {"messages": [
+        {"role": "system", "content": 'read it with gmail_get "now"'},
+        {"role": "user", "content": "[Earlier days · use recall]\nhi"},
+    ]}
+    patches = [{"old": 'gmail_get "now"', "new": 'mail(read=) "now"'},
+               {"old": "use recall]", "new": "use conversation]"}]
+    assert tool_exam.patched(request, patches) == {"messages": [
+        {"role": "system", "content": 'read it with mail(read=) "now"'},
+        {"role": "user", "content": "[Earlier days · use conversation]\nhi"},
+    ]}

@@ -461,25 +461,23 @@ def _trips(rule: Any, args: Any) -> bool:  # noqa: ANN401 - a substring list or 
 
 
 def load_patches(cases: Path) -> list[dict[str, str]]:
-    """``prompt-patches.json`` beside ``cases``: ``[{old, new}]`` text the system prompt changed.
+    """``prompt-patches.json`` beside ``cases``: ``[{old, new}]`` text the program now writes.
 
-    A logged request carries the system prompt of its day; a patch replays it as the checkout
-    would write it, so a tool rename and its prompt line are examined together. [] if absent.
+    A logged request carries the system prompt and history notes of its day; a patch replays it
+    as the checkout would write it, so a tool rename and the lines naming it are examined
+    together. [] if absent.
     """
     path = cases.parent / "prompt-patches.json"
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
 
 
 def patched(request: Mapping[str, Any], patches: Sequence[Mapping[str, str]]) -> dict[str, Any]:
-    """``request`` with each patch applied to its instructions (Responses) or system message."""
-    out = dict(request)
+    """``request`` with each patch applied wherever its text appears (prompt, history, results)."""
+    raw = json.dumps(request, ensure_ascii=False)
     for one in patches:
-        if "input" in out:
-            out["instructions"] = str(out.get("instructions") or "").replace(one["old"], one["new"])
-        elif out.get("messages") and out["messages"][0].get("role") == "system":
-            first, *rest = out["messages"]
-            text = str(first["content"]).replace(one["old"], one["new"])
-            out["messages"] = [{**first, "content": text}, *rest]
+        old, new = (json.dumps(one[k], ensure_ascii=False)[1:-1] for k in ("old", "new"))
+        raw = raw.replace(old, new)
+    out: dict[str, Any] = json.loads(raw)
     return out
 
 
