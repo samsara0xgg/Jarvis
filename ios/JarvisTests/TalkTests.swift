@@ -99,4 +99,11 @@ final class HisTextTests: XCTestCase {
         XCTAssertEqual(HisText.common("what is the wea", "what is the weather"), 12)
         XCTAssertEqual(HisText.common("what is the", "what is the weather"), 11, "a space ends the word, nothing to go back over")
     }
+
+    func testTypedWordsAreCutOnlyPastWhatTheBrainTakes() {
+        let ok = String(repeating: "字", count: AttachField.maxChars)
+        XCTAssertNil(AttachField.clip(ok))
+        XCTAssertEqual(AttachField.clip(ok + "多")?.count, AttachField.maxChars)
+        XCTAssertNil(AttachField.clip(String(repeating: "x", count: 121)), "the old 120 is gone")
+    }
 }

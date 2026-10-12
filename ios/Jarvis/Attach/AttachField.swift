@@ -11,6 +11,12 @@ struct AttachField: View {
     static let font = UIFont.systemFont(ofSize: 16)
     static var inset: CGFloat { (CGFloat(minH) - font.lineHeight) / 2 }            // one line is exactly 48 tall
     static var maxH: Double { Double(2 * inset + CGFloat(maxLines) * font.lineHeight) }
+    /// What the brain takes of typed words: 20,000 characters in a `say` over /phone/ws (jarvis/surface/terminal_events.py, counted in code points); POST /inherent/submit has no lower limit.
+    static let maxChars = 20_000
+    /// `t` cut to what the brain takes, or nil when it fits
+    static func clip(_ t: String) -> String? {
+        t.unicodeScalars.count > maxChars ? String(String.UnicodeScalarView(t.unicodeScalars.prefix(maxChars))) : nil
+    }
     static let textWidth = W - 40 - 52 - 56                                         // the box, less the + and the send button
 
     @Binding var text: String

@@ -264,7 +264,7 @@ struct StarChrome: View {
             AttachStrip(model: at)
             ZStack(alignment: .bottom) {
                 AttachField(text: $ui.text, focused: $focused, model: at, send: sendComposer)
-                    .onChange(of: ui.text) { _, t in if t.count > 120 { ui.text = String(t.prefix(120)) } }
+                    .onChange(of: ui.text) { _, t in if let c = AttachField.clip(t) { ui.text = c; engine.trouble("太长了，只留了前 2 万字") } }
                 HStack(spacing: 0) {
                     AttachPlusButton(model: at)
                     Spacer(minLength: 0)
