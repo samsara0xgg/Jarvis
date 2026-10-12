@@ -421,6 +421,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <thead><tr><th>功能</th><th>发给谁</th><th>发什么</th><th>什么时候</th><th>默认</th></tr></thead>
 <tbody>
 <tr><td>对话、深想</td><td>Anthropic（出厂；对话预设的服务商）</td><td>上面的四部分（包括手机打开那一项的标题，一行、至多 80 个字符；手机最近一次上报的地名和多久以前，ADR 0217），加上这一轮每个工具的结果。换成 OpenAI 预设时，两种接口都不让它留存：chat/completions 默认不存，深想走的 Responses 带 <code>store: false</code></td><td>每一轮</td><td>开</td></tr>
+<tr><td>深层通道（ADR 0251）</td><td>Anthropic（<code>llm.deep.preset</code> 的服务商）</td><td>上面的四部分，只是「这一句」换成交过来的任务（主人的原话，加上那一轮已知、任务要用的内容，至多 1500 个字符），再加上这个任务里每个工具的结果；工具列表是全部工具，连要先搜索才加载的也在，只少了 <code>think_deeper</code> 本身</td><td>对话里的模型调用 <code>think_deeper</code>，或主人这一句里有 <code>llm.think.on_words</code> 的词（想想吧、仔细查……）；同一时间只跑一个任务，一个任务至多 <code>llm.deep.max_tool_iterations</code> 次带工具的请求，到顶后再发一次不带工具的请求收尾</td><td>关：要有 <code>llm.deep</code> 这一段和一把 Anthropic key，缺了就没有这个功能；没有 key 时任务失败并说缺 key</td></tr>
 <tr><td>历史压缩</td><td>Anthropic（<code>session.compact_preset</code> 的服务商）</td><td>上一段摘要和要折叠的记录</td><td>见上</td><td>开</td></tr>
 <tr><td>缓存预热</td><td>OpenAI</td><td>下一轮请求里「这一句」之前的部分：系统提示、历史（到这一轮的回答为止）和工具，只让它回 16 个 token。OpenAI 只在旧请求结束的地方找得到缓存，这样下一轮开头整段都在缓存里</td><td>打开 <code>realtime.response.prefix_warm</code> 时，每一轮用 OpenAI 答完之后</td><td>关</td></tr>
 <tr><td>即时功能的判断（Jev）</td><td>OpenRouter，转给 TypeSafe 的 <code>typesafe/jev-1.13</code></td><td>主人这一句话，加上前面最多两轮（主人的话，和助手回答的前 200 个字，十分钟以内），以及即时功能的选项说明；key 放在请求头里，不记进事件；请求带 <code>provider.zdr: true</code>（<code>realtime.surrogate_route.zdr</code>，出厂开），只路由到零数据留存的端点</td><td>打开 <code>realtime.surrogate_route</code> 时，每一轮 Tier 0 没命中的话；等待上限 0.4 秒</td><td>关</td></tr>
@@ -529,6 +530,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <thead><tr><th>功能</th><th>要什么</th><th>默认</th></tr></thead>
 <tbody>
 <tr><td>对话（文字和语音）、深想</td><td>Anthropic key，<code>claude-sonnet-5-5</code>（对话 effort low，深想 high）</td><td>开</td></tr>
+<tr><td>深层通道（ADR 0251）</td><td>Anthropic key，<code>claude-sonnet-5-5</code>；要在 <code>llm.deep</code> 里写，不写就没有这个功能</td><td>关（不在首次设置里；Allen 的 config 里开着）</td></tr>
 <tr><td>实时语音 GPT-Live</td><td>OpenAI key，<code>gpt-live-1</code></td><td>关（<code>realtime.gpt_live.enabled</code>）</td></tr>
 <tr><td>工作状态、项目归类、邮件摘要</td><td>Anthropic key，<code>claude-haiku-5-5</code></td><td>用到时才调</td></tr>
 <tr><td>看一眼屏幕、听写的润色</td><td>Anthropic key，<code>claude-sonnet-5-5</code></td><td>用到时才调</td></tr>

@@ -29,7 +29,19 @@ llm:
   # （不能叫 on：YAML 会读成真假）。
   think:
     preset: sonnet-high
-    on_words: "想想吧|想一想|你想想|帮我想想|好好想想|认真想想|仔细想想|think (it )?(over|through)|think hard"
+    on_words: "想想吧|想一想|你想想|帮我想想|好好想想|认真想想|仔细想想|仔细查|好好查|think (it )?(over|through)|think hard"
+
+  # ADR 0251 深层通道：对话这一路（gpt-6-luna，菜单 35 个工具）遇到要查很多东西再综合的事，
+  # 调 think_deeper(task) 把它交给后台的深层通道，自己说一句“我得仔细查一下”就结束这一轮；
+  # 上面 think.on_words 里的词（想想吧、仔细查……）不经模型直接交过去。深层通道在 preset 上
+  # 用完整工具集（含 deferred 的，没有 tool_search），上限 max_tool_iterations 次带工具的请求，
+  # 到顶还会再发一次不带工具的请求来收尾。做完时，他还在和她语音对话（最近 live_window_s 秒内
+  # 有 Mac 上的语音，且没有收到退下）就读出来，否则是一张卡片加推送。同一时间只跑一个。
+  # 不写这一段就没有深层通道（也没有 think_deeper 这个工具）。
+  deep:
+    preset: sonnet-deep
+    max_tool_iterations: 40
+    live_window_s: 120
 
   # 对话每次请求的上限（秒）与重试次数；不写就是 SDK 默认的 600 秒、重试 2 次。
   # 对话只用 default_preset；日报、压缩、截屏、工作状态各自设了自己的上限，不读这里。
@@ -158,6 +170,19 @@ llm:
       context_length: 1000000
       reasoning_effort: medium
       images: true
+      spoken_structured: false
+    # 深层通道用的（上面的 llm.deep.preset，ADR 0251）：同一个模型，effort 开到 high。一次请求
+    # 带着全部工具和整段对话，思考加上去可以跑一两分钟，所以单次上限放到 300 秒（其他预设用
+    # 上面全局的 timeout_s: 30）。没有人在等这一轮，慢一点没关系。
+    sonnet-deep:
+      provider: anthropic
+      model: claude-sonnet-5-5
+      api_key_env: ANTHROPIC_API_KEY
+      max_tokens: 16384
+      context_length: 1000000
+      reasoning_effort: high
+      images: true
+      timeout_s: 300
       spoken_structured: false
     # context_length：模型窗口（token）。session.compact_at_context_ratio
     # 按它算压缩门槛；决策预设缺了它就永远不压缩。
@@ -1094,7 +1119,8 @@ realtime:
   input:
     intent_pump: true
     queue_capacity: 8
-    max_concurrent_turns: 2
+    # ADR 0251: 深层通道的任务也占一个，所以是 3：它在后台跑的时候，他还能说话、对话还能被回答。
+    max_concurrent_turns: 3
   # GPT-Live (ADR-0016).  `enabled`
   # only registers the controller behind POST /inherent/controls
   # {"live": "start"|"stop"}; nothing connects until that request
