@@ -27,13 +27,13 @@ if TYPE_CHECKING:
     from jarvis.execution.tools import ToolContext
 
 _KEEP_DESCRIPTION: Final = (
-    "Use for anything he wants noted, remembered or done later: 记一下, 记得, 回家修X, 顺便记录,"
-    " 提醒我, 别忘了 (not calendar events). It is saved only when this returns: never answer"
-    " 记下了 without calling it. Default: a memo for later (things to fix, buy, do, ideas)."
-    " kind=reminder with at (local time) or in_minutes ('in 10 minutes'): he is reminded then."
-    " kind=fact: a lasting fact about"
-    " him. cancel=<id> cancels a reminder. The same text twice is saved once. To read back, use"
-    " kept."
+    "Use whenever he names something to be done later, by him or by you: a thing to fix, buy,"
+    " check or do, a problem he found, an idea. That is a memo even when he only says it is for"
+    " later and never says 记一下, 记得 or 别忘了. kind=memo (default): kept for later."
+    " kind=reminder: he must be told at a time, with at (local time) or in_minutes ('in 10"
+    " minutes'). kind=fact: a lasting fact about him. Not calendar events. It is saved only when"
+    " this returns: never answer 记下了 or say it is noted without calling it. cancel=<id>"
+    " cancels a reminder. The same text twice is saved once. To read back, use kept."
 )
 _KEEP_SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
