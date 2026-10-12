@@ -134,6 +134,22 @@ def test_an_unbacked_claim_gets_the_note_in_chat_shape(monkeypatch: pytest.Monke
     assert tool_exam.judge(expect, line, request) == (True, "pass(g)")
 
 
+def test_a_claimed_lookup_with_no_call_gets_the_note_in_responses_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exam applies the loop's third case: 「我查了」 and no call is sent back (ADR 0250)."""
+    request = _responses()
+    claim = "我查了你的日历，明天没有安排。"  # noqa: RUF001 - fullwidth comma is Chinese punctuation
+    line, sent = _run(
+        monkeypatch, request, _answer(claim), _answer("", ("job_ledger", "{}")),
+    )
+    followed = sent[1]["input"][len(request["input"]) :]
+    assert followed[-2]["content"] == UNBACKED_NOTE.format(said="looked it up")
+    assert line["guarded"]["kind"] == "unbacked"
+    assert line["guarded"]["first_text"] == claim
+    assert line["calls"] == [{"name": "job_ledger", "args": {}}]
+
+
 def test_an_answer_backed_by_a_call_and_a_plain_answer_are_one_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -54,7 +54,7 @@ if TYPE_CHECKING:
 WROTE = TurnCall("keep", read_only=False, ok=True)
 WRITE_FAILED = TurnCall("keep", read_only=False, ok=False)
 READ = TurnCall("recall", read_only=True, ok=True)
-DID, CHECK = "did it", "will check"
+DID, CHECK, LOOKED = "did it", "will check", "looked it up"
 
 
 @pytest.mark.parametrize(
@@ -110,6 +110,52 @@ DID, CHECK = "did it", "will check"
         ("我看你是累了", [], None),
         ("我找到了", [], None),
         ("", [], None),
+        # Said to have been looked up, in a turn with no call (replay exam 2026-10-12, Haiku).
+        ("这周的话，我查了你的默认日历，目前没有安排。", [], LOOKED),
+        ("Your calendar is clear tomorrow.", [], LOOKED),
+        ("我查过了，明天没有会。", [], LOOKED),
+        ("已经查过了，没有新邮件。", [], LOOKED),
+        ("看了一下你的日历，下午三点有牙医。", [], LOOKED),
+        ("你的日历明天是空的。", [], LOOKED),
+        ("日历上没有安排。", [], LOOKED),
+        ("I checked your calendar and you are free.", [], LOOKED),
+        ("I've just checked, nothing at 3.", [], LOOKED),
+        ("I looked through your inbox, nothing new.", [], LOOKED),
+        ("According to your calendar, you have a meeting at 3.", [], LOOKED),
+        ("You have nothing on your calendar tomorrow.", [], LOOKED),
+        ('{"spoken":"我查了一下，周五没有安排。","written":""}', [], LOOKED),
+        ("<voice>I checked your reminders.</voice><document>- one</document>", [], LOOKED),
+        ("Done. Your calendar is clear.", [WRITE_FAILED], None),  # a call was made: not this guard
+        # A lookup that was a call, or a refused one, is not a claim of one without a call.
+        ("我查了你的日历，明天没有安排。", [READ], None),
+        ("Your calendar is clear tomorrow.", [READ], None),
+        ("I checked your calendar and you are free.", [WRITE_FAILED], None),
+        # Plain talk: 看了一下 at something that is not his data, and other things looked at.
+        ("我看了一下你说的这个想法，挺不错的。", [], None),
+        ("我看了一下这张图，挺好看的。", [], None),
+        ("I looked at your essay and it reads well.", [], None),
+        ("I looked it over and it is fine.", [], None),
+        ("I checked out the new cafe yesterday.", [], None),
+        ("你上次说过日历要同步。", [], None),
+        ("Your calendar app is open on the phone.", [], None),
+        ("你的日历有点乱。", [], None),
+        # Questions, denials and offers are not claims.
+        ("要我查了你的日历再告诉你吗？", [], None),
+        ("Should I say I checked your calendar?", [], None),
+        ("你的日历同步好了吗", [], None),
+        ("我还没查过你的日历。", [], None),
+        ("我没有查过。", [], None),
+        ("I haven't checked your calendar yet.", [], None),
+        ("我可以帮你查看过去的记录。", [], None),
+        # The answer cites the program's state: not a claim of a lookup.
+        ("The state line says your calendar is clear until 3.", [], None),
+        ("状态行里写着你的日历下午是空的。", [], None),
+        ("Per the program, the next item is the dentist at 3:30.", [], None),
+        # An answer from what the block holds needs no call: mail, reminders, the day's state.
+        ("邮箱里没有新邮件。", [], None),
+        ("Your pending reminders: the dentist call at 9 tomorrow.", [], None),
+        ("你半小时前还在写 my_day 的测试。", [], None),
+        ("Your next stop is Shelbourne, about 12 minutes from Hillside.", [], None),
     ],
 )
 def test_the_answer_table(text: str, calls: list[TurnCall], expected: str | None) -> None:
@@ -364,6 +410,31 @@ def test_an_announced_lookup_goes_back_and_the_lookup_follows(tmp_path: Path) ->
         assert text == "还没有备忘。"
         assert _notes(model.requests[1][0], CHECK)
         assert _count(conn, "action.result_observed") == 1
+    finally:
+        conn.close()
+
+
+def test_a_claimed_lookup_goes_back_and_the_lookup_follows(tmp_path: Path) -> None:
+    """「我查了你的日历」 and no call: the note says it looked it up; the model then looks."""
+    model = _ScriptedModel("我查了你的日历，没有安排。", ("kept", {}), "还没有备忘。")
+    text, conn = _batch(tmp_path, model)
+    try:
+        assert text == "还没有备忘。"
+        assert _notes(model.requests[1][0], LOOKED)
+        assert _count(conn, "action.result_observed") == 1
+        assert _guards(conn) == [{"turn_id": "T_guard", "guard": "unbacked", "said": LOOKED}]
+    finally:
+        conn.close()
+
+
+def test_a_lookup_claimed_after_a_real_call_is_not_sent_back(tmp_path: Path) -> None:
+    """The call made earlier this turn backs it; the answer stands with no note."""
+    model = _ScriptedModel(("kept", {}), "我查了，还没有备忘。")
+    text, conn = _batch(tmp_path, model)
+    try:
+        assert text == "我查了，还没有备忘。"
+        assert len(model.requests) == 2
+        assert _count(conn, "turn.guard_fired") == 0
     finally:
         conn.close()
 
