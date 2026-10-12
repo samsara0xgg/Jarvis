@@ -202,12 +202,14 @@ def test_exit_cancels_every_open_run_that_would_speak_and_leaves_the_rest(
     _run(runtime, "R-typed", "T-typed", trigger="surface.user_intent", intent_channel="cli_stdin")
     _run(runtime, "R-document", "T-doc", channel="document")
     _run(runtime, "R-live", "T-live", trigger="surface.user_intent", intent_channel="gpt_live")
+    _run(runtime, "R-deep", "T-deep", trigger="surface.user_intent", intent_channel="deep")
     _run(runtime, "R-sweep", "T-sweep", trigger=None)
 
     inherent_loop._make_cancel_voice_runs(runtime)()  # noqa: SLF001
 
+    # A task handed to the deep lane (ADR 0251) is no answer being written for the speaker.
     assert {run.response_id for run in runtime.response_runs.open_runs()} == {
-        "R-document", "R-live", "R-sweep", "R-typed",
+        "R-document", "R-live", "R-sweep", "R-typed", "R-deep",
     }
     cancelled = {
         (row[0], row[1])
