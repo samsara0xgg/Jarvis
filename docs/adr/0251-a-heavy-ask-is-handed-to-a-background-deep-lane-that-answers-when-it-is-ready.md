@@ -63,7 +63,9 @@
 - **A deep task is not a word of his.** It is excluded from `words_since`, from the think-word scan,
   from the utterance-count folds, and from the exit and barge-in cancellation (a spoken "stop" ends
   the voice lane's speech, not a running deep task). A later voice turn is told the task is running
-  (the in-flight line, ADR 0107), with its text cut to 200 characters, and can say so.
+  (the in-flight line, ADR 0107), with its text cut to 200 characters, and can say so. `decide()`
+  sends it straight to the model path (or to its fixed notice): the answer grammar, the repeat
+  shortcut, Tier 0 and the Jev surrogate are for his words and never see it.
 - **A request addressed to her forces the deep lane without a model request.** `llm.deep.on_words`
   is its own list of imperative phrases ("仔细查", "好好查", "深入查", "dig deeper"), not the ADR 0108
   think words, which still only give the voice lane's turn the think preset. A sentence is forced

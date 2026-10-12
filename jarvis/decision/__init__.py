@@ -1378,7 +1378,7 @@ def _claimed_turn_started(conn: sqlite3.Connection, trigger_event_uid: str) -> E
     return None if row is None else get_event(conn, row[0])
 
 
-def _handle_utterance(
+def _handle_utterance(  # noqa: C901, PLR0911 - one order: deep task, answer grammar, shortcuts, model
     packet: SituationPacket,
     policy: EffectivePolicy,
     ctx: DecideContext,
@@ -1433,6 +1433,13 @@ def _handle_utterance(
     #   - A card button (`confirmation_decision` on the intent, ADR 0062)
     #     names the exact confirmation it answers and is Allen's own act on
     #     his own surface, so it needs no grammar and no timing.
+    if deep_turn(trigger):
+        # ADR 0251: a deep task is the lane's own text, not words of his: no answer grammar, no
+        # repeat, no Tier 0 or Jev shortcut may take it. Its failure notice is one fixed sentence.
+        if trigger.payload.get("deep_failure"):
+            line = _deep_failed_line(trigger, scratch.lang)
+            return _finalize_response(line, packet, ctx, scratch)
+        return _run_model_path(packet, policy, ctx, scratch)
     pending_slot = packet.pending_confirmation.slot
     card_decision = trigger.payload.get("confirmation_decision")
     if isinstance(card_decision, Mapping):
@@ -1504,10 +1511,6 @@ def _run_instant_route(
     only sent here; the model's request goes out at once and its first output
     waits for Jev (:func:`_settle_surrogate`). Everywhere else Jev is asked first.
     """
-    if deep_turn(packet.trigger_event) and packet.trigger_event.payload.get("deep_failure"):
-        # ADR 0251: the notice that a deep task did not finish is one fixed sentence.
-        line = _deep_failed_line(packet.trigger_event, scratch.lang)
-        return _finalize_response(line, packet, ctx, scratch)
     hit = _deep_words_hit(packet, ctx) or tier_0_match(packet, ctx.tier0_table)
     if hit is not None:
         return _run_tier0_path(hit, packet, policy, ctx, scratch)
@@ -1524,12 +1527,9 @@ def _run_instant_route(
 
 
 def _deep_words_hit(packet: SituationPacket, ctx: DecideContext) -> Tier0Hit | None:
-    """ADR 0251: his whole sentence is a request in ``llm.deep.on_words``: no model decides.
-
-    A deep turn's own task never is: the words it carries are the lane's, not his.
-    """
+    """ADR 0251: his whole sentence is a request in ``llm.deep.on_words``: no model decides."""
     trigger = packet.trigger_event
-    if ctx.deep is None or ctx.deep_words is None or deep_turn(trigger):
+    if ctx.deep is None or ctx.deep_words is None:
         return None
     sentence = ctx.deep_words.sentence(ctx.conn, trigger)
     return forced_hit(sentence) if sentence and is_request(ctx.deep, sentence) else None

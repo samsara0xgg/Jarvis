@@ -28,6 +28,7 @@ from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.response_run import ResponseRunRegistry
 from jarvis.decision.think_mode import load_think_mode
+from jarvis.decision.tier0 import load_tier0_table
 from jarvis.decision.turn_guards import REPEATED_CALL
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.deep_tool import DESCRIPTION, DeepToolRegistry, build_deep_tool
@@ -280,6 +281,12 @@ class _Lane:
     def drive(self, intent: Event) -> None:
         """Run the turn the way the pump does."""
         drive_turn(self.runtime, user_intent_event=intent, available_surfaces=frozenset(), streaming_enabled=True)
+
+    def deep_task(self, task: str) -> Event:
+        """A task the lane starts, as ``hand_over`` writes it."""
+        assert isinstance(self.runtime.deep, DeepLane)
+        turn_id = self.runtime.deep.hand_over(self.conn, task=task, from_turn=None)["turn_id"]
+        return next(e for e in [self.deep_intent()] if e.payload["turn_id"] == turn_id)
 
     def deep_intent(self, *, nth: int = -1) -> Event:
         """The task the voice lane handed over, as the pump would find it."""
@@ -596,6 +603,27 @@ def test_a_barge_in_leaves_a_running_deep_task_alone_and_still_answers(tmp_path:
         worker.join(10)
         assert lane.answer(task.payload["turn_id"])["text"]
         assert lane.rows("response.cancelled") == []
+
+
+# --- a deep task is never taken by a shortcut ------------------------------------------------------
+
+
+def test_a_deep_task_whose_text_is_a_shortcut_phrase_still_goes_to_the_deep_model(tmp_path: Path) -> None:
+    """Tier 0 (and the answer grammar, the repeat, Jev) are for his words; the task is the lane's."""
+    with _Peer() as peer:
+        lane = _Lane(tmp_path, peer)
+        lane.runtime = replace(lane.runtime, tier0_table=load_tier0_table(repo_root() / "config/tier0_patterns.yaml"))
+        lane.runtime.tool_registry.register(Tool(
+            name="get_current_time", description="the time", input_schema={"type": "object"},
+            handler=lambda _args, _ctx: {"now": "15:04"}, allowed_callers=frozenset({CallerPrincipal.REGEX_ROUTER}),
+            risk_level="L0", read_only=True,
+        ))
+        peer.then("deep", ("say", _ANSWER))
+        task = lane.deep_task("现在几点")
+        lane.drive(task)
+        assert len(peer.requests["deep"]) == 1
+        assert _VOICE in lane.answer(task.payload["turn_id"])["text"]
+        assert lane.rows("action.dispatched") == []  # the time tool was not run for it
 
 
 # --- a running task does not hold the daemon busy -------------------------------------------------
