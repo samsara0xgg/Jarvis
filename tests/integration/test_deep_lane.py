@@ -25,14 +25,24 @@ from anthropic import AuthenticationError
 from jarvis.decision.deep import DEEP_RULES, DeepConfigError, load_deep_settings
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
+from jarvis.decision.response_run import ResponseRunRegistry
 from jarvis.decision.think_mode import load_think_mode
 from jarvis.decision.turn_guards import REPEATED_CALL
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.deep_tool import DESCRIPTION, build_deep_tool
 from jarvis.execution.tools import ActionLifecycle, Tool, ToolRegistry
-from jarvis.runtime import JarvisRuntime, _wave4_response_flags, drive_turn
+from jarvis.runtime import (
+    JarvisRuntime,
+    _wave4_response_flags,
+    drive_turn,
+    make_barge_in_interrupt_callable,
+)
 from jarvis.runtime.deep_lane import DeepLane
-from jarvis.runtime.inherent_loop import _emit_turn_failed, _start_intent_pump
+from jarvis.runtime.inherent_loop import (
+    _drive_turn_in_worker_thread,
+    _emit_turn_failed,
+    _start_intent_pump,
+)
 from jarvis.shared import CallerPrincipal, lang
 from jarvis.shared.realtime import Wave1FeatureFlags, Wave5InputFlags
 from jarvis.state.committed_event_bus import CommittedEventBus
@@ -57,7 +67,7 @@ _HANDED = "这个我得仔细查一下，查好了告诉你。"
 _MAIL = {"mails": [{"from": "腾讯", "subject": "面试邀约"}, {"from": "字节", "subject": "补充资料"}]}
 _SLOT = {"slots": ["周五上午", "周六下午"]}
 
-# A reply is ("say", text), ("call", tool, arguments) or ("status", http code).
+# A reply is ("say", text), ("call", tool, arguments), ("status", http code) or ("hold", reply).
 type Reply = tuple[Any, ...]
 _HAND_OFF: tuple[Reply, ...] = (
     ("call", "think_deeper", {"task": f"{_TASK}。他要的是哪些邮件需要回，先后顺序。"}),
@@ -115,6 +125,7 @@ class _Peer:
         self._lock = threading.Lock()
         self._ready = threading.Event()
         self._stop = threading.Event()
+        self.release = threading.Event()
         self._thread = threading.Thread(target=lambda: asyncio.run(self._main()), daemon=True)
 
     def __enter__(self) -> Self:
@@ -123,6 +134,7 @@ class _Peer:
         return self
 
     def __exit__(self, *_exc: object) -> None:
+        self.release.set()
         self._stop.set()
         self._thread.join(5)
 
@@ -159,6 +171,9 @@ class _Peer:
                 self._served += 1
                 reply: Reply = self.script[lane].pop(0) if self.script[lane] else ("status", 500)
                 n = self._served
+            if reply[0] == "hold":  # ("hold", reply): answer with reply once the test sets `release`
+                await asyncio.get_running_loop().run_in_executor(None, self.release.wait, 20)
+                reply = reply[1]
             if reply[0] == "status":
                 payload = json.dumps({"type": "error", "error": {
                     "type": "authentication_error" if reply[1] == 401 else "api_error",
@@ -228,13 +243,13 @@ def _registry(lane: DeepLane, ran: list[tuple[str, dict[str, Any]]]) -> ToolRegi
 class _Lane:
     """One runtime over the peer, with the tool calls its registry ran."""
 
-    def __init__(self, tmp_path: Path, peer: _Peer, **deep: Any) -> None:  # noqa: ANN401
+    def __init__(self, tmp_path: Path, peer: _Peer, *, cancel: bool = False, **deep: Any) -> None:  # noqa: ANN401
         llm = _llm(peer.url, **deep)
         paths = bootstrap_runtime(tmp_path)
         self.conn = open_event_log(paths.event_log)
         self.memory = tmp_path / "memory.db"
         self.ran: list[tuple[str, dict[str, Any]]] = []
-        config = {**_realtime_config(lifecycle=True, cancel=False), "llm": llm}
+        config = {**_realtime_config(lifecycle=True, cancel=cancel), "llm": llm}
         bus = CommittedEventBus()
         lane = DeepLane(load_deep_settings(llm) or pytest.fail("no llm.deep"), committed_event_bus=bus)
         flags = _wave4_response_flags(config)
@@ -246,6 +261,7 @@ class _Lane:
             response_flags=replace(flags, slow_results=True),
             llm_session_factory=LLMSessionFactory(llm), committed_event_bus=bus,
             think_mode=load_think_mode(llm), deep=lane, input_flags=Wave5InputFlags(intent_pump=True),
+            response_runs=ResponseRunRegistry() if flags.independent_response_cancel else None,
             memory=MemorySettings(db_path=self.memory, audio_dir=tmp_path / "audio"),
         )
         self.turns = 0
@@ -516,6 +532,38 @@ def test_a_deep_run_that_fails_says_so_plainly(tmp_path: Path, channel: str, att
         assert len(peer.requests["deep"]) == 2
         assert lane.rows("surface.response_emitted", task.payload["turn_id"]) == []
         assert peer.unused() == {"fast": 0, "deep": 0}
+
+
+# --- a barge-in does not reach the deep task ------------------------------------------------------
+
+
+def test_a_barge_in_leaves_a_running_deep_task_alone_and_still_answers(tmp_path: Path) -> None:
+    """The task has no playback to interrupt: the barge-in finds no run, and the answer arrives."""
+    with _Peer() as peer:
+        lane = _Lane(tmp_path, peer, cancel=True)
+        peer.then("fast", *_HAND_OFF)
+        lane.drive(lane.say(_TASK))
+        task = lane.deep_intent()
+        peer.then("deep", ("hold", ("say", _ANSWER)))
+        worker = threading.Thread(
+            target=_drive_turn_in_worker_thread, args=(lane.runtime,), kwargs={"user_intent_event": task},
+        )
+        worker.start()
+        for _ in range(500):
+            if peer.requests["deep"]:
+                break
+            time.sleep(0.01)
+        assert peer.requests["deep"], "the deep run did not start"
+        assert lane.runtime.response_runs is not None
+        (run,) = lane.runtime.response_runs.open_runs()
+        assert (run.interrupt_policy.confirmed_playback, run.interrupt_policy.generation_action) == ("ignore", "continue")
+
+        assert make_barge_in_interrupt_callable(lane.runtime)("conversation_speech") == "no_open_run"
+
+        peer.release.set()
+        worker.join(10)
+        assert lane.answer(task.payload["turn_id"])["text"]
+        assert lane.rows("response.cancelled") == []
 
 
 # --- the turn's guards still apply in the deep run ---------------------------------------------

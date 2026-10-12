@@ -3418,6 +3418,10 @@ def _start_drive_turn_response(
         committed_event_bus=runtime.committed_event_bus,
         corrects_response_id=correction.corrects_response_id if correction else None,
         route=route,
+        # ADR 0251: nothing is playing for a deep task, so a barge-in, a stop or a newer
+        # sentence of his has nothing of it to interrupt.
+        confirmed_playback="ignore" if deep else "interrupt_expected_playback_generation",
+        generation_action="continue" if deep else "cancel",
     )
     terminalizer = ResponseTerminalizer(
         lambda: runtime.conn,
@@ -3626,8 +3630,8 @@ def make_barge_in_interrupt_callable(
     run's own ``ResponseInterruptPolicy`` permits it.
 
     Returned strings beyond ``make_response_cancel_callable``'s own outcomes:
-    ``"no_open_run"``, ``"ambiguous_open_runs"``, ``"policy_ignore"``,
-    ``"policy_generation_continue"``.
+    ``"no_open_run"``, ``"ambiguous_open_runs"``, ``"policy_generation_continue"``. A run
+    whose policy ignores confirmed playback is not counted at all.
 
     ``only_turns`` (ADR 0209, 0219) narrows the target to the open runs of the turns it
     accepts: a device's barge-in interrupts that device's answer, whatever else is open.
@@ -3641,10 +3645,13 @@ def make_barge_in_interrupt_callable(
         # A commentary run for the same turn is legitimately open while the
         # final run waits on its action (ADR-0006 D8): counting it would make
         # every action-dispatching turn read as `ambiguous_open_runs`.
+        # A run that ignores barge-in (a deep task, ADR 0251) is not what he interrupted.
         open_runs = tuple(
             run
             for run in registry.open_runs()
-            if run.phase == "final" and (only_turns is None or only_turns(run.turn_id))
+            if run.phase == "final"
+            and run.interrupt_policy.confirmed_playback != "ignore"
+            and (only_turns is None or only_turns(run.turn_id))
         )
         if not open_runs:
             return "no_open_run"
@@ -3652,8 +3659,6 @@ def make_barge_in_interrupt_callable(
             return "ambiguous_open_runs"
         run = open_runs[0]
         policy = run.interrupt_policy
-        if policy.confirmed_playback != "interrupt_expected_playback_generation":
-            return "policy_ignore"
         if policy.generation_action != "cancel":
             return "policy_generation_continue"
         LOGGER.info(

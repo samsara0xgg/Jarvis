@@ -746,6 +746,7 @@ def start_response_run(  # noqa: PLR0913 — the ADR-0008 §4.2 response.started
         "interrupt_expected_playback_generation",
         "ignore",
     ] = ResponseInterruptPolicy.confirmed_playback,
+    generation_action: Literal["cancel", "continue"] = ResponseInterruptPolicy.generation_action,
 ) -> ResponseRun:
     """Open one durable ResponseRun and return it already generating.
 
@@ -800,6 +801,7 @@ def start_response_run(  # noqa: PLR0913 — the ADR-0008 §4.2 response.started
             response_id=response_id,
             policy_hash=policy.policy_hash,
             confirmed_playback=confirmed_playback,
+            generation_action=generation_action,
         ),
         request_client=request_client,
     )
