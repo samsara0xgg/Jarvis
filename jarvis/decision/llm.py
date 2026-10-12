@@ -1133,22 +1133,25 @@ class LLMClient:
         self._anthropic_client = anthropic.Anthropic(**self._stream_options())
         return self._anthropic_client
 
+    def _files_api(self) -> Any:  # noqa: ANN401 — the SDK's Files resource
+        if self._provider != "anthropic":
+            msg = "the Files API is Anthropic's; this client is not on an Anthropic preset"
+            raise ValueError(msg)
+        return self._get_anthropic_client().beta.files
+
     def upload_file(self, name: str, data: bytes, mime: str) -> str:
         """Upload one file to Anthropic's Files API (ADR 0255); its file id.
 
         Raises on any failure; the caller falls back to words.
         """
-        if self._provider != "anthropic":
-            msg = "the Files API is Anthropic's; this client is not on an Anthropic preset"
-            raise ValueError(msg)
-        return str(self._get_anthropic_client().beta.files.upload(file=(name, data, mime)).id)
+        return str(self._files_api().upload(file=(name, data, mime)).id)
 
     def delete_file(self, file_id: str) -> None:
         """Delete an uploaded file (ADR 0255); a file already gone is not an error."""
         import anthropic  # noqa: PLC0415 — lazy SDK import (see module docstring)
 
         try:
-            self._get_anthropic_client().beta.files.delete(file_id)
+            self._files_api().delete(file_id)
         except anthropic.NotFoundError:
             LOGGER.debug("Files API: %s was already gone", file_id)
 

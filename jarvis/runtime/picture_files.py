@@ -5,7 +5,8 @@ linked here, from the event log, for the files still kept (:func:`link_kept_pict
 
 On a Claude preset a picture in history is sent by its Files API id, not its bytes.
 :class:`PictureFiles` uploads a picture the first time a request needs it and keeps the id beside
-the file (``Attachments.file_id``).
+the file (``Attachments.file_id``); :meth:`PictureFiles.release` deletes a copy when its file is
+swept or erased.
 Nothing here raises into a turn: a picture that cannot be uploaded rides as words for that request,
 and is not tried again for :data:`RETRY_AFTER_S`.
 """
@@ -119,3 +120,33 @@ class PictureFiles:
                 return None
             self._store.set_file_id(attachment_id, file_id)
             return file_id
+
+    def release(self, client: LLMClient | None, *, everything: bool = False) -> int:
+        """Delete the Files API copies of the pictures whose file is gone; how many went.
+
+        ``everything`` deletes every copy (the data is being erased). A copy that cannot be
+        deleted now stays on record and is tried at the next sweep.
+        """
+        copies = self._store.file_ids(orphaned=not everything)
+        if not copies:
+            return 0
+        if client is None:
+            LOGGER.warning(
+                "pictures: %d uploaded copies to delete, but no Anthropic preset", len(copies),
+            )
+            return 0
+        done = 0
+        for attachment_id, file_id in copies.items():
+            try:
+                client.delete_file(file_id)
+            except Exception:  # noqa: BLE001 — best effort; the id stays for the next sweep
+                LOGGER.warning(
+                    "pictures: could not delete the uploaded copy of %s", attachment_id[:8],
+                    exc_info=True,
+                )
+                continue
+            self._store.forget_file_id(attachment_id)
+            done += 1
+        if done:
+            LOGGER.info("pictures: deleted %d uploaded copies", done)
+        return done

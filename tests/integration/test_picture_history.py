@@ -9,14 +9,20 @@ No network: the Files API is a recording fake.
   after his words, the 20 newest only; a picture's note is left out only while the picture rides;
 - a gone file, a failed upload and a preset that is not Anthropic's keep the marker and the note,
   and the parts are byte-identical from one render to the next;
-- the request the Anthropic adapter builds names the file and sends the Files API beta header.
+- the request the Anthropic adapter builds names the file and sends the Files API beta header;
+- the uploaded copy goes with its file: at the retention sweep, on clearing the recordings and on
+  erasing everything, and a delete that fails is tried again at the next sweep.
 """
 
 from __future__ import annotations
 
 import asyncio
+import http.server
 import json
+import os
 import sqlite3
+import threading
+import time
 from contextlib import closing
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -25,7 +31,7 @@ import pytest
 
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_anthropic import FILES_BETA, files_headers, request_fields
-from jarvis.runtime import picture_files
+from jarvis.runtime import inherent_loop, picture_files
 from jarvis.runtime.picture_files import RETRY_AFTER_S, PictureFiles
 from jarvis.state import picture_notes as note_records
 from jarvis.state.memory_db import (
@@ -119,7 +125,9 @@ class FilesClient(LLMClient):
             "presets": {"p": {"provider": provider, "model": "m", "max_tokens": 64}},
         })
         self.uploads: list[tuple[str, int, str]] = []
+        self.deleted: list[str] = []
         self.failing = False
+        self.failing_delete = False
 
     def upload_file(self, name: str, data: bytes, mime: str) -> str:
         """Record the upload; the id is the count so far, or fail when told to."""
@@ -128,6 +136,13 @@ class FilesClient(LLMClient):
             raise RuntimeError(msg)
         self.uploads.append((name, len(data), mime))
         return f"file_{len(self.uploads):03d}"
+
+    def delete_file(self, file_id: str) -> None:
+        """Record the delete, or fail when told to."""
+        if self.failing_delete:
+            msg = "files api down"
+            raise RuntimeError(msg)
+        self.deleted.append(file_id)
 
 
 class Clock:
@@ -386,3 +401,179 @@ def test_a_history_ending_on_his_picture_folds_into_the_live_message_with_both_p
     assert message["content"][1] == {"type": "image_file", "file_id": "file_001"}
     assert message["content"][3]["image_url"]["url"].startswith("data:image/png;base64,")
     assert "and this?" in message["content"][2]["text"]
+
+
+# --- the copy goes with the file -----------------------------------------------------------------
+
+
+def uploaded(world: World, *names: str) -> tuple[FilesClient, list[str]]:
+    """Store, link and upload the pictures; the client and their attachment ids."""
+    client = FilesClient()
+    world.runtime = replace(
+        world.runtime, llm_client=client, picture_files=PictureFiles(world.store),
+    )
+    ids = [send(world, name) for name in names]
+    render(world, world.runtime.picture_files, client)  # type: ignore[arg-type]
+    return client, ids
+
+
+def age(world: World, attachment_id: str, days: int) -> None:
+    """Make a stored picture ``days`` old."""
+    then = time.time() - days * 86400
+    os.utime(world.store.path(attachment_id), (then, then))  # type: ignore[arg-type]
+
+
+def sweep(world: World) -> None:
+    """One pass of the hourly data sweep, as the daemon runs it."""
+    inherent_loop._sweep_data(  # noqa: SLF001
+        inherent_loop._media_dirs(world.runtime), world.runtime.runtime_paths.root / "logs",  # noqa: SLF001
+    )
+    inherent_loop._release_pictures(world.runtime)  # noqa: SLF001
+
+
+def test_the_retention_sweep_deletes_the_uploaded_copy_of_the_files_it_removes(
+    world: World,
+) -> None:
+    """Only the aged picture's copy goes, and its file id record with it."""
+    client, (old, fresh) = uploaded(world, "IMG_1.png", "IMG_2.png")
+    old_copy, fresh_copy = world.store.file_id(old), world.store.file_id(fresh)
+    age(world, old, 31)
+
+    sweep(world)
+
+    assert client.deleted == [old_copy]
+    assert world.store.file_id(old) is None
+    assert world.store.file_id(fresh) == fresh_copy
+    sweep(world)
+    assert client.deleted == [old_copy], "nothing is deleted twice"
+
+
+def test_a_delete_that_fails_is_logged_kept_and_tried_again_at_the_next_sweep(
+    world: World, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Best effort: the sweep goes on, and the copy is not forgotten."""
+    client, (old,) = uploaded(world, "IMG_1.png")
+    age(world, old, 31)
+    client.failing_delete = True
+
+    sweep(world)
+
+    assert "could not delete the uploaded copy" in caplog.text
+    assert world.store.file_id(old) == "file_001"
+    client.failing_delete = False
+    sweep(world)
+    assert client.deleted == ["file_001"]
+    assert world.store.file_id(old) is None
+
+
+def test_clearing_the_recordings_deletes_every_copy_with_the_files(world: World) -> None:
+    """The pictures go at once, and so do their uploaded copies."""
+    client, ids = uploaded(world, "IMG_1.png", "IMG_2.png")
+
+    inherent_loop._clear_media(world.runtime)  # noqa: SLF001
+
+    assert sorted(client.deleted) == ["file_001", "file_002"]
+    assert all(world.store.file_id(one) is None for one in ids)
+
+
+def test_erasing_everything_deletes_the_copies_before_the_files_go_at_the_next_boot(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The files are still there when the erase is asked for, and the copies are not."""
+    client, ids = uploaded(world, "IMG_1.png")
+    monkeypatch.setattr(inherent_loop, "_restart_soon", lambda: None)
+
+    inherent_loop._erase_data(world.runtime)  # noqa: SLF001
+
+    assert client.deleted == ["file_001"]
+    assert world.store.path(ids[0]) is not None
+    assert world.store.file_id(ids[0]) is None
+
+
+def test_with_no_anthropic_preset_the_copies_wait_and_nothing_raises(world: World) -> None:
+    """The deletes need a key of that provider; without a preset the ids are kept."""
+    client, (old,) = uploaded(world, "IMG_1.png")
+    world.runtime = replace(world.runtime, llm_client=FilesClient("openai"))
+    age(world, old, 31)
+
+    sweep(world)
+
+    assert client.deleted == []
+    assert world.store.file_id(old) == "file_001"
+
+
+# --- the Files API calls themselves ------------------------------------------------------------
+
+
+class _FilesPeer(http.server.BaseHTTPRequestHandler):
+    """A local stand-in for api.anthropic.com's /v1/files: records what the SDK sends."""
+
+    seen: list[tuple[str, str, str, bytes]] = []  # noqa: RUF012 — shared by the test below
+
+    def _answer(self) -> None:
+        size = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(size)
+        self.seen.append((
+            self.command, self.path, self.headers.get("anthropic-beta") or "", body,
+        ))
+        status = 404 if self.path.endswith("file_gone") else 200
+        payload = (
+            {"type": "error", "error": {"type": "not_found_error", "message": "gone"}}
+            if status == 404 else {"id": "file_011abc", "type": "file", "deleted": True}
+        )
+        raw = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    do_POST = do_DELETE = _answer  # noqa: N815
+
+    def log_message(self, *_args: object) -> None:
+        """Keep the test output quiet."""
+
+
+def test_upload_and_delete_use_the_sdks_files_api_with_the_beta_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real SDK against a local peer: a multipart upload, a delete, a missing file is fine."""
+    monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FilesPeer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    _FilesPeer.seen.clear()
+    try:
+        from tests.integration.test_anthropic_adaptation import _preset  # noqa: PLC0415
+
+        client = _preset("")
+        client._base_url = f"http://127.0.0.1:{server.server_port}"  # noqa: SLF001
+        assert client.upload_file("IMG_1.png", PNG, "image/png") == "file_011abc"
+        client.delete_file("file_011abc")
+        client.delete_file("file_gone")  # already deleted: not an error
+    finally:
+        server.shutdown()
+    (up, down, gone) = _FilesPeer.seen
+    assert up[:3] == ("POST", "/v1/files?beta=true", FILES_BETA)
+    assert b'filename="IMG_1.png"' in up[3]
+    assert b"Content-Type: image/png" in up[3]
+    assert PNG in up[3]
+    assert down[:3] == ("DELETE", "/v1/files/file_011abc?beta=true", FILES_BETA)
+    assert gone[1] == "/v1/files/file_gone?beta=true"
+
+
+class RealClient(LLMClient):
+    """A real client, for the calls the fake above replaces."""
+
+    def __init__(self, provider: str) -> None:
+        """One preset of ``provider``."""
+        super().__init__({
+            "provider": provider, "default_preset": "p",
+            "presets": {"p": {"provider": provider, "model": "m", "max_tokens": 64}},
+        })
+
+
+def test_the_files_api_is_refused_on_a_client_that_is_not_anthropics() -> None:
+    """An OpenAI preset has no such API; asking raises, and the caller falls back to words."""
+    with pytest.raises(ValueError, match="Files API"):
+        RealClient("openai").upload_file("x.png", PNG, "image/png")
+

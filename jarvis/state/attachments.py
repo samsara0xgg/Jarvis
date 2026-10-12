@@ -215,6 +215,23 @@ class Attachments:
         self._file_ids.mkdir(mode=0o700, parents=True, exist_ok=True)
         (self._file_ids / attachment_id).write_text(file_id, encoding="utf-8")
 
+    def forget_file_id(self, attachment_id: str) -> None:
+        """Drop the kept Files API id, once its remote copy is deleted."""
+        if valid_id(attachment_id):
+            (self._file_ids / attachment_id).unlink(missing_ok=True)
+
+    def file_ids(self, *, orphaned: bool = False) -> dict[str, str]:
+        """Kept Files API ids, attachment id -> file id; ``orphaned``: those whose file is gone."""
+        if not self._file_ids.is_dir():
+            return {}
+        found: dict[str, str] = {}
+        for entry in self._file_ids.iterdir():
+            if not valid_id(entry.name) or (orphaned and self._path_of(entry.name) is not None):
+                continue
+            if (file_id := self.file_id(entry.name)) is not None:
+                found[entry.name] = file_id
+        return found
+
     def _used_bytes(self) -> int:
         if not self.directory.is_dir():
             return 0

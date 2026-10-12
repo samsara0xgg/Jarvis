@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     from datetime import date, tzinfo
 
     from jarvis.decision import ToolRegistryLike
+    from jarvis.decision.llm import LLMClient
     from jarvis.decision.turn_end_asks import TurnEndAsks
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.runtime.dashboard import MailDrafts
@@ -5832,6 +5833,30 @@ def _link_pictures(runtime: JarvisRuntime) -> int:
     )
 
 
+def _files_client(runtime: JarvisRuntime) -> LLMClient | None:
+    """A client on an Anthropic preset, whatever preset is active, or ``None`` without one."""
+    if runtime.llm_client.provider == "anthropic":
+        return runtime.llm_client
+    factory = runtime.llm_session_factory
+    if factory is None:
+        return None
+    for name, spec in runtime.llm_client.get_presets().items():
+        if str(spec.get("provider", "")).lower() == "anthropic":
+            return factory.create(factory.snapshot(name), response_id="pictures")
+    return None
+
+
+def _release_pictures(runtime: JarvisRuntime, *, everything: bool = False) -> int:
+    """ADR 0255: delete the uploaded copies of pictures whose file is gone (or all of them)."""
+    if runtime.picture_files is None:
+        return 0
+    try:
+        return runtime.picture_files.release(_files_client(runtime), everything=everything)
+    except Exception:
+        LOGGER.exception("pictures: could not delete uploaded copies")
+        return 0
+
+
 def _sweep_data(dirs: dict[Path, int | None], logs: Path) -> None:
     """Delete what has passed its days and cut each log past its size (ADR 0067)."""
     for directory, days in dirs.items():
@@ -5844,10 +5869,12 @@ def _sweep_data(dirs: dict[Path, int | None], logs: Path) -> None:
 
 async def _data_sweep_task(
     dirs: dict[Path, int | None], logs: Path, link_pictures: Callable[[], object] | None = None,
+    release_pictures: Callable[[], object] | None = None,
 ) -> None:
     """At boot and then every hour; a failed pass waits for the next one.
 
     ``link_pictures`` runs once, first (ADR 0255): the files must be there to be linked.
+    ``release_pictures`` runs after each sweep: the copies of the pictures it removed go too.
     """
     if link_pictures is not None:
         try:
@@ -5857,6 +5884,8 @@ async def _data_sweep_task(
     while True:
         try:
             await asyncio.to_thread(_sweep_data, dirs, logs)
+            if release_pictures is not None:
+                await asyncio.to_thread(release_pictures)
         except OSError:
             LOGGER.exception("retention: sweep failed; next try in an hour")
         await asyncio.sleep(_DATA_SWEEP_INTERVAL_S)
@@ -5867,6 +5896,7 @@ def _clear_media(runtime: JarvisRuntime) -> int:
     gone = data.clear_files(list(_media_dirs(runtime)))
     if runtime.memory is not None:
         picture_notes.delete_all(runtime.memory.db_path)
+    _release_pictures(runtime)
     return gone
 
 
@@ -5884,9 +5914,13 @@ def _export_data(runtime: JarvisRuntime) -> Path:
     )
 
 
-def _erase_data(root: Path) -> None:
-    """``POST /inherent/data/erase``: everything goes at the next boot, which starts now."""
-    data.request_erase(root)
+def _erase_data(runtime: JarvisRuntime) -> None:
+    """``POST /inherent/data/erase``: everything goes at the next boot, which starts now.
+
+    The uploaded copies of his pictures go first: the files that name them go at that boot.
+    """
+    _release_pictures(runtime, everything=True)
+    data.request_erase(runtime.runtime_paths.root)
     _restart_soon()
 
 
@@ -7500,7 +7534,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             data_export=functools.partial(asyncio.to_thread, _export_data, runtime),
             data_clear=functools.partial(asyncio.to_thread, _clear_media, runtime),
             data_erase=(
-                functools.partial(_erase_data, runtime.runtime_paths.root)
+                functools.partial(_erase_data, runtime)
                 if supervised() else None
             ),
             claude_sessions_read=_claude_sessions_served(runtime),
@@ -7836,6 +7870,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             _data_sweep_task(
                 _media_dirs(runtime), logs_dir(runtime.runtime_paths.root),
                 functools.partial(_link_pictures, runtime),
+                functools.partial(_release_pictures, runtime),
             ),
             name="data_sweep",
         ))
