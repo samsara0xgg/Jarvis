@@ -77,8 +77,7 @@ targets:
       - Jarvis/Voice/TalkIntent.swift       # the control's button names the app's intent
       - Jarvis/Push/JarvisActivity.swift    # the Live Activity's shape, started by the app and drawn here
       - Jarvis/Lifelog/LifelogStore.swift   # the recording switch, in the App Group's defaults, for the control's value
-      - Jarvis/Lifelog/LifelogIntents.swift # the control's switch and the Live Activity's 暂停; here they only set the switch
-      - Jarvis/Lifelog/LifelogActivityAttributes.swift   # the recording's Live Activity shape
+      - Jarvis/Lifelog/LifelogIntents.swift # the control's switch; here it only sets the switch
       - path: Jarvis/Resources/Fonts        # the app's faces, for the Live Activity
         excludes: ["README.md"]
     info:

@@ -3,6 +3,7 @@ import CallKit
 import Foundation
 import Observation
 import UIKit
+import WidgetKit
 import os
 
 // His recorded day (ADR 0238), the recording side: the microphone as it is, raw (no noise suppression, no gain control, no silence
@@ -363,7 +364,7 @@ final class LifelogRecorder {
         LifelogWriter.shared.onPiece = { d in
             Task { @MainActor in
                 LifelogRecorder.shared.pieceStartedAt = d
-                if d == nil { LifelogUploader.shared.kick(); LifelogActivity.sync() }
+                if d == nil { LifelogUploader.shared.kick() }
             }
         }
         let nc = NotificationCenter.default
@@ -393,7 +394,6 @@ final class LifelogRecorder {
                 let r = LifelogRecorder.shared
                 if r.interrupted, !r.calls.inCall { lifelogNote("app opened during an interruption: trying again"); r.interrupted = false; r.apply() }
                 else { r.followSwitch() }
-                LifelogActivity.sync()                  // a Live Activity refused while the app was in the background can start now
             }
         }
         nc.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: nil) { _ in LifelogWriter.shared.closeSync() }
@@ -416,7 +416,7 @@ final class LifelogRecorder {
 
     /// The switch as the App Group has it now (the extension may have set it).
     func followSwitch() {
-        if LifelogStore.isOn, AVAudioApplication.shared.recordPermission != .granted { LifelogStore.isOn = false }
+        if LifelogStore.isOn, AVAudioApplication.shared.recordPermission == .denied { LifelogStore.isOn = false }
         lifelogNote("switch is \(LifelogStore.isOn ? "on" : "off") (followed)")
         apply()
         LifelogMic.shared.kick()
@@ -441,7 +441,7 @@ final class LifelogRecorder {
         LifelogMic.shared.set(on: on, interrupted: paused)
         let changed = live != recording
         recording = live
-        if changed { LifelogActivity.sync() }
+        if changed { ControlCenter.shared.reloadControls(ofKind: LifelogSwitch.controlKind) }   // the control shows the switch as it is now
     }
 }
 

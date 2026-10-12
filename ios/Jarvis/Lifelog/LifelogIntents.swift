@@ -1,9 +1,13 @@
 import AppIntents
 import Foundation
+#if !WIDGET_EXTENSION
+import UIKit
+#endif
 
-// Compiled into the app and the widget extension (the control and the Live Activity button name these intents). Both conform to a system intent
-// kind (`AudioRecordingIntent`, `LiveActivityIntent`): iOS runs those in the app's process, in the background, without opening the app
-// (unlike TalkIntent, which asks to open it). When iOS runs one in the extension instead, it only sets the switch (`setFromExtension`).
+// Compiled into the app and the widget extension (the control names this intent). It is a `LiveActivityIntent`, so iOS runs it in the
+// app's process, launched in the background if need be (with `AudioRecordingIntent` alone it ran in the extension whenever the app was
+// not running). No Live Activity is ever started: he wants the recording out of sight. When iOS runs it in the extension anyway, it only
+// sets the switch (`setFromExtension`).
 
 enum LifelogSwitch {
     static let controlKind = "com.allen.jarvis.lifelog-control"
@@ -18,12 +22,13 @@ enum LifelogSwitch {
     }
 }
 
-/// The control's switch. Starting needs a Live Activity up while the microphone runs (`AudioRecordingIntent`'s rule): `turn` brings it up through
-/// `LifelogActivity`. `LiveActivityIntent` is what makes iOS run it in the app, launched in the background if need be, and lets it start the
-/// Live Activity there; `AudioRecordingIntent` alone left it to the extension whenever the app was not running.
-struct LifelogToggleIntent: SetValueIntent, AudioRecordingIntent, LiveActivityIntent {
+/// The control's switch. Turning off works in the background. Turning on opens Jarvis first: iOS lets an app start the microphone from the
+/// background only through `AudioRecordingIntent`, which requires a Live Activity for as long as it records.
+struct LifelogToggleIntent: SetValueIntent, LiveActivityIntent {
     static let title: LocalizedStringResource = "随身录音"
     static let description = IntentDescription("开关随身录音")
+    @available(iOS 26.0, *)
+    static var supportedModes: IntentModes { [.background, .foreground(.dynamic)] }
 
     @Parameter(title: "录音")
     var value: Bool
@@ -33,23 +38,10 @@ struct LifelogToggleIntent: SetValueIntent, AudioRecordingIntent, LiveActivityIn
         #if WIDGET_EXTENSION
         LifelogSwitch.setFromExtension(value)
         #else
+        if value, UIApplication.shared.applicationState != .active, #available(iOS 26.0, *) {
+            try await continueInForeground(nil, alwaysConfirm: false)
+        }
         await LifelogRecorder.shared.turn(value)
-        #endif
-        return .result()
-    }
-}
-
-/// The Live Activity's 暂停 button.
-struct LifelogPauseIntent: LiveActivityIntent {
-    static let title: LocalizedStringResource = "暂停随身录音"
-    static let isDiscoverable = false
-
-    @MainActor
-    func perform() async throws -> some IntentResult {
-        #if WIDGET_EXTENSION
-        LifelogSwitch.setFromExtension(false)
-        #else
-        await LifelogRecorder.shared.turn(false)
         #endif
         return .result()
     }

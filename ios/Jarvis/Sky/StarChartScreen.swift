@@ -127,8 +127,11 @@ struct StarChrome: View {
             Button { ui.settingsOpen = true } label: {
                 Image(systemName: "gearshape").font(.system(size: 18, weight: .regular)).foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.8))
                     .frame(width: 36, height: 36).glass(Circle())
+                    .overlay(alignment: .topTrailing) {     // the day is being recorded (随身录音); its switch is in settings
+                        if LifelogRecorder.shared.recording { Circle().fill(Color(red: 1, green: 92 / 255, blue: 92 / 255)).frame(width: 6, height: 6).offset(x: -3, y: 3) }
+                    }
             }.buttonStyle(PressScale())
-            .accessibilityLabel("设置")
+            .accessibilityLabel(LifelogRecorder.shared.recording ? "设置，正在随身录音" : "设置")
         }
         .padding(.horizontal, 30)
         .frame(width: W, height: 38)
