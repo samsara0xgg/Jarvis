@@ -24,9 +24,8 @@ from the log on the loop thread, in the same `usage.state_observed` shape as Ope
 
 Its limits:
 
-- The snapshot counts only this brain's calls, priced at record time. The Usage
-  page adds Claude Code's cost from the Token section's local logs (API rates,
-  today and this month) to the same block, as its own cut, once those logs are read.
+- It counts only this brain's calls, priced at record time; Claude Code sessions,
+  the subscription and anything else on the account are not in it.
 - `unpriced_calls` counts the month's calls the provider reported usage for and
   that had no price, so a model missing from the price table shows on the page.
 - No balance is shown, and no key is read.
@@ -40,8 +39,7 @@ Its limits:
 
 ## Consequences
 
-- The figure is the brain's spend plus Claude Code's logged cost at API rates, not
-  the account's bill: it is right only while Claude Code runs on the API key, and it
-  misses anything else billed to the key.
+- The figure is the brain's spend, not the account's, so it undercounts anything
+  billed to the same key elsewhere.
 - Adding an Anthropic model without a price row shows as `unpriced_calls`, not a
   wrong dollar figure.
