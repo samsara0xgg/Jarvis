@@ -56,7 +56,15 @@ from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.state.decision_snapshot import read_decision_snapshot
 from jarvis.state.event_log import emit_event
 from scripts.replay_decision import _client, history_of
-from scripts.tool_exam import _SECRET, _history, _percentile, _with_system
+from scripts.tool_exam import (
+    _SECRET,
+    _history,
+    _percentile,
+    _with_system,
+    shape_report,
+    spoken_reply_for,
+    structured_presets,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -458,7 +466,25 @@ def _peaks(cases: int) -> dict[str, Any]:
     }
 
 
-def cmd_run_steps(args: argparse.Namespace) -> int:
+def _presets_shape(
+    config: Path, presets: Sequence[str], cases: Sequence[Mapping[str, Any]],
+) -> dict[str, bool]:
+    """Which presets take the structured spoken reply; prints how many cases each rewrites."""
+    structured = structured_presets(config, presets)
+    sys.stdout.write(shape_report(cases, structured) + "\n")
+    return structured
+
+
+def _for_preset(
+    case: Mapping[str, Any], structured: Mapping[str, bool], preset: str,
+) -> Mapping[str, Any]:
+    """The case with its request in the spoken reply shape of ``preset`` (a fake run has none)."""
+    if preset not in structured:
+        return case
+    return {**case, "request": spoken_reply_for(case["request"], structured=structured[preset])}
+
+
+def cmd_run_steps(args: argparse.Namespace) -> int:  # noqa: PLR0915 - boot, run each case, report
     """``run-steps``: boot the sandbox runtime, run every case, append the records."""
     pristine = args.root.expanduser().resolve()
     live = (Path.home() / ".jarvis").resolve()
@@ -486,6 +512,7 @@ def cmd_run_steps(args: argparse.Namespace) -> int:
         warm = read_decision_snapshot(runtime.conn).fold_state
         presets = ["fake"] if script is not None else args.presets
         clients = {} if script is not None else {p: _client(args.config, p) for p in presets}
+        structured = {} if script is not None else _presets_shape(args.config, presets, cases)
         menu = _menu(runtime.tool_registry)
         sys.stdout.write(
             f"menu: {len(menu)} tools {' '.join(t['name'] for t in menu)}\n"
@@ -501,7 +528,8 @@ def cmd_run_steps(args: argparse.Namespace) -> int:
                         inner = (ScriptedClient(script[case["id"]]) if script is not None
                                  else clients[preset])
                         line = _run_case(runtime, baseline, work, warm, classes, table, pushes,
-                                         case, inner, preset, run, extra)
+                                         _for_preset(case, structured, preset), inner, preset,
+                                         run, extra)
                         out.write(json.dumps(line, ensure_ascii=False) + "\n")
                         out.flush()
                         done += 1

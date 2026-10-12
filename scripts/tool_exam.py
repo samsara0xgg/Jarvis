@@ -27,6 +27,13 @@ result line keeps both steps (``guarded``: kind, first calls, first text, first 
 ``score`` marks such runs ``(g)``. A response that mixes repeats with a call that would run is
 left unguarded: that call's result is not known here.
 
+A logged request is sent as production would build it for each preset (ADR 0240): a preset that
+says ``spoken_structured: false`` gets the unstructured spoken note and no text format, any other
+preset the structured note and the schema; the note is swapped in the request's instructions, so
+a logged request whose note is an older text is left as logged (``run`` prints how many of each).
+The switch ``realtime.response.spoken_streaming.structured`` is taken as on, as it was when the
+cases were logged.
+
 ``run`` sends each case through ``LLMClient.stream_events`` as ``replay_decision`` does, but with
 the tool menu THIS checkout would offer the decision model (see :func:`offered_tools`), not the
 tools the log recorded, so a merged or renamed tool is exam-visible at once. Keys come from the
@@ -54,7 +61,13 @@ from unittest.mock import MagicMock
 
 import yaml
 
-from jarvis.decision import _tool_menu
+from jarvis.decision import (
+    _SPOKEN_REPLY_NOTE,
+    _SPOKEN_REPLY_NOTE_STRUCTURED,
+    SPOKEN_REPLY_FORMAT,
+    _tool_menu,
+)
+from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.policy import effective_policy, surface_for
 from jarvis.decision.turn_guards import TurnCall, call_key, repeated_call, unbacked_claim
 from jarvis.deployment import load_env_file
@@ -179,6 +192,48 @@ def _with_system(request: Mapping[str, Any], extra: str) -> dict[str, Any]:
         first, *rest = request["messages"]
         out["messages"] = [{**first, "content": f"{first['content']}\n\n{extra}"}, *rest]
     return out
+
+
+def structured_presets(config: Path, presets: Sequence[str]) -> dict[str, bool]:
+    """Per preset: whether production gives its spoken turns the structured reply (ADR 0240)."""
+    factory = LLMSessionFactory(yaml.safe_load(config.read_text(encoding="utf-8"))["llm"])
+    return {name: factory.snapshot(name).spoken_structured for name in presets}
+
+
+def spoken_reply_for(request: Mapping[str, Any], *, structured: bool) -> dict[str, Any]:
+    """``request`` with the spoken reply shape a preset gets: the note, and the text format.
+
+    The other shape's note, found verbatim in the instructions, is replaced by this one's; the
+    schema goes (unstructured) or comes (structured). A request without that note is unchanged.
+    """
+    old, new = (
+        (_SPOKEN_REPLY_NOTE, _SPOKEN_REPLY_NOTE_STRUCTURED) if structured
+        else (_SPOKEN_REPLY_NOTE_STRUCTURED, _SPOKEN_REPLY_NOTE)
+    )
+    out = dict(request)
+    if old not in (request.get("instructions") or ""):
+        return out
+    out["instructions"] = request["instructions"].replace(old, new)
+    if structured:
+        out["text"] = {"format": SPOKEN_REPLY_FORMAT}
+    else:
+        out.pop("text", None)  # production's ``text`` holds the format and nothing else
+    return out
+
+
+def shape_report(cases: Sequence[Mapping[str, Any]], structured: Mapping[str, bool]) -> str:
+    """One line: per preset, how many cases :func:`spoken_reply_for` rewrote."""
+    parts = []
+    for preset, flag in structured.items():
+        shaped = [spoken_reply_for(c["request"], structured=flag) for c in cases]
+        changed = sum(one != c["request"] for one, c in zip(shaped, cases, strict=True))
+        left = 0 if flag else sum(bool((one.get("text") or {}).get("format")) for one in shaped)
+        parts.append(
+            f"{preset} {'structured' if flag else 'unstructured'}: "
+            f"{changed}/{len(cases)} rewritten"
+            + (f", {left} still carry the schema (their note is an older text)" if left else ""),
+        )
+    return "spoken reply shape: " + "; ".join(parts)
 
 
 def _calls(raw: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -311,13 +366,17 @@ async def _run(
         cases = [c for c in cases if c["id"] in args.only]
     catalog = {t["name"]: t for t in menu}
     extra = args.system_append.read_text(encoding="utf-8").strip() if args.system_append else ""
+    structured = structured_presets(config, args.presets)
+    sys.stdout.write(shape_report(cases, structured) + "\n")
+    sys.stdout.flush()
     gate = asyncio.Semaphore(args.concurrency)
     total = len(cases) * len(clients) * args.runs
     done = 0
 
     async def job(case: dict[str, Any], preset: str, run: int, out: TextIO) -> None:
         nonlocal done
-        request = {**_with_system(case["request"], extra), "tools": list(catalog)}
+        shaped = spoken_reply_for(case["request"], structured=structured[preset])
+        request = {**_with_system(shaped, extra), "tools": list(catalog)}
         base = {"kind": "run", "case": case["id"], "preset": preset, "run": run,
                 "model": clients[preset].model}
         async with gate:
