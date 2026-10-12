@@ -475,7 +475,8 @@ function KeyField({ provider, name, port, lang, value: key, onChange: setKey, on
   return <>
     <form className="st-key" onSubmit={e => { e.preventDefault(); if (key.trim()) void test(); }}>
       <input type="password" value={key} onChange={e => setKey(e.target.value)} placeholder={t(['Paste a new key', '贴一个新的密钥'])} aria-label={name}
-        autoComplete="off" spellCheck={false} disabled={!port || busy}/>
+        autoComplete="off" spellCheck={false} disabled={!port || busy}
+        onPointerDown={e => { const el = e.currentTarget; void Promise.resolve(window.jarvis?.focus(true)).then(() => el.focus({ preventScroll: true })); }}/>
       <button className="btn btn-ghost" disabled={!port || busy || !key.trim()}>{busy ? t(['Testing…', '测试中…']) : t(['Test and save', '测试并保存'])}</button>
     </form>
     {why && <p className="st-note st-why" role="alert">{why}</p>}
