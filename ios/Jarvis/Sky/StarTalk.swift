@@ -296,10 +296,11 @@ extension StarEngine {
 
 #if DEBUG
 extension StarEngine {
-    /// `-scene open|blocks|failed|typing|typingNote|typingWaiting|typingChipOpen|rest` (and the `steps…` ones of Sky/StarStatus.swift): the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
+    /// `-scene open|blocks|failed|pictures|typing|typingNote|typingWaiting|typingChipOpen|rest` (and the `steps…` ones of Sky/StarStatus.swift): the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
     func runTalkScene(_ name: String) {
         switch name {
         case "rest": setLevel(0)
+        case "pictures": runPicturesScene()
         case "talkAfter", "twoRounds":
             // a talk that starts after a conversation (the last round of it shows dimmer), and, for twoRounds, a second round of the same talk
             setLevel(0)
