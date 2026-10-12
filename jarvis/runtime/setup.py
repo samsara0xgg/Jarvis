@@ -197,10 +197,11 @@ class Setup:
         ]
 
     def _chat_provider(self) -> str:
-        """Whose key the conversation needs: the default preset's provider, else ``llm.provider``."""
+        """The key the chat needs: the default preset's provider, else ``llm.provider``."""
         llm = self._config.get("llm", {})
         preset = llm.get("presets", {}).get(llm.get("default_preset"), {})
-        return "anthropic" if (preset.get("provider") or llm.get("provider")) == "anthropic" else "openai"
+        provider = preset.get("provider") or llm.get("provider")
+        return "anthropic" if provider == "anthropic" else "openai"
 
     def _features(self) -> dict[str, dict[str, Any]]:
         """What works with the keys there are, and why not when it does not."""
@@ -281,7 +282,7 @@ class Setup:
         else:
             answer = self._check_tavily(key)
         # Only a key the service accepted counts: connect (and, for OpenAI, a real answer).
-        must_pass = ("connect", "chat") if provider == "openai" else ("connect",)  # an absent row passes
+        must_pass = ("connect", "chat") if provider == "openai" else ("connect",)  # absent row: passes
         refused = [
             row["reason"] for row in answer["checks"] if row["id"] in must_pass and not row["ok"]
         ]
@@ -355,8 +356,7 @@ class Setup:
         } - {None}
         background = {
             model for model in background
-            if next(p for p in presets.values() if p.get("model") == model).get("provider", "openai")
-            != "anthropic"
+            if not str(model).startswith("claude")
         }
         live = self._config.get("realtime", {}).get("gpt_live", {}).get("model")
         return chat, background, live
@@ -437,7 +437,7 @@ class Setup:
         return {"checks": [_check("connect")]}
 
     def check_at_boot(self) -> None:
-        """Check the saved chat-provider and MiniMax keys (no tokens, one word of TTS); log what fails."""
+        """Check the saved chat and MiniMax keys (no tokens, one word of TTS); log what fails."""
         for provider in (self._chat_provider(), "minimax"):
             key = os.environ.get(KEY_ENVS[provider])
             if not key:

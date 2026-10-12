@@ -167,7 +167,7 @@ def _tool_choice(tool_choice: str | None) -> dict[str, str] | None:
 
 
 _ADAPTIVE_ONLY = ("claude-sonnet-5",)
-"""Model id prefixes that take adaptive thinking only: no ``thinking: disabled``, so no forced call."""
+"""Model id prefixes taking adaptive thinking only: no ``thinking: disabled``, no forced call."""
 
 
 def request_fields(  # noqa: PLR0913 — the request's whole variable part, named

@@ -241,10 +241,13 @@ def test_an_anthropic_default_needs_the_anthropic_key_not_the_openai_one(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x")
     assert setup.read()["features"]["chat"] == {"on": True, "reason": None}
     seen: list[str] = []
-    monkeypatch.setattr(
-        runtime_setup.urllib.request, "urlopen",
-        lambda request, timeout: seen.append(request.get_header("X-api-key")) or io.BytesIO(b"{}"),
-    )
+
+    def urlopen(request: Any, timeout: float) -> Any:  # noqa: ANN401
+        del timeout
+        seen.append(request.get_header("X-api-key"))
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(runtime_setup.urllib.request, "urlopen", urlopen)
     with caplog.at_level("WARNING"):
         setup.check_at_boot()
     assert seen == ["sk-ant-x"]
