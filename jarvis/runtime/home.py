@@ -91,8 +91,8 @@ def _link_text(link: re.Match[str]) -> str:
 _NOT_A_PERSON = re.compile(r"no-?reply|notification|mailer-daemon|bounce", re.IGNORECASE)
 
 
-def mail_body(body: str, *, links: bool = False) -> str:
-    """The message body as plain text, capped; an HTML-only message loses its markup.
+def mail_text(body: str, *, links: bool = False) -> str:
+    """The message body as plain text, whole; an HTML-only message loses its markup.
 
     ``links`` keeps each anchor's address as ``text (url)`` for the page; the model's
     mail record (ADR 0063) leaves them out.
@@ -103,8 +103,13 @@ def mail_body(body: str, *, links: bool = False) -> str:
             body = _HTML_LINK_RE.sub(_link_text, body)
         body = _HTML_TAG_RE.sub("", _HTML_BREAK_RE.sub("\n", _HTML_DROP_RE.sub("", body)))
         body = html.unescape(body)
-    body = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", body).strip()
-    return body if len(body) <= _MAIL_BODY_CHARS else f"{body[:_MAIL_BODY_CHARS]}…"
+    return re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", body).strip()
+
+
+def mail_body(body: str, *, links: bool = False) -> str:
+    """:func:`mail_text` capped at the page's and the mail record's length."""
+    text = mail_text(body, links=links)
+    return text if len(text) <= _MAIL_BODY_CHARS else f"{text[:_MAIL_BODY_CHARS]}…"
 
 
 _LAYOUT_RE: Final = re.compile(r"<(?:table|img)\b", re.IGNORECASE)
@@ -405,6 +410,14 @@ class Home:
         self._listed = frozenset(str(one["id"]) for one in letters)
         self._junk = frozenset(str(one["id"]) for one in letters if one["junk"])
         return {"unread": sorted(letters, key=lambda one: str(one["received"]), reverse=True)}
+
+    def gmail(self, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        """One call to the ``gmail`` server answered as JSON (ADR 0241: the model's ``mail``).
+
+        A LookupError when Gmail is not connected; the server's own failure, sign-in
+        included, is a ToolError.
+        """
+        return _gmail(self._servers(MAIL_SERVER), tool, args)
 
     def _actionable(self) -> frozenset[str]:
         """The ids a tap may change: the junk offered; with the mail page on, any listed or open."""

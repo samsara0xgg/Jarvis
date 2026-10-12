@@ -738,7 +738,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       if (memTop?.k === 'item' || memTop?.k === 'edit') item = { kind: 'memory', id: memTop.id, title: notes.find(n => n.id === memTop.id)?.text ?? '' };
       else if (!memTop && memory.tab === 'items' && !memory.query) rows = notes.map(n => ({ id: n.id, title: n.text }));
     } else if (page === 'jobs') {
-      // A job card is the open item once unfolded, its mails the rows (the mail ids she opens with gmail_get); folded, each row carries its newest mail's id.
+      // A job card is the open item once unfolded, its mails the rows (the mail ids she opens with mail(read=)); folded, each row carries its newest mail's id.
       const card = jobApps?.find(a => a.id === unfolded), jobTitle = (g: { company: string; role?: string }) => g.role ? `${g.company} — ${g.role}` : g.company;
       if (card) { item = { kind: 'job', id: jobKey(card), title: jobTitle(card) }; rows = card.mails.map(m => ({ id: m.message_id, title: `${jobKind(m.kind)[1][0]} ${m.subject}` })); }
       else rows = (jobApps ?? (ledger ?? []).filter(g => g.mails.length)).map(g => ({ id: jobKey(g), title: jobTitle(g), ...('source' in g && g.mails[0] ? { mail_id: g.mails[0].message_id } : {}) }));

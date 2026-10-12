@@ -131,7 +131,7 @@ from jarvis.execution.job_ledger_tool import (
     build_job_ledger_tool,
     build_record_application_tool,
 )
-from jarvis.execution.mail_inbox_tool import build_mail_inbox_tool
+from jarvis.execution.mail_tool import build_mail_tool
 from jarvis.execution.mcp_oauth import DEFAULT_OAUTH_CALLBACK_PORT
 from jarvis.execution.mcp_tools import DEFAULT_MCP_TIMEOUT_S, McpServers, is_oauth, stdio_env
 from jarvis.execution.path_resolver import (
@@ -182,7 +182,7 @@ from jarvis.runtime.dashboard import (
 from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.runtime.departures import Departures
 from jarvis.runtime.highlight_marks import HighlightMarks
-from jarvis.runtime.home import Home, mail_body, mail_summarizer, weather_lookup
+from jarvis.runtime.home import Home, mail_body, mail_summarizer, mail_text, weather_lookup
 from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
@@ -1791,9 +1791,9 @@ def _register_job_ledger(registry: ToolRegistry, job_mail: JobMail | None) -> No
         registry.register(tool)
 
 
-def _register_mail_inbox(registry: ToolRegistry, home: Home) -> None:
-    """``mail_inbox`` (ADR 0190) reads what ``GET /inherent/mail`` serves; no Gmail is its error."""
-    for tool in build_mail_inbox_tool(home.mail):
+def _register_mail(registry: ToolRegistry, home: Home, zone: tzinfo) -> None:
+    """``mail`` (ADR 0241): the overview ``GET /inherent/mail`` serves, a search, one message."""
+    for tool in build_mail_tool(home.mail, home.gmail, mail_text, zone):
         registry.register(tool)
 
 
@@ -3066,7 +3066,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             paths.event_log,
         ),
     )
-    _register_mail_inbox(registry, home)
+    _register_mail(registry, home, local_zone)
     attachments = Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME)
     return JarvisRuntime(
         config=full_config,
@@ -4096,6 +4096,7 @@ def _queue_picture_notes(
 
 
 _MAIL_GET: Final[str] = "mcp__gmail__gmail_get"
+_MAIL: Final[str] = "mail"
 
 
 def _record_words(store: Attachments | None, payload: Mapping[str, Any]) -> str:
@@ -4107,29 +4108,46 @@ def _record_words(store: Attachments | None, payload: Mapping[str, Any]) -> str:
     return f"{words}\n{marker(store.get(str(one)) for one in ids)}"
 
 
-def _fetched_mail(conn: sqlite3.Connection, turn_id: str) -> tuple[str, str] | None:
-    """ADR 0063: the message this turn read whole with ``gmail_get``, as a mail record.
+def _read_mail_id(action: Mapping[str, Any]) -> str | None:
+    """The id of the message a proposed call reads whole (``mail(read=...)``, ``gmail_get``)."""
+    arguments = action.get("arguments")
+    arguments = arguments if isinstance(arguments, dict) else {}
+    if action.get("tool_name") == _MAIL and arguments.get("read"):
+        return str(arguments["read"])
+    if action.get("tool_name") == _MAIL_GET and arguments.get("format", "full") == "full":
+        return str(arguments.get("messageId"))
+    return None
 
-    Only when the turn read exactly one message in full: a turn that read
-    several is a list, answered in words. The record is headers, a blank
-    line, then the body, and its id is the result's event uid.
+
+def _fetched_mail(conn: sqlite3.Connection, turn_id: str) -> tuple[str, str] | None:
+    """ADR 0063: the message this turn read whole, as a mail record.
+
+    By ``mail(read=...)`` (ADR 0241) or ``gmail_get``. Only when the turn read exactly one
+    message in full: a turn that read several is a list, answered in words. The record is
+    headers, a blank line, then the body, and its id is the result's event uid.
     """
     gets = [
         event.payload
         for event in iter_events_for_turn(conn, turn_id, ("action.proposed",))
-        if event.payload.get("tool_name") == _MAIL_GET
-        and (event.payload.get("arguments") or {}).get("format", "full") == "full"
+        if _read_mail_id(event.payload) is not None
     ]
-    if len({str((get.get("arguments") or {}).get("messageId")) for get in gets}) != 1:
+    if len({_read_mail_id(get) for get in gets}) != 1:
         return None
     row = conn.execute(
         "SELECT event_uid, payload_json FROM events WHERE type = 'action.result_observed' "
         "AND json_extract(payload_json, '$.action_id') = ?",
         (gets[-1].get("action_id"),),
     ).fetchone()
+    message: Any
     try:
         output = json.loads(json.loads(row[1])["tool_output"]) if row else {}
-        message = json.loads(output.get("text", "")) if isinstance(output, dict) else None
+        if gets[-1].get("tool_name") == _MAIL:
+            # `mail` has cleaned the body; the card reads gmail_get's field names.
+            message = {**output, "date": output.get("at"), "threadId": output.get("thread_id")}
+            body = str(output.get("body") or "")
+        else:
+            message = json.loads(output.get("text", "")) if isinstance(output, dict) else None
+            body = mail_body(str(message.get("body") or "")) if isinstance(message, dict) else ""
     except (ValueError, KeyError, TypeError):
         return None  # a windowed (over-long) or failed answer shows no card
     if not isinstance(message, dict) or "error" in message or not message.get("id"):
@@ -4142,7 +4160,6 @@ def _fetched_mail(conn: sqlite3.Connection, turn_id: str) -> tuple[str, str] | N
         )
         if isinstance(message.get(key), str) and message[key]
     ]
-    body = mail_body(str(message.get("body") or ""))
     return str(row[0]), "\n".join(headers) + "\n\n" + body
 
 

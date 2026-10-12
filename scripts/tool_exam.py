@@ -73,7 +73,7 @@ from jarvis.decision.turn_guards import TurnCall, call_key, repeated_call, unbac
 from jarvis.deployment import load_env_file
 from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.job_ledger_tool import build_job_ledger_tool, build_record_application_tool
-from jarvis.execution.mail_inbox_tool import build_mail_inbox_tool
+from jarvis.execution.mail_tool import build_mail_tool
 from jarvis.execution.plugin_panel import plugin_panel_tools
 from jarvis.execution.tool_search import build_tool_search
 from jarvis.execution.tools import Tool, ToolContext, ToolRegistry, build_default_registry
@@ -164,7 +164,7 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
         *group,
         *build_tool_search(group, {s: sources.get(s, f"mcp-{s}") for s in servers}),
         *build_job_ledger_tool(dict), *build_record_application_tool(lambda _fields: ""),
-        *build_mail_inbox_tool(dict),
+        *build_mail_tool(dict, lambda *_: {}, str, UTC),
     ):
         registry.register(tool)
     return registry

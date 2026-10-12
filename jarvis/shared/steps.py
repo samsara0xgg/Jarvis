@@ -76,7 +76,7 @@ _KIND: Final[dict[str, str]] = {
     "write_file": "file",
     "open_path": "file",
     "open_url": "url",
-    "mail_inbox": "mail",
+    "mail": "mail",
     "write_mail_draft": "mail_write",
     "refresh_work_state": "work_state",
     "daily_work_report": "report",
