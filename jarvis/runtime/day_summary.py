@@ -29,6 +29,7 @@ from jarvis.runtime.ledger import DayDrafts, LedgerContext, ProseSettings, run_d
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import (
+    ALLEN_REACTION_SOURCE,
     PICTURE_NOTE_SOURCE,
     MemorySettings,
     append_day_summary,
@@ -80,7 +81,7 @@ class DaySummarySettings:
 
 def _speaker(source: str) -> str:
     """Who a verbatim line is from: him, her, or a picture's note (ADR 0223), which is neither."""
-    if source == "allen":
+    if source in ("allen", ALLEN_REACTION_SOURCE):
         return "user"
     return "picture note" if source == PICTURE_NOTE_SOURCE else "assistant"
 

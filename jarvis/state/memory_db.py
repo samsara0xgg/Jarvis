@@ -1068,16 +1068,38 @@ PICTURE_NOTE_SOURCE: Final = "picture_note"
 """The source of a picture's note (ADR 0223): memory, never part of what was said."""
 NOTE_ID_PREFIX: Final = "picture-note:"
 """A note's record id is this and the picture's attachment id."""
+ALLEN_REACTION_SOURCE: Final = "allen_reaction"
+JARVIS_REACTION_SOURCE: Final = "jarvis_reaction"
+"""The sources of a reaction's line (ADR 0256): one for each side, because a line is read in the
+role of whoever reacted. Neither is ever a row of the conversation window."""
+_NOT_MESSAGES: Final = (PICTURE_NOTE_SOURCE, ALLEN_REACTION_SOURCE, JARVIS_REACTION_SOURCE)
+_NOT_MESSAGES_SQL: Final = f"source NOT IN ({', '.join('?' * len(_NOT_MESSAGES))})"
 
 
 def history_role(source: str) -> str:
     """The prompt-history role of a record from ``source``.
 
-    His words are ``user``, and so is a picture's note: it is context about his picture, and as
-    ``assistant`` the model took it for words of its own and copied its header. Every other
-    source is ``assistant``.
+    His words are ``user``, and so are a picture's note and his reactions: the note is context
+    about his picture, and as ``assistant`` the model took it for words of its own and copied its
+    header. Every other source is ``assistant``, her reactions included.
     """
-    return "user" if source in ("allen", PICTURE_NOTE_SOURCE) else "assistant"
+    return "user" if source in ("allen", PICTURE_NOTE_SOURCE, ALLEN_REACTION_SOURCE) else (
+        "assistant"
+    )
+
+
+def message_record(path: Path, record_id: str) -> tuple[str, str] | None:
+    """``(source, words)`` of a record a reaction can sit on: his or her message, else ``None``.
+
+    Mail, a picture's note and reaction lines are not messages. Words are the record's text
+    without legacy markup, as a conversation row shows it.
+    """
+    with closing(open_memory_db(path)) as conn:
+        row = conn.execute(
+            "SELECT source, text FROM records WHERE id = ? AND source IN ('allen', 'jarvis')",
+            (record_id,),
+        ).fetchone()
+    return None if row is None else (str(row[0]), _plain(str(row[1])))
 
 CONVERSATION_PAGE_BYTES = 512 * 1024
 """The most text one page of :func:`conversation_rows` carries (UTF-8 bytes), one row at least."""
@@ -1114,7 +1136,8 @@ def conversation_rows(  # noqa: PLR0913 — the page's cursor and limits, all ke
 ) -> tuple[list[dict[str, object]], bool]:
     """A page of records for the conversation window, oldest first, each with its ``seq``.
 
-    Picture notes (:data:`PICTURE_NOTE_SOURCE`) are memory, not speech, so they are left out.
+    Picture notes (:data:`PICTURE_NOTE_SOURCE`) are memory, not speech, so they are left out,
+    and so are the lines of reactions (ADR 0256), which devices draw on the message instead.
 
     Each row of his (``source`` ``allen``) carries ``attachments``, the files that came with it
     (``{id, kind, name, gone}``; ``gone`` when ``attachments``, the store, no longer holds the
@@ -1132,8 +1155,8 @@ def conversation_rows(  # noqa: PLR0913 — the page's cursor and limits, all ke
     are under the floor).
     """
     limit = max(1, limit)
-    clauses = ["source <> ?"]
-    params: list[object] = [PICTURE_NOTE_SOURCE]
+    clauses = [_NOT_MESSAGES_SQL]
+    params: list[object] = [*_NOT_MESSAGES]
     if after:
         clauses.append("rowid > ?")
         params.append(after)
@@ -1178,8 +1201,9 @@ def conversation_rows(  # noqa: PLR0913 — the page's cursor and limits, all ke
         # Older than the page's first row (the last read, else the cursor), under the floor or
         # not; an empty default page asks whether there is any row.
         probe = conn.execute(
-            "SELECT 1 FROM records WHERE source <> ? AND (? IS NULL OR rowid < ?) LIMIT 1",
-            (PICTURE_NOTE_SOURCE, last, last),
+            f"SELECT 1 FROM records WHERE {_NOT_MESSAGES_SQL} "  # noqa: S608 - fixed literal
+            "AND (? IS NULL OR rowid < ?) LIMIT 1",
+            (*_NOT_MESSAGES, last, last),
         ).fetchone()
         return rows, probe is not None
 

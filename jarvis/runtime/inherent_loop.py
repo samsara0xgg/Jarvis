@@ -209,7 +209,7 @@ from jarvis.shared.realtime import (
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.shared.steps import EVENT_TYPES as STEP_EVENT_TYPES
 from jarvis.shared.steps import StepFold
-from jarvis.state import picture_notes, quiet_mode
+from jarvis.state import picture_notes, quiet_mode, reactions
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_highlights import day_notes
 from jarvis.state.day_line import DaySources, day_window, fold_day
@@ -3348,6 +3348,29 @@ def _add_steps(event_log: Path, rows: list[dict[str, object]]) -> None:
             conn.close()
     for row in rows:
         row.update(found.get(str(row["id"]), {}))
+
+
+def _add_reactions(event_log: Path, rows: list[dict[str, object]]) -> None:
+    """ADR 0256: put the reactions now on each message in a page of the conversation.
+
+    A message is his or her row; every one gets ``reactions`` (``{allen?, jarvis?}``, empty when
+    none). A log that cannot be read leaves the page without the field, never without rows.
+    """
+    ids = [str(row["id"]) for row in rows if row["source"] in ("allen", "jarvis")]
+    if not ids:
+        return
+    conn = open_runtime_event_log(event_log)
+    try:
+        found = reactions.current(conn, ids)
+    except sqlite3.Error:
+        LOGGER.warning("conversation: its messages' reactions could not be read", exc_info=True)
+        return
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    for row in rows:
+        if row["source"] in ("allen", "jarvis"):
+            row["reactions"] = found.get(str(row["id"]), {})
 
 
 def _phone_barge_in(runtime: JarvisRuntime, device: str) -> str:
@@ -7215,6 +7238,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 attachments=runtime.attachments,
             )
             _add_steps(runtime.runtime_paths.event_log, rows)
+            _add_reactions(runtime.runtime_paths.event_log, rows)
             return {"since": since, "rows": rows, "has_more": has_more}
 
         def _read_card() -> dict[str, Any]:
