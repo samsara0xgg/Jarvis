@@ -20,7 +20,12 @@ from typing import TYPE_CHECKING, Final
 
 from jarvis.shared import lang
 from jarvis.state.attachments import short_id
-from jarvis.state.memory_db import PICTURE_NOTE_SOURCE, append_record, open_memory_db
+from jarvis.state.memory_db import (
+    NOTE_ID_PREFIX,
+    PICTURE_NOTE_SOURCE,
+    append_record,
+    open_memory_db,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -33,7 +38,7 @@ SOURCE: Final = PICTURE_NOTE_SOURCE
 NOTE_MAX_CHARS: Final = 700
 """A note is short: what the picture shows, its text, and what he said about it."""
 
-_ID_PREFIX: Final = "picture-note:"
+_ID_PREFIX: Final = NOTE_ID_PREFIX
 _HEX_PREFIX: Final = re.compile(r"[0-9a-f]{8,32}")
 _HEADER_OPEN: Final = "[Picture note"
 _ATTACHED: Final = "[attached:"

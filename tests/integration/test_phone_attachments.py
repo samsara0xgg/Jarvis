@@ -539,7 +539,7 @@ class _CapturingModel:
 def _turn(  # noqa: PLR0913 — one keyword per thing a turn can be given.
     d: Daemon, said: str, ids: Sequence[str], *,
     live_context: tuple[str, ...] = (), tier0: bool = False, sent: list[str] | None = None,
-    history: Sequence[dict[str, str]] = (),
+    history: Sequence[dict[str, Any]] = (),
 ) -> tuple[_CapturingModel, str]:
     """Submit over HTTP, then run the stored intent through the real ``decide()``."""
     posted = d.remote.post(

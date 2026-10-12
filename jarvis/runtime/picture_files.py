@@ -3,13 +3,18 @@
 His record is linked to its files when it is written. Records written before that link existed are
 linked here, from the event log, for the files still kept (:func:`link_kept_pictures`).
 
-Layer rules: ``jarvis.state`` only; the runtime wires it (L5/L2).
+On a Claude preset a picture in history is sent by its Files API id, not its bytes.
+:class:`PictureFiles` uploads a picture the first time a request needs it and keeps the id beside
+the file (``Attachments.file_id``).
+Nothing here raises into a turn: a picture that cannot be uploaded rides as words for that request,
+and is not tried again for :data:`RETRY_AFTER_S`.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from typing import TYPE_CHECKING, Final
 
@@ -17,8 +22,10 @@ from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import link_attachments, linked_attachment_ids
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
+    from jarvis.decision.llm import LLMClient
     from jarvis.state.attachments import Attachments
 
 LOGGER = logging.getLogger(__name__)
@@ -64,3 +71,51 @@ def link_kept_pictures(
     if done:
         LOGGER.info("pictures: linked %d earlier records to their files", done)
     return done
+
+
+RETRY_AFTER_S: Final = 600.0
+"""A picture whose upload failed rides as words, and is not tried again for this long."""
+
+
+class PictureFiles:
+    """The Files API copies of the history pictures: made on first need, made on first need."""
+
+    def __init__(self, store: Attachments, *, clock: Callable[[], float] = time.monotonic) -> None:
+        """``store`` keeps the file ids; ``clock`` is monotonic seconds."""
+        self._store = store
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._failed: dict[str, float] = {}
+
+    def resolver(self, client: LLMClient) -> Callable[[str], str | None] | None:
+        """Attachment id -> file id for a request on ``client``; ``None`` off Anthropic.
+
+        Only a Claude preset takes a file id; any other provider keeps the marker and the note.
+        """
+        if client.provider != "anthropic":
+            return None
+        return lambda attachment_id: self._file_id(client, attachment_id)
+
+    def _file_id(self, client: LLMClient, attachment_id: str) -> str | None:
+        if (known := self._store.file_id(attachment_id)) is not None:
+            return known
+        with self._lock:  # the warm-up and the next turn may ask for the same picture at once
+            if (known := self._store.file_id(attachment_id)) is not None:
+                return known
+            if self._clock() < self._failed.get(attachment_id, 0.0):
+                return None
+            try:
+                ref = self._store.get(attachment_id)
+                path = self._store.path(attachment_id)
+                if ref is None or path is None or ref.kind != "image":
+                    return None
+                file_id = client.upload_file(ref.name, path.read_bytes(), ref.mime)
+            except Exception:  # noqa: BLE001 — a failed upload costs the picture, not the turn
+                LOGGER.warning(
+                    "pictures: could not upload %s; it rides as words", attachment_id[:8],
+                    exc_info=True,
+                )
+                self._failed[attachment_id] = self._clock() + RETRY_AFTER_S
+                return None
+            self._store.set_file_id(attachment_id, file_id)
+            return file_id

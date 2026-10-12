@@ -302,7 +302,9 @@ class MemoryContext(NamedTuple):
     """The prompt blocks rendered from memory.db for one turn."""
 
     profile: str  # [About the user] block (core memory) for the system prompt; "" when empty
-    history: tuple[dict[str, str], ...]  # summary, then one message per record, by role
+    # summary, then one message per record, by role; a message of his with pictures (ADR 0255)
+    # has a list of parts for its content, any other has text
+    history: tuple[dict[str, Any], ...]
     now: str  # the time line: changes every turn, so it goes after the history
 
 
@@ -735,12 +737,20 @@ def _now_line(moment: datetime, last_ts: str | None) -> str:
     return f"{line} · {' '.join(parts)} since the last exchange"
 
 
-def _append_turn(turns: list[dict[str, str]], role: str, content: str) -> None:
+def _append_turn(
+    turns: list[dict[str, Any]], role: str, content: str | list[dict[str, Any]],
+) -> None:
     """Add one message; a repeated role joins the previous message instead."""
-    if turns and turns[-1]["role"] == role:
-        turns[-1]["content"] = f"{turns[-1]['content']}\n{content}"
-    else:
+    if not (turns and turns[-1]["role"] == role):
         turns.append({"role": role, "content": content})
+        return
+    before = turns[-1]["content"]
+    if isinstance(before, str) and isinstance(content, str):
+        turns[-1]["content"] = f"{before}\n{content}"
+        return
+    parts = [{"type": "text", "text": before}] if isinstance(before, str) else list(before)
+    parts += [{"type": "text", "text": content}] if isinstance(content, str) else content
+    turns[-1]["content"] = parts
 
 
 def _hidden_records(shown: int, recent: int) -> int:
@@ -787,12 +797,55 @@ def _raw_cut(sizes: Sequence[int], max_chars: int) -> int:
     return cut
 
 
+HISTORY_PICTURES: Final[int] = 20
+"""The most pictures history carries as pictures (ADR 0255): the newest of the window."""
+
+PictureFileId = Callable[[str], str | None]
+"""ADR 0255: an attachment id -> the id its picture has at the provider, or ``None`` when it
+cannot ride (the file is gone, or could not be sent). It may upload."""
+
+
+def _image_links(conn: sqlite3.Connection, anchor: int) -> dict[str, list[str]]:
+    """Record id -> the ids of the pictures sent with it, for the records after ``anchor``."""
+    links: dict[str, list[str]] = {}
+    for record_id, attachment_id in conn.execute(
+        "SELECT a.record_id, a.attachment_id FROM record_attachments a "
+        "JOIN records r ON r.id = a.record_id WHERE r.rowid > ? AND a.kind = 'image' "
+        "ORDER BY r.rowid, a.pos",
+        (anchor,),
+    ):
+        links.setdefault(str(record_id), []).append(str(attachment_id))
+    return links
+
+
+def _riding(
+    shown: Sequence[Record], links: Mapping[str, Sequence[str]], file_id: PictureFileId,
+) -> dict[str, list[tuple[str, str]]]:
+    """Record id -> (attachment id, file id) of the pictures that ride, the newest 20 in all."""
+    riding: dict[str, list[tuple[str, str]]] = {}
+    left = HISTORY_PICTURES
+    for record_id, *_ in reversed(shown):
+        for attachment_id in reversed(links.get(record_id, ())):
+            if left and (found := file_id(attachment_id)) is not None:
+                riding.setdefault(record_id, []).insert(0, (attachment_id, found))
+                left -= 1
+    return riding
+
+
 def _append_records(
-    turns: list[dict[str, str]], shown: Sequence[Record], sent: Mapping[str, str],
+    turns: list[dict[str, Any]], shown: Sequence[Record], sent: Mapping[str, str],
+    riding: Mapping[str, Sequence[tuple[str, str]]] | None = None,
 ) -> None:
-    """Each record as its message: as sent when kept, else its words, a day marker on a new day."""
+    """Each record as its message: as sent when kept, else its words, a day marker on a new day.
+
+    A record of his with pictures in ``riding`` carries them after his words as ``image_file``
+    parts; the note of a picture that rides is left out, since the picture says more (ADR 0255).
+    """
     marked_day = None
+    ridden = {a for pictures in (riding or {}).values() for a, _ in pictures}
     for record_id, ts, source, text in shown:
+        if source == PICTURE_NOTE_SOURCE and record_id.removeprefix(NOTE_ID_PREFIX) in ridden:
+            continue
         role = history_role(source)
         day = datetime.fromisoformat(ts).date()
         as_sent = sent.get(record_id)
@@ -804,13 +857,21 @@ def _append_records(
                 content = f"{lang.day_marker(day)}\n{content}"
         if role == "user":
             marked_day = day
-        _append_turn(turns, role, content)
+        pictures = (riding or {}).get(record_id)
+        _append_turn(
+            turns, role,
+            content if not pictures else [
+                {"type": "text", "text": content},
+                *({"type": "image_file", "file_id": found} for _, found in pictures),
+            ],
+        )
 
 
 def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
     path: Path, *, exclude_id: str, since: str = "", now: datetime | None = None,
     recent: int = 0, context: str = "rolling", raw_max_chars: int = 40000,
     ledger: Ledger | None = None, places: PlacesBlock | None = None,
+    pictures: PictureFileId | None = None,
 ) -> MemoryContext:
     """Render the decision-path prompt blocks in one consistent read.
 
@@ -841,6 +902,10 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
 
     ``places`` (ADR 0234) is asked for the ``[Places he keeps]`` block, which follows the core
     memory ahead of the ledger's text.
+
+    ``pictures`` (ADR 0255) says which pictures ride the history as pictures: the newest
+    :data:`HISTORY_PICTURES` in the window for which it returns a file id. Without it history
+    is words only, as before.
     """
     moment = now or local_now()
     with closing(open_memory_db(path)) as conn:
@@ -862,11 +927,12 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
         last = conn.execute(
             "SELECT ts FROM records WHERE id != ? ORDER BY rowid DESC LIMIT 1", (exclude_id,),
         ).fetchone()
+        links = _image_links(conn, anchor) if pictures is not None else {}
     profile_block = "\n".join(["[About the user]", *profile]) if profile else ""
     profile_block = "\n\n".join(
         part for part in (profile_block, "" if places is None else places(moment)) if part
     )
-    turns: list[dict[str, str]] = []
+    turns: list[dict[str, Any]] = []
     if day_head:
         _append_turn(turns, "user", day_head[1])
         _append_turn(
@@ -901,7 +967,8 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
             f"[Earlier conversation · {hidden} records before {first_ts} are not shown · {where}]",
         )
         shown = shown[hidden:]
-    _append_records(turns, shown, sent)
+    riding = _riding(shown, links, pictures) if pictures is not None else None
+    _append_records(turns, shown, sent, riding)
     last_ts = shown[-1][1] if shown else None
     if not shown:
         if day_head and last:
@@ -984,6 +1051,8 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
 
 PICTURE_NOTE_SOURCE: Final = "picture_note"
 """The source of a picture's note (ADR 0223): memory, never part of what was said."""
+NOTE_ID_PREFIX: Final = "picture-note:"
+"""A note's record id is this and the picture's attachment id."""
 
 
 def history_role(source: str) -> str:

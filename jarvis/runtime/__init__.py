@@ -193,6 +193,7 @@ from jarvis.runtime.ledger import LedgerContext, LedgerSettings
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.now_block import KEPT, CalendarCache, calendar_line, doing_now_line
+from jarvis.runtime.picture_files import PictureFiles
 from jarvis.runtime.picture_notes import PictureNotes
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.plugins import Plugins, load_plugins
@@ -243,6 +244,7 @@ from jarvis.state.event_log import (
 from jarvis.state.ledger import LedgerSources, TerminalScreen
 from jarvis.state.memory_db import (
     MemorySettings,
+    PictureFileId,
     PlacesBlock,
     SessionSettings,
     append_record,
@@ -750,6 +752,8 @@ class JarvisRuntime:
     attachments: Attachments | None = None
     # ADR 0223: writes the note of each picture after its turn. None without a vision preset.
     picture_notes: PictureNotes | None = None
+    # ADR 0255: the Files API copies of the pictures in history.
+    picture_files: PictureFiles | None = None
 
 
 @dataclass(frozen=True)
@@ -3123,6 +3127,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         settings_drift=settings_drift,
         phone_events=phone_events,
         attachments=attachments,
+        picture_files=PictureFiles(attachments),
         picture_notes=(
             None if vision_client is None else PictureNotes(
                 memory_db=memory.db_path,
@@ -3253,6 +3258,7 @@ def _warm_next_prefix(  # noqa: PLR0913 — the next turn's request: client, pro
                 raw_max_chars=runtime.session.context_raw_max_chars,
                 ledger=runtime.ledger,
                 places=runtime.places_block,
+                pictures=_history_pictures(runtime, llm_client),
             ).history
             with contextlib.closing(
                 open_runtime_event_log(runtime.runtime_paths.event_log),
@@ -4152,6 +4158,13 @@ def _record_words(store: Attachments | None, payload: Mapping[str, Any]) -> str:
     return f"{words}\n{marker(store.get(str(one)) for one in ids)}"
 
 
+def _history_pictures(runtime: JarvisRuntime, client: LLMClient) -> PictureFileId | None:
+    """ADR 0255: how history gets a picture's file id on ``client``; none off a Claude preset."""
+    if runtime.picture_files is None:
+        return None
+    return runtime.picture_files.resolver(client)
+
+
 def _record_attachments(
     store: Attachments | None, payload: Mapping[str, Any],
 ) -> list[AttachmentRef]:
@@ -4438,20 +4451,6 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             audio_path=audio_ref if isinstance(audio_ref, str) else None,
             attachments=_record_attachments(runtime.attachments, user_intent_event.payload),
         )
-    # One consistent read of memory.db for this turn's prompt: the history
-    # block goes ahead of every per-turn note, the time line after them.
-    memory_context = (
-        render_context(
-            memory.db_path, exclude_id=memory_exclude_id, since=runtime.session.history_since,
-            recent=runtime.session.recent_records,
-            context=runtime.session.context,
-            raw_max_chars=runtime.session.context_raw_max_chars,
-            ledger=runtime.ledger,
-            places=runtime.places_block,
-        )
-        if memory is not None
-        else None
-    )
     # docs/plans/replay-as-sent-proposal.md: this turn's message is kept as
     # sent for later histories; a card's button wrote no row to keep it under.
     record_sent_message: Callable[[str], None] | None = None
@@ -4480,6 +4479,23 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             lambda: runtime.conn, close_after=False,
             committed_event_bus=runtime.committed_event_bus,
         )
+    # One consistent read of memory.db for this turn's prompt: the history
+    # block goes ahead of every per-turn note, the time line after them.
+    memory_context = (
+        render_context(
+            memory.db_path, exclude_id=memory_exclude_id, since=runtime.session.history_since,
+            recent=runtime.session.recent_records,
+            context=runtime.session.context,
+            raw_max_chars=runtime.session.context_raw_max_chars,
+            ledger=runtime.ledger,
+            places=runtime.places_block,
+            pictures=_history_pictures(
+                runtime, run.request_client if run is not None else runtime.llm_client,
+            ),
+        )
+        if memory is not None
+        else None
+    )
     suspended = False
     answered = ""  # the answer text, for the note of a picture sent with this turn (ADR 0223)
 

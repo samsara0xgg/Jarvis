@@ -1,7 +1,8 @@
 """Anthropic Messages request building for the one chat-completions history shape.
 
 Callers keep a single history vocabulary (``role: tool``, assistant ``tool_calls``,
-``image_url`` parts, a ``phase`` label); this module turns it into what
+``image_url`` parts, ``image_file`` parts for an uploaded picture, a ``phase`` label); this
+module turns it into what
 /v1/messages takes, and builds the request body: structured output from the
 Responses ``text.format``, adaptive thinking with an effort, and prompt caching.
 
@@ -68,6 +69,20 @@ def _image(url: str) -> dict[str, Any]:
     return {"type": "image", "source": {"type": "url", "url": url}}
 
 
+FILES_BETA: Final[str] = "files-api-2025-04-14"
+"""The beta header a request needs to name an uploaded file in an image block (ADR 0255)."""
+
+
+def files_headers(body: Mapping[str, Any]) -> dict[str, str]:
+    """The extra headers ``body`` needs: the Files beta when an image block names a file."""
+    for message in body.get("messages") or ():
+        content = message.get("content")
+        for block in content if isinstance(content, list) else ():
+            if block.get("type") == "image" and block.get("source", {}).get("type") == "file":
+                return {"anthropic-beta": FILES_BETA}
+    return {}
+
+
 def _user_blocks(content: object) -> list[dict[str, Any]]:
     if isinstance(content, str):
         return [{"type": "text", "text": content}] if content.strip() else []
@@ -78,6 +93,10 @@ def _user_blocks(content: object) -> list[dict[str, Any]]:
                 blocks.append({"type": "text", "text": part["text"]})
         elif part.get("type") == "image_url":
             blocks.append(_image(part["image_url"]["url"]))
+        elif part.get("type") == "image_file":  # a picture already uploaded (ADR 0255)
+            blocks.append(
+                {"type": "image", "source": {"type": "file", "file_id": part["file_id"]}},
+            )
     return blocks
 
 

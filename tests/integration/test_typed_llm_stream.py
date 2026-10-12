@@ -173,6 +173,7 @@ class _SSE:
         self.received = asyncio.Event()
         self.peer_closed = asyncio.Event()
         self.body: dict[str, Any] = {}
+        self.headers: dict[str, str] = {}
         self.path = ""
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -186,6 +187,7 @@ class _SSE:
             lines = header.decode().split("\r\n")
             self.path = lines[0].split()[1]
             fields = dict(line.split(": ", 1) for line in lines[1:] if ": " in line)
+            self.headers = {name.lower(): value for name, value in fields.items()}
             body = await reader.readexactly(int(fields["Content-Length"]))
             self.body = json.loads(body)
             self.received.set()

@@ -664,7 +664,7 @@ class DecideContext:
     # and the per-turn time line, rendered by the composition root from
     # memory.db. The history goes first in the prompt and only grows at
     # its end between compactions; the time line goes after it.
-    history: Sequence[Mapping[str, str]] = ()
+    history: Sequence[Mapping[str, Any]] = ()
     time_note: str | None = None
     # The plugins connected at this turn, one line. History replays older
     # answers that said an app was not connected; this line is the current
@@ -1240,11 +1240,18 @@ def _insert_system_notes(
             break
     head = [dict(turn) for turn in ctx.history]
     if head and head[-1]["role"] == "user" and messages and messages[0].get("role") == "user":
-        messages[0]["content"] = f"{head.pop()['content']}\n\n{messages[0]['content']}"
+        tail = head.pop()["content"]
+        messages[0]["content"] = (  # a tail with pictures (ADR 0255) is a list of parts
+            f"{tail}\n\n{messages[0]['content']}" if isinstance(tail, str)
+            else [*tail, {"type": "text", "text": messages[0]["content"]}]
+        )
     messages[0:0] = head
     # ADR 0211: the pictures go last, once the text is final, on this turn's message only.
     if live is not None and (parts := image_parts(attached)):
-        live["content"] = [{"type": "text", "text": live["content"]}, *parts]
+        body = live["content"]
+        live["content"] = [
+            *(body if isinstance(body, list) else [{"type": "text", "text": body}]), *parts,
+        ]
     return line
 
 
@@ -2916,7 +2923,7 @@ def open_prefix_warm(  # noqa: PLR0913 — the next request's whole prefix, plus
     *,
     llm_client: LLMClient,
     system_prompt: str,
-    history: Sequence[Mapping[str, str]],
+    history: Sequence[Mapping[str, Any]],
     tool_registry: ToolRegistryLike,
     responses: bool,
     committed_event_bus: CommittedEventBus | None = None,

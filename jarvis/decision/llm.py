@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 
-from jarvis.decision.llm_anthropic import remember_thinking, request_fields
+from jarvis.decision.llm_anthropic import files_headers, remember_thinking, request_fields
 from jarvis.decision.llm_io import stream_openai, warm_openai
 from jarvis.decision.llm_stream import LLMStreamHandle, StreamNormalizer
 from jarvis.shared import llm_io_log
@@ -1133,6 +1133,25 @@ class LLMClient:
         self._anthropic_client = anthropic.Anthropic(**self._stream_options())
         return self._anthropic_client
 
+    def upload_file(self, name: str, data: bytes, mime: str) -> str:
+        """Upload one file to Anthropic's Files API (ADR 0255); its file id.
+
+        Raises on any failure; the caller falls back to words.
+        """
+        if self._provider != "anthropic":
+            msg = "the Files API is Anthropic's; this client is not on an Anthropic preset"
+            raise ValueError(msg)
+        return str(self._get_anthropic_client().beta.files.upload(file=(name, data, mime)).id)
+
+    def delete_file(self, file_id: str) -> None:
+        """Delete an uploaded file (ADR 0255); a file already gone is not an error."""
+        import anthropic  # noqa: PLC0415 — lazy SDK import (see module docstring)
+
+        try:
+            self._get_anthropic_client().beta.files.delete(file_id)
+        except anthropic.NotFoundError:
+            LOGGER.debug("Files API: %s was already gone", file_id)
+
     def _chat_anthropic(
         self,
         *,
@@ -1163,7 +1182,7 @@ class LLMClient:
             streaming=False,
             measurement_semantics="immediately_before_sdk_call_not_network_send",
         )
-        response = client.messages.create(**kwargs)
+        response = client.messages.create(**kwargs, extra_headers=files_headers(kwargs) or None)
 
         usage = getattr(response, "usage", None)
         self._last_metadata["provider"] = "anthropic"

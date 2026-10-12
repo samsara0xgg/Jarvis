@@ -9,7 +9,8 @@ the reading loop, so the stream handle, its accounting and its trace context
 stay on the thread that reads it. :func:`warm_openai` opens a connection
 while Allen is still talking.
 
-Layer rules: stdlib + ``openai`` + ``anthropic`` + ``httpx``; no ``jarvis.*`` import.
+Layer rules: stdlib + ``openai`` + ``anthropic`` + ``httpx``; no ``jarvis.*`` import but
+``llm_anthropic``, which is stdlib only.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ import logging
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Final
+
+from jarvis.decision.llm_anthropic import files_headers
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
@@ -108,7 +111,9 @@ async def _pump(
     try:
         client = _IO.client(options, provider)
         if provider == "anthropic":
-            response = await client.messages.create(**body)
+            response = await client.messages.create(
+                **body, extra_headers=files_headers(body) or None,
+            )
         else:
             response = await (
                 client.responses.create(**body)

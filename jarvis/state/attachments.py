@@ -25,6 +25,9 @@ if TYPE_CHECKING:
 
 ATTACHMENTS_DIRNAME: Final = "attachments"
 """Under ``artifacts/`` in the runtime root."""
+FILE_IDS_DIRNAME: Final = "attachment-files"
+"""Beside it: one tiny file per picture, named by the picture's id, holding its Files API id
+(ADR 0255). Not under the age sweep: the picture's life ends it, not its own age."""
 
 MAX_IMAGE_BYTES: Final = 4 * 1024 * 1024
 """The cap a terminal's screenshot already has (ADR 0170)."""
@@ -191,6 +194,26 @@ class Attachments:
         with os.fdopen(descriptor, "wb") as sink:
             sink.write(data)
         return AttachmentRef(attachment_id, kind, f"{stem}.{ext}", len(data), mime)
+
+    @property
+    def _file_ids(self) -> Path:
+        return self.directory.parent / FILE_IDS_DIRNAME
+
+    def file_id(self, attachment_id: str) -> str | None:
+        """The Files API id kept for this picture, or ``None`` when it was never uploaded."""
+        if not valid_id(attachment_id):
+            return None
+        try:
+            return (self._file_ids / attachment_id).read_text(encoding="utf-8").strip() or None
+        except OSError:
+            return None
+
+    def set_file_id(self, attachment_id: str, file_id: str) -> None:
+        """Keep ``file_id`` for this picture (ADR 0255)."""
+        if not valid_id(attachment_id):
+            return
+        self._file_ids.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (self._file_ids / attachment_id).write_text(file_id, encoding="utf-8")
 
     def _used_bytes(self) -> int:
         if not self.directory.is_dir():
