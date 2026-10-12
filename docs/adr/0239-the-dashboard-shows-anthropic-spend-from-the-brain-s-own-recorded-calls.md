@@ -34,7 +34,10 @@ Its limits:
 
 - A refusal is kept as `official_error` (the HTTP status) and not retried for an hour; no
   key is stored or logged, and the key goes only in a request header.
-- The key reaches the brain as OpenAI's does: pasted under Settings, Accounts, checked by
+- An organization-scope key can read the report but cannot call a model without a workspace
+  header, so Claude calls keep their own key (`ANTHROPIC_API_KEY`, a Default-workspace key)
+  and the report is read with a second one (`ANTHROPIC_ADMIN_KEY`).
+- Both keys reach the brain as OpenAI's does: pasted under Settings, Accounts, checked by
   listing one model, and kept in the brain's own store (the Keychain, or the `env` file on
   the Pi).
 - With no `official` there is no balance, only the recorded figure and its date.

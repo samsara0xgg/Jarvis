@@ -181,11 +181,13 @@ def test_an_anthropic_key_is_kept_only_when_anthropic_lists_models_with_it(
         runtime_setup, "save_key", lambda _root, name, key: saved.append((name, key)),
     )
     seen: list[str] = []
+    urls: list[str] = []
     refuse = True
 
     def urlopen(request: Any, timeout: float) -> Any:  # noqa: ANN401
         del timeout
         seen.append(request.get_header("X-api-key"))
+        urls.append(request.full_url)
         if refuse:
             raise urllib.error.HTTPError(request.full_url, 401, "no", None, None)  # type: ignore[arg-type]
         return io.BytesIO(b"{}")
@@ -199,7 +201,12 @@ def test_an_anthropic_key_is_kept_only_when_anthropic_lists_models_with_it(
     refuse = False
     assert client.post("/inherent/setup/key", json=body).json()["ok"] is True
     assert saved == [("ANTHROPIC_API_KEY", "sk-ant-x")]
-    assert seen == ["sk-ant-x", "sk-ant-x"]
+    assert seen[:2] == ["sk-ant-x", "sk-ant-x"]
+
+    usage = {"provider": "anthropic_usage", "key": "sk-ant-org"}
+    assert client.post("/inherent/setup/key", json=usage).json()["ok"] is True
+    assert saved[-1] == ("ANTHROPIC_ADMIN_KEY", "sk-ant-org")
+    assert "cost_report" in urls[-1]
 
 
 def _status_error(cls: type[openai.APIStatusError], status: int, body: object) -> BaseException:

@@ -40,6 +40,9 @@ KEY_ENVS: Final[dict[str, str]] = {
     "minimax": "MINIMAX_API_KEY",
     "tavily": "TAVILY_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
+    # An organization-scope key: it reads the account's cost, and cannot call a model without
+    # a workspace header, so it is a second key beside the one the brain calls Claude with.
+    "anthropic_usage": "ANTHROPIC_ADMIN_KEY",
 }
 _TIMEOUT_S: Final[float] = 20.0
 _MAX_NAME: Final[int] = 40
@@ -54,6 +57,7 @@ _FIRST_LINE_PROMPT: Final[str] = (
 )
 _TAVILY_SEARCH: Final[str] = "https://api.tavily.com/search"
 _ANTHROPIC_MODELS: Final[str] = "https://api.anthropic.com/v1/models?limit=1"
+_ANTHROPIC_COST: Final[str] = "https://api.anthropic.com/v1/organizations/cost_report?limit=1&starting_at="
 
 
 class SetupError(ValueError):
@@ -246,8 +250,13 @@ class Setup:
             )
         elif provider == "minimax":
             answer = self._check_minimax(key)
-        elif provider == "anthropic":
-            answer = self._check_anthropic(key)
+        elif provider in ("anthropic", "anthropic_usage"):
+            answer = self._check_anthropic(
+                key,
+                _ANTHROPIC_MODELS
+                if provider == "anthropic"
+                else _ANTHROPIC_COST + time.strftime("%Y-%m-%dT00:00:00Z", time.gmtime()),
+            )
         else:
             answer = self._check_tavily(key)
         # Only a key the service accepted counts: connect (and, for OpenAI, a real answer).
@@ -388,10 +397,10 @@ class Setup:
             return {"checks": [_check("connect", reason=_http_reason(exc))]}
         return {"checks": [_check("connect")]}
 
-    def _check_anthropic(self, key: str) -> dict[str, Any]:
-        """connect: list one model, which costs nothing and says whether the key works."""
-        request = urllib.request.Request(  # noqa: S310 — fixed https endpoint.
-            _ANTHROPIC_MODELS, headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+    def _check_anthropic(self, key: str, url: str) -> dict[str, Any]:
+        """connect: list one model or read one cost day; both are free and say whether it works."""
+        request = urllib.request.Request(  # noqa: S310 — fixed https endpoints.
+            url, headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
         )
         try:
             urllib.request.urlopen(request, timeout=_TIMEOUT_S).close()  # noqa: S310
