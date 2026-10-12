@@ -1,4 +1,4 @@
-"""ADR 0242: what he and Jarvis said is read with one tool.
+"""ADR 0243: what he and Jarvis said is read with one tool.
 
 A real memory.db (records and day summaries, written through the store's own opener) is read by
 the real tool under a fixed clock; no model, no network. Each check asserts what the tool returns

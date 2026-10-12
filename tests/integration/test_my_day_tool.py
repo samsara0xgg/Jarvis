@@ -1,4 +1,4 @@
-"""ADR 0243 — ``my_day``: what he did and is doing, as one read-only tool.
+"""ADR 0244 — ``my_day``: what he did and is doing, as one read-only tool.
 
 Real memory.db, Event Log and a TimeSink-shaped sqlite in ``tmp_path`` (the ledger's own test
 world), the brain's terminal link where one is needed; nothing is asked of a model. Each check is

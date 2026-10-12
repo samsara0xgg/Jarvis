@@ -7,7 +7,7 @@ a search returns the best names under
 (ADR 0056), and the decision loop adds those tools to the model's tool list
 for the rest of the turn. The search never runs a found tool.
 
-A deferred tool that a tool on the menu has taken over (``Tool.supersedes``, ADR 0241) is found
+A deferred tool that a tool on the menu has taken over (``Tool.supersedes``, ADR 0242) is found
 but not loaded: the result says which tool to call instead. So is one the query names outright.
 """
 

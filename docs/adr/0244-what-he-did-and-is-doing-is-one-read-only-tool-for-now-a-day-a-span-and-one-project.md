@@ -1,4 +1,4 @@
-# ADR 0243 — What he did and is doing is one read-only tool for now, a day, a span and one project
+# ADR 0244 — What he did and is doing is one read-only tool for now, a day, a span and one project
 
 **Status:** Accepted
 **Date:** 2026-10-11
@@ -12,7 +12,7 @@
   L1 write that runs a paid analyst over the day's evidence and saves a new work state, ADR 0023).
 - Cursors and references are strings the model must copy exactly. On the Pi brain, 2026-10-11,
   27 cursor errors were counted across `get_briefing`, `recall`, `read_records` and
-  `search_records` (ADR 0242).
+  `search_records` (ADR 0243).
 - "What am I doing now" and "what did I do today" called the analyst: seconds of wait and a model
   call each time. Nothing re-analyses in the background on a brain (ADR 0180: its moment has no
   TimeSink) and `work_state.auto` is off by default, so the saved state is as old as the last
@@ -45,7 +45,7 @@ deferred.
 - **`my_day()` runs `refresh_work_state` first.** It makes the cheapest and most frequent question
   ("what did I do today") a paid model call plus seconds of silence; the ledger answers it from
   data in milliseconds, and the analyst's claim is still shown, labelled with its age.
-- **Keep the four tools and shorten their descriptions.** Every cursor error counted in ADR 0242
+- **Keep the four tools and shorten their descriptions.** Every cursor error counted in ADR 0243
   happened with the cursor rules already in the descriptions; `query_activity` alone pages 48,000
   characters of rows no voice answer needs.
 - **A new reader of TimeSink inside the tool.** It would count active time a second way, and a
@@ -54,7 +54,7 @@ deferred.
 - **A model call that writes a summary of a span on demand.** It adds seconds and cost to a read
   that the saved reports (ADR 0101) and the figures already answer for every day.
 - **`refresh_work_state` stays on the menu beside `my_day`.** Two entries for "what is he doing"
-  is the choice that went wrong with six conversation tools (ADR 0242); the Dashboard's refresh
+  is the choice that went wrong with six conversation tools (ADR 0243); the Dashboard's refresh
   route and the background re-analysis (ADR 0180) call the one refresh workflow themselves.
 
 ## Consequences
@@ -69,6 +69,6 @@ deferred.
 - Commits are the ones the Event Log saw: those made while no terminal observed the repository
   are not in a day's figures.
 - The four old tools stay registered because tests dispatch them by name; a model that names one
-  to `tool_search` gets ADR 0241's
+  to `tool_search` gets ADR 0242's
   `Tool.supersedes` note pointing at the `my_day` call. The `daily_work_report` tool's
   description, which is the skill's, now sends "what am I doing" and saved reports to `my_day`.

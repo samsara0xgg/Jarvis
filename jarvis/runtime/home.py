@@ -412,7 +412,7 @@ class Home:
         return {"unread": sorted(letters, key=lambda one: str(one["received"]), reverse=True)}
 
     def gmail(self, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
-        """One call to the ``gmail`` server answered as JSON (ADR 0241: the model's ``mail``).
+        """One call to the ``gmail`` server answered as JSON (ADR 0242: the model's ``mail``).
 
         A LookupError when Gmail is not connected; the server's own failure, sign-in
         included, is a ToolError.

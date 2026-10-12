@@ -1,4 +1,4 @@
-"""ADR 0242: what he and Jarvis said is one read-only tool that searches, summarizes and opens."""
+"""ADR 0243: what he and Jarvis said is one read-only tool that searches, summarizes and opens."""
 
 from __future__ import annotations
 

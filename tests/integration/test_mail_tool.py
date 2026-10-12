@@ -1,4 +1,4 @@
-"""ADR 0241: the model reads, searches and opens his mail with one tool.
+"""ADR 0242: the model reads, searches and opens his mail with one tool.
 
 A scripted Gmail layer answers like the Workspace server (JSON in a text block, a failure as
 ``{"error": ...}``) behind the real ``Home``, so the tool runs the path the daemon wires. Each
@@ -273,7 +273,7 @@ def test_a_page_past_the_end_is_a_sentence_not_an_error() -> None:
 
 
 def test_every_page_call_differs_from_the_last_for_the_repeat_guard() -> None:
-    """ADR 0239: page=3 is not a repeat of page=2, while asking for page=2 again is."""
+    """ADR 0240: page=3 is not a repeat of page=2, while asking for page=2 again is."""
     turn = [
         TurnCall(name="mail", read_only=True, ok=True, key=call_key({"query": "co-op"})),
         TurnCall(name="mail", read_only=True, ok=True, key=call_key({"query": "co-op", "page": 2})),
@@ -515,7 +515,7 @@ def test_the_menu_offers_mail_and_not_the_three_tools_it_replaces(tmp_path: Path
 
 
 def test_tool_search_in_the_shipped_registry_sends_gmail_reads_to_mail(tmp_path: Path) -> None:
-    """ADR 0241: tool_search finds the Gmail reads, loads only the write tool, and names `mail`."""
+    """ADR 0242: tool_search finds the Gmail reads, loads only the write tool, and names `mail`."""
     recorded = tmp_path / "mcp-tools.json"
     recorded.write_text(json.dumps({
         name: {"name": name, "description": "d", "input_schema": {"type": "object"}}

@@ -1,6 +1,6 @@
 # ADR 0190 — The unread mail list is read by one model tool
 
-**Status:** Superseded-by-0241
+**Status:** Superseded-by-0242
 **Date:** 2026-10-07
 **Supersedes:** none
 

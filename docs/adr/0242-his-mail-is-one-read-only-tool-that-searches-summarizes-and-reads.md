@@ -1,4 +1,4 @@
-# ADR 0241 — His mail is one read-only tool that searches, summarizes and reads
+# ADR 0242 — His mail is one read-only tool that searches, summarizes and reads
 
 **Status:** Accepted
 **Date:** 2026-10-11
@@ -37,7 +37,7 @@ those two calls.
   per-message habit and the separate overview, and the exam's two failing shapes stay: the loop
   and the redundant `tool_search`.
 - **A `more: true` flag for the next page.** Every page call then has the same arguments, and
-  the repeat guard (ADR 0239, `turn_guards.repeated_call`, keyed on name and arguments) answers
+  the repeat guard (ADR 0240, `turn_guards.repeated_call`, keyed on name and arguments) answers
   the third one with its repeat note instead of running it; a page number differs on each call.
 - **Separate `mail_search`, `mail_read` and the overview.** Three entries again, each with its
   own schema on every request, and the model chooses between them before it has seen a result;

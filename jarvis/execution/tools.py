@@ -408,7 +408,7 @@ class Tool:
     supersedes: Mapping[str, str] = field(default_factory=dict)
     """Deferred tools whose job this one now does, each with how to call this one instead
     (``{"mcp__gmail__gmail_search": "mail(query=...)"}``). While this tool is on the menu,
-    ``tool_search`` loads none of them and says to call this one (ADR 0241)."""
+    ``tool_search`` loads none of them and says to call this one (ADR 0242)."""
 
 
 def tool(  # noqa: PLR0913 — one keyword per Tool field.

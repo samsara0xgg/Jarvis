@@ -1,4 +1,4 @@
-"""ADR 0241: his mail is one read-only tool that searches, summarizes and reads."""
+"""ADR 0242: his mail is one read-only tool that searches, summarizes and reads."""
 
 from __future__ import annotations
 

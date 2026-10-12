@@ -1794,19 +1794,19 @@ def _register_job_ledger(registry: ToolRegistry, job_mail: JobMail | None) -> No
 
 
 def _register_mail(registry: ToolRegistry, home: Home, zone: tzinfo) -> None:
-    """``mail`` (ADR 0241): the overview ``GET /inherent/mail`` serves, a search, one message."""
+    """``mail`` (ADR 0242): the overview ``GET /inherent/mail`` serves, a search, one message."""
     for tool in build_mail_tool(home.mail, home.gmail, mail_text, zone):
         registry.register(tool)
 
 
 def _register_conversation(registry: ToolRegistry, memory_db: Path, zone: tzinfo) -> None:
-    """``conversation`` (ADR 0242): his words and hers, searched, summarized by day, opened."""
+    """``conversation`` (ADR 0243): his words and hers, searched, summarized by day, opened."""
     for tool in build_conversation_tool(memory_db, zone):
         registry.register(tool)
 
 
 def _register_my_day(registry: ToolRegistry, sources: LedgerSources) -> None:
-    """``my_day`` (ADR 0243): today and what he does now, a day, a span, one project."""
+    """``my_day`` (ADR 0244): today and what he does now, a day, a span, one project."""
     for tool in build_my_day_tool(sources):
         registry.register(tool)
 
@@ -4145,7 +4145,7 @@ def _read_mail_id(action: Mapping[str, Any]) -> str | None:
 def _fetched_mail(conn: sqlite3.Connection, turn_id: str) -> tuple[str, str] | None:
     """ADR 0063: the message this turn read whole, as a mail record.
 
-    By ``mail(read=...)`` (ADR 0241) or ``gmail_get``. Only when the turn read exactly one
+    By ``mail(read=...)`` (ADR 0242) or ``gmail_get``. Only when the turn read exactly one
     message in full: a turn that read several is a list, answered in words. The record is
     headers, a blank line, then the body, and its id is the result's event uid.
     """

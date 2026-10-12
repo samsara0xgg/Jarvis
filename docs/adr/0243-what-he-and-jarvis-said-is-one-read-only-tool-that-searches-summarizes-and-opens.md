@@ -1,4 +1,4 @@
-# ADR 0242 — What he and Jarvis said is one read-only tool that searches, summarizes and opens
+# ADR 0243 — What he and Jarvis said is one read-only tool that searches, summarizes and opens
 
 **Status:** Accepted
 **Date:** 2026-10-11
@@ -20,7 +20,7 @@
   before `order=oldest` existed (live 2026-10-02).
 - Every past day already has one derived summary with a `### Topics` list, written each night
   (ADR 0142); today has none, and a day under 1500 characters is stored word for word.
-- The repeat guard (ADR 0239, `turn_guards.repeated_call`) answers a call identical to an earlier
+- The repeat guard (ADR 0240, `turn_guards.repeated_call`) answers a call identical to an earlier
   one with its repeat note; a page number differs on each call.
 - A relevance ranking was added to `search_records` because a date digit shared by hundreds of
   lines buried the line holding the rare words (live 2026-10-03).
@@ -43,7 +43,7 @@ deferred.
   turn happened with the cursor rules already in the descriptions; a cursor the model copies is
   the failure, whatever the text says.
 - **Hold the cursor on the server and let the model send `more: true`.** Every page call then has
-  the same arguments, and the repeat guard (ADR 0239) answers the third with its repeat note
+  the same arguments, and the repeat guard (ADR 0240) answers the third with its repeat note
   instead of running it; a page number differs on each call.
 - **Separate `conversation_search`, `conversation_day` and `conversation_open`.** Three entries
   and three schemas on every request, and the model chooses among them before it has seen any
@@ -69,4 +69,4 @@ deferred.
 - The three old tools stay registered because tests dispatch them by name, and the history header
   that `render_context` writes still names them; it is changed with the next prompt revision.
   A model that sends `tool_search` a query naming one of them (they are built-ins, not in its
-  index) gets the note of ADR 0241's `Tool.supersedes` pointing at the `conversation` call.
+  index) gets the note of ADR 0242's `Tool.supersedes` pointing at the `conversation` call.

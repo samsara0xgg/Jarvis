@@ -1700,7 +1700,7 @@ def window_activity(  # noqa: PLR0913 — the window, its zone and the three sou
     return Activity(spans, sorted(calls), talks)
 
 
-# ------------------------------------------------------------------ days as figures (ADR 0243)
+# ------------------------------------------------------------------ days as figures (ADR 0244)
 _PLACES_SHOWN: Final[int] = 5
 
 

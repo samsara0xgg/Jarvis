@@ -1,8 +1,8 @@
-"""ADR 0241: a tool on the menu can supersede deferred tools, and ``tool_search`` says so.
+"""ADR 0242: a tool on the menu can supersede deferred tools, and ``tool_search`` says so.
 
 Fake deferred Gmail tools and the real ``mail`` tool, searched through the registry the daemon
 uses; nothing is called. The same mechanism is checked on made-up names, since the next merged
-tools (ADR 0241's successors) declare theirs the same way.
+tools (ADR 0242's successors) declare theirs the same way.
 """
 
 from __future__ import annotations
