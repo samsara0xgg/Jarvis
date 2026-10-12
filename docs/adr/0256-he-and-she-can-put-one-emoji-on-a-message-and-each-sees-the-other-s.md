@@ -38,13 +38,14 @@ message wins, and removing it is a reaction of nothing. Its limits:
   in the log, with `target` a record id. Current reactions are read from the log, and the
   newest event per (target, by) wins.
 - **His reaction reaches her as an appended line, not an edit.** When he reacts, a record is
-  appended with source `reaction` and role user. It reads `[He reacted <emoji> to: «first 60
+  appended with source `allen_reaction` and role user. It reads `[He reacted <emoji> to: «first 60
   chars»]`, or `[He took back <emoji> from: «…»]`. The history front stays stable. Nothing starts a
   turn; she reads it on her next one.
 - **Her reaction is markup in her reply.** `<react>EMOJI</react>` anywhere in her reply puts
   that emoji on his message that opened the turn. The markup is stripped from speech and text.
   A typed-turn reply that holds only the markup writes no text row and plays nothing. A record
-  with source `reaction` and role assistant (`[You reacted <emoji>]`) keeps it in her history. On a
+  with source `jarvis_reaction` and role assistant (`[You reacted <emoji>]`) keeps it in her
+  history. There are two sources because history gives a record the role of its source. On a
   spoken turn the prompt says she must still speak. There is at most one `<react>` per reply;
   the first wins.
 - **The program's eyes.** A typed message from him that arrives while another of his turns is
@@ -56,8 +57,8 @@ message wins, and removing it is a reaction of nothing. Its limits:
   - Rows from `GET /inherent/conversation` carry `reactions: {allen?, jarvis?}`.
   - `/phone/ws` sends a `reaction` frame `{target, by, emoji}` to every phone of his, whoever
     opened the turn.
-  - The `said` frame also carries `record_id`, so the phone can show eyes on a line it just
-    sent.
+  - The `said` frame with verdict `turn` also carries `record_id`, so the phone can show eyes on
+    a line it just sent.
 - **Rows that are not messages** (cards, step lines, picture notes) cannot be reacted to.
   Reaction records never show as rows.
 
