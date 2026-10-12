@@ -894,13 +894,23 @@ def spoken_reply_rules(*, structured: bool) -> str:
     return f"For a turn the program's state says he spoke or typed: {note}"
 
 
+# Only a spoken turn carries it: typed words are exactly what he wrote.
+_MISHEARD: Final = (
+    "His words came through speech recognition and may be misheard; a misheard word sounds like"
+    " the right one. Read an odd word as the name, place or term that sounds closest, from this"
+    " conversation, what you know about him, or well-known names and places. For a lookup, act"
+    " on your best reading and say in a few words how you read it; ask only when no reading"
+    " fits, and then offer your best two readings as choices."
+)
+
+
 def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None:
     """How this turn reached Jarvis, or None when the trigger carries no channel."""
     channel = packet.trigger_event.payload.get("channel")
     if not isinstance(channel, str) or not channel:
         return None
     if channel == "gpt_live":
-        return "This turn: spoken, relayed by Live; your answer is read aloud."
+        return f"This turn: spoken, relayed by Live; your answer is read aloud.\n{_MISHEARD}"
     if channel not in SPOKEN_CHANNELS and channel != TYPED_CHANNEL:
         return "Channel: text"
     # ADR 0226: how it came in, from which device, and how the answer goes out, as one fact; the
@@ -916,7 +926,7 @@ def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None
         line = (
             f"This turn: spoken to {device}; your answer is read aloud there."
             if device else "This turn: spoken; your answer is read aloud."
-        )
+        ) + f"\n{_MISHEARD}"
     route = ctx.routine_stream
     on_spoken_route = route is not None and route.context.route == "spoken"
     if route is not None and on_spoken_route and ctx.record_sent_message is None:

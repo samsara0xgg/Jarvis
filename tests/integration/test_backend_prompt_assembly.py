@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from jarvis.decision import DecideContext, decide
+from jarvis.decision import _MISHEARD, DecideContext, decide
 from jarvis.decision.llm import ChatResult, LLMClient
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.state.event_log import emit_event, open_event_log
@@ -74,6 +74,7 @@ STATUS = (
     "[Current state | from the program, not the user's words]\n"
     "Time: 2026-09-21T15:37-07:00 Monday\n"
     "This turn: spoken; your answer is read aloud.\n"
+    f"{_MISHEARD}\n"
 )
 LINE = "[Reply language for this turn: Chinese]"
 
