@@ -169,6 +169,7 @@ from jarvis.runtime import (
     make_response_cancel_callable,
     make_supersede_unspoken_callable,
     make_turn_cancel_callable,
+    picture_files,
     save_language,
 )
 from jarvis.runtime.card_feedback import CardFeedback
@@ -5817,6 +5818,20 @@ def _media_dirs(runtime: JarvisRuntime) -> dict[Path, int | None]:
     return dirs
 
 
+def _link_pictures(runtime: JarvisRuntime) -> int:
+    """ADR 0255: link his earlier records to the files still kept (see ``picture_files``)."""
+    if runtime.attachments is None or runtime.memory is None:
+        return 0
+    sent = runtime.config.get("attachments")
+    days = retention_days(
+        sent.get("retention_days", _ATTACHMENT_DAYS) if isinstance(sent, dict)
+        else _ATTACHMENT_DAYS,
+    )
+    return picture_files.link_kept_pictures(
+        runtime.memory.db_path, runtime.runtime_paths.event_log, runtime.attachments, days=days,
+    )
+
+
 def _sweep_data(dirs: dict[Path, int | None], logs: Path) -> None:
     """Delete what has passed its days and cut each log past its size (ADR 0067)."""
     for directory, days in dirs.items():
@@ -5827,8 +5842,18 @@ def _sweep_data(dirs: dict[Path, int | None], logs: Path) -> None:
         LOGGER.info("retention: started %d new log files", cut)
 
 
-async def _data_sweep_task(dirs: dict[Path, int | None], logs: Path) -> None:
-    """At boot and then every hour; a failed pass waits for the next one."""
+async def _data_sweep_task(
+    dirs: dict[Path, int | None], logs: Path, link_pictures: Callable[[], object] | None = None,
+) -> None:
+    """At boot and then every hour; a failed pass waits for the next one.
+
+    ``link_pictures`` runs once, first (ADR 0255): the files must be there to be linked.
+    """
+    if link_pictures is not None:
+        try:
+            await asyncio.to_thread(link_pictures)
+        except (OSError, sqlite3.Error):
+            LOGGER.exception("pictures: could not link earlier records to their files")
     while True:
         try:
             await asyncio.to_thread(_sweep_data, dirs, logs)
@@ -7808,7 +7833,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         if runtime.picture_notes is not None:
             runtime.picture_notes.start()  # recovers the notes still owed, then runs the queue
         watchers.append(asyncio.create_task(
-            _data_sweep_task(_media_dirs(runtime), logs_dir(runtime.runtime_paths.root)),
+            _data_sweep_task(
+                _media_dirs(runtime), logs_dir(runtime.runtime_paths.root),
+                functools.partial(_link_pictures, runtime),
+            ),
             name="data_sweep",
         ))
         if runtime.settings is not None and not brain:

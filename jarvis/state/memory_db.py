@@ -31,10 +31,13 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any, Final, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from jarvis.shared import lang
 from jarvis.state import NewerDataError, core_memory
+
+if TYPE_CHECKING:
+    from jarvis.state.attachments import AttachmentRef
 
 _SCHEMA: Final[str] = """
 CREATE TABLE IF NOT EXISTS records (
@@ -43,6 +46,14 @@ CREATE TABLE IF NOT EXISTS records (
     source     TEXT NOT NULL,
     text       TEXT NOT NULL,
     audio_path TEXT
+);
+CREATE TABLE IF NOT EXISTS record_attachments (
+    record_id     TEXT NOT NULL REFERENCES records(id),
+    pos           INTEGER NOT NULL,
+    attachment_id TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    PRIMARY KEY (record_id, pos)
 );
 CREATE TABLE IF NOT EXISTS profile (
     id   TEXT PRIMARY KEY,
@@ -137,7 +148,8 @@ CREATE TABLE IF NOT EXISTS place_prompts (
 
 # ``PRAGMA user_version`` (ADR 0068). 0 is a file from before the stamp, same
 # schema as 1; a file above this was written by a newer Jarvis and is refused.
-# ``sent``, ``day_summaries``, ``core_memory``, ``day_highlight_marks`` and the places tables
+# ``sent``, ``record_attachments`` (ADR 0255), ``day_summaries``, ``core_memory``,
+# ``day_highlight_marks`` and the places tables
 # (ADR 0234) are additive: an older opener ignores them, so they need no new version. So are the
 # ``day_prose`` columns ``line``, ``highlights`` and ``draft`` (ADR 0235), which
 # :func:`open_memory_db` adds to a table made before.
@@ -515,21 +527,48 @@ def append_nightly_core_memory(  # noqa: PLR0913 — the row's inputs, all keywo
         )
 
 
-def append_record(
+def append_record(  # noqa: PLR0913 — the row's columns, all keyword-only.
     path: Path,
     *,
     record_id: str,
     source: str,
     text: str,
     audio_path: str | None = None,
+    attachments: Sequence[AttachmentRef] = (),
 ) -> None:
-    """Append one record; a repeated ``record_id`` (retry) is a no-op."""
+    """Append one record; a repeated ``record_id`` (retry) is a no-op.
+
+    ``attachments`` are the files that came with his words (ADR 0255): linked to the record in
+    the same write, so history and the device API can find them by the record.
+    """
     with closing(open_memory_db(path)) as conn, conn:
         conn.execute(
             "INSERT OR IGNORE INTO records (id, ts, source, text, audio_path) "
             "VALUES (?, ?, ?, ?, ?)",
             (record_id, iso_seconds(local_now()), source, text, audio_path),
         )
+        _link(conn, record_id, attachments)
+
+
+def _link(conn: sqlite3.Connection, record_id: str, refs: Sequence[AttachmentRef]) -> None:
+    conn.executemany(
+        "INSERT OR IGNORE INTO record_attachments (record_id, pos, attachment_id, kind, name) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [(record_id, pos, ref.id, ref.kind, ref.name) for pos, ref in enumerate(refs)],
+    )
+
+
+def link_attachments(path: Path, record_id: str, refs: Sequence[AttachmentRef]) -> None:
+    """Link files to a record already written (ADR 0255 backfill); nothing when it is not there."""
+    with closing(open_memory_db(path)) as conn, conn:
+        if conn.execute("SELECT 1 FROM records WHERE id = ?", (record_id,)).fetchone():
+            _link(conn, record_id, refs)
+
+
+def linked_attachment_ids(path: Path) -> set[str]:
+    """The ids of every file some record is linked to."""
+    with closing(open_memory_db(path)) as conn:
+        return {str(a) for (a,) in conn.execute("SELECT attachment_id FROM record_attachments")}
 
 
 def record_sent(path: Path, record_id: str, text: str) -> None:

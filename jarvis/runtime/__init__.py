@@ -226,7 +226,7 @@ from jarvis.shared.realtime_trace import (
 from jarvis.state import device_reads
 from jarvis.state import picture_notes as note_records
 from jarvis.state import places as place_state
-from jarvis.state.attachments import ATTACHMENTS_DIRNAME, Attachments, marker
+from jarvis.state.attachments import ATTACHMENTS_DIRNAME, AttachmentRef, Attachments, marker
 from jarvis.state.authorized_dispatch_outbox import (
     ConfirmationRevalidationError,
     answer_confirmation_once,
@@ -4152,6 +4152,16 @@ def _record_words(store: Attachments | None, payload: Mapping[str, Any]) -> str:
     return f"{words}\n{marker(store.get(str(one)) for one in ids)}"
 
 
+def _record_attachments(
+    store: Attachments | None, payload: Mapping[str, Any],
+) -> list[AttachmentRef]:
+    """The kept files that came with his words, in the order he sent them (ADR 0255)."""
+    ids = payload.get("attachments")
+    if store is None or not isinstance(ids, list):
+        return []
+    return [ref for one in ids if (ref := store.get(str(one))) is not None]
+
+
 def _read_mail_id(action: Mapping[str, Any]) -> str | None:
     """The id of the message a proposed call reads whole (``mail(read=...)``, ``gmail_get``)."""
     arguments = action.get("arguments")
@@ -4426,6 +4436,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             source="allen",
             text=_record_words(runtime.attachments, user_intent_event.payload),
             audio_path=audio_ref if isinstance(audio_ref, str) else None,
+            attachments=_record_attachments(runtime.attachments, user_intent_event.payload),
         )
     # One consistent read of memory.db for this turn's prompt: the history
     # block goes ahead of every per-turn note, the time line after them.
