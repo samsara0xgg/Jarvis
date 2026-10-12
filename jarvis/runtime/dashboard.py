@@ -157,24 +157,34 @@ class ViewState:
         )
 
     def present(
-        self, page: str, item_id: str | None, *, asked: bool = True
+        self, page: str, item_id: str | None, *, asked: bool = True, position: int | None = None,
     ) -> dict[str, str | None]:
-        """Ask the companion to turn to ``page``, and to ``item_id`` when the view carries it.
+        """Ask the companion to turn to ``page``, and to one item on it when the view carries it.
 
-        On ``settings``, ``item_id`` may also be a Settings category (ADR 0208). An id the
-        current view does not carry opens the page alone. ``asked`` is whether
-        Allen's words asked to see something: without it a shut Dashboard stays shut. Returns
-        what was sent; ValueError for an unknown page, a shut Dashboard he did not ask for, or
-        when no Dashboard link is attached.
+        The item is ``item_id`` (the open item or a row of the current view, or on ``settings``
+        a Settings category, ADR 0208; any other id opens the page alone) or ``position``, its
+        number among the rows the Dashboard shows on that page, counted from 1 as the state
+        block's line numbers them. A position can be read only while the Dashboard is on that
+        page: from anywhere else the page opens alone. ``asked`` is whether Allen's words asked
+        to see something: without it a shut Dashboard stays shut. Returns what was sent;
+        ValueError, worded for the model with the way out, for an unknown page, both an id and
+        a position, a position past the rows, a shut Dashboard he did not ask for, or when no
+        Dashboard link is attached.
         """
         if page not in PAGES and page != CLOSE:
-            msg = f"unknown page {page!r}"
+            msg = f"{page!r} is not a Dashboard page; use one of: {', '.join((*PAGES, CLOSE))}"
             raise ValueError(msg)
         if self.push is None:
-            msg = "the Dashboard is not connected"
+            msg = "the Dashboard is not connected, so nothing can be shown on it; answer in words"
             raise ValueError(msg)
         if not asked and page != CLOSE and self._fresh() is None:
-            msg = "the Dashboard is shut and Allen did not ask to see anything; answer without it"
+            msg = (
+                "the Dashboard is shut: answer him without it, and open a page only when he "
+                "asks to see something (show me, open it)"
+            )
+            raise ValueError(msg)
+        if item_id and position is not None:
+            msg = "pass item (a number on the page) or item_id (an exact id), not both"
             raise ValueError(msg)
         if page == CLOSE:
             closed: dict[str, str | None] = {"page": None, "item_id": None, "kind": None}
@@ -185,14 +195,33 @@ class ViewState:
             sent = {"page": page, "item_id": item_id, "kind": "category"}
             self.push(sent)
             return sent
-        known = self.knows(item_id) if item_id else None
-        sent = {
-            "page": page,
-            "item_id": item_id if known else None,
-            "kind": None if known is None else known.kind,
-        }
+        if position is not None:
+            known = self._row(page, position)
+            shown = known.id if known else None
+        else:
+            known = self.knows(item_id) if item_id else None
+            shown = item_id if known else None
+        sent = {"page": page, "item_id": shown, "kind": None if known is None else known.kind}
         self.push(sent)
         return sent
+
+    def _row(self, page: str, position: int) -> Item | None:
+        """Row ``position`` (from 1) of the list shown on ``page``, or None when it is not shown.
+
+        ValueError when the Dashboard is on ``page`` and has no such row.
+        """
+        now = self._fresh()
+        if now is None or now.page != page:
+            return None
+        way_out = "pass an exact id from a tool result as item_id, or ask Allen which one"
+        if not now.rows:
+            msg = f"page {page} shows no numbered list now, so item={position} does not exist; "
+            raise ValueError(msg + way_out)
+        if position > len(now.rows):
+            more = " (only its first ten are reported to you)" if len(now.rows) == VIEW_ROWS else ""
+            msg = f"page {page} shows {len(now.rows)} items{more}; item={position} does not exist; "
+            raise ValueError(msg + way_out)
+        return now.rows[position - 1]
 
     def line(self) -> str | None:
         """The state-block line (a ``live_context`` producer): titles and ids, never a body."""

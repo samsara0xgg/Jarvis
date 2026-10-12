@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sqlite3
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -186,7 +187,7 @@ def _tool(view: ViewState | None) -> Any:  # noqa: ANN401
     return next(iter(tools), None)
 
 
-def _show(tool: Any, **args: str) -> Mapping[str, Any]:  # noqa: ANN401
+def _show(tool: Any, **args: object) -> Mapping[str, Any]:  # noqa: ANN401
     return tool.handler(args, cast("ToolContext", None))  # type: ignore[no-any-return]
 
 
@@ -225,7 +226,7 @@ def test_show_on_dashboard_pushes_present_with_an_id_only_the_current_view_carri
     assert {k: unseen[k] for k in ("shown", "item", "opened_page_only")} == {
         "shown": "memory", "item": None, "opened_page_only": True,
     }
-    assert "Do not retry with other ids" in unseen["note"]
+    assert "Do not guess other ids" in unseen["note"]
     assert _show(tool, page="jobs")["opened_page_only"] is True
     assert sent == [
         {"page": "mail", "item_id": "b2", "kind": "row"},
@@ -270,12 +271,12 @@ def test_show_on_dashboard_refuses_an_unknown_page_and_a_missing_link() -> None:
     """Both are tool errors, and nothing is pushed."""
     view = ViewState()
     tool = _tool(view)
-    with pytest.raises(ToolError, match="not connected"):
+    with pytest.raises(ToolError, match="not connected, so nothing can be shown"):
         _show(tool, page="mail")
     sent: list[dict[str, str | None]] = []
     view.push = sent.append
     for page in ("arrange", "nowhere", ""):
-        with pytest.raises(ToolError, match="unknown page"):
+        with pytest.raises(ToolError, match="is not a Dashboard page; use one of: home,"):
             _show(tool, page=page)
     assert sent == []
 
@@ -345,7 +346,7 @@ def test_a_shut_dashboard_opens_only_when_his_words_ask_to_see() -> None:
     sent: list[dict[str, str | None]] = []
     view.push = sent.append
     tool = _tool(view)
-    with pytest.raises(ToolError, match="did not ask"):
+    with pytest.raises(ToolError, match="the Dashboard is shut: answer him without it"):
         tool.handler({"page": "brief"}, turn(1, "What did I get done yesterday?"))
     assert sent == []
     tool.handler({"page": "brief"}, turn(2, "Show me."))
@@ -354,3 +355,80 @@ def test_a_shut_dashboard_opens_only_when_his_words_ask_to_see() -> None:
     tool.handler({"page": "jobs"}, turn(3, "And my applications?"))
     tool.handler({"page": CLOSE}, turn(4, "That's all."))
     assert [s["page"] for s in sent] == ["brief", "brief", "jobs", None]
+
+
+_SHELF = [(f"id{n}", f"Letter {n}") for n in range(1, 6)]
+
+
+@pytest.mark.parametrize(
+    ("on", "args", "wants"),
+    [
+        # The Dashboard is on the page: the number is the row as the state block's line numbers it.
+        ("mail", {"page": "mail", "item": 2}, ("id2", "row", False)),
+        ("mail", {"page": "mail", "item": 5}, ("id5", "row", False)),
+        ("mail", {"page": "mail", "item": 2.0}, ("id2", "row", False)),  # a whole float is fine
+        ("mail", {"page": "mail", "item": 6}, "page mail shows 5 items; item=6 does not exist"),
+        ("mail", {"page": "mail", "item": 0}, "item must be a whole number from 1"),
+        ("mail", {"page": "mail", "item": True}, "item must be a whole number from 1"),
+        ("mail", {"page": "mail", "item": "two"}, "item must be a whole number from 1"),
+        ("mail", {"page": "mail", "item": 1, "item_id": "id3"}, "item (a number on the page) or"),
+        # Another page, or a shut Dashboard that was asked to open: nothing to count, page alone.
+        ("memory", {"page": "mail", "item": 2}, ("", None, True)),
+        ("shut", {"page": "mail", "item": 2}, ("", None, True)),
+        ("usage", {"page": "usage", "item": 1}, "page usage shows no numbered list now"),
+    ],
+)
+def test_show_on_dashboard_opens_an_item_by_its_number_on_the_page_he_sees(
+    on: str, args: dict[str, object], wants: tuple[str, str | None, bool] | str,
+) -> None:
+    """``item=N`` is resolved from the rows the Dashboard reported; every miss names the fix."""
+    view = ViewState()
+    sent: list[dict[str, str | None]] = []
+    view.push = sent.append
+    if on == "mail":
+        view.set("mail", rows=_SHELF)
+    elif on == "memory":
+        view.set("memory", rows=[("m1", "Allen likes oat milk")])
+    elif on == "usage":
+        view.set("usage")
+    tool = _tool(view)
+    if isinstance(wants, str):
+        with pytest.raises(ToolError, match=re.escape(wants)) as caught:
+            _show(tool, **args)
+        assert caught.value.code == "invalid_argument"
+        assert sent == []
+        if "shows 5 items" in wants:
+            assert "pass an exact id from a tool result as item_id" in str(caught.value)
+        return
+    done = _show(tool, **args)
+    item, kind, page_only = wants
+    assert (done["item"], done["opened_page_only"]) == (item or None, page_only)
+    assert str(done["summary"]).startswith("The Dashboard is on the mail page")
+    assert next(iter(done)) == "summary"
+    assert sent == [{"page": "mail", "item_id": item or None, "kind": kind}]
+    if page_only:
+        assert "which item is number 2 there is not known" in done["note"]
+        assert "Do not retry" in done["note"]
+
+
+def test_a_position_past_ten_rows_says_only_the_first_ten_are_known() -> None:
+    """The shell reports ten rows at most: a page of 25 letters is still 'first ten' to her."""
+    view = ViewState()
+    view.push = lambda _sent: None
+    view.set("mail", rows=[(f"id{n}", f"Letter {n}") for n in range(25)])
+    first_ten = r"shows 10 items \(only its first ten are reported to you\)"
+    with pytest.raises(ToolError, match=first_ten):
+        _show(_tool(view), page="mail", item=11)
+    assert _show(_tool(view), page="mail", item=10)["item"] == "id9"
+
+
+def test_a_position_never_reads_a_stale_view_and_a_shut_dashboard_stays_shut() -> None:
+    """After 60 s of silence the rows are gone; an unasked turn cannot open the shut panel."""
+    clock = _Clock()
+    view = ViewState(clock)
+    view.push = lambda _sent: None
+    view.set("mail", rows=_SHELF)
+    clock.now += VIEW_STALE_S + 1
+    assert _show(_tool(view), page="mail", item=2)["opened_page_only"] is True
+    with pytest.raises(ValueError, match="the Dashboard is shut: answer him without it"):
+        view.present("mail", None, asked=False, position=2)
