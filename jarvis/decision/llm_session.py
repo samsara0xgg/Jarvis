@@ -71,6 +71,8 @@ class LLMPresetSnapshot:
     api: str | None = None
     # The preset's own lines after the system prompt (ADR 0220).
     system_note: str | None = None
+    # False: a spoken-route turn on this preset takes the unstructured reply (ADR 0240).
+    spoken_structured: bool = True
 
 
 def _optional_str(value: object) -> str | None:
@@ -126,6 +128,7 @@ class LLMSessionFactory:
         extra_body = dict(self._config.get("extra_body") or {})
         api = _optional_str(self._config.get("api"))
         system_note: str | None = None
+        spoken_structured = True
 
         if resolved is not None:
             preset = presets.get(resolved)
@@ -145,6 +148,7 @@ class LLMSessionFactory:
             extra_body = dict(preset.get("extra_body") or {})
             api = _optional_str(preset.get("api"))
             system_note = _optional_str(preset.get("system_note"))
+            spoken_structured = preset.get("spoken_structured") is not False
         elif preset_name is not None:
             msg = f"preset {preset_name!r} is not configured under llm.presets"
             raise UnknownRequestPresetError(msg)
@@ -186,6 +190,8 @@ class LLMSessionFactory:
             fields["api"] = api
         if system_note is not None:
             fields["system_note"] = system_note
+        if not spoken_structured:
+            fields["spoken_structured"] = False
         return LLMPresetSnapshot(
             preset_name=resolved,
             provider=provider,
@@ -200,6 +206,7 @@ class LLMSessionFactory:
             extra_body_json=json.dumps(extra_body, sort_keys=True, separators=(",", ":")),
             api=api,
             system_note=system_note,
+            spoken_structured=spoken_structured,
         )
 
     def create(

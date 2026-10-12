@@ -17,9 +17,12 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.decision import SPOKEN_REPLY_FORMAT
+from jarvis import runtime as runtime_module
+from jarvis.decision import _SPOKEN_REPLY_NOTE, SPOKEN_REPLY_FORMAT
+from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.stream_envelope import compose_envelope
 from jarvis.decision.stream_json import SpokenJsonExtractor
+from jarvis.state.memory_db import MemorySettings, append_record
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.voice_media import _ResponseBuffer, _ResponseChunk
 from tests.integration.test_spoken_streaming import (
@@ -54,6 +57,31 @@ def _structured_runtime(tmp_path: Path, url: str, *, structured: bool = True) ->
     runtime = _spoken_runtime(tmp_path, url)
     flags = replace(runtime.response_flags, spoken_structured=structured)
     return replace(runtime, response_flags=flags)
+
+
+def _preset_runtime(
+    tmp_path: Path, url: str, *, spoken_structured: bool | None, warm: bool = False,
+) -> JarvisRuntime:
+    """The structured switch on, the turn's preset saying ``spoken_structured`` (None: nothing)."""
+    preset: dict[str, Any] = {
+        "model": "fixture-model", "base_url": url, "api_key_env": "ROUTINE_STREAM_FIXTURE_KEY",
+        "max_tokens": 256,
+    }
+    if spoken_structured is not None:
+        preset["spoken_structured"] = spoken_structured
+    llm = {"default_preset": "p", "presets": {"p": preset}, "timeout_s": 5, "max_retries": 0}
+    runtime = replace(
+        _structured_runtime(tmp_path, url), llm_session_factory=LLMSessionFactory(llm),
+    )
+    if not warm:
+        return runtime
+    memory = MemorySettings.from_config({}, runtime_root=tmp_path)
+    for index in range(3):
+        append_record(memory.db_path, record_id=f"a{index}", source="allen", text=f"问题{index}")
+        append_record(memory.db_path, record_id=f"j{index}", source="jarvis", text=f"回答{index}")
+    flags = replace(runtime.response_flags, prefix_warm=True)
+    return replace(runtime, memory=memory, system_prompt="You are Jarvis. " * 40,
+                   response_flags=flags)
 
 
 def _chunks(runtime: JarvisRuntime) -> list[str]:
@@ -372,6 +400,51 @@ def test_the_request_carries_the_schema_only_when_the_switch_is_on(
         assert "text" not in body
         assert "<voice></voice>" in note
         assert result.response_plan.text == compose_envelope("今天有一个会。", "- 10:00 产品会")
+
+
+# ---- a preset that is not structured (ADR 0240) -------------------------------
+
+
+@pytest.mark.parametrize("spoken_structured", [False, None, True])
+def test_a_preset_chooses_the_reply_shape_of_every_request_of_its_turn(
+    tmp_path: Path, *, spoken_structured: bool | None,
+) -> None:
+    """Both requests (the call, then the answer after its result) carry one shape, the preset's."""
+    answer = "你还没有记过备忘录。"
+    with _Peer([[("call", "list_memos")], [("final_answer", answer)]]) as peer:
+        runtime = _preset_runtime(tmp_path, peer.url, spoken_structured=spoken_structured)
+        result = _drive(runtime, _spoken(runtime.conn, "turn-p", "我记过什么"))
+    assert len(peer.requests) == 2
+    for _path, body in peer.requests:
+        sent = json.dumps(body, ensure_ascii=False)
+        if spoken_structured is False:
+            assert "text" not in body
+            assert _SPOKEN_REPLY_NOTE in sent
+            assert "a JSON object with" not in sent
+        else:
+            assert body["text"] == {"format": SPOKEN_REPLY_FORMAT}
+            assert _SPOKEN_REPLY_NOTE not in sent
+            assert 'a JSON object with \\"spoken\\" and \\"written\\"' in sent
+    assert result.response_plan.text == answer
+
+
+@pytest.mark.parametrize("spoken_structured", [False, True])
+def test_the_prefix_warm_gets_the_text_format_the_turn_sent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, spoken_structured: bool,
+) -> None:
+    """Anthropic's cache is keyed on the text format, so the warm request takes the turn's own."""
+    warmed: list[dict[str, Any]] = []
+    monkeypatch.setattr(runtime_module, "_warm_next_prefix", lambda *_a, **kw: warmed.append(kw))
+    with _Peer([[("final_answer", "今天是晴天。")]]) as peer:
+        runtime = _preset_runtime(
+            tmp_path, peer.url, spoken_structured=spoken_structured, warm=True,
+        )
+        _drive(runtime, _spoken(runtime.conn, "turn-1", "今天天气怎么样"))
+    ((_path, body),) = peer.requests
+    sent = {"format": SPOKEN_REPLY_FORMAT} if spoken_structured else None
+    assert body.get("text") == sent
+    (request,) = warmed
+    assert request["text_format"] == (sent or {}).get("format")
 
 
 # ---- the tool budget of a spoken turn (ADR 0178) -----------------------------

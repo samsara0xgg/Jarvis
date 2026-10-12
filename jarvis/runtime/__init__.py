@@ -3292,7 +3292,8 @@ def _start_drive_turn_response(
         # docs/plans/speak-as-written-proposal.md: a turn Allen spoke streams
         # every request through /v1/responses, whose phase labels tell the line
         # before a call from the answer, and speaks the answer as it is written.
-        # Anthropic labels none: its structured reply carries no line before a call.
+        # Anthropic labels none: a line it writes before a call is read as part of the
+        # answer, and a structured reply has no place for one.
         route = "spoken"
         context = spoken_risk_context(
             assemble_packet(user_intent_event, runtime.conn, _snapshot_reader(runtime)),
@@ -3371,7 +3372,11 @@ def _start_drive_turn_response(
         first_clause_chars=(
             runtime.response_flags.spoken_first_clause_chars if route == "spoken" else 0
         ),
-        structured=route == "spoken" and runtime.response_flags.spoken_structured,
+        structured=(
+            route == "spoken"
+            and runtime.response_flags.spoken_structured
+            and snapshot.spoken_structured
+        ),
     )
     record_realtime_trace(
         "routine_stream_route_opened", turn_id=turn_id, response_id=response_id,
