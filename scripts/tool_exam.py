@@ -17,6 +17,14 @@ answer, ``args_must_not`` maps a tool to substrings its raw arguments must not h
 ``mcp-tools.json``: the MCP tool definitions (``{mcp__server__tool: {name, description,
 input_schema}}``) a live server would list, which an offline run cannot ask for.
 
+``run --guards`` applies the decision loop's two turn guards (ADR 0239, the same code) to the first
+response: a call identical to an earlier one in the request's history (with no write since) gets
+the repeat note as its result, or an answer no call backs gets the program's note; either way one
+more request follows, exactly as the runtime would send it, and that one is the step judged. The
+result line keeps both steps (``guarded``: kind, first calls, first text, first usage) and
+``score`` marks such runs ``(g)``. A response that mixes repeats with a call that would run is
+left unguarded: that call's result is not known here.
+
 ``run`` sends each case through ``LLMClient.stream_events`` as ``replay_decision`` does, but with
 the tool menu THIS checkout would offer the decision model (see :func:`offered_tools`), not the
 tools the log recorded, so a merged or renamed tool is exam-visible at once. Keys come from the
@@ -46,6 +54,7 @@ import yaml
 
 from jarvis.decision import _tool_menu
 from jarvis.decision.policy import effective_policy, surface_for
+from jarvis.decision.turn_guards import TurnCall, call_key, repeated_call, unbacked_claim
 from jarvis.deployment import load_env_file
 from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.job_ledger_tool import build_job_ledger_tool, build_record_application_tool
@@ -100,7 +109,12 @@ def _plugin_sources() -> dict[str, str]:
 
 
 def offered_tools(config: Mapping[str, Any], recorded_mcp: Path) -> list[dict[str, Any]]:
-    """The tool menu this checkout offers the decision model, rebuilt offline.
+    """The tool menu this checkout offers the decision model, rebuilt offline (see the registry)."""
+    return _menu(_exam_registry(config, recorded_mcp))
+
+
+def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistry:
+    """The registry behind that menu.
 
     The same registry the runtime assembles (``build_default_registry`` with a brain's device
     tools offered, then ``show_on_dashboard``, the plugin panel, the MCP tools with
@@ -138,7 +152,7 @@ def offered_tools(config: Mapping[str, Any], recorded_mcp: Path) -> list[dict[st
         *build_mail_inbox_tool(dict),
     ):
         registry.register(tool)
-    return _menu(registry)
+    return registry
 
 
 def _menu(registry: ToolRegistry) -> list[dict[str, Any]]:
@@ -176,7 +190,7 @@ def _calls(raw: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return calls
 
 
-async def _one(
+async def _step(
     client: LLMClient, request: Mapping[str, Any], catalog: Mapping[str, Any],
     base: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -191,7 +205,103 @@ async def _one(
     }
 
 
-async def _run(args: argparse.Namespace, menu: list[dict[str, Any]]) -> None:
+_LANGUAGE_LINE = re.compile(r"\[Reply language for this turn: [^\]]+\]")
+
+
+def _key(args: Any) -> str:  # noqa: ANN401 - a parsed argument object, or the raw text of one
+    return call_key(args) if isinstance(args, dict) else str(args)
+
+
+def _failed(output: str) -> bool:
+    try:
+        body = json.loads(output)
+    except ValueError:
+        return False
+    return isinstance(body, dict) and "error" in body
+
+
+def _turn_calls(request: Mapping[str, Any], read_only: Mapping[str, bool]) -> list[TurnCall]:
+    """The request's earlier calls as the decision loop records them (an unknown tool may write)."""
+    earlier, outputs = _history(request)
+    return [
+        TurnCall(c["name"], read_only.get(c["name"], False), not _failed(out), _key(c["args"]))
+        for c, out in zip(earlier, outputs, strict=False)
+    ]
+
+
+def _continued(
+    request: Mapping[str, Any], text: str, calls: Sequence[Mapping[str, Any]],
+    outputs: Sequence[str], note: str | None,
+) -> dict[str, Any]:
+    """``request`` plus the model's turn and what the loop appends after it (shapes as logged).
+
+    The loop ends the next request with the turn's reply-language line (ADR 0135), which the
+    request already holds from its last tool batch or its user message.
+    """
+    ids = [f"call_guard{i}" for i in range(len(calls))]
+    extra = [{"role": "user", "content": line} for line in (note,) if line]
+    language = _LANGUAGE_LINE.findall(json.dumps(request, ensure_ascii=False))
+    if language:
+        extra.append({"role": "user", "content": language[-1]})
+    args = [json.dumps(c["args"], ensure_ascii=False) if not isinstance(c["args"], str)
+            else c["args"] for c in calls]
+    if "input" in request:  # Responses
+        items: list[dict[str, Any]] = [{"role": "assistant", "content": text}] if text else []
+        items += [{"type": "function_call", "call_id": i, "name": c["name"], "arguments": a}
+                  for i, c, a in zip(ids, calls, args, strict=True)]
+        items += [{"type": "function_call_output", "call_id": i, "output": o}
+                  for i, o in zip(ids, outputs, strict=True)]
+        return {**request, "input": [*request["input"], *items, *extra]}
+    turn: list[dict[str, Any]] = [{"role": "assistant", "content": text}]  # chat
+    if calls:
+        turn = [{"role": "assistant", "content": text, "tool_calls": [
+            {"id": i, "type": "function", "function": {"name": c["name"], "arguments": a}}
+            for i, c, a in zip(ids, calls, args, strict=True)
+        ]}, *({"role": "tool", "tool_call_id": i, "content": o}
+              for i, o in zip(ids, outputs, strict=True))]
+    return {**request, "messages": [*request["messages"], *turn, *extra]}
+
+
+def _guard(
+    request: Mapping[str, Any], line: Mapping[str, Any], read_only: Mapping[str, bool],
+) -> tuple[str, dict[str, Any]] | None:
+    """The guard the loop would apply to a first response, and the request that follows it."""
+    turn = _turn_calls(request, read_only)
+    calls, text = line["calls"], line["text"] or ""
+    if calls:
+        notes = [repeated_call(turn, c["name"], _key(c["args"])) for c in calls]
+        if all(notes):  # one that would run has a result this exam cannot give
+            return "repeat", _continued(request, text, calls, [str(n) for n in notes], None)
+        return None
+    note = unbacked_claim(text, turn)
+    return None if note is None else ("unbacked", _continued(request, text, [], [], note))
+
+
+async def _one(
+    client: LLMClient, request: Mapping[str, Any], catalog: Mapping[str, Any],
+    base: Mapping[str, Any], read_only: Mapping[str, bool] | None,
+) -> dict[str, Any]:
+    """One run: its first step, then the guard's follow-up when ``--guards`` gave ``read_only``."""
+    first = await _step(client, request, catalog, base)
+    guard = None if read_only is None or first["error"] else _guard(request, first, read_only)
+    if guard is None:
+        return first
+    kind, followed = guard
+    final = await _step(client, followed, catalog, base)
+    # The user hears the first request's first token; the answer costs both requests' time.
+    timed = {} if final["error"] else {
+        "first_token_s": first["first_token_s"],
+        "total_s": round(first["total_s"] + final["total_s"], 3),
+    }
+    return {**final, **timed, "guarded": {
+        "kind": kind, "first_calls": first["calls"], "first_text": first["text"],
+        "first_usage": first["usage"],
+    }}
+
+
+async def _run(
+    args: argparse.Namespace, menu: list[dict[str, Any]], read_only: Mapping[str, bool] | None,
+) -> None:
     config = args.config
     clients = {name: _client(config, name) for name in args.presets}
     cases = json.loads(args.cases.read_text(encoding="utf-8"))
@@ -209,7 +319,7 @@ async def _run(args: argparse.Namespace, menu: list[dict[str, Any]]) -> None:
         base = {"kind": "run", "case": case["id"], "preset": preset, "run": run,
                 "model": clients[preset].model}
         async with gate:
-            line = await _one(clients[preset], request, catalog, base)
+            line = await _one(clients[preset], request, catalog, base, read_only)
         out.write(json.dumps(line, ensure_ascii=False) + "\n")
         out.flush()
         done += 1
@@ -237,13 +347,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     root = Path(os.environ.get("JARVIS_RUNTIME_ROOT") or Path.home() / ".jarvis")
     load_env_file(root.expanduser())  # fill-only; the values are never read here
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
-    menu = offered_tools(config, args.cases.parent / "mcp-tools.json")
+    registry = _exam_registry(config, args.cases.parent / "mcp-tools.json")
+    menu = _menu(registry)
+    read_only = {t.name: t.read_only for t in registry.for_caller(CallerPrincipal.JARVIS_LLM)}
     sys.stdout.write(
         f"menu: {len(menu)} tools, {_menu_chars(menu)} description+schema chars\n"
         f"{' '.join(t['name'] for t in menu)}\n",
     )
     sys.stdout.flush()
-    asyncio.run(_run(args, menu))
+    asyncio.run(_run(args, menu, read_only if args.guards else None))
     return 0
 
 
@@ -300,7 +412,8 @@ def judge(
         ):
             tripped.append(f"cursor:{name}")
         why += [one for one in tripped if one not in why]
-    return (not why), ("pass" if not why else f"FAIL({'+'.join(why)})")
+    label = "pass" if not why else f"FAIL({'+'.join(why)})"
+    return (not why), label + ("(g)" if line.get("guarded") else "")
 
 
 def _seen(line: Mapping[str, Any]) -> str:
@@ -317,12 +430,13 @@ def _percentile(values: Sequence[float], fraction: float) -> float:
 
 def _cost(lines: Sequence[Mapping[str, Any]], table: Mapping[str, Any]) -> str:
     total, unpriced = 0.0, 0
-    for line in lines:
-        usage = line.get("usage")
+    spent = [(line["model"], u) for line in lines
+             for u in (line.get("usage"), (line.get("guarded") or {}).get("first_usage"))]
+    for model, usage in spent:
         if not usage or usage["input"] is None or usage["output"] is None:
             continue
         one = compute_cost_usd(
-            line["model"], usage["input"], usage["output"], usage["cache_read"],
+            model, usage["input"], usage["output"], usage["cache_read"],
             usage["cache_write"], dict(table),
         )
         if one is None:
@@ -353,8 +467,10 @@ def _summary(
         passed = f"{sum(all(ok for ok, _ in v) for v in scored)}/{len(scored)}"
         timing = (f"{statistics.median(firsts):.2f} / {_percentile(firsts, _P90):.2f}"
                   if firsts else "n/a")
+        guarded = sum(1 for line in mine if line.get("guarded"))
         out.append(f"{preset:8s} {passed:>8s} {timing:>22s}  "
-                   f"{_cost(mine, table)} ({len(mine)} runs)")
+                   f"{_cost(mine, table)} ({len(mine)} runs"
+                   + (f", {guarded} guarded)" if guarded else ")"))
     return out
 
 
@@ -421,6 +537,8 @@ def main() -> int:
     run.add_argument("--config", type=Path, default=REPO / "config" / "jarvis.yaml")
     run.add_argument("--system-append", type=Path)
     run.add_argument("--concurrency", type=int, default=6)
+    run.add_argument("--guards", action="store_true",
+                     help="apply the loop's repeat and unbacked-claim guards, then one more step")
     run.set_defaults(func=cmd_run)
     score = sub.add_parser("score")
     score.add_argument("results", type=Path)
