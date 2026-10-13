@@ -4,7 +4,7 @@
 
 > **Demo video coming soon.** A short walkthrough of Jarvis running on my Mac will be posted right here.
 >
-> **Status:** Jarvis is my personal assistant. I built it for my own Mac and use it every day, and I'm still expanding and refining it quickly. It isn't a product you can download and use yet; a public version for other people is planned for later.
+> **Status:** Jarvis is my personal assistant. I built it for my own Mac and iPhone and use it every day, and I'm still expanding and refining it quickly. It isn't a product you can download and use yet; a public version for other people is planned for later.
 >
 > **In a rush?** You can see the interface on sample data with one command, no keys or setup. [Click here to try the demo.](#try-the-demo)
 >
@@ -12,6 +12,8 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS">
+  <img src="https://img.shields.io/badge/iOS-000000?logo=apple&logoColor=white" alt="iOS">
+  <img src="https://img.shields.io/badge/Swift-F05138?logo=swift&logoColor=white" alt="Swift">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/Electron-47848F?logo=electron&logoColor=white" alt="Electron">
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white" alt="React 19">
@@ -19,7 +21,7 @@
   <img src="https://img.shields.io/badge/MCP-1C1C1C?logo=modelcontextprotocol&logoColor=white" alt="MCP">
 </p>
 
-Jarvis sits next to the MacBook notch as a small glass ball with eyes. It answers when you talk to it, keeps a record of your day, and tells you when a Claude Code or Codex session needs you.
+Jarvis sits next to the MacBook notch as a small glass ball with eyes. It answers when you talk to it, keeps a record of your day, and tells you when a Claude Code or Codex session needs you. Its brain runs on an always-on Raspberry Pi, so it keeps going when the laptop is closed; the Mac and a native iPhone app are two ways to reach the same Jarvis.
 
 ## What it does
 
@@ -54,11 +56,11 @@ Four engineering stories, each with what was measured and the option that lost, 
 - **Staying fast as it remembers more.** The wait before each model request grew with the event log, from 0.16 s at 16k events to 1.36 s at 48.6k. Each turn now reads only the events since the last one.
 - **Pops in the audio.** They came from the speech provider's volume limiter, not from streaming, and went away with the volume left at its default.
 
-The daemon is split into six layers, and only `runtime/` may connect them; `lint-imports` fails if anything else does. Each decision that moves a boundary gets a short record in [docs/adr](docs/adr), over 170 so far.
+The daemon is split into six layers, and only `runtime/` may connect them; `lint-imports` fails if anything else does. Each decision that moves a boundary gets a short record in [docs/adr](docs/adr), nearly 250 so far.
 
 ## How it's built
 
-A Python daemon owns the microphone, speaker, models, memory and tools. The companion is Electron with React and TypeScript, with a small AppKit module for the glass. They talk over localhost with a per-machine key. Wake word: microWakeWord. Speech recognition: SenseVoice with Silero VAD, optionally with local Whisper for longer turns. Speech: MiniMax. Mail and agent sorting: a small model on zero-data-retention endpoints. Storage: SQLite. The full design is in [docs/spec.html](docs/spec.html).
+One brain holds everything that is Jarvis: memory, the event log, model calls and tools. It is a Python daemon on a Raspberry Pi. Every other device is a terminal ([ADR 0170](docs/adr/0170-one-brain-holds-the-owners-state-and-every-other-device-is-its-terminal.md)): it keeps its own microphone, echo cancellation and speaker, and reaches the brain over a private network. On the Mac the terminal is the companion, Electron with React and TypeScript plus a small AppKit module for the glass. On the iPhone it is a native SwiftUI app, in [ios/](ios). Models are Claude by default: Sonnet for conversation and Haiku for the frequent background analysts ([ADR 0253](docs/adr/0253-claude-by-default-sonnet-low-for-conversation-sonnet-medium-for-background-writing-haiku-for-forced-tool-analysts-gpt-live-off.md)). Wake word: microWakeWord. Speech recognition: SenseVoice with Silero VAD, optionally with local Whisper for longer turns. Speech: MiniMax. Mail and agent sorting: a small model on zero-data-retention endpoints. Storage: SQLite. The full design is in [docs/spec.html](docs/spec.html).
 
 ## Run it
 
@@ -114,5 +116,7 @@ On its first start the daemon downloads its speech models (about 240 MB) and run
 The first time it starts, the companion walks you through setup: your name, its language, an OpenAI key (required) and a MiniMax key for its voice. Each key is checked before it is saved to your login Keychain. You can also put keys in `~/.jarvis/env`, one `KEY=value` per line.
 
 Anything that reads another app or account (agent sessions, usage, screen activity, plugins) is off until you turn it on in Settings.
+
+The iPhone app in [ios/](ios) is generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`cd ios && xcodegen generate`), built in Xcode with your own signing team, and paired with a running brain.
 
 Jarvis runs from a developer checkout. It is not a signed app yet, and a few defaults still assume the author's machine.
