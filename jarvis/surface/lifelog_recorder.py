@@ -3,10 +3,10 @@
 A terminal that listens holds one audio ingress. With ``lifelog_capture.enabled`` it also takes a
 diagnostic lane of that ingress and cuts what it hears into pieces at each ten-minute mark of the
 wall clock, at a gap in the stream, and whenever it pauses (the microphone muted, or the switch
-off). A piece is written as a WAV under ``.recording/`` in the outbox, encoded with macOS's
-``afconvert`` (Opus in CAF, else AAC in MPEG-4) and sent to the brain's archive (ADR 0238) with
-this device's token. The outbox keeps a piece until the brain's SHA-256 of it matches this side's,
-so the Mac holds only what has not reached the brain yet.
+off). A piece is written as a WAV under ``.recording/`` in the outbox, encoded there with macOS's
+``afconvert`` (Opus in CAF, else AAC in MPEG-4), moved into the outbox whole, and sent to the
+brain's archive (ADR 0238) with this device's token. The outbox keeps a piece until the brain's
+SHA-256 of it matches this side's, so the Mac holds only what has not reached the brain yet.
 
 The lane is the canonical one every listener reads (16 kHz, mono, channel 0), as heard: no echo
 cancellation, no noise suppression.
@@ -231,11 +231,14 @@ class LifelogRecorder:
         self._ready(piece.path, piece.started_ms, piece.duration_ms, piece.piece_id)
 
     def _ready(self, wav: Path, started_ms: int, duration_ms: int, piece_id: str) -> None:
-        stem = self._outbox / f"{started_ms}_{max(1, duration_ms)}ms_{piece_id}"
+        # Encoded beside its WAV and moved into the outbox whole: the sender never sees a
+        # piece the encoder is still writing.
+        stem = self._recording / f"{started_ms}_{max(1, duration_ms)}ms_{piece_id}"
         out = self._encode(wav, stem)
         if out is None:
             LOGGER.warning("lifelog: could not encode %s; the WAV stays in the outbox", wav.name)
             return
+        out.replace(self._outbox / out.name)
         wav.unlink(missing_ok=True)
         self._wake.set()
 

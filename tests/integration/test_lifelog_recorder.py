@@ -6,8 +6,8 @@ and encoder (no PortAudio, no afconvert):
 - frames are cut into pieces at each ten-minute mark of the wall clock, at a gap in the stream
   (a discontinuity, a new stream epoch, a skipped cursor) and while paused, with exact lengths;
   a piece the stream runs on into after a mark ends at the next mark, never a sliver later;
-- each piece reaches the brain's archive with its start, length and bytes, and leaves the outbox
-  only once the brain's SHA-256 matches;
+- each piece reaches the brain's archive with its start, length and bytes, never while it is
+  still being encoded, and leaves the outbox only once the brain's SHA-256 matches;
 - a refused piece is held, never deleted; a full brain and an unreachable one leave it waiting;
 - WAVs a stopped run left half-written are recovered from the samples on disk.
 """
@@ -227,6 +227,42 @@ def test_a_piece_reaches_the_archive_and_leaves_the_outbox_once_the_digest_match
     assert kept.name.startswith(f"20261011T220005.000Z_{4 * FRAME_MS}ms_")
     assert hashlib.sha256(kept.read_bytes()).digest() == hashlib.sha256(body).digest()
     assert _ready(tmp_path) == []
+
+
+def test_a_piece_still_being_encoded_is_never_sent(
+    tmp_path: Path, brain: tuple[TestClient, str, Lifelog], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A send pass while the encoder is halfway through its file sends nothing; then the whole."""
+    client, token, store = brain
+    monkeypatch.setattr(lifelog_recorder, "_wall_ms_of", lambda _frame: BOUNDARY_MS + 5_000)
+    recorder: LifelogRecorder | None = None
+
+    def slow_encode(wav: Path, stem: Path) -> Path:
+        out = fake_encode(wav, stem)
+        whole = out.read_bytes()
+        out.write_bytes(whole[: len(whole) // 3])  # afconvert a third of the way through
+        assert recorder is not None
+        recorder.send_ready()
+        out.write_bytes(whole)
+        return out
+
+    recorder = LifelogRecorder(
+        Lane(), tmp_path / "mac" / "lifelog-outbox", brain_url=f"http://{REMOTE}:8006",
+        token=token, paused=lambda: False, encode=slow_encode, transport=_bridge(client),
+    )
+    (tmp_path / "mac" / "lifelog-outbox" / RECORDING_DIRNAME).mkdir(parents=True)
+    frames = Frames()
+    for _ in range(4):
+        recorder.feed(frames.next())
+    recorder._finish()  # noqa: SLF001
+
+    assert [p for p in store.directory.rglob("*") if p.is_file()] == []
+    (ready,) = (tmp_path / "mac" / "lifelog-outbox").glob("*.caf")
+    whole = ready.read_bytes()
+    recorder.send_ready()
+    (kept,) = (p for p in store.directory.rglob("*") if p.is_file())
+    assert kept.read_bytes() == whole
+    assert len(whole) == 4 + 4 * FRAME * 2
 
 
 def test_refused_pieces_are_held_and_a_full_or_absent_brain_leaves_them_waiting(
