@@ -207,6 +207,9 @@ final class LifelogMic: @unchecked Sendable {
     private var engine: AVAudioEngine?
     private var observer: NSObjectProtocol?
     private var retrying = false
+    /// another app's call has the audio (Discord, WhatsApp ... not all of them go through CallKit): the recorder stays off and leaves the
+    /// session alone until no other app's audio is on. Recording beside such a call took his microphone from it (phone, 2026-10-12).
+    private var yielded = false
     /// the running engine and its cue player, for `play`
     private static let cue = OSAllocatedUnfairLock<(engine: AVAudioEngine, player: AVAudioPlayerNode)?>(initialState: nil)
     private static let cueFormat = AVAudioFormat(standardFormatWithSampleRate: SoundSynth.sampleRate, channels: 2)!
@@ -234,7 +237,7 @@ final class LifelogMic: @unchecked Sendable {
 
     /// Brings the engine in line with the flags; `restart` builds it anew (the media services were reset).
     func kick(restart: Bool = false) {
-        queue.async { if restart { self.stopOwn() }; self.reconcile() }
+        queue.async { if restart { self.stopOwn() }; if self.yielded { self.checkYield() } else { self.reconcile() } }
     }
 
     /// A cue through the recorder's engine. False if the recorder does not hold the session (the caller plays it itself); true otherwise,
@@ -253,7 +256,7 @@ final class LifelogMic: @unchecked Sendable {
     private func reconcile() {
         let f = flags.withLock { $0 }
         if f.on && !f.interrupted && !f.voice {
-            if engine == nil { startOwn() }
+            if engine == nil, !yielded { startOwn() }
         } else {
             let had = engine != nil
             stopOwn()
@@ -265,6 +268,10 @@ final class LifelogMic: @unchecked Sendable {
 
     private func startOwn() {
         let s = AVAudioSession.sharedInstance()
+        // the earpiece or a Bluetooth headset in call mode is never the recorder's route (it asks for neither): someone else's call is on
+        let r0 = s.currentRoute
+        if r0.outputs.contains(where: { $0.portType == .builtInReceiver || $0.portType == .bluetoothHFP })
+            || r0.inputs.contains(where: { $0.portType == .bluetoothHFP }) { return yield("call route \(r0.outputs.map(\.portType.rawValue))") }
         // mixable so his music goes on; no HFP so AirPods stay in high quality and the input stays the built-in microphone; .default mode has no
         // automatic gain control
         do {
@@ -299,8 +306,10 @@ final class LifelogMic: @unchecked Sendable {
         observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: e, queue: nil) { [weak self, weak e] _ in
             self?.queue.async {
                 guard let self, let e, self.engine === e else { return }
-                lifelogNote("engine configuration changed, building again")
                 self.stopOwn()
+                // another app setting up its audio (a call starting) stops this engine; music starting does not
+                if AVAudioSession.sharedInstance().isOtherAudioPlaying { return self.yield("engine configuration changed with another app's audio on") }
+                lifelogNote("engine configuration changed, building again")
                 self.reconcile()
             }
         }
@@ -322,10 +331,36 @@ final class LifelogMic: @unchecked Sendable {
 
     /// Not now (the app was launched in the background, another app holds the microphone): again in 10 s, and when the app comes to the foreground.
     private func retry(_ why: String) {
+        if AVAudioSession.sharedInstance().isOtherAudioPlaying { return yield("could not start (\(why)) with another app's audio on") }
         lifelogNote("could not start the microphone (\(why)), trying again in 10 s")
         guard !retrying else { return }
         retrying = true
         queue.asyncAfter(deadline: .now() + 10) { [self] in retrying = false; reconcile() }
+    }
+
+    /// Stops, lets the session go without telling anyone, and waits until no other app's audio is on, looking every 10 s (reading a
+    /// property, never touching the session) and whenever `kick` runs.
+    private func yield(_ why: String) {
+        stopOwn()
+        if !yielded {
+            lifelogNote("yielding to another app's audio: \(why)")
+            try? AVAudioSession.sharedInstance().setActive(false)
+            LifelogWriter.shared.close()
+        }
+        yielded = true
+        guard !retrying else { return }
+        retrying = true
+        queue.asyncAfter(deadline: .now() + 10) { [self] in retrying = false; checkYield() }
+    }
+
+    private func checkYield() {
+        guard yielded, wanted else { yielded = false; return reconcile() }
+        let s = AVAudioSession.sharedInstance()
+        let callRoute = s.currentRoute.outputs.contains { $0.portType == .builtInReceiver || $0.portType == .bluetoothHFP }
+        if s.isOtherAudioPlaying || callRoute { return yield("still on") }
+        lifelogNote("the other app's audio ended: recording again")
+        yielded = false
+        reconcile()
     }
 
     /// The built-in microphone, its data source that does stereo, held as in a portrait phone. Only when the built-in microphone is
@@ -392,7 +427,10 @@ final class LifelogRecorder {
         nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated {
                 let r = LifelogRecorder.shared
-                if r.interrupted, !r.calls.inCall { lifelogNote("app opened during an interruption: trying again"); r.interrupted = false; r.apply() }
+                // not while another app's audio is on: that is most likely the call that interrupted it
+                if r.interrupted, !r.calls.inCall, !AVAudioSession.sharedInstance().isOtherAudioPlaying {
+                    lifelogNote("app opened during an interruption, no other audio on: trying again"); r.interrupted = false; r.apply()
+                }
                 else { r.followSwitch() }
             }
         }
