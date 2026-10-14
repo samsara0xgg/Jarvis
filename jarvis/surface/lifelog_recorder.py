@@ -185,23 +185,28 @@ class LifelogRecorder:
             self._finish()
             return
         piece = self._piece
-        if piece is not None and (
-            frame.discontinuity_before
-            or frame.stream_epoch != piece.epoch
-            or frame.sample_rate_hz != piece.rate_hz
-            or (piece.last_cursor is not None and frame.sample_cursor != piece.last_cursor)
-            or piece.started_ms + piece.duration_ms >= piece.ends_at_ms
-        ):
-            self._finish()
-            piece = None
+        mark: int | None = None
+        if piece is not None:
+            broken = (
+                frame.discontinuity_before
+                or frame.stream_epoch != piece.epoch
+                or frame.sample_rate_hz != piece.rate_hz
+                or (piece.last_cursor is not None and frame.sample_cursor != piece.last_cursor)
+            )
+            if broken or piece.started_ms + piece.duration_ms >= piece.ends_at_ms:
+                # A piece the stream runs on from ends at the next mark after this one, even
+                # when the wall clock puts its first frame a few milliseconds short of the mark.
+                mark = None if broken else piece.ends_at_ms
+                self._finish()
+                piece = None
         if piece is None:
-            piece = self._open(_wall_ms_of(frame), frame.sample_rate_hz)
+            piece = self._open(_wall_ms_of(frame), frame.sample_rate_hz, after_mark=mark)
             piece.epoch = frame.stream_epoch
         piece.writer.writeframesraw(frame.pcm16_mono)
         piece.samples += frame.frame_count
         piece.last_cursor = frame.sample_cursor + frame.frame_count
 
-    def _open(self, started_ms: int, rate_hz: int) -> _Piece:
+    def _open(self, started_ms: int, rate_hz: int, *, after_mark: int | None = None) -> _Piece:
         piece_id = uuid.uuid4().hex
         path = self._recording / f"{started_ms}_{piece_id}.wav"
         writer = wave.open(str(path), "wb")  # noqa: SIM115 — closed in _finish
@@ -209,6 +214,8 @@ class LifelogRecorder:
         writer.setsampwidth(2)
         writer.setframerate(rate_hz)
         ends_at = (started_ms // PIECE_MS + 1) * PIECE_MS
+        if after_mark is not None:
+            ends_at = max(ends_at, after_mark + PIECE_MS)
         self._piece = _Piece(path, writer, piece_id, started_ms, ends_at, rate_hz)
         return self._piece
 

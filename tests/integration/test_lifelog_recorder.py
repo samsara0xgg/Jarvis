@@ -5,6 +5,7 @@ and encoder (no PortAudio, no afconvert):
 
 - frames are cut into pieces at each ten-minute mark of the wall clock, at a gap in the stream
   (a discontinuity, a new stream epoch, a skipped cursor) and while paused, with exact lengths;
+  a piece the stream runs on into after a mark ends at the next mark, never a sliver later;
 - each piece reaches the brain's archive with its start, length and bytes, and leaves the outbox
   only once the brain's SHA-256 matches;
 - a refused piece is held, never deleted; a full brain and an unreachable one leave it waiting;
@@ -184,6 +185,25 @@ def test_pieces_break_at_the_ten_minute_mark_at_gaps_and_while_paused(
         (str(BOUNDARY_MS + 30_000), f"{FRAME_MS}ms"),
     ]
     assert list((tmp_path / "mac" / "lifelog-outbox" / RECORDING_DIRNAME).iterdir()) == []
+
+
+def test_a_cut_at_the_mark_runs_on_to_the_next_mark_however_the_wall_clock_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The frame after a mark's cut read 38 ms short of it: its piece still runs ten minutes."""
+    starts = iter([BOUNDARY_MS - 2 * FRAME_MS, BOUNDARY_MS - 38, BOUNDARY_MS + 1])
+    monkeypatch.setattr(lifelog_recorder, "_wall_ms_of", lambda _frame: next(starts))
+    recorder = _recorder(tmp_path, None, "t")
+    frames = Frames()
+
+    for _ in range(2 + 6):  # two before the mark, then six that cross it on the wall clock
+        recorder.feed(frames.next())
+    recorder._finish()  # noqa: SLF001
+
+    assert [n.split("_")[:2] for n in _ready(tmp_path)] == [
+        [str(BOUNDARY_MS - 2 * FRAME_MS), f"{2 * FRAME_MS}ms"],
+        [str(BOUNDARY_MS - 38), f"{6 * FRAME_MS}ms"],
+    ]
 
 
 def test_a_piece_reaches_the_archive_and_leaves_the_outbox_once_the_digest_matches(
