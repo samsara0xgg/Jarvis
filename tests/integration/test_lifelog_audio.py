@@ -259,3 +259,23 @@ def test_the_runtime_places_the_archive_and_keeps_it_out_of_sweep_clear_and_expo
     assert not any(
         d == default.directory or default.directory in d.parents for d in media
     )
+
+
+def test_each_piece_and_each_refusal_is_one_log_line_without_its_bytes(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Kept, kept again and refused each leave one line naming the device, never the audio."""
+    d = _daemon(tmp_path)
+
+    with caplog.at_level("INFO", logger="jarvis.surface.inherent_server"):
+        d.put(CAF)
+        d.put(CAF)
+        d.put(WAV, "other")
+
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("lifelog:")]
+    assert lines == [
+        f"lifelog: kept a 600 s piece from iphone ({len(CAF)} bytes)",
+        f"lifelog: already had a 600 s piece from iphone ({len(CAF)} bytes)",
+        "lifelog: refused a piece from iphone with 415: "
+        "send audio in a CAF, Ogg or MPEG-4 container",
+    ]

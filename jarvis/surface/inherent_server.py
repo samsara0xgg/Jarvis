@@ -2714,7 +2714,14 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
                     lifelog.save_audio, name, piece_id, started_ms, duration_ms, data,
                 )
             except PieceRefused as exc:
+                LOGGER.warning(
+                    "lifelog: refused a piece from %s with %d: %s", name, exc.status, exc,
+                )
                 raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+            LOGGER.info(
+                "lifelog: %s a %d s piece from %s (%d bytes)",
+                "kept" if kept.created else "already had", duration_ms // 1000, name, kept.size,
+            )
             return JSONResponse(
                 {"id": kept.id, "sha256": kept.sha256, "bytes": kept.size},
                 status_code=201 if kept.created else 200,
