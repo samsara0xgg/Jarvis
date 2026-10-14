@@ -6,8 +6,10 @@ and encoder (no PortAudio, no afconvert):
 - frames are cut into pieces at each ten-minute mark of the wall clock, at a gap in the stream
   (a discontinuity, a new stream epoch, a skipped cursor) and while paused, with exact lengths;
   a piece the stream runs on into after a mark ends at the next mark, never a sliver later;
-- each piece reaches the brain's archive with its start, length and bytes, never while it is
-  still being encoded, and leaves the outbox only once the brain's SHA-256 matches;
+- a cut only closes the piece's WAV; the sending thread encodes it, out of the outbox's sight,
+  so the lane is never left unread during an encode and a half-encoded piece is never sent;
+- each piece reaches the brain's archive with its start, length and bytes, and leaves the outbox
+  only once the brain's SHA-256 matches;
 - a refused piece is held, never deleted; a full brain and an unreachable one leave it waiting;
 - WAVs a stopped run left half-written are recovered from the samples on disk.
 """
@@ -175,6 +177,7 @@ def test_pieces_break_at_the_ten_minute_mark_at_gaps_and_while_paused(
     paused[0] = False
     recorder.feed(frames.next())
     recorder._finish()  # noqa: SLF001
+    recorder.encode_closed()
 
     names = _ready(tmp_path)
     assert [(n.split("_")[0], n.split("_")[1]) for n in names] == [
@@ -199,6 +202,7 @@ def test_a_cut_at_the_mark_runs_on_to_the_next_mark_however_the_wall_clock_reads
     for _ in range(2 + 6):  # two before the mark, then six that cross it on the wall clock
         recorder.feed(frames.next())
     recorder._finish()  # noqa: SLF001
+    recorder.encode_closed()
 
     assert [n.split("_")[:2] for n in _ready(tmp_path)] == [
         [str(BOUNDARY_MS - 2 * FRAME_MS), f"{2 * FRAME_MS}ms"],
@@ -217,6 +221,7 @@ def test_a_piece_reaches_the_archive_and_leaves_the_outbox_once_the_digest_match
     for _ in range(4):
         recorder.feed(frames.next())
     recorder._finish()  # noqa: SLF001
+    recorder.encode_closed()
     (sent,) = (tmp_path / "mac" / "lifelog-outbox").glob("*.caf")
     body = sent.read_bytes()
 
@@ -229,40 +234,44 @@ def test_a_piece_reaches_the_archive_and_leaves_the_outbox_once_the_digest_match
     assert _ready(tmp_path) == []
 
 
-def test_a_piece_still_being_encoded_is_never_sent(
+def test_a_cut_never_waits_on_its_encode_and_a_half_encoded_piece_is_never_sent(
     tmp_path: Path, brain: tuple[TestClient, str, Lifelog], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A send pass while the encoder is halfway through its file sends nothing; then the whole."""
+    """The lane's thread only closes the WAV; the sender encodes it out of the outbox's sight."""
     client, token, store = brain
-    monkeypatch.setattr(lifelog_recorder, "_wall_ms_of", lambda _frame: BOUNDARY_MS + 5_000)
-    recorder: LifelogRecorder | None = None
+    starts = iter([BOUNDARY_MS - 2 * FRAME_MS, BOUNDARY_MS])
+    monkeypatch.setattr(lifelog_recorder, "_wall_ms_of", lambda _frame: next(starts))
+    outbox = tmp_path / "mac" / "lifelog-outbox"
+    seen_mid_encode: list[list[str]] = []
 
     def slow_encode(wav: Path, stem: Path) -> Path:
         out = fake_encode(wav, stem)
         whole = out.read_bytes()
         out.write_bytes(whole[: len(whole) // 3])  # afconvert a third of the way through
-        assert recorder is not None
-        recorder.send_ready()
+        seen_mid_encode.append(_ready(tmp_path))
         out.write_bytes(whole)
         return out
 
     recorder = LifelogRecorder(
-        Lane(), tmp_path / "mac" / "lifelog-outbox", brain_url=f"http://{REMOTE}:8006",
-        token=token, paused=lambda: False, encode=slow_encode, transport=_bridge(client),
+        Lane(), outbox, brain_url=f"http://{REMOTE}:8006", token=token,
+        paused=lambda: False, encode=slow_encode, transport=_bridge(client),
     )
-    (tmp_path / "mac" / "lifelog-outbox" / RECORDING_DIRNAME).mkdir(parents=True)
+    (outbox / RECORDING_DIRNAME).mkdir(parents=True)
     frames = Frames()
-    for _ in range(4):
+    for _ in range(3):  # two before the mark, the third cuts there
         recorder.feed(frames.next())
-    recorder._finish()  # noqa: SLF001
 
-    assert [p for p in store.directory.rglob("*") if p.is_file()] == []
-    (ready,) = (tmp_path / "mac" / "lifelog-outbox").glob("*.caf")
-    whole = ready.read_bytes()
+    assert seen_mid_encode == []  # the cut encoded nothing on the lane's thread
+    assert [p.name.split("_")[1] for p in (outbox / RECORDING_DIRNAME).glob("*ms_*.wav")] == [
+        f"{2 * FRAME_MS}ms",
+    ]
+
     recorder.send_ready()
+
+    assert seen_mid_encode == [[]]
     (kept,) = (p for p in store.directory.rglob("*") if p.is_file())
-    assert kept.read_bytes() == whole
-    assert len(whole) == 4 + 4 * FRAME * 2
+    assert len(kept.read_bytes()) == 4 + 2 * FRAME * 2
+    assert _ready(tmp_path) == []
 
 
 def test_refused_pieces_are_held_and_a_full_or_absent_brain_leaves_them_waiting(
@@ -311,6 +320,7 @@ def test_a_half_written_wav_is_recovered_from_its_samples(
     writer._file.flush()  # type: ignore[attr-defined]  # noqa: SLF001
 
     recorder.recover()
+    recorder.encode_closed()
 
     assert _ready(tmp_path) == [f"{BOUNDARY_MS}_1000ms_{'c' * 32}.caf"]
     assert not wav.exists()

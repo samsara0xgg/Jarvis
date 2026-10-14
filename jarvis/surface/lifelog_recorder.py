@@ -3,10 +3,11 @@
 A terminal that listens holds one audio ingress. With ``lifelog_capture.enabled`` it also takes a
 diagnostic lane of that ingress and cuts what it hears into pieces at each ten-minute mark of the
 wall clock, at a gap in the stream, and whenever it pauses (the microphone muted, or the switch
-off). A piece is written as a WAV under ``.recording/`` in the outbox, encoded there with macOS's
-``afconvert`` (Opus in CAF, else AAC in MPEG-4), moved into the outbox whole, and sent to the
-brain's archive (ADR 0238) with this device's token. The outbox keeps a piece until the brain's
-SHA-256 of it matches this side's, so the Mac holds only what has not reached the brain yet.
+off). A piece is written as a WAV under ``.recording/`` in the outbox. Once it is closed, the
+sending thread encodes it there with macOS's ``afconvert`` (Opus in CAF, else AAC in MPEG-4), so
+the lane is never left unread while an encode runs, moves it into the outbox whole, and sends it
+to the brain's archive (ADR 0238) with this device's token. The outbox keeps a piece until the
+brain's SHA-256 of it matches this side's, so the Mac holds only what has not reached the brain.
 
 The lane is the canonical one every listener reads (16 kHz, mono, channel 0), as heard: no echo
 cancellation, no noise suppression.
@@ -58,6 +59,7 @@ _READY: Final = re.compile(
     r"(?P<start>\d{13})_(?P<ms>\d+)ms_(?P<id>[0-9a-f]{32})\.(?P<ext>caf|m4a)",
 )
 _RECORDING: Final = re.compile(r"(?P<start>\d{13})_(?P<id>[0-9a-f]{32})\.wav")
+_CLOSED: Final = re.compile(r"(?P<start>\d{13})_(?P<ms>\d+)ms_(?P<id>[0-9a-f]{32})\.wav")
 _WAV_HEADER_BYTES: Final = 44
 _FULL: Final = 507
 _FORMATS: Final = (("caff", "opus", "caf", "24000"), ("m4af", "aac", "m4a", "32000"))
@@ -220,7 +222,7 @@ class LifelogRecorder:
         return self._piece
 
     def _finish(self) -> None:
-        """Close the piece in hand and encode it into the outbox."""
+        """Close the piece in hand and leave it, named with its length, for the sending thread."""
         piece, self._piece = self._piece, None
         if piece is None:
             return
@@ -228,22 +230,31 @@ class LifelogRecorder:
         if piece.samples == 0:
             piece.path.unlink(missing_ok=True)
             return
-        self._ready(piece.path, piece.started_ms, piece.duration_ms, piece.piece_id)
+        self._closed_wav(piece.path, piece.started_ms, piece.duration_ms, piece.piece_id)
 
-    def _ready(self, wav: Path, started_ms: int, duration_ms: int, piece_id: str) -> None:
-        # Encoded beside its WAV and moved into the outbox whole: the sender never sees a
-        # piece the encoder is still writing.
-        stem = self._recording / f"{started_ms}_{max(1, duration_ms)}ms_{piece_id}"
-        out = self._encode(wav, stem)
-        if out is None:
-            LOGGER.warning("lifelog: could not encode %s; the WAV stays in the outbox", wav.name)
-            return
-        out.replace(self._outbox / out.name)
-        wav.unlink(missing_ok=True)
+    def _closed_wav(self, wav: Path, started_ms: int, duration_ms: int, piece_id: str) -> None:
+        wav.replace(self._recording / f"{started_ms}_{max(1, duration_ms)}ms_{piece_id}.wav")
         self._wake.set()
 
+    def encode_closed(self) -> None:
+        """Encode every closed WAV beside itself and move it into the outbox whole.
+
+        The sender never sees a piece the encoder is still writing; a WAV that will not encode is
+        held, not deleted.
+        """
+        for wav in sorted(self._recording.glob("*.wav")):
+            if _CLOSED.fullmatch(wav.name) is None or self._closed.is_set():
+                continue
+            out = self._encode(wav, wav.with_suffix(""))
+            if out is None:
+                LOGGER.warning("lifelog: could not encode %s; kept in %s", wav.name, HELD_DIRNAME)
+                wav.replace(self._held / wav.name)
+                continue
+            out.replace(self._outbox / out.name)
+            wav.unlink(missing_ok=True)
+
     def recover(self) -> None:
-        """Encode the WAVs a stopped run left half-written, from the samples on disk."""
+        """Close the WAVs a stopped run left half-written, from the samples on disk."""
         for wav in sorted(self._recording.glob("*.wav")):
             match = _RECORDING.fullmatch(wav.name)
             if match is None or (self._piece is not None and wav == self._piece.path):
@@ -260,7 +271,7 @@ class LifelogRecorder:
                 fixed.setframerate(rate)
                 fixed.writeframes(data)
             duration = (len(data) // 2) * 1000 // rate
-            self._ready(wav, int(match["start"]), duration, match["id"])
+            self._closed_wav(wav, int(match["start"]), duration, match["id"])
 
     def _read(self) -> None:
         while not self._closed.is_set() and not self._lane.closed:
@@ -281,7 +292,8 @@ class LifelogRecorder:
     # --- sending -------------------------------------------------------------------------
 
     def send_ready(self) -> float:
-        """Send every piece in the outbox once; the seconds to wait before the next pass."""
+        """Encode what is closed, send every piece in the outbox once; the wait before the next."""
+        self.encode_closed()
         wait = RETRY_S
         for path in sorted(self._outbox.iterdir()):
             match = _READY.fullmatch(path.name)
