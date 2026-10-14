@@ -376,10 +376,16 @@ async def serve_terminal(hub: TerminalHub, ws: WebSocket, name: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        if hub.listening is not None:
-            await hub.listening.detach(link)
-        await _end_speech(hub, link, streaming)
-        hub.detach(link)
+        hub.detach(link)  # first: a cancel during the awaits below must not keep it attached
+        # Shielded: a handler cancelled mid-cleanup still stops its turns and aborts its sessions.
+        await asyncio.shield(_leave(hub, link, streaming))
+
+
+async def _leave(hub: TerminalHub, link: _Link, streaming: asyncio.Task[None] | None) -> None:
+    """A terminal that left: stop what was running for it and end its speech."""
+    if hub.listening is not None:
+        await hub.listening.detach(link)
+    await _end_speech(hub, link, streaming)
 
 
 async def _greet(
