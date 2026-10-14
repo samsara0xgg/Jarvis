@@ -63,7 +63,7 @@ _TABLE: Final[dict[Owner, tuple[str, ...]]] = {
     "device": (
         "observer.repos", "observer.timesink", "observer.claude_sessions",
         "daily_report.codex_sessions", "tools.obsidian", "tools.open_path", "tools.screen",
-        "tools.workers", "dictation", "night", "respeaker",
+        "tools.workers", "dictation", "night", "respeaker", "lifelog_capture",
         # This machine's microphone, speaker, wake word, recognizer and player.
         "realtime.ambient_sounds", "realtime.output_device", "realtime.input_device",
         "realtime.playback_volume", "realtime.final_asr", "realtime.final_asr_language",

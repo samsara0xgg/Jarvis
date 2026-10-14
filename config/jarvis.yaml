@@ -251,6 +251,12 @@ lifelog:
   # dir: /mnt/ssd/lifelog          # 默认：<runtime root>/lifelog
   min_free_gb: 5                   # 存一段之后磁盘剩余低于这个数就回 507，手机留着稍后重传
 
+# ADR 0239 — 这台机器自己的麦克风也录进大脑的档案：终端在听（realtime.single_audio_ingress）时，
+# 每整十分钟切一段（16 kHz 单声道，原样，不消回声），用 afconvert 编成 Opus（不行就 AAC），
+# 先放在运行目录的 lifelog-outbox/，大脑确认收到（SHA-256 对上）才删。麦克风静音时暂停。
+lifelog_capture:
+  enabled: false
+
 # Supervisor sweep（ADR-0009 D4 / spec §3.4.8）：扫 open actions，超过
 # deadline 且无 terminal event 的 emit action.timeout_assumed。
 supervisor:

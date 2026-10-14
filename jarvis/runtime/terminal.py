@@ -113,6 +113,7 @@ from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.projects import Project, gather, parse_catalog, window_to_wire
 from jarvis.surface.claude_sessions import ClaudeSessions
 from jarvis.surface.inherent_output import InherentBroadcaster
+from jarvis.surface.lifelog_recorder import LANE_CAPACITY, OUTBOX_DIRNAME, LifelogRecorder
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.terminal_events import EventOutbox
 from jarvis.surface.terminal_link import (
@@ -479,6 +480,8 @@ class _Speaking:
     config_dir: Path | None = None  # where relative model paths in the config resolve from
     broadcaster: InherentBroadcaster | None = None  # the companion's sockets, with ``--serve-ui``
     controls: VoiceControls | None = None  # this device's mic and speech switches, likewise
+    brain_url: str = ""  # where the day recording's pieces go (ADR 0239)
+    brain_token: str = field(default="", repr=False)
 
 
 class _QuietBroadcaster(InherentBroadcaster):
@@ -541,6 +544,7 @@ class _Listening:
     session: voice_session.DuplexVoiceSession
     controls: LinkedControls
     dictation: Dictation | None = None  # recording on this microphone, for the UI's dictation
+    recorder: LifelogRecorder | None = None  # his day, from this microphone (ADR 0239)
 
 
 def _listening_requested(config: Mapping[str, Any]) -> bool:
@@ -689,7 +693,39 @@ async def _start_listening(speaking: _Speaking, speech: _Speech) -> _Listening |
     controls.on_surface_exit = session.dismiss
     controls.start()
     LOGGER.info("this terminal listens: wake, VAD and ASR run here; utterances go to the brain")
-    return _Listening(session, controls, dictation)
+    return _Listening(session, controls, dictation, _start_lifelog(speaking, session))
+
+
+def _start_lifelog(
+    speaking: _Speaking, session: voice_session.DuplexVoiceSession,
+) -> LifelogRecorder | None:
+    """ADR 0239: with ``lifelog_capture.enabled``, this microphone's day goes to the archive.
+
+    It pauses while the microphone is muted. A failure to start costs the recording, never
+    the listening.
+    """
+    section = speaking.config.get("lifelog_capture")
+    if not (isinstance(section, Mapping) and section.get("enabled") is True):
+        return None
+    if not speaking.brain_url or not speaking.brain_token:
+        return None
+    from jarvis.surface.voice_audio import SubscriberPurpose  # noqa: PLC0415 — PortAudio is lazy
+
+    controls = speaking.controls
+    try:
+        recorder = LifelogRecorder(
+            session.ingress.subscribe(
+                name="lifelog", purpose=SubscriberPurpose.DIAGNOSTIC, capacity=LANE_CAPACITY,
+            ),
+            speaking.runtime_root / OUTBOX_DIRNAME,
+            brain_url=speaking.brain_url, token=speaking.brain_token,
+            paused=lambda: controls is not None and controls.mic_muted,
+        )
+        recorder.start()
+    except (OSError, ValueError, RuntimeError):
+        LOGGER.exception("lifelog: the day recording could not start; listening goes on")
+        return None
+    return recorder
 
 
 async def _stop_listening(task: asyncio.Task[_Listening | None] | None) -> None:
@@ -703,6 +739,8 @@ async def _stop_listening(task: asyncio.Task[_Listening | None] | None) -> None:
     if listening is None:
         return
     await asyncio.to_thread(listening.controls.stop)
+    if listening.recorder is not None:
+        await asyncio.to_thread(listening.recorder.close)
     await asyncio.to_thread(listening.session.close)
 
 
@@ -997,7 +1035,9 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
             _configure_realtime_trace(runtime_root)
         asyncio.run(_run(
             base_url, token, tools=tools, execute=execute, watched=watched,
-            speaking=_Speaking(config, runtime_root, config_path.parent) if voice else None,
+            speaking=_Speaking(
+                config, runtime_root, config_path.parent, brain_url=base_url, brain_token=token,
+            ) if voice else None,
             ui=ui, night=night, settings=terminal_report(settings_yaml, runtime_root),
         ))
     except TerminalRefusedError as exc:
