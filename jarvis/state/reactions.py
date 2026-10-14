@@ -1,4 +1,4 @@
-"""ADR 0256: the emoji he and she put on messages, and the lines that tell the model.
+"""ADR 0257: the emoji he and she put on messages, and the lines that tell the model.
 
 A reaction is an event ``conversation.reaction {target, by, emoji|null}``: ``target`` is the id of
 a message record (his, or her answer), ``by`` is ``allen`` or ``jarvis``, ``emoji`` is null when

@@ -84,7 +84,7 @@ records a turn, once. A ``say`` with no flag is a turn: ``verdict`` is ``"turn"`
 host heard the words elsewhere first, which answers ``elsewhere`` flagged or not (ADR 0219);
 typed words are never checked.
 
-**Reactions (ADR 0256).** ``reaction`` is one change of an emoji on a message: ``target`` is the
+**Reactions (ADR 0257).** ``reaction`` is one change of an emoji on a message: ``target`` is the
 message's record id (the ``id`` of a row of ``GET /inherent/conversation``), ``by`` is ``allen`` or
 ``jarvis``, ``emoji`` is null when it was taken off. Unlike rows and steps it goes to every
 connected phone, whichever device opened the turn, and in log order with them: his own taps on
@@ -190,7 +190,7 @@ class StepCursor(Protocol):
 
 
 class ReactionCursor(Protocol):
-    """A place in the log's reaction events, which belong to no device (ADR 0256)."""
+    """A place in the log's reaction events, which belong to no device (ADR 0257)."""
 
     def poll(self) -> tuple[int, list[tuple[int, dict[str, Any]]]]:
         """``(highest id seen, [(id of the event, reaction frame)])``, advancing."""

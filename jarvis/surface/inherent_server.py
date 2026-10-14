@@ -59,7 +59,7 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
 - ``POST /inherent/attachments`` — ADR 0211; multipart ``file`` → ``{"id", "kind", "name", ...}``;
   ``POST /inherent/submit`` then takes ``"attachments": [id]``
 - ``POST /inherent/share``       — ADR 0211; a link, text or files from another app's share sheet
-- ``POST /inherent/reactions``   — ADR 0256; body ``{"target": <record id>, "emoji": <one emoji>
+- ``POST /inherent/reactions``   — ADR 0257; body ``{"target": <record id>, "emoji": <one emoji>
   or null}`` puts his reaction on a message or takes it off; never starts a turn
 - ``PUT /inherent/lifelog/audio/{id}`` — ADR 0238; one piece of the phone's day recording, kept
 """
@@ -291,7 +291,7 @@ class ShareRequest(BaseModel):
 
 
 class ReactionRequest(BaseModel):
-    """Body of ``POST /inherent/reactions`` (ADR 0256): his emoji on one message, or none (null)."""
+    """Body of ``POST /inherent/reactions`` (ADR 0257): his emoji on one message, or none (null)."""
 
     target: str
     emoji: str | None
@@ -664,7 +664,7 @@ class InherentDeps:
     # ADR 0214: ``about`` is the checked item the phone has open, or ``None`` (``submit`` only).
     submit_as_device: Callable[[str, str, Sequence[str], dict[str, Any] | None], str] | None = None
     share_callable: Callable[[dict[str, Any]], str] | None = None
-    # ADR 0256: ``reaction_set(target, emoji)`` puts his reaction on a message record (``None``
+    # ADR 0257: ``reaction_set(target, emoji)`` puts his reaction on a message record (``None``
     # takes it off), writes the line the model reads and the event, and raises ``LookupError``
     # when the target is not a message of his or hers. It blocks and runs on a worker thread;
     # ``None`` leaves ``POST /inherent/reactions`` unregistered.
@@ -2479,7 +2479,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
 
         @app.post("/inherent/reactions", status_code=200)
         async def react(req: ReactionRequest) -> dict[str, Any]:
-            """ADR 0256: his emoji on a message, or null to take it off; 400 for anything else.
+            """ADR 0257: his emoji on a message, or null to take it off; 400 for anything else.
 
             The emoji is exactly one grapheme cluster with the emoji property. The target is the
             id of a message record of his or hers: a row of ``GET /inherent/conversation`` that

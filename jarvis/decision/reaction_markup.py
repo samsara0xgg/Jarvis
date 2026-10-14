@@ -1,4 +1,4 @@
-"""L3 ``<react>EMOJI</react>``: her reaction to his message, cut out of the reply (ADR 0256).
+"""L3 ``<react>EMOJI</react>``: her reaction to his message, cut out of the reply (ADR 0257).
 
 The tag may stand anywhere in a reply and must never reach speech or the screen. This filter takes
 the reply's text in pieces, as it streams, returns it without the tag, and keeps the first valid

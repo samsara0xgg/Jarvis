@@ -4130,7 +4130,7 @@ def run_turn(
 def _record_reaction(
     runtime: JarvisRuntime, memory_db: Path, target: str, emoji: str, answer: Event,
 ) -> None:
-    """ADR 0256: put her ``emoji`` on his message ``target``; the answer's uid keeps a retry to one.
+    """ADR 0257: put her ``emoji`` on his message ``target``; the answer's uid keeps a retry to one.
 
     The reply is already out, so a reaction that cannot be written is logged, not raised.
     """
@@ -4686,7 +4686,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         iterations = continuation.iterations if continuation is not None else 0
         streamed = False
         written_apart = False
-        reaction: str | None = None  # ADR 0256: her <react> on the message that opened the turn
+        reaction: str | None = None  # ADR 0257: her <react> on the message that opened the turn
         last_gate_event_uid: str | None = None
 
         while response_plan is None and iterations < max_iterations:
@@ -4932,7 +4932,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             if render_event.payload.get("written_apart") is True:
                 answer = f"{render_event.payload.get('voice_text', '')}\n\n{answer}"
             answered = answer
-            # ADR 0256: a typed reply that is only her reaction has no words to keep as a row.
+            # ADR 0257: a typed reply that is only her reaction has no words to keep as a row.
             reaction_only = (
                 reaction is not None and not answer.strip() and typed_turn(user_intent_event)
             )

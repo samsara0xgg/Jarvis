@@ -1070,7 +1070,7 @@ NOTE_ID_PREFIX: Final = "picture-note:"
 """A note's record id is this and the picture's attachment id."""
 ALLEN_REACTION_SOURCE: Final = "allen_reaction"
 JARVIS_REACTION_SOURCE: Final = "jarvis_reaction"
-"""The sources of a reaction's line (ADR 0256): one for each side, because a line is read in the
+"""The sources of a reaction's line (ADR 0257): one for each side, because a line is read in the
 role of whoever reacted. Neither is ever a row of the conversation window."""
 _NOT_MESSAGES: Final = (PICTURE_NOTE_SOURCE, ALLEN_REACTION_SOURCE, JARVIS_REACTION_SOURCE)
 _NOT_MESSAGES_SQL: Final = f"source NOT IN ({', '.join('?' * len(_NOT_MESSAGES))})"
@@ -1137,7 +1137,7 @@ def conversation_rows(  # noqa: PLR0913 — the page's cursor and limits, all ke
     """A page of records for the conversation window, oldest first, each with its ``seq``.
 
     Picture notes (:data:`PICTURE_NOTE_SOURCE`) are memory, not speech, so they are left out,
-    and so are the lines of reactions (ADR 0256), which devices draw on the message instead.
+    and so are the lines of reactions (ADR 0257), which devices draw on the message instead.
 
     Each row of his (``source`` ``allen``) carries ``attachments``, the files that came with it
     (``{id, kind, name, gone}``; ``gone`` when ``attachments``, the store, no longer holds the

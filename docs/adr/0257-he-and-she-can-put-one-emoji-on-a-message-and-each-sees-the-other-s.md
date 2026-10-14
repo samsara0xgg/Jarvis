@@ -1,4 +1,4 @@
-# ADR 0256 — He and she can put one emoji on a message, and each sees the other's
+# ADR 0257 — He and she can put one emoji on a message, and each sees the other's
 
 **Status:** Accepted
 **Date:** 2026-10-12

@@ -747,7 +747,7 @@ class DecideResult:
             the run with its prefix hash and opens a correction run.
         written_apart: ADR 0114 — the plan's ``<document>`` is what its
             ``<voice>`` leaves out, not the whole answer.
-        reaction: ADR 0256 — the emoji of the first ``<react>`` the reply held, already cut
+        reaction: ADR 0257 — the emoji of the first ``<react>`` the reply held, already cut
             out of the plan's text; the runtime puts it on the message that opened the turn.
     """
 
@@ -804,7 +804,7 @@ class _Scratch:
     calls: list[TurnCall] = field(default_factory=list)
     # ADR 0240: the turn's one bounce of an answer no call backs has been used.
     unbacked_bounced: bool = False
-    # ADR 0256: the first valid <react> emoji of the turn's replies.
+    # ADR 0257: the first valid <react> emoji of the turn's replies.
     reaction: str | None = None
 
 
@@ -1039,7 +1039,7 @@ def _last_spoken_voice(packet: SituationPacket) -> str | None:
 
 
 def _answered_by_reaction(conn: sqlite3.Connection, input_event_uid: str) -> bool:
-    """Whether she reacted to this message herself (ADR 0256), which can be all her answer was.
+    """Whether she reacted to this message herself (ADR 0257), which can be all her answer was.
 
     The program's eyes do not count: they are put on a message before it is answered.
     """
@@ -1374,7 +1374,7 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
 
 
 def _with_reaction(result: DecideResult, scratch: _Scratch) -> DecideResult:
-    """ADR 0256: hand the reply's reaction, if it had one, to the runtime with the result."""
+    """ADR 0257: hand the reply's reaction, if it had one, to the runtime with the result."""
     return replace(result, reaction=scratch.reaction) if scratch.reaction else result
 
 
@@ -1896,7 +1896,7 @@ def _answer_after_tool_budget(
     The request rides the same cost guard, admission and cancellation checks
     as the loop's calls; a provider failure or an empty reply falls back to a
     fixed Chinese limitation instead of an internal English error. Cancellation
-    is never swallowed. ``reaction_ok`` (a typed turn, ADR 0256): an answer that is only a
+    is never swallowed. ``reaction_ok`` (a typed turn, ADR 0257): an answer that is only a
     ``<react>`` is the answer, not an empty one.
     """
     messages.append({"role": "user", "content": _TOOL_BUDGET_ANSWER_PROMPT})
@@ -3029,7 +3029,7 @@ class _SpokenReply:
     text: str = ""
     answer: str = ""
     tool_calls: list[LLMToolCallCompleted] = field(default_factory=list)
-    reacted: bool = False  # ADR 0256: this request's reply held a valid <react>
+    reacted: bool = False  # ADR 0257: this request's reply held a valid <react>
 
 
 def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913 - one request, the turn's seams, one event switch
@@ -3068,7 +3068,7 @@ def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913 - one request, the t
         stream.interrupt_when(pending.accepted_early)
     speaker.begin_request()
     reply = _SpokenReply()
-    line_react, answer_react = ReactionFilter(), ReactionFilter()  # ADR 0256: <react> is cut out
+    line_react, answer_react = ReactionFilter(), ReactionFilter()  # ADR 0257: <react> is cut out
     failed: LLMResponseFailed | None = None
     try:
         for event in stream:
@@ -3196,7 +3196,7 @@ def _speak_budget_reply(
 ) -> None:
     """What the request after the tool budget adds to speech: its answer, its line, or a limit.
 
-    A typed turn whose reply is only a ``<react>`` (ADR 0256) is answered, so no limit is said.
+    A typed turn whose reply is only a ``<react>`` (ADR 0257) is answered, so no limit is said.
     """
     if not (reply.answer + reply.text).strip():
         if not (reply.reacted and reaction_ok):

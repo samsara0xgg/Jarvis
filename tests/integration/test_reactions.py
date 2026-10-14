@@ -1,4 +1,4 @@
-"""ADR 0256: he and she can put one emoji on a message, and each sees the other's.
+"""ADR 0257: he and she can put one emoji on a message, and each sees the other's.
 
 Acceptance checks over a real memory.db and event log, the real turn driver and the real routes.
 No network and no model: the reply is scripted.

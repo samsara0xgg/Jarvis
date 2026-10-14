@@ -1,4 +1,4 @@
-"""ADR 0256: `<react>EMOJI</react>` in her reply is cut out and becomes her reaction.
+"""ADR 0257: `<react>EMOJI</react>` in her reply is cut out and becomes her reaction.
 
 The filter is checked on its own, whole and split at every position; then through the real
 turn driver and a localhost peer shaped like /v1/responses, on a typed turn and a spoken one,

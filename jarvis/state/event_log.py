@@ -749,7 +749,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("url", "title", "text", "note", "attachments"),
         schema_version=1,
     ),
-    # ADR 0256: one emoji of his or hers put on a message record, or taken off it (``emoji``
+    # ADR 0257: one emoji of his or hers put on a message record, or taken off it (``emoji``
     # null). ``by`` is ``allen`` or ``jarvis``; the newest event per (target, by) is the
     # reaction now. Written by ``POST /inherent/reactions``, by the end of a turn whose reply
     # carried ``<react>``, and by the program's eyes on a message that arrived mid-turn.

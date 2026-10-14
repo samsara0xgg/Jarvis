@@ -1304,7 +1304,7 @@ _SEEN_WINDOW_MS: Final = 5 * 60 * 1000
 
 
 def _mark_seen(event_log_path: Path, event: Event) -> None:
-    """ADR 0256: eyes on a message he typed while another of his turns is being answered.
+    """ADR 0257: eyes on a message he typed while another of his turns is being answered.
 
     The program puts them, at once, on the message's record (written when its turn is driven);
     the model is not involved and nothing removes them. A log that cannot be written is only
@@ -3347,7 +3347,7 @@ class _PhoneStepCursor:
 
 
 class _PhoneReactionCursor:
-    """The reaction events: every phone's, whichever device opened the turn (ADR 0256)."""
+    """The reaction events: every phone's, whichever device opened the turn (ADR 0257)."""
 
     def __init__(self, conn: sqlite3.Connection, after: int) -> None:
         self._conn = conn
@@ -3408,7 +3408,7 @@ def _add_steps(event_log: Path, rows: list[dict[str, object]]) -> None:
 
 
 def _add_reactions(event_log: Path, rows: list[dict[str, object]]) -> None:
-    """ADR 0256: put the reactions now on each message in a page of the conversation.
+    """ADR 0257: put the reactions now on each message in a page of the conversation.
 
     A message is his or her row; every one gets ``reactions`` (``{allen?, jarvis?}``, empty when
     none). A log that cannot be read leaves the page without the field, never without rows.
@@ -6761,7 +6761,7 @@ def _submit_as_device(
 def _set_reaction(
     event_log_path: Path, memory_db: Path, target: str, emoji: str | None,
 ) -> bool:
-    """ADR 0256: his reaction on a message, or taken off; whether anything changed.
+    """ADR 0257: his reaction on a message, or taken off; whether anything changed.
 
     The line the model reads and the event are written here and no turn is started.
     """

@@ -1,4 +1,4 @@
-"""What counts as one emoji (ADR 0256): a reaction is exactly one grapheme cluster of one.
+"""What counts as one emoji (ADR 0257): a reaction is exactly one grapheme cluster of one.
 
 The standard library has no Unicode emoji property, so the ranges below are the
 ``Extended_Pictographic`` set of Unicode 15 (its ``emoji-data.txt``), with the sequences that

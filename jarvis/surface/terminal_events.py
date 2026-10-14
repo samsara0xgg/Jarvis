@@ -341,7 +341,7 @@ def _say_uid(device: str, utterance_id: str) -> str:
 
 
 def phone_record_id(device: str, utterance_id: str) -> str:
-    """The id of the message record a phone's ``say`` becomes: its event's uid (ADR 0256)."""
+    """The id of the message record a phone's ``say`` becomes: its event's uid (ADR 0257)."""
     return _say_uid(device, utterance_id)
 
 
