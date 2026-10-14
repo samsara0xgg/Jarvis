@@ -690,6 +690,7 @@ def test_a_second_visit_to_the_same_circle_under_a_new_name_is_a_rename_not_a_sa
 def page(world: World) -> TestClient:
     """The real routes over the real page, on the world's store and log."""
     memory_page = MemoryPage(world.db, None, history_since="", event_log=world.log, zone=ZONE)
+    memory_page.clock = lambda: NOW_MS / 1000  # the 28 days end on the world's day, not today
     app = create_app(
         InherentDeps(
             submit_callable=lambda _text: None,
