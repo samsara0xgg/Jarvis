@@ -3587,6 +3587,7 @@ def _terminal_link(monkeypatch: pytest.MonkeyPatch, profile: str) -> Any:  # noq
     monkeypatch.setattr("sys.platform", "darwin")
     monkeypatch.setattr(audio_output, "_cache", None)
     monkeypatch.setattr(audio_output, "_probe", lambda: profile)
+    monkeypatch.setattr(audio_output, "_aggregate_parts", lambda: None)  # not this Mac's aggregate
 
     def link(op: str, arguments: Any, target: str | None) -> dict[str, Any]:  # noqa: ANN401
         del target
