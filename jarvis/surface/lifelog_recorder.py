@@ -1,4 +1,4 @@
-"""This machine's share of his recorded day (ADR 0239): the microphone it already holds, in pieces.
+"""This machine's share of his recorded day (ADR 0256): the microphone it already holds, in pieces.
 
 A terminal that listens holds one audio ingress. With ``lifelog_capture.enabled`` it also takes a
 diagnostic lane of that ingress and cuts what it hears into pieces at each ten-minute mark of the

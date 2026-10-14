@@ -1,4 +1,4 @@
-"""ADR 0239: the Mac terminal's microphone goes into the brain's day archive, piece by piece.
+"""ADR 0256: the Mac terminal's microphone goes into the brain's day archive, piece by piece.
 
 Acceptance checks against the real recorder, the real brain route and archive, and a fake lane
 and encoder (no PortAudio, no afconvert):

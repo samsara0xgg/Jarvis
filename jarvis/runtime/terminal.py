@@ -480,7 +480,7 @@ class _Speaking:
     config_dir: Path | None = None  # where relative model paths in the config resolve from
     broadcaster: InherentBroadcaster | None = None  # the companion's sockets, with ``--serve-ui``
     controls: VoiceControls | None = None  # this device's mic and speech switches, likewise
-    brain_url: str = ""  # where the day recording's pieces go (ADR 0239)
+    brain_url: str = ""  # where the day recording's pieces go (ADR 0256)
     brain_token: str = field(default="", repr=False)
 
 
@@ -544,7 +544,7 @@ class _Listening:
     session: voice_session.DuplexVoiceSession
     controls: LinkedControls
     dictation: Dictation | None = None  # recording on this microphone, for the UI's dictation
-    recorder: LifelogRecorder | None = None  # his day, from this microphone (ADR 0239)
+    recorder: LifelogRecorder | None = None  # his day, from this microphone (ADR 0256)
 
 
 def _listening_requested(config: Mapping[str, Any]) -> bool:
@@ -699,7 +699,7 @@ async def _start_listening(speaking: _Speaking, speech: _Speech) -> _Listening |
 def _start_lifelog(
     speaking: _Speaking, session: voice_session.DuplexVoiceSession,
 ) -> LifelogRecorder | None:
-    """ADR 0239: with ``lifelog_capture.enabled``, this microphone's day goes to the archive.
+    """ADR 0256: with ``lifelog_capture.enabled``, this microphone's day goes to the archive.
 
     It pauses while the microphone is muted. A failure to start costs the recording, never
     the listening.
