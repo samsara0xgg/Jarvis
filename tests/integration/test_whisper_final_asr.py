@@ -134,6 +134,9 @@ def test_a_voice_turn_hears_a_loop_as_nothing_without_a_hotter_retry(
     [
         ("谢谢观看。", ""),
         ("字幕由Amara.org社区提供", ""),
+        ("作曲 刘雨昕。", ""),  # 2026-10-14, over music: a credit line, the whole transcript
+        ("词曲:李宗盛", ""),
+        ("作曲家的工作不容易。", "作曲家的工作不容易。"),
         ("Thanks for watching!", ""),
         (f"{_SIMPLIFIED}", ""),
         ("谢谢观看这部电影的人不多。", "谢谢观看这部电影的人不多。"),

@@ -176,6 +176,15 @@ def test_a_poor_whisper_pass_leaves_sensevoices_words_and_says_why() -> None:
     assert (heard.sensevoice_confidence, heard.whisper_confidence) == (0.9, 0.5)
 
 
+def test_a_poor_whisper_pass_over_nothing_leaves_nothing() -> None:
+    """2026-10-14: music became a credit line when SenseVoice heard no words at all."""
+    ears = _hybrid(_sensevoice("zh", text=""), zh=_whisper("some credit line", signals=_POOR_PASS))
+    heard = ears.recognize_prepared("U1", _audio(2.0), 2.0)
+    assert (heard.text, heard.asr_engine) == ("", "whisper_gated")
+    good = _hybrid(_sensevoice("zh", text=""), zh=_whisper("real words", signals=_GOOD_PASS))
+    assert good.recognize_prepared("U2", _audio(2.0), 2.0).text == "real words."
+
+
 def test_a_good_whisper_pass_still_wins_and_names_both_scores() -> None:
     """A pass that reports healthy signals writes the turn; each engine's score keeps its name."""
     ears = _hybrid(_sensevoice("zh"), zh=_whisper("whisper heard this", signals=_GOOD_PASS))

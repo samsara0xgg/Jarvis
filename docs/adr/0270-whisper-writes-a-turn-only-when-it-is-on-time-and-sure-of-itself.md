@@ -38,8 +38,11 @@ the commit and its worst segment averaged at least -1.5; otherwise SenseVoice's 
 Record on `utterance.received` which engine's words stand and why, with each engine's own score
 under its own name, and read the Whisper model's weights whenever it has sat idle for 15 s.
 
-- **Gate.** A poor pass leaves SenseVoice's words only when SenseVoice wrote some; with none, the
-  poor pass is all there is and stands.
+- **Gate.** A poor pass is left out even when SenseVoice wrote nothing, so the turn is then empty.
+  2026-10-14 22:14:46, over music, SenseVoice wrote nothing and Whisper (confidence 0.203, one
+  segment) wrote a music credit line. Of the 5 retained turns where SenseVoice wrote nothing and
+  Whisper did, all had healthy passes (worst average above -0.5). A credit line of the form
+  "作曲 name" joins the transcripts the existing silence filter already drops.
 - **Bound.** The 4 s runs from the commit and is 2.5 times the longest hot pass. A pass that has
   not finished cannot be interrupted, so it runs to its end; the next passes queue behind it.
 - **`confidence`** keeps its meaning (the writing engine's own score) and is comparable only

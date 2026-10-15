@@ -522,9 +522,10 @@ class SenseVoiceRecognizer:
 
 # 言文 (typeless-local asr.py at 9b11024), verbatim: what Whisper writes for
 # silence or room noise, subtitle credits from its training data. Only a
-# transcript that is nothing but one of these is dropped.
+# transcript that is nothing but one of these is dropped. The music credit line is ours.
 _WHISPER_SILENCE_RE = re.compile(
     r"^(优优独播剧场.*|字幕.{0,20}(提供|制作|by.*)|.*请不吝点赞.*|明镜与点点栏目|(谢谢|感谢)(大家)?(收看|观看)"
+    r"|(作词|作曲|编曲|词曲|混音|字幕)[\s:\uff1a]\s*\S.{0,19}"  # a music credit line
     r"|thanks? (you )?(so much )?for watching|subtitles by.*)$",
     re.IGNORECASE,
 )
@@ -1106,7 +1107,7 @@ class HybridFinalRecognizer:
         if not text:
             return _with_engine(heard, "whisper_empty", whisper=result)
         signals = result.whisper_signals
-        if heard.text.strip() and signals and signals.avg_logprob < _WHISPER_POOR_LOGPROB:
+        if signals and signals.avg_logprob < _WHISPER_POOR_LOGPROB:
             LOGGER.info(
                 "hybrid final: Whisper pass poor (avg_logprob %.2f); SenseVoice's words stand",
                 signals.avg_logprob,
