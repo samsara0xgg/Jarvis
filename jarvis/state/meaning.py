@@ -202,10 +202,12 @@ def _matrix(
 
 
 def nearest(  # noqa: PLR0913 — the question and its bounds, all keyword-only after the model.
-    conn: sqlite3.Connection, path: Path, embedder: Embedder, query: str, kind: str,
-    *, among: set[str] | None = None, limit: int, margin: float,
+    conn: sqlite3.Connection, path: Path, embedder: Embedder, query: str | Sequence[str],
+    kind: str, *, among: set[str] | None = None, limit: int, margin: float,
 ) -> list[str]:
     """Ref ids of ``kind`` closest to ``query``, best first, each ``margin`` above the median.
+
+    Several phrasings (the same question in each language) are ranked one by one and merged.
 
     A text of several pieces counts once, at its best piece. ``among`` limits the candidates.
     e5 scores all text 0.8 or more, and how high depends on the query, so a hit is measured
@@ -217,13 +219,16 @@ def nearest(  # noqa: PLR0913 — the question and its bounds, all keyword-only 
         return []
     if not refs:
         return []
-    scores = matrix @ embedder.embed([query], query=True)[0]
-    best: dict[str, float] = {}
-    for ref, score in zip(refs, scores.tolist(), strict=True):
-        best[ref] = max(score, best.get(ref, -1.0))
-    floor = statistics.median(best.values()) + margin
-    near = [ref for ref, s in best.items() if s >= floor and (among is None or ref in among)]
-    return sorted(near, key=lambda ref: -best[ref])[:limit]
+    asked = [query] if isinstance(query, str) else list(query)
+    rankings = []
+    for scores in embedder.embed(asked, query=True) @ matrix.T:
+        best: dict[str, float] = {}
+        for ref, score in zip(refs, scores.tolist(), strict=True):
+            best[ref] = max(score, best.get(ref, -1.0))
+        floor = statistics.median(best.values()) + margin
+        near = [ref for ref, s in best.items() if s >= floor and (among is None or ref in among)]
+        rankings.append(sorted(near, key=lambda ref: -best[ref]))
+    return fuse(*rankings)[:limit]
 
 
 def fuse(*rankings: Sequence[str]) -> list[str]:

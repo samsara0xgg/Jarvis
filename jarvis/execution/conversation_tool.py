@@ -28,18 +28,22 @@ LOGGER = logging.getLogger(__name__)
 
 _DESCRIPTION: Final = (
     "Use for what Allen and you said to each other before, not for what he did (my_day) or "
-    "his mail. query: the closest lines by meaning and by words, in either language, up to 8 "
-    "per page, each with who, when and an excerpt. date (a day; to= its last day, up to 14 "
-    "days): the topics talked about, day by day. date or query with order, speaker or page: "
-    "the lines themselves, so 'the first thing I said last month' is date+to, order=oldest, "
+    "his mail. query: the closest lines by meaning and by words, up to 8 per page, each with "
+    "who, when and an excerpt. date (a day; to= its last day, up to 14 days): the topics "
+    "talked about, day by day. date or query with order, speaker or page: the lines "
+    "themselves, so 'the first thing I said last month' is date+to, order=oldest, "
     "speaker=Allen. open: an id from a result, the exchange around that line."
 )
 _SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
     "properties": {
         "query": {
-            "type": "string",
-            "description": "Words or a short phrase, in Chinese or English.",
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "The words or short phrase to find, once in Chinese and once in English: he "
+                "speaks both, and a line may be in either."
+            ),
         },
         "date": {
             "type": "string",
@@ -155,7 +159,8 @@ class _Conversation:
                 "open, order, speaker and page"
             )
             raise ToolError(msg, code="invalid_arguments")
-        query, opened = _text(args, "query"), _text(args, "open")
+        asked, opened = speakable.phrasings(args.get("query")), _text(args, "open")
+        query = " / ".join(asked)
         first, last = _text(args, "date"), _text(args, "to")
         order, speaker = args.get("order"), args.get("speaker")
         page = speakable.page_number(args.get("page"), "conversation", "lines 9-16")
@@ -172,7 +177,7 @@ class _Conversation:
                 if window is not None and not (query or order or speaker):
                     return self._topics(conn, window, (now, today))
                 return self._lines(
-                    conn, query, window, str(speaker or ""), page, (now, today),
+                    conn, asked, window, str(speaker or ""), page, (now, today),
                     newest=order != "oldest",
                 )
         except DailyError as exc:
@@ -240,15 +245,16 @@ class _Conversation:
         return [(str(a), str(b), str(c), str(d)) for a, b, c, d in conn.execute(sql, params)]
 
     def _lines(  # noqa: PLR0913 - what the call asked for, in the order it is applied
-        self, conn: sqlite3.Connection, query: str, window: tuple[date, date] | None,
+        self, conn: sqlite3.Connection, asked: list[str], window: tuple[date, date] | None,
         speaker: str, page: int, clock: tuple[datetime, date], *, newest: bool,
     ) -> dict[str, Any]:
         """Page ``page`` of ``_PAGE`` lines: those holding any word, best first, else in order."""
         now, today = clock
+        query = " / ".join(asked)
         rows = self._rows(conn, window, speaker, newest=newest)
         all_rows = rows
         fused = False
-        words = list(dict.fromkeys(query.casefold().split()))
+        words = list(dict.fromkeys(w for text in asked for w in text.casefold().split()))
         absent: list[str] = []
         if words:
             # Rare words weigh more, so a digit shared by hundreds of lines cannot bury the line
@@ -259,7 +265,7 @@ class _Conversation:
                 key=lambda pair: -pair[0],
             )
             rows = [row for _, row in ranked]
-            if close := self._by_meaning(conn, query, {row[0] for row in all_rows}):
+            if close := self._by_meaning(conn, asked, {row[0] for row in all_rows}):
                 # Merged with the word ranking, not chosen between: an exact hit stays first.
                 by_id = {row[0]: row for row in all_rows}
                 rows = [by_id[rid] for rid in meaning.fuse([row[0] for row in rows], close)]
@@ -299,13 +305,13 @@ class _Conversation:
             summary += f" No line holds: {', '.join(absent)}."
         return {"summary": summary, "moments": moments, "more": end < total}
 
-    def _by_meaning(self, conn: sqlite3.Connection, query: str, ids: set[str]) -> list[str]:
-        """Ids among ``ids`` closest to ``query`` by meaning; none when the model is absent."""
+    def _by_meaning(self, conn: sqlite3.Connection, asked: list[str], ids: set[str]) -> list[str]:
+        """Ids among ``ids`` closest to ``asked`` by meaning; none when the model is absent."""
         if self._embedder is None or not self._embedder.available:
             return []
         try:
             return meaning.nearest(
-                conn, self._store, self._embedder, query, meaning.RECORDS,
+                conn, self._store, self._embedder, asked, meaning.RECORDS,
                 among=ids, limit=_MEANING_LIMIT, margin=_MEANING_MARGIN,
             )
         except Exception:  # a search never fails a turn for want of the model

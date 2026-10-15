@@ -31,7 +31,7 @@ _DESCRIPTION: Final = (
     "Use for what he handed over from other apps: his payments (WeChat Pay, Alipay, Bank of "
     "China) and his past conversations with Claude. Not for what he said to you (conversation) "
     "or what he did on his devices (my_day). query finds the closest entries by meaning and by "
-    "words, in either language; date and to limit the span; source limits to one app. Returns up "
+    "words; date and to limit the span; source limits to one app. Returns up "
     "to 8 entries per page, each with its id, time (in the same time zone as the rest of your "
     "context), source and text, and for payments the "
     "count and the totals spent and received over every match, not just the page. open: an id "
@@ -41,7 +41,14 @@ _SOURCES: Final = ("claude", "wechat_pay", "alipay", "boc")
 _SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
     "properties": {
-        "query": {"type": "string", "description": "Words separated by spaces, either language."},
+        "query": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "The words or short phrase to find, once in Chinese and once in English: his "
+                "payments are mostly in Chinese, his Claude conversations in either."
+            ),
+        },
         "source": {"type": "string", "enum": list(_SOURCES), "description": "Only that app."},
         "date": {
             "type": "string",
@@ -128,7 +135,8 @@ class _Archive:
                 "to, page and open"
             )
             raise ToolError(msg, code="invalid_arguments")
-        query, opened, source = _text(args, "query"), _text(args, "open"), _text(args, "source")
+        asked = speakable.phrasings(args.get("query"))
+        query, opened, source = " / ".join(asked), _text(args, "open"), _text(args, "source")
         first, last = _text(args, "date"), _text(args, "to")
         page = speakable.page_number(args.get("page"), "archive", "entries 9-16")
         if problem := self._problem(query, opened, source, first, last, page):
@@ -141,7 +149,7 @@ class _Archive:
             with closing(read_connection(self._store)) as conn:
                 if opened:
                     return self._open(conn, opened, now)
-                return self._find(conn, query, source, window, page, (now, today))
+                return self._find(conn, asked, source, window, page, (now, today))
         except DailyError as exc:
             msg = f"The archive cannot be read just now ({exc}); tell him so."
             raise ToolError(msg, code="unavailable") from exc
@@ -177,7 +185,7 @@ class _Archive:
         return start, end
 
     def _find(  # noqa: PLR0913 - what the call asked for, in the order it is applied
-        self, conn: sqlite3.Connection, query: str, source: str,
+        self, conn: sqlite3.Connection, asked: list[str], source: str,
         window: tuple[date, date] | None, page: int, clock: tuple[datetime, date],
     ) -> dict[str, Any]:
         now = clock[0]
@@ -187,14 +195,15 @@ class _Archive:
             stop = datetime.combine(window[1] + timedelta(days=1), time.min, self._zone)
             end = int(stop.timestamp() * 1000)
         rows = imports.entries(conn, source=source or None, start_ms=start, end_ms=end)
-        words = list(dict.fromkeys(query.casefold().split()))
+        query = " / ".join(asked)
+        words = list(dict.fromkeys(w for text in asked for w in text.casefold().split()))
         absent: list[str] = []
         counted, near = rows, False
         if words:
             everything = rows
             rows, absent = rank(rows, words)
             counted = rows
-            if close := self._by_meaning(conn, query, {row.id for row in everything}):
+            if close := self._by_meaning(conn, asked, {row.id for row in everything}):
                 # Merged, not chosen between: an exact hit stays first. Totals stay on the word
                 # hits when there are any, since a near miss by meaning must not change a sum.
                 by_id = {row.id: row for row in everything}
@@ -243,13 +252,13 @@ class _Archive:
     def _at(row: imports.Entry) -> datetime:
         return datetime.fromtimestamp(row.at_ms / 1000, tz=UTC)
 
-    def _by_meaning(self, conn: sqlite3.Connection, query: str, ids: set[str]) -> list[str]:
-        """Ids among ``ids`` closest to ``query`` by meaning; none when the model is absent."""
+    def _by_meaning(self, conn: sqlite3.Connection, asked: list[str], ids: set[str]) -> list[str]:
+        """Ids among ``ids`` closest to ``asked`` by meaning; none when the model is absent."""
         if self._embedder is None or not self._embedder.available:
             return []
         try:
             return meaning.nearest(
-                conn, self._store, self._embedder, query, meaning.IMPORTS,
+                conn, self._store, self._embedder, asked, meaning.IMPORTS,
                 among=ids, limit=_MEANING_LIMIT, margin=_MEANING_MARGIN,
             )
         except Exception:  # a search never fails a turn for want of the model

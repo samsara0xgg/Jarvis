@@ -162,6 +162,15 @@ def test_the_tool_finds_a_line_by_meaning_when_no_word_matches(tmp_path: Path) -
     assert _ids(path, model, query="面试") == ["r4", "r1"]
 
 
+def test_the_question_in_both_languages_finds_what_either_finds(tmp_path: Path) -> None:
+    """A list of phrasings: words of each count, and each is ranked by meaning, then merged."""
+    path, model = _store(tmp_path), FakeEmbedder()
+    _drain(path, model)
+    assert sorted(_ids(path, None, query=["面试", "garden"])) == ["r3", "r4"]
+    # "天气" holds no word of any line; by meaning it reaches r2 ("rain"), "garden" reaches r3.
+    assert sorted(_ids(path, model, query=["天气", "garden"])) == ["r2", "r3"]
+
+
 def test_without_the_model_the_tool_searches_by_words_only(tmp_path: Path) -> None:
     """A missing model leaves the word results unchanged and embeds nothing."""
     path = _store(tmp_path)

@@ -97,6 +97,13 @@ def parse_day(value: str, today: date, tool: str) -> date:
     return day
 
 
+def phrasings(value: object) -> list[str]:
+    """A search's phrasings: one string, or a list of them (his words in each language)."""
+    items = [value] if isinstance(value, str) else value if isinstance(value, list) else []
+    kept = (text.strip() for text in items if isinstance(text, str))
+    return list(dict.fromkeys(text for text in kept if text))
+
+
 def page_number(value: object, tool: str, example: str) -> int:
     """The page asked for: 1 when none is, else a whole number from 1."""
     if value is None:
