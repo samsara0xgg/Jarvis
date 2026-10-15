@@ -317,6 +317,14 @@ def _levenshtein(a: str, b: str) -> int:
 _SENSEVOICE_FLOAT_RMS_FLOOR = 0.01
 
 
+class WhisperSignals(NamedTuple):
+    """What a Whisper pass says about itself, over its segments: the worst of each."""
+
+    avg_logprob: float
+    no_speech_prob: float
+    compression_ratio: float
+
+
 @dataclass(frozen=True)
 class TranscriptionResult:
     """Output of an ASR ``recognize()`` call (spec §3.6.1).
@@ -337,6 +345,7 @@ class TranscriptionResult:
     asr_engine: str | None = None
     sensevoice_confidence: float | None = None
     whisper_confidence: float | None = None
+    whisper_signals: WhisperSignals | None = None
 
 
 class AsrRecognizer(Protocol):
@@ -372,6 +381,18 @@ def _estimate_whisper_confidence(transcription: Mapping[str, Any]) -> float:
         probability = float(np.exp(min(avg_logprob, 0.0)))
         scores.append(max(0.0, min(1.0, probability * (1.0 - no_speech_prob))))
     return float(np.mean(scores, dtype=np.float64))
+
+
+def _whisper_signals(transcription: Mapping[str, Any]) -> WhisperSignals | None:
+    """The worst ``avg_logprob``, ``no_speech_prob`` and ``compression_ratio`` of the segments."""
+    segments = transcription.get("segments") or []
+    if not segments:
+        return None
+    return WhisperSignals(
+        avg_logprob=min(float(s.get("avg_logprob", 0.0)) for s in segments),
+        no_speech_prob=max(float(s.get("no_speech_prob", 0.0)) for s in segments),
+        compression_ratio=max(float(s.get("compression_ratio", 0.0)) for s in segments),
+    )
 
 
 class SenseVoiceRecognizer:
@@ -658,6 +679,7 @@ class MlxWhisperRecognizer:
             emotion=None,
             asr_engine="whisper",
             whisper_confidence=confidence,
+            whisper_signals=_whisper_signals(transcription),
         )
 
     def language_probs(self, audio_pcm: bytes) -> dict[str, float]:
@@ -791,6 +813,11 @@ _HYBRID_MAX_PREPARED = 4
 # pass takes 0.43 s at the median and 1.6 s at the most (699 retained turns); a model read back
 # from swap took 7.6-13 s.
 _HYBRID_WAIT_S = 4.0
+# ADR 0270: a pass whose worst segment averages below this log-probability does not replace words
+# SenseVoice has. Of 671 retained turns 12 fall below it; against a third decode (Whisper
+# large-v3) SenseVoice was nearer in 6, neither was in 5 and Whisper was in 1. no_speech_prob is 0
+# in every pass mlx returns, and the one pass over a compression ratio of 2.4 was the right one.
+_WHISPER_POOR_LOGPROB = -1.5
 
 
 @dataclass
@@ -815,8 +842,9 @@ class HybridFinalRecognizer:
     (SenseVoice misreading Mandarin) to the Chinese Whisper, ``en`` to the English one; any
     other language, an empty Whisper transcript or a Whisper error keeps SenseVoice's words.
 
-    ADR 0270: so does a pass still running ``_HYBRID_WAIT_S`` after the commit; every result
-    names the engine whose words stand (``asr_engine``) and keeps each engine's own score.
+    ADR 0270: so do a pass whose own signals are poor and a pass still running
+    ``_HYBRID_WAIT_S`` after the commit; every result names the engine whose words stand
+    (``asr_engine``) and keeps each engine's own score.
 
     ADR 0137: with ``whisper_command`` set, a short unclear Chinese line (2-4 characters, no
     question, no command already) is heard once more by it, and a Chinese command it returns
@@ -1049,6 +1077,13 @@ class HybridFinalRecognizer:
         text = result.text.strip()
         if not text:
             return _with_engine(heard, "whisper_empty", whisper=result)
+        signals = result.whisper_signals
+        if heard.text.strip() and signals and signals.avg_logprob < _WHISPER_POOR_LOGPROB:
+            LOGGER.info(
+                "hybrid final: Whisper pass poor (avg_logprob %.2f); SenseVoice's words stand",
+                signals.avg_logprob,
+            )
+            return _with_engine(heard, "whisper_gated", whisper=result)
         return replace(
             result,
             text=text,
@@ -1066,13 +1101,14 @@ def _with_engine(
 ) -> TranscriptionResult:
     """SenseVoice's words as the final ones, named for why Whisper's did not write them.
 
-    ``whisper`` is the pass that was heard but not used, so its own score is kept.
+    ``whisper`` is the pass that was heard but not used, so its own score and signals are kept.
     """
     return replace(
         heard,
         asr_engine=engine,
         sensevoice_confidence=heard.confidence,
         whisper_confidence=None if whisper is None else whisper.confidence,
+        whisper_signals=None if whisper is None else whisper.whisper_signals,
     )
 
 

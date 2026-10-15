@@ -57,10 +57,12 @@ def _whisper(
     language: str = "zh",
     delay_s: float = 0.0,
     gate: threading.Event | None = None,
+    signals: voice_asr.WhisperSignals | None = None,
 ) -> MagicMock:
     """Answers ``words``, or ``heard <bytes>`` when none is given: a test sees which audio it heard.
 
     ``gate`` holds every pass until set; ``fake.peak`` is the most passes ever running at once.
+    ``signals`` are what the pass reports about itself.
     """
     lock = threading.Lock()
     running = [0]
@@ -76,7 +78,7 @@ def _whisper(
             if isinstance(words, Exception):
                 raise words
             text = f"heard {len(audio_pcm)}" if words is None else words
-            return voice_asr.TranscriptionResult(text, 0.5, language, None)
+            return voice_asr.TranscriptionResult(text, 0.5, language, None, whisper_signals=signals)
         finally:
             with lock:
                 running[0] -= 1
@@ -161,6 +163,29 @@ def test_an_empty_or_failing_whisper_keeps_sensevoices_words(words: str | Except
     assert ears.recognize_prepared("U1", _audio(2.0), 2.0).text == _SENSEVOICE_WORDS
 
 
+_GOOD_PASS = voice_asr.WhisperSignals(avg_logprob=-0.2, no_speech_prob=0.01, compression_ratio=1.2)
+_POOR_PASS = voice_asr.WhisperSignals(avg_logprob=-2.5, no_speech_prob=0.9, compression_ratio=3.5)
+
+
+def test_a_poor_whisper_pass_leaves_sensevoices_words_and_says_why() -> None:
+    """ADR 0270: a pass whose own signals are poor never replaces a transcript SenseVoice has."""
+    ears = _hybrid(_sensevoice("zh"), zh=_whisper("whisper heard this", signals=_POOR_PASS))
+    heard = ears.recognize_prepared("U1", _audio(2.0), 2.0)
+    assert heard.text == _SENSEVOICE_WORDS
+    assert heard.asr_engine == "whisper_gated"
+    assert (heard.sensevoice_confidence, heard.whisper_confidence) == (0.9, 0.5)
+
+
+def test_a_good_whisper_pass_still_wins_and_names_both_scores() -> None:
+    """A pass that reports healthy signals writes the turn; each engine's score keeps its name."""
+    ears = _hybrid(_sensevoice("zh"), zh=_whisper("whisper heard this", signals=_GOOD_PASS))
+    heard = ears.recognize_prepared("U1", _audio(2.0), 2.0)
+    assert heard.text == "whisper heard this."
+    assert heard.asr_engine == "whisper"
+    assert (heard.sensevoice_confidence, heard.whisper_confidence) == (0.9, 0.5)
+    assert heard.confidence == heard.whisper_confidence  # the writing engine's, on its own scale
+
+
 @pytest.mark.parametrize("prepared", [True, False])
 def test_a_whisper_pass_that_hangs_past_the_bound_leaves_sensevoices_words(
     prepared: bool,  # noqa: FBT001 - parametrized: started at the pause, or at the commit
@@ -185,7 +210,8 @@ def test_a_whisper_pass_that_hangs_past_the_bound_leaves_sensevoices_words(
 @pytest.mark.parametrize(
     ("zh", "speech_s", "engine"),
     [
-        (_whisper("whisper heard this"), 2.0, "whisper"),
+        (_whisper("whisper heard this", signals=_GOOD_PASS), 2.0, "whisper"),
+        (_whisper("whisper heard this", signals=_POOR_PASS), 2.0, "whisper_gated"),
         (_whisper(""), 2.0, "whisper_empty"),
         (_whisper(RuntimeError("mlx failed")), 2.0, "whisper_error"),
         (_whisper("whisper heard this"), 0.5, "sensevoice_short"),
@@ -209,7 +235,7 @@ def test_the_committed_event_names_the_engine_and_each_engines_own_score(
     assert payload["sensevoice_confidence"] == 0.9
     written_by_whisper = engine == "whisper"
     assert payload["confidence"] == (0.5 if written_by_whisper else 0.9)
-    heard_whisper = {"whisper", "whisper_empty"}
+    heard_whisper = {"whisper", "whisper_gated", "whisper_empty"}
     assert ("whisper_confidence" in payload) == (engine in heard_whisper)
 
 

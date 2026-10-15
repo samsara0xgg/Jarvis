@@ -235,6 +235,7 @@ def main() -> None:
             "whisper_ms": [round(p) for p in passes],
             "whisper": result.asr_engine == "whisper",
             "engine": result.asr_engine,  # ADR 0270: why this engine's words stand
+            "whisper_signals": result.whisper_signals,
             "sensevoice": baseline.text,
             "hybrid": result.text,
         }
