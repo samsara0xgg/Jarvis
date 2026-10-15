@@ -22,6 +22,7 @@ final class ReportAppDelegate: NSObject, UIApplicationDelegate {
         PushNotifications.shared.install()
         // paired: permission (the first time) and the APNs token, which iOS issues again at each launch
         Task { await PushRegistry.shared.start() }
+        RideLiveActivity.shared.observe()                   // the ride Live Activity's tokens, including when a push-to-start wakes the app
         LifelogRecorder.shared.resume()                     // closes what a kill left open; records on if the switch is on
         return true
     }

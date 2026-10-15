@@ -76,6 +76,7 @@ targets:
         excludes: ["Info.plist"]
       - Jarvis/Voice/TalkIntent.swift       # the control's button names the app's intent
       - Jarvis/Push/JarvisActivity.swift    # the Live Activity's shape, started by the app and drawn here
+      - Jarvis/Push/RideActivityAttributes.swift   # the bus ride's Live Activity shape, started by the brain's push and drawn here
       - Jarvis/Lifelog/LifelogStore.swift   # the recording switch, in the App Group's defaults, for the control's value
       - Jarvis/Lifelog/LifelogIntents.swift # the control's switch; here it only sets the switch
       - path: Jarvis/Resources/Fonts        # the app's faces, for the Live Activity

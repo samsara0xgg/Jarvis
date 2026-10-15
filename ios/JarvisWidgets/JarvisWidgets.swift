@@ -10,6 +10,7 @@ struct JarvisWidgets: WidgetBundle {
         TalkControl()
         TalkLockWidget()
         JarvisLiveActivity()
+        RideLiveActivityWidget()
         LifelogControl()
     }
 }

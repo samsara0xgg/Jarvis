@@ -13,13 +13,16 @@ enum PushWire {
     /// What the brain is to do with the Live Activity token: leave the one it has, replace it, or forget it.
     enum ActivityToken: Equatable { case keep, set(String), clear }
 
-    /// `environment` is the one the build's tokens are issued by; `live_activity_token` is left out to keep the stored one and `null` clears it.
-    static func registration(deviceToken: String, environment: String, activity: ActivityToken) -> [String: Any] {
+    /// `environment` is the one the build's tokens are issued by. Each activity token (`live_activity_token`, and the ride's `ride_start_token` and `ride_activity_token`, ADR 0224)
+    /// is left out to keep the stored one, and `null` clears it.
+    static func registration(deviceToken: String, environment: String, activity: ActivityToken, rideStart: ActivityToken = .keep, rideActivity: ActivityToken = .keep) -> [String: Any] {
         var body: [String: Any] = ["device_token": deviceToken, "environment": environment]
-        switch activity {
-        case .keep: break
-        case .set(let token): body["live_activity_token"] = token
-        case .clear: body["live_activity_token"] = NSNull()
+        for (key, token) in [("live_activity_token", activity), ("ride_start_token", rideStart), ("ride_activity_token", rideActivity)] {
+            switch token {
+            case .keep: break
+            case .set(let value): body[key] = value
+            case .clear: body[key] = NSNull()
+            }
         }
         return body
     }
@@ -58,6 +61,7 @@ final class PushRegistry {
 
     private var deviceToken: String?
     private var activity = PushWire.ActivityToken.keep
+    private var rideStart = PushWire.ActivityToken.keep, rideActivity = PushWire.ActivityToken.keep
     private var busy = false, again = false, failed = false
 
     /// Paired: ask for permission the first time, then have iOS issue the device token (it does so again at each launch, and when it changes).
@@ -84,6 +88,10 @@ final class PushRegistry {
         Task { await send() }
     }
 
+    /// The ride Live Activity's push-to-start token changed (iOS issues it again at launch), or its own token (`rideActivity`) changed or the activity ended.
+    func setRideStartToken(_ token: PushWire.ActivityToken) { rideStart = token; Task { await send() } }
+    func setRideActivityToken(_ token: PushWire.ActivityToken) { rideActivity = token; Task { await send() } }
+
     /// A registration the brain did not take is made again when the app comes back to the screen.
     func retryIfNeeded() { if failed { Task { await send() } } }
 
@@ -95,11 +103,15 @@ final class PushRegistry {
         repeat {
             again = false
             guard BrainLink.shared.hasToken, let device = deviceToken else { return }
-            let told = activity
-            let body = PushWire.registration(deviceToken: device, environment: PushWire.environment, activity: told)
+            let told = activity, toldStart = rideStart, toldRide = rideActivity
+            let body = PushWire.registration(deviceToken: device, environment: PushWire.environment, activity: told, rideStart: toldStart, rideActivity: toldRide)
             let status = try? await BrainLink.shared.call { try await BrainClient.registerPush(body, bases: $0, token: $1) }
             failed = status != 200
-            if status == 200 && told == .clear && activity == .clear { activity = .keep }
+            if status == 200 {
+                if told == .clear && activity == .clear { activity = .keep }
+                if toldStart == .clear && rideStart == .clear { rideStart = .keep }
+                if toldRide == .clear && rideActivity == .clear { rideActivity = .keep }
+            }
         } while again
     }
 }
