@@ -169,7 +169,7 @@ from jarvis.execution.tools import (
 )
 from jarvis.execution.transit_tool import TransitOffers, first_leave_ms
 from jarvis.execution.workers import Workers, make_worker_tools
-from jarvis.runtime import audio_output, device_tools
+from jarvis.runtime import audio_output, device_tools, device_voice
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.daily_report import (
     PLAN_SERVER,
@@ -4559,6 +4559,24 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             audio_path=audio_ref if isinstance(audio_ref, str) else None,
             attachments=_record_attachments(runtime.attachments, user_intent_event.payload),
         )
+    # ADR 0268: the same words again from the same device, while the turn that heard them first
+    # is still answering, are kept as his row but start no second answer: this turn is cancelled
+    # as superseded by that one the moment its run opens.
+    if continuation is None and runtime.response_runs is not None:
+        runs = runtime.response_runs
+        twin = device_voice.repeat_of(
+            runtime.runtime_paths.event_log,
+            effective_turn_id,
+            str(user_intent_event.payload.get("transcript", "")),
+            window_s=_SUPERSEDE_WINDOW_S,
+            in_flight={run.turn_id for run in runs.open_runs()},
+            usable=lambda turn: not (runs.turn_superseded(turn) or runs.turn_stopped(turn)),
+        )
+        if twin is not None:
+            LOGGER.info("turn %s repeats turn %s; it starts no answer", effective_turn_id, twin)
+            runs.mark_turns_superseded(
+                [effective_turn_id], for_s=_SUPERSEDE_WINDOW_S, by_turn=twin,
+            )
     # docs/plans/replay-as-sent-proposal.md: this turn's message is kept as
     # sent for later histories; a card's button wrote no row to keep it under.
     record_sent_message: Callable[[str], None] | None = None

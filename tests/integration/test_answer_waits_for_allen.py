@@ -594,7 +594,7 @@ def test_a_sentence_one_second_after_the_one_not_yet_answered_is_answered_with_i
         assert runtime.response_runs is not None
         with ThreadPoolExecutor(max_workers=2) as pool:
             first = pool.submit(_drive, runtime, _spoken_turn(runtime.conn, "T-1", _FIRST))
-            _wait_until(lambda: len(peer.requests) == 1)
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
             time.sleep(1.0)
             peer.first_event_delay_s = 0.0
             make_supersede_unspoken_callable(runtime, lambda turn_ids: turn_ids)("T-2")
@@ -618,6 +618,72 @@ def test_a_sentence_one_second_after_the_one_not_yet_answered_is_answered_with_i
         assert 0 <= asked.index(_FIRST) < asked.index(words)
     assert peer.completed == 1
     assert _records(runtime) == [("allen", _FIRST), ("allen", words), ("jarvis", answer)]
+    runtime.conn.close()
+
+
+@pytest.mark.parametrize(
+    ("words", "answers"),
+    [
+        (_FIRST, 1),
+        ("去学校的公交 。", 1),
+        (_SECOND, 2),
+    ],
+    ids=["the_same_twice", "a_part_of_it", "other_words_keep_the_tool_exemption"],
+)
+def test_the_same_words_again_while_a_tool_turn_answers_start_no_second_answer(
+    tmp_path: Path,
+    words: str,
+    answers: int,
+) -> None:
+    """Live 2026-10-14 22:14:19 and 22:14:24: one sentence arrived twice, two answers.
+
+    The first turn called a tool, so ADR 0107 keeps it from being superseded. The repeat is
+    a different matter: his row stays, the repeat starts no answer of its own and the
+    log names the turn that answers for it. Other words keep the exemption: two answers.
+    """
+    # A turn that dispatched a tool asks the model again; the script has rounds to spare.
+    scripts = [[("final_answer", "八点二十有一班。")]] + [[("final_answer", "好的。")]] * 3
+    with _Peer(scripts, first_event_delay_s=1.5) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        runtime = replace(
+            runtime, response_flags=replace(runtime.response_flags, slow_results=True),
+        )
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(_drive, runtime, _spoken_turn(runtime.conn, "T-1", _FIRST))
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            emit_event(
+                runtime.conn,
+                type="action.dispatched",
+                payload={"action_id": "A-1"},
+                correlation={"turn_id": "T-1", "action_id": "A-1"},
+            )
+            time.sleep(1.0)
+            peer.first_event_delay_s = 0.0
+            make_supersede_unspoken_callable(runtime, lambda turn_ids: turn_ids)("T-2")
+            second = pool.submit(_drive, runtime, _spoken_turn(runtime.conn, "T-2", words))
+            first.result(timeout=20)
+            if answers == 1:
+                with pytest.raises(ResponseCancelledError):
+                    second.result(timeout=10)
+            else:
+                second.result(timeout=20)
+
+    cancelled = _payloads(runtime.conn, "response.cancelled")
+    emitted = _payloads(runtime.conn, "surface.response_emitted")
+    assert len(emitted) == answers
+    # The repeat never asked the model: only the turns that answer were admitted a request.
+    admitted = {row["response_id"] for row in _payloads(runtime.conn, "response.request_admitted")}
+    assert len(admitted) == answers
+    if answers == 1:
+        assert [(row["turn_id"], row["reason"]) for row in cancelled] == [("T-2", "superseded")]
+        assert cancelled[0]["interrupted_by_turn_id"] == "T-1"
+        assert [row["turn_id"] for row in emitted] == ["T-1"]
+        records = _records(runtime)
+        assert [source for source, _text in records] == ["allen", "allen", "jarvis"]
+        assert [text for _source, text in records[:2]] == [_FIRST, words]
+        assert records[2][1].startswith("八点二十有一班。")
+    else:
+        assert not cancelled
     runtime.conn.close()
 
 

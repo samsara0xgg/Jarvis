@@ -74,6 +74,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     "jarvis/execution/keep_tool.py": frozenset({"_KEEP_DESCRIPTION"}),
     # Typlus's polish prompt (ADR 0058) names the Chinese phantoms the recognizer emits
     # and Chinese dictations that must not be answered, as the words the model will read.
+    # Listening sounds stripped at a repeated sentence's edges (ADR 0268).
+    "jarvis/runtime/device_voice.py": frozenset({"_FILLERS"}),
     "jarvis/runtime/dictation.py": frozenset({"POLISH_PROMPT", "COMMAND_PROMPT"}),
     # A question naming a past day is the saved report's to answer; these read the question.
     # Verification-code mail is read by the words Chinese services write around the code (ADR 0266).

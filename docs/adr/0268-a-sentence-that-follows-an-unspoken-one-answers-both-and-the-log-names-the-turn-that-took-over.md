@@ -31,6 +31,10 @@
 - Gaps between the halves of one sentence in the record: 1.4 s (ADR 0074's card
   incident), 1.7 s (ADR 0053), 2 s and 3 s (ADR 0219). A weekday question 7 s after a
   search began was a new question, not a half (ADR 0107's live test).
+- Live 2026-10-14 22:14:19 and 22:14:24, the same sentence twice from one Mac voice
+  session: the first turn had called `where_am_i`, so the sweep left it alone (ADR 0107)
+  and the second turn started a second answer. ADR 0219 absorbs a repeat only across
+  devices.
 - A run that completed has its row in memory.db, which is append-only, so a
   completed answer cannot be taken back (ADR 0053).
 
@@ -51,6 +55,20 @@ discarded, if all of these hold:
 
 The name is written wherever a run is superseded: by that sweep, by the cancel at the
 open of a run that was marked first, and by Jev's supplement or correction (ADR 0139).
+
+A repeat starts no answer. When a voice turn begins, its words are compared with those
+of the earlier voice turns of the same device (`ingestion_node`) that began in the last
+10 s or still have an open run, and that were not cancelled or stopped. The comparison
+is `device_voice`'s, ADR 0219: punctuation, whitespace and a wake lead are ignored;
+in addition a listening sound (嗯, 啊, ...) at either edge is ignored. If the new words
+are the same as the earlier turn's, or a part of them (at least 2 characters), the new
+turn is a repeat of the latest such turn: his row is written as for any turn, the turn
+is marked superseded by that one, and its run is cancelled as `superseded` the moment it
+opens, with `interrupted_by_turn_id` naming the turn that answers for it. No request is
+sent for it. This holds whether or not the earlier turn dispatched an action, because
+the exemption protects a turn from being cancelled, and here the earlier turn is kept.
+Longer words that only begin with the earlier turn's are a continuation and follow the
+rules above, as do different words.
 
 Limits:
 
@@ -76,6 +94,9 @@ Limits:
   one message in the request.
 - **Narrow the window to 3-5 s** — the record has no merge that was wrong at 10 s and
   no miss to fix; a shorter window would move the line without a failing case.
+- **Cancel the earlier turn when a repeat arrives** — for a turn that dispatched a tool
+  that discards work that is already running (ADR 0107); the repeat is the one with
+  nothing to lose.
 - **Supersede a turn that dispatched an action** — the 2026-10-01 live test: a
   weekday question 7 s after a Micron search cancelled it, re-ran it for 24 s and never
   answered the weekday.
@@ -84,8 +105,13 @@ Limits:
 
 - A request cancelled in flight is paid for and thrown away; only the merged turn's
   answer counts.
-- A turn that dispatched a tool is outside the merge: two such sentences get two
-  answers, as before.
+- A turn that dispatched a tool is outside the merge: two different sentences get two
+  answers, as before. The same words again do not.
+- A repeat within 10 s of an answered turn is swallowed too, so asking the very same
+  words again that quickly gets no second answer; the first one is the answer. A longer
+  sentence, or the same one after the window, is answered.
+- A continuation that is longer than the earlier words, such as a cumulative transcript,
+  is not absorbed: it still follows the merge or the exemption.
 - The cancel of the first sentence still reaches the surfaces as `cancelled` for that
   turn; whether the screen shows it is the surface's.
 - A run that passed the completion hold just before he started talking can complete

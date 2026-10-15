@@ -7,6 +7,8 @@ Two readers of the event log that the runtime binds to the voice paths of every 
   cancels (barge-in, supersede, exit) take it as ``only_turns``.
 * :func:`heard_elsewhere` answers "did another device just record these words", the check the
   shared word judge runs first (:mod:`jarvis.surface.word_judge`, verdict ``elsewhere``).
+* :func:`repeat_of` answers "is this utterance the same words as one this device's turn is
+  still answering" (ADR 0268), asked where the turn starts.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from jarvis.surface import voice_asr
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
     from pathlib import Path
 
 ELSEWHERE_WINDOW_S: Final = 8.0
@@ -96,3 +98,64 @@ def heard_elsewhere(event_log_path: Path, device: str, text: str) -> bool:
             (since_ms, device),
         ).fetchall()
     return any(isinstance(row[0], str) and same_words(text, row[0]) for row in rows)
+
+
+_FILLERS: Final = "嗯哦噢喔唔呃额啊哈"
+"""Listening sounds at the edge of a sentence that are not part of what it says."""
+_REPEAT_ENDED = (
+    "SELECT 1 FROM events WHERE type IN ('response.cancelled', 'response.failed', 'turn.failed') "
+    "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
+)
+
+
+def repeats(words: str, earlier: str) -> bool:
+    """Whether ``words`` say no more than ``earlier`` did: the same, or a part of it.
+
+    Both are normalized as :func:`same_words` does and stripped of a listening sound at either
+    edge. A longer sentence that merely begins with ``earlier`` is a continuation, not a repeat.
+    """
+    a, b = _normalize(words).strip(_FILLERS), _normalize(earlier).strip(_FILLERS)
+    return len(a) >= _MIN_CHARS and a in b
+
+
+def repeat_of(  # noqa: PLR0913 - the turn, its words, and the three facts only the runtime knows
+    event_log_path: Path,
+    turn_id: str,
+    words: str,
+    *,
+    window_s: float,
+    in_flight: Collection[str],
+    usable: Callable[[str], bool],
+) -> str | None:
+    """The turn of the same device that ``turn_id``'s words repeat, if it is still answering.
+
+    That is the latest earlier voice turn under the same ``ingestion_node`` whose words
+    :func:`repeats` accepts, and that either began within ``window_s`` or is in ``in_flight``,
+    was not cancelled or failed, and which ``usable`` still lets answer.
+    """
+    since_ms = int((time.time() - window_s) * 1000)
+    with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
+        node = turn_origin(conn, turn_id)[1]
+        own = conn.execute(
+            "SELECT id FROM events WHERE type = 'utterance.received' "
+            "AND json_extract(payload_json, '$.turn_id') = ? ORDER BY id LIMIT 1",
+            (turn_id,),
+        ).fetchone()
+        if node is None or own is None:
+            return None
+        rows = conn.execute(
+            "SELECT json_extract(payload_json, '$.turn_id'), "
+            "json_extract(payload_json, '$.transcript'), ts_epoch_ms FROM events "
+            "WHERE type = 'utterance.received' AND ingestion_node = ? AND id < ? "
+            "ORDER BY id DESC LIMIT 20",
+            (node, own[0]),
+        ).fetchall()
+        for earlier, text, ts_ms in rows:
+            if (
+                isinstance(earlier, str) and isinstance(text, str) and earlier != turn_id
+                and (ts_ms >= since_ms or earlier in in_flight)
+                and repeats(words, text) and usable(earlier)
+                and conn.execute(_REPEAT_ENDED, (earlier,)).fetchone() is None
+            ):
+                return earlier
+    return None
