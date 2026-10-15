@@ -450,6 +450,26 @@ def test_captions_show_what_is_heard_while_the_pause_still_ends_the_utterance() 
     assert _traces("endpoint_decision") == []
 
 
+def test_captions_keep_going_after_a_slow_decode_and_dropped_snapshots() -> None:
+    """ADR 0273: captions alone skip what the lane could not take; they never stop the utterance."""
+    shown: list[tuple[str, str]] = []
+    harness = _Harness(
+        _ScriptedDecoder(["把灯", "把灯打开", "把灯打开吧"], delay_s=0.05),
+        partial=voice_session.PartialAsrConfig(captions=True, interval_ms=32),
+        required_misses=40,
+        on_partial=lambda turn_id, settled, tail: shown.append((turn_id, settled + tail)),
+    )
+    try:
+        for _ in range(4):
+            harness.feed(_SPEECH, decode=False)
+        harness.feed_many([_SPEECH] * 3)
+    finally:
+        harness.close()
+    assert _traces("partial_asr_degraded") == []
+    assert harness.lane.drops >= 3
+    assert len(shown) >= 2, "a caption still follows the over-budget decodes"
+
+
 class _RecordingDecoder(_ScriptedDecoder):
     """A scripted decoder that also keeps how long each snapshot it decoded was."""
 

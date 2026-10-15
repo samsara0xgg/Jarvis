@@ -395,6 +395,12 @@ def _whisper_signals(transcription: Mapping[str, Any]) -> WhisperSignals | None:
     )
 
 
+# ADR 0273: under memory pressure macOS pages an idle model out within minutes, and the first
+# caption decode after that took 666-701 ms against about 40 ms (2026-10-15). A 0.1 s decode
+# costs a few ms of CPU, so the model is read this often for as long as the process listens.
+_SENSEVOICE_KEEP_WARM_S = 15.0
+
+
 class SenseVoiceRecognizer:
     """sherpa-onnx SenseVoice INT8 backend — primary for short CN utterances.
 
@@ -420,6 +426,8 @@ class SenseVoiceRecognizer:
         # share this lock so a rolling partial can delay the final by at most
         # one bounded snapshot decode and never runs beside it.
         self._decode_lock = threading.Lock()
+        self._last_used = 0.0  # monotonic end of the last decode
+        self._keeper: threading.Thread | None = None
 
     def recognize(self, audio_pcm: bytes) -> TranscriptionResult:
         """Transcribe PCM16 mono 16 kHz audio with SenseVoice."""
@@ -483,8 +491,14 @@ class SenseVoiceRecognizer:
         return _MISPLACED_PERIOD.sub(r"\1", self._decode(audio).text.strip())
 
     def prewarm(self) -> None:
-        """Load SenseVoice and run one silent stream before capture is armed."""
+        """Load SenseVoice, run one silent stream, and keep it read while this process listens."""
         self._decode(np.zeros(_SAMPLE_RATE // 10, dtype=np.float32))
+        with self._decode_lock:
+            if self._keeper is None:
+                self._keeper = threading.Thread(
+                    target=self._keep_warm, name="jarvis-sensevoice-keep-warm", daemon=True,
+                )
+                self._keeper.start()
         record_realtime_trace(
             "asr_prewarm_completed",
             provider="sensevoice",
@@ -498,7 +512,20 @@ class SenseVoiceRecognizer:
             stream = recognizer.create_stream()
             stream.accept_waveform(_SAMPLE_RATE, audio)
             recognizer.decode_stream(stream)
+            self._last_used = time.monotonic()
             return stream.result
+
+    def _keep_warm(self) -> None:
+        """ADR 0273: decode 0.1 s of silence once ``_SENSEVOICE_KEEP_WARM_S`` pass undecoded."""
+        silence = np.zeros(_SAMPLE_RATE // 10, dtype=np.float32)
+        while True:
+            time.sleep(_SENSEVOICE_KEEP_WARM_S)
+            if time.monotonic() - self._last_used < _SENSEVOICE_KEEP_WARM_S:
+                continue
+            try:
+                self._decode(silence)
+            except Exception:  # noqa: BLE001 - a failed touch only leaves the next decode cold
+                LOGGER.warning("SenseVoice keep-warm failed", exc_info=True)
 
     def _load(self) -> Any:  # noqa: ANN401 — sherpa_onnx typing is dynamic
         if self._recognizer is not None:

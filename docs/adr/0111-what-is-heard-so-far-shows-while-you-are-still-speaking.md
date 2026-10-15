@@ -1,6 +1,6 @@
 # ADR 0111 — What is heard so far shows while you are still speaking
 
-**Status:** Accepted
+**Status:** Superseded-by-0273
 **Date:** 2026-10-01
 **Supersedes:** none
 

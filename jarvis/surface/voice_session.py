@@ -1107,7 +1107,9 @@ class UtteranceAssembler:
                 cut_bytes=cut,
             ),
         )
-        if drops >= _PARTIAL_DROP_DEGRADE_THRESHOLD:
+        # ADR 0273: captions alone only skip a snapshot the lane could not take; the
+        # degrade guards the semantic endpoint, which waits on these decodes.
+        if drops >= _PARTIAL_DROP_DEGRADE_THRESHOLD and self._partial.enabled:
             self._degrade("coalescing_queue_drops", consecutive_drops=drops)
 
     def _pull_revisions(self) -> None:
@@ -1142,7 +1144,7 @@ class UtteranceAssembler:
             stable_prefix_len=len(self._stable_prefix),
             decode_ms=round(revision.decode_ms, 3),
         )
-        if revision.decode_ms > self._partial.interval_ms:
+        if revision.decode_ms > self._partial.interval_ms and self._partial.enabled:
             self._degrade("partial_decode_over_budget", decode_ms=round(revision.decode_ms, 3))
 
     def _degrade(self, reason: str, **attributes: float) -> None:
