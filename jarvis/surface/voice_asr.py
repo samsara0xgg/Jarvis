@@ -787,6 +787,10 @@ _HYBRID_MIN_SPEECH_S = 1.0
 # Prepared passes held at once. Each is dropped when committed or discarded, so this only bounds
 # a pass nobody collected.
 _HYBRID_MAX_PREPARED = 4
+# How long the commit waits for a Whisper pass before SenseVoice's words stand (ADR 0270). A hot
+# pass takes 0.43 s at the median and 1.6 s at the most (699 retained turns); a model read back
+# from swap took 7.6-13 s.
+_HYBRID_WAIT_S = 4.0
 
 
 @dataclass
@@ -811,8 +815,8 @@ class HybridFinalRecognizer:
     (SenseVoice misreading Mandarin) to the Chinese Whisper, ``en`` to the English one; any
     other language, an empty Whisper transcript or a Whisper error keeps SenseVoice's words.
 
-    ADR 0270: every result names the engine whose words stand (``asr_engine``) and keeps each
-    engine's own score.
+    ADR 0270: so does a pass still running ``_HYBRID_WAIT_S`` after the commit; every result
+    names the engine whose words stand (``asr_engine``) and keeps each engine's own score.
 
     ADR 0137: with ``whisper_command`` set, a short unclear Chinese line (2-4 characters, no
     question, no command already) is heard once more by it, and a Chinese command it returns
@@ -861,7 +865,7 @@ class HybridFinalRecognizer:
         ponytail: the clip's whole length stands for its speech, so trailing silence can send
         a short utterance to Whisper; upgrade path is a VAD span from the caller.
         """
-        return self._hear(audio_pcm, len(audio_pcm) / 2 / _SAMPLE_RATE)
+        return self._hear_within_bound(audio_pcm, len(audio_pcm) / 2 / _SAMPLE_RATE)
 
     def prepare(self, utterance_id: str, audio_pcm: bytes, speech_s: float) -> None:
         """Hear ``audio_pcm`` in the background for ``utterance_id``; only enqueues, never waits.
@@ -879,12 +883,7 @@ class HybridFinalRecognizer:
             self._prepared[utterance_id] = entry
             while len(self._prepared) > _HYBRID_MAX_PREPARED:
                 self._drop(next(iter(self._prepared)))
-            self._queue.append(entry)
-            if self._worker is None:
-                self._worker = threading.Thread(
-                    target=self._work, name="jarvis-hybrid-final", daemon=True,
-                )
-                self._worker.start()
+            self._enqueue(entry)
 
     def discard(self, utterance_id: str) -> None:
         """Forget ``utterance_id``'s prepared pass: Allen spoke again, or it never committed."""
@@ -896,8 +895,9 @@ class HybridFinalRecognizer:
     ) -> TranscriptionResult:
         """The transcript of committed ``audio_pcm``, from the prepared pass when it heard a prefix.
 
-        It waits for that pass to finish, however far along it is. Without a usable pass it
-        hears the audio now, with ``speech_s`` as the speech it holds.
+        It waits for that pass to finish, however far along it is, but no longer than
+        ``_HYBRID_WAIT_S``: past that SenseVoice's words stand (``whisper_timeout``). Without a
+        usable pass it hears the audio now, with ``speech_s`` as the speech it holds.
         """
         with self._lock:
             entry = self._prepared.pop(utterance_id, None)
@@ -905,14 +905,8 @@ class HybridFinalRecognizer:
                 entry.dropped = True
                 entry = None
         if entry is None:
-            return self._hear(audio_pcm, speech_s)
-        entry.done.wait()
-        if entry.error is not None:
-            raise entry.error
-        if entry.result is None:  # pragma: no cover - the worker sets one of the two
-            msg = "hybrid final pass finished without a result"
-            raise RuntimeError(msg)
-        return entry.result
+            return self._hear_within_bound(audio_pcm, speech_s)
+        return self._collect(entry, audio_pcm)
 
     def partial_text(self, audio_pcm: bytes) -> str:
         """SenseVoice's snapshot decode: the captions and the semantic endpoint."""
@@ -935,6 +929,42 @@ class HybridFinalRecognizer:
         entry = self._prepared.pop(utterance_id, None)
         if entry is not None:
             entry.dropped = True
+
+    def _enqueue(self, entry: _PreparedFinal) -> None:
+        """Queue ``entry`` for the worker, starting it if idle (the lock is held)."""
+        self._queue.append(entry)
+        if self._worker is None:
+            self._worker = threading.Thread(
+                target=self._work, name="jarvis-hybrid-final", daemon=True,
+            )
+            self._worker.start()
+
+    def _hear_within_bound(self, audio_pcm: bytes, speech_s: float) -> TranscriptionResult:
+        """Hear ``audio_pcm`` on the worker, behind any pass already running, within the bound."""
+        entry = _PreparedFinal("", audio_pcm, speech_s)
+        with self._lock:
+            self._enqueue(entry)
+        return self._collect(entry, audio_pcm)
+
+    def _collect(self, entry: _PreparedFinal, audio_pcm: bytes) -> TranscriptionResult:
+        """``entry``'s result; if it is not done within the bound, SenseVoice's words for the audio.
+
+        mlx cannot be interrupted, so a late pass still finishes (and a pass not yet started is
+        skipped); what the bound saves is Allen's wait for a model that had to be read back in.
+        """
+        if not entry.done.wait(_HYBRID_WAIT_S):
+            entry.dropped = True
+            LOGGER.warning(
+                "hybrid final: Whisper not done %.1f s after the commit; SenseVoice's words stand",
+                _HYBRID_WAIT_S,
+            )
+            return _with_engine(self._sensevoice.recognize(audio_pcm), "whisper_timeout")
+        if entry.error is not None:
+            raise entry.error
+        if entry.result is None:  # pragma: no cover - the worker sets one of the two
+            msg = "hybrid final pass finished without a result"
+            raise RuntimeError(msg)
+        return entry.result
 
     def _work(self) -> None:
         while True:

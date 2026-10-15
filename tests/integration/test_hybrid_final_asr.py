@@ -161,6 +161,27 @@ def test_an_empty_or_failing_whisper_keeps_sensevoices_words(words: str | Except
     assert ears.recognize_prepared("U1", _audio(2.0), 2.0).text == _SENSEVOICE_WORDS
 
 
+@pytest.mark.parametrize("prepared", [True, False])
+def test_a_whisper_pass_that_hangs_past_the_bound_leaves_sensevoices_words(
+    prepared: bool,  # noqa: FBT001 - parametrized: started at the pause, or at the commit
+) -> None:
+    """A model read back from swap takes 7-13 s: the commit waits the bound, then SenseVoice."""
+    release = threading.Event()
+    ears = _hybrid(_sensevoice("zh"), zh=_whisper("late words", gate=release))
+    audio = _audio(2.0)
+    if prepared:
+        ears.prepare("U1", audio, 2.0)
+    with patch.object(voice_asr, "_HYBRID_WAIT_S", 0.3):
+        started = time.monotonic()
+        heard = ears.recognize_prepared("U1", audio, 2.0)
+        waited = time.monotonic() - started
+    release.set()
+    assert heard.text == _SENSEVOICE_WORDS
+    assert heard.asr_engine == "whisper_timeout"
+    assert 0.3 <= waited < 0.8, f"waited {waited:.2f} s against a bound of 0.3 s"
+    _wait_until(lambda: ears._worker is None)
+
+
 @pytest.mark.parametrize(
     ("zh", "speech_s", "engine"),
     [
