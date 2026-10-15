@@ -31,8 +31,9 @@ When the history is rendered, an answer whose turn ran at least one tool that su
   ADR 0231 shows under the answer, distinct and in order; the reader is the model, and the language table's English wording
   is the fixed one. A failed or unfinished step is not listed; a turn with none left gets no line.
 - **Fixed once the turn ends**, so a later render of the same history is byte-identical.
-- **Not her words and not backing.** The prompt says so and tells her never to write it; a copy in her answer is cut from the
-  history, the conversation page and a record read by id. The guard (ADR 0240, 0263) still judges only this turn's calls.
+- **Not her words and not backing.** The prompt says so and tells her never to write it. A copy in her reply is cut out
+  as it streams, the way the `<react>` tag is (ADR 0257), so it is not spoken, streamed or kept; older rows lose it when
+  read. The guard (ADR 0240, 0263) still judges only this turn's calls.
 
 ## Alternatives rejected
 
@@ -55,5 +56,6 @@ When the history is rendered, an answer whose turn ran at least one tool that su
 - The line is as coarse as the phrases: it says a note was saved, not which. The note's content is still found with the
   conversation or memory tools.
 - A line is rendered only for what the Event Log still holds; a turn that has left the log has none.
-- A `[You did: ...]` she copies into her answer is cut from what is read back, not from what is spoken or streamed at that moment.
+- A `[You did: ...]` on one line is cut from her reply; a start with no `]` before a line break or within 600
+  characters is text and is spoken as written.
 - One more Event Log read per history render, in the turn and in the prefix warm-up.

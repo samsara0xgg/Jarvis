@@ -4,6 +4,9 @@ The tag may stand anywhere in a reply and must never reach speech or the screen.
 the reply's text in pieces, as it streams, returns it without the tag, and keeps the first valid
 emoji. A tag that is cut by a piece boundary is held until it can be told from text; one that
 never closes, or holds more than an emoji can, is text after all and is given back as written.
+
+The same filter cuts a ``[You did: ...]`` line she copies from the history (ADR 0267): the
+program writes that line, so it is no part of what she says, spoken, streamed or kept.
 """
 
 from __future__ import annotations
@@ -19,6 +22,48 @@ _OPEN_RE: Final = re.compile(re.escape(_OPEN), re.IGNORECASE)
 _CLOSE_RE: Final = re.compile(re.escape(_CLOSE), re.IGNORECASE)
 _MAX_BODY: Final = 40
 """The longest tag body held back: a family or a flag-with-tags is under 30 characters."""
+_DID_OPEN: Final = "[You did: "
+_DID_MAX: Final = 600
+"""The longest ``[You did: ...]`` body held back; a longer one is text after all."""
+
+
+class _DidFilter:
+    """Cut ``[You did: ...]`` from text fed in pieces, holding a start the piece ends in."""
+
+    def __init__(self) -> None:
+        self._held = ""
+
+    def feed(self, delta: str) -> str:
+        text = self._held + delta
+        self._held = ""
+        out: list[str] = []
+        while text:
+            start = text.find(_DID_OPEN)
+            if start < 0:
+                cut = _partial(text, _DID_OPEN)
+                out.append(text[:cut])
+                self._held = text[cut:]
+                break
+            out.append(text[:start])
+            body = text[start + len(_DID_OPEN) :]
+            end, newline = body.find("]"), body.find("\n")
+            if 0 <= end <= _DID_MAX and (newline < 0 or end < newline):
+                text = body[end + 1 :]  # the line is cut out
+            elif newline >= 0:
+                out.append(_DID_OPEN + body[: newline + 1])  # a line break: it was text
+                text = body[newline + 1 :]
+            elif len(body) > _DID_MAX:
+                out.append(_DID_OPEN)
+                text = body
+            else:
+                self._held = text[start:]
+                break
+        return "".join(out)
+
+    def finish(self) -> str:
+        """End of the reply: a start that never closed is text."""
+        held, self._held = self._held, ""
+        return held
 
 
 class ReactionFilter:
@@ -29,9 +74,17 @@ class ReactionFilter:
         self.emoji: str | None = None
         self._held = ""
         self._body: str | None = None  # the text since an open tag, while inside one
+        self._did = _DidFilter()
 
     def feed(self, delta: str) -> str:
         """Append a delta; return the text now safe to use."""
+        return self._did.feed(self._cut_tag(delta))
+
+    def finish(self) -> str:
+        """End of the reply: whatever is still held is text, except a tag left open on an emoji."""
+        return self._did.feed(self._finish_tag()) + self._did.finish()
+
+    def _cut_tag(self, delta: str) -> str:
         text = self._held + delta
         self._held = ""
         out: list[str] = []
@@ -42,7 +95,7 @@ class ReactionFilter:
                     out.append(text[: found.start()])
                     text, self._body = text[found.end() :], ""
                     continue
-                cut = _partial_open(text)
+                cut = _partial(text.lower(), _OPEN)
                 out.append(text[:cut])
                 self._held, text = text[cut:], ""
                 continue
@@ -58,8 +111,7 @@ class ReactionFilter:
                 self._body = None
         return "".join(out)
 
-    def finish(self) -> str:
-        """End of the reply: whatever is still held is text, except a tag left open on an emoji."""
+    def _finish_tag(self) -> str:
         held, body = self._held, self._body
         self._held, self._body = "", None
         if body is None:
@@ -74,10 +126,10 @@ class ReactionFilter:
             self.emoji = body.strip()
 
 
-def _partial_open(text: str) -> int:
-    """Where the end of ``text`` starts to be the beginning of an open tag, else its length."""
-    for size in range(min(len(_OPEN) - 1, len(text)), 0, -1):
-        if _OPEN.startswith(text[-size:].lower()):
+def _partial(text: str, opening: str) -> int:
+    """Where the end of ``text`` starts to be the beginning of ``opening``, else its length."""
+    for size in range(min(len(opening) - 1, len(text)), 0, -1):
+        if opening.startswith(text[-size:]):
             return len(text) - size
     return len(text)
 
