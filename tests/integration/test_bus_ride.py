@@ -594,6 +594,10 @@ def test_the_unknown_stop_is_asked_once_and_set_by_a_tool(world: World) -> None:
     set_it = world.tool({"get_off": "Gum"})
     assert (set_it["set"], set_it["alight_stop"]) == (True, "Gum St")
     assert world.events("ride.alight_set")[0]["alight_stop"] == "Gum St"
+    again = world.tool({"get_off": "Gum"})  # ADR 0263: the same stop from a later turn
+    assert (again["set"], again["already"]) == (True, True)
+    assert again["summary"].startswith("Already set to this stop, nothing changed. ")
+    assert len(world.events("ride.alight_set")) == 1
     nothing = world.tool({"get_off": "Zebra"})
     assert nothing.get("code") == "no_such_stop"
 

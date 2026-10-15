@@ -29,7 +29,8 @@ _TABLE: Final = "jarvis/shared/lang.py"
 _MATCHERS: Final[dict[str, frozenset[str]]] = {
     "jarvis/cli/__init__.py": frozenset({"_LONG_RUN_RE"}),
     "jarvis/decision/__init__.py": frozenset(
-        {"_WRITTEN_MARKUP_RE", "_REPEAT_REQUEST_RE", "_repeat_of_last_answer"}
+        {"_WRITTEN_MARKUP_RE", "_REPEAT_REQUEST_RE", "_repeat_of_last_answer", "_PIECE_END",
+         "_FULL_WIDTH_END", "_CLOSERS", "_CLAUSE_END"}
     ),
     # A model-written line before a tool call that already claims a result is not spoken.
     "jarvis/decision/commentary.py": frozenset({"_RESULT_CLAIM"}),
@@ -49,7 +50,7 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     # (ADR 0240, ADR 0250).
     "jarvis/decision/turn_guards.py": frozenset(
         {"_DID", "_WILL", "_SENTENCE_END", "_QUESTION", "_SCREEN", "_STORE_ZH", "_CALENDAR_ZH",
-         "_WHEN_ZH", "_ACT", "_CONTENT", "_CITES"},
+         "_WHEN_ZH", "_ACT", "_CONTENT", "_CITES", "_RIDE_TOPIC", "_SET_CLAIM"},
     ),
     "jarvis/decision/stream_gate.py": frozenset({"routine_stream_policy"}),
     "jarvis/decision/stream_risk.py": frozenset(

@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
+from jarvis.decision.turn_guards import RIDE_LINE
 from jarvis.execution.bus_tool import RideControl, sources_said
 from jarvis.execution.tools import ToolError
 from jarvis.shared import lang
@@ -108,7 +109,7 @@ PRIVATE_QUIET: Final = frozenset({"no-pop", "dnd"})
 
 CREDIT: Final = "BC Transit"
 """Credited wherever ride data from BC Transit's feeds is shown (its licence asks for it)."""
-RIDE_LINE_PREFIX: Final = "Bus ride: "
+RIDE_LINE_PREFIX: Final = RIDE_LINE
 RIDE_LINE_CHARS: Final = 520
 
 _ZONE: Final = ZoneInfo("America/Vancouver")
@@ -573,6 +574,9 @@ class Rides:
                 return {"set": False, "ambiguous": True,
                         "candidates": sorted({h.name for h in hits})[:5],
                         "note": "ask which stop he means, then call bus(get_off=...) again"}
+            if hits and hits[0].stop_id == ride.alight_stop_id:
+                # ADR 0263: the same stop again, from a later turn: nothing to write.
+                return {"set": True, "already": True, **self._describe(ride)}
             if hits:
                 stop = hits[0]
                 folded.write_alight(conn, ride.ride_id, stop=stop.name, stop_id=stop.stop_id,

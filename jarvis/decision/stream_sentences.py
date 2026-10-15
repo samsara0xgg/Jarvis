@@ -218,6 +218,12 @@ class SemanticAssembler:
             return ()
         return tuple(self._drain(final=True))
 
+    def flush_clean(self) -> tuple[SemanticCandidate, ...]:
+        """:meth:`flush`, but only where that cannot block assembly: the text is balanced prose."""
+        if _balanced_prose(self._buffer) and not _unsupported_syntax(self._buffer, final=True):
+            return self.flush()
+        return ()
+
     def _next(self, *, final: bool) -> tuple[int, Literal["sentence", "subclause", "final"]] | None:
         protected = _protected_dots(self._buffer)
         clauses: list[int] = []

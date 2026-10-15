@@ -83,6 +83,7 @@ from jarvis.decision.turn_guards import (
     calendar_in_view,
     call_key,
     repeated_call,
+    ride_stop_in_view,
     unbacked_claim,
 )
 from jarvis.deployment import load_env_file
@@ -384,7 +385,10 @@ def _guard(
         if all(notes):  # one that would run has a result this exam cannot give
             return "repeat", _continued(request, text, calls, [str(n) for n in notes], None)
         return None
-    note = unbacked_claim(text, turn, calendar_seen=calendar_in_view(_state_block(request)))
+    state = _state_block(request)
+    note = unbacked_claim(
+        text, turn, calendar_seen=calendar_in_view(state), ride_stop_seen=ride_stop_in_view(state),
+    )
     return None if note is None else ("unbacked", _continued(request, text, [], [], note))
 
 

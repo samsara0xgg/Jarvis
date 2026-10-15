@@ -38,6 +38,7 @@ from jarvis.decision.turn_guards import (
     TurnCall,
     calendar_in_view,
     repeated_call,
+    ride_stop_in_view,
     unbacked_claim,
     unbacked_said,
 )
@@ -229,6 +230,50 @@ def test_the_calendar_line_backs_what_his_calendar_holds_and_nothing_else(
 def test_the_calendar_line_is_found_only_as_a_line_of_its_own(state: str, expected: bool) -> None:  # noqa: FBT001
     """The state block's own line starts with the heading and the age bracket."""
     assert calendar_in_view(state) is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "seen", "expected"),
+    [
+        # The ride line shows his stop set and the warning with it (ADR 0263): saying so is backed.
+        ("好，下车站已经设成 Gum St，快到站前一站我会提醒你。提醒已经设好了。", True, None),
+        ("下车站设好了，到站前一站会提醒你。", True, None),
+        ("Your stop is set, and I'll remind you one stop before it.", True, None),
+        ("提醒是之前设好的，下车前一站我会叫你。", True, None),
+        # Without the line, or about something else, a claim of this kind is still unbacked.
+        ("好，下车站已经设成 Gum St，快到站前一站我会提醒你。提醒已经设好了。", False, DID),
+        ("提醒已经设好了。", True, DID),  # nothing says it is about his stop
+        ("好，明天九点的会提醒你，已设好了。", True, DID),
+        ("下车站设好了，也记下了你的新提醒。", True, DID),  # 记下 is not what the line shows
+        ("下车站设好了，我也发出去了。", True, DID),
+        ("I've sent it. Your stop is set.", True, DID),
+        # The line backs claims only; a lookup is still an act.
+        ("我查了，下车站是 Gum St。", True, LOOKED),
+    ],
+)
+def test_the_ride_line_backs_the_stop_and_the_warning_and_nothing_else(
+    text: str, seen: bool, expected: str | None,  # noqa: FBT001 - a parametrized table cell
+) -> None:
+    """A set-claim about his get-off stop passes with the ride line in view; others bounce."""
+    assert unbacked_said(text, [], ride_stop_seen=seen) == expected
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (RIDE_LINE_SET := "Bus ride: he is on route 26. His stop: Gum St, 3 stops left.", True),
+        ("Time: 9:00\n" + RIDE_LINE_SET, True),
+        ("Bus ride: on route 26. His stop is unknown: ask him once where he gets off.", False),
+        ("Bus ride: he is on route 26. His stop is still unknown (you already asked).", False),
+        ("Pending reminders (1): note Bus ride: His stop: Gum St", False),
+        ("", False),
+    ],
+)
+def test_the_ride_line_is_found_only_as_a_line_of_its_own_with_a_stop(
+    state: str, expected: bool,  # noqa: FBT001
+) -> None:
+    """Only the producer's line, and only once it carries a stop, shows the stop set."""
+    assert ride_stop_in_view(state) is expected
 
 
 RECALL = TurnCall("recall", read_only=True, ok=True, key="a")
@@ -623,58 +668,141 @@ def _propose(name: str, args: dict[str, Any]) -> list[LLMStreamEvent]:
     ]
 
 
+def _deltas(text: str, *, structured: bool, size: int = 4) -> list[LLMStreamEvent]:
+    """The same answer as ``_say`` but as several deltas, the way a provider streams it."""
+    body = json.dumps({"spoken": text, "written": ""}, ensure_ascii=False) if structured else text
+    return [
+        LLMTextDelta(
+            llm_request_id="r", provider_response_id=None, text=body[n : n + size],
+            content_block_index=0, phase="final_answer",
+        )
+        for n in range(0, len(body), size)
+    ]
+
+
+def _spoken_turn(
+    tmp_path: Path, model: _SpokenModel, *, structured: bool = False,
+    live_context: tuple[str, ...] = (),
+) -> tuple[Any, sqlite3.Connection]:
+    """Run one spoken turn through ``decide()`` on the scripted model; the caller closes it."""
+    conn = open_event_log(tmp_path / "events.db")
+    trigger = emit_event(
+        conn,
+        type="utterance.received",
+        payload={"transcript": "把明天开会记一下", "turn_id": "T_say", "channel": "speech"},
+        correlation={"turn_id": "T_say"},
+    )
+    context = spoken_risk_context(
+        assemble_packet(trigger, conn), response_id="R_say", turn_id="T_say",
+    )
+    policy = spoken_stream_policy(context, preset_snapshot_hash="b" * 64)
+    factory = LLMSessionFactory(
+        {"provider": "openai", "model": "synthetic", "base_url": "https://example.invalid"}
+    )
+    run = start_response_run(
+        conn,
+        turn_id="T_say",
+        trigger_event_uid=trigger.event_uid,
+        request_client=factory.create(factory.snapshot(), response_id="R_say"),
+        policy=policy,
+        response_id="R_say",
+    )
+    route = RoutineStreamRoute(
+        policy=policy,
+        context=context,
+        open_stream=lambda _handle: _Stream(model.script.pop(0)),
+        emit_segment=lambda permit, text: emit_permitted_segment(
+            conn, permit, text, query=context.user_request,
+            attention_channel=context.attention_channel,
+        ).event,
+        segment_guard=run.admission_guard,
+        structured=structured,
+    )
+    ctx = _context(conn, tmp_path, model, 8, live_context)
+    return decide(trigger, replace(ctx, routine_stream=route)), conn
+
+
+def _segments(conn: sqlite3.Connection) -> str:
+    """Everything the turn put out as spoken segments, in order."""
+    rows = conn.execute(
+        "SELECT payload_json FROM events WHERE type LIKE '%segment%' OR type LIKE '%chunk%'"
+    ).fetchall()
+    return "".join(str(json.loads(r[0]).get("text", "")) for r in rows)
+
+
 @pytest.mark.parametrize("structured", [False, True])
-def test_the_spoken_route_bounces_a_claim_and_speaks_the_answer_after_it(
+def test_the_spoken_route_never_speaks_a_bounced_claim(
     tmp_path: Path, *, structured: bool,
 ) -> None:
-    """The first answer is already spoken; the call and the answer after the note follow it."""
-    conn = open_event_log(tmp_path / "events.db")
+    """ADR 0263: a claim no call backs is held, judged and dropped, never spoken."""
+    model = _SpokenModel(
+        _deltas("记下了。", structured=structured),
+        _propose(*MEMO),
+        _deltas("好了，明天开会记在备忘录里了。", structured=structured),
+    )
+    result, conn = _spoken_turn(tmp_path, model, structured=structured)
     try:
-        model = _SpokenModel(
-            _say("记下了。", structured=structured),
-            _propose(*MEMO),
-            _say("好了，明天开会记在备忘录里了。", structured=structured),
-        )
-        trigger = emit_event(
-            conn,
-            type="utterance.received",
-            payload={"transcript": "把明天开会记一下", "turn_id": "T_say", "channel": "speech"},
-            correlation={"turn_id": "T_say"},
-        )
-        context = spoken_risk_context(
-            assemble_packet(trigger, conn), response_id="R_say", turn_id="T_say",
-        )
-        policy = spoken_stream_policy(context, preset_snapshot_hash="b" * 64)
-        factory = LLMSessionFactory(
-            {"provider": "openai", "model": "synthetic", "base_url": "https://example.invalid"}
-        )
-        run = start_response_run(
-            conn,
-            turn_id="T_say",
-            trigger_event_uid=trigger.event_uid,
-            request_client=factory.create(factory.snapshot(), response_id="R_say"),
-            policy=policy,
-            response_id="R_say",
-        )
-        route = RoutineStreamRoute(
-            policy=policy,
-            context=context,
-            open_stream=lambda _handle: _Stream(model.script.pop(0)),
-            emit_segment=lambda permit, text: emit_permitted_segment(
-                conn, permit, text, query=context.user_request,
-                attention_channel=context.attention_channel,
-            ).event,
-            segment_guard=run.admission_guard,
-            structured=structured,
-        )
-        ctx = _context(conn, tmp_path, model, 8)
-        result = decide(trigger, replace(ctx, routine_stream=route))
         assert result.response_plan is not None
         spoken = result.response_plan.text
-        assert spoken.index("记下了") < spoken.index("记在备忘录里了")
+        assert spoken == "好了，明天开会记在备忘录里了。"
+        assert _segments(conn) == spoken  # one answer went out, in the chunks and in the plan
         assert len(model.sent) == 3
         assert _notes(model.sent[1], DID)
         assert _count(conn, "memo.captured") == 1
+        assert _guards(conn) == [{"turn_id": "T_say", "guard": "unbacked", "said": DID}]
+    finally:
+        conn.close()
+
+
+def test_a_sentence_before_the_claim_is_spoken_at_once_and_not_repeated(tmp_path: Path) -> None:
+    """The text ahead of a claim goes out as it completes; the answer after the note adds to it."""
+    model = _SpokenModel(
+        _deltas("好的，我来办。记下了。", structured=False),
+        _propose(*MEMO),
+        _deltas("明天开会已经记在备忘录里。", structured=False),
+    )
+    result, conn = _spoken_turn(tmp_path, model)
+    try:
+        assert result.response_plan is not None
+        assert result.response_plan.text == "好的，我来办。\n\n明天开会已经记在备忘录里。"
+        assert "记下了" not in _segments(conn)
+    finally:
+        conn.close()
+
+
+RIDE_STATE = (
+    "Bus ride: he is on route 26, boarded at Alder St at 9:10 am. Next stop: Cedar Ave."
+    " His stop: Gum St, 3 stops left, arrives about 9:43 am (in 12 min). Times are from BC"
+    " Transit's live bus position.",
+)
+STOP_SET = "好，下车站是 Gum St，大约 9:43 到。快到站前一站我会提醒你。提醒已经设好了。"
+
+
+def test_the_ride_line_backs_the_stop_being_set_so_nothing_goes_back(tmp_path: Path) -> None:
+    """The stop was set turns ago and the state says so: saying it is set needs no new write."""
+    model = _SpokenModel(_deltas(STOP_SET, structured=False))
+    result, conn = _spoken_turn(tmp_path, model, live_context=RIDE_STATE)
+    try:
+        assert result.response_plan is not None
+        assert result.response_plan.text == STOP_SET
+        assert len(model.sent) == 1
+        assert _count(conn, "turn.guard_fired") == 0
+    finally:
+        conn.close()
+
+
+def test_the_same_claim_without_the_ride_line_still_goes_back(tmp_path: Path) -> None:
+    """With no ride line to show it, the claim is unbacked: held, dropped, and the call follows."""
+    model = _SpokenModel(
+        _deltas(STOP_SET, structured=False),
+        _propose(*MEMO),
+        _deltas("好了，记下了下车站。", structured=False),
+    )
+    result, conn = _spoken_turn(tmp_path, model)
+    try:
+        assert result.response_plan is not None
+        assert "提醒已经设好了" not in result.response_plan.text
+        assert "提醒已经设好了" not in _segments(conn)
         assert _guards(conn) == [{"turn_id": "T_say", "guard": "unbacked", "said": DID}]
     finally:
         conn.close()

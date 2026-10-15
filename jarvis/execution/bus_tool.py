@@ -435,7 +435,8 @@ class _Bus:
                 " call bus(get_off=<that stop>)."
             )
             return _ride_view(summary, raw)
-        return _ride_view(f"Set. {_ride_line(raw)} He is warned one stop before it.", raw)
+        lead = "Already set to this stop, nothing changed." if raw.get("already") else "Set."
+        return _ride_view(f"{lead} {_ride_line(raw)} He is warned one stop before it.", raw)
 
     def _end(self) -> dict[str, Any]:
         raw = self._rides().end()

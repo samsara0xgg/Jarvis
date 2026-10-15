@@ -108,7 +108,9 @@ from jarvis.decision.turn_guards import (
     TurnCall,
     calendar_in_view,
     call_key,
+    may_claim_done,
     repeated_call,
+    ride_stop_in_view,
     unbacked_said,
 )
 from jarvis.shared import (
@@ -1700,6 +1702,32 @@ def _repeat_refused(
     return repeated
 
 
+def _unbacked_guard_open(ctx: DecideContext, scratch: _Scratch, *, last_request: bool) -> bool:
+    """Whether a turn-ending answer may still be sent back (ADR 0240).
+
+    The bounce is unused, a request is left to run after it, and this is not a correction run
+    (its exposed prefix is fixed).
+    """
+    return not scratch.unbacked_bounced and not last_request and ctx.stream_correction is None
+
+
+def _claim_hold(
+    ctx: DecideContext, route: RoutineStreamRoute, scratch: _Scratch, speaker: _SegmentSpeaker,
+    *, last_request: bool,
+) -> _ClaimHold:
+    """The hold for one request's answer text (ADR 0263).
+
+    With a write behind it, or no bounce left, no claim can be sent back, so the text goes
+    out as it comes.
+    """
+    judged = _unbacked_guard_open(ctx, scratch, last_request=last_request) and not any(
+        c.ok and not c.read_only for c in scratch.calls
+    )
+    return _ClaimHold(
+        speaker.feed, speaker.flush_ready, route.first_clause_chars, judged=judged,
+    )
+
+
 def _bounce_unbacked(  # noqa: PLR0913 - the loop's handles plus the answer and whether a request is left
     answer: str,
     ctx: DecideContext,
@@ -1715,10 +1743,12 @@ def _bounce_unbacked(  # noqa: PLR0913 - the loop's handles plus the answer and 
     runs one more request. Never on the request the budget allows last (the budget's own
     answer follows it), and never on a correction run, whose exposed prefix is fixed.
     """
-    if scratch.unbacked_bounced or last_request or ctx.stream_correction is not None:
+    if not _unbacked_guard_open(ctx, scratch, last_request=last_request):
         return False
+    state = "\n".join(ctx.live_context)
     said = unbacked_said(
-        answer, scratch.calls, calendar_seen=calendar_in_view("\n".join(ctx.live_context)),
+        answer, scratch.calls, calendar_seen=calendar_in_view(state),
+        ride_stop_seen=ride_stop_in_view(state),
     )
     if said is None:
         return False
@@ -2705,6 +2735,13 @@ class _SegmentSpeaker:
                 if not self._admit(candidate):
                     return
 
+    def flush_ready(self) -> None:
+        """Let out a sentence that only waits for one more character, if that cannot block."""
+        if not self.sealed and self._assembler.blocked_reason is None:
+            for candidate in self._assembler.flush_clean():
+                if not self._admit(candidate):
+                    return
+
     def finish(self) -> EnvelopeTail:
         """Flush the held tail and the last fragment; return the envelope's rest."""
         if self._json is not None and self._json.complete and not self._json.has_spoken:
@@ -3047,15 +3084,104 @@ class _SpokenReply:
     reacted: bool = False  # ADR 0257: this request's reply held a valid <react>
 
 
-def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913 - one request, the turn's seams, one event switch
+# A piece ends at a sentence end (a full-width one, or a full stop followed by a space), or at a
+# clause end once it is as long as the assembler's own cap on a candidate, so a long first
+# sentence still starts speech (ADR 0263).
+_PIECE_END: Final = re.compile(
+    "(?:[\u3002\uff01\uff1f]+[\u201d\u2019\u300d\u300f\uff09)]*|\n+|[.!?]+(?=\\s)\\s*)"
+)
+_FULL_WIDTH_END: Final = frozenset("\u3002\uff01\uff1f")
+_CLOSERS: Final = frozenset("\u201d\u2019\u300d\u300f\uff09)")
+_CLAUSE_END: Final = re.compile("[,;:\u3001\uff0c\uff1b\uff1a]\\s*")
+_PIECE_MAX_CHARS: Final[int] = 60
+
+
+class _ClaimHold:
+    """An answer's text on its way to the speaker, with every piece that may claim held back.
+
+    ADR 0263: ``unbacked_said`` judges an answer only once it is whole, and what the speaker
+    has been given is spoken. A piece that could claim something was done or looked up
+    (``may_claim_done``) therefore waits here, and so does the text after it, until the
+    request ends and the loop either releases it or, when the answer is sent back, discards it.
+    Pieces before the first such piece go on as they complete.
+    """
+
+    def __init__(
+        self, sink: Callable[[str], None], flush: Callable[[], None], first_clause_chars: int,
+        *, judged: bool,
+    ) -> None:
+        """Pass released text to ``sink`` (the speaker's ``feed``); ``flush`` lets it go out.
+
+        With ``judged`` false nothing can be sent back, so every delta goes straight on.
+        """
+        self._judged = judged
+        self._sink = sink
+        self._flush = flush
+        self._first_clause = first_clause_chars
+        self._said = False  # a piece has been passed on
+        self._tail = ""  # an unfinished piece
+        self._held = ""  # from the first piece that may claim
+        self._ended = False  # the speaker holds the last piece passed on for one more character
+
+    def feed(self, text: str) -> None:
+        """Take one delta; pass on every piece it completes unless one is held."""
+        if not self._judged:
+            self._sink(text)
+            return
+        self._tail += text
+        while (cut := self._cut()) > 0:
+            self._take(self._tail[:cut])
+            self._tail = self._tail[cut:]
+        # The speaker holds a sentence's end until one more character follows it; the next
+        # piece may not complete for a while, so it is told the sentence is over.
+        if self._ended and self._tail.strip() and not self._held:
+            self._ended = False
+            if self._tail[0] not in _CLOSERS:
+                self._flush()
+
+    def _cut(self) -> int:
+        if end := _PIECE_END.search(self._tail):
+            return end.end()
+        clauses = list(_CLAUSE_END.finditer(self._tail))
+        if self._first_clause and not self._said:
+            return next((c.end() for c in clauses if c.end() >= self._first_clause), 0)
+        return clauses[-1].end() if clauses and len(self._tail) >= _PIECE_MAX_CHARS else 0
+
+    def _take(self, piece: str) -> None:
+        if self._held or may_claim_done(piece):
+            self._held += piece
+            return
+        self._sink(piece)
+        self._said = True
+        self._ended = not _PIECE_END.search(piece) or piece.rstrip()[-1:] in _FULL_WIDTH_END
+
+    def close(self) -> None:
+        """The request's text has ended: its last piece is judged like the others."""
+        if self._tail:
+            self._take(self._tail)
+        self._tail = ""
+
+    def release(self) -> None:
+        """The answer stands (or called a tool): pass on what was held."""
+        held, self._held = self._held, ""
+        if held:
+            self._sink(held)
+
+    def discard(self) -> None:
+        """The answer is sent back: what was held is never spoken."""
+        self._held = ""
+
+
+def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one request, the turn's seams, one event switch
     ctx: DecideContext,
     route: RoutineStreamRoute,
     speaker: _SegmentSpeaker,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
     scratch: _Scratch,
+    hold: _ClaimHold | None = None,
 ) -> _SpokenReply:
-    """Stream one request; answer text reaches the speaker as it arrives."""
+    """Stream one request; answer text reaches the speaker as it arrives, or through ``hold``."""
     _check_response_cancelled(ctx, "before provider request")
     if ctx.request_admission is not None:
         ctx.request_admission("decision")
@@ -3083,6 +3209,7 @@ def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913 - one request, the t
         stream.interrupt_when(pending.accepted_early)
     speaker.begin_request()
     reply = _SpokenReply()
+    speak = hold.feed if hold is not None else speaker.feed
     line_react, answer_react = ReactionFilter(), ReactionFilter()  # ADR 0257: <react> is cut out
     failed: LLMResponseFailed | None = None
     try:
@@ -3099,7 +3226,7 @@ def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913 - one request, the t
                 if shown and not reply.answer:
                     record_realtime_trace("spoken_answer_first_text", turn_id=scratch.turn_id)
                 reply.answer += shown
-                speaker.feed(shown)
+                speak(shown)
             elif isinstance(event, LLMToolCallCompleted):
                 if not reply.tool_calls:
                     record_realtime_trace(
@@ -3118,7 +3245,9 @@ def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913 - one request, the t
     reply.text += line_react.finish()
     if held := answer_react.finish():
         reply.answer += held
-        speaker.feed(held)
+        speak(held)
+    if hold is not None:
+        hold.close()
     emoji = line_react.emoji or answer_react.emoji
     reply.reacted = emoji is not None
     scratch.reaction = scratch.reaction or emoji
@@ -3148,12 +3277,15 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
     continued = late_noted = False
     for iteration in range(1, ctx.max_tool_iterations + 1):
         tools = _tool_menu(llm_surface, scratch.loaded_tools)
+        last_request = iteration >= ctx.max_tool_iterations
+        hold = _claim_hold(ctx, route, scratch, speaker, last_request=last_request)
         with realtime_trace_context(
             turn_id=scratch.turn_id, request_kind="decision", iteration=iteration,
         ):
-            reply = _stream_spoken_request(ctx, route, speaker, messages, tools, scratch)
+            reply = _stream_spoken_request(ctx, route, speaker, messages, tools, scratch, hold)
         line = reply.text.strip() or line
         if reply.tool_calls:
+            hold.release()
             # The line before a call is on screen while the call runs, not when the answer starts.
             speaker.end_request()
             message = _assistant_message_for(reply)
@@ -3186,9 +3318,11 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
         # A line with no answer was given its one more request above; an answer is checked here.
         if _bounce_unbacked(
             reply.answer.strip(), ctx, scratch, messages, language_line,
-            last_request=iteration >= ctx.max_tool_iterations,
+            last_request=last_request,
         ):
-            continue  # what it said is already spoken; the next answer is spoken after it
+            hold.discard()  # a claim is never spoken; what came before it already was
+            continue
+        hold.release()
         if not reply.answer.strip():
             speaker.feed(reply.text)  # its line was all it said, so that is the answer
         return _finish_spoken(packet, ctx, route, speaker, scratch)

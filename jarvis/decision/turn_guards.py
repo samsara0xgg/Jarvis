@@ -125,6 +125,25 @@ def calendar_in_view(state: str) -> bool:
     return _CALENDAR_LINE.search(state) is not None
 
 
+RIDE_LINE: Final = "Bus ride: "
+"""How the state block's bus-ride line begins; its producer is in the runtime layer."""
+_RIDE_STOP: Final = re.compile(rf"^{RIDE_LINE}.*\bHis stop: ", re.MULTILINE)
+
+
+def ride_stop_in_view(state: str) -> bool:
+    """Whether a turn's state block says where he gets off, so he is warned too (ADR 0263)."""
+    return _RIDE_STOP.search(state) is not None
+
+
+# An answer about his get-off stop, and a claim of the kind the ride line already shows true:
+# the stop is set and he is warned one stop before it (ADR 0263).
+_RIDE_TOPIC: Final = re.compile(
+    r"下车|到站|前一站|那一站|\bget(?:ting)? off\b|\byour stop\b|\bone stop before\b",
+    re.IGNORECASE,
+)
+_SET_CLAIM: Final = re.compile(r"设|提醒|\bremind|\bset\b|\bwarn", re.IGNORECASE)
+
+
 # A sentence that cites the program's own state is not a claim of a lookup.
 _CITES: Final = re.compile(
     r"\b(?:state|status) (?:line|block)\b|\bthe (?:program|block)\b"
@@ -158,8 +177,20 @@ def _spoken(text: str) -> tuple[str, bool]:
     return spoken.strip(), spoken != text
 
 
+def may_claim_done(text: str) -> bool:
+    """Whether a piece of an answer could be a claim that something was done or looked up.
+
+    A superset of what :func:`unbacked_said` sends back for those two cases (it ignores
+    questions and the written part): the spoken stream holds such a piece until the guard
+    has judged the answer (ADR 0263). An announced lookup is not held: it is heard before
+    its call anyway.
+    """
+    return _DID.search(text) is not None or _LOOKED.search(text) is not None
+
+
 def unbacked_said(
     text: str, calls: Sequence[TurnCall], *, calendar_seen: bool = False,
+    ride_stop_seen: bool = False,
 ) -> Literal["did it", "will check", "looked it up"] | None:
     """What a turn-ending answer claims that no call this turn did, or None.
 
@@ -169,11 +200,18 @@ def unbacked_said(
     no call at all; a sentence citing the program's state is not such a claim. With
     ``calendar_seen`` (the turn's state block carries the calendar line, see
     :func:`calendar_in_view`) what his calendar holds is backed, and only the act of looking
-    (「我查了」, "I checked") still needs a call.
+    (「我查了」, "I checked") still needs a call. With ``ride_stop_seen`` (see
+    :func:`ride_stop_in_view`) an answer about his get-off stop may say the stop or the
+    warning is set: the ride line shows it, so no call is needed.
     """
     said, written = _spoken(text)
     asserted = [s for s in _SENTENCE_END.split(said) if s.strip() and not _QUESTION.search(s)]
     claims = [s for s in asserted if _DID.search(s) and not (written and _SCREEN.search(s))]
+    if ride_stop_seen and _RIDE_TOPIC.search(said):
+        claims = [
+            s for s in claims
+            if not all(_SET_CLAIM.search(m.group()) for m in _DID.finditer(s))
+        ]
     if claims and not any(c.ok and not c.read_only for c in calls):
         return "did it"
     if not calls and len(said) <= _PROMISE_MAX_CHARS and any(_WILL.search(s) for s in asserted):
@@ -186,7 +224,8 @@ def unbacked_said(
 
 def unbacked_claim(
     text: str, calls: Sequence[TurnCall], *, calendar_seen: bool = False,
+    ride_stop_seen: bool = False,
 ) -> str | None:
     """The note to send for an answer no call backs, or None."""
-    said = unbacked_said(text, calls, calendar_seen=calendar_seen)
+    said = unbacked_said(text, calls, calendar_seen=calendar_seen, ride_stop_seen=ride_stop_seen)
     return None if said is None else UNBACKED_NOTE.format(said=said)
