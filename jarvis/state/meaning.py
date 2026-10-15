@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import sqlite3
+import statistics
 from collections.abc import Callable, Iterable
 from contextlib import closing
 from typing import TYPE_CHECKING, Final, NamedTuple
@@ -200,11 +201,13 @@ def _matrix(
 
 def nearest(  # noqa: PLR0913 — the question and its bounds, all keyword-only after the model.
     conn: sqlite3.Connection, path: Path, embedder: Embedder, query: str, kind: str,
-    *, among: set[str] | None = None, limit: int, floor: float,
+    *, among: set[str] | None = None, limit: int, margin: float,
 ) -> list[str]:
-    """Ref ids of ``kind`` closest to ``query``, best first, none under ``floor``.
+    """Ref ids of ``kind`` closest to ``query``, best first, each ``margin`` above the median.
 
     A text of several pieces counts once, at its best piece. ``among`` limits the candidates.
+    e5 scores all text 0.8 or more, and how high depends on the query, so a hit is measured
+    against this query's median over every text of ``kind``, not against a fixed score.
     """
     try:
         refs, matrix = _matrix(conn, path, kind, embedder.model_id)
@@ -215,9 +218,10 @@ def nearest(  # noqa: PLR0913 — the question and its bounds, all keyword-only 
     scores = matrix @ embedder.embed([query], query=True)[0]
     best: dict[str, float] = {}
     for ref, score in zip(refs, scores.tolist(), strict=True):
-        if score >= floor and (among is None or ref in among) and score > best.get(ref, -1.0):
-            best[ref] = score
-    return sorted(best, key=lambda ref: -best[ref])[:limit]
+        best[ref] = max(score, best.get(ref, -1.0))
+    floor = statistics.median(best.values()) + margin
+    near = [ref for ref, s in best.items() if s >= floor and (among is None or ref in among)]
+    return sorted(near, key=lambda ref: -best[ref])[:limit]
 
 
 def fuse(*rankings: Sequence[str]) -> list[str]:

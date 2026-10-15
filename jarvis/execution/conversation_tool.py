@@ -78,9 +78,10 @@ _AROUND: Final = 2
 _TOPIC_STEPS: Final = ((4, 150), (3, 120), (2, 90), (1, 70))
 """How many topics a day keeps and how long each may be, widest first, until the answer fits."""
 _MEANING_LIMIT: Final = 20
-_MEANING_FLOOR: Final = 0.8
-"""The closest lines by meaning to merge with the word hits, and the cosine under which a line is
-no match at all (e5 scores unrelated text high, so the floor is not near zero)."""
+_MEANING_MARGIN: Final = 0.06
+"""The closest lines by meaning to merge with the word hits, and how far above this query's median
+score a line must sit to count (0.06 kept 13 of 15 real topics and dropped 9 of 15 absent ones on
+his Claude export; ADR 0260)."""
 _USER: Final = "allen"
 _JARVIS: Final = ("jarvis", "jarvis_live")
 _RECORD_ID: Final = re.compile(r"\s*\[record_id=[^\]]*\]")
@@ -305,7 +306,7 @@ class _Conversation:
         try:
             return meaning.nearest(
                 conn, self._store, self._embedder, query, meaning.RECORDS,
-                among=ids, limit=_MEANING_LIMIT, floor=_MEANING_FLOOR,
+                among=ids, limit=_MEANING_LIMIT, margin=_MEANING_MARGIN,
             )
         except Exception:  # a search never fails a turn for want of the model
             LOGGER.exception("conversation: search by meaning failed; words only")

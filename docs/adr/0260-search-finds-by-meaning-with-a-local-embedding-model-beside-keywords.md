@@ -41,6 +41,11 @@ hits by meaning merged with hits by words; no text leaves his machines to be emb
 - **Search.** A scan of all vectors with cosine similarity. The keyword ranking and the meaning
   ranking are merged by reciprocal rank, so an exact name still comes first and a paraphrase is
   still found. The tools' parameters do not change; the model does not choose a mode.
+  e5 scores almost any text 0.8 or more against any query, and how high depends on the query, so
+  a text counts as close only when it scores 0.06 above this query's median over every text of
+  its kind. On his Claude export that kept 13 of 15 topics he had talked about and dropped 9 of 15
+  he had not; a fixed 0.8 kept everything. A short Chinese query still misses some English
+  conversations: such a query should also be tried in English.
 
 ## Alternatives rejected
 

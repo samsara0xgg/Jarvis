@@ -63,7 +63,7 @@ _FOCUS_CHARS: Final = 1800
 _NEAR_CHARS: Final = 300
 _AROUND: Final = 2
 _MEANING_LIMIT: Final = 20
-_MEANING_FLOOR: Final = 0.8
+_MEANING_MARGIN: Final = 0.06
 """As in ``conversation``: the closest entries by meaning merged with the word hits."""
 
 
@@ -250,7 +250,7 @@ class _Archive:
         try:
             return meaning.nearest(
                 conn, self._store, self._embedder, query, meaning.IMPORTS,
-                among=ids, limit=_MEANING_LIMIT, floor=_MEANING_FLOOR,
+                among=ids, limit=_MEANING_LIMIT, margin=_MEANING_MARGIN,
             )
         except Exception:  # a search never fails a turn for want of the model
             LOGGER.exception("archive: search by meaning failed; words only")

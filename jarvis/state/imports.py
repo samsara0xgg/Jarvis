@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 import uuid
 import zipfile
 from dataclasses import dataclass, replace
@@ -46,6 +47,8 @@ IMPORTS_DIRNAME: Final = "imports"
 
 
 MASK: Final = "[secret removed]"
+_ZIP_EPOCH_MS: Final = 946_684_800_000
+"""2000-01-01: a file time before it is an archive's default (1980), not when the file was made."""
 _SECRET_SHAPES: Final = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)"
     r"|\bsk-[A-Za-z0-9_-]{8,}"
@@ -208,6 +211,8 @@ def import_files(
             continue  # the same bytes under another name: read once
         seen.add(digest)
         fallback = int(file.stat().st_mtime * 1000)
+        if fallback < _ZIP_EPOCH_MS:  # unzipped without times: when he handed it over stands in
+            fallback = int(time.time() * 1000)
         try:
             if source == "claude":
                 parsed = list(import_parsers.claude(file.parent.name, file.name, data, fallback))

@@ -110,7 +110,7 @@ def test_vectors_of_another_model_are_ignored_and_rebuilt(tmp_path: Path) -> Non
     old, new = FakeEmbedder("fake-1"), FakeEmbedder("fake-2")
     _drain(path, old)
     with closing(open_memory_db(path)) as conn:
-        assert meaning.nearest(conn, path, new, "interview", "records", limit=5, floor=0.8) == []
+        assert meaning.nearest(conn, path, new, "interview", "records", limit=5, margin=0.06) == []
     _drain(path, new)
     assert len(new.embedded) == len(RECORDS)
     with closing(open_memory_db(path)) as conn:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import zipfile
 from contextlib import closing
 from datetime import UTC, date, datetime
@@ -124,6 +125,19 @@ def test_raw_is_kept_once_by_digest_and_a_second_import_adds_nothing(tmp_path: P
     assert not list((tmp_path / "imports").rglob("light_metadata*"))
     kinds = sorted(e.kind for e in _held(tmp_path).values())
     assert kinds == ["memory"] * 2 + ["message"] * 7 + ["reflection"]
+
+
+def test_a_file_unzipped_without_its_time_is_dated_when_it_was_handed_over(tmp_path: Path) -> None:
+    """A reflection with no time of its own and a 1980 file time takes the import time instead."""
+    copy = tmp_path / "reflections" / "reflections-1.json"
+    copy.parent.mkdir()
+    copy.write_bytes((CLAUDE / "reflections" / "reflections-1.json").read_bytes())
+    os.utime(copy, (315_532_800, 315_532_800))  # 1980-01-01, a zip's default
+
+    _import(tmp_path, "claude", copy)
+
+    (row,) = _held(tmp_path).values()
+    assert datetime.fromtimestamp(row.at_ms / 1000, UTC).year >= 2026
 
 
 def test_china_times_land_on_their_utc_instant_and_amounts_are_exact(tmp_path: Path) -> None:
