@@ -191,6 +191,7 @@ def _drive_one_turn(
     history: Sequence[dict[str, str]],
     connected_apps: str | None = None,
     live_context: tuple[str, ...] = (),
+    time_note: str = "Time: 2026-09-21T15:37-07:00 Monday",
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run one ``surface.user_intent`` turn; return the ``system`` and ``messages`` sent."""
     conn = open_event_log(tmp_path / "events.db")
@@ -207,7 +208,7 @@ def _drive_one_turn(
         llm_client=cast("LLMClient", llm),
         system_prompt="stub system prompt\n\n[About the user]\n- 用户叫 Allen。",
         history=history,
-        time_note="Time: 2026-09-21T15:37-07:00 Monday",
+        time_note=time_note,
         connected_apps=connected_apps,
         live_context=live_context,
     )

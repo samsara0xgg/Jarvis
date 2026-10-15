@@ -8,7 +8,9 @@ Each check feeds known rows and asserts the text the program computes from them.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+import threading
 import time
 from contextlib import closing
 from datetime import UTC, date, datetime, timedelta, timezone
@@ -42,6 +44,7 @@ from jarvis.state.memory_db import (
     prose_days,
     render_context,
 )
+from tests.integration.test_backend_prompt_assembly import _drive_one_turn
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -622,6 +625,66 @@ def test_a_turn_never_waits_on_the_terminal_for_a_read_it_already_knows(
         time.sleep(0.1)
     assert asked == ["m1", "m2"]  # m3 asked nothing; the refresh replaced the answer
     assert screen.misses == 0
+
+
+def _gated(link: Any, answers: threading.Event) -> Any:  # noqa: ANN401
+    """``link``, but the Mac answers only once ``answers`` is set; until then it hangs 10 s."""
+
+    def gated(op: str, arguments: Any, target: str | None) -> dict[str, Any]:  # noqa: ANN401
+        answers.wait(10)
+        return dict(link(op, arguments, target))
+
+    return gated
+
+
+def _turn_state(tmp_path: Path, src: LedgerSources, context: LedgerContext) -> tuple[str, float]:
+    """The state block a turn sends, and the seconds from his words to the model request."""
+    (tmp_path / "turn").mkdir(exist_ok=True)
+    began = time.monotonic()
+    memory = render_context(src.memory_db, exclude_id="", now=NOW, ledger=context)
+    _, messages = _drive_one_turn(tmp_path / "turn", (), time_note=memory.now)
+    return str(messages[-1]["content"]), time.monotonic() - began
+
+
+def test_a_turn_reaches_the_model_while_the_terminal_hangs_and_leaves_the_computer_out(
+    tmp_path: Path,
+) -> None:
+    """ADR 0264: a Mac that does not answer for 10 s holds no turn; the line is left out."""
+    one = _world(tmp_path)
+    answers = threading.Event()  # never set here: every read of the Mac hangs
+    link = _gated(_terminal_link(one.timesink, [], up=[True]), answers)
+    src = LedgerSources(one.memory_db, one.event_log, None, ZONE, TerminalScreen(link))
+    context = LedgerContext(src, LedgerSettings())
+    context.warm(lambda: NOW)
+    time.sleep(0.3)  # the warm-up thread is inside the hung read
+    block, took = _turn_state(tmp_path, src, context)
+    answers.set()
+    assert took < 0.2
+    assert "[Today so far" in block
+    assert "Computer:" not in block
+    assert "no activity recorded" not in block
+
+
+def test_a_turn_shows_the_computer_from_the_prefetch_with_when_it_was_read(
+    tmp_path: Path,
+) -> None:
+    """ADR 0264: the prefetched answer is the line's source, aged; a later hang changes nothing."""
+    one = _world(tmp_path)
+    answers = threading.Event()
+    answers.set()
+    link = _gated(_terminal_link(one.timesink, [], up=[True]), answers)
+    src = LedgerSources(one.memory_db, one.event_log, None, ZONE, TerminalScreen(link))
+    context = LedgerContext(src, LedgerSettings())
+    context.warm(lambda: NOW)
+    deadline = time.monotonic() + 10
+    while "Computer:" not in context(NOW, None)[1]:
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    answers.clear()  # the Mac stops answering
+    block, took = _turn_state(tmp_path, src, context)
+    answers.set()
+    assert took < 0.2
+    assert re.search(r"Computer: .*active today 1h00m.*\(TimeSink as of 1[45]:\d\d\)", block)
 
 
 def test_without_a_terminal_or_a_path_the_ledgers_timesink_parts_are_empty_not_errors(

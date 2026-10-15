@@ -99,6 +99,10 @@ _TERMINAL_TTL_S: Final[float] = 60.0
 # it; one ceiling for every read, a per-fn age if some read ever needs fresher.
 _TERMINAL_STALE_S: Final[float] = 1800.0
 _MOVING_ARGS: Final[frozenset[str]] = frozenset({"as_of", "hi"})  # the window's far end: now
+_TERMINAL_SERVED_S: Final[float] = 900.0
+"""How old a prefetched reading may be and still reach a turn (ADR 0264); older is left out."""
+_SCREEN: Final = "ledger_screen"
+_SUBMISSIONS: Final = "ledger_submissions"
 _ReadKey = tuple[str, tuple[tuple[str, str], ...]]
 
 
@@ -156,6 +160,31 @@ class TerminalScreen:
                 self.misses += found is None
             return found
 
+    def fetch(self, fn: str, **args: str) -> None:
+        """Ask the terminal for ``fn`` now and keep the answer for :meth:`held`; it waits.
+
+        For the background prefetch (ADR 0264) only: a turn never calls it.
+        """
+        items = tuple(sorted(args.items()))
+        self._ask_and_keep(
+            (fn, items), (fn, tuple(item for item in items if item[0] not in _MOVING_ARGS)), args,
+        )
+
+    def held(self, fn: str, **args: str) -> tuple[Any, float] | None:
+        """The newest kept answer to this read and its age in seconds; no ask and no wait.
+
+        None when none is kept or the newest is older than :data:`_TERMINAL_SERVED_S`.
+        """
+        fixed = (fn, tuple(sorted(item for item in args.items() if item[0] not in _MOVING_ARGS)))
+        with self._lock:
+            known = self._known.get(fixed)
+        age = None if known is None else _clock.monotonic() - known[0]
+        return None if known is None or age is None or age > _TERMINAL_SERVED_S else (known[1], age)
+
+    def cached(self) -> CachedScreen:
+        """The view a turn reads through: only what :meth:`fetch` kept, never an ask."""
+        return CachedScreen(self)
+
     def _refresh(self, key: _ReadKey, fixed: _ReadKey, args: dict[str, str]) -> None:
         try:
             self._ask_and_keep(key, fixed, args)
@@ -180,6 +209,31 @@ class TerminalScreen:
         return found
 
 
+class CachedScreen:
+    """A :class:`TerminalScreen` as a turn sees it: the prefetched answers only (ADR 0264).
+
+    ``read`` has :meth:`TerminalScreen.read`'s signature and returns the newest answer the
+    background prefetch kept, or None (counted in :attr:`misses`) when there is none young enough.
+    :attr:`ages` holds, per read, the age in seconds of the answer the last ``read`` returned.
+    """
+
+    def __init__(self, screen: TerminalScreen) -> None:
+        """Bind the screen whose kept answers are read."""
+        self._screen = screen
+        self.misses = 0
+        self.ages: dict[str, float] = {}
+
+    def read(self, fn: str, **args: str) -> Any:  # noqa: ANN401 — the reader's JSON.
+        """The kept answer to ``fn``; no ask, no wait."""
+        found = self._screen.held(fn, **args)
+        if found is None:
+            self.misses += 1
+            self.ages.pop(fn, None)
+            return None
+        self.ages[fn] = found[1]
+        return found[0]
+
+
 @dataclass(frozen=True)
 class LedgerSources:
     """Where the ledger reads, and the zone its days are cut in.
@@ -193,7 +247,7 @@ class LedgerSources:
     event_log: Path
     timesink: Path | None
     zone: tzinfo
-    terminal: TerminalScreen | None = None
+    terminal: TerminalScreen | CachedScreen | None = None
     attachments: Path | None = None
 
 
@@ -1476,25 +1530,36 @@ def _reminders(src: LedgerSources, as_of: datetime, day: date) -> list[str]:
     return lines
 
 
+def _today_reach(local: datetime) -> tuple[datetime, datetime, datetime]:
+    """Local midnight, this week's Monday and how far back :func:`today_text` reads spans."""
+    midnight = datetime.combine(local.date(), time.min, local.tzinfo)
+    monday = midnight - timedelta(days=local.weekday())
+    return midnight, monday, min(midnight - timedelta(days=2), monday - timedelta(days=8))
+
+
 def today_text(src: LedgerSources, now: datetime) -> str:
     """Block E: today since midnight, what the midnight text cannot hold."""
     local = now.astimezone(src.zone)
     today = local.date()
-    midnight = datetime.combine(today, time.min, src.zone)
-    monday = midnight - timedelta(days=local.weekday())
-    data = _Data(
-        src, now, min(midnight - timedelta(days=2), monday - timedelta(days=8)),
-        phone_from=midnight,
-    )
+    midnight, monday, reach = _today_reach(local)
+    data = _Data(src, now, reach, phone_from=midnight)
     spans = data.clip(midnight, now)
     out = [f"[Today so far · {local:%a %Y-%m-%d}, now {local:%H:%M}]"]
     bounds = data.bounds(today)
-    if spans and bounds:
+    # A turn's terminal is a :class:`CachedScreen` (ADR 0264): with no reading young enough the
+    # block says nothing of the computer, and with one it says when it was read.
+    held = src.terminal if isinstance(src.terminal, CachedScreen) else None
+    age = None if held is None else held.ages.get(_SCREEN)
+    unread = held is not None and age is None
+    if unread:
+        pass
+    elif spans and bounds:
         calls = _fmt_calls(data.calls_seconds(midnight, now))
         apps = _fmt_top(_top(data.seconds_by(spans, lambda s: s.app), 3))
+        read = "" if age is None else f" (TimeSink as of {now - timedelta(seconds=age):%H:%M})"
         out.append(
             f"  Computer: {_fmt_bounds(today, bounds, still_on=True)}, active today "
-            f"{hm(data.active(spans))}; top apps {apps}" + (f"; {calls}" if calls else ""),
+            f"{hm(data.active(spans))}; top apps {apps}" + (f"; {calls}" if calls else "") + read,
         )
         before = [run[1] for run in data.runs() if run[1] <= bounds[0]]
         if before:  # the gap before today's working day: how long he was away from the Mac
@@ -1507,7 +1572,7 @@ def today_text(src: LedgerSources, now: datetime) -> str:
     else:
         out.append("  Computer: no activity recorded yet today")
     out += _phone_lines(data.phone.day(today), today)
-    if monday < midnight:
+    if monday < midnight and not unread:
         week_spans = data.clip(monday, now)
         this = data.active(week_spans)
         then = now - timedelta(days=7)
@@ -1615,10 +1680,10 @@ def terminal_submissions(store: Path | None, as_of: datetime) -> list[list[Any]]
 
 
 def _terminal_spans(
-    terminal: TerminalScreen | None, lo: datetime, hi: datetime,
+    terminal: TerminalScreen | CachedScreen | None, lo: datetime, hi: datetime,
 ) -> tuple[list[_Span], list[_Call]]:
     got = None if terminal is None else terminal.read(
-        "ledger_screen", lo=lo.astimezone(UTC).isoformat(), hi=_next_minute(hi),
+        _SCREEN, lo=lo.astimezone(UTC).isoformat(), hi=_next_minute(hi),
     )
     if got is None:
         return [], []
@@ -1630,11 +1695,24 @@ def _terminal_spans(
 
 def _terminal_submissions(src: LedgerSources, as_of: datetime) -> list[_Sub]:
     got = None if src.terminal is None else src.terminal.read(
-        "ledger_submissions", as_of=_next_minute(as_of),
+        _SUBMISSIONS, as_of=_next_minute(as_of),
     )
     if got is None:
         return []
     return [_Sub(_at(at, src.zone), company, role) for at, company, role in got]
+
+
+def prefetch_terminal(src: LedgerSources, now: datetime) -> None:
+    """Ask the terminal for what the per-turn blocks read of it and keep the answers (ADR 0264).
+
+    The reads are the ones :func:`today_text` and :func:`job_hunt_text` make, so a turn reading
+    through :meth:`TerminalScreen.cached` finds them. It waits on the terminal: background only.
+    """
+    if not isinstance(src.terminal, TerminalScreen):
+        return
+    _, _, reach = _today_reach(now.astimezone(src.zone))
+    src.terminal.fetch(_SCREEN, lo=reach.astimezone(UTC).isoformat(), hi=_next_minute(now))
+    src.terminal.fetch(_SUBMISSIONS, as_of=_next_minute(now))
 
 
 # ------------------------------------------------------------------ one window, raw (ADR 0199)
@@ -1673,7 +1751,7 @@ class Activity(NamedTuple):
 def window_activity(  # noqa: PLR0913 — the window, its zone and the three sources.
     begin: datetime, end: datetime, zone: tzinfo, *,
     timesink: Path | None = None, memory_db: Path | None = None,
-    terminal: TerminalScreen | None = None,
+    terminal: TerminalScreen | CachedScreen | None = None,
 ) -> Activity:
     """The raw activity in ``[begin, end)``, loaded the way every ledger render loads it.
 
@@ -1805,6 +1883,7 @@ __all__ = [
     "Activity",
     "ActivityCall",
     "ActivitySpan",
+    "CachedScreen",
     "DayFigures",
     "Figures",
     "LedgerSources",
@@ -1816,6 +1895,7 @@ __all__ = [
     "job_hunt_text",
     "notes_stamp",
     "phone_stamp",
+    "prefetch_terminal",
     "since_text",
     "standing_text",
     "terminal_screen",

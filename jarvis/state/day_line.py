@@ -62,7 +62,7 @@ if TYPE_CHECKING:
     from datetime import tzinfo
     from pathlib import Path
 
-    from jarvis.state.ledger import ActivitySpan, TerminalScreen
+    from jarvis.state.ledger import ActivitySpan, CachedScreen, TerminalScreen
 
     type Source = Callable[[sqlite3.Connection, int, int, int], list[dict[str, Any]]]
     type CalendarRead = Callable[[int, int, int], list[dict[str, Any]]]
@@ -99,7 +99,8 @@ class DaySources:
     zone: tzinfo
     timesink: Path | None = None
     memory_db: Path | None = None
-    terminal: TerminalScreen | None = None  # a brain's ``timesink``: the terminal's store
+    # a brain's ``timesink``: the terminal's store
+    terminal: TerminalScreen | CachedScreen | None = None
     attachments: Path | None = None  # where his pictures are kept (ADR 0223)
     # ``(window_start_ms, window_end_ms, now_ms)`` to his calendar's events (ADR 0230), each
     # ``{id, title, start, end}`` with aware ISO times and ``all_day`` on an all-day one. It

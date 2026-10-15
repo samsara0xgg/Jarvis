@@ -16,7 +16,7 @@ import threading
 import time as _time
 from collections.abc import Callable, Mapping
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final
@@ -37,12 +37,14 @@ from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.ledger import (
     DAY_STARTS_AT,
     LedgerSources,
+    TerminalScreen,
     day_active,
     day_numbers_text,
     day_report,
     job_hunt_text,
     notes_stamp,
     phone_stamp,
+    prefetch_terminal,
     since_text,
     standing_text,
     today_text,
@@ -76,6 +78,8 @@ _ATTEMPTS: Final[int] = 3
 _BACKOFF_S: Final[tuple[float, ...]] = (2.0, 8.0)
 _RETRY_S: Final[float] = 60.0
 _KEEP_WARM_S: Final[float] = 60.0
+_PREFETCH_S: Final[float] = 180.0
+"""How often the terminal is asked for what the per-turn blocks read of it (ADR 0264)."""
 _TRANSIENT: Final[frozenset[str]] = frozenset({"rate_limited", "network", "timeout"})
 
 
@@ -144,26 +148,45 @@ class LedgerContext:
         """Bind the sources and the knobs; nothing is read until the first call."""
         self.sources = sources
         self.settings = settings
+        self._turn = sources  # what the per-turn blocks read; :meth:`warm` makes it cache-only
+        self._warmed = False
         self._lock = threading.Lock()
         self._cached: tuple[object, str, float] | None = None  # key, text, trust it until
 
     def __call__(self, now: datetime, last_ts: datetime | None) -> tuple[str, str]:
         """The text that follows the core memory and the text that follows the time line."""
-        return self._standing(now), self._per_turn(now, last_ts)
+        if not self._warmed:
+            return self._standing(now), self._per_turn(now, last_ts)
+        return (self._cached[1] if self._cached else ""), self._per_turn(now, last_ts)
 
     def warm(self, now: Callable[[], datetime]) -> None:
-        """Keep the standing text current in the background, so no turn builds it.
+        """Keep the standing text and the terminal's answers current, so no turn waits on either.
+
+        From here a turn only reads what this thread has kept (ADR 0264): the standing text as
+        last built, and, on a brain, the terminal's answers as last fetched; with none yet, or
+        none young enough, the text it would have carried is left out.
 
         The text is a 38-day read that costs seconds on a Pi, and it is rebuilt when the day turns,
         a note lands, a late phone batch arrives or the terminal answers after being away. Checked
-        once a minute, as :meth:`_standing` checks it per turn (cheap when nothing changed), the
-        first turn of the day finds it already built.
+        once a minute (cheap when nothing changed), the first turn of the day finds it built.
         """
+        terminal = self.sources.terminal
+        if isinstance(terminal, TerminalScreen):
+            self._turn = replace(self.sources, terminal=terminal.cached())
+        self._warmed = True
+
         def keep() -> None:
+            fetch_at = 0.0
             while True:
+                if _time.monotonic() >= fetch_at:
+                    fetch_at = _time.monotonic() + _PREFETCH_S
+                    try:
+                        prefetch_terminal(self.sources, now())
+                    except Exception:  # the next round tries again; the turns go without it
+                        LOGGER.exception("ledger: prefetching the terminal's answers failed")
                 try:
                     self._standing(now())
-                except Exception:  # the next minute tries again; a turn still builds it if needed
+                except Exception:  # the next minute tries again
                     LOGGER.exception("ledger: keeping the standing text warm failed")
                 _time.sleep(_KEEP_WARM_S)
 
@@ -209,11 +232,11 @@ class LedgerContext:
 
     def _per_turn(self, now: datetime, last_ts: datetime | None) -> str:
         parts = [
-            self._guarded(partial(job_hunt_text, self.sources, now)),
-            self._guarded(partial(today_text, self.sources, now)),
+            self._guarded(partial(job_hunt_text, self._turn, now)),
+            self._guarded(partial(today_text, self._turn, now)),
         ]
         if last_ts is not None:
-            parts.append(self._guarded(partial(since_text, self.sources, now, last_ts)))
+            parts.append(self._guarded(partial(since_text, self._turn, now, last_ts)))
         return "\n\n".join(part for part in parts if part)
 
     @staticmethod
