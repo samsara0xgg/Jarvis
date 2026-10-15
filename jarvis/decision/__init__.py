@@ -3099,8 +3099,8 @@ def open_prefix_warm(  # noqa: PLR0913 — the next request's whole prefix, plus
 class _SpokenReply:
     """One streamed request of a spoken turn, by phase, and its calls.
 
-    ``text`` is the ``commentary`` line (``_assistant_message_for`` echoes it);
-    ``answer`` the rest, which went to the speaker as it came.
+    ``text`` is the ``commentary`` line; ``answer`` the rest, which went to the speaker as it
+    came. A request that ends in calls echoes both into the history.
     """
 
     text: str = ""
@@ -3313,8 +3313,10 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
             hold.release()
             # The line before a call is on screen while the call runs, not when the answer starts.
             speaker.end_request()
-            message = _assistant_message_for(reply)
-            if reply.text.strip():
+            # Whatever she said before the call is in her history, so the next request does not
+            # say it again: Anthropic labels no phase, so that is ``answer``, not ``text``.
+            message = {**_assistant_message_for(reply), "content": reply.text + reply.answer}
+            if message["content"].strip():
                 message["phase"] = "commentary"
             messages.append(message)
             for tool_call in reply.tool_calls:

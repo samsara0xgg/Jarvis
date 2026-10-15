@@ -463,6 +463,17 @@ def test_the_line_before_a_call_goes_out_before_the_call_runs(tmp_path: Path) ->
     assert order[0] == ("surface.response_chunk", line), order
 
 
+def test_what_she_said_before_a_call_is_in_the_next_requests_history(tmp_path: Path) -> None:
+    """Anthropic labels no phase: the line before a call is an answer; the next request has it."""
+    line = "我把它理解成社区矫正办公室。先查一下地址。"
+    outputs = [[("final_answer", line), ("call", "kept")], [("final_answer", "在 Quadra St。")]]
+    with _Peer(outputs) as peer:
+        runtime = _preset_runtime(tmp_path, peer.url, spoken_structured=False)
+        _drive(runtime, _spoken(runtime.conn, "turn-said", "怎么去社区矫正办公室"))
+    _, second = peer.requests[1]
+    assert line in json.dumps(second, ensure_ascii=False), "her own words before the call"
+
+
 @pytest.mark.parametrize("spoken_structured", [False, True])
 def test_the_prefix_warm_gets_the_text_format_the_turn_sent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, spoken_structured: bool,
