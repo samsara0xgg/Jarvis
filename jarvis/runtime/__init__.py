@@ -54,7 +54,7 @@ from datetime import date, datetime
 from datetime import time as clock
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -3474,6 +3474,11 @@ def _start_drive_turn_response(
                     response_id=run.response_id,
                     scope="generation",
                     reason=late_cancel,
+                    source_turn_id=(
+                        runtime.response_runs.superseded_by(run.turn_id)
+                        if late_cancel == "superseded"
+                        else None
+                    ),
                 ),
             )
     if context is None:
@@ -3511,11 +3516,19 @@ def _start_drive_turn_response(
     return run, terminalizer, seam
 
 
+class ResponseCancel(Protocol):
+    """``(response_id, scope, reason, by_turn) -> outcome``; ``by_turn`` took the run's place."""
+
+    def __call__(
+        self, response_id: str, scope: str, reason: str, by_turn: str | None = None,
+    ) -> str: ...
+
+
 def make_response_cancel_callable(  # noqa: C901 - one seam, two scopes' exact outcome words
     runtime: JarvisRuntime,
     *,
     stop_foreground_output: Callable[[str], str] | None = None,
-) -> Callable[[str, str, str], str]:
+) -> ResponseCancel:
     """Build the injectable ``(response_id, scope, reason) -> outcome`` seam.
 
     Returned strings for ``scope="generation"``: ``"cancelled"``,
@@ -3543,6 +3556,7 @@ def make_response_cancel_callable(  # noqa: C901 - one seam, two scopes' exact o
         response_id: str,
         scope: str,
         reason: str,
+        by_turn: str | None = None,
     ) -> str:
         deadline = time.monotonic() + cancel_timeout_ms / 1000
 
@@ -3573,6 +3587,7 @@ def make_response_cancel_callable(  # noqa: C901 - one seam, two scopes' exact o
                 response_id=response_id,
                 scope="generation" if scope == "generation" else "foreground_output",
                 reason=normalized_reason,
+                source_turn_id=by_turn,
             ),
             deadline=deadline,
         )
@@ -3804,6 +3819,7 @@ def make_supersede_unspoken_callable(
                     )
                 },
                 for_s=_SUPERSEDE_WINDOW_S,
+                by_turn=turn_id,
             )
             # ponytail: a run that passed the completion hold just before Allen
             # started talking can complete between this drop and its cancel; its
@@ -3816,7 +3832,7 @@ def make_supersede_unspoken_callable(
             for run in runs:
                 if run.turn_id not in dropped:
                     continue
-                outcome = cancel(run.response_id, "generation", "superseded")
+                outcome = cancel(run.response_id, "generation", "superseded", turn_id)
                 LOGGER.info(
                     "unspoken answer superseded by %s: turn %s response %s -> %s",
                     turn_id, run.turn_id, run.response_id, outcome,
@@ -3875,7 +3891,7 @@ def make_relation_supersede_callable(
                     return "audible"
                 stop_playback()
             for run in runs:
-                outcome = cancel(run.response_id, "generation", "superseded")
+                outcome = cancel(run.response_id, "generation", "superseded", turn_id)
                 LOGGER.info(
                     "earlier answer %s by %s (%s): response %s -> %s",
                     "superseded" if unspoken else "stopped", turn_id, relation,

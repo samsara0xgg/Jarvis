@@ -1,6 +1,6 @@
 # ADR 0074 — A dropped answer takes its waiting card with it
 
-**Status:** Accepted
+**Status:** Superseded-by-0268
 **Date:** 2026-09-26
 **Supersedes:** 0072
 

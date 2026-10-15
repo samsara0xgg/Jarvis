@@ -436,8 +436,9 @@ class ResponseRunRegistry:
         self._allen_quiet.set()
         # Turns the stop button hit before their run opened, as expiry times.
         self._stopped_turns: dict[str, float] = {}
-        # ADR 0074: turns a newer sentence superseded before their run opened.
-        self._superseded_turns: dict[str, float] = {}
+        # ADR 0074: turns a newer sentence superseded before their run opened, as
+        # (expiry, the turn that took their place; ADR 0268).
+        self._superseded_turns: dict[str, tuple[float, str | None]] = {}
 
     def hold_completion(self, *, held: bool) -> None:
         """Hold, or release, every run's completion while Allen is talking."""
@@ -466,17 +467,27 @@ class ResponseRunRegistry:
         with self._lock:
             return self._stopped_turns.get(turn_id, 0.0) > time.monotonic()
 
-    def mark_turns_superseded(self, turn_ids: Iterable[str], *, for_s: float) -> None:
-        """Remember turns a newer sentence superseded, for runs not yet open."""
+    def mark_turns_superseded(
+        self, turn_ids: Iterable[str], *, for_s: float, by_turn: str | None = None,
+    ) -> None:
+        """Remember turns ``by_turn``'s sentence superseded, for runs not yet open."""
         now = time.monotonic()
         with self._lock:
-            self._superseded_turns = {t: u for t, u in self._superseded_turns.items() if u > now}
-            self._superseded_turns.update(dict.fromkeys(turn_ids, now + for_s))
+            self._superseded_turns = {
+                t: mark for t, mark in self._superseded_turns.items() if mark[0] > now
+            }
+            self._superseded_turns.update(dict.fromkeys(turn_ids, (now + for_s, by_turn)))
 
     def turn_superseded(self, turn_id: str) -> bool:
         """Whether a newer sentence superseded ``turn_id`` recently enough to still bind it."""
         with self._lock:
-            return self._superseded_turns.get(turn_id, 0.0) > time.monotonic()
+            return self._superseded_turns.get(turn_id, (0.0, None))[0] > time.monotonic()
+
+    def superseded_by(self, turn_id: str) -> str | None:
+        """The turn whose sentence superseded ``turn_id``, while that still binds it."""
+        with self._lock:
+            until, by_turn = self._superseded_turns.get(turn_id, (0.0, None))
+        return by_turn if until > time.monotonic() else None
 
     def register(self, run: ResponseRun) -> None:
         """Add ``run`` under its response id."""
@@ -575,6 +586,7 @@ class ResponseCancelRequest:
     expected_playback_generation_id: int | None = None
     source_utterance_id: str | None = None
     source_event_uid: str | None = None
+    source_turn_id: str | None = None
 
 
 class ResponseTerminalizer:
@@ -676,6 +688,7 @@ class ResponseTerminalizer:
         reason: str,
         cancel_scope: ResponseCancelScope,
         interrupted_by_utterance_id: str | None = None,
+        interrupted_by_turn_id: str | None = None,
         source_event_id: str | None = None,
         committed_prefix_hash: str | None = None,
     ) -> TerminalOutcome:
@@ -689,6 +702,8 @@ class ResponseTerminalizer:
         }
         if interrupted_by_utterance_id is not None:
             payload["interrupted_by_utterance_id"] = interrupted_by_utterance_id
+        if interrupted_by_turn_id is not None:
+            payload["interrupted_by_turn_id"] = interrupted_by_turn_id
         if committed_prefix_hash is not None:
             payload["committed_prefix_hash"] = committed_prefix_hash
         return self._write(
@@ -918,6 +933,7 @@ def request_response_cancel(  # noqa: PLR0911 — policy, timeout, and CAS outco
                 reason=request.reason,
                 cancel_scope=request.scope,
                 interrupted_by_utterance_id=request.source_utterance_id,
+                interrupted_by_turn_id=request.source_turn_id,
                 source_event_id=request.source_event_uid,
                 committed_prefix_hash=terminalizer.committed_prefix_hash(run),
             )

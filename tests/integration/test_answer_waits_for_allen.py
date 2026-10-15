@@ -11,6 +11,7 @@ that would start during the hold and discards a dropped one.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -21,10 +22,16 @@ import pytest
 from jarvis.decision.response_run import ResponseCancelledError
 from jarvis.runtime import make_relation_supersede_callable, make_supersede_unspoken_callable
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
+from jarvis.state.memory_db import MemorySettings
 from jarvis.state.projections import PendingConfirmations
 from jarvis.surface import voice_media, voice_pipeline
 from tests.integration.test_conversation_mode import _Session
 from tests.integration.test_foreground_arbitration import _whole
+from tests.integration.test_spoken_streaming import (
+    _fixture_key,  # noqa: F401 - autouse fixture of the spoken-route peer
+    _Peer,
+    _spoken_runtime,
+)
 from tests.integration.test_wave2_streaming_media import (
     _Behavior,
     _CallbackPump,
@@ -44,6 +51,7 @@ from tests.integration.test_wave4a_response_run import (
     _payloads,
     _script_decide,
 )
+from tests.integration.test_wire_routine_streaming import _drive
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -412,6 +420,7 @@ def test_a_supplement_or_correction_acts_on_the_one_turn_it_names(  # noqa: PLR0
     if cancelled:
         (row,) = _payloads(runtime.conn, "response.cancelled")
         assert (row["turn_id"], row["reason"]) == ("T-first", "superseded")
+        assert row["interrupted_by_turn_id"] == "T-next"
     runtime.conn.close()
 
 
@@ -525,5 +534,112 @@ def test_a_sentence_accepted_before_the_earlier_run_opens_still_supersedes_it(
         )
     cancelled = _payloads(runtime.conn, "response.cancelled")
     assert [(row["turn_id"], row["reason"]) for row in cancelled] == [("T-first", "superseded")]
+    assert cancelled[0]["interrupted_by_turn_id"] == "T-next"
     assert _event_count(runtime.conn, "surface.response_emitted") == 0
+    runtime.conn.close()
+
+
+# --- one request for two back-to-back sentences (ADR 0268) -------------------
+
+
+def _spoken_turn(conn: Any, turn_id: str, words: str) -> Any:  # noqa: ANN401 - Event
+    """The two rows a heard sentence leaves: ``utterance.received`` and its intent."""
+    emit_event(
+        conn,
+        type="utterance.received",
+        payload={"transcript": words, "turn_id": turn_id, "channel": "inherent_wake"},
+        correlation={"turn_id": turn_id},
+    )
+    return emit_event(
+        conn,
+        type="surface.user_intent",
+        payload={"transcript": words, "turn_id": turn_id, "channel": "inherent_wake"},
+        correlation={"turn_id": turn_id},
+    )
+
+
+_FIRST = "我想问一下去学校的公交"
+_SECOND = "现在出发能赶上哪一班"
+
+
+def _merge_rig(tmp_path: Path, peer: Any) -> Any:  # noqa: ANN401 - JarvisRuntime
+    runtime = _spoken_runtime(tmp_path, peer.url)
+    return replace(runtime, memory=MemorySettings.from_config({}, runtime_root=tmp_path))
+
+
+def _records(runtime: Any) -> list[tuple[str, str]]:  # noqa: ANN401 - JarvisRuntime
+    import sqlite3  # noqa: PLC0415 - one read of memory.db
+
+    with sqlite3.connect(runtime.memory.db_path) as conn:
+        rows = conn.execute("SELECT source, text FROM records ORDER BY rowid").fetchall()
+    return [(str(source), str(text)) for source, text in rows]
+
+
+@pytest.mark.parametrize("words", [_SECOND, _FIRST], ids=["another", "the_same_twice"])
+def test_a_sentence_one_second_after_the_one_not_yet_answered_is_answered_with_it(
+    tmp_path: Path,
+    words: str,
+) -> None:
+    """The first sentence's request is in flight with no word out; the second one arrives.
+
+    The first request is cancelled quietly and names the sentence that took its place; one
+    request is answered, carrying both sentences in order; one answer is rendered; nothing
+    of his is dropped from the record (live 2026-10-14 21:18: sentences cancelled each
+    other and he said the question again). The same words heard twice (22:14: a session
+    double) are the same case: one answer, not two.
+    """
+    answer = "八点二十有一班。"
+    with _Peer([[("final_answer", answer)]], first_event_delay_s=30.0) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        assert runtime.response_runs is not None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(_drive, runtime, _spoken_turn(runtime.conn, "T-1", _FIRST))
+            _wait_until(lambda: len(peer.requests) == 1)
+            time.sleep(1.0)
+            peer.first_event_delay_s = 0.0
+            make_supersede_unspoken_callable(runtime, lambda turn_ids: turn_ids)("T-2")
+            second = pool.submit(_drive, runtime, _spoken_turn(runtime.conn, "T-2", words))
+            second.result(timeout=20)
+            with pytest.raises(ResponseCancelledError):
+                first.result(timeout=10)
+
+    (cancelled,) = _payloads(runtime.conn, "response.cancelled")
+    assert (cancelled["turn_id"], cancelled["reason"]) == ("T-1", "superseded")
+    assert cancelled["interrupted_by_turn_id"] == "T-2"
+    assert not _payloads(runtime.conn, "response.failed")
+    assert not _payloads(runtime.conn, "turn.failed")
+    emitted = _payloads(runtime.conn, "surface.response_emitted")
+    assert [row["turn_id"] for row in emitted] == ["T-2"]
+    # One request was answered, and it carries both sentences, the earlier one first.
+    asked = json.dumps(peer.requests[-1][1]["input"], ensure_ascii=False)
+    if words == _FIRST:
+        assert asked.count(_FIRST) == 2
+    else:
+        assert 0 <= asked.index(_FIRST) < asked.index(words)
+    assert peer.completed == 1
+    assert _records(runtime) == [("allen", _FIRST), ("allen", words), ("jarvis", answer)]
+    runtime.conn.close()
+
+
+def test_a_sentence_after_the_first_has_started_speaking_leaves_it_to_barge_in(
+    tmp_path: Path,
+) -> None:
+    """Unchanged: once any of the answer has reached the speaker neither turn is cancelled."""
+    with _Peer(
+        [[("final_answer", "第一句。第二句。")], [("final_answer", "好的。")]], hold=True,
+    ) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(_drive, runtime, _spoken_turn(runtime.conn, "T-1", _FIRST))
+            _wait_until(lambda: bool(_payloads(runtime.conn, "surface.response_chunk")))
+            # L5 reports the first sentence played: nothing of the turn is left to drop.
+            make_supersede_unspoken_callable(runtime, lambda _turn_ids: frozenset())("T-2")
+            second = pool.submit(_drive, runtime, _spoken_turn(runtime.conn, "T-2", _SECOND))
+            peer.release.set()
+            first.result(timeout=20)
+            second.result(timeout=20)
+
+    assert not _payloads(runtime.conn, "response.cancelled")
+    emitted = _payloads(runtime.conn, "surface.response_emitted")
+    assert sorted(row["turn_id"] for row in emitted) == ["T-1", "T-2"]
     runtime.conn.close()
