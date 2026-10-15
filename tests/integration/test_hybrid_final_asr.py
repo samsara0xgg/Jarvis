@@ -239,6 +239,20 @@ def test_the_committed_event_names_the_engine_and_each_engines_own_score(
     assert ("whisper_confidence" in payload) == (engine in heard_whisper)
 
 
+def test_an_idle_model_is_read_every_so_often_and_a_busy_one_is_left_alone() -> None:
+    """The keep-warm touch runs only when no pass has used the model for a whole interval."""
+    zh, en = _whisper(), _whisper()
+    ears = _hybrid(_sensevoice("zh"), zh=zh, en=en)
+    with patch.object(voice_asr, "_HYBRID_KEEP_WARM_S", 0.05):
+        ears.prewarm()
+        _wait_until(lambda: zh.touch.call_count >= 1)
+        busy_until = time.monotonic() + 1000
+        zh.last_used = en.last_used = busy_until
+        touched = zh.touch.call_count
+        time.sleep(0.3)
+    assert zh.touch.call_count == touched
+
+
 def test_whispers_level_gate_still_applies() -> None:
     """A dead mic or a click never reaches the model, whatever the VAD called speech."""
     zh = _whisper("whisper heard this")

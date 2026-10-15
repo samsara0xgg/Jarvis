@@ -605,6 +605,11 @@ class MlxWhisperRecognizer:
         """Load the model (~1.6 GB, a few seconds) by hearing half a second of silence."""
         self.recognize(bytes(_SAMPLE_RATE))
 
+    def touch(self) -> None:
+        """Read every weight once: an encoder pass and one decoder step on silence, about 0.3 s."""
+        self.language_probs(bytes(_SAMPLE_RATE * 2))
+        self.last_used = time.monotonic()
+
     def warm(self) -> None:
         """Allen started talking: after 20 s idle, run one silent pass in the background."""
         if time.monotonic() - self.last_used < _WHISPER_WARM_IDLE_S:
@@ -803,6 +808,10 @@ class WhisperFinalRecognizer:
         self._whisper.warm()
 
 
+# ADR 0270: macOS pages an idle process's GPU buffers out under memory pressure, and the pass
+# after that reads 2.3 GB back from swap (7.6-13 s against 0.4 s). Reading the weights every 15 s
+# of idleness keeps them recently used, for about 2% of one GPU.
+_HYBRID_KEEP_WARM_S = 15.0
 # ADR 0132: a clip with less speech than this is heard by SenseVoice alone; Whisper writes words
 # for it that were never said ("Yeah" became "Thank you").
 _HYBRID_MIN_SPEECH_S = 1.0
@@ -844,7 +853,7 @@ class HybridFinalRecognizer:
 
     ADR 0270: so do a pass whose own signals are poor and a pass still running
     ``_HYBRID_WAIT_S`` after the commit; every result names the engine whose words stand
-    (``asr_engine``) and keeps each engine's own score.
+    (``asr_engine``) and keeps each engine's own score, and an idle model is read every 15 s.
 
     ADR 0137: with ``whisper_command`` set, a short unclear Chinese line (2-4 characters, no
     question, no command already) is heard once more by it, and a Chinese command it returns
@@ -877,6 +886,7 @@ class HybridFinalRecognizer:
         self._prepared: dict[str, _PreparedFinal] = {}
         self._queue: deque[_PreparedFinal] = deque()
         self._worker: threading.Thread | None = None
+        self._keeper: threading.Thread | None = None
         self._on_prepared_text: Callable[[str, int, str], None] | None = None
 
     def on_prepared_text(self, listener: Callable[[str, int, str], None] | None) -> None:
@@ -945,12 +955,30 @@ class HybridFinalRecognizer:
         self._sensevoice.prewarm()
         self._whisper_zh.prewarm()
         self._whisper_en.prewarm()
+        with self._lock:
+            if self._keeper is None:
+                self._keeper = threading.Thread(
+                    target=self._keep_warm, name="jarvis-whisper-keep-warm", daemon=True,
+                )
+                self._keeper.start()
 
     def warm(self) -> None:
         """Allen started talking: after 20 s without a Whisper pass, run one silent pass."""
         last = max(self._whisper_zh.last_used, self._whisper_en.last_used)
         if time.monotonic() - last >= _WHISPER_WARM_IDLE_S:
             self._whisper_zh.warm()
+
+    def _keep_warm(self) -> None:
+        """Every ``_HYBRID_KEEP_WARM_S``, read the model's weights if no pass has since the last."""
+        while True:
+            time.sleep(_HYBRID_KEEP_WARM_S)
+            last = max(self._whisper_zh.last_used, self._whisper_en.last_used)
+            if time.monotonic() - last < _HYBRID_KEEP_WARM_S:
+                continue
+            try:
+                self._whisper_zh.touch()
+            except Exception:  # noqa: BLE001 - a failed touch only leaves the next pass cold
+                LOGGER.warning("Whisper keep-warm failed", exc_info=True)
 
     def _drop(self, utterance_id: str) -> None:
         """Forget a prepared pass (the lock is held); one not yet started is skipped."""
