@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta
@@ -11,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Final
 from jarvis.execution import speakable
 from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
-from jarvis.state import imports
+from jarvis.state import imports, meaning
 from jarvis.state.daily_contract import DailyError, encoded
 from jarvis.state.daily_records import rank_by_words, read_connection
 from jarvis.state.import_parsers import money
@@ -21,6 +22,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from datetime import tzinfo
     from pathlib import Path
+
+    from jarvis.state.embedding import Embedder
+
+LOGGER = logging.getLogger(__name__)
 
 _DESCRIPTION: Final = (
     "Use for what he handed over from other apps: his payments (WeChat Pay, Alipay, Bank of "
@@ -57,6 +62,9 @@ _BUDGET: Final = 4000
 _FOCUS_CHARS: Final = 1800
 _NEAR_CHARS: Final = 300
 _AROUND: Final = 2
+_MEANING_LIMIT: Final = 20
+_MEANING_FLOOR: Final = 0.8
+"""As in ``conversation``: the closest entries by meaning merged with the word hits."""
 
 
 def _text(args: Mapping[str, Any], name: str) -> str:
@@ -67,7 +75,7 @@ def _text(args: Mapping[str, Any], name: str) -> str:
 def rank(rows: list[imports.Entry], words: list[str]) -> tuple[list[imports.Entry], list[str]]:
     """The entries holding any of ``words``, best first (newest among equals), and the absent words.
 
-    The one place the order of a search is decided; a ranking by meaning joins or replaces it here.
+    The order by words; ``_Archive._find`` merges the closest entries by meaning into it.
     """
     scores, absent = rank_by_words([row.text for row in rows], words)
     best = sorted(((s, row) for s, row in zip(scores, rows, strict=True) if s), key=lambda p: -p[0])
@@ -103,10 +111,14 @@ def _masked_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
 class _Archive:
     """The tool's handler: entries for words, a source or a span; one entry opened."""
 
-    def __init__(self, store: Path, zone: tzinfo, clock: Callable[[], datetime]) -> None:
+    def __init__(
+        self, store: Path, zone: tzinfo, clock: Callable[[], datetime],
+        embedder: Embedder | None,
+    ) -> None:
         self._store = store
         self._zone = zone
         self._clock = clock
+        self._embedder = embedder
 
     def run(self, args: Mapping[str, Any], _ctx: object) -> dict[str, Any]:
         """Dispatch on the arguments; a store that cannot be read is worded for the model."""
@@ -177,10 +189,19 @@ class _Archive:
         rows = imports.entries(conn, source=source or None, start_ms=start, end_ms=end)
         words = list(dict.fromkeys(query.casefold().split()))
         absent: list[str] = []
+        counted, near = rows, False
         if words:
+            everything = rows
             rows, absent = rank(rows, words)
+            counted = rows
+            if close := self._by_meaning(conn, query, {row.id for row in everything}):
+                # Merged, not chosen between: an exact hit stays first. Totals stay on the word
+                # hits when there are any, since a near miss by meaning must not change a sum.
+                by_id = {row.id: row for row in everything}
+                rows = [by_id[eid] for eid in meaning.fuse([row.id for row in rows], close)]
+                counted, near = (counted, False) if counted else (rows, True)
         total, begin = len(rows), (page - 1) * _PAGE
-        what = f' holding "{query}"' if words else ""
+        what = f' for "{query}"' if words else ""
         if not rows:
             summary = f"No entry{what} was handed over for this."
             return {"summary": summary, "entries": [], "more": False}
@@ -210,13 +231,30 @@ class _Archive:
         }
         if absent and len(absent) < len(words):
             answer["summary"] += f" No entry holds: {', '.join(absent)}."
-        if (totals := _totals(rows)) is not None:
+        if (totals := _totals(counted)) is not None:
+            if near:
+                totals["note"] += (
+                    "; no entry holds these words, so these are the closest by meaning"
+                )
             answer["totals"] = totals
         return answer
 
     @staticmethod
     def _at(row: imports.Entry) -> datetime:
         return datetime.fromtimestamp(row.at_ms / 1000, tz=UTC)
+
+    def _by_meaning(self, conn: sqlite3.Connection, query: str, ids: set[str]) -> list[str]:
+        """Ids among ``ids`` closest to ``query`` by meaning; none when the model is absent."""
+        if self._embedder is None or not self._embedder.available:
+            return []
+        try:
+            return meaning.nearest(
+                conn, self._store, self._embedder, query, meaning.IMPORTS,
+                among=ids, limit=_MEANING_LIMIT, floor=_MEANING_FLOOR,
+            )
+        except Exception:  # a search never fails a turn for want of the model
+            LOGGER.exception("archive: search by meaning failed; words only")
+            return []
 
     def _open(self, conn: sqlite3.Connection, entry_id: str, now: datetime) -> dict[str, Any]:
         """One entry whole; a Claude message with two messages either side, up to what fits."""
@@ -261,6 +299,7 @@ class _Archive:
 
 def build_archive_tool(
     store: Path | None, zone: tzinfo, clock: Callable[[], datetime] = speakable.now,
+    *, embedder: Embedder | None = None,
 ) -> tuple[Tool, ...]:
     """``archive`` over the memory store's import entries; none without a store."""
     if store is None:
@@ -270,7 +309,7 @@ def build_archive_tool(
             name="archive",
             description=_DESCRIPTION,
             input_schema=_SCHEMA,
-            handler=_Archive(store, zone, clock).run,
+            handler=_Archive(store, zone, clock, embedder).run,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L0",
             read_only=True,

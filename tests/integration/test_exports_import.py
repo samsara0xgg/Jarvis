@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pytest
 from pypdf import PdfWriter
 
@@ -26,7 +27,7 @@ from jarvis.deployment import data
 from jarvis.execution.archive_tool import build_archive_tool
 from jarvis.execution.tools import Tool, ToolContext, ToolError
 from jarvis.runtime import JarvisRuntime, inherent_loop
-from jarvis.state import imports
+from jarvis.state import imports, meaning
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.event_log import open_event_log
 from jarvis.state.import_parsers import boc_text
@@ -218,6 +219,38 @@ def test_the_archive_tool_searches_pages_totals_and_opens(tmp_path: Path) -> Non
     with pytest.raises(ToolError) as missing:
         _call(tool, open="claude-000000000000")
     assert missing.value.code == "not_found"
+
+
+class _LunchEmbedder:
+    """One concept, lunch in either language, plus a constant so no vector is zero."""
+
+    model_id = "fake-lunch"
+    available = True
+
+    def embed(self, texts: Any, *, query: bool) -> np.ndarray:  # noqa: ANN401, ARG002
+        """1 along lunch for a text that names it."""
+        rows = [[float(any(w in t.casefold() for w in ("lunch", "午饭"))), 0.01] for t in texts]
+        vectors = np.array(rows, dtype=np.float32)
+        return vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
+
+
+def test_the_archive_finds_an_entry_by_meaning_and_says_when_totals_rest_on_it(tmp_path: Path) -> None:
+    """A Chinese word finds the English lunch payment; an exact word hit keeps its plain totals."""
+    wechat, alipay = _statements(tmp_path)
+    _import(tmp_path, "wechat_pay", wechat)
+    _import(tmp_path, "alipay", alipay)
+    embedder = _LunchEmbedder()
+    while meaning.index_pending(tmp_path / "memory.db", embedder):
+        pass
+    (tool,) = build_archive_tool(tmp_path / "memory.db", VANCOUVER, lambda: NOW, embedder=embedder)
+
+    near = _call(tool, query="午饭")
+    assert [e["text"] for e in near["entries"]] == ["paid CNY 68.00 to Lotus Noodle House: Lunch set"]
+    assert near["totals"]["spent"] == "68.00"
+    assert "closest by meaning" in near["totals"]["note"]
+    exact = _call(tool, query="noodle")
+    assert exact["totals"]["note"] == "all counted"
+    assert _call(tool, query="午饭", source="alipay")["entries"] == []
 
 
 def test_the_day_line_folds_payments_and_chats_in_his_zone(tmp_path: Path) -> None:

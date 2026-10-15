@@ -34,6 +34,8 @@ BATCH: Final = 32
 RRF_K: Final = 60
 RECORDS: Final = "records"
 """The kind of a conversation record; the ``conversation`` tool searches this one."""
+IMPORTS: Final = "imports"
+"""The kind of an entry read from an export he handed over (ADR 0259); ``archive`` searches it."""
 
 # One text to index: (ref id, text). ``ref`` is what the kind's own table calls the row.
 Text = tuple[str, str]
@@ -66,6 +68,15 @@ def _days(conn: sqlite3.Connection) -> Iterator[Text]:
         yield str(day), str(summary)
 
 
+def _imports(conn: sqlite3.Connection) -> Iterator[Text]:
+    try:
+        rows = conn.execute("SELECT id, text FROM import_entries").fetchall()
+    except sqlite3.OperationalError:  # a store from before the table
+        return
+    for eid, text in rows:
+        yield str(eid), str(text)
+
+
 def _wordings(item: core_memory.Item) -> Iterator[str]:
     for earlier in item.get("history") or []:
         text = earlier.get("text") if isinstance(earlier, dict) else earlier
@@ -95,6 +106,7 @@ INDEXERS: Final[tuple[tuple[str, Indexer], ...]] = (
     ("day", _days),
     ("core", _core),
     ("core_past", _core_past),
+    (IMPORTS, _imports),
 )
 """Kind name and the reader of its texts; the vector table is keyed by the kind."""
 

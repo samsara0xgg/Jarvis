@@ -1827,9 +1827,12 @@ def _register_conversation(
         registry.register(tool)
 
 
-def _register_archive(registry: ToolRegistry, memory_db: Path, zone: tzinfo) -> None:
+def _register_archive(
+    registry: ToolRegistry, memory_db: Path, zone: tzinfo, runtime_root: Path,
+) -> None:
     """``archive`` (ADR 0259): the payments and Claude conversations he handed over."""
-    for tool in build_archive_tool(memory_db, zone):
+    embedder = embedding.shared(default_meaning_dir(runtime_root))
+    for tool in build_archive_tool(memory_db, zone, embedder=embedder):
         registry.register(tool)
 
 
@@ -3138,7 +3141,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     )
     _register_mail(registry, home, local_zone)
     _register_conversation(registry, memory.db_path, local_zone, paths.root)
-    _register_archive(registry, memory.db_path, local_zone)
+    _register_archive(registry, memory.db_path, local_zone, paths.root)
     _register_my_day(
         registry,
         LedgerSources(
