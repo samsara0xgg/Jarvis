@@ -76,6 +76,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     # and Chinese dictations that must not be answered, as the words the model will read.
     "jarvis/runtime/dictation.py": frozenset({"POLISH_PROMPT", "COMMAND_PROMPT"}),
     # A question naming a past day is the saved report's to answer; these read the question.
+    # Verification-code mail is read by the words Chinese services write around the code (ADR 0266).
+    "jarvis/runtime/mail_codes.py": frozenset({"_STRONG", "_NOT_LOGIN"}),
     "jarvis/runtime/daily_report.py": frozenset({"_PAST_DAY", "_YESTERDAY"}),
     "jarvis/execution/tool_search.py": frozenset({"_TOKEN"}),
     "jarvis/shared/text.py": frozenset({"is_english"}),

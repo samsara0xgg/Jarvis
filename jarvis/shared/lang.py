@@ -1108,6 +1108,7 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "voice.English_Trustworth_Man": {"zh": "可靠男声", "en": "Trustworthy Man"},
     "voice.English_Trustworth_Man.note": {"zh": "浑厚，真诚", "en": "resonant, sincere"},
     # ADR 0155: the job-mail card's title and one sentence, from the typed facts only.
+    "mail.code_copied": {"zh": "已复制验证码 {code}", "en": "Copied verification code {code}"},
     "job.title.offer": {"zh": "录用通知 · {company}", "en": "Offer · {company}"},
     "job.title.interview": {"zh": "面试邀请 · {company}", "en": "Interview invitation · {company}"},
     "job.title.rejection": {"zh": "申请结果 · {company}", "en": "Application update · {company}"},

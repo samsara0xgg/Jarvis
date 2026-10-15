@@ -97,11 +97,13 @@ from jarvis.runtime.inherent_loop import (
     _voice_knobs,
     _voice_models_preflight,
 )
+from jarvis.runtime.mail_codes import copy_code
 from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.night_watch import NightWatch
 from jarvis.runtime.settings import Settings, apply_settings
 from jarvis.runtime.settings_owner import check_own, page_keys, release, terminal_report
 from jarvis.shared import ActionRequest
+from jarvis.shared.device_link import COPY_CODE
 from jarvis.shared.realtime_trace import configure_realtime_trace_jsonl
 from jarvis.state import device_reads, job_time, ledger, timesink, timesink_moment
 from jarvis.state.daily_contract import DailyError
@@ -166,10 +168,11 @@ def _declared(registry: ToolRegistry) -> frozenset[str]:
     """The tools this machine can run: the device tools it holds that a caller may reach.
 
     Beside them the reads of its own TimeSink store, repositories and Claude Code sessions, which
-    are not menu tools.
+    are not menu tools, and ``copy_code`` (ADR 0266).
     """
     held = {tool.name for tool in registry.get_definitions() if tool.allowed_callers}
-    return frozenset(held & TERMINAL_TOOL_NAMES) | {RESOLVE_FILE} | device_reads.TERMINAL_READS
+    names = frozenset(held & TERMINAL_TOOL_NAMES)
+    return names | {RESOLVE_FILE, COPY_CODE} | device_reads.TERMINAL_READS
 
 
 _MAX_READ_CHARS = MAX_FRAME_CHARS - 4096
@@ -344,13 +347,15 @@ def make_executor(
         LOGGER.info("ran %s: %s", tool, "ok" if reply["ok"] else reply["code"])
         return reply
 
-    def run(
+    def run(  # noqa: PLR0911 - one early return per hidden operation
         tool: str, arguments: Mapping[str, Any], target_entity_ref: str | None,
     ) -> dict[str, Any]:
         if tool not in declared:
             return {"ok": False, "code": "unknown_tool", "message": f"this terminal has no {tool}"}
         if tool in device_reads.TERMINAL_READS:
             return _read_device(tool, arguments, timesink_store, repos, projects, claude)
+        if tool == COPY_CODE:
+            return copy_code(str(arguments.get("code", "")), str(arguments.get("sender", "")))
         conn = open_event_log(Path(":memory:"))  # opened here: a log belongs to its thread
         try:
             if tool == RESOLVE_FILE:

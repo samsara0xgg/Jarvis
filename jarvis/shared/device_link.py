@@ -29,3 +29,7 @@ class DeviceCallError(Exception):
 
 type DeviceLink = Callable[[str, Mapping[str, Any], str | None], dict[str, Any]]
 """``(tool name, arguments, resolved target) -> payload``; raises :class:`DeviceCallError`."""
+
+COPY_CODE = "copy_code"
+"""Not a menu tool: the brain asks the terminal to copy a mail's verification code and show a
+notification (ADR 0266). Arguments ``code`` and ``sender``."""

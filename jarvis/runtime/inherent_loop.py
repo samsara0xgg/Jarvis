@@ -7980,6 +7980,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             job_mail.may_speak = lambda: not controls.speech_muted and not controls.conversation
             job_mail.say = functools.partial(_say_job_line, runtime)
             watchers.append(asyncio.create_task(job_mail.run(), name="job_mail"))
+        if runtime.mail_codes is not None:
+            watchers.append(asyncio.create_task(runtime.mail_codes.run(), name="mail_codes"))
         if spend is not None and runtime.memory is not None:
             # ADR 0185: the card is a job-alert row; _alert_deps serves it with job mail off too.
             watchers.append(asyncio.create_task(

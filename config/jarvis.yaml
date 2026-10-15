@@ -528,6 +528,13 @@ home:
     importance:
       enabled: false
 
+# 2026-10-15 (Allen): a verification code in new mail is copied to the Mac clipboard with a
+# notification (ADR 0266); only mail newer than window_min minutes counts.
+mail_codes:
+  enabled: true
+  poll_s: 20
+  window_min: 10
+
 # ADR 0155 — job-hunt mail.  In the background, every poll_s, Jarvis lists the last backfill_days
 # (or every day since backfill_since) of Allen's Gmail (every category, no-reply senders
 # included; spam, trash, sent and drafts excluded) with gmail_search and gmail_get only:

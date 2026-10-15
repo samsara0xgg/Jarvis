@@ -196,6 +196,7 @@ from jarvis.runtime.home import Home, mail_body, mail_summarizer, mail_text, wea
 from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
+from jarvis.runtime.mail_codes import MailCodes, MailCodesSettings
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.now_block import KEPT, CalendarCache, calendar_line, doing_now_line
@@ -717,6 +718,8 @@ class JarvisRuntime:
     oneshot: JevOneShot | None = None
     # ADR 0155: the job-mail poller and the ledger it keeps. None = off.
     job_mail: JobMail | None = None
+    # ADR 0266: verification codes in new mail go to the Mac clipboard. None = off.
+    mail_codes: MailCodes | None = None
     # ADR 0161: the situation TimeSink last recorded, read on demand. None = off.
     moment: Moment | None = None
     # ADR 0179: the clock that fires the owner's reminders. None = hand-assembled.
@@ -1750,6 +1753,30 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
     return JobMail(
         settings, route, connections, db_path, rule_judge_v1,
         moment=moment, timesink_path=_timesink_db_path(config), device=device, event_log=event_log,
+    )
+
+
+def _mail_codes(
+    config: Mapping[str, Any], config_path: Path, connections: PluginConnections,
+    device: DeviceLink | None,
+) -> MailCodes | None:
+    """``mail_codes`` (ADR 0266): off unless enabled; bad values stop boot."""
+    block = config.get("mail_codes")
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    values = {}
+    for key, low, high in (("poll_s", 1, None), ("window_min", 1, 60)):
+        value = block.get(key)
+        if isinstance(value, bool) or not isinstance(value, int | float) or value < low or (
+            high is not None and value > high
+        ):
+            msg = f"runtime: {config_path} mail_codes.{key} must be a number of at least {low}" + (
+                "" if high is None else f" and at most {high}"
+            )
+            raise RuntimeBootstrapError(msg)
+        values[key] = value
+    return MailCodes(
+        MailCodesSettings(float(values["poll_s"]), int(values["window_min"])), connections, device,
     )
 
 
@@ -3115,6 +3142,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         paths.event_log,
     )
     _register_job_ledger(registry, job_mail)
+    mail_codes = _mail_codes(full_config, config_path, plugin_connections, device)
     reminders = Reminders(
         paths.event_log,
         moment=moment,
@@ -3237,6 +3265,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         voice_cues=voice_cues,
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
         job_mail=job_mail,
+        mail_codes=mail_codes,
         moment=moment,
         push=Push.from_config(full_config, paths.root, paths.event_log),
         whereabouts=Whereabouts(

@@ -1,0 +1,82 @@
+[
+ {
+  "subject": "Your GitHub launch code",
+  "body": "Here's your GitHub launch code, Allen!\n\nVerification code: 482913\n",
+  "expected": "482913"
+ },
+ {
+  "subject": "G-731904 is your Google verification code",
+  "body": "Don't share it.",
+  "expected": "731904"
+ },
+ {
+  "subject": "Security code for your Microsoft account",
+  "body": "Please use this security code: 8841\n\nThanks",
+  "expected": "8841"
+ },
+ {
+  "subject": "Your Apple ID Code is: 625 318",
+  "body": "Never share this code with anyone.",
+  "expected": "625318"
+ },
+ {
+  "subject": "Your login code",
+  "body": "Use code 90317254 to sign in. It expires in 10 minutes.",
+  "expected": "90317254"
+ },
+ {
+  "subject": "Slack confirmation",
+  "body": "Your confirmation code is A7K9QX. It expires in 10 minutes. Verify your email.",
+  "expected": "A7K9QX"
+ },
+ {
+  "subject": "",
+  "body": "【美团】验证码：527904，5分钟内有效，请勿泄露给他人。",
+  "expected": "527904"
+ },
+ {
+  "subject": "",
+  "body": "您的验证码是 308116。如非本人操作请忽略。",
+  "expected": "308116"
+ },
+ {
+  "subject": "",
+  "body": "Your one-time passcode is 6623. Do not share it. 2026-10-15",
+  "expected": "6623"
+ },
+ {
+  "subject": "Verification code",
+  "body": "Your code:\n\n2048",
+  "expected": "2048"
+ },
+ {
+  "subject": "Order confirmation",
+  "body": "Thanks! Order #48151623 total $23.50. Questions? Call (250) 555-1234. Promo code SAVE20 on your next order.",
+  "expected": null
+ },
+ {
+  "subject": "October newsletter",
+  "body": "What's new in 2026: our verification process got faster in 2025. Read more at https://x.example/verify?token=ab12cd34",
+  "expected": null
+ },
+ {
+  "subject": "Call me back",
+  "body": "My code is the same as before; phone 1-800-555-0199 or 4165550123.",
+  "expected": null
+ },
+ {
+  "subject": "Reset your password",
+  "body": "Click https://example.com/reset?code=118273 to reset your password. The link expires in 24 hours.",
+  "expected": null
+ },
+ {
+  "subject": "Delivery update",
+  "body": "Your zip code 90210 is confirmed. Tracking 1Z999AA10123456784.",
+  "expected": null
+ },
+ {
+  "subject": "Meeting Oct 15",
+  "body": "Please verify the agenda for October 2026 before the call.",
+  "expected": null
+ }
+]
