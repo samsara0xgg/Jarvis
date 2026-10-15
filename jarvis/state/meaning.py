@@ -31,7 +31,9 @@ LOGGER = logging.getLogger(__name__)
 
 PIECE_CHARS: Final = 400
 PIECE_OVERLAP: Final = 80
-BATCH: Final = 32
+BATCH: Final = 8
+"""Pieces embedded at once: 32 of 400 characters held about 1.4 GB at peak on the brain, 8 about
+0.8 GB, at the same speed."""
 RRF_K: Final = 60
 RECORDS: Final = "records"
 """The kind of a conversation record; the ``conversation`` tool searches this one."""
