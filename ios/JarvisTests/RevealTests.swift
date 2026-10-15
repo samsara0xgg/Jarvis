@@ -32,6 +32,15 @@ final class RevealTests: XCTestCase {
         for (got, want) in zip(r.at, [0, 0.035, 0.07, 0.105]) { XCTAssertEqual(got, want, accuracy: 1e-9) }
     }
 
+    func testEveryParagraphIsTaggedWithItsWordsCountedFromTheStartOfTheAnswer() {
+        // the layout counts characters again from each paragraph: the tags must not
+        let text = AttributedString("好的。\n\n明天见\n\nOK")
+        let pieces = RevealText.pieces(text).map { (String(text[$0.range].characters), $0.word) }
+        XCTAssertEqual(pieces.map(\.0), ["好", "的。\n\n", "明", "天", "见\n\n", "OK"])
+        XCTAssertEqual(pieces.map(\.1), [0, 1, 2, 3, 4, 5])
+        XCTAssertTrue(RevealText.pieces(AttributedString("")).isEmpty)
+    }
+
     func testHerVoiceLightsTheWordsItHasStartedAndNeverTakesOneBack() {
         let text = "你好 Allen，明天见"
         let wordOf = Reveal.words(text)                                  // 你 好 | Allen， | 明 天 见 -> 0 1 2 3 4 5

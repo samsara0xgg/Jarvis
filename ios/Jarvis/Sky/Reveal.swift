@@ -15,6 +15,7 @@ struct Reveal: Equatable {
     /// a typed answer of `n` words: one word every `step`, a long one quicker so reading it does not take minutes
     static func stagger(_ n: Int) -> Double { min(step, longest / Double(max(n, 1))) }
 
+
     /// `n` words said one `every` after the other from `start`
     static func timed(_ n: Int, from start: Double, every: Double) -> Reveal { Reveal(at: (0..<n).map { start + Double($0) * every }) }
 
@@ -53,28 +54,21 @@ struct Reveal: Equatable {
     static func said(_ chars: Int, in wordOf: [Int]) -> Int { chars <= 0 || wordOf.isEmpty ? 0 : wordOf[min(chars, wordOf.count) - 1] + 1 }
 }
 
+/// The word a piece of the text belongs to, carried on the text itself: the layout's character indices start again at each paragraph (and at some runs within a line),
+/// so a glyph's word cannot be counted from them.
+private struct WordTag: TextAttribute { let word: Int }
+
 /// Draws each glyph at the opacity of its word. The text under it keeps its layout; only this redraws.
 private struct RevealRenderer: TextRenderer {
     let reveal: Reveal
-    let wordOf: [Int]
     let t: Double
     let fade: Double
 
     func draw(layout: Text.Layout, in ctx: inout GraphicsContext) {
-        guard let origin = layout.first?.first?.characterIndices.first else { return }
         for line in layout {
-            for run in line {
-                let idx = run.characterIndices
-                var from = 0
-                // consecutive glyphs of one brightness are drawn together
-                func alpha(_ g: Int) -> Double { reveal.alpha(wordOf.isEmpty ? 0 : wordOf[min(max(origin.distance(to: idx[g]), 0), wordOf.count - 1)], at: t, fade: fade) }
-                while from < run.count {
-                    let a = alpha(from)
-                    var to = from + 1
-                    while to < run.count && alpha(to) == a { to += 1 }
-                    if a > 0 { ctx.opacity = a; ctx.draw(run[from..<to]) }
-                    from = to
-                }
+            for run in line {            // a run is one word: the tags split them
+                let a = reveal.alpha(run[WordTag.self]?.word ?? 0, at: t, fade: fade)
+                if a > 0 { ctx.opacity = a; ctx.draw(run) }
             }
         }
     }
@@ -97,11 +91,29 @@ struct RevealText: View {
 
     var body: some View {
         if let r = reveal, !(reduce && !r.voiced) {
-            let wordOf = Reveal.words(String(text.characters)), fade = reduce ? 0 : Reveal.fade
+            let tagged = Self.tagged(text), fade = reduce ? 0 : Reveal.fade
             TimelineView(RevealClock(until: Date(timeIntervalSinceReferenceDate: r.end(fade: fade)))) { ctx in
-                Text(text).textRenderer(RevealRenderer(reveal: r, wordOf: wordOf, t: ctx.date.timeIntervalSinceReferenceDate, fade: fade))
+                tagged.textRenderer(RevealRenderer(reveal: r, t: ctx.date.timeIntervalSinceReferenceDate, fade: fade))
             }
         } else { Text(text) }
+    }
+
+    /// `text` with each word's characters tagged with the word (`Reveal.words`), its styles and links kept
+    static func tagged(_ text: AttributedString) -> Text {
+        pieces(text).reduce(Text("")) { $0 + Text(AttributedString(text[$1.range])).customAttribute(WordTag(word: $1.word)) }
+    }
+
+    /// the stretches of `text` that are one word each, in order
+    static func pieces(_ text: AttributedString) -> [(range: Range<AttributedString.Index>, word: Int)] {
+        let wordOf = Reveal.words(String(text.characters))
+        var out: [(range: Range<AttributedString.Index>, word: Int)] = []
+        var lo = text.startIndex, i = text.startIndex, k = 0
+        while i < text.endIndex {
+            let next = text.characters.index(after: i)
+            if next == text.endIndex || wordOf[k + 1] != wordOf[k] { out.append((lo..<next, wordOf[k])); lo = next }
+            i = next; k += 1
+        }
+        return out
     }
 }
 
