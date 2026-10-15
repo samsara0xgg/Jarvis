@@ -2698,6 +2698,13 @@ class _SegmentSpeaker:
         self.voice += safe
         self._assemble(safe)
 
+    def end_request(self) -> None:
+        """A request that called tools has written all it will: its held sentence goes out."""
+        if not self.sealed and self._assembler.blocked_reason is None:
+            for candidate in self._assembler.flush():
+                if not self._admit(candidate):
+                    return
+
     def finish(self) -> EnvelopeTail:
         """Flush the held tail and the last fragment; return the envelope's rest."""
         if self._json is not None and self._json.complete and not self._json.has_spoken:
@@ -3147,6 +3154,8 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
             reply = _stream_spoken_request(ctx, route, speaker, messages, tools, scratch)
         line = reply.text.strip() or line
         if reply.tool_calls:
+            # The line before a call is on screen while the call runs, not when the answer starts.
+            speaker.end_request()
             message = _assistant_message_for(reply)
             if reply.text.strip():
                 message["phase"] = "commentary"

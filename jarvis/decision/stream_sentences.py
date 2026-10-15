@@ -212,6 +212,12 @@ class SemanticAssembler:
             return ()
         return tuple(self._drain(final=True))
 
+    def flush(self) -> tuple[SemanticCandidate, ...]:
+        """Release what the lookahead holds, without closing: the text so far will not continue."""
+        if self._closed or self._blocked_reason is not None:
+            return ()
+        return tuple(self._drain(final=True))
+
     def _next(self, *, final: bool) -> tuple[int, Literal["sentence", "subclause", "final"]] | None:
         protected = _protected_dots(self._buffer)
         clauses: list[int] = []

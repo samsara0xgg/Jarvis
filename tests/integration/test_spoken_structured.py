@@ -446,6 +446,23 @@ def test_a_request_after_a_call_starts_a_new_paragraph(
     assert _payloads(runtime.conn, "surface.response_emitted")[-1]["text"] == expected
 
 
+def test_the_line_before_a_call_goes_out_before_the_call_runs(tmp_path: Path) -> None:
+    """Its last mark ends the request: no next character comes to release it, so it is let go."""
+    line = "我来查一下你记过什么。"
+    outputs = [[("final_answer", line), ("call", "kept")], [("final_answer", "还没有。")]]
+    with _Peer(outputs) as peer:
+        runtime = _preset_runtime(tmp_path, peer.url, spoken_structured=False)
+        _drive(runtime, _spoken(runtime.conn, "turn-early", "我记过什么"))
+    order = [
+        (kind, json.loads(payload).get("text", ""))
+        for kind, payload in runtime.conn.execute(
+            "SELECT type, payload_json FROM events ORDER BY id",
+        )
+        if kind == "surface.response_chunk" or kind.startswith("action.")
+    ]
+    assert order[0] == ("surface.response_chunk", line), order
+
+
 @pytest.mark.parametrize("spoken_structured", [False, True])
 def test_the_prefix_warm_gets_the_text_format_the_turn_sent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, spoken_structured: bool,
