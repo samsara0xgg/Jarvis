@@ -43,7 +43,7 @@ final class TurnStatusTests: XCTestCase {
         XCTAssertEqual(TypedSend.of(LinkError.noAttachments), .useSubmit)
         XCTAssertEqual(TypedSend.of(LinkError.host("say's attachments are the ids of files")), .useSubmit, "an older brain: the other route")
         XCTAssertEqual(TypedSend.of(LinkError.notConnected), .useSubmit)
-        XCTAssertEqual(TypedSend.of(LinkError.timeout), .refused("Jarvis 没有回应"))
+        XCTAssertEqual(TypedSend.of(LinkError.timeout), .useSubmit, "no answer: the words may be there, so the other route goes under the same id")
     }
 
     func testTheConversationBringsTheStepsOfAnAnswerAndNothingWhenNoToolRan() throws {
@@ -286,7 +286,7 @@ final class TurnStatusTests: XCTestCase {
         XCTAssertEqual(board.turn?.turn, "T9")
     }
 
-    @MainActor func testASayThatGetsNoAnswerIsSentOnceMoreWithTheSameIdAndThenGivenUp() async {
+    @MainActor func testASayThatGetsNoAnswerIsSentOnceMoreWithTheSameIdAndThenHandedToTheOtherRoute() async {
         let (link, fake, board) = line([.failure(.timeout), .success(("T9", "turn", nil))])
         let r = await link.sendTyped(utterance: "u1", text: "hi", attachments: [], about: nil)
         XCTAssertEqual(r, .taken(turn: "T9", record: nil))
@@ -294,7 +294,7 @@ final class TurnStatusTests: XCTestCase {
         XCTAssertEqual(board.turn?.utterance, "u1")
         let (link2, fake2, _) = line([.failure(.timeout), .failure(.timeout), .success(("T9", "turn", nil))])
         let r2 = await link2.sendTyped(utterance: "u1", text: "hi", attachments: [], about: nil)
-        XCTAssertEqual(r2, .refused("Jarvis 没有回应"))
+        XCTAssertEqual(r2, .useSubmit, "then the other route, which dedupes by the same id")
         XCTAssertEqual(fake2.says.count, 2, "once more, not forever")
     }
 

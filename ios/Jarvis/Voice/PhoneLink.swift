@@ -17,8 +17,8 @@ enum TypedSend: Equatable {
     static func of(_ error: Error) -> TypedSend {
         switch error as? LinkError {
         case .refused(let m): return .refused(m)
-        case .noAttachments, .host, .notConnected, .unpaired: return .useSubmit
-        case .timeout, nil: return .refused(LinkError.timeout.errorDescription ?? "Jarvis 没有回应")
+        case .noAttachments, .host, .notConnected, .unpaired, .timeout: return .useSubmit          // no answer is not a refusal: the words may be there, and the other route carries the same id
+        case nil: return .refused(LinkError.timeout.errorDescription ?? "Jarvis 没有回应")
         }
     }
 }
@@ -126,14 +126,15 @@ final class PhoneLink {
     }
 
     /// Typed words and their files over the line, if it is there (or comes within `typedWait`): the host answers `said` at once. A say that gets no answer is sent
-    /// once more (the host knows it by its id and answers the same turn); an `error` about the fields means an older brain.
+    /// once more (the host knows it by its id and answers the same turn), and after the second try the words go by POST /inherent/submit under the same id (ADR 0262);
+    /// an `error` about the fields means an older brain.
     func sendTyped(utterance: String, text: String, attachments: [String], about: [String: Any]?) async -> TypedSend {
         guard endpoint() != nil else { return .useSubmit }
         ensure()
         let until = Date().timeIntervalSince1970 + Self.typedWait
         while !ready, Date().timeIntervalSince1970 < until { try? await Task.sleep(nanoseconds: 50_000_000) }
         guard ready else { return .useSubmit }
-        var last: TypedSend = .refused("Jarvis 没有回应")
+        var last: TypedSend = .useSubmit
         for timeout in [6.0, 10.0] {
             do {
                 let r = try await say(utteranceId: utterance, text: text, language: nil, confidence: nil, spoken: false, overHer: false, conversation: false,

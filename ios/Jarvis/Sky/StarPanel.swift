@@ -72,9 +72,24 @@ struct TalkRowView: View, Equatable {
                     .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.06), lineWidth: 0.5))
                     .overlay(alignment: .topLeading) { ReactionBadges(reactions: row.reactions, his: true) }
                     .frame(maxWidth: 300, alignment: .trailing)
+                    .opacity(row.send == .sending ? 0.55 : 1)
             }
+            if row.send == .failed { notSent }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    /// his message did not go out: it says so under the bubble, and the button sends that same message again (under the id it first had)
+    private var notSent: some View {
+        Button(action: retry) {
+            HStack(spacing: 5) {
+                Image(systemName: "exclamationmark.circle.fill")
+                Text("没发出去，点重试")
+            }
+            .font(.system(size: 13)).foregroundStyle(amber).frame(minHeight: 32).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("没发出去，点重试")
     }
 
     @ViewBuilder private var her: some View {
@@ -443,7 +458,7 @@ struct TalkPanel: View {
                             ForEach(day.rows) { r in
                                 VStack(alignment: .leading, spacing: 6) {
                                     if let s = r.stamp { Text(s).font(AT.mono(11)).foregroundStyle(muted).frame(maxWidth: .infinity, alignment: r.his ? .trailing : .leading) }
-                                    TalkRowView(row: r, stepsOpen: ui.stepsOpen.contains(r.id), dropAbout: { engine.dropAbout() }, toggleSteps: { engine.toggleSteps(r.id) }, retry: { engine.sendAgain() }).equatable()
+                                    TalkRowView(row: r, stepsOpen: ui.stepsOpen.contains(r.id), dropAbout: { engine.dropAbout() }, toggleSteps: { engine.toggleSteps(r.id) }, retry: { engine.sendAgain(row: r.id) }).equatable()
                                 }
                                 .opacity((shown[r.id] ?? 0) + (1 - (shown[r.id] ?? 0)) * open)
                                 .id(r.id)

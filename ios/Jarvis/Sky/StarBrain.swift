@@ -3,13 +3,25 @@ import UIKit
 // What he types and attaches, sent to the brain while the phone is paired (Brain/BrainTalk), and her answer as it lands in the conversation.
 // The prototype's canned replies stay for the unpaired phone.
 
-/// A typed turn as it went out, kept once the brain has taken it: a failed one is sent again with the same words and the files already up.
 /// The rows a typed turn's words stream into, before the conversation has them (a lead-in line, then the answer).
 struct TypedRows { var lead: Int?, answer: Int? }
 
+/// A typed message as it went out: a failed one is sent again with the same words and the files already up. `utterance` is the message's id, made once: every
+/// send of it (the line, the HTTP route, a second try) carries it, and the brain writes one turn for it. `taken`: the brain has the message; an answer that failed
+/// after that is asked again as a new message, not as this one.
 struct SentTurn {
     let words: String, shown: String, ids: [String], pics: [SentItem], about: About?
-    let his: Int                // the live row of his line; it and everything after it go when the turn is sent again
+    let his: Int                // the live row of his line; when a taken one is sent again it and everything after it go
+    let utterance: String
+    var taken = true
+}
+
+/// How the words of a message ended: the brain `taken` them; `refused` them for a reason that sending again does not change; or they are `lost`, and the brain may or may not have them
+/// (a send that got no answer): the message stays on screen, not sent, and goes again under its id.
+enum Delivery: Equatable {
+    case taken(record: String?)
+    case refused(String)
+    case lost(String)
 }
 
 extension StarEngine {
@@ -19,11 +31,12 @@ extension StarEngine {
     func trouble(_ text: String) { note(text); Haptic.notify(.warning) }
     func clearNote() { brainNote = nil; brainNoteUntil = 0 }
 
-    /// His words and everything attached go to the brain: his line shows at once, and under it hers, the typing dots (the board's steps then say what she is doing).
-    /// Each file goes up first, then the words with their ids over the live line (PhoneLink); a brain that cannot take them there gets POST /inherent/submit.
-    /// Anything that goes wrong takes his line back, says why on the status line and leaves the words and the files where they were, so he can take the refused
-    /// one off and send again. Once the brain has taken the turn, her answer is waited for.
-    /// `again`: a failed turn sent as it was (its files are up already; the composer is not read).
+    /// His words and everything attached go to the brain: the field empties at the tap, his line shows at once (dimmed while it is on its way), and under it hers, the typing dots
+    /// (the board's steps then say what she is doing). Each file goes up first, then the words with the message's id over the live line (PhoneLink); a brain that cannot take them
+    /// there gets POST /inherent/submit with the same id. The id is made once per message, so however many times the network makes the send happen, the brain has one turn of it.
+    /// A refusal takes his line back, says why on the status line and leaves the words and the files where they were, so he can take the refused one off and send again. A send that
+    /// got no answer is not taken back (the brain may have it): the line stays with 没发出去, 点重试, and goes again under the same id. Once the brain has taken the turn, her answer is waited for.
+    /// `again`: a message sent as it was (its files are up already; the composer is not read): one not sent goes under its first id, a taken one whose answer failed is a new message.
     func sendToBrain(_ words: String, again: SentTurn? = nil) {
         let text = words.trimmingCharacters(in: .whitespacesAndNewlines), items = again == nil ? ui.attach.items : []
         if (text.isEmpty && items.isEmpty && again == nil) || sendingToBrain { return }
@@ -32,30 +45,37 @@ extension StarEngine {
         if again == nil { captureAbout() }
         let about = again.map(\.about) ?? ui.about
         note("正在发给她…", for: 120_000)
-        let shown = again?.shown ?? text, pics = again?.pics ?? SentPics.items(items), utterance = UUID().uuidString
+        let shown = again?.shown ?? text, pics = again?.pics ?? SentPics.items(items)
+        let utterance = again.flatMap { $0.taken ? nil : $0.utterance } ?? UUID().uuidString
+        if again == nil, ui.text.trimmingCharacters(in: .whitespacesAndNewlines) == text { ui.text = "" }       // his words are the message now: the field is empty at the tap
         if talk != nil { interrupt() }
         run { ok in
-            // after the interrupt's own end of the talk (queued before this): his line, and the field empty for the next one
-            // a turn that failed leaves its rows (all of them when it is sent again) before the new ones
-            let from = again?.his ?? .max
-            self.ui.liveTurns.removeAll { $0.failed || $0.id >= from }
+            // after the interrupt's own end of the talk (queued before this): his line
+            // a turn that failed leaves its rows (all of them when it is sent again) before the new ones; a message not sent keeps its row, and the ones after it
+            let reuse = again.flatMap { $0.taken ? nil : $0.his }, from = again?.his ?? .max
+            if let reuse { self.unsent[reuse] = nil }
+            self.ui.liveTurns.removeAll { $0.failed || (reuse == nil && $0.id >= from) }
             // The talk's base is the newest row before his line. `beginTalk` would ask for it by itself, and that answer can come after the brain has stored his
             // line (a slow link): his line would then be listed twice. The one asked below, before the words go, is used instead.
             let fresh = !self.ui.talking, mine = self.talkId + 1
             self.beginTalk(base: Conversation.shared.rows.last?.seq ?? 0)
             self.talk = "listen"
-            let his = self.addTurn(his: true, shown, pics: pics)
+            let his = reuse.flatMap { r in self.ui.liveTurns.contains { $0.id == r } ? r : nil } ?? self.addTurn(his: true, shown, pics: pics)
+            self.markSend(his, .sending)
             var record: String?                 // the conversation record of his line, which the host's `said` names (ADR 0256)
             StatusBoard.shared.begin(utterance: utterance)
             self.showStatus()
-            if self.ui.text == words { self.ui.text = "" }
-            @MainActor func fail(_ m: String) {
+            @MainActor func settle() {
                 self.sendingToBrain = false
-                self.ui.liveTurns.removeAll { $0.id == his }
                 self.dropStatus()
                 StatusBoard.shared.end()
-                if self.ui.text.isEmpty { self.ui.text = words }
                 if self.talk == "listen" { self.talk = nil; self.lingerFrom(nowMs()) }
+            }
+            @MainActor func fail(_ m: String) {
+                self.ui.liveTurns.removeAll { $0.id == his }
+                self.unsent[his] = nil
+                settle()
+                if self.ui.text.isEmpty { self.ui.text = words }
                 self.trouble(m)
             }
             // her answer is the first row of hers past the newest one now: asked while the files go up
@@ -73,18 +93,6 @@ extension StarEngine {
                 seq = await latest
                 if fresh, let seq, self.talkId == mine { self.talkBase = max(self.talkBase, seq) }
                 StallLog.mark("send: latest seq")
-                switch await PhoneLink.shared.sendTyped(utterance: utterance, text: text, attachments: ids, about: about?.json) {
-                case .taken(_, let id):
-                    record = id
-                    if let id, let i = self.ui.liveTurns.firstIndex(where: { $0.id == his }) { self.ui.liveTurns[i].recordId = id }
-                case .refused(let m): return fail(m)
-                case .useSubmit:
-                    let status = try await BrainLink.shared.call { try await BrainClient.submit(text, attachments: ids, about: about, bases: $0, token: $1) }
-                    guard status == 200 else {
-                        // the host takes the item whole or refuses the turn: say so, and leave the chip for him to take off
-                        return fail(status == 404 ? "文件过期了，再发一次" : status == 422 && about != nil ? "她没接住上面的那一项，去掉它再发" : AttachUpload.refusal(status: status, name: ""))
-                    }
-                }
             } catch let e as AttachUpload.Refused {
                 return fail(e.message)
             } catch let e as BrainError {
@@ -92,14 +100,57 @@ extension StarEngine {
             } catch {
                 return fail(BrainError.refused.message)
             }
+            let sent = SentTurn(words: text, shown: shown, ids: ids, pics: self.ui.liveTurns.first { $0.id == his }?.pics ?? pics, about: about, his: his, utterance: utterance, taken: false)
+            self.unsent[his] = sent
+            switch await self.deliver(utterance, text, ids, about) {
+            case .taken(let id):
+                record = id
+                if let id, let i = self.ui.liveTurns.firstIndex(where: { $0.id == his }) { self.ui.liveTurns[i].recordId = id }
+            case .refused(let m): return fail(m)
+            case .lost(let m):
+                self.markSend(his, .failed)
+                settle()
+                return self.trouble(m)
+            }
             StallLog.mark("send: taken")
-            self.sentTurn = SentTurn(words: text, shown: shown, ids: ids, pics: self.ui.liveTurns.first { $0.id == his }?.pics ?? pics, about: about, his: his)
+            self.unsent[his] = nil
+            self.markSend(his, .sent)
+            var done = sent
+            done.taken = true
+            self.sentTurn = done
             for it in self.ui.attach.take() { AttachTemp.discard(it.url) }
             self.sendingToBrain = false
             guard let seq else { self.talk = nil; self.lingerFrom(nowMs()); return self.note("发给她了", for: 4000) }       // no conversation to read her answer from
             self.clearNote()
             try await self.brainTalk(ok, after: seq, utterance: utterance, record: record)
         }
+    }
+
+    /// The words out: over the live line, or when it cannot take them (no socket, an older brain, no answer after the second try) POST /inherent/submit. Both carry the
+    /// message's id, so a send that got through unseen and is made again is the same turn.
+    @MainActor static func deliverToBrain(utterance: String, text: String, ids: [String], about: About?) async -> Delivery {
+        switch await PhoneLink.shared.sendTyped(utterance: utterance, text: text, attachments: ids, about: about?.json) {
+        case .taken(_, let id): return .taken(record: id)
+        case .refused(let m): return .refused(m)
+        case .useSubmit:
+            do {
+                let status = try await BrainLink.shared.call { try await BrainClient.submit(text, attachments: ids, about: about, utterance: utterance, bases: $0, token: $1) }
+                // the host takes the item whole or refuses the turn: say so, and leave the chip for him to take off
+                guard status == 200 else {
+                    return .refused(status == 404 ? "文件过期了，再发一次" : status == 422 && about != nil ? "她没接住上面的那一项，去掉它再发" : AttachUpload.refusal(status: status, name: ""))
+                }
+                return .taken(record: nil)
+            } catch let e as BrainError {
+                return .lost(e.message)
+            } catch {
+                return .lost(BrainError.refused.message)
+            }
+        }
+    }
+
+    /// his line's state: on its way, not sent, or with the brain
+    func markSend(_ row: Int, _ state: SendState) {
+        if let i = ui.liveTurns.firstIndex(where: { $0.id == row }), ui.liveTurns[i].send != state { ui.liveTurns[i].send = state }
     }
 
     /// A picture of his is up: this phone keeps the original it picked or took under the brain's id (off the main thread, before the temp copy goes), and his line in the talk
@@ -240,8 +291,9 @@ extension StarEngine {
         if let i = ui.liveTurns.lastIndex(where: { $0.id == id }) { ui.liveTurns[i].failed = true }
     }
 
-    /// 重试: the failed turn goes again with its words and files.
-    func sendAgain() {
+    /// 重试: the message under the button (`row`) goes again under its first id if it was not sent, else the failed turn goes again with its words and files as a new message.
+    func sendAgain(row: String? = nil) {
+        if let row, let n = Int(row.dropFirst()), let t = unsent[n] { return sendToBrain(t.words, again: t) }
         guard let t = sentTurn else { return }
         sendToBrain(t.words, again: t)
     }

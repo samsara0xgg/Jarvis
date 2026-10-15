@@ -93,7 +93,7 @@ extension StarEngine {
 
     /// every frame: a talk nobody touches goes
     func stepTalk(_ now: Double) {
-        if ui.talking && talk == nil && voiceState == .idle && !lingerHold && now > lingerUntil { ui.talking = false; rowKey = ""; setAbout(nil); aboutDropped = nil }
+        if ui.talking && talk == nil && voiceState == .idle && !lingerHold && unsent.isEmpty && now > lingerUntil { ui.talking = false; rowKey = ""; setAbout(nil); aboutDropped = nil }
         put(\.topTime, clock(F))
         syncStatus()
         for e in MainActor.assumeIsolated({ PhoneRows.take() }) { phoneEvent(e) }
@@ -297,7 +297,7 @@ extension StarEngine {
 
 #if DEBUG
 extension StarEngine {
-    /// `-scene open|blocks|failed|pictures|typing|typingNote|typingWaiting|typingChipOpen|rest` (and the `steps…` ones of Sky/StarStatus.swift): the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
+    /// `-scene open|blocks|failed|pictures|typing|typingSending|typingFailed|typingNote|typingWaiting|typingChipOpen|rest` (and the `steps…` ones of Sky/StarStatus.swift): the talk panel's states, for screenshots (listening, speaking and speakingLong are `-voiceScene`s)
     func runTalkScene(_ name: String) {
         switch name {
         case "rest": setLevel(0)
@@ -330,6 +330,14 @@ extension StarEngine {
             beginTalk(); lingerHold = true
             addTurn(his: true, "帮我订周五晚上的位子")
             showFailed()
+        case "typingSending", "typingFailed":
+            // his message just sent from the composer, which is empty: on its way (dimmed, her typing line under it), or not sent, with 点重试 under it
+            setLevel(0)
+            debugConversation()
+            beginTalk(); lingerHold = true
+            let his = addTurn(his: true, "司机不知道咋的下车了逆天")
+            markSend(his, name == "typingSending" ? .sending : .failed)
+            if name == "typingSending" { showStatus() } else { trouble("连不上 Jarvis") }
         case "reveal": runRevealScene()
         case "typedStream": runTypedStreamScene()
         case "steps", "stepsDots", "stepsStep", "stepsDone", "stepsOpen": runStepsScene(name)

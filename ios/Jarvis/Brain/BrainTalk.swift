@@ -84,16 +84,18 @@ extension BrainClient {
         return (id, 200)
     }
 
-    /// The body of `POST /inherent/submit`: the words, the files, and the item he has open (ADR 0214) while its chip shows.
-    static func submitBody(_ text: String, attachments: [String], about: About?) throws -> Data {
+    /// The body of `POST /inherent/submit`: the words, the files, the item he has open (ADR 0214) while its chip shows, and the message's id (ADR 0262), the one its say carries,
+    /// so the brain makes one turn of it however many times it arrives.
+    static func submitBody(_ text: String, attachments: [String], about: About?, utterance: String? = nil) throws -> Data {
         var o: [String: Any] = ["text": text, "attachments": attachments]
         if let about { o["about"] = about.json }
+        if let utterance { o["utterance_id"] = utterance }
         return try JSONSerialization.data(withJSONObject: o)
     }
 
     /// The words of a turn and the ids of the files that go with them (the text may be empty then). 200 it was taken; 404 a file is gone, 422 over the turn's limits or the `about` refused, 501 no files here.
-    static func submit(_ text: String, attachments: [String], about: About? = nil, bases: [URL], token: String) async throws -> Int {
-        let body = try submitBody(text, attachments: attachments, about: about)
+    static func submit(_ text: String, attachments: [String], about: About? = nil, utterance: String? = nil, bases: [URL], token: String) async throws -> Int {
+        let body = try submitBody(text, attachments: attachments, about: about, utterance: utterance)
         return try await send("POST", "/inherent/submit", body: body, also: [404, 422, 501], bases: bases, token: token, unauthorized: .revoked).status
     }
 

@@ -19,6 +19,7 @@ struct TalkRow: Identifiable, Equatable {
     var status: StatusLine?             // not words yet: the typing dots or the step she is on, in her place
     var steps: StepsInfo?               // what she did to answer: the small line under her words
     var failed = false                  // her turn failed: `text` says so, and a button sends the same words again
+    var send = SendState.sent           // his message: on its way, or not sent, with a button that sends it again under the same id
     var recordId: String?               // the conversation record of these words, which a reaction names; a live row has it once the brain has told (ADR 0256)
     var reactions = RowReactions()      // his and hers on this message, with the frames since the conversation was read
 }
@@ -100,7 +101,7 @@ enum TalkStream {
         return reacted(group(rows, days, cal: cal, now: now), overlay)
     }
     static func row(_ t: LiveTurn) -> TalkRow {
-        TalkRow(id: "l\(t.id)", his: t.his, text: t.text, reveal: t.reveal, pics: t.pics, leadIn: t.leadIn, growing: t.growing, at: t.at.timeIntervalSince1970, current: true, card: t.card, status: t.status, steps: t.steps, failed: t.failed, recordId: t.recordId)
+        TalkRow(id: "l\(t.id)", his: t.his, text: t.text, reveal: t.reveal, pics: t.pics, leadIn: t.leadIn, growing: t.growing, at: t.at.timeIntervalSince1970, current: true, card: t.card, status: t.status, steps: t.steps, failed: t.failed, send: t.send, recordId: t.recordId)
     }
 
     /// `rows` after `days`: each row joins the last day when it is on that day, and the time goes above a row after a long gap or a new day

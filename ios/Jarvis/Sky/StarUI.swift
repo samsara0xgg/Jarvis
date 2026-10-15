@@ -45,6 +45,9 @@ enum SentPics {
     }
 }
 
+/// Where his typed message stands: with the brain, on its way (dimmed), or not sent (点重试).
+enum SendState: Equatable { case sent, sending, failed }
+
 /// One row of the talk on show under the dial: his words or hers, as they are said. `reveal` lights her words one at a time while they are being said (nil: all lit).
 struct LiveTurn: Identifiable, Equatable {
     let id: Int
@@ -58,6 +61,7 @@ struct LiveTurn: Identifiable, Equatable {
     var status: StatusLine?             // not words yet: she is typing, or working on a step (Brain/TurnStatus); her first words take this row
     var steps: StepsInfo?               // what she did to answer, for the small line under it
     var failed = false                  // the turn failed: "没答出来" in her place, and a button to send the same words again
+    var send = SendState.sent           // his message: on its way, or "没发出去" with 点重试 under it
     var recordId: String?               // the conversation record of these words, once the brain has said which (ADR 0256): a row without one cannot be reacted to
     var at = Date()
 }
