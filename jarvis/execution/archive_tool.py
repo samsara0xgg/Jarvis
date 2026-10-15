@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta
@@ -14,6 +15,7 @@ from jarvis.state import imports
 from jarvis.state.daily_contract import DailyError, encoded
 from jarvis.state.daily_records import rank_by_words, read_connection
 from jarvis.state.import_parsers import money
+from jarvis.state.imports import mask_secrets
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -25,7 +27,8 @@ _DESCRIPTION: Final = (
     "China) and his past conversations with Claude. Not for what he said to you (conversation) "
     "or what he did on his devices (my_day). query finds the closest entries by meaning and by "
     "words, in either language; date and to limit the span; source limits to one app. Returns up "
-    "to 8 entries per page, each with its id, local time, source and text, and for payments the "
+    "to 8 entries per page, each with its id, time (in the same time zone as the rest of your "
+    "context), source and text, and for payments the "
     "count and the totals spent and received over every match, not just the page. open: an id "
     "from a result; for a Claude message, the messages around it."
 )
@@ -89,6 +92,12 @@ def _totals(rows: list[imports.Entry]) -> dict[str, Any] | None:
             if len(moved) < len(pays) else "all counted"
         ),
     }
+
+
+def _masked_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """The entry's fields with any secret-looking string masked (a second guard)."""
+    masked: dict[str, Any] = json.loads(mask_secrets(json.dumps(fields, ensure_ascii=False)))
+    return masked
 
 
 class _Archive:
@@ -193,7 +202,7 @@ class _Archive:
                     "id": row.id,
                     "when": speakable.when(self._at(row), now, self._zone),
                     "source": row.source,
-                    "text": speakable.cut(" ".join(row.text.split()), _EXCERPT_CHARS),
+                    "text": speakable.cut(" ".join(mask_secrets(row.text).split()), _EXCERPT_CHARS),
                 }
                 for row in shown
             ],
@@ -217,7 +226,7 @@ class _Archive:
             raise ToolError(msg, code="not_found")
 
         def turn(one: imports.Entry, limit: int) -> dict[str, Any]:
-            shown = one.text.strip()
+            shown = mask_secrets(one.text).strip()
             if len(shown) > limit:
                 shown = f"{shown[:limit].rstrip()}… ({len(shown) - limit} more characters)"
             return {
@@ -231,7 +240,7 @@ class _Archive:
             return {
                 "summary": f"{row.source} {row.kind}, "
                 f"{speakable.when(self._at(row), now, self._zone)}.",
-                "entry": {**turn(row, _FOCUS_CHARS), "fields": row.fields},
+                "entry": {**turn(row, _FOCUS_CHARS), "fields": _masked_fields(row.fields)},
             }
         before, after = imports.around(conn, row, _AROUND)
         near = [turn(one, _NEAR_CHARS) for one in (*before, *after)]

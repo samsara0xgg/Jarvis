@@ -23,10 +23,11 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import uuid
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Final
 from xml.etree import ElementTree as ET
 
@@ -42,6 +43,48 @@ LOGGER = logging.getLogger(__name__)
 
 IMPORTS_DIRNAME: Final = "imports"
 """Under the runtime root."""
+
+
+MASK: Final = "[secret removed]"
+_SECRET_SHAPES: Final = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)"
+    r"|\bsk-[A-Za-z0-9_-]{8,}"
+    r"|\bAKIA[0-9A-Z]{16}\b"
+    r"|\bgh[pousr]_[A-Za-z0-9]{20,}"
+    r"|\bgithub_pat_[A-Za-z0-9_]{20,}"
+    r"|\bxox[abp]-[A-Za-z0-9-]{10,}"
+    r"|\bBearer\s+[A-Za-z0-9._~+/=-]{16,}",
+    re.DOTALL,
+)
+_NAMED_TOKEN: Final = re.compile(
+    r"(?i)(\b(?:api[_-]?key|key|token|secret|password)\b[\"']?\s*[:=]?\s*[\"']?)"
+    r"([A-Za-z0-9_+/=-]{32,})",
+)
+
+
+def mask_secrets(text: str) -> str:
+    """``text`` with secret-looking strings replaced by ``[secret removed]``.
+
+    Known key shapes, PEM private keys, and a 32+ character mixed letter-and-digit token that
+    follows a word like key, token, secret or password. The raw file is never masked.
+    """
+    def named(found: re.Match[str]) -> str:
+        token = found.group(2)
+        if token.isalpha() or token.isdigit():
+            return found.group(0)  # a long plain word or number is not a token
+        return found.group(1) + MASK
+
+    return _NAMED_TOKEN.sub(named, _SECRET_SHAPES.sub(MASK, text))
+
+
+def _masked(value: object) -> Any:  # noqa: ANN401 - mirrors the JSON shape it is given
+    if isinstance(value, str):
+        return mask_secrets(value)
+    if isinstance(value, list):
+        return [_masked(one) for one in value]
+    if isinstance(value, dict):
+        return {key: _masked(one) for key, one in value.items()}
+    return value
 
 
 @dataclass(frozen=True)
@@ -102,6 +145,7 @@ def add_entries(
 ) -> None:
     """Add what is not held; count what is, and what is held but reads differently."""
     for one in parsed:
+        one = replace(one, text=mask_secrets(one.text), fields=_masked(one.fields))  # noqa: PLW2901
         row = (
             entry_id(one.source, one.key), one.source, one.key, file_digest, one.pos, one.at_ms,
             one.zone, one.kind, one.text,

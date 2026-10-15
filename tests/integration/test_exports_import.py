@@ -262,3 +262,65 @@ def test_the_imports_directory_is_outside_sweep_clear_and_export(tmp_path: Path)
     assert not any(d == kept or kept in d.parents or d in kept.parents for d in media)
     assert len(list((kept / "wechat_pay").iterdir())) == 1
     assert json.loads(json.dumps(sorted(imports.SOURCES))) == ["alipay", "claude", "wechat_pay"]
+
+
+FAKE_KEYS = [
+    "sk-test-" + "x" * 30,
+    "sk-ant-api03-" + "y" * 30,
+    "AKIA" + "Z" * 16,
+    "ghp_" + "a1" * 15,
+    "github_pat_" + "b2" * 15,
+    "xoxb-" + "1234567890-abcdef",
+    "Bearer " + "q" * 24,
+]
+
+
+def test_a_pasted_secret_never_reaches_an_entry_or_the_tool_but_stays_in_the_raw_file(
+    tmp_path: Path,
+) -> None:
+    """Masked in text and fields before storing, and again on the tool's way out."""
+    pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIfake\nmorefake\n-----END RSA PRIVATE KEY-----"
+    named = "api key: " + "A1b2" * 10
+    text = " | ".join([*FAKE_KEYS, pem, named, "plain " + "word" * 12])
+    export = tmp_path / "export"
+    export.mkdir()
+    chat = {
+        "uuid": "c1", "name": "keys", "created_at": "2026-10-10T18:00:00Z",
+        "chat_messages": [{
+            "uuid": "m1", "text": text, "sender": "human", "created_at": "2026-10-10T18:00:00Z",
+        }],
+    }
+    raw = json.dumps([chat]).encode()
+    (export / "conversations.json").write_bytes(raw)
+    _import(tmp_path, "claude", export)
+
+    (held,) = _held(tmp_path).values()
+    for secret in [*FAKE_KEYS, "MIIfake", "A1b2" * 10]:
+        assert secret not in held.text
+    assert held.text.count("[secret removed]") == len(FAKE_KEYS) + 2
+    assert "plain " + "word" * 12 in held.text  # a long plain word is not a token
+    (kept,) = (tmp_path / "imports" / "claude").iterdir()
+    assert kept.read_bytes() == raw
+    # second guard: an entry written before the mask existed is still masked on the way out
+    with closing(open_memory_db(tmp_path / "memory.db")) as conn:
+        conn.execute("UPDATE import_entries SET text = ?", ("leaked " + FAKE_KEYS[0],))
+        conn.commit()
+    tool = _tool(tmp_path)
+    shown = _call(tool, source="claude")
+    assert FAKE_KEYS[0] not in json.dumps(shown)
+    assert "leaked [secret removed]" in json.dumps(shown)
+    assert FAKE_KEYS[0] not in json.dumps(_call(tool, open=shown["entries"][0]["id"]))
+
+
+def test_the_tool_shows_a_china_time_in_his_zone_not_as_written(tmp_path: Path) -> None:
+    """An Alipay row at 07:41:37 Asia/Shanghai reads 4:41 pm on Oct 11 in Vancouver."""
+    csv = tmp_path / "alipay.csv"
+    csv.write_bytes(_alipay().replace(
+        "2026-10-12 12:30:05".encode("gb18030"), "2026-10-12 07:41:37".encode("gb18030"),
+    ))
+    _import(tmp_path, "alipay", csv)
+
+    shown = _call(_tool(tmp_path), query="bakery")["entries"][0]
+    assert shown["when"] == "Sun Oct 11, 4:41 pm"
+    assert "description" not in shown
+    assert "time (in the same time zone as the rest of your context)" in _tool(tmp_path).description
