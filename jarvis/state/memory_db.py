@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from jarvis.shared import lang
+from jarvis.shared.html_tags import strip_html
 from jarvis.state import NewerDataError, core_memory
 
 if TYPE_CHECKING:
@@ -753,9 +754,9 @@ def _records_after(conn: sqlite3.Connection, anchor: int) -> list[Record]:
 
 
 def _plain(text: str) -> str:
-    """A record's text without the retired envelope tags or a copied history label."""
+    """A record's text without the retired envelope tags, stray HTML or a copied history label."""
     text = _COPIED_LABEL_RE.sub("", text)
-    return _ENVELOPE_TAG_RE.sub("", text).strip() if "<" in text else text
+    return strip_html(_ENVELOPE_TAG_RE.sub("", text)).strip() if "<" in text else text
 
 
 def _now_line(moment: datetime, last_ts: str | None) -> str:

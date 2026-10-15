@@ -122,6 +122,7 @@ from jarvis.shared import (
     llm_io_log,
 )
 from jarvis.shared.about import clean_about, prompt_title
+from jarvis.shared.html_tags import HtmlTagFilter, strip_html
 from jarvis.shared.lang import action, is_filler, letter_to, reply_language, t
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.shared.realtime import AlreadyConsumed, Wave1FeatureFlags, stable_authorization_identity
@@ -825,9 +826,10 @@ _SENT_STATUS_HEADER: Final[str] = (
 _SPOKEN_REPLY_NOTE: Final[str] = (
     "Your reply is spoken aloud as you write it. Start with the answer itself, in plain "
     "spoken sentences in the language of the user's words: by default at most about 60 "
-    "Chinese characters or 40 English words, with no lists, headings, links, code or other "
-    "markup. When the user explicitly asks you to count, read aloud, repeat something "
-    "verbatim, go into detail or speak at a given length, say all of it. When the answer has "
+    "Chinese characters or 40 English words, with no lists, headings, links, code, HTML tags "
+    "such as <br> or other markup. When the user explicitly asks you to count, read aloud, "
+    "repeat something verbatim, go into detail or speak at a given length, say all of it. "
+    "When the answer has "
     "more that belongs on screen (a list, a table, code, links, figures to read), write the "
     "spoken reply inside <voice></voice> and then the full written answer inside "
     "<document></document>. When you need a tool for what the user asked, first say one "
@@ -842,8 +844,9 @@ _SPOKEN_REPLY_NOTE_STRUCTURED: Final[str] = (
     'Your reply is a JSON object with "spoken" and "written"; "spoken" is read aloud as you '
     'write it. Put the answer itself in "spoken", in plain spoken sentences in the language '
     "of the user's words: by default at most two short sentences, with no lists, headings, "
-    "links, code or other markup. When the user explicitly asks you to count, read aloud, "
-    "tell a story, repeat something verbatim, go into detail or speak at a given length, say "
+    "links, code, HTML tags such as <br> or other markup. When the user explicitly asks you "
+    "to count, read aloud, tell a story, repeat something verbatim, go into detail or speak "
+    "at a given length, say "
     'all of it in "spoken". When the user asks what happened or what was talked about in a '
     'period, tell it in "spoken" in up to four sentences, keeping only the main points. What '
     "belongs only on screen (a list, a table, code, links, times, figures to read) goes in "
@@ -2661,6 +2664,7 @@ class _SegmentSpeaker:
         self._splitter = StreamEnvelopeSplitter()
         self._assembler = SemanticAssembler(first_clause_chars=route.first_clause_chars)
         self._citation = ""  # an open citation, held until it closes
+        self._tags = HtmlTagFilter()  # a cut HTML tag, held until it can be told from text
         self._json: SpokenJsonExtractor | None = None  # this request's reply, once it is JSON
         self._raw = ""  # this request's text while it may still be JSON
         self._plain = False  # this request's text is not the schema's JSON
@@ -2719,6 +2723,7 @@ class _SegmentSpeaker:
         self._expose(self._splitter.feed(self._uncited(text)))
 
     def _expose(self, safe: str) -> None:
+        safe = self._tags.feed(safe)
         if self._paragraph and safe.strip():
             # Anthropic labels no phase, so the text before a call and the text after its
             # result would run together ("…日程。明天…", "it.You" even reads as a domain).
@@ -2758,16 +2763,17 @@ class _SegmentSpeaker:
             self._expose(t("voice.code_on_screen"))  # the reply was only code
         tail = self._splitter.finish()
         self._close_json()
-        self.voice += tail.voice_tail
-        self._assemble(tail.voice_tail)
+        voice_tail = self._tags.feed(tail.voice_tail) + self._tags.finish()
+        self.voice += voice_tail
+        self._assemble(voice_tail)
         self._assemble("", final=True)
         if self._written:
             self.written_apart = True
             parts = [*self._written, tail.document] if tail.document else self._written
             return EnvelopeTail(
-                tail.voice_tail, _CITATION_RE.sub("", "\n\n".join(parts)), enveloped=True,
+                voice_tail, strip_html(_CITATION_RE.sub("", "\n\n".join(parts))), enveloped=True,
             )
-        return tail
+        return EnvelopeTail(voice_tail, strip_html(tail.document), tail.enveloped)
 
     def _assemble(self, text: str, *, final: bool = False) -> None:
         if self.sealed or self._assembler.blocked_reason is not None:
@@ -3672,7 +3678,7 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     # answer. The user originally asked..." reached memory.db while voice_text
     # was clean). Text outside the envelope has no channel; drop it before the
     # gate hashes the draft.
-    draft_text = envelope_only(_CITATION_RE.sub("", draft_text))
+    draft_text = strip_html(envelope_only(_CITATION_RE.sub("", draft_text)))
 
     # Attempt 0 — the verdict on the raw LLM draft (or, on the Tier 0
     # path, on the closed template literal — see `gate_text` in the
