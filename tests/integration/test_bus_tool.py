@@ -47,7 +47,8 @@ class Follower:
             "alight_stop": self.stop, "alight_known": self.stop is not None,
             "next_stop": "Cedar Ave", "stops_left": 3 if self.stop else None,
             "minutes_to_alight": 12 if self.stop else None,
-            "eta_ms": _ms(17, 12) if self.stop else None, "stale": False, "live": True,
+            "eta_ms": _ms(17, 12) if self.stop else None, "position_live": True,
+            "arrival_live": True,
             "started_at_ms": _ms(17, 0), "source": "said", "warned": False,
             "credit": "BC Transit",
         }
@@ -191,7 +192,8 @@ STORY: list[Row] = [
         "his stop is named: set, and he is warned before it",
         {"get_off": "Gum"},
         "Set. On the 26 from Alder St; next stop Cedar Ave. He gets off at Gum St:"
-        " 3 stops left, about 5:12 pm (in 12 min). He is warned one stop before it.",
+        " 3 stops left, about 5:12 pm (in 12 min). The bus position and the arrival at his stop"
+        " are live from BC Transit. He is warned one stop before it.",
         ("set", "alight_stop"), "", [("set_stop", ("Gum",))],
     ),
     (

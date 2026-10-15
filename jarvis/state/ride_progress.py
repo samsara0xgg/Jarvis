@@ -4,8 +4,10 @@ Pure functions over what BC Transit's feeds said; nothing here reads the log or 
 The bus is the truth about the ride: the phone's fixes only say whether he is still with it
 (:func:`rides_with`, :func:`apart_from`), and the trip's stop list, the vehicle's position and
 the live prediction give the next stop, the stops left and the arrival at his stop
-(:func:`progress`). Without a live vehicle the same answer comes from the timetable and says
-``stale``.
+(:func:`progress`). Two facts are kept apart: whether the bus's position is live
+(``position_live``) and whether the arrival at his stop is a live prediction (``arrival_live``).
+BC Transit's TripUpdates often lack his stop, so a live position can come with a timetable
+arrival. Without a live vehicle the whole answer comes from the timetable.
 """
 
 from __future__ import annotations
@@ -80,14 +82,18 @@ class Fix:
 
 @dataclass(frozen=True)
 class Progress:
-    """Where the ride is. ``stale``: no live vehicle, so these are timetable times."""
+    """Where the ride is. ``position_live``: a live vehicle gave the place; else the timetable did.
+
+    ``arrival_live``: the feed predicted the arrival at his stop; else it is a timetable estimate.
+    """
 
     next_stop: str | None
     stops_left: int | None
     eta_ms: int | None
     minutes: int | None
     passed: bool
-    stale: bool
+    position_live: bool
+    arrival_live: bool = False
 
 
 def position_at(samples: Sequence[Sample], at_ms: int) -> tuple[float, float] | None:
@@ -184,25 +190,30 @@ def progress(  # noqa: PLR0913 - the trip, his stop, the bus, the prediction and
 ) -> Progress:
     """Next stop, stops left and arrival at his stop; ``vehicle`` None means the timetable.
 
-    ``predicted`` is the live arrival (epoch ms) by stop id. A stop's lateness is carried
-    forward: the next stop's prediction minus its timetable moves the stops after it.
+    ``predicted`` is the live arrival (epoch ms) by stop id, used only with a live vehicle. A
+    stop's lateness is carried forward: the next stop's prediction minus its timetable moves the
+    stops after it.
     """
     nxt = next_index(stops, vehicle, now_ms)
     name = stops[nxt].name if nxt < len(stops) else None
-    stale = vehicle is None
+    live = vehicle is not None
+    predicted = predicted if live else {}
     if alight_id is None:
-        return Progress(name, None, None, None, passed=False, stale=stale)
+        return Progress(name, None, None, None, passed=False, position_live=live)
     found = [i for i, s in enumerate(stops) if s.seq == alight_seq] if alight_seq else []
     found = found or [i for i, s in enumerate(stops) if s.stop_id == alight_id]
     if not found:
-        return Progress(name, None, None, None, passed=False, stale=stale)
+        return Progress(name, None, None, None, passed=False, position_live=live)
     goal = next((i for i in found if i >= nxt), found[-1])
     if goal < nxt:
-        return Progress(name, 0, None, None, passed=True, stale=stale)
+        return Progress(name, 0, None, None, passed=True, position_live=live)
     stop = stops[goal]
     late = 0
     if nxt < len(stops) and stops[nxt].stop_id in predicted:
         late = predicted[stops[nxt].stop_id] - stops[nxt].sched_ms
     eta = predicted.get(stop.stop_id, stop.sched_ms + late)
     minutes = max(0, math.ceil((eta - now_ms) / 60_000))
-    return Progress(name, goal - nxt + 1, eta, minutes, passed=False, stale=stale)
+    return Progress(
+        name, goal - nxt + 1, eta, minutes, passed=False, position_live=live,
+        arrival_live=stop.stop_id in predicted,
+    )

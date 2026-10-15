@@ -205,6 +205,24 @@ def _plan_line(raw: Mapping[str, Any]) -> str:
     return text + (f" {len(options)} options are listed." if len(options) > 1 else "")
 
 
+def sources_said(*, position_live: bool, arrival_live: bool, has_arrival: bool) -> str:
+    """Where the ride's two facts come from, in words: the bus's place and his arrival, ADR 0261."""
+    if not position_live:
+        also = " and when he arrives" if has_arrival else ""
+        return (
+            f"There is no live bus position now: the timetable gives where the bus is{also},"
+            " and may be off."
+        )
+    if not has_arrival:
+        return "The bus position is live from BC Transit."
+    if arrival_live:
+        return "The bus position and the arrival at his stop are live from BC Transit."
+    return (
+        "The bus position is live from BC Transit; the arrival at his stop is a timetable"
+        " estimate and may be off by a few minutes."
+    )
+
+
 def _ride_line(ride: Mapping[str, Any]) -> str:
     """How the ride is going, in words: the bus, the next stop, his stop and when."""
     text = f"On the {ride['route']}"
@@ -221,11 +239,13 @@ def _ride_line(ride: Mapping[str, Any]) -> str:
         text += f" {transit_tool.said_ms(ride['eta_ms'], soon=True)}."
     else:
         text += "."
-    if ride.get("next_stop") is None and ride.get("stale", True):
+    position = bool(ride.get("position_live"))
+    if ride.get("next_stop") is None and not position:
         return text + " There is no bus data for this trip now: say you cannot give times."
-    if ride.get("stale"):
-        text += " No live bus position now: these are timetable times and may be off."
-    return text
+    return text + " " + sources_said(
+        position_live=position, arrival_live=bool(ride.get("arrival_live")),
+        has_arrival=ride.get("eta_ms") is not None,
+    )
 
 
 def _ride_view(summary: str, raw: Mapping[str, Any]) -> dict[str, Any]:

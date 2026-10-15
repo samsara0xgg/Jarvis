@@ -171,6 +171,8 @@ class World:
     buses: list[Bus] = field(default_factory=list)
     vehicle_error: Exception | None = None
     phone_fixes: list[tuple[int, float, float]] = field(default_factory=list)
+    unpredicted: set[str] = field(default_factory=set)
+    """Stop ids the TripUpdates feed leaves out, as BC Transit's often does."""
 
     def __post_init__(self) -> None:
         """Build the daemon's pieces over the scripted feeds."""
@@ -229,6 +231,8 @@ class World:
             update = message.entity.add(id=str(n)).trip_update
             update.trip.trip_id = bus.trip_id
             for i, (stop, *_rest) in enumerate(STOPS):
+                if stop in self.unpredicted:
+                    continue
                 one = update.stop_time_update.add(stop_id=stop, stop_sequence=i + 1)
                 one.arrival.time = (bus.leaves_ms // 1000) + 60 * i + bus.delay_s
         return message.SerializeToString()
@@ -566,7 +570,7 @@ def test_a_late_bus_moves_the_arrival_from_the_trip_updates(world: World) -> Non
     world.run(75, world.with_bus(bus))
     view = world.rides.view()
     assert view is not None
-    assert view["stale"] is False
+    assert (view["position_live"], view["arrival_live"]) == (True, True)
     assert view["eta_ms"] == at("17:10") + 180_000
 
 
@@ -709,6 +713,70 @@ def test_without_a_live_activity_the_warning_is_a_time_sensitive_alert(world: Wo
 # --- the endings ------------------------------------------------------------------------------
 
 
+def test_a_live_bus_with_no_prediction_for_his_stop_is_live_with_a_timetable_arrival(
+    world: World,
+) -> None:
+    """ADR 0261: the bus's place and his arrival are two facts; the warning needs only the first."""
+    world.unpredicted = {"S5"}  # Fir Lane, his stop: the TripUpdates feed leaves it out
+    bus = _board_said(world)
+    world.run(105, world.with_bus(bus))  # 17:08:45, between Dogwood Way and Elm Cres
+    view = world.rides.view()
+    assert view is not None
+    assert (view["position_live"], view["arrival_live"]) == (True, False)
+    assert view["eta_ms"] == at("17:10")  # the timetable's, no lateness known
+    line, said = world.rides.line(), world.tool({})["summary"]
+    assert line is not None
+    for text in (line, said):
+        assert "bus position is live" in text
+        assert "arrival at his stop is a timetable estimate" in text
+    assert world.events("ride.warned") == []
+    world.run(30, world.with_bus(bus))  # 17:09:15, at Elm Cres: one stop left
+    assert len(world.events("ride.warned")) == 1
+
+
+@pytest.mark.parametrize("unpredicted", [frozenset[str](), frozenset({"S5"})])
+def test_a_live_vehicle_is_never_called_missing_by_the_line_or_the_tool(
+    world: World, unpredicted: frozenset[str],
+) -> None:
+    """Every tick, with or without his stop predicted, and right after bus(get_off=...)."""
+    world.unpredicted = set(unpredicted)
+    world.clock_ms = at("17:07")
+    bus = Bus("v1", "T7a", "7", at("17:05"))
+    world.buses = [bus]
+    world.fix(*world.with_bus(bus)(world.clock_ms))
+    assert world.tool({"ride": "start", "route": "7"})["started"]
+    world.rides.defer = lambda _call: None  # the answer comes before the next tick, as it can
+    set_it = world.tool({"get_off": "Fir Lane"})  # answered from the bus's last seen position
+    assert set_it["set"] is True
+    assert "no live bus position" not in set_it["summary"].casefold()
+    for _ in range(8):
+        line, said = world.rides.line(), world.tool({})["summary"]
+        assert line is not None
+        for text in (line, said):
+            assert "no live bus position" not in text.casefold()
+            assert "live from BC Transit" in text
+        world.run(15, world.with_bus(bus))
+
+
+def test_no_live_vehicle_makes_both_facts_the_timetable_and_warns_on_nothing(
+    world: World,
+) -> None:
+    """The place and the arrival both say timetable; a timetable alone does not buzz him."""
+    bus = _board_said(world)
+    world.run(15, world.with_bus(bus))
+    world.vehicle_error = OSError("feed down")
+    world.run(150, world.with_bus(bus))  # 17:09:45, by the clock one stop before his
+    view = world.rides.view()
+    assert view is not None
+    assert (view["position_live"], view["arrival_live"], view["stops_left"]) == (False, False, 1)
+    line, said = world.rides.line(), world.tool({})["summary"]
+    assert line is not None
+    for text in (line, said):
+        assert "no live bus position" in text.casefold()
+        assert "timetable gives where the bus is and when he arrives" in text
+    assert world.events("ride.warned") == []
+
+
 def _ended(world: World) -> dict[str, Any]:
     (ended,) = world.events("ride.ended")
     return ended
@@ -815,11 +883,11 @@ def test_the_ride_starts_a_live_activity_by_push_then_updates_it_on_change(world
     assert start.body["attributes"]["route"] == "7"
     state = start.body["content-state"]
     assert set(state) == {
-        "route", "next_stop", "stops_left", "minutes_to_alight", "alight_stop", "stale", "phase",
+        "route", "next_stop", "stops_left", "minutes_to_alight", "alight_stop", "position_live",
+        "arrival_live", "phase",
     }
-    assert (state["route"], state["alight_stop"], state["phase"], state["stale"]) == (
-        "7", "Fir Lane", "riding", False,
-    )
+    assert (state["route"], state["alight_stop"], state["phase"]) == ("7", "Fir Lane", "riding")
+    assert (state["position_live"], state["arrival_live"]) == (True, True)
     # No update before the phone has registered the activity's token; none when nothing changed.
     sent = len(world.apns.rides)
     world.run(15, world.with_bus(bus))
@@ -914,15 +982,15 @@ def test_the_day_line_has_the_ride_and_not_the_automotive_move_it_covers(world: 
 
 
 def test_a_failing_vehicle_feed_falls_back_to_the_timetable_and_says_so(world: World) -> None:
-    """The line, the view and the activity say stale while the feed is down, and recover."""
+    """The line, the view and the activity say there is no live position while the feed is down."""
     bus = _board_said(world)
     world.run(30, world.with_bus(bus))
-    assert world.rides.view()["stale"] is False  # type: ignore[index]
+    assert world.rides.view()["position_live"] is True  # type: ignore[index]
     world.vehicle_error = OSError("feed down")
     world.run(30, world.with_bus(bus))
     view = world.rides.view()
     assert view is not None
-    assert view["stale"] is True
+    assert (view["position_live"], view["arrival_live"]) == (False, False)
     assert view["next_stop"] is not None  # from the timetable
     line = world.rides.line()
     assert line is not None
@@ -930,7 +998,7 @@ def test_a_failing_vehicle_feed_falls_back_to_the_timetable_and_says_so(world: W
     assert world.ride() is not None  # a dead feed never ends the ride
     world.vehicle_error = None
     world.run(30, world.with_bus(bus))
-    assert world.rides.view()["stale"] is False  # type: ignore[index]
+    assert world.rides.view()["position_live"] is True  # type: ignore[index]
 
 
 def test_no_feeds_at_all_is_a_declared_ride_on_the_timetable(world: World) -> None:
@@ -940,7 +1008,7 @@ def test_no_feeds_at_all_is_a_declared_ride_on_the_timetable(world: World) -> No
     bare.defer = lambda call: call()
     world.clock_ms = at("17:07")
     out = bare.start("12", "campus", None)
-    assert (out["started"], out["route"], out["stale"]) == (True, "12", True)
+    assert (out["started"], out["route"], out["position_live"]) == (True, "12", False)
     line = bare.line()
     assert line is not None
     assert "no bus data" in line
@@ -969,7 +1037,8 @@ def test_the_ride_routes_validate_and_report(world: World) -> None:
     shown = client.get("/inherent/ride").json()["ride"]
     assert shown["route"] == "7"
     assert {"ride_id", "alight_stop", "next_stop", "stops_left", "minutes_to_alight", "eta_ms",
-            "stale", "warned", "started_at_ms", "source", "credit"} <= shown.keys()
+            "position_live", "arrival_live", "warned", "started_at_ms", "source",
+            "credit"} <= shown.keys()
     assert shown["credit"] == "BC Transit"
 
 
@@ -998,17 +1067,21 @@ def test_the_rules_on_positions_as_a_table() -> None:
              for i, (s, n, la, lo) in enumerate(STOPS)]
     bus = Vehicle("v", "T", "7", lat_of(1.5), LNG, 0, "S2", 3, 2)
     got = progress(stops, "S5", bus, {}, at("17:06", 30))
-    assert (got.next_stop, got.stops_left, got.minutes, got.passed, got.stale) == (
-        "Cedar Ave", 4, 4, False, False,
+    assert (got.next_stop, got.stops_left, got.minutes, got.passed, got.position_live) == (
+        "Cedar Ave", 4, 4, False, True,
     )
+    assert got.arrival_live is False  # no prediction for his stop: a timetable estimate
     stopped = Vehicle("v", "T", "7", lat_of(2), LNG, 0, "S2", 3, 1)
     assert progress(stops, "S5", stopped, {}, at("17:07")).next_stop == "Dogwood Way"
     gone = Vehicle("v", "T", "7", lat_of(6), LNG, 0, "S6", 7, 2)
     assert progress(stops, "S5", gone, {}, at("17:11")).passed is True
     table = progress(stops, "S5", None, {}, at("17:06", 30))
-    assert (table.next_stop, table.stale, table.stops_left) == ("Cedar Ave", True, 4)
+    assert (table.next_stop, table.position_live, table.stops_left) == ("Cedar Ave", False, 4)
     late = progress(stops, "S5", bus, {"S2": at("17:07") + 120_000}, at("17:06", 30))
     assert late.eta_ms == at("17:10") + 120_000
+    assert late.arrival_live is False  # his stop is not in the prediction; the delay is carried
+    said = progress(stops, "S5", bus, {"S5": at("17:10") + 60_000}, at("17:06", 30))
+    assert (said.eta_ms, said.arrival_live) == (at("17:10") + 60_000, True)
 
 
 def test_a_transit_answer_remembers_where_the_first_bus_lets_him_off() -> None:

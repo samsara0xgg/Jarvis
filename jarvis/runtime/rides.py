@@ -17,8 +17,8 @@ reason:
 
 He starts a ride by tapping the notification's button (:meth:`Rides.act`) or by saying so
 (``bus(ride="start")``); it is never inferred. When the feed fails the ride falls back to the
-timetable and says ``stale``. Everything runs off the event loop; the one thing read on it is
-:meth:`line`, from a snapshot the ticks keep.
+timetable and says the bus has no live position. Everything runs off the event loop; the one
+thing read on it is :meth:`line`, from a snapshot the ticks keep.
 """
 
 from __future__ import annotations
@@ -30,12 +30,12 @@ import logging
 import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
-from jarvis.execution.bus_tool import RideControl
+from jarvis.execution.bus_tool import RideControl, sources_said
 from jarvis.execution.tools import ToolError
 from jarvis.shared import lang
 from jarvis.shared.geo import metres
@@ -586,7 +586,7 @@ class Rides:
             else:
                 msg = "no stop of this trip matches that; ask him for the stop's name"
                 raise ToolError(msg, code="no_such_stop")
-            self._refresh(ride, now)
+            self._refresh(ride, now, self._seen.get(ride.vehicle_id or ""))
         self.defer(self.tick)
         return {"set": True, **self._describe(ride)}
 
@@ -600,12 +600,13 @@ class Rides:
         if reason is not None:
             self._finish(conn, ride, *reason)
             return
-        if ride.alight_stop_id and not ride.warned and prog.stops_left == 1 and not prog.stale:
+        # One stop left is known from the bus's own position; a timetable alone can be minutes off.
+        if ride.alight_stop_id and not ride.warned and prog.stops_left == 1 and prog.position_live:
             self._warn(conn, ride, prog, now)
         self._tell_phone(ride, prog, now)
 
     def _refresh(self, ride: folded.Ride, now: int, bus: Vehicle | None = None) -> Progress:
-        """The ride's progress, kept for :meth:`line`. ``bus`` None is the timetable (stale)."""
+        """The ride's progress, kept for :meth:`line`. ``bus`` None is the timetable."""
         stops = self._timetable(ride.trip_id, ride.service_date, now)
         live_bus = bus if bus is not None and bus.trip_id == ride.trip_id else None
         if live_bus is not None and now - self._pred_ms >= PREDICT_EVERY_MS and self.live:
@@ -616,12 +617,10 @@ class Rides:
                 LOGGER.warning("rides: BC Transit trip updates unavailable", exc_info=True)
         if not stops:  # no timetable: nothing to say of where the ride is
             self._snap = (ride, None)
-            return Progress(None, None, None, None, passed=False, stale=True)
+            return Progress(None, None, None, None, passed=False, position_live=False)
         prog = progress(
             stops, ride.alight_stop_id, live_bus, self._preds, now, alight_seq=ride.alight_seq,
         )
-        if prog.eta_ms is not None and ride.alight_stop_id not in self._preds:
-            prog = replace(prog, stale=True)  # the arrival is a timetable time
         self._snap = (ride, prog)
         return prog
 
@@ -638,7 +637,7 @@ class Rides:
             gone = left_at(fixes, list(self._hist.get(bus.vehicle_id, ())))
             if gone is not None:
                 return "left_vehicle", gone
-        if prog.passed and not prog.stale:
+        if prog.passed and prog.position_live:
             self._passed_ms = self._passed_ms or now
             if motion_now(conn, self._passed_ms - PASSED_BACK_MS) in _STILL:
                 return "passed_stop", now
@@ -701,7 +700,8 @@ class Rides:
             "stops_left": prog.stops_left if prog else None,
             "minutes_to_alight": prog.minutes if prog else None,
             "alight_stop": ride.alight_stop,
-            "stale": True if prog is None else prog.stale,
+            "position_live": prog is not None and prog.position_live,
+            "arrival_live": prog is not None and prog.arrival_live,
             "phase": phase or ("arriving" if ride.warned else "riding"),
         }
 
@@ -737,8 +737,8 @@ class Rides:
             "stops_left": prog.stops_left if prog else None,
             "minutes_to_alight": prog.minutes if prog else None,
             "eta_ms": prog.eta_ms if prog else None,
-            "stale": True if prog is None else prog.stale,
-            "live": self.live is not None and not self._feed_down,
+            "position_live": prog is not None and prog.position_live,
+            "arrival_live": prog is not None and prog.arrival_live,
             "started_at_ms": ride.started_at_ms, "source": ride.source, "warned": ride.warned,
             "credit": CREDIT if ride.trip_id else None,
         }
@@ -786,8 +786,9 @@ class Rides:
             text += "."
         if prog is None:
             text += " There is no bus data for this trip: say you cannot give times."
-        elif prog.stale:
-            text += " No live bus position now: these are timetable times and may be off."
         else:
-            text += " Times are from BC Transit's live bus position."
+            text += " " + sources_said(
+                position_live=prog.position_live, arrival_live=prog.arrival_live,
+                has_arrival=prog.eta_ms is not None,
+            )
         return text[:RIDE_LINE_CHARS]
