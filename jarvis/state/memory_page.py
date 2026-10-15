@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 ITEM_CHARS: Final[int] = 400
-CAP_RANGE: Final[tuple[int, int]] = (1000, 20000)
+CAP_RANGE: Final[tuple[int, int]] = (1000, 40000)
 _LINE_CHARS: Final[int] = 80
 _VERSION_LIMIT: Final[int] = 60
 _VERSION_LINES: Final[int] = 6
@@ -250,8 +250,11 @@ def _new_entries(conn: sqlite3.Connection, rows: Sequence[Row]) -> dict[str, Any
     return {"day": row.upto_day, "ts": row.ts, "version": row.id, "entries": entries}
 
 
-def overview(path: Path, *, max_chars: int, booted_max_chars: int) -> dict[str, Any]:
-    """The 记着的 screen: the six sections, last night's changes, and the counts the tabs show."""
+def overview(
+    path: Path, *, max_chars: int, booted_max_chars: int,
+    section_caps: Mapping[str, int] = core_memory.SECTION_CAPS,
+) -> dict[str, Any]:
+    """The 记着的 screen: the eleven sections, last night's changes, the counts the tabs show."""
     with closing(open_memory_db(path)) as conn:
         rows = _rows(conn)
         days = int(conn.execute("SELECT COUNT(DISTINCT day) FROM day_summaries").fetchone()[0])
@@ -263,6 +266,8 @@ def overview(path: Path, *, max_chars: int, booted_max_chars: int) -> dict[str, 
     sections = [
         {
             "name": section,
+            "chars": core_memory.section_chars(current.doc, section),
+            "cap": section_caps[section],
             "items": [
                 {"id": item_id, "text": item["text"], "pinned": pins[item_id]}
                 for sec, item, item_id in core_memory.listing(current.doc)
@@ -314,6 +319,7 @@ def item(path: Path, item_id: str) -> dict[str, Any]:
         "text": entry["text"],
         "pinned": bool(entry.get("pinned")),
         "since": entry.get("since"),
+        "history": entry.get("history", []),
         "number": flat,
         "chars": len(str(entry["text"])),
         "sources": sources,
@@ -331,10 +337,12 @@ def _write(
     ],
     *,
     max_chars: int,
+    section_caps: Mapping[str, int],
 ) -> dict[str, Any]:
     """One user version: ``act(conn, current row, current doc)`` gives the new document and changes.
 
-    A write that would leave the note over ``max_chars`` is refused unless it makes it no longer.
+    A write that would leave the note over ``max_chars``, or a section over its cap, is refused
+    unless it makes it no longer.
     """
     now = local_now()
     with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
@@ -345,6 +353,11 @@ def _write(
         if size > max_chars and size > current.chars:
             msg = f"core memory would be {size} characters, over the {max_chars} cap"
             raise ValueError(msg)
+        for section, cap in section_caps.items():
+            grown = core_memory.section_chars(doc, section)
+            if grown > cap and grown > core_memory.section_chars(current.doc, section):
+                msg = f"{section} would be {grown} characters, over its {cap} cap"
+                raise ValueError(msg)
         base = core_memory.Version(current.id, current.upto_day, current.doc)
         version = core_memory.append_version(
             conn,
@@ -358,8 +371,9 @@ def _write(
     return {"ok": True, "version": version}
 
 
-def edit_item(
-    path: Path, item_id: str, text: str, section: str | None, *, max_chars: int
+def edit_item(  # noqa: PLR0913 — the item, its new words and section, and the two caps.
+    path: Path, item_id: str, text: str, section: str | None,
+    *, max_chars: int, section_caps: Mapping[str, int],
 ) -> dict[str, Any]:
     """Set an item's words and section; it is pinned, so the night leaves it alone."""
     line = " ".join(text.split())
@@ -370,7 +384,7 @@ def edit_item(
         msg = f"an item is at most {ITEM_CHARS} characters"
         raise ValueError(msg)
     if section is not None and section not in core_memory.SECTIONS:
-        msg = f"section {section!r} is not one of the six"
+        msg = f"section {section!r} is not one of the eleven"
         raise ValueError(msg)
     day = local_now().date().isoformat()
 
@@ -386,10 +400,12 @@ def edit_item(
         )
         return new, [change]
 
-    return _write(path, act, max_chars=max_chars)
+    return _write(path, act, max_chars=max_chars, section_caps=section_caps)
 
 
-def delete_item(path: Path, item_id: str, *, max_chars: int) -> dict[str, Any]:
+def delete_item(
+    path: Path, item_id: str, *, max_chars: int, section_caps: Mapping[str, int],
+) -> dict[str, Any]:
     """Remove an item; the version keeps it, so undoing that version brings it back."""
 
     def act(
@@ -398,10 +414,12 @@ def delete_item(path: Path, item_id: str, *, max_chars: int) -> dict[str, Any]:
         new, change = core_memory.delete(doc, item_id)
         return new, [change]
 
-    return _write(path, act, max_chars=max_chars)
+    return _write(path, act, max_chars=max_chars, section_caps=section_caps)
 
 
-def confirm_item(path: Path, item_id: str, *, max_chars: int) -> dict[str, Any]:
+def confirm_item(
+    path: Path, item_id: str, *, max_chars: int, section_caps: Mapping[str, int],
+) -> dict[str, Any]:
     """Say an item is right as it is: a version with no document change that hides it from new."""
 
     def act(
@@ -410,10 +428,12 @@ def confirm_item(path: Path, item_id: str, *, max_chars: int) -> dict[str, Any]:
         new, change = core_memory.confirm(doc, item_id)
         return new, [change]
 
-    return _write(path, act, max_chars=max_chars)
+    return _write(path, act, max_chars=max_chars, section_caps=section_caps)
 
 
-def keep_stale(path: Path, version_id: str, item_id: str, *, max_chars: int) -> dict[str, Any]:
+def keep_stale(
+    path: Path, version_id: str, item_id: str, *, max_chars: int, section_caps: Mapping[str, int],
+) -> dict[str, Any]:
     """Put back an item the nightly ``version_id`` marked stale, pinned (留着)."""
 
     def act(
@@ -438,7 +458,7 @@ def keep_stale(path: Path, version_id: str, item_id: str, *, max_chars: int) -> 
         new, change = core_memory.restore(doc, {**old[1], "id": item_id}, old[0])
         return new, [change]
 
-    return _write(path, act, max_chars=max_chars)
+    return _write(path, act, max_chars=max_chars, section_caps=section_caps)
 
 
 def _kind(row: Row) -> str:
@@ -494,7 +514,9 @@ def versions(path: Path) -> dict[str, Any]:
     return {"versions": out, "total": len(rows)}
 
 
-def undo(path: Path, version_id: str, *, max_chars: int) -> dict[str, Any]:
+def undo(
+    path: Path, version_id: str, *, max_chars: int, section_caps: Mapping[str, int],
+) -> dict[str, Any]:
     """Take back what a version changed, as a new version; refuse if a later one touched it.
 
     The nightly ``upto_day`` stays: undoing a night does not make the night run that day again.
@@ -537,7 +559,7 @@ def undo(path: Path, version_id: str, *, max_chars: int) -> dict[str, Any]:
             {"op": "undo", "of": version_id}
         ]
 
-    return _write(path, act, max_chars=max_chars)
+    return _write(path, act, max_chars=max_chars, section_caps=section_caps)
 
 
 def _by_ts(hit: dict[str, Any]) -> str:

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Final
 from jarvis.execution.tools import Tool, ToolError, _get_running_event_uid
 from jarvis.shared import CallerPrincipal
 from jarvis.state import reminders as reminder_state
+from jarvis.state.core_memory import SECTIONS
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.event_log import emit_event, iter_events_of_types
 from jarvis.state.memory_db import current_core_memory, keep_fact
@@ -71,6 +72,14 @@ _KEEP_SCHEMA: Final[Mapping[str, Any]] = {
         "topic": {
             "type": "string",
             "description": "fact only: a short label, e.g. birthday; the same label replaces it.",
+        },
+        "section": {
+            "type": "string",
+            "enum": list(SECTIONS),
+            "description": (
+                "fact only: the core-memory section it belongs in (one of the eleven names);"
+                " omit when unsure."
+            ),
         },
         "cancel": {
             "type": "string",
@@ -178,9 +187,10 @@ class _Keeper:
     def keep(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         """Save, schedule or cancel what the arguments say; the result says which."""
         text, at, topic = _text(args, "text"), _text(args, "at"), _text(args, "topic")
+        section = _text(args, "section")
         at = self._in_minutes(args.get("in_minutes"), at)
         if cancel := _text(args, "cancel"):
-            if text or at or topic:
+            if text or at or topic or section:
                 msg = "keep: cancel=<id> stands alone; to keep something new, call keep without it"
                 raise ToolError(msg, code="invalid_arguments")
             return self._cancel(cancel, ctx)
@@ -191,14 +201,15 @@ class _Keeper:
         if not text:
             msg = "keep: text is empty; pass what to keep, e.g. keep(text='fix the emoji bug')"
             raise ToolError(msg, code="empty_text")
-        for name, value, only in (("at", at, "reminder"), ("topic", topic, "fact")):
+        only_with = (("at", at, "reminder"), ("topic", topic, "fact"), ("section", section, "fact"))
+        for name, value, only in only_with:
             if value and kind != only:
                 msg = f"keep: {name} goes only with kind={only}; leave it out or change kind"
                 raise ToolError(msg, code="invalid_arguments")
         if kind == "reminder":
             return self._reminder(text, at, ctx)
         if kind == "fact":
-            return self._fact(text, topic)
+            return self._fact(text, topic, section)
         return self._memo(text, ctx)
 
     def _in_minutes(self, minutes: object, at: str) -> str:
@@ -295,7 +306,7 @@ class _Keeper:
                 )
         return {"summary": summary, **said, "text": text}
 
-    def _fact(self, text: str, topic: str) -> dict[str, Any]:
+    def _fact(self, text: str, topic: str, section: str) -> dict[str, Any]:
         if self._memory_db is None:
             msg = "keep: long-term memory is not available here; kind=memo keeps it as a note"
             raise ToolError(msg, code="unavailable")
@@ -305,8 +316,16 @@ class _Keeper:
                 f" {_TOPIC_CHARS}); keep anything longer as a memo"
             )
             raise ToolError(msg, code="too_long")
+        if section and section not in SECTIONS:
+            msg = f"keep: section {section!r} is not one of the eleven names; omit it if unsure"
+            raise ToolError(msg, code="invalid_arguments")
         stored = f"{topic}: {text}" if topic else text
-        if keep_fact(self._memory_db, text, topic or None):
+        try:
+            kept = keep_fact(self._memory_db, text, topic or None, section or None)
+        except ValueError as exc:
+            msg = f"keep: {exc}"
+            raise ToolError(msg, code="invalid_arguments") from exc
+        if kept:
             summary = f'Saved to long-term memory: "{stored}".'
         else:
             summary = f'Already in long-term memory, nothing new: "{stored}".'

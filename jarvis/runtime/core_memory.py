@@ -13,13 +13,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.decision.core_memory import build_core_memory_messages, check_core_memory, day_labels
 from jarvis.decision.core_memory_review import ReviewFailed, review_changes
 from jarvis.decision.cost_guard import CostRecorder
-from jarvis.state import places
+from jarvis.state import core_memory, places
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import (
     MemorySettings,
@@ -41,10 +41,21 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 KIND: Final[str] = "core_memory"
-_DEFAULT_MAX_CHARS: Final[int] = 4000
+_DEFAULT_MAX_CHARS: Final[int] = 40000
 _DEFAULT_MAX_STALE: Final[int] = 5
 DEFAULT_REVIEW_MODEL: Final[str] = "typesafe/jev-1.13"
 _DEFAULT_REVIEW_TIMEOUT_MS: Final[int] = 10_000
+
+
+def section_caps(raw: object) -> dict[str, int]:
+    """Each section's cap: ``section_caps:`` of the ``core_memory:`` block over the defaults."""
+    given = raw.get("section_caps") if isinstance(raw, Mapping) else None
+    caps = dict(core_memory.SECTION_CAPS)
+    if isinstance(given, Mapping):
+        for name, cap in given.items():
+            if name in caps and isinstance(cap, int) and not isinstance(cap, bool) and cap > 0:
+                caps[name] = cap
+    return caps
 
 
 @dataclass(frozen=True)
@@ -54,6 +65,7 @@ class CoreMemorySettings:
     preset: str
     prompt: str
     max_chars: int = _DEFAULT_MAX_CHARS
+    section_caps: Mapping[str, int] = field(default_factory=lambda: dict(core_memory.SECTION_CAPS))
     max_stale: int = _DEFAULT_MAX_STALE
     review_min_confidence: float | None = None  # None = no Jev review
     review_drop: bool = False  # False: Jev's verdicts are only logged, every change lands
@@ -79,6 +91,7 @@ class CoreMemorySettings:
             preset=preset,
             prompt=prompt.strip(),
             max_chars=chars if isinstance(chars, int) and chars > 0 else _DEFAULT_MAX_CHARS,
+            section_caps=section_caps(raw),
             max_stale=stale if isinstance(stale, int) and stale >= 0 else _DEFAULT_MAX_STALE,
             review_min_confidence=(
                 float(bar)
@@ -127,6 +140,7 @@ def consolidate_day(  # noqa: PLR0913 — the day, the store, the knobs, the cli
             day_summary=summaries[0][1] if summaries else "",
             records=records,
             places=places.names_block(memory.db_path),
+            section_caps=settings.section_caps,
         ),
         system=settings.prompt,
         tools=None,
@@ -141,6 +155,7 @@ def consolidate_day(  # noqa: PLR0913 — the day, the store, the knobs, the cli
         labels=day_labels(records),
         max_stale=settings.max_stale,
         max_chars=settings.max_chars,
+        section_caps=settings.section_caps,
         day=day,
         since=base.upto_day,
     )
@@ -222,4 +237,4 @@ def run_core_memory(  # noqa: PLR0913 — the store, the knobs, the client and t
     return outcomes
 
 
-__all__ = ["CoreMemorySettings", "consolidate_day", "run_core_memory"]
+__all__ = ["CoreMemorySettings", "consolidate_day", "run_core_memory", "section_caps"]

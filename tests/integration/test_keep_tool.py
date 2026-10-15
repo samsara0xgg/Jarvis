@@ -111,10 +111,10 @@ def test_the_menu_entries_are_two_small_tools_with_the_owner_s_words() -> None:
         assert not one.deferred
         assert one.input_schema["additionalProperties"] is False
     assert set(keep.input_schema["properties"]) == {
-        "text", "kind", "at", "in_minutes", "topic", "cancel",
+        "text", "kind", "at", "in_minutes", "topic", "section", "cancel",
     }
     assert set(kept.input_schema["properties"]) == {"kind", "query", "page"}
-    for phrase in ("记一下", "记得", "回家修", "提醒我", "别忘了", "saved only when this returns"):
+    for phrase in ("记一下", "记得", "别忘了", "saved only when this returns"):
         assert phrase in keep.description
     assert "kept" in keep.description
     assert "keep(cancel=)" in kept.description
@@ -141,7 +141,7 @@ def test_the_offline_menu_offers_keep_and_kept_in_place_of_the_six(tmp_path: Pat
         one["name"]: len(one["description"]) + len(json.dumps(one["input_schema"]))
         for one in menu if one["name"] in {"keep", "kept"}
     }
-    assert sizes["keep"] < 1600
+    assert sizes["keep"] < 2400  # the section enum names eleven sections
     assert sizes["kept"] < 700
 
 
@@ -342,6 +342,26 @@ def test_a_fact_goes_to_core_memory_once_and_a_topic_replaces_its_item(world: _W
     with closing(open_memory_db(world.memory)) as conn:
         origins = [row[0] for row in conn.execute("SELECT origin FROM core_memory ORDER BY rowid")]
     assert origins == ["migration", "remember", "remember", "remember"]
+
+
+def test_a_fact_goes_to_the_section_the_model_names_and_a_bad_one_is_refused(
+    world: _World,
+) -> None:
+    """``section`` files the fact; none means 经历; an ID number in 证件和硬期限 is refused."""
+    assert world.memory is not None
+    world.keep("他不吃辣", kind="fact", section="身体")
+    world.keep("他爱喝茶", kind="fact")
+    world.keep("护照 2031-05-01 到期", kind="fact", section="证件和硬期限")
+    doc = current_core_memory(world.memory).doc
+    assert [i["text"] for i in doc["身体"]] == ["他不吃辣"]
+    assert [i["text"] for i in doc["经历"]] == ["他爱喝茶"]
+    assert [i["text"] for i in doc["证件和硬期限"]] == ["护照 2031-05-01 到期"]
+    assert world.keep("护照 E12345678", kind="fact", section="证件和硬期限")["code"] == (
+        "invalid_arguments"
+    )
+    assert world.keep("x", kind="fact", section="其他")["code"] == "invalid_arguments"
+    assert world.keep("x", kind="memo", section="身体")["code"] == "invalid_arguments"
+    assert "护照 E12345678" not in str(current_core_memory(world.memory).doc)
 
 
 def test_a_fact_that_is_not_one_short_line_or_has_no_memory_is_refused(

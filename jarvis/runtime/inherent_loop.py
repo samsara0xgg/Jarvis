@@ -176,7 +176,7 @@ from jarvis.runtime import (
     save_language,
 )
 from jarvis.runtime.card_feedback import CardFeedback
-from jarvis.runtime.core_memory import CoreMemorySettings
+from jarvis.runtime.core_memory import CoreMemorySettings, section_caps
 from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
 from jarvis.runtime.dictation import (
     COMMAND_PROMPT,
@@ -7635,6 +7635,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else MemoryPage(
                     window_memory.db_path,
                     runtime.settings,
+                    section_caps=section_caps(runtime.config.get("core_memory")),
                     history_since=runtime.session.history_since,
                     event_log=runtime.runtime_paths.event_log,
                     zone=resolve_zone(None, _work_state_timezone(runtime.config))[1],

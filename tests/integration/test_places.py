@@ -1039,8 +1039,8 @@ def test_the_tables_and_the_nightly_prompt_are_what_the_decision_names(tmp_path:
     config = yaml.safe_load((Path(__file__).parents[2] / "config" / "jarvis.yaml").read_text())
     prompt: str = config["core_memory"]["prompt"]
     assert prompt.rstrip().endswith(
-        "- Places he keeps are listed in [Places he keeps]. "
-        "Do not add or keep items that only restate a place's name or location.",
+        "- Places he keeps are listed in [Places he keeps]. Do not add or keep items\n"
+        "  that only restate a place's name or location.",
     )
 
 

@@ -444,13 +444,15 @@ def set_user_name(path: Path, name: str) -> None:
 def remember_fact(path: Path, topic: str, fact: str, section: str | None = None) -> None:
     """Keep ``fact`` in core memory under ``topic``; the same topic replaces it (ADR 0066, 0146).
 
-    The item keeps its place in the block, so rewriting a fact never reorders the prompt's
-    ``[About the user]`` lines. A new topic goes to the end of ``section`` (default: 关于你).
+    The old wording stays on the item as history. A new topic goes into ``section`` (default: 经历);
+    a section lists pinned items first, then the newest.
     """
     _keep_item(path, topic=topic, text=f"{topic}: {fact}", section=section, origin="remember")
 
 
-def keep_fact(path: Path, text: str, topic: str | None = None) -> bool:
+def keep_fact(
+    path: Path, text: str, topic: str | None = None, section: str | None = None,
+) -> bool:
     """Keep ``text`` in core memory as ``remember_fact`` does; False when it is there already.
 
     With a ``topic`` the item reads ``topic: text`` and replaces the one of that topic. Without,
@@ -460,7 +462,7 @@ def keep_fact(path: Path, text: str, topic: str | None = None) -> bool:
         path,
         topic=topic or text[:_FACT_TOPIC_CHARS],
         text=f"{topic}: {text}" if topic else text,
-        section=None,
+        section=section,
         origin="remember",
         only_new=True,
     )

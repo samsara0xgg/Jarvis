@@ -1,6 +1,6 @@
 """L2 core memory: the append-only versioned note about the user (ADR 0146).
 
-One ``core_memory`` row is one version of a document with six fixed sections; the
+One ``core_memory`` row is one version of a document with eleven fixed sections; the
 latest row is current and every older row stays as history. This module owns the
 document (render, number, apply typed changes) and the row reads and writes on an
 open connection. ``memory_db`` wraps them with a path and the clock.
@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import uuid
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
@@ -22,15 +23,33 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Iterator, Mapping, Sequence
 
-SECTIONS: Final[tuple[str, ...]] = (
-    "关于你",
-    "偏好",
-    "常提到的人",
-    "正在做的事",
-    "定下来的规矩",
-    "承诺和待办",
-)
-DEFAULT_SECTION: Final[str] = SECTIONS[0]
+# ADR 0258: section name -> default cap in characters; the caps sum to the 40,000 ceiling.
+SECTION_CAPS: Final[dict[str, int]] = {
+    "经历": 4000,
+    "性格和价值观": 3000,
+    "身体": 2000,
+    "钱": 2000,
+    "兴趣和品味": 2000,
+    "你希望被怎么对待": 3000,
+    "定下来的规矩": 3000,
+    "证件和硬期限": 1000,
+    "承诺和待办": 3000,
+    "身边的人": 10000,
+    "生活里的几件事": 7000,
+}
+SECTIONS: Final[tuple[str, ...]] = tuple(SECTION_CAPS)
+DEFAULT_SECTION: Final[str] = "经历"
+DUE_SECTION: Final[str] = "承诺和待办"
+ID_FREE_SECTION: Final[str] = "证件和硬期限"
+# The six sections of ADR 0146 and where an older version's items go.
+_LEGACY: Final[dict[str, str]] = {
+    "关于你": "经历",
+    "偏好": "兴趣和品味",
+    "常提到的人": "身边的人",
+    "正在做的事": "生活里的几件事",
+}
+_DATES: Final[re.Pattern[str]] = re.compile(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}")
+_LONG_DIGITS: Final[re.Pattern[str]] = re.compile(r"\d{6,}")
 NAME_TOPIC: Final[str] = "name"
 _NAME_ROW: Final[str] = "profile-name"  # the legacy profile row first-run setup wrote
 _FACT_PREFIX: Final[str] = "fact:"
@@ -54,6 +73,34 @@ def empty_doc() -> Doc:
     return {section: [] for section in SECTIONS}
 
 
+def section_chars(doc: Doc, section: str) -> int:
+    """The size of a section as the prompt renders its lines (without the heading)."""
+    return len("\n".join(f"- {item['text']}" for item in doc[section]))
+
+
+def check_item(section: str, text: str) -> None:
+    """ValueError when ``text`` may not go in ``section`` (证件和硬期限 holds dates, no ID)."""
+    if section == ID_FREE_SECTION and _LONG_DIGITS.search(_DATES.sub("", text)):
+        msg = f"{section} holds dates only: no number of 6 or more digits"
+        raise ValueError(msg)
+
+
+def _rank(doc: Doc) -> None:
+    """Each section in rank order, in place: pinned first, then the most recent ``since``."""
+    for items in doc.values():
+        items.sort(key=lambda item: str(item.get("since") or ""), reverse=True)
+        items.sort(key=lambda item: not item.get("pinned"))
+
+
+def _revise(item: Item, text: str, since: str) -> None:
+    """Set the item's wording; the old one stays in ``history`` with the day it held from."""
+    if item["text"] != text:
+        item.setdefault("history", []).append(
+            {"text": item["text"], "since": item.get("since")},
+        )
+    item.update(text=text, since=since)
+
+
 def render(doc: Doc, labels: Mapping[str, str] | None = None) -> str:
     """The prompt text: ``### <section>`` then ``- <text>`` lines; empty sections omitted.
 
@@ -69,16 +116,19 @@ def render(doc: Doc, labels: Mapping[str, str] | None = None) -> str:
     return "\n".join(lines)
 
 
-def numbered(doc: Doc) -> str:
+def numbered(doc: Doc, caps: Mapping[str, int] | None = None) -> str:
     """The consolidation input: items numbered ``[N]`` 1..N in section order.
+
+    Each heading carries the section's size and cap: ``### 身边的人 (1234/10000)``.
 
     A pinned item (ADR 0154) reads ``[N] (pinned) text``: the model is told it is fixed.
     """
+    cap = caps or SECTION_CAPS
     lines: list[str] = []
     number = 0
     for section in SECTIONS:
         if doc[section]:
-            lines.append(f"### {section}")
+            lines.append(f"### {section} ({section_chars(doc, section)}/{cap[section]})")
             for item in doc[section]:
                 number += 1
                 mark = "(pinned) " if item.get("pinned") else ""
@@ -144,8 +194,8 @@ def apply_changes(doc: Doc, changes: Sequence[Mapping[str, Any]], day: str) -> D
     """A copy of ``doc`` with the gated nightly ``changes`` applied in order.
 
     Item numbers refer to ``numbered(doc)`` before any change: an add appends to its
-    section, a rewrite replaces text, sources and ``since`` (the topic stays) and may move
-    the item, a stale removes it.
+    section, a rewrite replaces text, sources and ``since`` (the topic stays; the old wording
+    goes to ``history``) and may move the item, a stale removes it. Every section ends ranked.
     """
     new = copy.deepcopy(doc)
     stamp_ids(new)
@@ -158,11 +208,13 @@ def apply_changes(doc: Doc, changes: Sequence[Mapping[str, Any]], day: str) -> D
         if change["op"] == "stale":
             _drop(new, item)
             continue
-        item.update(text=change["text"], sources=list(change["sources"]), since=day)
+        _revise(item, change["text"], day)
+        item["sources"] = list(change["sources"])
         target = change.get("section")
         if target is not None and not any(other is item for other in new[target]):
             _drop(new, item)
             new[target].append(item)
+    _rank(new)
     return new
 
 
@@ -178,21 +230,26 @@ def remember(
 
     An item with the same topic (case-folded) in any section is replaced where it is (text
     and ``since``; its sources stay); an explicit ``section`` that differs moves it. Else the
-    item is added at the end of ``section`` (default: the first section).
+    item is added to ``section`` (default: 经历); a section is ranked after. ValueError when the
+    section may not hold the text (:func:`check_item`).
     """
     new = copy.deepcopy(doc)
     stamp_ids(new)
     for current in SECTIONS:
         for item in new[current]:
             if str(item["topic"] or "").casefold() == topic.casefold():
-                item.update(text=text, since=day)
+                check_item(section or current, text)
+                _revise(item, text, day)
                 if section is not None and section != current:
                     _drop(new, item)
                     new[section].append(item)
+                _rank(new)
                 change = {"op": "rewrite", "topic": topic, "text": text, "sources": item["sources"]}
                 return new, change
     target = section or DEFAULT_SECTION
+    check_item(target, text)
     new[target].append(_new_item(text, topic, [], day))
+    _rank(new)
     return new, {"op": "add", "section": target, "topic": topic, "text": text, "sources": []}
 
 
@@ -213,17 +270,21 @@ def edit(
 ) -> tuple[Doc, dict[str, Any]]:
     """``doc`` with the user's ``text`` and ``section`` on an item, pinned (ADR 0154).
 
-    The item stays where it is when its section does not change, else it goes to the end of
-    the new one. Its sources stay: they are what the item was first drawn from.
+    The item moves to the new section when it changes; the section is ranked after. Its sources
+    stay: they are what the item was first drawn from. ValueError when the section may not hold
+    the text (:func:`check_item`).
     """
+    check_item(section, text)
     new = copy.deepcopy(doc)
     stamp_ids(new)
     old_section, index, item = _where(new, item_id)
     before = _snapshot(old_section, index, item)
-    item.update(text=text, since=day, pinned=True)
+    _revise(item, text, day)
+    item["pinned"] = True
     if section != old_section:
         _drop(new, item)
         new[section].append(item)
+    _rank(new)
     return new, {"op": "edit", "id": item_id, "before": before, "text": text, "section": section}
 
 
@@ -258,6 +319,7 @@ def restore(doc: Doc, item: Item, section: str) -> tuple[Doc, dict[str, Any]]:
         msg = "the item is already in core memory"
         raise ValueError(msg)
     new[section].append(kept)
+    _rank(new)
     return new, {"op": "restore", "id": kept["id"], "section": section, "text": kept["text"]}
 
 
@@ -314,13 +376,18 @@ def undo(current: Doc, base: Doc, version: Doc) -> Doc:
         restored = copy.deepcopy(item)
         restored["id"] = item_id
         new[section].insert(min(index, len(new[section])), restored)
+    _rank(new)
     return new
 
 
 def load(raw: str) -> Doc:
     """A stored ``doc`` column as a document."""
-    sections = json.loads(raw)["sections"]
-    return {section: list(sections.get(section, [])) for section in SECTIONS}
+    stored = json.loads(raw)["sections"]
+    sections: Doc = {section: [] for section in SECTIONS}
+    for name, items in stored.items():  # an older version's names map one to one (ADR 0258)
+        if (target := _LEGACY.get(name, name)) in sections:
+            sections[target].extend(items)
+    return sections
 
 
 def latest(conn: sqlite3.Connection) -> Version | None:
@@ -421,14 +488,18 @@ def current(conn: sqlite3.Connection, now: str) -> Version:
 
 __all__ = [
     "DEFAULT_SECTION",
+    "DUE_SECTION",
+    "ID_FREE_SECTION",
     "NAME_TOPIC",
     "SECTIONS",
+    "SECTION_CAPS",
     "Delta",
     "Doc",
     "Item",
     "Version",
     "append_version",
     "apply_changes",
+    "check_item",
     "confirm",
     "current",
     "delete",
@@ -444,6 +515,7 @@ __all__ = [
     "remember",
     "render",
     "restore",
+    "section_chars",
     "stamp_ids",
     "states",
     "undo",

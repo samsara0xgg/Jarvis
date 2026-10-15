@@ -109,8 +109,8 @@ def world(tmp_path: Path) -> World:
         ],
     )
     remember_fact(path, "城市", "Vancouver")
-    remember_fact(path, "饮食", "每天喝咖啡", "偏好")
-    remember_fact(path, "项目", "写论文", "正在做的事")
+    remember_fact(path, "饮食", "每天喝咖啡", "兴趣和品味")
+    remember_fact(path, "项目", "写论文", "生活里的几件事")
     d3, d2 = _day(3).isoformat(), _day(2).isoformat()
     model = _Consolidator()
     model.script[d3] = [
@@ -128,8 +128,8 @@ def world(tmp_path: Path) -> World:
     return made
 
 
-def test_the_page_lists_six_sections_and_what_last_night_did_with_its_quotes(world: World) -> None:
-    """Counts, the six sections in order, one entry per nightly change, each with its source."""
+def test_the_page_lists_eleven_sections_and_what_the_night_did(world: World) -> None:
+    """Counts, the eleven sections in order, one entry per nightly change, each with its source."""
     page = world.overview()
     assert [s["name"] for s in page["sections"]] == list(core_memory.SECTIONS)
     assert page["items"] == 3
@@ -155,7 +155,7 @@ def test_an_item_opens_with_its_sources_as_words_and_its_history(world: World) -
     """The cited record is resolved to who, when and the words; history says who wrote it."""
     rewritten = world.items()["城市: Victoria"]
     detail = world.get(f"/item/{rewritten['id']}")
-    assert detail["section"] == "关于你"
+    assert detail["section"] == "经历"
     assert detail["number"] == 1
     assert detail["chars"] == len("城市: Victoria")
     assert [(s["who"], s["text"], s["day"]) for s in detail["sources"]] == [
@@ -165,6 +165,7 @@ def test_an_item_opens_with_its_sources_as_words_and_its_history(world: World) -
     assert [e["origin"] for e in detail["edits"]] == ["nightly"]
     assert detail["edits"][0]["day"] == _day(3).isoformat()
     assert detail["pinned"] is False
+    assert [h["text"] for h in detail["history"]] == ["城市: Vancouver"]  # the night's rewrite
     assert world.client.get("/inherent/memory/item/nope").status_code == 404
 
 
@@ -205,10 +206,10 @@ def test_edit_and_move_append_user_versions_pin_the_item_and_never_touch_older_r
     moved = world.items()["写论文: 第三章"]
     assert (moved["section"], moved["pinned"], moved["id"]) == ("承诺和待办", True, first["id"])
     # Moving to a section is the same call with the same text: still one more row.
-    world.post("/item/edit", {"id": first["id"], "text": "写论文: 第三章", "section": "偏好"})
-    assert world.items()["写论文: 第三章"]["section"] == "偏好"
+    world.post("/item/edit", {"id": first["id"], "text": "写论文: 第三章", "section": "兴趣和品味"})
+    assert world.items()["写论文: 第三章"]["section"] == "兴趣和品味"
     assert len(world.rows()) == len(snapshot) + 2
-    last = json.loads(world.rows()[-1][3])["sections"]["偏好"][-1]
+    last = json.loads(world.rows()[-1][3])["sections"]["兴趣和品味"][-1]
     assert last["pinned"] is True
     for bad in (
         {"id": first["id"], "text": "  "},
@@ -237,15 +238,15 @@ def test_the_night_leaves_a_pinned_item_alone_and_keeps_a_stale_proposal_as_a_re
         _changes(
             {"op": "rewrite", "item": 1, "text": "城市: Seattle", "sources": ["r1"]},
             {"op": "stale", "item": 1, "sources": ["r1"]},
-            {"op": "stale", "item": 3, "sources": ["r1"]},
-            {"op": "add", "section": "偏好", "text": "喜欢西雅图", "sources": ["r1"]},
+            {"op": "stale", "item": 2, "sources": ["r1"]},  # 周五交稿, now before 写论文
+            {"op": "add", "section": "兴趣和品味", "text": "喜欢西雅图", "sources": ["r1"]},
         ),
     ]
     assert "[1] (pinned) 城市: Victoria (BC)" in _consolidation_input(world, model, d1)
     items = world.items()
     assert items["城市: Victoria (BC)"]["pinned"] is True  # untouched by the night
     assert "城市: Seattle" not in items
-    assert items["喜欢西雅图"]["section"] == "偏好"  # a free change still lands
+    assert items["喜欢西雅图"]["section"] == "兴趣和品味"  # a free change still lands
     assert "周五交稿" not in items  # the unpinned stale applied
     changes = json.loads(_changes_of_last(world))
     assert [c["op"] for c in changes] == ["stale", "add", "skipped", "suggest_stale"]
@@ -315,7 +316,7 @@ def test_keeping_a_stale_item_puts_it_back_pinned_and_a_stale_confirm_drops_the_
     )
     world.post("/item/keep", {"version": version, "id": stale["id"]})
     back = world.items()["饮食: 每天喝咖啡"]
-    assert (back["pinned"], back["section"], back["id"]) == (True, "偏好", stale["id"])
+    assert (back["pinned"], back["section"], back["id"]) == (True, "兴趣和品味", stale["id"])
     assert all(e["kind"] != "stale" for e in world.overview()["new"]["entries"])
     assert world.post("/item/keep", {"version": version, "id": stale["id"]}, status=400)
 
@@ -334,7 +335,7 @@ def test_undo_takes_back_what_a_version_changed_as_a_new_version(world: World) -
     again = world.items()["城市: Victoria"]
     assert again["id"] == target["id"]
     assert (
-        json.loads(world.rows()[-1][3])["sections"]["关于你"][0]["text"] == "城市: Victoria"
+        json.loads(world.rows()[-1][3])["sections"]["经历"][0]["text"] == "城市: Victoria"
     )  # its old index
     top = world.get("/versions")["versions"][0]
     assert (top["kind"], top["current"]) == ("undo", True)
@@ -350,8 +351,8 @@ def test_undo_takes_back_what_a_version_changed_as_a_new_version(world: World) -
     items = world.items()
     assert "周五交稿" not in items
     assert "写论文: 第二章" not in items
-    assert items["项目: 写论文"]["section"] == "正在做的事"
-    assert items["饮食: 每天喝咖啡"]["section"] == "偏好"
+    assert items["项目: 写论文"]["section"] == "生活里的几件事"
+    assert items["饮食: 每天喝咖啡"]["section"] == "兴趣和品味"
     assert current_core_memory(world.path).upto_day == upto  # undoing a night does not rerun it
 
 
@@ -403,9 +404,9 @@ def test_the_versions_list_names_each_kind_and_marks_the_current_one(world: Worl
 
 
 def test_the_cap_is_saved_in_settings_validated_and_obeyed_by_the_next_write(world: World) -> None:
-    """1000 to 20000; the page reads it back with the booted value; a longer note is refused."""
+    """1000 to 40000; the page reads it back with the booted value; a longer note is refused."""
     assert world.post("/cap", {"max_chars": 999}, status=400)
-    assert world.post("/cap", {"max_chars": 20001}, status=400)
+    assert world.post("/cap", {"max_chars": 40001}, status=400)
     saved = world.post("/cap", {"max_chars": 1200})
     assert saved == {"max_chars": 1200, "booted_max_chars": 4000}
     page = world.overview()
@@ -640,3 +641,32 @@ def test_a_fresh_store_migrates_on_the_first_read_and_has_nothing_new(tmp_path: 
     assert page["items"] == 0
     assert page["new"] == {"day": None, "ts": None, "version": None, "entries": []}
     assert [v["kind"] for v in world.get("/versions")["versions"]] == ["migration"]
+
+
+def test_an_edit_that_grows_a_section_past_its_cap_or_puts_an_id_number_in_documents_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Per-section caps work like ``max_chars`` (ADR 0258): refused unless the edit is no longer."""
+    made = World(tmp_path)
+    made.page = MemoryPage(
+        made.path, made.settings, history_since="",
+        section_caps={**core_memory.SECTION_CAPS, "身体": 30},
+    )
+    made.client = TestClient(create_app(InherentDeps(
+        submit_callable=lambda _text: None, broadcaster=InherentBroadcaster(),
+        memory_page=made.page,
+    )))
+    remember_fact(made.path, "睡眠", "每天十一点睡", "身体")
+    body = made.items()["睡眠: 每天十一点睡"]
+    refused = made.client.post(
+        "/inherent/memory/item/edit", json={"id": body["id"], "text": "睡眠: " + "长" * 40},
+    )
+    assert refused.status_code == 400
+    assert "身体" in refused.json()["detail"]
+    made.post("/item/edit", {"id": body["id"], "text": "睡眠: 十点睡"})  # shorter: fine
+    ids = made.client.post(
+        "/inherent/memory/item/edit",
+        json={"id": body["id"], "text": "护照 E12345678", "section": "证件和硬期限"},
+    )
+    assert ids.status_code == 400
+    assert made.items()["睡眠: 十点睡"]["section"] == "身体"

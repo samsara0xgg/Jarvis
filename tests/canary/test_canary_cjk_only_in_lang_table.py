@@ -80,7 +80,9 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     "jarvis/shared/text.py": frozenset({"is_english"}),
     # The six core-memory section names (ADR 0146) are stored keys and the exact words the
     # consolidation prompt and the `remember` enum name; they are not translated.
-    "jarvis/state/core_memory.py": frozenset({"SECTIONS"}),
+    "jarvis/state/core_memory.py": frozenset(
+        {"SECTION_CAPS", "DEFAULT_SECTION", "DUE_SECTION", "ID_FREE_SECTION", "_LEGACY"},
+    ),
     "jarvis/state/daily_report.py": frozenset({"MILESTONES", "_QUESTION"}),
     "jarvis/state/work_state.py": frozenset({"_STOP_WORDS", "_TERM", "_CJK_RUN"}),
     # A call is read from the front window; Tencent Meeting titles its lobby 腾讯会议 (ADR 0161).

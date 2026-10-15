@@ -22,7 +22,7 @@ LOGGER = logging.getLogger(__name__)
 
 _OPS: Final[frozenset[str]] = frozenset({"add", "rewrite", "stale"})
 _FENCE: Final[str] = "```"
-_DUE_SECTION: Final[str] = core_memory.SECTIONS[-1]  # 承诺和待办
+_DUE_SECTION: Final[str] = core_memory.DUE_SECTION
 # ISO, 2026年10月3日, 10月3日 / 10月3号, 10/3: the groups are (y, m, d), (y?, m, d), (m, d).
 _DATE: Final[re.Pattern[str]] = re.compile(
     r"(?<![\d-])(?:(\d{4})-(\d{1,2})-(\d{1,2})|(?:(\d{4})年)?(\d{1,2})月(\d{1,2})[日号]"
@@ -39,13 +39,14 @@ def day_labels(records: Sequence[tuple[str, str, str, str]]) -> dict[str, str]:
     return {f"r{number}": record[0] for number, record in enumerate(records, start=1)}
 
 
-def build_core_memory_messages(
+def build_core_memory_messages(  # noqa: PLR0913 — the day's inputs, all keyword-only.
     *,
     day: str,
     doc: core_memory.Doc,
     day_summary: str,
     records: Sequence[tuple[str, str, str, str]],
     places: str = "",
+    section_caps: Mapping[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """The one user message the consolidator sees: core memory, the day's summary, its records.
 
@@ -54,7 +55,7 @@ def build_core_memory_messages(
     """
     lines = [
         "[Current core memory]",
-        core_memory.numbered(doc),
+        core_memory.numbered(doc, section_caps),
         "",
         *([places, ""] if places else []),
         f"[Summary of {day}]",
@@ -108,7 +109,7 @@ def _wording(raw: dict[str, Any]) -> dict[str, str] | str:
     section = raw.get("section")
     if section is not None or raw["op"] == "add":
         if section not in core_memory.SECTIONS:
-            return f"section {section!r} is not one of the six"
+            return f"section {section!r} is not one of the eleven"
         wording["section"] = section
     return wording
 
@@ -134,12 +135,13 @@ def _clean(raw: object, *, items: int, labels: Mapping[str, str]) -> dict[str, A
     return change
 
 
-def _list_gates(
+def _list_gates(  # noqa: PLR0913 — the gates' inputs, all keyword-only.
     changes: Sequence[dict[str, Any]],
     *,
     doc: core_memory.Doc,
     max_stale: int,
     max_chars: int,
+    section_caps: Mapping[str, int],
     day: str,
 ) -> str | None:
     targets = [change["item"] for change in changes if "item" in change]
@@ -147,7 +149,19 @@ def _list_gates(
         return "an item is targeted twice"
     if (stale := sum(change["op"] == "stale" for change in changes)) > max_stale:
         return f"{stale} stale ops over the {max_stale} cap"
-    size = len(core_memory.render(core_memory.apply_changes(doc, changes, day)))
+    numbered = core_memory.listing(doc)
+    for change in changes:
+        if "text" in change:
+            section = change.get("section") or numbered[change["item"] - 1][0]
+            try:
+                core_memory.check_item(section, change["text"])
+            except ValueError as exc:
+                return str(exc)
+    new = core_memory.apply_changes(doc, changes, day)
+    for section, cap in section_caps.items():
+        if (size := core_memory.section_chars(new, section)) > cap:
+            return f"{section} is {size} chars over its {cap} cap"
+    size = len(core_memory.render(new))
     return f"{size} chars over the {max_chars} cap" if size > max_chars else None
 
 
@@ -250,6 +264,7 @@ def check_core_memory(  # noqa: PLR0913 — the answer and every gate's input.
     labels: Mapping[str, str],
     max_stale: int,
     max_chars: int,
+    section_caps: Mapping[str, int] = core_memory.SECTION_CAPS,
     day: str,
     since: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], None] | tuple[None, None, str]:
@@ -272,7 +287,11 @@ def check_core_memory(  # noqa: PLR0913 — the answer and every gate's input.
             return None, None, cleaned
         cleaned_all.append(cleaned)
     changes, notes = pin_gate(cleaned_all, doc)
-    reason = _list_gates(changes, doc=doc, max_stale=max_stale, max_chars=max_chars, day=day)
+    reason = _list_gates(changes, doc=doc, max_stale=max_stale,
+        max_chars=max_chars,
+        section_caps=section_caps,
+        day=day,
+    )
     if reason is not None:
         return None, None, reason
     targeted = {change["item"] for change in cleaned_all if "item" in change}

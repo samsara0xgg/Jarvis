@@ -85,13 +85,13 @@ _BOARD_DEFAULTS: dict[str, Any] = {
 }
 _DEFAULTS: dict[str, Any] = {
     "reply_language": "follow", "final_asr_language": "", "tts_volume": 1.0,
-    "core_memory_max_chars": 4000, **_BOARD_DEFAULTS,
+    "core_memory_max_chars": 40000, **_BOARD_DEFAULTS,
 }
 _DEVICES = {"output_device": "output", "input_device": "input"}
 _RANGES = {
     "wake_threshold": (0.80, 0.99),
     "tts_volume": (0.3, 1.0),
-    "core_memory_max_chars": (1000, 20000),
+    "core_memory_max_chars": (1000, 40000),
 }
 BOARD_LIGHTS = ("off", "breath", "rainbow", "solid", "direction", "ring")
 _LEVELS = {"board_speed": (1, 255), "board_headphone": (0, 9), "board_lineout": (0, 9)}

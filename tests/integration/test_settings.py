@@ -84,7 +84,7 @@ def test_the_page_reads_what_jarvis_booted_with(tmp_path: Path) -> None:
         "gpt_live": True, "timesink": True, "keep_audio": True,
         "audio_days": 30, "screenshot_days": 7,
         # ADR 0154: the memory page's cap on the core memory note.
-        "core_memory_max_chars": 4000,
+        "core_memory_max_chars": 40000,
         "repos": ["~/Projects/jarvis", "~/Projects/typlus"],
         "model_conversation": "gpt-5.6-luna", "model_background": "gpt-6-luna",
         "model_report": "gpt-6-sol",

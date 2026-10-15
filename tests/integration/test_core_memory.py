@@ -72,14 +72,14 @@ def test_the_first_read_migrates_profile_and_prompts_render_core_memory(tmp_path
         )
     # ADR 0201: each line carries its first-seen date and kind.
     rendered = (
-        "### 关于你\n- (2026-09-01, set) The user's name is Ada."
+        "### 经历\n- (2026-09-01, set) The user's name is Ada."
         "\n- (2026-09-01, set) Prefers short answers.\n- (2026-09-01, set) 送餐地址: 1 Test St"
     )
     assert render_context(path, exclude_id="").profile == f"[About the user]\n{rendered}"
     assert f"[About the user]\n{rendered}\n" in brief_note(path, max_chars=10_000)
 
     version = current_core_memory(path)
-    assert [(i["topic"], i["since"], i["sources"]) for i in version.doc["关于你"]] == [
+    assert [(i["topic"], i["since"], i["sources"]) for i in version.doc["经历"]] == [
         ("name", "2026-09-01", []),
         (None, "2026-09-01", []),
         ("送餐地址", "2026-09-01", []),
@@ -106,10 +106,12 @@ def test_an_empty_store_renders_no_block_and_a_rendered_item_has_no_ids(tmp_path
     open_memory_db(path).close()
     assert render_context(path, exclude_id="").profile == ""
     remember_fact(path, "a", "1")
-    remember_fact(path, "b", "2", "偏好")
+    remember_fact(path, "b", "2", "兴趣和品味")
     doc = current_core_memory(path).doc
-    assert core_memory.render(doc) == "### 关于你\n- a: 1\n### 偏好\n- b: 2"
-    assert core_memory.numbered(doc) == "### 关于你\n[1] a: 1\n### 偏好\n[2] b: 2"
+    assert core_memory.render(doc) == "### 经历\n- a: 1\n### 兴趣和品味\n- b: 2"
+    assert core_memory.numbered(doc) == (
+        "### 经历 (6/4000)\n[1] a: 1\n### 兴趣和品味 (6/2000)\n[2] b: 2"
+    )
 
 
 def test_remember_replaces_the_same_topic_adds_a_new_one_and_honours_the_section(
@@ -119,16 +121,16 @@ def test_remember_replaces_the_same_topic_adds_a_new_one_and_honours_the_section
     path = tmp_path / "memory.db"
     set_user_name(path, "Ada")
     remember_fact(path, "送餐地址", "1 Test St")
-    remember_fact(path, "饮食偏好", "不吃香菜", "偏好")
+    remember_fact(path, "饮食偏好", "不吃香菜", "兴趣和品味")
     remember_fact(path, "送餐地址", "2 Sample Rd")  # replaced where it was
     assert _items(path) == {
-        "关于你": ["The user's name is Ada.", "送餐地址: 2 Sample Rd"],
-        "偏好": ["饮食偏好: 不吃香菜"],
+        "经历": ["The user's name is Ada.", "送餐地址: 2 Sample Rd"],
+        "兴趣和品味": ["饮食偏好: 不吃香菜"],
     }
     remember_fact(path, "饮食偏好", "不吃香菜和辣", "定下来的规矩")  # explicit section moves it
     remember_fact(path, "送餐地址", "3 Elm Ave")  # no section: stays where it is
     assert _items(path) == {
-        "关于你": ["The user's name is Ada.", "送餐地址: 3 Elm Ave"],
+        "经历": ["The user's name is Ada.", "送餐地址: 3 Elm Ave"],
         "定下来的规矩": ["饮食偏好: 不吃香菜和辣"],
     }
     set_user_name(path, "Bea")
@@ -153,7 +155,7 @@ def test_remember_replaces_the_same_topic_adds_a_new_one_and_honours_the_section
         },
     ]
     version = current_core_memory(path)
-    assert [i["since"] for i in version.doc["关于你"]] == [
+    assert [i["since"] for i in version.doc["经历"]] == [
         datetime.now().astimezone().date().isoformat()
     ] * 2
 
@@ -176,14 +178,14 @@ def test_keep_writes_a_fact_and_says_so(daily: DailyHarness) -> None:
     saved = daily.call("keep", {"kind": "fact", "topic": "老板", "text": "Sam"})
     assert saved["summary"] == 'Saved to long-term memory: "老板: Sam".'
     daily.call("keep", {"kind": "fact", "text": "口味 辣"})  # no topic: the text alone
-    assert _items(daily.memory) == {"关于你": ["老板: Sam", "口味 辣"]}
+    assert _items(daily.memory) == {"经历": ["老板: Sam", "口味 辣"]}
 
     again = daily.call("keep", {"kind": "fact", "topic": "老板", "text": "Sam"})
     assert again["summary"] == 'Already in long-term memory, nothing new: "老板: Sam".'
     assert len(_versions(daily.memory)) == 3  # migration + two writes
 
     daily.call("keep", {"kind": "fact", "topic": "老板", "text": "Tom"})  # the topic is replaced
-    assert _items(daily.memory) == {"关于你": ["老板: Tom", "口味 辣"]}
+    assert _items(daily.memory) == {"经历": ["老板: Tom", "口味 辣"]}
     too_long = daily.call("keep", {"kind": "fact", "text": "x" * 300})
     assert too_long["code"] == "too_long"
     assert len(_versions(daily.memory)) == 4
@@ -227,7 +229,7 @@ def _changes(*ops: dict[str, Any]) -> str:
     return json.dumps({"changes": list(ops)}, ensure_ascii=False)
 
 
-def _schedule(tmp_path: Path, model: _Consolidator, **core: int) -> DaySummarySchedule:
+def _schedule(tmp_path: Path, model: _Consolidator, **core: Any) -> DaySummarySchedule:  # noqa: ANN401
     log = tmp_path / "events.db"
     open_event_log(log).close()
     schedule = DaySummarySchedule(
@@ -260,8 +262,8 @@ def test_the_schedule_consolidates_each_day_in_order_after_the_summaries(tmp_pat
     model = _Consolidator()
     model.script[d4] = [
         _changes(
-            {"op": "add", "section": "偏好", "text": "喜欢咖啡", "sources": ["r1"]},
-            {"op": "add", "section": "正在做的事", "text": "写论文", "sources": ["r1"]},
+            {"op": "add", "section": "兴趣和品味", "text": "喜欢咖啡", "sources": ["r1"]},
+            {"op": "add", "section": "生活里的几件事", "text": "写论文", "sources": ["r1"]},
         ),
     ]
     model.script[d3] = [
@@ -282,10 +284,11 @@ def test_the_schedule_consolidates_each_day_in_order_after_the_summaries(tmp_pat
 
     assert model.asked == [d4, d3, d2]  # oldest first; day 1 has no summary; today is not past
     assert "[1] 城市: Victoria" in model.inputs[d4]
-    assert "### 偏好\n[2] 喜欢咖啡\n### 正在做的事\n[3] 写论文" in model.inputs[d3]
+    expected = "### 兴趣和品味 (6/2000)\n[2] 喜欢咖啡\n### 生活里的几件事 (5/7000)\n[3] 写论文"
+    assert expected in model.inputs[d3]
     assert f"[Summary of {d3}]\n## {d3} (the whole day, word for word)" in model.inputs[d3]
     assert f"r1 | {_stamp(3, 9)} | allen | 第3天说的话" in model.inputs[d3]
-    assert _items(path) == {"关于你": ["城市: Victoria"], "定下来的规矩": ["更喜欢 茶"]}
+    assert _items(path) == {"经历": ["城市: Victoria"], "定下来的规矩": ["更喜欢 茶"]}
     after = [v[:2] for v in _versions(path)]
     assert after == [
         ("migration", None),
@@ -311,7 +314,7 @@ def test_the_schedule_consolidates_each_day_in_order_after_the_summaries(tmp_pat
     assert current_core_memory(path).upto_day == d0
 
 
-def _bad_answers() -> dict[str, tuple[str, dict[str, int]]]:
+def _bad_answers() -> dict[str, tuple[str, dict[str, Any]]]:
     rid = "r1"
     stale = {"op": "stale", "item": 1, "sources": [rid]}
     return {
@@ -322,14 +325,17 @@ def _bad_answers() -> dict[str, tuple[str, dict[str, int]]]:
             {},
         ),
         "foreign record id": (
-            _changes({"op": "add", "section": "偏好", "text": "x", "sources": ["r2"]}),
+            _changes({"op": "add", "section": "兴趣和品味", "text": "x", "sources": ["r2"]}),
             {},
         ),
         "a real record id instead of a label": (
-            _changes({"op": "add", "section": "偏好", "text": "x", "sources": [_rid(3, 1)]}),
+            _changes({"op": "add", "section": "兴趣和品味", "text": "x", "sources": [_rid(3, 1)]}),
             {},
         ),
-        "no sources": (_changes({"op": "add", "section": "偏好", "text": "x", "sources": []}), {}),
+        "no sources": (
+            _changes({"op": "add", "section": "兴趣和品味", "text": "x", "sources": []}),
+            {},
+        ),
         "bad section": (
             _changes({"op": "add", "section": "其他", "text": "x", "sources": [rid]}),
             {},
@@ -342,8 +348,18 @@ def _bad_answers() -> dict[str, tuple[str, dict[str, int]]]:
             _changes(stale, {"op": "stale", "item": 2, "sources": [rid]}),
             {"max_stale": 1},
         ),
+        "over its section cap": (
+            _changes({"op": "add", "section": "身体", "text": "长" * 100, "sources": [rid]}),
+            {"section_caps": {**core_memory.SECTION_CAPS, "身体": 99}},
+        ),
+        "an ID number in 证件和硬期限": (
+            _changes(
+                {"op": "add", "section": "证件和硬期限", "text": "护照 E1234567", "sources": [rid]},
+            ),
+            {},
+        ),
         "over max_chars": (
-            _changes({"op": "add", "section": "偏好", "text": "长" * 100, "sources": [rid]}),
+            _changes({"op": "add", "section": "兴趣和品味", "text": "长" * 100, "sources": [rid]}),
             {"max_chars": 60},
         ),
     }
@@ -386,7 +402,7 @@ def test_sources_are_short_labels_in_time_order_and_stored_as_real_ids(tmp_path:
     d3 = _day(3).isoformat()
     model = _Consolidator()
     model.script[d3] = [
-        _changes({"op": "add", "section": "偏好", "text": "喜欢茶", "sources": ["r1", "r2"]}),
+        _changes({"op": "add", "section": "兴趣和品味", "text": "喜欢茶", "sources": ["r1", "r2"]}),
     ]
     _schedule(tmp_path, model).write(TODAY)
     assert (
@@ -394,7 +410,7 @@ def test_sources_are_short_labels_in_time_order_and_stored_as_real_ids(tmp_path:
         in (model.inputs[d3])
     )
     assert _rid(3, 1) not in model.inputs[d3]
-    assert current_core_memory(path).doc["偏好"][0]["sources"] == [_rid(3, 1), _rid(3, 2)]
+    assert current_core_memory(path).doc["兴趣和品味"][0]["sources"] == [_rid(3, 1), _rid(3, 2)]
     nightly = _versions(path)[-1]
     assert nightly[2][0]["sources"] == [_rid(3, 1), _rid(3, 2)]
 
@@ -425,7 +441,7 @@ def test_a_failing_day_stops_the_chain_and_the_next_run_resumes_from_it(tmp_path
     d4, d3, d2 = (_day(n).isoformat() for n in (4, 3, 2))
     model = _Consolidator()
     model.script[d4] = [
-        _changes({"op": "add", "section": "偏好", "text": "喜欢咖啡", "sources": ["r1"]}),
+        _changes({"op": "add", "section": "兴趣和品味", "text": "喜欢咖啡", "sources": ["r1"]}),
     ]
     model.script[d3] = [TimeoutError("provider unreachable")]
     schedule = _schedule(tmp_path, model)
@@ -465,7 +481,7 @@ def test_a_remember_during_the_call_makes_the_answer_stale(tmp_path: Path) -> No
     ]
     _schedule(tmp_path, model).write(TODAY)
     assert model.asked == [d3, d3]  # the first answer was refused; the retry saw both items
-    assert _items(path) == {"关于你": ["城市: Victoria", "口味: 辣"]}
+    assert _items(path) == {"经历": ["城市: Victoria", "口味: 辣"]}
     assert current_core_memory(path).upto_day == d3
 
 
@@ -475,7 +491,7 @@ def test_consolidation_is_off_without_a_core_memory_block() -> None:
     assert CoreMemorySettings.from_config({"preset": "p"}) is None
     on = CoreMemorySettings.from_config({"preset": "p", "prompt": " x "})
     assert on is not None
-    assert (on.prompt, on.max_chars, on.max_stale) == ("x", 4000, 5)
+    assert (on.prompt, on.max_chars, on.max_stale) == ("x", 40000, 5)
 
 
 # --- the Jev review gate --------------------------------------------------------
@@ -568,8 +584,8 @@ def test_jev_keeps_a_confident_keep_and_drops_only_the_rest_with_a_log(
     _days(path, 3)
     remember_fact(path, "城市", "Victoria")
     d3 = _day(3).isoformat()
-    kept = {"op": "add", "section": "偏好", "text": "HIGH 喜欢咖啡", "sources": ["r1"]}
-    unsure = {"op": "add", "section": "偏好", "text": "LOW 喜欢茶", "sources": ["r1"]}
+    kept = {"op": "add", "section": "兴趣和品味", "text": "HIGH 喜欢咖啡", "sources": ["r1"]}
+    unsure = {"op": "add", "section": "兴趣和品味", "text": "LOW 喜欢茶", "sources": ["r1"]}
     joke = {"op": "rewrite", "item": 1, "text": "JOKE 住在火星", "sources": ["r1"]}
     stale = {"op": "stale", "item": 1, "sources": ["r1"]}
     model = _Consolidator()
@@ -584,7 +600,7 @@ def test_jev_keeps_a_confident_keep_and_drops_only_the_rest_with_a_log(
         review_drop=True,
     ).write(TODAY)
 
-    assert _items(path) == {"关于你": ["城市: Victoria"], "偏好": ["HIGH 喜欢咖啡"]}
+    assert _items(path) == {"经历": ["城市: Victoria"], "兴趣和品味": ["HIGH 喜欢咖啡"]}
     logged = _versions(path)[-1][2]
     assert [c["op"] for c in logged] == ["add", "dropped", "dropped"]
     assert logged[1] == {
@@ -599,7 +615,7 @@ def test_jev_keeps_a_confident_keep_and_drops_only_the_rest_with_a_log(
     states = sorted(r["state"] for r in jev.requests)
     assert len(states) == 3
     joke_state = (
-        f"Section: 关于你\nItem: JOKE 住在火星\nCited lines:\n{_stamp(3, 9)} | allen | 第3天说的话"
+        f"Section: 经历\nItem: JOKE 住在火星\nCited lines:\n{_stamp(3, 9)} | allen | 第3天说的话"
     )
     assert joke_state in states
     assert _rid(3, 1) not in "".join(states)
@@ -627,7 +643,7 @@ def test_jev_keeps_a_confident_keep_and_drops_only_the_rest_with_a_log(
         review_drop=True,
     ).write(TODAY)
     assert jev.requests == []
-    assert _items(path) == {"偏好": ["HIGH 喜欢咖啡"]}
+    assert _items(path) == {"兴趣和品味": ["HIGH 喜欢咖啡"]}
 
 
 @pytest.mark.parametrize("failure", ["http", "no_key"])
@@ -643,7 +659,9 @@ def test_a_jev_failure_rejects_the_day_like_a_gate_and_stops_the_chain(
     d3, d2 = _day(3).isoformat(), _day(2).isoformat()
     model = _Consolidator()
     model.script[d3] = [
-        _changes({"op": "add", "section": "偏好", "text": "HIGH 喜欢咖啡", "sources": ["r1"]}),
+        _changes(
+            {"op": "add", "section": "兴趣和品味", "text": "HIGH 喜欢咖啡", "sources": ["r1"]},
+        ),
     ]
     if failure == "http":
         jev.status = 500
@@ -665,7 +683,7 @@ def test_a_jev_failure_rejects_the_day_like_a_gate_and_stops_the_chain(
     model.asked.clear()
     schedule.write(TODAY)
     assert model.asked == [d3, d2]
-    assert _items(path) == {"偏好": ["HIGH 喜欢咖啡"]}
+    assert _items(path) == {"兴趣和品味": ["HIGH 喜欢咖啡"]}
 
 
 def test_log_only_review_lands_every_change_and_stores_each_verdict(
@@ -677,7 +695,7 @@ def test_log_only_review_lands_every_change_and_stores_each_verdict(
     _days(path, 3)
     remember_fact(path, "城市", "Victoria")
     d3 = _day(3).isoformat()
-    kept = {"op": "add", "section": "偏好", "text": "HIGH 喜欢咖啡", "sources": ["r1"]}
+    kept = {"op": "add", "section": "兴趣和品味", "text": "HIGH 喜欢咖啡", "sources": ["r1"]}
     joke = {"op": "rewrite", "item": 1, "text": "JOKE 住在火星", "sources": ["r1"]}
     model = _Consolidator()
     model.script[d3] = [_changes(kept, joke)]
@@ -685,7 +703,7 @@ def test_log_only_review_lands_every_change_and_stores_each_verdict(
 
     _reviewed(tmp_path, model, jev.route(JevLog(jev_log)), review_min_confidence=0.9).write(TODAY)
 
-    assert _items(path) == {"关于你": ["JOKE 住在火星"], "偏好": ["HIGH 喜欢咖啡"]}
+    assert _items(path) == {"经历": ["JOKE 住在火星"], "兴趣和品味": ["HIGH 喜欢咖啡"]}
     logged = _versions(path)[-1][2]
     assert [c["op"] for c in logged] == ["add", "rewrite", "reviewed", "reviewed"]
     assert logged[2:] == [
@@ -709,7 +727,9 @@ def test_log_only_review_failure_lands_the_day_unreviewed(
     d3 = _day(3).isoformat()
     model = _Consolidator()
     model.script[d3] = [
-        _changes({"op": "add", "section": "偏好", "text": "HIGH 喜欢咖啡", "sources": ["r1"]}),
+        _changes(
+            {"op": "add", "section": "兴趣和品味", "text": "HIGH 喜欢咖啡", "sources": ["r1"]},
+        ),
     ]
     if failure == "http":
         jev.status = 500
@@ -719,7 +739,7 @@ def test_log_only_review_failure_lands_the_day_unreviewed(
     _reviewed(tmp_path, model, jev.route(), review_min_confidence=0.9).write(TODAY)
 
     assert model.asked == [d3]  # no retry: the day landed
-    assert _items(path) == {"偏好": ["HIGH 喜欢咖啡"]}
+    assert _items(path) == {"兴趣和品味": ["HIGH 喜欢咖啡"]}
     assert [c["op"] for c in _versions(path)[-1][2]] == ["add"]
     assert current_core_memory(path).upto_day == d3
 
@@ -731,11 +751,13 @@ def test_review_is_off_without_review_min_confidence(tmp_path: Path, jev: _Jev) 
     d3 = _day(3).isoformat()
     model = _Consolidator()
     model.script[d3] = [
-        _changes({"op": "add", "section": "偏好", "text": "JOKE 住在火星", "sources": ["r1"]}),
+        _changes(
+            {"op": "add", "section": "兴趣和品味", "text": "JOKE 住在火星", "sources": ["r1"]},
+        ),
     ]
     _reviewed(tmp_path, model, jev.route()).write(TODAY)
     assert jev.requests == []
-    assert _items(path) == {"偏好": ["JOKE 住在火星"]}
+    assert _items(path) == {"兴趣和品味": ["JOKE 住在火星"]}
 
     off = CoreMemorySettings.from_config({"preset": "p", "prompt": "x"})
     on = CoreMemorySettings.from_config(
@@ -793,12 +815,12 @@ def test_a_to_do_goes_stale_by_code_when_its_latest_date_is_not_after_the_day(
 
 
 def test_date_stale_touches_only_the_to_do_section_and_pins_remind_once() -> None:
-    """Section 正在做的事 is skipped; a pinned item is reminded only on the night it passes."""
+    """Only 承诺和待办 is swept; a pinned item is reminded only on the night it passes."""
     doc = _doc_with("交表 2026-10-03", "交稿 2026-10-03", pinned=("交稿 2026-10-03",))
-    doc["正在做的事"] = [{"text": "写论文,截至 2026-10-01", "topic": None, "sources": []}]
-    assert [c["item"] for c in date_stale(doc, "2026-10-03", None)] == [2, 3]  # [1] is 正在做的事
-    assert [c["item"] for c in date_stale(doc, "2026-10-03", "2026-10-02")] == [2, 3]
-    assert [c["item"] for c in date_stale(doc, "2026-10-04", "2026-10-03")] == [2]  # 3: no reminder
+    doc["生活里的几件事"] = [{"text": "写论文,截至 2026-10-01", "topic": None, "sources": []}]
+    assert [c["item"] for c in date_stale(doc, "2026-10-03", None)] == [1, 2]  # [3]: 生活里的几件事
+    assert [c["item"] for c in date_stale(doc, "2026-10-03", "2026-10-02")] == [1, 2]
+    assert [c["item"] for c in date_stale(doc, "2026-10-04", "2026-10-03")] == [1]  # 2: no reminder
     assert date_stale(doc, "2026-10-03", None)[0]["reason"] == "date passed (2026-10-03)"
 
 
@@ -818,7 +840,7 @@ def test_the_night_marks_past_dated_to_dos_stale_with_no_model_call_and_never_tw
         "已钉": f"{d1} 交表",
     }.items():
         remember_fact(path, topic, fact, "承诺和待办")
-    remember_fact(path, "论文", f"截至 {d1 - timedelta(days=1)} 写完", "正在做的事")
+    remember_fact(path, "论文", f"截至 {d1 - timedelta(days=1)} 写完", "生活里的几件事")
     with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
         base = core_memory.current(conn, "2026-01-01T00:00:00-07:00")
         pin = core_memory.copy.deepcopy(base.doc)
@@ -831,12 +853,12 @@ def test_the_night_marks_past_dated_to_dos_stale_with_no_model_call_and_never_tw
     schedule = _schedule(tmp_path, model)
 
     schedule.write(TODAY)  # day 1 lands
-    assert _items(path)["承诺和待办"] == [
+    assert _items(path)["承诺和待办"] == [  # the pinned one ranks first
+        "已钉: " + f"{d1} 交表",
         "之后: " + f"{d1} 吃饭,{d0} 看电影",
         "无日期: 买牛奶",
-        "已钉: " + f"{d1} 交表",
     ]
-    assert _items(path)["正在做的事"] == [f"论文: 截至 {d1 - timedelta(days=1)} 写完"]
+    assert _items(path)["生活里的几件事"] == [f"论文: 截至 {d1 - timedelta(days=1)} 写完"]
     nightly = [v for v in _versions(path) if v[0] == "nightly"]
     assert [v[1] for v in nightly] == [d1.isoformat()]  # one version, upto_day intact
     ops = [(c["op"], c.get("reason")) for c in nightly[0][2]]
@@ -853,3 +875,76 @@ def test_the_night_marks_past_dated_to_dos_stale_with_no_model_call_and_never_tw
     nightly = [v for v in _versions(path) if v[0] == "nightly"]
     assert nightly[-1][2] == []
     assert len(model.asked) == 3  # the model was asked for each day, never for a stale
+
+
+def test_a_version_with_the_old_six_names_loads_into_the_eleven_without_losing_an_item(
+    tmp_path: Path,
+) -> None:
+    """ADR 0258: the four renamed sections map one to one, the other two keep their names."""
+    path = tmp_path / "memory.db"
+    old = {
+        "关于你": ["a"], "偏好": ["b"], "常提到的人": ["c"], "正在做的事": ["d"],
+        "定下来的规矩": ["e"], "承诺和待办": ["f"],
+    }
+    raw: dict[str, Any] = {
+        "sections": {
+            s: [{"text": t, "topic": None, "sources": [], "since": "x"} for t in ts]
+            for s, ts in old.items()
+        },
+    }
+    with closing(open_memory_db(path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO core_memory (id, ts, base_id, origin, upto_day, doc, changes, chars) "
+            "VALUES ('core:old', ?, NULL, 'nightly', NULL, ?, '[]', 0)",
+            (LEGACY_TS, json.dumps(raw, ensure_ascii=False)),
+        )
+    assert _items(path) == {
+        "经历": ["a"], "兴趣和品味": ["b"], "身边的人": ["c"], "生活里的几件事": ["d"],
+        "定下来的规矩": ["e"], "承诺和待办": ["f"],
+    }
+
+
+def test_a_section_lists_pinned_items_first_then_the_newest_and_numbers_follow() -> None:
+    """Rank: pinned, then most recent ``since``; ``numbered`` and ``listing`` agree."""
+    doc = core_memory.empty_doc()
+    doc["身边的人"] = [
+        {"text": "old", "topic": None, "sources": [], "since": "2026-01-01"},
+        {"text": "new", "topic": None, "sources": [], "since": "2026-03-01"},
+        {"text": "pin", "topic": None, "sources": [], "since": "2026-02-01", "pinned": True},
+    ]
+    ranked = core_memory.apply_changes(doc, [], "2026-04-01")
+    assert [i["text"] for i in ranked["身边的人"]] == ["pin", "new", "old"]
+    assert core_memory.numbered(ranked) == (
+        "### 身边的人 (17/10000)\n[1] (pinned) pin\n[2] new\n[3] old"
+    )
+    assert [item["text"] for _s, item, _i in core_memory.listing(ranked)] == ["pin", "new", "old"]
+
+
+def test_a_rewrite_keeps_the_old_wording_with_the_day_it_held(tmp_path: Path) -> None:
+    """Nightly rewrite and a same-topic ``remember`` both leave ``history`` on the item."""
+    path = tmp_path / "memory.db"
+    remember_fact(path, "城市", "Victoria")
+    first = current_core_memory(path).doc["经历"][0]
+    remember_fact(path, "城市", "Seattle")
+    item = current_core_memory(path).doc["经历"][0]
+    assert item["text"] == "城市: Seattle"
+    assert item["history"] == [{"text": "城市: Victoria", "since": first["since"]}]
+
+    doc = core_memory.apply_changes(
+        current_core_memory(path).doc,
+        [{"op": "rewrite", "item": 1, "text": "城市: Tacoma", "sources": ["x"]}],
+        "2026-10-20",
+    )
+    rewritten = doc["经历"][0]
+    assert [h["text"] for h in rewritten["history"]] == ["城市: Victoria", "城市: Seattle"]
+    assert rewritten["history"][1]["since"] == item["since"]
+    assert "Victoria" not in core_memory.render(doc)  # the prompt shows the current wording only
+
+
+def test_a_date_is_not_an_id_number_but_a_long_run_of_digits_is() -> None:
+    """证件和硬期限 refuses 6 or more digits in a row, dates apart; other sections do not."""
+    core_memory.check_item("证件和硬期限", "护照 2026-10-15 到期")
+    core_memory.check_item("证件和硬期限", "签证 2026/10/15 到期, 申请号 12345")
+    core_memory.check_item("钱", "卡号 1234567890")
+    with pytest.raises(ValueError, match="dates only"):
+        core_memory.check_item("证件和硬期限", "护照 123456")
