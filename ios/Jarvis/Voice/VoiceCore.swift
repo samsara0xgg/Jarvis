@@ -138,6 +138,25 @@ private func unitCost(_ c: Unicode.Scalar) -> Double {
 
 enum OverHer: Equatable { case echo, backchannel, tooShort, barge }
 
+/// His last spoken say, kept so that words which start soon after it and go on from it can name it. Only the id is kept, never the words: the host puts
+/// the segments together (ADR 0271), so each say carries just what was newly said and a thought of three says is never sent as three growing copies.
+struct SayChain: Equatable {
+    private(set) var id: String?
+    private(set) var endedAt = 0.0
+
+    /// His utterance ended at `t`; the say that follows names it.
+    mutating func ended(at t: Double) { endedAt = t }
+    /// The spoken say with this id was sent.
+    mutating func said(_ id: String) { self.id = id }
+    /// Nothing before this is a sentence the next words could go on from (typed words, or listening began afresh).
+    mutating func clear() { id = nil }
+    /// The id the words that start at `t` go on from: his last say, if they start within `window` seconds of its end.
+    func continues(at t: Double, within window: Double) -> String? {
+        guard let id, t - endedAt < window else { return nil }
+        return id
+    }
+}
+
 /// Only nods: one from the list, or nod characters over and over (嗯嗯嗯嗯, 好的好的).
 private let nodChars: Set<Character> = ["嗯", "对", "是", "的", "好", "哦", "噢", "喔", "啊", "行"]
 func isNod(_ squashed: String) -> Bool {
@@ -158,6 +177,15 @@ func judgeOverHer(_ text: String, hers: String, judged: String) -> OverHer {
 
 #if DEBUG || VOICE_HARNESS
 func demoVoiceCore() {
+    // a thought in three says: each names the one before and none carries more than its own words
+    var chain = SayChain()
+    assert(chain.continues(at: 0, within: 4) == nil)
+    chain.ended(at: 1); chain.said("a")
+    assert(chain.continues(at: 4.9, within: 4) == "a" && chain.continues(at: 5.1, within: 4) == nil)
+    chain.ended(at: 5); chain.said("b")
+    assert(chain.continues(at: 6, within: 4) == "b")
+    chain.clear()
+    assert(chain.continues(at: 6, within: 4) == nil)
     assert(speechUnits("你好") == 2 && abs(speechUnits("Hi，") - 0.75) < 1e-9)
     assert(speechPrefix("你好 Allen。", 2) == "你好" && speechPrefix("你好 Allen。", 3.7) == "你好 Allen" && speechPrefix("你好", 0.5) == "" && speechPrefix("你好", 9) == "你好")
     // words over her voice: the 10-10 leak ("我看一下日程" heard while she said it), nods, a stop word, a real interruption

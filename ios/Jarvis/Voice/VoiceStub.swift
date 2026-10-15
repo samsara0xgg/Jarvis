@@ -31,7 +31,7 @@ final class LocalStubLink: VoiceLink {
     }
 
     func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
-             about: [String: Any]?, attachments: [String], timeout: Double) async throws -> SayResult {
+             about: [String: Any]?, attachments: [String], continues: String?, timeout: Double) async throws -> SayResult {
         turns += 1
         let turn = "stub-\(turns)"
         let zh = language.map { $0 == .zh } ?? text.unicodeScalars.contains { $0.value >= 0x2E80 }

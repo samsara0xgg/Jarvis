@@ -37,6 +37,16 @@ final class TurnStatusTests: XCTestCase {
         XCTAssertEqual(PhoneFrame(files.json), files)
     }
 
+    func testASayThatGoesOnNamesTheOneBeforeAndAnOlderHostSeesTheSayItKnows() throws {
+        let plain = try XCTUnwrap(JSONSerialization.jsonObject(with: PhoneFrame.say(utteranceId: "u", text: "x", language: nil, confidence: nil, spoken: true, overHer: true).json) as? [String: Any])
+        XCTAssertNil(plain["continues"], "no earlier say: no key")
+        let more = PhoneFrame.say(utteranceId: "u2", text: "往39路的地方走", language: "zh", confidence: 0.9, spoken: true, overHer: true, continues: "u1")
+        let o = try XCTUnwrap(JSONSerialization.jsonObject(with: more.json) as? [String: Any])
+        XCTAssertEqual(o["continues"] as? String, "u1")
+        XCTAssertEqual(o["text"] as? String, "往39路的地方走", "only the new words")
+        XCTAssertEqual(PhoneFrame(more.json), more)
+    }
+
     func testTheHostsWordsAboutFilesAreErrorsTheLinkTellsApart() {
         XCTAssertEqual(HostFrame(Data(#"{"type":"error","code":"attachment_refused","message":"文件太大了"}"#.utf8)), .error(code: "attachment_refused", message: "文件太大了"))
         XCTAssertEqual(TypedSend.of(LinkError.refused("文件太大了")), .refused("文件太大了"), "the store's sentence is shown as it is")
@@ -256,13 +266,13 @@ final class TurnStatusTests: XCTestCase {
         let events: AsyncStream<LinkEvent>
         let out: AsyncStream<LinkEvent>.Continuation
         var outcomes: [Result<SayResult, LinkError>]
-        private(set) var says: [(id: String, files: [String])] = []
+        private(set) var says: [(id: String, files: [String], text: String, continues: String?)] = []
         init(_ outcomes: [Result<SayResult, LinkError>]) { self.outcomes = outcomes; (events, out) = AsyncStream.makeStream(of: LinkEvent.self) }
         func connect() { out.yield(.ready(device: "phone", voice: true, sampleRate: kWireRate, judges: true)) }
         func disconnect() {}
         func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
-                 about: [String: Any]?, attachments: [String], timeout: Double) async throws -> SayResult {
-            says.append((utteranceId, attachments))
+                 about: [String: Any]?, attachments: [String], continues: String?, timeout: Double) async throws -> SayResult {
+            says.append((utteranceId, attachments, text, continues))
             return try outcomes.removeFirst().get()
         }
         func barge() {}
@@ -310,6 +320,31 @@ final class TurnStatusTests: XCTestCase {
         let old = await c.sendTyped(utterance: "u1", text: "hi", attachments: [], about: nil)
         XCTAssertEqual(old, .useSubmit)
         XCTAssertEqual(boardC.turn?.utterance, "u1", "the board's turn waits for the other route to be taken")
+    }
+
+    /// Live 2026-10-14 21:36: the phone sent one long thought as cumulative transcripts and it was answered eight times. Each say is now only the new segment, naming the one before.
+    @MainActor func testAThoughtOfThreeSaysIsSentAsThreeSegmentsEachNamingTheOneBefore() async throws {
+        let (link, fake, _) = line([.success(("T1", "turn", nil)), .success(("T2", "turn", nil)), .success(("T3", "turn", nil)), .success(("T4", "turn", nil))])
+        let parts = ["我现在在。", "往39路的地方走", "到学校门口那站"]
+        var chain = SayChain()
+        var t = 0.0
+        for (i, words) in parts.enumerated() {
+            let id = "u\(i + 1)"
+            let continues = chain.continues(at: t, within: 4)
+            _ = try await link.say(utteranceId: id, text: words, language: .zh, confidence: nil, spoken: true, overHer: true, conversation: false, about: nil, continues: continues, timeout: 1)
+            chain.ended(at: t); chain.said(id)
+            t += 2
+        }
+        XCTAssertEqual(fake.says.map(\.text), parts, "never the words so far")
+        XCTAssertEqual(fake.says.map(\.continues), [nil, "u1", "u2"])
+        // 4 s of quiet after the last: a new sentence, not a continuation
+        let late = chain.continues(at: t + 4, within: 4)
+        XCTAssertNil(late)
+        _ = try await link.say(utteranceId: "u4", text: "几点了", language: .zh, confidence: nil, spoken: true, overHer: true, conversation: false, about: nil, continues: late, timeout: 1)
+        XCTAssertNil(fake.says.last?.continues)
+        chain.said("u4")
+        chain.clear()
+        XCTAssertNil(chain.continues(at: t, within: 4), "typed words and a fresh listening start no continuation")
     }
 
     @MainActor func testWithoutAPairingThereIsNoLineAndTheOtherRouteIsTheOnlyOne() async {

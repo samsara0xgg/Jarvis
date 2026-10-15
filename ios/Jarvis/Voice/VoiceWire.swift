@@ -166,7 +166,8 @@ enum PhoneFrame: Equatable, Sendable {
     case hello
     case say(utteranceId: String, text: String, language: String?, confidence: Double?, spoken: Bool, overHer: Bool = false, conversation: Bool = false,
              about: Data? = nil,                        // the item he has open (ADR 0214), as JSON
-             attachments: [String] = [])                // ids from POST /inherent/attachments; typed words only
+             attachments: [String] = [],                // ids from POST /inherent/attachments; typed words only
+             continues: String? = nil)                  // the utterance id of the spoken say these words go on from (ADR 0271); never its words
     case barge
     case cancel
     case ping(tNs: Int64)
@@ -175,13 +176,14 @@ enum PhoneFrame: Equatable, Sendable {
         var o: [String: Any]
         switch self {
         case .hello: o = ["type": "hello", "voice": true]
-        case .say(let id, let text, let lang, let conf, let spoken, let overHer, let conversation, let about, let attachments):
+        case .say(let id, let text, let lang, let conf, let spoken, let overHer, let conversation, let about, let attachments, let continues):
             o = ["type": "say", "utterance_id": id, "text": text, "spoken": spoken]
             if !attachments.isEmpty { o["attachments"] = attachments }
             if let lang { o["language"] = lang }
             if let conf { o["confidence"] = conf }
             if overHer { o["over_her"] = true }                 // only meaningful with spoken
             if conversation { o["conversation"] = true }
+            if let continues { o["continues"] = continues }
             if let about, let a = try? JSONSerialization.jsonObject(with: about) { o["about"] = a }
         case .barge: o = ["type": "barge"]
         case .cancel: o = ["type": "cancel"]
@@ -199,7 +201,7 @@ enum PhoneFrame: Equatable, Sendable {
             self = .say(utteranceId: id, text: text, language: o["language"] as? String, confidence: (o["confidence"] as? NSNumber)?.doubleValue, spoken: spoken,
                          overHer: o["over_her"] as? Bool ?? false, conversation: o["conversation"] as? Bool ?? false,
                          about: (o["about"] as? [String: Any]).flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) },
-                         attachments: o["attachments"] as? [String] ?? [])
+                         attachments: o["attachments"] as? [String] ?? [], continues: o["continues"] as? String)
         case "barge": self = .barge
         case "cancel": self = .cancel
         case "ping": guard let t = (o["t_ns"] as? NSNumber)?.int64Value else { return nil }; self = .ping(tNs: t)
@@ -292,12 +294,14 @@ func demoVoiceWire() {
                                .say(utteranceId: "u2", text: "hi", language: nil, confidence: nil, spoken: false),
                                .say(utteranceId: "u3", text: "等一下", language: "zh", confidence: 0.8, spoken: true, overHer: true, conversation: true),
                                .say(utteranceId: "u4", text: "这个几点", language: "zh", confidence: 0.9, spoken: true, about: Data(#"{"id":"r1","kind":"reminder","start_ms":1,"title":"t"}"#.utf8)),
-                               .say(utteranceId: "u5", text: "", language: nil, confidence: nil, spoken: false, attachments: ["a1", "b2"]), .barge, .cancel, .ping(tNs: 1_234_567_890_123)]
+                               .say(utteranceId: "u5", text: "", language: nil, confidence: nil, spoken: false, attachments: ["a1", "b2"]),
+                               .say(utteranceId: "u6", text: "往39路的地方走", language: "zh", confidence: nil, spoken: true, overHer: true, continues: "u1"), .barge, .cancel, .ping(tNs: 1_234_567_890_123)]
     for f in phone { assert(PhoneFrame(f.json) == f, "\(f)") }
     // the flags go on the wire only when true
     let plain = (try? JSONSerialization.jsonObject(with: PhoneFrame.say(utteranceId: "u", text: "x", language: nil, confidence: nil, spoken: true).json)) as? [String: Any]
     assert(plain?["over_her"] == nil && plain?["conversation"] == nil)
     assert(plain?["attachments"] == nil, "no files: no key, so an older host sees the say it knows")
+    assert(plain?["continues"] == nil, "no earlier say: no key")
     let flagged = (try? JSONSerialization.jsonObject(with: phone[3].json)) as? [String: Any]
     assert(flagged?["over_her"] as? Bool == true && flagged?["conversation"] as? Bool == true)
     let row = RowFrame(eventType: "surface.response_chunk", eventUid: String(repeating: "a", count: 32),

@@ -82,7 +82,7 @@ final class VoiceSession {
     @ObservationIgnored private var startedAt = 0.0
     @ObservationIgnored private var lastWordAt = 0.0
     @ObservationIgnored private var wakeTurn = false
-    @ObservationIgnored private var sayAt = 0.0
+    @ObservationIgnored private var chain = SayChain()               // his last spoken say, for words that go on from it
     @ObservationIgnored private var lastActivityAt = 0.0
     @ObservationIgnored private var playedAtSay: UInt64 = 0
     // the turn being answered
@@ -358,17 +358,19 @@ final class VoiceSession {
                 goIdle(releasing: false)
                 return
             }
-            // A pause cut his sentence: what he says right after his last words goes on from them (live 2026-10-10: 「我现在在。」|「往39路的地方走」).
-            if heldAt - sayAt < continueWindow, !transcript.isEmpty, !typedTurn { text = transcript + text; VoiceTrace.note("held words go on from his last: joined") }
+            // A pause cut his sentence: what he says right after his last words goes on from them (live 2026-10-10: 「我现在在。」|「往39路的地方走」). The say names
+            // the earlier one and carries only these words; the host puts the thought together (ADR 0271).
+            let continues = typedTurn ? nil : chain.continues(at: heldAt, within: continueWindow)
+            if continues != nil { VoiceTrace.note("held words go on from his last say") }
             VoiceTrace.note("judging over her: \(text.count) chars")
             let r: SayResult
-            do { r = try await PhoneLink.shared.say(utteranceId: id, text: text, language: lang, confidence: picked.confidence, spoken: true, overHer: true, conversation: false, about: AboutNow.current?.json, timeout: judgeTimeout) }
+            do { r = try await PhoneLink.shared.say(utteranceId: id, text: text, language: lang, confidence: picked.confidence, spoken: true, overHer: true, conversation: false, about: AboutNow.current?.json, continues: continues, timeout: judgeTimeout) }
             catch {
                 guard seq == turnSeq, held else { return }
                 VoiceTrace.note("judge timed out: turn (\(error.localizedDescription))")
                 link.barge()
                 takeOver(text, lang)
-                say(text, lang: lang, confidence: picked.confidence, spoken: true, utteranceId: id)
+                say(text, lang: lang, confidence: picked.confidence, spoken: true, utteranceId: id, continues: continues)
                 startSegment()
                 return
             }
@@ -381,13 +383,13 @@ final class VoiceSession {
             default:
                 if let turn = r.turnId {
                     takeOver(text, lang)
-                    sayAt = now; lastActivityAt = now
+                    chain.ended(at: now); chain.said(id); lastActivityAt = now
                     currentTurn = turn
                     startSegment()
                 } else {                                    // a turn with no id: the host did not write it down, so say it again
                     link.barge()
                     takeOver(text, lang)
-                    say(text, lang: lang, confidence: picked.confidence, spoken: true, utteranceId: id)
+                    say(text, lang: lang, confidence: picked.confidence, spoken: true, utteranceId: id, continues: continues)
                     startSegment()
                 }
             }
@@ -455,6 +457,7 @@ final class VoiceSession {
         lastWordAt = now
         errorText = missingNote
         transcript = ""
+        chain.clear()
     }
 
     /// He spoke over her (or tapped): stop her audio here at once, tell the host, listen.
@@ -476,7 +479,7 @@ final class VoiceSession {
         let wakeTurn = wakeTurn
         self.wakeTurn = false
         set(.thinking)
-        sayAt = now
+        chain.ended(at: now)
         waitUntil = 0                                       // he spoke: the wait is over
         lastActivityAt = now                                // the no-reply clock starts here, not at the last turn (the finals take a moment)
         playedAtSay = audio.core?.playedSamples ?? 0        // her earlier replies are not this turn's audio: thinking stays thinking until new audio plays
@@ -513,12 +516,14 @@ final class VoiceSession {
     }
 
     /// Send the words and start following the turn the host opens for them.
-    private func say(_ text: String, lang: VoiceLang?, confidence: Double?, spoken: Bool, utteranceId: String = UUID().uuidString, conversation: Bool = false) {
+    private func say(_ text: String, lang: VoiceLang?, confidence: Double?, spoken: Bool, utteranceId: String = UUID().uuidString, conversation: Bool = false,
+                     continues: String? = nil) {
         endTurn()
         awaitingSaid = true
         typedTurn = !spoken
         reply = ""
-        sayAt = now
+        chain.ended(at: now)
+        if spoken { chain.said(utteranceId) } else { chain.clear() }
         lastActivityAt = now
         PhoneLink.shared.ensure()
         let seq = turnSeq
@@ -526,11 +531,11 @@ final class VoiceSession {
         Task {
             do {
                 var r: SayResult
-                do { r = try await PhoneLink.shared.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: conversation, about: AboutNow.current?.json, timeout: conversation ? judgeTimeout : 10) }
+                do { r = try await PhoneLink.shared.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: conversation, about: AboutNow.current?.json, continues: continues, timeout: conversation ? judgeTimeout : 10) }
                 catch LinkError.timeout where conversation {
                     VoiceTrace.note("judge timed out: turn")
                     guard seq == turnSeq else { return }
-                    r = try await PhoneLink.shared.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: false, about: AboutNow.current?.json, timeout: 10)
+                    r = try await PhoneLink.shared.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: false, about: AboutNow.current?.json, continues: continues, timeout: 10)
                 }
                 guard seq == turnSeq else { return }
                 if conversation {
