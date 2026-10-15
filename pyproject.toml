@@ -38,6 +38,7 @@ dependencies = [
     "gtfs-realtime-bindings>=3.0.0",
     "ruamel-yaml>=0.19.1",
     "tokenizers",         # ADR 0260 — multilingual-e5-small tokenizer for search by meaning
+    "pypdf",              # ADR 0259 — pure-Python text of the Bank of China statement PDF; the Pi has no poppler
 ]
 
 [project.optional-dependencies]

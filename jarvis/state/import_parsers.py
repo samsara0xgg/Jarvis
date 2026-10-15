@@ -26,6 +26,9 @@ from typing import TYPE_CHECKING, Any, Final
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
 
+from pypdf import PdfReader
+from pypdf.errors import PyPdfError
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
@@ -286,8 +289,146 @@ def alipay(_name: str, data: bytes, _fallback_ms: int) -> Iterator[Parsed]:
             yield parsed
 
 
+# --- the Bank of China debit statement (交易流水明细清单 PDF) ---------------------------------
+
+_BOC_ROW: Final = re.compile(
+    r"^\s*(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(\S+)\s+(-?[\d,]+\.\d{2})\s+"
+    r"(-?[\d,]+\.\d{2})\s+(\S+)\s+(\S+)(?:\s+(.*))?$",
+)
+_BOC_PAGE_WORDS: Final = (
+    "交易区间", "客户姓名", "借记卡号", "账号", "页数", "行数", "打印时间", "交易流水明细",
+    "记账日期", "END",
+)
+_BOC_MAX_ACCOUNT: Final = 8
+_BOC_CURRENCY: Final = {"人民币": "CNY"}
+
+
+def _boc_cells(tokens: list[list[Any]]) -> tuple[str, str]:
+    """``(text, short account)`` of a row's tail: cells split where the gap is 2+ spaces.
+
+    A ``-----`` placeholder is empty. Digit runs of nine or more are dropped everywhere, and the
+    last cell, when it is one word after another cell, is the counterparty's account: kept only
+    if it is short (ADR 0259: never a long card or account number).
+    """
+    cells: list[str] = []
+    for start, _end, text, gap in tokens:
+        del start
+        if gap >= 2 or not cells:  # noqa: PLR2004 - two spaces split cells
+            cells.append(text)
+        else:
+            cells[-1] += f" {text}"
+    cells = [
+        c for c in (re.sub(r"\d{9,}", "", re.sub(r"^-{5,}|-{5,}$", "", c)).strip() for c in cells)
+        if c
+    ]
+    account = ""
+    if len(cells) >= 2 and " " not in cells[-1]:  # noqa: PLR2004
+        last = cells.pop()
+        account = last if len(last) <= _BOC_MAX_ACCOUNT else ""
+    return " ".join(cells), account
+
+
+def _boc_row(line: str, number: int) -> tuple[re.Match[str], list[list[Any]]] | None:
+    found = _BOC_ROW.match(line)
+    if found is None:
+        return None
+    tokens: list[list[Any]] = []
+    end = None
+    for word in re.finditer(r"\S+", line[found.start(8) :] if found.group(8) else ""):
+        dashes = re.match(r"-{5,}(?=.)", word.group())  # a placeholder glued to the next cell
+        start = found.start(8) + word.start() + (dashes.end() if dashes else 0)
+        stop = found.start(8) + word.end()
+        tokens.append([start, stop, word.group(), 2 if end is None else start - end])
+        end = stop
+    del number
+    return found, tokens
+
+
+def _boc_continue(tokens: list[list[Any]], line: str) -> None:
+    """Join the fragments of a wrapped cell onto the end of the cell they sit under.
+
+    A wrapped chunk starts at its cell's left edge, so a fragment belongs to the cell that starts
+    at its column: the words from the one under it up to the one under the next fragment (or the
+    end of that run of words). A fragment under no word is joined onto the last word.
+    """
+    found = [(w.start(), w.group()) for w in re.finditer(r"\S+", line)]
+    under: list[int | None] = []
+    for column, _text in found:
+        near = [(abs(t[0] - column), i) for i, t in enumerate(tokens) if abs(t[0] - column) <= 2]  # noqa: PLR2004
+        under.append(min(near)[1] if near else None)
+    for n, (_column, text) in enumerate(found):
+        first = under[n]
+        if first is None:
+            if tokens:
+                tokens[-1][2] += text
+            continue
+        later = next((u for u in under[n + 1 :] if u is not None), None)
+        last = later - 1 if later is not None else first
+        while later is None and last + 1 < len(tokens) and tokens[last + 1][3] < 2:  # noqa: PLR2004
+            last += 1
+        tokens[max(first, last)][2] += text
+
+
+def boc_text(text: str) -> Iterator[Parsed]:
+    """The entries of a statement's layout text.
+
+    A row starts at its date and time; page headers (with his name, card and account) are skipped
+    and never stored.
+    """
+    rows: list[tuple[re.Match[str], list[list[Any]], int]] = []
+    open_row = False
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            open_row = False
+        elif (row := _boc_row(line, number)) is not None:
+            rows.append((*row, number))
+            open_row = True
+        elif any(word in line for word in _BOC_PAGE_WORDS):
+            open_row = False
+        elif open_row:
+            _boc_continue(rows[-1][1], line)
+    for found, tokens, number in rows:
+        day, clock, currency, signed, balance, kind, channel, _ = found.groups()
+        local = datetime.strptime(f"{day} {clock}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=_CHINA)
+        fen = _fen(signed)
+        left = _fen(balance)
+        if fen is None or left is None:
+            continue
+        way = "out" if fen < 0 else "in" if fen > 0 else "neutral"
+        who, account = _boc_cells(tokens)
+        verb = {"out": "paid", "in": "received", "neutral": "moved"}[way]
+        words = f" {'to' if way == 'out' else 'from'} {who}" if who else ""
+        fields = {
+            "amount_fen": abs(fen), "balance_fen": left,
+            "currency": _BOC_CURRENCY.get(currency, currency),
+            "direction": way, "counterparty": who, "item": kind, "channel": channel,
+            "status": "", "method": "", "order": "", "counts": True,
+        }
+        if account:
+            fields["account"] = account
+        yield Parsed(
+            "boc", f"{day} {clock} {signed.replace(',', '')} {balance.replace(',', '')}",
+            f"line {number}", _ms(local), CHINA, "payment",
+            f"{verb} {fields['currency']} {money(abs(fen))}{words}: {kind}", fields,
+        )
+
+
+def boc(_name: str, data: bytes, _fallback_ms: int) -> Iterator[Parsed]:
+    """The Bank of China debit statement PDF. An encrypted copy is kept raw and gives no entries."""
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        if reader.is_encrypted:
+            return
+        text = "\n".join(page.extract_text(extraction_mode="layout") for page in reader.pages)
+    except PyPdfError as exc:
+        msg = "not a readable PDF"
+        raise ValueError(msg) from exc
+    yield from boc_text(text)
+
+
 PARSERS: Final[dict[str, Callable[[str, bytes, int], Iterator[Parsed]]]] = {
     "wechat_pay": wechat_pay,
     "alipay": alipay,
+    "boc": boc,
 }
 """Sources that are one file each. ``claude`` is a directory of files, read by :func:`claude`."""

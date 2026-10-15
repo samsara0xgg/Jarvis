@@ -20,6 +20,7 @@ from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import pytest
+from pypdf import PdfWriter
 
 from jarvis.deployment import data
 from jarvis.execution.archive_tool import build_archive_tool
@@ -28,6 +29,7 @@ from jarvis.runtime import JarvisRuntime, inherent_loop
 from jarvis.state import imports
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.event_log import open_event_log
+from jarvis.state.import_parsers import boc_text
 from jarvis.state.memory_db import open_memory_db
 
 CLAUDE = Path(__file__).resolve().parents[1] / "fixtures" / "imports" / "claude_export"
@@ -261,7 +263,7 @@ def test_the_imports_directory_is_outside_sweep_clear_and_export(tmp_path: Path)
     kept = tmp_path / imports.IMPORTS_DIRNAME
     assert not any(d == kept or kept in d.parents or d in kept.parents for d in media)
     assert len(list((kept / "wechat_pay").iterdir())) == 1
-    assert json.loads(json.dumps(sorted(imports.SOURCES))) == ["alipay", "claude", "wechat_pay"]
+    assert json.loads(json.dumps(sorted(imports.SOURCES))) == ["alipay", "boc", "claude", "wechat_pay"]
 
 
 FAKE_KEYS = [
@@ -324,3 +326,104 @@ def test_the_tool_shows_a_china_time_in_his_zone_not_as_written(tmp_path: Path) 
     assert shown["when"] == "Sun Oct 11, 4:41 pm"
     assert "description" not in shown
     assert "time (in the same time zone as the rest of your context)" in _tool(tmp_path).description
+
+
+# --- the Bank of China debit statement ----------------------------------------------------------
+
+_BOC_ROW = (
+    "      2026-03-04        10:11:12        人民币                -105.68         3,525.63  "
+    "网上快捷支付          银企对接       -------------------财付通-Some Shop Na 财付通-Some Shop Nam     Z123N"
+)
+_WRAP = " " * _BOC_ROW.index("财付通-Some Shop Na ") + "me" + " " * (
+    _BOC_ROW.index("财付通-Some Shop Nam ") - _BOC_ROW.index("财付通-Some Shop Na ") - 2
+) + "e"
+BOC_LAYOUT = f"""\
+                        中国银行借记卡交易流水明细清单
+ 交易区间: 2026-03-01 至 2026-03-31         客户姓名: 测试用户
+ 借记卡号: 6200000000000000000   账号: 123456789012345678       页数: 1/1   行数: 4   打印时间: 2026-04-01
+ 记账日期   记账时间   币别   金额   余额   交易名称   渠道   网点名称   附言   对方账户名   对方卡号/账号
+{_BOC_ROW}
+{_WRAP}
+      2026-03-05        09:00:00        人民币               2,000.00         5,525.63  工资                  ----------     ----------          Acme Payroll    6222000011112222333
+      2026-03-31        00:00:01        人民币                   0.45         5,526.08  结息                  ----------     ----------          ----------      ----------
+                                                          --------------------END--------------------
+"""
+
+
+def test_the_bank_statement_layout_is_read_row_by_row_without_his_card_or_account() -> None:
+    """Signed amounts, China time, wrapped cells joined, placeholders empty, no long digits kept."""
+    rows = list(boc_text(BOC_LAYOUT))
+
+    assert [(r.fields["direction"], r.fields["amount_fen"], r.fields["balance_fen"]) for r in rows] == [
+        ("out", 10568, 352563), ("in", 200000, 552563), ("in", 45, 552608),
+    ]
+    shop, pay, interest = rows
+    assert datetime.fromtimestamp(shop.at_ms / 1000, UTC) == datetime(2026, 3, 4, 2, 11, 12, tzinfo=UTC)
+    assert (shop.zone, shop.source, shop.kind, shop.fields["counts"]) == ("Asia/Shanghai", "boc", "payment", True)
+    assert shop.key == "2026-03-04 10:11:12 -105.68 3525.63"
+    assert shop.fields["counterparty"] == "财付通-Some Shop Name 财付通-Some Shop Name"
+    assert shop.fields["account"] == "Z123N"
+    assert shop.text == "paid CNY 105.68 to 财付通-Some Shop Name 财付通-Some Shop Name: 网上快捷支付"
+    assert pay.fields["counterparty"] == "Acme Payroll"
+    assert "account" not in pay.fields  # a 19-digit number is not kept
+    assert (interest.fields["item"], interest.fields["counterparty"]) == ("结息", "")
+    stored = json.dumps([(r.text, r.fields) for r in rows], ensure_ascii=False)
+    for private in ("6200000000000000000", "123456789012345678", "测试用户", "6222000011112222333"):
+        assert private not in stored
+
+
+def _pdf(lines: list[tuple[int, str]], *, password: str | None = None) -> bytes:
+    """A one-page PDF with each ``(x, text)`` line set in Courier at its column; ASCII only."""
+    stream = "BT /F1 8 Tf\n" + "".join(
+        f"1 0 0 1 {10 + col * 4.8:.1f} {780 - 12 * i} Tm ({text}) Tj\n"
+        for i, (col, text) in enumerate(lines)
+    ) + "ET"
+    parts = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 900 842] /Contents 4 0 R "
+        "/Resources << /Font << /F1 5 0 R >> >> >>",
+        f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>",
+    ]
+    out, offsets = "%PDF-1.4\n", []
+    for n, body in enumerate(parts, 1):
+        offsets.append(len(out))
+        out += f"{n} 0 obj\n{body}\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(parts) + 1}\n0000000000 65535 f \n"
+    out += "".join(f"{o:010d} 00000 n \n" for o in offsets)
+    out += f"trailer\n<< /Size {len(parts) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+    if password is None:
+        return out.encode()
+    writer = PdfWriter(clone_from=io.BytesIO(out.encode()))
+    writer.encrypt(password)
+    sealed = io.BytesIO()
+    writer.write(sealed)
+    return sealed.getvalue()
+
+
+def test_the_bank_pdf_is_read_through_its_text_and_an_encrypted_copy_only_kept(
+    tmp_path: Path,
+) -> None:
+    """A generated PDF goes through pypdf's layout text; the sealed copy is stored, not read."""
+    page = [
+        (0, "Card: 6200000000000000000  Page 1/1"),
+        (0, "2026-03-04   10:11:12   CNY   -105.68   3,525.63   Online   Bridge   Mart Shop Na"),
+        (74, "me"),
+    ]
+    plain, sealed = tmp_path / "plain.pdf", tmp_path / "sealed.pdf"
+    plain.write_bytes(_pdf(page))
+    sealed.write_bytes(_pdf(page, password="fake-pass"))  # noqa: S106
+
+    first = _import(tmp_path, "boc", sealed)
+    assert (first.files_stored, first.added, first.unreadable) == (1, 0, 0)
+    second = _import(tmp_path, "boc", plain)
+    assert (second.files_stored, second.added) == (1, 1)
+    (row,) = _held(tmp_path).values()
+    assert datetime.fromtimestamp(row.at_ms / 1000, UTC) == datetime(2026, 3, 4, 2, 11, 12, tzinfo=UTC)
+    assert (row.fields["direction"], row.fields["amount_fen"], row.fields["currency"]) == ("out", 10568, "CNY")
+    assert "6200000000000000000" not in json.dumps(row.fields) + row.text
+    assert len(list((tmp_path / "imports" / "boc").iterdir())) == 2
+    with pytest.raises(ValueError, match="no parser"):
+        _import(tmp_path, "paypal", plain)
