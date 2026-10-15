@@ -115,3 +115,35 @@ def fetch_missing(sensevoice_dir: Path, silero_vad_path: Path, progress: Progres
         LOGGER.info("models: downloading %s", model.url)
         download(path, model, progress)
         LOGGER.info("models: %s ready", path)
+
+
+# ADR 0260: the search-by-meaning model, pinned to one Hugging Face revision of the public repo.
+MEANING_REVISION: Final = "761b726dd34fb83930e26aab4e9ac3899aa1fa78"
+_MEANING_URL: Final = (
+    f"https://huggingface.co/Xenova/multilingual-e5-small/resolve/{MEANING_REVISION}/"
+)
+MEANING_FILES: Final[dict[str, ModelFile]] = {
+    "tokenizer.json": ModelFile(
+        _MEANING_URL + "tokenizer.json",
+        "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39",
+        17_082_730,
+    ),
+    "model_quantized.onnx": ModelFile(
+        _MEANING_URL + "onnx/model_quantized.onnx",
+        "f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193",
+        118_308_185,
+    ),
+}
+
+
+def default_meaning_dir(root: Path) -> Path:
+    """``<root>/models/multilingual-e5-small-int8``: where the search model lives."""
+    return root / "models" / "multilingual-e5-small-int8"
+
+
+def fetch_meaning_model(directory: Path) -> None:
+    """Download whichever of the search model's files are missing; a failure raises."""
+    for name, model in MEANING_FILES.items():
+        if not (directory / name).exists():
+            LOGGER.info("models: downloading %s", model.url)
+            download(directory / name, model)

@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 from jarvis.deployment import DEFAULT_RUNTIME_ROOT_LITERAL, launchd, process_lock
+from jarvis.deployment.models import default_meaning_dir, fetch_meaning_model
 from jarvis.deployment.process_lock import ProcessLockHeld
 from jarvis.runtime import (
     PreEmitTokenError,
@@ -1184,6 +1185,26 @@ def _main_mcp_login(argv: list[str]) -> int:
         return 1
 
 
+def _main_meaning_model(argv: list[str]) -> int:
+    """ADR 0260: `jarvis meaning-model` downloads the search-by-meaning model (118 MB), once."""
+    parser = argparse.ArgumentParser(
+        prog=f"{_PROG} meaning-model",
+        description="Download the model that lets search find lines by meaning.",
+    )
+    parser.add_argument(
+        "--runtime-root", type=Path, default=None, help="Override JARVIS_RUNTIME_ROOT."
+    )
+    args = parser.parse_args(argv)
+    try:
+        directory = default_meaning_dir(_resolve_runtime_root(args.runtime_root))
+        fetch_meaning_model(directory)
+    except (OSError, ValueError) as exc:
+        sys.stderr.write(f"jarvis meaning-model: {exc}\n")
+        return 1
+    sys.stdout.write(f"{directory}\n")
+    return 0
+
+
 def _main_devices(command: str, argv: list[str]) -> int:
     """ADR 0170, on the brain: `pair <name>`, `unpair <name>` and `devices`."""
     parser = argparse.ArgumentParser(
@@ -1245,6 +1266,7 @@ def main(argv: list[str] | None = None) -> int:
         "serve": _main_serve,
         "daemon": _main_daemon,
         "mcp-login": _main_mcp_login,
+        "meaning-model": _main_meaning_model,
         "terminal": _main_terminal,
         "terminal-agent": _main_terminal_agent,
     }

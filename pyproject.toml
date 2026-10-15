@@ -37,6 +37,7 @@ dependencies = [
     "libusb-package",     # ADR 0147 — the libusb dylib pyusb loads, so a fresh Mac needs no Homebrew
     "gtfs-realtime-bindings>=3.0.0",
     "ruamel-yaml>=0.19.1",
+    "tokenizers",         # ADR 0260 — multilingual-e5-small tokenizer for search by meaning
 ]
 
 [project.optional-dependencies]
