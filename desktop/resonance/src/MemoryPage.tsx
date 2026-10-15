@@ -39,7 +39,7 @@ type PlaceChange = { id: string; ts: string; origin: string; op: 'save' | 'renam
 type Placed = { places: Place[]; changes: PlaceChange[] };
 type DayRecords = { day: string; total: number; offset: number; records: { id: string; ts: string; who: Quote['who']; text: string }[] };
 
-const SECTION_EN: Record<string, string> = { 关于你: 'About you', 偏好: 'Preferences', 常提到的人: 'People', 正在做的事: 'Working on', 定下来的规矩: 'Rules', 承诺和待办: 'Commitments' };
+const SECTION_EN: Record<string, string> = { 经历: 'Life story', 性格和价值观: 'Character & values', 身体: 'Body', 钱: 'Money', 兴趣和品味: 'Interests & taste', 你希望被怎么对待: 'How to treat you', 定下来的规矩: 'Rules', 证件和硬期限: 'Documents & deadlines', 承诺和待办: 'Commitments', 身边的人: 'People', 生活里的几件事: 'Life threads' };
 const sectionName = (lang: Lang, zh: string) => lang === 'zh' ? zh : SECTION_EN[zh] ?? zh;
 const DAY_HEADS: [keyof NonNullable<DayDetail['sections']>, L][] = [['topics', ['What we talked about', '聊了什么']], ['decisions', ['What you decided', '你说定的']], ['unfinished', ['Not finished', '没做完']]];
 const ITEM_MAX = 400;
@@ -545,7 +545,7 @@ function Changes({ o, a, places }: { o: MemoryOverview; a: Acts; places: PlaceCh
 function Cap({ o, a }: { o: MemoryOverview; a: Acts }) {
   const { t, lang } = a;
   const [editing, setEditing] = useState(false), [value, setValue] = useState(String(o.max_chars));
-  const n = Number(value.replace(/[,\s]/g, '')), valid = Number.isInteger(n) && n >= 1000 && n <= 20000;
+  const n = Number(value.replace(/[,\s]/g, '')), valid = Number.isInteger(n) && n >= 1000 && n <= 40000;
   const pct = Math.min(100, o.chars / o.max_chars * 100), fmt = (x: number) => x.toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US');
   const save = async () => {
     if (!valid) return;

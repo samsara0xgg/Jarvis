@@ -47,19 +47,19 @@ const server = await createServer({ root, server: { host: '127.0.0.1', port, str
 
 
 const iso = (day, hm) => new Date(`${day}T${hm}:00`).toISOString();
-const SECTIONS = ['关于你', '偏好', '常提到的人', '正在做的事', '定下来的规矩', '承诺和待办'];
+const SECTIONS = ['经历', '性格和价值观', '身体', '钱', '兴趣和品味', '你希望被怎么对待', '定下来的规矩', '证件和硬期限', '承诺和待办', '身边的人', '生活里的几件事'];
 const SRC = [
   { id: 'r1', who: 'user', ts: iso('2026-10-02', '18:22'), day: '2026-10-02', text: '这周六要去跟朋友吃饭,这周日要去看电影。' },
   { id: 'r2', who: 'jarvis', ts: iso('2026-10-02', '18:23'), day: '2026-10-02', text: '记下了：周六和朋友吃饭，周日看电影。' },
 ];
 const fresh = () => ({
   items: [
-    { id: 'a1', section: '关于你', text: '用户叫 Allen。', pinned: false, src: [] },
-    { id: 'a2', section: '正在做的事', text: '报告下周三之前交。', pinned: false, src: [SRC[0]] },
+    { id: 'a1', section: '经历', text: '用户叫 Allen。', pinned: false, src: [] },
+    { id: 'a2', section: '生活里的几件事', text: '报告下周三之前交。', pinned: false, src: [SRC[0]] },
     { id: 'a3', section: '承诺和待办', text: '周六和朋友吃饭，周日看电影。', pinned: false, src: SRC },
   ],
   hidden: new Set(), versions: [{ id: 'v0', ts: iso('2026-10-03', '05:00'), origin: 'nightly', kind: 'nightly', day: '2026-10-02', undoable: true, lines: [{ tag: 'add', text: '周六和朋友吃饭，周日看电影。' }] }],
-  snaps: {}, cap: 4000, seq: 0,
+  snaps: {}, cap: 40000, seq: 0,
   places: [
     { id: 'p1', name: 'Home', role: 'home', radius_m: 100, has_centre: true, address: null, origin: 'model', days_28: 25, days_84: 70, last_visit: '2026-10-09', median_stay_min: 600, phone_label: null },
     { id: 'p2', name: 'Library', role: 'other', radius_m: 100, has_centre: true, address: null, origin: 'model', days_28: 6, days_84: 12, last_visit: '2026-10-08', median_stay_min: 40, phone_label: null },
@@ -72,11 +72,11 @@ const fresh = () => ({
 let S = fresh();
 const entries = () => [
   { kind: 'add', id: 'a3', section: '承诺和待办', text: S.items.find(i => i.id === 'a3')?.text ?? '', quote: { who: 'user', text: SRC[0].text } },
-  { kind: 'rewrite', id: 'a2', section: '正在做的事', text: '报告下周三之前交。', before: '报告下周五交。', quote: null },
-  { kind: 'stale', id: 'old1', section: '正在做的事', text: '周四前订好机票。', quote: { who: 'user', text: '机票订好了。' } },
+  { kind: 'rewrite', id: 'a2', section: '生活里的几件事', text: '报告下周三之前交。', before: '报告下周五交。', quote: null },
+  { kind: 'stale', id: 'old1', section: '生活里的几件事', text: '周四前订好机票。', quote: { who: 'user', text: '机票订好了。' } },
 ].filter(e => !S.hidden.has(e.id) && (e.kind === 'stale' || S.items.some(i => i.id === e.id)));
 const grouped = () => SECTIONS.map(name => ({ name, items: S.items.filter(i => i.section === name).map(({ id, text, pinned }) => ({ id, text, pinned })) }));
-const overview = () => ({ version: { id: S.versions[0].id, ts: S.versions[0].ts, origin: S.versions[0].origin }, items: S.items.length, days: 3, chars: S.items.reduce((n, i) => n + i.text.length, 0), max_chars: S.cap, booted_max_chars: 4000,
+const overview = () => ({ version: { id: S.versions[0].id, ts: S.versions[0].ts, origin: S.versions[0].origin }, items: S.items.length, days: 3, chars: S.items.reduce((n, i) => n + i.text.length, 0), max_chars: S.cap, booted_max_chars: 40000,
   sections: grouped(), new: { day: '2026-10-02', ts: iso('2026-10-03', '05:00'), version: 'v0', entries: entries() } });
 const versions = () => ({ total: S.versions.length, versions: S.versions.map((v, i) => ({ edited: 0, moved: 0, counts: { add: 0, chg: 0, old: 0 }, more: 0, chars: 100, ...v, current: i === 0 })) });
 const DAYS = { '2026-10-02': { kind: 'model', records: 215, sections: { topics: ['回顾昨天的工作：实时语音和字幕。', '问了 Rust 学习资料。'], decisions: ['周六和朋友吃饭。'], unfinished: [] } },
@@ -117,7 +117,7 @@ try {
     if (rest === '/item/keep') { const v = push('user'); S.hidden.add(body.id); return reply({ version: v }); }
     if (rest === '/undo') { const snap = S.snaps[body.version]; if (!snap) return reply({ detail: 'no' }, 409); S.items = JSON.parse(snap); S.hidden = new Set(); S.versions.unshift({ id: `v${++S.seq}`, ts: new Date().toISOString(), origin: 'user', kind: 'undo', day: null, undoable: true, lines: [] }); return reply({ version: 'v-undo' }); }
     if (rest === '/versions') return reply(versions());
-    if (rest === '/cap') { if (body.max_chars < 1000 || body.max_chars > 20000) return reply({ detail: 'range' }, 400); S.cap = body.max_chars; return reply({ max_chars: S.cap, booted_max_chars: 4000 }); }
+    if (rest === '/cap') { if (body.max_chars < 1000 || body.max_chars > 40000) return reply({ detail: 'range' }, 400); S.cap = body.max_chars; return reply({ max_chars: S.cap, booted_max_chars: 40000 }); }
     if (rest === '/search') {
       const q = url.searchParams.get('q'), who = url.searchParams.get('who'), hits = [{ id: 'r1', ts: SRC[0].ts, who: 'user', text: SRC[0].text }, { id: 'r2', ts: SRC[1].ts, who: 'jarvis', text: SRC[1].text }].filter(h => h.text.includes(q) && (who === 'all' || (who === 'user') === (h.who === 'user')));
       return reply({ words: [q], days: hits.length ? [{ day: '2026-10-02', hits }] : [], total: hits.length, truncated: false, since: iso('2026-09-01', '00:00') });
