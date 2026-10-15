@@ -12,21 +12,37 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 from jarvis.decision.response_run import ResponseCancelledError
-from jarvis.runtime import make_relation_supersede_callable, make_supersede_unspoken_callable
+from jarvis.runtime import (
+    inherent_loop,
+    make_continuation_callable,
+    make_relation_supersede_callable,
+    make_supersede_unspoken_callable,
+)
+from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
-from jarvis.state.memory_db import MemorySettings
+from jarvis.state.memory_db import MemorySettings, render_context
+from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.projections import PendingConfirmations
 from jarvis.surface import voice_media, voice_pipeline
+from jarvis.surface.inherent_output import InherentBroadcaster
+from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
+from jarvis.surface.terminal_events import BrainEvents
 from tests.integration.test_conversation_mode import _Session
 from tests.integration.test_foreground_arbitration import _whole
+from tests.integration.test_phone_here import REMOTE
+from tests.integration.test_phone_judge import _open, _say
 from tests.integration.test_spoken_streaming import (
     _fixture_key,  # noqa: F401 - autouse fixture of the spoken-route peer
     _Peer,
@@ -708,4 +724,305 @@ def test_a_sentence_after_the_first_has_started_speaking_leaves_it_to_barge_in(
     assert not _payloads(runtime.conn, "response.cancelled")
     emitted = _payloads(runtime.conn, "surface.response_emitted")
     assert sorted(row["turn_id"] for row in emitted) == ["T-1", "T-2"]
+    runtime.conn.close()
+
+
+# --- a phone's sentence that goes on from its last (ADR 0271) ----------------
+
+_THOUGHT = _FIRST + _SECOND
+
+
+@dataclass
+class _PhoneRig:
+    """The phone route over the runtime's own log, with the real take-over seam.
+
+    The phone's voice is a fake that records what it was asked; ``audible`` says whether the
+    earlier turn's audio had reached the speaker (the answer to ``drop_unspoken``).
+    """
+
+    runtime: Any
+    audible: bool = False
+    voice_calls: list[tuple[str, Any]] = field(default_factory=list)
+    taken_over: list[tuple[str, str, str]] = field(default_factory=list)
+    client: TestClient = field(init=False)
+    events: sqlite3.Connection = field(init=False)
+
+    def __post_init__(self) -> None:
+        log = self.runtime.runtime_paths.event_log
+        root = log.parent
+        self.events = sqlite3.connect(log, check_same_thread=False)
+        token = pair_device(root, "iphone")
+        self.token = token
+        calls = self.voice_calls
+
+        async def open_voice(_device: str, _send: Any) -> Any:  # noqa: ANN401
+            async def stop_playback(reason: str) -> str:
+                calls.append(("stop_playback", reason))
+                return "stopped"
+
+            async def drop_unspoken(turn_ids: frozenset[str]) -> frozenset[str]:
+                calls.append(("drop_unspoken", turn_ids))
+                return frozenset() if self.audible else turn_ids
+
+            async def nothing() -> None:
+                return None
+
+            return SimpleNamespace(
+                player=SimpleNamespace(
+                    connection_lost=lambda: None, is_running=False,
+                    observe_clock=lambda *_a: None,
+                ),
+                begin=nothing, close=nothing, stop_playback=stop_playback,
+                drop_unspoken=drop_unspoken,
+            )
+
+        real = make_continuation_callable(self.runtime)
+
+        def supersede_turn(earlier: str, turn_id: str) -> str:
+            outcome = real(earlier, turn_id)
+            self.taken_over.append((earlier, turn_id, outcome))
+            return outcome
+
+        hub = PhoneHub(
+            events=BrainEvents(self.events),
+            rows=inherent_loop._PhoneRows(self.events),  # noqa: SLF001
+            open_voice=open_voice,
+            supersede_turn=supersede_turn,
+        )
+        app = create_app(
+            InherentDeps(
+                submit_callable=lambda _text: "T1",
+                broadcaster=InherentBroadcaster(),
+                phone=hub,
+                device_name=lambda one: device_name_for_token(root, one),
+            ),
+        )
+        require_local_key(
+            app, lambda header: local_key_matches(local_key(root), header),
+            extra_hosts=[REMOTE],
+            device_token_matches=lambda one: device_token_matches(root, one),
+        )
+        self.client = TestClient(app, base_url=f"http://{REMOTE}:8006", client=(REMOTE, 50000))
+
+    def connect(self) -> Any:  # noqa: ANN401 - a Starlette test websocket context
+        return self.client.websocket_connect(
+            f"ws://{REMOTE}:8006{PHONE_PATH}", headers={"Authorization": f"Bearer {self.token}"},
+        )
+
+    def heard(self, turn_id: str) -> Any:  # noqa: ANN401 - Event
+        """The ``utterance.received`` the take-over wrote for ``turn_id``, to drive its turn."""
+        (event,) = [
+            one for one in iter_events_of_types(self.events, ("utterance.received",))
+            if one.payload["turn_id"] == turn_id
+        ]
+        return event
+
+
+def _unspoken_history(runtime: Any) -> list[str]:  # noqa: ANN401 - JarvisRuntime
+    """What the next turn would read as his side of the history, one string per message."""
+    context = render_context(runtime.memory.db_path, exclude_id="")
+    return [str(turn["content"]) for turn in context.history if turn["role"] == "user"]
+
+
+@pytest.mark.parametrize("over_her", [True, False], ids=["over_her", "plain"])
+def test_a_sentence_that_goes_on_while_the_first_is_thought_about_is_one_answer(
+    tmp_path: Path,
+    over_her: bool,  # noqa: FBT001 - pytest parameter
+) -> None:
+    """Live 2026-10-14 21:36: one long thought on a bus was answered eight times.
+
+    The phone sends only the new segment and names the one before. The earlier turn is
+    cancelled as superseded by the new one, its unspoken audio is dropped and what was audible
+    stopped; one request is answered and carries the whole thought once; the history holds each
+    segment as its own row and reads them as one message.
+    """
+    answer = "八点二十有一班。"
+    with _Peer([[("final_answer", answer)]], first_event_delay_s=30.0) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _PhoneRig(runtime)
+        flags = {"over_her": True} if over_her else {}
+        with rig.connect() as ws, ThreadPoolExecutor(max_workers=2) as pool:
+            _open(ws)
+            first_said = _say(ws, "ua", _FIRST, **flags)
+            first = pool.submit(_drive, runtime, rig.heard(first_said["turn_id"]))
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            time.sleep(0.5)  # the peer reads its delay a moment after it logs the request
+            peer.first_event_delay_s = 0.0
+            second_said = _say(ws, "ub", _SECOND, continues="ua", **flags)
+            assert second_said["verdict"] == "turn"
+            second = pool.submit(_drive, runtime, rig.heard(second_said["turn_id"]))
+            second.result(timeout=20)
+            with pytest.raises(ResponseCancelledError):
+                first.result(timeout=10)
+
+    assert rig.taken_over == [(first_said["turn_id"], second_said["turn_id"], "superseded")]
+    assert rig.voice_calls[-2:] == [  # the first say's own barge-in, if it was over her, is before
+        ("drop_unspoken", frozenset({first_said["turn_id"]})), ("stop_playback", "barge_in"),
+    ]
+    (cancelled,) = _payloads(runtime.conn, "response.cancelled")
+    assert (cancelled["turn_id"], cancelled["reason"]) == (first_said["turn_id"], "superseded")
+    assert cancelled["interrupted_by_turn_id"] == second_said["turn_id"]
+    # The event holds the thought and the segment; the rows hold the segments.
+    heard = rig.heard(second_said["turn_id"]).payload
+    assert (heard["transcript"], heard["segment"]) == (_THOUGHT, _SECOND)
+    assert heard["continues"] == first_said["turn_id"]
+    emitted = _payloads(runtime.conn, "surface.response_emitted")
+    assert [row["turn_id"] for row in emitted] == [second_said["turn_id"]]
+    asked = json.dumps(peer.requests[-1][1]["input"], ensure_ascii=False)
+    assert asked.count(_FIRST) == 1
+    assert asked.count(_SECOND) == 1
+    assert asked.index(_FIRST) < asked.index(_SECOND)
+    assert _records(runtime) == [("allen", _FIRST), ("allen", _SECOND), ("jarvis", answer)]
+    history = _unspoken_history(runtime)
+    assert len(history) == 1
+    assert history[0].count(_FIRST) == 1
+    assert history[0].count(_SECOND) == 1
+    runtime.conn.close()
+
+
+def test_a_sentence_that_goes_on_after_the_first_has_started_to_speak_stops_it(
+    tmp_path: Path,
+) -> None:
+    """A phone that names its earlier sentence has said what these words are.
+
+    ADR 0074 leaves an audible answer to barge-in; here the answer under way is stopped and
+    cancelled all the same.
+    """
+    answer = "八点二十有一班。"
+    with _Peer(
+        [[("final_answer", "我先查一下。再看看。")], [("final_answer", answer)]], hold=True,
+    ) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _PhoneRig(runtime, audible=True)
+        with rig.connect() as ws, ThreadPoolExecutor(max_workers=2) as pool:
+            _open(ws)
+            first_said = _say(ws, "ua", _FIRST, over_her=True)
+            first = pool.submit(_drive, runtime, rig.heard(first_said["turn_id"]))
+            _wait_until(lambda: bool(_payloads(runtime.conn, "surface.response_chunk")))
+            second_said = _say(ws, "ub", _SECOND, over_her=True, continues="ua")
+            peer.release.set()
+            second = pool.submit(_drive, runtime, rig.heard(second_said["turn_id"]))
+            second.result(timeout=20)
+            with pytest.raises(ResponseCancelledError):
+                first.result(timeout=10)
+
+    assert ("stop_playback", "barge_in") in rig.voice_calls
+    (cancelled,) = _payloads(runtime.conn, "response.cancelled")
+    assert (cancelled["turn_id"], cancelled["reason"]) == (first_said["turn_id"], "superseded")
+    assert cancelled["interrupted_by_turn_id"] == second_said["turn_id"]
+    emitted = _payloads(runtime.conn, "surface.response_emitted")
+    assert [row["turn_id"] for row in emitted] == [second_said["turn_id"]]
+    asked = json.dumps(peer.requests[-1][1]["input"], ensure_ascii=False)
+    assert asked.count(_FIRST) == 1
+    assert asked.count(_SECOND) == 1
+    assert _records(runtime)[-3:] == [("allen", _FIRST), ("allen", _SECOND), ("jarvis", answer)]
+    runtime.conn.close()
+
+
+def test_three_steps_of_one_thought_are_one_answer_to_all_three(tmp_path: Path) -> None:
+    """Each segment names the one before it; the third carries the thought, not three copies."""
+    third = "往三十九路的地方走"
+    answer = "好的。"
+    with _Peer([[("final_answer", answer)]], first_event_delay_s=30.0) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _PhoneRig(runtime)
+        with rig.connect() as ws, ThreadPoolExecutor(max_workers=3) as pool:
+            _open(ws)
+            said = [_say(ws, "ua", _FIRST, over_her=True)]
+            futures = [pool.submit(_drive, runtime, rig.heard(said[0]["turn_id"]))]
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            for utterance, words, before in (("ub", _SECOND, "ua"), ("uc", third, "ub")):
+                time.sleep(0.5)  # the peer reads its delay a moment after it logs the request
+                peer.first_event_delay_s = 0.0 if utterance == "uc" else 30.0
+                said.append(_say(ws, utterance, words, over_her=True, continues=before))
+                futures.append(pool.submit(_drive, runtime, rig.heard(said[-1]["turn_id"])))
+                _wait_until(lambda: len(peer.requests) == len(futures), timeout_s=15.0)
+            futures[2].result(timeout=60)
+            for earlier in futures[:2]:
+                with pytest.raises(ResponseCancelledError):
+                    earlier.result(timeout=10)
+
+    heard = rig.heard(said[2]["turn_id"]).payload
+    assert heard["transcript"] == _FIRST + _SECOND + third
+    assert heard["segment"] == third
+    assert len(heard["folded"]) == 2
+    cancelled = {row["turn_id"]: row["interrupted_by_turn_id"]
+                 for row in _payloads(runtime.conn, "response.cancelled")}
+    assert cancelled == {said[0]["turn_id"]: said[1]["turn_id"],
+                         said[1]["turn_id"]: said[2]["turn_id"]}
+    asked = json.dumps(peer.requests[-1][1]["input"], ensure_ascii=False)
+    assert [asked.count(words) for words in (_FIRST, _SECOND, third)] == [1, 1, 1]
+    assert _records(runtime) == [
+        ("allen", _FIRST), ("allen", _SECOND), ("allen", third), ("jarvis", answer),
+    ]
+    (message,) = _unspoken_history(runtime)
+    assert [message.count(words) for words in (_FIRST, _SECOND, third)] == [1, 1, 1]
+    runtime.conn.close()
+
+
+def test_a_sentence_that_names_no_earlier_one_is_a_turn_of_its_own(tmp_path: Path) -> None:
+    """No ``continues``: nothing is taken over, the event holds the words as said, two answers."""
+    scripts = [[("final_answer", "一。")], [("final_answer", "二。")]]
+    with _Peer(scripts, first_event_delay_s=1.0) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _PhoneRig(runtime)
+        with rig.connect() as ws, ThreadPoolExecutor(max_workers=2) as pool:
+            _open(ws)
+            first_said = _say(ws, "ua", _FIRST, over_her=True)
+            first = pool.submit(_drive, runtime, rig.heard(first_said["turn_id"]))
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            time.sleep(0.5)  # the peer reads its delay a moment after it logs the request
+            peer.first_event_delay_s = 0.0
+            second_said = _say(ws, "ub", _SECOND, over_her=True)
+            second = pool.submit(_drive, runtime, rig.heard(second_said["turn_id"]))
+            first.result(timeout=20)
+            second.result(timeout=20)
+
+    assert rig.taken_over == []
+    heard = rig.heard(second_said["turn_id"]).payload
+    assert heard["transcript"] == _SECOND
+    assert not {"segment", "continues", "folded"} & set(heard)
+    assert not _payloads(runtime.conn, "response.cancelled")
+    assert len(_payloads(runtime.conn, "surface.response_emitted")) == 2
+    runtime.conn.close()
+
+
+def test_words_that_go_on_from_an_answer_already_given_stand_alone(tmp_path: Path) -> None:
+    """The earlier turn finished: its answer is a record that stays, so the words are a new turn."""
+    with _Peer([[("final_answer", "一。")], [("final_answer", "二。")]]) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _PhoneRig(runtime)
+        with rig.connect() as ws:
+            _open(ws)
+            first_said = _say(ws, "ua", _FIRST)
+            _drive(runtime, rig.heard(first_said["turn_id"]))
+            second_said = _say(ws, "ub", _SECOND, over_her=True, continues="ua")
+            _drive(runtime, rig.heard(second_said["turn_id"]))
+
+    assert rig.taken_over == [(first_said["turn_id"], second_said["turn_id"], "over")]
+    heard = rig.heard(second_said["turn_id"]).payload
+    assert heard["transcript"] == _SECOND
+    assert "continues" not in heard
+    assert not _payloads(runtime.conn, "response.cancelled")
+    assert [source for source, _text in _records(runtime)] == ["allen", "jarvis", "allen", "jarvis"]
+    runtime.conn.close()
+
+
+def test_a_continues_that_is_not_an_utterance_id_is_refused_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    """A malformed field is ``bad_say``, as the other flags are; an unknown id is no earlier one."""
+    with _Peer([]) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _PhoneRig(runtime)
+        with rig.connect() as ws:
+            _open(ws)
+            assert _say(ws, "ub", _SECOND, continues=7)["code"] == "bad_say"
+            assert _say(ws, "ub", _SECOND, continues="has space")["code"] == "bad_say"
+            unknown = _say(ws, "ub", _SECOND, continues="ua")
+            assert unknown["verdict"] == "turn"
+    assert rig.taken_over == []
+    heard = rig.heard(unknown["turn_id"]).payload
+    assert heard["transcript"] == _SECOND
+    assert "continues" not in heard
     runtime.conn.close()

@@ -26,7 +26,7 @@ import json
 import re
 import sqlite3
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -926,6 +926,7 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
     recent: int = 0, context: str = "rolling", raw_max_chars: int = 40000,
     ledger: Ledger | None = None, places: PlacesBlock | None = None,
     pictures: PictureFileId | None = None, did: DidOf | None = None,
+    also_exclude: Collection[str] = (),
 ) -> MemoryContext:
     """Render the decision-path prompt blocks in one consistent read.
 
@@ -941,7 +942,8 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
     and all, without a marker. It only grows at its end between
     compactions, so the provider's prefix cache covers it. ``now`` is the
     per-turn time line. ``exclude_id`` is the current turn's own utterance,
-    which the prompt already carries as the live user message. ``recent`` > 0
+    which the prompt already carries as the live user message; ``also_exclude`` (ADR 0271) are
+    the earlier rows whose words that message holds too. ``recent`` > 0
     shows only the latest records (see :func:`_hidden_records`); a note after
     the summary says how many earlier ones there are and how to find them.
 
@@ -1007,7 +1009,9 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
             "record with conversation(query=...)]\n"
             f"{current.summary}",
         )
-    shown = [record for record in records if record[0] != exclude_id]
+    shown = [
+        record for record in records if record[0] != exclude_id and record[0] not in also_exclude
+    ]
     if day_head:
         hidden = _raw_cut([len(sent.get(r[0]) or _plain(r[3])) for r in shown], raw_max_chars)
     else:

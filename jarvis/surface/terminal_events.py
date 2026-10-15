@@ -200,6 +200,34 @@ class BrainEvents:
         ).fetchone()
         return row is not None
 
+    def continued_words(self, device: str, continues: str, text: str) -> dict[str, Any] | None:
+        """The payload fields of a spoken ``say`` that goes on from the one named ``continues``.
+
+        ADR 0271: ``transcript`` is the earlier sentence's whole thought followed by ``text``,
+        ``segment`` is ``text`` alone, ``continues`` is the earlier turn and ``folded`` the record
+        ids whose words ``transcript`` already holds. ``None`` when the earlier sentence is not a
+        spoken one of this device's, or the thought would be longer than an utterance may be:
+        the words then stand alone.
+        """
+        earlier_uid = _say_uid(device, continues)
+        row = self._conn.execute(
+            "SELECT payload_json FROM events WHERE event_uid = ? AND type = 'utterance.received'",
+            (earlier_uid,),
+        ).fetchone()
+        if row is None:
+            return None
+        earlier = json.loads(row[0])
+        thought = _join_words(str(earlier.get("transcript", "")), text)
+        if len(thought) > _MAX_TRANSCRIPT_CHARS:
+            return None
+        folded = earlier.get("folded")
+        return {
+            "transcript": thought,
+            "segment": text,
+            "continues": phone_turn_id(device, continues),
+            "folded": [*(folded if isinstance(folded, list) else []), earlier_uid],
+        }
+
     def record_phone_say(  # noqa: PLR0913 - the fields of one `say` frame
         self,
         device: str,
@@ -211,6 +239,7 @@ class BrainEvents:
         confidence: float | None = None,
         about: object = None,
         attachments: Sequence[str] = (),
+        continues: str | None = None,
     ) -> str:
         """Append the words a paired phone sent (ADR 0209), once; the turn id they open.
 
@@ -223,7 +252,9 @@ class BrainEvents:
         phone has open (ADR 0214); checked by :func:`jarvis.shared.about.clean_about` and kept on
         the opening row, in either branch, only when given. ``attachments`` (ADR 0231) are the ids
         of the files typed words came with, already checked by the store; they ride the typed
-        row as ``POST /inherent/submit`` writes them, and spoken words take none.
+        row as ``POST /inherent/submit`` writes them, and spoken words take none. ``continues``
+        (ADR 0271) is the utterance id of the spoken sentence these words go on from: when that
+        one is on the log, ``transcript`` holds both (see :meth:`continued_words`).
 
         Raises:
             ValueError: a field is missing or has the wrong shape, ``about`` included.
@@ -254,6 +285,10 @@ class BrainEvents:
                 payload["language"] = language
             payload["utterance_id"] = utterance_id
             event_type = "utterance.received"
+            if continues is not None and (
+                continued := self.continued_words(device, continues, text)
+            ) is not None:
+                payload.update(continued)
         else:
             payload["channel"] = _PHONE_TYPED_CHANNEL
             payload["language"] = language or _PHONE_TYPED_LANGUAGE
@@ -339,6 +374,15 @@ class BrainEvents:
 
 def _say_uid(device: str, utterance_id: str) -> str:
     return uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"say\0{device}\0{utterance_id}").hex
+
+
+def _join_words(earlier: str, more: str) -> str:
+    """Two halves of one sentence as one: a space only between two ASCII word edges."""
+    if earlier[-1:].isascii() and more[:1].isascii() and not (
+        earlier[-1:].isspace() or more[:1].isspace()
+    ):
+        return f"{earlier} {more}"
+    return f"{earlier}{more}"
 
 
 def phone_record_id(device: str, utterance_id: str) -> str:

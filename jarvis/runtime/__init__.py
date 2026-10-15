@@ -3907,6 +3907,63 @@ def make_relation_supersede_callable(
     return _relate
 
 
+_TURN_OVER_SQL: Final = (
+    "SELECT 1 FROM events WHERE (type IN ('turn.ended', 'turn.failed') "
+    "AND json_extract(correlation_json, '$.turn_id') = ?1) "
+    "OR (type IN ('response.completed', 'response.cancelled', 'response.failed') "
+    "AND json_extract(payload_json, '$.turn_id') = ?1 "
+    "AND json_extract(payload_json, '$.response_id') IN ("
+    "SELECT json_extract(payload_json, '$.response_id') FROM events "
+    "WHERE type = 'response.started' AND json_extract(payload_json, '$.turn_id') = ?1 "
+    "AND json_extract(payload_json, '$.phase') = 'final')) LIMIT 1"
+)
+
+
+def make_continuation_callable(runtime: JarvisRuntime) -> Callable[[str, str], str]:
+    """Build the ADR 0271 ``(earlier_turn_id, turn_id) -> outcome`` seam.
+
+    A paired phone says the words of ``turn_id`` go on from the sentence of ``earlier_turn_id``,
+    its own, and ``turn_id`` will answer both. The earlier turn is marked superseded by it, so a
+    run that opens later is cancelled as it opens, and every run of it still open is cancelled as
+    ``superseded`` naming ``turn_id``, spoken to the speaker or not (the sweep of ADR 0074 leaves
+    an audible answer to barge-in; here the phone has said what the words are), whether or not
+    it dispatched an action; a card it put up that still waits is rejected. The caller has
+    already dropped the earlier turn's unspoken audio and stopped what was audible.
+
+    Outcomes: ``superseded``; ``over`` when the earlier turn has ended, failed or had its final
+    answer completed, cancelled or failed (its answer is a record that cannot be taken back,
+    ADR 0053); ``no_registry`` without run bookkeeping.
+    """
+    cancel = make_response_cancel_callable(runtime)
+    registry = runtime.response_runs
+    event_log_path = runtime.runtime_paths.event_log
+
+    def _continue(earlier: str, turn_id: str) -> str:
+        if registry is None:  # pragma: no cover - wiring pairs the two flags
+            return "no_registry"
+        with contextlib.closing(
+            open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
+        ) as conn:
+            if conn.execute(_TURN_OVER_SQL, (earlier,)).fetchone() is not None:
+                return "over"
+            registry.mark_turns_superseded(
+                [earlier], for_s=_SUPERSEDE_WINDOW_S, by_turn=turn_id,
+            )
+            for run in registry.open_runs():
+                if run.turn_id != earlier:
+                    continue
+                outcome = cancel(run.response_id, "generation", "superseded", turn_id)
+                LOGGER.info(
+                    "turn %s goes on from %s: response %s -> %s",
+                    turn_id, earlier, run.response_id, outcome,
+                )
+                if outcome == "cancelled":
+                    _withdraw_card(conn, earlier, turn_id)
+        return "superseded"
+
+    return _continue
+
+
 def _withdraw_card(conn: sqlite3.Connection, dropped_turn_id: str, turn_id: str) -> None:
     """ADR 0074: reject the card a dropped turn put up, if it still waits.
 
@@ -4261,8 +4318,13 @@ _MAIL: Final[str] = "mail"
 
 
 def _record_words(store: Attachments | None, payload: Mapping[str, Any]) -> str:
-    """Allen's words as memory.db keeps them; files sent with them are named (ADR 0211)."""
-    words = str(payload.get("transcript", ""))
+    """Allen's words as memory.db keeps them; files sent with them are named (ADR 0211).
+
+    A sentence that goes on from an earlier one keeps its own words as its row; the earlier row
+    keeps the rest, and the history reads them as one message (ADR 0271).
+    """
+    segment = payload.get("segment")
+    words = segment if isinstance(segment, str) and segment else str(payload.get("transcript", ""))
     ids = payload.get("attachments")
     if store is None or not isinstance(ids, list) or not ids:
         return words
@@ -4567,6 +4629,10 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     surface_wrote_row = memory_exclude_id != user_intent_event.event_uid
     # ADR 0062: a card's button is Allen's act, not his words; it writes no row.
     card_button = isinstance(user_intent_event.payload.get("confirmation_decision"), Mapping)
+    # ADR 0271: a phone's sentence that goes on from earlier ones carries their whole thought as
+    # its words; the rows they left are its own history already, so this turn's prompt skips them.
+    folded_raw = user_intent_event.payload.get("folded")
+    folded = [str(one) for one in folded_raw] if isinstance(folded_raw, list) else []
     if memory is not None and continuation is None and not surface_wrote_row and not card_button:
         audio_ref = user_intent_event.payload.get("audio_artifact_ref")
         append_record(
@@ -4601,7 +4667,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     if memory is not None and runtime.session.replay_sent:
         record_sent_message = (
             (lambda _text: None)
-            if card_button
+            if card_button or folded  # a thought of several rows replays from the rows
             else partial(record_sent, memory.db_path, memory_exclude_id)
         )
     # ADR-0008 Step 2 (Wave 4A) — open the durable ResponseRun before the
@@ -4637,6 +4703,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 runtime, run.request_client if run is not None else runtime.llm_client,
             ),
             did=_history_did(runtime),
+            also_exclude=folded,
         )
         if memory is not None
         else None

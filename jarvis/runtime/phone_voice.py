@@ -257,6 +257,10 @@ class _Voice:
             self._pipeline.stop_foreground_output, None, reason=reason,
         )
 
+    async def drop_unspoken(self, turn_ids: frozenset[str]) -> frozenset[str]:
+        """Drop the answers of ``turn_ids`` none of which has played (ADR 0053, 0271)."""
+        return await asyncio.to_thread(self._pipeline.drop_unspoken, turn_ids)
+
     async def close(self) -> None:
         """Stop feeding the actor, close it (the player's socket is already gone), end the rest.
 
