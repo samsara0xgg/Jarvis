@@ -1212,7 +1212,7 @@ def _main_import(argv: list[str]) -> int:
         prog=f"{_PROG} import",
         description="Keep an export raw under the runtime root and read its entries.",
     )
-    parser.add_argument("source", help="claude, wechat_pay or alipay.")
+    parser.add_argument("source", help="claude, wechat_pay, alipay or boc.")
     parser.add_argument("paths", nargs="+", type=Path, help="Files, or directories of files.")
     parser.add_argument("--config", type=Path, default=None, help="Path to jarvis.yaml.")
     parser.add_argument(

@@ -38,9 +38,10 @@ _CHINA: Final = ZoneInfo(CHINA)
 
 SUCCESS: Final = frozenset({
     "支付成功", "交易成功", "已转账", "已收钱", "朋友已收钱", "对方已收钱", "已收款",
-    "提现已到账", "充值完成", "充值成功", "还款成功", "已存入零钱",
+    "提现已到账", "充值完成", "充值成功", "还款成功", "已存入零钱", "等待确认收货",
 })
-"""Statuses of money that moved. A refund, a closed or a failed order is shown, not summed."""
+"""Statuses of money that moved (an order awaiting delivery is already paid). A refund, a closed
+or a failed order is shown, not summed."""
 _DIRECTIONS: Final = {"支出": "out", "收入": "in"}
 
 
@@ -240,6 +241,9 @@ def _cells(sheet: bytes, strings: list[str]) -> Iterator[tuple[int, dict[str, st
         yield int(row.get("r", "0")), cells
 
 
+_EXCEL_EPOCH: Final = datetime(1899, 12, 30)  # noqa: DTZ001 - a day count, read as China time
+
+
 def wechat_pay(_name: str, data: bytes, _fallback_ms: int) -> Iterator[Parsed]:
     """WeChat Pay's statement .xlsx: a preamble, then a header row found by its column names."""
     ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -258,6 +262,10 @@ def wechat_pay(_name: str, data: bytes, _fallback_ms: int) -> Iterator[Parsed]:
                 header = dict(cells)
             continue
         row = {header[col]: text for col, text in cells.items() if col in header}
+        if re.fullmatch(r"\d+(\.\d+)?", serial := row.get("交易时间", "")):
+            # The real export stores the time as an Excel day number, China time.
+            at = _EXCEL_EPOCH + timedelta(seconds=round(float(serial) * 86400))
+            row["交易时间"] = at.strftime("%Y-%m-%d %H:%M:%S")
         amount = next((v for k, v in row.items() if k.startswith("金额")), "")
         parsed = _payment(
             "wechat_pay", row, f"row {number}", row.get("交易单号", ""), row.get("交易对方", ""),

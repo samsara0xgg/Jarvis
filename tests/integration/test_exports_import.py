@@ -46,7 +46,8 @@ WECHAT_ROWS = [
      "支付成功", "W100001", "M1", "/"],
     ["2026-10-12 09:00:00", "商户消费", "Maple Coffee", "Latte", "支出", "¥31.50", "零钱",
      "已全额退款", "W100002", "M2", "/"],
-    ["2026-10-13 10:00:00", "转账", "Friend Lin", "Transfer", "收入", "¥200.00", "零钱",
+    # as the real export writes it: the time an Excel day number, the amount a plain number
+    ["46308.416666666664", "转账", "Friend Lin", "Transfer", "收入", "200", "零钱",
      "已收钱", "W100003", "M3", "/"],
 ]
 ALIPAY_HEAD = (
@@ -139,6 +140,9 @@ def test_china_times_land_on_their_utc_instant_and_amounts_are_exact(tmp_path: P
     assert held["W100002"].fields["counts"] is False  # refunded
     assert held["A200002"].fields["counts"] is False  # closed
     assert held["A200003"].fields["direction"] == "neutral"
+    lin = held["W100003"]  # its Excel day number is 2026-10-13 10:00 in China
+    assert datetime.fromtimestamp(lin.at_ms / 1000, UTC) == datetime(2026, 10, 13, 2, 0, tzinfo=UTC)
+    assert lin.fields["amount_fen"] == 20000
     assert datetime.fromtimestamp(held["A200001"].at_ms / 1000, UTC) == datetime(2026, 10, 12, 4, 30, 5, tzinfo=UTC)
     assert held["A200001"].fields["counterparty"] == "Sunrise Bakery"  # trailing tab trimmed
 
