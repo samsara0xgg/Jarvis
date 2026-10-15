@@ -74,13 +74,13 @@ extension StarEngine {
         if ui.talking && !ui.panelOpen && !autoOpenSpent && AnswerBlocks.isRich(text) { openPanel(auto: true) }
     }
 
-    /// Her words in a row of their own, laid out whole and lit a word at a time (`Reveal`): `cps` words a second, else a steady pace that is quicker for a long answer.
+    /// Her words in a row of their own, laid out whole and lit a word at a time (`Reveal`) at `cps` words a second; without `cps` (a typed answer, which has come whole) all at once.
     @discardableResult func startSay(_ text: String, cps: Double? = nil, delay: Double = 0, leadIn: Bool = false, steps: StepsInfo? = nil, recordId: String? = nil) -> Say {
         finishSay()
         if text.isEmpty { return Say("") }       // nothing to say is no row (a row of no height would still take its gap)
         if !leadIn { Haptic.impact(.soft) }
-        let n = Reveal.count(String(AnswerText.linked(text).characters)), every = cps.map { 1 / $0 } ?? Reveal.stagger(n)
-        let s = Say(text, cps: Double(text.count) / (Double(max(n, 1)) * every), delay: delay)
+        let n = Reveal.count(String(AnswerText.linked(text).characters)), every = cps.map { 1 / $0 } ?? 0
+        let s = cps.map { _ in Say(text, cps: Double(text.count) / (Double(max(n, 1)) * every), delay: delay) } ?? Say("")       // a typed answer is not spoken: no mouth runs on once it is all there
         speaking = s
         speakId = addTurn(his: false, text, reveal: .timed(n, from: Date.timeIntervalSinceReferenceDate + delay / 1000, every: every), leadIn: leadIn, steps: steps, recordId: recordId)
         return s

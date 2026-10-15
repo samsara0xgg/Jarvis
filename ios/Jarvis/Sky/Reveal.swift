@@ -1,8 +1,8 @@
 import SwiftUI
 
 // How her words appear in the talk: the whole answer is laid out at once, its line breaks final, and each word fades in (opacity only) when it is said. A spoken answer
-// follows her voice (the voice session's pace, Voice/VoiceSession `revealAnswer`); a typed one runs on a steady clock of its own. Nothing is laid out again as it goes:
-// the text view stays as it is and a text renderer draws each glyph at the opacity of its word.
+// follows her voice (the voice session's pace, Voice/VoiceSession `revealAnswer`); a typed one has come whole, so it all fades in at once. Nothing is laid out again
+// as it goes: the text view stays as it is and a text renderer draws each glyph at the opacity of its word.
 
 /// When each word of a row is said, in seconds on `Date.timeIntervalSinceReferenceDate`. A word past the end of `at` is not said yet.
 struct Reveal: Equatable {
@@ -10,11 +10,6 @@ struct Reveal: Equatable {
     var voiced = false          // her voice sets the pace; a typed answer is shown at once under Reduce Motion
 
     static let fade = 0.2
-    static let step = 0.035, longest = 8.0     // a typed answer: seconds between two words, and the most a long one takes
-
-    /// a typed answer of `n` words: one word every `step`, a long one quicker so reading it does not take minutes
-    static func stagger(_ n: Int) -> Double { min(step, longest / Double(max(n, 1))) }
-
 
     /// `n` words said one `every` after the other from `start`
     static func timed(_ n: Int, from start: Double, every: Double) -> Reveal { Reveal(at: (0..<n).map { start + Double($0) * every }) }
@@ -119,14 +114,14 @@ struct RevealText: View {
 
 #if DEBUG
 extension StarEngine {
-    /// `-scene reveal`: a typed answer in Chinese and English with a link, laid out whole and lit word by word. The frame gaps while it runs go to Library/Caches/reveal.log.
+    /// `-scene reveal`: an answer in Chinese and English with a link, laid out whole and lit word by word at a typed answer's old pace. The frame gaps while it runs go to Library/Caches/reveal.log.
     func runRevealScene() {
         setLevel(0)
         beginTalk(); lingerHold = true
         addTurn(his: true, "给我讲讲明天的安排，顺便查查那家小蛋糕店")
         startSay("明天下午三点你有一个和 Lumen Labs 的二面，在线上进行，大概四十五分钟。之前我会把你上次面试的笔记整理出来，放在日程里，你可以随时翻开看看。"
                  + "晚上八点半给 Mia 回电话，我到时候提醒你。Remember that the 32 bus leaves at 9:20, so you should be at the stop by nine. "
-                 + "蛋糕店的地址在[这里](https://example.com/cake)，也可以直接看 https://example.org/map，它周末也开门。路上要不要我先查一下天气和出门的时间？")
+                 + "蛋糕店的地址在[这里](https://example.com/cake)，也可以直接看 https://example.org/map，它周末也开门。路上要不要我先查一下天气和出门的时间？", cps: 28)
         // the gaps between frames while it runs
         final class Gaps: NSObject {
             var last = 0.0, first = 0.0, worst = 0.0, slow = 0, n = 0, at = ""

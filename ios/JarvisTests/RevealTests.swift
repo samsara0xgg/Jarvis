@@ -25,13 +25,6 @@ final class RevealTests: XCTestCase {
         XCTAssertEqual(r.alpha(1, at: 10.05, fade: 0), 0)
     }
 
-    func testAnswerPaceIsSteadyAndQuickerWhenLong() {
-        XCTAssertEqual(Reveal.stagger(40), 0.035)
-        XCTAssertEqual(Reveal.stagger(400), 0.02, accuracy: 1e-9)
-        let r = Reveal.timed(4, from: 0, every: Reveal.stagger(4))
-        for (got, want) in zip(r.at, [0, 0.035, 0.07, 0.105]) { XCTAssertEqual(got, want, accuracy: 1e-9) }
-    }
-
     func testEveryParagraphIsTaggedWithItsWordsCountedFromTheStartOfTheAnswer() {
         // the layout counts characters again from each paragraph: the tags must not
         let text = AttributedString("好的。\n\n明天见\n\nOK")
@@ -39,6 +32,13 @@ final class RevealTests: XCTestCase {
         XCTAssertEqual(pieces.map(\.0), ["好", "的。\n\n", "明", "天", "见\n\n", "OK"])
         XCTAssertEqual(pieces.map(\.1), [0, 1, 2, 3, 4, 5])
         XCTAssertTrue(RevealText.pieces(AttributedString("")).isEmpty)
+    }
+
+    func testATypedAnswerFadesInWholeAtOnce() {
+        let r = Reveal.timed(4, from: 3, every: 0)
+        XCTAssertEqual(r.at, [3, 3, 3, 3])
+        XCTAssertEqual(r.alpha(3, at: 3.2), 1)
+        XCTAssertEqual(r.end(), 3.2, accuracy: 1e-9, "the whole answer is lit by the end of one fade")
     }
 
     func testHerVoiceLightsTheWordsItHasStartedAndNeverTakesOneBack() {
