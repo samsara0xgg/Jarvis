@@ -28,6 +28,16 @@ final class AnswerTextTests: XCTestCase {
         XCTAssertEqual(AnswerText.spoken("<voice>我上网"), "我上网")
     }
 
+    func testStrayHTMLIsDealtWith() {
+        XCTAssertEqual(AnswerText.visible("第一行<br>第二行<BR/>第三行<br />末"), "第一行\n第二行\n第三行\n末")
+        XCTAssertEqual(AnswerText.visible("<p>你好</p> <b>x</b> <span style='c'>y</span>"), "你好 x y")
+        XCTAssertEqual(AnswerText.visible("a < b and <3 and List<String>"), "a < b and <3 and List<String>")
+        XCTAssertEqual(AnswerText.visible("`<br>` stays"), "`<br>` stays")
+        XCTAssertEqual(AnswerText.visible("<voice>好的<br>晚安</voice><document>一<br>二</document>"), "一\n二")
+        XCTAssertEqual(AnswerText.spoken("<voice>好的<br>晚安</voice><document>一<br>二</document>"), "好的\n晚安")
+        XCTAssertEqual(AnswerText.visible("好的<br"), "好的")
+    }
+
     // MARK: links
 
     /// the text and address of every link in `a`

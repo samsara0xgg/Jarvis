@@ -4,13 +4,29 @@ import Foundation
 /// an untagged answer counts as both (ADR 0040). The Mac companion's `visible()` and `spoken()` (desktop/resonance/src/model.ts, Companion.tsx), as the phone reads them.
 enum AnswerText {
     /// What to show: a document is the whole answer and the voice only its spoken form, so once one is there show it alone; drop the tags and any half-streamed one.
-    static func visible(_ reply: String) -> String {
+    static func visible(_ text: String) -> String {
+        let reply = withoutHTML(text)
         let from = reply.range(of: "<document>").map { String(reply[$0.lowerBound...]) } ?? reply
         return from
             .replacingOccurrences(of: "</voice>", with: "\n")
             .replacingOccurrences(of: "</?(voice|document)>", with: "", options: .regularExpression)
             .replacingOccurrences(of: "</?[a-z]*\\z", with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Stray HTML she wrote (this app shows none): `<br>` is a line break and the other common tags go, their text stays; code in backticks is left as it is.
+    /// The same rule as the brain's `jarvis/shared/html_tags.py`, for rows written before the brain applied it.
+    static func withoutHTML(_ s: String) -> String {
+        guard s.contains("<") else { return s }
+        let names = "p|b|i|u|em|strong|span|div|ul|ol|li|h[1-6]|a|hr|font"
+        let pattern = "(```.*?```|`[^`\\n]*`)|(<br(?:\\s[^<>\\n]*)?/?>)|(</?(?:\(names))(?:\\s[^<>\\n]*)?/?>)"
+        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else { return s }
+        var out = s
+        for m in re.matches(in: s, range: NSRange(s.startIndex..., in: s)).reversed() {
+            guard m.range(at: 1).location == NSNotFound, let r = Range(m.range, in: out) else { continue }
+            out.replaceSubrange(r, with: m.range(at: 2).location == NSNotFound ? "" : "\n")
+        }
+        return out
     }
 
     /// What she says aloud: the `<voice>` region when there is one, else the whole text; plain words, without markdown emphasis and code ticks.
