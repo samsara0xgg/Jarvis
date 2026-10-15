@@ -1,6 +1,6 @@
 # ADR 0138 — Leaving From the Surface Is a Dismissal
 
-**Status:** Accepted
+**Status:** Superseded-by-0269
 **Date:** 2026-10-03
 **Supersedes:** none
 

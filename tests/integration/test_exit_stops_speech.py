@@ -10,8 +10,10 @@ audible and drops what is queued, through the same session callbacks as a spoken
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -160,6 +162,7 @@ def _run(  # noqa: PLR0913 - one run's trigger, channel and turn
     trigger: str | None = "utterance.received",
     intent_channel: str = "inherent_wake",
     channel: str = "both",
+    phase: str = "final",
 ) -> ResponseRun:
     """An open, registered run whose turn Allen's words started (``trigger=None``: nobody's)."""
     event = emit_event(
@@ -182,10 +185,20 @@ def _run(  # noqa: PLR0913 - one run's trigger, channel and turn
         ),
         response_id=response_id,
         channel=channel,  # type: ignore[arg-type]
+        phase=phase,  # type: ignore[arg-type]
     )
     assert runtime.response_runs is not None
     runtime.response_runs.register(run)
     return run
+
+
+def _answer_started(runtime: JarvisRuntime, turn_id: str) -> None:
+    """The turn's answer opened on the wire, so it has started (a chunk is on its way)."""
+    emit_event(
+        runtime.conn,
+        type="surface.response_open",
+        payload={"turn_id": turn_id, "query": "q", "kind": "text"},
+    )
 
 
 def test_exit_cancels_every_open_run_that_would_speak_and_leaves_the_rest(
@@ -194,10 +207,12 @@ def test_exit_cancels_every_open_run_that_would_speak_and_leaves_the_rest(
     """Whatever their age or number; a document, a silent channel and a background run stay.
 
     A Live relay and a typed turn (ADR 0181) are the silent channels: nothing of them speaks.
+    A spoken turn whose answer has not started stays too (ADR 0269): it answers in text.
     """
     runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
     assert runtime.response_runs is not None
     _run(runtime, "R-voice-old", "T-old")
+    _answer_started(runtime, "T-old")
     _run(runtime, "R-voice-new", "T-new")
     _run(runtime, "R-typed", "T-typed", trigger="surface.user_intent", intent_channel="cli_stdin")
     _run(runtime, "R-document", "T-doc", channel="document")
@@ -207,7 +222,7 @@ def test_exit_cancels_every_open_run_that_would_speak_and_leaves_the_rest(
     inherent_loop._make_cancel_voice_runs(runtime)()  # noqa: SLF001
 
     assert {run.response_id for run in runtime.response_runs.open_runs()} == {
-        "R-document", "R-live", "R-sweep", "R-typed",
+        "R-voice-new", "R-document", "R-live", "R-sweep", "R-typed",
     }
     cancelled = {
         (row[0], row[1])
@@ -216,15 +231,18 @@ def test_exit_cancels_every_open_run_that_would_speak_and_leaves_the_rest(
             "json_extract(payload_json, '$.reason') FROM events WHERE type = 'response.cancelled'",
         )
     }
-    assert cancelled == {
-        ("R-voice-old", "user_stop"), ("R-voice-new", "user_stop"),
-    }
+    assert cancelled == {("R-voice-old", "user_stop")}
     # A run of one of these turns that opens later is cancelled at its open.
     assert runtime.response_runs.turn_stopped("T-old")
     assert not runtime.response_runs.turn_stopped("T-live")
+    assert runtime.response_runs.turn_text_only("T-new")
+    assert not runtime.response_runs.turn_stopped("T-new")
 
 def test_a_run_still_generating_at_exit_never_reaches_the_speaker(tmp_path: Path) -> None:
-    """Its first sentence is audible, the rest unwritten: exit stops it and it cannot go on."""
+    """Its first sentence is audible, the rest unwritten: exit stops it and it cannot go on.
+
+    A second turn that had said nothing yet is not stopped with it (ADR 0269).
+    """
     runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
     assert runtime.response_runs is not None
     db_path = runtime.runtime_paths.event_log
@@ -271,8 +289,76 @@ def test_a_run_still_generating_at_exit_never_reaches_the_speaker(tmp_path: Path
     # No further segment can be written, and a later run of the turn is cancelled at its open.
     with pytest.raises(ResponseCancelledError):
         run.check_cancelled("next sentence")
-    with pytest.raises(ResponseCancelledError):
-        other.check_cancelled("next sentence")
+    # The other turn had not started answering (ADR 0269): it goes on, in text.
+    other.check_cancelled("next sentence")
     assert runtime.response_runs.turn_stopped("T-RG")
-    assert not runtime.response_runs.open_runs()
+    assert [run.response_id for run in runtime.response_runs.open_runs()] == ["R-other"]
 
+
+
+class _Wire:
+    """The ``voice spoken`` words the TTS watcher puts on the wire, in order."""
+
+    def __init__(self) -> None:
+        self.spoken: list[tuple[str, object]] = []
+
+    async def broadcast_voice(self, _phase: str, *, turn_id: str, **payload: object) -> None:
+        self.spoken.append((turn_id, payload.get("output_outcome")))
+
+
+def test_leaving_voice_mode_keeps_a_spoken_turn_that_has_not_started_answering(
+    tmp_path: Path,
+) -> None:
+    """Live 2026-10-14 21:18: the companion's exit cancelled a sentence he had just spoken.
+
+    The turn's run stays open and its answer reaches the screen, but the speaker is given
+    none of it; the wait line of the same turn and an answer already under way are ended.
+    """
+    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+    registry = runtime.response_runs
+    assert registry is not None
+    pending = _run(runtime, "R-pending", "T-pending")
+    _run(runtime, "R-wait", "T-pending", phase="commentary")
+    started = _run(runtime, "R-started", "T-started")
+    _answer_started(runtime, "T-started")
+
+    cancel_runs = inherent_loop._make_cancel_voice_runs(runtime)  # noqa: SLF001
+    reply = _app(VoiceControls(conversation=True), cancel_runs).post(
+        "/inherent/controls", json={"conversation": False},
+    )
+    assert reply.json()["conversation"] is False
+
+    assert {run.response_id for run in registry.open_runs()} == {"R-pending"}
+    pending.check_cancelled("next sentence")
+    with pytest.raises(ResponseCancelledError):
+        started.check_cancelled("next sentence")
+    assert not registry.turn_stopped("T-pending")
+
+    wire, pipeline = _Wire(), MagicMock()
+
+    def answer() -> None:
+        for kind in ("response_open", "response_chunk", "response_emitted"):
+            emit_event(
+                runtime.conn,
+                type=f"surface.{kind}",
+                payload={"turn_id": "T-pending", "query": "q", "kind": "text", "text": "好。"},
+            )
+
+    async def watch() -> None:
+        task = asyncio.create_task(
+            inherent_loop._tts_watcher(  # noqa: SLF001 - the production watcher
+                conn=runtime.conn, pipeline=pipeline, poll_interval_s=0.01,
+                broadcaster=wire,  # type: ignore[arg-type]
+                text_only=registry.turn_text_only,
+            ),
+        )
+        await asyncio.sleep(0.05)
+        answer()
+        await asyncio.sleep(0.3)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(watch())
+    pipeline.begin_turn.assert_not_called()
+    assert wire.spoken == [("T-pending", "suppressed")]

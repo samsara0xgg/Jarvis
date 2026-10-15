@@ -216,7 +216,8 @@ async def _serving(tmp_path: Path) -> AsyncIterator[tuple[_Daemon, httpx.AsyncCl
     conn = open_event_log(daemon.paths.event_log)
     watcher = asyncio.create_task(
         inherent_loop._response_watcher(  # noqa: SLF001
-            SimpleNamespace(conn=conn), daemon.broadcaster, poll_interval_s=0.01,  # type: ignore[arg-type]
+            SimpleNamespace(conn=conn, response_runs=None),  # type: ignore[arg-type]
+            daemon.broadcaster, poll_interval_s=0.01,
         ),
     )
     daemon.pipeline.start()

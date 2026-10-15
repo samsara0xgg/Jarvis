@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
+from jarvis.decision.response_run import ResponseRunRegistry
 from jarvis.runtime import inherent_loop
 from jarvis.state.event_log import PHONE_VOICE_CHANNEL, emit_event, open_event_log
 from jarvis.surface.terminal_ui import Device, _own_voice
@@ -113,7 +114,7 @@ def test_a_boot_without_speech_ends_every_answer_with_no_voice(tmp_path: Path) -
     asyncio.run(
         _watch(
             inherent_loop._response_watcher(  # noqa: SLF001 - the production watcher
-                SimpleNamespace(conn=conn),  # type: ignore[arg-type]
+                SimpleNamespace(conn=conn, response_runs=None),  # type: ignore[arg-type]
                 wire,  # type: ignore[arg-type]
                 poll_interval_s=0.01,
                 voiced=False,
@@ -157,7 +158,7 @@ def test_a_brain_ends_a_typed_turn_with_a_word_a_voice_terminal_passes_on(tmp_pa
     asyncio.run(
         _watch(
             inherent_loop._response_watcher(  # noqa: SLF001 - the production watcher
-                SimpleNamespace(conn=conn),  # type: ignore[arg-type]
+                SimpleNamespace(conn=conn, response_runs=None),  # type: ignore[arg-type]
                 wire,  # type: ignore[arg-type]
                 poll_interval_s=0.01,
                 voiced=False,
@@ -180,6 +181,37 @@ def test_a_brain_ends_a_typed_turn_with_a_word_a_voice_terminal_passes_on(tmp_pa
         for turn, outcome in ends
     ]
     assert [r is not None for r in relayed] == [True, False, False]
+
+
+def test_a_spoken_turn_left_to_answer_in_text_ends_suppressed_on_a_brain(tmp_path: Path) -> None:
+    """ADR 0269: he left voice mode after speaking it, so no player is given the turn."""
+    conn = open_event_log(tmp_path / "events.db")
+    wire = _Wire()
+    registry = ResponseRunRegistry()
+    registry.mark_turn_text_only("T-text")
+
+    def emit() -> None:
+        for turn in ("T-text", "T-voice"):
+            emit_event(
+                conn,
+                type="surface.user_intent",
+                payload={"turn_id": turn, "transcript": "hi", "channel": "inherent_wake"},
+            )
+            _answer(conn, turn, attention_channel="voice_notify")
+
+    asyncio.run(
+        _watch(
+            inherent_loop._response_watcher(  # noqa: SLF001 - the production watcher
+                SimpleNamespace(conn=conn, response_runs=registry),  # type: ignore[arg-type]
+                wire,  # type: ignore[arg-type]
+                poll_interval_s=0.01,
+                voiced=False,
+            ),
+            emit,
+        ),
+    )
+    ends = [(turn, outcome) for phase, turn, outcome in wire.sent if phase == "spoken"]
+    assert ends == [("T-text", "suppressed"), ("T-voice", "no_voice")]
 
 
 def test_an_answer_dropped_from_the_queue_is_announced_spoken(tmp_path: Path) -> None:

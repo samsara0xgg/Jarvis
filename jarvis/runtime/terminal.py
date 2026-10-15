@@ -474,6 +474,7 @@ class _Seat:
     memory: MemorySettings | None = None
     voice_settings: None = None
     voice_cues: None = None
+    response_runs: None = None  # a terminal runs no turns: the brain decides what is spoken
 
 
 @dataclass(frozen=True)

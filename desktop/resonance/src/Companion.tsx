@@ -416,15 +416,17 @@ export function Companion() {
   // Whatever she is saying or about to say stops: the answer on screen by its response, or the turn she is still
   // thinking about by its turn. Where she had got to stays lit; the rest of it waits, dim. Poking her does it, and so does the first
   // thing typed into an empty field: she does not talk over your words.
+  const cutAnswer = () => { dispatch({ type: 'cut', at: Date.now() }); void link.current?.cancel(s.responseId).catch(() => undefined); };
   const stopTalking = () => {
-    if (answering) { dispatch({ type: 'cut', at: Date.now() }); void link.current?.cancel(s.responseId).catch(() => undefined); }
+    if (answering) cutAnswer();
     else if (s.askedAt !== null && s.waiting) void link.current?.stopTurn(s.waiting).catch(() => undefined);
   };
+  // Leaving voice stops the answer she is giving, but not a sentence she is still thinking about: that one answers on the screen (ADR 0269).
   const endVoice = () => {
     if (port) {
       feedback('voice-exit');
       void link.current?.controls({ conversation: false }).catch(() => undefined);
-      stopTalking();
+      if (answering) cutAnswer();
       return;
     }
     stopScript(); setReceiving(false); feedback('voice-exit'); setVoice('off'); setHearing(false); setPartial(''); setReply({ text: '' }); setTalking(false); dispatch({ type: 'cut', at: Date.now() }); };

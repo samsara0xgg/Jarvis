@@ -439,6 +439,8 @@ class ResponseRunRegistry:
         # ADR 0074: turns a newer sentence superseded before their run opened, as
         # (expiry, the turn that took their place; ADR 0268).
         self._superseded_turns: dict[str, tuple[float, str | None]] = {}
+        # ADR 0269: spoken turns whose answer is shown and not said, since he left voice mode.
+        self._text_only_turns: dict[str, float] = {}
 
     def hold_completion(self, *, held: bool) -> None:
         """Hold, or release, every run's completion while Allen is talking."""
@@ -466,6 +468,18 @@ class ResponseRunRegistry:
         """Whether the stop button hit ``turn_id`` recently enough to still bind it."""
         with self._lock:
             return self._stopped_turns.get(turn_id, 0.0) > time.monotonic()
+
+    def mark_turn_text_only(self, turn_id: str) -> None:
+        """Remember that ``turn_id`` answers in text only: he left voice mode after speaking it."""
+        now = time.monotonic()
+        with self._lock:
+            self._text_only_turns = {t: u for t, u in self._text_only_turns.items() if u > now}
+            self._text_only_turns[turn_id] = now + _STOPPED_TURN_MEMORY_S
+
+    def turn_text_only(self, turn_id: str) -> bool:
+        """Whether ``turn_id`` answers in text only, recently enough to still bind it."""
+        with self._lock:
+            return self._text_only_turns.get(turn_id, 0.0) > time.monotonic()
 
     def mark_turns_superseded(
         self, turn_ids: Iterable[str], *, for_s: float, by_turn: str | None = None,

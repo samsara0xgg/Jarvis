@@ -209,6 +209,13 @@ def test_a_devices_voice_cancels_only_the_runs_of_its_own_turns(
     """Each trigger, from each device, cancels the runs of that device's turns and no others."""
     via, device, trigger, open_for, expected = SCOPING[name]
     runtime = _scene(tmp_path, open_for)
+    if trigger == "cancel_runs":
+        # An exit ends answers under way; one not yet started is kept (ADR 0269).
+        for opened in open_for:
+            emit_event(
+                runtime.conn, type="surface.response_open",
+                payload={"turn_id": TURNS[opened], "query": "q", "kind": "text"},
+            )
     outcome = _trigger(runtime, via, device, trigger)
     assert _cancelled(runtime) == [(turn, REASON[trigger]) for turn in expected]
     if trigger == "interrupt":

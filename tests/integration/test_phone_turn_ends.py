@@ -389,7 +389,8 @@ def test_a_phone_turn_never_reaches_the_macs_companion_and_every_other_turn_does
     async def watch() -> None:
         task = asyncio.create_task(
             inherent_loop._response_watcher(  # noqa: SLF001 - the production watcher
-                SimpleNamespace(conn=conn), wire, poll_interval_s=0.01, voiced=False,  # type: ignore[arg-type]
+                SimpleNamespace(conn=conn, response_runs=None),  # type: ignore[arg-type]
+                wire, poll_interval_s=0.01, voiced=False,
             ),
         )
         await asyncio.sleep(0.05)

@@ -926,12 +926,12 @@ try {
     await emit('done', { turn_id: 'nb2', fadeMs: 100 }); await emit('voice', { phase: 'spoken', turn_id: 'nb2', output_outcome: 'interrupted' }); await page.waitForTimeout(500);
     await tap();
     check(`${captions}: and the next tap ends voice`, last('/inherent/controls')?.conversation === false);
-    // a tap while she thinks ends voice and stops the turn
+    // a tap while she thinks ends voice and leaves the turn to answer (ADR 0269)
     await emit('controls', { mic_muted: false, speech_muted: false, conversation: true }); s.daemonState.controls.conversation = true;
     await emit('voice', { phase: 'listening', turn_id: 'nb3' }); await emit('voice', { phase: 'accepted', turn_id: 'nb3', text: '再查一个' }); await page.waitForTimeout(500);
     const m = posts.length;
     await tap();
-    check(`${captions}: a tap while she thinks ends voice and stops that turn`, posts.slice(m).some(p => p.path === '/inherent/controls' && p.body.conversation === false) && posts.slice(m).some(p => p.path === '/inherent/cancel-response' && p.body.turn_id === 'nb3'));
+    check(`${captions}: a tap while she thinks ends voice and does not stop that turn`, posts.slice(m).some(p => p.path === '/inherent/controls' && p.body.conversation === false) && !posts.slice(m).some(p => p.path === '/inherent/cancel-response'));
     check(`${captions}: no page errors (no buttons)`, s.errors.length === 0);
     await s.context.close();
   }

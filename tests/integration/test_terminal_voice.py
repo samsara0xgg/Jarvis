@@ -1021,7 +1021,7 @@ def _host(config: dict[str, Any], journal: Journal) -> Any:  # noqa: ANN401
             transactional_event_append=True, lifecycle_terminal_cas=True,
         ),
         response_flags=Wave4ResponseFlags(), runtime_paths=_Paths(journal.path), conn=journal.conn,
-        memory=None,
+        memory=None, response_runs=None,
     )
 
 

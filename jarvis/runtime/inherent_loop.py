@@ -365,8 +365,14 @@ _DEFAULT_PORT: int = 8006
 # into the talk field) is the same kind of label and is silent for the same
 # reason: ADR 0181, only words he spoke are answered aloud. ``phone_voice`` (ADR 0209) is
 # spoken, but by the phone's own media actor: the Mac's speaker and a terminal's leave it alone.
+_TEXT_ONLY_CHANNEL: Final = "text_only"
+"""ADR 0269: the label a spoken turn takes once he leaves voice mode before its answer starts."""
+
 _TTS_SILENT_CHANNELS: frozenset[str] = frozenset(
-    {"queue_review", "silent_log", "badge_card", "gpt_live", TYPED_CHANNEL, PHONE_VOICE_CHANNEL},
+    {
+        "queue_review", "silent_log", "badge_card", "gpt_live", TYPED_CHANNEL,
+        PHONE_VOICE_CHANNEL, _TEXT_ONLY_CHANNEL,
+    },
 )
 
 # WS-broadcaster suppression set — deliberately NARROWER than the TTS
@@ -1600,7 +1606,8 @@ async def _response_watcher(
     ``voiced=False`` (no speech pipeline this boot) follows every
     ``done`` with ``voice spoken {output_outcome: "no_voice"}``: a surface
     ends a turn's speaking face on ``spoken``, and nothing else would send it.
-    A turn typed on :data:`TYPED_CHANNEL` (ADR 0181) is ended with
+    A turn typed on :data:`TYPED_CHANNEL` (ADR 0181), or spoken and then left to
+    answer in text (ADR 0269), is ended with
     ``suppressed`` instead, as :func:`_tts_watcher` ends it where a speaker
     exists: ``no_voice`` is the word a voice terminal drops, since its own
     player will say ``spoken``, and that player is never given a typed turn.
@@ -1633,13 +1640,16 @@ async def _response_watcher(
                         ev,
                         turn_id=turn_id,
                         silent_turns=typed_turns,
-                        silent_channels=frozenset({TYPED_CHANNEL}),
+                        silent_channels=frozenset({TYPED_CHANNEL, _TEXT_ONLY_CHANNEL}),
                         consumer="response_watcher (speech)",
                         intent_channel=(
-                            turn_intent_channel(runtime.conn, turn_id)
-                            if ev.type == "surface.response_open"
-                            else None
-                        ),
+                            _TEXT_ONLY_CHANNEL
+                            if runtime.response_runs is not None
+                            and runtime.response_runs.turn_text_only(turn_id)
+                            else turn_intent_channel(runtime.conn, turn_id)
+                        )
+                        if ev.type == "surface.response_open"
+                        else None,
                     )
                     response_id = ev.payload.get("response_id")
                     is_line = ev.payload.get("phase") == "commentary"
@@ -1744,6 +1754,7 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
     pipeline: object,  # voice_tts.TTSPipeline protocol; loosely typed to avoid cycles
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
     broadcaster: InherentBroadcaster | None = None,
+    text_only: Callable[[str], bool] | None = None,
 ) -> None:
     """Background task: feed every surface.response_* row into the TTSPipeline.
 
@@ -1836,10 +1847,12 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
                         silent_channels=_TTS_SILENT_CHANNELS,
                         consumer="tts_watcher",
                         intent_channel=(
-                            turn_intent_channel(conn, turn_id)
-                            if ev.type == "surface.response_open"
-                            else None
-                        ),
+                            _TEXT_ONLY_CHANNEL
+                            if text_only is not None and text_only(turn_id)
+                            else turn_intent_channel(conn, turn_id)
+                        )
+                        if ev.type == "surface.response_open"
+                        else None,
                     ):
                         if broadcaster is not None and ev.type in _RESPONSE_TERMINAL_TYPES:
                             await broadcaster.broadcast_voice(
@@ -2426,10 +2439,15 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
                 # at the only granularity the fold supports.
                 return None
             if _turn_over_or_answering(conn, turn_id) or (
-                runtime.response_runs is not None and runtime.response_runs.turn_stopped(turn_id)
+                runtime.response_runs is not None
+                and (
+                    runtime.response_runs.turn_stopped(turn_id)
+                    or runtime.response_runs.turn_text_only(turn_id)
+                )
             ):
                 # The stop button's mark covers a turn still queued, whose run
-                # has not opened to write its response.cancelled yet.
+                # has not opened to write its response.cancelled yet. A turn that answers
+                # in text only (ADR 0269) has no wait line to say.
                 # Last before the render, after the slow projection rebuild: the
                 # answer is out or on its way (a quick answer, or a Tier 0 turn
                 # that ends before its tool's rows reach this watcher), and a
@@ -2643,6 +2661,9 @@ def _make_cancel_voice_runs(
     it had of a cancelled run. A turn submitted on a channel the speaker is silent
     for (``_TTS_SILENT_CHANNELS``) and background turns are left alone.
 
+    A turn he spoke whose answer has not started (ADR 0269) is not cancelled: it answers in
+    text only, and only a wait line or an answer already under way is ended.
+
     ``only_turns`` (ADR 0219) narrows it to the turns it accepts: a device's exit ends that
     device's answers, not another's.
     """
@@ -2676,10 +2697,20 @@ def _make_cancel_voice_runs(
             open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
         ) as conn:
             runs = [run for run in runs if _from_his_words(conn, run.turn_id)]
-        if only_turns is not None:
-            runs = [run for run in runs if only_turns(run.turn_id)]
+            if only_turns is not None:
+                runs = [run for run in runs if only_turns(run.turn_id)]
+            unanswered = {
+                run.turn_id
+                for run in runs
+                if run.phase == "final"
+                and conn.execute(_SELECT_ANSWER_STARTED_SQL, (run.turn_id,)).fetchone() is None
+            }
+        for turn_id in unanswered:
+            registry.mark_turn_text_only(turn_id)
+        runs = [run for run in runs if run.turn_id not in unanswered or run.phase != "final"]
         for run in runs:
-            registry.mark_turn_stopped(run.turn_id)
+            if run.turn_id not in unanswered:
+                registry.mark_turn_stopped(run.turn_id)
         for run in runs:
             outcome = cancel(run.response_id, "generation", "user_stop")
             LOGGER.info(
@@ -2988,6 +3019,9 @@ class SpeakerHost(Protocol):
     @property
     def voice_settings(self) -> VoiceSettings | None: ...
 
+    @property
+    def response_runs(self) -> ResponseRunRegistry | None: ...
+
 
 def _build_tts_pipeline(  # noqa: C901, PLR0913, PLR0915 - rollout/degradation capability boundary
     runtime: SpeakerHost,
@@ -3115,6 +3149,7 @@ def _build_tts_pipeline(  # noqa: C901, PLR0913, PLR0915 - rollout/degradation c
             playback_tap=echo_canceller.add_playback if echo_canceller is not None else None,
             volume=playback_volume,
         )
+        text_registry = runtime.response_runs
         try:
             return voice_media.StreamingTTSPipeline(
                 provider=streaming_provider,
@@ -3131,6 +3166,10 @@ def _build_tts_pipeline(  # noqa: C901, PLR0913, PLR0915 - rollout/degradation c
                     wait_for_lane=runtime.response_flags.slow_results,
                 ),
                 silent_intent_channels=_TTS_SILENT_CHANNELS,
+                speaks_turn=(
+                    None if text_registry is None
+                    else lambda _conn, turn_id: not text_registry.turn_text_only(turn_id)
+                ),
             )
         except voice_media.StreamingMediaStartupError as exc:
             if not exc.legacy_fallback_safe:
@@ -3201,9 +3240,12 @@ class _SpokenCursor:
     speaker, so a terminal never hears what this daemon would not.
     """
 
-    def __init__(self, conn: sqlite3.Connection, after: int) -> None:
+    def __init__(
+        self, conn: sqlite3.Connection, after: int, text_only: Callable[[str], bool] | None,
+    ) -> None:
         self._conn = conn
         self._after = after
+        self._text_only = text_only
         self._silent: set[str] = set()
 
     def poll(self) -> terminal_voice.RowBatch:
@@ -3221,10 +3263,12 @@ class _SpokenCursor:
                 silent_channels=_TTS_SILENT_CHANNELS,
                 consumer="terminal_speech",
                 intent_channel=(
-                    turn_intent_channel(self._conn, turn_id)
-                    if event.type == "surface.response_open"
-                    else None
-                ),
+                    _TEXT_ONLY_CHANNEL
+                    if self._text_only is not None and self._text_only(turn_id)
+                    else turn_intent_channel(self._conn, turn_id)
+                )
+                if event.type == "surface.response_open"
+                else None,
             ):
                 spoken.append((row_id, event))
         return self._after, spoken
@@ -3233,14 +3277,17 @@ class _SpokenCursor:
 class _SpokenRows:
     """The brain's answer rows, for :class:`terminal_voice.BrainVoice` (ADR 0172)."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(
+        self, conn: sqlite3.Connection, text_only: Callable[[str], bool] | None = None,
+    ) -> None:
         self._conn = conn
+        self._text_only = text_only
 
     def high_water(self) -> int:
         return _latest_id(self._conn)
 
     def cursor(self, after: int) -> _SpokenCursor:
-        return _SpokenCursor(self._conn, after)
+        return _SpokenCursor(self._conn, after, self._text_only)
 
 
 def _build_brain_voice(
@@ -3268,7 +3315,13 @@ def _build_brain_voice(
         recorder=recorder,
         voice_settings=runtime.voice_settings,
     )
-    return terminal_voice.BrainVoice(client, _SpokenRows(runtime.conn))
+    return terminal_voice.BrainVoice(
+        client,
+        _SpokenRows(
+            runtime.conn,
+            None if runtime.response_runs is None else runtime.response_runs.turn_text_only,
+        ),
+    )
 
 
 class _PhoneCursor:
@@ -7910,6 +7963,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         pipeline=tts_pipe,
                         poll_interval_s=poll_interval_s,
                         broadcaster=broadcaster,
+                        text_only=(
+                            None if runtime.response_runs is None
+                            else runtime.response_runs.turn_text_only
+                        ),
                     ),
                     name="tts_watcher",
                 ),

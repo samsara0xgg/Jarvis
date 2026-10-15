@@ -398,7 +398,7 @@ try {
     await folded();
     await move(600, 560); await waitPlace('home');
     check('L6 and after 8 s it leaves and she goes home', true);
-    // A poke while she thinks: that turn has no answer to name yet, so it is stopped by its turn, not the last answer's id.
+    // A poke while she thinks ends voice, and that turn, which has no answer yet, is left to answer (ADR 0269).
     await page.evaluate(() => window.__emit('voice', { phase: 'listening', turn_id: 'v2t' }));
     await waitPlace('out');
     await page.evaluate(() => window.__emit('voice', { phase: 'accepted', turn_id: 'v2t', text: '帮我查一下航班' }));
@@ -406,7 +406,7 @@ try {
     const posted = posts.length;
     await hit.click({ force: true }); await page.waitForTimeout(600);
     const stops = posts.slice(posted).filter(p => p.path === '/inherent/cancel-response');
-    check('L6 a poke while she thinks stops that turn by its id', thinks === '30' && stops.length === 1 && stops[0].body.turn_id === 'v2t' && !stops[0].body.response_id);
+    check('L6 a poke while she thinks ends voice and does not stop that turn', thinks === '30' && stops.length === 0 && posts.slice(posted).some(p => p.path === '/inherent/controls' && p.body.conversation === false));
     await page.evaluate(() => window.__emit('cancelled', { turn_id: 'v2t' }));
     await move(600, 560); await waitPlace('home');
 
