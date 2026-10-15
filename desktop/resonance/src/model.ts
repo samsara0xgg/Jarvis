@@ -187,7 +187,10 @@ export function reducer(s: State, a: Action): State {
   }
 }
 // The render layer wraps speech in <voice> and card text in <document> (voice_tts.py:99). A document is the whole answer and the voice only its spoken form (ADR 0040), so once one arrives show it alone; drop the markup and any half-streamed tag.
-export const visible = (reply: string) => reply.slice(Math.max(0, reply.indexOf('<document>'))).replace(/<\/voice>/g, '\n').replace(/<\/?(voice|document)>/g, '').replace(/<\/?[a-z]*$/, '').trim();
+// Stray HTML she wrote (nothing here renders it): `<br>` is a line break, the other common tags go and their text stays, code in backticks is left as it is.
+// The same rule as the brain's jarvis/shared/html_tags.py, for rows written before the brain applied it.
+export const withoutHtml = (s: string) => s.replace(/(```[\s\S]*?```|`[^`\n]*`)|(<br(?:\s[^<>\n]*)?\/?>)|(<\/?(?:p|b|i|u|em|strong|span|div|ul|ol|li|h[1-6]|a|hr|font)(?:\s[^<>\n]*)?\/?>)/gi, (_m, code, br) => code ?? (br ? '\n' : ''));
+export const visible = (text: string) => { const reply = withoutHtml(text); return reply.slice(Math.max(0, reply.indexOf('<document>'))).replace(/<\/voice>/g, '\n').replace(/<\/?(voice|document)>/g, '').replace(/<\/?[a-z]*$/, '').trim(); };
 // Plain words for her bubble and the Dashboard: the answer's markdown emphasis and code ticks dropped.
 export const plain = (text: string) => visible(text).replace(/\*\*|`/g, '');
 // The line of the tool this surface's turn is waiting on ("Searching the web..."), or ''. What her voice is doing does not decide it (a wait line
