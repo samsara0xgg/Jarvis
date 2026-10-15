@@ -44,7 +44,9 @@ from jarvis.decision.turn_guards import (
 )
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.memory_db import append_record
 from jarvis.surface.stream_emission import emit_permitted_segment
+from tests.integration.test_phone_steps import _answer, _history_of, _Host, _tool
 
 if TYPE_CHECKING:
     import sqlite3
@@ -390,9 +392,9 @@ def _notes(messages: Sequence[dict[str, Any]], said: str) -> list[dict[str, Any]
     return [m for m in messages if m.get("content") == UNBACKED_NOTE.format(said=said)]
 
 
-def _context(
+def _context(  # noqa: PLR0913 - one argument per thing a turn's context can carry
     conn: sqlite3.Connection, tmp_path: Path, llm: object, budget: int,
-    live_context: tuple[str, ...] = (),
+    live_context: tuple[str, ...] = (), history: Sequence[dict[str, Any]] = (),
 ) -> DecideContext:
     paths = _StubRuntimePaths(
         event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts"
@@ -407,11 +409,13 @@ def _context(
         system_prompt="stub system prompt",
         max_tool_iterations=budget,
         live_context=live_context,
+        history=history,
     )
 
 
 def _batch(
     tmp_path: Path, model: _ScriptedModel, *, budget: int = 8, live_context: tuple[str, ...] = (),
+    history: Sequence[dict[str, Any]] = (),
 ) -> tuple[str, sqlite3.Connection]:
     conn = open_event_log(tmp_path / "events.db")
     trigger = emit_event(
@@ -420,7 +424,7 @@ def _batch(
         payload={"transcript": "把明天开会记一下", "turn_id": "T_guard"},
         correlation={"turn_id": "T_guard"},
     )
-    result = decide(trigger, _context(conn, tmp_path, model, budget, live_context))
+    result = decide(trigger, _context(conn, tmp_path, model, budget, live_context, history))
     assert result.response_plan is not None
     return result.response_plan.text, conn
 
@@ -492,6 +496,26 @@ def test_a_claim_with_no_call_goes_back_once_and_the_call_follows(tmp_path: Path
         assert second[second.index(note) - 1] == {"role": "assistant", "content": "记下了。"}
         assert _count(conn, "memo.captured") == 1
         assert _guards(conn) == [{"turn_id": "T_guard", "guard": "unbacked", "said": DID}]
+    finally:
+        conn.close()
+
+
+def test_a_did_line_in_the_history_is_no_backing_for_a_claim_in_this_turn(tmp_path: Path) -> None:
+    """ADR 0267: an earlier turn's [You did: ...] is not a call; 「记下了」 now still goes back."""
+    host = _Host(tmp_path)
+    _tool(host, "T_old", "keep", {"text": "上周的事"}, take=0)
+    append_record(host.memory, record_id="u0", source="allen", text="把上周的事记一下")
+    _answer(host, "T_old", "好。")
+    history = _history_of(host)
+    assert history[-1]["content"].endswith("好。\n[You did: saved a note]")
+    model = _ScriptedModel("记下了。", MEMO, "好了，明天开会记在备忘录里了。")
+    text, conn = _batch(tmp_path, model, history=history)
+    try:
+        assert text == "好了，明天开会记在备忘录里了。"
+        assert history[-1] in model.requests[0][0]
+        assert len(_notes(model.requests[1][0], DID)) == 1
+        assert _guards(conn) == [{"turn_id": "T_guard", "guard": "unbacked", "said": DID}]
+        assert _count(conn, "memo.captured") == 1
     finally:
         conn.close()
 

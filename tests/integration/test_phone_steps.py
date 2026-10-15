@@ -12,7 +12,9 @@ and a resend behave as the HTTP route's do; (b) a turn's tool calls reach its ow
 ``step`` frames, running then done or failed, labelled from the table with a safe detail, in log
 order with the rows, for typed and spoken turns alike and never for another device's turn; (c) the
 conversation row of her answer carries the steps, read from the log; (d) the label table, as data,
-in both languages.
+in both languages; (e) ADR 0267: the history rendered for the model puts a ``[You did: ...]`` line
+after an answer whose turn ran tools that worked, in English, and none after one that ran none or
+whose tools failed; an answer that copies the line has it cut from the history and the page.
 """
 
 from __future__ import annotations
@@ -34,8 +36,9 @@ from jarvis.shared import lang, steps
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME, Attachments
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
 from jarvis.state.event_log import emit_event, open_event_log
-from jarvis.state.memory_db import append_record, conversation_rows
+from jarvis.state.memory_db import append_record, conversation_rows, render_context
 from jarvis.state.plugin_settings import local_key, local_key_matches
+from jarvis.state.turn_steps import answer_did
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
@@ -44,7 +47,7 @@ from tests.integration.test_terminal_voice import _AsRemote, _free_port, _wait_f
 from tools.phone_fake_client import FakePhone
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
     from pathlib import Path
 
 
@@ -672,3 +675,56 @@ def test_every_kind_has_both_wordings() -> None:
         for language in ("en", "zh"):
             assert lang.t(f"step.{kind}", lang=language)
             assert lang.t(f"step.{kind}.done", lang=language)
+
+
+def _history_of(host: _Host) -> list[dict[str, Any]]:
+    """The history the model gets, with the line of what each answer did read from the log."""
+
+    def did(ids: Sequence[str]) -> dict[str, str]:
+        conn = open_event_log(host.log)
+        try:
+            return answer_did(conn, ids)
+        finally:
+            conn.close()
+
+    return list(render_context(host.memory, exclude_id="", did=did).history)
+
+
+def test_the_history_follows_an_answer_whose_turn_ran_tools_with_what_it_did(
+    tmp_path: Path,
+) -> None:
+    """(e) ADR 0267: the line is English, on its own, only after a turn with a tool that worked."""
+    lang.set_language("zh")  # the reader is the model: the line does not follow the setting
+    host = _Host(tmp_path)
+    _tool(host, "T1", "keep", {"text": "buy milk"}, take=0)
+    _tool(host, "T1", "where_am_i", {}, take=0)
+    _tool(host, "T1", "keep", {"text": "again"}, take=0)  # a repeat of a kind is named once
+    _tool(host, "T3", "web_search", {"query": "x"}, take=0, error="boom")  # failed: not listed
+    append_record(host.memory, record_id="u1", source="allen", text="save a note")
+    _answer(host, "T1", "Noted.")
+    append_record(host.memory, record_id="u2", source="allen", text="thanks")
+    _answer(host, "T2", "You are welcome.")
+    append_record(host.memory, record_id="u3", source="allen", text="search")
+    _answer(host, "T3", "The search failed.")
+    contents = [turn["content"] for turn in _history_of(host)]
+    assert contents[1].endswith("Noted.\n[You did: saved a note, checked where you are]")
+    assert contents[3].endswith("You are welcome.")
+    assert contents[5].endswith("The search failed.")
+    assert sum("[You did:" in c for c in contents) == 1
+
+
+def test_a_line_she_copies_into_her_answer_is_cut_from_the_history_and_the_page(
+    tmp_path: Path,
+) -> None:
+    """(e) The line is the program's; her copy of it is not words of hers, anywhere it is read."""
+    host = _Host(tmp_path)
+    append_record(host.memory, record_id="u1", source="allen", text="save a note")
+    append_record(
+        host.memory, record_id="a1", source="jarvis", text="Saved.\n[You did: saved a note]",
+    )
+    append_record(
+        host.memory, record_id="a2", source="jarvis", text="Done [You did: set a reminder] ok",
+    )
+    assert [t["content"] for t in _history_of(host)][1] == "Saved.\nDone ok"
+    rows, _ = conversation_rows(host.memory, since="", after=0, before=0, limit=10)
+    assert [r["text"] for r in rows if r["source"] == "jarvis"] == ["Saved.", "Done ok"]

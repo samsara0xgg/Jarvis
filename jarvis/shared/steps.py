@@ -197,6 +197,7 @@ class Step:
     tool: str
     label: str
     phrase: str
+    kind: str
     state: Literal["running", "done", "failed"]
     started_ms: int
     ended_ms: int | None
@@ -260,6 +261,7 @@ class StepFold:
                 tool,
                 label(tool, arguments),
                 phrase(tool, arguments),
+                kind(tool, arguments),
                 "running",
                 event.ts_epoch_ms,
                 None,

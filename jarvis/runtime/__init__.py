@@ -251,6 +251,7 @@ from jarvis.state.event_log import (
 )
 from jarvis.state.ledger import LedgerSources, TerminalScreen
 from jarvis.state.memory_db import (
+    DidOf,
     MemorySettings,
     PictureFileId,
     PlacesBlock,
@@ -266,6 +267,7 @@ from jarvis.state.shares import SHARES_LINE_CHARS, SHARES_LINE_PREFIX, shares_li
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
 from jarvis.state.turn_overlap import any_turn_in_flight, turn_activity_since
+from jarvis.state.turn_steps import answer_did
 from jarvis.state.voice_settings import VoiceSettings
 from jarvis.surface.ambient_sounds import AmbientSounds
 from jarvis.surface.cli import (
@@ -3335,6 +3337,7 @@ def _warm_next_prefix(  # noqa: PLR0913 — the next turn's request: client, pro
                 ledger=runtime.ledger,
                 places=runtime.places_block,
                 pictures=_history_pictures(runtime, llm_client),
+                did=_history_did(runtime),
             ).history
             with contextlib.closing(
                 open_runtime_event_log(runtime.runtime_paths.event_log),
@@ -4273,6 +4276,21 @@ def _history_pictures(runtime: JarvisRuntime, client: LLMClient) -> PictureFileI
     return runtime.picture_files.resolver(client)
 
 
+def _history_did(runtime: JarvisRuntime) -> DidOf:
+    """ADR 0267: how history learns what the turn behind an answer did, from the Event Log."""
+
+    def did(answer_ids: Sequence[str]) -> Mapping[str, str]:
+        path = runtime.runtime_paths.event_log
+        try:
+            with contextlib.closing(open_runtime_event_log(path)) as conn:
+                return answer_did(conn, answer_ids)
+        except sqlite3.Error:
+            LOGGER.warning("history: what its answers did could not be read", exc_info=True)
+            return {}
+
+    return did
+
+
 def _record_attachments(
     store: Attachments | None, payload: Mapping[str, Any],
 ) -> list[AttachmentRef]:
@@ -4618,6 +4636,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             pictures=_history_pictures(
                 runtime, run.request_client if run is not None else runtime.llm_client,
             ),
+            did=_history_did(runtime),
         )
         if memory is not None
         else None
