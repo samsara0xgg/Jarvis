@@ -124,7 +124,11 @@ from jarvis.decision.turn_end_asks import TurnEndAsks
 from jarvis.decision.voice_words import VoiceWords
 from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
 from jarvis.deployment.launchd import logs_dir
-from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
+from jarvis.deployment.models import (
+    default_meaning_dir,
+    default_sensevoice_dir,
+    default_silero_vad_path,
+)
 from jarvis.deployment.night_power import MacPower
 from jarvis.execution import speakable
 from jarvis.execution.conversation_tool import build_conversation_tool
@@ -226,7 +230,7 @@ from jarvis.shared.realtime_trace import (
     record_realtime_trace,
 )
 from jarvis.shared.system_prompt import SplitSystem
-from jarvis.state import device_reads, reactions
+from jarvis.state import device_reads, embedding, reactions
 from jarvis.state import picture_notes as note_records
 from jarvis.state import places as place_state
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME, AttachmentRef, Attachments, marker
@@ -1810,9 +1814,15 @@ def _register_mail(registry: ToolRegistry, home: Home, zone: tzinfo) -> None:
         registry.register(tool)
 
 
-def _register_conversation(registry: ToolRegistry, memory_db: Path, zone: tzinfo) -> None:
-    """``conversation`` (ADR 0243): his words and hers, searched, summarized by day, opened."""
-    for tool in build_conversation_tool(memory_db, zone):
+def _register_conversation(
+    registry: ToolRegistry, memory_db: Path, zone: tzinfo, runtime_root: Path,
+) -> None:
+    """``conversation`` (ADR 0243): his words and hers, searched, summarized by day, opened.
+
+    ADR 0260: the search also goes by meaning, with the model under the runtime root.
+    """
+    embedder = embedding.shared(default_meaning_dir(runtime_root))
+    for tool in build_conversation_tool(memory_db, zone, embedder=embedder):
         registry.register(tool)
 
 
@@ -3098,7 +3108,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
     )
     _register_mail(registry, home, local_zone)
-    _register_conversation(registry, memory.db_path, local_zone)
+    _register_conversation(registry, memory.db_path, local_zone, paths.root)
     _register_my_day(
         registry,
         LedgerSources(

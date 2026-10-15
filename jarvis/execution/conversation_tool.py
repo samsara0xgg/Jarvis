@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from contextlib import closing
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Final
 from jarvis.execution import speakable
 from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
+from jarvis.state import meaning
 from jarvis.state.daily_contract import DailyError, encoded
 from jarvis.state.daily_records import rank_by_words, read_connection
 from jarvis.state.memory_db import PICTURE_NOTE_SOURCE, latest_day_summaries
@@ -20,20 +22,24 @@ if TYPE_CHECKING:
     from datetime import tzinfo
     from pathlib import Path
 
+    from jarvis.state.embedding import Embedder
+
+LOGGER = logging.getLogger(__name__)
+
 _DESCRIPTION: Final = (
     "Use for what Allen and you said to each other before, not for what he did (my_day) or "
-    "his mail. query: lines holding any of the words, up to 8 per page, each with who, when "
-    "and an excerpt. date (a day; to= its last day, up to 14 days): the topics talked about, "
-    "day by day. date or query with order, speaker or page: the lines themselves, so 'the "
-    "first thing I said last month' is date+to, order=oldest, speaker=Allen. open: an id from "
-    "a result, the exchange around that line."
+    "his mail. query: the closest lines by meaning and by words, in either language, up to 8 "
+    "per page, each with who, when and an excerpt. date (a day; to= its last day, up to 14 "
+    "days): the topics talked about, day by day. date or query with order, speaker or page: "
+    "the lines themselves, so 'the first thing I said last month' is date+to, order=oldest, "
+    "speaker=Allen. open: an id from a result, the exchange around that line."
 )
 _SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
     "properties": {
         "query": {
             "type": "string",
-            "description": "Words separated by spaces, in the language they were said in.",
+            "description": "Words or a short phrase, in Chinese or English.",
         },
         "date": {
             "type": "string",
@@ -71,6 +77,10 @@ _NEAR_CHARS: Final = 300
 _AROUND: Final = 2
 _TOPIC_STEPS: Final = ((4, 150), (3, 120), (2, 90), (1, 70))
 """How many topics a day keeps and how long each may be, widest first, until the answer fits."""
+_MEANING_LIMIT: Final = 20
+_MEANING_FLOOR: Final = 0.8
+"""The closest lines by meaning to merge with the word hits, and the cosine under which a line is
+no match at all (e5 scores unrelated text high, so the floor is not near zero)."""
 _USER: Final = "allen"
 _JARVIS: Final = ("jarvis", "jarvis_live")
 _RECORD_ID: Final = re.compile(r"\s*\[record_id=[^\]]*\]")
@@ -127,10 +137,14 @@ def _where(window: tuple[date, date] | None, today: date) -> str:
 class _Conversation:
     """The tool's handler: lines for words or a window, a window's topics, one line opened."""
 
-    def __init__(self, store: Path, zone: tzinfo, clock: Callable[[], datetime]) -> None:
+    def __init__(
+        self, store: Path, zone: tzinfo, clock: Callable[[], datetime],
+        embedder: Embedder | None,
+    ) -> None:
         self._store = store
         self._zone = zone
         self._clock = clock
+        self._embedder = embedder
 
     def run(self, args: Mapping[str, Any], _ctx: object) -> dict[str, Any]:
         """Dispatch on the arguments; a store that cannot be read is worded for the model."""
@@ -231,6 +245,8 @@ class _Conversation:
         """Page ``page`` of ``_PAGE`` lines: those holding any word, best first, else in order."""
         now, today = clock
         rows = self._rows(conn, window, speaker, newest=newest)
+        all_rows = rows
+        fused = False
         words = list(dict.fromkeys(query.casefold().split()))
         absent: list[str] = []
         if words:
@@ -242,6 +258,11 @@ class _Conversation:
                 key=lambda pair: -pair[0],
             )
             rows = [row for _, row in ranked]
+            if close := self._by_meaning(conn, query, {row[0] for row in all_rows}):
+                # Merged with the word ranking, not chosen between: an exact hit stays first.
+                by_id = {row[0]: row for row in all_rows}
+                rows = [by_id[rid] for rid in meaning.fuse([row[0] for row in rows], close)]
+                fused = True
         total, begin = len(rows), (page - 1) * _PAGE
         where = _where(window, today)
         if not rows:
@@ -266,7 +287,8 @@ class _Conversation:
             for rid, ts, source, text in shown
         ]
         end = begin + len(shown)
-        what = f'{total} line{"" if total == 1 else "s"} hold "{query}"' if words else (
+        verb = "match" if fused else "hold"
+        what = f'{total} line{"" if total == 1 else "s"} {verb} "{query}"' if words else (
             f'{total} line{"" if total == 1 else "s"} said'
         )
         side = "oldest" if not newest else "newest"
@@ -275,6 +297,19 @@ class _Conversation:
         if absent and len(absent) < len(words):
             summary += f" No line holds: {', '.join(absent)}."
         return {"summary": summary, "moments": moments, "more": end < total}
+
+    def _by_meaning(self, conn: sqlite3.Connection, query: str, ids: set[str]) -> list[str]:
+        """Ids among ``ids`` closest to ``query`` by meaning; none when the model is absent."""
+        if self._embedder is None or not self._embedder.available:
+            return []
+        try:
+            return meaning.nearest(
+                conn, self._store, self._embedder, query, meaning.RECORDS,
+                among=ids, limit=_MEANING_LIMIT, floor=_MEANING_FLOOR,
+            )
+        except Exception:  # a search never fails a turn for want of the model
+            LOGGER.exception("conversation: search by meaning failed; words only")
+            return []
 
     def _topics(
         self, conn: sqlite3.Connection, window: tuple[date, date], clock: tuple[datetime, date],
@@ -391,6 +426,7 @@ class _Conversation:
 
 def build_conversation_tool(
     store: Path | None, zone: tzinfo, clock: Callable[[], datetime] = speakable.now,
+    embedder: Embedder | None = None,
 ) -> tuple[Tool, ...]:
     """``conversation`` over the memory store's records and day summaries; none without a store."""
     if store is None:
@@ -400,7 +436,7 @@ def build_conversation_tool(
             name="conversation",
             description=_DESCRIPTION,
             input_schema=_SCHEMA,
-            handler=_Conversation(store, zone, clock).run,
+            handler=_Conversation(store, zone, clock, embedder).run,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L0",
             read_only=True,

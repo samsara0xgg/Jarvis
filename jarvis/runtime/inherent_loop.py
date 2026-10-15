@@ -209,7 +209,7 @@ from jarvis.shared.realtime import (
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.shared.steps import EVENT_TYPES as STEP_EVENT_TYPES
 from jarvis.shared.steps import StepFold
-from jarvis.state import picture_notes, quiet_mode, reactions
+from jarvis.state import embedding, meaning, picture_notes, quiet_mode, reactions
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_highlights import day_notes
 from jarvis.state.day_line import DaySources, day_window, fold_day
@@ -5453,6 +5453,48 @@ def _start_timesink_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]
     ]
 
 
+_MEANING_IDLE_S: Final = 300.0
+_MEANING_BUSY_S: Final = 2.0
+
+
+def _index_meaning(db_path: Path, directory: Path) -> int:
+    """One small batch of ADR 0260's index; nothing to do while the model is not on disk."""
+    embedder = embedding.shared(directory)
+    return meaning.index_pending(db_path, embedder) if embedder.available else 0
+
+
+async def _meaning_index_task(db_path: Path, directory: Path) -> None:
+    """ADR 0260: embed new and changed text in small batches, off the loop; never fatal.
+
+    Backfill and new rows take the same path: a batch, a short pause while more is left, a long
+    one when caught up.
+    """
+    LOGGER.info("meaning_index started (%s)", directory)
+    try:
+        while True:
+            left = 0
+            try:
+                left = await asyncio.to_thread(_index_meaning, db_path, directory)
+            except Exception:
+                LOGGER.exception("meaning_index: batch failed; trying again later")
+            await asyncio.sleep(_MEANING_BUSY_S if left else _MEANING_IDLE_S)
+    except asyncio.CancelledError:
+        LOGGER.info("meaning_index cancelled")
+        raise
+
+
+def _start_meaning_index(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
+    """Start the index task when there is a memory store."""
+    if runtime.memory is None:
+        return []
+    directory = models.default_meaning_dir(runtime.runtime_paths.root)
+    return [
+        asyncio.create_task(
+            _meaning_index_task(runtime.memory.db_path, directory), name="meaning_index",
+        ),
+    ]
+
+
 async def _set_todo(home: Home, todo_id: str, done: bool) -> None:  # noqa: FBT001 — the route's body.
     """``POST /inherent/today/todo``: one To Do write, off the loop thread."""
     await asyncio.to_thread(functools.partial(home.set_todo, todo_id, done=done))
@@ -7910,6 +7952,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         watchers.extend(_start_repo_observer(runtime))
         watchers.extend(_start_usage_observer(usage_observer, runtime.config))
         watchers.extend(_start_timesink_observer(runtime))
+        watchers.extend(_start_meaning_index(runtime))
         if runtime.job_mail is not None:
             # ADR 0155: she speaks only at quiet off, unmuted and outside a live conversation.
             job_mail = runtime.job_mail
