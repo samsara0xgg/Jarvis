@@ -428,6 +428,24 @@ def test_a_preset_chooses_the_reply_shape_of_every_request_of_its_turn(
     assert result.response_plan.text == answer
 
 
+@pytest.mark.parametrize(("line", "answer"), [
+    ("我来查明天的天气和这周剩下的日程。", "明天多云间晴。"),
+    ("Let me check tomorrow.", "Tomorrow is sunny."),  # "check tomorrow.Tomorrow" reads as a domain
+])
+def test_a_request_after_a_call_starts_a_new_paragraph(
+    tmp_path: Path, line: str, answer: str,
+) -> None:
+    """Anthropic labels no phase: the text before a call and the answer after it are apart."""
+    with _Peer([[("final_answer", line), ("call", "kept")], [("final_answer", answer)]]) as peer:
+        runtime = _preset_runtime(tmp_path, peer.url, spoken_structured=False)
+        result = _drive(runtime, _spoken(runtime.conn, "turn-para", "明天天气和这周安排"))
+    expected = f"{line}\n\n{answer}"
+    assert len(peer.requests) == 2
+    assert result.response_plan.text == expected
+    assert "".join(_chunks(runtime)) == expected
+    assert _payloads(runtime.conn, "surface.response_emitted")[-1]["text"] == expected
+
+
 @pytest.mark.parametrize("spoken_structured", [False, True])
 def test_the_prefix_warm_gets_the_text_format_the_turn_sent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, spoken_structured: bool,

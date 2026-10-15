@@ -2634,6 +2634,7 @@ class _SegmentSpeaker:
         self._json: SpokenJsonExtractor | None = None  # this request's reply, once it is JSON
         self._raw = ""  # this request's text while it may still be JSON
         self._plain = False  # this request's text is not the schema's JSON
+        self._paragraph = False  # a request after spoken text starts a paragraph
         self._written: list[str] = []  # each finished request's written part
         self.prefix = ""
         self.voice = ""
@@ -2646,6 +2647,7 @@ class _SegmentSpeaker:
         """A new request starts: its text is judged afresh, the last one's written part kept."""
         self._close_json()
         self._raw, self._plain = "", False
+        self._paragraph = bool(self.voice.strip())
 
     def feed(self, text: str) -> None:
         """Take one delta; expose every sentence it completes until sealed."""
@@ -2687,6 +2689,12 @@ class _SegmentSpeaker:
         self._expose(self._splitter.feed(self._uncited(text)))
 
     def _expose(self, safe: str) -> None:
+        if self._paragraph and safe.strip():
+            # Anthropic labels no phase, so the text before a call and the text after its
+            # result would run together ("…日程。明天…", "it.You" even reads as a domain).
+            self._paragraph = False
+            trailing = len(self.voice) - len(self.voice.rstrip("\n"))
+            safe = "\n" * max(0, 2 - trailing) + safe.lstrip()
         self.voice += safe
         self._assemble(safe)
 
