@@ -18,6 +18,8 @@ import threading
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Final
 
+from jarvis.shared.system_prompt import SplitSystem
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
 
@@ -257,6 +259,18 @@ _ADAPTIVE_ONLY = ("claude-sonnet-5",)
 """Model id prefixes taking adaptive thinking only: no ``thinking: disabled``, no forced call."""
 
 
+def _system_blocks(system: str) -> str | list[dict[str, Any]]:
+    """A split prompt as two text blocks, a cache breakpoint closing the stable one."""
+    if not isinstance(system, SplitSystem):
+        return system
+    blocks: list[dict[str, Any]] = [
+        {"type": "text", "text": system.stable, "cache_control": {"type": "ephemeral"}},
+    ]
+    if system.variable:
+        blocks.append({"type": "text", "text": "\n\n" + system.variable})
+    return blocks
+
+
 def request_fields(  # noqa: PLR0913 — the request's whole variable part, named
     *, model: str = "", messages: Sequence[Mapping[str, Any]], system: str,
     tools: Sequence[Mapping[str, Any]] | None, max_tokens: int,
@@ -272,7 +286,8 @@ def request_fields(  # noqa: PLR0913 — the request's whole variable part, name
     request for automatic prompt caching (the last block, tools -> system -> messages).
     """
     body: dict[str, Any] = {
-        "max_tokens": max_tokens, "system": system, "messages": to_messages(messages),
+        "max_tokens": max_tokens, "system": _system_blocks(system),
+        "messages": to_messages(messages),
     }
     forced = None
     if tools:

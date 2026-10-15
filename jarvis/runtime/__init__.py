@@ -225,6 +225,7 @@ from jarvis.shared.realtime_trace import (
     configure_realtime_trace_jsonl,
     record_realtime_trace,
 )
+from jarvis.shared.system_prompt import SplitSystem
 from jarvis.state import device_reads, reactions
 from jarvis.state import picture_notes as note_records
 from jarvis.state import places as place_state
@@ -4569,15 +4570,14 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             if runtime.plugin_connections is not None
             else None
         )
+        route_rules: list[str] = []
         if runtime.session.replay_sent:
             # What every turn would repeat rides the system prompt, cached once,
-            # instead of each replayed state block.
+            # instead of each replayed state block; it follows the cached prefix.
             if stream_route is not None and stream_route.context.route == "spoken":
-                turn_system_prompt += "\n\n" + spoken_reply_rules(
-                    structured=stream_route.structured,
-                )
+                route_rules.append(spoken_reply_rules(structured=stream_route.structured))
             if connected_apps is not None:
-                turn_system_prompt += "\n\n" + connected_apps
+                route_rules.append(connected_apps)
                 connected_apps = None
         decide_ctx = DecideContext(
             conn=runtime.conn,
@@ -4606,10 +4606,11 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             llm_client=run.request_client if run is not None else runtime.llm_client,
             # The profile rides the system prompt: stable across turns, so it
             # sits in the cached prefix rather than in the per-turn context.
-            system_prompt=(
+            system_prompt=SplitSystem(
                 f"{turn_system_prompt.rstrip()}\n\n{memory_context.profile}"
                 if memory_context is not None and memory_context.profile
-                else turn_system_prompt
+                else turn_system_prompt,
+                "\n\n".join(route_rules),
             ),
             tier0_table=runtime.tier0_table,
             # ADR-0011 D4 — resolve-on-propose. Built fresh per turn (a

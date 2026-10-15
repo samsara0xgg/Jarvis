@@ -26,6 +26,7 @@ from jarvis.decision.llm_stream import (
     LLMUsageCompleted,
 )
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
+from jarvis.shared.system_prompt import SplitSystem
 from jarvis.state.event_log import open_event_log
 from tests.canary._helpers import repo_root
 from tests.integration.test_typed_llm_stream import _SSE
@@ -439,3 +440,23 @@ def test_the_replay_script_rebuilds_the_history_and_streams_it_through_the_clien
     assert out["finish_reason"] == "end_turn"
     assert out["usage"] == {"input": 18, "output": 6, "cache_read": 4, "cache_write": 2, "status": "provider_final"}
     assert out["first_token_s"] is not None
+
+
+def test_a_split_system_prompt_caches_its_stable_prefix_as_a_block_of_its_own() -> None:
+    """The stable block carries the breakpoint, the route's rules follow it without one."""
+    system = SplitSystem("base\n\n[About the user]\n- Allen", "spoken rules")
+    body = request_fields(
+        messages=[{"role": "user", "content": "x"}], system=system, tools=None, max_tokens=9,
+        reasoning_effort=None,
+    )
+    assert body["system"] == [
+        {"type": "text", "text": "base\n\n[About the user]\n- Allen",
+         "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "\n\nspoken rules"},
+    ]
+    assert "".join(b["text"] for b in body["system"]) == str(system)
+    assert body["cache_control"] == {"type": "ephemeral"}
+    assert request_fields(
+        messages=[{"role": "user", "content": "x"}], system="S", tools=None, max_tokens=9,
+        reasoning_effort=None,
+    )["system"] == "S"
