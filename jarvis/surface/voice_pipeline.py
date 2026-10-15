@@ -360,6 +360,13 @@ class VoicePipeline:
                 payload["language_detected"] = tr.language_detected
             if tr.emotion:
                 payload["emotion"] = tr.emotion
+            # ADR 0270: `confidence` is the writing engine's own score; these say whose it is.
+            if tr.asr_engine:
+                payload["asr_engine"] = tr.asr_engine
+            if tr.sensevoice_confidence is not None:
+                payload["sensevoice_confidence"] = tr.sensevoice_confidence
+            if tr.whisper_confidence is not None:
+                payload["whisper_confidence"] = tr.whisper_confidence
             if artifact_ref:
                 payload["audio_artifact_ref"] = artifact_ref
             if session_id is not None:

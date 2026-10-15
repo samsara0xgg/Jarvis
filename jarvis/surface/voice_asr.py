@@ -332,6 +332,11 @@ class TranscriptionResult:
     language_detected: str | None
     emotion: str | None
     event: str | None = None  # SenseVoice's audio-event label (Laughter, Cough, ...), ADR 0152
+    # Which engine's text this is and why (the hybrid's choice, ADR 0270), and each engine's own
+    # score under its own name: ``confidence`` is the writing engine's, on that engine's scale.
+    asr_engine: str | None = None
+    sensevoice_confidence: float | None = None
+    whisper_confidence: float | None = None
 
 
 class AsrRecognizer(Protocol):
@@ -437,6 +442,8 @@ class SenseVoiceRecognizer:
             language_detected=language or None,
             emotion=emotion,
             event=event,
+            asr_engine="sensevoice",
+            sensevoice_confidence=confidence,
         )
 
     def partial_text(self, audio_pcm: bytes) -> str:
@@ -649,6 +656,8 @@ class MlxWhisperRecognizer:
             confidence=confidence,
             language_detected=heard_language or None,
             emotion=None,
+            asr_engine="whisper",
+            whisper_confidence=confidence,
         )
 
     def language_probs(self, audio_pcm: bytes) -> dict[str, float]:
@@ -801,6 +810,9 @@ class HybridFinalRecognizer:
     that language fixed (ADR 0150: with a short word list in its prompt): ``zh`` and ``yue``
     (SenseVoice misreading Mandarin) to the Chinese Whisper, ``en`` to the English one; any
     other language, an empty Whisper transcript or a Whisper error keeps SenseVoice's words.
+
+    ADR 0270: every result names the engine whose words stand (``asr_engine``) and keeps each
+    engine's own score.
 
     ADR 0137: with ``whisper_command`` set, a short unclear Chinese line (2-4 characters, no
     question, no command already) is heard once more by it, and a Chinese command it returns
@@ -976,36 +988,62 @@ class HybridFinalRecognizer:
             text += "。"
         return replace(
             again, text=text, language_detected=result.language_detected, emotion=result.emotion,
-            event=result.event,
+            event=result.event, asr_engine="whisper_command",
+            sensevoice_confidence=result.sensevoice_confidence,
         )
 
     def _hear_once(self, audio_pcm: bytes, speech_s: float) -> TranscriptionResult:
         heard = self._sensevoice.recognize(audio_pcm)
         whisper = self._by_language.get(heard.language_detected or "")
-        if (
-            whisper is None
-            or speech_s < _HYBRID_MIN_SPEECH_S
-            or len(audio_pcm) < _WHISPER_MIN_BYTES
-            or too_quiet_for_speech(audio_pcm, floor=_WHISPER_LEVEL_FLOOR)
-        ):
-            return heard
+        if whisper is None:
+            return _with_engine(heard, "sensevoice_language")
+        if speech_s < _HYBRID_MIN_SPEECH_S or len(audio_pcm) < _WHISPER_MIN_BYTES:
+            return _with_engine(heard, "sensevoice_short")
+        if too_quiet_for_speech(audio_pcm, floor=_WHISPER_LEVEL_FLOOR):
+            return _with_engine(heard, "sensevoice_quiet")
+        result = self._whisper_or(heard, whisper, audio_pcm)
+        text = result.text
+        if result.asr_engine == "whisper" and not unicodedata.category(text[-1]).startswith("P"):
+            return replace(result, text=text + ("." if text[-1].isascii() else "。"))  # closes it
+        return result
+
+    def _whisper_or(
+        self, heard: TranscriptionResult, whisper: MlxWhisperRecognizer, audio_pcm: bytes,
+    ) -> TranscriptionResult:
+        """Whisper's words for ``audio_pcm``, unless SenseVoice's ``heard`` should stand."""
         try:
             result = whisper.recognize(audio_pcm)
         except Exception:  # noqa: BLE001 - Whisper is the upgrade; SenseVoice's words still stand
             LOGGER.warning("hybrid final: Whisper failed; SenseVoice's words stand", exc_info=True)
-            return heard
+            return _with_engine(heard, "whisper_error")
         text = result.text.strip()
         if not text:
-            return heard
-        if not unicodedata.category(text[-1]).startswith("P"):
-            text += "." if text[-1].isascii() else "。"  # SenseVoice closes every sentence
+            return _with_engine(heard, "whisper_empty", whisper=result)
         return replace(
             result,
             text=text,
             language_detected=heard.language_detected,
             emotion=heard.emotion,
             event=heard.event,
+            asr_engine="whisper",
+            sensevoice_confidence=heard.confidence,
+            whisper_confidence=result.confidence,
         )
+
+
+def _with_engine(
+    heard: TranscriptionResult, engine: str, *, whisper: TranscriptionResult | None = None,
+) -> TranscriptionResult:
+    """SenseVoice's words as the final ones, named for why Whisper's did not write them.
+
+    ``whisper`` is the pass that was heard but not used, so its own score is kept.
+    """
+    return replace(
+        heard,
+        asr_engine=engine,
+        sensevoice_confidence=heard.confidence,
+        whisper_confidence=None if whisper is None else whisper.confidence,
+    )
 
 
 _CJK_ONLY_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]+")

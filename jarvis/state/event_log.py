@@ -307,6 +307,10 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "confidence",
             "language_detected",
             "emotion",
+            # ADR 0270: which engine wrote the transcript and each engine's own score.
+            "asr_engine",
+            "sensevoice_confidence",
+            "whisper_confidence",
             "audio_artifact_ref",
             # ADR 0214: the item a paired phone has open when it speaks.
             "about",

@@ -8,6 +8,7 @@ and its Event Log, and the duplex session's assembler on a scripted ingress.
 # ruff: noqa: SLF001, RUF001 - the map's bound is only visible in the recognizer; fullwidth question marks
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import replace
@@ -158,6 +159,37 @@ def test_an_empty_or_failing_whisper_keeps_sensevoices_words(words: str | Except
     """The upgrade never costs the turn: nothing from Whisper, or Whisper raising, falls back."""
     ears = _hybrid(_sensevoice("zh"), zh=_whisper(words))
     assert ears.recognize_prepared("U1", _audio(2.0), 2.0).text == _SENSEVOICE_WORDS
+
+
+@pytest.mark.parametrize(
+    ("zh", "speech_s", "engine"),
+    [
+        (_whisper("whisper heard this"), 2.0, "whisper"),
+        (_whisper(""), 2.0, "whisper_empty"),
+        (_whisper(RuntimeError("mlx failed")), 2.0, "whisper_error"),
+        (_whisper("whisper heard this"), 0.5, "sensevoice_short"),
+    ],
+)
+def test_the_committed_event_names_the_engine_and_each_engines_own_score(
+    tmp_path: Path, zh: MagicMock, speech_s: float, engine: str,
+) -> None:
+    """Through the real pipeline: ``utterance.received`` says whose words these are and why."""
+    pipeline = _pipeline(tmp_path, _hybrid(_sensevoice("zh"), zh=zh))
+    pipeline.run_turn(
+        audio_bytes=_audio(2.0), turn_id="T1", channel="inherent_wake", language="zh-CN",
+        utterance_id="U1", speech_s=speech_s,
+    )
+    payload = json.loads(
+        open_event_log(tmp_path / "events.db").execute(
+            "SELECT payload_json FROM events WHERE type = 'utterance.received'",
+        ).fetchone()[0],
+    )
+    assert payload["asr_engine"] == engine
+    assert payload["sensevoice_confidence"] == 0.9
+    written_by_whisper = engine == "whisper"
+    assert payload["confidence"] == (0.5 if written_by_whisper else 0.9)
+    heard_whisper = {"whisper", "whisper_empty"}
+    assert ("whisper_confidence" in payload) == (engine in heard_whisper)
 
 
 def test_whispers_level_gate_still_applies() -> None:

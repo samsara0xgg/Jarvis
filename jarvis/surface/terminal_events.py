@@ -84,8 +84,10 @@ _MAX_TRANSCRIPT_CHARS: Final = 20_000
 _ID: Final = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _UTTERANCE_TEXT_FIELDS: Final = {
     "language": 32, "language_detected": 64, "emotion": 64, "audio_artifact_ref": 1024,
-    "session_id": 64, "endpoint_reason": 64,
+    "session_id": 64, "endpoint_reason": 64, "asr_engine": 64,
 }
+_UTTERANCE_SCORES: Final = ("confidence", "sensevoice_confidence", "whisper_confidence")
+"""ADR 0270: the writing engine's score, and each engine's own; numbers, any of them absent."""
 _UTTERANCE_UID_NAMESPACE: Final = uuid.UUID("5f0c6a4e-0b1d-4f6e-9a57-6a1b2f0c1d00")
 _PHONE_TYPED_CHANNEL: Final = "cli_stdin"
 """The channel of typed words (ADR 0181): answered on screen, never played."""
@@ -153,15 +155,15 @@ class BrainEvents:
         transcript, turn_id, utterance_id = (
             args.get("transcript"), args.get("turn_id"), args.get("utterance_id"),
         )
-        confidence = args.get("confidence")
+        scores = {key: args.get(key) for key in _UTTERANCE_SCORES}
         if (
             not isinstance(transcript, str) or not 0 < len(transcript) <= _MAX_TRANSCRIPT_CHARS
             or not isinstance(turn_id, str) or _ID.fullmatch(turn_id) is None
             or not isinstance(utterance_id, str) or _ID.fullmatch(utterance_id) is None
             or args.get("channel") != UTTERANCE_CHANNEL
-            or not (
-                confidence is None
-                or (isinstance(confidence, int | float) and not isinstance(confidence, bool))
+            or not all(
+                score is None or (isinstance(score, int | float) and not isinstance(score, bool))
+                for score in scores.values()
             )
         ):
             msg = "not an utterance this brain accepts"
@@ -169,8 +171,7 @@ class BrainEvents:
         payload: dict[str, Any] = {
             "transcript": transcript, "turn_id": turn_id, "channel": UTTERANCE_CHANNEL,
         }
-        if confidence is not None:
-            payload["confidence"] = confidence
+        payload.update({key: score for key, score in scores.items() if score is not None})
         for key, limit in _UTTERANCE_TEXT_FIELDS.items():
             value = args.get(key)
             if value is None:

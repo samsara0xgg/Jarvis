@@ -233,8 +233,8 @@ def main() -> None:
             "prepares": done["prepares"],
             "discards": done["discards"],
             "whisper_ms": [round(p) for p in passes],
-            # SenseVoice's confidence is 0.9 or 0.1; Whisper's is a log-probability mean.
-            "whisper": result.confidence not in {0.1, 0.9},
+            "whisper": result.asr_engine == "whisper",
+            "engine": result.asr_engine,  # ADR 0270: why this engine's words stand
             "sensevoice": baseline.text,
             "hybrid": result.text,
         }
