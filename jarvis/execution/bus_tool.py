@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
     from jarvis.execution.tools import ToolContext
     from jarvis.execution.transit_tool import TransitOffers
+    from jarvis.state.places import Place
 
 
 @dataclass(frozen=True)
@@ -43,9 +44,10 @@ _DESCRIPTION: Final = (
     " is on; not for where he is (where_am_i). No arguments: the ride he is on now (next stop,"
     " his stop, minutes left), else the next buses home. to= (home, school, a place) lists up to"
     " 3 numbered options with leave time, walk, buses and arrival; at=HH:MM for later today,"
-    " route=39 asks about that one bus. pin=[N] puts listed option N on the notch. ride=start: he"
-    " boarded; ride=watch: he is heading out; ride=end: he got off. get_off=<stop> sets his stop"
-    " and warns him before it."
+    " route=39 asks about that one bus. Told you missed a bus: search again with its route= or"
+    " at=, never the same call. pin=[N] puts listed option N on the"
+    " notch. ride=start: he boarded; ride=watch: he is heading out; ride=end: he got off."
+    " get_off=<stop> sets his stop and warns him before it."
 )
 _FROM_MAC: Final = "here: his location, read from this Mac, which he carries."
 _FROM_PHONE: Final = (
@@ -77,14 +79,22 @@ def _schema(here: str) -> dict[str, Any]:
             "to": {
                 "type": "string",
                 "description": "Where to: 'home' (default), 'school' (UVic too), or a place or"
-                " address. With ride=watch, where he is going.",
+                " address. With ride=watch, where he is going. Each option has spare_min and a"
+                " verdict; missed with a spare of -2 to -5 means only a run catches it: say so,"
+                " then give the next bus. A warning field means the starting point is old: say"
+                " that first, or ask where he is.",
             },
             "from": {
                 "type": "string",
                 "description": "Another start, only when he says he starts elsewhere; never guess"
                 f" one from the time of day. Default {here}",
             },
-            "at": {"type": "string", "description": "Local time later today, HH:MM; omit for now."},
+            "at": {
+                "type": "string",
+                "description": "Local time later today, HH:MM; omit for now. If he says you"
+                " missed a bus, search again with that route= or an at=, and compare with what"
+                " you found earlier this turn; never repeat the identical call.",
+            },
             "route": {
                 "type": "string",
                 "description": "The bus number he names ('39', '26A'; digits only if speech was"
@@ -454,6 +464,7 @@ def build_bus_tool(  # noqa: PLR0913 - the key, places, two readers, offers, liv
     offers: TransitOffers | None = None,
     bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
     control: RideControl | None = None,
+    kept: Callable[[], list[Place]] | None = None,
 ) -> tuple[Tool, ...]:
     """``bus``; none without a Google Routes key and a ride to follow.
 
@@ -467,6 +478,7 @@ def build_bus_tool(  # noqa: PLR0913 - the key, places, two readers, offers, liv
     offers = offers if offers is not None else transit_tool.TransitOffers()
     plan = transit_tool.build_planner(
         api_key, places, here, phone_here=phone_here, offers=offers, bus_live=bus_live,
+        kept=kept,
     )
     return (
         Tool(

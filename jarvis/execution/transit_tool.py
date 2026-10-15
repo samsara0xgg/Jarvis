@@ -15,10 +15,11 @@ from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
-from jarvis.execution.location_tool import read_here, said_where
+from jarvis.execution.location_tool import describe_age, read_here, said_where
 from jarvis.execution.tools import ToolError, _get_running_event_uid, _turn_of
 from jarvis.shared import lang
 from jarvis.state import departures, reminders
+from jarvis.state import places as place_state
 from jarvis.state.event_log import emit_event
 
 if TYPE_CHECKING:
@@ -35,9 +36,14 @@ _MAX_OPTIONS: Final = 3
 # longer.
 _LATER_MIN: Final = 15
 _SLOWER: Final = 1.5
-# `route` asks Google from this long before now: a bus whose leave time (departure minus Google's
-# walking estimate) just passed is still returned, and he can walk faster than Google assumes.
-_ROUTE_LOOKBACK_MIN: Final = 10
+# Every search without `at` asks Google from this long before now: a bus whose leave time
+# (departure minus Google's walking estimate) just passed is still returned, and he can walk
+# faster than Google assumes (ADR 0221 for a named route, ADR 0265 for all).
+_LOOKBACK_MIN: Final = 10
+# A bus this many minutes short of a normal walk is gone for good: no run makes it up.
+_RUN_MIN: Final = 5
+# A phone report older than this is not where he is now; the result says so.
+_OLD_START_S: Final = 30 * 60
 _LIVE_TIMEOUT_S: Final = 4.0
 # spare_min: at or above this he has room (easy); at or below its negative the bus is gone.
 _EASY_SPARE_MIN: Final = 2
@@ -63,27 +69,52 @@ def _here(
     mac: Callable[[], Mapping[str, Any]] | None,
     phone: Callable[[], Mapping[str, Any]] | None,
     ctx: ToolContext,
-) -> tuple[dict[str, Any], str]:
-    """The user's location as a waypoint, and how to say it in the result."""
+    kept: Callable[[], list[place_state.Place]] | None = None,
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    """The user's location as a waypoint, how to say it in the result, and a warning if it is old.
+
+    A fix inside a kept place's circle is said as that place, not as the street the phone named;
+    an old phone report there means he has stayed (the phone reports only when he moves). The
+    warning is ``{}`` unless the fix is a phone report over half an hour old outside every kept
+    place; then it holds ``from_age_min`` and the ``warning`` line the model must act on before
+    giving any times.
+    """
     fix = read_here(mac, phone, ctx)
-    near = f"{fix['place']}, " if fix["place"] else ""
+    inside = place_state.containing(kept(), fix["lat"], fix["lng"]) if kept else None
+    aged = fix["source"] == "phone" and fix["age_s"] > _OLD_START_S
+    if inside is not None:
+        near = f"at {inside.name}{', still there since then' if aged else ''}, "
+    else:
+        near = f"{fix['place']}, " if fix["place"] else ""
     label = f"here ({said_where(fix)}, {near}±{round(fix['accuracy_m'])} m)"
     latlng = {"latitude": fix["lat"], "longitude": fix["lng"]}
-    return {"location": {"latLng": latlng}}, label
+    old: dict[str, Any] = {}
+    if aged and inside is None:
+        where = fix["place"] or "no place name"
+        old = {
+            "from_age_min": fix["age_s"] // 60,
+            "warning": (
+                f"The starting point is his phone's report from {describe_age(fix['age_s'])} ago"
+                f" ({where}); he may have moved. Say that first, or ask where he is, before"
+                " giving times from it."
+            ),
+        }
+    return {"location": {"latLng": latlng}}, label, old
 
 
-def _waypoint(
+def _waypoint(  # noqa: PLR0913 - the word, saved places, three readers and the context.
     place: str,
     saved: Mapping[str, str],
     mac: Callable[[], Mapping[str, Any]] | None,
     phone: Callable[[], Mapping[str, Any]] | None,
     ctx: ToolContext,
-) -> tuple[dict[str, Any], str]:
+    kept: Callable[[], list[place_state.Place]] | None = None,
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
     word = " ".join(place.lower().split())
     if word in _SCHOOL_NAMES:
         word = "school"
     if word == "here":
-        return _here(mac, phone, ctx)
+        return _here(mac, phone, ctx, kept)
     text = saved.get(word, "") if word in ("home", "school") else place.strip()
     if not text:
         msg = (
@@ -93,8 +124,8 @@ def _waypoint(
         raise ToolError(msg, code="not_configured")
     if match := _LAT_LNG.match(text):
         latlng = {"latitude": float(match[1]), "longitude": float(match[2])}
-        return {"location": {"latLng": latlng}}, place.strip()
-    return {"address": text}, place.strip()
+        return {"location": {"latLng": latlng}}, place.strip(), {}
+    return {"address": text}, place.strip(), {}
 
 
 def _departure(depart_at: str) -> str:
@@ -164,12 +195,20 @@ def _spare(departs: datetime, walk_min: int, now: datetime) -> int:
     return math.floor((departs - now).total_seconds() / 60) - walk_min
 
 
+def _verdict(spare: int) -> str:
+    """``easy`` with room, ``missed`` when a normal walk is too late, else ``tight``."""
+    if spare >= _EASY_SPARE_MIN:
+        return "easy"
+    return "missed" if spare <= -_EASY_SPARE_MIN else "tight"
+
+
 def _pairs(answer: Mapping[str, Any], now: datetime) -> list[tuple[dict[str, Any], Any]]:
     """Each bus route of Google's answer as ``(option with spare_min, Google's route)``."""
     pairs = [(o, r) for r in answer.get("routes", ()) if (o := _option(r))]
     for o, _ in pairs:
         at = _today(o["legs"][0]["departs"], "departs")
         o["spare_min"] = _spare(at, o["walk_to_first_stop_min"], now)
+        o["verdict"] = _verdict(o["spare_min"])
     return pairs
 
 
@@ -221,16 +260,13 @@ def _named_route(
             at, fresh = datetime.fromtimestamp(ms / 1000, _ZONE), True
     walk = option["walk_to_first_stop_min"]
     spare = _spare(at, walk, now)
-    verdict = (
-        "easy" if spare >= _EASY_SPARE_MIN else "missed" if spare <= -_EASY_SPARE_MIN else "tight"
-    )
     named: dict[str, Any] = {
         "route": leg["route"],
         "board_stop": leg["board_stop"],
         "departs": at.strftime("%H:%M"),
         "walk_min": walk,
         "spare_min": spare,
-        "verdict": verdict,
+        "verdict": _verdict(spare),
     }
     if fresh:
         named["live"] = True
@@ -268,9 +304,9 @@ def _search(  # noqa: PLR0913 - the trip, how it was asked and the clock.
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[tuple[dict[str, Any], Any]], dict[str, Any]]:
     """Ask Google and the other ways: ``(answer, options, hits of the named route, modes)``.
 
-    A named route asks from ten minutes ago, so a bus whose leave time just passed still shows;
-    if that finds no such bus, the usual 'now' answer is used. ToolError ``not_found`` when no
-    bus route is left.
+    Without ``depart_at`` it asks from ten minutes ago, so a bus whose leave time just passed
+    still shows, with its true spare minutes; if a named route is not found that way, the usual
+    'now' answer is used. ToolError ``not_found`` when no bus route is left.
     """
     body: dict[str, Any] = {
         "origin": start,
@@ -281,10 +317,10 @@ def _search(  # noqa: PLR0913 - the trip, how it was asked and the clock.
     plain = dict(body)
     if args.get("depart_at"):
         body["departureTime"] = _departure(str(args["depart_at"]))
-    elif wanted:
-        ago = now.replace(second=0, microsecond=0) - timedelta(minutes=_ROUTE_LOOKBACK_MIN)
+    else:
+        ago = now.replace(second=0, microsecond=0) - timedelta(minutes=_LOOKBACK_MIN)
         body["departureTime"] = _utc(ago)
-    shifted = "departureTime" in body and not args.get("depart_at")
+    shifted = not args.get("depart_at")
     # The bus answer and, concurrently, the other ways there (ADR 0205): one request each.
     with ThreadPoolExecutor(max_workers=1 + len(_MODES)) as pool:
         ways = {name: pool.submit(_mode, api_key, start, end, travel) for name, travel in _MODES}
@@ -309,9 +345,20 @@ def _search(  # noqa: PLR0913 - the trip, how it was asked and the clock.
     modes = {name: found for name, way in ways.items() if (found := way.result())}
     # An earlier start returns buses he could not reach at a normal pace: only the named one stays.
     first = hits[0][0] if hits else None
-    rest = [o for o, _ in pairs if o is not first and (not shifted or o["spare_min"] >= 0)]
+    rest = [o for o, _ in pairs if o is not first]
+    near: list[dict[str, Any]] = []
+    if shifted:
+        rest.sort(key=lambda o: o["legs"][0]["departs"])  # ponytail: one day, no midnight
+        if wanted:
+            rest = [o for o in rest if o["spare_min"] >= 0]
+        else:
+            # Only the latest bus he missed by a run's worth stays, marked; it is no yardstick.
+            near = [
+                o for o in rest if o["verdict"] == "missed" and o["spare_min"] >= -_RUN_MIN
+            ][-1:]
+            rest = [o for o in rest if o["verdict"] != "missed"]
     # The named bus is first however late or slow it is; it does not set the others' yardstick.
-    options = ([first] if first else []) + _sensible(rest)
+    options = ([first] if first else []) + near + _sensible(rest)
     if not options:
         msg = (
             "No bus route found for that trip at that time; tell him, or try another time with"
@@ -770,6 +817,7 @@ def build_planner(  # noqa: PLR0913 - the key, places, two readers, offers, live
     phone_here: Callable[[], Mapping[str, Any]] | None,
     offers: TransitOffers,
     bus_live: Callable[[str, tuple[float, float], int], int | None] | None,
+    kept: Callable[[], list[place_state.Place]] | None = None,
 ) -> Callable[[Mapping[str, Any], ToolContext], dict[str, Any]] | None:
     """The bus read over Google Routes behind ``bus(to=...)``; None without a key.
 
@@ -783,7 +831,7 @@ def build_planner(  # noqa: PLR0913 - the key, places, two readers, offers, live
     ``bus(pin=...)``; the runtime shares it with the routes that pin them. ``bus_live`` is BC
     Transit's live departure of a route at a stop near ``(lat, lng)`` around an epoch ms (the
     runtime wires it, as it does ``here``); when it answers, a named route's ``departs`` and
-    ``spare_min`` use it.
+    ``spare_min`` use it. ``kept`` reads every kept place, so a "here" inside one is said as it.
     """
     if not api_key:
         return None
@@ -794,8 +842,8 @@ def build_planner(  # noqa: PLR0913 - the key, places, two readers, offers, live
             msg = "origin and destination are both required"
             raise ToolError(msg, code="invalid_argument")
         saved = places()
-        start, start_label = _waypoint(origin, saved, here, phone_here, ctx)
-        end, end_label = _waypoint(destination, saved, here, phone_here, ctx)
+        start, start_label, old_start = _waypoint(origin, saved, here, phone_here, ctx, kept)
+        end, end_label, _ = _waypoint(destination, saved, here, phone_here, ctx, kept)
         now = _now()
         wanted = re.sub(r"[^0-9A-Za-z]", "", str(args.get("route") or ""))
         try:
@@ -817,7 +865,7 @@ def build_planner(  # noqa: PLR0913 - the key, places, two readers, offers, live
         extra: dict[str, Any] = {"modes": modes} if modes else {}
         if wanted:
             extra["named_route"] = _named_route(wanted, hits, now, bus_live)
-        return {"from": start_label, "to": end_label, "options": options, **extra}
+        return {"from": start_label, "to": end_label, **old_start, "options": options, **extra}
 
     return transit
 

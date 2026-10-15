@@ -44,6 +44,7 @@ from jarvis.execution.tools import (
 )
 from jarvis.runtime import _phone_here, bootstrap_runtime_app, inherent_loop
 from jarvis.shared import CallerPrincipal
+from jarvis.state import places as place_state
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME, Attachments
 from jarvis.state.device_tokens import (
     device_name_for_token,
@@ -526,6 +527,52 @@ def test_bus_here_starts_from_the_device_the_turn_came_from(
     assert before == "here (this Mac, no phone has reported yet, Ring Rd, Saanich, ±40 m)"
     assert phone == "here (the phone's last report 12 min ago, ±90 m)"
     assert mac == "here (this Mac, Ring Rd, Saanich, ±40 m)"
+
+
+def test_an_old_phone_report_is_flagged_unless_it_is_inside_a_kept_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Over 30 min old and outside every kept place: flagged. Inside home: said as home, no flag."""
+    _serve(monkeypatch)
+    monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
+    log, memory = tmp_path / "events.db", tmp_path / "memory.db"
+    conn = open_event_log(log)
+    payload = {"lat": 48.5, "lng": -123.5, "accuracy_m": 90.0, "place": "Ring Rd, Saanich"}
+    asked = {"to": "Mayfair Mall"}
+
+    def report(minutes_ago: int) -> None:
+        emit_event(conn, type="phone.location_observed", ingestion_node="iphone", payload=payload,
+                   ts_epoch_ms=int(time.time() * 1000) - minutes_ago * MIN)
+
+    def ask() -> dict[str, Any]:
+        registry = build_default_registry(
+            transit_api_key="test-key-not-real", transit_places=dict, memory_db_path=memory,
+            here_location=lambda: dict(MAC_FIX), here_phone=partial(_phone_here, log),
+        )
+        bus = next(d for d in registry.get_definitions() if d.name == "bus")
+        return _in_turn(conn, "TP", bus, asked)
+
+    try:
+        _open_turn(conn, "TP", PHONE_SPOKEN)
+        report(150)
+        outside = ask()  # no kept place yet
+        place_state.save(memory, name="home", lat=48.5003, lng=-123.5, role="home", origin="user")
+        inside = ask()
+        report(12)
+        fresh = ask()
+    finally:
+        conn.close()
+    assert 150 <= outside["from_age_min"] <= 151
+    assert "2 h 30 min" in outside["warning"]
+    assert "Ring Rd, Saanich" in outside["warning"]
+    assert "ask where he is" in outside["warning"]
+    assert "from_age_min" not in inside
+    assert "warning" not in inside
+    assert inside["from"] == (
+        "here (the phone's last report 2 h 30 min ago, at home, still there since then, ±90 m)"
+    )
+    assert "warning" not in fresh
+    assert fresh["from"] == "here (the phone's last report 12 min ago, at home, ±90 m)"
 
 
 def test_a_brain_reads_the_phone_for_every_turn(tmp_path: Path) -> None:

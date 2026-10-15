@@ -81,6 +81,7 @@ from jarvis.state.authorized_dispatch_outbox import (
 )
 from jarvis.state.event_log import emit_event, iter_events_of_types
 from jarvis.state.lifecycle_terminal import terminalize_action
+from jarvis.state.places import read_kept
 from jarvis.state.projections import (
     CLARIFICATION_EVENT_TYPES,
     PendingClarification,
@@ -4184,6 +4185,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         *build_bus_tool(
             transit_api_key, transit_places or dict, here_location, phone_here=here_phone,
             offers=transit_offers, bus_live=bus_live, control=ride_control,
+            kept=None if memory_db_path is None else lambda: read_kept(memory_db_path),
         ),
         *build_where_tool(here_location, here_phone),
         *build_highlight_tool(highlight_marker),

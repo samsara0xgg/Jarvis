@@ -309,10 +309,10 @@ def test_unpinning_from_the_notch_cancels_the_ring(world: _World) -> None:
 
 def test_the_tool_refuses_a_past_leave_time_and_an_option_the_list_lacks(world: _World) -> None:
     """A listed option whose leave time has gone, and a number the list has not got, pin nothing."""
-    world.pin(leave="16:50", departs="17:05")  # a list of one whose leave time is 10 min gone
+    world.pin(leave="16:56", departs="17:05")  # a list of one whose leave time is 4 min gone
     gone = world.call("bus", {"pin": [1]})
     assert gone["code"] == "time_in_past"
-    assert "Option 1 (leave 4:50 pm) is already past" in gone["error"]
+    assert "Option 1 (leave 4:56 pm) is already past" in gone["error"]
     assert "bus(to=...)" in gone["error"]
     unknown = world.call("bus", {"pin": [4]})
     assert unknown["code"] == "not_found"

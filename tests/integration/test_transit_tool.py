@@ -140,6 +140,7 @@ def test_the_answer_is_plain_words_in_local_time_with_three_options(
         "arrive_at": "17:48",
         "total_min": 42,
         "spare_min": 6,  # leaves 17:12, now 17:00, 6 min walk
+        "verdict": "easy",
     }
     assert [leg["route"] for leg in options[1]["legs"]] == ["28", "6"]
     assert options[1]["arrive_at"] == "18:03"
@@ -177,15 +178,15 @@ def test_one_post_with_the_key_a_tight_field_mask_and_the_saved_places(
     assert timeout == 5.0
 
 
-def test_any_other_text_goes_to_google_as_an_address_and_now_sends_no_time(
+def test_any_other_text_goes_to_google_as_an_address_and_now_looks_back_ten_minutes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Free text is an address; without depart_at no departureTime is sent."""
+    """Free text is an address; without depart_at the time sent is ten minutes ago (ADR 0265)."""
     seen = _serve(monkeypatch)
     _call({"from": "school", "to": "Mayfair Mall"})
     body = json.loads(_sent(seen)[0].data)
     assert body["destination"] == {"address": "Mayfair Mall"}
-    assert "departureTime" not in body
+    assert body["departureTime"] == "2026-10-06T23:50:00Z"
 
 
 def test_the_tool_is_gated_on_the_key_and_is_a_quiet_up_front_model_tool() -> None:
@@ -608,13 +609,44 @@ def test_the_plain_answer_may_hold_the_named_bus_and_depart_at_is_not_moved_back
     assert out["named_route"]["verdict"] == "none"
 
 
-def test_without_a_route_the_request_and_the_answer_are_as_before(
+def test_without_a_route_the_request_looks_back_and_there_is_no_named_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No route: no departureTime, no named_route."""
+    """No route: asked from ten minutes ago too (ADR 0265), one bus request, no named_route."""
     seen = _serve(monkeypatch)
     out = _call({"from": "school", "to": "home"})
-    assert _times(seen) == [None]
+    assert _times(seen) == ["2026-10-06T23:50:00Z"]
+    assert "named_route" not in out
+
+
+def test_without_a_route_a_bus_about_to_go_stays_with_its_spare_and_a_gone_one_is_marked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Now 09:29 (the live miss): Google plans from now and loses the 09:31; the look-back keeps it.
+
+    Walk is 4 min, so the 09:31 has spare -2 and is marked missed (only a run catches it); a bus
+    that left 4 min ago is dropped, and of two near misses only the later stays. Three requests
+    in all: one bus, one drive, one walk.
+    """
+    everything = _routes(
+        _bus("10", "09:25"), _bus("12", "09:30"), _bus("31", "09:31"), _bus("26", "09:54"),
+        _bus("27", "09:44"),
+    )
+
+    def answer(body: dict[str, Any]) -> dict[str, Any]:
+        return everything if "departureTime" in body else _routes(_bus("26", "09:54"))
+
+    seen = _serve(monkeypatch, answer=answer)
+    monkeypatch.setattr(
+        transit_tool, "_now",
+        lambda: datetime(2026, 10, 6, 9, 29, tzinfo=ZoneInfo("America/Vancouver")),
+    )
+    out = _call({"from": "here", "to": "UVic"}, here=_fix())
+    assert _times(seen) == ["2026-10-06T16:19:00Z"]  # 09:19 PDT
+    assert len(seen) == 3
+    assert [(o["legs"][0]["route"], o["spare_min"], o["verdict"]) for o in out["options"]] == [
+        ("31", -2, "missed"), ("27", 11, "easy"), ("26", 21, "easy"),
+    ]
     assert "named_route" not in out
 
 
