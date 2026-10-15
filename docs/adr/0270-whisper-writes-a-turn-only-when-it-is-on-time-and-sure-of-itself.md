@@ -36,7 +36,8 @@
 In `hybrid`, let Whisper's words replace SenseVoice's only when its pass is done within 4 s of
 the commit and its worst segment averaged at least -1.5; otherwise SenseVoice's words stand.
 Record on `utterance.received` which engine's words stand and why, with each engine's own score
-under its own name, and read the Whisper model's weights whenever it has sat idle for 15 s.
+under its own name, and read the Whisper model's weights every 15 s of idleness for the 5
+minutes after voice was last used.
 
 - **Gate.** A poor pass is left out even when SenseVoice wrote nothing, so the turn is then empty.
   2026-10-14 22:14:46, over music, SenseVoice wrote nothing and Whisper (confidence 0.203, one
@@ -65,9 +66,13 @@ under its own name, and read the Whisper model's weights whenever it has sat idl
 
 - A turn that times out or is gated is written by SenseVoice, which mis-hears numbers and names
   (ADR 0132). Allen sees that as an occasional worse transcript where he used to see a long wait.
-- Reading the weights is about 0.33 s of GPU every 15 s of idleness for as long as the terminal
-  runs, 2% of one GPU. Its benefit was not reproduced under pressure; the count of
-  `whisper_timeout` turns is how to tell whether it holds.
+- Reading the weights is about 0.31 s of GPU every 15 s, 2% of one GPU, only while voice is in
+  use: the 41 gaps between Whisper passes of 2026-10-10..14 were 60 s or less inside a
+  conversation and over 600 s between them, so 5 minutes after the last speech or pass covers
+  every gap inside one, and the thread ends after that until Allen next speaks. It does not warm
+  the first turn after a long silence; the bound covers that turn. Its battery state is not read.
+  Its benefit was not reproduced under pressure; the count of `whisper_timeout` turns is how to
+  tell whether it holds.
 - The gate rests on 12 turns judged by a decode of the same model family. It should be re-run
   with `tools/hybrid_asr_replay.py` when more turns are retained.
 - A brain that predates the new fields drops them: a terminal that sends them to it loses

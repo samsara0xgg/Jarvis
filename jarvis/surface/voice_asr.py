@@ -811,8 +811,12 @@ class WhisperFinalRecognizer:
 
 # ADR 0270: macOS pages an idle process's GPU buffers out under memory pressure, and the pass
 # after that reads 2.3 GB back from swap (7.6-13 s against 0.4 s). Reading the weights every 15 s
-# of idleness keeps them recently used, for about 2% of one GPU.
+# of idleness keeps them recently used, for about 2% of one GPU, but only while voice is in use:
+# the 41 gaps between Whisper passes in terminal.err.log 2026-10-10..14 were all 60 s or less
+# within a conversation and over 600 s between them, so 5 minutes after the last speech or pass
+# covers every gap inside one; after that the thread ends until Allen next speaks.
 _HYBRID_KEEP_WARM_S = 15.0
+_HYBRID_KEEP_WARM_WINDOW_S = 300.0
 # ADR 0132: a clip with less speech than this is heard by SenseVoice alone; Whisper writes words
 # for it that were never said ("Yeah" became "Thank you").
 _HYBRID_MIN_SPEECH_S = 1.0
@@ -888,6 +892,7 @@ class HybridFinalRecognizer:
         self._queue: deque[_PreparedFinal] = deque()
         self._worker: threading.Thread | None = None
         self._keeper: threading.Thread | None = None
+        self._engaged_at = 0.0  # the last prewarm or speech start, monotonic
         self._on_prepared_text: Callable[[str, int, str], None] | None = None
 
     def on_prepared_text(self, listener: Callable[[str, int, str], None] | None) -> None:
@@ -956,7 +961,12 @@ class HybridFinalRecognizer:
         self._sensevoice.prewarm()
         self._whisper_zh.prewarm()
         self._whisper_en.prewarm()
+        self._engage()
+
+    def _engage(self) -> None:
+        """Voice is in use: start the keep-warm thread unless it is running."""
         with self._lock:
+            self._engaged_at = time.monotonic()
             if self._keeper is None:
                 self._keeper = threading.Thread(
                     target=self._keep_warm, name="jarvis-whisper-keep-warm", daemon=True,
@@ -965,16 +975,25 @@ class HybridFinalRecognizer:
 
     def warm(self) -> None:
         """Allen started talking: after 20 s without a Whisper pass, run one silent pass."""
+        self._engage()
         last = max(self._whisper_zh.last_used, self._whisper_en.last_used)
         if time.monotonic() - last >= _WHISPER_WARM_IDLE_S:
             self._whisper_zh.warm()
 
     def _keep_warm(self) -> None:
-        """Every ``_HYBRID_KEEP_WARM_S``, read the model's weights if no pass has since the last."""
+        """Every ``_HYBRID_KEEP_WARM_S``, read the model's weights if no pass has since the last.
+
+        Ends once nothing has been heard or started for ``_HYBRID_KEEP_WARM_WINDOW_S``.
+        """
         while True:
             time.sleep(_HYBRID_KEEP_WARM_S)
             last = max(self._whisper_zh.last_used, self._whisper_en.last_used)
-            if time.monotonic() - last < _HYBRID_KEEP_WARM_S:
+            now = time.monotonic()
+            with self._lock:
+                if now - max(self._engaged_at, last) > _HYBRID_KEEP_WARM_WINDOW_S:
+                    self._keeper = None
+                    return
+            if now - last < _HYBRID_KEEP_WARM_S:
                 continue
             try:
                 self._whisper_zh.touch()

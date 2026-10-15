@@ -248,18 +248,27 @@ def test_the_committed_event_names_the_engine_and_each_engines_own_score(
     assert ("whisper_confidence" in payload) == (engine in heard_whisper)
 
 
-def test_an_idle_model_is_read_every_so_often_and_a_busy_one_is_left_alone() -> None:
-    """The keep-warm touch runs only when no pass has used the model for a whole interval."""
+def test_an_idle_model_is_read_while_voice_is_in_use_and_not_after() -> None:
+    """The keep-warm touch needs no pass for an interval and speech within the window."""
     zh, en = _whisper(), _whisper()
     ears = _hybrid(_sensevoice("zh"), zh=zh, en=en)
-    with patch.object(voice_asr, "_HYBRID_KEEP_WARM_S", 0.05):
+    with (
+        patch.object(voice_asr, "_HYBRID_KEEP_WARM_S", 0.05),
+        patch.object(voice_asr, "_HYBRID_KEEP_WARM_WINDOW_S", 0.5),
+    ):
         ears.prewarm()
         _wait_until(lambda: zh.touch.call_count >= 1)
-        busy_until = time.monotonic() + 1000
-        zh.last_used = en.last_used = busy_until
+        _wait_until(lambda: ears._keeper is None, timeout_s=3)  # nothing heard for the window
         touched = zh.touch.call_count
         time.sleep(0.3)
-    assert zh.touch.call_count == touched
+        assert zh.touch.call_count == touched  # listening ended: no more touches
+        ears.warm()  # Allen speaks again
+        assert ears._keeper is not None
+        _wait_until(lambda: zh.touch.call_count > touched)
+        busy = zh.touch.call_count
+        zh.last_used = en.last_used = time.monotonic() + 1000  # a pass ran meanwhile
+        time.sleep(0.3)
+    assert zh.touch.call_count <= busy + 1  # at most the one already under way
 
 
 def test_whispers_level_gate_still_applies() -> None:
