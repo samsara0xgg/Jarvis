@@ -76,6 +76,9 @@ class E5Embedder:
                 tokenizer.enable_truncation(_MAX_TOKENS)
                 options = ort.SessionOptions()
                 options.intra_op_num_threads = _THREADS
+                # The arena keeps the peak of every batch shape for good; without it the brain
+                # holds the model at about +450 MB instead of +580 MB, at the same speed.
+                options.enable_cpu_mem_arena = False
                 session = ort.InferenceSession(
                     str(self._dir / MODEL_FILE), options, providers=["CPUExecutionProvider"],
                 )
