@@ -78,6 +78,8 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     "jarvis/state/places.py": frozenset({"places", "place_changes", "place_prompts"}),
     # ADR 0260: the vectors of what is searchable, rebuilt from the texts at any time.
     "jarvis/state/meaning.py": frozenset({"meaning_vectors"}),
+    # ADR 0259: the entries read from the exports he hands over, in memory.db; append-only.
+    "jarvis/state/imports.py": frozenset({"import_entries"}),
     # ADR 0019: which Codex threads this daemon opened (parent action, child
     # thread, open|closed). Topology, not a projection of events.
     "jarvis/state/worker_edges.py": frozenset({"worker_edges"}),

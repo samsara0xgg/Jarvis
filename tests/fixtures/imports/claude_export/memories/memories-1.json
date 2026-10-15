@@ -1,0 +1,11 @@
+{
+ "conversations_memory": "He is a student who grows tomatoes.",
+ "memory_files": [
+  {
+   "path": "/memories/garden.md",
+   "content": "Grows tomatoes on a balcony.",
+   "updated_at": "2026-10-09T12:00:00Z"
+  }
+ ],
+ "account_uuid": "acct-0001"
+}

@@ -84,6 +84,10 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
         {"SECTION_CAPS", "DEFAULT_SECTION", "DUE_SECTION", "ID_FREE_SECTION", "_LEGACY"},
     ),
     "jarvis/state/daily_report.py": frozenset({"MILESTONES", "_QUESTION"}),
+    # The WeChat Pay and Alipay statements (ADR 0259) name their columns and statuses in Chinese.
+    "jarvis/state/import_parsers.py": frozenset(
+        {"SUCCESS", "_DIRECTIONS", "_fen", "_payment", "wechat_pay", "alipay"}
+    ),
     "jarvis/state/work_state.py": frozenset({"_STOP_WORDS", "_TERM", "_CJK_RUN"}),
     # A call is read from the front window; Tencent Meeting titles its lobby 腾讯会议 (ADR 0161).
     "jarvis/state/timesink_moment.py": frozenset({"call_app"}),

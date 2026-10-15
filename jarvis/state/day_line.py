@@ -23,6 +23,10 @@ Each source folds on its own and a source that raises leaves its items out (:fun
 - ``calendar``: his Outlook events, read through the reader the runtime injects
   (:attr:`DaySources.calendar`), in his lane with state ``next`` until they start (ADR 0230); an
   all-day event is a label of the day (:attr:`DayLine.labels`), not an item;
+- ``imports``: what he handed over (ADR 0259), in his lane: each payment that moved money as a
+  point (amount, direction, counterparty, item), and each conversation with Claude as a span from
+  its first to its last message of the window (the title as text); with no memory store it has
+  nothing to read and says nothing in ``missing``;
 - ``departures``: the bus trips he pinned (ADR 0204), each a point at its departure time, from the
   pin as the log held it at the end of the day; the reminder that rings for a trip on the line is
   left out, the departure stands for it.
@@ -38,20 +42,22 @@ import hashlib
 import json
 import logging
 import re
+import sqlite3
 from collections import defaultdict
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.state import departures, picture_notes, places, reminders, timesink
+from jarvis.state import departures, imports, picture_notes, places, reminders, timesink
 from jarvis.state import rides as ride_state
 from jarvis.state.attachments import Attachments
+from jarvis.state.import_parsers import money
 from jarvis.state.ledger import CALL_FLOOR_S, TOP_FLOOR_S, window_activity
 from jarvis.state.phone_day import LOOKBACK_MS, read_rows, sleeps, stays
 from jarvis.state.phone_day import moves as phone_moves
 
 if TYPE_CHECKING:
-    import sqlite3
     from collections.abc import Callable, Iterable
     from datetime import tzinfo
     from pathlib import Path
@@ -169,6 +175,7 @@ def fold_day(
         ("pictures", lambda db, first, last, now: _picture_items(db, sources, first, last, now)),
         ("calendar", lambda _conn, first, last, now: _calendar_items(sources, first, last, now)),
         ("departures", _departure_items),
+        ("imports", lambda _conn, first, last, now: _import_items(sources, first, last, now)),
     )
     items: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -502,6 +509,57 @@ def _talk_items(
         for run in talks
         if _overlaps(run[0], run[-1], window_start, window_end)
     ]
+
+
+# --- what he handed over -------------------------------------------------------------------
+
+
+def _import_items(
+    sources: DaySources, window_start: int, window_end: int, now_ms: int,
+) -> list[dict[str, Any]]:
+    """His payments as points and his Claude conversations as spans, from the imported entries."""
+    path = sources.memory_db
+    if path is None or not path.is_file():
+        return []  # no memory store: ``talks`` already says so in ``missing``
+    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+        rows = imports.entries(
+            conn, start_ms=window_start, end_ms=window_end, kinds=("payment", "message"),
+        )
+    items: list[dict[str, Any]] = []
+    chats: dict[str, list[imports.Entry]] = defaultdict(list)
+    for row in rows:
+        if row.kind == "message":
+            chats[str(row.fields.get("conversation"))].append(row)
+        elif row.fields.get("counts"):
+            fields = row.fields
+            items.append({
+                "id": f"payment-{row.id}",
+                "lane": "you",
+                "kind": "payment",
+                "start_ms": row.at_ms,
+                "end_ms": row.at_ms,
+                "state": _state(row.at_ms, row.at_ms, now_ms),
+                "source": row.source,
+                "amount": money(fields["amount_fen"]),
+                "currency": fields["currency"],
+                "direction": fields["direction"],
+                "counterparty": fields["counterparty"],
+                "text": fields["item"],
+            })
+    for chat, messages in chats.items():
+        first, last = min(m.at_ms for m in messages), max(m.at_ms for m in messages)
+        items.append({
+            "id": f"claude-{chat}-{first}",
+            "lane": "you",
+            "kind": "claude_chat",
+            "start_ms": first,
+            "end_ms": last,
+            "state": _state(first, last, now_ms),
+            "source": "claude",
+            "text": messages[0].fields.get("conversation_name") or "Claude conversation",
+            "messages": len(messages),
+        })
+    return items
 
 
 # --- the pictures he sent ------------------------------------------------------------------

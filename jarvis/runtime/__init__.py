@@ -131,6 +131,7 @@ from jarvis.deployment.models import (
 )
 from jarvis.deployment.night_power import MacPower
 from jarvis.execution import speakable
+from jarvis.execution.archive_tool import build_archive_tool
 from jarvis.execution.conversation_tool import build_conversation_tool
 from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.geocode import Unplaced, geocode
@@ -230,7 +231,7 @@ from jarvis.shared.realtime_trace import (
     record_realtime_trace,
 )
 from jarvis.shared.system_prompt import SplitSystem
-from jarvis.state import device_reads, embedding, reactions
+from jarvis.state import device_reads, embedding, imports, reactions
 from jarvis.state import picture_notes as note_records
 from jarvis.state import places as place_state
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME, AttachmentRef, Attachments, marker
@@ -281,7 +282,7 @@ from jarvis.surface.terminal_link import TerminalHub
 from jarvis.surface.voice_cues import VoiceCues
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from datetime import tzinfo
 
     from jarvis.decision import ResponsePlan
@@ -1826,6 +1827,12 @@ def _register_conversation(
         registry.register(tool)
 
 
+def _register_archive(registry: ToolRegistry, memory_db: Path, zone: tzinfo) -> None:
+    """``archive`` (ADR 0259): the payments and Claude conversations he handed over."""
+    for tool in build_archive_tool(memory_db, zone):
+        registry.register(tool)
+
+
 def _register_my_day(registry: ToolRegistry, sources: LedgerSources) -> None:
     """``my_day`` (ADR 0244): today and what he does now, a day, a span, one project."""
     for tool in build_my_day_tool(sources):
@@ -2738,6 +2745,28 @@ def mcp_login(
     return 0
 
 
+def import_exports(
+    source: str,
+    paths: Sequence[Path],
+    *,
+    config_path: Path | None = None,
+    runtime_root: Path | None = None,
+) -> imports.Counts:
+    """ADR 0259: keep the files raw under the runtime root and read their entries into memory.db.
+
+    Raises:
+        ValueError: ``source`` has no parser yet.
+        OSError: a file cannot be read or kept.
+    """
+    if config_path is None:
+        config_path = _locate_repo_root(Path(__file__).parent) / _DEFAULT_CONFIG_FILENAME
+    root = bootstrap_runtime(runtime_root)
+    config = _load_full_config(config_path, root.settings)
+    memory = MemorySettings.from_config(config.get("memory"), runtime_root=root.root)
+    with contextlib.closing(open_memory_db(memory.db_path)) as conn:
+        return imports.import_files(conn, root.root / imports.IMPORTS_DIRNAME, source, paths)
+
+
 def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stays explicit
     *,
     config_path: Path | None = None,
@@ -3109,6 +3138,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     )
     _register_mail(registry, home, local_zone)
     _register_conversation(registry, memory.db_path, local_zone, paths.root)
+    _register_archive(registry, memory.db_path, local_zone)
     _register_my_day(
         registry,
         LedgerSources(
@@ -5030,6 +5060,7 @@ __all__ = [
     "TriggerWaitTimeout",
     "bootstrap_runtime_app",
     "drive_turn",
+    "import_exports",
     # Re-exported for jarvis.cli: H13 forbids a single file importing two
     # middle-layer siblings, and the CLI already imports jarvis.deployment.
     # Same route PreEmitTokenError above already takes.

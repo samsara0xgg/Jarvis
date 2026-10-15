@@ -1,0 +1,264 @@
+"""ADR 0259: exports he hands over are kept raw and read into one UTC timeline.
+
+Synthetic exports only: a fake Claude export directory under ``tests/fixtures/imports`` and a
+WeChat Pay .xlsx and an Alipay .csv built here. Each check asserts what the import counted, what
+sits on disk and in memory.db, and what the tool and the day line return; no model, no network.
+"""
+
+# ruff: noqa: E501, RUF001 - statement rows and expected texts read best one per line; full-width colons
+from __future__ import annotations
+
+import io
+import json
+import logging
+import zipfile
+from contextlib import closing
+from datetime import UTC, date, datetime
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from jarvis.deployment import data
+from jarvis.execution.archive_tool import build_archive_tool
+from jarvis.execution.tools import Tool, ToolContext, ToolError
+from jarvis.runtime import JarvisRuntime, inherent_loop
+from jarvis.state import imports
+from jarvis.state.day_line import DaySources, day_window, fold_day
+from jarvis.state.event_log import open_event_log
+from jarvis.state.memory_db import open_memory_db
+
+CLAUDE = Path(__file__).resolve().parents[1] / "fixtures" / "imports" / "claude_export"
+VANCOUVER = ZoneInfo("America/Vancouver")
+NOW = datetime(2026, 10, 14, 20, 0, tzinfo=UTC)
+
+WECHAT_HEADER = [
+    "交易时间", "交易类型", "交易对方", "商品", "收/支", "金额(元)", "支付方式", "当前状态",
+    "交易单号", "商户单号", "备注",
+]
+WECHAT_ROWS = [
+    ["2026-10-12 07:41:37", "商户消费", "Lotus Noodle House", "Lunch set", "支出", "¥68.00", "零钱",
+     "支付成功", "W100001", "M1", "/"],
+    ["2026-10-12 09:00:00", "商户消费", "Maple Coffee", "Latte", "支出", "¥31.50", "零钱",
+     "已全额退款", "W100002", "M2", "/"],
+    ["2026-10-13 10:00:00", "转账", "Friend Lin", "Transfer", "收入", "¥200.00", "零钱",
+     "已收钱", "W100003", "M3", "/"],
+]
+ALIPAY_HEAD = (
+    "交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,"
+)
+
+
+def _xlsx(rows: list[list[str]]) -> bytes:
+    """A WeChat-shaped workbook: three preamble rows, the header row, then the rows."""
+    preamble = [["微信支付账单明细"], ["微信昵称：[tester]"], ["起始时间：[2026-10-01 00:00:00]"]]
+    sheet = [*preamble, WECHAT_HEADER, *rows]
+    strings: list[str] = []
+    xml_rows = []
+    for number, row in enumerate(sheet, 1):
+        cells = []
+        for col, text in enumerate(row):
+            strings.append(text)
+            cells.append(f'<c r="{chr(65 + col)}{number}" t="s"><v>{len(strings) - 1}</v></c>')
+        xml_rows.append(f'<row r="{number}">{"".join(cells)}</row>')
+    ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as book:
+        book.writestr("xl/worksheets/sheet1.xml", f"<worksheet {ns}><sheetData>{''.join(xml_rows)}</sheetData></worksheet>")
+        book.writestr("xl/sharedStrings.xml", f"<sst {ns}>{''.join(f'<si><t>{s}</t></si>' for s in strings)}</sst>")
+    return out.getvalue()
+
+
+def _alipay(amount: str = "25.00") -> bytes:
+    """An Alipay-shaped GBK file: preamble lines, the header line, rows with padded cells."""
+    lines = [
+        "------------------------------------------------------------------------------------",
+        "导出信息：", "姓名：测试", "支付宝支付科技有限公司", "",
+        "------------------------交易记录明细列表------------------------",
+        ALIPAY_HEAD,
+        f"2026-10-12 12:30:05\t,餐饮美食\t,Sunrise Bakery\t,x***@example.com\t,Bread\t,支出,{amount},余额,交易成功,A200001\t,B1\t,\t,",
+        "2026-10-12 13:00:00\t,其他\t,Gift Shop\t,y***@example.com\t,Mug\t,支出,40.00,余额,交易关闭,A200002\t,B2\t,\t,",
+        "2026-10-13 08:00:00\t,转账\t,Friend Lin\t,z***@example.com\t,Split\t,不计收支,10.00,余额,交易成功,A200003\t,B3\t,\t,",
+        "------------------------------------------------------------------------------------",
+    ]
+    return "\n".join(lines).encode("gb18030")
+
+
+def _import(root: Path, source: str, *paths: Path) -> imports.Counts:
+    with closing(open_memory_db(root / "memory.db")) as conn:
+        return imports.import_files(conn, root / imports.IMPORTS_DIRNAME, source, paths)
+
+
+def _held(root: Path) -> dict[str, imports.Entry]:
+    with closing(open_memory_db(root / "memory.db")) as conn:
+        return {row.id: row for row in imports.entries(conn)}
+
+
+def _statements(tmp_path: Path) -> tuple[Path, Path]:
+    wechat, alipay = tmp_path / "wechat.xlsx", tmp_path / "alipay.csv"
+    wechat.write_bytes(_xlsx(WECHAT_ROWS))
+    alipay.write_bytes(_alipay())
+    return wechat, alipay
+
+
+def test_raw_is_kept_once_by_digest_and_a_second_import_adds_nothing(tmp_path: Path) -> None:
+    """Seven files in: a byte-copy is kept once and the login history not at all."""
+    first = _import(tmp_path, "claude", CLAUDE)
+    kept = sorted(p.name[17:] for p in (tmp_path / "imports" / "claude").iterdir())
+    again = _import(tmp_path, "claude", CLAUDE)
+
+    assert kept == [
+        "conversations 2.json", "design-1.json", "memories-1.json", "projects.json", "reflections-1.json",
+    ]
+    assert (first.files_stored, first.files_skipped) == (5, 1)
+    # 6 messages (the empty-text one reads from content), 1 design message, 2 memories, 1 reflection
+    assert (first.added, first.held, first.conflicting) == (10, 0, 0)
+    assert (again.files_stored, again.files_skipped) == (0, 6)
+    assert (again.added, again.held) == (0, 10)
+    assert not list((tmp_path / "imports").rglob("light_metadata*"))
+    kinds = sorted(e.kind for e in _held(tmp_path).values())
+    assert kinds == ["memory"] * 2 + ["message"] * 7 + ["reflection"]
+
+
+def test_china_times_land_on_their_utc_instant_and_amounts_are_exact(tmp_path: Path) -> None:
+    """Naive Asia/Shanghai times become UTC instants; amounts are fen; refunds do not count."""
+    wechat, alipay = _statements(tmp_path)
+    _import(tmp_path, "wechat_pay", wechat)
+    _import(tmp_path, "alipay", alipay)
+
+    held = {e.fields["order"]: e for e in _held(tmp_path).values()}
+    lunch = held["W100001"]
+    assert datetime.fromtimestamp(lunch.at_ms / 1000, UTC) == datetime(2026, 10, 11, 23, 41, 37, tzinfo=UTC)
+    assert (lunch.zone, lunch.source, lunch.kind) == ("Asia/Shanghai", "wechat_pay", "payment")
+    assert (lunch.fields["amount_fen"], lunch.fields["direction"], lunch.fields["counts"]) == (6800, "out", True)
+    assert held["W100002"].fields["counts"] is False  # refunded
+    assert held["A200002"].fields["counts"] is False  # closed
+    assert held["A200003"].fields["direction"] == "neutral"
+    assert datetime.fromtimestamp(held["A200001"].at_ms / 1000, UTC) == datetime(2026, 10, 12, 4, 30, 5, tzinfo=UTC)
+    assert held["A200001"].fields["counterparty"] == "Sunrise Bakery"  # trailing tab trimmed
+
+
+def test_a_changed_held_row_is_logged_and_kept_as_it_was(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Same order number, other amount: counted as conflicting, logged by field name only."""
+    _, alipay = _statements(tmp_path)
+    _import(tmp_path, "alipay", alipay)
+    changed = tmp_path / "alipay-later.csv"
+    changed.write_bytes(_alipay(amount="26.00"))
+
+    with caplog.at_level(logging.WARNING, logger="jarvis.state.imports"):
+        counts = _import(tmp_path, "alipay", changed)
+
+    assert (counts.files_stored, counts.added, counts.held, counts.conflicting) == (1, 0, 3, 1)
+    assert "differs in text, fields" in caplog.text
+    assert "26.00" not in caplog.text
+    bakery = next(e for e in _held(tmp_path).values() if e.fields["order"] == "A200001")
+    assert bakery.fields["amount_fen"] == 2500
+
+
+def _tool(root: Path) -> Tool:
+    (tool,) = build_archive_tool(root / "memory.db", VANCOUVER, lambda: NOW)
+    return tool
+
+
+def _call(tool: Tool, **args: object) -> dict[str, Any]:
+    return cast("dict[str, Any]", tool.handler(args, cast("ToolContext", None)))
+
+
+def test_the_archive_tool_searches_pages_totals_and_opens(tmp_path: Path) -> None:
+    """Words, source, span and page; totals over every match; open; the refusals."""
+    wechat, alipay = _statements(tmp_path)
+    _import(tmp_path, "wechat_pay", wechat)
+    _import(tmp_path, "alipay", alipay)
+    _import(tmp_path, "claude", CLAUDE)
+    tool = _tool(tmp_path)
+
+    assert tool.read_only
+    words = _call(tool, query="noodle")
+    assert [e["text"] for e in words["entries"]] == [
+        "paid CNY 68.00 to Lotus Noodle House: Lunch set",
+    ]
+    assert words["totals"] == {
+        "payments": 1, "spent": "68.00", "received": "0.00", "currency": "CNY", "note": "all counted",
+    }
+    # source + date: Vancouver Oct 11 holds the noodle lunch (23:41Z) and the bakery (04:30Z Oct 12 = Oct 11 21:30)
+    day = _call(tool, source="wechat_pay", date="2026-10-11")
+    assert day["totals"]["spent"] == "68.00"
+    span = _call(tool, source="alipay", date="2026-10-11", to="2026-10-13")
+    assert span["totals"] == {
+        "payments": 3, "spent": "25.00", "received": "0.00", "currency": "CNY",
+        "note": "2 refunded, closed or internal; not in the totals",
+    }
+    # page 1 shows 8 of 13 payments + messages; totals cover only payments, all of them
+    everything = _call(tool, date="2026-10-01", to="2026-10-14")
+    assert len(everything["entries"]) == 8
+    assert everything["more"] is True
+    assert everything["totals"]["payments"] == 6
+    second = _call(tool, date="2026-10-01", to="2026-10-14", page=2)
+    assert len(second["entries"]) == 8
+    assert second["more"] is False
+
+    hit = _call(tool, query="soil")["entries"][0]
+    assert hit["source"] == "claude"
+    around = _call(tool, open=hit["id"])
+    assert [t["who"] for t in around["turns"]] == ["human", "assistant", "human", "assistant"]
+    assert [t.get("here") for t in around["turns"]] == [None, None, True, None]
+    paid = _call(tool, open=_call(tool, query="noodle")["entries"][0]["id"])
+    assert paid["entry"]["fields"]["order"] == "W100001"
+
+    for bad in ({}, {"open": "x", "query": "y"}, {"to": "2026-10-02"}, {"source": "paypal"}):
+        with pytest.raises(ToolError) as caught:
+            _call(tool, **bad)
+        assert caught.value.code == "invalid_arguments"
+    with pytest.raises(ToolError) as missing:
+        _call(tool, open="claude-000000000000")
+    assert missing.value.code == "not_found"
+
+
+def test_the_day_line_folds_payments_and_chats_in_his_zone(tmp_path: Path) -> None:
+    """The same entries land on different days in Vancouver and Shanghai."""
+    wechat, _ = _statements(tmp_path)
+    _import(tmp_path, "wechat_pay", wechat)
+    _import(tmp_path, "claude", CLAUDE)
+    conn = open_event_log(tmp_path / "events.db")
+    sources = DaySources(VANCOUVER, memory_db=tmp_path / "memory.db")
+
+    def items(zone: ZoneInfo, day: str) -> list[dict[str, Any]]:
+        first, last = day_window(date.fromisoformat(day), zone)
+        line = fold_day(conn, first, last, int(NOW.timestamp() * 1000), DaySources(zone, memory_db=sources.memory_db))
+        return [i for i in line.items if i["kind"] in ("payment", "claude_chat")]
+
+    vancouver = items(VANCOUVER, "2026-10-11")
+    # the noodle lunch is 23:41Z: Oct 11 in Vancouver; the chat's two messages straddle UTC midnight
+    assert [(i["kind"], i.get("text")) for i in vancouver] == [
+        ("claude_chat", "Bus pass question"), ("payment", "Lunch set"),
+    ]
+    chat, pay = vancouver
+    assert (pay["amount"], pay["direction"], pay["counterparty"]) == ("68.00", "out", "Lotus Noodle House")
+    assert (chat["messages"], int(chat["end_ms"]) - int(chat["start_ms"])) == (2, 40 * 60 * 1000)
+    assert [i["kind"] for i in items(ZoneInfo("Asia/Shanghai"), "2026-10-12")] == ["claude_chat", "payment"]
+    # Friend Lin's transfer is 02:00Z on Oct 13: still Oct 12 in Vancouver, Oct 13 in Shanghai
+    assert [i.get("text") for i in items(VANCOUVER, "2026-10-12")] == ["Transfer"]
+    assert items(VANCOUVER, "2026-10-13") == []
+    conn.close()
+
+
+def test_the_imports_directory_is_outside_sweep_clear_and_export(tmp_path: Path) -> None:
+    """Not a media directory, so the hourly sweep, clear-recordings and export never see it."""
+    wechat, _ = _statements(tmp_path)
+    _import(tmp_path, "wechat_pay", wechat)
+    runtime = cast("JarvisRuntime", SimpleNamespace(
+        config={}, runtime_paths=SimpleNamespace(root=tmp_path, artifacts_root=tmp_path / "artifacts"),
+        attachments=None, memory=None,
+    ))
+
+    media = inherent_loop._media_dirs(runtime)  # noqa: SLF001
+    data.clear_files(list(media))
+
+    kept = tmp_path / imports.IMPORTS_DIRNAME
+    assert not any(d == kept or kept in d.parents or d in kept.parents for d in media)
+    assert len(list((kept / "wechat_pay").iterdir())) == 1
+    assert json.loads(json.dumps(sorted(imports.SOURCES))) == ["alipay", "claude", "wechat_pay"]

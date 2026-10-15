@@ -1,0 +1,90 @@
+[
+ {
+  "uuid": "c0000001-aaaa",
+  "name": "Planning a garden bed",
+  "summary": "",
+  "created_at": "2026-10-10T18:00:00.000000Z",
+  "updated_at": "2026-10-10T18:05:00.000000Z",
+  "chat_messages": [
+   {
+    "uuid": "m0000001",
+    "text": "How deep should a raised tomato bed be?",
+    "content": [
+     {
+      "type": "text",
+      "text": "How deep should a raised tomato bed be?"
+     }
+    ],
+    "sender": "human",
+    "created_at": "2026-10-10T18:00:00.000000Z",
+    "attachments": [],
+    "files": [],
+    "parent_message_uuid": "00000000"
+   },
+   {
+    "uuid": "m0000002",
+    "text": "About thirty centimetres is plenty for tomatoes.",
+    "content": [],
+    "sender": "assistant",
+    "created_at": "2026-10-10T18:00:20.000000Z",
+    "attachments": [],
+    "files": [],
+    "parent_message_uuid": "m0000001"
+   },
+   {
+    "uuid": "m0000003",
+    "text": "And which soil mix works best?",
+    "content": [],
+    "sender": "human",
+    "created_at": "2026-10-10T18:03:00.000000Z",
+    "attachments": [],
+    "files": [],
+    "parent_message_uuid": "m0000002"
+   },
+   {
+    "uuid": "m0000004",
+    "text": "",
+    "content": [
+     {
+      "type": "text",
+      "text": "Two parts compost, one part coarse sand."
+     }
+    ],
+    "sender": "assistant",
+    "created_at": "2026-10-10T18:05:00.000000Z",
+    "attachments": [],
+    "files": [],
+    "parent_message_uuid": "m0000003"
+   }
+  ]
+ },
+ {
+  "uuid": "c0000002-bbbb",
+  "name": "Bus pass question",
+  "summary": "",
+  "created_at": "2026-10-11T23:30:00+00:00",
+  "updated_at": "2026-10-12T00:10:00+00:00",
+  "chat_messages": [
+   {
+    "uuid": "m0000005",
+    "text": "Is the monthly bus pass worth it?",
+    "content": [],
+    "sender": "human",
+    "created_at": "2026-10-11T23:30:00+00:00",
+    "attachments": [],
+    "files": [],
+    "parent_message_uuid": "00000000"
+   },
+   {
+    "uuid": "m0000006",
+    "text": "If you ride more than twenty trips, yes.",
+    "content": [],
+    "sender": "assistant",
+    "created_at": "2026-10-12T00:10:00+00:00",
+    "attachments": [],
+    "files": [],
+    "parent_message_uuid": "m0000005"
+   }
+  ]
+ }
+]

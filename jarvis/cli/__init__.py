@@ -64,6 +64,7 @@ from jarvis.runtime import (
     RuntimeBootstrapError,
     TriggerWaitTimeout,
     bootstrap_runtime_app,
+    import_exports,
     mcp_login,
     parse_response_channels,
     run_turn,
@@ -1205,6 +1206,34 @@ def _main_meaning_model(argv: list[str]) -> int:
     return 0
 
 
+def _main_import(argv: list[str]) -> int:
+    """ADR 0259: `jarvis import <source> <path>...` keeps exports raw, reads them; counts only."""
+    parser = argparse.ArgumentParser(
+        prog=f"{_PROG} import",
+        description="Keep an export raw under the runtime root and read its entries.",
+    )
+    parser.add_argument("source", help="claude, wechat_pay or alipay.")
+    parser.add_argument("paths", nargs="+", type=Path, help="Files, or directories of files.")
+    parser.add_argument("--config", type=Path, default=None, help="Path to jarvis.yaml.")
+    parser.add_argument(
+        "--runtime-root", type=Path, default=None, help="Override JARVIS_RUNTIME_ROOT."
+    )
+    args = parser.parse_args(argv)
+    try:
+        counts = import_exports(
+            args.source, args.paths, config_path=args.config, runtime_root=args.runtime_root,
+        )
+    except (RuntimeBootstrapError, OSError, ValueError) as exc:
+        sys.stderr.write(f"jarvis import: {exc}\n")
+        return 1
+    sys.stdout.write(
+        f"files: {counts.files_stored} stored, {counts.files_skipped} already held, "
+        f"{counts.unreadable} unreadable; entries: {counts.added} added, "
+        f"{counts.held} already held, {counts.conflicting} conflicting\n"
+    )
+    return 0
+
+
 def _main_devices(command: str, argv: list[str]) -> int:
     """ADR 0170, on the brain: `pair <name>`, `unpair <name>` and `devices`."""
     parser = argparse.ArgumentParser(
@@ -1267,6 +1296,7 @@ def main(argv: list[str] | None = None) -> int:
         "daemon": _main_daemon,
         "mcp-login": _main_mcp_login,
         "meaning-model": _main_meaning_model,
+        "import": _main_import,
         "terminal": _main_terminal,
         "terminal-agent": _main_terminal_agent,
     }
