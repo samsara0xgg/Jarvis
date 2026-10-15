@@ -76,6 +76,8 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # ADR 0234: the places he keeps (the view), their versions and the spots already asked
     # about, in memory.db; each write appends a change and updates the view in one transaction.
     "jarvis/state/places.py": frozenset({"places", "place_changes", "place_prompts"}),
+    # ADR 0260: the vectors of what is searchable, rebuilt from the texts at any time.
+    "jarvis/state/meaning.py": frozenset({"meaning_vectors"}),
     # ADR 0019: which Codex threads this daemon opened (parent action, child
     # thread, open|closed). Topology, not a projection of events.
     "jarvis/state/worker_edges.py": frozenset({"worker_edges"}),
@@ -137,6 +139,10 @@ _L2_OPERATIONAL_DELETES: dict[str, str] = {
     ),
     # ADR 0234: forgetting a place takes it out of the view; place_changes keeps what it was.
     "jarvis/state/places.py": "DELETE FROM places WHERE id = ?",
+    # ADR 0260: a vector goes when the text it came from does.
+    "jarvis/state/meaning.py": (
+        "DELETE FROM meaning_vectors WHERE kind = ? AND ref = ? AND piece = ?"
+    ),
 }
 
 

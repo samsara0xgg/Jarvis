@@ -144,13 +144,22 @@ CREATE TABLE IF NOT EXISTS place_prompts (
     lng      REAL NOT NULL,
     shown_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS meaning_vectors (
+    kind   TEXT NOT NULL,
+    ref    TEXT NOT NULL,
+    piece  INTEGER NOT NULL,
+    model  TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    vec    BLOB NOT NULL,
+    PRIMARY KEY (kind, ref, piece)
+);
 """
 
 # ``PRAGMA user_version`` (ADR 0068). 0 is a file from before the stamp, same
 # schema as 1; a file above this was written by a newer Jarvis and is refused.
 # ``sent``, ``record_attachments`` (ADR 0255), ``day_summaries``, ``core_memory``,
-# ``day_highlight_marks`` and the places tables
-# (ADR 0234) are additive: an older opener ignores them, so they need no new version. So are the
+# ``day_highlight_marks``, the places tables (ADR 0234) and ``meaning_vectors`` (ADR 0260) are
+# additive: an older opener ignores them, so they need no new version. So are the
 # ``day_prose`` columns ``line``, ``highlights`` and ``draft`` (ADR 0235), which
 # :func:`open_memory_db` adds to a table made before.
 SCHEMA_VERSION: Final[int] = 1
