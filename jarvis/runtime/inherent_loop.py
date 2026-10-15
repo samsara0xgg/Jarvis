@@ -311,6 +311,7 @@ from jarvis.surface.phone_link import PhoneHub
 from jarvis.surface.phone_player import PHONE_SAMPLE_RATE_HZ, PhoneAudioStreamPlayer
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.repo_observer import RepoObserver
+from jarvis.surface.terminal_events import BrainEvents, phone_turn_id
 from jarvis.surface.terminal_link import SETTINGS_NOTICE
 from jarvis.surface.timesink_observer import TimesinkHead, TimesinkObserver
 from jarvis.surface.usage_observer import (
@@ -6790,14 +6791,33 @@ def _submit_with_attachments(
     return turn_id
 
 
-def _submit_as_device(
+def _submit_as_device(  # noqa: PLR0913 - the phone message's fields, as `say` has them.
     event_log_path: Path, device: str, text: str, attachment_ids: Sequence[str],
-    about: dict[str, Any] | None,
+    about: dict[str, Any] | None, utterance_id: str | None = None,
 ) -> str:
-    """ADR 0212: the turn of words a paired ``device`` sent over HTTP, with or without files."""
-    return _submit_with_attachments(
-        event_log_path, text, attachment_ids, device=device, about=about,
-    )
+    """ADR 0212: the turn of words a paired ``device`` sent over HTTP, with or without files.
+
+    ADR 0262: with the phone's ``utterance_id`` the words are written as its ``/phone/ws``
+    ``say`` is, under the same uid and turn id, so the same message sent again by either route
+    returns its first turn and writes nothing.
+
+    Raises:
+        ValueError: ``utterance_id`` is given and the words are not an utterance this host takes.
+    """
+    if utterance_id is None:
+        return _submit_with_attachments(
+            event_log_path, text, attachment_ids, device=device, about=about,
+        )
+    inner_conn = open_runtime_event_log(event_log_path)
+    try:
+        return BrainEvents(inner_conn).record_phone_say(
+            device, utterance_id, text, spoken=False, about=about, attachments=attachment_ids,
+        )
+    except sqlite3.IntegrityError:  # the same message's other route wrote it just now
+        return phone_turn_id(device, utterance_id)
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            inner_conn.close()
 
 
 def _set_reaction(

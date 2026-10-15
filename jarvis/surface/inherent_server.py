@@ -268,6 +268,9 @@ class SubmitRequest(BaseModel):
     attachments: list[str] = Field(default_factory=list)
     # ADR 0214: the item a paired phone has open (``jarvis.shared.about``); 422 if it is bad.
     about: dict[str, Any] | None = None
+    # ADR 0262: the phone's id for this message, the one its ``/phone/ws`` ``say`` carries. The
+    # same id sent again, over either route, is the same turn and writes nothing twice.
+    utterance_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
 
     @field_validator("about")
     @classmethod
@@ -662,7 +665,11 @@ class InherentDeps:
     # opening row written under the paired ``device``'s name, for words a paired device sent over
     # ``submit``, ``ask`` or ``share`` (``ids`` may be empty). ``None``: the Mac's own name.
     # ADR 0214: ``about`` is the checked item the phone has open, or ``None`` (``submit`` only).
-    submit_as_device: Callable[[str, str, Sequence[str], dict[str, Any] | None], str] | None = None
+    # ADR 0262: ``utterance_id`` (or ``None``) is the phone's id for the message, deduplicated
+    # exactly as a ``say`` is.
+    submit_as_device: (
+        Callable[[str, str, Sequence[str], dict[str, Any] | None, str | None], str] | None
+    ) = None
     share_callable: Callable[[dict[str, Any]], str] | None = None
     # ADR 0257: ``reaction_set(target, emoji)`` puts his reaction on a message record (``None``
     # takes it off), writes the line the model reads and the event, and raises ``LookupError``
@@ -2272,32 +2279,40 @@ def _for_reader(card: object, reader: str) -> dict[str, Any] | None:
     return card if device is None or device == reader else None
 
 
-async def _start_turn(
+async def _start_turn(  # noqa: PLR0913 - the phone message's fields, as `say` has them.
     deps: InherentDeps, device: str | None, text: str, ids: Sequence[str] = (),
-    about: dict[str, Any] | None = None,
+    about: dict[str, Any] | None = None, utterance_id: str | None = None,
 ) -> str:
     """Start the turn of ``text`` (with stored files ``ids``), written under ``device`` if any.
 
     ``about`` (ADR 0214) is the item the paired phone has open; the caller has refused it for
-    anyone else.
+    anyone else. ``utterance_id`` (ADR 0262) names the message: a second call with it starts
+    no second turn.
     """
     if device is not None and deps.submit_as_device is not None:
-        return await asyncio.to_thread(deps.submit_as_device, device, text, ids, about)
+        try:
+            return await asyncio.to_thread(
+                deps.submit_as_device, device, text, ids, about, utterance_id,
+            )
+        except ValueError as exc:  # only a named message is checked on the way in
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     if ids and deps.submit_attachments is not None:
         return await asyncio.to_thread(deps.submit_attachments, text, ids)
     return await asyncio.to_thread(deps.submit_callable, text) or ""
 
 
-async def _submit_with_attachments(
+async def _submit_with_attachments(  # noqa: PLR0913 - the same fields.
     deps: InherentDeps, text: str, ids: Sequence[str], device: str | None,
-    about: dict[str, Any] | None = None,
+    about: dict[str, Any] | None = None, utterance_id: str | None = None,
 ) -> dict[str, str]:
     """``POST /inherent/submit`` with ``attachments``: the files go with the words (ADR 0211)."""
     unique = list(dict.fromkeys(ids))
     await _checked_attachments(deps, unique)
     if deps.submit_attachments is None:  # _checked_attachments refused already
         raise HTTPException(status_code=501, detail="attachments are not enabled")
-    turn_id = await _start_turn(deps, device, text or t("attach.no_words"), unique, about)
+    turn_id = await _start_turn(
+        deps, device, text or t("attach.no_words"), unique, about, utterance_id,
+    )
     return {"status": "accepted", "turn_id": turn_id}
 
 
@@ -2389,11 +2404,15 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
         device = _paired_device(deps, request)
         if req.about is not None and device is None:
             raise HTTPException(status_code=400, detail="about is for a paired device")
+        if req.utterance_id is not None and device is None:
+            raise HTTPException(status_code=400, detail="utterance_id is for a paired device")
         if req.attachments:
-            return await _submit_with_attachments(deps, text, req.attachments, device, req.about)
+            return await _submit_with_attachments(
+                deps, text, req.attachments, device, req.about, req.utterance_id,
+            )
         if not text:
             raise HTTPException(status_code=400, detail="text required")
-        turn_id = await _start_turn(deps, device, text, (), req.about)
+        turn_id = await _start_turn(deps, device, text, (), req.about, req.utterance_id)
         return {"status": "accepted", "turn_id": turn_id}
 
     if deps.ask_outcome is not None:

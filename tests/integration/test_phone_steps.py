@@ -324,6 +324,39 @@ def test_a_typed_say_with_a_stored_file_is_the_turn_submit_makes_and_is_answered
             phone.close()
 
 
+def test_one_message_is_one_turn_over_http_and_the_socket(tmp_path: Path) -> None:
+    """ADR 0262: one `utterance_id` sent twice, or by say then submit, is one turn."""
+    with _Host(tmp_path) as host:
+        phone = host.phone()
+        try:
+            body = {"text": "the driver got off", "utterance_id": "m-bus"}
+            first = host.http("POST", "/inherent/submit", json=body)
+            again = host.http("POST", "/inherent/submit", json=body)
+            assert (first.status_code, again.status_code) == (200, 200)
+            assert first.json()["turn_id"] == again.json()["turn_id"]
+            phone.say("m-bus", "the driver got off", spoken=False)  # the socket's resend
+            phone.wait_until(lambda: len(_frames(phone, "said")) == 1, "no said for the resend")
+            assert _frames(phone, "said")[0]["turn_id"] == first.json()["turn_id"]
+            assert len(host.intents()) == 1
+
+            phone.say("m-late", "second", spoken=False)  # a say first, then its HTTP fallback
+            phone.wait_until(lambda: len(_frames(phone, "said")) == 2, "no said for the say")
+            late = _frames(phone, "said")[1]
+            sent = host.http(
+                "POST", "/inherent/submit", json={"text": "second", "utterance_id": "m-late"},
+            )
+            assert sent.json()["turn_id"] == late["turn_id"]
+            assert len(host.intents()) == 2
+
+            plain = [host.http("POST", "/inherent/submit", json={"text": "same"}) for _ in "ab"]
+            assert plain[0].json()["turn_id"] != plain[1].json()["turn_id"]  # no id: as before
+            assert host.http(
+                "POST", "/inherent/submit", json={"text": "x", "utterance_id": "no good!"},
+            ).status_code == 422
+        finally:
+            phone.close()
+
+
 @pytest.mark.parametrize(
     ("spoken", "attachments", "code"),
     [
