@@ -74,7 +74,8 @@ extension StarEngine {
         if ui.talking && !ui.panelOpen && !autoOpenSpent && AnswerBlocks.isRich(text) { openPanel(auto: true) }
     }
 
-    /// Her words in a row of their own, laid out whole and lit a word at a time (`Reveal`) at `cps` words a second; without `cps` (a typed answer, which has come whole) all at once.
+    /// Her words in a row of their own, laid out whole and lit a word at a time (`Reveal`) at `cps` words a second; without `cps` (a typed answer that came whole, not
+    /// streamed: Sky/StarBrain `brainTalk`) all at once.
     @discardableResult func startSay(_ text: String, cps: Double? = nil, delay: Double = 0, leadIn: Bool = false, steps: StepsInfo? = nil, recordId: String? = nil) -> Say {
         finishSay()
         if text.isEmpty { return Say("") }       // nothing to say is no row (a row of no height would still take its gap)
@@ -330,6 +331,7 @@ extension StarEngine {
             addTurn(his: true, "帮我订周五晚上的位子")
             showFailed()
         case "reveal": runRevealScene()
+        case "typedStream": runTypedStreamScene()
         case "steps", "stepsDots", "stepsStep", "stepsDone", "stepsOpen": runStepsScene(name)
         case "open":
             setLevel(0)

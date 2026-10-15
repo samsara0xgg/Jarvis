@@ -75,6 +75,9 @@ struct TurnStatus: Equatable {
     /// the host ended the turn with `response.failed`: there will be no answer
     private(set) var failed = false
     private var waitLines = Set<String>()
+    private var chunks = Set<String>()          // the event uids of the words already taken: a row sent again is not words twice
+    /// her words so far as the rows bring them, as she writes them: the line before the answer (commentary), and the answer
+    private(set) var leadText = "", answerText = ""
     private var shown: Int?
     private var shownAt = 0.0
 
@@ -106,7 +109,10 @@ struct TurnStatus: Equatable {
         let lead = r.phase == "commentary"
         switch r.eventType {
         case "surface.response_open": if lead, let id = r.payload["response_id"] as? String { waitLines.insert(id) }
-        case "surface.response_chunk": if lead { leadInAt = leadInAt ?? now } else { answerAt = answerAt ?? now }
+        case "surface.response_chunk":
+            if lead { leadInAt = leadInAt ?? now } else { answerAt = answerAt ?? now }
+            guard let t = r.text, chunks.insert(r.eventUid).inserted else { return }
+            if lead { leadText += t } else { answerText += t }
         case "surface.response_emitted": if !lead { answerAt = answerAt ?? now; end(at: now) }
         case "response.cancelled", "response.failed":
             if let id = r.payload["response_id"] as? String, waitLines.contains(id) { return }
@@ -203,6 +209,15 @@ final class StatusBoard {
 
     /// the steps of the turn on show, for the line under her answer
     var info: StepsInfo? { turn?.info }
+
+    /// Her words the line has brought so far for the turn sent as `utterance` (a lead-in line, then the answer); nil for another turn.
+    func words(utterance: String) -> (lead: String, answer: String)? {
+        guard let t = turn, t.utterance == utterance else { return nil }
+        return (t.leadText, t.answerText)
+    }
+
+    /// The host has ended the turn sent as `utterance`: its record is in the conversation, or about to be.
+    func over(utterance: String) -> Bool { turn?.utterance == utterance && turn?.phase == .over }
 
     /// The host failed the turn sent as `utterance`.
     func failed(utterance: String) -> Bool { turn?.utterance == utterance && turn?.failed == true }

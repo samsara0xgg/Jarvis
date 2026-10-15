@@ -4,6 +4,9 @@ import UIKit
 // The prototype's canned replies stay for the unpaired phone.
 
 /// A typed turn as it went out, kept once the brain has taken it: a failed one is sent again with the same words and the files already up.
+/// The rows a typed turn's words stream into, before the conversation has them (a lead-in line, then the answer).
+struct TypedRows { var lead: Int?, answer: Int? }
+
 struct SentTurn {
     let words: String, shown: String, ids: [String], pics: [SentItem], about: About?
     let his: Int                // the live row of his line; it and everything after it go when the turn is sent again
@@ -112,14 +115,20 @@ extension StarEngine {
         }
     }
 
-    /// Her side of a typed turn the brain took: her thinking look, then her words as they land in the conversation. A lead-in ("我上网查查") is shown and the answer waited for.
+    /// Her side of a typed turn the brain took: her thinking look, then her words as the line brings them, each piece the moment it comes, and the conversation's
+    /// record of them once it lands (which the rows then hold). A lead-in ("我上网查查") is shown and the answer waited for.
     /// `record` is the conversation record of his line: a reaction of hers on it, other than the program's eyes, is her whole answer (ADR 0256).
     @MainActor private func brainTalk(_ ok: Ok, after seq: Int, utterance: String, record: String?) async throws {
         sound(.heard, 1); expr = "31"; try await nap(520, ok)
         sound(.think, 1); expr = "30"
-        var last = seq, deadline = nowMs() + 90_000, said = false, failed = false, reacted = false
+        var last = seq, deadline = nowMs() + 90_000, said = false, failed = false, reacted = false, read = 0.0
+        var live = TypedRows()
         while nowMs() < deadline {
-            try await nap(500, ok)
+            try await nap(50, ok)
+            if let w = StatusBoard.shared.words(utterance: utterance), streamTyped(w, into: &live) { expr = "39"; talk = "speak"; said = true }
+            // the conversation is read every half second, and at once when the host has ended the turn
+            guard nowMs() - read >= 500 || StatusBoard.shared.over(utterance: utterance) else { continue }
+            read = nowMs()
             let rows = await Conversation.shared.rows(after: last)
             try ok.check()
             let hers = rows.filter { !$0.isHis }
@@ -129,11 +138,8 @@ extension StarEngine {
                 continue
             }
             last = rows.last?.seq ?? last
-            for r in hers.dropLast() where !AnswerText.visible(r.text).isEmpty { addTurn(his: false, AnswerText.visible(r.text), leadIn: r.isLeadIn, steps: r.isLeadIn ? nil : r.steps, recordId: r.id.isEmpty ? nil : r.id) }
-            // the steps under the answer: the brain's own summary of the turn, or what the line saw of them until the conversation has it
-            let words = AnswerText.visible(row.text)
-            startSay(words, leadIn: row.isLeadIn, steps: row.isLeadIn ? nil : row.steps ?? StatusBoard.shared.info, recordId: row.id.isEmpty ? nil : row.id)
-            if !words.isEmpty { expr = "39"; talk = "speak"; said = true }          // an empty reply is not an answer: the fallback line still stands
+            for r in hers.dropLast() where !AnswerText.visible(r.text).isEmpty { placeTyped(r, live: &live, last: false) }
+            if placeTyped(row, live: &live, last: true) { expr = "39"; talk = "speak"; said = true }          // an empty reply is not an answer: the fallback line still stands
             if row.isLeadIn { showStatus(); deadline = nowMs() + 25_000; continue }          // more follows (the steps she takes meanwhile show in a line of their own): it is waited for while this is read
             break
         }
@@ -147,6 +153,85 @@ extension StarEngine {
         if failed { lingerUntil = nowMs() + Self.lingerFailed }
         await Conversation.shared.refresh()
     }
+
+    /// Her words of a typed turn as far as the line has brought them: the lead-in line and the answer each in a row of their own, the new words fading in as they come.
+    /// True when there is a word on show.
+    @MainActor private func streamTyped(_ w: (lead: String, answer: String), into live: inout TypedRows) -> Bool {
+        for (lead, raw) in [(true, w.lead), (false, w.answer)] {
+            let text = AnswerText.visible(raw)
+            guard !text.isEmpty else { continue }
+            let n = Reveal.count(String(AnswerText.linked(text).characters)), t = Date.timeIntervalSinceReferenceDate
+            if let id = lead ? live.lead : live.answer {
+                guard let i = ui.liveTurns.lastIndex(where: { $0.id == id }), ui.liveTurns[i].text != text else { continue }
+                var r = ui.liveTurns[i].reveal ?? Reveal()
+                r.say(n, at: t)
+                setTurn(id, text: text, reveal: r)
+            } else {
+                finishSay()
+                var r = Reveal()
+                r.say(n, at: t)
+                let id = addTurn(his: false, text, reveal: r, leadIn: lead)
+                if lead { live.lead = id } else { live.answer = id; Haptic.impact(.soft) }
+            }
+        }
+        return live.answer != nil || live.lead != nil
+    }
+
+    /// A record of hers from the conversation. The row her words streamed into takes it (words the line had not brought fade in, the rest stays as it is); a record
+    /// that streamed nowhere shows whole, the `last` one in the talk's say. True when it has words.
+    @MainActor @discardableResult private func placeTyped(_ r: ConversationRow, live: inout TypedRows, last: Bool) -> Bool {
+        let words = AnswerText.visible(r.text), recordId = r.id.isEmpty ? nil : r.id
+        // the steps under the answer: the brain's own summary of the turn, or what the line saw of them until the conversation has it
+        let steps = r.isLeadIn ? nil : r.steps ?? StatusBoard.shared.info
+        if let id = r.isLeadIn ? live.lead : live.answer, let i = ui.liveTurns.lastIndex(where: { $0.id == id }) {
+            var rv = ui.liveTurns[i].reveal ?? Reveal()
+            rv.say(Reveal.count(String(AnswerText.linked(words).characters)), at: Date.timeIntervalSinceReferenceDate)
+            setTurn(id, text: words, reveal: rv)
+            ui.liveTurns[i].leadIn = r.isLeadIn; ui.liveTurns[i].steps = steps; ui.liveTurns[i].recordId = recordId
+        } else if last {
+            startSay(words, leadIn: r.isLeadIn, steps: steps, recordId: recordId)
+        } else {
+            addTurn(his: false, words, leadIn: r.isLeadIn, steps: r.isLeadIn ? nil : r.steps, recordId: recordId)
+        }
+        return !words.isEmpty
+    }
+
+    #if DEBUG
+    /// `-scene typedStream`: a typed turn whose answer streams in as the host's own rows: a line before a tool call, the step, then the answer a sentence at a time,
+    /// and the conversation's record taking the row at the end (it must not move or light again).
+    func runTypedStreamScene() {
+        setLevel(0)
+        beginTalk(); lingerHold = true
+        addTurn(his: true, "帮我看看明天天气，再说说我这周剩下还有什么安排")
+        let board = MainActor.assumeIsolated { StatusBoard.shared }
+        MainActor.assumeIsolated { board.begin(utterance: "scene"); board.bind(utterance: "scene", turn: "T1") }
+        showStatus()
+        var n = 0
+        func frame(_ json: String) { MainActor.assumeIsolated { if case .row(let r)? = HostFrame(Data(json.utf8)) { board.feed(.row(r)) } else if case .step(let f)? = HostFrame(Data(json.utf8)) { board.feed(.step(f)) } } }
+        func chunk(_ text: String) {
+            n += 1
+            let body = String(data: try! JSONSerialization.data(withJSONObject: ["type": "row", "event_type": "surface.response_chunk", "event_uid": String(format: "%032x", n), "ts_epoch_ms": 1791650015000,
+                                                                             "payload": ["turn_id": "T1", "text": text, "phase": "final"]]), encoding: .utf8)!
+            frame(body)
+        }
+        let parts = ["我来查明天的天气和这周剩下的日程。", "\n\n明天多云间晴，最低八度，最高十八度，", "带件薄外套就行。\n\n", "这周剩下的安排：从明天到周日，日历、待办和提醒里都是空的。\n\n", "要是想定个提醒，跟我说一声。"]
+        let at = [1.0, 3.6, 4.0, 4.6, 5.2]
+        let later = { (s: Double, f: @escaping () -> Void) in DispatchQueue.main.asyncAfter(deadline: .now() + s) { f() } }
+        for (p, t) in zip(parts, at) { later(t) { chunk(p) } }
+        later(1.3) { frame(#"{"type":"step","turn_id":"T1","step":1,"tool":"weather","label":"查天气","state":"running","started_ms":1791650003000,"ended_ms":null}"#) }
+        later(3.3) { frame(#"{"type":"step","turn_id":"T1","step":1,"tool":"weather","label":"查天气","state":"done","started_ms":1791650003000,"ended_ms":1791650005000}"#) }
+        later(5.4) { frame(#"{"type":"row","event_type":"surface.response_emitted","event_uid":"ffffffffffffffffffffffffffffffff","ts_epoch_ms":1791650016000,"payload":{"turn_id":"T1","text":"x","phase":"final"}}"#) }
+        var live = TypedRows()
+        let tick = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+            MainActor.assumeIsolated { if let w = board.words(utterance: "scene") { _ = self.streamTyped(w, into: &live) } }
+        }
+        later(5.8) {
+            tick.invalidate()
+            let record: [String: Any] = ["rows": [["seq": 9, "id": "r9", "source": "jarvis", "ts": "2026-10-15T09:00:00", "text": parts.joined(), "steps": [["label": "查天气", "ms": 2000]], "steps_ms": 2000, "steps_summary": "查了天气"]]]
+            if let row = ConversationRow.parse(try! JSONSerialization.data(withJSONObject: record))?.first { MainActor.assumeIsolated { _ = self.placeTyped(row, live: &live, last: true) } }
+        }
+    }
+    #endif
 
     /// The turn failed: her place says so (the brain's reason is not shown), with a button that sends the same words again.
     func showFailed() {

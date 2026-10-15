@@ -7,8 +7,8 @@ final class TurnStatusTests: XCTestCase {
     private func step(_ n: Int, _ state: StepFrame.State = .running, label: String = "查公交 · 去 UVic", turn: String = "T1", started: Int64 = 1_000, ended: Int64? = nil) -> StepFrame {
         StepFrame(turnId: turn, step: n, tool: "transit", label: label, state: state, startedMs: started, endedMs: state == .running ? nil : ended ?? started + 4_000)
     }
-    private func row(_ type: String, _ payload: [String: Any] = [:], turn: String = "T1") -> RowFrame {
-        RowFrame(eventType: type, eventUid: String(repeating: "a", count: 32), payload: payload.merging(["turn_id": turn]) { a, _ in a }, tsEpochMs: 0)
+    private func row(_ type: String, _ payload: [String: Any] = [:], turn: String = "T1", uid: String = String(repeating: "a", count: 32)) -> RowFrame {
+        RowFrame(eventType: type, eventUid: uid, payload: payload.merging(["turn_id": turn]) { a, _ in a }, tsEpochMs: 0)
     }
     private func bound(at now: Double = 0) -> TurnStatus {
         var t = TurnStatus(utterance: "u1", at: now)
@@ -75,6 +75,18 @@ final class TurnStatusTests: XCTestCase {
         t.row(row("surface.response_emitted", ["text": "好", "phase": "final"]), at: 7)
         XCTAssertEqual(t.phase, .over)
         XCTAssertEqual(t.answerAt, 6)
+    }
+
+    func testHerWordsGrowAsTheChunksComeTheLineBeforeTheAnswerApartAndARowSentAgainIsNotWordsTwice() {
+        var t = bound()
+        t.row(row("surface.response_chunk", ["text": "我查一下。", "phase": "commentary"], uid: "c1"), at: 1)
+        t.row(row("surface.response_chunk", ["text": "明天多云，", "phase": "final"], uid: "f1"), at: 2)
+        t.row(row("surface.response_chunk", ["text": "明天多云，", "phase": "final"], uid: "f1"), at: 2.1)
+        t.row(row("surface.response_chunk", ["text": "最高十八度。", "phase": "final"], uid: "f2"), at: 3)
+        XCTAssertEqual(t.leadText, "我查一下。")
+        XCTAssertEqual(t.answerText, "明天多云，最高十八度。")
+        t.row(row("surface.response_chunk", ["text": "晚到的", "phase": "final"], uid: "f3"), at: 4)
+        XCTAssertEqual(t.answerText, "明天多云，最高十八度。晚到的", "words keep coming in order until the turn is over")
     }
 
     func testTheStepOnShowCountsFromTheFramesArrivalOnThePhonesClock() {
