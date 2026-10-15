@@ -464,6 +464,8 @@ core_memory:
       requests, small talk, weather, and anything the user withdrew.
     - A preference, rule, value or decision needs the user's own words; the
       assistant's suggestions are not enough.
+    - Give the reason behind a habit or choice only when he said it himself; do not
+      guess why.
     - A one-time request, a joke, or an instruction for a single task or session
       is not a lasting preference or rule. A single bug or fix of the day is not
       a thread of his life; keep the thread and where it stands instead.
