@@ -115,6 +115,7 @@ from jarvis.decision.response_run import (
     legacy_full_text_policy,
     request_response_cancel,
     start_response_run,
+    wait_out_hold,
 )
 from jarvis.decision.stream_gate import routine_stream_policy, spoken_stream_policy
 from jarvis.decision.surrogate_route import JevLog, SurrogateRoute, offered
@@ -169,7 +170,7 @@ from jarvis.execution.tools import (
 )
 from jarvis.execution.transit_tool import TransitOffers, first_leave_ms
 from jarvis.execution.workers import Workers, make_worker_tools
-from jarvis.runtime import audio_output, device_tools, device_voice
+from jarvis.runtime import answer_hold, audio_output, device_tools, device_voice
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.daily_report import (
     PLAN_SERVER,
@@ -4633,6 +4634,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     # its words; the rows they left are its own history already, so this turn's prompt skips them.
     folded_raw = user_intent_event.payload.get("folded")
     folded = [str(one) for one in folded_raw] if isinstance(folded_raw, list) else []
+    # ADR 0272: the model request below goes at once; what leaves her waits until this time.
+    output_hold = answer_hold.output_not_before(runtime.config, user_intent_event)
     if memory is not None and continuation is None and not surface_wrote_row and not card_button:
         audio_ref = user_intent_event.payload.get("audio_artifact_ref")
         append_record(
@@ -4838,6 +4841,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             request_admission=(
                 partial(run.admit_request, runtime.conn) if run is not None else None
             ),
+            output_not_before=output_hold,
             routine_stream=stream_route,
             read_snapshot=_snapshot_reader(runtime),
             slow_results=runtime.response_flags.slow_results,
@@ -5046,6 +5050,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                     and time.monotonic() < hold_ends
                 ):
                     _raise_if_cancelled("while Allen was talking")
+            # ADR 0272: and not before the turn's own hold for his next words is past.
+            wait_out_hold(output_hold, run.check_cancelled, "while Allen may go on")
             _raise_if_cancelled("before finalizing")
             run.mark("finalizing")
             completion = terminalizer.complete(

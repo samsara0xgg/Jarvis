@@ -1016,6 +1016,17 @@ realtime:
     # Typed turns, Jev, background jobs and prefix_warm never send it; neither
     # does any preset whose base_url is not api.openai.com.  Empty: nothing sent.
     voice_service_tier: ""
+    # ADR 0272.  A pause in what Allen says is not always the end of it.  The
+    # model request for a turn he spoke goes out at once; the answer's first
+    # sentence, its audio and any tool that writes wait until `seconds` after
+    # his speech ended, so words that follow inside it are answered as one
+    # thought.  A line of at most `short_chars` characters that reads as
+    # finished (no trailing connective) waits for nothing; typed text and
+    # every non-voice surface never wait.  Both default to these values when
+    # the block is absent; seconds 0 turns the hold off.
+    answer_hold:
+      seconds: 1.5
+      short_chars: 10
     # After each turn, send the next turn's prompt up to its new message as a
     # request of its own (16 output tokens), so the next turn's first request
     # finds the whole history cached. Without it that request found only the

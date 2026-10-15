@@ -88,6 +88,9 @@ _UTTERANCE_TEXT_FIELDS: Final = {
 }
 _UTTERANCE_SCORES: Final = ("confidence", "sensevoice_confidence", "whisper_confidence")
 """ADR 0270: the writing engine's score, and each engine's own; numbers, any of them absent."""
+
+_MAX_SPOKE_AGO_MS: Final = 60_000
+"""A terminal's own account of how long ago he stopped speaking is not trusted past this."""
 _UTTERANCE_UID_NAMESPACE: Final = uuid.UUID("5f0c6a4e-0b1d-4f6e-9a57-6a1b2f0c1d00")
 _PHONE_TYPED_CHANNEL: Final = "cli_stdin"
 """The channel of typed words (ADR 0181): answered on screen, never played."""
@@ -180,6 +183,9 @@ class BrainEvents:
                 msg = f"utterance field {key} is not text of at most {limit} characters"
                 raise ValueError(msg)
             payload[key] = value
+        spoke_ago = args.get("spoke_ago_ms")
+        if isinstance(spoke_ago, int) and not isinstance(spoke_ago, bool) and spoke_ago >= 0:
+            payload["spoke_ago_ms"] = min(spoke_ago, _MAX_SPOKE_AGO_MS)
         payload["utterance_id"] = utterance_id
         uid = uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"{device}\0{utterance_id}").hex
         if self._conn.execute("SELECT 1 FROM events WHERE event_uid = ?", (uid,)).fetchone():

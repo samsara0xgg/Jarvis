@@ -196,6 +196,8 @@ class CapturedUtterance:
     # Seconds from its first speech frame to its last: what final ASR may use when nothing
     # was prepared (ADR 0132).
     speech_s: float = 0.0
+    # The monotonic time of its last speech frame (ADR 0272); 0.0 when it held none.
+    spoke_until: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -317,6 +319,7 @@ class _PipelinePort(Protocol):
         before_emit: Callable[[str], None] | None = ...,
         wake_lead: bool = ...,
         speech_s: float = ...,
+        spoke_until: float = ...,
     ) -> Event:
         """Run final ASR and commit ``utterance.received``."""
         ...
@@ -876,6 +879,12 @@ class UtteranceAssembler:
             LOGGER.info("wake channel missing from the utterance's frames: heard channel 0")
         return b"".join(frames), "channel 0 (no beam)"
 
+    def _spoke_until(self) -> float:
+        if self._speech_last < 0:
+            return 0.0
+        quiet_frames = len(self._audio_frames) - 1 - self._speech_last
+        return time.monotonic() - quiet_frames * self._frame_ms / 1_000.0
+
     def _speech_s(self) -> float:
         if self._speech_first < 0:
             return 0.0
@@ -964,6 +973,7 @@ class UtteranceAssembler:
             audio_bytes=audio,
             woken=self._woken,
             speech_s=self._speech_s(),
+            spoke_until=self._spoke_until(),
         )
         self._prepared = False  # the commit collects it; reset_to_idle must not discard it
         self.reset_to_idle()
@@ -2066,6 +2076,7 @@ class DuplexVoiceSession:
                         before_emit=functools.partial(self._judge_words, utterance.turn_id),
                         wake_lead=utterance.woken or over_her,
                         speech_s=utterance.speech_s,
+                        spoke_until=utterance.spoke_until,
                     )
                 self._assembler.mark_committed(utterance.utterance_id)
             except voice_pipeline.VoicePipelineAbsorbedError as absorbed:

@@ -46,7 +46,14 @@ def _runtime(  # noqa: PLR0913 - the fixture's knobs, one per test setting
         model="typesafe/jev-1.13", min_confidence=0.9, timeout_ms=timeout_ms, url=fake.url,
         parallel=parallel,
     )
-    return replace(runtime, response_flags=flags, tier0_table=TABLE, surrogate_route=route)
+    # These tests time Jev's deadline against the model's first event: ADR 0272's hold on a
+    # spoken answer would add its own 1.5 s to every turn measured, so it is off here.
+    realtime = runtime.config["realtime"]
+    response = {**realtime["response"], "answer_hold": {"seconds": 0}}
+    config = {**runtime.config, "realtime": {**realtime, "response": response}}
+    return replace(
+        runtime, config=config, response_flags=flags, tier0_table=TABLE, surrogate_route=route,
+    )
 
 
 def _decided(runtime: JarvisRuntime) -> dict[str, Any]:

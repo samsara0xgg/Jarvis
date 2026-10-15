@@ -16,6 +16,7 @@ import contextlib
 import logging
 import secrets
 import threading
+import time
 from typing import TYPE_CHECKING, Protocol
 
 from jarvis.shared.realtime_trace import record_realtime_trace
@@ -221,6 +222,7 @@ class VoicePipeline:
         before_emit: Callable[[str], None] | None = None,
         wake_lead: bool = True,
         speech_s: float = 0.0,
+        spoke_until: float = 0.0,
     ) -> Event:
         """Execute one voice turn end-to-end. Returns the emitted Event row.
 
@@ -262,6 +264,8 @@ class VoicePipeline:
             speech_s: Seconds of speech in ``audio_bytes``. Used only by a
                 recognizer that was handed a ``prepare_final`` for the
                 supplied ``utterance_id`` and has nothing usable of it.
+            spoke_until: Monotonic time of the utterance's last speech frame (ADR 0272);
+                ``0.0`` when unknown. The committed utterance says how long ago it was.
 
         Raises:
             VoiceInputBusyError: VOICE_INPUT_LOCK contention (PTT path: 503).
@@ -374,6 +378,9 @@ class VoicePipeline:
             payload["utterance_id"] = utterance_id
             if endpoint_reason is not None:
                 payload["endpoint_reason"] = endpoint_reason
+            if spoke_until > 0:
+                # ADR 0272: how long ago he stopped, for the hold his answer waits out.
+                payload["spoke_ago_ms"] = max(0, round((time.monotonic() - spoke_until) * 1000))
 
             if self._emit is not None:  # a voice terminal sends it to the brain (ADR 0172)
                 ev = self._emit(payload, {"turn_id": turn_id})

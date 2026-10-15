@@ -80,7 +80,7 @@ from jarvis.decision.packet import (
 from jarvis.decision.policy import EffectivePolicy, effective_policy, surface_for
 from jarvis.decision.pre_route import SPOKEN_CHANNELS, TYPED_CHANNEL, spoken_turn, typed_turn
 from jarvis.decision.reaction_markup import ReactionFilter, split_reaction
-from jarvis.decision.response_run import ResponseCancelledError
+from jarvis.decision.response_run import ResponseCancelledError, wait_out_hold
 from jarvis.decision.stream_envelope import (
     EnvelopeTail,
     StreamEnvelopeSplitter,
@@ -283,6 +283,21 @@ def _check_response_cancelled(ctx: DecideContext, where: str) -> None:
     """Stop new response work while preserving already accepted actions."""
     if ctx.cancellation_checkpoint is not None:
         ctx.cancellation_checkpoint(where)
+
+
+def _hold_for_next_words(ctx: DecideContext, where: str, *, tool_name: str | None = None) -> None:
+    """Hold what leaves her (ADR 0272) until his held turn is past; reads may go ahead.
+
+    The answer's sentences, and any tool that is not ``read_only``, wait for the turn's
+    release time: if his next words arrive meanwhile, the run is cancelled and none of it
+    ever left. A read-only tool runs at once, so the answer is ready when the hold ends.
+    """
+    if tool_name is not None:
+        tool_def = _find_tool_def(ctx.tool_registry, tool_name)
+        if tool_def is not None and tool_def.read_only:
+            _check_response_cancelled(ctx, where)
+            return
+    wait_out_hold(ctx.output_not_before, ctx.cancellation_checkpoint, where)
 
 
 def _run_llm_chat_with_cost_guard(  # noqa: PLR0913 - mirrors the provider call plus audit keys
@@ -665,6 +680,9 @@ class DecideContext:
     wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
     cancellation_checkpoint: Callable[[str], None] | None = None
     request_admission: Callable[[str], None] | None = None
+    # ADR 0272: the monotonic time before which this turn's answer and its writes wait, for a
+    # turn Allen spoke whose end may not be the whole of what he means to say; None is no hold.
+    output_not_before: float | None = None
     # The history (current summary, then one message per record, by role)
     # and the per-turn time line, rendered by the composition root from
     # memory.db. The history goes first in the prompt and only grows at
@@ -2161,7 +2179,7 @@ def _run_tier0_path(
         action_id=action_id,
         tool_name=hit.tool_name,
     )
-    _check_response_cancelled(ctx, "before tool dispatch")
+    _hold_for_next_words(ctx, "before tool dispatch", tool_name=hit.tool_name)
     bundle = ctx.tool_registry.dispatch(
         action_request,
         ctx.conn,
@@ -2439,7 +2457,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
         action_id=action_id,
         tool_name=name,
     )
-    _check_response_cancelled(ctx, "before tool dispatch")
+    _hold_for_next_words(ctx, "before tool dispatch", tool_name=name)
     bundle = ctx.tool_registry.dispatch(
         action_request,
         ctx.conn,
@@ -2785,6 +2803,7 @@ class _SegmentSpeaker:
 
     def _admit(self, candidate: SemanticCandidate) -> bool:
         route = self._route
+        _hold_for_next_words(self._ctx, "before the answer's first sentence")
         with route.segment_guard():
             outcome = stream_emission_gate(
                 self._ctx.conn,
@@ -4447,7 +4466,7 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
         action_id=action_id,
         tool_name=tool_name,
     )
-    _check_response_cancelled(ctx, "before tool dispatch")
+    _hold_for_next_words(ctx, "before tool dispatch", tool_name=tool_name)
     try:
         bundle = ctx.tool_registry.dispatch(
             action_request,

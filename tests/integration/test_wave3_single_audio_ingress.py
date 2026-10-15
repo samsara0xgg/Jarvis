@@ -1858,6 +1858,8 @@ def test_duplex_session_runs_two_silero_utterances_without_second_round_truncati
         assert all(call["session_id"] for call in pipeline.calls)
         assert pipeline.calls[0]["utterance_id"] != pipeline.calls[1]["utterance_id"]
         assert all(call["endpoint_reason"] == "acoustic_pause" for call in pipeline.calls)
+        # ADR 0272: each utterance says when its last speech frame was, for the answer's hold.
+        assert all(0 < call["spoke_until"] <= time.monotonic() for call in pipeline.calls)
         metrics = session.metrics()
         assert metrics.endpoint_commits == 2
         assert metrics.capture_discontinuities == 0

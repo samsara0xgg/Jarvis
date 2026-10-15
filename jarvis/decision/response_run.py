@@ -416,6 +416,29 @@ class ResponseRun:
         )
 
 
+_HOLD_SLICE_S = 0.05
+
+
+def wait_out_hold(
+    not_before: float | None,
+    check_cancelled: Callable[[str], None] | None,
+    where: str,
+) -> None:
+    """Wait until the monotonic time ``not_before`` (ADR 0272), unless the run is cancelled.
+
+    A spoken turn's answer waits here for his next words: the model request has gone, the
+    answer's first sentence, its audio and its writes have not. ``check_cancelled`` raises
+    when his next sentence or the stop button cancelled the run meanwhile, so a held answer
+    is dropped with nothing of it out. ``None`` is no hold.
+    """
+    while not_before is not None and (left := not_before - time.monotonic()) > 0:
+        if check_cancelled is not None:
+            check_cancelled(where)
+        time.sleep(min(left, _HOLD_SLICE_S))
+    if check_cancelled is not None:
+        check_cancelled(where)
+
+
 # A stop that finds no run open waits this long for the turn's run to open
 # (the turn may queue behind others); bounded so a stream of stops cannot grow it.
 _STOPPED_TURN_MEMORY_S = 120.0
@@ -1015,4 +1038,5 @@ __all__ = [
     "reconcile_open_responses",
     "request_response_cancel",
     "start_response_run",
+    "wait_out_hold",
 ]

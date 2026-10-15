@@ -1026,3 +1026,176 @@ def test_a_continues_that_is_not_an_utterance_id_is_refused_and_writes_nothing(
     assert heard["transcript"] == _SECOND
     assert "continues" not in heard
     runtime.conn.close()
+
+
+# --- a spoken answer waits for the end of his thought (ADR 0272) -------------
+
+
+def _events_of(conn: Any, event_type: str) -> list[Any]:  # noqa: ANN401 - sqlite3.Connection
+    return list(iter_events_of_types(conn, (event_type,)))
+
+
+def _chunk_turns(runtime: Any) -> list[str]:  # noqa: ANN401 - JarvisRuntime
+    """The turn of every answer sentence that has left her, in order."""
+    chunks = _events_of(runtime.conn, "surface.response_chunk")
+    return [str(one.correlation["turn_id"]) for one in chunks]
+
+
+def _sleep_until_after(event: Any, seconds: float) -> None:  # noqa: ANN401 - Event
+    """Sleep until ``seconds`` past the event, as the clock he spoke on counts them."""
+    time.sleep(max(0.0, event.ts_epoch_ms / 1000 + seconds - time.time()))
+
+
+_HELD_S = 1.5
+_SLACK_S = 0.1  # the log stamps a row a moment after the code that wrote it ran
+
+
+def test_a_long_spoken_turn_sends_its_request_at_once_and_holds_the_answer(
+    tmp_path: Path,
+) -> None:
+    """The model hears him at once; the first sentence leaves 1.5 s after his speech ended."""
+    with _Peer([[("final_answer", "八点二十有一班。")]]) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        heard = _spoken_turn(runtime.conn, "T-1", _FIRST)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            turn = pool.submit(_drive, runtime, heard)
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            asked_after = time.time() - heard.ts_epoch_ms / 1000
+            assert not _chunk_turns(runtime)
+            turn.result(timeout=20)
+    (chunk,) = _events_of(runtime.conn, "surface.response_chunk")
+    assert asked_after < _HELD_S - 0.5
+    assert chunk.ts_epoch_ms / 1000 - heard.ts_epoch_ms / 1000 >= _HELD_S - _SLACK_S
+    runtime.conn.close()
+
+
+@pytest.mark.parametrize(
+    ("channel", "words"),
+    [("inherent_wake", "几点了"), ("cli_stdin", _FIRST + _SECOND)],
+    ids=["a_short_line_that_reads_finished", "typed_text"],
+)
+def test_a_short_finished_line_and_typed_text_are_answered_with_no_hold(
+    tmp_path: Path,
+    channel: str,
+    words: str,
+) -> None:
+    """Only a spoken turn that may be cut in two waits; these are not."""
+    with _Peer([[("final_answer", "八点二十有一班。")]]) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        heard = emit_event(
+            runtime.conn,
+            type="surface.user_intent",
+            payload={"transcript": words, "turn_id": "T-1", "channel": channel},
+            correlation={"turn_id": "T-1"},
+        )
+        _drive(runtime, heard)
+    (chunk,) = _events_of(runtime.conn, "surface.response_chunk")
+    assert chunk.ts_epoch_ms / 1000 - heard.ts_epoch_ms / 1000 < _HELD_S - 0.5
+    runtime.conn.close()
+
+
+def test_a_phone_sentence_that_goes_on_inside_the_hold_leaves_nothing_of_the_first_answer(
+    tmp_path: Path,
+) -> None:
+    """B names A and arrives 1.0 s after A: the model answered A at once, none of it was said."""
+    answer = "八点二十有一班。"
+    with _Peer([[("final_answer", "先说前半句。")], [("final_answer", answer)]]) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _PhoneRig(runtime)
+        with rig.connect() as ws, ThreadPoolExecutor(max_workers=2) as pool:
+            _open(ws)
+            first_said = _say(ws, "ua", _FIRST, over_her=True)
+            first_heard = rig.heard(first_said["turn_id"])
+            first = pool.submit(_drive, runtime, first_heard)
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            _sleep_until_after(first_heard, 1.0)
+            assert not _chunk_turns(runtime)
+            second_said = _say(ws, "ub", _SECOND, continues="ua", over_her=True)
+            assert second_said["verdict"] == "turn"
+            second = pool.submit(_drive, runtime, rig.heard(second_said["turn_id"]))
+            second.result(timeout=20)
+            with pytest.raises(ResponseCancelledError):
+                first.result(timeout=10)
+
+    assert rig.taken_over == [(first_said["turn_id"], second_said["turn_id"], "superseded")]
+    assert set(_chunk_turns(runtime)) == {second_said["turn_id"]}
+    assert [row["turn_id"] for row in _payloads(runtime.conn, "surface.response_emitted")] == [
+        second_said["turn_id"],
+    ]
+    assert len(peer.requests) == 2  # A's went out at once, B's carries the whole thought
+    asked = json.dumps(peer.requests[-1][1]["input"], ensure_ascii=False)
+    assert (asked.count(_FIRST), asked.count(_SECOND)) == (1, 1)
+    runtime.conn.close()
+
+
+def test_a_second_mac_utterance_inside_the_hold_is_answered_with_the_first_and_nothing_of_it(
+    tmp_path: Path,
+) -> None:
+    """The sweep finds the first answer with no word out, because none was allowed out yet."""
+    answer = "八点二十有一班。"
+    with _Peer([[("final_answer", "先说前半句。")], [("final_answer", answer)]]) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        first_heard = _spoken_turn(runtime.conn, "T-1", _FIRST)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(_drive, runtime, first_heard)
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            _sleep_until_after(first_heard, 1.0)
+            assert not _chunk_turns(runtime)
+            make_supersede_unspoken_callable(runtime, lambda turn_ids: turn_ids)("T-2")
+            second = pool.submit(_drive, runtime, _spoken_turn(runtime.conn, "T-2", _SECOND))
+            second.result(timeout=20)
+            with pytest.raises(ResponseCancelledError):
+                first.result(timeout=10)
+
+    (cancelled,) = _payloads(runtime.conn, "response.cancelled")
+    assert (cancelled["turn_id"], cancelled["reason"]) == ("T-1", "superseded")
+    assert set(_chunk_turns(runtime)) == {"T-2"}
+    asked = json.dumps(peer.requests[-1][1]["input"], ensure_ascii=False)
+    assert (asked.count(_FIRST), asked.count(_SECOND)) == (1, 1)
+    assert _records(runtime) == [("allen", _FIRST), ("allen", _SECOND), ("jarvis", answer)]
+    runtime.conn.close()
+
+
+def test_a_write_waits_for_the_hold_and_a_read_does_not(tmp_path: Path) -> None:
+    """The reading is done when the hold ends; the card taken down is not done before it."""
+    script = [[("call", "kept"), ("call", "dismiss_card")], [("final_answer", "好的。")]]
+    with _Peer(script) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        heard = _spoken_turn(runtime.conn, "T-1", "看一下备忘录然后把卡片收起来")
+        _drive(runtime, heard)
+    named = {
+        one.payload["action_id"]: one.payload["tool_name"]
+        for one in _events_of(runtime.conn, "action.proposed")
+    }
+    dispatched = {
+        named[one.payload["action_id"]]: one.ts_epoch_ms
+        for one in _events_of(runtime.conn, "action.dispatched")
+    }
+    assert set(dispatched) >= {"kept", "dismiss_card"}
+    after = {name: ms / 1000 - heard.ts_epoch_ms / 1000 for name, ms in dispatched.items()}
+    assert after["kept"] < _HELD_S - 0.5
+    assert after["dismiss_card"] >= _HELD_S - _SLACK_S
+    runtime.conn.close()
+
+
+def test_the_hold_counts_from_the_end_of_his_speech_when_the_device_says_how_long_ago(
+    tmp_path: Path,
+) -> None:
+    """A Mac that heard him stop 1.0 s before its utterance reached the brain: 0.5 s is left."""
+    with _Peer([[("final_answer", "八点二十有一班。")]]) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        uid = BrainEvents(runtime.conn).record_utterance(
+            "macbook",
+            {
+                "transcript": _FIRST, "turn_id": "T-1", "utterance_id": "u1",
+                "channel": "inherent_wake", "spoke_ago_ms": 1000,
+            },
+        )
+        (heard,) = [one for one in _events_of(runtime.conn, "utterance.received")
+                    if one.event_uid == uid]
+        assert heard.payload["spoke_ago_ms"] == 1000
+        _drive(runtime, heard)
+    (chunk,) = _events_of(runtime.conn, "surface.response_chunk")
+    waited = chunk.ts_epoch_ms / 1000 - heard.ts_epoch_ms / 1000
+    assert _HELD_S - 1.0 - _SLACK_S <= waited < _HELD_S - 0.3
+    runtime.conn.close()
