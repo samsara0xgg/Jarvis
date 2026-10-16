@@ -1,6 +1,6 @@
 # ADR 0282 — The weather tool answers any place and day in one call
 
-**Status:** Accepted
+**Status:** Superseded-by-0285
 **Date:** 2026-10-16
 **Supersedes:** 0188
 
