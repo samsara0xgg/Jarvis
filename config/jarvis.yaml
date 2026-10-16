@@ -588,6 +588,22 @@ job_mail:
     before_min: 30
     outlook: true
 
+# ADR 0274 — what he has to go to.  In the background, every poll_s, Jarvis lists his Gmail since
+# backfill_since (gmail_search and gmail_get only: nothing is ever modified, labelled, trashed or
+# sent), drops what shows no date or hour, and asks the llm preset below about the rest, at most
+# max_mails_per_cycle letters a cycle.  It needs neither Jev nor OpenRouter.  Interview and offer
+# mail stays with job_mail.  A mail-made item is unconfirmed until he confirms it; each item in
+# the next seven days gets one reminder remind_before_min before it (private ones say only the
+# time).  The letter's sender, subject and first 3000 characters of body go to the preset's
+# provider, so it is off here; the Pi turns it on in its own settings.
+commitments:
+  enabled: false
+  poll_s: 300
+  backfill_since: 2026-09-10
+  max_mails_per_cycle: 60
+  preset: haiku-bg
+  remind_before_min: 60
+
 # ADR 0161 — the moment.  When an alert is decided, delivered or shown, Jarvis reads TimeSink's
 # saved spans (read-only, nothing copied, no model) to see what Allen is doing.  In a call or
 # meeting every card and sound waits and nothing is spoken; away (idle, locked, asleep) they wait

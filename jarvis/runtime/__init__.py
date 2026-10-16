@@ -172,6 +172,7 @@ from jarvis.execution.transit_tool import TransitOffers, first_leave_ms
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime import answer_hold, audio_output, device_tools, device_voice
 from jarvis.runtime.bus_live import BusLive
+from jarvis.runtime.commitment_intake import CommitmentIntake, CommitmentSettings
 from jarvis.runtime.daily_report import (
     PLAN_SERVER,
     DailyReportService,
@@ -200,7 +201,13 @@ from jarvis.runtime.ledger import LedgerContext, LedgerSettings
 from jarvis.runtime.mail_codes import MailCodes, MailCodesSettings
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.runtime.night_run import NightRun, night_settings
-from jarvis.runtime.now_block import KEPT, CalendarCache, calendar_line, doing_now_line
+from jarvis.runtime.now_block import (
+    KEPT,
+    CalendarCache,
+    calendar_line,
+    doing_now_line,
+    next_appointments,
+)
 from jarvis.runtime.picture_files import PictureFiles
 from jarvis.runtime.picture_notes import PictureNotes
 from jarvis.runtime.plugin_connections import PluginConnections
@@ -294,6 +301,7 @@ if TYPE_CHECKING:
     from jarvis.decision.llm_stream import LLMStreamHandle
     from jarvis.decision.packet import SnapshotReader
     from jarvis.decision.tier0 import Tier0Table
+    from jarvis.runtime.work_state import LLMAnalyst
     from jarvis.shared.realtime_trace import TraceValue
 
 
@@ -723,6 +731,8 @@ class JarvisRuntime:
     job_mail: JobMail | None = None
     # ADR 0266: verification codes in new mail go to the Mac clipboard. None = off.
     mail_codes: MailCodes | None = None
+    # ADR 0274: the poller that reads his mail for things he has to go to. None = off.
+    commitments: CommitmentIntake | None = None
     # ADR 0161: the situation TimeSink last recorded, read on demand. None = off.
     moment: Moment | None = None
     # ADR 0179: the clock that fires the owner's reminders. None = hand-assembled.
@@ -1780,6 +1790,46 @@ def _mail_codes(
         values[key] = value
     return MailCodes(
         MailCodesSettings(float(values["poll_s"]), int(values["window_min"])), connections, device,
+    )
+
+
+def _commitments(  # noqa: PLR0913 - the config and the poller's collaborators
+    config: Mapping[str, Any], config_path: Path, connections: PluginConnections, db_path: Path,
+    event_log: Path, analyst_for: Callable[[str], LLMAnalyst | None],
+) -> CommitmentIntake | None:
+    """``commitments`` (ADR 0274): off unless enabled; bad values stop boot."""
+    block = config.get("commitments")
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    where = f"runtime: {config_path} commitments"
+    numbers = {}
+    for key, low, high in (
+        ("poll_s", 1, None), ("max_mails_per_cycle", 1, 200), ("remind_before_min", 1, 1440),
+    ):
+        value = block.get(key)
+        if isinstance(value, bool) or not isinstance(value, int | float) or value < low or (
+            high is not None and value > high
+        ):
+            msg = f"{where}.{key} must be a number of at least {low}" + (
+                "" if high is None else f" and at most {high}"
+            )
+            raise RuntimeBootstrapError(msg)
+        numbers[key] = value
+    since = block.get("backfill_since")
+    if not isinstance(since, date) or isinstance(since, datetime):
+        msg = f"{where}.backfill_since must be a date (YYYY-MM-DD)"
+        raise RuntimeBootstrapError(msg)
+    preset = block.get("preset")
+    if not isinstance(preset, str) or not preset.strip():
+        msg = f"{where}.preset must be the name of an llm preset"
+        raise RuntimeBootstrapError(msg)
+    settings = CommitmentSettings(
+        float(numbers["poll_s"]), since, int(numbers["max_mails_per_cycle"]), preset.strip(),
+        int(numbers["remind_before_min"]),
+    )
+    return CommitmentIntake(
+        settings, connections, db_path, event_log,
+        mail_summarizer(analyst_for(settings.preset), event_log),
     )
 
 
@@ -3146,6 +3196,16 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     )
     _register_job_ledger(registry, job_mail)
     mail_codes = _mail_codes(full_config, config_path, plugin_connections, device)
+    commitments = _commitments(
+        full_config, config_path, plugin_connections, memory.db_path, paths.event_log,
+        lambda preset: build_analyst(
+            full_config,
+            preset,
+            pricing_path=repo_root / "data" / "pricing.json",
+            account_cost=wave1_features.exactly_once_cost_accounting,
+            kind="commitments",
+        ),
+    )
     reminders = Reminders(
         paths.event_log,
         moment=moment,
@@ -3263,12 +3323,16 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             partial(_shares_line, paths.event_log),
             # ADR 0249: what he is doing now, then his next calendar items, each with its age.
             partial(doing_now_line, paths.event_log, local_zone, speakable.now),
-            partial(calendar_line, calendar_next, local_zone, speakable.now),
+            partial(
+                calendar_line, calendar_next, local_zone, speakable.now,
+                partial(next_appointments, paths.event_log, local_zone),
+            ),
         ),
         voice_cues=voice_cues,
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
         job_mail=job_mail,
         mail_codes=mail_codes,
+        commitments=commitments,
         moment=moment,
         push=Push.from_config(full_config, paths.root, paths.event_log),
         whereabouts=Whereabouts(
