@@ -3924,6 +3924,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
     ride_control: RideControl | None = None,
     highlight_marker: HighlightMarker | None = None,
+    maps_monthly_usd: float = 10.0,
     local_zone: tzinfo | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
@@ -4021,6 +4022,8 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         ride_control: ADR 0224 — what the runtime does when the model says he is heading out,
             has boarded, gets off at a stop, or is off the bus, and how his ride is going; gives
             `bus` its `ride` and `get_off`. `None` leaves them out of its answers.
+        maps_monthly_usd: ADR 0283 — the month's cap on Google map spend (`maps.monthly_usd`);
+            `bus` and `map_search` stop near it. 0 or less is no cap.
         highlight_marker: ADR 0235 — what the runtime does to mark or unmark an item of a day's
             timeline as a highlight; registers `mark_highlight`. `None` leaves it off the menu.
     """
@@ -4174,14 +4177,17 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     from jarvis.execution.keep_tool import build_keep_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.location_tool import build_where_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.mail_draft_tool import build_mail_draft_tool  # noqa: PLC0415
+    from jarvis.execution.map_tool import build_map_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.picture_tool import build_picture_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.place_tools import build_place_tools  # noqa: PLC0415 — same cycle.
+    from jarvis.execution.places_api import PlaceBook  # noqa: PLC0415 — same cycle.
     from jarvis.execution.voice_tools import build_voice_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.weather_tool import build_weather_tool  # noqa: PLC0415 — same cycle.
 
     for night_tool in build_night_tools(night, remote=device_link is not None):
         register_device_tool(night_tool)  # a brain's run is its terminal's
+    found_places = PlaceBook()  # what `map_search` found, so `bus` can name a place_id (ADR 0283)
     for conversation_tool in (
         *build_keep_tools(memory_db_path, local_zone),
         *build_voice_tool(voice_settings),
@@ -4192,6 +4198,10 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             transit_api_key, transit_places or dict, here_location, phone_here=here_phone,
             offers=transit_offers, bus_live=bus_live, control=ride_control,
             kept=None if memory_db_path is None else lambda: read_kept(memory_db_path),
+            cap_usd=maps_monthly_usd, book=found_places,
+        ),
+        *build_map_tool(
+            transit_api_key, maps_monthly_usd, found_places, here_location, phone_here=here_phone,
         ),
         *build_where_tool(here_location, locate_phone or here_phone),
         *build_highlight_tool(highlight_marker),
