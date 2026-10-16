@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 
 from jarvis.execution.tools import build_default_registry
+from jarvis.execution.weather_tool import DAYS_BACK
 from jarvis.runtime.home import weather_lookup
 from tests.integration.weatherkit_world import Net, kit_for, make_key
 
@@ -54,6 +55,13 @@ def items(today: date) -> list[Item]:
     bad = ["web_search", "tool_search", "where_am_i"]
     one = {"max_calls": 1}
     home = {"weather": {"place": "*"}}
+    fri = -3 - today.weekday()  # the Friday of last week: 3 to 9 days back
+    past = (
+        _first(["weather"], bad, args_must={"weather": [{"start_date": d(fri)}]},
+               args_must_not=home, **one)
+        if fri >= -DAYS_BACK  # on a Saturday or Sunday it is out of range: search instead
+        else _first(["text", "web_search"], ["weather", "tool_search"])
+    )
     return [
         ("wk-now-zh", "现在外面冷吗", [],
          _first(["weather"], bad, args_must_not=home, **one), ["weather", "now"]),
@@ -106,7 +114,9 @@ def items(today: date) -> list[Item]:
         ("wk-far-zh", "三个星期以后的天气怎么样", [],
          _first(["text", "web_search"], ["weather", "tool_search"]), ["weather", "range"]),
         ("wk-yesterday-zh", "昨天下过雨吗", [],
-         _first(["text", "web_search"], ["weather", "tool_search"]), ["weather", "range"]),
+         _first(["weather"], bad, args_must={"weather": [{"start_date": d(-1)}]},
+                args_must_not=home, **one), ["weather", "past"]),
+        ("wk-last-friday-zh", "上周五多冷", [], past, ["weather", "past"]),
         ("wk-news-zh", "最近有什么新闻", [],
          _first(["web_search"], ["weather"]), ["weather", "negative"]),
     ]
