@@ -161,13 +161,13 @@ header strong { color: var(--fg-strong); }
 
 <h3 id="positioning">一句话</h3>
 
-<blockquote>给同时用 Claude Code 和 Codex 的 Mac 开发者的刘海伙伴。替主人盯着所有 agent，记住主人的一天，只在值得的时候开口。下载就能用，用主人自己的一把 key。</blockquote>
+<blockquote>陪主人过好每一天的助手。记得主人的一切，把每天排好、盯到做完，只在值得的时候、在主人正用着的那台设备上开口。下载就能用，用主人自己的一把 key。（ADR 0275）</blockquote>
 
 <table>
 <thead><tr><th>它是</th><th>它不是</th></tr></thead>
 <tbody>
 <tr><td><strong>一人一份。</strong>每个 macOS 账户一个主人，主人的名字在首次设置时定下（ADR 0090）。</td><td><strong>又一个干活的 agent。</strong>写代码、操作电脑交给 Claude Code 和 Codex。</td></tr>
-<tr><td><strong>agent 的总管。</strong>派活、盯进度、收结果，审批不用切窗口。</td><td><strong>多人协作或团队工具。</strong>一个安装只认一个主人。</td></tr>
+<tr><td><strong>一天的总管。</strong>和主人一起把每天排好，到点提醒，要紧的事盯到主人回应。agent 是它替主人盯着的事之一：派活、盯进度、收结果，审批不用切窗口。</td><td><strong>多人协作或团队工具。</strong>一个安装只认一个主人。</td></tr>
 <tr><td><strong>本地优先。</strong>状态都在这台 Mac 的运行目录里。Jarvis 没有自己的服务器，发出的请求只去主人配置的服务商、主人连上的服务，或对话里要打开的网址（<a href="#egress">见第 5 章</a>）。</td><td><strong>云服务。</strong>不中转主人的数据，也不转售模型额度。</td></tr>
 <tr><td><strong>一把 key。</strong>默认打开的功能只用主人自己的一把 Anthropic key（ADR 0092、ADR 0253）。</td><td><strong>智能家居中枢。</strong>房间屏幕不在这一版里；Hue 这类设备走插件（ADR 0079）。主人自己的设备可以连同一个大脑当终端（ADR 0170），但这不是同步，也不管别人的设备。</td></tr>
 </tbody>
@@ -182,7 +182,7 @@ header strong { color: var(--fg-strong); }
 
 <div class="constitution"><strong>C2. 状态才是本体。</strong>身份不在模型、提示词、工具或语音管线里，而在持续维护的状态里：只追加的事件日志，和从它折出来的投影（<a href="#state">第 3 章</a>）。换模型、改提示词、加工具都不动它。</div>
 
-<div class="constitution"><strong>C3. 少让主人重复解释。</strong>核心价值是主人不用重新装载上下文：哪个 agent 在干什么，昨天做到哪，哪些事没收尾，下一步先做什么。</div>
+<div class="constitution"><strong>C3. 少让主人重复解释。</strong>核心价值是主人不用自己记，也不用重新装载上下文：今天要做什么，答应过谁什么，昨天做到哪，哪些事没收尾，下一步先做什么。</div>
 
 <div class="constitution"><strong>C4. 总管，不是干活的。</strong>Jarvis 派活、盯进度、收结果、整理状态；写代码和改文件交给 Claude Code 和 Codex。主模型没有终端、打补丁或写文件的工具。worker 的最终消息原样转给主人，Jarvis 不替它判定做没做成（ADR 0019）。</div>
 
@@ -573,7 +573,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <section id="agents">
 <h2>8. 和 Claude Code / Codex 的接口</h2>
 
-<p>Jarvis 最主要的价值建在两个别人的程序上。这一章列出它依赖对方的哪些文件、命令和接口；Claude Code 或 Codex 一改格式，从这里查起。</p>
+<p>Jarvis 替主人盯着的 agent 跑在两个别人的程序上。这一章列出它依赖对方的哪些文件、命令和接口；Claude Code 或 Codex 一改格式，从这里查起。</p>
 
 <h3 id="hooks">hooks</h3>
 <table>
