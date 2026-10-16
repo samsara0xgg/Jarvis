@@ -821,6 +821,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "written_apart",
             # ADR 0215: the times the answer refers to, from the turn's own log.
             "times",
+            # ADR 0283: the places the turn's tools returned, for the phone's map card.
+            "places",
             "response_hash",
             "response_id",
             "response_group_id",
@@ -1203,6 +1205,26 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         required_payload=("clarification_id", "question", "fields", "turn_id"),
         # `trip`: a `bus` plan's rows and modes (ADR 0205), a card with no fields.
         optional_payload=("action_id", "trip"),
+        schema_version=1,
+    ),
+    # ADR 0283: the places a tool (`map_search`, `bus`) returned, logged so the turn's answer can
+    # carry them to the phone's map; `places` rows are `{name, lat, lng, address, place_id, kind}`.
+    EventTypeSchema(
+        event_type="map.places_found",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("turn_id", "places"),
+        optional_payload=("action_id",),
+        schema_version=1,
+    ),
+    # ADR 0283: what Google map requests cost (`bus`, `map_search`), one row per SKU per call;
+    # the month's sum is the cap. Not `cost.recorded`: that is L3's alone.
+    EventTypeSchema(
+        event_type="maps.spend_recorded",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("sku", "requests", "cost_usd"),
+        optional_payload=("action_id",),
         schema_version=1,
     ),
     # ADR 0206: she took the waiting card down (`dismiss_card`) because his words

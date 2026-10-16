@@ -507,6 +507,13 @@ core_memory:
 # into it (memory.db `places`), and from then on `bus` reads home and school
 # from there, where the memory page and `save_place` change them. Editing them later does nothing.
 
+# ADR 0283 — the monthly cap on Google map spend, USD.  `bus` (Routes) and `map_search` (Places)
+# count every request at Google's list price and record it (maps.spend_recorded events),
+# so the month's total survives a restart.  Past 90% of the cap their calls stop and
+# she tells him why; they start again next month.  0 = no cap.
+maps:
+  monthly_usd: 10
+
 # ADR 0051 — 小球首页：日程和待办直接读 Microsoft，邮件读 Gmail（~/.jarvis/env 里的
 # GMAIL_ADDRESS + GMAIL_APP_PASSWORD），都不经过模型；天气来自 Open-Meteo（不用 key），
 # 按 weather 的经纬度，每个用户在自己的 settings.yaml 里写，例如
