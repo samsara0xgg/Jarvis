@@ -351,7 +351,7 @@ def _hour(
 
 
 def _report(body: Mapping[str, Any], label: str, request: WeatherRequest) -> dict[str, Any]:
-    """What the model's ``weather`` tool answers with (ADR 0279): plain words, local times.
+    """What the model's ``weather`` tool answers with (ADR 0282): plain words, local times.
 
     With no days asked: ``today``, ``tomorrow`` and the next 12 hours; else ``days``. ``hourly``
     puts every hour of those days in place of the next 12.
@@ -417,7 +417,7 @@ def _air(latitude: float, longitude: float, request: WeatherRequest) -> dict[str
 def weather_lookup(
     place: Mapping[str, Any] | None,
 ) -> Callable[[WeatherRequest], dict[str, Any]] | None:
-    """The model's weather read (ADR 0279) for a :class:`WeatherRequest`.
+    """The model's weather read (ADR 0282) for a :class:`WeatherRequest`.
 
     ``place`` is ``home.weather`` (``latitude``, ``longitude``, optional ``name``), the answer
     when the request names no place; None when the home has no location, which leaves the tool

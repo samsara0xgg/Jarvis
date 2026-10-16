@@ -1,4 +1,4 @@
-# ADR 0279 — The weather tool answers any place and day in one call
+# ADR 0282 — The weather tool answers any place and day in one call
 
 **Status:** Accepted
 **Date:** 2026-10-16

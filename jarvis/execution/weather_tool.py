@@ -1,4 +1,4 @@
-"""ADR 0279: the conversation's one-call read of the weather at any place and day."""
+"""ADR 0282: the conversation's one-call read of the weather at any place and day."""
 
 from __future__ import annotations
 

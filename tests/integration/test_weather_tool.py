@@ -1,4 +1,4 @@
-"""ADR 0279: the model reads the weather at any place and day in one call, over a faked HTTP layer.
+"""ADR 0282: the model reads the weather at any place and day in one call, over a faked HTTP layer.
 
 The Open-Meteo answers are built from the query the tool sent (the days, the place), so a request
 that asks for the wrong days or the wrong place reads wrong data here.

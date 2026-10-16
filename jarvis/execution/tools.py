@@ -3995,7 +3995,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             `None` (one machine) registers them as they are.
             The activity tools (`query_activity`, `read_activity`, `save_*`) stay as they
             are too, but ask the terminal for what they read of TimeSink and git.
-        weather_lookup: ADR 0279 — the weather read for a `WeatherRequest` (home, a named place or
+        weather_lookup: ADR 0282 — the weather read for a `WeatherRequest` (home, a named place or
             `here`; the home is `home.weather`); `None` (no location configured) leaves `weather`
             off the menu.
         transit_api_key: ADR 0189 — the Google Routes key (`GOOGLE_MAPS_API_KEY`, resolved
