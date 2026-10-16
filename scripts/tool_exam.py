@@ -8,7 +8,8 @@ r"""Tool exam: replay logged decision requests and score whether the FIRST step 
 (``~/.jarvis/evals/tool-exam/cases.json``): a list of ``{id, said, request, tags, expect?}`` where
 ``request`` is a logged decision request (``kind: decision``, Responses or chat shape) and
 ``expect.first`` is ``{ok, bad, text_must_not?, args_must_not?, args_must?, no_identical_repeat?,
-cursor_must_come_from_history?, must_mention?}``: ``ok`` names tools (or ``"text"``, a spoken answer
+cursor_must_come_from_history?, must_mention?, max_calls?}``: ``ok`` names tools (or ``"text"``, a
+spoken answer
 with no tool) that pass, ``bad`` names fail even next to an ok one, ``text_must_not`` regexes fail a
 no-tool answer, ``args_must_not`` maps a tool to substrings its raw arguments must not hold, or to
 an ``{arg: value}`` dict that fails a call carrying all of those values (``"*"``: any value),
@@ -16,7 +17,8 @@ an ``{arg: value}`` dict that fails a call carrying all of those values (``"*"``
 tool's ok use is told from its bad one), ``no_identical_repeat`` fails a call the request's history
 already made with the same arguments, ``cursor_must_come_from_history`` fails a ``cursor`` no
 earlier tool output gave, and ``must_mention`` regexes (one must match the answer or the call
-arguments) check that misheard words were understood. Next to it sits ``mcp-tools.json``: the MCP
+arguments) check that misheard words were understood, and ``max_calls`` fails a step that
+proposes more calls than that. Next to it sits ``mcp-tools.json``: the MCP
 tool definitions (``{mcp__server__tool: {name, description, input_schema}}``) a live server would
 list, which an offline run cannot ask for. An optional ``tool-aliases.json`` next to the cases maps
 a tool name the cases still use to the name that replaced it (``{"mail_inbox": "mail"}``): ``score``
@@ -167,7 +169,8 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
             obsidian_vault_root=base, web_search_provider="tavily", web_search_api_key="x",
             vision_client=stub, memory_db_path=base / "memory.db",
             timesink_db_path=base / "timesink.db", work_state_refresh=stub, night=stub,
-            voice_settings=stub, mail_drafts=stub, weather_lookup=dict, transit_api_key="x",
+            voice_settings=stub, mail_drafts=stub, weather_lookup=lambda _request: {},
+            transit_api_key="x",
             transit_places=lambda: {"home": "home"}, transit_offers=stub, here_location=dict,
             here_phone=dict, bus_live=lambda *_: None, ride_control=stub, highlight_marker=stub,
             device_link=lambda *_: {},
@@ -539,7 +542,7 @@ def usable_aliases(
     return {old: new for old, new in aliases.items() if new in menu}
 
 
-def judge(
+def judge(  # noqa: C901 - one verdict from the expectation's rules.
     first: Mapping[str, Any], line: Mapping[str, Any], request: Mapping[str, Any],
     aliases: Mapping[str, str] | None = None,
 ) -> tuple[bool, str]:
@@ -563,6 +566,8 @@ def judge(
     why = []
     if hit & bad or not hit & ok:
         why.append(",".join(dict.fromkeys(names)))
+    if len(calls) > first.get("max_calls", len(calls)):
+        why.append(f"{len(calls)} calls")
     if names == ["text"] and any(re.search(rx, line.get("text") or "") for rx in first.get(
         "text_must_not", (),
     )):
