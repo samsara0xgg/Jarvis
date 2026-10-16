@@ -2183,6 +2183,8 @@ def _log_shape(
             continue
         if str(payload.get("response_hash", "")) in drop_response_hashes:
             continue
+        if event_type == "turn.timing":  # ADR 0276: a measurement; its numbers differ run to run
+            payload = {"turn_id": payload.get("turn_id")}
         shape.append(
             (
                 str(event_type),

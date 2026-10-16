@@ -332,6 +332,7 @@ def test_flag_off_drive_turn_matches_legacy_sequence(
         "surface.response_open",
         "surface.response_chunk",
         "surface.response_emitted",
+        "turn.timing",  # ADR 0276
     ]
     legacy = stable_legacy_presentation_binding(turn_id="T-fixed", response_hash=_PLAN_HASH)
     opened = _payloads(runtime.conn, "surface.response_open")[0]
