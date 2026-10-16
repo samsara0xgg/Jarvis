@@ -12,6 +12,7 @@ from jarvis.state.phone_location import NoPhoneReport, turn_from_phone
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
+    from jarvis.execution.around import Surroundings
     from jarvis.execution.tools import ToolContext
 
 _DESCRIPTION: Final = (
@@ -59,6 +60,14 @@ _BOTH_DESCRIPTION: Final = (
     " shops near him, how"
     " far something is from here. For bus trips use bus instead (it starts from here). If it"
     " returns an error, say so and ask him where he is."
+)
+
+_AROUND_RULE: Final = (
+    " The result also has `around` (ADR 0284): the street and nearest intersection, how long he"
+    " has been at this spot, his kept place if he is in one, candidate places he may be at and"
+    " up to 10 other places within 300 m with direction, distance and open now. They are facts"
+    " for you to judge, and each new spot costs money, so do not call it again for the same"
+    " spot."
 )
 
 _ASK: Final = "ask the user where he is, or use a saved place he names"
@@ -170,8 +179,11 @@ def _phone_note(fix: Mapping[str, Any]) -> str:
 def build_where_tool(
     mac: Callable[[], Mapping[str, Any]] | None,
     phone: Callable[[], Mapping[str, Any]] | None = None,
+    around: Surroundings | None = None,
 ) -> tuple[Tool, ...]:
     """``where_am_i`` over ``mac`` and ``phone``; none when this machine has neither.
+
+    With ``around`` the result also carries what is around the fix (ADR 0284).
 
     ``mac`` is this Mac's fresh fix (ADR 0194), ``phone`` the phone's last report (ADR 0198).
     With both, :func:`read_here` picks by where the turn came from (ADR 0212) and the
@@ -183,17 +195,19 @@ def build_where_tool(
     def where_am_i(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         fix = read_here(mac, phone, ctx)
         if fix["source"] == "phone":
-            return {**fix, "note": _phone_note(fix)}
-        if fix.pop("phone_unreported", False):
+            here = {**fix, "note": _phone_note(fix)}
+        elif fix.pop("phone_unreported", False):
             note = "no phone has reported a location yet, so this is this Mac's, which may not be"
-            return {**fix, "note": note + " where he is."}
-        return fix
+            here = {**fix, "note": note + " where he is."}
+        else:
+            here = fix
+        return here if around is None else {**here, "around": around.lookup(ctx, fix)}
 
     description = (
         _BOTH_DESCRIPTION if mac is not None and phone is not None
         else _PHONE_DESCRIPTION if phone is not None
         else _DESCRIPTION
-    )
+    ) + ("" if around is None else _AROUND_RULE)
     return (
         Tool(
             name="where_am_i",

@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import tzinfo
 
+    from jarvis.execution.around import Surroundings
     from jarvis.runtime.moment import Moment
     from jarvis.surface.terminal_link import TerminalHub
 
@@ -42,6 +43,8 @@ LOGGER = logging.getLogger(__name__)
 WHERE_PREFIX: Final = "Where you run:"
 ASK_FIX_MAX_AGE_MS: Final = 15 * 60_000
 """How fresh the phone's fix must be for him to count as at a spot."""
+AROUND_MAX_AGE_MS: Final = 3 * 3_600_000
+"""How old the phone's fix may be and still say what is around him (the held readings' life)."""
 ASK_PLACE_LINE: Final = (
     "[Place] He is at a spot he has been to on {n} days in the last 4 weeks (last {date}). "
     "It has no name. If the moment suits, you may ask him once, in passing, what it is. "
@@ -61,20 +64,23 @@ def _host() -> str:
 class Whereabouts:
     """The host's one reading of "now"; every method is safe to call from any thread."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the root, hub and moment, then what the lines read.
         self, root: Path, hub: TerminalHub | None, moment: Moment | None,
         *, memory_db: Path | None = None, zone: tzinfo | None = None,
+        around: Surroundings | None = None,
     ) -> None:
         """``hub`` is the brain's terminal table (``None`` on a Mac running alone).
 
         ``memory_db`` and ``zone`` (the one days are cut in) let :meth:`lines` tell her of a spot
-        to ask about; without them it never does.
+        to ask about; without them it never does. ``around`` adds the line about his surroundings
+        (ADR 0284), made from what it already holds and never by a request.
         """
         self._root = root
         self._hub = hub
         self._moment = moment
         self._memory_db = memory_db
         self._zone = zone
+        self._around = around
         self._host = _host() if hub is not None else ""
         # Wired by the daemon: whether a device has its ``/phone/ws`` socket open now (ADR 0209).
         self.phone_open: Callable[[str], bool] = lambda _device: False
@@ -99,6 +105,7 @@ class Whereabouts:
             self._devices_line([*terminals, *(n for n in paired if n not in terminals)], kind,
                                terminals),
             self._place_line(conn),
+            self._around_line(conn),
             self._ask_line(conn),
         ]
         return tuple(line for line in found if line)
@@ -174,6 +181,23 @@ class Whereabouts:
         if fix.left:
             return f"His phone last reported him leaving {fix.place}, {age} ago."
         return f"His phone last put him at {fix.place}, {age} ago."
+
+    def _around_line(self, conn: sqlite3.Connection) -> str | None:
+        """His street and the place he is at, from what is held for where the phone put him.
+
+        Free: no request is made here (ADR 0284). It never fails the other lines.
+        """
+        if self._around is None:
+            return None
+        try:
+            fix = latest_phone_fix(conn)
+            now_ms = int(self.clock() * 1000)
+            if fix is None or fix.left or now_ms - fix.at_ms > AROUND_MAX_AGE_MS:
+                return None
+            return self._around.line(conn, (fix.lat, fix.lng), fix.accuracy_m, now_ms)
+        except Exception:  # the other lines are worth more than this one.
+            LOGGER.exception("whereabouts: the surroundings line failed, skipped")
+            return None
 
     def _ask_line(self, conn: sqlite3.Connection) -> str | None:
         """The note about an unnamed spot he is at now, once; it never fails the other lines."""

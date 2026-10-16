@@ -134,6 +134,7 @@ from jarvis.deployment.models import (
 from jarvis.deployment.night_power import MacPower
 from jarvis.execution import maps_spend, speakable
 from jarvis.execution.archive_tool import build_archive_tool
+from jarvis.execution.around import Surroundings
 from jarvis.execution.conversation_tool import build_conversation_tool
 from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.geocode import Unplaced, geocode
@@ -3101,6 +3102,9 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         None if phone_events is None
         else _locator(full_config, paths.event_log, locate_waits, memory.db_path)
     )
+    surroundings = Surroundings(  # ADR 0284: held by position; the tool and the state line share it
+        maps_key, _maps_monthly_usd(full_config), memory.db_path, local_zone,
+    )
     registry = build_default_registry(
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
@@ -3112,6 +3116,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         weather_lookup=weather_lookup(_home_weather(full_config)),
         transit_api_key=maps_key,
         maps_monthly_usd=_maps_monthly_usd(full_config),
+        surroundings=surroundings,
         transit_places=kept_places,
         transit_offers=transit_offers,
         here_location=_here_location(role),
@@ -3391,6 +3396,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         push=Push.from_config(full_config, paths.root, paths.event_log),
         whereabouts=Whereabouts(
             paths.root, terminal_hub, moment, memory_db=memory.db_path, zone=local_zone,
+            around=surroundings,
         ),
         reminders=reminders,
         rides=rides,

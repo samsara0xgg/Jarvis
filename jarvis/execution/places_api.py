@@ -37,6 +37,12 @@ _ENTERPRISE_FIELDS: Final = (
 )
 # Text and Nearby Search: Enterprise tier, because rating, price level, hours and phone are.
 SEARCH_MASK: Final = ",".join(f"places.{f}" for f in (*_ESSENTIAL_FIELDS, *_ENTERPRISE_FIELDS))
+# What is around a point (ADR 0284): name, address, point, kind and open now. Open now is an
+# Enterprise field, so the request is billed as Nearby Search Enterprise.
+AROUND_MASK: Final = ",".join(f"places.{f}" for f in (
+    "id", "displayName", "formattedAddress", "location", "primaryTypeDisplayName",
+    "currentOpeningHours.openNow",
+))
 # Place Details with review highlights: Enterprise + Atmosphere (reviews are Atmosphere fields).
 DETAILS_MASK: Final = ",".join((
     *_ESSENTIAL_FIELDS, *_ENTERPRISE_FIELDS, "websiteUri",
@@ -140,6 +146,14 @@ def nearby_search(
     return [p for p in found.get("places", []) if isinstance(p, dict)]
 
 
+def nearby_around(
+    api_key: str, body: Mapping[str, Any], meter: list[str],
+) -> list[dict[str, Any]]:
+    """Nearby Search with no type filter and :data:`AROUND_MASK`: what is around a point."""
+    found = _call(api_key, "places:searchNearby", AROUND_MASK, SKU_NEARBY, meter, body)
+    return [p for p in found.get("places", []) if isinstance(p, dict)]
+
+
 def details(api_key: str, place_id: str, meter: list[str]) -> dict[str, Any]:
     """Place Details with weekly hours and review highlights."""
     return _call(api_key, f"places/{place_id}", DETAILS_MASK, SKU_DETAILS, meter, None)
@@ -233,7 +247,7 @@ def turn_places(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, Any]]:
 
 
 __all__ = [
-    "DETAILS_MASK", "EVENT_TYPE", "NAME_MASK", "SEARCH_MASK", "PlaceBook", "announce", "circle",
-    "details", "distance_and_direction", "name_of", "nearby_search", "on_map", "price_word",
-    "text_search", "turn_places",
+    "AROUND_MASK", "DETAILS_MASK", "EVENT_TYPE", "NAME_MASK", "SEARCH_MASK", "PlaceBook",
+    "announce", "circle", "details", "distance_and_direction", "name_of", "nearby_around",
+    "nearby_search", "on_map", "price_word", "text_search", "turn_places",
 ]

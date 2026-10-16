@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from datetime import tzinfo
 
+    from jarvis.execution.around import Surroundings
     from jarvis.execution.bus_tool import RideControl
     from jarvis.execution.highlight_tool import HighlightMarker
     from jarvis.execution.mail_draft_tool import DraftStore
@@ -3925,6 +3926,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     ride_control: RideControl | None = None,
     highlight_marker: HighlightMarker | None = None,
     maps_monthly_usd: float = 10.0,
+    surroundings: Surroundings | None = None,
     local_zone: tzinfo | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
@@ -4024,6 +4026,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             `bus` its `ride` and `get_off`. `None` leaves them out of its answers.
         maps_monthly_usd: ADR 0283 — the month's cap on Google map spend (`maps.monthly_usd`);
             `bus` and `map_search` stop near it. 0 or less is no cap.
+        surroundings: ADR 0284 — what is around him, held by position; `where_am_i` returns it.
         highlight_marker: ADR 0235 — what the runtime does to mark or unmark an item of a day's
             timeline as a highlight; registers `mark_highlight`. `None` leaves it off the menu.
     """
@@ -4203,7 +4206,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         *build_map_tool(
             transit_api_key, maps_monthly_usd, found_places, here_location, phone_here=here_phone,
         ),
-        *build_where_tool(here_location, locate_phone or here_phone),
+        *build_where_tool(here_location, locate_phone or here_phone, surroundings),
         *build_highlight_tool(highlight_marker),
     ):
         registry.register(conversation_tool)

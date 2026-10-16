@@ -35,6 +35,7 @@ STOP_AT: Final = 0.9
 #   Places API (New): Text Search and Nearby Search at the Enterprise tier (rating, price level,
 #   opening hours and phone are Enterprise fields) 35; Place Details with reviews (Enterprise +
 #   Atmosphere) 25; Place Details with name and address only (Pro) 17.
+#   Geocoding API (reverse, ADR 0284): 5 per thousand requests.
 #   Routes: TRANSIT counted at Pro, 10, because it was not certain whether transit is billed at
 #   Essentials; DRIVE and WALK with the default routing preference are Essentials, 5.
 PRICE_USD: Final[dict[str, float]] = {
@@ -42,6 +43,7 @@ PRICE_USD: Final[dict[str, float]] = {
     "places.nearby_search.enterprise": 0.035,
     "places.details.enterprise_atmosphere": 0.025,
     "places.details.pro": 0.017,
+    "geocoding.reverse": 0.005,
     "routes.transit.pro": 0.010,
     "routes.basic.essentials": 0.005,
 }
