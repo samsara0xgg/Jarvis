@@ -98,6 +98,7 @@ if TYPE_CHECKING:
     from jarvis.execution.mail_draft_tool import DraftStore
     from jarvis.execution.night_tools import NightControl
     from jarvis.execution.transit_tool import TransitOffers
+    from jarvis.execution.weather_tool import WeatherRequest
     from jarvis.shared import Event
     from jarvis.shared.device_link import DeviceLink
     from jarvis.state.voice_settings import VoiceSettings
@@ -3913,7 +3914,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     voice_settings: VoiceSettings | None = None,
     mail_drafts: DraftStore | None = None,
     device_link: DeviceLink | None = None,
-    weather_lookup: Callable[[], Mapping[str, Any]] | None = None,
+    weather_lookup: Callable[[WeatherRequest], Mapping[str, Any]] | None = None,
     transit_api_key: str | None = None,
     transit_places: Callable[[], Mapping[str, str]] | None = None,
     transit_offers: TransitOffers | None = None,
@@ -3994,8 +3995,9 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             `None` (one machine) registers them as they are.
             The activity tools (`query_activity`, `read_activity`, `save_*`) stay as they
             are too, but ask the terminal for what they read of TimeSink and git.
-        weather_lookup: ADR 0188 — the home's weather read (`home.weather`);
-            `None` (no location configured) leaves `weather` off the menu.
+        weather_lookup: ADR 0279 — the weather read for a `WeatherRequest` (home, a named place or
+            `here`; the home is `home.weather`); `None` (no location configured) leaves `weather`
+            off the menu.
         transit_api_key: ADR 0189 — the Google Routes key (`GOOGLE_MAPS_API_KEY`, resolved
             by the runtime); empty or `None` leaves `bus` unable to read times (and off the
             menu altogether without a `ride_control`).
@@ -4179,7 +4181,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     for conversation_tool in (
         *build_keep_tools(memory_db_path, local_zone),
         *build_voice_tool(voice_settings),
-        *build_weather_tool(weather_lookup),
+        *build_weather_tool(weather_lookup, here_location, here_phone),
         *build_picture_tool(vision_client, memory_db_path),
         *(() if memory_db_path is None else build_place_tools(memory_db_path, local_zone)),
         *build_bus_tool(

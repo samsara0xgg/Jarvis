@@ -18,6 +18,7 @@ from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta, timezone
 from email.utils import parseaddr, parsedate_to_datetime
 from typing import TYPE_CHECKING, Any, Final
+from urllib.parse import urlencode
 
 from jarvis.decision.daily_report import brief_of
 from jarvis.execution.tools import ToolError
@@ -36,12 +37,35 @@ if TYPE_CHECKING:
 
     from jarvis.decision.mail_reply import MailReply
     from jarvis.execution.mcp_tools import McpServers
+    from jarvis.execution.weather_tool import WeatherRequest
     from jarvis.runtime.dashboard import ViewState
     from jarvis.runtime.plugin_connections import PluginConnections
     from jarvis.runtime.work_state import LLMAnalyst
 
 LOGGER = logging.getLogger(__name__)
 _OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
+_GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
+_AIR_QUALITY = "https://air-quality-api.open-meteo.com/v1/air-quality"
+_GEOCODE_MATCHES = 5
+_ALTERNATIVES = 2
+_LAT_LNG = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
+_COMPASS = (
+    "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW",
+    "NNW",
+)
+_CURRENT = (
+    "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,precipitation,"
+    "wind_speed_10m,wind_gusts_10m,wind_direction_10m"
+)
+_HOURLY = (
+    "temperature_2m,apparent_temperature,weather_code,precipitation_probability,precipitation,"
+    "wind_speed_10m"
+)
+_DAILY = (
+    "weather_code,temperature_2m_max,temperature_2m_min,apparent_temperature_max,"
+    "apparent_temperature_min,precipitation_probability_max,precipitation_sum,snowfall_sum,"
+    "wind_speed_10m_max,wind_gusts_10m_max,uv_index_max,sunrise,sunset"
+)
 _WEATHER_TIMEOUT_S = 4.0
 _FORECAST_STEP_H = 3
 _REPORT_HOURS = 12
@@ -164,17 +188,45 @@ def _kind(code: int) -> str:
     return next((kind for codes, kind in _WMO if code in codes), "rain")
 
 
-def _forecast(latitude: float, longitude: float) -> dict[str, Any]:
-    """Open-Meteo's two-day forecast for the place, in its local time; raises when unreachable."""
-    query = (
-        f"latitude={latitude}&longitude={longitude}&timezone=auto&timeformat=unixtime"
-        "&forecast_days=2&current=temperature_2m,weather_code"
-        "&hourly=temperature_2m,weather_code,precipitation_probability"
-        "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code"
-    )
-    with urllib.request.urlopen(f"{_OPEN_METEO}?{query}", timeout=_WEATHER_TIMEOUT_S) as reply:  # noqa: S310 — a fixed https URL.
-        body: dict[str, Any] = json.load(reply)
+def _get(url: str, query: Mapping[str, Any], what: str) -> dict[str, Any]:
+    """One JSON GET; a ToolError that names ``what`` when it cannot be read."""
+    try:
+        with urllib.request.urlopen(  # noqa: S310 — a fixed https URL.
+            f"{url}?{urlencode(query, safe=',')}", timeout=_WEATHER_TIMEOUT_S,
+        ) as reply:
+            body: dict[str, Any] = json.load(reply)
+    except Exception as exc:  # timeout, refusal, bad JSON: all one short reason.
+        msg = (
+            f"weather: {what} could not be read ({type(exc).__name__}); "
+            "use web_search, or tell him it is unavailable"
+        )
+        raise ToolError(msg, code="network_error") from exc
     return body
+
+
+def _span(start: date | None, end: date | None) -> dict[str, Any]:
+    """Open-Meteo's days: the two from today, or ``start`` to ``end``."""
+    if start is None or end is None:
+        return {"forecast_days": 2}
+    return {"start_date": start.isoformat(), "end_date": end.isoformat()}
+
+
+def _forecast(
+    latitude: float, longitude: float, start: date | None = None, end: date | None = None,
+) -> dict[str, Any]:
+    """Open-Meteo's forecast for the place, in its local time; raises when unreachable.
+
+    Today and tomorrow unless ``start`` and ``end`` are given.
+    """
+    return _get(
+        _OPEN_METEO,
+        {
+            "latitude": latitude, "longitude": longitude, "timezone": "auto",
+            "timeformat": "unixtime", **_span(start, end),
+            "current": _CURRENT, "hourly": _HOURLY, "daily": _DAILY,
+        },
+        "the forecast",
+    )
 
 
 def _first_hour(body: Mapping[str, Any]) -> int:
@@ -204,48 +256,187 @@ def weather(latitude: float, longitude: float) -> dict[str, Any]:
     }
 
 
-def weather_report(latitude: float, longitude: float, place: str) -> dict[str, Any]:
-    """What the model's ``weather`` tool answers with (ADR 0188): plain words, local times."""
-    body = _forecast(latitude, longitude)
-    current, hourly, daily = body["current"], body["hourly"], body["daily"]
-    zone = timezone(timedelta(seconds=body["utc_offset_seconds"]))
-    first = _first_hour(body)
+def _label(found: Mapping[str, Any]) -> str:
+    """``Toronto, Ontario, Canada`` for a geocoding match."""
+    return ", ".join(dict.fromkeys(
+        str(one) for one in (found["name"], found.get("admin1"), found.get("country")) if one
+    ))
+
+
+def _geocode(name: str) -> tuple[float, float, str, list[dict[str, str]]]:
+    """The best match for ``name`` (latitude, longitude, label) and the other places called that.
+
+    Tries the name's own language, then English.
+
+    Raises:
+        ToolError: Open-Meteo did not answer, or knows no place of that name.
+    """
+    for language in dict.fromkeys((lang.text_language(name), "en")):
+        query = {"name": name, "count": _GEOCODE_MATCHES, "language": language, "format": "json"}
+        if found := _get(_GEOCODE, query, "the place lookup").get("results"):
+            break
+    else:
+        msg = f"weather: no place found named {name!r}; ask him which place he means"
+        raise ToolError(msg, code="not_found")
+    first, *rest = found
+    other = {
+        _label(one): f"{one['latitude']},{one['longitude']}"
+        for one in rest if one["name"].casefold() == first["name"].casefold()
+    }
+    other.pop(_label(first), None)
+    others = [
+        {"place": label, "use_place": coords}
+        for label, coords in list(other.items())[:_ALTERNATIVES]
+    ]
+    return first["latitude"], first["longitude"], _label(first), others
+
+
+def _spot(
+    request: WeatherRequest, home: tuple[float, float, str],
+) -> tuple[float, float, str, list[dict[str, str]]]:
+    """Where the request is for: (latitude, longitude, label, same-name places)."""
+    if request.here is not None:
+        return (*request.here, [])
+    if request.place is None:
+        return (*home, [])
+    if pair := _LAT_LNG.match(request.place):
+        return float(pair[1]), float(pair[2]), request.place, []
+    return _geocode(request.place)
+
+
+def _now(current: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "place": place,
-        "now": {"temp_c": current["temperature_2m"], "condition": _words(current["weather_code"])},
-        **{
-            name: {
-                "date": datetime.fromtimestamp(daily["time"][day], zone).date().isoformat(),
-                "high_c": daily["temperature_2m_max"][day],
-                "low_c": daily["temperature_2m_min"][day],
-                "rain_chance_pct": daily["precipitation_probability_max"][day],
-                "condition": _words(daily["weather_code"][day]),
-            }
-            for day, name in enumerate(("today", "tomorrow"))
-        },
-        "next_hours": [
-            {
-                "at": datetime.fromtimestamp(hourly["time"][i], zone).strftime("%Y-%m-%d %H:%M"),
-                "temp_c": hourly["temperature_2m"][i],
-                "condition": _words(
-                    current["weather_code"] if i == first else hourly["weather_code"][i]
-                ),
-                "rain_chance_pct": hourly["precipitation_probability"][i],
-            }
+        "temp_c": current["temperature_2m"],
+        "feels_c": current["apparent_temperature"],
+        "condition": _words(current["weather_code"]),
+        "humidity_pct": current["relative_humidity_2m"],
+        "wind_kmh": current["wind_speed_10m"],
+        "gust_kmh": current["wind_gusts_10m"],
+        "wind_from": _COMPASS[round(current["wind_direction_10m"] / 22.5) % len(_COMPASS)],
+        "precip_mm": current["precipitation"],
+    }
+
+
+def _day(daily: Mapping[str, Any], i: int, zone: tzinfo) -> dict[str, Any]:
+    return {
+        "date": datetime.fromtimestamp(daily["time"][i], zone).date().isoformat(),
+        "high_c": daily["temperature_2m_max"][i],
+        "low_c": daily["temperature_2m_min"][i],
+        "feels_high_c": daily["apparent_temperature_max"][i],
+        "feels_low_c": daily["apparent_temperature_min"][i],
+        "condition": _words(daily["weather_code"][i]),
+        "rain_chance_pct": daily["precipitation_probability_max"][i],
+        "precip_mm": daily["precipitation_sum"][i],
+        "snow_cm": daily["snowfall_sum"][i],
+        "wind_max_kmh": daily["wind_speed_10m_max"][i],
+        "gust_max_kmh": daily["wind_gusts_10m_max"][i],
+        "uv_index_max": daily["uv_index_max"][i],
+        "sunrise": datetime.fromtimestamp(daily["sunrise"][i], zone).strftime("%H:%M"),
+        "sunset": datetime.fromtimestamp(daily["sunset"][i], zone).strftime("%H:%M"),
+    }
+
+
+def _hour(
+    hourly: Mapping[str, Any], i: int, zone: tzinfo, code: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "at": datetime.fromtimestamp(hourly["time"][i], zone).strftime("%Y-%m-%d %H:%M"),
+        "temp_c": hourly["temperature_2m"][i],
+        "feels_c": hourly["apparent_temperature"][i],
+        "condition": _words(hourly["weather_code"][i] if code is None else code),
+        "rain_chance_pct": hourly["precipitation_probability"][i],
+        "precip_mm": hourly["precipitation"][i],
+        "wind_kmh": hourly["wind_speed_10m"][i],
+    }
+
+
+def _report(body: Mapping[str, Any], label: str, request: WeatherRequest) -> dict[str, Any]:
+    """What the model's ``weather`` tool answers with (ADR 0279): plain words, local times.
+
+    With no days asked: ``today``, ``tomorrow`` and the next 12 hours; else ``days``. ``hourly``
+    puts every hour of those days in place of the next 12.
+    """
+    zone = timezone(timedelta(seconds=body["utc_offset_seconds"]))
+    daily, hourly = body["daily"], body["hourly"]
+    days = [_day(daily, i, zone) for i in range(len(daily["time"]))]
+    report: dict[str, Any] = {
+        "place": label, "timezone": body["timezone"], "now": _now(body["current"]),
+    }
+    report |= {"today": days[0], "tomorrow": days[1]} if request.start is None else {"days": days}
+    if request.hourly:
+        report["hourly"] = [_hour(hourly, i, zone) for i in range(len(hourly["time"]))]
+    elif request.start is None:
+        first = _first_hour(body)
+        report["next_hours"] = [
+            _hour(hourly, i, zone, body["current"]["weather_code"] if i == first else None)
             for i in range(first, min(first + _REPORT_HOURS, len(hourly["time"])))
+        ]
+    return report
+
+
+def _worst(values: list[float | None]) -> float | None:
+    return max((one for one in values if one is not None), default=None)
+
+
+def _air(latitude: float, longitude: float, request: WeatherRequest) -> dict[str, Any]:
+    """US AQI, PM2.5 and PM10 now and the worst of each day, for the days of the request."""
+    body = _get(
+        _AIR_QUALITY,
+        {
+            "latitude": latitude, "longitude": longitude, "timezone": "auto",
+            "timeformat": "unixtime", **_span(request.start, request.end),
+            "current": "us_aqi,pm2_5,pm10", "hourly": "us_aqi,pm2_5,pm10",
+        },
+        "the air quality",
+    )
+    zone = timezone(timedelta(seconds=body["utc_offset_seconds"]))
+    hourly = body["hourly"]
+    by_day: dict[str, list[int]] = {}
+    for i, at in enumerate(hourly["time"]):
+        by_day.setdefault(datetime.fromtimestamp(at, zone).date().isoformat(), []).append(i)
+
+    def pick(name: str, rows: list[int]) -> float | None:
+        return _worst([hourly[name][i] for i in rows])
+
+    return {
+        "now": {
+            "us_aqi": body["current"]["us_aqi"],
+            "pm2_5_ugm3": body["current"]["pm2_5"],
+            "pm10_ugm3": body["current"]["pm10"],
+        },
+        "days": [
+            {
+                "date": day, "us_aqi_max": pick("us_aqi", rows),
+                "pm2_5_max_ugm3": pick("pm2_5", rows), "pm10_max_ugm3": pick("pm10", rows),
+            }
+            for day, rows in by_day.items()
         ],
     }
 
 
-def weather_lookup(place: Mapping[str, Any] | None) -> Callable[[], dict[str, Any]] | None:
-    """The model's weather read for ``home.weather`` (``latitude``, ``longitude``, ``name``).
+def weather_lookup(
+    place: Mapping[str, Any] | None,
+) -> Callable[[WeatherRequest], dict[str, Any]] | None:
+    """The model's weather read (ADR 0279) for a :class:`WeatherRequest`.
 
-    ``name`` is optional; None when the home has no location, which leaves the tool unregistered.
+    ``place`` is ``home.weather`` (``latitude``, ``longitude``, optional ``name``), the answer
+    when the request names no place; None when the home has no location, which leaves the tool
+    unregistered.
     """
     if place is None:
         return None
-    name = str(place.get("name") or "home")
-    return lambda: weather_report(float(place["latitude"]), float(place["longitude"]), name)
+    home = (float(place["latitude"]), float(place["longitude"]), str(place.get("name") or "home"))
+
+    def lookup(request: WeatherRequest) -> dict[str, Any]:
+        latitude, longitude, label, others = _spot(request, home)
+        report = _report(_forecast(latitude, longitude, request.start, request.end), label, request)
+        if others:
+            report["same_name_elsewhere"] = others
+        if request.air_quality:
+            report["air_quality"] = _air(latitude, longitude, request)
+        return report
+
+    return lookup
 
 
 class Home:

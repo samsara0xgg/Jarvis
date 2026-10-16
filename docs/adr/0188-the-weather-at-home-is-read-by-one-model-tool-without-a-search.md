@@ -1,6 +1,6 @@
 # ADR 0188 — The weather at home is read by one model tool, without a search
 
-**Status:** Accepted
+**Status:** Superseded-by-0279
 **Date:** 2026-10-06
 **Supersedes:** none
 
