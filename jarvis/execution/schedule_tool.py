@@ -415,6 +415,8 @@ class _Schedule:
             due = datetime.fromtimestamp(one.due_at_ms / 1000, UTC)
             if pin is not None and one.reminder_id in pin.rings:
                 continue  # the pinned bus's ring is the bus, listed once below
+            if one.reminder_id.startswith(commitments.REMINDER_PREFIX):
+                continue  # the appointment's ring: the appointment stands for it
             if window.start <= due < window.end:
                 day = speakable.day_name(due.astimezone(self._zone).date(), today)
                 clock = speakable.clock(due.astimezone(self._zone))
@@ -447,8 +449,14 @@ class _Schedule:
         start = datetime.fromtimestamp(occ.start_ms / 1000, UTC)
         end = datetime.fromtimestamp(occ.end_ms / 1000, UTC)
         what = speakable.cut(one.title, _WHAT_CHARS - len(_UNCONFIRMED))
+        today = now.astimezone(self._zone).date()
+        day = start.astimezone(self._zone).date()
+        when = (
+            f"due {speakable.day_name(day, today)}, all day" if one.all_day
+            else self._timed(start, end, now)
+        )
         fields: dict[str, Any] = {
-            "when": self._timed(start, end, now),
+            "when": when,
             "what": what if one.confirmed else what + _UNCONFIRMED,
         }
         if place := speakable.cut(one.place, _WHERE_CHARS):

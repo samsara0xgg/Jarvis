@@ -26,10 +26,13 @@ TYPES: Final[tuple[str, ...]] = (
     "commitment.sender_rule",
 )
 ID_PREFIX: Final[str] = "commitment-"
+REMINDER_PREFIX: Final[str] = "reminder-cm"
+"""Every reminder the commitment poller arms has this id prefix; the readers leave them out."""
 SOURCES: Final[tuple[str, ...]] = ("mail", "said")
 WHY: Final[tuple[str, ...]] = ("cancelled", "not_his", "he_dropped")
 RULES: Final[tuple[str, ...]] = ("always", "never")
 DEFAULT_MINUTES: Final[int] = 60
+_DAY_MINUTES: Final[int] = 24 * 60
 EVIDENCE_CHARS: Final[int] = 200
 _WEEK: Final[timedelta] = timedelta(days=7)
 
@@ -52,6 +55,9 @@ class Commitment:
     source_ref: str = ""
     sender_domain: str = ""
     evidence: str = ""
+    # a date with no hour (a deadline, a check-in, an all-day event): ``start_at`` is that day's
+    # local midnight and it lasts the day
+    all_day: bool = False
     dropped: str | None = None
 
     @property
@@ -62,6 +68,8 @@ class Commitment:
     @property
     def minutes(self) -> int:
         """How long it lasts: ``end_at`` less ``start_at``, else an hour."""
+        if self.all_day:
+            return _DAY_MINUTES
         if not self.end_at:
             return DEFAULT_MINUTES
         span = (datetime.fromisoformat(self.end_at) - self.start).total_seconds() / 60
@@ -75,7 +83,7 @@ class Commitment:
             "skip_dates": list(self.skip_dates), "place": self.place, "link": self.link,
             "source": self.source, "source_ref": self.source_ref,
             "sender_domain": self.sender_domain, "private": self.private,
-            "confirmed": self.confirmed, "evidence": self.evidence,
+            "confirmed": self.confirmed, "evidence": self.evidence, "all_day": self.all_day,
         }
 
 
@@ -110,6 +118,7 @@ def _from_payload(payload: Mapping[str, Any]) -> Commitment:
         source_ref=str(payload.get("source_ref") or ""),
         sender_domain=str(payload.get("sender_domain") or ""),
         evidence=str(payload.get("evidence") or ""),
+        all_day=bool(payload.get("all_day")),
     )
 
 

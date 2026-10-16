@@ -22,6 +22,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from datetime import time as clock
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
@@ -59,7 +60,11 @@ _CATCH_UP_S: Final[float] = 5.0
 _AHEAD: Final[timedelta] = timedelta(days=7)
 _ACTION_ID: Final[str] = "commitment-reminders"
 # A reminder this module armed has this id prefix; no other reminder does.
-_RID: Final[str] = reminder_state.ID_PREFIX + "cm"
+_RID: Final[str] = commitments.REMINDER_PREFIX
+# A mail this young that the job ledger has not seen yet is left for the next cycle: job mail may
+# be about to call it an interview, and that has its own reminders.
+_JOB_FIRST: Final[timedelta] = timedelta(minutes=30)
+_EVENING: Final[clock] = clock(20, 0)
 _PLACE_SHORT: Final[int] = 40
 _LOG_WAIT_S: Final[float] = 5.0
 _FIELDS: Final[tuple[str, ...]] = (
@@ -141,7 +146,7 @@ class CommitmentIntake:
             for message_id in self._unseen(servers):
                 now = self.now()
                 try:
-                    verdict, given, said = self._read(servers, conn, message_id, now)
+                    read = self._read(servers, conn, message_id, now)
                 except _ModelFailed:
                     LOGGER.warning("commitments: the model did not answer", exc_info=True)
                     seen.record(self._db, message_id, "error", now)
@@ -150,6 +155,9 @@ class CommitmentIntake:
                     LOGGER.warning("commitments: cannot read %s", message_id, exc_info=True)
                     seen.record(self._db, message_id, "error", now)
                 else:
+                    if read is None:
+                        continue  # left unread for a later cycle
+                    verdict, given, said = read
                     seen.record(
                         self._db, message_id, verdict, now, input_json=given, output_json=said,
                     )
@@ -183,13 +191,17 @@ class CommitmentIntake:
 
     def _read(
         self, servers: McpServers, conn: sqlite3.Connection, message_id: str, now: datetime,
-    ) -> tuple[str, str, str]:
-        """One letter to ``(verdict, what the model was given, what it said)``."""
+    ) -> tuple[str, str, str] | None:
+        """One letter to ``(verdict, what the model was given, what it said)``; None to wait."""
         args = {"messageId": message_id, "format": "metadata"}
         head = _letter(gmail_read(servers, "gmail_get", args))
         domain = head["address"].rpartition("@")[2].lower()
         if ledger.is_interview_mail(self._db, message_id):
             return "interview", "", ""  # ADR 0186 has its reminders
+        sent = datetime.fromisoformat(head["received"]) if head["received"] else None
+        young = sent is not None and now - sent < _JOB_FIRST
+        if young and not ledger.has_seen_row(self._db, message_id):
+            return None  # job mail has not looked at it yet
         rule = commitments.sender_rules(conn).get(domain)
         if rule == "never":
             return "filtered", "", ""
@@ -258,6 +270,7 @@ class CommitmentIntake:
                     end_at=fields.get("end_at", ""),
                     weekly_until=fields.get("weekly_until", ""),
                     skip_dates=tuple(fields.get("skip_dates", ())),
+                    all_day=fields.get("all_day", False),
                     place=fields.get("place", ""),
                     link=fields.get("link", ""),
                     source_ref=message_id,
@@ -290,8 +303,9 @@ class CommitmentIntake:
     def reconcile(self) -> None:
         """Make the pending reminders match the next seven days; running it twice changes nothing.
 
-        One reminder, ``remind_before_min`` before each occurrence still ahead. One that no
-        occurrence wants any more (dropped, changed, skipped) is cancelled.
+        One reminder, ``remind_before_min`` before each occurrence still ahead (an all-day one at
+        20:00 the evening before). One that no occurrence wants any more (dropped, changed,
+        skipped) is cancelled.
         """
         now = self.now()
         zone = ZoneInfo(self.zone)
@@ -304,7 +318,11 @@ class CommitmentIntake:
                 start = datetime.fromtimestamp(occ.start_ms / 1000, zone)
                 if start > now:  # one that has begun is not reminded of
                     tail = occ.commitment.commitment_id.removeprefix("commitment-")[:12]
-                    due = start - timedelta(minutes=self._settings.remind_before_min)
+                    due = (
+                        datetime.combine(start.date() - timedelta(days=1), _EVENING, zone)
+                        if occ.commitment.all_day
+                        else start - timedelta(minutes=self._settings.remind_before_min)
+                    )
                     line = self._line(occ.commitment, start)
                     wanted[f"{_RID}{tail}-{occ.start_ms}"] = (due, line)
             known = reminder_state.fold(conn)
@@ -332,11 +350,15 @@ class CommitmentIntake:
 
     @staticmethod
     def _line(c: commitments.Commitment, start: datetime) -> str:
-        """The reminder's words: a private commitment is only its time."""
+        """The reminder's words: a private commitment is only its time (an all-day one, nothing)."""
         at = f"{start:%H:%M}"
+        place = f" · {c.place}" if c.place and len(c.place) <= _PLACE_SHORT else ""
+        if c.all_day:
+            if c.private:
+                return lang.t("commitment.rem.private_day")
+            return lang.t("commitment.rem.day", title=c.title, place=place)
         if c.private:
             return lang.t("commitment.rem.private", time=at)
-        place = f" · {c.place}" if c.place and len(c.place) <= _PLACE_SHORT else ""
         return lang.t("commitment.rem.line", time=at, title=c.title, place=place)
 
     # --- plumbing ------------------------------------------------------------------------

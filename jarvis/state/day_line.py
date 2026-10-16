@@ -26,7 +26,8 @@ Each source folds on its own and a source that raises leaves its items out (:fun
 - ``commitments``: what he has to go to (ADR 0274), folded from the event log, one item per
   occurrence in his lane as kind ``event`` (every build of the phone draws it), with ``source``
   (``mail`` or ``said``), ``confirmed``, ``private`` and ``place`` besides the calendar's fields;
-  its id is ``<commitment_id>@<day>``;
+  its id is ``<commitment_id>@<day>``; an all-day one (a deadline with a date and no hour) is a
+  label of the day instead of an item, with the same extra fields;
 - ``imports``: what he handed over (ADR 0259), in his lane: each payment that moved money as a
   point (amount, direction, counterparty, item), and each conversation with Claude as a span from
   its first to its last message of the window (the title as text); with no memory store it has
@@ -129,12 +130,13 @@ class _NotConnected(Exception):  # noqa: N818 — a source's answer, not an erro
 class DayLine:
     """The items of one window, sorted by start then id, and the sources that could not be read.
 
-    ``labels`` are what the day carries without a stretch of time: ``{title, source}``.
+    ``labels`` are what the day carries without a stretch of time: ``{title, source}``, and for
+    an all-day commitment also ``{confirmed, private, place, id}``.
     """
 
     items: list[dict[str, Any]]
     missing: list[str]
-    labels: list[dict[str, str]] = field(default_factory=list)
+    labels: list[dict[str, Any]] = field(default_factory=list)
 
 
 def parse_day(text: str) -> date:
@@ -205,7 +207,10 @@ def fold_day(
             LOGGER.exception("day line: the %s source could not be read", name)
             missing.append(name)
     labels = [
-        {"title": row["title"], "source": "calendar"} for row in items if row["kind"] == "label"
+        {"title": row["title"], "source": "calendar"}
+        if "confirmed" not in row  # a commitment's label also says whose it is (ADR 0274)
+        else {k: row[k] for k in ("title", "source", "confirmed", "private", "place", "id")}
+        for row in items if row["kind"] == "label"
     ]
     items = _without_pin_rings([row for row in items if row["kind"] != "label"])
     items = _without_ridden_moves(items, now_ms)
@@ -245,6 +250,8 @@ def _reminder_items(
     for one in reminders.fold(conn).values():
         if one.cancelled or not window_start <= one.due_at_ms < window_end:
             continue
+        if one.reminder_id.startswith(commitments.REMINDER_PREFIX):
+            continue  # the commitment's ring: the commitment stands for it
         fired = one.fired_at_ms is not None
         items.append({
             "id": one.reminder_id,
@@ -347,12 +354,12 @@ def _calendar_items(
 def _commitment_items(
     conn: sqlite3.Connection, sources: DaySources, window_start: int, window_end: int, now_ms: int,
 ) -> list[dict[str, Any]]:
-    """Each occurrence of a live commitment in the window, in his lane, as an ``event``."""
+    """Each occurrence of a live commitment in the window: an ``event``, a ``label`` if all-day."""
     return [
         {
             "id": f"{occ.commitment.commitment_id}@{occ.day}",
             "lane": "you",
-            "kind": "event",
+            "kind": "label" if occ.commitment.all_day else "event",
             "start_ms": occ.start_ms,
             "end_ms": occ.end_ms,
             "state": _state(occ.start_ms, occ.end_ms, now_ms),

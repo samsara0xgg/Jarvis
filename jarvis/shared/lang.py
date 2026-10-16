@@ -1116,6 +1116,10 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "job.title.job_other": {"zh": "求职邮件 · {company}", "en": "Job mail · {company}"},
     # ADR 0274: the reminder before a commitment; a private one says only its time.
     "commitment.rem.private": {"zh": "{time} 有一件事", "en": "{time} you have something on"},
+    "commitment.rem.private_day": {
+        "zh": "明天有一件事要办", "en": "you have something to do tomorrow",
+    },
+    "commitment.rem.day": {"zh": "明天 {title}{place}", "en": "Tomorrow: {title}{place}"},
     "commitment.rem.line": {"zh": "{time} {title}{place}", "en": "{time} {title}{place}"},
     # ADR 0186: the two interview reminders and the Outlook event written for an interview time.
     "job.rem.evening": {

@@ -360,6 +360,15 @@ def is_flagged(path: Path, message_id: str) -> bool:
         )
 
 
+def has_seen_row(path: Path, message_id: str) -> bool:
+    """Whether the job-mail poller has recorded this mail at all (ADR 0274)."""
+    with _db(path) as conn:
+        return (
+            conn.execute("SELECT 1 FROM job_seen WHERE message_id = ?", (message_id,)).fetchone()
+            is not None
+        )
+
+
 def seen_ids(path: Path) -> set[str]:
     """Ids not to triage again: decided ones, and errors retried ``MAX_ERROR_TRIES`` times."""
     with _db(path) as conn:

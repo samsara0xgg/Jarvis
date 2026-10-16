@@ -1263,7 +1263,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         ),
         optional_payload=(
             "end_at", "weekly_until", "skip_dates", "place", "link", "source_ref",
-            "sender_domain", "evidence",
+            "sender_domain", "evidence", "all_day",
         ),
         schema_version=1,
     ),

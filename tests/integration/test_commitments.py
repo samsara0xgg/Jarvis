@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 from contextlib import closing
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -784,3 +784,181 @@ def test_the_replay_script_filters_offline_and_carries_commitments_forward(tmp_p
     assert seen_known == [True]
     assert [(r["message_id"], r["asked"], [a["action"] for a in r["actions"] or []])
             for r in lines] == [("b", False, []), ("a", True, ["new"]), ("c", True, ["update"])]
+
+
+# --- follow-up 1: all-day items, the interview race, quiet readers, replay days -----------
+
+_DUE = {
+    "action": "new", "title": "Enable 2FA", "start_at": "2026-10-31", "all_day": True,
+    "private": False, "evidence": "by Oct 31",
+}
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (_DUE, ("2026-10-31T00:00:00-07:00", True)),
+        ({**_DUE, "start_at": "2026-10-31T17:45:00-07:00"}, ("2026-10-31T00:00:00-07:00", True)),
+        ({**_DUE, "end_at": "2026-11-01T00:00:00-07:00"}, ("2026-10-31T00:00:00-07:00", True)),
+        ({**_DUE, "all_day": False, "start_at": "2026-10-31T17:45:00"},
+         ("2026-10-31T17:45:00-07:00", False)),
+        ({**_DUE, "all_day": "yes"}, None),
+        ({**_DUE, "start_at": "someday"}, None),
+    ],
+)
+def test_an_all_day_item_is_the_local_midnight_of_its_day(
+    raw: dict[str, Any], expected: tuple[str, bool] | None,
+) -> None:
+    """A date with no hour parses to that day's midnight; a bad flag drops the action."""
+    found = _parse([raw])
+    if expected is None:
+        assert found == []
+        return
+    (action,) = found
+    assert (action.fields["start_at"], action.fields["all_day"]) == expected
+    assert "end_at" not in action.fields or not expected[1]
+
+
+def test_the_prompt_asks_for_dated_obligations_and_not_sales_deadlines() -> None:
+    """The wording the live exam depends on: the all-day rule and the sales exclusion."""
+    system, _user = triage.build_prompt(
+        triage.Mail("S", "s.example", "Subject", "2026-10-01T00:00:00+00:00", "Body"),
+        [], zone="America/Los_Angeles", today=_TODAY,
+    )
+    assert '"all_day": true' in system
+    assert "date but no time" in system
+    assert '"offer ends"' in system
+    assert "cannot tell the time" not in system
+
+
+def test_an_all_day_occurrence_is_its_whole_day(log: _Log) -> None:
+    """It overlaps any window inside its day and none outside; a weekly one keeps the rule."""
+    one = _record(_at(10, 31, 0), all_day=True, weekly_until="2026-11-07")
+    commitments.note(log.conn, one)
+    assert _days(log, _at(10, 31, 22), _at(11, 1, 1)) == ["2026-10-31"]
+    assert _days(log, _at(11, 1, 0), _at(11, 7, 0)) == []
+    assert _days(log, _at(11, 7, 12), _at(11, 8, 0)) == ["2026-11-07"]
+    (first, *_) = commitments.occurrences(log.conn, _ms(_at(10, 1, 0)), _ms(_at(12, 1, 0)))
+    assert first.end_ms - first.start_ms == 24 * 3_600_000
+
+
+def test_the_poller_notes_an_all_day_item_and_its_reminder_is_the_evening_before(
+    log: _Log,
+) -> None:
+    """Evening 20:00 the day before, time-free words when private, nothing once the day begins."""
+    gmail = _Gmail([_mail("m2", "Bank <a@bank.example>", "Security", "Enable 2FA by Oct 31.", 2)])
+    assert _intake(log, gmail, _Model({"Security": [_DUE]})).poll_once() == 1
+    (held,) = commitments.live(log.conn)
+    assert (held.all_day, held.start_at) == (True, "2026-10-31T00:00:00-07:00")
+    private = _record(_at(10, 15, 0), title="Check-in", all_day=True, private=True)
+    commitments.note(log.conn, private)
+    intake = _intake(log, _Gmail([]), _Model({}))
+    intake.reconcile()
+    intake.reconcile()
+    rings = {r.due_at_local: r.text for r in _pending(log)}
+    assert rings == {"2026-10-14T20:00:00-07:00": "you have something to do tomorrow"}
+    intake.now = lambda: _at(10, 30, 9).astimezone(UTC)
+    intake.reconcile()
+    assert sorted((r.due_at_local, r.text) for r in _pending(log)) == [
+        ("2026-10-30T20:00:00-07:00", "Tomorrow: Enable 2FA"),
+    ]
+    intake.now = lambda: _at(10, 31, 9).astimezone(UTC)
+    intake.reconcile()  # the day has begun
+    assert _pending(log) == []
+
+
+def test_the_readers_show_an_all_day_item_as_due_and_leave_its_ring_out(log: _Log) -> None:
+    """my_schedule says due; the day has a label, not an item; the state block lists it."""
+    one = _record(_at(10, 15, 0), title="Enable 2FA", all_day=True, place="bank.example")
+    timed = _record(_at(10, 15, 10), title="Dentist", confirmed=True)
+    for rec in (one, timed):
+        commitments.note(log.conn, rec)
+    _intake(log, _Gmail([]), _Model({})).reconcile()
+    assert _pending(log), "the interim rings exist"
+    rows = {r["id"]: r for r in _schedule(log)["items"] if "id" in r}
+    assert rows[one.commitment_id]["when"] == "due tomorrow (Thu), all day"
+    assert not [r for r in _schedule(log)["items"] if r["source"] == "reminder"]
+    first, last = day_window(date(2026, 10, 15), ZONE)
+    day = fold_day(log.conn, first, last, _ms(NOW), DaySources(ZONE))
+    assert [i["kind"] for i in day.items] == ["event"]  # the dentist; no ring, no all-day item
+    assert day.labels == [{
+        "title": "Enable 2FA", "source": "mail", "confirmed": False, "private": False,
+        "place": "bank.example", "id": f"{one.commitment_id}@2026-10-15",
+    }]
+    line = calendar_line(
+        None, ZONE, lambda: NOW.astimezone(UTC),
+        lambda now: next_appointments(log.paths.event_log, ZONE, now),
+    )
+    assert line == (
+        'Next on his calendar (read just now): due tomorrow (Thu) "Enable 2FA (not confirmed)";'
+        ' tomorrow (Thu) 10:00 am "Dentist".'
+    )
+    # kept can still list the rings
+    kept = _Keep(log).call("kept", kind="reminder")
+    assert kept["items"]
+
+
+def test_the_state_block_lists_a_deadline_due_today(log: _Log) -> None:
+    """An all-day item of today is still ahead at noon."""
+    commitments.note(log.conn, _record(_at(10, 14, 0), title="Hand in form", all_day=True))
+    now = _at(10, 14, 12).astimezone(UTC)
+    line = calendar_line(
+        None, ZONE, lambda: now, lambda at: next_appointments(log.paths.event_log, ZONE, at),
+    )
+    assert line == (
+        'Next on his calendar (read just now): due today "Hand in form (not confirmed)".'
+    )
+
+
+def _mail_at(key: str, subject: str, when: datetime) -> dict[str, Any]:
+    stamp = when.astimezone(UTC).strftime("%a, %d %b %Y %H:%M:%S +0000")
+    return {
+        "id": key, "threadId": key, "from": "Studio <hello@studio.example>", "subject": subject,
+        "date": stamp, "body": "Tuesday 7 PM.",
+    }
+
+
+def test_a_young_mail_the_job_ledger_has_not_seen_waits_and_an_old_one_does_not(log: _Log) -> None:
+    """Under 30 minutes and no job_seen row: unread and unrecorded; seen or older: read."""
+    gmail = _Gmail([
+        _mail_at("m1", "Old unseen", NOW - timedelta(minutes=45)),
+        _mail_at("m2", "Young unseen", NOW - timedelta(minutes=5)),
+        _mail_at("m3", "Young seen", NOW - timedelta(minutes=6)),
+    ])
+    ledger.record_seen(log.memory, "m3", "not_job", NOW)
+    model = _Model({})
+    intake = _intake(log, gmail, model)
+    assert intake.poll_once() == 2
+    assert sorted(model.asked) == ["Old unseen", "Young seen"]
+    assert _verdicts(log) == {"m1": "none", "m3": "none"}  # m2 left no record
+    intake.now = lambda: (NOW + timedelta(minutes=40)).astimezone(UTC)
+    assert intake.poll_once() == 1  # half an hour on, job mail or not, it is read
+    assert "Young unseen" in model.asked
+    assert _verdicts(log)["m2"] == "none"
+
+
+def test_the_replay_gives_each_mail_its_own_day_with_today_received(tmp_path: Path) -> None:
+    """``--today received`` tells the model the mail's received date as today."""
+    from scripts import commitment_replay  # noqa: PLC0415 - only this test needs it
+
+    rows = [{
+        "message_id": "a", "sender_name": "Bank", "sender_domain": "bank.example",
+        "subject": "Security", "received_at": "2026-10-02T20:00:00+00:00",
+        "body": "Enable 2FA by Oct 31.",
+    }]
+    told: list[str] = []
+
+    def ask(_system: str, user: str) -> str:
+        told.append(next(x for x in user.splitlines() if x.startswith("His time zone")))
+        return "[]"
+
+    commitment_replay.replay(rows, "America/Los_Angeles", None, ask)
+    commitment_replay.replay(rows, "America/Los_Angeles", _TODAY, ask)
+    assert told == [
+        "His time zone: America/Los_Angeles. Today: 2026-10-02.",
+        "His time zone: America/Los_Angeles. Today: 2026-10-14.",
+    ]
+    source = tmp_path / "in.jsonl"
+    source.write_text(json.dumps(rows[0]) + "\n", encoding="utf-8")
+    out = tmp_path / "o.jsonl"
+    assert commitment_replay.main([str(source), str(out), "--today", "received"]) == 0

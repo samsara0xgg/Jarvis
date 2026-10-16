@@ -52,6 +52,7 @@ class CalendarItem(NamedTuple):
 
     start: datetime
     title: str
+    all_day: bool = False  # a date with no hour: shown as "due <day>"
 
 
 class CalendarGlance(NamedTuple):
@@ -160,7 +161,9 @@ def next_appointments(
         title = "something private" if one.private else one.title
         if not one.confirmed:
             title += " (not confirmed)"
-        items.append(CalendarItem(datetime.fromtimestamp(occ.start_ms / 1000, UTC), title))
+        items.append(
+            CalendarItem(datetime.fromtimestamp(occ.start_ms / 1000, UTC), title, one.all_day),
+        )
     return items
 
 
@@ -180,15 +183,25 @@ def calendar_line(
     if glance is None and not held:
         return None
     items = [*(() if glance is None else glance.items), *held]
-    ahead = sorted((i for i in items if i.start > now), key=lambda i: i.start)[:_ITEMS]
+    today = now.astimezone(zone).date()
+    ahead = sorted(
+        (
+            i for i in items
+            if i.start > now or (i.all_day and i.start.astimezone(zone).date() >= today)
+        ),
+        key=lambda i: i.start,
+    )[:_ITEMS]
     if not ahead:
         return None
-    today = now.astimezone(zone).date()
 
     def said(item: CalendarItem) -> str:
         local = item.start.astimezone(zone)
         days = (local.date() - today).days
-        if days == 0:
+        if item.all_day:
+            when = "due today" if days == 0 else (
+                f"due tomorrow ({local:%a})" if days == 1 else f"due {local:%a %b} {local.day}"
+            )
+        elif days == 0:
             when = speakable.clock(local)
         elif days == 1:
             when = f"tomorrow ({local:%a}) {speakable.clock(local)}"

@@ -118,16 +118,18 @@ You read one email sent to Allen, a university student in Victoria, BC, and say 
 him go somewhere or be somewhere at a time. The email may be in Chinese, English or both. Answer \
 with a JSON array only, no other text. An email that makes him go nowhere is [].
 
-Count only what he is registered for, invited to personally, has booked or is obliged to attend: \
-a class or a group he joined, an appointment, an exam, a government or school deadline with a \
-time, an interview that is not from a job application. Marketing, newsletters, webinars he did \
-not sign up for, and other people's events are [].
+Count only what he is registered for, invited to personally, has booked or is obliged to attend \
+or do: a class or a group he joined, an appointment, an exam, a government, school or account \
+deadline, a check-in due by a date, an interview that is not from a job application. Marketing, \
+newsletters, webinars he did not sign up for, other people's events, and sales deadlines ("offer \
+ends", "apply now", "last chance") are [].
 
 Each action is an object:
 {"action": "new" | "update" | "cancel",
  "commitment_id": <only for update and cancel: one id from the known list>,
  "title": short, in the words of the email,
  "start_at": "YYYY-MM-DDTHH:MM:SS+HH:MM" local time of the first time, with the offset,
+ "all_day": true only for a personal obligation with a date and no time (see below), else omit,
  "end_at": same form or omit,
  "weekly_until": "YYYY-MM-DD" the last day of a weekly series, or omit,
  "skip_dates": ["YYYY-MM-DD", ...] days of a series that do not happen, or omit,
@@ -142,8 +144,11 @@ changed) or nothing at all, never "new".
 - A cancelled or called-off event that is in the known list is "cancel".
 - "private" is true for counselling, therapy, anger or mental-health groups, legal and medical \
 matters; false for the rest.
+- A personal obligation with a date but no time (a deadline such as "enable 2FA by Oct 31", a \
+check-in "before the 15th", an all-day event) is an item with "all_day": true and "start_at" that \
+date at 00:00 local. With a time, it is a normal item. An email with no date at all is [].
 - Work out dates from the received time and today's date. If the email gives no year, take the \
-next such date. If you cannot tell the time, answer [].
+next such date. If you cannot tell the date, answer [].
 """
 
 
@@ -212,12 +217,19 @@ def _fields(raw: dict[str, Any], zone: tzinfo, today: date) -> dict[str, Any] | 
             return None
         out["title"] = title
     start = None
+    all_day = raw.get("all_day")
+    if all_day is not None and not isinstance(all_day, bool):
+        return None
     if "start_at" in raw:
         start = _time(raw["start_at"], zone)
         if start is None or abs(start.date() - today) > _YEAR:
             return None
+        if all_day:  # the day, from its local midnight
+            start = start.replace(hour=0, minute=0, second=0, microsecond=0)
         out["start_at"] = start.isoformat(timespec="seconds")
-    if raw.get("end_at"):
+    if all_day is not None:
+        out["all_day"] = all_day
+    if raw.get("end_at") and not all_day:
         end = _time(raw["end_at"], zone)
         if end is None or (start is not None and end <= start):
             return None
