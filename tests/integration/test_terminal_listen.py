@@ -13,6 +13,10 @@ the speech provider, the recognizer, the microphone):
 - the brain's drop and stop commands reach the terminal that holds the playback, and the
   terminal's executor runs them against its media actor;
 - a microphone that cannot be opened leaves a terminal that still speaks, and is not retried;
+- a listening terminal runs a daemon's device watch and power observer beside its capture
+  session, hooked to one power coordinator, and ends them with it; one that cannot listen runs
+  neither; the reSpeaker's saved look is kept on the board while any terminal runs, and a pick
+  on the Settings page reaches it;
 - one end-to-end run over a real websocket: a replayed WAV, heard by a real capture session with a
   fake recognizer, becomes an ``utterance.received`` in the brain's log under the terminal's
   name, the brain's answer is played by the terminal, and the end-of-speech to first-audible
@@ -24,6 +28,7 @@ the speech provider, the recognizer, the microphone):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import json
 import logging
@@ -36,12 +41,15 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pytest
 
+from jarvis.runtime import inherent_loop
 from jarvis.runtime import terminal as terminal_module
 from jarvis.runtime.dictation import load_vocab
+from jarvis.runtime.settings import Settings
 from jarvis.shared.realtime_trace import configure_realtime_trace_jsonl, reset_realtime_trace
 from jarvis.state.device_tokens import pair_device
 from jarvis.state.event_log import iter_events, open_event_log
 from jarvis.surface import (
+    respeaker_board,
     terminal_listen,
     voice_asr,
     voice_audio,
@@ -787,10 +795,40 @@ LISTEN_CONFIG: dict[str, Any] = {
 """This terminal's own config: wake, VAD and endpointing knobs live here, not on the brain."""
 
 
+class _Power:
+    """The system's power registration, replaced: keeps the hooks it was given and the shutdown."""
+
+    def __init__(self) -> None:
+        self.installs = 0
+        self.hooks: tuple[Any, Any] | None = None  # bound methods of the coordinator
+        self.log: sqlite3.Connection | None = None
+        self.shutdowns = 0
+
+    def install(
+        self, event_log: sqlite3.Connection, *, loop: asyncio.AbstractEventLoop,
+        before_sleep_hook: Callable[[], object], on_wake_hook: Callable[[], object],
+    ) -> _Power:
+        assert loop.is_running()
+        self.installs += 1
+        self.log = event_log
+        self.hooks = (before_sleep_hook, on_wake_hook)
+        return self
+
+    def shutdown(self) -> None:
+        self.shutdowns += 1
+
+
 def _heard(
     monkeypatch: pytest.MonkeyPatch, backend: Callable[[], voice_backend.AudioDuplexBackend],
-) -> None:
-    """Replace the machine under the capture session: models, microphone, speaker device."""
+) -> _Power:
+    """Replace the machine under the capture session: models, microphone, speaker, power.
+
+    CoreAudio lists no devices (the device watch has nothing to watch and ends) and the system's
+    power registration is a stand-in, so no test registers with the real machine.
+    """
+    power = _Power()
+    monkeypatch.setattr(inherent_loop, "install_power_observer", power.install)
+    monkeypatch.setattr(voice_backend, "coreaudio_devices", lambda _kind: None)
     monkeypatch.setattr(terminal_module, "_voice_models_preflight", lambda **_k: (True, []))
     monkeypatch.setattr(voice_asr, "SenseVoiceRecognizer", _Ears)
     monkeypatch.setattr(voice_wake, "MicroWakeWordEngine", _Wake)
@@ -802,6 +840,7 @@ def _heard(
     monkeypatch.setattr(voice_backend, "SoundDeviceDuplexBackend", lambda **_k: backend())
     monkeypatch.setattr(voice_tts, "_open_output_stream", _open_stream(pull=True))
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    return power
 
 
 def _say(path: Path) -> Path:
@@ -827,7 +866,7 @@ def test_a_microphone_that_cannot_be_opened_leaves_a_terminal_that_still_speaks(
                 reason="another process holds the microphone", attempt_id=kwargs["attempt_id"],
             )
 
-    _heard(monkeypatch, lambda: Busy(wav))
+    power = _heard(monkeypatch, lambda: Busy(wav))
     token = pair_device(tmp_path, "macbook")
     brain = _Brain(tmp_path)
     brain.hub.listening = BrainListening(brain.hub, brain.hub.events)  # type: ignore[arg-type]
@@ -853,11 +892,127 @@ def test_a_microphone_that_cannot_be_opened_leaves_a_terminal_that_still_speaks(
         )
         assert terminal.error is None
     assert len(starts) == 1
+    assert power.installs == 0  # no capture session, so no power hooks to carry
     refusal = [r for r in caplog.records if "does not listen" in r.getMessage()]
     assert len(refusal) == 1
     assert refusal[0].levelno == logging.ERROR
     assert "stop that one and restart" in refusal[0].getMessage()
     assert "utterance.received" not in _types(brain.log)
+
+
+def test_a_listening_terminal_runs_the_device_watch_and_the_power_observer_and_ends_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ADR 0054 and ADR-0009 D3 on a terminal: the daemon's two watches beside the microphone.
+
+    Both are the daemon's own functions over one power coordinator that holds this terminal's
+    capture session and media actor. A change of the default microphone is re-read (the log line
+    the daemon prints), the system's sleep notice reaches the coordinator, the Settings page's
+    device pick reaches the watch, and ending the terminal shuts the observer and the watch.
+    """
+    wav = _write_wav(tmp_path / "room.wav", np.zeros(16_000 * 20, dtype="<i2"))  # nobody speaks
+    power = _heard(monkeypatch, lambda: voice_backend.FileReplayBackend(wav))
+    default_mic = [1]
+    monkeypatch.setattr(
+        voice_backend, "coreaudio_devices",
+        lambda kind: (default_mic[0] if kind == "input" else 9, {}),
+    )
+    monkeypatch.setattr(inherent_loop, "_AUDIO_DEVICE_POLL_S", 0.05)
+    refreshed: list[tuple[str | None, str | None]] = []
+
+    def refresh(_self: object, *, input_device: str | None, output_device: str | None) -> str:
+        """The re-read itself is test_audio_device_refresh's; PortAudio is the machine's."""
+        refreshed.append((input_device, output_device))
+        return "refreshed"
+
+    monkeypatch.setattr(inherent_loop._VoicePowerCoordinator, "refresh_devices", refresh)  # noqa: SLF001
+    watches: list[asyncio.Task[None]] = []
+    start_watch = inherent_loop._start_audio_device_watch  # noqa: SLF001
+
+    def record(*args: Any) -> asyncio.Task[None]:  # noqa: ANN401
+        watches.append(start_watch(*args))
+        return watches[-1]
+
+    monkeypatch.setattr(terminal_module, "_start_audio_device_watch", record)
+    page = Settings(tmp_path / "page", LISTEN_CONFIG, lambda _kind: [])
+    token = pair_device(tmp_path, "macbook")
+    brain = _Brain(tmp_path)
+    brain.hub.listening = BrainListening(brain.hub, brain.hub.events)  # type: ignore[arg-type]
+    with (
+        caplog.at_level(logging.INFO, logger="jarvis"),
+        brain,
+        _Terminal(brain.url, token, tmp_path / "terminal-root", LISTEN_CONFIG, page) as terminal,
+    ):
+        _wait_for(lambda: power.hooks is not None and bool(watches), "no watch started", 40)
+        assert power.installs == 1
+        assert not watches[0].done()
+        assert page.on_devices is not None  # a pick on the page reaches the watch
+        assert power.hooks is not None
+        before_sleep, on_wake = power.hooks
+        coordinator = before_sleep.__self__
+        assert isinstance(coordinator, inherent_loop._VoicePowerCoordinator)  # noqa: SLF001
+        assert on_wake.__self__ is coordinator
+        time.sleep(0.3)  # the watch has taken its first look
+        default_mic[0] = 2  # the microphone the system defaults to has changed
+        _wait_for(
+            lambda: any("audio devices re-read" in r.getMessage() for r in caplog.records),
+            "the device watch never re-read the devices",
+        )
+        assert refreshed == [(None, None)]  # the pick is the system default for both
+        before_sleep()
+        assert coordinator.asleep
+        assert terminal.error is None
+        assert power.shutdowns == 0
+    assert power.shutdowns == 1
+    assert watches[0].done()
+    assert power.log is not None
+    with pytest.raises(sqlite3.ProgrammingError):
+        power.log.execute("SELECT 1")  # the observer's log is closed with it
+
+
+def test_the_reSpeaker_look_is_kept_while_a_terminal_runs_and_a_pick_on_the_page_reaches_it(  # noqa: N802
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0147: no look saved, no writes; a saved look is put back; the page's save is applied.
+
+    The board is a recorder in place of the USB write. The terminal here neither speaks nor
+    listens: the board look needs no voice. Ending the terminal ends the watch.
+    """
+    looks: list[dict[str, Any]] = []
+
+    def ensure(look: dict[str, Any]) -> str:
+        looks.append(dict(look))
+        return "kept"
+
+    monkeypatch.setattr(respeaker_board, "ensure", ensure)
+    monkeypatch.setattr(inherent_loop, "_BOARD_POLL_S", 0.02)
+
+    async def link(*_args: object, **_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(terminal_module, "run_terminal_client", link)
+    page = Settings(tmp_path, {}, lambda _kind: [])
+
+    async def main() -> None:
+        task = asyncio.create_task(terminal_module._run(  # noqa: SLF001
+            "http://127.0.0.1:1", "t", tools=frozenset(), execute=lambda *_: {},
+            watched=None, page=page,
+        ))
+        await asyncio.sleep(0.3)
+        assert looks == []  # nothing saved on the page: nothing written to the board
+        assert page.on_board is not None
+        page.update({"board_light": "solid"})
+        await asyncio.sleep(0.3)
+        assert looks
+        assert looks[-1]["light"] == "solid"
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        settled = len(looks)
+        await asyncio.sleep(0.2)
+        assert len(looks) == settled  # ended with the terminal
+
+    asyncio.run(main())
 
 
 def test_a_terminal_hears_the_owner_and_the_brains_answer_is_played_where_it_was_heard(

@@ -6263,16 +6263,17 @@ async def _watch_board(settings: Settings) -> None:
 
 
 def _start_audio_device_watch(
-    runtime: JarvisRuntime,
+    config: Mapping[str, Any],
+    settings: Settings | None,
     coordinator: _VoicePowerCoordinator,
     ingress: voice_audio.AudioIngress,
     live_voice: voice_live.LiveVoice | None,
 ) -> asyncio.Task[None]:
     """Start the ADR 0054 device watch and let the Settings page's device picks reach it."""
-    realtime = runtime.config.get("realtime") or {}
+    realtime = config.get("realtime") or {}
     choice = _AudioDeviceChoice(realtime.get("input_device"), realtime.get("output_device"))
-    if runtime.settings is not None:
-        runtime.settings.on_devices = choice.choose
+    if settings is not None:
+        settings.on_devices = choice.choose
     return asyncio.create_task(
         _watch_audio_devices(coordinator, ingress, live_voice, choice),
         name="audio_device_watch",
@@ -8154,7 +8155,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         )
         if power_coordinator is not None and duplex_voice_session is not None:
             device_watch = _start_audio_device_watch(
-                runtime, power_coordinator, duplex_voice_session.ingress, live_voice,
+                runtime.config, runtime.settings, power_coordinator,
+                duplex_voice_session.ingress, live_voice,
             )
             device_watch.add_done_callback(_log_watcher_death)
             watchers.append(device_watch)

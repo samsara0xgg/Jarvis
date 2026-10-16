@@ -20,6 +20,10 @@ same capture session as a daemon's (wake, VAD, local ASR, barge-in) runs here wh
 machine's own config turns ``realtime.single_audio_ingress`` on; each callback that touches
 brain state is a call over the link, and a final utterance goes to the brain as one
 ``utterance.received``. A microphone that cannot be opened leaves a speaking-only terminal.
+Beside that session it keeps the daemon's three Mac-local jobs: the reSpeaker's saved look on
+the board (ADR 0147, with or without voice), the re-read of the audio devices when they change
+(ADR 0054) and the power observer that closes the voice before sleep and reopens it on wake
+(ADR-0009 D3).
 
 With ``--serve-ui`` it also listens on 127.0.0.1 and serves this device's UI, the companion's
 interface, forwarding what is the brain's to the brain (ADR 0183). That is the one thing here
@@ -85,17 +89,23 @@ from jarvis.runtime.inherent_loop import (
     _build_tts_pipeline,
     _build_voice_pipeline,
     _claude_sessions_read,
+    _install_power_observer_or_degrade,
     _ListenPorts,
+    _log_watcher_death,
     _repo_observer_task,
     _restart_soon,
+    _shutdown_power_observer,
     _single_ingress_activation,
     _spawn_single_ingress_session,
+    _start_audio_device_watch,
     _timesink_observer_task,
     _tts_watcher,
     _usage_observer_task,
     _usage_poll_interval_s,
     _voice_knobs,
     _voice_models_preflight,
+    _VoicePowerCoordinator,
+    _watch_board,
 )
 from jarvis.runtime.mail_codes import copy_code
 from jarvis.runtime.night_run import NightRun, night_settings
@@ -147,6 +157,7 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable
 
+    from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
     from jarvis.surface import voice_aec, voice_session
 
@@ -544,6 +555,16 @@ class _Speech:
 
 
 @dataclass
+class _MacWatch:
+    """What keeps a listening Mac's microphone right through replugs and sleep, as a daemon's."""
+
+    coordinator: _VoicePowerCoordinator
+    devices: asyncio.Task[None]  # ADR 0054: re-reads the devices when they change
+    power: PowerObserver | None  # ADR-0009 D3: none if the system would not register it
+    log: sqlite3.Connection  # the log the observer writes ``mac.sleeping`` / ``mac.awake`` to
+
+
+@dataclass
 class _Listening:
     """A running capture session, and what keeps it and the brain in step."""
 
@@ -551,6 +572,7 @@ class _Listening:
     controls: LinkedControls
     dictation: Dictation | None = None  # recording on this microphone, for the UI's dictation
     recorder: LifelogRecorder | None = None  # his day, from this microphone (ADR 0256)
+    mac: _MacWatch | None = None
 
 
 def _listening_requested(config: Mapping[str, Any]) -> bool:
@@ -612,7 +634,9 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
     )
 
 
-async def _start_listening(speaking: _Speaking, speech: _Speech) -> _Listening | None:
+async def _start_listening(
+    speaking: _Speaking, speech: _Speech, page: Settings | None = None,
+) -> _Listening | None:
     """Run the capture session of this terminal, or say why this terminal only speaks.
 
     One attempt, no retry: a microphone another process holds stays held, and trying again in
@@ -699,7 +723,42 @@ async def _start_listening(speaking: _Speaking, speech: _Speech) -> _Listening |
     controls.on_surface_exit = session.dismiss
     controls.start()
     LOGGER.info("this terminal listens: wake, VAD and ASR run here; utterances go to the brain")
-    return _Listening(session, controls, dictation, _start_lifelog(speaking, session))
+    return _Listening(
+        session, controls, dictation, _start_lifelog(speaking, session),
+        _start_mac_watch(speaking, pipeline, session, page),
+    )
+
+
+def _start_mac_watch(
+    speaking: _Speaking, pipeline: StreamingTTSPipeline,
+    session: voice_session.DuplexVoiceSession, page: Settings | None,
+) -> _MacWatch:
+    """The device watch and the power observer a daemon runs beside its capture session.
+
+    The observer writes its two events to this terminal's night log: the night run's card reads
+    when the Mac slept from there, and nothing else here reads them. Runs on the loop: the
+    observer marshals its callbacks onto it, and the log belongs to its thread.
+    """
+    coordinator = _VoicePowerCoordinator(session=session, media=pipeline)
+    devices = _start_audio_device_watch(
+        speaking.config, page, coordinator, session.ingress, None,
+    )
+    devices.add_done_callback(_log_watcher_death)
+    log = open_event_log(speaking.runtime_root / NIGHT_LOG)
+    power = _install_power_observer_or_degrade(
+        log, asyncio.get_running_loop(),
+        before_sleep_hook=coordinator.before_sleep, on_wake_hook=coordinator.on_wake,
+    )
+    return _MacWatch(coordinator, devices, power, log)
+
+
+async def _stop_mac_watch(watch: _MacWatch) -> None:
+    """Power observer first, as a daemon's teardown has it: a sleep landing now finds it shut."""
+    _shutdown_power_observer(watch.power)
+    watch.coordinator.close(timeout_s=0.1)
+    watch.devices.cancel()
+    await asyncio.gather(watch.devices, return_exceptions=True)
+    watch.log.close()
 
 
 def _start_lifelog(
@@ -744,6 +803,8 @@ async def _stop_listening(task: asyncio.Task[_Listening | None] | None) -> None:
     listening = task.result()
     if listening is None:
         return
+    if listening.mac is not None:
+        await _stop_mac_watch(listening.mac)
     await asyncio.to_thread(listening.controls.stop)
     if listening.recorder is not None:
         await asyncio.to_thread(listening.recorder.close)
@@ -845,21 +906,39 @@ def _start_night(night: NightRun | None, speech: _Speech) -> asyncio.Task[None] 
     return asyncio.create_task(night.run(), name="night_run")
 
 
+def _device_page(config: Mapping[str, Any], runtime_root: Path) -> Settings:
+    """This machine's Settings page; the UI, the board look and the device watch share one."""
+    return Settings(
+        runtime_root, config, _audio_devices, _default_audio_device, owned=_OWN_PAGE_KEYS,
+    )
+
+
+async def _cancel(task: asyncio.Task[None] | None) -> None:
+    """End a task this terminal started, if it did."""
+    if task is not None:
+        task.cancel()
+        await asyncio.wait({task})
+
+
+def _start_board(page: Settings | None) -> asyncio.Task[None] | None:
+    """Keep the Settings page's reSpeaker look on the board (ADR 0147); no look saved, no writes."""
+    if page is None:
+        return None
+    task = asyncio.create_task(_watch_board(page), name="board_watch")
+    task.add_done_callback(_log_watcher_death)
+    return task
+
+
 def _ui_device(
     ui: _Ui, speaking: _Speaking | None, speech: Callable[[], _Speech],
-    night: NightRun | None = None,
+    night: NightRun | None = None, page: Settings | None = None,
 ) -> Device:
     """What this machine answers itself behind the UI (ADR 0183)."""
     return Device(
         controls=None if speaking is None else speaking.controls,
         settings=(
             None if speaking is None
-            else _DeviceSettings(
-                Settings(
-                    ui.runtime_root, ui.config, _audio_devices, _default_audio_device,
-                    owned=_OWN_PAGE_KEYS,
-                ),
-            )
+            else _DeviceSettings(page or _device_page(ui.config, ui.runtime_root))
         ),
         restart=_restart_soon if spawned_by_terminal_agent() else None,
         release=functools.partial(release, ui.runtime_root / "settings.yaml", ui.runtime_root),
@@ -873,8 +952,14 @@ async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
     base_url: str, token: str, *, tools: frozenset[str], execute: Execute,
     watched: _Watched | None, speaking: _Speaking | None = None, ui: _Ui | None = None,
     night: NightRun | None = None, settings: Mapping[str, Any] | None = None,
+    page: Settings | None = None,
 ) -> None:
-    """The link, and beside it the observers, the voice and the UI when there is anything to run."""
+    """The link, and beside it the observers, the voice and the UI when there is anything to run.
+
+    ``page`` is this machine's Settings page. The reSpeaker's saved look is kept on the board
+    for as long as the terminal runs (ADR 0147); with voice listening it also carries the device
+    watch and the power observer a daemon runs (ADR 0054, ADR-0009 D3).
+    """
     outbox = EventOutbox() if watched is not None or speaking is not None else None
     observing = None if outbox is None or watched is None else asyncio.create_task(
         _observe(outbox, watched),
@@ -892,7 +977,7 @@ async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
             brain,
             authorize=functools.partial(local_key_matches, local_key(ui.runtime_root)),
             broadcaster=broadcaster,
-            device=_ui_device(ui, speaking, lambda: speech, night),
+            device=_ui_device(ui, speaking, lambda: speech, night, page),
         )
         server = _UiServer(uvicorn.Config(app, log_level="warning", lifespan="off"))
         serving = asyncio.create_task(server.serve(sockets=[ui.sock]))
@@ -904,20 +989,17 @@ async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
             LOGGER.exception("voice could not start; this terminal runs without it")
     if speaking is not None and speech.pipeline is not None:
         execute = with_voice_commands(execute, speech.pipeline)
-        speech.listening = asyncio.create_task(_start_listening(speaking, speech))
+        speech.listening = asyncio.create_task(_start_listening(speaking, speech, page))
     nights = _start_night(night, speech)
+    boarding = _start_board(page)
     try:
         await run_terminal_client(
             base_url, token, tools=tools, execute=execute, events=outbox, voice=speech.link,
             settings=settings,
         )
     finally:
-        if nights is not None:
-            nights.cancel()
-            await asyncio.wait({nights})
-        if observing is not None:
-            observing.cancel()
-            await asyncio.wait({observing})
+        for task in (nights, boarding, observing):
+            await _cancel(task)
         await _stop_speech(speech)
         if server is not None and serving is not None:
             server.should_exit = True
@@ -989,6 +1071,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
         sys.stderr.write(f"jarvis terminal: {exc}\n")
         return 1
     check_own("terminal", settings_yaml, runtime_root)
+    page = _device_page(config, runtime_root)
     ui = None
     if serve_ui is not None:
         try:
@@ -1044,7 +1127,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
             speaking=_Speaking(
                 config, runtime_root, config_path.parent, brain_url=base_url, brain_token=token,
             ) if voice else None,
-            ui=ui, night=night, settings=terminal_report(settings_yaml, runtime_root),
+            ui=ui, night=night, settings=terminal_report(settings_yaml, runtime_root), page=page,
         ))
     except TerminalRefusedError as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")

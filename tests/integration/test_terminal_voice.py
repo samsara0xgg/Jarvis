@@ -75,6 +75,8 @@ if TYPE_CHECKING:
 
     from starlette.types import ASGIApp, Receive, Scope, Send
 
+    from jarvis.runtime.settings import Settings
+
 REMOTE = "100.87.250.92"
 TERMINAL_WS = "ws://127.0.0.1:8006/terminal/ws"
 RATE = 8_000
@@ -1171,7 +1173,9 @@ class _Terminal:
 
     def __init__(
         self, url: str, token: str, root: Path, config: dict[str, Any] | None = None,
+        page: Settings | None = None,
     ) -> None:
+        self.page = page
         self.loop = asyncio.new_event_loop()
         self.task: asyncio.Task[None] | None = None
         self.error: BaseException | None = None
@@ -1185,7 +1189,7 @@ class _Terminal:
             self.task = asyncio.create_task(_run(
                 url, token, tools=frozenset({"read_clipboard"}),
                 execute=lambda *_: {"ok": True, "output": {}}, watched=None,
-                speaking=_Speaking(self._config, root),
+                speaking=_Speaking(self._config, root), page=self.page,
             ))
             with contextlib.suppress(asyncio.CancelledError):
                 try:
