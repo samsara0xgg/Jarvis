@@ -1251,6 +1251,38 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    # What he has to go to (ADR 0274): the list is a fold over these three types
+    # (`jarvis.state.commitments`). A `noted` carries the whole record, so the last one per id
+    # wins; a change or a confirm is a new `noted`.
+    EventTypeSchema(
+        event_type="commitment.noted",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=(
+            "commitment_id", "title", "start_at", "source", "confirmed", "private",
+        ),
+        optional_payload=(
+            "end_at", "weekly_until", "skip_dates", "place", "link", "source_ref",
+            "sender_domain", "evidence",
+        ),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="commitment.dropped",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("commitment_id", "why"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="commitment.sender_rule",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("domain", "rule"),
+        optional_payload=(),
+        schema_version=1,
+    ),
     # A pinned bus departure on the notch (ADR 0200, 0204): the pin is a fold over these types
     # (`jarvis.state.departures`); a newer `pinned` (a set of up to three trips) replaces the older,
     # the card's clicks emit `trip_added` / `trip_removed`, the daemon's refresh emits `updated` per

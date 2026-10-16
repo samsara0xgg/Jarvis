@@ -432,6 +432,19 @@ def body_excerpt(path: Path, message_id: str) -> str:
     return row["body_excerpt"] if row else ""
 
 
+def is_interview_mail(path: Path, message_id: str) -> bool:
+    """Whether the ledger holds this mail, not deleted, as an interview or an offer (ADR 0274)."""
+    with _db(path) as conn:
+        return (
+            conn.execute(
+                "SELECT 1 FROM job_mail WHERE message_id = ? AND deleted = 0"
+                " AND kind IN (SELECT value FROM json_each(?))",
+                (message_id, json.dumps(sorted(INTERVIEWING))),
+            ).fetchone()
+            is not None
+        )
+
+
 def bodyless_mails(path: Path, kinds: Sequence[str], limit: int) -> list[dict[str, Any]]:
     """The newest visible mails of these kinds with no kept body, at most ``limit`` (ADR 0184)."""
     with _db(path) as conn:
