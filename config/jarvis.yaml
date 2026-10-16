@@ -328,7 +328,7 @@ daily_report:
   # and sends it to the model. Off unless the user turns it on.
   codex_sessions: false
 
-# ADR 0276 — 每日体验表：每天 at 之后（机器睡着就在醒来后第一次检查时），给每个还没有行的过去
+# ADR 0279 — 每日体验表：每天 at 之后（机器睡着就在醒来后第一次检查时），给每个还没有行的过去
 # 日期各算一行（从事件日志里第一轮开始，从旧到新；第一次部署会补全全部历史），存进 memory.db 的
 # day_experience。纯计数和时间差，不调用模型，不出本机，不挡任何一轮。今天不算。
 # enabled: false = 不算；没有这个块或没有 at = 默认 04:00。读：python -m jarvis.runtime.experience_report

@@ -1,4 +1,4 @@
-"""Runtime wiring for the daily experience table (ADR 0276).
+"""Runtime wiring for the daily experience table (ADR 0279).
 
 Once a day, after the configured local time, the schedule folds every local date before today
 that has no ``day_experience`` row, oldest first, from the first turn on the event log. That one
