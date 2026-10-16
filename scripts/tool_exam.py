@@ -239,20 +239,28 @@ def structured_presets(config: Path, presets: Sequence[str]) -> dict[str, bool]:
     return {name: factory.snapshot(name).spoken_structured for name in presets}
 
 
+_NOTE_STARTS = (
+    'Your reply is a JSON object with "spoken"', "Your reply is spoken aloud as you write it.",
+)
+"""How either spoken reply note begins, in every version the logged requests carry."""
+
+
 def spoken_reply_for(request: Mapping[str, Any], *, structured: bool) -> dict[str, Any]:
     """``request`` with the spoken reply shape a preset gets: the note, and the text format.
 
-    The other shape's note, found verbatim in the instructions, is replaced by this one's; the
-    schema goes (unstructured) or comes (structured). A request without that note is unchanged.
+    The note in the instructions, of either shape and any older wording (its paragraph, found by
+    how it begins), becomes this shape's; the schema goes (unstructured) or comes (structured). A
+    request without a note is unchanged.
     """
-    old, new = (
-        (_SPOKEN_REPLY_NOTE, _SPOKEN_REPLY_NOTE_STRUCTURED) if structured
-        else (_SPOKEN_REPLY_NOTE_STRUCTURED, _SPOKEN_REPLY_NOTE)
-    )
     out = dict(request)
-    if old not in (request.get("instructions") or ""):
+    text = request.get("instructions") or ""
+    at = min((i for one in _NOTE_STARTS if (i := text.find(one)) >= 0), default=-1)
+    if at < 0:
         return out
-    out["instructions"] = request["instructions"].replace(old, new)
+    end = text.find("\n\n", at)
+    end = len(text) if end < 0 else end
+    note = _SPOKEN_REPLY_NOTE_STRUCTURED if structured else _SPOKEN_REPLY_NOTE
+    out["instructions"] = text[:at] + note + text[end:]
     if structured:
         out["text"] = {"format": SPOKEN_REPLY_FORMAT}
     else:

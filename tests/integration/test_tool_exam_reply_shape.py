@@ -55,3 +55,12 @@ def test_a_request_with_an_older_note_is_left_as_logged_and_counted() -> None:
         "spoken reply shape: haiku unstructured: 1/3 rewritten, 1 still carry the schema "
         "(their note is an older text); luna structured: 1/3 rewritten"
     )
+
+
+def test_an_older_wording_of_the_json_note_is_rewritten_too() -> None:
+    """Requests logged before the note's last edit carry another JSON wording; it goes too."""
+    older = _request(
+        'Your reply is a JSON object with "spoken" and "written"; an older wording.', schema=True,
+    )
+    assert tool_exam.spoken_reply_for(older, structured=False) == UNSTRUCTURED
+    assert tool_exam.spoken_reply_for(older, structured=True) == STRUCTURED
