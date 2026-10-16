@@ -97,6 +97,11 @@ CREATE TABLE IF NOT EXISTS day_prose (
     highlights   TEXT,
     draft        INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS day_experience (
+    local_date   TEXT PRIMARY KEY,
+    metrics_json TEXT NOT NULL,
+    computed_at  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS day_highlight_marks (
     id         TEXT PRIMARY KEY,
     day        TEXT NOT NULL,
@@ -172,10 +177,10 @@ CREATE INDEX IF NOT EXISTS import_entries_at ON import_entries (at_ms);
 
 # ``PRAGMA user_version`` (ADR 0068). 0 is a file from before the stamp, same
 # schema as 1; a file above this was written by a newer Jarvis and is refused.
-# ``sent``, ``record_attachments`` (ADR 0255), ``day_summaries``, ``core_memory``,
-# ``day_highlight_marks``, the places tables (ADR 0234), ``import_entries`` (ADR 0259) and
-# ``meaning_vectors`` (ADR 0260) are additive: an older opener ignores them, so they need no
-# new version. So are the
+# ``sent``, ``record_attachments`` (ADR 0255), ``day_summaries``, ``day_experience`` (ADR 0276),
+# ``core_memory``, ``day_highlight_marks``, the places tables (ADR 0234), ``import_entries``
+# (ADR 0259) and ``meaning_vectors`` (ADR 0260) are additive: an older opener ignores them, so
+# they need no new version. So are the
 # ``day_prose`` columns ``line``, ``highlights`` and ``draft`` (ADR 0235), which
 # :func:`open_memory_db` adds to a table made before.
 SCHEMA_VERSION: Final[int] = 1
@@ -1572,6 +1577,38 @@ def latest_day_summaries(
     return list(dict(rows).items())  # a later row of the same day replaces the earlier one
 
 
+def put_day_experience(path: Path, day: str, metrics_json: str) -> None:
+    """Keep one local date's experience metrics; a date computed again replaces its row."""
+    with closing(open_memory_db(path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO day_experience (local_date, metrics_json, computed_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(local_date) DO UPDATE SET metrics_json = excluded.metrics_json, "
+            "computed_at = excluded.computed_at",
+            (day, metrics_json, iso_seconds(local_now())),
+        )
+
+
+def experience_days(path: Path) -> set[str]:
+    """The local dates that already have a ``day_experience`` row."""
+    with closing(open_memory_db(path)) as conn:
+        return {str(row[0]) for row in conn.execute("SELECT local_date FROM day_experience")}
+
+
+def latest_day_experience(conn: sqlite3.Connection, count: int) -> list[tuple[str, str]]:
+    """``(local_date, metrics_json)`` of the newest ``count`` rows, oldest first.
+
+    Takes the caller's connection so a read-only one works; no table yet is no rows.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT local_date, metrics_json FROM day_experience ORDER BY local_date DESC LIMIT ?",
+            (count,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [(str(day), str(metrics)) for day, metrics in reversed(rows)]
+
+
 def pending_days(path: Path, today: date) -> list[tuple[str, int, int]]:
     """Local dates before ``today`` with records and no summary row, oldest first.
 
@@ -1630,9 +1667,11 @@ __all__ = [
     "core_memory_pending_days",
     "current_core_memory",
     "day_records",
+    "experience_days",
     "iso_seconds",
     "keep_fact",
     "last_draft_at",
+    "latest_day_experience",
     "latest_day_lines",
     "latest_day_summaries",
     "latest_highlight_marks",
@@ -1640,6 +1679,7 @@ __all__ = [
     "open_memory_db",
     "pending_days",
     "prose_days",
+    "put_day_experience",
     "remember_fact",
     "render_context",
     "search_records",

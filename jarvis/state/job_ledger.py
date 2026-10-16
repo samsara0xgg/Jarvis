@@ -1380,6 +1380,17 @@ def expire_cards(path: Path, now: datetime, after: timedelta = CARD_IGNORED_AFTE
     return len(rows)
 
 
+def card_reactions(path: Path, first: datetime, last: datetime) -> list[tuple[str, str]]:
+    """``(card id, reaction)`` of the proactive-card reactions recorded in ``[first, last)``."""
+    with _db(path) as conn:
+        rows = conn.execute(
+            "SELECT notice_id, reaction FROM notice_feedback"
+            " WHERE datetime(at) >= datetime(?) AND datetime(at) < datetime(?) ORDER BY id",
+            (_stamp(first.astimezone(UTC)), _stamp(last.astimezone(UTC))),
+        ).fetchall()
+    return [(str(row["notice_id"]), str(row["reaction"])) for row in rows]
+
+
 def _touch(
     conn: sqlite3.Connection,
     alert_id: str,
