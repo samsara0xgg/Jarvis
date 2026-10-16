@@ -11,7 +11,8 @@ module decides. Four things push, each by its own rule:
   a silent banner at ``quiet``, nothing from ``no-pop`` up. A card goes only to the device whose
   turn asked it; a Claude Code request, or a card no turn asked, only while he is away from the
   Mac, and a held request is pushed once he leaves it while it still waits (ADR 0218);
-- whatever another feature wants him to see (:meth:`Push.send`);
+- whatever another feature wants him to see (:meth:`Push.send`), and the silent push that wakes
+  the phone for a fix (:meth:`Push.locate`, ADR 0281);
 - the running Live Activity's content (:meth:`Push.poll`), when her state or the next reminder
   changed;
 - the ride Live Activity (:meth:`Push.ride_activity`), which the ride follower starts, updates and
@@ -194,6 +195,29 @@ class Push:
             PushMessage(title, body, url, category, thread, sound, time_sensitive, data),
             skip=lambda name: device is not None and name != device,
         )
+
+    def locate(self, request_id: str) -> int:
+        """Wake every registered phone with a silent push asking for a fix; how many took it.
+
+        The phone answers by posting a location report that carries ``request_id`` (ADR 0281).
+        Blocks for the network; nothing is retried. Pushes nothing until a key is configured.
+        """
+        if self._client is None:
+            return 0
+        sent = 0
+        for name, one in push_tokens.registrations(self._root).items():
+            try:
+                outcome = self._client.send_locate(
+                    one.device_token, one.environment, request_id, label=name,
+                )
+            except Exception as exc:  # noqa: BLE001 — a push must never take its caller down.
+                LOGGER.warning("push: locate to %s failed (%s)", name, type(exc).__name__)
+                continue
+            if outcome is Outcome.UNREGISTERED:
+                push_tokens.drop_token(self._root, name, "device")
+            LOGGER.info("push: %s to %s, locate", outcome.name.lower(), name)
+            sent += int(outcome is Outcome.SENT)
+        return sent
 
     def reminder(self, line: str) -> int:
         """Push a fired reminder's line, whatever the quiet level (ADR 0179)."""

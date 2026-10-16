@@ -5,7 +5,8 @@ Three small pieces, none of which knows what Jarvis is pushing about:
 - :class:`ProviderToken` signs the ES256 JWT APNs wants (header ``alg`` and ``kid``, claims ``iss``
   and ``iat``) with the owner's ``.p8`` key and reuses it until it is :data:`TOKEN_TTL_S` old,
   because APNs refuses a token older than an hour and refuses one refreshed too often;
-- :func:`alert_payload` and :func:`activity_payload` build the two bodies the app handles;
+- :func:`alert_payload`, :func:`activity_payload` and :func:`locate_payload` build the bodies the
+  app handles;
 - :class:`ApnsClient` posts one of them to one device over HTTP/2, to the sandbox or the
   production endpoint as the device registered, and answers :class:`Outcome`.
 
@@ -28,6 +29,8 @@ import httpx
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+
+from jarvis.state.locate_wait import valid_request_id
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -148,6 +151,23 @@ def activity_payload(content_state: Mapping[str, Any], now_s: int) -> bytes:
     return json.dumps(
         {"aps": {"timestamp": now_s, "event": "update", "content-state": dict(content_state)}},
         ensure_ascii=False, separators=(",", ":"),
+    ).encode()
+
+
+def locate_payload(request_id: str) -> bytes:
+    """The body of the silent push that asks the phone for a fix (ADR 0281).
+
+    ``locate`` rides beside ``aps`` as the app's own key; the app wakes, takes a fix and posts it
+    with this ``request_id``.
+
+    Raises:
+        ValueError: ``request_id`` is not 1 to 64 of ``A-Za-z0-9_-``.
+    """
+    if not valid_request_id(request_id):
+        msg = "request_id is 1 to 64 of A-Za-z0-9_-"
+        raise ValueError(msg)
+    return json.dumps(
+        {"aps": {"content-available": 1}, "locate": request_id}, separators=(",", ":"),
     ).encode()
 
 
@@ -284,6 +304,19 @@ class ApnsClient:
         return self._post(
             device_token, environment, label, "alert", self._bundle_id, alert_payload(message),
             priority=10, expiration=int(self._clock()) + ALERT_TTL_S,
+        )
+
+    def send_locate(
+        self, device_token: str, environment: str, request_id: str, *, label: str,
+    ) -> Outcome:
+        """Wake the app with a background push that asks it for a fix (ADR 0281).
+
+        Priority 5 and no expiration: a fix asked for minutes ago is of no use, so APNs makes one
+        attempt and drops the push if the phone cannot be reached.
+        """
+        return self._post(
+            device_token, environment, label, "background", self._bundle_id,
+            locate_payload(request_id), priority=5, expiration=0,
         )
 
     def send_activity(

@@ -31,6 +31,11 @@ a newer one replaces the older (the older is closed with code 4000).
     phone -> host   {"type": "cancel"}                    stop the current answer
     phone -> host   {"type": "ping", "t_ns": 123}
     host -> phone   {"type": "pong", "t_ns": 123, "host_ns": 456}
+    host -> phone   {"type": "locate", "request_id": "<1-64 of A-Za-z0-9_->"}
+    phone -> host   {"type": "located", "request_id": "...", "lat": 49.28, "lng": -123.12,
+                     "accuracy_m": 12.0, "fix_ts_epoch_ms": 1700000000000,
+                     "snapshot": "<id from POST /inherent/attachments>"}
+                    or {"type": "located", "request_id": "...", "error": "denied"|"unavailable"}
     host -> phone   {"type": "error", "code": "bad_say", "message": "..."}
 
 ``voice`` in ``ready`` is false when the host has no speech key or could not build its voice
@@ -109,6 +114,16 @@ the conversation carry the same as ``reactions``. ``said`` with ``verdict: "turn
 ``record_id``, the id the words will have as a message, so the phone can show a reaction on a line
 it has just sent before any row has come back.
 
+**A fresh fix (ADR 0281).** ``locate`` asks the phone for a fix now, because she needs to know
+where he is. The phone answers ``located`` with the same ``request_id``: a fix taken after the
+request, ``fix_ts_epoch_ms`` the time it was taken, and optionally ``snapshot``, the id of a
+picture it stored with ``POST /inherent/attachments`` (a view from where he is), or ``error``:
+``denied`` (no location permission) or ``unavailable`` (no fix could be taken). The host stores
+a fix as an ordinary ``phone.location_observed`` event carrying ``request_id`` (and ``snapshot``)
+and gives up waiting after a few seconds (``locate.socket_wait_s``), so a late answer is only a
+location report. A ``located`` that is malformed is answered ``error bad_located``. A phone
+with no live socket is asked by a background push instead (the push section of the spec).
+
 **Binary frames** carry the player protocol, one WebSocket message per frame:
 :mod:`jarvis.surface.phone_player` has the layouts. After ``ready`` with ``voice: true`` the
 phone sends READY (its audio session is up); the host speaks nothing before it.
@@ -136,9 +151,11 @@ from fastapi import WebSocketDisconnect
 
 from jarvis.shared import lang
 from jarvis.state.attachments import AttachmentRefused, valid_id
+from jarvis.state.locate_wait import LOCATE_ERRORS, Refused, valid_request_id
+from jarvis.state.phone_location import LOCATION_EVENT
 from jarvis.surface import word_judge
 from jarvis.surface.phone_player import PHONE_SAMPLE_RATE_HZ, PhoneFrameError
-from jarvis.surface.terminal_events import phone_record_id, phone_turn_id
+from jarvis.surface.terminal_events import located_uid, phone_record_id, phone_turn_id
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -267,6 +284,14 @@ class PhoneHub:
         """Whether ``device`` has a live socket now; the push sender reads it (ADR 0210)."""
         return device in self.live
 
+    def ask_location(self, request_id: str) -> int:
+        """Ask every connected phone for a fix now (``locate`` frame); how many were asked.
+
+        Callable from any thread: ``where_am_i`` runs on a worker thread (ADR 0281).
+        """
+        frame = json.dumps({"type": "locate", "request_id": request_id})
+        return sum(conn.queue_threadsafe(frame) for conn in list(self.live.values()))
+
     def word_hooks(
         self, heard_elsewhere: Callable[[str, str], bool] | None = None,
     ) -> word_judge.WordHooks:
@@ -300,10 +325,14 @@ class _Connection:
 
     def send_binary(self, data: bytes) -> bool:
         """Queue a binary frame from any thread; False once the connection is gone."""
+        return self.queue_threadsafe(data)
+
+    def queue_threadsafe(self, item: str | bytes) -> bool:
+        """Queue a text or binary frame from any thread; False once the connection is gone."""
         if self._closed:
             return False
         try:
-            self.loop.call_soon_threadsafe(self.outbox.put_nowait, data)
+            self.loop.call_soon_threadsafe(self.outbox.put_nowait, item)
         except RuntimeError:  # the loop is closed
             return False
         return True
@@ -512,10 +541,53 @@ def _control(hub: PhoneHub, conn: _Connection, text: str) -> None:
         if conn.voice is not None:
             conn.voice.player.observe_clock(t_ns, host_ns)
         conn.send_json({"type": "pong", "t_ns": t_ns, "host_ns": host_ns})
+    elif kind == "located":
+        _located(hub, conn, frame)
     elif kind == "barge":
         conn.spawn(_interrupt(hub, conn, reason="barge_in", cancel_turns=False))
     elif kind == "cancel":
         conn.spawn(_interrupt(hub, conn, reason="user_stop", cancel_turns=True))
+
+
+def _located(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
+    """The phone's answer to a ``locate`` (ADR 0281): store the fix, or pass on why there is none.
+
+    A fix is appended as a ``phone.location_observed`` carrying the request's id, by the same
+    path as a phone's report, which also answers the request that waits for it. A request
+    nobody waits for any more is only a report.
+    """
+    request_id, error = frame.get("request_id"), frame.get("error")
+    waits = hub.events.locates
+    if not valid_request_id(request_id):
+        conn.error("bad_located", "located needs a request_id")
+        return
+    if not (error is None or error in LOCATE_ERRORS):
+        conn.error("bad_located", "located's error is denied or unavailable")
+        return
+    if error is not None:
+        if waits is not None:
+            waits.deliver(request_id, Refused(error))
+        return
+    payload = {
+        "lat": frame.get("lat"), "lng": frame.get("lng"), "accuracy_m": frame.get("accuracy_m"),
+        "request_id": request_id,
+    }
+    for key in ("snapshot", "place"):
+        if frame.get(key) is not None:
+            payload[key] = frame[key]
+    event = {
+        "event_uid": located_uid(conn.device, request_id), "event_type": LOCATION_EVENT,
+        "ts_epoch_ms": frame.get("fix_ts_epoch_ms"), "payload": payload,
+    }
+    try:
+        ack = hub.events.record_phone_batch(conn.device, [event])[0]
+    except sqlite3.Error:
+        LOGGER.exception("phone %s: appending its fix failed", conn.device)
+        ack = {"ok": False, "code": "retry"}
+    if not ack["ok"]:
+        conn.error("bad_located", f"the fix was refused: {ack.get('code')}")
+        if waits is not None:
+            waits.deliver(request_id, Refused("unavailable"))
 
 
 @dataclass(frozen=True)
