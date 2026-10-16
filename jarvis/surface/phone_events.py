@@ -23,7 +23,9 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Final
 
+from jarvis.state.attachments import valid_id
 from jarvis.state.event_log import EventTypeRegistry
+from jarvis.state.locate_wait import valid_request_id
 from jarvis.state.phone_day import HEALTH_EVENT, MOTION_EVENT
 from jarvis.state.phone_location import LOCATION_EVENT, VISIT_EVENT
 
@@ -119,7 +121,8 @@ _CHECKS: Final[Mapping[str, Mapping[str, Check]]] = {
     },
     LOCATION_EVENT: {
         "lat": _LAT, "lng": _LNG, "accuracy_m": _non_negative, "place": _PLACE,
-        "speed_mps": _non_negative,
+        "speed_mps": _non_negative, "request_id": lambda value, _now_ms: valid_request_id(value),
+        "snapshot": lambda value, _now_ms: valid_id(value),
     },
     MOTION_EVENT: {
         "activity": _one_of(ACTIVITIES), "confidence": _one_of(CONFIDENCES),

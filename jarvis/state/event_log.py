@@ -1090,7 +1090,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L5",
         actor="observer",
         required_payload=("lat", "lng", "accuracy_m"),
-        optional_payload=("place", "speed_mps"),
+        optional_payload=("place", "speed_mps", "request_id", "snapshot"),
         schema_version=1,
     ),
     EventTypeSchema(

@@ -40,6 +40,8 @@ from typing import TYPE_CHECKING, Any, Final
 from jarvis.shared import Event
 from jarvis.shared.about import clean_about
 from jarvis.state.event_log import PHONE_VOICE_CHANNEL, EventLogError, EventTypeRegistry, emit_event
+from jarvis.state.locate_wait import Located, LocateWaits
+from jarvis.state.phone_location import LOCATION_EVENT
 from jarvis.surface import phone_events, repo_observer, timesink_observer, usage_observer
 
 if TYPE_CHECKING:
@@ -127,9 +129,14 @@ class BrainEvents:
     of the runtime's log).
     """
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        """Append to ``conn``, the runtime's own event log."""
+    def __init__(self, conn: sqlite3.Connection, locates: LocateWaits | None = None) -> None:
+        """Append to ``conn``, the runtime's own event log.
+
+        ``locates`` (ADR 0281): a phone's location report that carries the id of a request
+        waiting there answers it.
+        """
         self._conn = conn
+        self.locates = locates
 
     def baseline(self) -> list[dict[str, Any]]:
         """The rows an observer folds its baseline from: ``[{"event_type", "payload"}, ...]``."""
@@ -366,8 +373,7 @@ class BrainEvents:
         if code is not None:
             return _ack(uid, code)
         event_type, payload, ts = frame["event_type"], frame["payload"], frame["ts_epoch_ms"]
-        if not now_ms - _PAST_S * 1000 <= ts <= now_ms + _FUTURE_S * 1000:
-            ts = now_ms  # a clock that far off is not trusted to place the event in the day
+        ts = _trusted_ts(ts, now_ms)
         try:
             if self._conn.execute("SELECT 1 FROM events WHERE event_uid = ?", (uid,)).fetchone():
                 return _ack(uid, None)
@@ -408,11 +414,31 @@ class BrainEvents:
             size = len(json.dumps(frame, ensure_ascii=False, separators=(",", ":")))
             ack = self.record(device, frame, size, phone_events.PHONE_EVENT_TYPES)
             acks.append(_ack(frame["event_uid"], "retry") if ack is None else ack)
+            if ack is not None and ack["ok"]:
+                self._answer_locate(device, frame)
         return acks
+
+    def _answer_locate(self, device: str, frame: Mapping[str, Any]) -> None:
+        """A stored fix that names a request waiting for it answers that request (ADR 0281)."""
+        payload = frame["payload"]
+        request_id = payload.get("request_id")
+        if self.locates is None or frame["event_type"] != LOCATION_EVENT or request_id is None:
+            return
+        self.locates.deliver(request_id, Located(
+            lat=float(payload["lat"]), lng=float(payload["lng"]),
+            accuracy_m=float(payload["accuracy_m"]),
+            at_ms=_trusted_ts(frame["ts_epoch_ms"], int(time.time() * 1000)), device=device,
+            place=payload.get("place") or None, snapshot=payload.get("snapshot"),
+        ))
 
 
 def _utterance_uid(device: str, utterance_id: str) -> str:
     return uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"{device}\0{utterance_id}").hex
+
+
+def located_uid(device: str, request_id: str) -> str:
+    """The event uid of the fix a phone sent for ``request_id``: a resend writes nothing twice."""
+    return uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"located\0{device}\0{request_id}").hex
 
 
 def _say_uid(device: str, utterance_id: str) -> str:
@@ -478,6 +504,13 @@ def _refusal(
     ):
         return "bad_event"
     return None
+
+
+def _trusted_ts(ts: int, now_ms: int) -> int:
+    """``ts``, or ``now_ms`` when it is further off the brain's clock than an event may be."""
+    if not now_ms - _PAST_S * 1000 <= ts <= now_ms + _FUTURE_S * 1000:
+        return now_ms  # a clock that far off is not trusted to place the event in the day
+    return ts
 
 
 def _ack(uid: str | None, code: str | None) -> dict[str, Any]:
