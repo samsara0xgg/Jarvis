@@ -107,11 +107,12 @@ def test_the_menu_entries_are_two_small_tools_with_the_owner_s_words() -> None:
     assert (kept.name, kept.read_only, kept.risk_level) == ("kept", True, "L0")
     for one in (keep, kept):
         assert one.allowed_callers == {CallerPrincipal.JARVIS_LLM, CallerPrincipal.REGEX_ROUTER}
-        assert len(one.description) <= 600
+        assert len(one.description) <= 700  # 600 before appointments (ADR 0274)
         assert not one.deferred
         assert one.input_schema["additionalProperties"] is False
     assert set(keep.input_schema["properties"]) == {
-        "text", "kind", "at", "in_minutes", "topic", "section", "cancel",
+        "text", "kind", "at", "in_minutes", "topic", "section", "cancel", "until", "place",
+        "confirm", "whole_sender",
     }
     assert set(kept.input_schema["properties"]) == {"kind", "query", "page"}
     for phrase in ("记一下", "记得", "别忘了", "saved only when this returns"):
@@ -141,8 +142,8 @@ def test_the_offline_menu_offers_keep_and_kept_in_place_of_the_six(tmp_path: Pat
         one["name"]: len(one["description"]) + len(json.dumps(one["input_schema"]))
         for one in menu if one["name"] in {"keep", "kept"}
     }
-    assert sizes["keep"] < 2400  # the section enum names eleven sections
-    assert sizes["kept"] < 700
+    assert sizes["keep"] < 2700  # the section enum names eleven sections; 2400 before ADR 0274
+    assert sizes["kept"] < 800  # 700 before appointments
 
 
 # --- a memo ------------------------------------------------------------------------------------
@@ -260,7 +261,7 @@ def test_the_same_reminder_text_and_minute_is_set_once(
         ({"kind": "memo", "at": "2026-10-12 09:00"}, "invalid_arguments", "goes only with kind=r"),
         ({"kind": "fact", "at": "2026-10-12 09:00"}, "invalid_arguments", "goes only with kind=r"),
         ({"kind": "memo", "topic": "x"}, "invalid_arguments", "goes only with kind=fact"),
-        ({"kind": "note"}, "invalid_arguments", "memo, reminder or fact"),
+        ({"kind": "note"}, "invalid_arguments", "memo, reminder, appointment or fact"),
     ],
 )
 def test_a_bad_reminder_time_or_pair_is_refused_with_the_fix(

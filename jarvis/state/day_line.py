@@ -23,6 +23,10 @@ Each source folds on its own and a source that raises leaves its items out (:fun
 - ``calendar``: his Outlook events, read through the reader the runtime injects
   (:attr:`DaySources.calendar`), in his lane with state ``next`` until they start (ADR 0230); an
   all-day event is a label of the day (:attr:`DayLine.labels`), not an item;
+- ``commitments``: what he has to go to (ADR 0274), folded from the event log, one item per
+  occurrence in his lane as kind ``event`` (every build of the phone draws it), with ``source``
+  (``mail`` or ``said``), ``confirmed``, ``private`` and ``place`` besides the calendar's fields;
+  its id is ``<commitment_id>@<day>``;
 - ``imports``: what he handed over (ADR 0259), in his lane: each payment that moved money as a
   point (amount, direction, counterparty, item), and each conversation with Claude as a span from
   its first to its last message of the window (the title as text); with no memory store it has
@@ -49,7 +53,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.state import departures, imports, picture_notes, places, reminders, timesink
+from jarvis.state import (
+    commitments,
+    departures,
+    imports,
+    picture_notes,
+    places,
+    reminders,
+    timesink,
+)
 from jarvis.state import rides as ride_state
 from jarvis.state.attachments import Attachments
 from jarvis.state.import_parsers import money
@@ -175,6 +187,10 @@ def fold_day(
         ("talks", lambda _conn, first, last, now: _talk_items(sources, first, last, now)),
         ("pictures", lambda db, first, last, now: _picture_items(db, sources, first, last, now)),
         ("calendar", lambda _conn, first, last, now: _calendar_items(sources, first, last, now)),
+        (
+            "commitments",
+            lambda db, first, last, now: _commitment_items(db, sources, first, last, now),
+        ),
         ("departures", _departure_items),
         ("imports", lambda _conn, first, last, now: _import_items(sources, first, last, now)),
     )
@@ -326,6 +342,28 @@ def _calendar_items(
             "title": str(event["title"]),
         })
     return rows
+
+
+def _commitment_items(
+    conn: sqlite3.Connection, sources: DaySources, window_start: int, window_end: int, now_ms: int,
+) -> list[dict[str, Any]]:
+    """Each occurrence of a live commitment in the window, in his lane, as an ``event``."""
+    return [
+        {
+            "id": f"{occ.commitment.commitment_id}@{occ.day}",
+            "lane": "you",
+            "kind": "event",
+            "start_ms": occ.start_ms,
+            "end_ms": occ.end_ms,
+            "state": _state(occ.start_ms, occ.end_ms, now_ms),
+            "title": occ.commitment.title,
+            "source": occ.commitment.source,
+            "confirmed": occ.commitment.confirmed,
+            "private": occ.commitment.private,
+            "place": occ.commitment.place,
+        }
+        for occ in commitments.occurrences(conn, window_start, window_end, zone=sources.zone)
+    ]
 
 
 def _departure_items(

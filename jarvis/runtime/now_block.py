@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
-from datetime import timedelta
+import sqlite3
+from collections.abc import Callable, Sequence
+from contextlib import closing
+from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Final, NamedTuple
 
 from jarvis.decision.turn_guards import CALENDAR_LINE
@@ -20,10 +22,11 @@ from jarvis.execution import speakable
 from jarvis.execution.my_day_tool import work_state_now
 from jarvis.execution.tools import ToolError
 from jarvis.shared.about import prompt_title
+from jarvis.state import commitments
+from jarvis.state.event_log import open_runtime_event_log
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-    from datetime import datetime, tzinfo
+    from datetime import tzinfo
     from pathlib import Path
 
 LINE_CHARS: Final = 200
@@ -129,19 +132,55 @@ def doing_now_line(
     return f"{head}{speakable.cut(str(state['text']), room)}.{note}"
 
 
+Appointments = Callable[[datetime], Sequence[CalendarItem]]
+"""The things he has to go to (ADR 0274) from now to the end of tomorrow; a local read."""
+
+
+def next_appointments(
+    event_log: Path, zone: tzinfo, now: datetime,
+) -> list[CalendarItem]:
+    """The occurrences of his commitments from ``now`` to the end of tomorrow, soonest first.
+
+    A private one is named only as such and an unconfirmed one says so. The event log is local,
+    so this still answers when Microsoft does not.
+    """
+    local = now.astimezone(zone)
+    end = datetime.combine(local.date() + timedelta(days=2), time(), zone)
+    try:
+        with closing(open_runtime_event_log(event_log)) as conn:
+            found = commitments.occurrences(
+                conn, int(now.timestamp() * 1000), int(end.timestamp() * 1000), zone=zone,
+            )
+    except sqlite3.Error as exc:
+        LOGGER.warning("appointments: not read (%s)", exc)
+        return []
+    items = []
+    for occ in found:
+        one = occ.commitment
+        title = "something private" if one.private else one.title
+        if not one.confirmed:
+            title += " (not confirmed)"
+        items.append(CalendarItem(datetime.fromtimestamp(occ.start_ms / 1000, UTC), title))
+    return items
+
+
 def calendar_line(
     read: CalendarRead | None, zone: tzinfo, clock: Callable[[], datetime],
+    appointments: Appointments | None = None,
 ) -> str | None:
-    """His next one or two calendar items still ahead, with how long ago they were read.
+    """His next one or two items still ahead, calendar and appointments, with the calendar's age.
 
-    None without a reader (the default), without a reading, or when nothing in it is still
-    ahead: a reading from an hour ago never offers an item that has begun as the next one.
+    None when there is neither a reading nor an appointment, or when nothing in them is still
+    ahead: a reading from an hour ago never offers an item that has begun as the next one. A
+    calendar that could not be read leaves the appointments, which are read here, just now.
     """
     glance = None if read is None else read()
-    if glance is None:
-        return None
     now = clock()
-    ahead = sorted((i for i in glance.items if i.start > now), key=lambda i: i.start)[:_ITEMS]
+    held = [] if appointments is None else list(appointments(now))
+    if glance is None and not held:
+        return None
+    items = [*(() if glance is None else glance.items), *held]
+    ahead = sorted((i for i in items if i.start > now), key=lambda i: i.start)[:_ITEMS]
     if not ahead:
         return None
     today = now.astimezone(zone).date()
@@ -157,8 +196,9 @@ def calendar_line(
             when = speakable.when(item.start, now, zone)
         return f'{when} "{speakable.cut(prompt_title(item.title), _TITLE_CHARS)}"'
 
+    read_at = now if glance is None else glance.read_at
     line = (
-        f"{CALENDAR_PREFIX} (read {speakable.age(glance.read_at, now)}): "
+        f"{CALENDAR_PREFIX} (read {speakable.age(read_at, now)}): "
         + "; ".join(said(i) for i in ahead) + "."
     )
     return speakable.cut(line, LINE_CHARS)

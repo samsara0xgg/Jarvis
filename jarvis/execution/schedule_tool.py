@@ -1,9 +1,9 @@
 """ADR 0248: what is on for him is one read-only tool: calendar, to-dos, reminders, a pinned bus.
 
 The calendar and the to-dos are read from Microsoft just now, through the two Graph reads the
-home already makes (``graph``), over the local day's own bounds; the reminders and the pinned
-bus are read from the event log. A source that cannot be read is named and never passed off as
-an empty one.
+home already makes (``graph``), over the local day's own bounds; the reminders, the pinned bus
+and the things he has to go to (ADR 0274) are read from the event log, so they are there when
+Microsoft is not. A source that cannot be read is named and never passed off as an empty one.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Final
 from jarvis.execution import speakable
 from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
-from jarvis.state import departures, reminders
+from jarvis.state import commitments, departures, reminders
 from jarvis.state.daily_contract import encoded
 
 if TYPE_CHECKING:
@@ -30,12 +30,13 @@ if TYPE_CHECKING:
     from jarvis.execution.tools import ToolContext
 
 _DESCRIPTION: Final = (
-    "Use for anything on his schedule: calendar events, interviews, meetings, to-dos due, "
-    "reminders waiting, a pinned bus; call it before saying he is free or his calendar is clear. "
-    "It only reads (reminders are set with keep). No arguments: today from now on, and tomorrow. "
-    "date: a day (today, tomorrow, Mon, 2026-10-15); to: the last day of a span of up to 14 days. "
-    "query: words to find in the next 60 days, e.g. Reliable Controls interview. page=2 gives "
-    "items 9-16. Says which source could not be read."
+    "Use for anything on his schedule: calendar events, interviews, meetings, appointments, "
+    "to-dos due, reminders waiting, a pinned bus; call it before saying he is free or his "
+    "calendar is clear. It only reads (reminders are set with keep). No arguments: today from "
+    "now on, and tomorrow. date: a day (today, tomorrow, Mon, 2026-10-15); to: the last day of a "
+    "span of up to 14 days. query: words to find in the next 60 days, e.g. Reliable Controls "
+    "interview. page=2 gives items 9-16. confirmed=false: a mail made it, he has not said it is "
+    "his; say so. Says which source could not be read."
 )
 _SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
@@ -68,6 +69,7 @@ _SOON: Final = timedelta(hours=6)
 _HOUR: Final = 60
 _NOON: Final = 12
 _WHAT_CHARS: Final = 120
+_UNCONFIRMED: Final = " (from a mail, not confirmed yet)"
 _WHERE_CHARS: Final = 80
 _LINK_CHARS: Final = 300
 _REASON_CHARS: Final = 200
@@ -77,6 +79,7 @@ _NAMES: Final = {
     "to-do": ("to-do", "to-dos"),
     "reminder": ("reminder", "reminders"),
     "bus": ("bus to catch", "buses to catch"),
+    "commitment": ("appointment", "appointments"),
 }
 _READ_AS: Final = {"calendar": "calendar", "to-do": "to-dos", "reminder": "reminders"}
 _GONE_AS: Final = {
@@ -104,6 +107,12 @@ class _Row:
     at: datetime
     over: datetime
     fields: dict[str, Any]
+
+
+def _kind(row: _Row) -> str:
+    """The count a row belongs to: an appointment's ``source`` is where it came from."""
+    source: str = row.fields["source"]
+    return "commitment" if source in commitments.SOURCES else source
 
 
 def _text(args: Mapping[str, Any], name: str) -> str:
@@ -398,7 +407,7 @@ class _Schedule:
         return rows
 
     def _stored(self, window: _Window, ctx: ToolContext, now: datetime) -> list[_Row]:
-        """The waiting reminders and the pinned bus's trips that fall inside the window."""
+        """The waiting reminders, the pinned bus's trips and the appointments in the window."""
         today = now.astimezone(self._zone).date()
         pin = departures.active(ctx.conn, int(now.timestamp() * 1000))
         rows = []
@@ -426,7 +435,30 @@ class _Schedule:
                     ),
                     "source": "bus",
                 }))
+        found = commitments.occurrences(
+            ctx.conn, int(window.start.timestamp() * 1000), int(window.end.timestamp() * 1000),
+            zone=self._zone,
+        )
+        rows.extend(self._appointment(occ, now) for occ in found)
         return rows
+
+    def _appointment(self, occ: commitments.Occurrence, now: datetime) -> _Row:
+        one = occ.commitment
+        start = datetime.fromtimestamp(occ.start_ms / 1000, UTC)
+        end = datetime.fromtimestamp(occ.end_ms / 1000, UTC)
+        what = speakable.cut(one.title, _WHAT_CHARS - len(_UNCONFIRMED))
+        fields: dict[str, Any] = {
+            "when": self._timed(start, end, now),
+            "what": what if one.confirmed else what + _UNCONFIRMED,
+        }
+        if place := speakable.cut(one.place, _WHERE_CHARS):
+            fields["where"] = place
+        if one.link and len(one.link) <= _LINK_CHARS:
+            fields["link"] = one.link
+        fields |= {"source": one.source, "confirmed": one.confirmed, "id": one.commitment_id}
+        if one.private:
+            fields["private"] = True
+        return _Row(start, end, fields)
 
     def _summary(  # noqa: PLR0913 - the request, what was found, what was read and not, the clock
         self, window: _Window, query: str, rows: list[_Row], page: int, read: list[str],
@@ -441,7 +473,7 @@ class _Schedule:
             return f"Nothing on your {scope} {where} (read just now).{gone}"
         counts = ", ".join(
             f"{n} {_NAMES[s][n != 1]}"
-            for s in _NAMES if (n := sum(r.fields["source"] == s for r in rows))
+            for s in _NAMES if (n := sum(_kind(r) == s for r in rows))
         )
         if page > 1:
             first, last = (page - 1) * _PAGE + 1, min(page * _PAGE, len(rows))
