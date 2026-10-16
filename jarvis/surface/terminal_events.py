@@ -142,8 +142,13 @@ class BrainEvents:
         ).fetchall()
         return [{"event_type": kind, "payload": json.loads(payload)} for kind, payload in rows]
 
-    def record_utterance(self, device: str, args: Mapping[str, Any]) -> str:
+    def record_utterance(
+        self, device: str, args: Mapping[str, Any], *, continues: str | None = None,
+    ) -> str:
         """Append the ``utterance.received`` a voice terminal heard, once; its event uid.
+
+        ``continues`` (ADR 0274) is the turn the brain composed these words into: when that
+        turn's sentence is on the log, ``transcript`` holds both (see :meth:`continued_words`).
 
         The uid is derived from ``device`` and the utterance's own id, so a terminal that
         sends the same utterance again (it never saw the answer) gets the first one's uid and
@@ -187,9 +192,13 @@ class BrainEvents:
         if isinstance(spoke_ago, int) and not isinstance(spoke_ago, bool) and spoke_ago >= 0:
             payload["spoke_ago_ms"] = min(spoke_ago, _MAX_SPOKE_AGO_MS)
         payload["utterance_id"] = utterance_id
-        uid = uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"{device}\0{utterance_id}").hex
+        uid = _utterance_uid(device, utterance_id)
         if self._conn.execute("SELECT 1 FROM events WHERE event_uid = ?", (uid,)).fetchone():
             return uid
+        if continues is not None and (
+            continued := self.continued_words(device, continues, transcript)
+        ) is not None:
+            payload.update(continued)
         try:
             emit_event(
                 self._conn, type="utterance.received", payload=payload,
@@ -199,6 +208,15 @@ class BrainEvents:
             raise ValueError(str(exc)) from exc
         return uid
 
+    def has_utterance(self, device: str, utterance_id: object) -> bool:
+        """Whether this terminal utterance was already recorded, so a resend composes nothing."""
+        if not isinstance(utterance_id, str) or _ID.fullmatch(utterance_id) is None:
+            return False
+        row = self._conn.execute(
+            "SELECT 1 FROM events WHERE event_uid = ?", (_utterance_uid(device, utterance_id),),
+        ).fetchone()
+        return row is not None
+
     def has_phone_say(self, device: str, utterance_id: str) -> bool:
         """Whether this ``say`` was already recorded (ADR 0231), so a resend can skip its checks."""
         row = self._conn.execute(
@@ -207,22 +225,23 @@ class BrainEvents:
         return row is not None
 
     def continued_words(self, device: str, continues: str, text: str) -> dict[str, Any] | None:
-        """The payload fields of a spoken ``say`` that goes on from the one named ``continues``.
+        """The payload fields of a spoken sentence that goes on from the turn ``continues``.
 
-        ADR 0271: ``transcript`` is the earlier sentence's whole thought followed by ``text``,
-        ``segment`` is ``text`` alone, ``continues`` is the earlier turn and ``folded`` the record
-        ids whose words ``transcript`` already holds. ``None`` when the earlier sentence is not a
-        spoken one of this device's, or the thought would be longer than an utterance may be:
-        the words then stand alone.
+        ADR 0271, 0274: ``transcript`` is the earlier sentence's whole thought followed by
+        ``text``, ``segment`` is ``text`` alone, ``continues`` is the earlier turn and ``folded``
+        the record ids whose words ``transcript`` already holds. ``None`` when ``continues`` is
+        not a turn this device opened with a spoken sentence, or the thought would be longer than
+        an utterance may be: the words then stand alone.
         """
-        earlier_uid = _say_uid(device, continues)
         row = self._conn.execute(
-            "SELECT payload_json FROM events WHERE event_uid = ? AND type = 'utterance.received'",
-            (earlier_uid,),
+            "SELECT event_uid, payload_json FROM events WHERE type = 'utterance.received' "
+            "AND ingestion_node = ? AND json_extract(payload_json, '$.turn_id') = ? "
+            "ORDER BY id LIMIT 1",
+            (device, continues),
         ).fetchone()
         if row is None:
             return None
-        earlier = json.loads(row[0])
+        earlier_uid, earlier = row[0], json.loads(row[1])
         thought = _join_words(str(earlier.get("transcript", "")), text)
         if len(thought) > _MAX_TRANSCRIPT_CHARS:
             return None
@@ -230,7 +249,7 @@ class BrainEvents:
         return {
             "transcript": thought,
             "segment": text,
-            "continues": phone_turn_id(device, continues),
+            "continues": continues,
             "folded": [*(folded if isinstance(folded, list) else []), earlier_uid],
         }
 
@@ -259,8 +278,9 @@ class BrainEvents:
         the opening row, in either branch, only when given. ``attachments`` (ADR 0231) are the ids
         of the files typed words came with, already checked by the store; they ride the typed
         row as ``POST /inherent/submit`` writes them, and spoken words take none. ``continues``
-        (ADR 0271) is the utterance id of the spoken sentence these words go on from: when that
-        one is on the log, ``transcript`` holds both (see :meth:`continued_words`).
+        (ADR 0271, 0274) is the turn id of the spoken sentence of this device these words go on
+        from: when that one is on the log, ``transcript`` holds both (see
+        :meth:`continued_words`).
 
         Raises:
             ValueError: a field is missing or has the wrong shape, ``about`` included.
@@ -376,6 +396,10 @@ class BrainEvents:
             ack = self.record(device, frame, size, phone_events.PHONE_EVENT_TYPES)
             acks.append(_ack(frame["event_uid"], "retry") if ack is None else ack)
         return acks
+
+
+def _utterance_uid(device: str, utterance_id: str) -> str:
+    return uuid.uuid5(_UTTERANCE_UID_NAMESPACE, f"{device}\0{utterance_id}").hex
 
 
 def _say_uid(device: str, utterance_id: str) -> str:

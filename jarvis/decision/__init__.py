@@ -138,7 +138,7 @@ from jarvis.state.authorized_dispatch_outbox import (
 from jarvis.state.cost_accounting import record_run_cost_once
 from jarvis.state.event_log import emit_event, get_event, iter_events_for_turn
 from jarvis.state.stream_emission import committed_text_prefix
-from jarvis.state.turn_overlap import TurnInFlight, turns_in_flight, words_since
+from jarvis.state.turn_overlap import TurnInFlight, folded_tool_calls, turns_in_flight, words_since
 
 if TYPE_CHECKING:
     import sqlite3
@@ -1168,6 +1168,38 @@ def _turns_in_flight_line(earlier: tuple[TurnInFlight, ...]) -> str | None:
     )
 
 
+_DONE_OUTPUT_CHARS: Final = 4000
+_DONE_ARGUMENTS_CHARS: Final = 500
+
+
+def _cut(text: str, limit: int) -> str:
+    return text if len(text) <= limit else f"{text[:limit]}…[cut]"
+
+
+def _done_for_thought_line(packet: SituationPacket, ctx: DecideContext) -> str | None:
+    """ADR 0274: what the earlier sentences of this composed thought already did.
+
+    A turn that takes over from earlier ones inherits their tool calls as plain facts, not as
+    tool blocks: each call and its result, so she uses them and does not call again.
+    """
+    folded = packet.trigger_event.payload.get("folded")
+    if not isinstance(folded, list) or not folded:
+        return None
+    calls = folded_tool_calls(ctx.conn, [str(one) for one in folded])
+    if not calls:
+        return None
+    lines = []
+    for call in calls:
+        asked = _cut(json.dumps(call.arguments, ensure_ascii=False), _DONE_ARGUMENTS_CHARS)
+        got = "no result yet" if call.output is None else _cut(call.output, _DONE_OUTPUT_CHARS)
+        lines.append(f"- {call.tool_name}({asked}) -> {got}")
+    return (
+        "Already done for this thought (the sentences before the last were started first; these "
+        "tool calls ran for it, so use their results and do not call them again):\n"
+        + "\n".join(lines)
+    )
+
+
 def _late_answer_note(packet: SituationPacket, ctx: DecideContext) -> str | None:
     """After a slow tool: what the user said meanwhile, and how to open this answer."""
     if not ctx.slow_results:
@@ -1212,6 +1244,7 @@ def _current_status_block(packet: SituationPacket, ctx: DecideContext) -> str | 
                 functools.partial(_answered_by_reaction, ctx.conn),
             ),
             _turns_in_flight_line(earlier),
+            _done_for_thought_line(packet, ctx),
             format_pending_confirmation_note(packet),
             format_pending_clarification_note(packet),
             _format_open_actions_note(packet),

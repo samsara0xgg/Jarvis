@@ -3797,6 +3797,7 @@ def make_supersede_unspoken_callable(
     drop_unspoken: Callable[[frozenset[str]], frozenset[str]],
     *,
     only_turns: Callable[[str], bool] | None = None,
+    leave: Callable[[str], str | None] | None = None,
 ) -> Callable[[str], None]:
     """Build the ADR 0074 ``(accepted_turn_id) -> None`` seam.
 
@@ -3824,6 +3825,11 @@ def make_supersede_unspoken_callable(
     ``only_turns`` (ADR 0219) narrows both the open runs and the turns marked superseded to
     the turns it accepts: a device's voice replaces its own earlier sentence, never another
     device's answer.
+
+    ``leave`` (ADR 0274) names the one turn the sweep leaves alone for ``turn_id``: the
+    earlier sentence the new one is composed into at the utterance, which takes it over
+    whether or not it dispatched a tool or any of it is audible. Without it the sweep is the
+    whole of how a sentence replaces the one before.
     """
     cancel = make_response_cancel_callable(runtime)
     registry = runtime.response_runs
@@ -3832,11 +3838,12 @@ def make_supersede_unspoken_callable(
     def _supersede(turn_id: str) -> None:
         if registry is None:  # pragma: no cover - wiring pairs the two flags
             return
+        kept = leave(turn_id) if leave is not None else None
         runs = [
             run
             for run in registry.open_runs()
             if run.phase == "final"
-            and run.turn_id != turn_id
+            and run.turn_id not in {turn_id, kept}
             and run.interrupt_policy.generation_action == "cancel"
             and (only_turns is None or only_turns(run.turn_id))
         ]
@@ -3857,6 +3864,8 @@ def make_supersede_unspoken_callable(
             }
             if only_turns is not None:
                 recent = {recent_turn for recent_turn in recent if only_turns(recent_turn)}
+            if kept is not None:
+                recent.discard(kept)
             working: set[str] = set()
             if runtime.response_flags.slow_results:
                 # The action names its turn in `correlation_json` (L4 stamps it
@@ -3972,26 +3981,39 @@ def make_relation_supersede_callable(
     return _relate
 
 
-_TURN_OVER_SQL: Final = (
-    "SELECT 1 FROM events WHERE (type IN ('turn.ended', 'turn.failed') "
-    "AND json_extract(correlation_json, '$.turn_id') = ?1) "
-    "OR (type IN ('response.completed', 'response.cancelled', 'response.failed') "
-    "AND json_extract(payload_json, '$.turn_id') = ?1 "
-    "AND json_extract(payload_json, '$.response_id') IN ("
-    "SELECT json_extract(payload_json, '$.response_id') FROM events "
-    "WHERE type = 'response.started' AND json_extract(payload_json, '$.turn_id') = ?1 "
-    "AND json_extract(payload_json, '$.phase') = 'final')) LIMIT 1"
-)
+def make_compose_callable(
+    runtime: JarvisRuntime,
+) -> Callable[[str, str, str | None], str | None]:
+    """Build the ADR 0274 ``(device, turn_id, words) -> earlier_turn_id | None`` seam.
+
+    For a spoken sentence from any device, the earlier turn of that device it goes on from:
+    its latest earlier spoken sentence when her answer to it is not over, within
+    ``device_voice.COMPOSE_BOUND_S``. A stop request, a repeat of the earlier words and a
+    host without run bookkeeping answer ``None``. With ``words`` ``None`` the words checks
+    are left out. Blocks on SQLite; call from a worker thread.
+    """
+    registry = runtime.response_runs
+    event_log_path = runtime.runtime_paths.event_log
+
+    def _compose(device: str, turn_id: str, words: str | None) -> str | None:
+        if registry is None:  # pragma: no cover - wiring pairs the two flags
+            return None
+        return device_voice.compose_target(
+            event_log_path, device, turn_id, words, superseded=registry.turn_superseded,
+        )
+
+    return _compose
 
 
 def make_continuation_callable(runtime: JarvisRuntime) -> Callable[[str, str], str]:
     """Build the ADR 0271 ``(earlier_turn_id, turn_id) -> outcome`` seam.
 
-    A paired phone says the words of ``turn_id`` go on from the sentence of ``earlier_turn_id``,
-    its own, and ``turn_id`` will answer both. The earlier turn is marked superseded by it, so a
-    run that opens later is cancelled as it opens, and every run of it still open is cancelled as
+    The words of ``turn_id`` go on from the sentence of ``earlier_turn_id``, the same device's
+    (the brain's pick, ADR 0274: :func:`make_compose_callable`), and ``turn_id`` will answer
+    both. The earlier turn is marked superseded by it, so a run that opens later is cancelled
+    as it opens, and every run of it still open is cancelled as
     ``superseded`` naming ``turn_id``, spoken to the speaker or not (the sweep of ADR 0074 leaves
-    an audible answer to barge-in; here the phone has said what the words are), whether or not
+    an audible answer to barge-in; here the words are known to go on from it), whether or not
     it dispatched an action; a card it put up that still waits is rejected. The caller has
     already dropped the earlier turn's unspoken audio and stopped what was audible.
 
@@ -4009,7 +4031,7 @@ def make_continuation_callable(runtime: JarvisRuntime) -> Callable[[str, str], s
         with contextlib.closing(
             open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
         ) as conn:
-            if conn.execute(_TURN_OVER_SQL, (earlier,)).fetchone() is not None:
+            if conn.execute(device_voice.TURN_OVER_SQL, (earlier,)).fetchone() is not None:
                 return "over"
             registry.mark_turns_superseded(
                 [earlier], for_s=_SUPERSEDE_WINDOW_S, by_turn=turn_id,

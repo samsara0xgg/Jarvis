@@ -21,6 +21,9 @@ op       args                                  value
 utterance the final words, as the pipeline     ``{"event_uid"}``: written once as
          writes them (transcript, turn_id,     ``utterance.received`` under the device's
          utterance_id, ...)                    name, so a second send of it writes nothing
+                                               (ADR 0274: first taking over from the device's
+                                               pending earlier sentence, so the row holds the
+                                               whole thought)
 words    turn_id, text, recent, over_her,      ``{"choice": str | null}``: the word judge
          confirm
 elsewhere turn_id, text                        ``{"elsewhere": bool}``: another device recorded
@@ -173,6 +176,12 @@ class ListenHooks:
     """``(device, turn_id)``: drop ``device``'s earlier unspoken answers (ADR 0219)."""
     cancel_runs: Callable[[str], None] | None = None
     """``(device)``: end every answer being written for ``device``'s turns (ADR 0219)."""
+    composes_into: Callable[[str, str, str], str | None] | None = None
+    """``(device, turn_id, text)``: the earlier turn of ``device`` these words go on from, if
+    its answer is not over (ADR 0274)."""
+    take_over: Callable[[str, str], str] | None = None
+    """``(earlier_turn_id, turn_id)``: cancel the earlier turn's open answer as superseded by
+    ``turn_id``; ``"superseded"`` when it did (ADR 0271)."""
     set_conversation: Callable[[bool, str], None] | None = None
     set_quiet: Callable[[str], None] | None = None
     controls: Callable[[], Mapping[str, Any]] | None = None
@@ -274,7 +283,7 @@ class BrainListening:
                 raise _Refused(msg, "unknown_op")  # noqa: TRY301 — one place for every refusal.
             await state.tells.join()  # what the terminal told first has been done
             if op == "utterance":
-                reply["value"] = self._utterance(link, args)
+                reply["value"] = await self._utterance(link, args)
             else:
                 reply["value"] = await asyncio.to_thread(self._run, str(op), link.name, args)
         except asyncio.CancelledError:
@@ -299,12 +308,46 @@ class BrainListening:
 
     # -- the asks ----------------------------------------------------------------------
 
-    def _utterance(self, link: _Link, args: Mapping[str, Any]) -> dict[str, Any]:
-        """Write the utterance once, and make the terminal that heard it the answer's place."""
+    async def _utterance(self, link: _Link, args: Mapping[str, Any]) -> dict[str, Any]:
+        """Write the utterance once, and make the terminal that heard it the answer's place.
+
+        A sentence said before her answer to the one before it is over goes on from that one
+        (ADR 0274): the earlier turn is taken over first, so the row that opens this turn holds
+        the whole thought. Written on the loop, where the event log's connection lives.
+        """
         turn_id = args.get("turn_id")
         if isinstance(turn_id, str) and link.speech is not None and self._hub.voice is not None:
             self._hub.voice.route(turn_id, link.speech)  # before the row, so no answer beats it
-        return {"event_uid": self._events.record_utterance(link.name, args)}
+        earlier = None
+        if not self._events.has_utterance(link.name, args.get("utterance_id")):
+            earlier = await self._take_over(link, args)
+        return {"event_uid": self._events.record_utterance(link.name, args, continues=earlier)}
+
+    async def _take_over(self, link: _Link, args: Mapping[str, Any]) -> str | None:
+        """The earlier turn this utterance's words are composed into, once it is taken over.
+
+        Its unspoken audio is dropped, what is audible stopped and its open answer cancelled as
+        superseded by this turn, as a phone's ``say`` does (ADR 0271). ``None`` when the words
+        stand alone; a failure is that too, since the words must not be lost.
+        """
+        pick, take = self.hooks.composes_into, self.hooks.take_over
+        turn_id, text = args.get("turn_id"), args.get("transcript")
+        if pick is None or take is None or not isinstance(turn_id, str) or not isinstance(
+            text, str,
+        ):
+            return None
+        try:
+            earlier = await asyncio.to_thread(pick, link.name, turn_id, text)
+            if earlier is None or self._events.continued_words(link.name, earlier, text) is None:
+                return None
+            await asyncio.to_thread(self.drop_unspoken, frozenset({earlier}))
+            await asyncio.to_thread(self._stop_on, link, "barge_in")
+            outcome = await asyncio.to_thread(take, earlier, turn_id)
+        except Exception:
+            LOGGER.exception("terminal %s: taking over from the earlier sentence failed", link.name)
+            return None
+        LOGGER.info("terminal %s: words go on from %s -> %s", link.name, earlier, outcome)
+        return earlier if outcome == "superseded" else None
 
     def _words(self, args: Mapping[str, Any]) -> dict[str, Any]:
         line = (
@@ -460,6 +503,9 @@ class BrainListening:
             link = None if peer is None else self._hub.voice_link_of(peer)
         if link is None:
             return "no_terminal"
+        return self._stop_on(link, reason)
+
+    def _stop_on(self, link: _Link, reason: str) -> str:
         try:
             reply = self._hub.call_on(
                 link, STOP_OUTPUT, {"reason": reason}, timeout_s=COMMAND_TIMEOUT_S,

@@ -24,7 +24,9 @@ from fastapi.testclient import TestClient
 
 from jarvis.decision.response_run import ResponseCancelledError
 from jarvis.runtime import (
+    device_voice,
     inherent_loop,
+    make_compose_callable,
     make_continuation_callable,
     make_relation_supersede_callable,
     make_supersede_unspoken_callable,
@@ -39,6 +41,8 @@ from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
 from jarvis.surface.terminal_events import BrainEvents
+from jarvis.surface.terminal_link import TerminalHub
+from jarvis.surface.voice_controls import VoiceControls
 from tests.integration.test_conversation_mode import _Session
 from tests.integration.test_foreground_arbitration import _whole
 from tests.integration.test_phone_here import REMOTE
@@ -574,6 +578,9 @@ def _spoken_turn(conn: Any, turn_id: str, words: str) -> Any:  # noqa: ANN401 - 
     )
 
 
+# The ADR 0268 tests below drive the sweep alone, as the host's own session does (it has no
+# terminal and records its utterances itself); a terminal's sweep leaves the pending sentence to
+# composition (ADR 0274), which its tests further down drive end to end.
 _FIRST = "我想问一下去学校的公交"
 _SECOND = "现在出发能赶上哪一班"
 
@@ -788,6 +795,7 @@ class _PhoneRig:
             rows=inherent_loop._PhoneRows(self.events),  # noqa: SLF001
             open_voice=open_voice,
             supersede_turn=supersede_turn,
+            pick_earlier=make_compose_callable(self.runtime),
         )
         app = create_app(
             InherentDeps(
@@ -960,8 +968,10 @@ def test_three_steps_of_one_thought_are_one_answer_to_all_three(tmp_path: Path) 
     runtime.conn.close()
 
 
-def test_a_sentence_that_names_no_earlier_one_is_a_turn_of_its_own(tmp_path: Path) -> None:
-    """No ``continues``: nothing is taken over, the event holds the words as said, two answers."""
+def test_a_continues_that_names_another_turn_than_the_pending_one_is_dropped(
+    tmp_path: Path,
+) -> None:
+    """The brain picks the turn by state; a name that disagrees is dropped (ADR 0274)."""
     scripts = [[("final_answer", "一。")], [("final_answer", "二。")]]
     with _Peer(scripts, first_event_delay_s=1.0) as peer:
         runtime = _merge_rig(tmp_path, peer)
@@ -973,7 +983,7 @@ def test_a_sentence_that_names_no_earlier_one_is_a_turn_of_its_own(tmp_path: Pat
             _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
             time.sleep(0.5)  # the peer reads its delay a moment after it logs the request
             peer.first_event_delay_s = 0.0
-            second_said = _say(ws, "ub", _SECOND, over_her=True)
+            second_said = _say(ws, "ub", _SECOND, over_her=True, continues="uz")
             second = pool.submit(_drive, runtime, rig.heard(second_said["turn_id"]))
             first.result(timeout=20)
             second.result(timeout=20)
@@ -984,6 +994,58 @@ def test_a_sentence_that_names_no_earlier_one_is_a_turn_of_its_own(tmp_path: Pat
     assert not {"segment", "continues", "folded"} & set(heard)
     assert not _payloads(runtime.conn, "response.cancelled")
     assert len(_payloads(runtime.conn, "surface.response_emitted")) == 2
+    runtime.conn.close()
+
+
+def test_a_spoken_say_with_no_continues_goes_on_from_the_pending_turn_all_the_same(
+    tmp_path: Path,
+) -> None:
+    """ADR 0274: no time window and no name from the phone; the earlier answer is not over."""
+    answer = "八点二十有一班。"
+    with _Peer([[("final_answer", answer)]], first_event_delay_s=30.0) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _PhoneRig(runtime)
+        with rig.connect() as ws, ThreadPoolExecutor(max_workers=2) as pool:
+            _open(ws)
+            first_said = _say(ws, "ua", _FIRST)
+            first = pool.submit(_drive, runtime, rig.heard(first_said["turn_id"]))
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            time.sleep(0.5)  # the peer reads its delay a moment after it logs the request
+            peer.first_event_delay_s = 0.0
+            second_said = _say(ws, "ub", _SECOND)
+            assert second_said["verdict"] == "turn"
+            second = pool.submit(_drive, runtime, rig.heard(second_said["turn_id"]))
+            second.result(timeout=20)
+            with pytest.raises(ResponseCancelledError):
+                first.result(timeout=10)
+
+    assert rig.taken_over == [(first_said["turn_id"], second_said["turn_id"], "superseded")]
+    heard = rig.heard(second_said["turn_id"]).payload
+    assert (heard["transcript"], heard["segment"]) == (_THOUGHT, _SECOND)
+    assert _records(runtime) == [("allen", _FIRST), ("allen", _SECOND), ("jarvis", answer)]
+    runtime.conn.close()
+
+
+@pytest.mark.parametrize(
+    "words", ["停", _FIRST],
+    ids=["a_stop_request", "the_same_words_again"],
+)
+def test_a_phone_stop_request_or_repeat_is_not_composed(tmp_path: Path, words: str) -> None:
+    """A stop is never part of a request, and a repeat is the ADR 0268 rule's, not a join."""
+    with _Peer([[("final_answer", "八点二十有一班。")]], first_event_delay_s=30.0) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _PhoneRig(runtime)
+        with rig.connect() as ws, ThreadPoolExecutor(max_workers=1) as pool:
+            _open(ws)
+            first_said = _say(ws, "ua", _FIRST)
+            pool.submit(_drive, runtime, rig.heard(first_said["turn_id"]))
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            second_said = _say(ws, "ub", words)
+            peer.first_event_delay_s = 0.0
+    assert rig.taken_over == []
+    heard = rig.heard(second_said["turn_id"]).payload
+    assert heard["transcript"] == words
+    assert not {"segment", "continues", "folded"} & set(heard)
     runtime.conn.close()
 
 
@@ -999,7 +1061,7 @@ def test_words_that_go_on_from_an_answer_already_given_stand_alone(tmp_path: Pat
             second_said = _say(ws, "ub", _SECOND, over_her=True, continues="ua")
             _drive(runtime, rig.heard(second_said["turn_id"]))
 
-    assert rig.taken_over == [(first_said["turn_id"], second_said["turn_id"], "over")]
+    assert rig.taken_over == []  # the brain saw the earlier answer was over and took nothing
     heard = rig.heard(second_said["turn_id"]).payload
     assert heard["transcript"] == _SECOND
     assert "continues" not in heard
@@ -1025,6 +1087,339 @@ def test_a_continues_that_is_not_an_utterance_id_is_refused_and_writes_nothing(
     heard = rig.heard(unknown["turn_id"]).payload
     assert heard["transcript"] == _SECOND
     assert "continues" not in heard
+    runtime.conn.close()
+
+
+# --- any spoken sentence goes on from the pending one, by state (ADR 0274) ---
+
+_MAC = "macbook"
+
+
+@dataclass
+class _MacRig:
+    """A voice terminal's two asks on the real hooks the runtime binds for it.
+
+    ``hear`` does what the capture session does for an accepted sentence: the ``supersede`` ask
+    (the sweep), then the ``utterance`` ask. The terminal link is not involved: dropping what is
+    unspoken and stopping what is audible are recorded.
+    """
+
+    runtime: Any
+    taken_over: list[tuple[str, str, str]] = field(default_factory=list)
+    dropped: list[frozenset[str]] = field(default_factory=list)
+    stopped: list[str] = field(default_factory=list)
+    listening: Any = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.listening = inherent_loop._build_brain_listening(  # noqa: SLF001
+            self.runtime, TerminalHub(events=BrainEvents(self.runtime.conn)),
+            controls=VoiceControls(), set_conversation=lambda _on, _why: None,
+            set_quiet=lambda _level: None,
+        )
+        assert self.listening is not None
+        self.listening.drop_unspoken = self._drop
+        self.listening._stop_on = self._stop  # noqa: SLF001
+        real = self.listening.hooks.take_over
+
+        def take_over(earlier: str, turn_id: str) -> str:
+            outcome = str(real(earlier, turn_id))
+            self.taken_over.append((earlier, turn_id, outcome))
+            return outcome
+
+        self.listening.hooks.take_over = take_over
+
+    def _drop(self, turn_ids: frozenset[str]) -> frozenset[str]:
+        self.dropped.append(turn_ids)
+        return turn_ids
+
+    def _stop(self, _link: Any, reason: str) -> str:  # noqa: ANN401
+        self.stopped.append(reason)
+        return "applied"
+
+    def hear(self, turn_id: str, words: str) -> Any:  # noqa: ANN401 - Event
+        """The ``utterance.received`` the brain wrote for a sentence of the terminal's."""
+        self.listening.hooks.supersede(_MAC, turn_id)
+        args = {
+            "transcript": words, "turn_id": turn_id, "utterance_id": f"U-{turn_id}",
+            "channel": "inherent_wake",
+        }
+        link = SimpleNamespace(name=_MAC, speech=None)
+        reply = asyncio.run(self.listening._utterance(link, args))  # noqa: SLF001
+        (event,) = [
+            one for one in iter_events_of_types(self.runtime.conn, ("utterance.received",))
+            if one.event_uid == reply["event_uid"]
+        ]
+        return event
+
+
+def _asked(peer: Any) -> str:  # noqa: ANN401 - _Peer
+    return str(json.dumps(peer.requests[-1][1]["input"], ensure_ascii=False))
+
+
+def test_a_second_mac_utterance_while_the_first_is_thought_about_is_one_composed_turn(
+    tmp_path: Path,
+) -> None:
+    """Live 2026-10-15 15:22: two sentences ~1 s apart were two turns that contradicted.
+
+    The second utterance arrives while the first has no word out: the first is cancelled as
+    superseded naming the second, one request is answered and carries the whole thought once,
+    and memory.db holds each segment as it was spoken.
+    """
+    answer = "八点二十有一班。"
+    with _Peer([[("final_answer", answer)]], first_event_delay_s=30.0) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _MacRig(runtime)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_heard = rig.hear("T-1", _FIRST)
+            first = pool.submit(_drive, runtime, first_heard)
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            time.sleep(0.5)  # the peer reads its delay a moment after it logs the request
+            peer.first_event_delay_s = 0.0
+            second_heard = rig.hear("T-2", _SECOND)
+            second = pool.submit(_drive, runtime, second_heard)
+            second.result(timeout=20)
+            with pytest.raises(ResponseCancelledError):
+                first.result(timeout=10)
+
+    assert rig.taken_over == [("T-1", "T-2", "superseded")]
+    assert rig.dropped == [frozenset({"T-1"})]
+    assert rig.stopped == ["barge_in"]
+    payload = second_heard.payload
+    assert (payload["transcript"], payload["segment"], payload["continues"]) == (
+        _THOUGHT, _SECOND, "T-1",
+    )
+    assert payload["folded"] == [first_heard.event_uid]
+    (cancelled,) = _payloads(runtime.conn, "response.cancelled")
+    assert (cancelled["turn_id"], cancelled["reason"]) == ("T-1", "superseded")
+    assert cancelled["interrupted_by_turn_id"] == "T-2"
+    assert [row["turn_id"] for row in _payloads(runtime.conn, "surface.response_emitted")] == [
+        "T-2",
+    ]
+    asked = _asked(peer)
+    assert (asked.count(_FIRST), asked.count(_SECOND)) == (1, 1)
+    assert asked.index(_FIRST) < asked.index(_SECOND)
+    assert _records(runtime) == [("allen", _FIRST), ("allen", _SECOND), ("jarvis", answer)]
+    (message,) = _unspoken_history(runtime)
+    assert (message.count(_FIRST), message.count(_SECOND)) == (1, 1)
+    runtime.conn.close()
+
+
+def test_a_second_mac_utterance_takes_over_a_turn_that_called_a_tool_and_carries_its_results(
+    tmp_path: Path,
+) -> None:
+    """With slow_results on the sweep spared a turn working on a tool; now it is taken over.
+
+    The first turn searched (the call and its result are on the log). The composed request
+    cannot carry tool blocks, so a note lists the call and its observed output.
+    """
+    answer = "八点二十有一班。"
+    found = '{"departures": ["08:20 39路", "08:35 39路"]}'
+    with _Peer([[("final_answer", answer)]], first_event_delay_s=30.0) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        runtime = replace(
+            runtime, response_flags=replace(runtime.response_flags, slow_results=True),
+        )
+        rig = _MacRig(runtime)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_heard = rig.hear("T-1", _FIRST)
+            first = pool.submit(_drive, runtime, first_heard)
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            for kind, payload in (
+                ("action.proposed", {
+                    "action_id": "A-1", "tool_name": "transit_times", "caller_principal": "llm",
+                    "risk_level": "low", "arguments": {"to": "学校"},
+                }),
+                ("action.dispatched", {"action_id": "A-1"}),
+                ("action.result_observed", {
+                    "action_id": "A-1", "semantics": "observation", "tool_output": found,
+                }),
+            ):
+                emit_event(
+                    runtime.conn, type=kind, payload=payload,
+                    correlation={"turn_id": "T-1", "action_id": "A-1"},
+                )
+            time.sleep(0.5)  # the peer reads its delay a moment after it logs the request
+            peer.first_event_delay_s = 0.0
+            second_heard = rig.hear("T-2", _SECOND)
+            second = pool.submit(_drive, runtime, second_heard)
+            second.result(timeout=20)
+            with pytest.raises(ResponseCancelledError):
+                first.result(timeout=10)
+
+    assert rig.taken_over == [("T-1", "T-2", "superseded")]
+    (cancelled,) = _payloads(runtime.conn, "response.cancelled")
+    assert (cancelled["turn_id"], cancelled["interrupted_by_turn_id"]) == ("T-1", "T-2")
+    asked = _asked(peer)
+    assert "Already done for this thought" in asked
+    assert "transit_times" in asked
+    assert asked.count("08:20 39路") == 1
+    assert [row["turn_id"] for row in _payloads(runtime.conn, "surface.response_emitted")] == [
+        "T-2",
+    ]
+    runtime.conn.close()
+
+
+def test_a_second_mac_utterance_after_the_first_was_answered_is_its_own_turn(
+    tmp_path: Path,
+) -> None:
+    """The first answer completed: a record that stays, so nothing is taken over."""
+    with _Peer([[("final_answer", "一。")], [("final_answer", "二。")]]) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _MacRig(runtime)
+        _drive(runtime, rig.hear("T-1", _FIRST))
+        second_heard = rig.hear("T-2", _SECOND)
+        _drive(runtime, second_heard)
+
+    assert rig.taken_over == []
+    assert second_heard.payload["transcript"] == _SECOND
+    assert not {"segment", "continues", "folded"} & set(second_heard.payload)
+    assert not _payloads(runtime.conn, "response.cancelled")
+    assert len(_payloads(runtime.conn, "surface.response_emitted")) == 2
+    runtime.conn.close()
+
+
+def test_a_mac_stop_request_is_never_composed(tmp_path: Path) -> None:
+    """Words that only ask her to stop stand alone; the pending answer is not taken over."""
+    with _Peer([[("final_answer", "一。")]], first_event_delay_s=30.0) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _MacRig(runtime)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(_drive, runtime, rig.hear("T-1", _FIRST))
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            stop_heard = rig.hear("T-2", "停")
+            peer.first_event_delay_s = 0.0
+    assert rig.taken_over == []
+    assert stop_heard.payload["transcript"] == "停"
+    assert not {"segment", "continues", "folded"} & set(stop_heard.payload)
+    runtime.conn.close()
+
+
+def test_the_same_mac_words_again_are_left_to_the_repeat_rule_not_composed(
+    tmp_path: Path,
+) -> None:
+    """ADR 0268 stays: his row is kept, the repeat starts no answer and names the first turn."""
+    with _Peer([[("final_answer", "八点二十有一班。")]], first_event_delay_s=1.5) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _MacRig(runtime)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(_drive, runtime, rig.hear("T-1", _FIRST))
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            time.sleep(0.5)
+            peer.first_event_delay_s = 0.0
+            repeat_heard = rig.hear("T-2", _FIRST)
+            second = pool.submit(_drive, runtime, repeat_heard)
+            first.result(timeout=20)
+            with pytest.raises(ResponseCancelledError):
+                second.result(timeout=10)
+
+    assert rig.taken_over == []
+    assert repeat_heard.payload["transcript"] == _FIRST
+    assert not {"segment", "continues", "folded"} & set(repeat_heard.payload)
+    (cancelled,) = _payloads(runtime.conn, "response.cancelled")
+    assert (cancelled["turn_id"], cancelled["reason"]) == ("T-2", "superseded")
+    assert cancelled["interrupted_by_turn_id"] == "T-1"
+    admitted = {row["response_id"] for row in _payloads(runtime.conn, "response.request_admitted")}
+    assert len(admitted) == 1
+    assert [row["turn_id"] for row in _payloads(runtime.conn, "surface.response_emitted")] == [
+        "T-1",
+    ]
+    runtime.conn.close()
+
+
+def test_an_earlier_mac_utterance_older_than_the_bound_stands_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bound is a safety net for a turn that never ended: past it nothing is composed."""
+    monkeypatch.setattr(device_voice, "COMPOSE_BOUND_S", 0.3)
+    with _Peer([[("final_answer", "一。")], [("final_answer", "二。")]], hold=False) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _MacRig(runtime)
+        # A turn the log never saw end: only its sentence is there, and it is old enough.
+        rig.hear("T-1", _FIRST)
+        time.sleep(0.6)
+        second_heard = rig.hear("T-2", _SECOND)
+        _drive(runtime, second_heard)
+
+    assert rig.taken_over == []
+    assert second_heard.payload["transcript"] == _SECOND
+    assert not {"segment", "continues", "folded"} & set(second_heard.payload)
+    runtime.conn.close()
+
+
+def test_a_third_mac_utterance_composes_into_the_second_and_the_thought_is_in_once(
+    tmp_path: Path,
+) -> None:
+    """A chain names only the last turn; the third carries the thought, not three copies."""
+    third_words = "往三十九路的地方走"
+    with _Peer([[("final_answer", "好的。")]], first_event_delay_s=30.0) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _MacRig(runtime)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [pool.submit(_drive, runtime, rig.hear("T-1", _FIRST))]
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            time.sleep(0.5)
+            futures.append(pool.submit(_drive, runtime, rig.hear("T-2", _SECOND)))
+            _wait_until(lambda: len(peer.requests) == 2, timeout_s=15.0)
+            time.sleep(0.5)
+            peer.first_event_delay_s = 0.0
+            third_heard = rig.hear("T-3", third_words)
+            futures.append(pool.submit(_drive, runtime, third_heard))
+            futures[2].result(timeout=60)
+            for earlier in futures[:2]:
+                with pytest.raises(ResponseCancelledError):
+                    earlier.result(timeout=10)
+
+    assert [(e, t) for e, t, _o in rig.taken_over] == [("T-1", "T-2"), ("T-2", "T-3")]
+    assert third_heard.payload["transcript"] == _FIRST + _SECOND + third_words
+    assert len(third_heard.payload["folded"]) == 2
+    asked = _asked(peer)
+    assert [asked.count(words) for words in (_FIRST, _SECOND, third_words)] == [1, 1, 1]
+    runtime.conn.close()
+
+
+def test_a_sentence_after_a_repeat_goes_on_from_the_turn_the_repeat_repeated(
+    tmp_path: Path,
+) -> None:
+    """The repeat is cancelled (ADR 0268); it must not hide the turn that still answers."""
+    third_words = "往三十九路的地方走"
+    with _Peer([[("final_answer", "好的。")]], first_event_delay_s=30.0) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _MacRig(runtime)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            first = pool.submit(_drive, runtime, rig.hear("T-1", _FIRST))
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            time.sleep(0.5)
+            repeat = pool.submit(_drive, runtime, rig.hear("T-2", _FIRST))
+            with pytest.raises(ResponseCancelledError):
+                repeat.result(timeout=10)
+            peer.first_event_delay_s = 0.0
+            third_heard = rig.hear("T-3", third_words)
+            third = pool.submit(_drive, runtime, third_heard)
+            third.result(timeout=60)
+            with pytest.raises(ResponseCancelledError):
+                first.result(timeout=10)
+
+    assert rig.taken_over == [("T-1", "T-3", "superseded")]
+    assert third_heard.payload["transcript"] == _FIRST + third_words
+    assert third_heard.payload["continues"] == "T-1"
+    runtime.conn.close()
+
+
+def test_a_typed_say_never_goes_on_from_a_pending_spoken_turn(tmp_path: Path) -> None:
+    """Typed words are never composed; a typed Mac submit does not reach the composing seam."""
+    with _Peer([[("final_answer", "一。")]], first_event_delay_s=30.0) as peer:
+        runtime = _merge_rig(tmp_path, peer)
+        rig = _PhoneRig(runtime)
+        with rig.connect() as ws, ThreadPoolExecutor(max_workers=1) as pool:
+            _open(ws)
+            first_said = _say(ws, "ua", _FIRST)
+            pool.submit(_drive, runtime, rig.heard(first_said["turn_id"]))
+            _wait_until(lambda: len(peer.requests) == 1, timeout_s=15.0)
+            typed = _say(ws, "ub", _SECOND, spoken=False, continues="ua")
+            peer.first_event_delay_s = 0.0
+    assert typed["verdict"] == "turn"
+    assert rig.taken_over == []
+    assert not _payloads(runtime.conn, "response.cancelled")
     runtime.conn.close()
 
 

@@ -225,11 +225,14 @@ def test_a_devices_voice_cancels_only_the_runs_of_its_own_turns(
             else "ambiguous_open_runs" if name in AMBIGUOUS else "no_open_run"
         )
     if trigger == "supersede":
-        # The sentences whose run has not opened yet are marked for the same device alone.
+        # The sentences whose run has not opened yet are marked for the same device alone. A
+        # terminal's sweep leaves the device's latest one to composition (ADR 0274), which
+        # takes it over at the next utterance: only the host's own session marks it.
         registry = runtime.response_runs
         assert registry is not None
+        local = via == "local"
         assert (registry.turn_superseded("W-mac"), registry.turn_superseded("W-iphone")) == (
-            device == MAC_NODE, device == PHONE,
+            local and device == MAC_NODE, local and device == PHONE,
         )
     runtime.conn.close()
 

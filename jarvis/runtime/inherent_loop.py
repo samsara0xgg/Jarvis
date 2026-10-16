@@ -167,6 +167,7 @@ from jarvis.runtime import (
     diagnostics_flag,
     drive_turn,
     make_barge_in_interrupt_callable,
+    make_compose_callable,
     make_continuation_callable,
     make_foreground_decision_callable,
     make_relation_supersede_callable,
@@ -3590,6 +3591,7 @@ def _build_phone_hub(
         barge_in=None if registry is None else functools.partial(_phone_barge_in, runtime),
         cancel_turn=None if registry is None else make_turn_cancel_callable(runtime),
         supersede_turn=None if registry is None else make_continuation_callable(runtime),
+        pick_earlier=None if registry is None else make_compose_callable(runtime),
         ask_words=mine.ask_words,
         note_words=mine.note_words,
         begin_line=mine.begin_line,
@@ -3658,10 +3660,14 @@ def _build_brain_listening(
             runtime, only_turns=device_voice.device_turns(event_log_path, device),
         ),
     )
+    compose = make_compose_callable(runtime)
     supersede = _per_device(
         lambda device: make_supersede_unspoken_callable(
             runtime, listening.drop_unspoken,
             only_turns=device_voice.device_turns(event_log_path, device),
+            # ADR 0274: the device's pending sentence is composed into the next one at its
+            # utterance, so the sweep leaves it to that.
+            leave=lambda turn_id: compose(device, turn_id, None),
         ),
     )
     cancel_runs = _per_device(
@@ -3687,6 +3693,8 @@ def _build_brain_listening(
         cancel_runs=(
             (lambda device: cancel_runs(device)()) if registry is not None else None
         ),
+        composes_into=compose if registry is not None else None,
+        take_over=make_continuation_callable(runtime) if registry is not None else None,
         heard_elsewhere=lambda device, _turn_id, text: device_voice.heard_elsewhere(
             event_log_path, device, text,
         ),

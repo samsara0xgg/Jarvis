@@ -9,6 +9,8 @@ Two readers of the event log that the runtime binds to the voice paths of every 
   shared word judge runs first (:mod:`jarvis.surface.word_judge`, verdict ``elsewhere``).
 * :func:`repeat_of` answers "is this utterance the same words as one this device's turn is
   still answering" (ADR 0268), asked where the turn starts.
+* :func:`compose_target` answers "which earlier turn of this device do these words go on
+  from" (ADR 0274), asked where the utterance is recorded.
 """
 
 from __future__ import annotations
@@ -158,4 +160,68 @@ def repeat_of(  # noqa: PLR0913 - the turn, its words, and the three facts only 
                 and conn.execute(_REPEAT_ENDED, (earlier,)).fetchone() is None
             ):
                 return earlier
+    return None
+
+
+COMPOSE_BOUND_S: Final = 120.0
+"""ADR 0274: a safety bound for an earlier turn that never ended, not a heuristic about how
+long a pause may be. Within it, what matters is whether her answer to that turn is over."""
+TURN_OVER_SQL: Final = (
+    "SELECT 1 FROM events WHERE (type IN ('turn.ended', 'turn.failed') "
+    "AND json_extract(correlation_json, '$.turn_id') = ?1) "
+    "OR (type IN ('response.completed', 'response.cancelled', 'response.failed') "
+    "AND json_extract(payload_json, '$.turn_id') = ?1 "
+    "AND json_extract(payload_json, '$.response_id') IN ("
+    "SELECT json_extract(payload_json, '$.response_id') FROM events "
+    "WHERE type = 'response.started' AND json_extract(payload_json, '$.turn_id') = ?1 "
+    "AND json_extract(payload_json, '$.phase') = 'final')) LIMIT 1"
+)
+"""Whether a turn is over: it ended or failed, or its final answer completed, was cancelled
+or failed. A completed answer is a record that cannot be taken back (ADR 0053)."""
+_CANCELLED_SUPERSEDED = (
+    "SELECT 1 FROM events WHERE type = 'response.cancelled' "
+    "AND json_extract(payload_json, '$.turn_id') = ? "
+    "AND json_extract(payload_json, '$.reason') = 'superseded' LIMIT 1"
+)
+
+
+def compose_target(
+    event_log_path: Path,
+    device: str,
+    turn_id: str,
+    words: str | None,
+    *,
+    superseded: Callable[[str], bool],
+) -> str | None:
+    """The earlier turn of ``device`` that ``turn_id``'s spoken ``words`` go on from, if any.
+
+    That is the device's latest earlier ``utterance.received`` that no later sentence took
+    over (``superseded`` says so for a take-over not yet on the log; one that is shows as a
+    cancel), provided her answer to it is not over and it was recorded within
+    :data:`COMPOSE_BOUND_S`. With ``words`` ``None`` the answer is the same without the checks
+    that need the words (a stop request, a repeat): the Mac's sweep uses it to leave that turn
+    to composition. A stop request is never composed, and words that say no more than the
+    earlier turn did are a repeat (ADR 0268), left to that rule.
+    """
+    if words is not None and voice_asr.is_stop_request(words):
+        return None
+    now_ms = int(time.time() * 1000)
+    with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
+        rows = conn.execute(
+            "SELECT json_extract(payload_json, '$.turn_id'), "
+            "json_extract(payload_json, '$.transcript'), ts_epoch_ms FROM events "
+            "WHERE type = 'utterance.received' AND ingestion_node = ? ORDER BY id DESC LIMIT 20",
+            (device,),
+        ).fetchall()
+        for earlier, text, ts_ms in rows:
+            if not isinstance(earlier, str) or not isinstance(text, str) or earlier == turn_id:
+                continue
+            if superseded(earlier) or conn.execute(_CANCELLED_SUPERSEDED, (earlier,)).fetchone():
+                continue  # a later sentence took its place; the one that did is the latest
+            if (
+                now_ms - ts_ms > COMPOSE_BOUND_S * 1000
+                or conn.execute(TURN_OVER_SQL, (earlier,)).fetchone() is not None
+            ):
+                return None
+            return None if words is not None and repeats(words, text) else earlier
     return None

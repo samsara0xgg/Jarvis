@@ -84,18 +84,20 @@ records a turn, once. A ``say`` with no flag is a turn: ``verdict`` is ``"turn"`
 host heard the words elsewhere first, which answers ``elsewhere`` flagged or not (ADR 0219);
 typed words are never checked.
 
-**Going on from a sentence (ADR 0271).** ``continues`` is the ``utterance_id`` of the spoken
-``say`` of this device that the words go on from (a pause cut his sentence); the ``say`` carries
-only its new words, never the earlier ones. A host that can (``supersede_turn``) composes the
-thought: the ``utterance.received`` it writes has ``transcript`` holding the earlier sentence's
-whole thought followed by the new words, ``segment`` the new words alone, ``continues`` the
-earlier turn and ``folded`` the record ids whose words ``transcript`` holds; the earlier turn's
-unspoken audio is dropped, what is audible stopped and its open answer cancelled as
-``superseded`` naming this turn (``interrupted_by_turn_id``), after a ``turn`` verdict when the
-``say`` was judged. When the earlier turn is over (its answer was given or it was stopped), is
-unknown, or is not a spoken ``say`` of this device, the words are a turn of their own and
-``continues`` is dropped. Typed words ignore it; a value that is not an id is ``error bad_say``.
-A host that does not know the field ignores it.
+**Going on from a sentence (ADR 0271, 0274).** The host decides, by state, whether a spoken
+``say`` goes on from this device's latest earlier spoken sentence: it does while her answer to
+that one is not over (and it is under two minutes old), unless the words are a stop request or
+a repeat of the earlier ones. ``continues`` is the ``utterance_id`` of the ``say`` the phone
+believes it goes on from (a pause cut his sentence); a ``say`` carries only its new words,
+never the earlier ones. The host composes the thought: the ``utterance.received`` it writes has
+``transcript`` holding the earlier sentence's whole thought followed by the new words,
+``segment`` the new words alone, ``continues`` the earlier turn and ``folded`` the record ids
+whose words ``transcript`` holds; the earlier turn's unspoken audio is dropped, what is audible
+stopped and its open answer cancelled as ``superseded`` naming this turn
+(``interrupted_by_turn_id``), after a ``turn`` verdict when the ``say`` was judged. A
+``continues`` is not needed, and when the host's pick is another turn it is ignored. When there
+is no such earlier turn the words are a turn of their own. Typed words never continue; a value
+that is not an id is ``error bad_say``.
 
 **Reactions (ADR 0257).** ``reaction`` is one change of an emoji on a message: ``target`` is the
 message's record id (the ``id`` of a row of ``GET /inherent/conversation``), ``by`` is ``allen`` or
@@ -127,7 +129,7 @@ import re
 import sqlite3
 import time
 from collections import deque
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from fastapi import WebSocketDisconnect
@@ -233,10 +235,11 @@ class PhoneHub:
     these words just now. It blocks and runs on a worker thread; true answers a spoken ``say``
     with ``elsewhere`` and records nothing.
 
-    ``supersede_turn(earlier_turn_id, turn_id)`` (ADR 0271) takes the open answer of a turn the
-    new one goes on from, cancels it as superseded by ``turn_id`` and answers ``"superseded"``, or
-    answers something else when that turn is over. It blocks and runs on a worker thread;
-    ``None`` is a host that cannot, and a ``say`` that continues then stands alone.
+    ``pick_earlier(device, turn_id, text)`` (ADR 0274) is the earlier turn of ``device`` a
+    spoken ``say`` goes on from, or ``None``; ``supersede_turn(earlier_turn_id, turn_id)``
+    (ADR 0271) takes the open answer of that turn, cancels it as superseded by ``turn_id`` and
+    answers ``"superseded"``, or answers something else when that turn is over. Both block and
+    run on a worker thread; without either, a ``say`` always stands alone.
 
     ``check_attachments(ids)`` (ADR 0231) is the store's check of the files a typed ``say``
     names, as ``POST /inherent/submit`` makes it: it returns, or raises
@@ -256,6 +259,7 @@ class PhoneHub:
     set_quiet: Callable[[str], None] | None = None
     heard_elsewhere: Callable[[str, str, str], bool] | None = None
     supersede_turn: Callable[[str, str], str] | None = None
+    pick_earlier: Callable[[str, str, str], str | None] | None = None
     check_attachments: Callable[[Sequence[str]], object] | None = None
     live: dict[str, _Connection] = field(default_factory=dict)
 
@@ -583,7 +587,7 @@ def _route_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
         conn.spawn(_judge_say(hub, conn, say))
     elif say.spoken and (check := _elsewhere_check(hub, conn)) is not None:
         conn.spawn(_record_unless_elsewhere(hub, conn, say, check))
-    elif say.continues is not None:
+    elif say.spoken and hub.pick_earlier is not None and hub.supersede_turn is not None:
         conn.spawn(_record_continuing(hub, conn, say))
     else:
         _record_say(hub, conn, say)
@@ -651,13 +655,18 @@ async def _record_unless_elsewhere(
         await _record_continuing(hub, conn, say)
 
 
-def _record_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
-    """Write the words as a turn, once, and answer ``said`` with its id."""
+def _record_say(
+    hub: PhoneHub, conn: _Connection, say: _Say, continues: str | None = None,
+) -> None:
+    """Write the words as a turn, once, and answer ``said`` with its id.
+
+    ``continues`` is the earlier turn they were composed into (ADR 0274).
+    """
     try:
         turn_id = hub.events.record_phone_say(
             conn.device, say.utterance_id, say.text, spoken=say.spoken, language=say.language,
             confidence=say.confidence, about=say.about, attachments=say.attachments,
-            continues=say.continues,
+            continues=continues,
         )
     except ValueError as exc:
         LOGGER.warning("phone %s: say refused: %s", conn.device, exc)
@@ -678,43 +687,48 @@ def _record_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
 
 
 async def _record_continuing(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
-    """Record a spoken ``say``, first taking over from the sentence it goes on from (ADR 0271)."""
-    _record_say(hub, conn, await _take_over(hub, conn, say))
+    """Record a spoken ``say``, first taking over from the sentence it goes on from (ADR 0274)."""
+    _record_say(hub, conn, say, await _take_over(hub, conn, say))
 
 
-async def _take_over(hub: PhoneHub, conn: _Connection, say: _Say) -> _Say:
-    """``say``, once the answer it goes on from is taken over, or without ``continues``.
+async def _take_over(hub: PhoneHub, conn: _Connection, say: _Say) -> str | None:
+    """The earlier turn ``say`` is composed into, once its answer is taken over; else ``None``.
 
-    The host composes the thought, not the phone. The earlier turn's unspoken audio is dropped,
-    what is audible stopped, and its open answer cancelled as superseded by this turn; the
-    words are then recorded as both sentences in one. When the earlier turn is already over
-    (answered, stopped, or not this device's) the words stand alone and ``continues`` is gone.
-    A resent ``say`` that was recorded is not taken over again.
+    The host decides by state which turn that is (``pick_earlier``, ADR 0274); a ``continues``
+    the phone sent is accepted when it names that turn and dropped when it does not. The
+    earlier turn's unspoken audio is dropped, what is audible stopped, and its open answer
+    cancelled as superseded by this turn; the words are then recorded as both sentences in
+    one. When there is no such turn the words stand alone. A resent ``say`` that was recorded
+    is not taken over again.
     """
-    if say.continues is None:
-        return say
     events = hub.events
-    if events.has_phone_say(conn.device, say.utterance_id):
-        return say  # a resend: the first one's turn is the answer, nothing more to take over
     if (
-        hub.supersede_turn is None
-        or events.continued_words(conn.device, say.continues, say.text) is None
-    ):
-        return replace(say, continues=None)
-    earlier = phone_turn_id(conn.device, say.continues)
+        not say.spoken or hub.pick_earlier is None or hub.supersede_turn is None
+        or events.has_phone_say(conn.device, say.utterance_id)
+    ):  # a resend: the first one's turn is the answer, nothing more to take over
+        return None
+    turn_id = phone_turn_id(conn.device, say.utterance_id)
+    try:
+        earlier = await asyncio.to_thread(hub.pick_earlier, conn.device, turn_id, say.text)
+    except Exception:  # noqa: BLE001 - what he said is never lost to a failed pick
+        LOGGER.warning("phone %s: picking the sentence it goes on from failed", conn.device,
+                       exc_info=True)
+        return None
+    if earlier is None or (
+        say.continues is not None and earlier != phone_turn_id(conn.device, say.continues)
+    ) or events.continued_words(conn.device, earlier, say.text) is None:
+        return None
     outcome = "failed"
     try:
         if conn.voice is not None:
             await conn.voice.drop_unspoken(frozenset({earlier}))
             await conn.voice.stop_playback("barge_in")
-        outcome = await asyncio.to_thread(
-            hub.supersede_turn, earlier, phone_turn_id(conn.device, say.utterance_id),
-        )
+        outcome = await asyncio.to_thread(hub.supersede_turn, earlier, turn_id)
     except Exception:
         LOGGER.exception("phone %s: taking over from %s failed", conn.device, earlier)
         conn.error("interrupt_failed", "taking over from the earlier sentence did not complete")
     LOGGER.info("phone %s: words go on from %s -> %s", conn.device, earlier, outcome)
-    return say if outcome == "superseded" else replace(say, continues=None)
+    return earlier if outcome == "superseded" else None
 
 
 async def _judge_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
@@ -736,10 +750,10 @@ async def _judge_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
     LOGGER.info("phone %s: words over_her=%s conversation=%s -> %s",
                 conn.device, say.over_her, say.conversation, verdict)
     if verdict == "turn":
-        say = await _take_over(hub, conn, say)
-        if say.over_her and say.continues is None:
+        earlier = await _take_over(hub, conn, say)
+        if say.over_her and earlier is None:
             await _interrupt(hub, conn, reason="barge_in", cancel_turns=False)
-        _record_say(hub, conn, say)
+        _record_say(hub, conn, say, earlier)
         return
     if verdict in {"stop", "wait"}:
         await _interrupt(hub, conn, reason="barge_in", cancel_turns=False)

@@ -8,11 +8,15 @@ since its own so its late answer opens by pointing back at its question.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
+
+from jarvis.state.event_log import iter_events_for_turn
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Sequence
 
 _INPUT_TYPES: Final[tuple[str, str]] = ("utterance.received", "surface.user_intent")
 # A turn is over once it ended, failed, or had its run cancelled (ADR 0074
@@ -70,6 +74,53 @@ def turns_in_flight(
         for turn_id, words, asked_ms in rows
         if isinstance(words, str) and words.strip()
     )
+
+
+@dataclass(frozen=True)
+class DoneCall:
+    """A tool call an earlier part of one thought made: what was asked and what came back."""
+
+    tool_name: str
+    arguments: Any
+    output: str | None
+
+
+def folded_tool_calls(conn: sqlite3.Connection, folded: Sequence[str]) -> tuple[DoneCall, ...]:
+    """ADR 0274: the tool calls of the turns whose sentences a composed turn holds, in order.
+
+    ``folded`` is the payload field naming the earlier ``utterance.received`` events by uid.
+    A call whose result was not observed (it was still running) has ``output`` ``None``; a
+    failed one carries its error text.
+    """
+    done: list[DoneCall] = []
+    for uid in folded:
+        row = conn.execute(
+            "SELECT json_extract(payload_json, '$.turn_id') FROM events WHERE event_uid = ?",
+            (uid,),
+        ).fetchone()
+        if row is None or not isinstance(row[0], str):
+            continue
+        events = list(
+            iter_events_for_turn(conn, row[0], ("action.proposed", "action.result_observed")),
+        )
+        results = {
+            event.payload.get("action_id"): event.payload
+            for event in events if event.type == "action.result_observed"
+        }
+        for event in events:
+            if event.type != "action.proposed":
+                continue
+            result = results.get(event.payload.get("action_id"))
+            output = None if result is None else result.get("tool_output", result.get("error"))
+            done.append(
+                DoneCall(
+                    str(event.payload.get("tool_name", "")),
+                    event.payload.get("arguments"),
+                    None if output is None else output if isinstance(output, str)
+                    else json.dumps(output, ensure_ascii=False),
+                ),
+            )
+    return tuple(done)
 
 
 def any_turn_in_flight(conn: sqlite3.Connection, *, since_ms: int) -> bool:
