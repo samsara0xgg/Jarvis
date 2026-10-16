@@ -64,10 +64,12 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # projection of events. ADR 0201: day_prose is the nightly "The day" line of the ledger.
     # ADR 0235: day_highlight_marks are his marks of a day's items, over her picks in day_prose.
     # ADR 0255: record_attachments link his record to the files that came with it.
+    # ADR 0276: day_experience is the nightly count of a day, a row per local date that no read
+    # of the log depends on; the log stays the source and a row can be dropped and refolded.
     "jarvis/state/memory_db.py": frozenset(
         {
             "records", "summaries", "sent", "day_summaries", "day_prose", "day_highlight_marks",
-            "record_attachments",
+            "record_attachments", "day_experience",
         },
     ),
     # ADR 0146: the versions of the user's core memory, derived from records and
