@@ -16,15 +16,17 @@ if TYPE_CHECKING:
     from jarvis.execution.tools import ToolContext
 
 DAYS_AHEAD: Final = 9
+DAYS_BACK: Final = 7
 HOURLY_MAX_DAYS: Final = 3
 _DESCRIPTION: Final = (
-    "The weather from Apple Weather at any place, for today and up to 9 days ahead, in one call:"
+    "The weather from Apple Weather at any place, from 7 days back to 9 days ahead, in one call:"
     " one call answers the whole question, so do not call it again for the same place."
     " Use it for every weather question: now, today, tonight, tomorrow, a weekday or the weekend,"
-    " rain, wind, UV, sunrise and sunset, warnings, at home or anywhere else. The result has"
-    " `now` (temperature, feels-like, wind, humidity, rain rate); `today` and `tomorrow`, or"
-    " `days` when dates were asked (high and low, conditions, chance and amount of rain or snow,"
-    " wind, UV index, sunrise and sunset); `next_hours`, the next 12 hours, or `hourly`;"
+    " a day gone by, rain, wind, UV, sunrise and sunset, warnings, at home or anywhere else. The"
+    " result has `now` (temperature, feels-like, wind, humidity, rain rate); `today` and"
+    " `tomorrow`, or `days` when dates were asked (high and low, conditions, chance and amount"
+    " of rain or snow, wind, UV index, sunrise and sunset); `next_hours`, the next 12 hours, or"
+    " `hourly`;"
     " `next_hour`, minute-by-minute rain for the next 60 minutes (is it dry or raining now, when"
     ' rain starts_at or stops_at, peak intensity: use it for "will it rain soon", "when does it'
     ' start or stop raining", "do I need an umbrella now"); `alerts`, the official warnings in'
@@ -35,15 +37,17 @@ _DESCRIPTION: Final = (
     " language, without extra words), and pass it again whenever he corrects or changes the"
     " place of an earlier answer: never state one place's weather from another place's result."
     "{here} With no dates you get now, today, tomorrow and the next 12 hours: that answers"
-    " now, today, tonight and tomorrow. For a later day pass start_date as YYYY-MM-DD in the"
-    " place's own calendar (work a weekday or a day number out from today's date; a day alone"
-    " needs only start_date), and end_date for a range. Set hourly only when he wants"
-    " hour-by-hour rows for those days (up to 3 days), and air_quality for US AQI, PM2.5 and"
-    " PM10. Yesterday and earlier, or beyond 9 days ahead, are not available: say so, or use"
-    " web_search. If other places share the name, the result lists them: mention it when it"
-    " matters, and pass the coordinates given as place to read one of them. Times are the"
-    " place's local time; the weather is Apple Weather, which you may name. If it returns an"
-    " error, say what failed, then use web_search or tell him it is unavailable."
+    " now, today, tonight and tomorrow. For any other day, past or later, pass start_date as"
+    " YYYY-MM-DD in the place's own calendar (work a weekday or a day number out from today's"
+    " date; a day alone needs only start_date), and end_date for a range. A past day gives its"
+    " daily figures only: no now, hours or alerts. Set hourly only when he wants hour-by-hour"
+    " rows for those days (today or later, up to 3 days), and air_quality for US AQI, PM2.5 and"
+    " PM10. Days from 7 back to 9 ahead are all one call; earlier or later ones are not"
+    " available: say so, or use web_search. If other places share the name, the result lists"
+    " them: mention it when it matters, and pass the coordinates given as place to read one of"
+    " them. Times are the place's local time; the weather is Apple Weather, which you may name."
+    " If it returns an error, say what failed, then use web_search or tell him it is"
+    " unavailable."
 )
 _HERE: Final = (
     ' Pass place "here" for where he is right now (his location is read for it, and the result'
@@ -90,12 +94,13 @@ def _dates(args: Mapping[str, Any], *, hourly: bool) -> tuple[date | None, date 
     # ponytail: judged against the UTC date, one day of grace each way, because the place's own
     # zone is not known before the request; the lookup refuses what is still out of range.
     today = datetime.now(UTC).date()
-    low, high = today - timedelta(days=1), today + timedelta(days=DAYS_AHEAD + 1)
+    low, high = today - timedelta(days=DAYS_BACK + 1), today + timedelta(days=DAYS_AHEAD + 1)
     if end < start or start < low or end > high:
         msg = (
-            f"weather: dates must run from today to {DAYS_AHEAD} days ahead"
-            f" ({today.isoformat()} to {(today + timedelta(days=DAYS_AHEAD)).isoformat()}) with"
-            " end_date not before start_date; use web_search beyond that"
+            f"weather: dates must run from {DAYS_BACK} days back to {DAYS_AHEAD} days ahead"
+            f" ({(today - timedelta(days=DAYS_BACK)).isoformat()} to"
+            f" {(today + timedelta(days=DAYS_AHEAD)).isoformat()}) with end_date not before"
+            " start_date; use web_search beyond that"
         )
         raise ToolError(msg, code="invalid_argument")
     if hourly and (end - start).days >= HOURLY_MAX_DAYS:
@@ -153,8 +158,8 @@ def build_weather_tool(
         },
         "start_date": {
             "type": "string",
-            "description": "First day, YYYY-MM-DD, today to 9 days ahead; leave out for now, today"
-            " or tomorrow.",
+            "description": "First day, YYYY-MM-DD, from 7 days back to 9 days ahead; leave out for"
+            " now, today or tomorrow.",
         },
         "end_date": {"type": "string", "description": "Last day, YYYY-MM-DD; default start_date."},
         "hourly": {
@@ -178,4 +183,4 @@ def build_weather_tool(
     )
 
 
-__all__ = ["DAYS_AHEAD", "WeatherRequest", "build_weather_tool"]
+__all__ = ["DAYS_AHEAD", "DAYS_BACK", "WeatherRequest", "build_weather_tool"]

@@ -28,7 +28,7 @@ from tzfpy import get_tz
 
 from jarvis.decision.daily_report import brief_of
 from jarvis.execution.tools import ToolError
-from jarvis.execution.weather_tool import DAYS_AHEAD
+from jarvis.execution.weather_tool import DAYS_AHEAD, DAYS_BACK
 from jarvis.runtime.daily_report import PLAN_SERVER, _graph
 from jarvis.runtime.weatherkit import NOT_SET_UP, home_line
 from jarvis.runtime.weatherkit import report as wk_report
@@ -341,11 +341,18 @@ def weather_lookup(
         today = datetime.fromtimestamp(kit.clock(), ZoneInfo(str(zone_name))).date()
         first = request.start or today
         last = request.end or (first if request.start else today + timedelta(days=1))
-        if first < today or last > today + timedelta(days=DAYS_AHEAD):
+        oldest, newest = today - timedelta(days=DAYS_BACK), today + timedelta(days=DAYS_AHEAD)
+        if first < oldest or last > newest:
             msg = (
-                f"weather: {spot.label}'s forecast runs from today ({today.isoformat()}) to"
-                f" {(today + timedelta(days=DAYS_AHEAD)).isoformat()}; earlier or later days are"
-                " not available (use web_search)"
+                f"weather: {spot.label}'s forecast runs from {DAYS_BACK} days back"
+                f" ({oldest.isoformat()}) to {DAYS_AHEAD} days ahead ({newest.isoformat()});"
+                " earlier or later days are not available (use web_search)"
+            )
+            raise ToolError(msg, code="invalid_argument")
+        if request.hourly and first < today:
+            msg = (
+                f"weather: hour-by-hour rows exist from now on, not for {first.isoformat()};"
+                " ask for today or later, or drop hourly for the daily figures"
             )
             raise ToolError(msg, code="invalid_argument")
         body = kit.read(

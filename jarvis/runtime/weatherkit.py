@@ -29,7 +29,7 @@ from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from jarvis.execution.tools import ToolError
-from jarvis.execution.weather_tool import DAYS_AHEAD
+from jarvis.execution.weather_tool import DAYS_AHEAD, DAYS_BACK
 from jarvis.surface.apns import ProviderToken, load_signing_key
 
 if TYPE_CHECKING:
@@ -141,21 +141,23 @@ class WeatherKit:
 
         Daily rows for those days, hourly rows from now (or ``first``) to the end of ``last``,
         the current conditions, the next hour's minutes and, when ``country`` is known, alerts.
+        Days all before today get the daily rows alone: nothing live applies to them.
         """
         tz = ZoneInfo(zone)
         now = self.clock()
         begin = datetime.combine(first, day_start(), tz)
         end = datetime.combine(last + timedelta(days=1), day_start(), tz)
-        hourly = max(begin, datetime.fromtimestamp(now // 3600 * 3600, tz))
-        sets = ["currentWeather", "forecastHourly", "forecastDaily", "forecastNextHour"]
-        query = {
-            "dataSets": ",".join([*sets, "weatherAlerts"] if country else sets),
-            "timezone": zone,
-            "dailyStart": _utc(begin), "dailyEnd": _utc(end),
-            "hourlyStart": _utc(hourly), "hourlyEnd": _utc(max(end, hourly + timedelta(hours=1))),
-        }
-        if country:
-            query["countryCode"] = country
+        query = {"timezone": zone, "dailyStart": _utc(begin), "dailyEnd": _utc(end)}
+        if last < datetime.fromtimestamp(now, tz).date():
+            query["dataSets"] = "forecastDaily"
+        else:
+            hourly = max(begin, datetime.fromtimestamp(now // 3600 * 3600, tz))
+            sets = ["currentWeather", "forecastHourly", "forecastDaily", "forecastNextHour"]
+            query["dataSets"] = ",".join([*sets, "weatherAlerts"] if country else sets)
+            query["hourlyStart"] = _utc(hourly)
+            query["hourlyEnd"] = _utc(max(end, hourly + timedelta(hours=1)))
+            if country:
+                query["countryCode"] = country
         url = f"{ENDPOINT}/en/{latitude}/{longitude}?{urlencode(query, safe=',:/')}"
         with self._lock:
             held = self._held.get(url)
@@ -324,7 +326,8 @@ def report(  # noqa: PLR0913 - what the tool answers with: the answer and what w
 
     ``whole`` is a request with no days: ``today``, ``tomorrow`` and the next 12 hours; else
     ``days`` (``first`` to ``last``). ``hourly`` puts every hour of those days in place of the
-    next 12. The next hour's minutes come with the current day; alerts and attribution always.
+    next 12. The next hour's minutes come with the current day; alerts and attribution always,
+    except that days all before today give ``days`` and the attribution alone (no ``now``).
 
     Raises:
         ToolError: WeatherKit holds none of the days asked.
@@ -338,12 +341,15 @@ def report(  # noqa: PLR0913 - what the tool answers with: the answer and what w
     if not days:
         msg = (
             f"weather: WeatherKit has no forecast for {first.isoformat()} to {last.isoformat()}"
-            f" (it covers today, {today.isoformat()}, to {DAYS_AHEAD} days after it); use"
-            " web_search for other dates"
+            f" (it covers {DAYS_BACK} days before today, {today.isoformat()}, to {DAYS_AHEAD}"
+            " days after it); use web_search for other dates"
         )
         raise ToolError(msg, code="invalid_argument")
     current = body.get("currentWeather") or {}
-    out: dict[str, Any] = {"place": label, "timezone": zone_name, "now": _now(current)}
+    past = last < today
+    out: dict[str, Any] = {"place": label, "timezone": zone_name}
+    if not past:
+        out["now"] = _now(current)
     out |= {"today": days[0], "tomorrow": days[1] if len(days) > 1 else None} if whole \
         else {"days": days}
     rows = body.get("forecastHourly", {}).get("hours", ())
@@ -357,7 +363,8 @@ def report(  # noqa: PLR0913 - what the tool answers with: the answer and what w
         ]
     if first <= today <= last:
         out["next_hour"] = next_hour(body, zone, now)
-    out["alerts"] = alerts(body, zone)
+    if not past:
+        out["alerts"] = alerts(body, zone)
     out["attribution"] = ATTRIBUTION
     return out
 

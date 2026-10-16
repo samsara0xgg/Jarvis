@@ -16,7 +16,8 @@
   ES256 JWT: header `alg`, `kid` (the key's id) and `id` (`<team id>.<services id>`); claims
   `iss` (team id), `sub` (services id), `iat`, `exp`. It takes no place name, and the day
   boundaries follow the `timezone` parameter; alerts need `countryCode`. It has no air quality.
-  The daily forecast covers today and nine days after it; this ADR does not rely on past days.
+  The daily forecast covers nine days after today and, by a live probe on 2026-10-16, seven
+  days before it (a request 30 days back is a 400).
 - Open-Meteo's geocoding answers a time zone and a country code with each match; its air
   quality API is one small call that needs no key.
 - The key does not exist yet; the owner creates it in the Apple developer portal.
@@ -31,8 +32,11 @@
   and adds `next_hour` (dry or raining now, `starts_at`, `stops_at`, peak intensity, or why there
   is none for this place), `alerts` (headline, severity, area, effective, expires, source;
   an empty list means none) and `attribution`.
-- Dates run from today to 9 days ahead in the place's own calendar; earlier or later is an error
-  that names the range and sends the model to `web_search`.
+- Dates run from 7 days back to 9 days ahead in the place's own calendar, one call for any of
+  them; earlier or later is an error that names the range and sends the model to `web_search`.
+  A request of days all before today asks WeatherKit for the daily forecast alone and the answer
+  is `days` and the attribution: no `now`, `next_hour` or `alerts`, which are of the moment.
+  Hour-by-hour rows are for today and later; hourly with a past day is an error.
 - A named place is geocoded by Open-Meteo, which also gives its zone and country. A point
   (`here` or `lat,lng`) uses the zone and country of a place the lookup listed, or home's within
   100 km of home; any other takes its zone from tzfpy's offline map. A place with no country
@@ -62,8 +66,8 @@
 
 ## Consequences
 
-- Days before today are no longer available (ADR 0282 had 7 back) and the horizon is 9 days, not
-  16; the daily rows lose `feels_*_c` and `gust_max_kmh`, which WeatherKit does not give.
+- Past days stay at 7 back, as in ADR 0282, and the horizon is 9 days, not 16; the daily rows
+  lose `feels_*_c` and `gust_max_kmh`, which WeatherKit does not give.
 - A WeatherKit outage or a revoked key leaves the weather empty, with no fallback.
 - Weather requests go to Apple with the coordinates; Apple Weather must be named wherever the
   data is shown, so the phone page that shows weather must show `attribution` when it does.

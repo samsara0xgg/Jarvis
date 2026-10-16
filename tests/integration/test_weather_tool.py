@@ -285,10 +285,10 @@ def test_an_unknown_place_is_a_tool_error(
     assert net.hosts() == ["geocoding-api.open-meteo.com"]
 
 
-def test_days_from_today_to_nine_ahead_are_read_and_others_are_refused_untouched(
+def test_days_from_seven_back_to_nine_ahead_are_read_and_others_are_refused_untouched(
     monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
-    """A range gets its days; yesterday, past nine ahead, or backwards, is refused clearly."""
+    """A range gets its days; 8 back, past nine ahead, or backwards, is refused clearly."""
     net = Net(monkeypatch)
     kit = kit_for(key[0])
     report = _call(kit, {"start_date": _day(0), "end_date": _day(9)})
@@ -302,8 +302,8 @@ def test_days_from_today_to_nine_ahead_are_read_and_others_are_refused_untouched
     assert [d["date"] for d in later["days"]] == [_day(3)]
     assert "next_hour" not in later  # minute rain is for now only
     net.asked.clear()
-    for first, last in ((_day(12), _day(12)), (_day(-1), _day(-1)), (_day(5), _day(2))):
-        with pytest.raises(ToolError, match=r"from today to|forecast runs from today"):
+    for first, last in ((_day(12), _day(12)), (_day(-8), _day(-8)), (_day(5), _day(2))):
+        with pytest.raises(ToolError, match=r"dates must run from 7 days back|forecast runs from"):
             _call(kit, {"start_date": first, "end_date": last})
     with pytest.raises(ToolError, match="YYYY-MM-DD"):
         _call(kit, {"start_date": "next friday"})
@@ -312,13 +312,51 @@ def test_days_from_today_to_nine_ahead_are_read_and_others_are_refused_untouched
     assert net.asked == []
 
 
-def test_a_day_the_grace_lets_through_but_the_place_has_passed_is_refused_in_its_zone(
+def test_yesterday_and_seven_days_back_are_read_and_eight_back_is_refused_naming_the_range(
     monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
-    """The check against the UTC date has a day of grace; the place's own date is exact."""
+    """Either guard (UTC with a day of grace, then the place's own date) names the full range."""
     net = Net(monkeypatch)
-    with pytest.raises(ToolError, match=r"forecast runs from today \(.*\) to"):
-        _call(kit_for(key[0]), {"start_date": _day(-1)})
+    kit = kit_for(key[0])
+    assert [d["date"] for d in _call(kit, {"start_date": _day(-1)})["days"]] == [_day(-1)]
+    assert [d["date"] for d in _call(kit, {"start_date": _day(-7)})["days"]] == [_day(-7)]
+    net.asked.clear()
+    with pytest.raises(ToolError) as caught:
+        _call(kit, {"start_date": _day(-8)})
+    assert _day(-7) in str(caught.value)
+    assert _day(9) in str(caught.value)
+    assert net.asked == []
+
+
+def test_a_request_of_days_all_past_asks_for_the_daily_forecast_alone_and_answers_without_now(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """Past days: one daily-only request, ``days`` and attribution; into today it is whole."""
+    net = Net(monkeypatch)
+    kit = kit_for(key[0])
+    report = _call(kit, {"start_date": _day(-3), "end_date": _day(-1)})
+    assert len(net.asked) == 1
+    query = _query(net.asked[0])
+    assert query["dataSets"] == "forecastDaily"
+    assert not {"hourlyStart", "hourlyEnd", "countryCode"} & set(query)
+    assert set(report) == {"place", "timezone", "days", "attribution"}
+    assert [d["date"] for d in report["days"]] == [_day(-3), _day(-2), _day(-1)]
+    assert report["days"][0]["high_c"] == 15.0
+    assert report["days"][0]["precip_mm"] == 3.5
+    mixed = _call(kit, {"start_date": _day(-1), "end_date": _day(1)})
+    assert [d["date"] for d in mixed["days"]] == [_day(-1), _day(0), _day(1)]
+    assert {"now", "next_hour", "alerts"} <= set(mixed)
+    assert "dailyStart" in _query(net.asked[-1])
+    assert "forecastHourly" in _query(net.asked[-1])["dataSets"]
+
+
+def test_hourly_rows_for_a_past_day_are_refused_untouched(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """Hour rows run from now on: hourly with a day before today is an error, no request made."""
+    net = Net(monkeypatch)
+    with pytest.raises(ToolError, match="hour-by-hour rows exist from now on"):
+        _call(kit_for(key[0]), {"start_date": _day(-1), "hourly": True})
     assert net.asked == []
 
 
@@ -511,7 +549,7 @@ def test_the_tool_is_on_the_models_menu_up_front_read_only_and_only_with_a_locat
     assert definition.read_only
     assert not definition.requires_confirmation
     assert not definition.deferred
-    for word in ("web_search", "next_hour", "alerts", "Apple Weather", "9 days"):
+    for word in ("web_search", "next_hour", "alerts", "Apple Weather", "9 days", "7 days"):
         assert word in definition.description
     assert "weather" not in {d.name for d in build_default_registry().get_definitions()}
     assert weather_lookup(None, None, ZONE) is None

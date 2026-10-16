@@ -82,7 +82,8 @@ def weatherkit_body(
     sets = query["dataSets"].split(",")
     d0 = _parse(query["dailyStart"]).astimezone(zone)
     d1 = _parse(query["dailyEnd"]).astimezone(zone)
-    h0, h1 = _parse(query["hourlyStart"]), _parse(query["hourlyEnd"])
+    h0, h1 = (_parse(query[k]) for k in ("hourlyStart", "hourlyEnd")) if "hourlyStart" in query \
+        else (d0, d0)
     body: dict[str, Any] = {}
     if "currentWeather" in sets:
         body["currentWeather"] = {
