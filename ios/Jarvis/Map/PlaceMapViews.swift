@@ -3,7 +3,7 @@ import MapKit
 import CoreLocation
 
 // The places an answer names, as the talk shows them: a still map under the answer (a snapshot, so a long conversation does not hold a live map per row), and on a tap
-// the whole map full screen, over everything like his pictures (Attach/PictureViewer). Apple Maps' own data and place cards; the hand-off for directions is Apple Maps.
+// the whole map full screen, over everything like his pictures (Attach/PictureViewer). Apple Maps' own data and place cards; the hand-offs for a place of hers and for directions are Google Maps.
 
 private let amber = Color(red: 1, green: 217 / 255, blue: 176 / 255)
 private let navy = Color(red: 8 / 255, green: 10 / 255, blue: 24 / 255)
@@ -169,7 +169,7 @@ struct PlaceMapScreen: View {
     }
 }
 
-/// A place he tapped: its name and address, and the way there in Apple Maps.
+/// A place he tapped: its name and address, its page in Google Maps, and the way there in Google Maps.
 struct PlaceInfoBar: View {
     let place: AnswerPlace
 
@@ -180,6 +180,11 @@ struct PlaceInfoBar: View {
                 if let a = place.address { Text(a).font(.system(size: 13)).foregroundStyle(SetColor.muted).lineLimit(2) }
             }
             Spacer(minLength: 0)
+            Button { PlaceHandoff.openInGoogle(place) } label: {
+                Text("谷歌地图").font(.system(size: 15, weight: .medium)).foregroundStyle(amber)
+                    .padding(.horizontal, 14).frame(minHeight: 40).overlay(Capsule().stroke(amber.opacity(0.6), lineWidth: 1)).contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
             Button { PlaceHandoff.open(place) } label: {
                 Text("去这里").font(.system(size: 15, weight: .semibold)).foregroundStyle(navy)
                     .padding(.horizontal, 16).frame(minHeight: 40).background(amber, in: Capsule()).contentShape(Capsule())
@@ -192,11 +197,34 @@ struct PlaceInfoBar: View {
     }
 }
 
+/// Hand-offs go to Google Maps (universal links: the app when it is installed, else the browser). Apple's own cards stay for the other places on the map.
 enum PlaceHandoff {
-    /// Apple Maps with the way to this place, from where he is
-    static func open(_ place: AnswerPlace) {
-        let item = MKMapItem(placemark: MKPlacemark(coordinate: place.coordinate))
-        item.name = place.name
-        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDefault])
+    /// Google Maps transit directions to this place, from where he is
+    static func directionsURL(_ place: AnswerPlace) -> URL? {
+        var q = "destination=" + target(place)
+        if let id = place.placeId { q += "&destination_place_id=" + enc(id) }
+        return URL(string: "https://www.google.com/maps/dir/?api=1&" + q + "&travelmode=transit")
     }
+
+    /// Google Maps' page for this place
+    static func searchURL(_ place: AnswerPlace) -> URL? {
+        var q = "query=" + target(place)
+        if let id = place.placeId { q += "&query_place_id=" + enc(id) }
+        return URL(string: "https://www.google.com/maps/search/?api=1&" + q)
+    }
+
+    @MainActor static func open(_ place: AnswerPlace) { go(directionsURL(place)) }
+    @MainActor static func openInGoogle(_ place: AnswerPlace) { go(searchURL(place)) }
+
+    @MainActor private static func go(_ url: URL?) { if let url { UIApplication.shared.open(url) } }
+
+    /// Google wants the name next to a place id; with no id the coordinate says more than a name can
+    private static func target(_ p: AnswerPlace) -> String { p.placeId != nil ? enc(p.name) : String(format: "%.6f,%.6f", p.lat, p.lng) }
+
+    private static func enc(_ s: String) -> String { s.addingPercentEncoding(withAllowedCharacters: .urlQueryValue) ?? s }
+}
+
+private extension CharacterSet {
+    /// unreserved characters only, so `&`, `+`, `=` and `,` in a name cannot cut the query
+    static let urlQueryValue = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 }

@@ -87,4 +87,29 @@ final class MapPlacesTests: XCTestCase {
         XCTAssertEqual(PlaceFit.region([a], me: near).center.latitude, 48.46, accuracy: 0.001, "the middle of him and the place")
         XCTAssertEqual(PlaceFit.region([a], me: far).center.latitude, 48.45, accuracy: 0.001, "a city away he would shrink the place to a dot")
     }
+
+    // MARK: Google Maps hand-offs
+
+    func testDirectionsURLWithPlaceIdUsesTheEncodedNameAndTheId() {
+        let p = AnswerPlace(name: "维多利亚 Beach & Café", lat: 48.4, lng: -123.3, address: nil, placeId: "ChIJ_abc-1")
+        XCTAssertEqual(PlaceHandoff.directionsURL(p)?.absoluteString,
+                       "https://www.google.com/maps/dir/?api=1&destination=%E7%BB%B4%E5%A4%9A%E5%88%A9%E4%BA%9A%20Beach%20%26%20Caf%C3%A9&destination_place_id=ChIJ_abc-1&travelmode=transit")
+    }
+
+    func testDirectionsURLWithoutPlaceIdFallsBackToTheCoordinate() {
+        let p = AnswerPlace(name: "海边", lat: 48.4417, lng: -123.2967, address: nil, placeId: nil)
+        XCTAssertEqual(PlaceHandoff.directionsURL(p)?.absoluteString,
+                       "https://www.google.com/maps/dir/?api=1&destination=48.441700,-123.296700&travelmode=transit")
+    }
+
+    func testSearchURLWithPlaceIdUsesTheEncodedNameAndTheId() {
+        let p = AnswerPlace(name: "威洛斯海滩", lat: 48.4, lng: -123.3, address: nil, placeId: "P1")
+        XCTAssertEqual(PlaceHandoff.searchURL(p)?.absoluteString,
+                       "https://www.google.com/maps/search/?api=1&query=%E5%A8%81%E6%B4%9B%E6%96%AF%E6%B5%B7%E6%BB%A9&query_place_id=P1")
+    }
+
+    func testSearchURLWithoutPlaceIdFallsBackToTheCoordinate() {
+        let p = AnswerPlace(name: "海边", lat: 48.4417, lng: -123.2967, address: nil, placeId: nil)
+        XCTAssertEqual(PlaceHandoff.searchURL(p)?.absoluteString, "https://www.google.com/maps/search/?api=1&query=48.441700,-123.296700")
+    }
 }
