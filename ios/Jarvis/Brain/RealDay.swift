@@ -103,8 +103,12 @@ final class RealDay {
             meta = topic == nil ? when : dayPrefix(t0, now) + clock(t0) + " · 和你说了 \(n) 句"
         case "event":
             let name = i.title.flatMap { $0.isEmpty ? nil : $0 } ?? "日程"
-            title = name; s = fit(name, 9); src = "日历"
+            title = name; s = fit(name, 9)
+            src = i.source == "mail" ? "邮件" : i.source == "said" ? "你说的" : "日历"
             meta = when + (t1 == nil ? "" : " · " + durText(Int((d ?? 0).rounded())))
+            // a mail made it and he has not said it is his: say so, and where
+            let extra = [i.confirmed == false ? "从邮件里收的，还没确认" : nil, i.place.flatMap { $0.isEmpty ? nil : $0 }].compactMap { $0 }
+            note = extra.isEmpty ? nil : extra.joined(separator: " · ")
         case "departure":
             let name = i.title.flatMap { $0.isEmpty ? nil : $0 } ?? i.route.map { "\($0) 路" } ?? "发车"
             title = name; s = fit(name, 9); src = "公交"

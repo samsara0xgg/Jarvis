@@ -116,6 +116,8 @@ struct DayItem: Decodable {
     /// an Outlook event or a pinned bus departure (kinds `event` and `departure`): the title ("route · stop" for a bus), and where and when the bus goes
     let title: String?, route: String?, board_stop: String?, to: String?
     let leave_at_ms: Int64?
+    /// an event he has to go to, from his mail or his own words (ADR 0274): where it came from (`mail` or `said`, none for a calendar event), whether he confirmed it, whether it is private (counselling, legal, health), and `place` as above
+    let source: String?, confirmed: Bool?, `private`: Bool?
 }
 
 struct KeptPlace: Decodable, Equatable {

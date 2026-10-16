@@ -49,4 +49,17 @@ final class DayLineTests: XCTestCase {
         XCTAssertNil(RealDay.shared.line(1), "another day has none")
         XCTAssertNil(try { _ = RealDay.shared.rebuild(["d": try reply(base, #", "line": {"text": "  ", "draft": true}"#)], now: 1200); return RealDay.shared.line(0) }(), "an empty sentence is no line")
     }
+
+    func testAnEventFromMailSaysWhereItCameFromAndThatItIsUnconfirmed() throws {
+        let items = #"[{"id": "commitment-a@2026-10-11", "lane": "you", "kind": "event", "state": "next", "start_ms": \#(base + 60_000_000), "end_ms": \#(base + 63_600_000), "title": "Pottery class", "source": "mail", "confirmed": false, "private": false, "place": "Studio 4"}, {"id": "commitment-b@2026-10-11", "lane": "you", "kind": "event", "state": "next", "start_ms": \#(base + 70_000_000), "title": "Dentist", "source": "said", "confirmed": true, "private": true, "place": ""}, {"id": "event-1", "lane": "you", "kind": "event", "state": "next", "start_ms": \#(base + 80_000_000), "title": "Standup"}]"#
+        let day = #"{"date": "2026-10-11", "tz": "UTC", "start_ms": \#(base), "end_ms": \#(base + 86_400_000), "now_ms": \#(base + 50_000_000), "missing": [], "items": \#(items)}"#
+        let evs = RealDay.shared.rebuild(["d": try JSONDecoder().decode(DayReply.self, from: Data(day.utf8))], now: 1200)
+        let mail = try XCTUnwrap(evs.first { $0.id.hasPrefix("commitment-a") }), said = try XCTUnwrap(evs.first { $0.id.hasPrefix("commitment-b") }), cal = try XCTUnwrap(evs.first { $0.id == "event-1" })
+        XCTAssertEqual(mail.src, "邮件")
+        XCTAssertEqual(mail.note, "从邮件里收的，还没确认 · Studio 4")
+        XCTAssertEqual(said.src, "你说的")
+        XCTAssertNil(said.note, "confirmed, no place: nothing to add")
+        XCTAssertEqual(cal.src, "日历", "an old event has none of the new fields")
+        XCTAssertNil(cal.note)
+    }
 }
