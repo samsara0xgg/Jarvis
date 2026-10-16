@@ -3,19 +3,24 @@
 int8 ONNX through onnxruntime plus the ``tokenizers`` package, two threads, loaded on first use
 and once per process. A model directory without its files is not an error: ``available`` says so
 (logged once) and search stays on words.
+
+Every load and batch runs on one thread of the embedder's own, and glibc is asked to hand the freed
+memory back after each: glibc keeps a heap per thread that touched ``malloc``, so batches landing
+on whichever ``to_thread`` worker was free left the brain about 400 MB larger for good.
 """
 
 from __future__ import annotations
 
+import ctypes
 import functools
 import logging
-import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 import numpy as np
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
@@ -53,7 +58,7 @@ class E5Embedder:
     def __init__(self, directory: Path) -> None:
         """Remember where the files are; nothing is read yet."""
         self._dir = directory
-        self._lock = threading.Lock()
+        self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="meaning-embed")
         self._loaded: tuple[Any, Any, bool] | None = None
         self._warned = False
 
@@ -67,29 +72,37 @@ class E5Embedder:
         return have
 
     def _load(self) -> tuple[Any, Any, bool]:
-        with self._lock:
-            if self._loaded is None:
-                import onnxruntime as ort  # noqa: PLC0415 — heavy; only a search by meaning pays
-                from tokenizers import Tokenizer  # noqa: PLC0415
+        if self._loaded is None:
+            import onnxruntime as ort  # noqa: PLC0415 — heavy; only a search by meaning pays
+            from tokenizers import Tokenizer  # noqa: PLC0415
 
-                tokenizer = Tokenizer.from_file(str(self._dir / TOKENIZER_FILE))
-                tokenizer.enable_truncation(_MAX_TOKENS)
-                options = ort.SessionOptions()
-                options.intra_op_num_threads = _THREADS
-                # The arena keeps the peak of every batch shape for good; without it the brain
-                # holds the model at about +450 MB instead of +580 MB, at the same speed.
-                options.enable_cpu_mem_arena = False
-                session = ort.InferenceSession(
-                    str(self._dir / MODEL_FILE), options, providers=["CPUExecutionProvider"],
-                )
-                wants_types = any(i.name == "token_type_ids" for i in session.get_inputs())
-                self._loaded = (tokenizer, session, wants_types)
-            return self._loaded
+            tokenizer = Tokenizer.from_file(str(self._dir / TOKENIZER_FILE))
+            tokenizer.enable_truncation(_MAX_TOKENS)
+            options = ort.SessionOptions()
+            options.intra_op_num_threads = _THREADS
+            # The arena keeps the peak of every batch shape for good; without it the brain
+            # holds the model at about +450 MB instead of +580 MB, at the same speed.
+            options.enable_cpu_mem_arena = False
+            session = ort.InferenceSession(
+                str(self._dir / MODEL_FILE), options, providers=["CPUExecutionProvider"],
+            )
+            wants_types = any(i.name == "token_type_ids" for i in session.get_inputs())
+            self._loaded = (tokenizer, session, wants_types)
+        return self._loaded
 
     def embed(self, texts: Sequence[str], *, query: bool) -> np.ndarray:
-        """Mean-pool over the attention mask, then L2-normalise."""
+        """Mean-pool over the attention mask, then L2-normalise; on the embedder's own thread."""
         if not texts:
             return np.zeros((0, DIMENSIONS), dtype=np.float32)
+        return self._worker.submit(self._embed, texts, query=query).result()
+
+    def _embed(self, texts: Sequence[str], *, query: bool) -> np.ndarray:
+        try:
+            return self._pooled(texts, query=query)
+        finally:
+            _trim()
+
+    def _pooled(self, texts: Sequence[str], *, query: bool) -> np.ndarray:
         tokenizer, session, wants_types = self._load()
         prefix = _QUERY_PREFIX if query else _PASSAGE_PREFIX
         encoded = tokenizer.encode_batch([prefix + text for text in texts])
@@ -107,6 +120,21 @@ class E5Embedder:
         pooled = (hidden * weights).sum(axis=1) / weights.sum(axis=1)
         norm = np.linalg.norm(pooled, axis=1, keepdims=True)
         return np.asarray(pooled / np.maximum(norm, 1e-12), dtype=np.float32)
+
+
+@functools.cache
+def _malloc_trim() -> Callable[[int], int] | None:
+    try:
+        return ctypes.CDLL("libc.so.6").malloc_trim
+    except (OSError, AttributeError):  # not glibc (macOS): its allocator returns memory itself
+        return None
+
+
+def _trim() -> None:
+    """Return the free pages glibc holds in every thread's heap to the system."""
+    trim = _malloc_trim()
+    if trim is not None:
+        trim(0)
 
 
 @functools.cache
