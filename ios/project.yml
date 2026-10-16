@@ -30,7 +30,7 @@ targets:
               NSIncludesSubdomains: true
               NSExceptionAllowsInsecureHTTPLoads: true
         NSSupportsLiveActivities: true   # her state and the next reminder in the Dynamic Island, updated by the brain's pushes
-        UIBackgroundModes: [audio, location, fetch]   # audio: her reply keeps playing if the phone is locked mid-answer; location + fetch: the phone reports what it senses (ADR 0197)
+        UIBackgroundModes: [audio, location, fetch, remote-notification]   # audio: her reply keeps playing if the phone is locked mid-answer; location + fetch: the phone reports what it senses (ADR 0197); remote-notification: a silent push asks where he is now
         BGTaskSchedulerPermittedIdentifiers: [com.yilunshi.jarvis.report-flush]
         NSLocationWhenInUseUsageDescription: 记下你去过的地方，让她知道你在哪。
         NSLocationAlwaysAndWhenInUseUsageDescription: 选「始终」，你到了新地方、或走远了，她才收得到，不用你打开 App。平时只记到达和离开，走路、坐车时才记得密一些，不会一直定位。

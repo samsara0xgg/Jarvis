@@ -45,7 +45,8 @@ enum StateChange {
 
 enum Sensed {
     case visit(lat: Double, lng: Double, accuracyM: Double, arrivedAt: Date, departedAt: Date?, place: String?)
-    case location(lat: Double, lng: Double, accuracyM: Double, at: Date, place: String?, speedMps: Double?)
+    /// `requestId`: the brain asked for this fix (a silent push, Map/LocatePush); it comes back on the frame so the brain knows which request it answers
+    case location(lat: Double, lng: Double, accuracyM: Double, at: Date, place: String?, speedMps: Double?, requestId: String? = nil)
     case motion(activity: Activity, confidence: Confidence, startedAt: Date, endedAt: Date?)
     case health(metric: HealthMetric, start: Date, end: Date, value: Double, detail: String?)
     case state(StateChange, at: Date, detail: String?)
@@ -71,6 +72,7 @@ private struct LocationPayload: Encodable {
     let lat, lng, accuracyM: Double
     let place: String?
     let speedMps: Double?
+    let requestId: String?
 }
 
 private struct MotionPayload: Encodable {
@@ -94,6 +96,7 @@ private struct StatePayload: Encodable {
 extension ReportFrame {
     static let maxPlaceChars = 200
     static let maxDetailChars = 64
+    static let maxRequestIdChars = 64
 
     private static let encoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -134,15 +137,15 @@ extension ReportFrame {
                 ts = d ?? a
                 payload = try Self.encoder.encode(VisitPayload(
                     lat: lat, lng: lng, accuracyM: acc, arrivedAtMs: a, departedAtMs: d, place: name))
-            case let .location(lat, lng, acc, when, place, speed):
+            case let .location(lat, lng, acc, when, place, speed, requestId):
                 guard Self.validPlace(lat, lng, acc) else { return nil }
                 let t = Self.at(when, now)
                 type = "phone.location_observed"
-                key = "\(Self.coord(lat)),\(Self.coord(lng)),\(t)"
+                key = "\(Self.coord(lat)),\(Self.coord(lng)),\(t)" + (requestId.map { ",\($0)" } ?? "")
                 ts = t
                 payload = try Self.encoder.encode(LocationPayload(
                     lat: lat, lng: lng, accuracyM: acc, place: Self.text(place, Self.maxPlaceChars),
-                    speedMps: speed.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }))
+                    speedMps: speed.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }, requestId: Self.text(requestId, Self.maxRequestIdChars)))
             case let .motion(activity, confidence, started, ended):
                 let s = Self.at(started, now)
                 let e = ended.map { max(Self.at($0, now), s) }

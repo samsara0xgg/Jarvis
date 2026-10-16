@@ -36,6 +36,18 @@ final class ReportAppDelegate: NSObject, UIApplicationDelegate {
         NSLog("push: registering with APNs failed (%ld)", (error as NSError).code)
     }
 
+    /// A silent push that asks where he is now (`{"locate": "<request_id>"}`, Map/LocatePush): one fix goes to the brain with the request's id before the wake ends.
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        guard let id = LocatePush.requestId(userInfo) else { return completionHandler(.noData) }
+        Task { @MainActor in
+            let hold = BackgroundHold.begin("jarvis.locate")        // the request after the fix needs the app running a little longer
+            let sent = await LocatePush.handle(id, source: OneShotLocation())
+            hold.end()
+            completionHandler(sent ? .newData : .failed)
+        }
+    }
+
     /// iOS relaunched the app for the lifelog upload session (a piece finished while the app was not running).
     func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
         guard identifier == LifelogUploader.sessionID else { return completionHandler() }
