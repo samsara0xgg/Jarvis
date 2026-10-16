@@ -13,7 +13,7 @@ answer will need first). The same reply serves each reader at its own time:
   the turn exists, for the commentary watcher to speak (never two first lines: the watcher's
   per-turn count decides);
 - the whole verdict, written as a ``route.oneshot_read`` event at the same moment, whatever
-  its confidence, so the day's experience table can read it later (ADR 0276).
+  its confidence, so the day's experience table can read it later (ADR 0279).
 
 Every tool the model then proposes is noted next to the prediction (:meth:`note_tool`), so the
 dataset can say later whether prefetching a read would pay. Every call is in the Jev dataset
