@@ -1,7 +1,7 @@
 r"""Replay mails through the commitment reader of ADR 0274, offline.
 
     .venv/bin/python -m scripts.commitment_replay MAILS.jsonl OUT.jsonl [--live] [--preset haiku-bg]
-        [--config config/jarvis.yaml] [--zone America/Vancouver] [--today 2026-10-15]
+        [--config config/jarvis.yaml] [--zone America/Vancouver] [--today 2026-10-15|received]
 
 ``MAILS.jsonl`` has one mail per line: ``{message_id, sender_name, sender_domain, subject,
 received_at, body}``. ``OUT.jsonl`` gets one line per mail, in received order:
@@ -11,7 +11,8 @@ cost, ``asked`` false, ``actions`` null). With ``--live`` each mail that passes 
 preset's real model (the key comes from the environment) and its answer is parsed exactly as the
 poller parses it. The commitments earlier mails made are carried forward in memory, so a
 reminder or a cancellation is read against them as it would be; nothing is written anywhere
-but ``OUT.jsonl``.
+but ``OUT.jsonl``. ``--today received`` gives each mail its own received date as "today", as the
+poller would have had on the day it arrived (the default is the real today for every mail).
 """
 
 from __future__ import annotations
@@ -73,7 +74,7 @@ def _carry(known: dict[str, triage.Known], action: triage.Action, domain: str, n
 
 
 def replay(
-    mails: list[dict[str, Any]], zone: str, today: date, ask: Any | None,  # noqa: ANN401
+    mails: list[dict[str, Any]], zone: str, today: date | None, ask: Any | None,  # noqa: ANN401
 ) -> list[dict[str, Any]]:
     """The output line of each mail, oldest first."""
     known: dict[str, triage.Known] = {}
@@ -92,10 +93,12 @@ def replay(
             shown = triage.related(
                 list(known.values()), mail.sender_domain, datetime.fromisoformat(mail.received_at),
             )
-            system, user = triage.build_prompt(mail, shown, zone=zone, today=today)
+            received = datetime.fromisoformat(mail.received_at)
+            day = today or received.astimezone(ZoneInfo(zone)).date()
+            system, user = triage.build_prompt(mail, shown, zone=zone, today=day)
             answer = ask(system, user)
             actions = triage.parse_actions(
-                answer, {k.commitment_id for k in shown}, zone=ZoneInfo(zone), today=today,
+                answer, {k.commitment_id for k in shown}, zone=ZoneInfo(zone), today=day,
             )
             for action in actions:
                 _carry(known, action, mail.sender_domain, n)
@@ -114,13 +117,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--preset", default="haiku-bg")
     parser.add_argument("--config", type=Path, default=REPO / "config" / "jarvis.yaml")
     parser.add_argument("--zone", default=local_zone())
-    parser.add_argument("--today", type=date.fromisoformat, default=None)
+    parser.add_argument(
+        "--today", default=None, help="a date (YYYY-MM-DD), or 'received' for each mail's own day",
+    )
     args = parser.parse_args(argv)
     mails = [
         json.loads(line)
         for line in args.mails.read_text(encoding="utf-8").splitlines() if line.strip()
     ]
-    today = args.today or datetime.now(ZoneInfo(args.zone)).date()
+    today = (
+        None if args.today == "received"
+        else date.fromisoformat(args.today) if args.today
+        else datetime.now(ZoneInfo(args.zone)).date()
+    )
     ask = _asker(args.config, args.preset) if args.live else None
     lines = replay(mails, args.zone, today, ask)
     args.out.write_text(
