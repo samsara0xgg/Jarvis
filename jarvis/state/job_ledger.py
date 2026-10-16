@@ -594,6 +594,7 @@ def _interview_step(
 
     ``message_id`` is the mail whose ``event_at`` it is.
     """
+    at: str | None
     if upcoming and status != "rejected":
         at, future = upcoming, True
     else:
