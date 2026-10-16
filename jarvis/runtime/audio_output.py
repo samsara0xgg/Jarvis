@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import sys
 import threading
@@ -25,7 +26,6 @@ from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.state import device_reads
 from jarvis.state.daily_contract import DailyError
-from jarvis.surface.voice_backend import PRIVATE_OUTPUT_NAME, parts_are_private
 
 if TYPE_CHECKING:
     from jarvis.shared.device_link import DeviceLink
@@ -37,6 +37,10 @@ _TIMEOUT_S: Final[float] = 3.0
 _CACHE_S: Final[float] = 2.0
 _BLUETOOTH: Final[str] = "coreaudio_device_type_bluetooth"
 _BUILTIN: Final[str] = "coreaudio_device_type_builtin"
+_NAME: Final[re.Pattern[str]] = re.compile(
+    r"headphone|airpods|buds|earphone|earbuds", re.IGNORECASE
+)
+_BLUETOOTH_FOURCC: Final[frozenset[str]] = frozenset({"blue", "blea"})
 _NONE: Final[dict[str, Any]] = {"name": "", "transport": "", "private": False}
 
 _cache: tuple[float, dict[str, Any]] | None = None
@@ -55,7 +59,7 @@ def classify(profile: Any) -> dict[str, Any]:  # noqa: ANN401 - parsed JSON, any
                     private = (
                         transport == _BLUETOOTH
                         or (transport == _BUILTIN and "headphone" in source.lower())
-                        or bool(PRIVATE_OUTPUT_NAME.search(name))
+                        or bool(_NAME.search(name))
                     )
                     return {"name": name, "transport": transport, "private": private}
     except (KeyError, TypeError, AttributeError):
@@ -85,7 +89,13 @@ def _parts_private(parts: list[tuple[str, str, bool]]) -> bool:
             "audio output: aggregate default expands to %s",
             [f"{name} ({transport.strip()})" for name, transport, _ in parts] or "nothing readable",
         )
-    return parts_are_private(parts)
+    real = [part for part in parts if part[1] != "virt"]
+    return bool(real) and all(
+        transport in _BLUETOOTH_FOURCC
+        or (transport == "bltn" and jack)
+        or bool(_NAME.search(name))
+        for name, transport, jack in real
+    )
 
 
 def current_output(*, fresh: bool = False) -> dict[str, Any]:
