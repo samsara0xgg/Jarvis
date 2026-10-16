@@ -764,6 +764,9 @@ class InherentDeps:
     # it is still running. A small SQLite read, called off the loop thread; ``None`` leaves the
     # route unregistered.
     ask_outcome: Callable[[str], AskOutcome | None] | None = None
+    # ADR 0276: ``(since_ms, limit)`` -> the newest ``limit`` per-turn timing facts at or after
+    # ``since_ms``, read from the log off the loop thread; ``None`` leaves the route unregistered.
+    turn_timings_read: Callable[[int, int], Awaitable[dict[str, Any]]] | None = None
     # ADR 0199: one day's timeline, folded from the log when asked: the day asked for, or ``None``
     # for today in the owner's zone, to the response document. Off the loop thread. A ValueError
     # is a 400; ``None`` leaves the route unregistered.
@@ -1707,6 +1710,25 @@ class JobApplicationEditRequest(BaseModel):
     applied_at: str | None = Field(default=None, max_length=10)
     note: str | None = Field(default=None, max_length=2000)
     hidden: bool | None = None
+
+
+_TURN_TIMINGS_MAX = 500
+"""The most facts one ``GET /inherent/turn-timings`` may ask for."""
+
+
+def _register_turn_timings_route(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0276: ``GET /inherent/turn-timings``, where each answered turn's time went."""
+    if deps.turn_timings_read is None:
+        return
+    timings_read = deps.turn_timings_read
+
+    @app.get("/inherent/turn-timings")
+    async def turn_timings(
+        since: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=_TURN_TIMINGS_MAX)] = 50,
+    ) -> dict[str, Any]:
+        """``{now_ms, turns}``: the newest ``limit`` timing facts from ``since`` (epoch ms)."""
+        return await timings_read(since, limit)
 
 
 def _register_day_route(app: FastAPI, deps: InherentDeps) -> None:
@@ -3028,6 +3050,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
             """ADR 0108: ``{on, on_words, turn_id}`` for the companion's deep look."""
             return think_read()
 
+    _register_turn_timings_route(app, deps)
     _register_day_route(app, deps)
     _register_home_routes(app, deps)
     _register_mail_page_routes(app, deps)

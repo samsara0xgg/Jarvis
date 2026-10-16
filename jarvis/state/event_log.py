@@ -274,6 +274,21 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         ),
         schema_version=1,
     ),
+    # ADR 0276 — one row per answered turn: where its time went, on the brain's monotonic clock
+    # (every ``*_ms`` is from the moment the brain began driving the turn).  ``requests`` is one
+    # object per model request; ``holds`` names each wait the first chunk stood behind.
+    EventTypeSchema(
+        event_type="turn.timing",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("turn_id",),
+        optional_payload=(
+            "channel", "device", "trigger", "provider", "model", "preset", "queue_ms",
+            "decide_start_ms", "context_ms", "context_parts", "first_text_ms", "first_chunk_ms",
+            "done_ms", "tool_round_before_text", "holds", "held_by", "requests",
+        ),
+        schema_version=1,
+    ),
     # ADR 0140 — Jev's tool-group prediction for a voice line, written once the turn exists and
     # only when the group is one with a wait line to say and the bar is met; the commentary
     # watcher speaks it.

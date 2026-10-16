@@ -71,6 +71,7 @@ from jarvis.decision import (
     emit_turn_ended,
     open_prefix_warm,
     spoken_reply_rules,
+    turn_timing,
 )
 from jarvis.decision.attention import rule_judge_v1
 from jarvis.decision.confirm_grammar import ConfirmGrammarConfigError, load_confirm_grammar
@@ -821,6 +822,7 @@ class WaitingTurn:
     trigger: Event | None = None
     failure: Exception | None = None
     queued: bool = False
+    timer: turn_timing.TurnTimer | None = None  # ADR 0276: the turn's clock runs through the wait
 
 
 class TurnSuspended(Exception):  # noqa: N818 — internal scheduler handoff, not a failure.
@@ -4615,6 +4617,19 @@ def _read_turn_times(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, A
     return [entry for _id, entry in sorted(found, key=lambda one: one[0])[:_TIMES_MAX]]
 
 
+def _emit_turn_timing(conn: sqlite3.Connection, timer: turn_timing.TurnTimer) -> None:
+    """ADR 0276: write the answered turn's timing fact; a measurement never fails a turn."""
+    try:
+        emit_event(
+            conn,
+            type="turn.timing",
+            payload=timer.payload(),
+            correlation={"turn_id": timer.turn_id},
+        )
+    except Exception:
+        LOGGER.exception("turn %s: its timing could not be written, skipped", timer.turn_id)
+
+
 def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; argument set + traced multi-trigger loop are the cross-surface contract, and every ResponseRun branch is flag-guarded.
     runtime: JarvisRuntime,
     *,
@@ -4696,6 +4711,16 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         the events emitted.
     """
     effective_turn_id = str(user_intent_event.payload["turn_id"])
+    timer = (
+        continuation.timer
+        if continuation is not None and continuation.timer is not None
+        else turn_timing.TurnTimer(
+            turn_id=effective_turn_id,
+            channel=str(user_intent_event.payload.get("channel") or "") or None,
+            trigger=user_intent_event.type,
+            queue_ms=max(0, int(time.time() * 1000) - user_intent_event.ts_epoch_ms),
+        )
+    )
     record_realtime_trace(
         "intent_queue_accepted" if continuation is None else "turn_continuation_resumed",
         turn_id=effective_turn_id,
@@ -4780,23 +4805,24 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         )
     # One consistent read of memory.db for this turn's prompt: the history
     # block goes ahead of every per-turn note, the time line after them.
-    memory_context = (
-        render_context(
-            memory.db_path, exclude_id=memory_exclude_id, since=runtime.session.history_since,
-            recent=runtime.session.recent_records,
-            context=runtime.session.context,
-            raw_max_chars=runtime.session.context_raw_max_chars,
-            ledger=runtime.ledger,
-            places=runtime.places_block,
-            pictures=_history_pictures(
-                runtime, run.request_client if run is not None else runtime.llm_client,
-            ),
-            did=_history_did(runtime),
-            also_exclude=folded,
+    with timer.part("memory"):
+        memory_context = (
+            render_context(
+                memory.db_path, exclude_id=memory_exclude_id, since=runtime.session.history_since,
+                recent=runtime.session.recent_records,
+                context=runtime.session.context,
+                raw_max_chars=runtime.session.context_raw_max_chars,
+                ledger=timer.timed("ledger", runtime.ledger),
+                places=timer.timed("places", runtime.places_block),
+                pictures=timer.timed("pictures", _history_pictures(
+                    runtime, run.request_client if run is not None else runtime.llm_client,
+                )),
+                did=timer.timed("did", _history_did(runtime)),
+                also_exclude=folded,
+            )
+            if memory is not None
+            else None
         )
-        if memory is not None
-        else None
-    )
     suspended = False
     answered = ""  # the answer text, for the note of a picture sent with this turn (ADR 0223)
 
@@ -4835,6 +4861,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     # even when the turn raises: a leaked action_id is one the supervisor
     # sweep will refuse to close for the life of the process, so a crashed
     # turn would permanently protect the very orphan it created.
+    timer_token = turn_timing.bind(timer)
     try:
         _raise_if_cancelled("before the model")  # a stop that came before the run opened
         if continuation is not None:
@@ -4946,6 +4973,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             ),
         )
 
+        timer.device = decide_ctx.turn_device
         # SQLite row id of the surface.user_intent event — used as the
         # "after_id" anchor for the trigger poll loop.
         last_seen_id = (
@@ -5057,7 +5085,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 raise TurnSuspended(WaitingTurn(  # noqa: TRY301 — scheduler handoff preserves finally ownership
                     intent=user_intent_event, run=run, after_id=last_seen_id,
                     action_ids=owned_action_ids, deadline=time.monotonic() + wait_timeout_s,
-                    iterations=iterations, events=tuple(collected_events),
+                    iterations=iterations, events=tuple(collected_events), timer=timer,
                 ))
             try:
                 next_event, last_seen_id = _wait_for_next_trigger(
@@ -5130,14 +5158,18 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # so his next sentence can still drop it unwritten and unheard.
             registry = runtime.response_runs
             if registry is not None:
+                waiting_since = time.monotonic_ns()
                 hold_ends = time.monotonic() + _ALLEN_TALKING_CEILING_S
                 while (
                     not registry.wait_completion_allowed(0.05)
                     and time.monotonic() < hold_ends
                 ):
                     _raise_if_cancelled("while Allen was talking")
+                timer.hold("completion_hold", waiting_since)
             # ADR 0272: and not before the turn's own hold for his next words is past.
+            waiting_since = time.monotonic_ns()
             wait_out_hold(output_hold, run.check_cancelled, "while Allen may go on")
+            timer.hold("answer_hold", waiting_since)
             _raise_if_cancelled("before finalizing")
             run.mark("finalizing")
             completion = terminalizer.complete(
@@ -5170,6 +5202,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                     ),
                 )
 
+        timer.mark("first_chunk")  # a streamed answer's first chunk went out long before this
         # The in-memory capture stream serves two ends at once. First the
         # operator console: render_response() writes the cli_stdout slice
         # into it so the runtime can re-emit the same bytes to the real
@@ -5201,6 +5234,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         sys.stdout.write(rendered)
         sys.stdout.flush()
         collected_events.append(render_event)
+        timer.mark("rendered")
+        _emit_turn_timing(runtime.conn, timer)
         if memory is not None:
             # ADR 0063: the one message this turn read whole shows above the answer.
             mail = _fetched_mail(runtime.conn, effective_turn_id)
@@ -5289,6 +5324,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 )
         raise
     finally:
+        turn_timing.release(timer_token)
         if not suspended:
             if run is not None and runtime.response_runs is not None:
                 runtime.response_runs.unregister(run.response_id)

@@ -50,6 +50,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
+from jarvis.decision import turn_timing as timing
 from jarvis.decision.attachment_parts import attachment_text, image_parts
 from jarvis.decision.confirm_grammar import ConfirmGrammarHit, match_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
@@ -297,7 +298,9 @@ def _hold_for_next_words(ctx: DecideContext, where: str, *, tool_name: str | Non
         if tool_def is not None and tool_def.read_only:
             _check_response_cancelled(ctx, where)
             return
+    waiting_since = time.monotonic_ns()
     wait_out_hold(ctx.output_not_before, ctx.cancellation_checkpoint, where)
+    timing.hold("answer_hold", waiting_since)
 
 
 def _run_llm_chat_with_cost_guard(  # noqa: PLR0913 - mirrors the provider call plus audit keys
@@ -319,25 +322,29 @@ def _run_llm_chat_with_cost_guard(  # noqa: PLR0913 - mirrors the provider call 
     )
     if ctx.request_admission is not None:
         ctx.request_admission(kind)
+    sent = timing.request(kind, ctx.llm_client)
     if cost_recorder is None:
         extra: dict[str, Any] = {"service_tier": ctx.service_tier} if ctx.service_tier else {}
-        return ctx.llm_client.chat(
+        result = ctx.llm_client.chat(
             messages=messages,
             system=system,
             tools=tools,
             tool_choice=tool_choice,
             **extra,
         )
-    return cost_recorder.chat(
-        ctx.llm_client,
-        messages=messages,
-        system=system,
-        tools=tools,
-        tool_choice=tool_choice,
-        kind=kind,
-        turn_id=turn_id,
-        service_tier=ctx.service_tier,
-    )
+    else:
+        result = cost_recorder.chat(
+            ctx.llm_client,
+            messages=messages,
+            system=system,
+            tools=tools,
+            tool_choice=tool_choice,
+            kind=kind,
+            turn_id=turn_id,
+            service_tier=ctx.service_tier,
+        )
+    sent.chat_done(result)
+    return result
 
 
 def _emit_cost_recorded_from_metadata(
@@ -1402,7 +1409,9 @@ def decide(trigger: Event, ctx: DecideContext) -> DecideResult:
     if trigger.payload.get("attachments") and is_filler(heard):
         heard = ctx.last_words  # ADR 0223: the filler sentence is in the process language
     scratch = _Scratch(lang=reply_language(heard, ctx.reply_language))
-    packet = assemble_packet(trigger, ctx.conn, ctx.read_snapshot)
+    timing.mark("decide_start")
+    with timing.part("packet"):
+        packet = assemble_packet(trigger, ctx.conn, ctx.read_snapshot)
     policy = effective_policy(_allowed_tool_surface(ctx.tool_registry))
 
     # ``utterance.received`` is the voice-surface twin of
@@ -1582,7 +1591,9 @@ def _run_instant_route(
         scratch.surrogate = pending
         return None
     pending.settled = True
+    waiting_since = time.monotonic_ns()
     action = pending.action()
+    timing.hold("surrogate", waiting_since)
     _record_surrogate(pending, ctx, scratch, accepted=action is not None)
     return _act_on_surrogate(action, packet, policy, ctx, scratch) if action else None
 
@@ -1702,7 +1713,10 @@ def _settle_surrogate(ctx: DecideContext, scratch: _Scratch) -> None:
     if pending is None or pending.settled:
         return
     pending.settled = True
-    if pending.action() is not None:
+    waiting_since = time.monotonic_ns()
+    chosen = pending.action()
+    timing.hold("surrogate", waiting_since)
+    if chosen is not None:
         raise _SurrogateTookTurn
     _record_surrogate(pending, ctx, scratch, accepted=False)
 
@@ -2636,8 +2650,9 @@ def _loop_messages(
     packet: SituationPacket, ctx: DecideContext, lang: Language | None
 ) -> tuple[list[dict[str, Any]], str | None]:
     """The tool loop's messages (history, system notes, correction prefix) and its language line."""
-    messages = build_llm_messages(packet)
-    line = _insert_system_notes(messages, packet, ctx, lang)
+    with timing.part("messages"):
+        messages = build_llm_messages(packet)
+        line = _insert_system_notes(messages, packet, ctx, lang)
     if ctx.stream_correction is not None:
         # The failed stream's exposed prefix is the model's own prior text;
         # the correction continues it and never rewrites it (ADR-0008 D3).
@@ -2858,6 +2873,7 @@ class _SegmentSpeaker:
                 self.sealed = True
                 return False
             self._scratch.events.append(route.emit_segment(outcome.permit, candidate.text))
+        timing.mark("first_chunk")
         self.prefix += candidate.text
         self.emitted += 1
         return True
@@ -2884,6 +2900,7 @@ def _stream_routine_text(
         pricing_table=_pricing_table(),
         committed_event_bus=route.committed_event_bus,
     )
+    sent = timing.request("decision", ctx.llm_client)
     with llm_io_log.labels(response_id=route.context.response_id):
         handle = cost_recorder.stream_events(
             ctx.llm_client,
@@ -2902,6 +2919,7 @@ def _stream_routine_text(
     failed: LLMResponseFailed | None = None
     try:
         for event in stream:
+            sent.seen(event)
             _check_response_cancelled(ctx, "while streaming")
             if isinstance(event, LLMTextDelta):
                 speaker.feed(react.feed(event.text))
@@ -2909,6 +2927,7 @@ def _stream_routine_text(
                 failed = event
     finally:
         stream.close()
+        sent.done(handle)
     _check_response_cancelled(ctx, "after provider stream")
     if failed is not None:
         message = f"routine stream failed before completion ({failed.error_code})"
@@ -2982,8 +3001,9 @@ def _run_routine_stream(
     A stream sealed before its first permit never gets that far: it degrades
     to the ordinary full-text path in place, on the text it already has.
     """
-    messages = build_llm_messages(packet)
-    _insert_system_notes(messages, packet, ctx, scratch.lang)
+    with timing.part("messages"):
+        messages = build_llm_messages(packet)
+        _insert_system_notes(messages, packet, ctx, scratch.lang)
     streamed = _stream_routine_text(ctx, route, messages, scratch, gate_segments=True)
     if streamed.emitted_segments == 0:
         # D2 rules 1 and 4: a seal before the first permit exposed nothing, so
@@ -3182,6 +3202,7 @@ class _ClaimHold:
         self._said = False  # a piece has been passed on
         self._tail = ""  # an unfinished piece
         self._held = ""  # from the first piece that may claim
+        self._held_since = 0  # when ``_held`` first had text (monotonic ns), for the turn's timing
         self._ended = False  # the speaker holds the last piece passed on for one more character
 
     def feed(self, text: str) -> None:
@@ -3210,6 +3231,8 @@ class _ClaimHold:
 
     def _take(self, piece: str) -> None:
         if self._held or may_claim_done(piece):
+            if not self._held:
+                self._held_since = time.monotonic_ns()
             self._held += piece
             return
         self._sink(piece)
@@ -3226,6 +3249,7 @@ class _ClaimHold:
         """The answer stands (or called a tool): pass on what was held."""
         held, self._held = self._held, ""
         if held:
+            timing.hold("claim_hold", self._held_since)
             self._sink(held)
 
     def discard(self) -> None:
@@ -3251,6 +3275,7 @@ def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one reque
         pricing_table=_pricing_table(),
         committed_event_bus=route.committed_event_bus,
     )
+    sent = timing.request("decision", ctx.llm_client)
     with llm_io_log.labels(response_id=route.context.response_id):
         handle = cost_recorder.stream_events(
             ctx.llm_client,
@@ -3275,6 +3300,7 @@ def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one reque
     failed: LLMResponseFailed | None = None
     try:
         for event in stream:
+            sent.seen(event)
             _settle_surrogate(ctx, scratch)
             _check_response_cancelled(ctx, "while streaming")
             if isinstance(event, LLMTextDelta) and event.phase == "commentary":
@@ -3299,6 +3325,7 @@ def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one reque
         _settle_surrogate(ctx, scratch)  # a stream cut short by Jev's answer has no event
     finally:
         stream.close()
+        sent.done(handle)
     _check_response_cancelled(ctx, "after provider stream")
     if failed is not None:
         message = f"spoken stream failed before completion ({failed.error_code})"

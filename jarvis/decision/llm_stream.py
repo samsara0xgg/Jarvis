@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -119,6 +120,22 @@ type LLMStreamEvent = (
     LLMTextDelta | LLMToolCallStarted | LLMToolArgumentsDelta | LLMToolCallCompleted
     | LLMUsageCompleted | LLMResponseCompleted | LLMResponseFailed
 )
+
+
+@dataclass(frozen=True)
+class StreamTiming:
+    """When a stream's first outputs came, on the process monotonic clock (ns).
+
+    ``sent_ns`` is when the first read began, which is when the request leaves; each other
+    field is ``None`` until that kind of output has come (``first_thinking_ns`` only on a
+    provider that streams thinking, ahead of its text).
+    """
+
+    sent_ns: int | None
+    first_event_ns: int | None
+    first_thinking_ns: int | None
+    first_text_ns: int | None
+    thinking_bytes: int
 
 
 class SyncTokenStream(Protocol):
@@ -259,6 +276,8 @@ class StreamNormalizer:
         # Anthropic thinking blocks by content index, kept to go back with the tool results.
         self._thinking: dict[int, dict[str, Any]] = {}
         self._thinking_bytes = 0
+        self.first_thinking_ns: int | None = None
+        self.thinking_text_bytes = 0  # the thinking text alone, not its signature
 
     def _identity(self) -> dict[str, Any]:
         return {"llm_request_id": self.request_id, "provider_response_id": self.response_id}
@@ -533,6 +552,8 @@ class StreamNormalizer:
                 )] if text else []
             if block_type not in {"thinking", "redacted_thinking"}:
                 raise _protocol_error("unsupported_content_block")
+            if self.first_thinking_ns is None:
+                self.first_thinking_ns = time.monotonic_ns()
             self._thinking[index] = (
                 {"type": "thinking", "thinking": "", "signature": ""}
                 if block_type == "thinking"
@@ -556,6 +577,8 @@ class StreamNormalizer:
                 piece = _text(delta.get(key, ""))
                 self._thinking[index][key] += piece
                 self._thinking_bytes += len(piece.encode("utf-8"))
+                if key == "thinking":
+                    self.thinking_text_bytes += len(piece.encode("utf-8"))
                 return []
             raise _protocol_error("invalid_content_delta")
         if kind == "content_block_stop":
@@ -669,6 +692,17 @@ class LLMStreamHandle:
         self._result: StreamDisposition | None = None
         self._accounted = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._sent_ns: int | None = None
+        self._first_event_ns: int | None = None
+        self._first_text_ns: int | None = None
+
+    @property
+    def timing(self) -> StreamTiming:
+        """When this stream's first outputs came; read it once the stream has ended."""
+        return StreamTiming(
+            self._sent_ns, self._first_event_ns, self._normalizer.first_thinking_ns,
+            self._first_text_ns, self._normalizer.thinking_text_bytes,
+        )
 
     @property
     def result(self) -> StreamDisposition | None:
@@ -734,12 +768,13 @@ class LLMStreamHandle:
         """Release abandoned streams; preserve an already chosen terminal outcome."""
         await self.cancel("consumer_closed")
 
-    async def _events(self) -> AsyncIterator[LLMStreamEvent]:  # noqa: C901, PLR0912 — single-reader protocol lifecycle
+    async def _events(self) -> AsyncIterator[LLMStreamEvent]:  # noqa: C901, PLR0912, PLR0915 — single-reader protocol lifecycle
         self._bind_loop()
         outcome: LLMRequestOutcome = "cancelled"
         error: str | None = None
         proposals: list[LLMToolCallCompleted] = []
         try:
+            self._sent_ns = time.monotonic_ns()
             while not self._cancelled():
                 self._read = asyncio.create_task(self._read_next())
                 try:
@@ -751,9 +786,17 @@ class LLMStreamHandle:
                             self._tap(proposal)
                     outcome = "completed"
                     break
+                if self._first_event_ns is None:
+                    self._first_event_ns = time.monotonic_ns()
                 for event in self._normalizer.feed(raw):
                     if self._cancelled():
                         return
+                    if (
+                        self._first_text_ns is None
+                        and isinstance(event, LLMTextDelta)
+                        and event.text
+                    ):
+                        self._first_text_ns = time.monotonic_ns()
                     if self._tap is not None:
                         self._tap(event)
                     yield event

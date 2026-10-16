@@ -6779,6 +6779,35 @@ def _ask_outcome(event_log_path: Path, turn_id: str) -> AskOutcome | None:
     return None
 
 
+def _read_turn_timings(event_log_path: Path, since_ms: int, limit: int) -> dict[str, Any]:
+    """``GET /inherent/turn-timings`` (ADR 0276): the newest ``limit`` timing facts, oldest first.
+
+    ``since_ms`` is a time in epoch ms (0 for no lower bound); each fact is the event's payload
+    with its ``event_uid`` and ``ts_epoch_ms`` (when the turn's answer was out) added. The log is
+    read on a connection of its own, so this runs on a worker thread.
+    """
+    conn = open_runtime_event_log(event_log_path)
+    try:
+        rows = conn.execute(
+            "SELECT event_uid, ts_epoch_ms, payload_json FROM events "
+            "WHERE type = 'turn.timing' AND ts_epoch_ms >= ? ORDER BY id DESC LIMIT ?",
+            (since_ms, limit),
+        ).fetchall()
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    turns = [
+        {"event_uid": uid, "ts_epoch_ms": ts, **json.loads(payload)}
+        for uid, ts, payload in reversed(rows)
+    ]
+    return {"now_ms": int(time.time() * 1000), "turns": turns}
+
+
+async def _serve_turn_timings(event_log_path: Path, since_ms: int, limit: int) -> dict[str, Any]:
+    """:func:`_read_turn_timings` off the loop thread."""
+    return await asyncio.to_thread(_read_turn_timings, event_log_path, since_ms, limit)
+
+
 def _live_wake_subscriber(live_voice: voice_live.LiveVoice) -> Callable[[Event], None]:
     """Bus subscriber: a response terminal wakes the delegation that owns its turn (D9).
 
@@ -7690,6 +7719,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             ),
             conversation_read=None if window_memory is None else _read_conversation,
             ask_outcome=functools.partial(_ask_outcome, runtime.runtime_paths.event_log),
+            turn_timings_read=functools.partial(
+                _serve_turn_timings, runtime.runtime_paths.event_log,
+            ),
             card_read=_read_card,
             card_decide=_decide_card,
             question_read=_read_question,
