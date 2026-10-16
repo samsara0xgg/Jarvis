@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import Future
+from contextlib import closing
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -20,8 +21,13 @@ import yaml
 from jarvis.decision import decide
 from jarvis.decision.jev_oneshot import JevOneShot, oneshot_state
 from jarvis.decision.surrogate_route import JevLog, Reply, SurrogateRoute, offered
-from jarvis.runtime import RuntimeBootstrapError, _jev_oneshot
-from jarvis.state.event_log import emit_event
+from jarvis.runtime import RuntimeBootstrapError, _event_emitter, _jev_oneshot
+from jarvis.state.event_log import (
+    EventTypeRegistry,
+    emit_event,
+    iter_events_for_turn,
+    open_event_log,
+)
 from tests.canary._helpers import repo_root
 from tests.integration.test_conversational_turn_no_gate_downgrade import _build_ctx
 from tests.integration.test_soft_barge_in import LONG, SHORT, _Rig
@@ -88,14 +94,18 @@ class _Lines:
         self.route = _FakeRoute(
             model="m", min_confidence=1.0, timeout_ms=800, log=JevLog(self.log_path),
         )
-        self.emitted: list[tuple[str, dict[str, Any], str]] = []
+        self.emitted: list[tuple[str, dict[str, Any], str]] = []  # route.tool_predicted
+        self.read: list[tuple[str, dict[str, Any], str]] = []  # route.oneshot_read (ADR 0276)
         options: dict[str, Any] = {
             "words_at": 0.95, "relation_at": 0.98, "window_s": 30.0, "tool_at": 0.95,
             "tool_groups": GROUPS,
-            "emit": lambda kind, payload, turn: self.emitted.append((kind, payload, turn)),
+            "emit": self._emit,
             **kwargs,
         }
         self.oneshot = JevOneShot(self.route, offered(TABLE), **options)
+
+    def _emit(self, kind: str, payload: dict[str, Any], turn: str) -> None:
+        (self.read if kind == "route.oneshot_read" else self.emitted).append((kind, payload, turn))
 
     def say(self, **script: tuple[str, float]) -> None:
         self.route.script = script
@@ -287,6 +297,93 @@ def test_a_reply_that_lands_after_the_turn_started_still_writes_the_event_once(
     assert lines.emitted == []
     lines.route.release(lines.route.futures[0], lines.route.sent[0][1])
     assert [e[1]["group"] for e in lines.emitted] == ["mail_read"]
+
+
+def test_the_whole_verdict_is_written_once_the_turn_exists_whatever_its_confidence(
+    tmp_path: Path,
+) -> None:
+    """ADR 0276: intent, relation (with the line it compared) and group, each with its confidence.
+
+    The relation is absent for a first line.
+    """
+    lines = _Lines(tmp_path)
+    lines.say(
+        intent=("none", 0.4), relation=("correction", 0.3), tool_group=("web_search", 0.2),
+    )
+    lines.oneshot.begin("T1", "帮我查明天的天气", "", False, False)  # noqa: FBT003
+    lines.oneshot.begin("T2", "不对 后天的", "", False, False)  # noqa: FBT003
+    assert lines.read == []  # no turn yet
+    assert lines.oneshot.take("T1") is not None
+    assert lines.oneshot.take("T2") is not None
+    assert lines.oneshot.take("T2") is None
+    assert [(kind, turn) for kind, _payload, turn in lines.read] == [
+        ("route.oneshot_read", "T1"), ("route.oneshot_read", "T2"),
+    ]
+    first, second = (payload for _kind, payload, _turn in lines.read)
+    assert {k: v for k, v in first.items() if k != "latency_ms"} == {
+        "turn_id": "T1", "intent": "none", "intent_confidence": 0.4,
+        "tool_group": "web_search", "tool_group_confidence": 0.2,
+    }
+    assert second["relation"] == "correction"
+    assert second["relation_confidence"] == 0.3
+    assert second["prev_turn_id"] == "T1"
+    assert lines.emitted == []  # 0.2 is under the tool bar: only the record is written
+
+
+def test_a_reply_that_lands_after_the_turn_started_writes_the_verdict_when_it_lands(
+    tmp_path: Path,
+) -> None:
+    """Taken first, answered later: the verdict is written once, when the reply lands."""
+    lines = _Lines(tmp_path)
+    lines.route.hang = True
+    lines.say(intent=("time", 0.97))
+    lines.oneshot.begin("T1", "几点了", "", False, False)  # noqa: FBT003
+    assert lines.oneshot.take("T1") is not None
+    assert lines.read == []
+    lines.route.release(lines.route.futures[0], lines.route.sent[0][1])
+    assert [payload["intent"] for _k, payload, _t in lines.read] == ["time"]
+
+
+def test_a_failed_or_unreadable_reply_writes_no_verdict(tmp_path: Path) -> None:
+    """No answer to read, nothing to record; a failing writer never breaks the turn."""
+    lines = _Lines(tmp_path)
+    lines.say()  # a reply with no answers at all
+    lines.oneshot.begin("T1", "嗯这个", "", False, False)  # noqa: FBT003
+    assert lines.oneshot.take("T1") is not None
+    assert lines.read == []
+
+    def broken(*_args: object) -> None:
+        raise OSError
+
+    failing = _Lines(tmp_path / "failing")
+    failing.oneshot.emit = broken
+    failing.say(intent=("none", 0.9), tool_group=("web_search", 0.99))
+    failing.oneshot.begin("T1", "查一下", "", False, False)  # noqa: FBT003
+    assert failing.oneshot.take("T1") is not None
+
+
+def test_the_verdict_lands_in_the_event_log_on_the_turn_through_the_runtime_emitter(
+    tmp_path: Path,
+) -> None:
+    """The runtime's own emitter accepts the payload and correlates it to the turn."""
+    path = tmp_path / "events.db"
+    open_event_log(path).close()
+    lines = _Lines(tmp_path, emit=_event_emitter(path))
+    lines.say(intent=("none", 0.9), tool_group=("mail_read", 0.8))
+    lines.oneshot.begin("T9", "看一下我的邮件", "", False, False)  # noqa: FBT003
+    assert lines.oneshot.take("T9") is not None
+    with closing(open_event_log(path)) as conn:
+        [event] = list(iter_events_for_turn(conn, "T9", ("route.oneshot_read",)))
+    assert (event.payload["intent"], event.payload["tool_group"]) == ("none", "mail_read")
+
+
+def test_the_verdict_event_is_registered_with_the_l3_owner() -> None:
+    """The event the nightly fold reads is a registered L3 type with only turn_id required."""
+    schema = EventTypeRegistry.get("route.oneshot_read")
+    assert schema is not None
+    assert (schema.owner_layer, schema.actor, schema.required_payload) == (
+        "L3", "jarvis_runtime", ("turn_id",),
+    )
 
 
 def test_every_proposed_tool_is_noted_next_to_the_prediction(tmp_path: Path) -> None:
