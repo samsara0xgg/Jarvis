@@ -11,7 +11,9 @@ answer will need first). The same reply serves each reader at its own time:
   through :attr:`JevOneShot.relate` (the earlier line's unspoken answer is dropped);
 - a confident group that has a line to say, written as a ``route.tool_predicted`` event once
   the turn exists, for the commentary watcher to speak (never two first lines: the watcher's
-  per-turn count decides).
+  per-turn count decides);
+- the whole verdict, written as a ``route.oneshot_read`` event at the same moment, whatever
+  its confidence, so the day's experience table can read it later (ADR 0276).
 
 Every tool the model then proposes is noted next to the prediction (:meth:`note_tool`), so the
 dataset can say later whether prefetching a read would pay. Every call is in the Jev dataset
@@ -49,6 +51,7 @@ CONTROL: Final[tuple[str, ...]] = tuple(CONTROL_CRITERIA)
 RELATIONS: Final[tuple[str, ...]] = ("new", "supplement", "correction", "unrelated")
 ACTING: Final[tuple[str, ...]] = ("supplement", "correction")
 PREDICTED_EVENT: Final[str] = "route.tool_predicted"
+READ_EVENT: Final[str] = "route.oneshot_read"
 _KEPT_LINES: Final[int] = 32
 _KEPT_TOOLS: Final[int] = 64
 _RECENT_CHARS: Final[int] = 200
@@ -229,6 +232,7 @@ class Line:
     attached: bool = False  # the decision stage has taken it: the turn exists
     done: bool = False
     fired: bool = False
+    verdict: dict[str, Any] | None = None  # what the reply said, as ``route.oneshot_read`` holds it
 
 
 class JevOneShot:
@@ -280,6 +284,7 @@ class JevOneShot:
         self._lock = threading.Lock()
         self._lines: OrderedDict[str, Line] = OrderedDict()
         self._tools: OrderedDict[str, tuple[str, float] | None] = OrderedDict()
+        self._intents = (*CONTROL, *(o.id for o in self.instants), NONE)
         self._prev: tuple[str, str, float] | None = None
 
     @property
@@ -354,7 +359,7 @@ class JevOneShot:
             if line is not None:
                 line.attached = True
         if line is not None:
-            self._fire_tool(line)
+            self._fire(line)
         return line
 
     def note_tool(self, turn_id: str, tool: str, args: object) -> None:
@@ -378,9 +383,28 @@ class JevOneShot:
             LOGGER.warning("jev oneshot: reading the reply failed", exc_info=True)
         with self._lock:
             line.done = True
-        self._fire_tool(line)
+        self._fire(line)
+
+    def _verdict(self, line: Line, reply: Reply) -> dict[str, Any] | None:
+        """Each question's choice and confidence, with the turn the relation compared against."""
+        picks = {
+            "intent": _pick(reply.parsed, "intent", self._intents),
+            "relation": _pick(reply.parsed, "relation", RELATIONS),
+            "tool_group": _pick(reply.parsed, "tool_group", tuple(TOOL_GROUPS)),
+        }
+        verdict: dict[str, Any] = {}
+        for key, picked in picks.items():
+            if picked is not None:
+                verdict[key], verdict[f"{key}_confidence"] = picked
+        if not verdict:
+            return None
+        if "relation" in verdict and line.prev is not None:
+            verdict["prev_turn_id"] = line.prev
+        verdict["latency_ms"] = max(0, int((reply.finished - line.started) * 1000))
+        return verdict
 
     def _read(self, line: Line, reply: Reply) -> None:
+        line.verdict = self._verdict(line, reply)
         group = _pick(reply.parsed, "tool_group", tuple(TOOL_GROUPS))
         with self._lock:
             if line.turn_id in self._tools:
@@ -401,23 +425,32 @@ class JevOneShot:
                 relation=relation[0], confidence=relation[1], target=line.prev, outcome=outcome,
             )
 
-    def _fire_tool(self, line: Line) -> None:
-        """Write ``route.tool_predicted`` once, when the reply is in and the turn exists."""
+    def _fire(self, line: Line) -> None:
+        """Write the line's events once, when the reply is in and the turn exists."""
         with self._lock:
             if not (line.attached and line.done) or line.fired:
                 return
             line.fired = True
             predicted = self._tools.get(line.turn_id)
+        if self.emit is None:
+            return
+        if line.verdict is not None:
+            self._write(READ_EVENT, {"turn_id": line.turn_id, **line.verdict}, line.turn_id)
         if (
-            predicted is None or self.emit is None or self._tool_at is None
+            predicted is None or self._tool_at is None
             or predicted[0] not in self._tool_groups or predicted[1] < self._tool_at
         ):
             return
+        self._write(
+            PREDICTED_EVENT,
+            {"turn_id": line.turn_id, "group": predicted[0], "confidence": predicted[1]},
+            line.turn_id,
+        )
+
+    def _write(self, kind: str, payload: dict[str, Any], turn_id: str) -> None:
+        if self.emit is None:
+            return
         try:
-            self.emit(
-                PREDICTED_EVENT,
-                {"turn_id": line.turn_id, "group": predicted[0], "confidence": predicted[1]},
-                line.turn_id,
-            )
-        except Exception:  # noqa: BLE001 - a wait line is a courtesy
-            LOGGER.warning("jev oneshot: tool_predicted not written", exc_info=True)
+            self.emit(kind, payload, turn_id)
+        except Exception:  # noqa: BLE001 - a wait line and a record are courtesies
+            LOGGER.warning("jev oneshot: %s not written", kind, exc_info=True)

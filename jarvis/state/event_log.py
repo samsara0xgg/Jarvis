@@ -285,6 +285,22 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("confidence",),
         schema_version=1,
     ),
+    # ADR 0276 — what Jev's one request for a voice line answered (ADR 0139), written once the
+    # turn exists, whatever the confidence.  Each question is present only when its answer was
+    # readable: ``intent`` (a control word, a Tier 0 instant function id, or ``none``),
+    # ``relation`` to the previous line (with ``prev_turn_id``, only when that line was inside
+    # the relation window) and ``tool_group``.  The day's experience table folds it.
+    EventTypeSchema(
+        event_type="route.oneshot_read",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("turn_id",),
+        optional_payload=(
+            "intent", "intent_confidence", "relation", "relation_confidence", "prev_turn_id",
+            "tool_group", "tool_group_confidence", "latency_ms",
+        ),
+        schema_version=1,
+    ),
     # ADR 0240 — a turn guard acted: a call the model repeated was answered with a note
     # instead of running (`repeat`, with its `tool`), or its answer said something no call did
     # and went back once (`unbacked`, with what it `said`).
