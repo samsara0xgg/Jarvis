@@ -75,9 +75,12 @@ def _parse(text: str) -> datetime:
 
 
 def weatherkit_body(
-    query: dict[str, str], *, minutes: str = "dry-then-rain",
+    query: dict[str, str], *, minutes: str = "dry-then-rain", warned: bool = True,
 ) -> dict[str, Any]:
-    """The WeatherKit answer for ``query``; ``minutes`` is one of dry-then-rain, raining, none."""
+    """The WeatherKit answer for ``query``; ``minutes`` is one of dry-then-rain, raining, none.
+
+    With ``warned`` False no alert is in force, and WeatherKit leaves the set out of its answer.
+    """
     zone = ZoneInfo(query["timezone"])
     sets = query["dataSets"].split(",")
     d0 = _parse(query["dailyStart"]).astimezone(zone)
@@ -131,7 +134,7 @@ def weatherkit_body(
             "summary": [{"startTime": rows[0]["startTime"], "condition": "rain",
                          "precipitationChance": 0.8, "precipitationIntensity": 1.5}],
         }
-    if "weatherAlerts" in sets:
+    if "weatherAlerts" in sets and warned:
         body["weatherAlerts"] = {"alerts": [{
             "description": "Rainfall Warning", "severity": "moderate",
             "areaName": "Greater Victoria",
@@ -171,12 +174,12 @@ class Net:
 
     def __init__(
         self, monkeypatch: pytest.MonkeyPatch, *, down: tuple[str, ...] = (),
-        refuse: int | None = None, minutes: str = "dry-then-rain",
+        refuse: int | None = None, minutes: str = "dry-then-rain", warned: bool = True,
     ) -> None:
         """Replace ``urlopen``; ``down`` lists hosts that time out, ``refuse`` an HTTP status."""
         self.asked: list[str] = []
         self.headers: list[dict[str, str]] = []
-        self.down, self.refuse, self.minutes = down, refuse, minutes
+        self.down, self.refuse, self.minutes, self.warned = down, refuse, minutes, warned
         monkeypatch.setattr(urllib.request, "urlopen", self._urlopen)
 
     def _urlopen(self, target: Any, *, timeout: float) -> io.BytesIO:  # noqa: ANN401
@@ -193,7 +196,7 @@ class Net:
                 raise urllib.error.HTTPError(
                     url, self.refuse, "refused", {}, io.BytesIO(b'{"reason":"NOT_ENABLED"}'),  # type: ignore[arg-type]
                 )
-            body = weatherkit_body(query, minutes=self.minutes)
+            body = weatherkit_body(query, minutes=self.minutes, warned=self.warned)
         elif host.startswith("geocoding"):
             found = GEOCODED[query["name"], query["language"]]
             body = {"results": found} if found else {"generationtime_ms": 0.1}

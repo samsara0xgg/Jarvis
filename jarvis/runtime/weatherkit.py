@@ -299,11 +299,17 @@ def next_hour(body: Mapping[str, Any], zone: ZoneInfo, now: float) -> dict[str, 
     return out
 
 
-def alerts(body: Mapping[str, Any], zone: ZoneInfo) -> list[dict[str, Any]] | dict[str, str]:
-    """The official alerts in force or coming; ``{"unavailable": why}`` when not asked for."""
-    data = body.get("weatherAlerts")
-    if data is None:
+def alerts(
+    body: Mapping[str, Any], zone: ZoneInfo, *, asked: bool,
+) -> list[dict[str, Any]] | dict[str, str]:
+    """The official alerts in force or coming; ``{"unavailable": why}`` when not ``asked`` for.
+
+    WeatherKit leaves ``weatherAlerts`` out of its answer when none are in force, so an asked
+    for set that is missing is no alerts, not an unknown.
+    """
+    if not asked:
         return {"unavailable": "alerts are read only where the country is known"}
+    data = body.get("weatherAlerts") or {}
     return [
         {
             "headline": one.get("description"), "severity": one.get("severity"),
@@ -320,7 +326,7 @@ def alerts(body: Mapping[str, Any], zone: ZoneInfo) -> list[dict[str, Any]] | di
 
 def report(  # noqa: PLR0913 - what the tool answers with: the answer and what was asked of it.
     body: Mapping[str, Any], label: str, zone_name: str, *,
-    first: date, last: date, whole: bool, hourly: bool, now: float,
+    first: date, last: date, whole: bool, hourly: bool, now: float, alerts_asked: bool,
 ) -> dict[str, Any]:
     """What the model's ``weather`` tool answers with (ADR 0285): plain words, local times.
 
@@ -328,6 +334,7 @@ def report(  # noqa: PLR0913 - what the tool answers with: the answer and what w
     ``days`` (``first`` to ``last``). ``hourly`` puts every hour of those days in place of the
     next 12. The next hour's minutes come with the current day; alerts and attribution always,
     except that days all before today give ``days`` and the attribution alone (no ``now``).
+    ``alerts_asked`` is whether the request carried a country, and so asked for alerts.
 
     Raises:
         ToolError: WeatherKit holds none of the days asked.
@@ -364,7 +371,7 @@ def report(  # noqa: PLR0913 - what the tool answers with: the answer and what w
     if first <= today <= last:
         out["next_hour"] = next_hour(body, zone, now)
     if not past:
-        out["alerts"] = alerts(body, zone)
+        out["alerts"] = alerts(body, zone, asked=alerts_asked)
     out["attribution"] = ATTRIBUTION
     return out
 

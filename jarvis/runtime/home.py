@@ -362,6 +362,7 @@ def weather_lookup(
         result = wk_report(
             body, spot.label, str(zone_name), first=first, last=last,
             whole=request.start is None, hourly=request.hourly, now=kit.clock(),
+            alerts_asked=spot.country is not None,
         )
         if others:
             result["same_name_elsewhere"] = [

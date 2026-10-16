@@ -225,6 +225,17 @@ def test_a_named_place_is_geocoded_then_read_in_its_own_zone_and_country(
     assert report["timezone"] == "America/Toronto"
 
 
+def test_a_country_with_no_alert_in_force_reads_as_no_alerts(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """WeatherKit omits the alerts set when none are in force: that is [], not unavailable."""
+    net = Net(monkeypatch, warned=False)
+    report = _call(kit_for(key[0]), {"place": "Toronto"})
+    assert "weatherAlerts" in _query(net.asked[-1])["dataSets"]
+    assert report["place"] == "Toronto, Ontario, Canada"
+    assert report["alerts"] == []
+
+
 def test_a_name_in_the_users_language_is_tried_in_that_language_then_in_english(
     monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
