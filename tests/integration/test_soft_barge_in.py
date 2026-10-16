@@ -50,9 +50,10 @@ from tests.integration.test_wave3_single_audio_ingress import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from pathlib import Path
 
+    from jarvis.shared import Event
     from jarvis.surface.voice_cues import VoiceCues
 
 VOICE, ROOM = 8_000, 30  # constant frames at about -12 and -60 dBFS
@@ -110,6 +111,9 @@ class _Rig:
         cancel_voice_runs: Callable[[], None] | None = None,
         cues: VoiceCues | None = None,
         heard_elsewhere: Callable[[str, str], bool] | None = None,
+        emit: Callable[[Mapping[str, object], Mapping[str, str]], Event] | None = None,
+        judged_on_send: bool = False,
+        supersede_unspoken: Callable[[str], None] | None = None,
     ) -> None:
         self.output: list[str] = []
         self.phases: list[tuple[str, object]] = []
@@ -123,7 +127,8 @@ class _Rig:
         self.ingress = _ingress(self.backend, wake_input_channel=wake_input_channel)
         self.asr = _ScriptedAsr([heard])
         pipeline = voice_pipeline.VoicePipeline(
-            conn_factory=lambda: open_event_log(self.db),
+            conn_factory=None if emit else (lambda: open_event_log(self.db)),
+            emit=emit,
             recognizer=self.asr,
             normalizer=voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False),
             broadcaster=self,
@@ -155,7 +160,8 @@ class _Rig:
                 answer_words=answer_words
                 or (lambda _turn_id, reason, _text: self.answers.append(reason)),
                 stop_speaking=stop_speaking or self._stop,
-                supersede_unspoken=lambda _turn_id: self.output.append("supersede"),
+                supersede_unspoken=supersede_unspoken
+                or (lambda _turn_id: self.output.append("supersede")),
                 cancel_voice_runs=cancel_voice_runs or (lambda: self.output.append("cancel runs")),
                 yield_speaking=lambda gain: self.output.append(f"gain {gain}"),
                 pause_speaking=lambda paused: self.output.append("pause" if paused else "go on"),
@@ -165,6 +171,7 @@ class _Rig:
                 begin_line=begin_line,
                 cues=cues,
                 heard_elsewhere=heard_elsewhere,
+                judged_on_send=judged_on_send,
             )
             assert self.session.start().started
 

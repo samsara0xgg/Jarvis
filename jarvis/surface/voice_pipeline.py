@@ -72,6 +72,19 @@ class VoicePipelineAbsorbedError(VoicePipelineEmptyError):
         self.reason = reason
 
 
+class UtteranceJudgedError(VoicePipelineError):
+    """The brain judged the words as it received them and they are no turn (ADR 0277).
+
+    Raised by an ``emit`` that sends the words with the owner's judge context; ``verdict`` is the
+    word judge's (``dismissed``, ``backchannel``, ...), and nothing was written as a turn.
+    """
+
+    def __init__(self, verdict: str) -> None:
+        """Keep the brain's ``verdict`` beside the message."""
+        super().__init__(f"judged as {verdict}")
+        self.verdict = verdict
+
+
 class _BroadcasterProtocol(Protocol):
     """Subset of InherentBroadcaster that voice_pipeline calls."""
 
@@ -188,17 +201,17 @@ class VoicePipeline:
         text = self._normalizer.normalize(self.partial_text(audio_bytes))
         return voice_asr.DictationHeard(text, "")
 
-    def _judge(
+    def _judge[T](
         self,
-        before_emit: Callable[[str], None],
+        before_emit: Callable[[str], T],
         normalized: str,
         *,
         turn_id: str,
         broadcast: bool,
-    ) -> None:
+    ) -> T:
         """Hand the owner the words; an utterance it absorbs ends as ``empty`` on the wire."""
         try:
-            before_emit(normalized)
+            return before_emit(normalized)
         except VoicePipelineAbsorbedError as absorbed:
             if broadcast and self._broadcaster is not None:
                 self._broadcaster.broadcast_voice_sync(
@@ -219,7 +232,8 @@ class VoicePipeline:
         session_id: str | None = None,
         utterance_id: str | None = None,
         endpoint_reason: str | None = None,
-        before_emit: Callable[[str], None] | None = None,
+        before_emit: Callable[[str], Mapping[str, object] | None] | None = None,
+        on_judged: Callable[[str, str], None] | None = None,
         wake_lead: bool = True,
         speech_s: float = 0.0,
         spoke_until: float = 0.0,
@@ -257,7 +271,15 @@ class VoicePipeline:
                 conversation mode drops the unspoken answer to Allen's
                 previous sentence there, so the new turn can never see it
                 (ADR 0053), and raises :class:`VoicePipelineAbsorbedError`
-                for words spoken over Jarvis that are no turn.
+                for words spoken over Jarvis that are no turn. What it returns,
+                when it returns a mapping, travels with the utterance as ``judge``
+                for a brain that judges the words on receipt (ADR 0277); ``emit``
+                then sends it and raises :class:`UtteranceJudgedError` for words
+                that are no turn.
+            on_judged: ``(normalized, verdict)`` once the brain has judged the
+                words ``before_emit`` described, ``"turn"`` included. It carries
+                out the verdict and raises :class:`VoicePipelineAbsorbedError`
+                for words that are no turn, as ``before_emit`` does.
             wake_lead: The wake word opened this turn, or it was said over
                 her, so a wake phrase is a lead to cut; ``False`` keeps a
                 bare "Hey Jarvis" as a greeting.
@@ -341,16 +363,13 @@ class VoicePipeline:
             # 3. Normalize BEFORE emit — ADR §8 fix #1 (spec §3.6.2).
             normalized = self._normalizer.normalize(said)
 
+            judge: Mapping[str, object] | None = None
             if before_emit is not None:
-                self._judge(before_emit, normalized, turn_id=turn_id, broadcast=broadcast)
+                judge = self._judge(before_emit, normalized, turn_id=turn_id, broadcast=broadcast)
 
-            # 4. Audio retention for memory.db (None = off).
-            artifact_ref = voice_artifact_store.persist(
-                audio_bytes,
-                turn_id=turn_id,
-                sample_rate_hz=self._sample_rate_hz,
-                artifacts_dir=self._artifacts_dir,
-            )
+            # 4. Audio retention for memory.db (None = off): the utterance names the file,
+            # which is written after it is sent (ADR 0277).
+            artifact_ref = voice_artifact_store.planned_ref(turn_id, self._artifacts_dir)
 
             # 5. Emit utterance.received via fresh connection (worker thread).
             payload: dict[str, object] = {
@@ -382,8 +401,16 @@ class VoicePipeline:
                 # ADR 0272: how long ago he stopped, for the hold his answer waits out.
                 payload["spoke_ago_ms"] = max(0, round((time.monotonic() - spoke_until) * 1000))
 
+            if judge is not None and self._emit is not None:
+                payload["judge"] = dict(judge)
+
             if self._emit is not None:  # a voice terminal sends it to the brain (ADR 0172)
-                ev = self._emit(payload, {"turn_id": turn_id})
+                try:
+                    ev = self._emit(payload, {"turn_id": turn_id})
+                except UtteranceJudgedError as judged:
+                    self._judged(on_judged, normalized, judged.verdict, turn_id, broadcast)
+                    raise  # unreachable: _judged absorbs every verdict but "turn"
+                self._judged(on_judged, normalized, "turn", turn_id, broadcast)
             else:
                 assert self._conn_factory is not None  # noqa: S101 — the constructor ensures it.
                 with contextlib.closing(self._conn_factory()) as worker_conn:
@@ -393,6 +420,12 @@ class VoicePipeline:
                         payload=payload,
                         correlation={"turn_id": turn_id},
                     )
+            voice_artifact_store.persist_later(
+                audio_bytes,
+                turn_id=turn_id,
+                sample_rate_hz=self._sample_rate_hz,
+                artifacts_dir=self._artifacts_dir,
+            )
             record_realtime_trace(
                 "utterance_committed",
                 turn_id=turn_id,
@@ -422,9 +455,28 @@ class VoicePipeline:
             if not lock_already_held:
                 VOICE_INPUT_LOCK.release()
 
+    def _judged(
+        self,
+        on_judged: Callable[[str, str], None] | None,
+        normalized: str,
+        verdict: str,
+        turn_id: str,
+        broadcast: bool,  # noqa: FBT001 - run_turn's own flag
+    ) -> None:
+        """Carry out the brain's verdict; every one but ``turn`` ends the turn as absorbed."""
+
+        def act(text: str) -> None:
+            if on_judged is not None:
+                on_judged(text, verdict)
+            if verdict != "turn":
+                raise VoicePipelineAbsorbedError(verdict)
+
+        self._judge(act, normalized, turn_id=turn_id, broadcast=broadcast)
+
 
 __all__ = [
     "VOICE_INPUT_LOCK",
+    "UtteranceJudgedError",
     "VoiceInputBusyError",
     "VoicePipeline",
     "VoicePipelineAbsorbedError",

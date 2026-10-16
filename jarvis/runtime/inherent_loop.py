@@ -4471,6 +4471,10 @@ class _ListenPorts:
     cancel_voice_runs: Callable[[], None] | None = None
     heard_elsewhere: Callable[[str, str], bool] | None = None
     """``(turn_id, text) -> bool``: another device recorded these words just now (ADR 0219)."""
+    judged_on_send: bool = False
+    """The brain judges the words as it receives them, so the ports above that only the judge
+    reaches (``ask_words``, ``note_words``, ``begin_line``, ``recent_speech``,
+    ``heard_elsewhere``, ``supersede_unspoken``) are the brain's own (ADR 0277)."""
     cues: VoiceCues | None = None
     ambient: AmbientSounds | None = None
 
@@ -4842,6 +4846,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             supersede_unspoken=listen.supersede_unspoken,
             cancel_voice_runs=listen.cancel_voice_runs,
             heard_elsewhere=listen.heard_elsewhere,
+            judged_on_send=listen.judged_on_send,
             yield_speaking=streaming.set_yield_gain if streaming is not None else None,
             pause_speaking=streaming.pause_speaking if streaming is not None else None,
             ambient=listen.ambient,

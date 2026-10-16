@@ -634,6 +634,21 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
     )
 
 
+def _terminal_ports(turn: LinkedTurn) -> _ListenPorts:
+    """What a voice terminal's capture session reaches in the brain, and nothing it can leave there.
+
+    The brain judges the words as it receives the utterance (ADR 0277), so no call to it
+    precedes the send: the judge's hooks, the elsewhere check, and the cancel and supersede that
+    go with a verdict are the brain's, not the session's. ``cancel_voice_runs`` stays for the
+    owner leaving conversation mode from a surface.
+    """
+    return _ListenPorts(
+        answer_words=turn.answer_words, turn_working=turn.turn_working,
+        interrupt=turn.interrupt, hold_runs=turn.hold_runs,
+        cancel_voice_runs=turn.cancel_runs, judged_on_send=True,
+    )
+
+
 async def _start_listening(
     speaking: _Speaking, speech: _Speech, page: Settings | None = None,
 ) -> _Listening | None:
@@ -669,13 +684,7 @@ async def _start_listening(
                      "; ".join(missing))
         return None
     turn, controls = LinkedTurn(link), LinkedControls(link)
-    ports = _ListenPorts(
-        answer_words=turn.answer_words, turn_working=turn.turn_working,
-        recent_speech=turn.recent_speech, ask_words=turn.ask_words, note_words=turn.note_words,
-        begin_line=turn.begin_line, interrupt=turn.interrupt, hold_runs=turn.hold_runs,
-        supersede_unspoken=turn.supersede, cancel_voice_runs=turn.cancel_runs,
-        heard_elsewhere=turn.heard_elsewhere,
-    )
+    ports = _terminal_ports(turn)
     broadcaster = speech.broadcaster
 
     def build() -> tuple[voice_session.DuplexVoiceSession | None, bool, Dictation | None]:

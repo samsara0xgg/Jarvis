@@ -18,18 +18,21 @@ brain's half of a callback of :class:`~jarvis.surface.voice_session.DuplexVoiceS
 ======== ===================================== ==============================================
 op       args                                  value
 ======== ===================================== ==============================================
-utterance the final words, as the pipeline     ``{"event_uid"}``: written once as
-         writes them (transcript, turn_id,     ``utterance.received`` under the device's
-         utterance_id, ...)                    name, so a second send of it writes nothing
+utterance the final words, as the pipeline     ``{"verdict": "turn", "event_uid"}``: written
+         writes them (transcript, turn_id,     once as ``utterance.received`` under the
+         utterance_id, ...), and ``judge``     device's name, so a second send of it writes
+         (``conversation``, ``over_her``)      nothing; or ``{"verdict": <other>}``: judged
+                                               no turn on receipt (ADR 0277), nothing written
                                                (ADR 0278: first taking over from the device's
                                                pending earlier sentence, so the row holds the
                                                whole thought)
 words    turn_id, text, recent, over_her,      ``{"choice": str | null}``: the word judge
-         confirm
+         confirm                               (only a terminal built before ADR 0277 asks)
 elsewhere turn_id, text                        ``{"elsewhere": bool}``: another device recorded
-                                               these words in the last few seconds (ADR 0219)
+                                               these words in the last few seconds (ADR 0219;
+                                               only a terminal built before ADR 0277 asks)
 working  (none)                                ``{"working": bool}``: a turn is in flight
-recent   (none)                                ``{"text": str}``: what she said lately
+recent   (none)                                ``{"text": str}``: what she said lately (ditto)
 interrupt source                               ``{"outcome": str}``: generation cancel
 supersede turn_id                              ``{}``: unspoken answers dropped and cancelled
 cancel_runs (none)                             ``{}``
@@ -48,10 +51,17 @@ begin    turn_id, text, recent, over_her,      (tell) the word judge's one reque
 say      turn_id, reason, text                 (tell) one spoken line back
 ======== ===================================== ==============================================
 
+An utterance that carries ``judge`` is judged by the brain as it arrives, in the one round trip
+that delivers it (ADR 0277): same-words-from-another-device first (ADR 0219), then the regexes
+and Jev, then, for a turn, the unspoken answer it replaces is dropped (ADR 0074) before the row
+is written. The terminal acts on the verdict it gets back. ``words``, ``elsewhere``, ``recent``
+and the tells ``note`` and ``begin`` used to be sent one after another before the utterance;
+the brain still answers them for a terminal built before that, and may stop once none is.
+
 ``interrupt``, ``supersede``, ``cancel_runs`` and ``elsewhere`` act for the terminal that
 sent them, which the brain knows from the link: they touch the turns that terminal opened and
 no others (ADR 0219), and the frames carry no device. A brain that does not know ``elsewhere``
-answers ``unknown_op``, which the terminal reads as false.
+answers ``unknown_op``.
 
 The brain also commands the terminal, on the ordinary ``call`` frame, with two tool names that
 are not menu tools: :data:`DROP_UNSPOKEN` and :data:`STOP_OUTPUT`, for supersede and
@@ -76,7 +86,9 @@ from jarvis.shared import Event
 from jarvis.shared.device_link import DeviceCallError
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.quiet_mode import LEVELS as QUIET_LEVELS
+from jarvis.surface import word_judge
 from jarvis.surface.terminal_speaker import BrainCallError
+from jarvis.surface.voice_pipeline import UtteranceJudgedError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -103,13 +115,8 @@ _DEVICE_OPS: Final = frozenset({"elsewhere", "interrupt", "supersede", "cancel_r
 TELLS: Final = frozenset({"hold", "note", "begin", "say"})
 
 UTTERANCE_TIMEOUT_S: Final = 8.0
-WORDS_TIMEOUT_S: Final = 3.0
-"""The word judge blocks up to its own ``words_timeout_ms`` (0.8 s) on the brain."""
-ELSEWHERE_TIMEOUT_S: Final = 0.3
-"""One log read on the brain. Asked before every line is judged, so an unreachable brain must
-not hold the line: past this the words are taken as heard here alone."""
+"""Covers the brain's judging of the words (Jev waits at most its own ``words_timeout_ms``)."""
 WORKING_TIMEOUT_S: Final = 1.0
-RECENT_TIMEOUT_S: Final = 1.0
 INTERRUPT_TIMEOUT_S: Final = 3.0
 RUNS_TIMEOUT_S: Final = 5.0
 POLISH_TIMEOUT_S: Final = 45.0
@@ -283,7 +290,7 @@ class BrainListening:
                 raise _Refused(msg, "unknown_op")  # noqa: TRY301 — one place for every refusal.
             await state.tells.join()  # what the terminal told first has been done
             if op == "utterance":
-                reply["value"] = await self._utterance(link, args)
+                reply["value"] = await self._take_utterance(link, args)
             else:
                 reply["value"] = await asyncio.to_thread(self._run, str(op), link.name, args)
         except asyncio.CancelledError:
@@ -307,6 +314,56 @@ class BrainListening:
         return self._ops[op](args)
 
     # -- the asks ----------------------------------------------------------------------
+
+    async def _take_utterance(self, link: _Link, args: Mapping[str, Any]) -> dict[str, Any]:
+        """Judge the words if the terminal sent ``judge``, then write them if they are a turn."""
+        judge = args.get("judge")
+        if not isinstance(judge, dict):  # a terminal that judged the words itself
+            return await self._utterance(link, args)
+        verdict = await asyncio.to_thread(self._judge, link.name, args, judge)
+        if verdict != "turn":
+            return {"verdict": verdict}
+        return {"verdict": verdict, **await self._utterance(link, args)}
+
+    def _judge(self, device: str, args: Mapping[str, Any], judge: Mapping[str, Any]) -> str:
+        """The word judge's verdict on an utterance, and for a turn the supersede that goes first.
+
+        The hooks are those the terminal used to ask for one by one; a judge that fails leaves
+        the words a turn, as it does on the Mac (ADR 0053, 0130, 0216, 0219).
+        """
+        turn_id, text = _text(args, "turn_id", _ID_CHARS), _text(args, "transcript")
+        hooks = self.hooks
+        elsewhere = hooks.heard_elsewhere
+        word_hooks = word_judge.WordHooks(
+            ask=hooks.ask_words, note=hooks.note_words, begin=hooks.begin_line,
+            recent=hooks.recent_speech, quiet=hooks.set_quiet is not None,
+            heard_elsewhere=(
+                None if elsewhere is None else lambda turn, words: elsewhere(device, turn, words)
+            ),
+        )
+        conversation, over_her = _flag(judge, "conversation"), _flag(judge, "over_her")
+        try:
+            verdict = word_judge.words_verdict(
+                word_hooks, turn_id, text, conversation=conversation, over_her=over_her,
+            )
+        except Exception:  # noqa: BLE001 - the judge cannot lose the owner's words
+            LOGGER.warning("judging %s failed; the words stay a turn", turn_id, exc_info=True)
+            verdict = "turn"
+        # A turn replaces the unspoken answer before it; a dismissal or a quiet phrase also ends
+        # every answer still being written. The terminal sends nothing for either.
+        ends_answers = verdict == "dismissed" or verdict.startswith("quiet:")
+        if ends_answers and hooks.cancel_runs is not None:
+            self._best_effort(hooks.cancel_runs, device)
+        if (verdict == "turn" or ends_answers) and hooks.supersede is not None:
+            self._best_effort(hooks.supersede, device, turn_id)
+        return verdict
+
+    @staticmethod
+    def _best_effort(hook: Callable[..., None], *args: str) -> None:
+        try:
+            hook(*args)
+        except Exception:  # an answer left alone never loses the owner's words
+            LOGGER.exception("ending earlier answers failed")
 
     async def _utterance(self, link: _Link, args: Mapping[str, Any]) -> dict[str, Any]:
         """Write the utterance once, and make the terminal that heard it the answer's place.
@@ -558,59 +615,15 @@ class LinkedTurn:
     """The capture session's brain-bound callbacks, answered over the link (ADR 0172).
 
     Each is the callback the session holds on one machine, with the fallback that callback has
-    there when it cannot be answered: no judge means a turn, no read means nothing is in
-    flight and nothing was said, and a stop that cannot be asked of the brain still stopped
-    the speaker. Only the utterance has none: an utterance the brain never took is an error.
+    there when it cannot be answered: no read means nothing is in flight, and a stop that
+    cannot be asked of the brain still stopped the speaker. Only the utterance has none: an
+    utterance the brain never took is an error. The word judge is not among them: the brain
+    judges the words as the utterance arrives (ADR 0277), so no call precedes it.
     """
 
     def __init__(self, link: VoiceLink) -> None:
         """Ask and tell the brain over ``link``."""
         self._link = link
-
-    def ask_words(
-        self, turn_id: str, text: str, recent: str, over_her: bool, confirm: bool,  # noqa: FBT001
-    ) -> str | None:
-        """The word judge's choice, or ``None`` (a turn) when it cannot be asked."""
-        try:
-            value = self._link.ask(
-                "words", {"turn_id": turn_id, "text": text, "recent": recent,
-                          "over_her": over_her, "confirm": confirm},
-                timeout_s=WORDS_TIMEOUT_S,
-            )
-        except BrainCallError as exc:
-            LOGGER.warning("the word judge could not be asked (%s); the line stays a turn", exc)
-            return None
-        choice = value.get("choice") if isinstance(value, dict) else None
-        return choice if isinstance(choice, str) else None
-
-    def heard_elsewhere(self, turn_id: str, text: str) -> bool:
-        """Whether another device recorded these words just now; false when it cannot be asked.
-
-        A brain that does not know the op answers ``unknown_op`` and one that errors answers
-        ``brain_error``; both, and a brain that is slow or gone, read as false (ADR 0219).
-        """
-        try:
-            value = self._link.ask(
-                "elsewhere", {"turn_id": turn_id, "text": text}, timeout_s=ELSEWHERE_TIMEOUT_S,
-            )
-        except BrainCallError as exc:
-            LOGGER.debug("the brain could not say whether another device heard this: %s", exc)
-            return False
-        return isinstance(value, dict) and value.get("elsewhere") is True
-
-    def note_words(
-        self, turn_id: str, verdict: str, text: str, over_her: bool, conversation: bool,  # noqa: FBT001
-    ) -> None:
-        """Tell the brain a line the regexes settled alone."""
-        self._link.tell("note", {"turn_id": turn_id, "verdict": verdict, "text": text,
-                                 "over_her": over_her, "conversation": conversation})
-
-    def begin_line(
-        self, turn_id: str, text: str, recent: str, over_her: bool, conversation: bool,  # noqa: FBT001
-    ) -> None:
-        """Tell the brain to send the line's one word-judge request."""
-        self._link.tell("begin", {"turn_id": turn_id, "text": text, "recent": recent,
-                                  "over_her": over_her, "conversation": conversation})
 
     def answer_words(self, turn_id: str, reason: str, text: str) -> None:
         """Have the brain say one line back (it writes the answer rows; they come here)."""
@@ -623,15 +636,6 @@ class LinkedTurn:
         except BrainCallError:
             return False
         return isinstance(value, dict) and value.get("working") is True
-
-    def recent_speech(self) -> str:
-        """What she said in the last minute; ``""`` when it cannot be asked."""
-        try:
-            value = self._link.ask("recent", {}, timeout_s=RECENT_TIMEOUT_S)
-        except BrainCallError:
-            return ""
-        text = value.get("text") if isinstance(value, dict) else None
-        return text if isinstance(text, str) else ""
 
     def hold_runs(self, held: bool) -> None:  # noqa: FBT001 - the capture side's one bit
         """Tell the brain to hold or release the completion of answers while he talks."""
@@ -647,13 +651,6 @@ class LinkedTurn:
         outcome = value.get("outcome") if isinstance(value, dict) else None
         return outcome if isinstance(outcome, str) else "unknown"
 
-    def supersede(self, turn_id: str) -> None:
-        """Have the brain drop and cancel the unspoken answers a new line replaces."""
-        try:
-            self._link.ask("supersede", {"turn_id": turn_id}, timeout_s=RUNS_TIMEOUT_S)
-        except BrainCallError as exc:
-            LOGGER.warning("an unspoken answer could not be superseded: %s", exc)
-
     def cancel_runs(self) -> None:
         """Have the brain end every answer still being written for the speaker."""
         try:
@@ -666,7 +663,12 @@ class LinkedTurn:
     ) -> Event:
         """Send the utterance to the brain and wait until it is in the log.
 
+        The brain judges the words as they arrive (``payload["judge"]``, ADR 0277): the reply is
+        the event of a turn, or the verdict on words that are none. A brain that predates the
+        judge writes every utterance as a turn and names no verdict.
+
         Raises:
+            UtteranceJudgedError: the brain judged the words no turn; nothing was written.
             BrainCallError: the brain did not take it; nothing was written, and the owner is
                 not answered.
         """
@@ -675,6 +677,11 @@ class LinkedTurn:
         except BrainCallError as exc:
             LOGGER.warning("the brain is not reachable; this utterance was not delivered (%s)", exc)
             raise
+        verdict = value.get("verdict") if isinstance(value, dict) else None
+        if isinstance(verdict, str) and verdict != "turn":
+            record_realtime_trace("utterance_judged", turn_id=correlation.get("turn_id", ""),
+                                  verdict=verdict)
+            raise UtteranceJudgedError(verdict)
         uid = value.get("event_uid") if isinstance(value, dict) else None
         if not isinstance(uid, str):
             msg = "the brain's answer to an utterance names no event"

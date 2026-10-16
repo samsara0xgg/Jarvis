@@ -51,6 +51,7 @@ from jarvis.state.event_log import iter_events, open_event_log
 from jarvis.surface import (
     respeaker_board,
     terminal_listen,
+    voice_artifact_store,
     voice_asr,
     voice_audio,
     voice_backend,
@@ -138,8 +139,7 @@ def _ok(value: object) -> dict[str, Any]:
 def fast_deadlines(monkeypatch: pytest.MonkeyPatch) -> None:
     """The per-call deadlines, short: what they guard is the fallback, not the wait."""
     for name in (
-        "UTTERANCE_TIMEOUT_S", "WORDS_TIMEOUT_S", "WORKING_TIMEOUT_S", "RECENT_TIMEOUT_S",
-        "INTERRUPT_TIMEOUT_S", "RUNS_TIMEOUT_S",
+        "UTTERANCE_TIMEOUT_S", "WORKING_TIMEOUT_S", "INTERRUPT_TIMEOUT_S", "RUNS_TIMEOUT_S",
     ):
         monkeypatch.setattr(terminal_listen, name, 0.1)
 
@@ -149,42 +149,32 @@ def test_the_brains_answers_are_what_the_terminals_callbacks_return(tmp_path: Pa
 
     def brain(frame: dict[str, Any]) -> dict[str, Any] | None:
         replies: dict[str, object] = {
-            "words": {"choice": "stop"}, "working": {"working": True},
-            "recent": {"text": "I said this."}, "interrupt": {"outcome": "cancelled"},
-            "supersede": {}, "cancel_runs": {},
-            "utterance": {"event_uid": "a" * 32},
+            "working": {"working": True},
+            "interrupt": {"outcome": "cancelled"}, "cancel_runs": {},
+            "utterance": {"verdict": "turn", "event_uid": "a" * 32},
         }
         return _ok(replies[frame["op"]])
 
     bench = _Bench(tmp_path, brain)
     try:
         turn = LinkedTurn(bench.link)
-        assert turn.ask_words("T1", "stop", "I said", True, False) == "stop"
         assert turn.turn_working() is True
-        assert turn.recent_speech() == "I said this."
         assert turn.interrupt("conversation_speech") == "cancelled"
-        turn.supersede("T1")
         turn.cancel_runs()
         event = turn.emit_utterance({"transcript": "hi", "turn_id": "T1"}, {"turn_id": "T1"})
         assert (event.event_uid, event.type, event.correlation) == (
             "a" * 32, "utterance.received", {"turn_id": "T1"},
         )
         turn.hold_runs(True)
-        turn.note_words("T1", "backchannel", "mm", False, True)
-        turn.begin_line("T1", "hello", "", False, False)
         turn.answer_words("T1", "wait", "Okay.")
-        _wait_for(lambda: len(bench.frames) == 11, "frames did not reach the brain")
+        _wait_for(lambda: len(bench.frames) == 6, "frames did not reach the brain")
     finally:
         bench.close()
     told = [frame for frame in bench.frames if "id" not in frame]
-    assert [frame["op"] for frame in told] == ["hold", "note", "begin", "say"]
-    assert told[1]["args"] == {
-        "turn_id": "T1", "verdict": "backchannel", "text": "mm", "over_her": False,
-        "conversation": True,
-    }
+    assert [frame["op"] for frame in told] == ["hold", "say"]
     asked = [frame for frame in bench.frames if "id" in frame]
     assert [frame["op"] for frame in asked] == [
-        "words", "working", "recent", "interrupt", "supersede", "cancel_runs", "utterance",
+        "working", "interrupt", "cancel_runs", "utterance",
     ]
     assert all(frame["type"] == "ask" for frame in bench.frames)
 
@@ -194,7 +184,7 @@ def test_the_brains_answers_are_what_the_terminals_callbacks_return(tmp_path: Pa
 def test_a_call_with_a_deadline_keeps_its_fallback_when_the_brain_cannot_answer(
     tmp_path: Path, brain_is: str,
 ) -> None:
-    """The word judge's absence is a turn, nothing in flight, nothing said, a stop that stops."""
+    """Nothing in flight, a stop that stops, and an utterance the brain never took is an error."""
     refuse: dict[str, Any] = {"ok": False, "code": "not_listening", "message": "no"}
     bench = _Bench(tmp_path, (lambda _frame: refuse) if brain_is == "refusing" else None)
     try:
@@ -202,17 +192,13 @@ def test_a_call_with_a_deadline_keeps_its_fallback_when_the_brain_cannot_answer(
             bench.link.down()
         turn = LinkedTurn(bench.link)
         started = time.monotonic()
-        assert turn.ask_words("T1", "stop", "", True, False) is None
         assert turn.turn_working() is False
-        assert turn.recent_speech() == ""
         assert turn.interrupt("conversation_speech") == "brain_unreachable"
-        turn.supersede("T1")  # neither raises: the local stop already happened
-        turn.cancel_runs()
+        turn.cancel_runs()  # does not raise: the local stop already happened
         assert time.monotonic() - started < 3.0
         with pytest.raises(BrainCallError):
             turn.emit_utterance({"transcript": "hi", "turn_id": "T1"}, {"turn_id": "T1"})
         turn.hold_runs(True)  # fire and forget, never an error
-        turn.note_words("T1", "turn", "hi", False, False)
         time.sleep(0.2)
         sent = bench.ops()
     finally:
@@ -220,9 +206,7 @@ def test_a_call_with_a_deadline_keeps_its_fallback_when_the_brain_cannot_answer(
     if brain_is == "gone":
         assert sent == []  # a tell to a gone brain is dropped, not queued for later
     else:
-        assert sent[:7] == [
-            "words", "working", "recent", "interrupt", "supersede", "cancel_runs", "utterance",
-        ]
+        assert sent[:4] == ["working", "interrupt", "cancel_runs", "utterance"]
 
 
 def test_an_ask_in_flight_fails_at_once_when_the_link_drops(tmp_path: Path) -> None:
@@ -1074,6 +1058,7 @@ def test_a_terminal_hears_the_owner_and_the_brains_answer_is_played_where_it_was
     # file is there; the brain's side of the test directory has no audio at all.
     ref = Path(str(heard.payload["audio_artifact_ref"]))
     assert ref.is_relative_to(root)
+    voice_artifact_store.flush()  # the file is written after the utterance is sent (ADR 0277)
     assert ref.exists()
     assert not (tmp_path / "memory").exists()
 

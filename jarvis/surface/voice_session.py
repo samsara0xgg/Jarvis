@@ -316,7 +316,8 @@ class _PipelinePort(Protocol):
         session_id: str | None = ...,
         utterance_id: str | None = ...,
         endpoint_reason: str | None = ...,
-        before_emit: Callable[[str], None] | None = ...,
+        before_emit: Callable[[str], Mapping[str, object] | None] | None = ...,
+        on_judged: Callable[[str, str], None] | None = ...,
         wake_lead: bool = ...,
         speech_s: float = ...,
         spoke_until: float = ...,
@@ -1232,6 +1233,7 @@ class DuplexVoiceSession:
         supersede_unspoken: Callable[[str], None] | None = None,
         cancel_voice_runs: Callable[[], None] | None = None,
         heard_elsewhere: Callable[[str, str], bool] | None = None,
+        judged_on_send: bool = False,
         yield_speaking: Callable[[float], None] | None = None,
         pause_speaking: Callable[[bool], None] | None = None,
         ambient: ambient_sounds.AmbientSounds | None = None,
@@ -1278,6 +1280,14 @@ class DuplexVoiceSession:
         ADR 0219: ``heard_elsewhere(turn_id, text)`` is whether another device recorded these
         words just now; the word judge asks it first, and a line it calls so is no turn here.
 
+        ADR 0277: with ``judged_on_send`` the brain judges the words as it receives them: the
+        session sends them with whether conversation mode is on and whether they were said over
+        her, asks nothing before, and carries out the verdict that comes back in the same reply.
+        ``ask_words``, ``note_words``, ``begin_line``, ``recent_speech``, ``heard_elsewhere`` and
+        ``supersede_unspoken`` are then the brain's to call, and the session leaves them unset;
+        the brain also ends the answers still being written when it judges a dismissal or a
+        quiet phrase.
+
         ADR 0151: ``ambient`` is fed the diagnostic lane's frames, started and stopped with
         this session.
         """
@@ -1308,6 +1318,7 @@ class DuplexVoiceSession:
         self._supersede_unspoken = supersede_unspoken
         self._cancel_voice_runs = cancel_voice_runs
         self._heard_elsewhere = heard_elsewhere
+        self._judged_on_send = judged_on_send
         self._yield_speaking = yield_speaking
         self._pause_speaking = pause_speaking
         # Soft barge-in: the turns spoken over Jarvis until final ASR has
@@ -1764,6 +1775,23 @@ class DuplexVoiceSession:
         self._conversation_hold_until = 0.0
         self._supersede(turn_id)
 
+    def _words_context(self, turn_id: str, _text: str) -> dict[str, bool]:
+        """What the brain needs to judge ``turn_id``'s words as it receives them (ADR 0277)."""
+        with self._barge_lock:
+            over_her = turn_id in self._barges
+        return {"conversation": self._conversation_open(), "over_her": over_her}
+
+    def _words_judged(self, turn_id: str, text: str, verdict: str) -> None:
+        """Carry out the brain's verdict on words it received; raises when they are no turn."""
+        with self._barge_lock:
+            over_her = turn_id in self._barges
+        self._act_on_words(turn_id, text, verdict, over_her=over_her)
+        if verdict != "turn":  # a barge-in that ended meanwhile does not make them a turn
+            raise voice_pipeline.VoicePipelineAbsorbedError(verdict)
+        self._conversation_busy_at = time.monotonic()
+        self._awaiting_answer = True
+        self._conversation_hold_until = 0.0
+
     def _word_hooks(self) -> word_judge.WordHooks:
         return word_judge.WordHooks(
             ask=self._ask_words, note=self._note_words, begin=self._begin_line,
@@ -1799,8 +1827,7 @@ class DuplexVoiceSession:
         if verdict.startswith("quiet:") and self._set_quiet is not None:
             level = verdict.removeprefix("quiet:")
             self._settle_barge_in(turn_id, go_on=False)
-            self._cancel_runs()
-            self._supersede(turn_id)
+            self._end_earlier_answers(turn_id)
             self._set_quiet(level)
             self._answer(turn_id, voice_asr.QUIET_REASONS[level], text)
             raise voice_pipeline.VoicePipelineAbsorbedError(verdict)
@@ -1809,8 +1836,7 @@ class DuplexVoiceSession:
             if verdict == "dismissed":
                 # An answer still on its way would come after her goodbye (live 2026-10-02),
                 # however old it is (live 2026-10-03: a 50 s old answer spoke after it).
-                self._cancel_runs()
-                self._supersede(turn_id)
+                self._end_earlier_answers(turn_id)
                 self._change_conversation(on=False, reason=verdict)
             else:
                 self._conversation_hold_until = (
@@ -1835,6 +1861,16 @@ class DuplexVoiceSession:
             raise voice_pipeline.VoicePipelineAbsorbedError(
                 "stop_request" if verdict == "stop" else verdict,
             )
+
+    def _end_earlier_answers(self, turn_id: str) -> None:
+        """End every answer still being written and drop the unspoken ones.
+
+        With ``judged_on_send`` the brain did both as it judged the words (ADR 0277).
+        """
+        if self._judged_on_send:
+            return
+        self._cancel_runs()
+        self._supersede(turn_id)
 
     def _answer(self, turn_id: str, reason: str, text: str) -> None:
         if self._answer_words is None:
@@ -2075,7 +2111,14 @@ class DuplexVoiceSession:
                         session_id=utterance.session_id,
                         utterance_id=utterance.utterance_id,
                         endpoint_reason=utterance.endpoint_reason,
-                        before_emit=functools.partial(self._judge_words, utterance.turn_id),
+                        before_emit=functools.partial(
+                            self._words_context if self._judged_on_send else self._judge_words,
+                            utterance.turn_id,
+                        ),
+                        on_judged=(
+                            functools.partial(self._words_judged, utterance.turn_id)
+                            if self._judged_on_send else None
+                        ),
                         wake_lead=utterance.woken or over_her,
                         speech_s=utterance.speech_s,
                         spoke_until=utterance.spoke_until,

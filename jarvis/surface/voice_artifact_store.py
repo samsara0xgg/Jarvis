@@ -5,6 +5,9 @@ Every recognised utterance is written under ``artifacts_dir`` (the
 built-in ``afconvert``; when that fails the PCM16 WAV stays. The returned
 path lands on ``utterance.received.audio_artifact_ref`` and from there on
 ``records.audio_path``. ``artifacts_dir=None`` disables retention.
+
+The file is not needed to send the utterance, only its name: :func:`planned_ref` gives the name
+before the audio is written and :func:`persist_later` writes it after (ADR 0277).
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ LOGGER = logging.getLogger(__name__)
 
 _AAC_BITRATE: str = "32000"
 _TRANSCODE_TIMEOUT_S: float = 30.0
+_KEEP = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jarvis-voice-keep")
 
 
 def persist(
@@ -64,6 +68,42 @@ def persist(
         return str(wav_path)
     wav_path.unlink(missing_ok=True)
     return str(m4a_path)
+
+
+def planned_ref(turn_id: str, artifacts_dir: Path | None) -> str | None:
+    """Where :func:`persist` will leave ``turn_id``'s audio; ``None`` when retention is off."""
+    return None if artifacts_dir is None else str(artifacts_dir / f"{turn_id}.m4a")
+
+
+def persist_later(
+    pcm_audio: bytes, *, turn_id: str, sample_rate_hz: int, artifacts_dir: Path | None,
+) -> None:
+    """Queue :func:`persist` on a thread of its own, to the file :func:`planned_ref` named.
+
+    A failure costs one warning, never the turn.
+    """
+    if artifacts_dir is not None:
+        _KEEP.submit(_keep, pcm_audio, turn_id, sample_rate_hz, artifacts_dir)
+
+
+def flush(timeout_s: float = 10.0) -> None:
+    """Wait until every queued :func:`persist_later` has been written."""
+    _KEEP.submit(lambda: None).result(timeout=timeout_s)
+
+
+def _keep(pcm_audio: bytes, turn_id: str, sample_rate_hz: int, artifacts_dir: Path) -> None:
+    try:
+        path = persist(
+            pcm_audio, turn_id=turn_id, sample_rate_hz=sample_rate_hz,
+            artifacts_dir=artifacts_dir,
+        )
+    except Exception:  # noqa: BLE001 - keeping the audio must never cost a turn
+        LOGGER.warning("voice audio not kept turn_id=%s", turn_id, exc_info=True)
+        return
+    # ponytail: without afconvert the WAV stays and the event's ref names a file that is
+    # not there; macOS always has the encoder. Rename the WAV to the planned name if it bites.
+    if path != planned_ref(turn_id, artifacts_dir):
+        LOGGER.warning("voice audio kept as %s, not the planned .m4a turn_id=%s", path, turn_id)
 
 
 class TtsRecorder:
@@ -115,4 +155,4 @@ class TtsRecorder:
                 LOGGER.warning("tts recording not kept: %s", exc)
 
 
-__all__ = ["TtsRecorder", "persist"]
+__all__ = ["TtsRecorder", "flush", "persist", "persist_later", "planned_ref"]
