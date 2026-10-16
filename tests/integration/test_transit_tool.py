@@ -6,6 +6,7 @@ import io
 import json
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -55,6 +56,10 @@ def _serve(
     seen: list[Any] = []
 
     def urlopen(request: urllib.request.Request, *, timeout: float) -> io.BytesIO:
+        if not request.full_url.startswith("https://routes.googleapis.com/"):
+            # `where_am_i` also asks Google what is around him (ADR 0284); not this stub's job.
+            msg = "not served here"
+            raise urllib.error.URLError(msg)
         seen.append((request, timeout))
         sent = json.loads(request.data)
         travel = sent["travelMode"]
