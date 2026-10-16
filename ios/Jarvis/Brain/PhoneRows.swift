@@ -19,6 +19,8 @@ enum PhoneEvent: Equatable {
     case cardGone(String)
     /// the final `surface.response_emitted`'s `times`, in the order the turn did them
     case times([AnswerTime])
+    /// the final `surface.response_emitted`'s `places`: the map under her answer
+    case places([AnswerPlace])
 }
 
 enum PhoneRows {
@@ -42,8 +44,17 @@ enum PhoneRows {
         }
     }
 
+    /// the places a final answer row names; a row carries them beside its times, so they are read apart from `event`
+    static func places(_ r: RowFrame) -> [AnswerPlace] {
+        r.eventType == "surface.response_emitted" && r.phase != "commentary" ? AnswerPlace.parse(r.payload["places"]) : []
+    }
+
     @MainActor private static var queue: [PhoneEvent] = []
-    @MainActor static func offer(_ r: RowFrame) { if let e = event(r) { queue.append(e) } }
+    @MainActor static func offer(_ r: RowFrame) {
+        if let e = event(r) { queue.append(e) }
+        let p = places(r)
+        if !p.isEmpty { queue.append(.places(p)) }
+    }
     @MainActor static func take() -> [PhoneEvent] {
         if queue.isEmpty { return [] }
         defer { queue = [] }

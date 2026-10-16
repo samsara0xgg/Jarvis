@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreLocation
 
 // The talk under the dial: the rows of his words and hers that every kind of talk (voice, typed, the prototype's scripted ones) writes into `ui.liveTurns`,
 // and how long they stay. Nothing is cut here; the panel (Sky/StarPanel) decides what fits.
@@ -115,6 +116,10 @@ extension StarEngine {
             withAnimation(.easeOut(duration: 0.25)) { ui.liveTurns.removeAll { $0.card?.brainId == id } }
             Task { @MainActor in await Waiting.shared.poll() }
         case .times(let ts): showTimes(ts)
+        case .places(let ps):
+            // the answer's row has the map; a late one is in the conversation's row and comes with it
+            guard ui.talking, let i = ui.liveTurns.lastIndex(where: { !$0.his && !$0.leadIn && $0.card == nil && $0.status == nil && !$0.failed }) else { return }
+            withAnimation(.easeOut(duration: 0.25)) { ui.liveTurns[i].places = ps }
         }
     }
 
@@ -187,6 +192,7 @@ extension StarEngine {
             let shown = AnswerText.visible(row.text)
             if !shown.isEmpty && ui.liveTurns[i].text != shown { ui.liveTurns[i].text = shown; ui.liveTurns[i].reveal = nil }
             ui.liveTurns[i].steps = row.steps ?? MainActor.assumeIsolated { StatusBoard.shared.info }
+            if !row.places.isEmpty { ui.liveTurns[i].places = row.places }
         }
     }
 }
@@ -338,6 +344,21 @@ extension StarEngine {
             let his = addTurn(his: true, "司机不知道咋的下车了逆天")
             markSend(his, name == "typingSending" ? .sending : .failed)
             if name == "typingSending" { showStatus() } else { trouble("连不上 Jarvis") }
+        case "map", "mapFull":
+            // an answer that names three places, from the conversation's own row, with a made-up position of his: the map card under it, and (mapFull) the whole map over it
+            setLevel(0)
+            let cal = Cal.cur.cal, now = Date(), at = TalkStream.dayId(now, cal) + "T" + TalkStream.clock(now, cal) + ":00"
+            let places = #"[{"name":"Willows Beach","lat":48.4417,"lng":-123.2967,"address":"Beach Dr, Victoria","place_id":null,"kind":"place"},{"name":"Cadboro Bay Village","lat":48.4569,"lng":-123.3004,"address":"Sinclair Rd, Victoria","place_id":null,"kind":"place"},{"name":"Gyro Park","lat":48.4553,"lng":-123.3079,"address":null,"place_id":null,"kind":"place"}]"#
+            let rows = #"{"rows":[{"seq":1,"source":"allen","ts":"\#(at)","text":"附近有什么适合傍晚散步的海边"},{"seq":2,"source":"jarvis","ts":"\#(at)","text":"找到三个，都不远，傍晚的光线最好。","places":\#(places)}]}"#
+            MainActor.assumeIsolated {
+                MyPlace.debug = CLLocationCoordinate2D(latitude: 48.4521, longitude: -123.3018)
+                Conversation.shared.debugSet(ConversationRow.parse(Data(rows.utf8)) ?? [])
+            }
+            openPanel(quiet: true)
+            if name == "mapFull" {
+                let list = AnswerPlace.parse((try? JSONSerialization.jsonObject(with: Data(places.utf8))))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { MainActor.assumeIsolated { PlaceMapViewer.present(list, me: MyPlace.known()) } }
+            }
         case "reveal": runRevealScene()
         case "typedStream": runTypedStreamScene()
         case "steps", "stepsDots", "stepsStep", "stepsDone", "stepsOpen": runStepsScene(name)

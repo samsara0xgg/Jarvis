@@ -63,6 +63,7 @@ struct LiveTurn: Identifiable, Equatable {
     var failed = false                  // the turn failed: "没答出来" in her place, and a button to send the same words again
     var send = SendState.sent           // his message: on its way, or "没发出去" with 点重试 under it
     var recordId: String?               // the conversation record of these words, once the brain has said which (ADR 0256): a row without one cannot be reacted to
+    var places: [AnswerPlace] = []      // the places her answer names: a map under it
     var at = Date()
 }
 

@@ -30,6 +30,7 @@ struct ConversationRow: Equatable {
     var id = ""                        // the record's own id, stable; empty when the brain gave none
     var attachments: [RowAttachment] = []      // what he sent with the words; his words alone are `text` then (empty for a turn of files only)
     var reactions = RowReactions()     // his and hers on this message (ADR 0256)
+    var places: [AnswerPlace] = []     // the places her answer names, for the map under it; empty for most rows
     var isHis: Bool { source == "allen" }
     /// a line she says before the answer comes (only a voice part): more is on its way
     var isLeadIn: Bool { !isHis && AnswerText.isLeadIn(text) }
@@ -40,7 +41,7 @@ struct ConversationRow: Equatable {
         return rows.compactMap { r in
             guard let seq = r["seq"] as? Int, let source = r["source"] as? String, let text = r["text"] as? String else { return nil }
             return ConversationRow(seq: seq, source: source, ts: (r["ts"] as? String) ?? "", text: text, steps: StepsInfo.parse(r),
-                                   id: (r["id"] as? String) ?? "", attachments: RowAttachment.parse(r), reactions: RowReactions.parse(r))
+                                   id: (r["id"] as? String) ?? "", attachments: RowAttachment.parse(r), reactions: RowReactions.parse(r), places: AnswerPlace.parse(r["places"]))
         }
     }
 }

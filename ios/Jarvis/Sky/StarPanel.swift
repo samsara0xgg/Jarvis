@@ -33,6 +33,7 @@ struct TalkRowView: View, Equatable {
     private var hers: some View {
         VStack(alignment: .leading, spacing: 4) {
             if row.failed { failedRow } else if let s = row.status { StatusRow(line: s).transition(.opacity) } else { her.transition(.opacity) }
+            if !row.places.isEmpty, row.status == nil, !row.failed { PlaceMapCard(places: row.places).padding(.trailing, Self.badgeRoom).transition(.opacity) }
             if let info = row.steps, row.status == nil { StepsLine(info: info, open: stepsOpen, toggle: toggleSteps) }
         }
         .animation(.easeOut(duration: 0.2), value: row.status == nil)
