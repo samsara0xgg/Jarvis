@@ -2362,6 +2362,9 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
         if resolved is not None:
             target_entity_ref = resolved.entity_id
             write_target_canonical = resolved.canonical
+        # A file search on the terminal can take many seconds; a turn cancelled meanwhile
+        # proposes nothing.
+        _check_response_cancelled(ctx, "after entity resolve")
 
     action_id = _new_action_id()
     action_request = ActionRequest(
