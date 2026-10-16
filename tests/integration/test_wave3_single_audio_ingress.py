@@ -170,6 +170,13 @@ class _FakeBackend:
     def current_output_route(self) -> voice_backend.OutputRoute | None:
         return None
 
+    def output_parts(self, name: str | None) -> list[voice_backend.OutputPart] | None:
+        del name
+        return None
+
+    def use_respeaker_output(self) -> str | None:
+        return None
+
     def input_format(self) -> voice_backend.AudioInputFormat:
         return self.format
 
@@ -1335,6 +1342,182 @@ def test_respeaker_is_cancelled_when_she_plays_on_another_speaker(
         f"{respeaker} playing on {respeaker}",
         f"echo cancellation on on microphone {respeaker} playing on 'MacBook Pro Speakers'",
     ]
+    assert ingress.close().definitively_closed
+
+
+_BOARD = "reSpeaker XVF3800 4-Mic Array"
+_SPEAKERS = "MacBook Pro Speakers"
+_MULTI = "Multi-Output Device 2"
+
+
+class _Mac:
+    """A fake CoreAudio output table: nothing here touches the real Mac's audio."""
+
+    def __init__(
+        self, monkeypatch: pytest.MonkeyPatch, *, default: str, multi: bool = True,
+    ) -> None:
+        self.parts: dict[str, voice_backend.OutputPart] = {
+            _SPEAKERS: (_SPEAKERS, "bltn", False),
+            "External Headphones": ("External Headphones", "bltn", True),
+            "AirPods": ("AirPods", "blue", False),
+            _BOARD: (_BOARD, "usb ", False),
+        }
+        self.subs: dict[str, list[voice_backend.OutputPart]] = {}
+        if multi:
+            self.parts[_MULTI] = (_MULTI, "grup", False)
+            self.subs[_MULTI] = [self.parts[_SPEAKERS], self.parts[_BOARD]]
+        self.ids = {name: index for index, name in enumerate(self.parts, start=1)}
+        self.default = self.ids[default]
+        self.readable = True
+        self.switches: list[str] = []
+        monkeypatch.setattr(voice_backend, "_output_snapshot", self._snapshot)
+        monkeypatch.setattr(voice_backend, "_set_default_output", self._set_default)
+
+    def _snapshot(self) -> tuple[int, list[voice_backend._OutputDevice]] | None:
+        if not self.readable:
+            return None
+        return self.default, [
+            voice_backend._OutputDevice(
+                self.ids[name], part, self.subs.get(name, []),
+            )
+            for name, part in self.parts.items()
+        ]
+
+    def _set_default(self, device: int) -> bool:
+        self.default = device
+        self.switches.append(next(n for n, i in self.ids.items() if i == device))
+        return True
+
+    @property
+    def default_name(self) -> str:
+        return next(n for n, i in self.ids.items() if i == self.default)
+
+
+class _MacBackend(_FakeBackend):
+    """The fake backend whose output side is the real shim functions over a ``_Mac``."""
+
+    def __init__(self, mac: _Mac) -> None:
+        super().__init__()
+        self.mac = mac
+
+    def current_output_route(self) -> voice_backend.OutputRoute | None:
+        name, transport, jack = self.mac.parts[self.mac.default_name]
+        return voice_backend.OutputRoute(
+            uid=name, name=name, transport_type=transport,
+            data_source="hdpn" if jack else None, sample_rate_hz=48000,
+        )
+
+    def output_parts(self, name: str | None) -> list[voice_backend.OutputPart] | None:
+        return voice_backend.output_parts(name)
+
+    def use_respeaker_output(self) -> str | None:
+        return voice_backend.use_respeaker_output()
+
+
+@pytest.mark.parametrize(
+    ("mic", "default", "multi", "cancelled", "switched"),
+    [
+        (_BOARD, _MULTI, True, False, []),  # 1: the board hears what plays
+        ("MacBook Pro Microphone", _SPEAKERS, True, True, []),  # 2: laptop mic, laptop speakers
+        ("MacBook Pro Microphone", "AirPods", True, False, []),  # 3: Bluetooth
+        ("MacBook Pro Microphone", "External Headphones", True, False, []),  # 3: the jack
+        (_BOARD, _SPEAKERS, False, True, []),  # 4: no multi-output with the board to pull to
+        (_BOARD, _SPEAKERS, True, False, [_MULTI]),  # 5: pulled once, then the board cancels
+        (_BOARD, "AirPods", True, False, []),  # 6: private default is never touched
+        (_BOARD, "External Headphones", True, False, []),  # 6: nor the jack
+    ],
+)
+def test_echo_cancellation_follows_the_devices_she_plays_through(  # noqa: PLR0913
+    monkeypatch: pytest.MonkeyPatch, mic: str, default: str, multi: bool,  # noqa: FBT001
+    cancelled: bool, switched: list[str],  # noqa: FBT001
+) -> None:
+    """ADR 0275: private output or the board in the path means no software cancel; else cancel."""
+    from jarvis.surface.voice_aec import EchoCanceller  # noqa: PLC0415
+
+    mac = _Mac(monkeypatch, default=default, multi=multi)
+    backend = _MacBackend(mac)
+    backend.device_uid = mic
+    ingress = _ingress(backend, echo_canceller=EchoCanceller())
+    capture = ingress.subscribe(
+        name="aec-capture", purpose=voice_audio.SubscriberPurpose.CAPTURE,
+    )
+    assert ingress.start().started
+    epoch = ingress.stream_epoch
+    assert epoch is not None
+    for _ in range(3):  # past the canceller's 10 ms lead
+        backend.emit(epoch=epoch, value=1000)
+    heard = np.frombuffer(_read_frames(capture, 3)[-1].pcm16_mono, dtype="<i2")
+    assert (not np.all(heard == 1000)) is cancelled
+    assert mac.switches == switched
+    assert ingress.close().definitively_closed
+
+
+def test_unreadable_output_keeps_the_name_test(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ADR 0275: with no parts to read, the reSpeaker passes only on a board-named output."""
+    from jarvis.surface.voice_aec import EchoCanceller  # noqa: PLC0415
+
+    mac = _Mac(monkeypatch, default=_SPEAKERS)
+    mac.readable = False
+    backend = _MacBackend(mac)
+    backend.device_uid = _BOARD
+    ingress = _ingress(backend, echo_canceller=EchoCanceller())
+    with caplog.at_level("INFO", logger="jarvis.surface.voice_aec"):
+        assert ingress.start().started
+        assert ingress.stop_for_sleep() is not None
+        mac.default = mac.ids[_BOARD]
+        assert ingress.resume_after_wake() is not None
+    assert [r.getMessage() for r in caplog.records] == [
+        f"echo cancellation on on microphone {_BOARD!r} playing on {_SPEAKERS!r}",
+        "echo cancellation off (the microphone does its own) on microphone "
+        f"{_BOARD!r} playing on {_BOARD!r}",
+    ]
+    assert mac.switches == []
+    assert ingress.close().definitively_closed
+
+
+def test_pulling_the_output_to_the_board_settles_after_one_switch(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ADR 0275: the pull precedes the route observer's baseline, so it never reopens itself."""
+    from jarvis.surface.voice_aec import EchoCanceller  # noqa: PLC0415
+
+    mac = _Mac(monkeypatch, default=_SPEAKERS)
+    backend = _MacBackend(mac)
+    backend.device_uid = _BOARD
+    ingress = voice_audio.AudioIngress(
+        backend=backend,
+        echo_canceller=EchoCanceller(),
+        config=replace(
+            voice_audio.AudioIngressConfig(),
+            route_observer_enabled=True,
+            worker_poll_s=0.0005,
+            fault_poll_s=0.001,
+            route_poll_s=60.0,
+            reopen_initial_backoff_s=0.001,
+            reopen_max_backoff_s=0.002,
+            shutdown_timeout_s=1.0,
+        ),
+    )
+    with caplog.at_level("INFO"):
+        assert ingress.start().started
+        assert mac.switches == [_MULTI]
+        assert [r.getMessage() for r in caplog.records if "moved" in r.getMessage()] == [
+            f"default output moved from {_SPEAKERS!r} to {_MULTI!r} "
+            "so the reSpeaker's board hears what plays",
+        ]
+        for _ in range(3):
+            ingress._poll_output_route()  # what the worker does on its timer
+        assert (backend.start_count, mac.switches) == (1, [_MULTI])
+        # The default drifts back (it did on 10-07): the poller reopens once, the open pulls
+        # it again, and the baseline is the pulled route, so it stays one reopen.
+        mac.default = mac.ids[_SPEAKERS]
+        ingress._poll_output_route()
+        assert (backend.start_count, mac.switches) == (2, [_MULTI, _MULTI])
+        for _ in range(3):
+            ingress._poll_output_route()
+        assert (backend.start_count, mac.switches) == (2, [_MULTI, _MULTI])
     assert ingress.close().definitively_closed
 
 

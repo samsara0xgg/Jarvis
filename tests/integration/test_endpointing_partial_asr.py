@@ -703,6 +703,13 @@ class _FakeBackend:
     def current_output_route(self) -> voice_backend.OutputRoute | None:
         return None
 
+    def output_parts(self, name: str | None) -> list[voice_backend.OutputPart] | None:
+        del name
+        return None
+
+    def use_respeaker_output(self) -> str | None:
+        return None
+
     def input_format(self) -> voice_backend.AudioInputFormat:
         return self.format
 

@@ -1587,16 +1587,28 @@ class AudioIngress:
             )
         # The CoreAudio route query is a foreign call: never hold the local
         # control lock across it (same rule as the foreign close below).
+        # ADR 0275: a reSpeaker gets the route that lets its board hear what plays, before the
+        # route is read, so the cancellation choice and the route observer both see the result.
+        if (
+            result.profile is not None
+            and voice_backend.RESPEAKER in result.profile.device_name.lower()
+        ):
+            self._backend.use_respeaker_output()
         output_route = (
             self._backend.current_output_route()
             if self._config.route_observer_enabled and result.profile is not None
             else None
         )
-        # ADR 0191: the canceller asks where she plays: the picked speaker, else the default.
+        # ADR 0275: the canceller asks where she plays: the picked speaker, else the default.
         aec_output = self._speaker
         if aec_output is None and self._echo_canceller is not None and result.profile is not None:
             route = output_route or self._backend.current_output_route()
             aec_output = None if route is None else route.name
+        aec_parts = (
+            self._backend.output_parts(aec_output)
+            if self._echo_canceller is not None and result.profile is not None
+            else None
+        )
         with self._control_lock:
             commit_allowed = self._control_allows_running(control_generation)
             if commit_allowed:
@@ -1606,6 +1618,7 @@ class AudioIngress:
                     self._echo_canceller.set_input_device(
                         result.profile.device_name if result.profile is not None else "",
                         aec_output,
+                        aec_parts,
                     )
                 self._active_timeline = timeline
                 self._active_epoch = epoch
@@ -2592,7 +2605,7 @@ class AudioIngress:
             self._backend.set_device(device)
 
     def set_output_device(self, device: str | None) -> None:
-        """Name the speaker the player plays on (ADR 0191); ``None`` is the system default."""
+        """Name the speaker the player plays on (ADR 0275); ``None`` is the system default."""
         self._speaker = device
 
     @property

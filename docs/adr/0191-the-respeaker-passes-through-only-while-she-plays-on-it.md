@@ -1,6 +1,6 @@
 # ADR 0191 — The reSpeaker passes through only while she plays on it
 
-**Status:** Accepted
+**Status:** Superseded-by-0275
 **Date:** 2026-10-07
 **Supersedes:** 0143
 

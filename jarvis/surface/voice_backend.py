@@ -19,6 +19,7 @@ import ctypes.util
 import enum
 import functools
 import logging
+import re
 import struct
 import threading
 import time
@@ -356,6 +357,14 @@ class AudioDuplexBackend(Protocol):
         """Return the default-output identity, or ``None`` when unobservable."""
         ...
 
+    def output_parts(self, name: str | None) -> list[OutputPart] | None:
+        """Return the devices output ``name`` (``None``: default) plays through, if readable."""
+        ...
+
+    def use_respeaker_output(self) -> str | None:
+        """Move the default output onto the reSpeaker's multi-output (ADR 0275); its name."""
+        ...
+
     def input_format(self) -> AudioInputFormat:
         """Return the configured native input layout."""
         ...
@@ -438,6 +447,15 @@ def _coreaudio_libraries() -> tuple[Any, Any] | None:
         ctypes.POINTER(ctypes.c_uint32),
     ]
     ca.AudioObjectGetPropertyDataSize.restype = ctypes.c_int32
+    ca.AudioObjectSetPropertyData.argtypes = [
+        ctypes.c_uint32,
+        ctypes.POINTER(_CoreAudioPropertyAddress),
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    ca.AudioObjectSetPropertyData.restype = ctypes.c_int32
     cf.CFStringGetCString.argtypes = [
         ctypes.c_void_p,
         ctypes.c_char_p,
@@ -569,27 +587,59 @@ def _fourcc(value: int) -> str:
     return struct.pack(">I", value).decode("latin-1")
 
 
-def _active_sub_devices(ca: Any, cf: Any, device: int) -> list[tuple[str, str, bool]]:  # noqa: ANN401
+# One output device as it plays: (name, transport fourcc, on the headphone jack).
+OutputPart = tuple[str, str, bool]
+
+RESPEAKER = "respeaker"  # the XVF3800 board cancels the echo of what is played through it
+_AGGREGATE = frozenset({"grup", "fgrp"})
+_BLUETOOTH_FOURCC = frozenset({"blue", "blea"})
+# The same private-output notion as jarvis/runtime/audio_output.py (ADR 0155), which uses this.
+PRIVATE_OUTPUT_NAME = re.compile(r"headphone|airpods|buds|earphone|earbuds", re.IGNORECASE)
+
+
+def part_is_private(name: str, transport: str, jack: bool) -> bool:  # noqa: FBT001
+    """Bluetooth, the built-in headphone jack, or a headphone-looking name: nobody else hears it."""
+    return (
+        transport in _BLUETOOTH_FOURCC
+        or (transport == "bltn" and jack)
+        or bool(PRIVATE_OUTPUT_NAME.search(name))
+    )
+
+
+def parts_are_private(parts: list[OutputPart]) -> bool:
+    """Some real (non-virtual) part exists and each one is private."""
+    real = [part for part in parts if part[1] != "virt"]
+    return bool(real) and all(part_is_private(*part) for part in real)
+
+
+def _output_part(ca: Any, cf: Any, device: int) -> OutputPart | None:  # noqa: ANN401
+    name = _coreaudio_string(ca, cf, device, b"lnam")
+    kind = ctypes.c_uint32(0)
+    if name is None or not _coreaudio_property(ca, device, b"tran", _CA_GLOBAL_SCOPE, kind):
+        return None
+    source = ctypes.c_uint32(0)
+    jack = (
+        _coreaudio_property(ca, device, b"ssrc", _CA_OUTPUT_SCOPE, source)
+        and _fourcc(source.value) == "hdpn"
+    )
+    return name, _fourcc(kind.value), jack
+
+
+def _active_sub_devices(ca: Any, cf: Any, device: int) -> list[OutputPart]:  # noqa: ANN401
     size = _coreaudio_size(ca, device, b"agrp", _CA_GLOBAL_SCOPE)
     ids = (ctypes.c_uint32 * ((size or 0) // ctypes.sizeof(ctypes.c_uint32)))()
     if not size or not _coreaudio_property(ca, device, b"agrp", _CA_GLOBAL_SCOPE, ids):
         return []
-    parts: list[tuple[str, str, bool]] = []
+    parts: list[OutputPart] = []
     for sub in ids:
-        name = _coreaudio_string(ca, cf, sub, b"lnam")
-        kind = ctypes.c_uint32(0)
-        if name is None or not _coreaudio_property(ca, sub, b"tran", _CA_GLOBAL_SCOPE, kind):
+        part = _output_part(ca, cf, sub)
+        if part is None:
             return []
-        source = ctypes.c_uint32(0)
-        jack = (
-            _coreaudio_property(ca, sub, b"ssrc", _CA_OUTPUT_SCOPE, source)
-            and _fourcc(source.value) == "hdpn"
-        )
-        parts.append((name, _fourcc(kind.value), jack))
+        parts.append(part)
     return parts
 
 
-def aggregate_output_parts() -> list[tuple[str, str, bool]] | None:
+def aggregate_output_parts() -> list[OutputPart] | None:
     """The active sub-devices of an aggregate default output, else ``None``.
 
     Each part is ``(name, transport fourcc, on the headphone jack)``. ``None`` when the default
@@ -607,11 +657,99 @@ def aggregate_output_parts() -> list[tuple[str, str, bool]] | None:
             ca, _CA_SYSTEM_OBJECT, b"dOut", _CA_GLOBAL_SCOPE, device
         ) or not _coreaudio_property(ca, device.value, b"tran", _CA_GLOBAL_SCOPE, transport):
             return None
-        if _fourcc(transport.value) not in {"grup", "fgrp"}:
+        if _fourcc(transport.value) not in _AGGREGATE:
             return None
         return _active_sub_devices(ca, cf, device.value)
     except (OSError, ValueError):
         return []
+
+
+@dataclass(frozen=True)
+class _OutputDevice:
+    device: int
+    part: OutputPart
+    subs: list[OutputPart]  # an aggregate's active sub-devices, else empty
+
+
+def _output_snapshot() -> tuple[int, list[_OutputDevice]] | None:
+    """The default output's id and every output device with its parts, or ``None``.
+
+    The one place the output side reads CoreAudio, so a test fakes this and ``_set_default_output``.
+    """
+    libraries = _coreaudio_libraries()
+    devices = coreaudio_devices("output")
+    if libraries is None or devices is None:
+        return None
+    ca, cf = libraries
+    found: list[_OutputDevice] = []
+    for device in devices[1].values():
+        part = _output_part(ca, cf, device)
+        if part is not None:
+            subs = _active_sub_devices(ca, cf, device) if part[1] in _AGGREGATE else []
+            found.append(_OutputDevice(device, part, subs))
+    return devices[0], found
+
+
+def _set_default_output(device: int) -> bool:
+    """Make ``device`` the system default output (CoreAudio ``dOut``); True when it took."""
+    libraries = _coreaudio_libraries()
+    if libraries is None:
+        return False
+    value = ctypes.c_uint32(device)
+    address = _CoreAudioPropertyAddress(struct.unpack(">I", b"dOut")[0], _CA_GLOBAL_SCOPE, 0)
+    status = libraries[0].AudioObjectSetPropertyData(
+        _CA_SYSTEM_OBJECT, ctypes.byref(address), 0, None,
+        ctypes.sizeof(value), ctypes.byref(value),
+    )
+    return bool(status == 0)
+
+
+def output_parts(name: str | None = None) -> list[OutputPart] | None:
+    """The devices output ``name`` (``None``: the default) plays through, else ``None``.
+
+    An aggregate / multi-output is its active sub-devices; any other device is itself.
+    ``None`` when it cannot be found or read. Never raises.
+    """
+    try:
+        snapshot = _output_snapshot()
+        if snapshot is None:
+            return None
+        default, devices = snapshot
+        for found in devices:
+            if found.device == default if name is None else found.part[0] == name:
+                return found.subs or ([found.part] if found.part[1] not in _AGGREGATE else None)
+    except (OSError, ValueError):
+        LOGGER.debug("output device read failed", exc_info=True)
+    return None
+
+
+def use_respeaker_output() -> str | None:
+    """Move the default output from the built-in speakers to the reSpeaker's multi-output.
+
+    Only when the default is the built-in speakers (not the headphone jack, Bluetooth or anything
+    else) and an aggregate whose active sub-devices include the reSpeaker exists; returns that
+    device's name once it is the default, else ``None``. Never raises (ADR 0275).
+    """
+    try:
+        snapshot = _output_snapshot()
+        if snapshot is None:
+            return None
+        default, devices = snapshot
+        current = next((d.part for d in devices if d.device == default), None)
+        if current is None or current[1] != "bltn" or current[2]:
+            return None
+        for found in devices:
+            if any(RESPEAKER in sub[0].lower() for sub in found.subs) and _set_default_output(
+                found.device,
+            ):
+                LOGGER.info(
+                    "default output moved from %r to %r so the reSpeaker's board hears what plays",
+                    current[0], found.part[0],
+                )
+                return found.part[0]
+    except (OSError, ValueError):
+        LOGGER.debug("default output switch failed", exc_info=True)
+    return None
 
 
 # Held around PortAudio device queries and the re-initialisation, which frees
@@ -880,6 +1018,14 @@ class SoundDeviceDuplexBackend:
         except Exception:  # noqa: BLE001 - foreign framework boundary fails to unknown
             LOGGER.debug("default output route query failed", exc_info=True)
             return None
+
+    def output_parts(self, name: str | None) -> list[OutputPart] | None:
+        """Read what output ``name`` plays through from the L5 CoreAudio shim."""
+        return output_parts(name)
+
+    def use_respeaker_output(self) -> str | None:
+        """Pull the default output onto the reSpeaker's multi-output through the shim."""
+        return use_respeaker_output()
 
     def input_format(self) -> AudioInputFormat:
         """Return the fixed native callback format."""
@@ -1708,6 +1854,15 @@ class FileReplayBackend:
         """Replay observes no output route, which resolves ``unknown``."""
         return None
 
+    def output_parts(self, name: str | None) -> list[OutputPart] | None:
+        """Replay plays nowhere."""
+        del name
+        return None
+
+    def use_respeaker_output(self) -> str | None:
+        """Replay never touches the Mac's output."""
+        return None
+
     def input_format(self) -> AudioInputFormat:
         """Return the fixed canonical replay layout."""
         return self._format
@@ -1763,6 +1918,7 @@ __all__ = [
     "InputClockMapping",
     "InputDeviceProfile",
     "InputFrameSink",
+    "OutputPart",
     "OutputRoute",
     "RenderSource",
     "RouteKind",

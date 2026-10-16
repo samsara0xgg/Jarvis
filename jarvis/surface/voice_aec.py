@@ -21,9 +21,10 @@ worker inside :meth:`EchoCanceller.clean`.
 
 The canceller always exists and the player always taps into it; each mic open
 tells it which microphone it got and where Jarvis plays
-(:meth:`EchoCanceller.set_input_device`). The reSpeaker's board cancels the echo of what it
-plays itself, so that mic passes through untouched while the default output is the board too
-(or unknown); any other pair is cancelled here (ADR 0191).
+(:meth:`EchoCanceller.set_input_device`). Nothing is cancelled here when she plays on a private
+output (headphones: no echo path) or when the microphone is the reSpeaker and the board is one
+of the devices she plays through (its own cancellation hears what it plays); any other pair is
+cancelled here (ADR 0275).
 
 Diagnostics (``history_s > 0``): the last few seconds of mic-before, the far
 end fed with each mic chunk, and mic-after are kept in lockstep 10 ms chunks,
@@ -43,13 +44,14 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from jarvis.surface.voice_backend import RESPEAKER, parts_are_private
+
 if TYPE_CHECKING:
     from pathlib import Path
 
-LOGGER = logging.getLogger(__name__)
+    from jarvis.surface.voice_backend import OutputPart
 
-# The XVF3800 board cancels the echo itself (it sends the cleaned mix on channel 0).
-_SELF_CANCELLING_MIC = "respeaker"
+LOGGER = logging.getLogger(__name__)
 
 _CHUNK_NS = 10_000_000  # WebRTC takes exactly 10 ms per call
 # The far end is fed this long before its echo is due, so it reaches AEC3 first even when the
@@ -101,19 +103,31 @@ class EchoCanceller:
         self._history_lock = threading.Lock()
         self._restart()
 
-    def set_input_device(self, name: str, output: str | None = None) -> None:
-        """A microphone just opened: pass it through if it cancels its own echo, else cancel.
+    def set_input_device(
+        self, name: str, output: str | None = None, parts: list[OutputPart] | None = None,
+    ) -> None:
+        """A microphone just opened: pass it through if no echo can reach it, else cancel.
 
-        The reSpeaker's reference is its own USB output: over another speaker (``output``, the
-        default output's name) its mix still carries her voice, so it is cancelled here. An
-        unknown output keeps the name test alone.
+        ``output`` is the speaker she plays on and ``parts`` the devices it plays through (a
+        multi-output is its sub-devices, any other device itself). Over a private output there is
+        no echo path. The reSpeaker's reference is its own USB output, so it cancels what plays
+        through the board only: when one of the parts is the board it is left alone, and over any
+        other speaker it is cancelled here. Unreadable parts keep the name test alone (ADR 0275).
         """
-        board_plays = output is None or _SELF_CANCELLING_MIC in output.lower()
-        self._bypass = self._follow_device and _SELF_CANCELLING_MIC in name.lower() and board_plays
+        if parts:
+            private = parts_are_private(parts)
+            board = RESPEAKER in name.lower() and any(RESPEAKER in p[0].lower() for p in parts)
+            why = "private output" if private else "the microphone does its own"
+            off = private or board
+        else:
+            why = "the microphone does its own"
+            off = RESPEAKER in name.lower() and (output is None or RESPEAKER in output.lower())
+        self._bypass = self._follow_device and off
         LOGGER.info(
-            "echo cancellation %s on microphone %r%s",
-            "off (the microphone does its own)" if self._bypass else "on", name,
+            "echo cancellation %s on microphone %r%s%s",
+            f"off ({why})" if self._bypass else "on", name,
             "" if output is None else f" playing on {output!r}",
+            f" through {[f'{n} ({t.strip()})' for n, t, _ in parts]}" if parts else "",
         )
 
     def add_playback(self, block: np.ndarray, sample_rate_hz: int, presentation_ns: int) -> None:

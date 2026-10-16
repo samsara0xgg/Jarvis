@@ -328,6 +328,13 @@ class _RouteBackend:
             return self.output_script.pop(0)
         return self.output_route
 
+    def output_parts(self, name: str | None) -> list[voice_backend.OutputPart] | None:
+        del name
+        return None
+
+    def use_respeaker_output(self) -> str | None:
+        return None
+
     def input_format(self) -> voice_backend.AudioInputFormat:
         return self.format
 
