@@ -259,6 +259,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     phase: str = "final",
     written_apart: bool = False,
     times: Sequence[Mapping[str, object]] = (),
+    places: Sequence[Mapping[str, object]] = (),
 ) -> tuple[SurfaceState, Event]:
     """Render an approved ResponsePlan across all surfaces for ``attention_channel``.
 
@@ -355,6 +356,8 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
         written_apart: ADR 0114 — the document is what the voice leaves
             out, not the whole answer; stamped on the audit event so the
             Inherent surface can show both.
+        places: ADR 0283 — the places the turn's tools returned, at most eight, read from the
+            turn's own log by the composition root; the audit row carries them when there are any.
         times: ADR 0215 — the times the answer refers to, read from the turn's own log by
             the composition root; the audit row carries them when there are any.
 
@@ -526,6 +529,8 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
         audit_payload["written_apart"] = True
     if times:
         audit_payload["times"] = [dict(one) for one in times]
+    if places:
+        audit_payload["places"] = [dict(one) for one in places]
     if binding is not None:
         audit_payload.update(
             {

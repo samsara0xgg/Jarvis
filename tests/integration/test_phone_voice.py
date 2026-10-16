@@ -811,6 +811,8 @@ def test_question_cards_reach_the_phone_for_its_own_turns_and_never_its_speech(
 ) -> None:
     """(i): the device's spoken and typed turns get cards; the Mac's turn and the speaker none."""
     times = [{"kind": "reminder", "at_ms": 1_791_619_200_000, "label": "mom", "ref": "reminder-1"}]
+    places = [{"name": "Cafe", "lat": 48.43, "lng": -123.37, "address": None,
+               "place_id": "ChIJcafe", "kind": "place"}]
     with _Host(tmp_path) as host:
         phone = host.phone()
         try:
@@ -831,7 +833,7 @@ def test_question_cards_reach_the_phone_for_its_own_turns_and_never_its_speech(
                 host.log, spoken_turn, "R-card", "Take the 28.",
                 emitted={
                     "voice_text": "Take the 28.", "document_text": "Leave 08:20, Hillside.",
-                    "written_apart": True, "times": times,
+                    "written_apart": True, "times": times, "places": places,
                 },
             )
             phone.wait_until(
@@ -855,6 +857,7 @@ def test_question_cards_reach_the_phone_for_its_own_turns_and_never_its_speech(
             assert emitted["payload"]["document_text"] == "Leave 08:20, Hillside."
             assert emitted["payload"]["written_apart"] is True
             assert emitted["payload"]["times"] == times
+            assert emitted["payload"]["places"] == places  # ADR 0283: the map card's places
 
             # the cursor that feeds the phone's media actor reads the answer rows and no card
             with closing(sqlite3.connect(host.log)) as raw:

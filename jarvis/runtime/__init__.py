@@ -132,7 +132,7 @@ from jarvis.deployment.models import (
     default_silero_vad_path,
 )
 from jarvis.deployment.night_power import MacPower
-from jarvis.execution import speakable
+from jarvis.execution import maps_spend, speakable
 from jarvis.execution.archive_tool import build_archive_tool
 from jarvis.execution.conversation_tool import build_conversation_tool
 from jarvis.execution.dashboard_tool import build_dashboard_tool
@@ -151,6 +151,7 @@ from jarvis.execution.path_resolver import (
     resolve_write_target,
 )
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
+from jarvis.execution.places_api import turn_places
 from jarvis.execution.schedule_tool import build_schedule_tool, upcoming_events
 from jarvis.execution.tools import (
     DEFAULT_SCREEN_MAX_WIDTH_PX,
@@ -1522,6 +1523,18 @@ def _transit_places(config: Mapping[str, Any]) -> dict[str, str]:
     if "home" not in places and weather is not None:
         places["home"] = f"{weather['latitude']},{weather['longitude']}"
     return places
+
+
+def _maps_monthly_usd(config: Mapping[str, Any]) -> float:
+    """``maps.monthly_usd`` (ADR 0283): the month's cap on Google map spend, USD.
+
+    A missing or unusable value is the default; 0 switches the cap off.
+    """
+    block = config.get("maps")
+    value = block.get("monthly_usd") if isinstance(block, Mapping) else None
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        return maps_spend.DEFAULT_MONTHLY_USD
+    return float(value)
 
 
 def _locate_places(db_path: Path, api_key: str) -> None:
@@ -3098,6 +3111,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         voice_settings=voice_settings,
         weather_lookup=weather_lookup(_home_weather(full_config)),
         transit_api_key=maps_key,
+        maps_monthly_usd=_maps_monthly_usd(full_config),
         transit_places=kept_places,
         transit_offers=transit_offers,
         here_location=_here_location(role),
@@ -4610,6 +4624,18 @@ def _turn_times(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, Any]]:
         return []
 
 
+def _turn_places(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, Any]]:
+    """The places this turn's tools returned (ADR 0283); none if the log cannot give them.
+
+    As with the times, an unreadable row costs the phone its map, not the turn its answer.
+    """
+    try:
+        return turn_places(conn, turn_id)
+    except (sqlite3.Error, ValueError, KeyError, TypeError):
+        LOGGER.warning("turn %s: its answer's places could not be read", turn_id, exc_info=True)
+        return []
+
+
 def _read_turn_times(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, Any]]:
     """The turn's times: ``[{kind, at_ms, label, ref}]``.
 
@@ -5267,6 +5293,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             delivery_terminal_only=streamed,
             written_apart=written_apart,
             times=_turn_times(runtime.conn, effective_turn_id),
+            places=_turn_places(runtime.conn, effective_turn_id),
         )
         rendered = capture.getvalue()
         sys.stdout.write(rendered)
