@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Final, NamedTuple
 
 import numpy as np
 
-from jarvis.state import core_memory
+from jarvis.state import core_memory, imports
 from jarvis.state.memory_db import open_memory_db
 
 if TYPE_CHECKING:
@@ -72,12 +72,8 @@ def _days(conn: sqlite3.Connection) -> Iterator[Text]:
 
 
 def _imports(conn: sqlite3.Connection) -> Iterator[Text]:
-    try:
-        rows = conn.execute("SELECT id, text FROM import_entries").fetchall()
-    except sqlite3.OperationalError:  # a store from before the table
-        return
-    for eid, text in rows:
-        yield str(eid), str(text)
+    for one in imports.entries(conn):  # as the tools read them: no export stand-ins
+        yield one.id, one.text
 
 
 def _wordings(item: core_memory.Item) -> Iterator[str]:

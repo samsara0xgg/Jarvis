@@ -140,6 +140,30 @@ def test_a_file_unzipped_without_its_time_is_dated_when_it_was_handed_over(tmp_p
     assert datetime.fromtimestamp(row.at_ms / 1000, UTC).year >= 2026
 
 
+def test_the_exports_stand_ins_for_tool_blocks_are_dropped_even_from_rows_held_before(
+    tmp_path: Path,
+) -> None:
+    """A message that was only a stand-in is gone; one with words keeps the words alone."""
+    stand_in = "```\nThis block is not supported on your current device yet.\n```"
+    chat = {"uuid": "c1", "name": "Bus pass", "created_at": "2026-10-01T10:00:00Z", "chat_messages": [
+        {"uuid": "m1", "sender": "assistant", "created_at": "2026-10-01T10:00:01Z", "text": stand_in},
+        {"uuid": "m2", "sender": "assistant", "created_at": "2026-10-01T10:00:02Z",
+         "text": f"Looked it up.\n\n{stand_in}\n\nThe pass is 50 dollars."},
+    ]}
+    export = tmp_path / "conversations.json"
+    export.write_text(json.dumps([chat]))
+    _import(tmp_path, "claude", export)
+    assert [e.text for e in _held(tmp_path).values()] == ["Looked it up.\n\nThe pass is 50 dollars."]
+    # a row read by the parser before the fix still holds the stand-in: reading drops it
+    with closing(open_memory_db(tmp_path / "memory.db")) as conn, conn:
+        conn.execute("UPDATE import_entries SET text = ? WHERE source = 'claude'", (f"Looked it up.\n{stand_in}",))
+    (held,) = _held(tmp_path).values()
+    assert held.text == "Looked it up."
+    seen = _SeenEmbedder()
+    meaning.index_pending(tmp_path / "memory.db", seen)
+    assert seen.texts == ["Looked it up."]  # the search index is built from the same clean text
+
+
 def test_china_times_land_on_their_utc_instant_and_amounts_are_exact(tmp_path: Path) -> None:
     """Naive Asia/Shanghai times become UTC instants; amounts are fen; refunds do not count."""
     wechat, alipay = _statements(tmp_path)
@@ -249,7 +273,20 @@ class _LunchEmbedder:
         """1 along lunch for a text that names it."""
         rows = [[float(any(w in t.casefold() for w in ("lunch", "午饭"))), 0.01] for t in texts]
         vectors = np.array(rows, dtype=np.float32)
-        return vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
+        return np.asarray(vectors / np.linalg.norm(vectors, axis=1, keepdims=True), dtype=np.float32)
+
+
+class _SeenEmbedder(_LunchEmbedder):
+    """Keeps the passages it was asked to embed."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    def embed(self, texts: Any, *, query: bool) -> np.ndarray:  # noqa: ANN401
+        """Records passages, then embeds as the lunch model does."""
+        if not query:
+            self.texts.extend(texts)
+        return super().embed(texts, query=query)
 
 
 def test_the_archive_finds_an_entry_by_meaning_and_says_when_totals_rest_on_it(tmp_path: Path) -> None:

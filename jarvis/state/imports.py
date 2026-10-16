@@ -232,6 +232,8 @@ def import_files(
 
 def _entry(row: tuple[Any, ...]) -> Entry:
     rid, source, digest, pos, at_ms, zone, kind, text, fields = row
+    if source == "claude":  # rows read before the stand-ins were dropped still hold them
+        text = import_parsers.strip_placeholders(text)
     return Entry(rid, source, digest, pos, at_ms, zone, kind, text, json.loads(fields))
 
 
@@ -260,7 +262,7 @@ def entries(
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = f"SELECT {_COLUMNS} FROM import_entries {where} ORDER BY at_ms DESC, id"  # noqa: S608 - fixed clauses, bound values
     try:
-        return [_entry(row) for row in conn.execute(sql, params)]
+        return [one for one in map(_entry, conn.execute(sql, params)) if one.text]
     except sqlite3.OperationalError as exc:
         if "no such table" in str(exc):
             return []  # a memory.db from before ADR 0259 and before the first import
@@ -279,11 +281,11 @@ def around(conn: sqlite3.Connection, one: Entry, count: int) -> tuple[list[Entry
     """Up to ``count`` messages before and after ``one`` in its conversation, oldest first."""
     chat = one.fields.get("conversation")
     rows = [
-        _entry(row) for row in conn.execute(
+        row for row in map(_entry, conn.execute(
             f"SELECT {_COLUMNS} FROM import_entries WHERE source = ? AND kind = 'message' "  # noqa: S608
             "AND json_extract(fields, '$.conversation') = ? ORDER BY at_ms, rowid",
             (one.source, chat),
-        )
+        )) if row.text
     ]
     at = next((i for i, row in enumerate(rows) if row.id == one.id), len(rows))
     return rows[max(0, at - count) : at], rows[at + 1 : at + 1 + count]

@@ -84,16 +84,27 @@ def _objects(data: bytes) -> list[dict[str, Any]]:
     return [one for one in many if isinstance(one, dict)]
 
 
+_PLACEHOLDER: Final = re.compile(
+    r"(?:`{3}[ \t]*\n)?This block is not supported on your current device yet\.(?:[ \t]*\n?`{3})?",
+)
+"""What the export writes where a tool call or its result was: no words of his or of Claude's."""
+
+
+def strip_placeholders(text: str) -> str:
+    """``text`` without the export's stand-ins for tool blocks, and the blank lines they leave."""
+    return re.sub(r"\n{3,}", "\n\n", _PLACEHOLDER.sub("", text)).strip()
+
+
 def _message_text(message: dict[str, Any]) -> str:
     text = message.get("text")
     if isinstance(text, str) and text.strip():
-        return text.strip()
+        return strip_placeholders(text)
     blocks = message.get("content")
     parts = (
         [b.get("text", "") for b in blocks if isinstance(b, dict)]
         if isinstance(blocks, list) else []
     )
-    return "\n".join(p for p in parts if isinstance(p, str) and p.strip()).strip()
+    return strip_placeholders("\n".join(p for p in parts if isinstance(p, str) and p.strip()))
 
 
 def _chat_messages(
