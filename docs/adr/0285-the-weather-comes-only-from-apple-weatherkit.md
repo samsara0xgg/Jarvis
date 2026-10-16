@@ -34,8 +34,8 @@
 - Dates run from today to 9 days ahead in the place's own calendar; earlier or later is an error
   that names the range and sends the model to `web_search`.
 - A named place is geocoded by Open-Meteo, which also gives its zone and country. A point
-  (`here` or `lat,lng`) uses the zone of a place the lookup listed, or home's within 100 km of
-  home; any other is an error that asks for the city's name. Alerts are read only where the
+  (`here` or `lat,lng`) uses the zone and country of a place the lookup listed, or home's within
+  100 km of home; any other takes its zone from tzfpy's offline map, with no country. Alerts are read only where the
   country is known (a geocoded place, or `home.weather.country_code`).
 - An answer is held 5 minutes by request, so the home's weather line and a turn's call for the
   same place cost one request. The home line is built from the same answer.
@@ -63,8 +63,7 @@
 
 - Days before today are no longer available (ADR 0282 had 7 back) and the horizon is 9 days, not
   16; the daily rows lose `feels_*_c` and `gust_max_kmh`, which WeatherKit does not give.
-- `here` in a city far from home fails until the model names it; a timezone lookup table would
-  lift this.
+- `here` in a city far from home has no country, so no alerts, until the model names the city.
 - A WeatherKit outage or a revoked key leaves the weather empty, with no fallback.
 - Weather requests go to Apple with the coordinates; Apple Weather must be named wherever the
   data is shown, so the phone page that shows weather must show `attribution` when it does.

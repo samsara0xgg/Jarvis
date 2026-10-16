@@ -39,6 +39,7 @@ dependencies = [
     "ruamel-yaml>=0.19.1",
     "tokenizers",         # ADR 0260 — multilingual-e5-small tokenizer for search by meaning
     "pypdf",              # ADR 0259 — pure-Python text of the Bank of China statement PDF; the Pi has no poppler
+    "tzfpy>=2.1.1",
 ]
 
 [project.optional-dependencies]

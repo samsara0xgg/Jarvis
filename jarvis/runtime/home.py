@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any, Final, NamedTuple
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
+from tzfpy import get_tz
+
 from jarvis.decision.daily_report import brief_of
 from jarvis.execution.tools import ToolError
 from jarvis.execution.weather_tool import DAYS_AHEAD
@@ -234,8 +236,8 @@ def _spot(
 ) -> tuple[Spot, list[Spot]]:
     """Where the request is for, and the same-name places a named one has.
 
-    A point (``here`` or ``lat,lng``) has no zone of its own: it takes a listed alternative's,
-    or the home's within :data:`_NEAR_HOME_KM` of it. Else it is an error that asks for a name.
+    A point (``here`` or ``lat,lng``) takes a listed alternative's zone, or the home's country
+    within :data:`_NEAR_HOME_KM` of it; its zone otherwise comes from tzfpy's offline map.
     """
     if request.here is not None:
         point, label = request.here[:2], request.here[2]
@@ -252,11 +254,7 @@ def _spot(
         return match._replace(label=label), []
     if _km(point, (home.latitude, home.longitude)) <= _NEAR_HOME_KM:
         return Spot(*point, label, home.zone, home.country), []
-    msg = (
-        f"weather: the time zone of {label} is not known from a point this far from home; pass"
-        " the name of the city or area as place instead"
-    )
-    raise ToolError(msg, code="invalid_argument")
+    return Spot(*point, label, get_tz(point[1], point[0]), None), []
 
 
 def _worst(values: list[float | None]) -> float | None:

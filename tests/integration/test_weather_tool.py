@@ -259,14 +259,15 @@ def test_same_name_places_are_listed_and_picked_by_coordinates_in_their_own_zone
     assert "same_name_elsewhere" not in picked
 
 
-def test_a_point_far_from_home_with_no_known_zone_is_an_error_that_asks_for_a_name(
+def test_a_point_far_from_home_takes_its_zone_from_the_offline_map(
     monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
-    """Coordinates the lookup never listed, far from home, have no zone: no guess, no request."""
+    """Coordinates the lookup never listed, far from home: their own zone, no country, no lookup."""
     net = Net(monkeypatch)
-    with pytest.raises(ToolError, match="pass the name of the city or area as place") as caught:
-        _call(kit_for(key[0]), {"place": "10.5,20.5"})
-    assert caught.value.code == "invalid_argument"
+    far = _call(kit_for(key[0]), {"place": "35.69,139.69"})
+    assert far["timezone"] == "Asia/Tokyo"
+    assert net.hosts() == ["weatherkit.apple.com"]
+    net.asked.clear()
     near = _call(kit_for(key[0]), {"place": "48.5,-123.4"})  # inside 100 km of home: its zone
     assert near["timezone"] == ZONE
     assert net.hosts() == ["weatherkit.apple.com"]
@@ -345,7 +346,7 @@ def test_hourly_rows_cover_the_days_asked_and_air_quality_adds_aqi_rows(
 def test_here_reads_the_location_seam_and_says_where_it_came_from(
     monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
-    """``here`` reads the fix without geocoding; far from home it needs a name; no reader: error."""
+    """``here`` reads the fix without geocoding; far away its own zone; no reader: error."""
     net = Net(monkeypatch)
     kit = kit_for(key[0])
     fix = {"lat": 48.45, "lng": -123.37, "accuracy_m": 30.0, "place": "Government St, Victoria"}
@@ -355,8 +356,7 @@ def test_here_reads_the_location_seam_and_says_where_it_came_from(
     assert report["place"] == "Government St, Victoria"
     assert report["location_from"] == "this Mac"
     away = {"lat": 43.65, "lng": -79.38, "accuracy_m": 30.0, "place": "King St, Toronto"}
-    with pytest.raises(ToolError, match="King St, Toronto is not known"):
-        _call(kit, {"place": "here"}, here=lambda: away)
+    assert _call(kit, {"place": "here"}, here=lambda: away)["timezone"] == "America/Toronto"
 
     def denied() -> dict[str, Any]:
         msg = "denied"
