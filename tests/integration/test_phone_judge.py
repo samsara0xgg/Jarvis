@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from jarvis.state.voiceprint import VoiceprintBook
+
 TURN_WORDS = "把它推到明天"
 RECENT = "今天天气很好适合出门散步"
 
@@ -59,6 +61,7 @@ class _Rig:
         self, *, quiet: bool = True, ask: Callable[..., str | None] | None = None,
         recent: str | None = RECENT,
         elsewhere: Callable[[str, str, str], bool] | None = None,
+        voiceprints: VoiceprintBook | None = None,
     ) -> None:
         self.root.mkdir(exist_ok=True)
         self.log = self.root / "events.db"
@@ -113,6 +116,7 @@ class _Rig:
             recent_speech=None if recent is None else (lambda: recent),
             set_quiet=set_quiet if quiet else None,
             heard_elsewhere=None if elsewhere is None else heard_elsewhere,
+            voiceprints=voiceprints,
         )
         app = create_app(
             InherentDeps(

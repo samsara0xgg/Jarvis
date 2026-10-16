@@ -52,11 +52,14 @@ say      turn_id, reason, text                 (tell) one spoken line back
 ======== ===================================== ==============================================
 
 An utterance that carries ``judge`` is judged by the brain as it arrives, in the one round trip
-that delivers it (ADR 0277): same-words-from-another-device first (ADR 0219), then the regexes
+that delivers it (ADR 0277): a long utterance that is not in his voice first (``not_owner``,
+ADR 0286: the optional ``voiceprint`` the utterance carries, scored against the profile of the
+microphone that heard it), then same-words-from-another-device (ADR 0219), then the regexes
 and Jev, then, for a turn, the unspoken answer it replaces is dropped (ADR 0074) before the row
-is written. The terminal acts on the verdict it gets back. ``words``, ``elsewhere``, ``recent``
-and the tells ``note`` and ``begin`` used to be sent one after another before the utterance;
-the brain still answers them for a terminal built before that, and may stop once none is.
+is written; the row keeps the voiceprint's score, never its embedding. The terminal acts on the
+verdict it gets back. ``words``, ``elsewhere``, ``recent`` and the tells ``note`` and ``begin``
+used to be sent one after another before the utterance; the brain still answers them for a
+terminal built before that, and may stop once none is.
 
 ``interrupt``, ``supersede``, ``cancel_runs`` and ``elsewhere`` act for the terminal that
 sent them, which the brain knows from the link: they touch the turns that terminal opened and
@@ -86,6 +89,7 @@ from jarvis.shared import Event
 from jarvis.shared.device_link import DeviceCallError
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.quiet_mode import LEVELS as QUIET_LEVELS
+from jarvis.state.voiceprint import Scored, Voiceprint, VoiceprintBook
 from jarvis.surface import word_judge
 from jarvis.surface.terminal_speaker import BrainCallError
 from jarvis.surface.voice_pipeline import UtteranceJudgedError
@@ -189,6 +193,9 @@ class ListenHooks:
     take_over: Callable[[str, str], str] | None = None
     """``(earlier_turn_id, turn_id)``: cancel the earlier turn's open answer as superseded by
     ``turn_id``; ``"superseded"`` when it did (ADR 0271)."""
+    voiceprints: VoiceprintBook | None = None
+    """The owner's profiles, per terminal microphone: an utterance's voiceprint is scored first
+    (ADR 0286)."""
     set_conversation: Callable[[bool, str], None] | None = None
     set_quiet: Callable[[str], None] | None = None
     controls: Callable[[], Mapping[str, Any]] | None = None
@@ -320,16 +327,48 @@ class BrainListening:
         judge = args.get("judge")
         if not isinstance(judge, dict):  # a terminal that judged the words itself
             return await self._utterance(link, args)
-        verdict = await asyncio.to_thread(self._judge, link.name, args, judge)
+        scored = await asyncio.to_thread(self._score, link.name, args)
+        verdict = await asyncio.to_thread(self._judge, link.name, args, judge, scored)
         if verdict != "turn":
+            await asyncio.to_thread(self._learn, scored, verdict, args)
             return {"verdict": verdict}
-        return {"verdict": verdict, **await self._utterance(link, args)}
+        written = await self._utterance(link, args, scored)
+        await asyncio.to_thread(self._learn, scored, verdict, args)
+        return {"verdict": verdict, **written}
 
-    def _judge(self, device: str, args: Mapping[str, Any], judge: Mapping[str, Any]) -> str:
+    def _learn(self, scored: Scored | None, verdict: str, args: Mapping[str, Any]) -> None:
+        """Log the scored utterance with its verdict, and let a turn of his teach his profile."""
+        book = self.hooks.voiceprints
+        if scored is None or book is None:
+            return
+        try:
+            book.finish(scored, verdict, _text(args, "turn_id", _ID_CHARS))
+        except Exception:  # noqa: BLE001 - a profile cannot cost the owner his words
+            LOGGER.warning("voiceprint: learning from %s failed", args.get("turn_id"),
+                           exc_info=True)
+
+    def _score(self, device: str, args: Mapping[str, Any]) -> Scored | None:
+        """The utterance's voiceprint scored on this terminal's microphone, if it has one."""
+        book = self.hooks.voiceprints
+        voiceprint = Voiceprint.parse(args.get("voiceprint"))
+        if book is None or voiceprint is None:
+            return None
+        try:
+            return book.score(device, voiceprint)
+        except Exception:  # noqa: BLE001 - a profile cannot cost the owner his words
+            LOGGER.warning("voiceprint: scoring failed; the words are judged as they are",
+                           exc_info=True)
+            return None
+
+    def _judge(
+        self, device: str, args: Mapping[str, Any], judge: Mapping[str, Any],
+        scored: Scored | None = None,
+    ) -> str:
         """The word judge's verdict on an utterance, and for a turn the supersede that goes first.
 
         The hooks are those the terminal used to ask for one by one; a judge that fails leaves
-        the words a turn, as it does on the Mac (ADR 0053, 0130, 0216, 0219).
+        the words a turn, as it does on the Mac (ADR 0053, 0130, 0216, 0219). A stranger, by the
+        utterance's ``scored`` voiceprint, is turned away before anything else (ADR 0286).
         """
         turn_id, text = _text(args, "turn_id", _ID_CHARS), _text(args, "transcript")
         hooks = self.hooks
@@ -345,6 +384,7 @@ class BrainListening:
         try:
             verdict = word_judge.words_verdict(
                 word_hooks, turn_id, text, conversation=conversation, over_her=over_her,
+                not_owner=scored is not None and scored.turn_away,
             )
         except Exception:  # noqa: BLE001 - the judge cannot lose the owner's words
             LOGGER.warning("judging %s failed; the words stay a turn", turn_id, exc_info=True)
@@ -365,7 +405,9 @@ class BrainListening:
         except Exception:  # an answer left alone never loses the owner's words
             LOGGER.exception("ending earlier answers failed")
 
-    async def _utterance(self, link: _Link, args: Mapping[str, Any]) -> dict[str, Any]:
+    async def _utterance(
+        self, link: _Link, args: Mapping[str, Any], scored: Scored | None = None,
+    ) -> dict[str, Any]:
         """Write the utterance once, and make the terminal that heard it the answer's place.
 
         A sentence said before her answer to the one before it is over goes on from that one
@@ -379,7 +421,12 @@ class BrainListening:
         earlier = None
         if not self._events.has_utterance(link.name, args.get("utterance_id")):
             earlier = await self._take_over(link, args)
-        return {"event_uid": self._events.record_utterance(link.name, args, continues=earlier)}
+        return {
+            "event_uid": self._events.record_utterance(
+                link.name, args, continues=earlier,
+                voiceprint=None if scored is None else scored.payload(),
+            ),
+        }
 
     async def _take_over(self, link: _Link, args: Mapping[str, Any]) -> str | None:
         """The earlier turn this utterance's words are composed into, once it is taken over.

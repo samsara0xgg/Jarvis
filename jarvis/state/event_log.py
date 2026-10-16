@@ -354,6 +354,9 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             # ADR 0272: milliseconds between the end of his speech and this event, when the
             # device that heard him knows it; the hold his answer waits out counts from there.
             "spoke_ago_ms",
+            # ADR 0286: ``{score, mic, seconds}``, the brain's score of the voice against his
+            # profile of that microphone; never the embedding, and never shown to a model.
+            "voiceprint",
         ),
         schema_version=1,
     ),

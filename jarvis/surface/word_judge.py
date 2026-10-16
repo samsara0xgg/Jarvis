@@ -3,8 +3,10 @@
 One judge for every ear: the Mac's :class:`~jarvis.surface.voice_session.DuplexVoiceSession` and a
 paired phone's ``say`` (:mod:`jarvis.surface.phone_link`) both ask :func:`words_verdict`. The
 verdict is one of ``turn``, ``backchannel``, ``unclear``, ``echo``, ``stop``, ``wait``,
-``dismissed``, ``quiet:<level>`` or ``elsewhere`` (ADR 0219: another device recorded these
-words first); what to do about it belongs to the caller.
+``dismissed``, ``quiet:<level>``, ``elsewhere`` (ADR 0219: another device recorded these
+words first) or ``not_owner`` (ADR 0286: a long utterance that is not in his voice, decided by
+the caller's voiceprint check and answered before anything else); what to do about it belongs to
+the caller.
 
 The regexes (:mod:`jarvis.surface.voice_asr`) judge first. Where the hooks carry ``ask`` (Jev,
 ADR 0130), a line they call a turn, said over her or in conversation mode, is put to it. Where the
@@ -49,12 +51,20 @@ class WordHooks:
     heard_elsewhere: Callable[[str, str], bool] | None = None
 
 
-def words_verdict(
+def words_verdict(  # noqa: PLR0913 - the hooks, the words and the three facts about them
     hooks: WordHooks, turn_id: str, text: str, *, conversation: bool, over_her: bool,
+    not_owner: bool = False,
 ) -> str:
-    """elsewhere, dismissed, wait, backchannel, unclear, stop, echo or turn; Jev settles some."""
-    if _heard_elsewhere(hooks, turn_id, text):
-        return "elsewhere"
+    """not_owner, elsewhere, dismissed, wait, backchannel, unclear, stop, echo or turn.
+
+    ``not_owner`` is the caller's voiceprint verdict (ADR 0286); it comes first and costs no
+    other check. Jev settles some of the rest.
+    """
+    early = "not_owner" if not_owner else "elsewhere" if _heard_elsewhere(
+        hooks, turn_id, text,
+    ) else None
+    if early is not None:
+        return early
     ask = hooks.ask
     # With Jev, a dismissal found only inside a sentence must be confirmed by it.
     loose = (

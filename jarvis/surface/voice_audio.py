@@ -1259,6 +1259,7 @@ class AudioIngress:
         self._last_epoch = 0
         self._attempt_sequence = 0
         self._active_profile: voice_backend.InputDeviceProfile | None = None
+        self._active_opened_s = 0.0  # monotonic time the active epoch's stream was opened
         self._closing = self._suspended = False
         self._callback_calls = self._callback_frames = 0
         self._first_callback_monotonic_ns: int | None = None
@@ -1614,6 +1615,7 @@ class AudioIngress:
                     for subscriber in self._subscriber_snapshot:
                         subscriber._ring.set_publication_token(timeline)  # noqa: SLF001
                 self._active_profile = result.profile
+                self._active_opened_s = time.monotonic()
                 if result.profile is not None:
                     self._resolve_device_profile(
                         result.profile,
@@ -2604,6 +2606,17 @@ class AudioIngress:
     def stream_epoch(self) -> int | None:
         """Return the active epoch, if any."""
         return self._active_epoch
+
+    def active_input(self) -> tuple[str, float] | None:
+        """The microphone the stream is open on and the seconds since it opened (ADR 0286).
+
+        The name is the one the backend opened, as the device profile carries it; ``None``
+        while no stream is open.
+        """
+        profile = self._active_profile
+        if self._active_epoch is None or profile is None:
+            return None
+        return profile.device_name, time.monotonic() - self._active_opened_s
 
     def clock_mapping(self) -> voice_backend.InputClockMapping | None:
         """Anchor cursor zero for the active epoch to ADC and monotonic clocks."""

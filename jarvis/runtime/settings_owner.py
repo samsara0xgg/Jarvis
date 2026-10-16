@@ -47,7 +47,7 @@ _TABLE: Final[dict[Owner, tuple[str, ...]]] = {
         "llm", "attachments", "lifelog", "supervisor", "work_state.preset", "work_state.auto",
         "daily_report.preset", "daily_report.at", "day_summary", "day_experience", "ledger",
         "core_memory", "home", "job_mail", "mail_codes", "commitments", "moment", "spend_cap",
-        "dashboard", "agents", "jev_log", "maps", "weather",
+        "dashboard", "agents", "jev_log", "maps", "weather", "voiceprint",
         "tools.web",
         "tools.screen.vision_preset", "tools.plugins", "tools.mcp", "confirmation",
         "diagnostics.log_llm_io", "dictation.polish_preset", "push", "locate", "session",
@@ -73,6 +73,7 @@ _TABLE: Final[dict[Owner, tuple[str, ...]]] = {
         "realtime.final_asr_terms", "realtime.wake_threshold", "realtime.wake_join_timeout_s",
         "realtime.tts_ring_seconds", "realtime.vad", "realtime.single_audio_ingress",
         "realtime.gpt_live", "realtime.sensevoice_dir", "realtime.silero_vad_path",
+        "realtime.voiceprint_model_path",
     ),
     "both": (
         "assistant_name", "language", "projects", "memory", "observer.poll_interval_s",

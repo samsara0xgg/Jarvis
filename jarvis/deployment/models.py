@@ -79,6 +79,14 @@ def default_silero_vad_path(root: Path) -> Path:
     return root / "models" / "silero_vad.onnx"
 
 
+def default_voiceprint_model_path(root: Path) -> Path:
+    """``<root>/models/3dspeaker_...onnx``: where a terminal keeps its speaker model (ADR 0286).
+
+    Not fetched: a terminal without the file sends no voiceprint.
+    """
+    return root / "models" / "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+
+
 def missing_models(sensevoice_dir: Path, silero_vad_path: Path) -> dict[Path, ModelFile]:
     """The model files not yet on disk, by the path each belongs at."""
     wanted = {sensevoice_dir / name: f for name, f in SENSEVOICE_FILES.items()}

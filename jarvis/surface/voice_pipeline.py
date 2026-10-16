@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
     from jarvis.shared import Event
     from jarvis.surface.voice_cues import VoiceCues
+    from jarvis.surface.voice_print import VoiceprintExtractor
 
 
 LOGGER = logging.getLogger("jarvis.surface.voice_pipeline")
@@ -110,12 +111,14 @@ class VoicePipeline:
         sample_rate_hz: int = 16000,
         cues: VoiceCues | None = None,
         emit: Callable[[Mapping[str, object], Mapping[str, str]], Event] | None = None,
+        voiceprints: VoiceprintExtractor | None = None,
     ) -> None:
         """Wire together one VoicePipeline; see class docstring for semantics.
 
         The utterance is committed to the log ``conn_factory`` opens, or, on a voice terminal
         (ADR 0172), handed to ``emit(payload, correlation)``, which returns the committed
-        event. Exactly one of the two is given.
+        event. Exactly one of the two is given. With ``voiceprints`` (ADR 0286) a turn that
+        names its microphone is embedded beside its final ASR.
         """
         if (conn_factory is None) == (emit is None):
             msg = "a VoicePipeline commits to a log or hands the utterance on, not both or neither"
@@ -128,6 +131,7 @@ class VoicePipeline:
         self._artifacts_dir = artifacts_dir
         self._sample_rate_hz = sample_rate_hz
         self._cues = cues  # ADR 0152: the clip's tone and sounds, for her next turn
+        self._voiceprints = voiceprints
 
     def prewarm_input_model(self) -> None:
         """Prewarm the concrete local ASR provider for single-ingress activation."""
@@ -203,15 +207,14 @@ class VoicePipeline:
 
     def _judge[T](
         self,
-        before_emit: Callable[[str], T],
-        normalized: str,
+        ask: Callable[[], T],
         *,
         turn_id: str,
         broadcast: bool,
     ) -> T:
         """Hand the owner the words; an utterance it absorbs ends as ``empty`` on the wire."""
         try:
-            return before_emit(normalized)
+            return ask()
         except VoicePipelineAbsorbedError as absorbed:
             if broadcast and self._broadcaster is not None:
                 self._broadcaster.broadcast_voice_sync(
@@ -232,11 +235,13 @@ class VoicePipeline:
         session_id: str | None = None,
         utterance_id: str | None = None,
         endpoint_reason: str | None = None,
-        before_emit: Callable[[str], Mapping[str, object] | None] | None = None,
+        before_emit: Callable[[str, Mapping[str, object] | None], Mapping[str, object] | None]
+        | None = None,
         on_judged: Callable[[str, str], None] | None = None,
         wake_lead: bool = True,
         speech_s: float = 0.0,
         spoke_until: float = 0.0,
+        mic: tuple[str, float] | None = None,
     ) -> Event:
         """Execute one voice turn end-to-end. Returns the emitted Event row.
 
@@ -266,7 +271,8 @@ class VoicePipeline:
                 endpointed utterance); the PTT path does not, so an unsupplied
                 id is minted here — one press-to-release is one utterance.
             endpoint_reason: Optional typed acoustic endpoint reason.
-            before_emit: Called with the normalized transcript once it is
+            before_emit: Called with the normalized transcript and the utterance's
+                voiceprint (ADR 0286, ``None`` without one) once it is
                 accepted, before ``utterance.received`` is written:
                 conversation mode drops the unspoken answer to Allen's
                 previous sentence there, so the new turn can never see it
@@ -275,7 +281,8 @@ class VoicePipeline:
                 when it returns a mapping, travels with the utterance as ``judge``
                 for a brain that judges the words on receipt (ADR 0277); ``emit``
                 then sends it and raises :class:`UtteranceJudgedError` for words
-                that are no turn.
+                that are no turn. Without ``emit`` the mapping is added to the
+                committed payload.
             on_judged: ``(normalized, verdict)`` once the brain has judged the
                 words ``before_emit`` described, ``"turn"`` included. It carries
                 out the verdict and raises :class:`VoicePipelineAbsorbedError`
@@ -288,6 +295,9 @@ class VoicePipeline:
                 supplied ``utterance_id`` and has nothing usable of it.
             spoke_until: Monotonic time of the utterance's last speech frame (ADR 0272);
                 ``0.0`` when unknown. The committed utterance says how long ago it was.
+            mic: ``(name, seconds since its stream opened)`` of the microphone that heard
+                the utterance (ADR 0286); with it and ``voiceprints`` the audio is embedded
+                beside the final ASR and a terminal's utterance carries the ``voiceprint``.
 
         Raises:
             VoiceInputBusyError: VOICE_INPUT_LOCK contention (PTT path: 503).
@@ -320,6 +330,13 @@ class VoicePipeline:
                 channel=channel,
                 audio_bytes=len(audio_bytes),
                 measurement_boundary="authoritative_asr_call_started",
+            )
+            embedding = None if self._voiceprints is None or mic is None else (
+                self._voiceprints.begin(
+                    audio_bytes, self._sample_rate_hz,
+                    seconds=speech_s or len(audio_bytes) / 2 / self._sample_rate_hz,
+                    mic=mic[0], mic_age_s=mic[1],
+                )
             )
             recognize_prepared = getattr(self._recognizer, "recognize_prepared", None)
             if prepared and callable(recognize_prepared):
@@ -363,9 +380,13 @@ class VoicePipeline:
             # 3. Normalize BEFORE emit — ADR §8 fix #1 (spec §3.6.2).
             normalized = self._normalizer.normalize(said)
 
+            voiceprint = None if embedding is None else embedding()
             judge: Mapping[str, object] | None = None
             if before_emit is not None:
-                judge = self._judge(before_emit, normalized, turn_id=turn_id, broadcast=broadcast)
+                judge = self._judge(
+                    lambda: before_emit(normalized, voiceprint), turn_id=turn_id,
+                    broadcast=broadcast,
+                )
 
             # 4. Audio retention for memory.db (None = off): the utterance names the file,
             # which is written after it is sent (ADR 0277).
@@ -401,8 +422,13 @@ class VoicePipeline:
                 # ADR 0272: how long ago he stopped, for the hold his answer waits out.
                 payload["spoke_ago_ms"] = max(0, round((time.monotonic() - spoke_until) * 1000))
 
-            if judge is not None and self._emit is not None:
-                payload["judge"] = dict(judge)
+            if self._emit is None:
+                payload.update(judge or {})  # the owner's own additions to the row
+            else:
+                if judge is not None:
+                    payload["judge"] = dict(judge)
+                if voiceprint is not None:
+                    payload["voiceprint"] = voiceprint  # the brain scores it (ADR 0286)
 
             if self._emit is not None:  # a voice terminal sends it to the brain (ADR 0172)
                 try:
@@ -471,7 +497,7 @@ class VoicePipeline:
             if verdict != "turn":
                 raise VoicePipelineAbsorbedError(verdict)
 
-        self._judge(act, normalized, turn_id=turn_id, broadcast=broadcast)
+        self._judge(lambda: act(normalized), turn_id=turn_id, broadcast=broadcast)
 
 
 __all__ = [

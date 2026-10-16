@@ -130,6 +130,7 @@ from jarvis.deployment.models import (
     default_meaning_dir,
     default_sensevoice_dir,
     default_silero_vad_path,
+    default_voiceprint_model_path,
 )
 from jarvis.deployment.night_power import MacPower
 from jarvis.execution import maps_spend, speakable
@@ -283,6 +284,7 @@ from jarvis.state.trigger_consumption import mark_trigger_consumed
 from jarvis.state.turn_overlap import any_turn_in_flight, turn_activity_since
 from jarvis.state.turn_steps import answer_did
 from jarvis.state.voice_settings import VoiceSettings
+from jarvis.state.voiceprint import VoiceprintBook
 from jarvis.surface.ambient_sounds import AmbientSounds
 from jarvis.surface.cli import (
     PreEmitTokenError,
@@ -327,6 +329,7 @@ _DEFAULT_PROMPT_FILENAME = Path("prompts") / "jarvis_v1.md"
 # ``<runtime root>/models`` instead (``jarvis.deployment.models``).
 DEFAULT_SENSEVOICE_DIR = Path("data/sensevoice-small-int8")
 DEFAULT_SILERO_VAD_PATH = Path("data/silero_vad.onnx")
+DEFAULT_VOICEPRINT_MODEL = Path("data/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx")
 
 # Trigger event types the runtime loop expects from L4 paths.
 # ``action.result_observed`` is defensive — sync tools emit it inline
@@ -685,6 +688,11 @@ class JarvisRuntime:
     # the defaults keep a hand-assembled runtime byte-identical to today.
     sensevoice_dir: Path = DEFAULT_SENSEVOICE_DIR
     silero_vad_path: Path = DEFAULT_SILERO_VAD_PATH
+    # ADR 0286: the speaker model a Mac running alone embeds its voice with; absent, no voiceprint.
+    voiceprint_model: Path = DEFAULT_VOICEPRINT_MODEL
+    # ADR 0286: the owner's voice, per microphone: scores what a terminal, a phone or this
+    # machine's own microphone heard. None = hand-assembled.
+    voiceprints: VoiceprintBook | None = None
     # memory.db wiring (``memory:`` config block). None = no memory store:
     # hand-assembled runtimes write no records and inject no note.
     memory: MemorySettings | None = None
@@ -1589,6 +1597,16 @@ def _ambient_sounds(config: Mapping[str, Any]) -> bool:
     value = realtime.get("ambient_sounds", True) if isinstance(realtime, Mapping) else True
     if not isinstance(value, bool):
         msg = "realtime.ambient_sounds must be true or false"
+        raise TypeError(msg)
+    return value
+
+
+def _voiceprint_gate(config: Mapping[str, Any]) -> bool:
+    """``voiceprint.gate`` (ADR 0286): turn away a long utterance not his; on unless false."""
+    section = config.get("voiceprint")
+    value = section.get("gate", True) if isinstance(section, Mapping) else True
+    if not isinstance(value, bool):
+        msg = "voiceprint.gate must be true or false"
         raise TypeError(msg)
     return value
 
@@ -2896,6 +2914,18 @@ def import_exports(
         return imports.import_files(conn, root.root / imports.IMPORTS_DIRNAME, source, paths)
 
 
+def open_voiceprints(
+    *, config_path: Path | None = None, runtime_root: Path | None = None,
+) -> VoiceprintBook:
+    """ADR 0286: the owner's profiles in this runtime's ``memory.db``, for the CLI."""
+    if config_path is None:
+        config_path = _locate_repo_root(Path(__file__).parent) / _DEFAULT_CONFIG_FILENAME
+    root = bootstrap_runtime(runtime_root)
+    config = _load_full_config(config_path, root.settings)
+    memory = MemorySettings.from_config(config.get("memory"), runtime_root=root.root)
+    return VoiceprintBook(memory.db_path)
+
+
 def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stays explicit
     *,
     config_path: Path | None = None,
@@ -3002,6 +3032,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     _install_open_path(full_config)
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
     memory = MemorySettings.from_config(full_config.get("memory"), runtime_root=paths.root)
+    voiceprint_gate = _voiceprint_gate(full_config)  # ADR 0286, read once at boot
     # ADR 0170: a brain's TimeSink and git are its terminal's, so what reads them asks the hub.
     locate_waits = LocateWaits()
     phone_events = (
@@ -3369,6 +3400,13 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             config_dir=config_dir,
             fallback=default_silero_vad_path(paths.root),
         ),
+        voiceprint_model=_realtime_model_path(
+            full_config,
+            key="voiceprint_model_path",
+            config_dir=config_dir,
+            fallback=default_voiceprint_model_path(paths.root),
+        ),
+        voiceprints=VoiceprintBook(memory.db_path, gate=lambda: voiceprint_gate),
         tool_cues=tool_cues,
         think_mode=think_mode,
         work_state=work_state,
@@ -5418,6 +5456,7 @@ __all__ = [
     "bootstrap_runtime_app",
     "drive_turn",
     "import_exports",
+    "open_voiceprints",
     # Re-exported for jarvis.cli: H13 forbids a single file importing two
     # middle-layer siblings, and the CLI already imports jarvis.deployment.
     # Same route PreEmitTokenError above already takes.

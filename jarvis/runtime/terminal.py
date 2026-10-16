@@ -52,7 +52,11 @@ from zoneinfo import ZoneInfo
 import uvicorn
 
 from jarvis.deployment.launchd import spawned_by_terminal_agent
-from jarvis.deployment.models import default_sensevoice_dir, default_silero_vad_path
+from jarvis.deployment.models import (
+    default_sensevoice_dir,
+    default_silero_vad_path,
+    default_voiceprint_model_path,
+)
 from jarvis.deployment.night_power import MacPower
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.tools import (
@@ -676,6 +680,10 @@ async def _start_listening(
         config, key="silero_vad_path", config_dir=config_dir,
         fallback=default_silero_vad_path(speaking.runtime_root),
     )
+    voiceprint_model = _realtime_model_path(  # ADR 0286: absent, utterances go without one
+        config, key="voiceprint_model_path", config_dir=config_dir,
+        fallback=default_voiceprint_model_path(speaking.runtime_root),
+    )
     models_ok, missing = _voice_models_preflight(
         sensevoice_dir=sensevoice_dir, silero_path=silero_path,
     )
@@ -690,7 +698,7 @@ async def _start_listening(
     def build() -> tuple[voice_session.DuplexVoiceSession | None, bool, Dictation | None]:
         recognizer_pipeline = _build_voice_pipeline(
             seat, broadcaster=broadcaster, sensevoice_dir=sensevoice_dir,
-            emit=turn.emit_utterance,
+            emit=turn.emit_utterance, voiceprint_model=voiceprint_model,
         )
         session, attempted = _spawn_single_ingress_session(
             runtime=seat, pipeline=recognizer_pipeline, broadcaster=broadcaster,

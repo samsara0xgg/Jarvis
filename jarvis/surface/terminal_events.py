@@ -192,11 +192,14 @@ class BrainEvents:
 
     def record_utterance(
         self, device: str, args: Mapping[str, Any], *, continues: str | None = None,
+        voiceprint: Mapping[str, Any] | None = None,
     ) -> str:
         """Append the ``utterance.received`` a voice terminal heard, once; its event uid.
 
         ``continues`` (ADR 0278) is the turn the brain composed these words into: when that
         turn's sentence is on the log, ``transcript`` holds both (see :meth:`continued_words`).
+        ``voiceprint`` (ADR 0286) is what the brain made of the terminal's: the score, the
+        microphone and the seconds; the embedding is never kept.
 
         The uid is derived from ``device`` and the utterance's own id, so a terminal that
         sends the same utterance again (it never saw the answer) gets the first one's uid and
@@ -219,6 +222,8 @@ class BrainEvents:
             continued := self.continued_words(device, continues, transcript)
         ) is not None:
             payload.update(continued)
+        if voiceprint is not None:
+            payload["voiceprint"] = dict(voiceprint)
         try:
             emit_event(
                 self._conn, type="utterance.received", payload=payload,
@@ -273,7 +278,7 @@ class BrainEvents:
             "folded": [*(folded if isinstance(folded, list) else []), earlier_uid],
         }
 
-    def record_phone_say(  # noqa: PLR0913 - the fields of one `say` frame
+    def record_phone_say(  # noqa: C901, PLR0913 - the fields of one `say` frame
         self,
         device: str,
         utterance_id: str,
@@ -285,6 +290,7 @@ class BrainEvents:
         about: object = None,
         attachments: Sequence[str] = (),
         continues: str | None = None,
+        voiceprint: Mapping[str, Any] | None = None,
     ) -> str:
         """Append the words a paired phone sent (ADR 0209), once; the turn id they open.
 
@@ -300,7 +306,8 @@ class BrainEvents:
         row as ``POST /inherent/submit`` writes them, and spoken words take none. ``continues``
         (ADR 0271, 0278) is the turn id of the spoken sentence of this device these words go on
         from: when that one is on the log, ``transcript`` holds both (see
-        :meth:`continued_words`).
+        :meth:`continued_words`). ``voiceprint`` (ADR 0286) is the brain's score of the spoken
+        words, kept on the row as :meth:`record_utterance` keeps it.
 
         Raises:
             ValueError: a field is missing or has the wrong shape, ``about`` included.
@@ -335,6 +342,8 @@ class BrainEvents:
                 continued := self.continued_words(device, continues, text)
             ) is not None:
                 payload.update(continued)
+            if voiceprint is not None:
+                payload["voiceprint"] = dict(voiceprint)
         else:
             payload["channel"] = _PHONE_TYPED_CHANNEL
             payload["language"] = language or _PHONE_TYPED_LANGUAGE

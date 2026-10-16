@@ -173,14 +173,26 @@ CREATE TABLE IF NOT EXISTS import_entries (
     UNIQUE (source, key)
 );
 CREATE INDEX IF NOT EXISTS import_entries_at ON import_entries (at_ms);
+CREATE TABLE IF NOT EXISTS voiceprints (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    device  TEXT NOT NULL,
+    mic     TEXT NOT NULL,
+    ts      TEXT NOT NULL,
+    seconds REAL NOT NULL,
+    weight  REAL NOT NULL,
+    seed    INTEGER NOT NULL,
+    turn_id TEXT UNIQUE,
+    vec     BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS voiceprints_mic ON voiceprints (device, mic, id);
 """
 
 # ``PRAGMA user_version`` (ADR 0068). 0 is a file from before the stamp, same
 # schema as 1; a file above this was written by a newer Jarvis and is refused.
 # ``sent``, ``record_attachments`` (ADR 0255), ``day_summaries``, ``day_experience`` (ADR 0280),
 # ``core_memory``, ``day_highlight_marks``, the places tables (ADR 0234), ``import_entries``
-# (ADR 0259) and ``meaning_vectors`` (ADR 0260) are additive: an older opener ignores them, so
-# they need no new version. So are the
+# (ADR 0259), ``meaning_vectors`` (ADR 0260) and ``voiceprints`` (ADR 0286) are additive: an
+# older opener ignores them, so they need no new version. So are the
 # ``day_prose`` columns ``line``, ``highlights`` and ``draft`` (ADR 0235), which
 # :func:`open_memory_db` adds to a table made before.
 SCHEMA_VERSION: Final[int] = 1

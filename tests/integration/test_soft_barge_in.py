@@ -54,7 +54,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.shared import Event
+    from jarvis.state.voiceprint import VoiceprintBook
     from jarvis.surface.voice_cues import VoiceCues
+    from jarvis.surface.voice_print import VoiceprintExtractor
 
 VOICE, ROOM = 8_000, 30  # constant frames at about -12 and -60 dBFS
 # With the shipped profile (5-frame smoothing, 3 hits) speech starts on the
@@ -114,6 +116,8 @@ class _Rig:
         emit: Callable[[Mapping[str, object], Mapping[str, str]], Event] | None = None,
         judged_on_send: bool = False,
         supersede_unspoken: Callable[[str], None] | None = None,
+        voiceprints: VoiceprintBook | None = None,
+        embedder: VoiceprintExtractor | None = None,
     ) -> None:
         self.output: list[str] = []
         self.phases: list[tuple[str, object]] = []
@@ -134,6 +138,7 @@ class _Rig:
             broadcaster=self,
             artifacts_dir=None,
             cues=cues,
+            voiceprints=embedder,
         )
         with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySilero()):
             self.session = voice_session.DuplexVoiceSession(
@@ -171,6 +176,7 @@ class _Rig:
                 begin_line=begin_line,
                 cues=cues,
                 heard_elsewhere=heard_elsewhere,
+                voiceprints=voiceprints,
                 judged_on_send=judged_on_send,
             )
             assert self.session.start().started

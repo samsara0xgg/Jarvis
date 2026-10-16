@@ -66,6 +66,7 @@ from jarvis.runtime import (
     bootstrap_runtime_app,
     import_exports,
     mcp_login,
+    open_voiceprints,
     parse_response_channels,
     run_turn,
 )
@@ -81,6 +82,7 @@ from jarvis.state.device_tokens import (
     unpair_device,
 )
 from jarvis.state.plugin_settings import local_key
+from jarvis.state.voiceprint import seed_study
 
 LOGGER = logging.getLogger("jarvis.cli")
 
@@ -1234,6 +1236,52 @@ def _main_import(argv: list[str]) -> int:
     return 0
 
 
+def _main_voiceprint(argv: list[str]) -> int:
+    """ADR 0286: `jarvis voiceprint seed FILE --device D --mic KEY=NAME ...` and `... status`."""
+    parser = argparse.ArgumentParser(
+        prog=f"{_PROG} voiceprint",
+        description="Seed or read the profiles of the owner's voice, one per terminal microphone.",
+    )
+    parser.add_argument("command", choices=("seed", "status"))
+    parser.add_argument(
+        "file", nargs="?", type=Path,
+        help='seed: the study\'s {"mics": {"<key>": {"n": int, "centroid": [192 numbers]}}}.',
+    )
+    parser.add_argument("--device", help="seed: the terminal's paired name, e.g. macbook.")
+    parser.add_argument(
+        "--mic", action="append", default=[], metavar="KEY=NAME",
+        help="seed: a key of the file and the full name of its microphone (repeat per key).",
+    )
+    parser.add_argument("--config", type=Path, default=None, help="Path to jarvis.yaml.")
+    parser.add_argument(
+        "--runtime-root", type=Path, default=None, help="Override JARVIS_RUNTIME_ROOT."
+    )
+    args = parser.parse_args(argv)
+    try:
+        book = open_voiceprints(config_path=args.config, runtime_root=args.runtime_root)
+        if args.command == "status":
+            for one in book.status():
+                sys.stdout.write(
+                    f"{one.device}\t{one.mic}\trows={one.rows}\tdays={one.days}\t"
+                    f"ready={'yes' if one.ready else 'no'}\tlast_added={one.last_added}\n"
+                )
+            return 0
+        names = dict(pair.split("=", 1) for pair in args.mic if "=" in pair)
+        if args.file is None or not args.device or len(names) != len(args.mic):
+            sys.stderr.write("jarvis voiceprint seed: needs FILE, --device and --mic KEY=NAME\n")
+            return 2
+        seeded = seed_study(
+            book, args.device, json.loads(args.file.read_text(encoding="utf-8")), names,
+        )
+    except (RuntimeBootstrapError, NewerDataError, OSError, ValueError) as exc:
+        sys.stderr.write(f"jarvis voiceprint: {exc}\n")
+        return 1
+    for mic, count in seeded:
+        sys.stdout.write(f"{args.device}\t{mic}\tseeded n={count}\n")
+    sys.stdout.write("restart the brain to load the new profiles\n")
+    return 0
+
+
 def _main_devices(command: str, argv: list[str]) -> int:
     """ADR 0170, on the brain: `pair <name>`, `unpair <name>` and `devices`."""
     parser = argparse.ArgumentParser(
@@ -1297,6 +1345,7 @@ def main(argv: list[str] | None = None) -> int:
         "mcp-login": _main_mcp_login,
         "meaning-model": _main_meaning_model,
         "import": _main_import,
+        "voiceprint": _main_voiceprint,
         "terminal": _main_terminal,
         "terminal-agent": _main_terminal_agent,
     }

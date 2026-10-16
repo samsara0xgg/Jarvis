@@ -668,6 +668,13 @@ moment:
 spend_cap:
   daily_usd: 1.00
 
+# ADR 0286 — a terminal sends each utterance with a voiceprint and the brain keeps a profile of
+# his voice per microphone.  gate: true turns away an utterance of 2 s or more that scores under
+# 0.30 against that microphone's ready profile (verdict not_owner, no turn); false still scores,
+# logs and learns, but turns nothing away.
+voiceprint:
+  gate: true
+
 # ADR 0147 — the Dashboard's mail page.  On: the page can open a letter whole, mark it read,
 # archive or trash it (Gmail's Trash, kept 30 days; nothing is deleted for good), tell Jarvis
 # which item is open so "this email" means it, and show a reply draft Jarvis writes under the
@@ -922,6 +929,10 @@ realtime:
   # file's own directory, never at cwd; `~` and absolute paths as written.
   # sensevoice_dir: ~/Models/sensevoice-small-int8
   # silero_vad_path: ~/Models/silero_vad.onnx
+  # ADR 0286.  The speaker model a terminal embeds each utterance's voice with.  Absent, it
+  # lives at `<runtime root>/models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx`;
+  # not fetched, and a terminal without the file sends no voiceprint.
+  # voiceprint_model_path: ~/Models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx
   # docs/plans/whisper-final-asr-proposal.md.  Which model writes a voice
   # turn's words: sensevoice, or whisper -- the local whisper-large-v3-turbo
   # that 言文 dictates with, decoded as it decodes: Chinese, the user terms of

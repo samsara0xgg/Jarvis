@@ -81,13 +81,23 @@ resumes its held audio. ``stop``, ``wait``: the host does what ``barge`` does, n
 ``dismissed``: what ``cancel`` does, no turn; the phone ends its own conversation mode.
 ``quiet:<level>``: that, then ``set_quiet(level)``; quiet commands are heard only where the host
 wires ``set_quiet``. ``elsewhere``: another device recorded these words first (ADR 0219), so
-nothing happens and ``turn_id`` is null; the phone does not resend them. No turn is recorded
+nothing happens and ``turn_id`` is null; the phone does not resend them. ``not_owner``: the
+same, for a long utterance that is not in his voice (ADR 0286; below). No turn is recorded
 for any verdict but ``turn``. The judging runs beside
 the receive loop (Jev may take seconds), so DISCARD_ACK keeps flowing. A resent flagged ``say``
 is judged again, with no cache; a phone that gave up waiting resends it with no flags, which
 records a turn, once. A ``say`` with no flag is a turn: ``verdict`` is ``"turn"``, unless the
 host heard the words elsewhere first, which answers ``elsewhere`` flagged or not (ADR 0219);
 typed words are never checked.
+
+**His voice (ADR 0286).** A spoken ``say`` may carry ``voiceprint``: ``embedding`` (192 numbers),
+``seconds`` of speech, ``mic`` (the name of the microphone that heard it) and ``mic_age_s`` (how
+long that stream has been open). The host scores it against the profile of this device's
+microphone, flagged or not, before anything else; a long one that scores far below it is
+answered ``not_owner`` exactly as ``elsewhere`` is (nothing happens, ``turn_id`` null, no
+resend), and a turn's row keeps ``voiceprint: {score, mic, seconds}``, never the embedding. A
+``voiceprint`` that is malformed is ignored: the words are judged as without one. Typed words
+carry none.
 
 **Going on from a sentence (ADR 0271, 0278).** The host decides, by state, whether a spoken
 ``say`` goes on from this device's latest earlier spoken sentence: it does while her answer to
@@ -153,6 +163,7 @@ from jarvis.shared import lang
 from jarvis.state.attachments import AttachmentRefused, valid_id
 from jarvis.state.locate_wait import LOCATE_ERRORS, Refused, valid_request_id
 from jarvis.state.phone_location import LOCATION_EVENT
+from jarvis.state.voiceprint import Voiceprint
 from jarvis.surface import word_judge
 from jarvis.surface.phone_player import PHONE_SAMPLE_RATE_HZ, PhoneFrameError
 from jarvis.surface.terminal_events import located_uid, phone_record_id, phone_turn_id
@@ -163,6 +174,7 @@ if TYPE_CHECKING:
     from fastapi import WebSocket
 
     from jarvis.shared import Event
+    from jarvis.state.voiceprint import Scored, VoiceprintBook
     from jarvis.surface.phone_player import PhoneAudioStreamPlayer
     from jarvis.surface.terminal_events import BrainEvents
     from jarvis.surface.terminal_voice import RowCursor
@@ -252,6 +264,10 @@ class PhoneHub:
     these words just now. It blocks and runs on a worker thread; true answers a spoken ``say``
     with ``elsewhere`` and records nothing.
 
+    ``voiceprints`` (ADR 0286) is the owner's profiles: a spoken ``say`` that carries a
+    ``voiceprint`` is scored against the profile of this device's microphone before anything
+    else, and a long one that is not his is answered ``not_owner`` and records nothing.
+
     ``pick_earlier(device, turn_id, text)`` (ADR 0278) is the earlier turn of ``device`` a
     spoken ``say`` goes on from, or ``None``; ``supersede_turn(earlier_turn_id, turn_id)``
     (ADR 0271) takes the open answer of that turn, cancels it as superseded by ``turn_id`` and
@@ -275,6 +291,7 @@ class PhoneHub:
     recent_speech: Callable[[], str] | None = None
     set_quiet: Callable[[str], None] | None = None
     heard_elsewhere: Callable[[str, str, str], bool] | None = None
+    voiceprints: VoiceprintBook | None = None
     supersede_turn: Callable[[str, str], str] | None = None
     pick_earlier: Callable[[str, str, str], str | None] | None = None
     check_attachments: Callable[[Sequence[str]], object] | None = None
@@ -604,6 +621,7 @@ class _Say:
     conversation: bool
     attachments: tuple[str, ...] = ()
     continues: str | None = None
+    voiceprint: Voiceprint | None = None
 
     @property
     def judged(self) -> bool:
@@ -647,6 +665,7 @@ def _say(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
         utterance_id, text, spoken, language, confidence, frame.get("about"),
         over_her, conversation, tuple(dict.fromkeys(files)),
         continues if spoken and continues != utterance_id else None,  # typed words never continue
+        Voiceprint.parse(frame.get("voiceprint")) if spoken else None,
     )
     _route_say(hub, conn, say)
 
@@ -657,8 +676,11 @@ def _route_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
         conn.spawn(_record_with_files(hub, conn, say))
     elif say.judged:
         conn.spawn(_judge_say(hub, conn, say))
-    elif say.spoken and (check := _elsewhere_check(hub, conn)) is not None:
-        conn.spawn(_record_unless_elsewhere(hub, conn, say, check))
+    elif say.spoken and (
+        (check := _elsewhere_check(hub, conn)) is not None
+        or (hub.voiceprints is not None and say.voiceprint is not None)
+    ):
+        conn.spawn(_record_unless_dropped(hub, conn, say, check))
     elif say.spoken and hub.pick_earlier is not None and hub.supersede_turn is not None:
         conn.spawn(_record_continuing(hub, conn, say))
     else:
@@ -698,47 +720,88 @@ def _elsewhere_check(hub: PhoneHub, conn: _Connection) -> Callable[[str, str], b
     return check
 
 
-def _answer_elsewhere(conn: _Connection, say: _Say) -> None:
-    LOGGER.info("phone %s: words heard elsewhere first; no turn", conn.device)
+def _answer_dropped(conn: _Connection, say: _Say, verdict: str) -> None:
+    LOGGER.info("phone %s: words dropped (%s); no turn", conn.device, verdict)
     conn.send_json(
-        {"type": "said", "utterance_id": say.utterance_id, "turn_id": None,
-         "verdict": "elsewhere"},
+        {"type": "said", "utterance_id": say.utterance_id, "turn_id": None, "verdict": verdict},
     )
 
 
-async def _record_unless_elsewhere(
-    hub: PhoneHub, conn: _Connection, say: _Say, check: Callable[[str, str], bool],
-) -> None:
-    """An unflagged spoken ``say`` is a turn unless another device recorded the words first.
+async def _score_say(hub: PhoneHub, conn: _Connection, say: _Say) -> Scored | None:
+    """The spoken ``say``'s voiceprint scored on this phone's microphone (ADR 0286).
 
-    The log is read on a worker thread, so the receive loop never blocks on SQLite.
+    ``None`` without a voiceprint or profiles, when scoring fails, and for a ``say`` this
+    connection already recorded: a resend keeps the turn it made.
     """
+    book = hub.voiceprints
+    if book is None or say.voiceprint is None or hub.events.has_phone_say(
+        conn.device, say.utterance_id,
+    ):
+        return None
     try:
-        elsewhere = await asyncio.to_thread(
-            check, phone_turn_id(conn.device, say.utterance_id), say.text,
-        )
-    except Exception:  # noqa: BLE001 - another device's log cannot lose the phone's words
-        LOGGER.warning("phone %s: heard_elsewhere failed; the say stays a turn",
+        return await asyncio.to_thread(book.score, conn.device, say.voiceprint)
+    except Exception:  # noqa: BLE001 - a profile cannot lose the phone's words
+        LOGGER.warning("phone %s: scoring its voiceprint failed; the say is judged as it is",
                        conn.device, exc_info=True)
-        elsewhere = False
-    if elsewhere:
-        _answer_elsewhere(conn, say)
+        return None
+
+
+async def _finish_say(hub: PhoneHub, conn: _Connection, scored: Scored | None, verdict: str,
+                      say: _Say) -> None:
+    """Log the scored ``say`` with its verdict; a turn of his own teaches his profile."""
+    if scored is None or hub.voiceprints is None:
+        return
+    try:
+        await asyncio.to_thread(
+            hub.voiceprints.finish, scored, verdict, phone_turn_id(conn.device, say.utterance_id),
+        )
+    except Exception:  # noqa: BLE001 - a profile cannot lose the phone's words
+        LOGGER.warning("phone %s: learning from its voiceprint failed", conn.device,
+                       exc_info=True)
+
+
+async def _record_unless_dropped(
+    hub: PhoneHub, conn: _Connection, say: _Say,
+    check: Callable[[str, str], bool] | None,
+) -> None:
+    """An unflagged spoken ``say`` is a turn unless it is not his voice or was heard elsewhere.
+
+    The voiceprint is asked first (ADR 0286), then the other devices' log (ADR 0219), each on
+    a worker thread, so the receive loop never blocks on SQLite.
+    """
+    scored = await _score_say(hub, conn, say)
+    verdict = "not_owner" if scored is not None and scored.turn_away else "turn"
+    if verdict == "turn" and check is not None:
+        try:
+            elsewhere = await asyncio.to_thread(
+                check, phone_turn_id(conn.device, say.utterance_id), say.text,
+            )
+        except Exception:  # noqa: BLE001 - another device's log cannot lose the phone's words
+            LOGGER.warning("phone %s: heard_elsewhere failed; the say stays a turn",
+                           conn.device, exc_info=True)
+            elsewhere = False
+        verdict = "elsewhere" if elsewhere else "turn"
+    if verdict == "turn":
+        await _record_continuing(hub, conn, say, scored)
     else:
-        await _record_continuing(hub, conn, say)
+        _answer_dropped(conn, say, verdict)
+    await _finish_say(hub, conn, scored, verdict, say)
 
 
 def _record_say(
     hub: PhoneHub, conn: _Connection, say: _Say, continues: str | None = None,
+    scored: Scored | None = None,
 ) -> None:
     """Write the words as a turn, once, and answer ``said`` with its id.
 
-    ``continues`` is the earlier turn they were composed into (ADR 0278).
+    ``continues`` is the earlier turn they were composed into (ADR 0278); ``scored`` the
+    score of their voiceprint, which the row keeps (ADR 0286).
     """
     try:
         turn_id = hub.events.record_phone_say(
             conn.device, say.utterance_id, say.text, spoken=say.spoken, language=say.language,
             confidence=say.confidence, about=say.about, attachments=say.attachments,
-            continues=continues,
+            continues=continues, voiceprint=None if scored is None else scored.payload(),
         )
     except ValueError as exc:
         LOGGER.warning("phone %s: say refused: %s", conn.device, exc)
@@ -758,9 +821,11 @@ def _record_say(
     )
 
 
-async def _record_continuing(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
+async def _record_continuing(
+    hub: PhoneHub, conn: _Connection, say: _Say, scored: Scored | None = None,
+) -> None:
     """Record a spoken ``say``, first taking over from the sentence it goes on from (ADR 0278)."""
-    _record_say(hub, conn, say, await _take_over(hub, conn, say))
+    _record_say(hub, conn, say, await _take_over(hub, conn, say), scored)
 
 
 async def _take_over(hub: PhoneHub, conn: _Connection, say: _Say) -> str | None:
@@ -810,22 +875,25 @@ async def _judge_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
     that fails leaves the words a turn. See the module docstring for what each verdict does.
     """
     turn_id = phone_turn_id(conn.device, say.utterance_id)
+    scored = await _score_say(hub, conn, say)
     try:
         verdict = await asyncio.to_thread(
             word_judge.words_verdict, hub.word_hooks(_elsewhere_check(hub, conn)), turn_id,
             say.text,
             conversation=say.conversation, over_her=say.over_her,
+            not_owner=scored is not None and scored.turn_away,
         )
     except Exception:
         LOGGER.exception("phone %s: judging its words failed; they stay a turn", conn.device)
         verdict = "turn"
     LOGGER.info("phone %s: words over_her=%s conversation=%s -> %s",
                 conn.device, say.over_her, say.conversation, verdict)
+    await _finish_say(hub, conn, scored, verdict, say)
     if verdict == "turn":
         earlier = await _take_over(hub, conn, say)
         if say.over_her and earlier is None:
             await _interrupt(hub, conn, reason="barge_in", cancel_turns=False)
-        _record_say(hub, conn, say, earlier)
+        _record_say(hub, conn, say, earlier, scored)
         return
     if verdict in {"stop", "wait"}:
         await _interrupt(hub, conn, reason="barge_in", cancel_turns=False)
@@ -837,7 +905,8 @@ async def _judge_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
             except Exception:
                 LOGGER.exception("phone %s: setting quiet failed", conn.device)
                 conn.error("quiet_failed", "the quiet level was not set")
-    # backchannel, unclear, echo, elsewhere: nothing happens and the phone goes on with her audio
+    # backchannel, unclear, echo, elsewhere, not_owner: nothing happens and the phone goes on
+    # with her audio
     conn.send_json(
         {"type": "said", "utterance_id": say.utterance_id, "turn_id": None, "verdict": verdict},
     )

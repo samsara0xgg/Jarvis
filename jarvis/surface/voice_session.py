@@ -36,12 +36,15 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
+from jarvis.state.event_log import MAC_NODE
+from jarvis.state.voiceprint import Voiceprint
 from jarvis.surface import ambient_sounds, voice_asr, voice_audio, voice_pipeline, word_judge
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from jarvis.shared import Event
+    from jarvis.state.voiceprint import Scored, VoiceprintBook
     from jarvis.surface import voice_backend
     from jarvis.surface.voice_cues import VoiceCues
 
@@ -316,11 +319,13 @@ class _PipelinePort(Protocol):
         session_id: str | None = ...,
         utterance_id: str | None = ...,
         endpoint_reason: str | None = ...,
-        before_emit: Callable[[str], Mapping[str, object] | None] | None = ...,
+        before_emit: Callable[[str, Mapping[str, object] | None], Mapping[str, object] | None]
+        | None = ...,
         on_judged: Callable[[str, str], None] | None = ...,
         wake_lead: bool = ...,
         speech_s: float = ...,
         spoke_until: float = ...,
+        mic: tuple[str, float] | None = ...,
     ) -> Event:
         """Run final ASR and commit ``utterance.received``."""
         ...
@@ -1233,6 +1238,7 @@ class DuplexVoiceSession:
         supersede_unspoken: Callable[[str], None] | None = None,
         cancel_voice_runs: Callable[[], None] | None = None,
         heard_elsewhere: Callable[[str, str], bool] | None = None,
+        voiceprints: VoiceprintBook | None = None,
         judged_on_send: bool = False,
         yield_speaking: Callable[[float], None] | None = None,
         pause_speaking: Callable[[bool], None] | None = None,
@@ -1280,6 +1286,11 @@ class DuplexVoiceSession:
         ADR 0219: ``heard_elsewhere(turn_id, text)`` is whether another device recorded these
         words just now; the word judge asks it first, and a line it calls so is no turn here.
 
+        ADR 0286: ``voiceprints`` is the owner's profiles when this session judges the words
+        itself (not ``judged_on_send``): an utterance that carries a voiceprint is scored against
+        the profile of this microphone first, and a long one that is not his is no turn
+        (``not_owner``). A terminal sends the voiceprint to its brain instead.
+
         ADR 0277: with ``judged_on_send`` the brain judges the words as it receives them: the
         session sends them with whether conversation mode is on and whether they were said over
         her, asks nothing before, and carries out the verdict that comes back in the same reply.
@@ -1318,6 +1329,7 @@ class DuplexVoiceSession:
         self._supersede_unspoken = supersede_unspoken
         self._cancel_voice_runs = cancel_voice_runs
         self._heard_elsewhere = heard_elsewhere
+        self._voiceprints = voiceprints
         self._judged_on_send = judged_on_send
         self._yield_speaking = yield_speaking
         self._pause_speaking = pause_speaking
@@ -1751,7 +1763,9 @@ class DuplexVoiceSession:
             paused = self._barges.get(turn_id) == "paused"
         self._settle_barge_in(turn_id, go_on=not paused)
 
-    def _judge_words(self, turn_id: str, text: str) -> None:
+    def _judge_words(
+        self, turn_id: str, text: str, voiceprint: Mapping[str, object] | None = None,
+    ) -> dict[str, object] | None:
         """Final ASR's verdict on words spoken over Jarvis, then ADR 0053's drop.
 
         A listening sound or one syllable that says nothing lets her go on (from
@@ -1761,21 +1775,46 @@ class DuplexVoiceSession:
         mode, 「等我一下」 stops her and holds the mode, and with her silent a
         listening sound or one syllable that says nothing is dropped; none of
         them is a turn. A turn restarts the mode's clock. With Jev (ADR 0130)
-        a short line the regexes call a turn may be one of these too.
+        a short line the regexes call a turn may be one of these too. A long utterance whose
+        voiceprint is not his is no turn first (ADR 0286); what comes back is what the row
+        keeps of the score.
         """
         conversation = self._conversation_open()
         with self._barge_lock:
             over_her = turn_id in self._barges
+        scored = self._score_voiceprint(voiceprint)
         verdict = self._words_verdict(
             turn_id, text, conversation=conversation, over_her=over_her,
+            not_owner=scored is not None and scored.turn_away,
         )
+        kept = None if scored is None else scored.payload()
+        if scored is not None and self._voiceprints is not None:
+            try:
+                self._voiceprints.finish(scored, verdict, turn_id)
+            except Exception:  # noqa: BLE001 - a profile cannot cost the owner his words
+                LOGGER.warning("voiceprint: learning from %s failed", turn_id, exc_info=True)
         self._act_on_words(turn_id, text, verdict, over_her=over_her)
         self._conversation_busy_at = time.monotonic()
         self._awaiting_answer = True
         self._conversation_hold_until = 0.0
         self._supersede(turn_id)
+        return None if kept is None else {"voiceprint": kept}
 
-    def _words_context(self, turn_id: str, _text: str) -> dict[str, bool]:
+    def _score_voiceprint(self, voiceprint: Mapping[str, object] | None) -> Scored | None:
+        """This microphone's score for the utterance's voiceprint; none when it cannot be made."""
+        parsed = Voiceprint.parse(voiceprint)
+        if self._voiceprints is None or parsed is None:
+            return None
+        try:
+            return self._voiceprints.score(MAC_NODE, parsed)
+        except Exception:  # noqa: BLE001 - a profile cannot cost the owner his words
+            LOGGER.warning("voiceprint: scoring failed; the words are judged as they are",
+                           exc_info=True)
+            return None
+
+    def _words_context(
+        self, turn_id: str, _text: str, _voiceprint: Mapping[str, object] | None = None,
+    ) -> dict[str, bool]:
         """What the brain needs to judge ``turn_id``'s words as it receives them (ADR 0277)."""
         with self._barge_lock:
             over_her = turn_id in self._barges
@@ -1801,10 +1840,12 @@ class DuplexVoiceSession:
 
     def _words_verdict(
         self, turn_id: str, text: str, *, conversation: bool, over_her: bool,
+        not_owner: bool = False,
     ) -> str:
-        """dismissed, wait, backchannel, unclear, stop, echo or turn; Jev settles what is left."""
+        """The word judge's verdict: not_owner, dismissed, wait, backchannel, ..., echo or turn."""
         return word_judge.words_verdict(
             self._word_hooks(), turn_id, text, conversation=conversation, over_her=over_her,
+            not_owner=not_owner,
         )
 
     def _regex_words(
@@ -1818,10 +1859,10 @@ class DuplexVoiceSession:
 
     def _act_on_words(self, turn_id: str, text: str, verdict: str, *, over_her: bool) -> None:
         """Carry out a verdict; raises when the words are no turn."""
-        if verdict == "elsewhere":
-            # ADR 0219: another device took these words first. She is not being talked to, so
-            # whatever was held goes on, and nothing is superseded (the caller's drop comes
-            # after this raises).
+        if verdict in {"elsewhere", "not_owner"}:
+            # ADR 0219: another device took these words first. ADR 0286: they are not in his
+            # voice. She is not being talked to, so whatever was held goes on, and nothing is
+            # superseded (the caller's drop comes after this raises).
             self._settle_barge_in(turn_id, go_on=True)
             raise voice_pipeline.VoicePipelineAbsorbedError(verdict)
         if verdict.startswith("quiet:") and self._set_quiet is not None:
@@ -2122,6 +2163,7 @@ class DuplexVoiceSession:
                         wake_lead=utterance.woken or over_her,
                         speech_s=utterance.speech_s,
                         spoke_until=utterance.spoke_until,
+                        mic=self._ingress.active_input(),
                     )
                 self._assembler.mark_committed(utterance.utterance_id)
             except voice_pipeline.VoicePipelineAbsorbedError as absorbed:

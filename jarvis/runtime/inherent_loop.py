@@ -112,6 +112,7 @@ if TYPE_CHECKING:
     from jarvis.state.committed_event_bus import CommittedEventBus
     from jarvis.state.day_line import CalendarRead
     from jarvis.state.voice_settings import VoiceSettings
+    from jarvis.state.voiceprint import VoiceprintBook
     from jarvis.surface.ambient_sounds import AmbientSounds
     from jarvis.surface.codex_sessions import CodexSession
     from jarvis.surface.terminal_link import TerminalHub
@@ -324,6 +325,7 @@ from jarvis.surface.usage_observer import (
     latest_usage,
     redeem_codex_reset,
 )
+from jarvis.surface.voice_print import load_extractor
 
 LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
 
@@ -2858,6 +2860,7 @@ def _build_voice_pipeline(
     broadcaster: InherentBroadcaster,
     sensevoice_dir: Path,
     emit: Callable[[Mapping[str, object], Mapping[str, str]], Event] | None = None,
+    voiceprint_model: Path | None = None,
 ) -> voice_pipeline.VoicePipeline:
     """Construct the L5 :class:`VoicePipeline` with a fresh-conn factory.
 
@@ -2869,6 +2872,9 @@ def _build_voice_pipeline(
 
     A voice terminal (ADR 0172) has no log of its own to commit to: it passes ``emit``, which
     sends the utterance to the brain, and the audio it keeps stays on its own disk.
+
+    With ``voiceprint_model`` (ADR 0286) a turn is embedded beside its final ASR; a model file
+    that is not there means no voiceprint.
     """
     # realtime.final_asr_language pins SenseVoice's language, and with it the hybrid's Whisper.
     realtime = runtime.config.get("realtime")
@@ -2893,6 +2899,7 @@ def _build_voice_pipeline(
         broadcaster=broadcaster,
         artifacts_dir=artifacts_dir,
         cues=runtime.voice_cues,
+        voiceprints=None if voiceprint_model is None else load_extractor(voiceprint_model),
     )
 
 
@@ -3624,6 +3631,7 @@ def _build_phone_hub(
         heard_elsewhere=lambda device, _turn_id, text: device_voice.heard_elsewhere(
             runtime.runtime_paths.event_log, device, text,
         ),
+        voiceprints=runtime.voiceprints,
         check_attachments=(
             None if runtime.attachments is None else runtime.attachments.check_for_turn
         ),
@@ -3722,6 +3730,7 @@ def _build_brain_listening(
         heard_elsewhere=lambda device, _turn_id, text: device_voice.heard_elsewhere(
             event_log_path, device, text,
         ),
+        voiceprints=runtime.voiceprints,
         set_conversation=set_conversation,
         set_quiet=set_quiet,
         controls=controls.update,
@@ -4494,6 +4503,8 @@ class _ListenPorts:
     cancel_voice_runs: Callable[[], None] | None = None
     heard_elsewhere: Callable[[str, str], bool] | None = None
     """``(turn_id, text) -> bool``: another device recorded these words just now (ADR 0219)."""
+    voiceprints: VoiceprintBook | None = None
+    """The owner's profiles, for a session that judges its own words (ADR 0286)."""
     judged_on_send: bool = False
     """The brain judges the words as it receives them, so the ports above that only the judge
     reaches (``ask_words``, ``note_words``, ``begin_line``, ``recent_speech``,
@@ -4598,6 +4609,7 @@ def _local_listen_ports(
         heard_elsewhere=lambda _turn_id, text: device_voice.heard_elsewhere(
             runtime.runtime_paths.event_log, MAC_NODE, text,
         ),
+        voiceprints=runtime.voiceprints,
         cues=runtime.voice_cues,
         ambient=runtime.ambient,
     )
@@ -4869,6 +4881,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             supersede_unspoken=listen.supersede_unspoken,
             cancel_voice_runs=listen.cancel_voice_runs,
             heard_elsewhere=listen.heard_elsewhere,
+            voiceprints=listen.voiceprints,
             judged_on_send=listen.judged_on_send,
             yield_speaking=streaming.set_yield_gain if streaming is not None else None,
             pause_speaking=streaming.pause_speaking if streaming is not None else None,
@@ -7289,6 +7302,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     runtime,
                     broadcaster=broadcaster,
                     sensevoice_dir=sensevoice_dir,
+                    voiceprint_model=runtime.voiceprint_model,
                 )
                 voice_pipeline_callable = _build_voice_pipeline_callable(voice_pipe)
                 echo_canceller = _build_echo_canceller(runtime)
