@@ -199,6 +199,7 @@ from jarvis.runtime.home import Home, mail_body, mail_summarizer, mail_text, wea
 from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
+from jarvis.runtime.locate import PUSH_WAIT_S, SOCKET_WAIT_S, Locator
 from jarvis.runtime.mail_codes import MailCodes, MailCodesSettings
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.runtime.night_run import NightRun, night_settings
@@ -259,6 +260,7 @@ from jarvis.state.event_log import (
     open_runtime_event_log,
 )
 from jarvis.state.ledger import LedgerSources, TerminalScreen
+from jarvis.state.locate_wait import LocateWaits
 from jarvis.state.memory_db import (
     DidOf,
     MemorySettings,
@@ -651,6 +653,7 @@ class JarvisRuntime:
             ``None`` unless the role is ``brain``.
         phone_events: where a paired phone's events are appended (ADR 0197); ``None``
             unless the daemon is a brain or listens beyond loopback (ADR 0207).
+        locator: asks the phone for a fresh fix (ADR 0281); ``None`` where ``phone_events`` is.
         attachments: the store of files a phone sends with a turn or a share (ADR 0211).
         picture_notes: the worker that writes a note for each picture after its turn (ADR 0223).
     """
@@ -772,6 +775,8 @@ class JarvisRuntime:
     settings_drift: SettingsDrift | None = None
     # ADR 0197, 0207: where a paired phone's events are appended.
     phone_events: BrainEvents | None = None
+    # ADR 0281: asks his phone for a fresh fix for `where_am_i`; None where no phone can answer.
+    locator: Locator | None = None
     # ADR 0211: the pictures and text files a phone sends with a turn or a share.
     attachments: Attachments | None = None
     # ADR 0223: writes the note of each picture after its turn. None without a vision preset.
@@ -1456,6 +1461,30 @@ def _phone_here(event_log_path: Path) -> dict[str, Any]:
     """
     with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
         return read_phone_here(conn)
+
+
+_MAX_LOCATE_WAIT_S = 30
+
+
+def _locator(
+    config: Mapping[str, Any], event_log: Path, waits: LocateWaits, memory_db: Path,
+) -> Locator:
+    """``locate`` — how long ``where_am_i`` waits for his phone's fresh fix (ADR 0281)."""
+    block = config.get("locate")
+    block = block if isinstance(block, Mapping) else {}
+    waits_s = []
+    for key, default in (("socket_wait_s", SOCKET_WAIT_S), ("push_wait_s", PUSH_WAIT_S)):
+        value = block.get(key, default)
+        if (
+            isinstance(value, bool) or not isinstance(value, int | float)
+            or not 0 < value <= _MAX_LOCATE_WAIT_S
+        ):
+            msg = f"locate: locate.{key} is seconds, above 0 and up to {_MAX_LOCATE_WAIT_S}"
+            raise RuntimeBootstrapError(msg)
+        waits_s.append(float(value))
+    return Locator(
+        event_log, waits, socket_wait_s=waits_s[0], push_wait_s=waits_s[1], memory_db=memory_db,
+    )
 
 
 def _live_departure(live: BusLive) -> Callable[[str, tuple[float, float], int], int | None]:
@@ -2959,7 +2988,10 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
     memory = MemorySettings.from_config(full_config.get("memory"), runtime_root=paths.root)
     # ADR 0170: a brain's TimeSink and git are its terminal's, so what reads them asks the hub.
-    phone_events = BrainEvents(conn) if role == "brain" or listen_addresses else None
+    locate_waits = LocateWaits()
+    phone_events = (
+        BrainEvents(conn, locate_waits) if role == "brain" or listen_addresses else None
+    )
     terminal_hub = TerminalHub(events=phone_events) if role == "brain" else None
     device = None if terminal_hub is None else terminal_hub.call
     settings_drift = _settings_drift(terminal_hub, paths, full_config)
@@ -3052,6 +3084,10 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         account_cost=wave1_features.exactly_once_cost_accounting,
     )
     rides = Rides(paths.event_log, bus_live, places=kept_places, offers=transit_offers)  # ADR 0224
+    locator = (  # ADR 0281: only where a phone's answer can arrive
+        None if phone_events is None
+        else _locator(full_config, paths.event_log, locate_waits, memory.db_path)
+    )
     registry = build_default_registry(
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
@@ -3066,6 +3102,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         transit_offers=transit_offers,
         here_location=_here_location(role),
         here_phone=partial(_phone_here, paths.event_log),
+        locate_phone=locator,
         bus_live=_live_departure(bus_live),
         ride_control=rides.control(),
         highlight_marker=_highlight_marks(full_config, memory, paths, device).mark,
@@ -3266,6 +3303,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         terminal_hub=terminal_hub,
         settings_drift=settings_drift,
         phone_events=phone_events,
+        locator=locator,
         attachments=attachments,
         picture_files=picture_files,
         picture_notes=(

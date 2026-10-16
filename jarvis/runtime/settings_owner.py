@@ -50,7 +50,8 @@ _TABLE: Final[dict[Owner, tuple[str, ...]]] = {
         "dashboard", "agents", "jev_log",
         "tools.web",
         "tools.screen.vision_preset", "tools.plugins", "tools.mcp", "confirmation",
-        "diagnostics.log_llm_io", "dictation.polish_preset", "push", "session", "reply_language",
+        "diagnostics.log_llm_io", "dictation.polish_preset", "push", "locate", "session",
+        "reply_language",
         "onboarded",
         # What the brain's speech provider and turn pipeline read (the terminal only relays).
         "realtime.tts_voice", "realtime.tts_volume", "realtime.tts_model",

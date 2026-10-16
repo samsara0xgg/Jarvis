@@ -3920,6 +3920,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     transit_offers: TransitOffers | None = None,
     here_location: Callable[[], Mapping[str, Any]] | None = None,
     here_phone: Callable[[], Mapping[str, Any]] | None = None,
+    locate_phone: Callable[[], Mapping[str, Any]] | None = None,
     bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
     ride_control: RideControl | None = None,
     highlight_marker: HighlightMarker | None = None,
@@ -4012,6 +4013,9 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             and `device`). Without `here_location` (a brain) it is every turn's `here`; with
             both, a turn a paired phone opened gets it and the Mac's own turn gets the Mac's
             (ADR 0212). Both tools say which they read.
+        locate_phone: ADR 0281 — like `here_phone` for `where_am_i` alone, but asks the phone for
+            a fresh fix first and falls back to its last report (`fresh`, `not_fresh`).
+            `None`: `where_am_i` reads `here_phone`.
         bus_live: the live departure (epoch ms) of a route at a stop position around a time, for
             a route `bus` is asked about.
         ride_control: ADR 0224 — what the runtime does when the model says he is heading out,
@@ -4189,7 +4193,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             offers=transit_offers, bus_live=bus_live, control=ride_control,
             kept=None if memory_db_path is None else lambda: read_kept(memory_db_path),
         ),
-        *build_where_tool(here_location, here_phone),
+        *build_where_tool(here_location, locate_phone or here_phone),
         *build_highlight_tool(highlight_marker),
     ):
         registry.register(conversation_tool)

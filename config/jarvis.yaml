@@ -1454,6 +1454,14 @@ push:
   team_id: ""
   bundle_id: ""
 
+# How long `where_am_i` waits for his phone to take a fresh fix before it answers with the
+# phone's last report (ADR 0281). A phone with a live conversation socket is asked over it
+# (socket_wait_s); one without, or one that stays silent, is woken by a silent push (push_wait_s,
+# which needs the push: block above). 0 to 30 seconds.
+locate:
+  socket_wait_s: 4
+  push_wait_s: 8
+
 # The night run (ADR 0093): "我要睡觉了，让它继续跑" keeps the Mac awake this long,
 # screen off and sound muted. Before `morning` an unlock is only a look; from it on,
 # coming back puts brightness and sound back. Times follow work_state.timezone.

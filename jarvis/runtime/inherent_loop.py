@@ -7674,6 +7674,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             else None
         )
         phone_hub = None if built_phone is None else built_phone[0]
+        if phone_hub is not None and runtime.locator is not None:
+            # ADR 0281: a phone with a live conversation socket is asked for a fix over it.
+            runtime.locator.ask_socket = phone_hub.ask_location
         if phone_hub is not None and runtime.whereabouts is not None:
             # ADR 0217: a device with its conversation socket open is a phone, and that is said.
             runtime.whereabouts.phone_open = phone_hub.connected
@@ -8123,6 +8126,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             if phone_hub is not None:
                 # ADR 0209: a device with a live conversation socket needs no push.
                 push.phone_socket_open = phone_hub.connected
+            if runtime.locator is not None:
+                # ADR 0281: a phone with no socket is woken for a fix by a silent push.
+                runtime.locator.ask_push = push.locate
             if runtime.whereabouts is not None:
                 # ADR 0218: a request, or a card no turn asked, goes to the phone only away from
                 # the Mac.
