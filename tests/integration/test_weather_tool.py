@@ -328,17 +328,26 @@ def test_here_reads_the_location_seam_and_says_where_it_came_from(
     [
         ("geocoding-api.open-meteo.com", {"place": "Toronto"}, "the place lookup"),
         ("api.open-meteo.com", {"place": "Toronto"}, "the forecast"),
-        ("air-quality-api.open-meteo.com", {"air_quality": True}, "the air quality"),
     ],
 )
 def test_each_failed_read_is_a_tool_error_that_names_it(
     monkeypatch: pytest.MonkeyPatch, down: str, args: dict[str, Any], failed: str,
 ) -> None:
-    """The geocoder, the forecast or the air quality down: the error says which."""
+    """The geocoder or the forecast down: the error says which."""
     Net(monkeypatch, down=(down,))
     with pytest.raises(ToolError, match=f"weather: {failed} could not be read") as caught:
         _call(args)
     assert caught.value.code == "network_error"
+
+
+def test_the_forecast_stands_when_the_air_quality_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Air quality down or out of its reach: the weather comes back, the air marked unavailable."""
+    Net(monkeypatch, down=("air-quality-api.open-meteo.com",))
+    result = _call({"air_quality": True})
+    assert "today" in result
+    assert "unavailable" in result["air_quality"]
 
 
 def test_the_tool_is_on_the_models_menu_up_front_read_only_and_only_with_a_location() -> None:

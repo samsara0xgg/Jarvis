@@ -206,9 +206,9 @@ def _get(url: str, query: Mapping[str, Any], what: str) -> dict[str, Any]:
 
 def _span(start: date | None, end: date | None) -> dict[str, Any]:
     """Open-Meteo's days: the two from today, or ``start`` to ``end``."""
-    if start is None or end is None:
+    if start is None:
         return {"forecast_days": 2}
-    return {"start_date": start.isoformat(), "end_date": end.isoformat()}
+    return {"start_date": start.isoformat(), "end_date": (end or start).isoformat()}
 
 
 def _forecast(
@@ -433,7 +433,12 @@ def weather_lookup(
         if others:
             report["same_name_elsewhere"] = others
         if request.air_quality:
-            report["air_quality"] = _air(latitude, longitude, request)
+            try:
+                report["air_quality"] = _air(latitude, longitude, request)
+            except ToolError:  # the forecast stands without it
+                report["air_quality"] = {
+                    "unavailable": "not read for these days; its forecast reaches only a few days",
+                }
         return report
 
     return lookup
