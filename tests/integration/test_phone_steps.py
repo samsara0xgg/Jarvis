@@ -85,6 +85,7 @@ class _Host:
             limit=limit,
         )
         inherent_loop._add_steps(self.log, rows)  # noqa: SLF001
+        inherent_loop._add_places(self.log, rows)  # noqa: SLF001
         return {"since": "", "rows": rows, "has_more": more}
 
     async def _main(self) -> None:
@@ -168,7 +169,9 @@ class _Host:
             ]
 
 
-def _answer(host: _Host, turn_id: str, text: str) -> str:
+def _answer(
+    host: _Host, turn_id: str, text: str, places: list[dict[str, Any]] | None = None,
+) -> str:
     """Her answer's rows, and its memory record under the emitted row's uid; that uid."""
     conn = open_event_log(host.log)
     try:
@@ -204,6 +207,7 @@ def _answer(host: _Host, turn_id: str, text: str) -> str:
                 "text": text,
                 "response_group_id": "G",
                 "channel": "speech",
+                **({"places": places} if places else {}),
             },
         )
     finally:
@@ -566,6 +570,30 @@ def test_the_conversation_row_of_her_answer_carries_the_steps_read_from_the_log(
         ).json()["rows"]
         assert [r["id"] for r in older] == [busy_answer]
         assert older[0]["steps"] == busy_row["steps"]
+
+
+def test_the_conversation_row_of_her_answer_carries_the_places_it_showed(tmp_path: Path) -> None:
+    """ADR 0279: history redraws the map card from the row's ``places``; none, no key."""
+    places = [
+        {"name": "Ramen Shop", "lat": 48.43, "lng": -123.37, "address": "1 Fort St",
+         "place_id": "ChIJone", "kind": "place"},
+    ]
+    with _Host(tmp_path) as host:
+        phone = host.phone()
+        try:
+            phone.say("u-1", "ramen near me", spoken=False)
+            shown = phone.wait_text("said")["turn_id"]
+            phone.say("u-2", "thanks", spoken=False)
+            phone.wait_until(lambda: len(_frames(phone, "said")) == 2, "no second said")
+            plain = _frames(phone, "said")[1]["turn_id"]
+            with_places = _answer(host, shown, "There is one.", places)
+            without = _answer(host, plain, "You are welcome.")
+        finally:
+            phone.close()
+        rows = {r["id"]: r for r in host.http("GET", "/inherent/conversation").json()["rows"]}
+        assert rows[with_places]["places"] == places
+        assert "places" not in rows[without]
+        assert "places" not in {k for r in rows.values() if r["source"] == "allen" for k in r}
 
 
 # --- (d) the label table -------------------------------------------------------------------------

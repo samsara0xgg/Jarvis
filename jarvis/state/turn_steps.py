@@ -9,6 +9,7 @@ Layer rules: stdlib, ``jarvis.shared`` and ``jarvis.state`` only.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from jarvis.shared import lang
@@ -62,3 +63,18 @@ def answer_did(conn: sqlite3.Connection, answer_uids: Iterable[str]) -> dict[str
         for turn, by_n in last.items()
     }
     return {uid: did[turn] for uid, turn in turns.items() if did.get(turn)}
+
+
+def answer_places(conn: sqlite3.Connection, answer_uids: Iterable[str]) -> dict[str, list[Any]]:
+    """``{answer event uid: places}`` for the answers whose ``surface.response_emitted`` has any.
+
+    The places are the row's own ``places`` (ADR 0279), as logged: the phone redraws the map card
+    of an old answer from them. A uid with none, or that names no such row, is left out.
+    """
+    rows = conn.execute(
+        "SELECT event_uid, json_extract(payload_json, '$.places') FROM events "
+        "WHERE type = 'surface.response_emitted' "
+        "AND event_uid IN (SELECT value FROM json_each(?))",
+        (json.dumps(list(dict.fromkeys(answer_uids))),),
+    )
+    return {str(uid): json.loads(places) for uid, places in rows if places}

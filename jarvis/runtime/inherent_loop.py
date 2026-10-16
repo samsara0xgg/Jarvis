@@ -275,7 +275,7 @@ from jarvis.state.push_tokens import register_body
 from jarvis.state.reminders import ID_PREFIX
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.state.turn_overlap import any_turn_in_flight, turns_in_flight
-from jarvis.state.turn_steps import answer_steps
+from jarvis.state.turn_steps import answer_places, answer_steps
 from jarvis.surface import (
     respeaker_board,
     terminal_listen,
@@ -3462,6 +3462,29 @@ def _add_steps(event_log: Path, rows: list[dict[str, object]]) -> None:
             conn.close()
     for row in rows:
         row.update(found.get(str(row["id"]), {}))
+
+
+def _add_places(event_log: Path, rows: list[dict[str, object]]) -> None:
+    """ADR 0279: put the places of her answer on its row, so history redraws the map card.
+
+    ``places`` is what the answer's ``surface.response_emitted`` carried; a row without any gets
+    no key. A log that cannot be read leaves the page without places, never without rows.
+    """
+    ids = [str(row["id"]) for row in rows if row["source"] == "jarvis"]
+    if not ids:
+        return
+    conn = open_runtime_event_log(event_log)
+    try:
+        found = answer_places(conn, ids)
+    except sqlite3.Error:
+        LOGGER.warning("conversation: the places of its answers could not be read", exc_info=True)
+        return
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    for row in rows:
+        if places := found.get(str(row["id"])):
+            row["places"] = places
 
 
 def _add_reactions(event_log: Path, rows: list[dict[str, object]]) -> None:
@@ -7471,6 +7494,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 attachments=runtime.attachments,
             )
             _add_steps(runtime.runtime_paths.event_log, rows)
+            _add_places(runtime.runtime_paths.event_log, rows)
             _add_reactions(runtime.runtime_paths.event_log, rows)
             return {"since": since, "rows": rows, "has_more": has_more}
 
