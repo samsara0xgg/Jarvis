@@ -1,8 +1,7 @@
-"""ADR 0055 — the companion home's routes over replayed Microsoft, Gmail and Open-Meteo answers.
+"""ADR 0055 — the companion home's routes over replayed Microsoft and Gmail answers.
 
-The To Do list and task and the weather are the services' answers of
-2026-09-25 (ids shortened, one forecast hour turned to rain so the icon
-mapping shows); the calendar is empty on the real account, so its events are
+The To Do list and task are the services' answers of 2026-09-25 (ids shortened); the weather
+is a faked WeatherKit (ADR 0285); the calendar is empty on the real account, so its events are
 written in Graph's calendarView shape, and the mail in the JSON text blocks the
 Google Workspace server's gmail_search and gmail_get answer. Each check asserts
 what a route serves (what the home renders) or what Jarvis sent to Microsoft or
@@ -14,13 +13,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
-import io
 import json
 import sqlite3
 import threading
 import time
-import urllib.request
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from datetime import time as clock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
@@ -38,10 +35,13 @@ from jarvis.state.daily_report import save_report
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
+from tests.integration.weatherkit_world import NOW, Net, kit_for, make_key
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
     from pathlib import Path
+
+    from jarvis.runtime.weatherkit import WeatherKit
 
 ZONE = "America/Vancouver"
 LIST = {"displayName": "Tasks", "wellknownListName": "defaultList", "id": "AQMkADAw-list="}
@@ -110,19 +110,6 @@ LETTERS: list[dict[str, Any]] = [
         "to": "allen@example.com", "date": "Thu, 25 Sep 2026 09:00:00 -0700",
     },
 ]
-WEATHER: dict[str, Any] = {
-    "current": {"time": 1790400600, "temperature_2m": 10.5, "weather_code": 0},
-    "hourly": {
-        "time": [1790391600 + 3600 * i for i in range(16)],
-        "temperature_2m": [
-            11.6, 11.3, 10.8, 10.2, 10.6, 10.3, 10.2, 10.0,
-            9.8, 9.7, 9.7, 9.5, 9.9, 11.3, 12.1, 12.7,
-        ],
-        # Index 5 was 0 (clear); 61 (rain) there shows the mapping.
-        "weather_code": [51, 61, 0, 0, 0, 61, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    },
-    "daily": {"temperature_2m_max": [13.0, 13.8]},
-}
 ANSWERS = {
     "list-todo-task-lists": [LIST],
     "list-todo-tasks": TASKS,
@@ -217,33 +204,31 @@ def _client(
     )))
 
 
-def _weather_answers(monkeypatch: pytest.MonkeyPatch, *, reachable: bool = True) -> list[str]:
-    asked: list[str] = []
-
-    def urlopen(url: str, *, timeout: float) -> io.BytesIO:
-        del timeout
-        asked.append(url)
-        if not reachable:
-            raise TimeoutError
-        return io.BytesIO(json.dumps(WEATHER).encode())
-
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    return asked
+def _weather_answers(
+    monkeypatch: pytest.MonkeyPatch, *, reachable: bool = True,
+) -> Net:
+    return Net(monkeypatch, down=() if reachable else ("weatherkit.apple.com",))
 
 
-def _home(server: _Microsoft | None, gmail: _Gmail | None = None) -> Home:
+def _home(
+    server: _Microsoft | None, gmail: _Gmail | None = None, kit: WeatherKit | None = None,
+) -> Home:
     return Home(
         _Connections(server, gmail),  # type: ignore[arg-type]
         (ZONE, ZoneInfo(ZONE)),
-        {"latitude": 49.28, "longitude": -123.12},
+        {"latitude": 49.28, "longitude": -123.12, "country_code": "CA"},
+        weatherkit=kit,
     )
 
 
-def test_today_serves_calendar_open_todos_and_weather(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_today_serves_calendar_open_todos_and_weather(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
     """GET /inherent/today: timed and all-day events, open to-dos due by day's end, 3-hourly sky."""
-    asked = _weather_answers(monkeypatch)
+    net = _weather_answers(monkeypatch)
     server = _Microsoft()
-    reply = _client(_home(server)).get("/inherent/today")
+    kit = kit_for(make_key(tmp_path)[0])
+    reply = _client(_home(server, kit=kit)).get("/inherent/today")
     assert reply.status_code == 200
     body = reply.json()
     assert body["events"] == [
@@ -263,17 +248,26 @@ def test_today_serves_calendar_open_todos_and_weather(monkeypatch: pytest.Monkey
             "due": "2026-09-26T23:59:00-07:00",
         },
     ]
+    first = NOW.replace(minute=0, second=0).astimezone(UTC)
     assert body["weather"] == {
-        "now_c": 10.5,
-        "high_c": 13.0,
+        "now_c": 11.0,
+        "high_c": 15.0,
         "hours": [
-            {"at": "2026-09-26T05:00:00+00:00", "kind": "sun", "temp_c": 10.8},
-            {"at": "2026-09-26T08:00:00+00:00", "kind": "rain", "temp_c": 10.3},
-            {"at": "2026-09-26T11:00:00+00:00", "kind": "sun", "temp_c": 9.8},
-            {"at": "2026-09-26T14:00:00+00:00", "kind": "sun", "temp_c": 9.5},
+            {
+                "at": (first + timedelta(hours=3 * n)).isoformat(),
+                "kind": "cloud" if n == 0 else "rain",
+                "temp_c": round(
+                    10.0 + (first + timedelta(hours=3 * n)).astimezone(ZoneInfo(ZONE)).hour / 4,
+                    1,
+                ),
+            }
+            for n in range(4)
         ],
     }
-    assert "latitude=49.28&longitude=-123.12" in asked[0]
+    # One request serves the home; the tool's default request for the same place shares it.
+    assert net.hosts() == ["weatherkit.apple.com"]
+    assert "/49.28/-123.12" in net.asked[0]
+    assert "countryCode=CA" in net.asked[0]
     # The calendar is read for the local day the request falls on.
     view = next(args for tool, args in server.calls if tool == "get-calendar-view")
     start = datetime.fromisoformat(view["startDateTime"])
@@ -285,12 +279,25 @@ def test_today_serves_calendar_open_todos_and_weather(monkeypatch: pytest.Monkey
     ]
 
 
-def test_weather_failure_keeps_the_calendar(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Open-Meteo down: Today still answers, without weather."""
+def test_weather_failure_keeps_the_calendar(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """WeatherKit down: Today still answers, without weather."""
     _weather_answers(monkeypatch, reachable=False)
-    body = _client(_home(_Microsoft())).get("/inherent/today").json()
+    kit = kit_for(make_key(tmp_path)[0])
+    body = _client(_home(_Microsoft(), kit=kit)).get("/inherent/today").json()
     assert body["weather"] is None
     assert [t["title"] for t in body["todos"]] == ["repack jarvis", "CSC370 A3"]
+
+
+def test_with_no_weatherkit_key_the_home_shows_no_weather_and_asks_nobody(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No key: Today answers without weather and no request is made."""
+    net = _weather_answers(monkeypatch)
+    body = _client(_home(_Microsoft())).get("/inherent/today").json()
+    assert body["weather"] is None
+    assert net.asked == []
 
 
 def test_the_checkbox_writes_the_task_status_to_todo() -> None:

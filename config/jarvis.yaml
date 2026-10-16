@@ -514,10 +514,28 @@ core_memory:
 maps:
   monthly_usd: 10
 
+# ADR 0285 — the weather (the `weather` tool and the home's weather line) comes only from Apple
+# WeatherKit's REST API; air quality and place-name lookups stay on Open-Meteo (no key).  Off
+# until a key is set: the tool then answers "weather is not set up: WeatherKit key missing", the
+# home shows no weather, and the boot logs that once.  Set these in the owner's settings.yaml.
+#   key_id:     the Key ID of a key with WeatherKit enabled (Apple Developer > Keys).
+#   team_id:    the developer Team ID (default the owner's).
+#   service_id: the Services ID (Identifiers > Services IDs) with WeatherKit enabled; the
+#               token's `sub` and the second half of its header `id`.
+#   key_file:   the private key file from Apple, a regular file, mode 0600 (~ allowed).  It is
+#               read only to sign.
+weather:
+  weatherkit:
+    key_id: 5YTD6WQL62
+    team_id: 3MEBVQ3N3U
+    service_id: com.allen.jarvis.weather
+    key_file: ~/.jarvis/weatherkit.p8
+
 # ADR 0051 — 小球首页：日程和待办直接读 Microsoft，邮件读 Gmail（~/.jarvis/env 里的
-# GMAIL_ADDRESS + GMAIL_APP_PASSWORD），都不经过模型；天气来自 Open-Meteo（不用 key），
-# 按 weather 的经纬度，每个用户在自己的 settings.yaml 里写，例如
-# home: {weather: {latitude: 48.48, longitude: -123.38}}。不写就不显示天气。
+# GMAIL_ADDRESS + GMAIL_APP_PASSWORD），都不经过模型；天气来自 Apple WeatherKit（ADR 0285，
+# 见上面的 weather 块），按 home.weather 的经纬度，每个用户在自己的 settings.yaml 里写，例如
+# home: {weather: {latitude: 48.48, longitude: -123.38, country_code: CA}}。country_code
+# （两位国家码）让天气警报可用；不写就没有警报。不写经纬度就不显示天气。
 home:
   # ADR 0123, 0124.  Ask Jev (TypeSafe's hosted decision model, through OpenRouter) once per
   # unread letter on the home whether it needs Allen's own reply; only the sender's

@@ -224,6 +224,7 @@ from jarvis.runtime.settings import REPLY_LINES, SETUP_VOICES, Settings, apply_s
 from jarvis.runtime.settings_owner import SettingsDrift, check_own, page_keys
 from jarvis.runtime.setup import write_setting
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
+from jarvis.runtime.weatherkit import WeatherKit
 from jarvis.runtime.whereabouts import Whereabouts
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event, lang, llm_io_log
@@ -3102,6 +3103,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         None if phone_events is None
         else _locator(full_config, paths.event_log, locate_waits, memory.db_path)
     )
+    weatherkit = WeatherKit.from_config(full_config)  # ADR 0285: logs which source is used
     surroundings = Surroundings(  # ADR 0284: held by position; the tool and the state line share it
         maps_key, _maps_monthly_usd(full_config), memory.db_path, local_zone,
     )
@@ -3113,7 +3115,10 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         work_state_refresh=_work_state_tool_refresh(work_state, daily_report),
         night=night,
         voice_settings=voice_settings,
-        weather_lookup=weather_lookup(_home_weather(full_config)),
+        weather_lookup=weather_lookup(
+            _home_weather(full_config), weatherkit,
+            resolve_zone(None, _work_state_timezone(full_config))[0],
+        ),
         transit_api_key=maps_key,
         maps_monthly_usd=_maps_monthly_usd(full_config),
         surroundings=surroundings,
@@ -3287,6 +3292,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             ),
             paths.event_log,
         ),
+        weatherkit,
     )
     _register_mail(registry, home, local_zone)
     _register_conversation(registry, memory.db_path, local_zone, paths.root)
