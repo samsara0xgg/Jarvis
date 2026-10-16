@@ -261,7 +261,7 @@ from jarvis.state.event_log import (
     open_event_log,
     open_runtime_event_log,
 )
-from jarvis.state.ledger import LedgerSources, TerminalScreen
+from jarvis.state.ledger import TURN_WAIT_S, LedgerSources, TerminalScreen
 from jarvis.state.locate_wait import LocateWaits
 from jarvis.state.memory_db import (
     DidOf,
@@ -1372,7 +1372,7 @@ def _highlight_marks(
         paths.event_log,
         DaySources(
             zone, _timesink_db_path(full_config), memory.db_path,
-            None if device is None else TerminalScreen(device),
+            None if device is None else TerminalScreen(device, wait_s=TURN_WAIT_S),
             paths.artifacts_root / ATTACHMENTS_DIRNAME,
         ),
     )
@@ -3295,7 +3295,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         registry,
         LedgerSources(
             memory.db_path, paths.event_log, _timesink_db_path(full_config), local_zone,
-            None if device is None else TerminalScreen(device),
+            None if device is None else TerminalScreen(device, wait_s=TURN_WAIT_S),
             paths.artifacts_root / ATTACHMENTS_DIRNAME,
         ),
     )

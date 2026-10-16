@@ -21,6 +21,7 @@ prose line, which the decision layer writes once a night from these numbers, is 
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import re
 import sqlite3
@@ -101,6 +102,8 @@ _TERMINAL_STALE_S: Final[float] = 1800.0
 _MOVING_ARGS: Final[frozenset[str]] = frozenset({"as_of", "hi"})  # the window's far end: now
 _TERMINAL_SERVED_S: Final[float] = 900.0
 """How old a prefetched reading may be and still reach a turn (ADR 0264); older is left out."""
+TURN_WAIT_S: Final[float] = 2.0
+"""How long a turn's read waits on the terminal before it answers without it; the ask goes on."""
 _SCREEN: Final = "ledger_screen"
 _SUBMISSIONS: Final = "ledger_submissions"
 _ReadKey = tuple[str, tuple[tuple[str, str], ...]]
@@ -117,11 +120,17 @@ class TerminalScreen:
     terminal that is away, slow past the link's timeout or too old to know the read gives ``None``
     and the part is empty, as with no store. :attr:`misses` counts the asks that were given
     ``None``, so a caller can tell that what it just built was built without the terminal.
+
+    With ``wait_s`` (a turn's tool or page), a read with nothing known waits that long at most: a
+    Mac asleep behind a socket not yet seen dead would hold it for the link's whole call timeout.
+    The ask goes on without it, and its answer is kept for the next read.
     """
 
-    def __init__(self, device: DeviceLink) -> None:
-        """Bind the brain's link to its terminal."""
+    def __init__(self, device: DeviceLink, *, wait_s: float | None = None) -> None:
+        """Bind the brain's link to its terminal; ``wait_s`` caps how long :meth:`read` waits."""
         self._device = device
+        self._wait_s = wait_s
+        self._asking: dict[_ReadKey, concurrent.futures.Future[Any]] = {}
         self._lock = threading.Lock()  # the dicts, the set and ``misses``
         self._ask_lock = threading.Lock()  # a turn and the prefix warm share one cold ask
         self._kept: dict[_ReadKey, tuple[float, Any]] = {}  # exact asks, for a minute
@@ -155,7 +164,12 @@ class TerminalScreen:
         with self._ask_lock:
             with self._lock:
                 hit = self._kept.get(key)
-            found = hit[1] if hit is not None else self._ask_and_keep(key, fixed, args)
+            if hit is not None:
+                found = hit[1]
+            elif self._wait_s is None:
+                found = self._ask_and_keep(key, fixed, args)
+            else:
+                found = self._ask_within(key, fixed, args, self._wait_s)
             with self._lock:
                 self.misses += found is None
             return found
@@ -184,6 +198,35 @@ class TerminalScreen:
     def cached(self) -> CachedScreen:
         """The view a turn reads through: only what :meth:`fetch` kept, never an ask."""
         return CachedScreen(self)
+
+    def _ask_within(
+        self, key: _ReadKey, fixed: _ReadKey, args: dict[str, str], wait_s: float,
+    ) -> Any:  # noqa: ANN401 — the reader's JSON.
+        with self._lock:
+            asking = self._asking.get(key)
+            if asking is None:
+                asking = self._asking[key] = concurrent.futures.Future()
+                threading.Thread(
+                    target=self._ask_into, args=(asking, key, fixed, args), daemon=True,
+                    name="jarvis-ledger-terminal-ask",
+                ).start()
+        try:
+            return asking.result(timeout=wait_s)
+        except concurrent.futures.TimeoutError:
+            LOGGER.info("ledger: terminal read %s not back in %g s; went on", key[0], wait_s)
+            return None
+
+    def _ask_into(
+        self, asking: concurrent.futures.Future[Any], key: _ReadKey, fixed: _ReadKey,
+        args: dict[str, str],
+    ) -> None:
+        try:
+            asking.set_result(self._ask_and_keep(key, fixed, args))
+        except BaseException as exc:  # noqa: BLE001 — handed to whoever waits.
+            asking.set_exception(exc)
+        finally:
+            with self._lock:
+                self._asking.pop(key, None)
 
     def _refresh(self, key: _ReadKey, fixed: _ReadKey, args: dict[str, str]) -> None:
         try:

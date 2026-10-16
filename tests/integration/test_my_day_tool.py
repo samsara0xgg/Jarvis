@@ -8,9 +8,11 @@ a call and the exact words or fields it gives back, with local times (UTC-7 here
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import sqlite3
+import time
 from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
@@ -21,9 +23,12 @@ import yaml
 
 from jarvis.execution.my_day_tool import build_my_day_tool
 from jarvis.execution.tools import Tool, ToolContext, ToolError
+from jarvis.runtime import terminal as terminal_runtime
 from jarvis.shared import CallerPrincipal
+from jarvis.state.device_reads import TIMESINK_READ
 from jarvis.state.event_log import emit_event, open_event_log
-from jarvis.state.ledger import LedgerSources, TerminalScreen
+from jarvis.state.ledger import TURN_WAIT_S, LedgerSources, TerminalScreen
+from jarvis.surface.terminal_link import TerminalHub
 from scripts import tool_exam
 from tests.integration.test_day_line import _load
 from tests.integration.test_ledger import (
@@ -386,6 +391,44 @@ def test_a_terminal_that_is_away_is_named_and_the_brains_own_data_still_answers(
         "yesterday (Wed): no computer activity",
     ]
     assert away.misses == 1
+
+
+def test_a_terminal_that_does_not_answer_holds_my_day_two_seconds_and_its_late_answer_is_kept(
+    src: LedgerSources,
+) -> None:
+    """A Mac asleep behind a half-open socket: this turn goes on, the next has its answer."""
+    asked: list[dict[str, Any]] = []
+
+    async def scenario() -> tuple[float, dict[str, Any], dict[str, Any]]:
+        hub = TerminalHub()  # the daemon's own call timeout
+
+        async def send(text: str) -> None:
+            asked.append(json.loads(text))  # the frame goes out; nothing comes back yet
+
+        link = hub.attach("macbook", frozenset({TIMESINK_READ}), send)
+        brain = LedgerSources(
+            src.memory_db, src.event_log, None, ZONE, TerminalScreen(hub.call, wait_s=TURN_WAIT_S),
+        )
+        tool = _tool(brain)
+        began = time.monotonic()
+        without = await asyncio.to_thread(_call, tool, date="2026-10-06")
+        took = time.monotonic() - began
+        for frame in asked:  # the Mac wakes and answers what it was asked
+            reply = terminal_runtime._read_device(  # noqa: SLF001
+                frame["tool"], frame["arguments"], src.timesink, (),
+            )
+            hub.deliver(link, {"type": "result", "id": frame["id"], **reply})
+        await asyncio.sleep(0.2)
+        return took, without, await asyncio.to_thread(_call, tool, date="2026-10-06")
+
+    took, without, later = asyncio.run(scenario())
+    assert took < TURN_WAIT_S + 1
+    assert without["missing"] == [
+        "apps, projects and calls (his computer's terminal is not connected)",
+    ]
+    assert without["commits"] == ["jarvis 2"]
+    assert len(asked) == 1
+    assert later == _call(_tool(src), date="2026-10-06")
 
 
 def test_a_connected_terminal_gives_what_one_machine_gives(src: LedgerSources) -> None:

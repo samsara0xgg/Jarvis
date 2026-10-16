@@ -251,7 +251,7 @@ from jarvis.state.input_submission_inbox import (
     resolve_asr_request,
     submit_text_once,
 )
-from jarvis.state.ledger import TerminalScreen
+from jarvis.state.ledger import TURN_WAIT_S, TerminalScreen
 from jarvis.state.lifelog import DEFAULT_MIN_FREE_BYTES, LIFELOG_DIRNAME, Lifelog
 from jarvis.state.memory_db import (
     HISTORY_PICTURES,
@@ -7770,7 +7770,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 _timesink_db_path(runtime.config),
                 terminal=(
                     None if runtime.terminal_hub is None
-                    else TerminalScreen(runtime.terminal_hub.call)
+                    else TerminalScreen(runtime.terminal_hub.call, wait_s=TURN_WAIT_S)
                 ),
                 attachments=None if runtime.attachments is None else runtime.attachments.directory,
                 calendar=None if runtime.home is None else runtime.home.calendar,
