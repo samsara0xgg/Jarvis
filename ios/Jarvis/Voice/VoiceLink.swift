@@ -12,6 +12,8 @@ enum LinkEvent: Sendable {
     case step(StepFrame)
     /// a reaction set or taken back on a message, by him or by her (ADR 0256)
     case reaction(ReactionFrame)
+    /// the brain asks for a fresh fix of where he is (`PhoneFrame.located` answers it)
+    case locate(requestId: String)
     /// a frame for the player (from the host's binary messages)
     case audio(PlayerIn)
     /// an `error` frame the link does not handle itself (bad_ping, bad_frame, no_voice, interrupt_failed)
@@ -54,6 +56,12 @@ protocol VoiceLink: AnyObject {
     func cancel()
     /// what the player reports back (READY, REPORT, STATUS, DISCARD_ACK)
     func send(_ frames: [PlayerOut])
+    /// a text frame to the host (the answer to a `locate`); a link with no host to tell drops it
+    func sendFrame(_ frame: PhoneFrame)
+}
+
+extension VoiceLink {
+    func sendFrame(_ frame: PhoneFrame) {}
 }
 
 extension VoiceLink {
@@ -177,6 +185,7 @@ final class WebSocketVoiceLink: VoiceLink {
         case .row(let r): out.yield(.row(r))
         case .step(let f): out.yield(.step(f))
         case .reaction(let f): out.yield(.reaction(f))
+        case .locate(let id): out.yield(.locate(requestId: id))
         case .pong: break
         case .error("retry", _):                      // the host could not write it down: send the same say again
             Task { [weak self, mine = generation] in
@@ -231,6 +240,7 @@ final class WebSocketVoiceLink: VoiceLink {
         }
     }
 
+    func sendFrame(_ frame: PhoneFrame) { sendText(frame) }
     func barge() { stopped += 1; sendText(.barge) }
     func cancel() { stopped += 1; sendText(.cancel) }
 

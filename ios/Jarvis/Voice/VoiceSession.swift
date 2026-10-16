@@ -643,6 +643,7 @@ final class VoiceSession {
         case .row(let r): handleRow(r)
         case .step: break                                   // the board has it (PhoneLink)
         case .reaction: break                               // PhoneLink keeps them (Brain/Reactions)
+        case .locate: break                                 // PhoneLink answers it (Map/Locate)
         case .audio(let f):
             audio.core?.ingest(f)
             // what the host streams, once per change, so a turn whose answer never plays shows which side dropped it

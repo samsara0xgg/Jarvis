@@ -161,9 +161,17 @@ struct ReactionFrame: Equatable, Sendable {
     let target: String, by: String, emoji: String?
 }
 
+/// What the phone answers a `locate` with (`located`): a fix with the time it was taken (the host judges how fresh it is) and, when the app was on screen, the attachment id of a map picture;
+/// or why there is none: `denied` (no permission) or `unavailable` (no fix in time).
+enum LocateOutcome: Equatable, Sendable {
+    case fix(lat: Double, lng: Double, accuracyM: Double, fixTsEpochMs: Int64, snapshot: String?)
+    case error(String)
+}
+
 /// phone -> host
 enum PhoneFrame: Equatable, Sendable {
     case hello
+    case located(requestId: String, outcome: LocateOutcome)
     case say(utteranceId: String, text: String, language: String?, confidence: Double?, spoken: Bool, overHer: Bool = false, conversation: Bool = false,
              about: Data? = nil,                        // the item he has open (ADR 0214), as JSON
              attachments: [String] = [],                // ids from POST /inherent/attachments; typed words only
@@ -185,6 +193,14 @@ enum PhoneFrame: Equatable, Sendable {
             if conversation { o["conversation"] = true }
             if let continues { o["continues"] = continues }
             if let about, let a = try? JSONSerialization.jsonObject(with: about) { o["about"] = a }
+        case .located(let id, let outcome):
+            o = ["type": "located", "request_id": id]
+            switch outcome {
+            case .fix(let lat, let lng, let acc, let ts, let snapshot):
+                o["lat"] = lat; o["lng"] = lng; o["accuracy_m"] = acc; o["fix_ts_epoch_ms"] = ts
+                if let snapshot { o["snapshot"] = snapshot }
+            case .error(let why): o["error"] = why
+            }
         case .barge: o = ["type": "barge"]
         case .cancel: o = ["type": "cancel"]
         case .ping(let t): o = ["type": "ping", "t_ns": t]
@@ -202,6 +218,12 @@ enum PhoneFrame: Equatable, Sendable {
                          overHer: o["over_her"] as? Bool ?? false, conversation: o["conversation"] as? Bool ?? false,
                          about: (o["about"] as? [String: Any]).flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) },
                          attachments: o["attachments"] as? [String] ?? [], continues: o["continues"] as? String)
+        case "located":
+            guard let id = o["request_id"] as? String else { return nil }
+            if let why = o["error"] as? String { self = .located(requestId: id, outcome: .error(why)); return }
+            guard let lat = (o["lat"] as? NSNumber)?.doubleValue, let lng = (o["lng"] as? NSNumber)?.doubleValue, let acc = (o["accuracy_m"] as? NSNumber)?.doubleValue,
+                  let ts = (o["fix_ts_epoch_ms"] as? NSNumber)?.int64Value else { return nil }
+            self = .located(requestId: id, outcome: .fix(lat: lat, lng: lng, accuracyM: acc, fixTsEpochMs: ts, snapshot: o["snapshot"] as? String))
         case "barge": self = .barge
         case "cancel": self = .cancel
         case "ping": guard let t = (o["t_ns"] as? NSNumber)?.int64Value else { return nil }; self = .ping(tNs: t)
@@ -220,6 +242,8 @@ enum HostFrame: Equatable, Sendable {
     case row(RowFrame)
     case step(StepFrame)
     case reaction(ReactionFrame)
+    /// the brain wants a fresh fix of where he is now; answered with `located`
+    case locate(requestId: String)
     case pong(tNs: Int64, hostNs: Int64)
     /// codes: bad_say, bad_ping, bad_frame, no_voice, retry (resend the same say), interrupt_failed; attachment_refused (the message is the store's sentence)
     /// and no_attachments (this host takes none) for a typed say with files
@@ -233,6 +257,7 @@ enum HostFrame: Equatable, Sendable {
             o = ["type": "said", "utterance_id": u, "turn_id": t ?? NSNull(), "verdict": v]
             if let rec { o["record_id"] = rec }
         case .reaction(let f): o = ["type": "reaction", "target": f.target, "by": f.by, "emoji": f.emoji ?? NSNull()]
+        case .locate(let id): o = ["type": "locate", "request_id": id]
         case .row(let r): o = ["type": "row", "event_type": r.eventType, "event_uid": r.eventUid, "payload": r.payload, "ts_epoch_ms": r.tsEpochMs]
         case .step(let f):
             o = ["type": "step", "turn_id": f.turnId, "step": f.step, "tool": f.tool, "label": f.label, "state": f.state.rawValue, "started_ms": f.startedMs,
@@ -255,6 +280,9 @@ enum HostFrame: Equatable, Sendable {
         case "reaction":
             guard let target = o["target"] as? String, !target.isEmpty, let by = o["by"] as? String else { return nil }
             self = .reaction(ReactionFrame(target: target, by: by, emoji: (o["emoji"] as? String).flatMap { $0.isEmpty ? nil : $0 }))
+        case "locate":
+            guard let id = o["request_id"] as? String, !id.isEmpty else { return nil }
+            self = .locate(requestId: id)
         case "row":
             guard let t = o["event_type"] as? String, let u = o["event_uid"] as? String, let p = o["payload"] as? [String: Any],
                   let ts = (o["ts_epoch_ms"] as? NSNumber)?.int64Value else { return nil }

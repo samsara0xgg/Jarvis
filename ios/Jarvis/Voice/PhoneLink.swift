@@ -41,11 +41,13 @@ final class PhoneLink {
     private var foreground = true
     private let board: StatusBoard
     private let make: ((_ real: Bool) -> VoiceLink)?
+    private let locator: LocateService
 
     /// `make` stands in for the websocket and the stub (the tests' line)
-    init(board: StatusBoard = .shared, make: ((_ real: Bool) -> VoiceLink)? = nil) {
+    init(board: StatusBoard = .shared, make: ((_ real: Bool) -> VoiceLink)? = nil, locator: LocateService? = nil) {
         self.board = board
         self.make = make
+        self.locator = locator ?? LocateService()
         foreground = UIApplication.shared.applicationState != .background
         hop(UIApplication.didEnterBackgroundNotification) { $0.foreground = false }
         hop(UIApplication.willEnterForegroundNotification) { $0.foreground = true; $0.connectIfOnScreen() }
@@ -101,6 +103,10 @@ final class PhoneLink {
         case .ready: ready = true
         case .closed, .unpaired, .replaced: ready = false
         case .reaction(let f): Reactions.shared.apply(f)
+        case .locate(let id):
+            // asked for where he is: one fix, and the answer goes back on the line that asked
+            let asked = link, service = locator
+            Task { asked?.sendFrame(await service.answer(id)) }
         default: break
         }
         board.feed(e)
