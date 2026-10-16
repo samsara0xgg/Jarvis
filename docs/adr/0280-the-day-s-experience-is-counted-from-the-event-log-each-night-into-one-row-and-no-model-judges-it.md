@@ -1,4 +1,4 @@
-# ADR 0279 — The day's experience is counted from the event log each night into one row, and no model judges it
+# ADR 0280 — The day's experience is counted from the event log each night into one row, and no model judges it
 
 **Status:** Accepted
 **Date:** 2026-10-16

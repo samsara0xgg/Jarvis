@@ -8137,7 +8137,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             )
         day_experience = DayExperienceSettings.from_config(runtime.config.get("day_experience"))
         if day_experience is not None and runtime.memory is not None:
-            # ADR 0279: past days' experience table, folded from the event log once a day.
+            # ADR 0280: past days' experience table, folded from the event log once a day.
             watchers.append(
                 asyncio.create_task(
                     DayExperienceSchedule(

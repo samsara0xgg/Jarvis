@@ -1,4 +1,4 @@
-"""ADR 0279 — the day's experience table: the fold and the store.
+"""ADR 0280 — the day's experience table: the fold and the store.
 
 The fold is driven by synthetic rows (type, time, payload, device) of one local date and its
 expected metrics; the store and the cards' reactions run over a real memory.db and a real

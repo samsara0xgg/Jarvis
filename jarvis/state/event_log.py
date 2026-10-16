@@ -285,7 +285,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("confidence",),
         schema_version=1,
     ),
-    # ADR 0279 — what Jev's one request for a voice line answered (ADR 0139), written once the
+    # ADR 0280 — what Jev's one request for a voice line answered (ADR 0139), written once the
     # turn exists, whatever the confidence.  Each question is present only when its answer was
     # readable: ``intent`` (a control word, a Tier 0 instant function id, or ``none``),
     # ``relation`` to the previous line (with ``prev_turn_id``, only when that line was inside

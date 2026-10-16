@@ -1,4 +1,4 @@
-"""L2 day experience (ADR 0279): one local day of how it went, folded from the event log.
+"""L2 day experience (ADR 0280): one local day of how it went, folded from the event log.
 
 :func:`fold_day` is a pure function over the rows of one local date; :func:`compute_day` reads
 them (and the proactive cards' reactions in memory.db) and folds. Nothing here is a judgement

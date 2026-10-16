@@ -95,7 +95,7 @@ class _Lines:
             model="m", min_confidence=1.0, timeout_ms=800, log=JevLog(self.log_path),
         )
         self.emitted: list[tuple[str, dict[str, Any], str]] = []  # route.tool_predicted
-        self.read: list[tuple[str, dict[str, Any], str]] = []  # route.oneshot_read (ADR 0279)
+        self.read: list[tuple[str, dict[str, Any], str]] = []  # route.oneshot_read (ADR 0280)
         options: dict[str, Any] = {
             "words_at": 0.95, "relation_at": 0.98, "window_s": 30.0, "tool_at": 0.95,
             "tool_groups": GROUPS,
@@ -302,7 +302,7 @@ def test_a_reply_that_lands_after_the_turn_started_still_writes_the_event_once(
 def test_the_whole_verdict_is_written_once_the_turn_exists_whatever_its_confidence(
     tmp_path: Path,
 ) -> None:
-    """ADR 0279: intent, relation (with the line it compared) and group, each with its confidence.
+    """ADR 0280: intent, relation (with the line it compared) and group, each with its confidence.
 
     The relation is absent for a first line.
     """

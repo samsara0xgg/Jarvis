@@ -1,4 +1,4 @@
-"""ADR 0279 — the nightly run, its schedule and the plain-text report, over real files."""
+"""ADR 0280 — the nightly run, its schedule and the plain-text report, over real files."""
 
 from __future__ import annotations
 

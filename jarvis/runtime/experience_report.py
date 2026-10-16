@@ -1,4 +1,4 @@
-"""Print a day's experience table and the weekly line as plain text (ADR 0279).
+"""Print a day's experience table and the weekly line as plain text (ADR 0280).
 
     python -m jarvis.runtime.experience_report [--date YYYY-MM-DD] [--week]
         [--runtime-root PATH] [--db PATH]
