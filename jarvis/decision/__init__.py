@@ -1177,7 +1177,7 @@ def _cut(text: str, limit: int) -> str:
 
 
 def _done_for_thought_line(packet: SituationPacket, ctx: DecideContext) -> str | None:
-    """ADR 0274: what the earlier sentences of this composed thought already did.
+    """ADR 0278: what the earlier sentences of this composed thought already did.
 
     A turn that takes over from earlier ones inherits their tool calls as plain facts, not as
     tool blocks: each call and its result, so she uses them and does not call again.

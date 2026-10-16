@@ -3665,7 +3665,7 @@ def _build_brain_listening(
         lambda device: make_supersede_unspoken_callable(
             runtime, listening.drop_unspoken,
             only_turns=device_voice.device_turns(event_log_path, device),
-            # ADR 0274: the device's pending sentence is composed into the next one at its
+            # ADR 0278: the device's pending sentence is composed into the next one at its
             # utterance, so the sweep leaves it to that.
             leave=lambda turn_id: compose(device, turn_id, None),
         ),

@@ -188,7 +188,7 @@ class BrainEvents:
     ) -> str:
         """Append the ``utterance.received`` a voice terminal heard, once; its event uid.
 
-        ``continues`` (ADR 0274) is the turn the brain composed these words into: when that
+        ``continues`` (ADR 0278) is the turn the brain composed these words into: when that
         turn's sentence is on the log, ``transcript`` holds both (see :meth:`continued_words`).
 
         The uid is derived from ``device`` and the utterance's own id, so a terminal that
@@ -240,7 +240,7 @@ class BrainEvents:
     def continued_words(self, device: str, continues: str, text: str) -> dict[str, Any] | None:
         """The payload fields of a spoken sentence that goes on from the turn ``continues``.
 
-        ADR 0271, 0274: ``transcript`` is the earlier sentence's whole thought followed by
+        ADR 0271, 0278: ``transcript`` is the earlier sentence's whole thought followed by
         ``text``, ``segment`` is ``text`` alone, ``continues`` is the earlier turn and ``folded``
         the record ids whose words ``transcript`` already holds. ``None`` when ``continues`` is
         not a turn this device opened with a spoken sentence, or the thought would be longer than
@@ -291,7 +291,7 @@ class BrainEvents:
         the opening row, in either branch, only when given. ``attachments`` (ADR 0231) are the ids
         of the files typed words came with, already checked by the store; they ride the typed
         row as ``POST /inherent/submit`` writes them, and spoken words take none. ``continues``
-        (ADR 0271, 0274) is the turn id of the spoken sentence of this device these words go on
+        (ADR 0271, 0278) is the turn id of the spoken sentence of this device these words go on
         from: when that one is on the log, ``transcript`` holds both (see
         :meth:`continued_words`).
 

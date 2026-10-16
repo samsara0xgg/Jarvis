@@ -1,6 +1,6 @@
 # ADR 0271 — A phone's sentence that goes on from its last is composed by the brain into one turn
 
-**Status:** Superseded-by-0274
+**Status:** Superseded-by-0278
 **Date:** 2026-10-14
 **Supersedes:** none
 

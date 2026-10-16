@@ -580,7 +580,7 @@ def _spoken_turn(conn: Any, turn_id: str, words: str) -> Any:  # noqa: ANN401 - 
 
 # The ADR 0268 tests below drive the sweep alone, as the host's own session does (it has no
 # terminal and records its utterances itself); a terminal's sweep leaves the pending sentence to
-# composition (ADR 0274), which its tests further down drive end to end.
+# composition (ADR 0278), which its tests further down drive end to end.
 _FIRST = "我想问一下去学校的公交"
 _SECOND = "现在出发能赶上哪一班"
 
@@ -971,7 +971,7 @@ def test_three_steps_of_one_thought_are_one_answer_to_all_three(tmp_path: Path) 
 def test_a_continues_that_names_another_turn_than_the_pending_one_is_dropped(
     tmp_path: Path,
 ) -> None:
-    """The brain picks the turn by state; a name that disagrees is dropped (ADR 0274)."""
+    """The brain picks the turn by state; a name that disagrees is dropped (ADR 0278)."""
     scripts = [[("final_answer", "一。")], [("final_answer", "二。")]]
     with _Peer(scripts, first_event_delay_s=1.0) as peer:
         runtime = _merge_rig(tmp_path, peer)
@@ -1000,7 +1000,7 @@ def test_a_continues_that_names_another_turn_than_the_pending_one_is_dropped(
 def test_a_spoken_say_with_no_continues_goes_on_from_the_pending_turn_all_the_same(
     tmp_path: Path,
 ) -> None:
-    """ADR 0274: no time window and no name from the phone; the earlier answer is not over."""
+    """ADR 0278: no time window and no name from the phone; the earlier answer is not over."""
     answer = "八点二十有一班。"
     with _Peer([[("final_answer", answer)]], first_event_delay_s=30.0) as peer:
         runtime = _merge_rig(tmp_path, peer)
@@ -1090,7 +1090,7 @@ def test_a_continues_that_is_not_an_utterance_id_is_refused_and_writes_nothing(
     runtime.conn.close()
 
 
-# --- any spoken sentence goes on from the pending one, by state (ADR 0274) ---
+# --- any spoken sentence goes on from the pending one, by state (ADR 0278) ---
 
 _MAC = "macbook"
 

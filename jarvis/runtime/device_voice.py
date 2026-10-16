@@ -10,7 +10,7 @@ Two readers of the event log that the runtime binds to the voice paths of every 
 * :func:`repeat_of` answers "is this utterance the same words as one this device's turn is
   still answering" (ADR 0268), asked where the turn starts.
 * :func:`compose_target` answers "which earlier turn of this device do these words go on
-  from" (ADR 0274), asked where the utterance is recorded.
+  from" (ADR 0278), asked where the utterance is recorded.
 """
 
 from __future__ import annotations
@@ -164,7 +164,7 @@ def repeat_of(  # noqa: PLR0913 - the turn, its words, and the three facts only 
 
 
 COMPOSE_BOUND_S: Final = 120.0
-"""ADR 0274: a safety bound for an earlier turn that never ended, not a heuristic about how
+"""ADR 0278: a safety bound for an earlier turn that never ended, not a heuristic about how
 long a pause may be. Within it, what matters is whether her answer to that turn is over."""
 TURN_OVER_SQL: Final = (
     "SELECT 1 FROM events WHERE (type IN ('turn.ended', 'turn.failed') "

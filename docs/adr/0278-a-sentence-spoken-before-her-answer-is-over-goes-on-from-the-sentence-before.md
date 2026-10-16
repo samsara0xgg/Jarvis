@@ -1,4 +1,4 @@
-# ADR 0274 — A sentence spoken before her answer is over goes on from the sentence before it
+# ADR 0278 — A sentence spoken before her answer is over goes on from the sentence before it
 
 **Status:** Accepted
 **Date:** 2026-10-15

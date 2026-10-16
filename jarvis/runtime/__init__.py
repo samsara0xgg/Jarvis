@@ -3826,7 +3826,7 @@ def make_supersede_unspoken_callable(
     the turns it accepts: a device's voice replaces its own earlier sentence, never another
     device's answer.
 
-    ``leave`` (ADR 0274) names the one turn the sweep leaves alone for ``turn_id``: the
+    ``leave`` (ADR 0278) names the one turn the sweep leaves alone for ``turn_id``: the
     earlier sentence the new one is composed into at the utterance, which takes it over
     whether or not it dispatched a tool or any of it is audible. Without it the sweep is the
     whole of how a sentence replaces the one before.
@@ -3984,7 +3984,7 @@ def make_relation_supersede_callable(
 def make_compose_callable(
     runtime: JarvisRuntime,
 ) -> Callable[[str, str, str | None], str | None]:
-    """Build the ADR 0274 ``(device, turn_id, words) -> earlier_turn_id | None`` seam.
+    """Build the ADR 0278 ``(device, turn_id, words) -> earlier_turn_id | None`` seam.
 
     For a spoken sentence from any device, the earlier turn of that device it goes on from:
     its latest earlier spoken sentence when her answer to it is not over, within
@@ -4009,7 +4009,7 @@ def make_continuation_callable(runtime: JarvisRuntime) -> Callable[[str, str], s
     """Build the ADR 0271 ``(earlier_turn_id, turn_id) -> outcome`` seam.
 
     The words of ``turn_id`` go on from the sentence of ``earlier_turn_id``, the same device's
-    (the brain's pick, ADR 0274: :func:`make_compose_callable`), and ``turn_id`` will answer
+    (the brain's pick, ADR 0278: :func:`make_compose_callable`), and ``turn_id`` will answer
     both. The earlier turn is marked superseded by it, so a run that opens later is cancelled
     as it opens, and every run of it still open is cancelled as
     ``superseded`` naming ``turn_id``, spoken to the speaker or not (the sweep of ADR 0074 leaves

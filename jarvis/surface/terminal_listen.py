@@ -21,7 +21,7 @@ op       args                                  value
 utterance the final words, as the pipeline     ``{"event_uid"}``: written once as
          writes them (transcript, turn_id,     ``utterance.received`` under the device's
          utterance_id, ...)                    name, so a second send of it writes nothing
-                                               (ADR 0274: first taking over from the device's
+                                               (ADR 0278: first taking over from the device's
                                                pending earlier sentence, so the row holds the
                                                whole thought)
 words    turn_id, text, recent, over_her,      ``{"choice": str | null}``: the word judge
@@ -178,7 +178,7 @@ class ListenHooks:
     """``(device)``: end every answer being written for ``device``'s turns (ADR 0219)."""
     composes_into: Callable[[str, str, str], str | None] | None = None
     """``(device, turn_id, text)``: the earlier turn of ``device`` these words go on from, if
-    its answer is not over (ADR 0274)."""
+    its answer is not over (ADR 0278)."""
     take_over: Callable[[str, str], str] | None = None
     """``(earlier_turn_id, turn_id)``: cancel the earlier turn's open answer as superseded by
     ``turn_id``; ``"superseded"`` when it did (ADR 0271)."""
@@ -312,7 +312,7 @@ class BrainListening:
         """Write the utterance once, and make the terminal that heard it the answer's place.
 
         A sentence said before her answer to the one before it is over goes on from that one
-        (ADR 0274): the earlier turn is taken over first, so the row that opens this turn holds
+        (ADR 0278): the earlier turn is taken over first, so the row that opens this turn holds
         the whole thought. Written on the loop, where the event log's connection lives.
         """
         turn_id = args.get("turn_id")

@@ -84,7 +84,7 @@ records a turn, once. A ``say`` with no flag is a turn: ``verdict`` is ``"turn"`
 host heard the words elsewhere first, which answers ``elsewhere`` flagged or not (ADR 0219);
 typed words are never checked.
 
-**Going on from a sentence (ADR 0271, 0274).** The host decides, by state, whether a spoken
+**Going on from a sentence (ADR 0271, 0278).** The host decides, by state, whether a spoken
 ``say`` goes on from this device's latest earlier spoken sentence: it does while her answer to
 that one is not over (and it is under two minutes old), unless the words are a stop request or
 a repeat of the earlier ones. ``continues`` is the ``utterance_id`` of the ``say`` the phone
@@ -235,7 +235,7 @@ class PhoneHub:
     these words just now. It blocks and runs on a worker thread; true answers a spoken ``say``
     with ``elsewhere`` and records nothing.
 
-    ``pick_earlier(device, turn_id, text)`` (ADR 0274) is the earlier turn of ``device`` a
+    ``pick_earlier(device, turn_id, text)`` (ADR 0278) is the earlier turn of ``device`` a
     spoken ``say`` goes on from, or ``None``; ``supersede_turn(earlier_turn_id, turn_id)``
     (ADR 0271) takes the open answer of that turn, cancels it as superseded by ``turn_id`` and
     answers ``"superseded"``, or answers something else when that turn is over. Both block and
@@ -660,7 +660,7 @@ def _record_say(
 ) -> None:
     """Write the words as a turn, once, and answer ``said`` with its id.
 
-    ``continues`` is the earlier turn they were composed into (ADR 0274).
+    ``continues`` is the earlier turn they were composed into (ADR 0278).
     """
     try:
         turn_id = hub.events.record_phone_say(
@@ -687,14 +687,14 @@ def _record_say(
 
 
 async def _record_continuing(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
-    """Record a spoken ``say``, first taking over from the sentence it goes on from (ADR 0274)."""
+    """Record a spoken ``say``, first taking over from the sentence it goes on from (ADR 0278)."""
     _record_say(hub, conn, say, await _take_over(hub, conn, say))
 
 
 async def _take_over(hub: PhoneHub, conn: _Connection, say: _Say) -> str | None:
     """The earlier turn ``say`` is composed into, once its answer is taken over; else ``None``.
 
-    The host decides by state which turn that is (``pick_earlier``, ADR 0274); a ``continues``
+    The host decides by state which turn that is (``pick_earlier``, ADR 0278); a ``continues``
     the phone sent is accepted when it names that turn and dropped when it does not. The
     earlier turn's unspoken audio is dropped, what is audible stopped, and its open answer
     cancelled as superseded by this turn; the words are then recorded as both sentences in

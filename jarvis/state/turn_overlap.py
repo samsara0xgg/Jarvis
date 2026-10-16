@@ -86,7 +86,7 @@ class DoneCall:
 
 
 def folded_tool_calls(conn: sqlite3.Connection, folded: Sequence[str]) -> tuple[DoneCall, ...]:
-    """ADR 0274: the tool calls of the turns whose sentences a composed turn holds, in order.
+    """ADR 0278: the tool calls of the turns whose sentences a composed turn holds, in order.
 
     ``folded`` is the payload field naming the earlier ``utterance.received`` events by uid.
     A call whose result was not observed (it was still running) has ``output`` ``None``; a
