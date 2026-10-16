@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import urllib.error
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +16,7 @@ from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
+from jarvis.execution import maps_spend, places_api
 from jarvis.execution.location_tool import describe_age, read_here, said_where
 from jarvis.execution.tools import ToolError, _get_running_event_uid, _turn_of
 from jarvis.shared import lang
@@ -58,7 +60,9 @@ _FIELD_MASK: Final = ",".join(
         "transitDetails.transitLine.nameShort",
         "transitDetails.transitLine.name",
     )
-)
+) + ",routes.legs.endLocation,geocodingResults"
+# The last two: the point Google put the destination at, and the place_id it resolved a text to
+# (ADR 0283), so the answer can say what Google actually understood.
 # DRIVE and WALK need only how long and how far; the default routing preference is the cheap one.
 _MODE_MASK: Final = "routes.duration,routes.distanceMeters"
 _MODES: Final = (("drive", "DRIVE"), ("walk", "WALK"))
@@ -301,6 +305,7 @@ def _search(  # noqa: PLR0913 - the trip, how it was asked and the clock.
     args: Mapping[str, Any],
     wanted: str,
     now: datetime,
+    meter: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[tuple[dict[str, Any], Any]], dict[str, Any]]:
     """Ask Google and the other ways: ``(answer, options, hits of the named route, modes)``.
 
@@ -323,9 +328,12 @@ def _search(  # noqa: PLR0913 - the trip, how it was asked and the clock.
     shifted = not args.get("depart_at")
     # The bus answer and, concurrently, the other ways there (ADR 0205): one request each.
     with ThreadPoolExecutor(max_workers=1 + len(_MODES)) as pool:
-        ways = {name: pool.submit(_mode, api_key, start, end, travel) for name, travel in _MODES}
+        ways = {
+            name: pool.submit(_mode, api_key, start, end, travel, meter)
+            for name, travel in _MODES
+        }
         try:
-            answer = pool.submit(_compute, api_key, body).result()
+            answer = pool.submit(_compute, api_key, body, _FIELD_MASK, meter).result()
         except Exception as exc:  # timeout, HTTP error, bad JSON: all one short reason.
             msg = (
                 f"Bus times could not be read just now (Google Routes: {type(exc).__name__});"
@@ -336,7 +344,7 @@ def _search(  # noqa: PLR0913 - the trip, how it was asked and the clock.
         hits = _ahead(pairs, wanted, now) if wanted else []
         if wanted and shifted and not hits:
             try:
-                later = pool.submit(_compute, api_key, plain).result()
+                later = pool.submit(_compute, api_key, plain, _FIELD_MASK, meter).result()
             except Exception:  # noqa: BLE001 - the first answer stands.
                 later = None
             if later is not None:
@@ -370,6 +378,7 @@ def _search(  # noqa: PLR0913 - the trip, how it was asked and the clock.
 
 def _compute(
     api_key: str, body: Mapping[str, Any], mask: str = _FIELD_MASK,
+    meter: list[str] | None = None,
 ) -> dict[str, Any]:
     request = urllib.request.Request(  # noqa: S310 — a fixed https URL.
         _URL,
@@ -381,16 +390,30 @@ def _compute(
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as reply:  # noqa: S310
-        answer: dict[str, Any] = json.load(reply)
+    billed = True
+    try:
+        with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as reply:  # noqa: S310
+            answer: dict[str, Any] = json.load(reply)
+    except urllib.error.HTTPError:
+        billed = False  # a refused request is not billed.
+        raise
+    finally:
+        if billed and meter is not None:  # a list append, safe from the pool's threads.
+            meter.append(
+                "routes.transit.pro" if body.get("travelMode") == "TRANSIT"
+                else "routes.basic.essentials",
+            )
     return answer
 
 
-def _mode(api_key: str, start: Mapping[str, Any], end: Mapping[str, Any], travel: str) -> Any:  # noqa: ANN401
+def _mode(
+    api_key: str, start: Mapping[str, Any], end: Mapping[str, Any], travel: str,
+    meter: list[str] | None = None,
+) -> Any:  # noqa: ANN401
     """``{minutes, km}`` of the trip by ``travel`` (DRIVE or WALK); None when Google has none."""
     try:
         body = {"origin": start, "destination": end, "travelMode": travel}
-        route = _compute(api_key, body, _MODE_MASK)["routes"][0]
+        route = _compute(api_key, body, _MODE_MASK, meter)["routes"][0]
         seconds = float(str(route["duration"]).removesuffix("s"))
         km = round(route["distanceMeters"] / 1000, 1)
         return {"minutes": max(1, round(seconds / 60)), "km": km}
@@ -809,7 +832,58 @@ def _sensible(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 
-def build_planner(  # noqa: PLR0913 - the key, places, two readers, offers, live.
+def _by_id(place_id: str, book: places_api.PlaceBook) -> tuple[dict[str, Any], str]:
+    """A ``map_search`` place as the route's end, and the name to say it by."""
+    known = book.get(place_id)
+    return {"placeId": place_id}, str(known["name"]) if known else "that place"
+
+
+def _destination(  # noqa: PLR0913 - the answer, the end asked, who he named, the key, the book.
+    answer: Mapping[str, Any],
+    end: Mapping[str, Any],
+    label: str,
+    saved: Mapping[str, str],
+    api_key: str,
+    book: places_api.PlaceBook,
+    meter: list[str],
+) -> dict[str, Any] | None:
+    """The place Google took the destination to be, as the phone's map draws it (ADR 0283).
+
+    The point is Google's own end of the route. Name and address are the remembered result of a
+    ``map_search`` for a place_id, else Google's Place Details for the id it resolved a text to;
+    a destination he kept (home, school) is said as he named it, and one whose name cannot be
+    read is said as he asked it. None when the answer has no end point.
+    """
+    try:
+        at = answer["routes"][0]["legs"][-1]["endLocation"]["latLng"]
+        lat, lng = float(at["latitude"]), float(at["longitude"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    address = end.get("address")
+    kept = (address is None and "placeId" not in end) or address in saved.values()
+    found: Mapping[str, Any] | None = None
+    resolved = (answer.get("geocodingResults") or {}).get("destination") or {}
+    place_id = end.get("placeId") or (None if kept else resolved.get("placeId"))
+    if place_id:
+        found = book.get(str(place_id))
+        if found is None:
+            try:
+                found = places_api.on_map(places_api.name_of(api_key, str(place_id), meter))
+            except ToolError:
+                found = None  # the name is a bonus; the route stands.
+            if found is not None:
+                book.remember(found)
+    return {
+        "name": (found or {}).get("name") or label,
+        "lat": lat,
+        "lng": lng,
+        "address": (found or {}).get("address"),
+        "place_id": str(place_id) if place_id else None,
+        "kind": "place",
+    }
+
+
+def build_planner(  # noqa: PLR0913, C901 - the key, places, two readers, offers, live; one plan.
     api_key: str | None,
     places: Callable[[], Mapping[str, str]],
     here: Callable[[], Mapping[str, Any]] | None,
@@ -818,11 +892,14 @@ def build_planner(  # noqa: PLR0913 - the key, places, two readers, offers, live
     offers: TransitOffers,
     bus_live: Callable[[str, tuple[float, float], int], int | None] | None,
     kept: Callable[[], list[place_state.Place]] | None = None,
+    cap_usd: float = maps_spend.DEFAULT_MONTHLY_USD,
+    book: places_api.PlaceBook | None = None,
 ) -> Callable[[Mapping[str, Any], ToolContext], dict[str, Any]] | None:
     """The bus read over Google Routes behind ``bus(to=...)``; None without a key.
 
-    Its arguments are ``origin`` and ``destination`` (both required), ``depart_at`` and
-    ``route``. ``places`` reads, at each call, the kept ``home`` and ``school`` as an address or
+    Its arguments are ``origin`` and ``destination`` (both required), ``depart_at``,
+    ``route`` and ``place_id`` (a ``map_search`` result standing for the destination). ``places``
+    reads, at each call, the kept ``home`` and ``school`` as an address or
     ``lat,lng`` (ADR 0234); a missing one makes that word a tool error rather than a guess.
     ``here`` reads this Mac's location when asked (ADR 0194) and ``phone_here`` the phone's last
     report (ADR 0198), whose age the result then says; with both, a turn a phone opened gets the
@@ -832,31 +909,39 @@ def build_planner(  # noqa: PLR0913 - the key, places, two readers, offers, live
     Transit's live departure of a route at a stop near ``(lat, lng)`` around an epoch ms (the
     runtime wires it, as it does ``here``); when it answers, a named route's ``departs`` and
     ``spare_min`` use it. ``kept`` reads every kept place, so a "here" inside one is said as it.
+    Every Google request is counted against the month's ``cap_usd`` (ADR 0283); ``book`` holds the
+    places ``map_search`` found, so a place_id has a name.
     """
     if not api_key:
         return None
+    book = book if book is not None else places_api.PlaceBook()
 
-    def transit(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    def plan(args: Mapping[str, Any], ctx: ToolContext, meter: list[str]) -> dict[str, Any]:
         origin, destination = str(args.get("origin", "")), str(args.get("destination", ""))
         if not origin.strip() or not destination.strip():
             msg = "origin and destination are both required"
             raise ToolError(msg, code="invalid_argument")
         saved = places()
         start, start_label, old_start = _waypoint(origin, saved, here, phone_here, ctx, kept)
-        end, end_label, _ = _waypoint(destination, saved, here, phone_here, ctx, kept)
+        place_id = str(args.get("place_id") or "").strip()
+        if place_id:
+            end, end_label = _by_id(place_id, book)
+            destination = end_label
+        else:
+            end, end_label, _ = _waypoint(destination, saved, here, phone_here, ctx, kept)
         now = _now()
         wanted = re.sub(r"[^0-9A-Za-z]", "", str(args.get("route") or ""))
         try:
-            answer, options, hits, modes = _search(api_key, start, end, args, wanted, now)
+            answer, options, hits, modes = _search(api_key, start, end, args, wanted, now, meter)
         except ToolError as exc:
             retry = _with_city(end, saved) if exc.code == "not_found" else None
             if retry is None:
                 raise
             end = retry
             end_label = retry["address"]
-            answer, options, hits, modes = _search(api_key, start, end, args, wanted, now)
+            answer, options, hits, modes = _search(api_key, start, end, args, wanted, now, meter)
         offers.remember(answer)
-        asked = destination.strip().lower()[:60]
+        asked = end_label.strip().lower()[:60] if place_id else destination.strip().lower()[:60]
         offers.keep(options, asked)
         # The card offers only buses he can still catch: a missed one is in the answer, not a row.
         catchable = [o for o in options if o["spare_min"] > -_EASY_SPARE_MIN]
@@ -865,7 +950,18 @@ def build_planner(  # noqa: PLR0913 - the key, places, two readers, offers, live
         extra: dict[str, Any] = {"modes": modes} if modes else {}
         if wanted:
             extra["named_route"] = _named_route(wanted, hits, now, bus_live)
+        if dest := _destination(answer, end, end_label, saved, api_key, book, meter):
+            extra["destination"] = dest
+            places_api.announce(ctx, [dest])
         return {"from": start_label, "to": end_label, **old_start, "options": options, **extra}
+
+    def transit(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        maps_spend.guard(ctx.conn, cap_usd)
+        meter: list[str] = []
+        try:
+            return plan(args, ctx, meter)
+        finally:
+            maps_spend.record(ctx, meter)
 
     return transit
 

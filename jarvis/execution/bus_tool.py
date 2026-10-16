@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.execution import transit_tool
+from jarvis.execution import maps_spend, places_api, transit_tool
 from jarvis.execution.tools import Tool, ToolError, _get_running_event_uid
 from jarvis.shared import CallerPrincipal
 from jarvis.state import departures
@@ -60,7 +60,7 @@ _FROM_BOTH: Final = (
 )
 _STARTS: Final = ("start", "watch", "end")
 _KEYS: Final = frozenset(
-    {"to", "from", "at", "route", "pin", "ride", "option", "get_off", "vehicle_id"},
+    {"to", "from", "at", "route", "pin", "ride", "option", "get_off", "vehicle_id", "place_id"},
 )
 _HOME: Final = "home"
 _RIDE_ONLY: Final = {
@@ -83,6 +83,11 @@ def _schema(here: str) -> dict[str, Any]:
                 " verdict; missed with a spare of -2 to -5 means only a run catches it: say so,"
                 " then give the next bus. A warning field means the starting point is old: say"
                 " that first, or ask where he is.",
+            },
+            "place_id": {
+                "type": "string",
+                "description": "A place_id from a map_search result, as the destination, instead"
+                " of to=: Google then has no other place to take it for.",
             },
             "from": {
                 "type": "string",
@@ -197,6 +202,14 @@ def _named_line(named: Mapping[str, Any]) -> str:
     return first
 
 
+def _to_said(raw: Mapping[str, Any]) -> str:
+    """The destination as Google took it (name and address), else as he asked it."""
+    dest = raw.get("destination") or {}
+    if dest.get("address"):
+        return f"{dest['name']} ({dest['address']})"
+    return str(dest.get("name") or _where(raw["to"]))
+
+
 def _plan_line(raw: Mapping[str, Any]) -> str:
     """The plan in a few words: the named bus if one was asked about, else the first catchable."""
     options = raw["options"]
@@ -206,12 +219,14 @@ def _plan_line(raw: Mapping[str, Any]) -> str:
     pick = next((o for o in options if o["spare_min"] > -_EASY_SPARE_MIN), options[0])
     leg = pick["legs"][0]
     text = (
-        f"To {_where(raw['to'])}, option {options.index(pick) + 1}: {_leave(pick)}, take"
+        f"To {_to_said(raw)}, option {options.index(pick) + 1}: {_leave(pick)}, take"
         f" {_buses(pick)} from {leg['board_stop']} at {transit_tool.said_hhmm(leg['departs'])},"
         f" arrive {transit_tool.said_hhmm(pick['arrive_at'])} ({pick['total_min']} min)."
     )
     if pick["spare_min"] <= -_EASY_SPARE_MIN:
         text += " It is probably too late to catch."
+    if walk := (raw.get("modes") or {}).get("walk"):
+        text += f" Walking all the way is {walk['minutes']} min."
     return text + (f" {len(options)} options are listed." if len(options) > 1 else "")
 
 
@@ -332,10 +347,16 @@ class _Bus:
                 " cannot be read."
             )
             raise ToolError(msg, code="unavailable")
+        place_id = _text(given.get("place_id"), 200)
+        if place_id and "to" in given:
+            msg = "give to= or place_id=, not both"
+            raise _bad(msg)
         asked: dict[str, Any] = {
             "origin": _text(given.get("from")) or "here",
-            "destination": _text(given.get("to")) or _HOME,
+            "destination": place_id or _text(given.get("to")) or _HOME,
         }
+        if place_id:
+            asked["place_id"] = place_id
         if at := _text(given.get("at")):
             asked["depart_at"] = at
         if route := _text(given.get("route"), 8):
@@ -465,6 +486,8 @@ def build_bus_tool(  # noqa: PLR0913 - the key, places, two readers, offers, liv
     bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
     control: RideControl | None = None,
     kept: Callable[[], list[Place]] | None = None,
+    cap_usd: float = maps_spend.DEFAULT_MONTHLY_USD,
+    book: places_api.PlaceBook | None = None,
 ) -> tuple[Tool, ...]:
     """``bus``; none without a Google Routes key and a ride to follow.
 
@@ -478,7 +501,7 @@ def build_bus_tool(  # noqa: PLR0913 - the key, places, two readers, offers, liv
     offers = offers if offers is not None else transit_tool.TransitOffers()
     plan = transit_tool.build_planner(
         api_key, places, here, phone_here=phone_here, offers=offers, bus_live=bus_live,
-        kept=kept,
+        kept=kept, cap_usd=cap_usd, book=book,
     )
     return (
         Tool(

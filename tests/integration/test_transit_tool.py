@@ -167,6 +167,8 @@ def test_one_post_with_the_key_a_tight_field_mask_and_the_saved_places(
         "routes.legs.steps.transitDetails.headsign",
         "routes.legs.steps.transitDetails.transitLine.nameShort",
         "routes.legs.steps.transitDetails.transitLine.name",
+        "routes.legs.endLocation",
+        "geocodingResults",
     ]
     assert json.loads(request.data) == {
         "origin": {"location": {"latLng": {"latitude": 48.48, "longitude": -123.38}}},
