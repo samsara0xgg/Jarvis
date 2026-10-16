@@ -142,23 +142,12 @@ class BrainEvents:
         ).fetchall()
         return [{"event_type": kind, "payload": json.loads(payload)} for kind, payload in rows]
 
-    def record_utterance(
-        self, device: str, args: Mapping[str, Any], *, continues: str | None = None,
-    ) -> str:
-        """Append the ``utterance.received`` a voice terminal heard, once; its event uid.
-
-        ``continues`` (ADR 0274) is the turn the brain composed these words into: when that
-        turn's sentence is on the log, ``transcript`` holds both (see :meth:`continued_words`).
-
-        The uid is derived from ``device`` and the utterance's own id, so a terminal that
-        sends the same utterance again (it never saw the answer) gets the first one's uid and
-        nothing is written twice. The payload is rebuilt from the fields the voice pipeline
-        writes; nothing else a terminal sends is kept. ``audio_artifact_ref`` is a path on
-        the terminal's own disk: the audio itself never leaves it.
+    @staticmethod
+    def utterance_payload(args: Mapping[str, Any]) -> dict[str, Any]:
+        """The ``utterance.received`` payload rebuilt from ``args``; checked before any take-over.
 
         Raises:
             ValueError: a field is missing or has the wrong shape.
-            sqlite3.Error: the log could not be written; the utterance is not recorded.
         """
         transcript, turn_id, utterance_id = (
             args.get("transcript"), args.get("turn_id"), args.get("utterance_id"),
@@ -192,6 +181,30 @@ class BrainEvents:
         if isinstance(spoke_ago, int) and not isinstance(spoke_ago, bool) and spoke_ago >= 0:
             payload["spoke_ago_ms"] = min(spoke_ago, _MAX_SPOKE_AGO_MS)
         payload["utterance_id"] = utterance_id
+        return payload
+
+    def record_utterance(
+        self, device: str, args: Mapping[str, Any], *, continues: str | None = None,
+    ) -> str:
+        """Append the ``utterance.received`` a voice terminal heard, once; its event uid.
+
+        ``continues`` (ADR 0274) is the turn the brain composed these words into: when that
+        turn's sentence is on the log, ``transcript`` holds both (see :meth:`continued_words`).
+
+        The uid is derived from ``device`` and the utterance's own id, so a terminal that
+        sends the same utterance again (it never saw the answer) gets the first one's uid and
+        nothing is written twice. The payload is rebuilt from the fields the voice pipeline
+        writes; nothing else a terminal sends is kept. ``audio_artifact_ref`` is a path on
+        the terminal's own disk: the audio itself never leaves it.
+
+        Raises:
+            ValueError: a field is missing or has the wrong shape.
+            sqlite3.Error: the log could not be written; the utterance is not recorded.
+        """
+        payload = self.utterance_payload(args)
+        transcript, turn_id, utterance_id = (
+            payload["transcript"], payload["turn_id"], payload["utterance_id"],
+        )
         uid = _utterance_uid(device, utterance_id)
         if self._conn.execute("SELECT 1 FROM events WHERE event_uid = ?", (uid,)).fetchone():
             return uid

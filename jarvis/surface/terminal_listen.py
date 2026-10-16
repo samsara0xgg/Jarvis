@@ -318,6 +318,7 @@ class BrainListening:
         turn_id = args.get("turn_id")
         if isinstance(turn_id, str) and link.speech is not None and self._hub.voice is not None:
             self._hub.voice.route(turn_id, link.speech)  # before the row, so no answer beats it
+        self._events.utterance_payload(args)  # a malformed ask takes nothing over
         earlier = None
         if not self._events.has_utterance(link.name, args.get("utterance_id")):
             earlier = await self._take_over(link, args)
