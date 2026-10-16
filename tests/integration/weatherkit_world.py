@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 KEY_ID = "ABC123DEFG"
 TEAM_ID = "3MEBVQ3N3U"
 SERVICE_ID = "com.example.jarvis.weather"
-NOW = datetime.now(UTC).replace(second=30, microsecond=0)
+NOW = datetime.now(UTC).replace(minute=30, second=30, microsecond=0)  # mid-hour: +5 min, same hour
 GEOCODED: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
 
