@@ -80,6 +80,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     # A question naming a past day is the saved report's to answer; these read the question.
     # Verification-code mail is read by the words Chinese services write around the code (ADR 0266).
     "jarvis/runtime/mail_codes.py": frozenset({"_STRONG", "_NOT_LOGIN"}),
+    # A letter is read for a sign of a date or an hour in Chinese or English (ADR 0274).
+    "jarvis/decision/commitment_mail.py": frozenset({"_SIGNS"}),
     "jarvis/runtime/daily_report.py": frozenset({"_PAST_DAY", "_YESTERDAY"}),
     "jarvis/execution/tool_search.py": frozenset({"_TOKEN"}),
     "jarvis/shared/text.py": frozenset({"is_english"}),

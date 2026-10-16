@@ -173,7 +173,9 @@ def daily(tmp_path: Path) -> Iterator[DailyHarness]:
 def test_keep_writes_a_fact_and_says_so(daily: DailyHarness) -> None:
     """kind=fact files a line in core memory; a topic replaces its item, the same text nothing."""
     tool = next(t for t in daily.tools if t.name == "keep")
-    assert tool.input_schema["properties"]["kind"]["enum"] == ["memo", "reminder", "fact"]
+    assert tool.input_schema["properties"]["kind"]["enum"] == [
+        "memo", "reminder", "fact", "appointment",
+    ]
 
     saved = daily.call("keep", {"kind": "fact", "topic": "老板", "text": "Sam"})
     assert saved["summary"] == 'Saved to long-term memory: "老板: Sam".'

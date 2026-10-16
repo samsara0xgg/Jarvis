@@ -87,6 +87,9 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # job mail, its alerts, Allen's reactions (also to every other card), one row per decision
     # and one per Jev answer. Not a projection. ADR 0177: job_application, Allen's own tracker
     # rows and his edits of mail-derived ones.
+    # ADR 0274: one row per letter the commitment poller looked at, with what it was given and
+    # said. Not a projection: the commitments themselves are events.
+    "jarvis/state/commitment_mail.py": frozenset({"commitment_mail"}),
     "jarvis/state/job_ledger.py": frozenset(
         {
             "job_mail",
