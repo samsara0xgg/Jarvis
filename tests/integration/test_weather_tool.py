@@ -188,7 +188,7 @@ def test_the_next_hour_says_when_rain_starts_or_stops_or_that_there_is_no_minute
 def test_alerts_come_with_headline_severity_times_and_source_and_need_the_country(
     monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
-    """The alert is read in the place's time; a place with no country is not asked for them."""
+    """The alert is read in the place's time; a place whose zone has no country is not asked."""
     net = Net(monkeypatch)
     (alert,) = _call(kit_for(key[0]))["alerts"]
     assert alert["headline"] == "Rainfall Warning"
@@ -200,7 +200,7 @@ def test_alerts_come_with_headline_severity_times_and_source_and_need_the_countr
     net.asked.clear()
     registry = build_default_registry(
         weather_lookup=weather_lookup(
-            {"latitude": 48.48, "longitude": -123.38}, kit_for(key[0]), ZONE,
+            {"latitude": 48.48, "longitude": -123.38}, kit_for(key[0]), "Etc/UTC",
         ),
     )
     (tool,) = (d for d in registry.get_definitions() if d.name == "weather")
@@ -267,6 +267,7 @@ def test_a_point_far_from_home_takes_its_zone_from_the_offline_map(
     far = _call(kit_for(key[0]), {"place": "35.69,139.69"})
     assert far["timezone"] == "Asia/Tokyo"
     assert net.hosts() == ["weatherkit.apple.com"]
+    assert parse_qs(urlparse(net.asked[0].split(" ")[0]).query)["countryCode"] == ["JP"]
     net.asked.clear()
     near = _call(kit_for(key[0]), {"place": "48.5,-123.4"})  # inside 100 km of home: its zone
     assert near["timezone"] == ZONE

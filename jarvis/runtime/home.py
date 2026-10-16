@@ -8,6 +8,7 @@ only because Allen clicked it on the home (ADR 0124 for the letters).
 
 from __future__ import annotations
 
+import functools
 import html
 import json
 import logging
@@ -18,9 +19,10 @@ import urllib.request
 from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta, timezone
 from email.utils import parseaddr, parsedate_to_datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 from urllib.parse import urlencode
-from zoneinfo import ZoneInfo
+from zoneinfo import TZPATH, ZoneInfo
 
 from tzfpy import get_tz
 
@@ -40,7 +42,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from collections.abc import Set as AbstractSet
     from datetime import tzinfo
-    from pathlib import Path
 
     from jarvis.decision.mail_reply import MailReply
     from jarvis.execution.mcp_tools import McpServers
@@ -237,7 +238,7 @@ def _spot(
     """Where the request is for, and the same-name places a named one has.
 
     A point (``here`` or ``lat,lng``) takes a listed alternative's zone, or the home's country
-    within :data:`_NEAR_HOME_KM` of it; its zone otherwise comes from tzfpy's offline map.
+    within :data:`_NEAR_HOME_KM` of it; else its zone comes from tzfpy's offline map.
     """
     if request.here is not None:
         point, label = request.here[:2], request.here[2]
@@ -254,7 +255,24 @@ def _spot(
         return match._replace(label=label), []
     if _km(point, (home.latitude, home.longitude)) <= _NEAR_HOME_KM:
         return Spot(*point, label, home.zone, home.country), []
-    return Spot(*point, label, get_tz(point[1], point[0]), None), []
+    zone = get_tz(point[1], point[0])
+    return Spot(*point, label, zone, _country(zone)), []
+
+
+@functools.cache
+def _zone_countries() -> dict[str, str]:
+    """Time zone -> ISO country code, from the system tz database's ``zone.tab``."""
+    for root in TZPATH:
+        if (table := Path(root) / "zone.tab").is_file():
+            lines = table.read_text().splitlines()
+            rows = (line.split("\t") for line in lines if line and not line.startswith("#"))
+            return {zone: country for country, _, zone, *_ in rows}
+    return {}
+
+
+def _country(zone: str | None) -> str | None:
+    """The country a time zone is in (``America/Vancouver`` -> ``CA``), for WeatherKit alerts."""
+    return _zone_countries().get(zone) if zone else None
 
 
 def _worst(values: list[float | None]) -> float | None:
@@ -311,7 +329,7 @@ def weather_lookup(
         return None
     home = Spot(
         float(place["latitude"]), float(place["longitude"]), str(place.get("name") or "home"),
-        zone, place.get("country_code"),
+        zone, place.get("country_code") or _country(zone),
     )
     known: dict[tuple[float, float], Spot] = {}
 
@@ -476,7 +494,8 @@ class Home:
             today = datetime.now(self._zone).date()
             body = kit.read(  # the same request as the tool's default one, so one call serves both
                 float(place["latitude"]), float(place["longitude"]), zone=self._zone_name,
-                country=place.get("country_code"), first=today, last=today + timedelta(days=1),
+                country=place.get("country_code") or _country(self._zone_name),
+                first=today, last=today + timedelta(days=1),
             )
             return home_line(body, self._zone_name, kit.clock())
         except Exception as exc:  # noqa: BLE001 — the calendar and to-dos still show without it.
