@@ -179,6 +179,7 @@ from jarvis.runtime import (
 )
 from jarvis.runtime.card_feedback import CardFeedback
 from jarvis.runtime.core_memory import CoreMemorySettings, section_caps
+from jarvis.runtime.day_experience import DayExperienceSchedule, DayExperienceSettings
 from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
 from jarvis.runtime.dictation import (
     COMMAND_PROMPT,
@@ -8132,6 +8133,19 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         ledger=runtime.ledger,
                     ).run(),
                     name="day_summary_schedule",
+                ),
+            )
+        day_experience = DayExperienceSettings.from_config(runtime.config.get("day_experience"))
+        if day_experience is not None and runtime.memory is not None:
+            # ADR 0276: past days' experience table, folded from the event log once a day.
+            watchers.append(
+                asyncio.create_task(
+                    DayExperienceSchedule(
+                        memory=runtime.memory,
+                        settings=day_experience,
+                        event_log_path=runtime.runtime_paths.event_log,
+                    ).run(),
+                    name="day_experience_schedule",
                 ),
             )
         if runtime.picture_notes is not None:
