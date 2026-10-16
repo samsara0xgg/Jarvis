@@ -234,19 +234,30 @@ def _b64(data: bytes) -> str:
 class ProviderToken:
     """The ES256 JWT for one key, signed lazily and reused until it is :data:`TOKEN_TTL_S` old."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the key, its ids, the clock and the optional JWT fields.
         self,
         key: ec.EllipticCurvePrivateKey,
         key_id: str,
         team_id: str,
         clock: Callable[[], float] = time.time,
+        *,
+        header: Mapping[str, str] | None = None,
+        claims: Mapping[str, str] | None = None,
+        lifetime_s: int | None = None,
     ) -> None:
-        """Hold the key; ``key_id`` is the key's own id, ``team_id`` the developer team's."""
+        """Hold the key; ``key_id`` is the key's own id, ``team_id`` the developer team's.
+
+        ``header`` and ``claims`` add fields to the JWT's (WeatherKit's ``id`` and ``sub``,
+        ADR 0285), and ``lifetime_s`` adds an ``exp`` that far after ``iat``; APNs takes none.
+        """
         self._key = key
         self._header = _b64(
-            json.dumps({"alg": "ES256", "kid": key_id}, separators=(",", ":")).encode(),
+            json.dumps({"alg": "ES256", "kid": key_id, **(header or {})},
+                       separators=(",", ":")).encode(),
         )
         self._team_id = team_id
+        self._claims = dict(claims or {})
+        self._lifetime_s = lifetime_s
         self._clock = clock
         self._lock = threading.Lock()
         self._held: tuple[str, float] | None = None
@@ -257,8 +268,10 @@ class ProviderToken:
             now = self._clock()
             if self._held is not None and now - self._held[1] < TOKEN_TTL_S:
                 return self._held[0]
-            claims = _b64(json.dumps({"iss": self._team_id, "iat": int(now)},
-                                     separators=(",", ":")).encode())
+            body: dict[str, Any] = {"iss": self._team_id, "iat": int(now), **self._claims}
+            if self._lifetime_s is not None:
+                body["exp"] = int(now) + self._lifetime_s
+            claims = _b64(json.dumps(body, separators=(",", ":")).encode())
             signing_input = f"{self._header}.{claims}"
             r, s = decode_dss_signature(
                 self._key.sign(signing_input.encode(), ec.ECDSA(hashes.SHA256())),
