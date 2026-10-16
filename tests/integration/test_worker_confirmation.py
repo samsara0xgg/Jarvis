@@ -61,6 +61,7 @@ class _Spawns:
 
 class _ScriptedClient:
     """Asks for one worker in ``cwd``, then only talks."""
+    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
 
     model = "stub-model"
     last_input_tokens = 0

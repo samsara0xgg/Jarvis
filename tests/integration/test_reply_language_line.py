@@ -41,6 +41,7 @@ class _StubRuntimePaths:
 
 
 class _RecordingClient:
+    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
     def __init__(self, *, call_a_tool: bool = False) -> None:
         self.live: list[str] = []
         self.call_a_tool = call_a_tool

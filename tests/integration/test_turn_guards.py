@@ -321,6 +321,7 @@ class _StubRuntimePaths:
 
 class _ScriptedModel:
     """Answers each request with the next step: text, or one tool call (name, arguments)."""
+    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
 
     def __init__(self, *steps: Step) -> None:
         self._steps = list(steps)
@@ -657,6 +658,7 @@ class _Stream:
 
 class _SpokenModel:
     """The client the spoken route opens streams with; ``script`` holds each request's events."""
+    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
 
     provider = "openai"
     model = "stub-model"

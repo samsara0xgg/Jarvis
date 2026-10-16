@@ -70,6 +70,7 @@ from jarvis.decision.intent import (
     tool_definitions_for_llm,
 )
 from jarvis.decision.jev_oneshot import CONTROL, JevOneShot
+from jarvis.decision.llm_anthropic import NATIVE_TOOL_SEARCH
 from jarvis.decision.llm_stream import LLMResponseFailed, LLMTextDelta, LLMToolCallCompleted
 from jarvis.decision.packet import (
     SituationPacket,
@@ -129,6 +130,7 @@ from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.shared.realtime import AlreadyConsumed, Wave1FeatureFlags, stable_authorization_identity
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
 from jarvis.shared.text import is_english, truncate_utf8
+from jarvis.shared.tool_discovery import native_catalog
 from jarvis.state import reactions
 from jarvis.state.authorized_dispatch_outbox import (
     AuthorizedDispatchAlreadyStarted,
@@ -1762,9 +1764,10 @@ def _repeat_refused(
 ) -> str:
     """The tool result for a call that is not run: the repeat's note, else "unknown tool"."""
     if repeated is None:
+        search = "the tool search tool" if ctx.llm_client.native_tool_search else _OWN_TOOL_SEARCH
         return json.dumps({
             "error": f"unknown tool: {name}; call only a tool in your list, or find one with "
-            "tool_search"
+            f"{search}"
         })
     _guard_fired(ctx, scratch, "repeat", tool=name)
     return repeated
@@ -1849,7 +1852,9 @@ def _run_tool_use_loop(
         iteration += 1
         # ADR 0034: the menu is rebuilt per call, so a tool a search loaded is
         # callable from the next call on; only this caller's surface can load.
-        tools = _tool_menu(llm_surface, scratch.loaded_tools)
+        tools = _tool_menu(
+            llm_surface, scratch.loaded_tools, native=ctx.llm_client.native_tool_search,
+        )
         record_realtime_trace(
             "llm_chat_call_started_upper_bound",
             turn_id=scratch.turn_id,
@@ -3131,7 +3136,10 @@ def open_prefix_warm(  # noqa: PLR0913 — the next request's whole prefix, plus
     if not messages:
         return None
     policy = effective_policy(_allowed_tool_surface(tool_registry))
-    tools = _tool_menu(surface_for(policy, tool_registry, CallerPrincipal.JARVIS_LLM), ())
+    tools = _tool_menu(
+        surface_for(policy, tool_registry, CallerPrincipal.JARVIS_LLM), (),
+        native=llm_client.native_tool_search,
+    )
     cost_recorder = CostRecorder(
         conn, pricing_table=_pricing_table(), committed_event_bus=committed_event_bus,
     )
@@ -3364,7 +3372,9 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
     line: str | None = None
     continued = late_noted = False
     for iteration in range(1, ctx.max_tool_iterations + 1):
-        tools = _tool_menu(llm_surface, scratch.loaded_tools)
+        tools = _tool_menu(
+            llm_surface, scratch.loaded_tools, native=ctx.llm_client.native_tool_search,
+        )
         last_request = iteration >= ctx.max_tool_iterations
         hold = _claim_hold(ctx, route, scratch, speaker, last_request=last_request)
         with realtime_trace_context(
@@ -4627,6 +4637,9 @@ def _allowed_tool_surface(
     return surface
 
 
+_OWN_TOOL_SEARCH: Final = "tool_search"
+"""Jarvis's own search over deferred tools (ADR 0034), for a brain without Anthropic's (0287)."""
+
 _CARD_NOTE: Final = (
     " Calling this does not run it: the user gets a card with these arguments"
     " and runs or discards it."
@@ -4634,12 +4647,31 @@ _CARD_NOTE: Final = (
 
 
 def _tool_menu(
-    llm_surface: Sequence[ToolDefinitionLike], loaded: Collection[str],
+    llm_surface: Sequence[ToolDefinitionLike], loaded: Collection[str], *, native: bool = False,
 ) -> list[dict[str, Any]]:
-    """One request's tools: the surface without the deferred ones not yet loaded."""
-    return tool_definitions_for_llm(
-        [_tool_to_dict(t) for t in llm_surface if not t.deferred or t.name in loaded],
-    )
+    """One request's tools: the surface without the deferred ones not yet loaded.
+
+    ``native`` (ADR 0287): every tool, the deferred ones marked for Anthropic's own tool search
+    to find, which stands where ``tool_search`` stood and carries its list of what can be found.
+    A deferred tool a menu tool took over (ADR 0242) is left out, so no search finds it.
+    """
+    if not native:
+        return tool_definitions_for_llm(
+            [_tool_to_dict(t) for t in llm_surface if not t.deferred or t.name in loaded],
+        )
+    taken = {
+        old for one in llm_surface if not one.deferred for old in getattr(one, "supersedes", {})
+    }
+    menu: list[dict[str, Any]] = []
+    for one in llm_surface:
+        if one.name == _OWN_TOOL_SEARCH:
+            menu.append({**NATIVE_TOOL_SEARCH, "catalog": native_catalog(one.description)})
+        elif not one.deferred:
+            menu.extend(tool_definitions_for_llm([_tool_to_dict(one)]))
+        elif one.name not in taken:
+            (definition,) = tool_definitions_for_llm([_tool_to_dict(one)])
+            menu.append({**definition, "defer_loading": True})
+    return menu
 
 
 def _tool_to_dict(tool_def: ToolDefinitionLike) -> dict[str, Any]:

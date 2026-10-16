@@ -14,9 +14,15 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.decision import SPOKEN_REPLY_FORMAT, open_prefix_warm
+from jarvis.decision import SPOKEN_REPLY_FORMAT, _tool_menu, open_prefix_warm
 from jarvis.decision.llm import LLMClient, failure_reason
-from jarvis.decision.llm_anthropic import CONTINUE, remember_thinking, request_fields, to_messages
+from jarvis.decision.llm_anthropic import (
+    CONTINUE,
+    NATIVE_TOOL_SEARCH,
+    remember_blocks,
+    request_fields,
+    to_messages,
+)
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.llm_stream import (
     LLMResponseCompleted,
@@ -62,9 +68,14 @@ def _reply(*blocks: dict[str, Any], stop: str, usage: dict[str, int] | None = No
         start = {"thinking": {"type": "thinking", "thinking": "", "signature": ""},
                  "text": {"type": "text", "text": ""},
                  "tool_use": {"type": "tool_use", "id": block.get("id"), "name": block.get("name"),
-                              "input": {}}}[block["type"]]
+                              "input": {}},
+                 "server_tool_use": {"type": "server_tool_use", "id": block.get("id"),
+                                     "name": block.get("name"), "input": {}},
+                 "tool_search_tool_result": block}[block["type"]]
         frames.append({"type": "content_block_start", "index": index, "content_block": start})
-        if block["type"] == "thinking":
+        if block["type"] == "tool_search_tool_result":
+            pass  # the server sends its result whole, with no deltas
+        elif block["type"] == "thinking":
             frames.append({"type": "content_block_delta", "index": index,
                            "delta": {"type": "thinking_delta", "thinking": block["thinking"]}})
             frames.append({"type": "content_block_delta", "index": index,
@@ -186,6 +197,111 @@ def test_a_tool_turn_sends_its_thinking_blocks_back_unchanged_with_the_result(
             {"type": "tool_result", "tool_use_id": "toolu_A", "content": "cold"},
             {"type": "text", "text": "state note"}]},
     ]
+
+
+def _tool(name: str, *, deferred: bool = False, supersedes: dict[str, str] | None = None) -> Any:  # noqa: ANN401 — a ToolDefinitionLike
+    return SimpleNamespace(
+        name=name, description=f"{name} d", input_schema={"type": "object"}, deferred=deferred,
+        requires_confirmation=False, supersedes=supersedes or {},
+    )
+
+
+SEARCH_DESCRIPTION = (
+    "# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools "
+    "for the next model call.\n\nYou have access to tools from the following sources:\n- gmail: Mail.\n"
+    "Some of the tools may not have been provided to you upfront, and you should use this tool "
+    "(`tool_search`) to search for the required tools. Tool metadata is English, so search with "
+    "English keywords."
+)
+
+
+def test_on_anthropics_host_the_deferred_tools_wait_for_its_own_search() -> None:
+    """ADR 0287: every tool goes, deferred ones marked; its search stands where tool_search stood."""
+    search = _tool("tool_search")
+    search.description = SEARCH_DESCRIPTION
+    surface = [
+        _tool("mail", supersedes={"mcp__gmail__gmail_search": "mail(query=...)"}), search,
+        _tool("mcp__gmail__gmail_search", deferred=True), _tool("mcp__gmail__gmail_send", deferred=True),
+    ]
+    own = _tool_menu(surface, {"mcp__gmail__gmail_send"})
+    assert [t["name"] for t in own] == ["mail", "tool_search", "mcp__gmail__gmail_send"]
+    menu = _tool_menu(surface, (), native=True)
+    catalog = (
+        "# Tool discovery\n\nYou have access to tools from the following sources:\n- gmail: Mail.\n"
+        "Some of the tools may not have been provided to you upfront, and you should search for the "
+        "required tools with the tool search tool. Tool metadata is English, so search with English "
+        "keywords."
+    )
+    assert menu == [
+        {"name": "mail", "description": "mail d", "input_schema": {"type": "object"}},
+        {**NATIVE_TOOL_SEARCH, "catalog": catalog},
+        {"name": "mcp__gmail__gmail_send", "description": "mcp__gmail__gmail_send d",
+         "input_schema": {"type": "object"}, "defer_loading": True},
+    ]
+    body = request_fields(
+        messages=[{"role": "user", "content": "x"}], system=SplitSystem("STABLE", "VAR"),
+        tools=menu, max_tokens=9, reasoning_effort="low",
+    )
+    assert body["tools"] == [
+        {"name": "mail", "description": "mail d", "input_schema": {"type": "object"}},
+        {"type": "tool_search_tool_bm25_20251119", "name": "tool_search_tool_bm25"},
+        {"name": "mcp__gmail__gmail_send", "description": "mcp__gmail__gmail_send d",
+         "input_schema": {"type": "object"}, "defer_loading": True},
+    ]
+    assert body["system"] == [
+        {"type": "text", "text": f"STABLE\n\n{catalog}", "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "\n\nVAR"},
+    ]
+
+
+def test_only_anthropics_own_host_runs_its_tool_search() -> None:
+    """Another server speaking the Messages API, and every OpenAI preset, keep tool_search."""
+    assert _preset("").native_tool_search
+    assert _preset("https://api.anthropic.com").native_tool_search
+    assert not _preset("https://api.example.cn/anthropic").native_tool_search
+    assert not LLMClient({"provider": "openai", "model": "m"}).native_tool_search
+
+
+def test_a_found_tools_search_rides_back_in_order_with_its_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The server's search call and result go back on the turn's next request, where they came."""
+    monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
+    found = {"type": "tool_search_tool_result", "tool_use_id": "srvtoolu_S", "content": {
+        "type": "tool_search_tool_search_result",
+        "tool_references": [{"type": "tool_reference", "tool_name": "lookup"}]}}
+    first = _reply(
+        {"type": "thinking", "thinking": "find it", "signature": "sig-3"},
+        {"type": "server_tool_use", "id": "srvtoolu_S", "name": "tool_search_tool_bm25",
+         "json": '{"query": "look up"}'},
+        found,
+        {"type": "tool_use", "id": "toolu_B", "name": "lookup", "json": '{"q": "ice"}'},
+        stop="tool_use",
+    )
+    client = _preset("")
+    menu = [{**NATIVE_TOOL_SEARCH, "catalog": "C"}, {**TOOLS[0], "defer_loading": True}]
+    _, events = asyncio.run(_run(client, first, messages=[{"role": "user", "content": "q"}],
+                                 system="S", tools=menu))
+    calls = [event for event in events if isinstance(event, LLMToolCallCompleted)]
+    assert [(c.call_id, c.name) for c in calls] == [("toolu_B", "lookup")]
+    history = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "toolu_B", "type": "function",
+            "function": {"name": "lookup", "arguments": '{"q": "ice"}'}}]},
+        {"role": "tool", "tool_call_id": "toolu_B", "content": "cold"},
+    ]
+    peer, _ = asyncio.run(_run(
+        client, _reply({"type": "text", "text": "{}"}, stop="end_turn"),
+        messages=history, system="S", tools=menu,
+    ))
+    assert peer.body["system"] == "S\n\nC"
+    assert peer.body["messages"][1] == {"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "find it", "signature": "sig-3"},
+        {"type": "server_tool_use", "id": "srvtoolu_S", "name": "tool_search_tool_bm25",
+         "input": {"query": "look up"}},
+        found,
+        {"type": "tool_use", "id": "toolu_B", "name": "lookup", "input": {"q": "ice"}}]}
 
 
 def test_a_refusal_fails_the_stream_closed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -374,7 +490,7 @@ def test_effort_and_forced_calls_map_to_thinking(
 
 def test_the_stash_survives_a_new_client_and_prices_the_haiku_card() -> None:
     """A tool loop's later round may run on another client; cost uses the >100K card past 100K."""
-    remember_thinking(["toolu_Z"], [{"type": "thinking", "thinking": "x", "signature": "y"}])
+    remember_blocks(["toolu_Z"], [{"type": "thinking", "thinking": "x", "signature": "y"}])
     out = to_messages([
         {"role": "assistant", "content": "", "tool_calls": [{
             "id": "toolu_Z", "type": "function", "function": {"name": "a", "arguments": "{}"}}]},

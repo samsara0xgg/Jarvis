@@ -209,15 +209,20 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
     return registry
 
 
-def _menu(registry: ToolRegistry) -> list[dict[str, Any]]:
+def _menu(registry: ToolRegistry, *, native: bool = False) -> list[dict[str, Any]]:
+    """The first request's tools; ``native``: as Anthropic's host gets them (ADR 0287)."""
     policy = effective_policy({
         who: frozenset(t.name for t in registry.for_caller(who)) for who in CallerPrincipal
     })
-    return _tool_menu(surface_for(policy, registry, CallerPrincipal.JARVIS_LLM), ())
+    return _tool_menu(surface_for(policy, registry, CallerPrincipal.JARVIS_LLM), (), native=native)
 
 
 def _menu_chars(menu: Sequence[Mapping[str, Any]]) -> int:
-    return sum(len(t["description"]) + len(json.dumps(t["input_schema"])) for t in menu)
+    """What the first request carries of the menu: a deferred tool's text waits for a search."""
+    return sum(
+        len(t["description"]) + len(json.dumps(t["input_schema"]))
+        for t in menu if "type" not in t and not t.get("defer_loading")
+    )
 
 
 def _with_system(request: Mapping[str, Any], extra: str) -> dict[str, Any]:
@@ -426,14 +431,19 @@ async def _one(
 
 
 async def _run(
-    args: argparse.Namespace, menu: list[dict[str, Any]], read_only: Mapping[str, bool] | None,
+    args: argparse.Namespace, menus: Mapping[bool, list[dict[str, Any]]],
+    read_only: Mapping[str, bool] | None,
 ) -> None:
     config = args.config
     clients = {name: _client(config, name) for name in args.presets}
     cases = json.loads(args.cases.read_text(encoding="utf-8"))
     if args.only:
         cases = [c for c in cases if c["id"] in args.only]
-    catalog = {t["name"]: t for t in menu}
+    # A preset on Anthropic's host gets the menu its own tool search reads (ADR 0287).
+    catalogs = {
+        name: {t["name"]: t for t in menus[client.native_tool_search]}
+        for name, client in clients.items()
+    }
     extra = args.system_append.read_text(encoding="utf-8").strip() if args.system_append else ""
     structured = structured_presets(config, args.presets)
     sys.stdout.write(shape_report(cases, structured) + "\n")
@@ -448,11 +458,11 @@ async def _run(
     async def job(case: dict[str, Any], preset: str, run: int, out: TextIO) -> None:
         nonlocal done
         shaped = spoken_reply_for(patched(case["request"], patches), structured=structured[preset])
-        request = {**_with_system(shaped, extra), "tools": list(catalog)}
+        request = {**_with_system(shaped, extra), "tools": list(catalogs[preset])}
         base = {"kind": "run", "case": case["id"], "preset": preset, "run": run,
                 "model": clients[preset].model}
         async with gate:
-            line = await _one(clients[preset], request, catalog, base, read_only)
+            line = await _one(clients[preset], request, catalogs[preset], base, read_only)
         out.write(json.dumps(line, ensure_ascii=False) + "\n")
         out.flush()
         done += 1
@@ -467,10 +477,11 @@ async def _run(
         await asyncio.gather(*(job(case, preset, run, out) for run in range(1, args.runs)))
 
     with args.out.open("a", encoding="utf-8") as out:
+        menu = menus[False]
         out.write(json.dumps({
             "kind": "menu", "at": datetime.now(UTC).isoformat(timespec="seconds"),
-            "tools": list(catalog), "chars": _menu_chars(menu),
-            "system_append": bool(extra),
+            "tools": [t["name"] for t in menu], "chars": _menu_chars(menu),
+            "native_chars": _menu_chars(menus[True]), "system_append": bool(extra),
         }) + "\n")
         await asyncio.gather(*(cell(case, preset, out) for case in cases for preset in clients))
 
@@ -481,14 +492,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     load_env_file(root.expanduser())  # fill-only; the values are never read here
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
     registry = _exam_registry(config, args.cases.parent / "mcp-tools.json")
-    menu = _menu(registry)
+    menus = {native: _menu(registry, native=native) for native in (False, True)}
+    menu = menus[False]
     read_only = {t.name: t.read_only for t in registry.for_caller(CallerPrincipal.JARVIS_LLM)}
     sys.stdout.write(
-        f"menu: {len(menu)} tools, {_menu_chars(menu)} description+schema chars\n"
+        f"menu: {len(menu)} tools, {_menu_chars(menu)} description+schema chars "
+        f"({_menu_chars(menus[True])} with Anthropic's tool search)\n"
         f"{' '.join(t['name'] for t in menu)}\n",
     )
     sys.stdout.flush()
-    asyncio.run(_run(args, menu, read_only if args.guards else None))
+    asyncio.run(_run(args, menus, read_only if args.guards else None))
     return 0
 
 

@@ -55,6 +55,7 @@ class _StubLLMClient:
     prove that the gate is no longer downgrading on keyword presence
     alone when no subject is in scope.
     """
+    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
 
     def __init__(self, draft_text: str) -> None:
         self._draft_text = draft_text

@@ -59,6 +59,7 @@ class _Paths:
 
 class _ScriptedClient:
     """Searches for a tool, calls it, then only talks; records what it was offered."""
+    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
 
     model = "stub-model"
     last_input_tokens = 0

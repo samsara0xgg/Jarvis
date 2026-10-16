@@ -143,6 +143,7 @@ class _StubRuntimePaths:
 
 class _CapturingLLMClient:
     """Answers with fixed text and keeps the request it was handed."""
+    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
 
     def __init__(self) -> None:
         self.model = "stub-model"

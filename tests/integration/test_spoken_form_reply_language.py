@@ -53,6 +53,7 @@ class _StubRuntimePaths:
 
 class _RecordingClient:
     """Answers the first request with ``answer``, the spoken-form request with a short line."""
+    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
 
     def __init__(self, answer: str) -> None:
         self._answer = answer

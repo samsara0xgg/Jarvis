@@ -131,6 +131,7 @@ def test_disable_plugin_needs_no_request_id_and_waits_for_a_busy_connection(
 
 class _RemovingClient:
     """Calls remove_plugin on the first model call, then only talks."""
+    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
 
     model = "stub-model"
     last_input_tokens = 0

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution.tools import Tool, ToolContext, ToolError
 from jarvis.shared import CallerPrincipal
+from jarvis.shared.tool_discovery import OWN_SEARCH_ASK, OWN_SEARCH_LEAD
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -37,12 +38,10 @@ _NAME_PART: Final = re.compile(r"[^a-z0-9]+")
 
 _DESCRIPTION: Final = (
     "# Tool discovery\n\n"
-    "Searches over deferred tool metadata with BM25 and exposes matching tools for the "
-    "next model call.\n\n"
+    f"{OWN_SEARCH_LEAD}"
     "You have access to tools from the following sources:\n{sources}\n{loaded}"
-    "Some of the tools may not have been provided to you upfront, and you should use this "
-    "tool (`tool_search`) to search for the required tools. Tool metadata is English, so "
-    "search with English keywords."
+    f"Some of the tools may not have been provided to you upfront, and {OWN_SEARCH_ASK}. "
+    "Tool metadata is English, so search with English keywords."
 )
 
 _SCHEMA: Final[Mapping[str, Any]] = {

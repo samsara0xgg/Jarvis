@@ -45,6 +45,7 @@ class _StubRuntimePaths:
 
 class _ToolHungryClient:
     """Proposes kept on every request that offers tools; answers otherwise."""
+    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
 
     def __init__(self, *, answer: str | None, fail_without_tools: bool = False) -> None:
         self._answer = answer

@@ -30,31 +30,40 @@ _BAD_ID: Final[re.Pattern[str]] = re.compile(r"[^a-zA-Z0-9_-]")
 CONTINUE: Final[str] = "Continue."
 _OPENING: Final[str] = "(start of the conversation)"
 
-# A tool-using turn's thinking blocks, by tool call id: the next request of that
-# turn must carry them back unchanged. History never holds them (it is one shape
-# for every provider), so the stream or response that produced them leaves them here.
-_THINKING_KEPT: Final[int] = 512
-_thinking: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
-_thinking_lock = threading.Lock()
+# A tool-using turn's thinking and server-tool blocks (the server's tool search, ADR 0287), by
+# tool call id: the next request of that turn must carry them back unchanged. History never
+# holds them (it is one shape for every provider), so the stream or response that produced them
+# leaves them here, in the order the response gave them.
+KEPT_BLOCKS: Final = frozenset(
+    {"thinking", "redacted_thinking", "server_tool_use", "tool_search_tool_result"},
+)
+_BLOCKS_KEPT: Final[int] = 512
+_kept: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+_kept_lock = threading.Lock()
+
+NATIVE_TOOL_SEARCH: Final[Mapping[str, str]] = {
+    "type": "tool_search_tool_bm25_20251119", "name": "tool_search_tool_bm25",
+}
+"""Anthropic's own tool search (ADR 0287): it finds ``defer_loading`` tools inside the response."""
 
 
-def remember_thinking(call_ids: Iterable[str], blocks: Sequence[Mapping[str, Any]]) -> None:
+def remember_blocks(call_ids: Iterable[str], blocks: Sequence[Mapping[str, Any]]) -> None:
     """Keep ``blocks`` for the turn that answers these tool calls."""
     if not blocks:
         return
-    with _thinking_lock:
+    with _kept_lock:
         for call_id in call_ids:
-            _thinking[call_id] = [dict(block) for block in blocks]
-            _thinking.move_to_end(call_id)
-        while len(_thinking) > _THINKING_KEPT:
-            _thinking.popitem(last=False)
+            _kept[call_id] = [dict(block) for block in blocks]
+            _kept.move_to_end(call_id)
+        while len(_kept) > _BLOCKS_KEPT:
+            _kept.popitem(last=False)
 
 
-def _kept_thinking(call_ids: Iterable[str]) -> list[dict[str, Any]]:
-    with _thinking_lock:
+def _kept_blocks(call_ids: Iterable[str]) -> list[dict[str, Any]]:
+    with _kept_lock:
         for call_id in call_ids:
-            if call_id in _thinking:
-                return [dict(block) for block in _thinking[call_id]]
+            if call_id in _kept:
+                return [dict(block) for block in _kept[call_id]]
     return []
 
 
@@ -219,7 +228,7 @@ def to_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 }
                 for call in calls
             ]
-            _push(out, "assistant", blocks, _kept_thinking(call["id"] for call in calls))
+            _push(out, "assistant", blocks, _kept_blocks(call["id"] for call in calls))
         else:  # user, and the system notes a history carries mid-conversation
             _push(out, "user", _user_blocks(message.get("content")))
     for message in out:
@@ -233,16 +242,30 @@ def to_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 
 def to_tools(tools: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Tool definitions with only the keys /v1/messages takes."""
-    return [
-        {
+    """Tool definitions with only the keys /v1/messages takes.
+
+    A server tool (one with a ``type``) goes as it is, less the ``catalog`` the system takes.
+    """
+    out: list[dict[str, Any]] = []
+    for tool in tools:
+        if "type" in tool:
+            out.append({k: v for k, v in tool.items() if k != "catalog"})
+            continue
+        definition = {
             "name": tool["name"], "description": tool.get("description", ""),
             "input_schema": copy.deepcopy(
                 tool.get("input_schema") or {"type": "object", "properties": {}},
             ),
         }
-        for tool in tools
-    ]
+        if tool.get("defer_loading"):
+            definition["defer_loading"] = True
+        out.append(definition)
+    return out
+
+
+def _catalog(tools: Sequence[Mapping[str, Any]] | None) -> str:
+    """What the server's tool search can find, said in the system prompt as Anthropic advises."""
+    return next((str(t["catalog"]) for t in tools or () if t.get("catalog")), "")
 
 
 def _tool_choice(tool_choice: str | None) -> dict[str, str] | None:
@@ -259,12 +282,16 @@ _ADAPTIVE_ONLY = ("claude-sonnet-5",)
 """Model id prefixes taking adaptive thinking only: no ``thinking: disabled``, no forced call."""
 
 
-def _system_blocks(system: str) -> str | list[dict[str, Any]]:
-    """A split prompt as two text blocks, a cache breakpoint closing the stable one."""
+def _system_blocks(system: str, catalog: str = "") -> str | list[dict[str, Any]]:
+    """A split prompt as two text blocks, a cache breakpoint closing the stable one.
+
+    ``catalog`` joins the stable part: it changes only with the tool list ahead of it.
+    """
     if not isinstance(system, SplitSystem):
-        return system
+        return f"{system}\n\n{catalog}" if catalog else system
+    stable = f"{system.stable}\n\n{catalog}" if catalog else system.stable
     blocks: list[dict[str, Any]] = [
-        {"type": "text", "text": system.stable, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}},
     ]
     if system.variable:
         blocks.append({"type": "text", "text": "\n\n" + system.variable})
@@ -286,7 +313,7 @@ def request_fields(  # noqa: PLR0913 — the request's whole variable part, name
     request for automatic prompt caching (the last block, tools -> system -> messages).
     """
     body: dict[str, Any] = {
-        "max_tokens": max_tokens, "system": _system_blocks(system),
+        "max_tokens": max_tokens, "system": _system_blocks(system, _catalog(tools)),
         "messages": to_messages(messages),
     }
     forced = None

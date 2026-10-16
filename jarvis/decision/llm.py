@@ -36,8 +36,9 @@ from typing import TYPE_CHECKING, Any, Literal
 import yaml
 
 from jarvis.decision.llm_anthropic import (
+    KEPT_BLOCKS,
     files_headers,
-    remember_thinking,
+    remember_blocks,
     repair_stale_files,
     request_fields,
 )
@@ -426,6 +427,17 @@ class LLMClient:
     def base_url(self) -> str:
         """Active provider base URL. May be empty for native Anthropic."""
         return self._base_url
+
+    @property
+    def native_tool_search(self) -> bool:
+        """Whether deferred tools go to Anthropic's own tool search (ADR 0287).
+
+        Only Anthropic's host runs it; another server speaking the Messages API keeps
+        Jarvis's ``tool_search``.
+        """
+        return self._provider == "anthropic" and "api.anthropic.com" in (
+            self._base_url or "api.anthropic.com"
+        )
 
     @property
     def max_tokens(self) -> int:
@@ -1268,11 +1280,16 @@ class LLMClient:
 
         text_parts: list[str] = []
         tool_calls_list: list[ToolCall] = []
-        thinking_blocks: list[Mapping[str, Any]] = []
+        kept_blocks: list[Mapping[str, Any]] = []
         for block in getattr(response, "content", []) or []:
             btype = getattr(block, "type", None)
-            if btype in ("thinking", "redacted_thinking"):
-                thinking_blocks.append(_safe_model_dump(block))
+            if btype in KEPT_BLOCKS:
+                dumped = _safe_model_dump(block)
+                # A server-tool block goes back as the API sent it: no null fields the SDK added.
+                kept_blocks.append(
+                    dumped if btype.endswith("thinking")
+                    else {k: v for k, v in dumped.items() if v is not None},
+                )
             elif btype == "text":
                 text_parts.append(getattr(block, "text", "") or "")
             elif btype == "tool_use":
@@ -1291,7 +1308,7 @@ class LLMClient:
                     )
                 )
 
-        remember_thinking([call.call_id for call in tool_calls_list], thinking_blocks)
+        remember_blocks([call.call_id for call in tool_calls_list], kept_blocks)
         text_joined = "".join(text_parts).strip() or None
         raw = _safe_model_dump(response)
         return ChatResult(

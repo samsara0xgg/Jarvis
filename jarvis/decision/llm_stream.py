@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from jarvis.decision.llm_anthropic import remember_thinking
+from jarvis.decision.llm_anthropic import remember_blocks
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Iterator, Mapping
@@ -28,6 +28,7 @@ _MAX_CALL_ID = 512
 _MAX_TOOL_NAME = 256
 _MAX_BLOCKS = 128
 _MAX_THINKING_BYTES = 1_000_000
+_SERVER_BLOCKS = frozenset({"server_tool_use", "tool_search_tool_result"})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -276,6 +277,10 @@ class StreamNormalizer:
         # Anthropic thinking blocks by content index, kept to go back with the tool results.
         self._thinking: dict[int, dict[str, Any]] = {}
         self._thinking_bytes = 0
+        # The server's own tool search (ADR 0287): its call and result, with the call's input
+        # as streamed, kept to go back on the next request of this turn.
+        self._server: dict[int, dict[str, Any]] = {}
+        self._server_input: dict[int, str] = {}
         self.first_thinking_ns: int | None = None
         self.thinking_text_bytes = 0  # the thinking text alone, not its signature
 
@@ -550,6 +555,9 @@ class StreamNormalizer:
                 return [LLMTextDelta(
                     **self._identity(), text=text, content_block_index=index,
                 )] if text else []
+            if block_type in _SERVER_BLOCKS:
+                self._server[index] = dict(block)
+                return []
             if block_type not in {"thinking", "redacted_thinking"}:
                 raise _protocol_error("unsupported_content_block")
             if self.first_thinking_ns is None:
@@ -570,6 +578,12 @@ class StreamNormalizer:
                 )]
             if active_block == "tool_use" and delta.get("type") == "input_json_delta":
                 return [self._arguments(index, delta.get("partial_json"))]
+            if active_block == "server_tool_use" and delta.get("type") == "input_json_delta":
+                piece = _text(delta.get("partial_json"))
+                self._server_input[index] = self._server_input.get(index, "") + piece
+                if len(self._server_input[index].encode("utf-8")) > _MAX_ARGUMENT_BYTES:
+                    raise _protocol_error("tool_arguments_too_large")
+                return []
             if active_block == "thinking" and delta.get("type") in {
                 "thinking_delta", "signature_delta",
             }:
@@ -588,6 +602,11 @@ class StreamNormalizer:
             self._blocks[index] = "stopped"
             if index in self._tools:
                 self._tools[index].stopped = True
+            if self._server_input.get(index):
+                try:
+                    self._server[index]["input"] = _object(json.loads(self._server_input[index]))
+                except ValueError as exc:
+                    raise _protocol_error("invalid_server_tool_input") from exc
             return []
         if kind == "message_delta":
             delta = _object(raw.get("delta"))
@@ -640,10 +659,12 @@ class StreamNormalizer:
                 **self._identity(), call_index=index, call_id=tool.call_id,
                 name=tool.name, arguments_json=arguments,
             ))
-        if results and self._thinking and self._thinking_bytes <= _MAX_THINKING_BYTES:
-            remember_thinking(
-                [one.call_id for one in results],
-                [block for _, block in sorted(self._thinking.items())],
+        kept = dict(self._server)
+        if self._thinking_bytes <= _MAX_THINKING_BYTES:
+            kept.update(self._thinking)
+        if results and kept:
+            remember_blocks(
+                [one.call_id for one in results], [block for _, block in sorted(kept.items())],
             )
         return results
 
