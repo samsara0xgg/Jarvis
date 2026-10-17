@@ -298,7 +298,7 @@ def test_a_progress_notice_obeys_the_quiet_level_and_her_adjust_marks_a_task_don
                                "why": "he said it is sent"})]
     rig.quiet = "dnd"
     rig.drafted(_item("p1", start=None), _item("p2", start=None, title="Email Sam", minutes=30))
-    assert rig.watch.tick(_at("09:00")) == ["woke", "progress:1", "open"]
+    assert rig.watch.tick(_at("09:00")) == ["woke", "progress:1", "open", "settle"]
     notice = json.loads(rig.asked[0])["notice"]
     assert (notice["key"], notice["facts"]["remaining_min"], notice["facts"]["fits"]) == (
         "progress:1", 90, True,

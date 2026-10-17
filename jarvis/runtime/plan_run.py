@@ -461,13 +461,18 @@ class PlanWatch:
             run.held = plan.for_day(run.conn, run.day)
 
     def _settle(self, run: _Run) -> None:
-        """The first item's start settles a plan nobody settled."""
+        """The day getting under way settles a plan nobody settled.
+
+        Under way: the first timed item's start, or the first progress check, which is how a
+        day of tasks alone gets under way.
+        """
         held = run.held
-        starts = [i.start or i.window_from for i in held.items] if held else []
-        first = min((s for s in starts if s), default=None)
-        if held is None or held.status == "settled" or first is None:
+        if held is None or held.status == "settled":
             return
-        if f"{run.now:%H:%M}" >= first:
+        starts = [i.start or i.window_from for i in held.items]
+        first = min((s for s in starts if s), default=None)
+        checked = any(key.startswith("progress:") for key in plan.notices(run.conn, run.day))
+        if checked or (first is not None and f"{run.now:%H:%M}" >= first):
             plan.settle(run.conn, run.day, "first_item")
             run.handled.append("settle")
 
