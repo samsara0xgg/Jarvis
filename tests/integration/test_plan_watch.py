@@ -216,8 +216,8 @@ def test_the_decide_prompt_carries_the_notice_the_plan_and_what_she_told() -> No
     system, user = build_decide_prompt(held, one, facts, _at("07:30"), told, zone=ZONE)
     body = json.loads(user)
     assert "## Task: notice" in system
-    assert (body["task"], body["now"], body["notice"]["key"]) == ("notice", "07:30", "woke")
-    assert body["told_today"] == [{"at": "07:10", "say": "Heads up."}]
+    assert (body["task"], body["now"], body["notice"]["key"]) == ("notice", "7:30 AM", "woke")
+    assert body["told_today"] == [{"at": "7:10 AM", "say": "Heads up."}]
     assert body["plan"][0]["private"] is True
     assert body["facts"]["wake"] == {"kind": "focus_off", "at": "07:00"}
 

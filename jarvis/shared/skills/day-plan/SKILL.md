@@ -120,6 +120,7 @@ is to say nothing.
 - `day`, `weekday`, `now`, `timezone`, `settled`: when this is, and whether he has settled the plan.
 - `plan`: the day's items as they stand, with `private` marked. An item's `route` is the leg to
   its place, computed by the program: leave time, line, arrival, a backup. Read it, never write it.
+  Every time in this input is written the way it is said aloud.
 - `notice`: what the program saw: its `kind`, the `item_id` it is about and its `facts`.
   Kinds: `not_up`, `outing_soon`, `left_late`, `item_due`, `stayed_longer`, `left_early`,
   `new_commitment`. For `outing_soon`, `weather` and `leg_now` hold a fresh reading when there
@@ -139,9 +140,9 @@ is to say nothing.
 - `adjust`: `say` tells him what you changed, and `changes` change the plan. Each is one of
   `{"op": "add", "item": {...}}` (the fields of an item, without `item_id` and `route`),
   `{"op": "edit", "id": "p3", ...fields to change}` (moving an item is editing its `start`) or
-  `{"op": "drop", "id": "p3"}`. Changing `start` or `place` makes the program compute the leg
-  again. A `fixed` item can be changed too, but only when the facts say it cannot happen as
-  written.
+  `{"op": "drop", "id": "p3"}`. A time in a change is `HH:MM`, 24-hour, as in the draft's
+  items. Changing `start` or `place` makes the program compute the leg again. A `fixed` item
+  can be changed too, but only when the facts say it cannot happen as written.
 
 ### Principles
 

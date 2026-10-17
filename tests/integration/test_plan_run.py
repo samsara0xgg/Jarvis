@@ -211,7 +211,7 @@ def test_outing_soon_is_asked_with_the_weather_and_the_leg_read_again(tmp_path: 
     assert "outing_soon:p9" in rig.watch.tick(_at("13:00"))
     facts = json.loads(rig.asked[0])["notice"]["facts"]
     assert facts["weather"] == {"summary": "rain"}
-    assert facts["leg_now"]["leave_at"] == "13:25"
+    assert facts["leg_now"]["leave_at"] == "1:25 PM"  # said as she says it
     assert facts["leg_now"]["line"] == "28"
     (action_id, args, kwargs), = asked
     assert (action_id, args) == (f"plan-{DAY}-outing_soon:p9", ("Home", "Clinic"))

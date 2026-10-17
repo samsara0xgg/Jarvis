@@ -17,6 +17,7 @@ from datetime import date, datetime, timedelta
 from functools import cache
 from typing import TYPE_CHECKING, Any, Final
 
+from jarvis.shared import lang
 from jarvis.shared.skills import load_skill
 from jarvis.state.plan import ACTS, MAX_ITEMS, Plan, PlanItem, apply_changes, check_item
 
@@ -179,6 +180,25 @@ class Decision:
     notes: tuple[str, ...] = ()
 
 
+_CLOCK: Final[re.Pattern[str]] = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
+
+
+def _said_clocks(value: Any, day: date, zone: tzinfo, said_in: lang.Language) -> Any:  # noqa: ANN401
+    """``value`` with every ``HH:MM`` string as it is said aloud (``晚上9点35分``, ``9:35 PM``).
+
+    What she says comes from these facts; a clock in digits comes back as 二十一点三十五.
+    """
+    if isinstance(value, dict):
+        return {k: _said_clocks(v, day, zone, said_in) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_said_clocks(v, day, zone, said_in) for v in value]
+    if isinstance(value, str) and _CLOCK.fullmatch(value):
+        hour, minute = (int(part) for part in value.split(":"))
+        moment = datetime.combine(day, datetime.min.time(), zone).replace(hour=hour, minute=minute)
+        return lang.spoken_time(moment, said_in)
+    return value
+
+
 def build_decide_prompt(  # noqa: PLR0913 - the plan, the notice, the facts, the clock, what was said.
     plan: Plan, notice: Notice, facts: DayFacts, now: datetime,
     told_today: Sequence[Decided], *, zone: tzinfo,
@@ -186,24 +206,28 @@ def build_decide_prompt(  # noqa: PLR0913 - the plan, the notice, the facts, the
     """``(system, user)`` of the notice call: the skill, and what she needs to judge it.
 
     The plan's items carry their computed ``route`` (read-only for her); ``told_today`` is what she
-    already said today, so she does not say it twice.
+    already said today, so she does not say it twice. Every clock time is written as she says it,
+    in the language of the plan's titles: given ``21:35`` she says 二十一点三十五, and given a mix
+    of forms she misreads one against the other. Her changes still write ``HH:MM``.
     """
     local = now.astimezone(zone)
+    said_in = lang.text_language(" ".join(item.title for item in plan.items))
     body = {
         "task": "notice",
         "day": plan.day.isoformat(),
         "weekday": plan.day.strftime("%A"),
-        "now": local.strftime("%H:%M"),
+        "now": lang.spoken_time(local, said_in),
         "timezone": _zone_name(zone),
         "settled": plan.status == "settled",
-        "plan": [item.payload() for item in plan.items],
+        "plan": _said_clocks([item.payload() for item in plan.items], plan.day, zone, said_in),
         "notice": {
             "key": notice.key, "kind": notice.kind, "item_id": notice.item_id,
-            "facts": notice.facts,
+            "facts": _said_clocks(notice.facts, plan.day, zone, said_in),
         },
         "facts": facts.payload(zone),
         "told_today": [
-            {"at": datetime.fromtimestamp(d.at_ms / 1000, zone).strftime("%H:%M"), "say": d.say}
+            {"at": lang.spoken_time(datetime.fromtimestamp(d.at_ms / 1000, zone), said_in),
+             "say": d.say}
             for d in told_today if d.act != "silent"
         ],
     }
