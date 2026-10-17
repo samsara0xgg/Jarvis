@@ -221,21 +221,13 @@ def _item_due(plan: Plan, facts: DayFacts, now: datetime) -> list[Notice]:
     return found
 
 
-def _progress(plan: Plan, facts: DayFacts, now: datetime, day_ends: time) -> list[Notice]:
-    """A look at the tasks left, as one or two notices.
-
-    ``progress:<n>`` comes every :data:`PROGRESS_EVERY` after waking, ``progress:after:<id>``
-    when a timed item ends. Only while he is awake and a task is not done, never inside a timed
-    item. A checkpoint that a timed item ended after is left to that item's own notice.
-    """
+def budget_facts(plan: Plan, now: datetime, day_ends: time) -> dict[str, Any] | None:
+    """The tasks and the budget of a ``progress`` notice at ``now``; None when none is left."""
     zone = now.tzinfo
     held = budget(plan, now, day_ends=day_ends)
-    spans = [(held_span, i) for i in plan.items if (held_span := span_of(plan, i, zone))]
-    if facts.wake is None or held.next_task is None or any(a <= now < b for (a, b), _ in spans):
-        return []
-    woke = datetime.fromtimestamp(facts.wake.at_ms / 1000, zone)
-    ended = [(b, i) for (_, b), i in spans if woke <= b <= now]
-    base = {
+    if held.next_task is None:
+        return None
+    return {
         "tasks": [
             {"id": i.item_id, "title": i.title, "minutes": i.minutes, "done": i.done}
             for i in plan.items if is_task(i)
@@ -245,7 +237,30 @@ def _progress(plan: Plan, facts: DayFacts, now: datetime, day_ends: time) -> lis
             datetime.combine(plan.day, day_ends, tzinfo=zone)),
         "next_task": {"id": held.next_task.item_id, "title": held.next_task.title,
                       "minutes": held.next_task.minutes},
-        "private": held.next_task.private, "doing": list(facts.doing),
+        "private": held.next_task.private,
+    }
+
+
+def _progress(plan: Plan, facts: DayFacts, now: datetime, day_ends: time) -> list[Notice]:
+    """A look at the tasks left, as one or two notices.
+
+    ``progress:<n>`` comes every :data:`PROGRESS_EVERY` after waking, ``progress:after:<id>``
+    when a timed item ends. Only while he is awake and a task is not done, never inside a timed
+    item, and never when no time is left (at or after ``day_ends``, or the rest of the day spoken
+    for). A checkpoint that a timed item ended after is left to that item's own notice.
+    """
+    zone = now.tzinfo
+    spans = [(held_span, i) for i in plan.items if (held_span := span_of(plan, i, zone))]
+    base = budget_facts(plan, now, day_ends)
+    if (
+        facts.wake is None or base is None or base["free_min"] == 0
+        or any(a <= now < b for (a, b), _ in spans)
+    ):
+        return []
+    woke = datetime.fromtimestamp(facts.wake.at_ms / 1000, zone)
+    ended = [(b, i) for (_, b), i in spans if woke <= b <= now]
+    base |= {
+        "doing": list(facts.doing),
         "commits": [
             {"at": _clock(datetime.fromtimestamp(c.at_ms / 1000, zone)), "repo": c.repo,
              "subject": c.subject}
@@ -356,8 +371,9 @@ def notice(
     ``left_early`` (a drive or a walk of :data:`LEAVING_WALK` began :data:`LEFT_EARLY_BEFORE` or
     more before a placed item's end);
     ``new_commitment`` (noted today for today and not in the plan); ``progress`` (every
-    :data:`PROGRESS_EVERY` after waking and when a timed item ends, while a task is not done and
-    never inside a timed item; ``day_ends`` is when the day's work stops, for :func:`budget`).
+    :data:`PROGRESS_EVERY` after waking and when a timed item ends, while a task is not done,
+    never inside a timed item and never when no time is left; ``day_ends`` is when the day's work
+    stops, for :func:`budget`).
     """
     found = [
         *_woke(facts, now.tzinfo),
@@ -374,4 +390,4 @@ def notice(
 
 
 
-__all__ = ["Notice", "budget", "notice"]
+__all__ = ["Notice", "budget", "budget_facts", "notice"]

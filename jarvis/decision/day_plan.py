@@ -12,14 +12,16 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, time, timedelta
 from functools import cache
 from typing import TYPE_CHECKING, Any, Final
 
+from jarvis.decision.plan_watch import budget_facts
 from jarvis.shared import lang
 from jarvis.shared.skills import load_skill
 from jarvis.state.plan import ACTS, MAX_ITEMS, Plan, PlanItem, apply_changes, check_item
+from jarvis.state.plan_budget import budget, is_task
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
@@ -273,6 +275,120 @@ def parse_decision(text: str, plan: Plan) -> Decision:
         return _decide(found, plan)
     except ValueError as exc:
         return Decision("silent", notes=(str(exc),))
+
+
+def build_progress_prompt(
+    plan: Plan, notice: Notice, now: datetime, *, zone: tzinfo,
+) -> tuple[str, str]:
+    """``(system, user)`` of the done-check call of a ``progress`` notice (task ``progress``).
+
+    Input: the tasks in order (id, title, minutes, done) and the notice's ``evidence`` (the screen
+    activities, his words and the commits since the last check). Clocks stay ``HH:MM``: nothing
+    in this answer is spoken.
+    """
+    evidence = notice.facts.get("evidence") or {}
+    body = {
+        "task": "progress",
+        "day": plan.day.isoformat(),
+        "now": now.astimezone(zone).strftime("%H:%M"),
+        "tasks": [
+            {"id": i.item_id, "title": i.title, "minutes": i.minutes, "done": i.done}
+            for i in plan.items if is_task(i)
+        ],
+        "evidence": {k: evidence.get(k, []) for k in ("screen", "words", "commits")}
+        | {"since": evidence.get("since")},
+    }
+    return _instructions(), json.dumps(body, ensure_ascii=False, default=str)
+
+
+@dataclass(frozen=True)
+class Progress:
+    """What the evidence shows of the tasks: ``done`` ids, and ``left`` minutes by id (under way).
+
+    ``notes`` say what was dropped from the answer and why.
+    """
+
+    done: tuple[str, ...] = ()
+    left: dict[str, int] = field(default_factory=dict)
+    why: str = ""
+    notes: tuple[str, ...] = ()
+
+    def changes(self) -> list[dict[str, Any]]:
+        """The edits for :func:`jarvis.state.plan.apply_changes`: done true, minutes the rest."""
+        return [
+            *({"op": "edit", "id": n, "done": True} for n in self.done),
+            *({"op": "edit", "id": n, "minutes": m} for n, m in self.left.items()),
+        ]
+
+
+def _listed(found: Mapping[str, Any], name: str, kind: type, notes: list[str]) -> Any:  # noqa: ANN401
+    """``found[name]`` when it is a ``kind``; otherwise nothing, and a note unless it is absent."""
+    value = found.get(name)
+    if isinstance(value, kind):
+        return value
+    if value is not None:
+        notes.append(f"{name} is not a {kind.__name__}")
+    return kind()
+
+
+def parse_progress(text: str, plan: Plan) -> Progress:
+    """The done-check in a model's answer ``{"done": [...], "left": {"p3": 40}, "why": "..."}``.
+
+    Untrusted: each id must be a task of ``plan`` that is not done (a timed item is not marked
+    here); ``left`` minutes must be a whole number from 1 to the task's own estimate (a larger
+    figure is the decide call's to change), and ``done`` wins over ``left`` for one id. Anything
+    else is dropped and noted; an answer that is no JSON object is an empty result.
+    """
+    found = _object(text)
+    if found is None:
+        return Progress(notes=("the answer is not a JSON object",))
+    tasks = {i.item_id: i for i in plan.items if is_task(i)}
+    notes: list[str] = []
+
+    def task(raw: object, what: str) -> PlanItem | None:
+        item = tasks.get(raw) if isinstance(raw, str) else None
+        if item is None or item.done:
+            why = "not a task of the plan" if item is None else "already done"
+            notes.append(f"{what} {raw!r} dropped: {why}")
+            return None
+        return item
+
+    done = list(dict.fromkeys(
+        i.item_id for n in _listed(found, "done", list, notes) if (i := task(n, "done"))
+    ))
+    left: dict[str, int] = {}
+    for name, minutes in _listed(found, "left", dict, notes).items():
+        if (item := task(name, "left")) is None:
+            continue
+        if name in done:
+            notes.append(f"left {name!r} dropped: marked done")
+        elif isinstance(minutes, bool) or not isinstance(minutes, int) or not (
+            1 <= minutes <= item.minutes
+        ):
+            notes.append(f"left {name!r} dropped: {minutes!r} is not 1 to {item.minutes} minutes")
+        elif minutes != item.minutes:
+            left[name] = minutes
+    why = found.get("why")
+    return Progress(
+        tuple(done), left, why.strip()[:WHY_CHARS] if isinstance(why, str) else "", tuple(notes),
+    )
+
+
+def unfit_notice(
+    plan: Plan, notice: Notice, marked: Progress, now: datetime, day_ends: time,
+) -> Notice | None:
+    """The ``progress`` notice to put to the decide call, or None when the tasks fit the day.
+
+    ``plan`` is the plan after ``marked`` was applied. The notice's facts get the budget worked
+    out again and ``marked`` (what the done-check changed); the evidence stays out of the call.
+    """
+    if budget(plan, now, day_ends=day_ends).fits:
+        return None
+    facts = {k: v for k, v in notice.facts.items() if k != "evidence"}
+    facts |= budget_facts(plan, now, day_ends) or {}
+    if marked.done or marked.left:
+        facts["marked"] = {"done": list(marked.done), "left": marked.left}
+    return replace(notice, facts=facts)
 
 
 def _minute(text: str) -> int:

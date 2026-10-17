@@ -22,13 +22,19 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from jarvis.decision.day_plan import build_decide_prompt, parse_decision
+from jarvis.decision.day_plan import (
+    build_decide_prompt,
+    build_progress_prompt,
+    parse_decision,
+    parse_progress,
+)
 from jarvis.decision.plan_watch import budget, notice
 from jarvis.runtime.now_block import plan_line
 from jarvis.state import commitments, plan
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.places import Place
+from jarvis.state.plan_budget import DAY_ENDS
 from jarvis.state.plan_facts import (
     Commit,
     DayFacts,
@@ -37,6 +43,7 @@ from jarvis.state.plan_facts import (
     NotedCommitment,
     Stay,
     Wake,
+    evidence,
     facts_at,
 )
 
@@ -304,6 +311,82 @@ def test_progress_needs_a_wake_and_a_task_not_done() -> None:
     assert "progress" not in kinds(_plan(_task("p1", done=True), MEETING), awake)
 
 
+def test_no_progress_check_at_or_after_the_days_end_or_with_no_time_left() -> None:
+    """The 17:00 checkpoint comes; 18:00, 19:00 and the small hours do not; a booked day none."""
+    awake = DayFacts(0, Wake("focus_off", _ms("07:00")), None, (), (), (), ())
+    held = _plan(_task("p1"))
+
+    def keys(plan_: plan.Plan, clock: str, ends: time) -> list[str]:
+        return [n.key for n in notice(plan_, awake, _at(clock), set(), day_ends=ends)
+                if n.kind == "progress"]
+
+    assert keys(held, "17:00", time(18, 0)) == ["progress:5"]
+    assert [keys(held, c, time(18, 0)) for c in ("18:00", "19:00", "23:25")] == [[], [], []]
+    assert [keys(held, c, DAY_ENDS) for c in ("23:30", "01:25", "03:25")] == [[], [], []]
+    booked = _plan(_task("p1"), _item("p9", firmness="fixed", start="13:00", minutes=600))
+    assert keys(booked, "11:00", time(14, 0)) == []  # 13:00 to 14:00 is spoken for, and more
+
+
+def _work(conn: Any, at: str, *texts: str) -> None:  # noqa: ANN401
+    acts = [{"text": t} for t in texts]
+    emit_event(conn, type="work_state.revised", ts_epoch_ms=_ms(at), payload={
+        "item": {"activities": acts}, "trigger": "auto"})
+
+
+def _said(conn: Any, kind: str, at: str, words: str) -> None:  # noqa: ANN401
+    emit_event(conn, type=kind, ts_epoch_ms=_ms(at), payload={"transcript": words, "turn_id": "t"})
+
+
+def test_evidence_is_what_he_did_since_the_previous_check_each_activity_once(
+    tmp_path: Path,
+) -> None:
+    """Each window sees its own events; an activity shows at its first time; repeats fold."""
+    with closing(_log(tmp_path / "events.db")) as conn:
+        _work(conn, "06:00", "asleep at the desk")  # before the first window
+        _work(conn, "08:00", "editing the report", "reading mail")
+        _work(conn, "08:30", "editing the report", "  writing   tests ")
+        _work(conn, "09:30", "writing tests")
+        _work(conn, "11:30", "after the window")
+        _said(conn, "utterance.received", "08:10", "sent the report")
+        _said(conn, "surface.user_intent", "08:10", "sent the report")  # the same turn, twice
+        _said(conn, "surface.user_intent", "09:40", "x" * 300)
+        emit_event(conn, type="project.commit_seen", ts_epoch_ms=_ms("08:20"), payload={
+            "repo_path": "/p/jarvis", "commit_sha": "a1", "subject": "early",
+            "committed_at_ms": _ms("08:20"), "actor": "observer"})
+        emit_event(conn, type="project.commit_seen", ts_epoch_ms=_ms("09:50"), payload={
+            "repo_path": "/p/jarvis", "commit_sha": "b2", "subject": "late",
+            "committed_at_ms": _ms("09:50"), "actor": "observer"})
+        first = evidence(conn, _ms("07:00"), _ms("09:00"), ZONE)
+        second = evidence(conn, _ms("09:00"), _ms("11:00"), ZONE)
+    assert first["screen"] == [
+        {"at": "08:00", "text": "editing the report"}, {"at": "08:00", "text": "reading mail"},
+        {"at": "08:30", "text": "writing tests"},
+    ]
+    assert first["words"] == [{"at": "08:10", "text": "sent the report"}]
+    assert [c["subject"] for c in first["commits"]] == ["early"]
+    assert (first["since"], first["since_ms"], first["until_ms"]) == ("07:00", _ms("07:00"),
+                                                                      _ms("09:00"))
+    assert second["screen"] == [{"at": "09:30", "text": "writing tests"}]
+    assert [(w["at"], len(w["text"])) for w in second["words"]] == [("09:40", 200)]  # clipped
+    assert [c["subject"] for c in second["commits"]] == ["late"]
+
+
+def test_evidence_keeps_the_latest_forty_activities_and_twenty_words(tmp_path: Path) -> None:
+    """Over the cap the oldest go; what stays keeps its order."""
+    with closing(_log(tmp_path / "events.db")) as conn:
+        for n in range(45):
+            _work(conn, f"08:{n:02d}", f"activity {n}")
+        for n in range(25):
+            _said(conn, "utterance.received", f"09:{n:02d}", f"words {n}")
+        got = evidence(conn, _ms("07:00"), _ms("10:00"), ZONE)
+    assert (got["screen"][0]["text"], got["screen"][-1]["text"], len(got["screen"])) == (
+        "activity 5", "activity 44", 40,
+    )
+    assert (got["words"][0]["text"], got["words"][-1]["text"], len(got["words"])) == (
+        "words 5", "words 24", 20,
+    )
+
+
 # --- the decision --------------------------------------------------------------------------
 
 
@@ -332,6 +415,55 @@ def test_parse_decision_keeps_a_good_answer_and_turns_a_bad_one_to_silence() -> 
         got = parse_decision(bad, held)
         assert (got.act, got.say, got.changes) == ("silent", "", ()), bad
         assert got.notes, bad
+
+
+def test_parse_progress_keeps_what_reads_and_drops_the_rest_with_a_note() -> None:
+    """Untrusted: unknown, timed and finished ids, and minutes out of range are dropped."""
+    held = _plan(
+        _task("p1", 60), _task("p2", 40), _task("p3", 30, done=True), _task("p4", 90), _task("p5"),
+        MEETING,
+    )
+    ok = parse_progress(
+        json.dumps({"done": ["p1", "p1"], "left": {"p2": 15, "p4": 90}, "why": "he said so"}), held,
+    )
+    assert (ok.done, ok.left, ok.why, ok.notes) == (("p1",), {"p2": 15}, "he said so", ())
+    assert ok.changes() == [
+        {"op": "edit", "id": "p1", "done": True}, {"op": "edit", "id": "p2", "minutes": 15},
+    ]  # p4 left as many minutes as planned: nothing to change
+    bad = parse_progress(json.dumps({
+        "done": ["p9", "p3", "x", 7],  # a timed item, a finished one, unknown, not an id
+        "left": {"p1": 0, "p2": -5, "p4": 120, "p5": "ten", "p9": 10, "p3": 5},
+    }), held)
+    assert (bad.done, bad.left, len(bad.notes)) == ((), {}, 10)
+    timed = parse_progress(json.dumps({"done": ["p9"], "left": {"p9": 10, "p1": 20, "p2": 10}}),
+                           held)
+    assert (timed.done, timed.left) == ((), {"p1": 20, "p2": 10})
+    assert any("p9" in n for n in timed.notes)
+    both = parse_progress(json.dumps({"done": ["p1"], "left": {"p1": 10}}), held)
+    assert (both.done, both.left, len(both.notes)) == (("p1",), {}, 1)  # done wins
+    for text in ("not json", '["p1"]', json.dumps({"done": "p1", "left": ["p2"]})):
+        got = parse_progress(text, held)
+        assert (got.done, got.left, got.changes()) == ((), {}, []), text
+        assert got.notes, text
+
+
+def test_the_progress_prompt_lists_the_tasks_in_order_and_the_evidence() -> None:
+    """Timed items are not in the list; the evidence carries its span and the three kinds."""
+    held = _plan(_task("p1"), MEETING, _task("p2", 30, done=True))
+    facts = DayFacts(0, Wake("focus_off", _ms("07:00")), None, (), (), (), ())
+    [one] = [n for n in notice(held, facts, _at("09:00"), set()) if n.kind == "progress"]
+    one = replace(one, facts=one.facts | {"evidence": {
+        "since": "07:00", "since_ms": 1, "until_ms": 2, "screen": [{"at": "08:00", "text": "x"}],
+        "words": [], "commits": [],
+    }})
+    _, user = build_progress_prompt(held, one, _at("09:00"), zone=ZONE)
+    body = json.loads(user)
+    assert (body["task"], body["now"]) == ("progress", "09:00")
+    assert [t["id"] for t in body["tasks"]] == ["p1", "p2"]
+    assert body["tasks"][1] == {"id": "p2", "title": "Task p2", "minutes": 30, "done": True}
+    assert body["evidence"] == {
+        "screen": [{"at": "08:00", "text": "x"}], "words": [], "commits": [], "since": "07:00",
+    }
 
 
 def test_the_decide_prompt_carries_the_notice_the_plan_and_what_she_told() -> None:
@@ -553,3 +685,43 @@ def test_the_replay_shows_the_budget_on_progress_lines(tmp_path: Path) -> None:
     [first] = [line for line in lines if line["key"] == "progress:1"]
     assert first["budget"] == {"remaining_min": 90, "free_min": 870, "fits": True}  # 09:00 to 23:30
     assert "  - budget: 90 min of tasks, " in script.summary(DAY, lines)
+
+
+def test_the_replay_prints_the_done_check_and_asks_the_decider_only_when_the_day_does_not_fit(
+    tmp_path: Path,
+) -> None:
+    """The check marks p1 done, so 30 minutes fit the 45 left: silent, no decider; else it asks."""
+    from jarvis.decision.day_plan import Decision, Progress  # noqa: PLC0415
+    from scripts import plan_day_replay as script  # noqa: PLC0415 - the script is not a package
+
+    log = tmp_path / "events.db"
+    with closing(_log(log)) as conn:
+        emit_event(
+            conn, type="phone.state_observed", ts_epoch_ms=_ms("07:00"), ingestion_node="phone",
+            payload={"signal": "focus", "value": "off"},
+        )
+        _work(conn, "08:00", "editing the report")
+    held = _plan(_task("p1", 60), _task("p2", 30))
+    asked: list[str] = []  # the progress notices the decider is asked about
+
+    def decide(_system: str, user: str, _held: plan.Plan) -> Any:  # noqa: ANN401
+        if json.loads(user)["notice"]["kind"] == "progress":
+            asked.append(user)
+        return Decision("tell", "x")
+
+    def run(check: Any) -> dict[str, Any]:  # noqa: ANN401
+        with closing(script.open_read_only(log)) as conn:
+            lines = script.replay(DAY, held, conn, [], ZONE, 60, decide, time(9, 45), check)
+        [line] = [one for one in lines if one["key"] == "progress:1"]
+        return line
+
+    line = run(lambda *_: Progress(("p1",), {"p2": 20}, "sent", ()))
+    assert line["done_check"] == {"done": ["p1"], "left": {"p2": 20}, "why": "sent", "notes": []}
+    assert (line["decision"]["act"], line["decision"]["why"], asked) == ("silent", "fits", [])
+    assert line["budget"] == {"remaining_min": 20, "free_min": 45, "fits": True}
+    assert line["facts"]["evidence"]["screen"] == [{"at": "08:00", "text": "editing the report"}]
+    line = run(script.stub_check)
+    assert line["done_check"]["done"] == []
+    assert line["budget"]["fits"] is False
+    assert line["decision"]["act"] == "tell"
+    assert json.loads(asked[0])["notice"]["facts"]["fits"] is False

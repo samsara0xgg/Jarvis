@@ -34,6 +34,10 @@ FIX_LOOKBACK_MS: Final[int] = 6 * 3_600_000
 MAX_ACTIVITIES: Final[int] = 3
 MAX_COMMITS: Final[int] = 20
 TEXT_CHARS: Final[int] = 230
+MAX_SCREEN: Final[int] = 40
+"""Distinct screen activities kept in a progress check's evidence (the latest)."""
+MAX_WORDS: Final[int] = 20
+WORDS_CHARS: Final[int] = 200
 
 _PHONE_WAKE: Final[dict[tuple[str, str], str]] = {
     ("focus", "off"): "focus_off",
@@ -255,6 +259,43 @@ def _commits(conn: sqlite3.Connection, first_ms: int, now_ms: int) -> tuple[Comm
             subject = " ".join(str(payload["subject"]).split())[:TEXT_CHARS]
             found[str(payload["commit_sha"])] = Commit(at, repo, subject)
     return tuple(sorted(found.values(), key=lambda c: c.at_ms)[-MAX_COMMITS:])
+
+
+def evidence(conn: sqlite3.Connection, since_ms: int, now_ms: int, zone: tzinfo) -> dict[str, Any]:
+    """What the log shows he did in ``[since_ms, now_ms]``, for a progress check's done-check.
+
+    ``screen``: each distinct work-state activity once, with the local time it first appeared
+    (the latest :data:`MAX_SCREEN`); ``words``: his own words, spoken or typed (the latest
+    :data:`MAX_WORDS`, clipped, a repeat of the line before dropped); ``commits``: the commits
+    made in the span. Times are local ``HH:MM``; ``since_ms`` and ``until_ms`` are the span.
+    """
+
+    def clock(ms: int) -> str:
+        return f"{datetime.fromtimestamp(ms / 1000, zone):%H:%M}"
+
+    screen: dict[str, int] = {}
+    for event in iter_events_of_types(conn, ("work_state.revised",), since_epoch_ms=since_ms):
+        item = event.payload.get("item")
+        if event.ts_epoch_ms > now_ms or not isinstance(item, dict):
+            continue
+        for act in item.get("activities") or []:
+            text = " ".join(str(act.get("text") or "").split())[:TEXT_CHARS]
+            if text:
+                screen.setdefault(text, event.ts_epoch_ms)
+    words: list[tuple[int, str]] = []
+    for event in iter_events_of_types(conn, _SPOKEN, since_epoch_ms=since_ms):
+        text = " ".join(str(event.payload.get("transcript") or "").split())[:WORDS_CHARS]
+        if text and event.ts_epoch_ms <= now_ms and (not words or words[-1][1] != text):
+            words.append((event.ts_epoch_ms, text))
+    return {
+        "since": clock(since_ms), "since_ms": since_ms, "until_ms": now_ms,
+        "screen": [{"at": clock(at), "text": t} for t, at in list(screen.items())[-MAX_SCREEN:]],
+        "words": [{"at": clock(at), "text": t} for at, t in words[-MAX_WORDS:]],
+        "commits": [
+            {"at": clock(c.at_ms), "repo": c.repo, "subject": c.subject}
+            for c in _commits(conn, since_ms, now_ms)
+        ],
+    }
 
 
 def _noted(  # noqa: PLR0913 - the day, its bounds, the moment and the zone.

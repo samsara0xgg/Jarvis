@@ -9,7 +9,8 @@ and stub say and push hooks (no key, no network, no model). The examples are inv
 - a non-outing tell at dnd is only recorded, at quiet it is a silent push, past the hour's cap it
   is only recorded; a private item is named by its time on speakers and in a push;
 - ``adjust`` revises the plan by her; an adjust that does not apply is silence; a ``progress``
-  notice is judged like the others, and her adjust may mark a task done;
+  notice goes in two steps: a done-check that marks tasks done, then the decider only when the
+  tasks left do not fit the time left;
 - the first item's start settles the plan;
 - the ``plan`` tool reads (in order, with the budget), changes (move, done) and settles;
   ``route_legs`` fills the legs a draft lacks.
@@ -289,24 +290,104 @@ def test_an_adjust_with_a_change_that_does_not_apply_is_silence(rig: Rig) -> Non
     assert (decision.act, rig.said) == ("silent", [])
 
 
-def test_a_progress_notice_obeys_the_quiet_level_and_her_adjust_marks_a_task_done(
-    rig: Rig,
-) -> None:
-    """Two hours after waking she is asked with the budget; done applies, dnd keeps it unspoken."""
-    mark = {"op": "edit", "id": "p1", "done": True}
-    rig.answers = [json.dumps({"act": "adjust", "say": "Report done, good.", "changes": [mark],
-                               "why": "he said it is sent"})]
-    rig.quiet = "dnd"
+def _two_tasks(rig: Rig) -> None:
     rig.drafted(_item("p1", start=None), _item("p2", start=None, title="Email Sam", minutes=30))
+
+
+def _early(root: Path, *answers: str) -> Rig:
+    """A rig whose day ends at 10:00: at 09:00 it has 60 minutes for 90 of tasks."""
+    return Rig(root, answers=list(answers), settings=replace(SETTINGS, day_ends=time(10, 0)))
+
+
+def test_a_progress_check_that_fits_after_marking_is_silent_with_no_second_call(
+    tmp_path: Path,
+) -> None:
+    """The done-check marks p1 done (and p9, which is no task); 30 of 60 minutes fit: silence."""
+    rig = _early(tmp_path, json.dumps({"done": ["p1", "p9"], "why": "he sent the report"}))
+    rig.quiet = "off"
+    _two_tasks(rig)
     assert rig.watch.tick(_at("09:00")) == ["woke", "progress:1", "open", "settle"]
-    notice = json.loads(rig.asked[0])["notice"]
-    assert (notice["key"], notice["facts"]["remaining_min"], notice["facts"]["fits"]) == (
-        "progress:1", 90, True,
-    )
+    [asked] = rig.asked
+    body = json.loads(asked)
+    assert (body["task"], [t["id"] for t in body["tasks"]]) == ("progress", ["p1", "p2"])
+    assert body["evidence"]["since"] == "07:00"
     assert [i.done for i in rig.today().items] == [True, False]
-    assert rig.record(f"plan-{DAY}-progress:1") == "Report done, good."
-    assert (rig.said, rig.pushed) == ([], [])  # dnd: in the conversation only
+    with closing(rig.conn()) as conn:
+        by_key = {d.key: d for d in plan.decisions(conn, DAY)}
+        [revision] = plan.revisions(conn, DAY, DAY)
+    assert (by_key["progress:1:done"].act, by_key["progress:1:done"].say) == ("adjust", "")
+    assert "p9" in by_key["progress:1:done"].why  # what was dropped is on record
+    assert (by_key["progress:1"].act, by_key["progress:1"].why) == ("silent", "fits")
+    assert revision.by == "her"
+    assert (rig.said, rig.pushed, rig.record(f"plan-{DAY}-progress:1")) == ([], [], None)
     assert rig.watch.tick(_at("09:30")) == []  # each checkpoint once
+
+
+def test_a_progress_check_that_still_does_not_fit_asks_the_decider_with_the_fresh_budget(
+    tmp_path: Path,
+) -> None:
+    """p1 has 45 minutes left: 75 against 60. The second call sees that, not the evidence."""
+    rig = _early(tmp_path, json.dumps({"left": {"p1": 45}}), TELL)
+    _two_tasks(rig)
+    rig.watch.tick(_at("09:00"))
+    assert [json.loads(a)["task"] for a in rig.asked] == ["progress", "notice"]
+    second = json.loads(rig.asked[1])
+    facts = second["notice"]["facts"]
+    assert (facts["remaining_min"], facts["free_min"], facts["fits"]) == (75, 60, False)
+    assert facts["marked"] == {"done": [], "left": {"p1": 45}}
+    assert "evidence" not in facts
+    assert second["told_today"] == []  # the done-check is not something she told him
+    assert [(i.item_id, i.minutes) for i in rig.today().items] == [("p1", 45), ("p2", 30)]
+    assert rig.said == ["Heads up."]
+    with closing(rig.conn()) as conn:
+        assert [(d.key, d.act) for d in plan.decisions(conn, DAY)] == [
+            ("progress:1:done", "adjust"), ("progress:1", "tell"),
+        ]
+    # the day is over for checks at 10:00, whatever is left
+    assert rig.watch.tick(_at("11:00")) == []
+    assert len(rig.asked) == 2
+
+
+def test_a_done_check_that_fails_leaves_the_plan_and_the_budget_decides(tmp_path: Path) -> None:
+    """Not JSON: nothing marked, silent on record; 90 of 60 does not fit, so she is asked (dnd)."""
+    rig = _early(tmp_path, "not json", TELL)
+    rig.quiet = "dnd"
+    _two_tasks(rig)
+    rig.watch.tick(_at("09:00"))
+    assert (rig.said, rig.pushed, rig.record(f"plan-{DAY}-progress:1")) == ([], [], "Heads up.")
+    assert [i.done for i in rig.today().items] == [False, False]
+    with closing(rig.conn()) as conn:
+        by_key = {d.key: d for d in plan.decisions(conn, DAY)}
+    assert (by_key["progress:1:done"].act, "JSON" in by_key["progress:1:done"].why) == (
+        "silent", True,
+    )
+    assert by_key["progress:1"].act == "tell"
+
+
+def _work(rig: Rig, at: str, *texts: str) -> None:
+    with closing(rig.conn()) as conn:
+        emit_event(conn, type="work_state.revised", ts_epoch_ms=int(_at(at).timestamp() * 1000),
+                   payload={"item": {"activities": [{"text": t} for t in texts]},
+                            "trigger": "auto"})
+
+
+def test_each_progress_check_sees_the_evidence_since_the_previous_one(tmp_path: Path) -> None:
+    """The first looks back to waking; the second to when the first looked, not to waking."""
+    rig = Rig(tmp_path, answers=["{}", "{}"])
+    _two_tasks(rig)
+    _work(rig, "06:30", "before he woke")
+    _work(rig, "08:00", "editing the report")
+    _work(rig, "09:30", "writing tests")
+    rig.watch.tick(_at("09:00"))
+    rig.watch.tick(_at("11:00"))
+    with closing(rig.conn()) as conn:
+        seen = plan.notices(conn, DAY)
+    first, second = (seen[k].facts["evidence"] for k in ("progress:1", "progress:2"))
+    assert (first["since"], [a["text"] for a in first["screen"]]) == (
+        "07:00", ["editing the report"],
+    )
+    assert (second["since"], [a["text"] for a in second["screen"]]) == ("09:00", ["writing tests"])
+    assert [json.loads(a)["evidence"]["since"] for a in rig.asked] == ["07:00", "09:00"]
 
 
 def test_the_first_items_start_settles_the_plan(rig: Rig) -> None:

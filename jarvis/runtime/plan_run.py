@@ -9,8 +9,13 @@ asks :func:`jarvis.decision.plan_watch.notice` what changed, writes each new not
   ``plan-open-<date>`` and ``plan.opened`` is logged. It is never judged.
 - ``outing_soon`` first reads the weather and the leg again, so she is asked with both.
 - every other notice goes to the ``decide_preset`` model; its answer is logged as ``plan.decided``.
-  ``adjust`` also revises the plan by her: it may mark tasks done, move or drop them. A
-  ``progress`` notice is one of these, so it obeys the quiet level and the caps.
+  ``adjust`` also revises the plan by her: it may mark tasks done, move or drop them.
+- a ``progress`` notice goes in two steps. First a done-check: the model reads the tasks and the
+  evidence since the last check (screen, his words, commits) and says which are done and how many
+  minutes a task under way still needs; the program applies that as an edit by her and logs it as
+  ``plan.decided`` under ``<key>:done``. Then the budget is worked out again on the updated plan:
+  if the tasks fit the time left she stays silent (no second call); if not, the normal decision
+  is asked with the fresh budget, and obeys the quiet level and the caps.
 
 What she says (``tell``, ``adjust``) is always written into the conversation as her record. It is
 spoken on the Mac and pushed to the phone under the limits the ADR fixes in code: outing notices
@@ -33,10 +38,14 @@ from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.decision.day_plan import (
+    Progress,
     build_decide_prompt,
     build_opening_prompt,
+    build_progress_prompt,
     parse_decision,
     parse_opening,
+    parse_progress,
+    unfit_notice,
 )
 from jarvis.decision.plan_watch import Notice, notice
 from jarvis.execution.tools import ToolContext
@@ -47,7 +56,7 @@ from jarvis.state import commitments, places, plan
 from jarvis.state.day_line import day_window
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import append_record, message_record
-from jarvis.state.plan_facts import DayFacts, facts_at
+from jarvis.state.plan_facts import DayFacts, evidence, facts_at
 
 if TYPE_CHECKING:
     import sqlite3
@@ -63,6 +72,8 @@ LOGGER = logging.getLogger(__name__)
 TICK_S: Final[float] = 60.0
 OUTING: Final[frozenset[str]] = frozenset({"outing_soon", "left_late"})
 """Notices that obey only speech mute, a live conversation and a call (like a reminder)."""
+DONE: Final[str] = ":done"
+"""The suffix of a progress notice's key for its done-check in ``plan.decided``."""
 OPEN_ATTEMPTS: Final[int] = 3
 """How often a day's opening is tried when the model fails, before the day goes without."""
 HOUR_MS: Final[int] = 3_600_000
@@ -181,6 +192,8 @@ class _Run:
     held: plan.Plan | None
     facts: DayFacts
     handled: list[str] = field(default_factory=list)
+    last_check_ms: int | None = None
+    """When the day's latest progress check looked back to (its evidence ended), if any."""
 
 
 class PlanWatch:
@@ -235,6 +248,10 @@ class PlanWatch:
             )
             run = _Run(conn, day, now, held, facts)
             seen = plan.notices(conn, day)
+            run.last_check_ms = max((
+                int(n.facts["evidence"]["until_ms"]) for n in seen.values()
+                if n.kind == "progress" and "evidence" in n.facts
+            ), default=None)
             found = notice(
                 held or plan.Plan(day, ()), facts, now, seen.keys(),
                 day_ends=self._settings.day_ends,
@@ -255,6 +272,10 @@ class PlanWatch:
         try:
             if one.kind == "outing_soon":
                 one = self._refresh(run, one)
+            elif one.kind == "progress" and run.facts.wake is not None:
+                span = (run.last_check_ms or run.facts.wake.at_ms, int(run.now.timestamp() * 1000))
+                one = replace(one, facts={**one.facts, "evidence": evidence(
+                    run.conn, *span, self._zone)})
             plan.noticed(run.conn, run.day, one.key, one.kind, one.item_id, one.facts)
             run.handled.append(one.key)
             if one.kind != "woke":  # the opening is its own step, whenever it is due
@@ -347,10 +368,15 @@ class PlanWatch:
 
     def _judge(self, run: _Run, one: Notice) -> None:
         """Ask the model what to do about ``one`` and do it."""
+        if one.kind == "progress":
+            progressed = self._check_progress(run, one)
+            if progressed is None:
+                return
+            one = progressed
         held = run.held
         if held is None:
             return
-        prior = plan.decisions(run.conn, run.day)
+        prior = [d for d in plan.decisions(run.conn, run.day) if not d.key.endswith(DONE)]
         capped = one.kind not in OUTING and self._over_cap(prior, run.now)
         preset = self._settings.decide_preset
         try:
@@ -376,6 +402,43 @@ class PlanWatch:
         plan.decided(run.conn, run.day, one.key, act, say, why, preset)
         if act != "silent":
             self._tell(run, one, say, capped=capped)
+
+    def _check_progress(self, run: _Run, one: Notice) -> Notice | None:
+        """The done-check of a ``progress`` notice; the notice to decide on, None if the day fits.
+
+        The model marks what the evidence shows done (and the minutes a task under way still
+        needs); the budget is then worked out again. Tasks that fit: silence, no second call.
+        """
+        held = run.held
+        if held is None:
+            return None
+        preset = self._settings.decide_preset
+        key = f"{one.key}{DONE}"
+        marked = Progress()
+        try:
+            if self._ask_decide is None:
+                msg = f"no model: llm.presets.{preset} is missing or malformed"
+                raise RuntimeError(msg)  # noqa: TRY301 - one failure path for every cause
+            system, user = build_progress_prompt(held, one, run.now, zone=self._zone)
+            marked = parse_progress(self._ask_decide(system, user), held)
+        except Exception as exc:  # noqa: BLE001 - no done-check leaves the plan as it was.
+            LOGGER.warning("plan watch: %s not checked: %s: %s", one.key, type(exc).__name__, exc)
+            plan.decided(run.conn, run.day, key, "silent", "", f"{type(exc).__name__}", preset)
+        else:
+            items, notes = plan.apply_changes(held.items, marked.changes())
+            why = "; ".join(filter(None, [marked.why, *marked.notes, *notes]))
+            changed = items != list(held.items)
+            if changed:
+                plan.revise(run.conn, run.day, items, "her", marked.why or "progress")
+                run.held = plan.for_day(run.conn, run.day)
+            plan.decided(run.conn, run.day, key, "adjust" if changed else "silent", "", why, preset)
+            marked = marked if changed else Progress()
+        if run.held is None:
+            return None
+        fresh = unfit_notice(run.held, one, marked, run.now, self._settings.day_ends)
+        if fresh is None:
+            plan.decided(run.conn, run.day, one.key, "silent", "", "fits", preset)
+        return fresh
 
     def _over_cap(self, prior: Sequence[plan.Decided], now: datetime) -> bool:
         """Whether the told notices already fill the day's or the hour's allowance."""
