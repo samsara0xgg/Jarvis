@@ -170,6 +170,13 @@ def test_waking_opens_the_day_once_and_the_decider_is_not_asked(rig: Rig) -> Non
         assert list(plan.notices(conn, DAY)) == ["woke"]
 
 
+def test_a_day_is_not_opened_after_it_ends(rig: Rig) -> None:
+    """A watcher started late at night does not open the day he already lived."""
+    rig.drafted(_item())
+    assert "open" not in rig.watch.tick(_at("23:40"))
+    assert rig.record(f"plan-open-{DAY}") is None
+
+
 def test_a_day_whose_draft_failed_is_opened_with_that_fact_and_asked_once(rig: Rig) -> None:
     """No plan, a failed draft: the opening goes through the model with draft_failed, only once."""
     with closing(rig.conn()) as conn:

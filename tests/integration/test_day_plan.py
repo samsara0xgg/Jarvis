@@ -574,6 +574,16 @@ def test_a_start_after_at_with_nothing_on_record_drafts_once_then_waits_for_tomo
     assert clock.drafted == [DAY, tomorrow]
 
 
+def test_a_start_after_the_day_ends_drafts_nothing_until_tomorrows_at() -> None:
+    """A day that is over is not planned: a 23:40 start waits for tomorrow's `at`."""
+    clock = Clock()
+    clock.tick(_at(DAY, 23, 40))
+    clock.tick(_at(DAY + timedelta(days=1), 3, 59))
+    assert clock.drafted == []
+    clock.tick(_at(DAY + timedelta(days=1), 4, 0))
+    assert clock.drafted == [DAY + timedelta(days=1)]
+
+
 def test_a_start_after_at_with_a_draft_or_a_failure_on_record_does_nothing_today() -> None:
     """A start with a draft or failure on record waits for tomorrow's `at`."""
     clock = Clock(state={DAY})

@@ -303,7 +303,7 @@ class PlanWatch:
     def _open_day(self, run: _Run) -> None:
         """Open the day once he is up, if nobody has: retried a few times when the model fails."""
         wake = run.facts.wake
-        if wake is None:
+        if wake is None or run.now.time() >= self._settings.day_ends:
             return
         record_id = f"plan-open-{run.day}"
         if (run.held is not None and run.held.opened) or message_record(

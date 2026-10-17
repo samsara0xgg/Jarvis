@@ -483,8 +483,8 @@ class DayPlanSchedule:
         """Today when it should be drafted now, else None.
 
         The first check after a start drafts at once if today has no draft and no failure, at any
-        hour; a start after ``at`` with state on record waits for tomorrow. Later checks draft
-        once per date, from ``at`` on.
+        hour before ``day_ends`` (a day that is over is not planned); a start after ``at`` with
+        state on record waits for tomorrow. Later checks draft once per date, from ``at`` on.
         """
         local = now.astimezone(self._zone)
         today, past_at = local.date(), local.time() >= self._settings.at
@@ -492,7 +492,8 @@ class DayPlanSchedule:
             self._checked = True
             if past_at:
                 self._last = today
-            return None if self._has_state(today) else today
+            over = local.time() >= self._settings.day_ends
+            return None if over or self._has_state(today) else today
         if not past_at or today == self._last:
             return None
         self._last = today
