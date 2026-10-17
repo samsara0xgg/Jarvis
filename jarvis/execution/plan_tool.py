@@ -25,22 +25,22 @@ if TYPE_CHECKING:
 
 _DESCRIPTION: Final = (
     "Use when he asks to add, move, drop or change something in a day's plan, asks what is in"
-    " the plan, or says the plan is fine. action=read: the day's items in order (id, title, start,"
-    " minutes, place, firmness, route, done) and the time left against the tasks left."
-    " action=change: changes is a list of ops, each"
-    ' {"op": "add", "item": {title, start HH:MM, minutes, place, ...}, "after": "p2"},'
-    ' {"op": "edit", "id": "p3", <fields to change, done: true when finished>},'
-    ' {"op": "move", "id": "p3", "after": "p2" or null for first} (to reorder; changing the'
-    ' clock time is editing start) or {"op": "drop", "id": "p3"}; why is his reason in a few'
-    " words. action=settle: he accepts the plan as it is."
-    " day is an ISO date, today by default. It changes only a day that already has a plan, and"
-    " is saved only when this returns: never say it is changed without calling it. For"
-    " something to remember rather than plan, use keep."
+    " it, or says it is fine. It changes only a day that already has a plan, and a change is"
+    " saved only when this returns: never say it is changed without calling it. For something"
+    " to remember rather than plan, use keep."
 )
 _SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
     "properties": {
-        "action": {"type": "string", "enum": ["read", "change", "settle"]},
+        "action": {
+            "type": "string",
+            "enum": ["read", "change", "settle"],
+            "description": (
+                "read: the day's items in order (id, title, start, minutes, place, firmness,"
+                " route, done) and the time left against the tasks left. change: apply"
+                " changes. settle: he accepts the plan as it is."
+            ),
+        },
         "day": {"type": "string", "description": "ISO date, 2026-10-16. Default: today."},
         "changes": {
             "type": "array",

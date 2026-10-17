@@ -59,7 +59,10 @@ code: quiet levels and sleep, privacy on the lock screen and in pushes, and a ca
   (`quiet` silences the push, `no-pop` and `dnd` keep it in the conversation only) and a cap of 8
   told a day and 2 in any hour; past the cap a `tell` is kept in the conversation unspoken.
   A private item is named by its time only in a push and in a spoken line on speakers.
-- **Change by a sentence**: her conversation tool `plan` (`read`, `change`, `settle`) applies
+- **Change by a sentence** (the tool standard, ADR 0290): he will ask to change the day in words such
+  as 「把投简历挪到吃完饭以后」, 「今天不去走了」, 「计划就这样」. The plan is not in the per-turn
+  state beyond one line (these phrasings are expected, not yet his: he has not used it), and `keep` and `reminder` hold facts and times, not an ordered day, so
+  her conversation tool `plan` (`read`, `change`, `settle`) applies
   `add`, `edit` (any field, moving is editing `start`), and `drop` to a day, as one `plan.revised`
   by `him`. How she should plan (his rules) is kept with `keep` like any rule he sets. A one-line
   state block carries the plan's next item and whether it is settled.
@@ -86,5 +89,7 @@ code: quiet levels and sleep, privacy on the lock screen and in pushes, and a ca
 
 - One small-model call per notice; a day has about 5 to 15.
 - `outing_soon` costs one WeatherKit read and one Routes request per placed item.
+- The `plan` tool has no exam items yet: no conversation of his has used it. The five the standard
+  asks for come from his first days with it.
 - Notices and decisions are in the log, so a day can be replayed and her judgement compared with
   what he did.
