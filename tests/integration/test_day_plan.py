@@ -594,14 +594,15 @@ def test_a_start_after_at_with_a_draft_or_a_failure_on_record_does_nothing_today
     assert clock.drafted == [DAY + timedelta(days=1)]
 
 
-def test_a_start_before_at_catches_up_at_once_and_drafts_again_at_at() -> None:
-    """A start before `at` drafts at once and again at `at`."""
+def test_a_start_before_at_waits_for_at_and_drafts_once() -> None:
+    """A start before `at` with nothing on record waits for `at`: one draft a day."""
     clock = Clock()
     clock.tick(_at(DAY, 2, 0))
     clock.tick(_at(DAY, 3, 30))
+    assert clock.drafted == []
     clock.tick(_at(DAY, 4, 0))
     clock.tick(_at(DAY, 4, 1))
-    assert clock.drafted == [DAY, DAY]
+    assert clock.drafted == [DAY]
 
 
 def test_a_start_before_at_with_state_waits_for_at() -> None:

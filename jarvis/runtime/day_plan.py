@@ -1,10 +1,11 @@
 """Runtime wiring for the day's plan draft (ADR 0288).
 
-Once a day at ``day_plan.at``, and on start when today has neither a draft nor a failed draft,
-the schedule gathers the day's inputs, asks the model through the ``day-plan`` skill, keeps what
-the parser accepts, lets the route planner fill in the legs and writes ``plan.drafted``. A draft
-that cannot be made writes ``plan.draft_failed``, never an empty day. The work runs in a thread
-off the loop. A day he already changed (the plan's last write is a revision) is not redrafted.
+Once a day at ``day_plan.at``, and on a start after ``at`` and before ``day_ends`` when today has
+neither a draft nor a failed draft, the schedule gathers the day's inputs, asks the model through
+the ``day-plan`` skill, keeps what the parser accepts, lets the route planner fill in the legs and
+writes ``plan.drafted``. A draft that cannot be made writes ``plan.draft_failed``, never an empty
+day. The work runs in a thread off the loop. A day he already changed (the plan's last write is a
+revision) is not redrafted.
 """
 
 from __future__ import annotations
@@ -482,16 +483,17 @@ class DayPlanSchedule:
     def due(self, now: datetime) -> date | None:
         """Today when it should be drafted now, else None.
 
-        The first check after a start drafts at once if today has no draft and no failure, at any
-        hour before ``day_ends`` (a day that is over is not planned); a start after ``at`` with
-        state on record waits for tomorrow. Later checks draft once per date, from ``at`` on.
+        A start after ``at`` catches up at once when today has no draft and no failure and is not
+        over (``day_ends``), and otherwise waits for tomorrow; a start before ``at`` waits for it,
+        so a day is drafted once. Later checks draft once per date, from ``at`` on.
         """
         local = now.astimezone(self._zone)
         today, past_at = local.date(), local.time() >= self._settings.at
         if not self._checked:
             self._checked = True
-            if past_at:
-                self._last = today
+            if not past_at:
+                return None
+            self._last = today
             over = local.time() >= self._settings.day_ends
             return None if over or self._has_state(today) else today
         if not past_at or today == self._last:
