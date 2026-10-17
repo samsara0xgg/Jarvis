@@ -337,6 +337,9 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "reminder.line": {"zh": "提醒：{text}", "en": "Reminder: {text}"},
     "reminder.late_minutes": {"zh": "（晚了 {n} 分钟）", "en": " ({n} minutes late)"},
     "reminder.late_hours": {"zh": "（晚了 {n} 小时）", "en": " ({n} hours late)"},
+    # ADR 0289: a plan notice about a private item, said on speakers or pushed: its time only.
+    "plan.private": {"zh": "{time} 那件事。", "en": "The {time} thing."},
+    "plan.private_untimed": {"zh": "计划里有件事。", "en": "Something on your plan."},
     # ADR 0227: the notice that asks which side's settings to keep when a terminal's files and the
     # brain's differ.
     "settings.drift.title": {"zh": "设置不一致", "en": "Settings differ"},

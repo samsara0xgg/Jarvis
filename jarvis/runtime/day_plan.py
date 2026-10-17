@@ -44,6 +44,9 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_AT: Final[time] = time(4, 0)
 DEFAULT_PRESET: Final[str] = "sonnet-high"
+DEFAULT_DECIDE_PRESET: Final[str] = "haiku"
+DEFAULT_TOLD_PER_DAY: Final[int] = 8
+DEFAULT_TOLD_PER_HOUR: Final[int] = 2
 DEFAULT_HORIZON_DAYS: Final[int] = 3
 MAX_HORIZON_DAYS: Final[int] = 14
 HISTORY_DAYS: Final[int] = 14
@@ -65,6 +68,13 @@ type Ask = Callable[[str, str], str]
 type RouteLegs = Callable[[list[plan.PlanItem], date], list[plan.PlanItem]]
 
 
+def _count(value: object, default: int) -> int:
+    """``value`` when it is a whole number of 1 or more, else ``default``."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return value
+    return default
+
+
 @dataclass(frozen=True)
 class DayPlanSettings:
     """The ``day_plan:`` block of ``config/jarvis.yaml``."""
@@ -73,6 +83,10 @@ class DayPlanSettings:
     preset: str = DEFAULT_PRESET
     horizon_days: int = DEFAULT_HORIZON_DAYS
     morning_push: bool = False
+    watch: bool = False
+    decide_preset: str = DEFAULT_DECIDE_PRESET
+    told_per_day: int = DEFAULT_TOLD_PER_DAY
+    told_per_hour: int = DEFAULT_TOLD_PER_HOUR
 
     @classmethod
     def from_config(cls, raw: object) -> DayPlanSettings | None:
@@ -86,6 +100,7 @@ class DayPlanSettings:
             LOGGER.warning("day_plan.at %r is not HH:MM; no plan is drafted", block["at"])
             return None
         preset = block.get("preset")
+        decide = block.get("decide_preset")
         horizon = block.get("horizon_days")
         return cls(
             at=at,
@@ -95,6 +110,12 @@ class DayPlanSettings:
                 else DEFAULT_HORIZON_DAYS
             ),
             morning_push=block.get("morning_push") is True,
+            watch=block.get("watch") is True,
+            decide_preset=(
+                decide if isinstance(decide, str) and decide.strip() else DEFAULT_DECIDE_PRESET
+            ),
+            told_per_day=_count(block.get("told_per_day"), DEFAULT_TOLD_PER_DAY),
+            told_per_hour=_count(block.get("told_per_hour"), DEFAULT_TOLD_PER_HOUR),
         )
 
 

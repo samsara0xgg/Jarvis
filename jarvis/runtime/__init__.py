@@ -172,7 +172,7 @@ from jarvis.execution.tools import (
     release_turn_actions,
     turn_action_ids,
 )
-from jarvis.execution.transit_tool import TransitOffers, first_leave_ms
+from jarvis.execution.transit_tool import TransitOffers, build_leg_planner, first_leave_ms
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime import answer_hold, audio_output, device_tools, device_voice
 from jarvis.runtime.bus_live import BusLive
@@ -213,6 +213,7 @@ from jarvis.runtime.now_block import (
     calendar_line,
     doing_now_line,
     next_appointments,
+    plan_line,
 )
 from jarvis.runtime.picture_files import PictureFiles
 from jarvis.runtime.picture_notes import PictureNotes
@@ -759,6 +760,8 @@ class JarvisRuntime:
     rides: Rides | None = None
     # ADR 0217: the device each turn came from, the devices there are, where the phone put him.
     whereabouts: Whereabouts | None = None
+    # ADR 0288: one bus leg for a background job, given the job's own context. None: no maps key.
+    leg_planner: Callable[[ToolContext], Callable[..., dict[str, Any]] | None] | None = None
     # ADR 0052: the Settings page's file. None = hand-assembled.
     settings: Settings | None = None
     # ADR 0093: the night run; the daemon ticks it. None = hand-assembled.
@@ -3438,6 +3441,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
                 calendar_line, calendar_next, local_zone, speakable.now,
                 partial(next_appointments, paths.event_log, local_zone),
             ),
+            # ADR 0289: today's plan, settled or not, with its next item.
+            partial(plan_line, paths.event_log, local_zone, speakable.now),
         ),
         voice_cues=voice_cues,
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
@@ -3452,6 +3457,11 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
         reminders=reminders,
         rides=rides,
+        leg_planner=None if not maps_key else partial(
+            build_leg_planner, maps_key, kept_places,
+            kept=partial(place_state.read_kept, memory.db_path),
+            cap_usd=_maps_monthly_usd(full_config),
+        ),
         voice_words=_voice_words(full_config, config_path, jev_log),
         oneshot=_jev_oneshot(
             full_config, config_path, jev_log, tier0_table, _event_emitter(paths.event_log),

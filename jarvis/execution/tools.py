@@ -4267,6 +4267,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     from jarvis.execution.picture_tool import build_picture_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.place_tools import build_place_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.places_api import PlaceBook  # noqa: PLC0415 — same cycle.
+    from jarvis.execution.plan_tool import build_plan_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.voice_tools import build_voice_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.weather_tool import build_weather_tool  # noqa: PLC0415 — same cycle.
 
@@ -4275,6 +4276,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     found_places = PlaceBook()  # what `map_search` found, so `bus` can name a place_id (ADR 0283)
     for conversation_tool in (
         *build_keep_tools(memory_db_path, local_zone),
+        *build_plan_tool(local_zone),
         *build_voice_tool(voice_settings),
         *build_weather_tool(weather_lookup, here_location, here_phone),
         *build_picture_tool(vision_client, memory_db_path),

@@ -22,7 +22,7 @@ from jarvis.execution import speakable
 from jarvis.execution.my_day_tool import work_state_now
 from jarvis.execution.tools import ToolError
 from jarvis.shared.about import prompt_title
-from jarvis.state import commitments
+from jarvis.state import commitments, plan
 from jarvis.state.event_log import open_runtime_event_log
 
 if TYPE_CHECKING:
@@ -131,6 +131,36 @@ def doing_now_line(
     note = f" Note: {state['stale']}." if "stale" in state else ""
     room = LINE_CHARS - len(head) - len(note) - 1
     return f"{head}{speakable.cut(str(state['text']), room)}.{note}"
+
+
+PLAN_PREFIX: Final = "Plan today"
+
+
+def plan_line(event_log: Path, zone: tzinfo, clock: Callable[[], datetime]) -> str | None:
+    """Today's plan in one line (ADR 0289): whether it is settled, its next item, how many follow.
+
+    None without a plan for today. A private item is named by its time only. Items without a
+    time come last and count as ahead.
+    """
+    local = clock().astimezone(zone)
+    try:
+        with closing(open_runtime_event_log(event_log)) as conn:
+            held = plan.for_day(conn, local.date())
+    except sqlite3.Error as exc:
+        LOGGER.warning("plan line: not read (%s)", exc)
+        return None
+    if held is None:
+        return None
+    now = f"{local:%H:%M}"
+    ahead = [i for i in held.items if (i.start or i.window_from or "99:99") >= now]
+    state = "settled" if held.status == "settled" else "not settled yet"
+    if not ahead:
+        return f"{PLAN_PREFIX} ({state}): nothing more."
+    first = ahead[0]
+    title = "a private item" if first.private else prompt_title(first.title)
+    when = first.start or first.window_from or "any time"
+    line = f"{PLAN_PREFIX} ({state}): next {when} {speakable.cut(title, _TITLE_CHARS)}"
+    return f"{line}; {len(ahead) - 1} more." if len(ahead) > 1 else f"{line}."
 
 
 Appointments = Callable[[datetime], Sequence[CalendarItem]]

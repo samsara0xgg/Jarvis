@@ -113,11 +113,14 @@ def build_prompt(
     return _instructions(), user
 
 
-def build_opening_prompt(
+def build_opening_prompt(  # noqa: PLR0913 - the plan, what is open, the weather, the clock, a failure.
     plan: Plan, *, unconfirmed: Sequence[Mapping[str, Any]], weather: Mapping[str, Any] | None,
-    now: datetime, zone: tzinfo,
+    now: datetime, zone: tzinfo, draft_failed: bool = False,
 ) -> tuple[str, str]:
-    """``(system, user)`` of the opening call: the plan, what he has not confirmed, the weather."""
+    """``(system, user)`` of the opening call: the plan, what he has not confirmed, the weather.
+
+    ``draft_failed`` says the day's draft did not come, so ``plan`` is empty: she says so and asks.
+    """
     local = now.astimezone(zone)
     body = {
         "task": "opening",
@@ -126,6 +129,7 @@ def build_opening_prompt(
         "now": local.strftime("%H:%M"),
         "timezone": _zone_name(zone),
         "settled": plan.status == "settled",
+        "draft_failed": draft_failed,
         "plan": [_public(item) for item in plan.items],
         "unconfirmed": list(unconfirmed),
         "weather": weather,

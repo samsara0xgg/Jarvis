@@ -196,6 +196,7 @@ from jarvis.runtime.job_mail import served_notices, settle_notice
 from jarvis.runtime.memory_page import MemoryPage
 from jarvis.runtime.night_watch import NightWatch
 from jarvis.runtime.phone_voice import PhoneSpeech, UnplayedAnswers
+from jarvis.runtime.plan_run import Hooks, build_watch, leg_session, make_route_legs
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
 from jarvis.runtime.settings import SETTINGS_FILE
 from jarvis.runtime.setup import Setup
@@ -5878,6 +5879,31 @@ def _her_state(controls: voice_controls.VoiceControls) -> str:
     return "idle" if controls.quiet == "off" else controls.quiet
 
 
+def _plan_hooks(runtime: JarvisRuntime, controls: voice_controls.VoiceControls) -> Hooks:
+    """ADR 0289: how the plan watcher tells him: the quiet level, the speakers, the phone.
+
+    It speaks as a reminder does (speech on, no live conversation, not on a call) and pushes only
+    while he is away from the Mac. All of it runs on the watcher's thread.
+    """
+    moment, push, whereabouts = runtime.moment, runtime.push, runtime.whereabouts
+    return Hooks(
+        quiet=lambda: controls.quiet,
+        may_speak=lambda: (
+            not controls.speech_muted and not controls.conversation
+            and (moment is None or moment.hold() != "call")
+        ),
+        private_output=lambda: bool(runtime.sound_output()["private"]),
+        at_mac=lambda: whereabouts is not None and whereabouts.at_mac(),
+        say=functools.partial(_say_plan_line, runtime),
+        push=push.send if push is not None and push.enabled else None,
+    )
+
+
+def _say_plan_line(runtime: JarvisRuntime, said: str) -> None:
+    """ADR 0289: one line of the plan watcher, said as a conversation line (no model, no turn)."""
+    _say_conversation_line(runtime, _new_turn_id(), "plan", "", phrase=said)
+
+
 def _say_reminder(runtime: JarvisRuntime, said: str) -> None:
     """ADR 0179: one reminder line, said as a conversation line (no model, no turn)."""
     _say_conversation_line(runtime, _new_turn_id(), "reminder", "", phrase=said)
@@ -8240,33 +8266,58 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             # ADR 0288: the day's plan, drafted at `day_plan.at` and on a start with none for today.
             plan_zone = resolve_zone(None, _work_state_timezone(runtime.config))[1]
             home = runtime.home
+            plan_sources = DayPlanSources(
+                event_log_path=runtime.runtime_paths.event_log,
+                memory_db=runtime.memory.db_path,
+                zone=plan_zone,
+                day_sources=DaySources(
+                    plan_zone, _timesink_db_path(runtime.config),
+                    runtime.memory.db_path,
+                    None if runtime.terminal_hub is None
+                    else TerminalScreen(runtime.terminal_hub.call, wait_s=TURN_WAIT_S),
+                    None if runtime.attachments is None
+                    else runtime.attachments.directory,
+                    None if home is None else home.calendar,
+                ),
+                calendar=None if home is None else home.calendar,
+                todos=None if home is None else home.open_todos,
+                weather=None if home is None else home.day_weather,
+            )
+            open_leg = (
+                None if runtime.leg_planner is None else leg_session(
+                    runtime.leg_planner, runtime.runtime_paths.event_log, runtime.runtime_paths,
+                )
+            )
             watchers.append(
                 asyncio.create_task(
                     build_schedule(
                         day_plan,
                         config=runtime.config,
                         pricing_path=repo_root() / "data" / "pricing.json",
-                        sources=DayPlanSources(
-                            event_log_path=runtime.runtime_paths.event_log,
-                            memory_db=runtime.memory.db_path,
-                            zone=plan_zone,
-                            day_sources=DaySources(
-                                plan_zone, _timesink_db_path(runtime.config),
-                                runtime.memory.db_path,
-                                None if runtime.terminal_hub is None
-                                else TerminalScreen(runtime.terminal_hub.call, wait_s=TURN_WAIT_S),
-                                None if runtime.attachments is None
-                                else runtime.attachments.directory,
-                                None if home is None else home.calendar,
-                            ),
-                            calendar=None if home is None else home.calendar,
-                            todos=None if home is None else home.open_todos,
-                            weather=None if home is None else home.day_weather,
+                        sources=plan_sources,
+                        route_legs=(
+                            None if open_leg is None
+                            else make_route_legs(open_leg, runtime.memory.db_path)
                         ),
                     ).run(),
                     name="day_plan_schedule",
                 ),
             )
+            if day_plan.watch:
+                # ADR 0289: notice what changed in the day, let her decide, tell him within limits.
+                watchers.append(
+                    asyncio.create_task(
+                        build_watch(
+                            day_plan,
+                            config=runtime.config,
+                            pricing_path=repo_root() / "data" / "pricing.json",
+                            sources=plan_sources,
+                            open_leg=open_leg,
+                            hooks=_plan_hooks(runtime, controls),
+                        ).run(),
+                        name="plan_watch",
+                    ),
+                )
         if runtime.picture_notes is not None:
             runtime.picture_notes.start()  # recovers the notes still owed, then runs the queue
         watchers.append(asyncio.create_task(

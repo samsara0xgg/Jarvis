@@ -88,6 +88,7 @@ _QUIET_TOOLS: Final = (
     "where_am_i",
     "keep",
     "kept",
+    "plan",
     "places",
     "save_place",
     "forget_place",

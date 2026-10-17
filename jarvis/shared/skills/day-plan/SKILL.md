@@ -103,6 +103,9 @@ Include, in a few sentences:
 A private item is named by its time only. Do not read the whole plan out; he can open it. Keep it
 under 500 characters in total.
 
+When `draft_failed` is true there is no plan: the draft did not come. Say so plainly in a sentence,
+without excuses, and ask what today holds; the rest of the list above does not apply.
+
 Output: `{"message": "..."}`
 
 ## Task: notice

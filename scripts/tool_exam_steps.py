@@ -95,7 +95,7 @@ LIVE_READ = frozenset({
     "search_notes",  # a device tool: device_not_connected on this host
 })
 SANDBOX_WRITE = frozenset({
-    "keep", "ask_user", "dismiss_card",
+    "keep", "plan", "ask_user", "dismiss_card",
     "save_place", "forget_place", "save_knowledge",
     "save_briefing", "record_application", "mark_highlight",
     "bus",  # pins and rides write the sandbox; the times (to=...) read Google Routes LIVE
