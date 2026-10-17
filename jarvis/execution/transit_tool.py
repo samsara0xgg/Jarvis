@@ -12,8 +12,8 @@ import urllib.error
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, time, timedelta
-from typing import TYPE_CHECKING, Any, Final
+from datetime import UTC, date, datetime, time, timedelta
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 from zoneinfo import ZoneInfo
 
 from jarvis.execution import maps_spend, places_api
@@ -50,6 +50,8 @@ _LIVE_TIMEOUT_S: Final = 4.0
 # spare_min: at or above this he has room (easy); at or below its negative the bus is gone.
 _EASY_SPARE_MIN: Final = 2
 _SCHOOL_NAMES: Final = frozenset({"uvic", "u vic", "university of victoria"})
+# ADR 0288: a plan asks for a day this far ahead at most.
+_MAX_DAYS_AHEAD: Final = 30
 _FIELD_MASK: Final = ",".join(
     f"routes.legs.steps.{path}"
     for path in (
@@ -120,6 +122,10 @@ def _waypoint(  # noqa: PLR0913 - the word, saved places, three readers and the 
     if word == "here":
         return _here(mac, phone, ctx, kept)
     text = saved.get(word, "") if word in ("home", "school") else place.strip()
+    if word not in ("home", "school") and (one := _kept_named(word, kept)):
+        text = f"{one.lat},{one.lng}" if one.lat is not None and one.lng is not None else (
+            one.address or text
+        )
     if not text:
         msg = (
             f"His {word} address isn't saved yet; ask him for it and save it with save_place, or"
@@ -132,14 +138,60 @@ def _waypoint(  # noqa: PLR0913 - the word, saved places, three readers and the 
     return {"address": text}, place.strip(), {}
 
 
-def _departure(depart_at: str) -> str:
+def _kept_named(
+    word: str, kept: Callable[[], list[place_state.Place]] | None,
+) -> place_state.Place | None:
+    """The kept place he calls ``word`` (its name, any case), when it has a point or an address."""
+    for one in kept() if kept else ():
+        if " ".join(one.name.lower().split()) == word and (
+            one.address or (one.lat is not None and one.lng is not None)
+        ):
+            return one
+    return None
+
+
+class _When(NamedTuple):
+    """The day asked for, and the Routes time field to send with its UTC stamp (None: now)."""
+
+    day: date
+    field: str | None
+    stamp: str | None
+
+
+def _when(args: Mapping[str, Any], now: datetime) -> _When:
+    """``day`` with ``depart_at`` or ``arrive_by`` (HH:MM local on that day); ADR 0288.
+
+    ToolError ``invalid_argument`` for both times, a day not ISO, past or over 30 days ahead, an
+    arrive-by time that has passed, or a day other than today with neither time. A ``depart_at``
+    earlier than now is an error only when ``day`` is given; without it the older behavior stands.
+    """
+    depart, arrive = args.get("depart_at"), args.get("arrive_by")
+    if depart and arrive:
+        msg = "give at= or arrive_by=, not both"
+        raise ToolError(msg, code="invalid_argument")
+    today = now.date()
     try:
-        at = time.fromisoformat(depart_at.strip())
+        day = date.fromisoformat(str(args["day"]).strip()) if args.get("day") else today
     except ValueError as exc:
-        msg = f"at must be a local time today as HH:MM, not {depart_at!r}; leave it out for now"
+        msg = f"day must be a date as YYYY-MM-DD, not {args['day']!r}; leave it out for today"
         raise ToolError(msg, code="invalid_argument") from exc
-    when = datetime.combine(_now().date(), at.replace(second=0, microsecond=0), tzinfo=_ZONE)
-    return _utc(when)
+    if day < today or day > today + timedelta(days=_MAX_DAYS_AHEAD):
+        msg = (
+            f"day {day} is past or more than {_MAX_DAYS_AHEAD} days ahead; times can be read"
+            " from today up to then"
+        )
+        raise ToolError(msg, code="invalid_argument")
+    given, name = (arrive, "arrive_by") if arrive else (depart, "at")
+    if not given:
+        if day != today:
+            msg = f"day={day} needs at=HH:MM or arrive_by=HH:MM"
+            raise ToolError(msg, code="invalid_argument")
+        return _When(day, None, None)
+    at = _today(given, name, day)
+    if at < now.replace(second=0, microsecond=0) and (arrive or args.get("day")):
+        msg = f"{name}={given} on {day} has already passed"
+        raise ToolError(msg, code="invalid_argument")
+    return _When(day, "arrivalTime" if arrive else "departureTime", _utc(at))
 
 
 def _utc(when: datetime) -> str:
@@ -206,25 +258,30 @@ def _verdict(spare: int) -> str:
     return "missed" if spare <= -_EASY_SPARE_MIN else "tight"
 
 
-def _pairs(answer: Mapping[str, Any], now: datetime) -> list[tuple[dict[str, Any], Any]]:
-    """Each bus route of Google's answer as ``(option with spare_min, Google's route)``."""
+def _pairs(
+    answer: Mapping[str, Any], now: datetime, day: date | None = None,
+) -> list[tuple[dict[str, Any], Any]]:
+    """Each bus route of Google's answer as ``(option with spare_min, Google's route)``.
+
+    ``day`` is the day the answer is for (default today): the options' ``HH:MM`` are on it.
+    """
     pairs = [(o, r) for r in answer.get("routes", ()) if (o := _option(r))]
     for o, _ in pairs:
-        at = _today(o["legs"][0]["departs"], "departs")
+        at = _today(o["legs"][0]["departs"], "departs", day)
         o["spare_min"] = _spare(at, o["walk_to_first_stop_min"], now)
         o["verdict"] = _verdict(o["spare_min"])
     return pairs
 
 
 def _ahead(
-    pairs: list[tuple[dict[str, Any], Any]], wanted: str, now: datetime,
+    pairs: list[tuple[dict[str, Any], Any]], wanted: str, now: datetime, day: date | None = None,
 ) -> list[tuple[dict[str, Any], Any]]:
     """The routes whose first bus is ``wanted`` and not gone yet, earliest first."""
     floor = now.replace(second=0, microsecond=0)
     mine = [
         p for p in pairs
         if p[0]["legs"][0]["route"].casefold() == wanted.casefold()
-        and _today(p[0]["legs"][0]["departs"], "departs") >= floor
+        and _today(p[0]["legs"][0]["departs"], "departs", day) >= floor
     ]
     return sorted(mine, key=lambda p: p[0]["legs"][0]["departs"])  # ponytail: one day, no midnight
 
@@ -250,15 +307,19 @@ def _named_route(
     hits: list[tuple[dict[str, Any], Any]],
     now: datetime,
     live: Callable[[str, tuple[float, float], int], int | None] | None,
+    day: date | None = None,
 ) -> dict[str, Any]:
-    """The answer to 'can I still catch bus ``wanted``': how tight, and the next one."""
+    """The answer to 'can I still catch bus ``wanted``': how tight, and the next one.
+
+    ``day`` other than today: no live lookup, BC Transit's feed is for the buses running now.
+    """
     if not hits:
         return {"route": wanted, "verdict": "none", "note": f"no route {wanted} bus found then"}
     option, raw = hits[0]
     leg = option["legs"][0]
-    at, fresh = _today(leg["departs"], "departs"), False
+    at, fresh = _today(leg["departs"], "departs", day), False
     stop = _first_board(raw)
-    if live is not None and stop is not None:
+    if live is not None and stop is not None and (day or now.date()) == now.date():
         ms = _live_ms(live, leg["route"], stop[1], int(at.timestamp() * 1000))
         if ms:
             at, fresh = datetime.fromtimestamp(ms / 1000, _ZONE), True
@@ -302,16 +363,18 @@ def _search(  # noqa: PLR0913 - the trip, how it was asked and the clock.
     api_key: str,
     start: Mapping[str, Any],
     end: Mapping[str, Any],
-    args: Mapping[str, Any],
     wanted: str,
     now: datetime,
+    when: _When,
     meter: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[tuple[dict[str, Any], Any]], dict[str, Any]]:
     """Ask Google and the other ways: ``(answer, options, hits of the named route, modes)``.
 
     Without ``depart_at`` it asks from ten minutes ago, so a bus whose leave time just passed
     still shows, with its true spare minutes; if a named route is not found that way, the usual
-    'now' answer is used. ToolError ``not_found`` when no bus route is left.
+    'now' answer is used. With ``arrive_by`` it sends ``arrivalTime`` instead of a departure and
+    keeps the last three buses by leave time, the one nearest the deadline last (ADR 0288).
+    DRIVE and WALK carry no time either way. ToolError ``not_found`` when no bus route is left.
     """
     body: dict[str, Any] = {
         "origin": start,
@@ -320,12 +383,13 @@ def _search(  # noqa: PLR0913 - the trip, how it was asked and the clock.
         "computeAlternativeRoutes": True,
     }
     plain = dict(body)
-    if args.get("depart_at"):
-        body["departureTime"] = _departure(str(args["depart_at"]))
+    if when.field:
+        body[when.field] = when.stamp
     else:
         ago = now.replace(second=0, microsecond=0) - timedelta(minutes=_LOOKBACK_MIN)
         body["departureTime"] = _utc(ago)
-    shifted = not args.get("depart_at")
+    shifted = when.field is None
+    day = when.day
     # The bus answer and, concurrently, the other ways there (ADR 0205): one request each.
     with ThreadPoolExecutor(max_workers=1 + len(_MODES)) as pool:
         ways = {
@@ -340,16 +404,16 @@ def _search(  # noqa: PLR0913 - the trip, how it was asked and the clock.
                 " tell him this lookup failed, do not guess times"
             )
             raise ToolError(msg, code="network_error") from exc
-        pairs = _pairs(answer, now)
-        hits = _ahead(pairs, wanted, now) if wanted else []
+        pairs = _pairs(answer, now, day)
+        hits = _ahead(pairs, wanted, now, day) if wanted else []
         if wanted and shifted and not hits:
             try:
                 later = pool.submit(_compute, api_key, plain, _FIELD_MASK, meter).result()
             except Exception:  # noqa: BLE001 - the first answer stands.
                 later = None
             if later is not None:
-                answer, pairs = later, _pairs(later, now)
-                hits = _ahead(pairs, wanted, now)
+                answer, pairs = later, _pairs(later, now, day)
+                hits = _ahead(pairs, wanted, now, day)
     modes = {name: found for name, way in ways.items() if (found := way.result())}
     # An earlier start returns buses he could not reach at a normal pace: only the named one stays.
     first = hits[0][0] if hits else None
@@ -366,7 +430,11 @@ def _search(  # noqa: PLR0913 - the trip, how it was asked and the clock.
             ][-1:]
             rest = [o for o in rest if o["verdict"] != "missed"]
     # The named bus is first however late or slow it is; it does not set the others' yardstick.
-    options = ([first] if first else []) + near + _sensible(rest)
+    if when.field == "arrivalTime":
+        late = sorted(rest, key=lambda o: o["legs"][0]["departs"])  # ponytail: one day
+        options = ([first] if first else []) + late[-(_MAX_OPTIONS - bool(first)) :]
+    else:
+        options = ([first] if first else []) + near + _sensible(rest)
     if not options:
         msg = (
             "No bus route found for that trip at that time; tell him, or try another time with"
@@ -454,14 +522,16 @@ def _first_alight(
     return None
 
 
-def _today(value: object, field: str) -> datetime:
-    """``HH:MM`` as a local time today, or a tool error naming the field."""
+def _today(value: object, field: str, day: date | None = None) -> datetime:
+    """``HH:MM`` as a local time on ``day`` (default today), or a tool error naming the field."""
     try:
         at = time.fromisoformat(str(value).strip())
     except ValueError as exc:
-        msg = f"{field} must be a local time today as HH:MM, not {value!r}"
+        msg = f"{field} must be a local time as HH:MM, not {value!r}"
         raise ToolError(msg, code="invalid_argument") from exc
-    return datetime.combine(_now().date(), at.replace(second=0, microsecond=0), tzinfo=_ZONE)
+    return datetime.combine(
+        day or _now().date(), at.replace(second=0, microsecond=0), tzinfo=_ZONE,
+    )
 
 
 _PIN_PAST_GRACE: Final = timedelta(minutes=1)
@@ -883,6 +953,19 @@ def _destination(  # noqa: PLR0913 - the answer, the end asked, who he named, th
     }
 
 
+def _offer(  # noqa: PLR0913 - the offers, the context, the answer, its options, modes, the ask.
+    offers: TransitOffers, ctx: ToolContext, answer: Mapping[str, Any],
+    options: list[dict[str, Any]], modes: Mapping[str, Any], asked: str,
+) -> None:
+    """Keep today's answer as the offer: the stops, the list `pin` reads, and the chat card."""
+    offers.remember(answer)
+    offers.keep(options, asked)
+    # The card offers only buses he can still catch: a missed one is in the answer.
+    catchable = [o for o in options if o["spare_min"] > -_EASY_SPARE_MIN]
+    if catchable:
+        show_card(ctx, {**offers.put(catchable, asked), "modes": modes})
+
+
 def build_planner(  # noqa: PLR0913, C901 - the key, places, two readers, offers, live; one plan.
     api_key: str | None,
     places: Callable[[], Mapping[str, str]],
@@ -894,10 +977,12 @@ def build_planner(  # noqa: PLR0913, C901 - the key, places, two readers, offers
     kept: Callable[[], list[place_state.Place]] | None = None,
     cap_usd: float = maps_spend.DEFAULT_MONTHLY_USD,
     book: places_api.PlaceBook | None = None,
+    quiet: bool = False,
 ) -> Callable[[Mapping[str, Any], ToolContext], dict[str, Any]] | None:
     """The bus read over Google Routes behind ``bus(to=...)``; None without a key.
 
-    Its arguments are ``origin`` and ``destination`` (both required), ``depart_at``,
+    Its arguments are ``origin`` and ``destination`` (both required), ``depart_at`` or
+    ``arrive_by`` (HH:MM) on ``day`` (ISO date, default today; ADR 0288),
     ``route`` and ``place_id`` (a ``map_search`` result standing for the destination). ``places``
     reads, at each call, the kept ``home`` and ``school`` as an address or
     ``lat,lng`` (ADR 0234); a missing one makes that word a tool error rather than a guess.
@@ -910,7 +995,9 @@ def build_planner(  # noqa: PLR0913, C901 - the key, places, two readers, offers
     runtime wires it, as it does ``here``); when it answers, a named route's ``departs`` and
     ``spare_min`` use it. ``kept`` reads every kept place, so a "here" inside one is said as it.
     Every Google request is counted against the month's ``cap_usd`` (ADR 0283); ``book`` holds the
-    places ``map_search`` found, so a place_id has a name.
+    places ``map_search`` found, so a place_id has a name. ``quiet`` is for a background caller
+    (:func:`build_leg_planner`): no card, no offer kept, no destination announced or named (that
+    would be a Place Details request); the cap guard and the spend record stay.
     """
     if not api_key:
         return None
@@ -930,27 +1017,32 @@ def build_planner(  # noqa: PLR0913, C901 - the key, places, two readers, offers
         else:
             end, end_label, _ = _waypoint(destination, saved, here, phone_here, ctx, kept)
         now = _now()
+        when = _when(args, now)
         wanted = re.sub(r"[^0-9A-Za-z]", "", str(args.get("route") or ""))
         try:
-            answer, options, hits, modes = _search(api_key, start, end, args, wanted, now, meter)
+            answer, options, hits, modes = _search(
+                api_key, start, end, wanted, now, when, meter,
+            )
         except ToolError as exc:
             retry = _with_city(end, saved) if exc.code == "not_found" else None
             if retry is None:
                 raise
             end = retry
             end_label = retry["address"]
-            answer, options, hits, modes = _search(api_key, start, end, args, wanted, now, meter)
-        offers.remember(answer)
-        asked = end_label.strip().lower()[:60] if place_id else destination.strip().lower()[:60]
-        offers.keep(options, asked)
-        # The card offers only buses he can still catch: a missed one is in the answer, not a row.
-        catchable = [o for o in options if o["spare_min"] > -_EASY_SPARE_MIN]
-        if catchable:
-            show_card(ctx, {**offers.put(catchable, asked), "modes": modes})
+            answer, options, hits, modes = _search(
+                api_key, start, end, wanted, now, when, meter,
+            )
+        # The card, the list `pin` reads and the notch's stops are today's buses.
+        if not quiet and when.day == now.date():
+            asked = end_label.strip().lower()[:60] if place_id else destination.strip().lower()[:60]
+            _offer(offers, ctx, answer, options, modes, asked)
         extra: dict[str, Any] = {"modes": modes} if modes else {}
+        extra |= {k: str(args[k]).strip() for k in ("day", "arrive_by") if args.get(k)}
         if wanted:
-            extra["named_route"] = _named_route(wanted, hits, now, bus_live)
-        if dest := _destination(answer, end, end_label, saved, api_key, book, meter):
+            extra["named_route"] = _named_route(wanted, hits, now, bus_live, when.day)
+        if not quiet and (
+            dest := _destination(answer, end, end_label, saved, api_key, book, meter)
+        ):
             extra["destination"] = dest
             places_api.announce(ctx, [dest])
         return {"from": start_label, "to": end_label, **old_start, "options": options, **extra}
@@ -966,6 +1058,56 @@ def build_planner(  # noqa: PLR0913, C901 - the key, places, two readers, offers
     return transit
 
 
+def build_leg_planner(  # noqa: PLR0913 - the key, places, the context, kept, cap, book.
+    api_key: str | None,
+    places: Callable[[], Mapping[str, str]],
+    ctx: ToolContext,
+    *,
+    kept: Callable[[], list[place_state.Place]] | None = None,
+    cap_usd: float = maps_spend.DEFAULT_MONTHLY_USD,
+    book: places_api.PlaceBook | None = None,
+) -> Callable[..., dict[str, Any]] | None:
+    """One leg for a background job (ADR 0288), or None without a key.
+
+    ``plan_leg(origin, destination, *, day, arrive_by=None, depart_at=None)`` plans a leg on the
+    ISO date ``day`` for HH:MM local ``arrive_by`` or ``depart_at`` (exactly one). ``ctx`` is the
+    job's own (its connection takes the cap guard and the spend rows). It shows no card and keeps
+    no offer; "here" is not available. The answer is :func:`build_planner`'s plus ``chosen`` and
+    ``backup`` (or None): for ``arrive_by`` the latest bus that arrives in time and the one
+    before it; for ``depart_at`` the first he can still catch and the one after it. ToolError
+    ``spend_cap`` when the month's cap is reached, ``invalid_argument`` for a time that has
+    passed or a day over 30 days ahead, ``not_found`` for no bus route.
+    """
+    plan = build_planner(
+        api_key, places, None, phone_here=None, offers=TransitOffers(), bus_live=None,
+        kept=kept, cap_usd=cap_usd, book=book, quiet=True,
+    )
+    if plan is None:
+        return None
+
+    def plan_leg(
+        origin: str, destination: str, *, day: str,
+        arrive_by: str | None = None, depart_at: str | None = None,
+    ) -> dict[str, Any]:
+        if bool(arrive_by) == bool(depart_at):
+            msg = "give exactly one of arrive_by and depart_at"
+            raise ToolError(msg, code="invalid_argument")
+        args: dict[str, Any] = {"origin": origin, "destination": destination, "day": day}
+        args |= {"arrive_by": arrive_by} if arrive_by else {"depart_at": depart_at}
+        raw = plan(args, ctx)
+        options = raw["options"]
+        if arrive_by:
+            fits = [o for o in options if o["arrive_at"] <= arrive_by.strip()] or options[:1]
+            at = options.index(fits[-1])
+            backup = options[at - 1] if at else None
+        else:
+            at = next((i for i, o in enumerate(options) if o["spare_min"] > -_EASY_SPARE_MIN), 0)
+            backup = options[at + 1] if at + 1 < len(options) else None
+        return {**raw, "chosen": options[at], "backup": backup}
+
+    return plan_leg
+
+
 def said_clock(at: datetime, *, soon: bool = False) -> str:
     """``at`` as he hears it: ``5:06 pm``; ``soon`` adds `` (in 6 min)`` within 90 minutes."""
     local = at.astimezone(_ZONE)
@@ -975,9 +1117,10 @@ def said_clock(at: datetime, *, soon: bool = False) -> str:
     return f"{text} (in {ahead} min)" if soon and 0 < ahead <= _SAY_AHEAD_MIN else text
 
 
-def said_hhmm(hhmm: str, *, soon: bool = False) -> str:
-    """A ``HH:MM`` of today, as :func:`said_clock` says it."""
-    return said_clock(_today(hhmm, "time"), soon=soon)
+def said_hhmm(hhmm: str, *, soon: bool = False, day: date | None = None) -> str:
+    """A ``HH:MM`` of today, as :func:`said_clock` says it; on another ``day`` the date leads."""
+    text = said_clock(_today(hhmm, "time", day), soon=soon)
+    return text if day is None or day == _now().date() else f"{day:%a %b} {day.day}, {text}"
 
 
 def said_ms(ms: int, *, soon: bool = False) -> str:
