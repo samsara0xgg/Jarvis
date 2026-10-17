@@ -241,6 +241,7 @@ def _recent(
             f"{_clock(item['start_ms'], sources.zone)}-{_clock(item.get('end_ms'), sources.zone)} "
             f"{lived_line(item)}"
             for item in line.items
+            if item.get("source") != "plan"  # the plan is not what he lived
         ]
         rows.append({
             "date": past.isoformat(),

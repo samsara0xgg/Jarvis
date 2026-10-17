@@ -28,6 +28,10 @@ Each source folds on its own and a source that raises leaves its items out (:fun
   (``mail`` or ``said``), ``confirmed``, ``private`` and ``place`` besides the calendar's fields;
   its id is ``<commitment_id>@<day>``; an all-day one (a deadline with a date and no hour) is a
   label of the day instead of an item, with the same extra fields;
+- ``plan``: a day with a plan (ADR 0288) draws its items in his lane as kind ``event`` with
+  ``source`` ``plan``, id ``plan-<date>-<item id>``, from its start (or its window's start) for
+  its minutes, with ``place`` and ``private``; an item with no time is left out, and so is one
+  that stands for a commitment (``source`` ``commitment:*``), which is drawn once, as itself;
 - ``imports``: what he handed over (ADR 0259), in his lane: each payment that moved money as a
   point (amount, direction, counterparty, item), and each conversation with Claude as a span from
   its first to its last message of the window (the title as text); with no memory store it has
@@ -60,6 +64,7 @@ from jarvis.state import (
     imports,
     picture_notes,
     places,
+    plan,
     reminders,
     timesink,
 )
@@ -194,6 +199,7 @@ def fold_day(
             lambda db, first, last, now: _commitment_items(db, sources, first, last, now),
         ),
         ("departures", _departure_items),
+        ("plan", lambda db, first, last, now: _plan_items(db, sources, first, last, now)),
         ("imports", lambda _conn, first, last, now: _import_items(sources, first, last, now)),
     )
     items: list[dict[str, Any]] = []
@@ -371,6 +377,39 @@ def _commitment_items(
         }
         for occ in commitments.occurrences(conn, window_start, window_end, zone=sources.zone)
     ]
+
+
+def _plan_items(
+    conn: sqlite3.Connection, sources: DaySources, window_start: int, window_end: int, now_ms: int,
+) -> list[dict[str, Any]]:
+    """Each timed item of a day's plan that overlaps the window, as an ``event`` (ADR 0288)."""
+    first = datetime.fromtimestamp(window_start / 1000, sources.zone).date() - timedelta(days=1)
+    last = datetime.fromtimestamp(window_end / 1000, sources.zone).date()
+    rows: list[dict[str, Any]] = []
+    for held in plan.fold(conn).values():
+        if not first <= held.day <= last:
+            continue
+        for item in held.items:
+            clock = item.start or item.window_from
+            if clock is None or item.source.startswith("commitment:"):
+                continue
+            begin = datetime.combine(held.day, time.fromisoformat(clock), tzinfo=sources.zone)
+            start, end = _ms(begin), _ms(begin + timedelta(minutes=item.minutes))
+            if not _overlaps(start, end, window_start, window_end):
+                continue
+            rows.append({
+                "id": f"plan-{held.day.isoformat()}-{item.item_id}",
+                "lane": "you",
+                "kind": "event",
+                "start_ms": start,
+                "end_ms": end,
+                "state": _state(start, end, now_ms),
+                "title": item.title,
+                "source": "plan",
+                "private": item.private,
+                "place": item.place,
+            })
+    return rows
 
 
 def _departure_items(
