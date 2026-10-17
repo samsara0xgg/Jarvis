@@ -88,7 +88,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     # The six core-memory section names (ADR 0146) are stored keys and the exact words the
     # consolidation prompt and the `remember` enum name; they are not translated.
     "jarvis/state/core_memory.py": frozenset(
-        {"SECTION_CAPS", "DEFAULT_SECTION", "DUE_SECTION", "ID_FREE_SECTION", "_LEGACY"},
+        {"SECTION_CAPS", "DEFAULT_SECTION", "DUE_SECTION", "ID_FREE_SECTION", "GOALS_SECTION",
+         "_LEGACY"},
     ),
     "jarvis/state/daily_report.py": frozenset({"MILESTONES", "_QUESTION"}),
     # The WeChat Pay and Alipay statements (ADR 0259) name their columns and statuses in Chinese.

@@ -41,6 +41,7 @@ SECTIONS: Final[tuple[str, ...]] = tuple(SECTION_CAPS)
 DEFAULT_SECTION: Final[str] = "经历"
 DUE_SECTION: Final[str] = "承诺和待办"
 ID_FREE_SECTION: Final[str] = "证件和硬期限"
+GOALS_SECTION: Final[str] = "生活里的几件事"
 # The six sections of ADR 0146 and where an older version's items go.
 _LEGACY: Final[dict[str, str]] = {
     "关于你": "经历",
@@ -489,6 +490,7 @@ def current(conn: sqlite3.Connection, now: str) -> Version:
 __all__ = [
     "DEFAULT_SECTION",
     "DUE_SECTION",
+    "GOALS_SECTION",
     "ID_FREE_SECTION",
     "NAME_TOPIC",
     "SECTIONS",

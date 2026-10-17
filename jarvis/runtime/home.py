@@ -437,6 +437,16 @@ class Home:
             _event(one, self._zone)
             for one in _calendar_view(servers, start, start + timedelta(days=1))
         ]
+        return {"events": events, "todos": self.open_todos(), "weather": self._weather()}
+
+    def open_todos(self) -> list[dict[str, Any]]:
+        """Every To Do task not completed, as ``today()`` words them (``id``, ``title``, ``due``).
+
+        Raises:
+            LookupError: the ``microsoft`` server is not connected.
+            ToolError: the server did not answer, or answered with an error.
+        """
+        servers = self._servers()
         todos = []
         for one in _graph(servers, "list-todo-task-lists", {"fetchAllPages": True}):
             tasks = {"todoTaskListId": one["id"], "fetchAllPages": True}
@@ -445,7 +455,27 @@ class Home:
                 for task in _graph(servers, "list-todo-tasks", tasks)
                 if task.get("status") != "completed"
             ]
-        return {"events": events, "todos": todos, "weather": self._weather()}
+        return todos
+
+    def day_weather(self, day: date) -> dict[str, Any] | None:
+        """WeatherKit's daily row for ``day`` at home (ADR 0285); None without a place or key.
+
+        Raises:
+            ToolError: WeatherKit did not answer or holds no forecast for the day.
+        """
+        if self._weather_at is None or self._weatherkit is None:
+            return None
+        place, kit = self._weather_at, self._weatherkit
+        body = kit.read(
+            float(place["latitude"]), float(place["longitude"]), zone=self._zone_name,
+            country=place.get("country_code") or _country(self._zone_name), first=day, last=day,
+        )
+        answer = wk_report(
+            body, str(place.get("name") or "home"), self._zone_name, first=day, last=day,
+            whole=False, hourly=False, now=kit.clock(), alerts_asked=False,
+        )
+        row: dict[str, Any] = answer["days"][0]
+        return row
 
     def calendar(self, start_ms: int, end_ms: int, now_ms: int) -> list[dict[str, Any]]:
         """The calendar's events of ``[start_ms, end_ms)`` as ``today()`` words them (ADR 0230).

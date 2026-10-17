@@ -181,6 +181,7 @@ from jarvis.runtime import (
 from jarvis.runtime.card_feedback import CardFeedback
 from jarvis.runtime.core_memory import CoreMemorySettings, section_caps
 from jarvis.runtime.day_experience import DayExperienceSchedule, DayExperienceSettings
+from jarvis.runtime.day_plan import DayPlanSettings, DayPlanSources, build_schedule
 from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
 from jarvis.runtime.dictation import (
     COMMAND_PROMPT,
@@ -8232,6 +8233,38 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         event_log_path=runtime.runtime_paths.event_log,
                     ).run(),
                     name="day_experience_schedule",
+                ),
+            )
+        day_plan = DayPlanSettings.from_config(runtime.config.get("day_plan"))
+        if day_plan is not None and runtime.memory is not None:
+            # ADR 0288: the day's plan, drafted at `day_plan.at` and on a start with none for today.
+            plan_zone = resolve_zone(None, _work_state_timezone(runtime.config))[1]
+            home = runtime.home
+            watchers.append(
+                asyncio.create_task(
+                    build_schedule(
+                        day_plan,
+                        config=runtime.config,
+                        pricing_path=repo_root() / "data" / "pricing.json",
+                        sources=DayPlanSources(
+                            event_log_path=runtime.runtime_paths.event_log,
+                            memory_db=runtime.memory.db_path,
+                            zone=plan_zone,
+                            day_sources=DaySources(
+                                plan_zone, _timesink_db_path(runtime.config),
+                                runtime.memory.db_path,
+                                None if runtime.terminal_hub is None
+                                else TerminalScreen(runtime.terminal_hub.call, wait_s=TURN_WAIT_S),
+                                None if runtime.attachments is None
+                                else runtime.attachments.directory,
+                                None if home is None else home.calendar,
+                            ),
+                            calendar=None if home is None else home.calendar,
+                            todos=None if home is None else home.open_todos,
+                            weather=None if home is None else home.day_weather,
+                        ),
+                    ).run(),
+                    name="day_plan_schedule",
                 ),
             )
         if runtime.picture_notes is not None:
