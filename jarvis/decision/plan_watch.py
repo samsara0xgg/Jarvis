@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from datetime import tzinfo
 
     from jarvis.state.plan import Plan, PlanItem
-    from jarvis.state.plan_facts import DayFacts, Here, Stay
+    from jarvis.state.plan_facts import DayFacts, Here, Move, Stay
 
 NOT_UP_AFTER: Final[timedelta] = timedelta(minutes=30)
 """No wake signal this long after the first item's start."""
@@ -33,6 +33,12 @@ STAYED_AFTER: Final[timedelta] = timedelta(minutes=15)
 """``stayed_longer`` this long past a placed item's end, still in its stay."""
 LEFT_EARLY_BEFORE: Final[timedelta] = timedelta(minutes=20)
 """``left_early`` when he left a placed item's stay this long before its end."""
+MOVE_SLACK: Final[timedelta] = timedelta(minutes=10)
+"""A move this long before a leave time or an end already counts as leaving."""
+NEXT_SOON: Final[timedelta] = timedelta(minutes=45)
+"""``stayed_longer`` waits until the next item elsewhere is this close; earlier, staying is fine."""
+LEAVING_WALK: Final[timedelta] = timedelta(minutes=10)
+"""A walk this long during a placed item reads as leaving it; a shorter one as stepping out."""
 _MIN_NAME: Final[int] = 4
 """A place name shorter than this must match whole, never as part of another."""
 
@@ -146,19 +152,46 @@ def _outing_soon(plan: Plan, facts: DayFacts, now: datetime) -> list[Notice]:
     ]
 
 
+def _ms(moment: datetime) -> int:
+    return int(moment.timestamp() * 1000)
+
+
+def _moved(facts: DayFacts, since: datetime) -> bool:
+    """True when a move (walking, driving...) started at or after ``since``.
+
+    The phone's location fixes are sparse and its visits often missing, so a move is what says he
+    left; where he is only rules a notice out when it names somewhere else.
+    """
+    cut = _ms(since)
+    return any(move.start_ms >= cut for move in facts.moves)
+
+
+def _leaving(move: Move, now: datetime) -> bool:
+    """A drive, or a walk long enough to be going somewhere rather than stepping out."""
+    if move.activity in {"automotive", "ride"}:
+        return True
+    end = _ms(now) if move.end_ms is None else move.end_ms
+    return end - move.start_ms >= _ms_of(LEAVING_WALK)
+
+
+def _ms_of(span: timedelta) -> int:
+    return int(span.total_seconds() * 1000)
+
+
+def _elsewhere(place: str, here: Here | None) -> bool:
+    """True when ``here`` names a place and it is not ``place``."""
+    return here is not None and bool(here.place) and not _same(place, here)
+
+
 def _left_late(plan: Plan, facts: DayFacts, now: datetime) -> list[Notice]:
-    here = facts.here
-    if here is None or not here.in_stay:
-        return []
     found = []
     for item, leave, origin in _legs(plan, now):
         arrive = _begin(plan, item, now.tzinfo)
-        since = datetime.fromtimestamp((here.since_ms or 0) / 1000, now.tzinfo)
         if (
             now >= leave + LEFT_LATE_AFTER
             and (arrive is None or now < arrive)
-            and since <= leave
-            and _same(origin, here)
+            and not _moved(facts, leave - MOVE_SLACK)
+            and not _elsewhere(origin, facts.here)
         ):
             late = int((now - leave).total_seconds() // 60)
             found.append(Notice(
@@ -197,24 +230,35 @@ def _placed(plan: Plan, now: datetime) -> list[tuple[PlanItem, datetime, datetim
     return found
 
 
+def _next(
+    placed: list[tuple[PlanItem, datetime, datetime]], after: datetime,
+) -> tuple[PlanItem, datetime] | None:
+    later = [(item, begin) for item, begin, _ in placed if begin >= after]
+    return later[0] if later else None
+
+
 def _stayed_longer(plan: Plan, facts: DayFacts, now: datetime) -> list[Notice]:
-    here = facts.here
-    if here is None or not here.in_stay:
-        return []
-    since = datetime.fromtimestamp((here.since_ms or 0) / 1000, now.tzinfo)
     placed = _placed(plan, now)
     found = []
     for item, _begun, end in placed:
-        # another item at this place that is on now means staying is the plan
-        kept_on = any(
-            other is not item and _same(other.place, here) and a <= now < b
-            for other, a, b in placed
-        )
-        if now >= end + STAYED_AFTER and since < end and _same(item.place, here) and not kept_on:
+        following = _next(placed, end)
+        if following is None:
+            continue
+        going, starts = following
+        if (
+            now >= end + STAYED_AFTER
+            # a next item with a leg is left_late's to watch; one without is close enough to matter
+            and _said(going.place) != _said(item.place) and not going.route
+            and now >= starts - NEXT_SOON
+            and not any(other is not item and a <= now < b for other, a, b in placed)
+            and not _moved(facts, end - MOVE_SLACK)
+            and not _elsewhere(item.place, facts.here)
+        ):
             late = int((now - end).total_seconds() // 60)
             found.append(Notice(
                 _key("stayed_longer", item.item_id), "stayed_longer", item.item_id,
                 _item_facts(item) | {"ended_at": _clock(end), "minutes_past": late,
+                                     "going_to": going.place, "next_at": _clock(starts),
                                      "doing": list(facts.doing)},
             ))
     return found
@@ -223,21 +267,20 @@ def _stayed_longer(plan: Plan, facts: DayFacts, now: datetime) -> list[Notice]:
 def _left_early(plan: Plan, facts: DayFacts, now: datetime) -> list[Notice]:
     found = []
     for item, begin, end in _placed(plan, now):
-        for stay in reversed(facts.stays):
-            left = None if stay.end_ms is None else datetime.fromtimestamp(
-                stay.end_ms / 1000, now.tzinfo)
-            came = datetime.fromtimestamp(stay.start_ms / 1000, now.tzinfo)
-            if (
-                left is not None and _same(item.place, stay)
-                and came < end and begin < left <= end - LEFT_EARLY_BEFORE and left <= now
-            ):
-                early = int((end - left).total_seconds() // 60)
-                found.append(Notice(
-                    _key("left_early", item.item_id), "left_early", item.item_id,
-                    _item_facts(item) | {"left_at": _clock(left), "ends_at": _clock(end),
-                                         "minutes_early": early},
-                ))
-                break
+        left = next(
+            (m for m in facts.moves
+             if _ms(begin) <= m.start_ms <= min(_ms(end - LEFT_EARLY_BEFORE), _ms(now))
+             and _leaving(m, now)),
+            None,
+        )
+        if left is not None:
+            at = datetime.fromtimestamp(left.start_ms / 1000, now.tzinfo)
+            found.append(Notice(
+                _key("left_early", item.item_id), "left_early", item.item_id,
+                _item_facts(item) | {"left_at": _clock(at), "ends_at": _clock(end),
+                                     "minutes_early": int((end - at).total_seconds() // 60),
+                                     "how": left.activity},
+            ))
     return found
 
 
@@ -261,10 +304,12 @@ def notice(
     ``seen`` holds the keys already noticed today. Kinds (ADR 0289): ``woke``; ``not_up`` (no
     wake signal :data:`NOT_UP_AFTER` after a first item that starts before noon);
     ``outing_soon`` (:data:`OUTING_LEAD` before a leg's leave time); ``left_late``
-    (:data:`LEFT_LATE_AFTER` after it, still in the stay he leaves from, until the item starts);
+    (:data:`LEFT_LATE_AFTER` after it with no move since, until the item starts);
     ``item_due`` (a ``movable`` item's start or window start, while it lasts); ``stayed_longer``
-    (:data:`STAYED_AFTER` past a placed item's end, still in that stay and no other item there is
-    on); ``left_early`` (he left a placed item's stay :data:`LEFT_EARLY_BEFORE` before its end);
+    (:data:`STAYED_AFTER` past a placed item's end with no move since, when the next placed item
+    is elsewhere, has no leg and starts within :data:`NEXT_SOON`, and nothing else is on);
+    ``left_early`` (a drive or a walk of :data:`LEAVING_WALK` began :data:`LEFT_EARLY_BEFORE` or
+    more before a placed item's end);
     ``new_commitment`` (noted today for today and not in the plan).
     """
     found = [

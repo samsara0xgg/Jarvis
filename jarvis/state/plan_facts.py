@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.state import places
+from jarvis.state import places, rides
 from jarvis.state.event_log import iter_events_of_types
 from jarvis.state.phone_day import LOOKBACK_MS, read_rows, stays
 from jarvis.state.phone_day import moves as phone_moves
@@ -30,7 +30,6 @@ WAKE_FROM: Final[time] = time(4, 0)
 """Signals before this local time belong to the night, not to waking."""
 FIX_LOOKBACK_MS: Final[int] = 6 * 3_600_000
 """How far back the latest location fix is looked for."""
-WORK_LOOKBACK_MS: Final[int] = 2 * 24 * 3_600_000
 MAX_ACTIVITIES: Final[int] = 3
 TEXT_CHARS: Final[int] = 230
 
@@ -39,18 +38,23 @@ _PHONE_WAKE: Final[dict[tuple[str, str], str]] = {
     ("alarm", "stopped"): "alarm_stopped",
     ("alarm", "snoozed"): "alarm_snoozed",
     ("power", "disconnected"): "charger_unplugged",
+    ("headphones", "connected"): "headphones_on",
+    ("call", "started"): "call",
 }
 _MAC_ACTIVE: Final[str] = "active"
 _WATCHED: Final[tuple[str, ...]] = (
     "phone.state_observed", "timesink.state_observed", "utterance.received",
+    "surface.user_intent", rides.STARTED,
 )
+_SPOKEN: Final[tuple[str, ...]] = ("utterance.received", "surface.user_intent")
 
 
 @dataclass(frozen=True)
 class Wake:
     """The first sign of the day that he is up: its ``kind`` and when it happened."""
 
-    # focus_off, alarm_stopped, alarm_snoozed, charger_unplugged, mac_active or utterance
+    # a phone signal (focus_off, alarm_stopped, ..., headphones_on, call), mac_active,
+    # utterance (his words, spoken or typed), ride, or move (the first walk or drive)
     kind: str
     at_ms: int
 
@@ -172,8 +176,10 @@ def _wake(conn: sqlite3.Connection, first_ms: int, now_ms: int) -> Wake | None:
             kind = _PHONE_WAKE.get((str(payload["signal"]), str(payload["value"])))
             if kind:
                 found.append(Wake(kind, event.ts_epoch_ms))
-        elif event.type == "utterance.received":
+        elif event.type in _SPOKEN:
             found.append(Wake("utterance", event.ts_epoch_ms))
+        elif event.type == rides.STARTED:
+            found.append(Wake("ride", event.ts_epoch_ms))
         else:
             latest = payload.get("state_latest")
             if isinstance(latest, dict) and latest.get("kind") == _MAC_ACTIVE:
@@ -182,6 +188,18 @@ def _wake(conn: sqlite3.Connection, first_ms: int, now_ms: int) -> Wake | None:
                 if first_ms <= at <= now_ms:
                     found.append(Wake("mac_active", at))
     return min(found, key=lambda w: w.at_ms, default=None)
+
+
+def _rides(conn: sqlite3.Connection, since_ms: int, now_ms: int) -> list[Move]:
+    """His bus rides (ADR 0221's follower) as moves: a ride is leaving, like a walk or a drive."""
+    begun: dict[str, int] = {}
+    ended: dict[str, int] = {}
+    for event in iter_events_of_types(conn, (rides.STARTED, rides.ENDED), since_epoch_ms=since_ms):
+        if event.ts_epoch_ms > now_ms:
+            continue
+        ride = str(event.payload["ride_id"])
+        (begun if event.type == rides.STARTED else ended)[ride] = event.ts_epoch_ms
+    return [Move(at, ended.get(ride), "ride") for ride, at in begun.items()]
 
 
 def _kept_of(kept: Sequence[places.Place], lat: float, lng: float) -> tuple[str, str]:
@@ -199,12 +217,13 @@ def _latest_fix(conn: sqlite3.Connection, now_ms: int) -> Event | None:
     return fix
 
 
-def _doing(conn: sqlite3.Connection, now_ms: int) -> tuple[str, ...]:
-    """The activities of the latest work state before ``now_ms``, as the ledger words them."""
+def _doing(conn: sqlite3.Connection, since_ms: int, now_ms: int) -> tuple[str, ...]:
+    """The activities of today's latest work state before ``now_ms``, as the ledger words them.
+
+    One from before ``since_ms`` (the night before) says what he did then, not now.
+    """
     latest: Any = None
-    for event in iter_events_of_types(
-        conn, ("work_state.revised",), since_epoch_ms=now_ms - WORK_LOOKBACK_MS,
-    ):
+    for event in iter_events_of_types(conn, ("work_state.revised",), since_epoch_ms=since_ms):
         if event.ts_epoch_ms <= now_ms and isinstance(event.payload.get("item"), dict):
             latest = event.payload["item"]
     if latest is None:
@@ -246,8 +265,9 @@ def facts_at(
     """The facts about ``day`` as the log held them at ``now_ms`` (events timed after are unseen).
 
     ``kept`` are the places he keeps (``places.read_kept``); a stay or fix inside one carries its
-    name and role. ``wake`` is the earliest of focus off, alarm stopped or snoozed, charger
-    unplugged, the Mac turning active and an utterance of his, after 04:00 local.
+    name and role. ``wake`` is the earliest sign after 04:00 local that he is up: a phone signal
+    (focus off, alarm stopped or snoozed, charger unplugged, headphones on, a call), the Mac
+    turning active, words of his, a ride, or a walk or drive. ``moves`` hold his rides too.
     """
     first_ms, last_ms = _ms(day, time.min, zone), _ms(day + timedelta(days=1), time.min, zone)
     rows = read_rows(conn, first_ms - LOOKBACK_MS)
@@ -272,18 +292,27 @@ def facts_at(
             name or str(fix.payload.get("place") or ""), name, role, lat, lng, None,
             now_ms - fix.ts_epoch_ms,
         )
-    drive = tuple(
-        Move(m.start, m.end, str(m.fields["activity"]))
-        for m in phone_moves(motions, held, now_ms)
-        if m.start <= now_ms and (m.end is None or m.end >= first_ms)
-    )
+    morning = _ms(day, WAKE_FROM, zone)
+    drive = tuple(sorted(
+        (
+            *(Move(m.start, m.end, str(m.fields["activity"]))
+              for m in phone_moves(motions, held, now_ms)
+              if m.start <= now_ms and (m.end is None or m.end >= first_ms)),
+            *_rides(conn, first_ms, now_ms),
+        ),
+        key=lambda m: m.start_ms,
+    ))
+    wake = _wake(conn, morning, now_ms)
+    walked = next((m for m in drive if m.start_ms >= morning), None)
+    if walked is not None and (wake is None or walked.start_ms < wake.at_ms):
+        wake = Wake("move", walked.start_ms)
     return DayFacts(
         now_ms=now_ms,
-        wake=_wake(conn, _ms(day, WAKE_FROM, zone), now_ms),
+        wake=wake,
         here=here,
         stays=all_stays,
         moves=drive,
-        doing=_doing(conn, now_ms),
+        doing=_doing(conn, morning, now_ms),
         commitments=_noted(conn, day, first_ms, last_ms, now_ms, zone),
     )
 

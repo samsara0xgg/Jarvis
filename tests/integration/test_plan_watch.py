@@ -25,7 +25,7 @@ from jarvis.state import commitments, plan
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.places import Place
-from jarvis.state.plan_facts import DayFacts, Here, NotedCommitment, Stay, Wake, facts_at
+from jarvis.state.plan_facts import DayFacts, Here, Move, NotedCommitment, Stay, Wake, facts_at
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -127,13 +127,13 @@ CASES: dict[str, tuple[list[plan.PlanItem], dict[str, Any], str, str]] = {
     ),
     "item_due": ([_item(start="10:00")], {"wake": Wake("alarm_stopped", 1)}, "10:00", "09:59"),
     "stayed_longer": (
-        [_item(start="10:00", place="Library")],
+        [_item(start="10:00", place="Library"), _item("p2", start="11:45", place="Gym")],
         {"wake": Wake("alarm_stopped", 1), "here": _here("Library", "10:05")}, "11:15", "11:14",
     ),
     "left_early": (
         [_item(start="10:00", place="Library")],
-        {"wake": Wake("alarm_stopped", 1), "stays": (_stay("Library", "10:02", "10:40"),)},
-        "10:40", "10:39",
+        {"wake": Wake("alarm_stopped", 1), "moves": (Move(_ms("10:05"), None, "walking"),)},
+        "10:15", "10:14",
     ),
 }
 
@@ -143,7 +143,8 @@ def test_a_notice_fires_at_its_threshold_and_not_a_minute_before(kind: str) -> N
     """The thresholds of ADR 0289: not_up 30 min, outing_soon 25 min, left_late 3 min, ..."""
     items, kwargs, fires, before = CASES[kind]
     facts = DayFacts(
-        0, kwargs.get("wake"), kwargs.get("here"), kwargs.get("stays", ()), (), (), (),
+        0, kwargs.get("wake"), kwargs.get("here"), kwargs.get("stays", ()),
+        kwargs.get("moves", ()), (), (),
     )
     held = _plan(*items)
     keys = {n.kind: n.key for n in notice(held, facts, _at(fires), set())}
@@ -328,7 +329,7 @@ def test_the_replay_walks_a_day_with_a_stub_decider_and_writes_nothing(tmp_path:
         lines = script.replay(DAY, held, conn, [], ZONE, 5, script.stub_decide)
     assert [(line["time"], line["kind"]) for line in lines] == [
         ("07:40", "woke"), ("08:00", "item_due"), ("08:55", "outing_soon"),
-        ("10:00", "item_due"),
+        ("09:25", "left_late"), ("10:00", "item_due"),
     ]
     assert lines[0]["decision"]["say"] == script.STUB
     assert "- 08:55 outing_soon (Library): tell" in script.summary(DAY, lines)
