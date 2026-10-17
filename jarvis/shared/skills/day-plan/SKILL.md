@@ -191,7 +191,8 @@ evidence and answer; nothing you write here is said to him.
   whether it is already `done`.
 - `evidence`: what happened since `since` (the previous check, or when he woke): `screen`, each
   activity his screen showed with the time it first appeared; `words`, what he said or typed;
-  `commits`, the commits he made.
+  `commits`, the commits he made; `places`, where his phone placed him, with the time it was
+  first seen there; `rides`, the buses he took.
 
 ### Output
 
@@ -206,7 +207,7 @@ evidence and answer; nothing you write here is said to him.
 ### Principles
 
 1. Mark only what the evidence shows: a finished piece of work on his screen, a commit that
-   completes it, or his own words that it is done. Time passing is not evidence; a task that
+   completes it, his own words that it is done, or, for going somewhere, that he went. Time passing is not evidence; a task that
    should be done by now but shows nothing stays open.
 2. Work on a task that is not finished is `left`, not `done`; judge the minutes from how far the
    evidence shows it went.

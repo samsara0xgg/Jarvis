@@ -267,7 +267,9 @@ def evidence(conn: sqlite3.Connection, since_ms: int, now_ms: int, zone: tzinfo)
     ``screen``: each distinct work-state activity once, with the local time it first appeared
     (the latest :data:`MAX_SCREEN`); ``words``: his own words, spoken or typed (the latest
     :data:`MAX_WORDS`, clipped, a repeat of the line before dropped); ``commits``: the commits
-    made in the span. Times are local ``HH:MM``; ``since_ms`` and ``until_ms`` are the span.
+    made in the span; ``places``: where his phone placed him, each place once with the time it was
+    first seen there; ``rides``: his bus rides that began in the span. Times are local ``HH:MM``;
+    ``since_ms`` and ``until_ms`` are the span.
     """
 
     def clock(ms: int) -> str:
@@ -287,8 +289,16 @@ def evidence(conn: sqlite3.Connection, since_ms: int, now_ms: int, zone: tzinfo)
         text = " ".join(str(event.payload.get("transcript") or "").split())[:WORDS_CHARS]
         if text and event.ts_epoch_ms <= now_ms and (not words or words[-1][1] != text):
             words.append((event.ts_epoch_ms, text))
+    places: dict[str, int] = {}
+    for event in iter_events_of_types(conn, (LOCATION_EVENT,), since_epoch_ms=since_ms):
+        name = str(event.payload.get("place") or "")
+        if name and event.ts_epoch_ms <= now_ms:
+            places.setdefault(name, event.ts_epoch_ms)
+    rode = [m for m in _rides(conn, since_ms, now_ms) if m.start_ms >= since_ms]
     return {
         "since": clock(since_ms), "since_ms": since_ms, "until_ms": now_ms,
+        "places": [{"at": clock(at), "place": name} for name, at in places.items()],
+        "rides": [{"at": clock(m.start_ms), "ended": m.end_ms and clock(m.end_ms)} for m in rode],
         "screen": [{"at": clock(at), "text": t} for t, at in list(screen.items())[-MAX_SCREEN:]],
         "words": [{"at": clock(at), "text": t} for at, t in words[-MAX_WORDS:]],
         "commits": [
