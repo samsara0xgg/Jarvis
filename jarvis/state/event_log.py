@@ -1339,6 +1339,49 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    # The day's plan (ADR 0288): one plan per local date, a fold over these five types
+    # (`jarvis.state.plan`). A `drafted` or `revised` carries the whole item list, so the last of
+    # the two per date wins; `settled` and `opened` mark it; `draft_failed` says no draft came.
+    EventTypeSchema(
+        event_type="plan.drafted",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("date", "items", "digest", "model"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="plan.revised",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("date", "items", "by", "why"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="plan.settled",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("date", "by"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="plan.opened",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("date", "record_id", "signal", "at_ms"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="plan.draft_failed",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("date", "error"),
+        optional_payload=(),
+        schema_version=1,
+    ),
     # A pinned bus departure on the notch (ADR 0200, 0204): the pin is a fold over these types
     # (`jarvis.state.departures`); a newer `pinned` (a set of up to three trips) replaces the older,
     # the card's clicks emit `trip_added` / `trip_removed`, the daemon's refresh emits `updated` per
