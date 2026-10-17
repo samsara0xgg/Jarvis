@@ -8,6 +8,7 @@ import UserNotifications
 enum PushShape {
     static let waitingThread = "waiting"
     static let rideThread = "ride"
+    static let talkThread = "talk"
 
     /// the categories of what waits on him
     enum Waiting: String, CaseIterable {
@@ -146,6 +147,7 @@ final class PushNotifications: NSObject, UNUserNotificationCenterDelegate {
         if let url = PushShape.url(content.userInfo) { await UIApplication.shared.open(url) }
         else if content.threadIdentifier == PushShape.waitingThread { openCards(card: PushShape.cardId(content.userInfo)) }
         else if content.threadIdentifier == PushShape.rideThread, let ride = RidePush(content) { Waiting.shared.showRide(ride); openCards() }      // the card is there to answer
+        else if content.threadIdentifier == PushShape.talkThread { openCards() }      // she spoke first: the conversation, refreshed
     }
 
     private static func openCards(card: String? = nil) {
