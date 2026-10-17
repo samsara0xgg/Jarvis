@@ -32,8 +32,8 @@ code: quiet levels and sleep, privacy on the lock screen and in pushes, and a ca
 
 - **Notices** (pure, L3 `jarvis/decision/plan_watch.py`, over facts read from the log by L2
   `jarvis/state/plan_facts.py` as of a moment): `woke` (the first sign after 04:00 local: a phone
-  signal such as focus off, alarm stopped, charger unplugged or headphones on, the Mac turning
-  active, words of his, a ride, or a walk or drive); `not_up` (no such sign 30 min after the first
+  signal such as focus off, alarm stopped, charger unplugged or headphones on, the Mac in use again
+  (back from idle, unlocked or woken), words of his, a ride, or a walk or drive); `not_up` (no such sign 30 min after the first
   item, when it is before noon); `outing_soon` (25 min before a leg's leave time: the weather and
   the leg are fetched again and the notice carries both, old and new); `left_late` (3 min after
   the leave time with no move since, unless he is known to be somewhere else); `item_due` (a

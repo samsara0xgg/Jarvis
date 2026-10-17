@@ -47,7 +47,8 @@ _PHONE_WAKE: Final[dict[tuple[str, str], str]] = {
     ("headphones", "connected"): "headphones_on",
     ("call", "started"): "call",
 }
-_MAC_ACTIVE: Final[str] = "active"
+_MAC_RESUMED: Final[frozenset[str]] = frozenset({"active", "unlock", "wake"})
+"""TimeSink's states for the Mac in use again: back from idle, unlocked, woken from sleep."""
 _WATCHED: Final[tuple[str, ...]] = (
     "phone.state_observed", "timesink.state_observed", "utterance.received",
     "surface.user_intent", rides.STARTED,
@@ -198,7 +199,7 @@ def _wake(conn: sqlite3.Connection, first_ms: int, now_ms: int) -> Wake | None:
             found.append(Wake("ride", event.ts_epoch_ms))
         else:
             latest = payload.get("state_latest")
-            if isinstance(latest, dict) and latest.get("kind") == _MAC_ACTIVE:
+            if isinstance(latest, dict) and latest.get("kind") in _MAC_RESUMED:
                 # the state event's own time: the observer polls every few minutes
                 at = int(datetime.fromisoformat(str(latest["at"])).timestamp() * 1000)
                 if first_ms <= at <= now_ms:

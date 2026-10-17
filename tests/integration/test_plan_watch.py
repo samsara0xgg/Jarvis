@@ -530,6 +530,36 @@ def test_facts_at_reads_only_what_the_log_held_at_that_minute(tmp_path: Path) ->
     assert before.payload(ZONE)["here"]["since"] == "07:45"
 
 
+def _mac_state(kind: str, at: str) -> dict[str, Any]:
+    """A TimeSink observation whose latest state is ``kind`` at ``at`` (the 10-17 shape)."""
+    return {
+        "actor": "observer", "status": "ok", "identity": "i", "span_high": 1,
+        "span_latest_end": _at(at).isoformat(), "capture_high": 1,
+        "capture_latest_seen": _at(at).isoformat(), "state_high": 1,
+        "observed_at_ms": _ms(at), "state_latest": {"at": _at(at).isoformat(), "kind": kind},
+    }
+
+
+def test_unlocking_or_waking_the_mac_is_a_wake_sign_like_coming_back_from_idle(
+    tmp_path: Path,
+) -> None:
+    """2026-10-17: his first sign was an unlock at 09:24 and the watcher missed it."""
+    for kind in ("unlock", "wake", "active"):
+        with closing(_log(tmp_path / f"{kind}.db")) as conn:
+            emit_event(
+                conn, type="timesink.state_observed", ts_epoch_ms=_ms("09:26"),
+                payload=_mac_state(kind, "09:24"),
+            )
+            facts = facts_at(conn, DAY, _ms("09:30"), ZONE, [HOME])
+        assert facts.wake == Wake("mac_active", _ms("09:24")), kind
+    with closing(_log(tmp_path / "lock.db")) as conn:
+        emit_event(
+            conn, type="timesink.state_observed", ts_epoch_ms=_ms("09:26"),
+            payload=_mac_state("lock", "09:24"),
+        )
+        assert facts_at(conn, DAY, _ms("09:30"), ZONE, [HOME]).wake is None
+
+
 def test_facts_carry_todays_commits_by_repo_name_latest_twenty_up_to_that_minute(
     tmp_path: Path,
 ) -> None:
