@@ -228,13 +228,11 @@ class Peer:
     after: int = 0  # the last answer row this terminal has, in the brain's log
     sessions: dict[str, _BrainSession] = field(default_factory=dict)
     tasks: set[asyncio.Task[Any]] = field(default_factory=set)
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def send(self, frame: Mapping[str, Any] | str) -> None:
-        """Send one frame whole; frames from different tasks never interleave."""
+        """Send one frame; the socket's own writer keeps frames from different tasks apart."""
         text = frame if isinstance(frame, str) else json.dumps(frame, ensure_ascii=False)
-        async with self._lock:
-            await self.send_text(text)
+        await self.send_text(text)
 
 
 class BrainVoice:

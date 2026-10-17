@@ -45,7 +45,7 @@ from jarvis.shared.device_link import DeviceCallError
 from jarvis.surface.terminal_events import OBSERVER_EVENT_TYPES, VOICE_TERMINAL_EVENT_TYPES
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Mapping
+    from collections.abc import Awaitable, Callable, Coroutine, Mapping
 
     from fastapi import WebSocket
 
@@ -358,10 +358,11 @@ async def serve_terminal(hub: TerminalHub, ws: WebSocket, name: str) -> None:
         with contextlib.suppress(RuntimeError):
             await ws.close(code=1008)
         return
-    link = hub.attach(name, hello.tools, ws.send_text, voice=hello.voice, settings=hello.settings)
+    send = _one_writer(ws.send_text)
+    link = hub.attach(name, hello.tools, send, voice=hello.voice, settings=hello.settings)
     streaming: asyncio.Task[None] | None = None
     try:
-        streaming = await _greet(hub, link, ws, hello)
+        streaming = await _greet(hub, link, hello)
         while True:
             text = await ws.receive_text()
             if len(text) > MAX_FRAME_CHARS:
@@ -372,13 +373,30 @@ async def serve_terminal(hub: TerminalHub, ws: WebSocket, name: str) -> None:
             except ValueError:
                 continue
             if isinstance(frame, dict):
-                await _on_frame(hub, link, ws, frame, len(text))
+                await _on_frame(hub, link, frame, len(text))
     except WebSocketDisconnect:
         pass
     finally:
         hub.detach(link)  # first: a cancel during the awaits below must not keep it attached
         # Shielded: a handler cancelled mid-cleanup still stops its turns and aborts its sessions.
         await asyncio.shield(_leave(hub, link, streaming))
+
+
+def _one_writer(
+    send_text: Callable[[str], Awaitable[None]],
+) -> Callable[[str], Coroutine[Any, Any, None]]:
+    """``send_text`` for one writer at a time: every frame the brain sends a terminal goes here.
+
+    The server's socket allows one send waiting on a full buffer; a second one (an ack while
+    her speech fills it) fails an assertion inside the socket and drops the terminal.
+    """
+    lock = asyncio.Lock()
+
+    async def send(text: str) -> None:
+        async with lock:
+            await send_text(text)
+
+    return send
 
 
 async def _leave(hub: TerminalHub, link: _Link, streaming: asyncio.Task[None] | None) -> None:
@@ -388,19 +406,17 @@ async def _leave(hub: TerminalHub, link: _Link, streaming: asyncio.Task[None] | 
     await _end_speech(hub, link, streaming)
 
 
-async def _greet(
-    hub: TerminalHub, link: _Link, ws: WebSocket, hello: _Hello,
-) -> asyncio.Task[None] | None:
+async def _greet(hub: TerminalHub, link: _Link, hello: _Hello) -> asyncio.Task[None] | None:
     """Send ``ready``; for a voice terminal the brain can speak to, start its row stream."""
     if hello.voice and hub.voice is not None:
-        link.speech = hub.voice.attach(link.name, ws.send_text, hello.rows_after)
+        link.speech = hub.voice.attach(link.name, link.send, hello.rows_after)
     ready: dict[str, Any] = {"type": "ready", "device": link.name}
     if hub.events is not None:
         ready["baseline"] = hub.events.baseline()
     if hello.voice:
         ready["voice"] = hub.voice is not None
         ready["listen"] = hub.listening is not None
-    await ws.send_text(json.dumps(ready, ensure_ascii=False))
+    await link.send(json.dumps(ready, ensure_ascii=False))
     if link.speech is None or hub.voice is None:
         return None
     return asyncio.create_task(hub.voice.stream_rows(link.speech))
@@ -417,9 +433,7 @@ async def _end_speech(hub: TerminalHub, link: _Link, streaming: asyncio.Task[Non
         await hub.voice.detach(link.speech)
 
 
-async def _on_frame(
-    hub: TerminalHub, link: _Link, ws: WebSocket, frame: Mapping[str, Any], size: int,
-) -> None:
+async def _on_frame(hub: TerminalHub, link: _Link, frame: Mapping[str, Any], size: int) -> None:
     """A terminal's ``result`` goes to the call waiting for it; its ``event`` to the log.
 
     A voice terminal's ``tts`` request goes to its provider session, and its ``ask`` to
@@ -428,7 +442,7 @@ async def _on_frame(
     if frame.get("type") == "result":
         hub.deliver(link, frame)
     elif frame.get("type") == "event":
-        await _record_event(hub, ws, link, frame, size)
+        await _record_event(hub, link, frame, size)
     elif frame.get("type") == "tts":
         if link.speech is not None and hub.voice is not None:
             hub.voice.on_frame(link.speech, frame)
@@ -437,19 +451,19 @@ async def _on_frame(
                 "type": "tts", "sid": frame.get("sid"), "rid": frame["rid"], "ok": False,
                 "error": {"name": "Refused", "message": "this brain has no speech provider"},
             }
-            await ws.send_text(json.dumps(refusal))
+            await link.send(json.dumps(refusal))
     elif frame.get("type") == "ask" and link.voice:
         if hub.listening is not None:
             hub.listening.on_frame(link, frame)
         elif isinstance(frame.get("id"), str):
-            await ws.send_text(json.dumps({
+            await link.send(json.dumps({
                 "type": "reply", "id": frame["id"], "ok": False, "code": "not_listening",
                 "message": "this brain does not take a terminal's listening",
             }))
 
 
 async def _record_event(
-    hub: TerminalHub, ws: WebSocket, link: _Link, frame: Mapping[str, Any], size: int,
+    hub: TerminalHub, link: _Link, frame: Mapping[str, Any], size: int,
 ) -> None:
     """Append one event the terminal ``link`` sent, and answer it."""
     if hub.events is None:
@@ -462,7 +476,7 @@ async def _record_event(
         allowed = VOICE_TERMINAL_EVENT_TYPES if link.voice else OBSERVER_EVENT_TYPES
         ack = hub.events.record(link.name, frame, size, allowed)
     if ack is not None:
-        await ws.send_text(json.dumps(ack))
+        await link.send(json.dumps(ack))
 
 
 class TerminalRefusedError(Exception):

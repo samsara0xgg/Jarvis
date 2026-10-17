@@ -739,6 +739,74 @@ def test_a_first_frame_that_is_not_a_hello_closes_the_socket(tmp_path: Path, hel
     assert hub.connected() == []
 
 
+
+class _OneWriterSocket:
+    """The brain's end of a terminal socket whose send waits on a full buffer, as uvicorn's does.
+
+    A second send that starts while one waits fails, as the server socket's own assertion did
+    on 10-16 when an event's ack met her speech and dropped the Mac.
+    """
+
+    def __init__(self) -> None:
+        self.inbox: asyncio.Queue[str | None] = asyncio.Queue()
+        self.sent: list[dict[str, Any]] = []
+        self.waiting = False
+        self.blocked = asyncio.Event()  # a send is waiting on the buffer
+        self.two_out = asyncio.Event()  # two frames after ``ready`` are out
+
+    async def accept(self) -> None:
+        return None
+
+    async def receive_text(self) -> str:
+        text = await self.inbox.get()
+        if text is None:
+            raise WebSocketDisconnect(1000)
+        return text
+
+    async def send_text(self, text: str) -> None:
+        assert not self.waiting, "a second send waited on the socket while one did"
+        self.waiting = True
+        self.blocked.set()
+        await asyncio.sleep(0.05)
+        self.waiting = False
+        self.sent.append(json.loads(text))
+        if len(self.sent) >= 3:  # ready, then the two that met
+            self.two_out.set()
+
+    async def close(self, _code: int = 1000) -> None:
+        return None
+
+
+def test_the_brain_sends_a_terminal_one_frame_at_a_time() -> None:
+    """A call to the terminal still waiting on the socket holds an event's ack until it is out."""
+
+    async def scenario() -> list[dict[str, Any]]:
+        hub = TerminalHub(call_timeout_s=5)
+        ws = _OneWriterSocket()
+        ws.inbox.put_nowait(json.dumps({"type": "hello", "tools": ["open_url"]}))
+        server = asyncio.create_task(terminal_link.serve_terminal(hub, cast("Any", ws), "macbook"))
+        await ws.blocked.wait()  # ``ready``
+        await asyncio.sleep(0.1)
+        ws.blocked.clear()
+        call = asyncio.create_task(
+            asyncio.to_thread(hub.call, "open_url", {"url": "https://example.com"}, None),
+        )
+        await ws.blocked.wait()  # the call is waiting on the buffer
+        ws.inbox.put_nowait(json.dumps({"type": "event", "event_uid": "e1"}))
+        await asyncio.wait_for(ws.two_out.wait(), 2)
+        asked = next(frame for frame in ws.sent if frame.get("type") == "call")
+        ws.inbox.put_nowait(json.dumps({"type": "result", "id": asked["id"], "ok": True,
+                                        "output": {}}))
+        await call
+        ws.inbox.put_nowait(None)
+        await server
+        return ws.sent
+
+    sent = asyncio.run(scenario())
+    assert [frame["type"] for frame in sent] == ["ready", "call", "ack"]
+    assert sent[2]["event_uid"] == "e1"
+
+
 # --- a real terminal client against a real server --------------------------
 
 
