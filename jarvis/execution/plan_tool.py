@@ -25,7 +25,10 @@ if TYPE_CHECKING:
 
 _DESCRIPTION: Final = (
     "Use when he asks to add, move, drop or change something in a day's plan, asks what is in"
-    " it, or says it is fine. It changes only a day that already has a plan, and a change is"
+    " it, or says it is fine. While today's plan is opened and not settled, you are settling it"
+    " with him: ask one question at a time about what would change the day, then propose it"
+    " with its buses, and settle it once he agrees."
+    " It changes only a day that already has a plan, and a change is"
     " saved only when this returns: never say it is changed without calling it. For something"
     " to remember rather than plan, use keep."
 )

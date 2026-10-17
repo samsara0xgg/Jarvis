@@ -124,17 +124,47 @@ def build_opening_prompt(  # noqa: PLR0913 - the plan, what is open, the weather
     ``draft_failed`` says the day's draft did not come, so ``plan`` is empty: she says so and asks.
     """
     local = now.astimezone(zone)
+    said_in = lang.text_language(" ".join(item.title for item in plan.items))
     body = {
         "task": "opening",
         "day": plan.day.isoformat(),
         "weekday": plan.day.strftime("%A"),
-        "now": local.strftime("%H:%M"),
+        "now": lang.spoken_time(local, said_in),
         "timezone": _zone_name(zone),
         "settled": plan.status == "settled",
         "draft_failed": draft_failed,
-        "plan": [_public(item) for item in plan.items],
+        "plan": _said_clocks([_public(item) for item in plan.items], plan.day, zone, said_in),
         "unconfirmed": list(unconfirmed),
         "weather": weather,
+    }
+    return _instructions(), json.dumps(body, ensure_ascii=False, default=str)
+
+
+def build_follow_up_prompt(  # noqa: PLR0913 - the plan, the talk so far, the facts, the clock.
+    plan: Plan, conversation: Sequence[tuple[str, datetime, str]], facts: DayFacts,
+    now: datetime, *, asked: int, zone: tzinfo,
+) -> tuple[str, str]:
+    """``(system, user)`` of a follow-up: she opened the day, he has not answered her last words.
+
+    ``conversation`` is ``(who, at, text)`` since her opening, oldest first, ``who`` being ``you``
+    or ``him``; ``asked`` is how many follow-ups she already sent today. Clocks are spoken.
+    """
+    local = now.astimezone(zone)
+    said_in = lang.text_language(" ".join(item.title for item in plan.items))
+    last = conversation[-1][1] if conversation else local
+    body = {
+        "task": "follow-up",
+        "day": plan.day.isoformat(),
+        "weekday": plan.day.strftime("%A"),
+        "now": lang.spoken_time(local, said_in),
+        "minutes": max(0, round((local - last).total_seconds() / 60)),
+        "asked": asked,
+        "plan": _said_clocks([item.payload() for item in plan.items], plan.day, zone, said_in),
+        "conversation": [
+            {"who": who, "at": lang.spoken_time(at.astimezone(zone), said_in), "text": text}
+            for who, at, text in conversation
+        ],
+        "facts": facts.payload(zone),
     }
     return _instructions(), json.dumps(body, ensure_ascii=False, default=str)
 

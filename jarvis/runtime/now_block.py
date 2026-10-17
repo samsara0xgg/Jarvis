@@ -157,7 +157,9 @@ def plan_line(
     if held is None:
         return None
     left = budget(held, local, day_ends=day_ends)
-    state = "settled" if held.status == "settled" else "not settled yet"
+    state = "settled" if held.status == "settled" else (
+        "opened, not settled yet" if held.opened else "not settled yet"
+    )
     parts = []
     if left.next_task is not None:
         task = left.next_task

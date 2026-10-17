@@ -1639,6 +1639,23 @@ def pending_days(path: Path, today: date) -> list[tuple[str, int, int]]:
     return [(day, days[day][0], days[day][1]) for day in sorted(days)]
 
 
+def messages_since(path: Path, record_id: str, limit: int = 12) -> tuple[Record, ...]:
+    """His and her messages from record ``record_id`` on, oldest first, the latest ``limit``.
+
+    Empty when that record is not there. Mail, notes and reactions are left out.
+    """
+    with closing(open_memory_db(path)) as conn:
+        rows = conn.execute(
+            "SELECT id, ts, source, text FROM records "
+            "WHERE rowid >= (SELECT rowid FROM records WHERE id = ?) "
+            "AND source IN ('allen', 'jarvis') ORDER BY rowid DESC LIMIT ?",
+            (record_id, limit),
+        ).fetchall()
+    return tuple(
+        (str(rid), str(ts), str(source), str(text)) for rid, ts, source, text in reversed(rows)
+    )
+
+
 def day_records(path: Path, day: str) -> tuple[Record, ...]:
     """Every record whose local date is ``day``, oldest first, full text."""
     start = datetime.fromisoformat(day).astimezone()
@@ -1688,6 +1705,7 @@ __all__ = [
     "latest_day_summaries",
     "latest_highlight_marks",
     "local_now",
+    "messages_since",
     "open_memory_db",
     "pending_days",
     "prose_days",

@@ -6,7 +6,9 @@ asks :func:`jarvis.decision.plan_watch.notice` what changed, writes each new not
 ``plan.noticed`` and then:
 
 - ``woke`` opens the day (ADR 0288): her opening is written into the conversation as her record
-  ``plan-open-<date>`` and ``plan.opened`` is logged. It is never judged.
+  ``plan-open-<date>`` and ``plan.opened`` is logged. It is never judged. The opening starts a
+  conversation she leads until the plan is settled: when her last words there wait unanswered
+  (10, 15, 20, then 30 minutes), she follows up, at most six times a day (``unsettled:<n>``).
 - ``outing_soon`` first reads the weather and the leg again, so she is asked with both.
 - every other notice goes to the ``decide_preset`` model; its answer is logged as ``plan.decided``.
   ``adjust`` also revises the plan by her: it may mark tasks done, move or drop them.
@@ -21,7 +23,8 @@ What she says (``tell``, ``adjust``) is always written into the conversation as 
 spoken on the Mac and pushed to the phone under the limits the ADR fixes in code: outing notices
 obey speech mute, a live conversation and a call, as reminders do; every other notice obeys the
 quiet level and the caps. A private item is named by its time only on speakers and in a push.
-The first item's start settles a plan nobody settled.
+The first item's start settles a plan nobody settled and nobody opened: an opened plan is
+settled only by him.
 
 Legs: :func:`make_route_legs` is the ``route_legs`` the 04:00 draft takes, and the watcher computes
 the legs of items that lack one (a draft whose legs failed, an item he or she moved) when the
@@ -40,6 +43,7 @@ from typing import TYPE_CHECKING, Any, Final
 from jarvis.decision.day_plan import (
     Progress,
     build_decide_prompt,
+    build_follow_up_prompt,
     build_opening_prompt,
     build_progress_prompt,
     parse_decision,
@@ -55,13 +59,14 @@ from jarvis.shared import lang
 from jarvis.state import commitments, places, plan
 from jarvis.state.day_line import day_window
 from jarvis.state.event_log import open_runtime_event_log
-from jarvis.state.memory_db import append_record, message_record
+from jarvis.state.memory_db import append_record, message_record, messages_since
 from jarvis.state.plan_facts import DayFacts, evidence, facts_at
 
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Iterator, Mapping, Sequence
     from contextlib import AbstractContextManager
+    from datetime import tzinfo
     from pathlib import Path
 
     from jarvis.execution.tools import RuntimePathsLike
@@ -74,6 +79,10 @@ OUTING: Final[frozenset[str]] = frozenset({"outing_soon", "left_late"})
 """Notices that obey only speech mute, a live conversation and a call (like a reminder)."""
 DONE: Final[str] = ":done"
 """The suffix of a progress notice's key for its done-check in ``plan.decided``."""
+FOLLOW_UP: Final[str] = "unsettled:"
+"""The key prefix of her follow-ups on an opened day that is not settled."""
+FOLLOW_UP_AFTER_MIN: Final[tuple[int, ...]] = (10, 15, 20, 30, 30, 30)
+"""Minutes her last words wait unanswered before each follow-up; their number caps them."""
 OPEN_ATTEMPTS: Final[int] = 3
 """How often a day's opening is tried when the model fails, before the day goes without."""
 HOUR_MS: Final[int] = 3_600_000
@@ -89,6 +98,12 @@ type PlanLeg = Callable[..., dict[str, Any]]
 type OpenLeg = Callable[[str], AbstractContextManager[PlanLeg | None]]
 """``open_leg(action_id)`` gives a ``plan_leg`` bound to its own event-log connection, or None."""
 type LegFactory = Callable[[ToolContext], PlanLeg | None]
+
+
+def _record_time(ts: str, zone: tzinfo) -> datetime:
+    """A record's ``ts`` as an aware time (a naive one is local)."""
+    moment = datetime.fromisoformat(ts)
+    return moment if moment.tzinfo else moment.replace(tzinfo=zone)
 
 
 def leg_session(
@@ -260,7 +275,7 @@ class PlanWatch:
                 found = [n for n in found if n.kind == "woke"]  # nothing else to compare with
             for one in found:
                 self._take(run, one)
-            for step in (self._open_day, self._route, self._settle):
+            for step in (self._open_day, self._follow_up, self._route, self._settle):
                 try:  # one step failing must not hold back the others
                     step(run)
                 except Exception:
@@ -313,8 +328,62 @@ class PlanWatch:
             plan.opened(run.conn, run.day, record_id, wake.kind, wake.at_ms)
             run.held = plan.for_day(run.conn, run.day)
         run.handled.append("open")
-        if self._settings.morning_push and self._hooks.quiet() not in _HELD:
-            self._push(message, sound=False, urgent=False)
+        self._deliver(message, push=self._settings.morning_push)
+
+    def _follow_up(self, run: _Run) -> None:
+        """She opened the day and it is not settled: her last words unanswered, she picks it up."""
+        held = run.held
+        if held is None or not held.opened or held.status == "settled" or self._ask_open is None:
+            return
+        if run.now.time() >= self._settings.day_ends:
+            return
+        asked = sum(1 for key in plan.notices(run.conn, run.day) if key.startswith(FOLLOW_UP))
+        if asked >= len(FOLLOW_UP_AFTER_MIN):
+            return
+        talk = messages_since(self._sources.memory_db, held.opened_record_id or "")
+        if not talk or talk[-1][2] != "jarvis":
+            return  # his words are the last: her answer is the conversation's, not the watcher's
+        waited = run.now - _record_time(talk[-1][1], self._zone)
+        if waited < timedelta(minutes=FOLLOW_UP_AFTER_MIN[asked]):
+            return
+        key = f"{FOLLOW_UP}{asked + 1}"
+        plan.noticed(run.conn, run.day, key, "unsettled", None, {
+            "minutes": int(waited.total_seconds() // 60), "asked": asked,
+        })
+        run.handled.append(key)
+        conversation = [
+            ("him" if source == "allen" else "you", _record_time(ts, self._zone), text)
+            for _, ts, source, text in talk
+        ]
+        system, user = build_follow_up_prompt(
+            held, conversation, run.facts, run.now, asked=asked, zone=self._zone,
+        )
+        try:
+            message = parse_opening(self._ask_open(system, user))
+        except Exception as exc:  # noqa: BLE001 - a failed follow-up waits for the next one.
+            LOGGER.warning("plan watch: follow-up failed: %s: %s", type(exc).__name__, exc)
+            plan.decided(run.conn, run.day, key, "silent", "", f"failed: {type(exc).__name__}",
+                         OPEN_PRESET)
+            return
+        plan.decided(run.conn, run.day, key, "tell", message, "unanswered", OPEN_PRESET)
+        append_record(
+            self._sources.memory_db, record_id=f"plan-{run.day}-{key}", source="jarvis",
+            text=message,
+        )
+        self._deliver(message)
+
+    def _deliver(self, text: str, *, push: bool = True) -> None:
+        """Her own words (the opening, a follow-up): said where he is at the Mac, else pushed.
+
+        ``no-pop`` and ``dnd`` keep them in the conversation only.
+        """
+        level = self._hooks.quiet()
+        if level in _HELD:
+            return
+        if level == "off" and self._hooks.at_mac() and self._hooks.say and self._hooks.may_speak():
+            self._call("say", self._hooks.say, text)
+        if push:
+            self._push(text, sound=level == "off", urgent=False)
 
     def _unconfirmed(self, run: _Run) -> list[dict[str, Any]]:
         """Commitments of the next days that came from mail and are not confirmed yet."""
@@ -526,13 +595,13 @@ class PlanWatch:
             run.held = plan.for_day(run.conn, run.day)
 
     def _settle(self, run: _Run) -> None:
-        """The day getting under way settles a plan nobody settled.
+        """The day getting under way settles a plan nobody settled and nobody opened.
 
         Under way: the first timed item's start, or the first progress check, which is how a
-        day of tasks alone gets under way.
+        day of tasks alone gets under way. An opened plan is hers to settle with him.
         """
         held = run.held
-        if held is None or held.status == "settled":
+        if held is None or held.status == "settled" or held.opened:
             return
         starts = [i.start or i.window_from for i in held.items]
         first = min((s for s in starts if s), default=None)
