@@ -31,6 +31,7 @@ from jarvis.state import commitments, core_memory, places, plan, routines, work_
 from jarvis.state.day_line import day_window, fold_day
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
 from jarvis.state.memory_db import current_core_memory, local_now
+from jarvis.state.plan_budget import DAY_ENDS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -75,6 +76,15 @@ def _count(value: object, default: int) -> int:
     return default
 
 
+def day_ends_of(raw: object) -> time:
+    """``day_plan.day_ends`` of the block ``raw`` (``HH:MM``), else the default."""
+    block: Mapping[str, object] = raw if isinstance(raw, Mapping) else {}
+    try:
+        return time.fromisoformat(str(block["day_ends"]))
+    except (KeyError, ValueError):
+        return DAY_ENDS
+
+
 @dataclass(frozen=True)
 class DayPlanSettings:
     """The ``day_plan:`` block of ``config/jarvis.yaml``."""
@@ -87,6 +97,7 @@ class DayPlanSettings:
     decide_preset: str = DEFAULT_DECIDE_PRESET
     told_per_day: int = DEFAULT_TOLD_PER_DAY
     told_per_hour: int = DEFAULT_TOLD_PER_HOUR
+    day_ends: time = DAY_ENDS
 
     @classmethod
     def from_config(cls, raw: object) -> DayPlanSettings | None:
@@ -116,6 +127,7 @@ class DayPlanSettings:
             ),
             told_per_day=_count(block.get("told_per_day"), DEFAULT_TOLD_PER_DAY),
             told_per_hour=_count(block.get("told_per_hour"), DEFAULT_TOLD_PER_HOUR),
+            day_ends=day_ends_of(block),
         )
 
 
@@ -529,6 +541,7 @@ __all__ = [
     "DayPlanSettings",
     "DayPlanSources",
     "build_schedule",
+    "day_ends_of",
     "draft_day",
     "gather",
     "make_ask",

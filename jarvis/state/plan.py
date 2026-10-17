@@ -8,7 +8,12 @@ carries the whole item list), marked settled by a ``plan.settled`` and opened by
 The watcher (ADR 0289) adds two more types beside the fold: ``plan.noticed`` (the program saw the
 day depart from the plan) and ``plan.decided`` (what she made of it: silent, tell or adjust).
 Both are read back per date, never folded into the plan. :func:`apply_changes` is the one place
-that turns a list of add, edit and drop ops into items, for her ``plan`` tool and her decisions.
+that turns a list of add, edit, move and drop ops into items, for her ``plan`` tool and her
+decisions.
+
+A plan is an ordered list, not a timetable: the item order is the plan's order. An item with a
+``start`` (or a window) sits on the clock; one without is a task, to be done in its place in the
+list, and ``done`` marks it finished.
 """
 
 from __future__ import annotations
@@ -45,7 +50,6 @@ ERROR_CHARS: Final[int] = 200
 CHANGE_CHARS: Final[int] = 200
 NOTE_CHARS: Final[int] = 300
 _DAY_MINUTES: Final[int] = 24 * 60
-_UNPLACED: Final[str] = "99:99"
 _HM: Final[re.Pattern[str]] = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
 
 
@@ -73,6 +77,7 @@ class PlanItem:
     prepare: tuple[str, ...] = ()
     private: bool = False
     route: dict[str, Any] | None = None
+    done: bool = False
 
     def payload(self) -> dict[str, Any]:
         """The item as it is written to the log."""
@@ -82,6 +87,7 @@ class PlanItem:
             "window_to": self.window_to, "place": self.place, "firmness": self.firmness,
             "why": self.why, "goal": self.goal, "prepare": list(self.prepare),
             "source": self.source, "private": self.private, "route": self.route,
+            "done": self.done,
         }
 
     @classmethod
@@ -103,6 +109,7 @@ class PlanItem:
             prepare=tuple(str(p) for p in raw.get("prepare") or ()),
             private=bool(raw.get("private")),
             route=dict(route) if isinstance(route, dict) else None,
+            done=raw.get("done") is True,
         )
 
 
@@ -303,7 +310,7 @@ def decisions(conn: sqlite3.Connection, day: date) -> list[Decided]:
 
 _FIELDS: Final[frozenset[str]] = frozenset({
     "title", "start", "minutes", "window_from", "window_to", "place", "firmness", "why", "goal",
-    "prepare", "source", "private",
+    "prepare", "source", "private", "done",
 })
 _TEXT_FIELDS: Final[tuple[str, ...]] = ("title", "firmness", "source", "place", "why", "goal")
 
@@ -327,9 +334,10 @@ def _coerce(fields: Mapping[str, Any]) -> dict[str, Any]:
             msg = "prepare must be a list of text"
             raise TypeError(msg)
         out["prepare"] = tuple(p.strip() for p in out["prepare"] if p.strip())
-    if "private" in out and not isinstance(out["private"], bool):
-        msg = "private must be true or false"
-        raise TypeError(msg)
+    for name in ("private", "done"):
+        if name in out and not isinstance(out[name], bool):
+            msg = f"{name} must be true or false"
+            raise TypeError(msg)
     return out  # start, minutes and the windows are checked by check_item
 
 
@@ -338,8 +346,29 @@ def _next_id(items: Iterable[PlanItem]) -> str:
     return f"p{max(numbers, default=0) + 1}"
 
 
-def _sort_key(item: PlanItem) -> tuple[str, str]:
-    return item.start or item.window_from or _UNPLACED, item.title
+def _put(items: list[PlanItem], item: PlanItem, after: object) -> list[PlanItem]:
+    """``items`` with ``item`` placed after the item id ``after``; first when None."""
+    if after is None:
+        return [item, *items]
+    at = next((n for n, i in enumerate(items) if i.item_id == after), None)
+    if at is None:
+        msg = f"no item {after!r}"
+        raise ValueError(msg)
+    return [*items[: at + 1], item, *items[at + 1 :]]
+
+
+def _add(items: list[PlanItem], op: dict[str, Any]) -> list[PlanItem]:
+    if len(items) >= MAX_ITEMS:
+        msg = f"a plan holds at most {MAX_ITEMS} items"
+        raise ValueError(msg)
+    raw = op.get("item")
+    if not isinstance(raw, dict):
+        msg = "add needs an item"
+        raise TypeError(msg)
+    fields = {"firmness": "movable", "source": "his"} | _coerce(raw)
+    item = PlanItem(item_id=_next_id(items), **fields)
+    check_item(item)
+    return _put(items, item, op["after"]) if op.get("after") is not None else [*items, item]
 
 
 def _apply_op(items: list[PlanItem], op: object) -> list[PlanItem]:
@@ -349,23 +378,18 @@ def _apply_op(items: list[PlanItem], op: object) -> list[PlanItem]:
         raise TypeError(msg)
     kind = op.get("op")
     if kind == "add":
-        if len(items) >= MAX_ITEMS:
-            msg = f"a plan holds at most {MAX_ITEMS} items"
-            raise ValueError(msg)
-        raw = op.get("item")
-        if not isinstance(raw, dict):
-            msg = "add needs an item"
-            raise TypeError(msg)
-        fields = {"firmness": "movable", "source": "his"} | _coerce(raw)
-        item = PlanItem(item_id=_next_id(items), **fields)
-        check_item(item)
-        return [*items, item]
+        return _add(items, op)
     target = next((i for i in items if i.item_id == op.get("id")), None)
     if target is None:
         msg = f"no item {op.get('id')!r}"
         raise ValueError(msg)
     if kind == "drop":
         return [i for i in items if i is not target]
+    if kind == "move":
+        if "after" not in op or op["after"] == target.item_id:
+            msg = "move needs after, another item's id or null for first"
+            raise ValueError(msg)
+        return _put([i for i in items if i is not target], target, op["after"])
     if kind == "edit":
         fields = _coerce({k: v for k, v in op.items() if k not in ("op", "id")})
         edited = replace(target, **fields)
@@ -380,12 +404,15 @@ def _apply_op(items: list[PlanItem], op: object) -> list[PlanItem]:
 def apply_changes(
     items: Sequence[PlanItem], changes: object,
 ) -> tuple[list[PlanItem], list[str]]:
-    """``(new items, notes)``: ``items`` after the ops in ``changes``, in time order.
+    """``(new items, notes)``: ``items`` after the ops in ``changes``, in the order they leave.
 
-    An op is ``{"op": "add", "item": {...}}`` (a new id is made; the fields are a PlanItem's but
-    ``item_id`` and ``route``), ``{"op": "edit", "id": ..., <fields>}`` (any field but ``item_id``
-    and ``route``; changing ``start`` or ``place`` clears the item's route, the program computes it
-    again) or ``{"op": "drop", "id": ...}``. ``changes`` is untrusted: an op that does not read, or
+    An op is ``{"op": "add", "item": {...}, "after": "<id>"}`` (a new id is made; the fields are a
+    PlanItem's but ``item_id`` and ``route``; ``after`` is optional, the end by default),
+    ``{"op": "edit", "id": ..., <fields>}`` (any field but ``item_id`` and ``route``, ``done``
+    included; changing ``start`` or ``place`` clears the item's route, the program computes it
+    again), ``{"op": "move", "id": ..., "after": "<id>" | null}`` (null: first) or
+    ``{"op": "drop", "id": ...}``. Nothing sorts the items: the list order is the plan's order.
+    ``changes`` is untrusted: an op that does not read, or
     would leave an item that fails :func:`check_item`, is skipped and noted, and the others still
     apply. A ``fixed`` item may be edited or dropped like any other: he can change anything.
     """
@@ -398,7 +425,6 @@ def apply_changes(
             held = _apply_op(held, op)
         except (TypeError, ValueError) as exc:
             notes.append(f"change {index} skipped: {exc}"[:NOTE_CHARS])
-    held.sort(key=_sort_key)
     return held, notes
 
 
@@ -420,6 +446,11 @@ def diff(before: Sequence[PlanItem], after: Sequence[PlanItem]) -> str:
             if getattr(old, name) != getattr(new, name):
                 parts.append(f"{new.title} {name}: {getattr(old, name) or '-'} -> "
                              f"{getattr(new, name) or '-'}")
+        if old.done != new.done:
+            parts.append(f"{new.title} {'done' if new.done else 'not done'}")
+    common = was.keys() & now.keys()
+    if [i for i in was if i in common] != [i for i in now if i in common]:
+        parts.append("order changed")
     return "; ".join(parts)[:CHANGE_CHARS]
 
 

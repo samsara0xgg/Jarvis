@@ -345,6 +345,8 @@ day_experience:
 # decide_preset 一次她说不说、改不改计划（plan.decided）；开场也由它写进对话。先关着。
 # 出门类提醒（outing_soon、left_late）只看静音、对话和通话；别的看安静档，且一天最多
 # told_per_day 次、任何一小时最多 told_per_hour 次，超了只留在对话里不出声。
+# 计划是一串按顺序要做的事，只有真有时间的事（会、车、约、截止）才挂在钟上。day_ends 是一天的工作
+# 到几点为止：程序用它算剩下的事还塞不塞得进今天的空档（进度检查：醒后每两小时、每件有时间的事结束时）。
 day_plan:
   enabled: false
   at: "04:00"
@@ -355,6 +357,7 @@ day_plan:
   decide_preset: haiku
   told_per_day: 8
   told_per_hour: 2
+  day_ends: "23:30"
 
 # ADR 0142 — 每日对话摘要：每天 at 之后（Mac 睡着就在醒来后第一次检查时），给每个
 # 有记录、还没摘要的过去日期各写一份，从旧到新；第一次部署会补全全部历史。

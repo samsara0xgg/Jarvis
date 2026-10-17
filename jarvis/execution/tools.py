@@ -91,6 +91,7 @@ from jarvis.state.projections import (
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Sequence
+    from datetime import time as clock_time
     from datetime import tzinfo
 
     from jarvis.execution.around import Surroundings
@@ -4006,6 +4007,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     maps_monthly_usd: float = 10.0,
     surroundings: Surroundings | None = None,
     local_zone: tzinfo | None = None,
+    plan_day_ends: clock_time | None = None,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -4089,6 +4091,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         transit_places: reads the kept `home` and `school` for `bus` at each call (an
             address or `lat,lng`; ADR 0234).
         local_zone: the zone `places` counts days in (`None`: the machine's).
+        plan_day_ends: `day_plan.day_ends`, where `plan` counts the day's time left (`None`: 23:30).
         transit_offers: where `bus` leaves its options, for the chat card (ADR 0205) and `pin`.
         here_location: ADR 0194 — one fresh read of this Mac's location (`lat`, `lng`,
             `accuracy_m`, optional `place`); gives `bus` its `here` and registers
@@ -4276,7 +4279,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     found_places = PlaceBook()  # what `map_search` found, so `bus` can name a place_id (ADR 0283)
     for conversation_tool in (
         *build_keep_tools(memory_db_path, local_zone),
-        *build_plan_tool(local_zone),
+        *build_plan_tool(local_zone, day_ends=plan_day_ends),
         *build_voice_tool(voice_settings),
         *build_weather_tool(weather_lookup, here_location, here_phone),
         *build_picture_tool(vision_client, memory_db_path),

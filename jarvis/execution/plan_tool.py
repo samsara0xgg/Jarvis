@@ -1,19 +1,21 @@
 """ADR 0289: his plan of a day, read and changed in conversation by the one tool ``plan``.
 
-``read`` gives a day's items as compact rows, ``change`` applies add, edit and drop ops as one
-``plan.revised`` by him, ``settle`` says the plan is fine as it stands. The fold, the ops and the
+``read`` gives a day's items in order as compact rows (tasks with a done mark, then the time left
+against the tasks left), ``change`` applies add, edit, move and drop ops as one ``plan.revised``
+by him, ``settle`` says the plan is fine as it stands. The fold, the ops and the
 checks are :mod:`jarvis.state.plan`; this module only reads his arguments and words the answers.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
 from jarvis.state import plan
 from jarvis.state.daily_report import resolve_zone
+from jarvis.state.plan_budget import DAY_ENDS, budget
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -23,11 +25,14 @@ if TYPE_CHECKING:
 
 _DESCRIPTION: Final = (
     "Use when he asks to add, move, drop or change something in a day's plan, asks what is in"
-    " the plan, or says the plan is fine. action=read: the day's items (id, title, start,"
-    " minutes, place, firmness, route). action=change: changes is a list of ops, each"
-    ' {"op": "add", "item": {title, start HH:MM, minutes, place, ...}}, {"op": "edit", "id":'
-    ' "p3", <fields to change>} (moving an item is editing its start) or {"op": "drop", "id":'
-    ' "p3"}; why is his reason in a few words. action=settle: he accepts the plan as it is.'
+    " the plan, or says the plan is fine. action=read: the day's items in order (id, title, start,"
+    " minutes, place, firmness, route, done) and the time left against the tasks left."
+    " action=change: changes is a list of ops, each"
+    ' {"op": "add", "item": {title, start HH:MM, minutes, place, ...}, "after": "p2"},'
+    ' {"op": "edit", "id": "p3", <fields to change, done: true when finished>},'
+    ' {"op": "move", "id": "p3", "after": "p2" or null for first} (to reorder; changing the'
+    ' clock time is editing start) or {"op": "drop", "id": "p3"}; why is his reason in a few'
+    " words. action=settle: he accepts the plan as it is."
     " day is an ISO date, today by default. It changes only a day that already has a plan, and"
     " is saved only when this returns: never say it is changed without calling it. For"
     " something to remember rather than plan, use keep."
@@ -42,8 +47,9 @@ _SCHEMA: Final[Mapping[str, Any]] = {
             "items": {"type": "object"},
             "description": (
                 "change only. Ops: add {item: {title, start, minutes, place, firmness (fixed,"
-                " movable, droppable), why, prepare, private, window_from, window_to}}; edit"
-                " {id, <any of those fields>}; drop {id}."
+                " movable, droppable), why, prepare, private, window_from, window_to}, after (an"
+                " id; default the end)}; edit {id, <any of those fields>, done}; move {id, after"
+                " (an id, or null for first)}; drop {id}."
             ),
         },
         "why": {"type": "string", "description": "change only: his reason, a few words."},
@@ -66,16 +72,17 @@ def _row(item: plan.PlanItem) -> dict[str, Any]:
         "id": item.item_id, "title": item.title, "start": item.start, "minutes": item.minutes,
         "window_from": item.window_from, "window_to": item.window_to, "place": item.place,
         "firmness": item.firmness, "why": item.why, "goal": item.goal,
-        "prepare": list(item.prepare), "private": item.private,
+        "prepare": list(item.prepare), "private": item.private, "done": item.done,
         "route": item.route and {k: item.route.get(k) for k in _ROUTE},
     }
     return {k: v for k, v in row.items() if v not in (None, "", [], False)}
 
 
 class _Planner:
-    def __init__(self, zone: tzinfo, clock: Callable[[], datetime]) -> None:
+    def __init__(self, zone: tzinfo, clock: Callable[[], datetime], day_ends: time) -> None:
         self._zone = zone
         self._clock = clock
+        self._day_ends = day_ends
 
     def handle(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         """Read, change or settle the day the arguments name."""
@@ -108,22 +115,30 @@ class _Planner:
             msg = f'plan: day "{raw}" is not an ISO date like 2026-10-16'
             raise ToolError(msg, code="invalid_arguments") from None
 
-    @staticmethod
-    def _state(day: date, held: plan.Plan | None) -> dict[str, Any]:
+    def _state(self, day: date, held: plan.Plan | None) -> dict[str, Any]:
         if held is None:
             return {"day": day.isoformat(), "plan": False, "items": [],
                     "summary": f"No plan for {day}."}
-        return {
+        state: dict[str, Any] = {
             "day": day.isoformat(), "plan": True, "settled": held.status == "settled",
             "source": held.source, "items": [_row(i) for i in held.items],
         }
+        now = self._clock().astimezone(self._zone)
+        if day == now.date():  # the time left only means something for today
+            left = budget(held, now, day_ends=self._day_ends)
+            state["budget"] = {
+                "tasks_left": len(left.tasks), "remaining_min": left.remaining_min,
+                "free_min": left.free_min, "fits": left.fits,
+                "next_task": left.next_task and left.next_task.title,
+            }
+        return state
 
     def _change(
         self, args: Mapping[str, Any], ctx: ToolContext, day: date, held: plan.Plan,
     ) -> dict[str, Any]:
         changes = args.get("changes")
         if not isinstance(changes, list) or not changes:
-            msg = "plan: change needs changes, a list of add, edit and drop ops"
+            msg = "plan: change needs changes, a list of add, edit, move and drop ops"
             raise ToolError(msg, code="invalid_arguments")
         why = args.get("why")
         why = " ".join(why.split())[:_WHY_CHARS] if isinstance(why, str) else ""
@@ -140,10 +155,10 @@ class _Planner:
 
 
 def build_plan_tool(
-    zone: tzinfo | None, clock: Callable[[], datetime] = _now,
+    zone: tzinfo | None, clock: Callable[[], datetime] = _now, day_ends: time | None = None,
 ) -> tuple[Tool, ...]:
-    """The ``plan`` tool over the event log and his zone."""
-    planner = _Planner(resolve_zone(None, zone)[1], clock)
+    """The ``plan`` tool over the event log and his zone; ``day_ends`` bounds the time left."""
+    planner = _Planner(resolve_zone(None, zone)[1], clock, day_ends or DAY_ENDS)
     return (
         Tool(
             name="plan",

@@ -6,6 +6,10 @@ depends on what follows it, so the answer (silent, tell or adjust) is hers, aske
 with the notice, the plan and the facts (:mod:`jarvis.decision.day_plan`). The thresholds are the
 code's, not settings. A notice is keyed by its kind and item (``left_late:p2``), so each is noticed
 once a day.
+
+A plan is an ordered task list with a few things on the clock (ADR 0289): :func:`budget` works out
+whether the tasks left still fit in the rest of the day, and the ``progress`` notice asks her to
+look at that every couple of hours and whenever a timed item ends.
 """
 
 from __future__ import annotations
@@ -13,6 +17,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
+
+from jarvis.state.plan_budget import DAY_ENDS, budget, is_task, span_of
+from jarvis.state.plan_budget import at as _at
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -41,6 +48,8 @@ LEAVING_WALK: Final[timedelta] = timedelta(minutes=10)
 """A walk this long during a placed item reads as leaving it; a shorter one as stepping out."""
 _MIN_NAME: Final[int] = 4
 """A place name shorter than this must match whole, never as part of another."""
+PROGRESS_EVERY: Final[timedelta] = timedelta(hours=2)
+"""``progress`` this often after he woke, and when a timed item ends; never inside one."""
 
 
 @dataclass(frozen=True)
@@ -63,14 +72,6 @@ def _key(kind: str, item_id: str | None) -> str:
 
 def _clock(moment: datetime) -> str:
     return f"{moment:%H:%M}"
-
-
-def _at(plan: Plan, text: object, zone: tzinfo | None) -> datetime | None:
-    """``HH:MM`` on the plan's day in ``zone``, or None when ``text`` is not a clock time."""
-    try:
-        return datetime.combine(plan.day, time.fromisoformat(str(text)), tzinfo=zone)
-    except ValueError:
-        return None
 
 
 def _begin(plan: Plan, item: PlanItem, zone: tzinfo | None) -> datetime | None:
@@ -220,6 +221,50 @@ def _item_due(plan: Plan, facts: DayFacts, now: datetime) -> list[Notice]:
     return found
 
 
+def _progress(plan: Plan, facts: DayFacts, now: datetime, day_ends: time) -> list[Notice]:
+    """A look at the tasks left, as one or two notices.
+
+    ``progress:<n>`` comes every :data:`PROGRESS_EVERY` after waking, ``progress:after:<id>``
+    when a timed item ends. Only while he is awake and a task is not done, never inside a timed
+    item. A checkpoint that a timed item ended after is left to that item's own notice.
+    """
+    zone = now.tzinfo
+    held = budget(plan, now, day_ends=day_ends)
+    spans = [(held_span, i) for i in plan.items if (held_span := span_of(plan, i, zone))]
+    if facts.wake is None or held.next_task is None or any(a <= now < b for (a, b), _ in spans):
+        return []
+    woke = datetime.fromtimestamp(facts.wake.at_ms / 1000, zone)
+    ended = [(b, i) for (_, b), i in spans if woke <= b <= now]
+    base = {
+        "tasks": [
+            {"id": i.item_id, "title": i.title, "minutes": i.minutes, "done": i.done}
+            for i in plan.items if is_task(i)
+        ],
+        "remaining_min": held.remaining_min, "fixed_min": held.fixed_min,
+        "free_min": held.free_min, "fits": held.fits, "day_ends": _clock(
+            datetime.combine(plan.day, day_ends, tzinfo=zone)),
+        "next_task": {"id": held.next_task.item_id, "title": held.next_task.title,
+                      "minutes": held.next_task.minutes},
+        "private": held.next_task.private, "doing": list(facts.doing),
+        "commits": [
+            {"at": _clock(datetime.fromtimestamp(c.at_ms / 1000, zone)), "repo": c.repo,
+             "subject": c.subject}
+            for c in facts.commits
+        ],
+    }
+    found = []
+    if ended:
+        end, item = max(ended, key=lambda e: e[0])
+        found.append(Notice(
+            f"progress:after:{item.item_id}", "progress", None,
+            base | {"after": {"id": item.item_id, "title": item.title, "ended_at": _clock(end)}},
+        ))
+    count = (now - woke) // PROGRESS_EVERY
+    if count >= 1 and not any(b >= woke + count * PROGRESS_EVERY for b, _ in ended):
+        found.append(Notice(f"progress:{count}", "progress", None, base | {"checkpoint": count}))
+    return found
+
+
 def _placed(plan: Plan, now: datetime) -> list[tuple[PlanItem, datetime, datetime]]:
     """``(item, start, end)`` of the items with a place and a start."""
     found = []
@@ -297,7 +342,7 @@ def _new_commitments(plan: Plan, facts: DayFacts) -> list[Notice]:
 
 
 def notice(
-    plan: Plan, facts: DayFacts, now: datetime, seen: Collection[str],
+    plan: Plan, facts: DayFacts, now: datetime, seen: Collection[str], *, day_ends: time = DAY_ENDS,
 ) -> list[Notice]:
     """The changes in ``plan``'s day at ``now`` (aware, in his zone) that are not in ``seen``.
 
@@ -310,7 +355,9 @@ def notice(
     is elsewhere, has no leg and starts within :data:`NEXT_SOON`, and nothing else is on);
     ``left_early`` (a drive or a walk of :data:`LEAVING_WALK` began :data:`LEFT_EARLY_BEFORE` or
     more before a placed item's end);
-    ``new_commitment`` (noted today for today and not in the plan).
+    ``new_commitment`` (noted today for today and not in the plan); ``progress`` (every
+    :data:`PROGRESS_EVERY` after waking and when a timed item ends, while a task is not done and
+    never inside a timed item; ``day_ends`` is when the day's work stops, for :func:`budget`).
     """
     found = [
         *_woke(facts, now.tzinfo),
@@ -321,6 +368,10 @@ def notice(
         *_stayed_longer(plan, facts, now),
         *_left_early(plan, facts, now),
         *_new_commitments(plan, facts),
+        *_progress(plan, facts, now, day_ends),
     ]
     return [n for n in found if n.key not in seen]
 
+
+
+__all__ = ["Notice", "budget", "notice"]

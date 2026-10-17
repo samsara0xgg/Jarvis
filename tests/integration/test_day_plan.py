@@ -253,7 +253,7 @@ KNOWN = {"todo", "goal", "his", "commitment:c1"}
         ),
         pytest.param(
             _answer(_model(start=None, window_from="15:00", window_to="18:00")),
-            ["Dentist", "Write the report"], [], id="window-without-start",
+            ["Write the report", "Dentist"], [], id="window-without-start",
         ),
     ],
 )
@@ -290,8 +290,23 @@ def test_a_model_item_that_says_his_does_not_take_a_calendar_items_place() -> No
     items, notes = decide.parse_items(
         _answer(_model("Invented", source="his", start="12:00")), known_sources=KNOWN, fixed=fixed,
     )
-    assert [i.title for i in items] == ["Standup", "Invented"]
+    assert [i.title for i in items] == ["Invented", "Standup"]  # the fixed one is added last
     assert notes == []
+
+
+def test_the_models_order_is_the_plans_order_and_a_listed_fixed_item_keeps_its_place() -> None:
+    """Nothing is sorted by time: tasks and timed items stay where the model listed them."""
+    items, _ = decide.parse_items(
+        _answer(
+            _model("Last task", start=None),
+            _model("Dentist", source="commitment:c1", start="14:00"),
+            _model("First task", start=None, source="goal"),
+        ),
+        known_sources=KNOWN, fixed=FIXED,
+    )
+    assert [(i.item_id, i.title) for i in items] == [
+        ("p1", "Last task"), ("p2", "Dentist"), ("p3", "First task"),
+    ]
 
 
 def test_the_opening_is_strict_json_and_short() -> None:

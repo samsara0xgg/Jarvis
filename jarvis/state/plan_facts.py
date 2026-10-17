@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.state import places, rides
@@ -31,6 +32,7 @@ WAKE_FROM: Final[time] = time(4, 0)
 FIX_LOOKBACK_MS: Final[int] = 6 * 3_600_000
 """How far back the latest location fix is looked for."""
 MAX_ACTIVITIES: Final[int] = 3
+MAX_COMMITS: Final[int] = 20
 TEXT_CHARS: Final[int] = 230
 
 _PHONE_WAKE: Final[dict[tuple[str, str], str]] = {
@@ -112,6 +114,15 @@ class NotedCommitment:
 
 
 @dataclass(frozen=True)
+class Commit:
+    """A commit made today: when, in which repo (its folder's name) and its subject."""
+
+    at_ms: int
+    repo: str
+    subject: str
+
+
+@dataclass(frozen=True)
 class DayFacts:
     """Everything the watcher may know about ``day`` at ``now_ms``."""
 
@@ -122,6 +133,7 @@ class DayFacts:
     moves: tuple[Move, ...]
     doing: tuple[str, ...]
     commitments: tuple[NotedCommitment, ...]
+    commits: tuple[Commit, ...] = ()
 
     def moves_since(self, since_ms: int) -> tuple[Move, ...]:
         """The moves that were going at or after ``since_ms``."""
@@ -232,6 +244,19 @@ def _doing(conn: sqlite3.Connection, since_ms: int, now_ms: int) -> tuple[str, .
     return tuple(" ".join(t.split())[:TEXT_CHARS] for t in texts if t)[:MAX_ACTIVITIES]
 
 
+def _commits(conn: sqlite3.Connection, first_ms: int, now_ms: int) -> tuple[Commit, ...]:
+    """Today's commits seen by ``now_ms``, the latest :data:`MAX_COMMITS`, oldest first."""
+    found: dict[str, Commit] = {}
+    for event in iter_events_of_types(conn, ("project.commit_seen",), since_epoch_ms=first_ms):
+        payload = event.payload
+        at = int(payload["committed_at_ms"])
+        if event.ts_epoch_ms <= now_ms and first_ms <= at <= now_ms:
+            repo = PurePath(str(payload["repo_path"])).name
+            subject = " ".join(str(payload["subject"]).split())[:TEXT_CHARS]
+            found[str(payload["commit_sha"])] = Commit(at, repo, subject)
+    return tuple(sorted(found.values(), key=lambda c: c.at_ms)[-MAX_COMMITS:])
+
+
 def _noted(  # noqa: PLR0913 - the day, its bounds, the moment and the zone.
     conn: sqlite3.Connection, day: date, first_ms: int, last_ms: int, now_ms: int, zone: tzinfo,
 ) -> tuple[NotedCommitment, ...]:
@@ -314,5 +339,6 @@ def facts_at(
         moves=drive,
         doing=_doing(conn, morning, now_ms),
         commitments=_noted(conn, day, first_ms, last_ms, now_ms, zone),
+        commits=_commits(conn, first_ms, now_ms),
     )
 

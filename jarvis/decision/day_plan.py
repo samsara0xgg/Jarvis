@@ -36,7 +36,6 @@ SAY_CHARS: Final[int] = 300
 """Longest line the parser accepts for a notice: one or two short sentences."""
 WHY_CHARS: Final[int] = 300
 _DAY_MINUTES: Final[int] = 24 * 60
-_UNPLACED: Final[str] = "99:99"
 _FENCE: Final[re.Pattern[str]] = re.compile(r"^```[a-zA-Z]*\s*|\s*```$")
 
 
@@ -327,10 +326,6 @@ def _model_item(raw: object) -> PlanItem:
     return item
 
 
-def _sort_key(item: PlanItem) -> tuple[str, str]:
-    return item.start or item.window_from or _UNPLACED, item.title
-
-
 def parse_items(
     text: str, *, known_sources: Collection[str], fixed: Sequence[PlanItem],
 ) -> tuple[list[PlanItem], list[str]]:
@@ -339,8 +334,9 @@ def parse_items(
     An item is dropped (and noted) when it does not parse, overlaps a ``fixed`` item in time or
     names a source outside ``known_sources``. An item whose source is a fixed item's keeps that
     fixed item as it is and lends it ``why``, ``goal`` and ``prepare`` it lacks. Every fixed item
-    comes back whether or not the model listed it. An answer that is not JSON gives no items
-    (nothing is added back) and one note. Items are numbered ``p1``.. in time order.
+    comes back whether or not the model listed it: where the model put it, else at the end. An
+    answer that is not JSON gives no items (nothing is added back) and one note. The order of the
+    answer is the plan's order; items are numbered ``p1``.. in that order.
     """
     found = _object(text)
     raw_items = found.get("items") if found else None
@@ -361,18 +357,19 @@ def parse_items(
             continue
         base = by_source.get(item.source)
         if base is not None:
-            lent[item.source] = replace(
-                base, why=base.why or item.why, goal=base.goal or item.goal,
-                prepare=base.prepare or item.prepare,
-            )
+            if item.source not in lent:
+                lent[item.source] = replace(
+                    base, why=base.why or item.why, goal=base.goal or item.goal,
+                    prepare=base.prepare or item.prepare,
+                )
+                kept.append(lent[item.source])
         elif item.source not in known_sources:
             notes.append(f"item {index} ({item.title}) dropped: unknown source {item.source}")
         elif (clash := _collides(item, fixed)) is not None:
             notes.append(f"item {index} ({item.title}) dropped: overlaps {clash.title}")
         else:
             kept.append(item)
-    kept.extend(lent.get(f.source, f) for f in fixed)
-    kept.sort(key=_sort_key)
+    kept.extend(f for f in fixed if f.source not in lent)
     return [replace(item, item_id=f"p{n}") for n, item in enumerate(kept[:MAX_ITEMS], 1)], notes
 
 

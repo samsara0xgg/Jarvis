@@ -8,9 +8,11 @@ and stub say and push hooks (no key, no network, no model). The examples are inv
   the weather and the leg read again;
 - a non-outing tell at dnd is only recorded, at quiet it is a silent push, past the hour's cap it
   is only recorded; a private item is named by its time on speakers and in a push;
-- ``adjust`` revises the plan by her; an adjust that does not apply is silence;
+- ``adjust`` revises the plan by her; an adjust that does not apply is silence; a ``progress``
+  notice is judged like the others, and her adjust may mark a task done;
 - the first item's start settles the plan;
-- the ``plan`` tool reads, changes and settles; ``route_legs`` fills the legs a draft lacks.
+- the ``plan`` tool reads (in order, with the budget), changes (move, done) and settles;
+  ``route_legs`` fills the legs a draft lacks.
 """
 
 from __future__ import annotations
@@ -287,6 +289,26 @@ def test_an_adjust_with_a_change_that_does_not_apply_is_silence(rig: Rig) -> Non
     assert (decision.act, rig.said) == ("silent", [])
 
 
+def test_a_progress_notice_obeys_the_quiet_level_and_her_adjust_marks_a_task_done(
+    rig: Rig,
+) -> None:
+    """Two hours after waking she is asked with the budget; done applies, dnd keeps it unspoken."""
+    mark = {"op": "edit", "id": "p1", "done": True}
+    rig.answers = [json.dumps({"act": "adjust", "say": "Report done, good.", "changes": [mark],
+                               "why": "he said it is sent"})]
+    rig.quiet = "dnd"
+    rig.drafted(_item("p1", start=None), _item("p2", start=None, title="Email Sam", minutes=30))
+    assert rig.watch.tick(_at("09:00")) == ["woke", "progress:1", "open"]
+    notice = json.loads(rig.asked[0])["notice"]
+    assert (notice["key"], notice["facts"]["remaining_min"], notice["facts"]["fits"]) == (
+        "progress:1", 90, True,
+    )
+    assert [i.done for i in rig.today().items] == [True, False]
+    assert rig.record(f"plan-{DAY}-progress:1") == "Report done, good."
+    assert (rig.said, rig.pushed) == ([], [])  # dnd: in the conversation only
+    assert rig.watch.tick(_at("09:30")) == []  # each checkpoint once
+
+
 def test_the_first_items_start_settles_the_plan(rig: Rig) -> None:
     """Before 09:00 the plan stays a draft; at 09:00 the program settles it."""
     rig.drafted(_item(start="09:00"), _item("p2", start="11:00", firmness="droppable"))
@@ -326,6 +348,11 @@ def test_the_settings_read_the_watch_keys() -> None:
     off = runtime.DayPlanSettings.from_config({"enabled": True})
     assert off is not None
     assert (off.watch, off.decide_preset, off.told_per_day) == (False, "haiku", 8)
+    assert off.day_ends == time(23, 30)
+    ends = runtime.DayPlanSettings.from_config({"enabled": True, "day_ends": "22:15"})
+    assert ends is not None
+    assert ends.day_ends == time(22, 15)
+    assert runtime.day_ends_of({"day_ends": "late"}) == time(23, 30)
 
 
 # --- the plan tool -------------------------------------------------------------------------
@@ -366,6 +393,30 @@ def test_the_plan_tool_reads_changes_and_settles(rig: Rig) -> None:
     assert call({"action": "change", "changes": [{"op": "drop", "id": "nope"}]})["changed"] is False
     call({"action": "settle"})
     assert (rig.today().status, rig.today().settled_by) == ("settled", "him")
+
+
+def test_the_plan_tool_reads_tasks_in_order_with_the_budget_and_moves_and_marks_done(
+    rig: Rig,
+) -> None:
+    """Read: order, done marks, and the time left today (09:30 to 23:30 less dentist and bus)."""
+    rig.drafted(_item("p1", start=None), _item("p2", start=None, title="Email Sam", minutes=30),
+                DENTIST, wake=None)
+    call = _tool(rig)
+    read = call({"action": "read"})
+    assert read["budget"] == {
+        "tasks_left": 2, "remaining_min": 90, "free_min": 745, "fits": True,
+        "next_task": "Write the report",
+    }  # 840 minutes less 60 for the dentist and 35 for the bus
+    changed = call({"action": "change", "changes": [
+        {"op": "move", "id": "p2", "after": None}, {"op": "edit", "id": "p1", "done": True},
+    ]})
+    assert [(r["id"], r.get("done", False)) for r in changed["items"]] == [
+        ("p2", False), ("p1", True), ("p9", False),
+    ]
+    assert changed["budget"]["tasks_left"] == 1
+    assert (changed["budget"]["remaining_min"], changed["budget"]["next_task"]) == (30, "Email Sam")
+    assert "order changed" in changed["summary"]
+    assert "budget" not in call({"action": "read", "day": "2026-10-17"})
 
 
 def test_the_plan_tool_refuses_a_day_with_no_plan_and_a_bad_date(rig: Rig) -> None:

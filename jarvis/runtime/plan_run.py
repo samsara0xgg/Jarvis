@@ -9,7 +9,8 @@ asks :func:`jarvis.decision.plan_watch.notice` what changed, writes each new not
   ``plan-open-<date>`` and ``plan.opened`` is logged. It is never judged.
 - ``outing_soon`` first reads the weather and the leg again, so she is asked with both.
 - every other notice goes to the ``decide_preset`` model; its answer is logged as ``plan.decided``.
-  ``adjust`` also revises the plan by her.
+  ``adjust`` also revises the plan by her: it may mark tasks done, move or drop them. A
+  ``progress`` notice is one of these, so it obeys the quiet level and the caps.
 
 What she says (``tell``, ``adjust``) is always written into the conversation as her record. It is
 spoken on the Mac and pushed to the phone under the limits the ADR fixes in code: outing notices
@@ -122,12 +123,13 @@ def route_day(
     """
     # ponytail: the origin is the previous item's place, not where he will really be; add a
     # re-route on a dropped item when a wrong origin shows up in the replay.
-    done: list[plan.PlanItem] = []
+    done = list(items)
     previous: str | None = None
-    for item in items:
-        if not (item.place and item.start):
-            done.append(item)
-            continue
+    placed = sorted(
+        (n for n, i in enumerate(items) if i.place and i.start), key=lambda n: str(items[n].start),
+    )
+    for n in placed:  # in time order: the list's order is the plan's, not the clock's
+        item = items[n]
         same = _said(item.place) in home if previous is None else (
             _said(item.place) == _said(previous)
         )
@@ -135,10 +137,9 @@ def route_day(
             origin = previous or "home"
             try:
                 answer = plan_leg(origin, item.place, day=day.isoformat(), arrive_by=item.start)
-                item = replace(item, route=_route(origin, answer))  # noqa: PLW2901
+                done[n] = replace(item, route=_route(origin, answer))
             except Exception as exc:  # noqa: BLE001 - a plan without a leg beats no plan.
                 LOGGER.info("plan: no leg to %s: %s: %s", item.title, type(exc).__name__, exc)
-        done.append(item)
         previous = item.place
     return done
 
@@ -234,7 +235,10 @@ class PlanWatch:
             )
             run = _Run(conn, day, now, held, facts)
             seen = plan.notices(conn, day)
-            found = notice(held or plan.Plan(day, ()), facts, now, seen.keys())
+            found = notice(
+                held or plan.Plan(day, ()), facts, now, seen.keys(),
+                day_ends=self._settings.day_ends,
+            )
             if held is None:
                 found = [n for n in found if n.kind == "woke"]  # nothing else to compare with
             for one in found:

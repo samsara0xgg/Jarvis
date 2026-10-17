@@ -24,6 +24,7 @@ from jarvis.execution.tools import ToolError
 from jarvis.shared.about import prompt_title
 from jarvis.state import commitments, plan
 from jarvis.state.event_log import open_runtime_event_log
+from jarvis.state.plan_budget import DAY_ENDS, budget
 
 if TYPE_CHECKING:
     from datetime import tzinfo
@@ -136,11 +137,15 @@ def doing_now_line(
 PLAN_PREFIX: Final = "Plan today"
 
 
-def plan_line(event_log: Path, zone: tzinfo, clock: Callable[[], datetime]) -> str | None:
-    """Today's plan in one line (ADR 0289): whether it is settled, its next item, how many follow.
+def plan_line(
+    event_log: Path, zone: tzinfo, clock: Callable[[], datetime], day_ends: time = DAY_ENDS,
+) -> str | None:
+    """Today's plan in one line (ADR 0289).
 
-    None without a plan for today. A private item is named by its time only. Items without a
-    time come last and count as ahead.
+    Settled or not, the next task, the time left, the next thing on the clock.
+
+    None without a plan for today. A private task or item is named by its time only (a task has
+    none, so it is just "a private item").
     """
     local = clock().astimezone(zone)
     try:
@@ -151,16 +156,27 @@ def plan_line(event_log: Path, zone: tzinfo, clock: Callable[[], datetime]) -> s
         return None
     if held is None:
         return None
-    now = f"{local:%H:%M}"
-    ahead = [i for i in held.items if (i.start or i.window_from or "99:99") >= now]
+    left = budget(held, local, day_ends=day_ends)
     state = "settled" if held.status == "settled" else "not settled yet"
-    if not ahead:
+    parts = []
+    if left.next_task is not None:
+        task = left.next_task
+        title = "a private item" if task.private else prompt_title(task.title)
+        count = len(left.tasks)
+        parts.append(f"next task {speakable.cut(title, _TITLE_CHARS)}")
+        parts.append(
+            f"{count} task{'s' if count != 1 else ''} left, "
+            f"{left.remaining_min} of {left.free_min} free minutes",
+        )
+    elif left.next_timed is None:
         return f"{PLAN_PREFIX} ({state}): nothing more."
-    first = ahead[0]
-    title = "a private item" if first.private else prompt_title(first.title)
-    when = first.start or first.window_from or "any time"
-    line = f"{PLAN_PREFIX} ({state}): next {when} {speakable.cut(title, _TITLE_CHARS)}"
-    return f"{line}; {len(ahead) - 1} more." if len(ahead) > 1 else f"{line}."
+    else:
+        parts.append("no tasks left")
+    if (fixed := left.next_timed) is not None:
+        at = fixed.start or fixed.window_from
+        name = "" if fixed.private else " " + speakable.cut(prompt_title(fixed.title), _TITLE_CHARS)
+        parts.append(f"next fixed {at}{name}")
+    return f"{PLAN_PREFIX} ({state}): " + "; ".join(parts) + "."
 
 
 Appointments = Callable[[datetime], Sequence[CalendarItem]]

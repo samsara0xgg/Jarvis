@@ -1,7 +1,7 @@
 r"""Replay the plan watcher (ADR 0289) over a past day, minute by minute, offline.
 
     .venv/bin/python -m scripts.plan_day_replay --date 2026-10-14 --plan plan.json
-        [--step-min 1] [--live] [--out DIR] [--event-log PATH] [--memory-db PATH]
+        [--step-min 1] [--day-ends 23:30] [--live] [--out DIR] [--event-log PATH] [--memory-db PATH]
         [--config config/jarvis.yaml] [--zone America/Vancouver]
 
 ``plan.json`` is ``{"date": "...", "items": [<PlanItem payloads>]}``. The script opens the event
@@ -10,7 +10,9 @@ and writes nothing to either. From 04:00 of ``--date`` to 04:00 of the next day 
 ``--step-min`` minutes, for the facts as the log held them then (``facts_at`` reads only events
 timed up to that minute) and for the notices they raise; each notice is printed as one JSON line:
 time, key, kind, item, facts and the decision. The decision of a notice that ``adjust``s is
-applied to the plan in memory so later notices see it; nothing is stored.
+applied to the plan in memory so later notices see it; nothing is stored. A ``progress`` notice
+(every 2 hours after waking, and when a timed item ends) shows the budget: the tasks left, their
+minutes against the free minutes before ``--day-ends``, and whether they fit.
 
 Without ``--live`` no model is called: a stub decider answers ``tell`` with ``<stub>`` so every
 notice shows. With ``--live`` each notice goes to the ``day_plan.decide_preset`` model (``haiku``
@@ -40,6 +42,7 @@ from jarvis.deployment.launchd import default_runtime_root
 from jarvis.runtime.interview_reminders import local_zone
 from jarvis.state import places
 from jarvis.state.plan import Decided, Plan, PlanItem, apply_changes, check_item
+from jarvis.state.plan_budget import DAY_ENDS
 from jarvis.state.plan_facts import facts_at
 from scripts.day_plan_replay import _asker
 
@@ -52,6 +55,10 @@ REPO = Path(__file__).resolve().parents[1]
 DEFAULT_PRESET = "haiku"
 FROM_CLOCK = time(4, 0)
 STUB = "<stub>"
+
+
+def _budget(facts: dict[str, Any]) -> dict[str, Any]:
+    return {k: facts[k] for k in ("remaining_min", "free_min", "fits")}
 
 
 def load_plan(path: Path, day: date) -> Plan:
@@ -84,7 +91,7 @@ def live_decide(ask: Callable[[str, str], str]) -> Decide:
 
 def replay(  # noqa: PLR0913 - the day, the plan, the stores, the knobs and the decider.
     day: date, plan: Plan, conn: sqlite3.Connection, kept: list[places.Place], zone: ZoneInfo,
-    step_min: int, decide: Decide,
+    step_min: int, decide: Decide, day_ends: time = DAY_ENDS,
 ) -> list[dict[str, Any]]:
     """One line per notice from 04:00 of ``day`` to 04:00 of the next, with its decision."""
     held = plan
@@ -96,7 +103,7 @@ def replay(  # noqa: PLR0913 - the day, the plan, the stores, the knobs and the 
     while now < stop:
         now_ms = int(now.timestamp() * 1000)
         facts = facts_at(conn, day, now_ms, zone, kept)
-        for one in watch(held, facts, now, seen):
+        for one in watch(held, facts, now, seen, day_ends=day_ends):
             seen.add(one.key)
             system, user = build_decide_prompt(held, one, facts, now, told, zone=zone)
             decision = decide(system, user, held)
@@ -109,6 +116,7 @@ def replay(  # noqa: PLR0913 - the day, the plan, the stores, the knobs and the 
                     "changes": list(decision.changes), "notes": list(decision.notes),
                 },
                 "prompt_chars": len(system) + len(user),
+                **({"budget": _budget(one.facts)} if one.kind == "progress" else {}),
             })
             if decision.act != "silent":
                 told.append(Decided(one.key, decision.act, decision.say, decision.why,
@@ -126,6 +134,10 @@ def summary(day: date, lines: list[dict[str, Any]]) -> str:
         what = f" ({line['item']})" if line["item"] else ""
         decision = line["decision"]
         out.append(f"- {line['time']} {line['kind']}{what}: {decision['act']}")
+        if "budget" in line:
+            b = line["budget"]
+            out.append(f"  - budget: {b['remaining_min']} min of tasks, {b['free_min']} free, "
+                       + ("fits" if b["fits"] else "does not fit"))
         if decision["say"]:
             out.append(f"  - say: {decision['say']}")
         if decision["why"]:
@@ -145,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--date", required=True, type=date.fromisoformat)
     parser.add_argument("--plan", required=True, type=Path, help="a JSON file of the day's plan")
     parser.add_argument("--step-min", type=int, default=1)
+    parser.add_argument("--day-ends", type=time.fromisoformat, default=DAY_ENDS)
     parser.add_argument("--live", action="store_true", help="call the decide preset's real model")
     parser.add_argument("--out", type=Path, help="write <out>/<date>.md")
     root = default_runtime_root()
@@ -164,7 +177,9 @@ def main(argv: list[str] | None = None) -> int:
         preset = str((config.get("day_plan") or {}).get("decide_preset") or DEFAULT_PRESET)
         decide = live_decide(_asker(config, preset))
     with closing(open_read_only(args.event_log)) as conn:
-        lines = replay(args.date, plan, conn, kept, zone, args.step_min, decide)
+        lines = replay(
+            args.date, plan, conn, kept, zone, args.step_min, decide, args.day_ends,
+        )
     for line in lines:
         sys.stdout.write(json.dumps(line, ensure_ascii=False) + "\n")
     if args.out is not None:

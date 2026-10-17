@@ -195,6 +195,7 @@ from jarvis.runtime.dashboard import (
     MailDrafts,
     ViewState,
 )
+from jarvis.runtime.day_plan import day_ends_of
 from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.runtime.deep_search import build_deep_search
 from jarvis.runtime.departures import Departures
@@ -3172,6 +3173,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ride_control=rides.control(),
         highlight_marker=_highlight_marks(full_config, memory, paths, device).mark,
         local_zone=local_zone,
+        plan_day_ends=day_ends_of(full_config.get("day_plan")),
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
@@ -3442,7 +3444,10 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
                 partial(next_appointments, paths.event_log, local_zone),
             ),
             # ADR 0289: today's plan, settled or not, with its next item.
-            partial(plan_line, paths.event_log, local_zone, speakable.now),
+            partial(
+                plan_line, paths.event_log, local_zone, speakable.now,
+                day_ends_of(full_config.get("day_plan")),
+            ),
         ),
         voice_cues=voice_cues,
         turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),

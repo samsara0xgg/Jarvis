@@ -1,7 +1,9 @@
 """ADR 0289: the plan watcher's pure core, over invented days (no key, no network, no model).
 
-- ``apply_changes``: add, edit and drop, a fixed item he may change, an edit that clears the leg,
-  ops that do not read skipped with a note;
+- ``apply_changes``: add, edit, move and drop, the list order kept (never sorted by time), done,
+  a fixed item he may change, an edit that clears the leg, ops that do not read skipped with a note;
+- ``budget``: the tasks left against the time left, legs counted, what is past not counted;
+- ``progress``: every 2 hours after waking and when a timed item ends, never inside one;
 - each notice kind fires at its threshold and not a minute before, and only once;
 - ``parse_decision`` turns anything malformed into silence;
 - ``facts_at`` reads only what the log held at that minute;
@@ -13,19 +15,30 @@ from __future__ import annotations
 
 import json
 from contextlib import closing
-from datetime import date, datetime, timedelta
+from dataclasses import replace
+from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from jarvis.decision.day_plan import build_decide_prompt, parse_decision
-from jarvis.decision.plan_watch import notice
+from jarvis.decision.plan_watch import budget, notice
+from jarvis.runtime.now_block import plan_line
 from jarvis.state import commitments, plan
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.places import Place
-from jarvis.state.plan_facts import DayFacts, Here, Move, NotedCommitment, Stay, Wake, facts_at
+from jarvis.state.plan_facts import (
+    Commit,
+    DayFacts,
+    Here,
+    Move,
+    NotedCommitment,
+    Stay,
+    Wake,
+    facts_at,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -70,12 +83,43 @@ def test_apply_changes_adds_edits_and_drops_and_a_fixed_item_may_change() -> Non
     ])
     assert notes == []
     assert [(i.item_id, i.title, i.start) for i in new] == [
-        ("p3", "Walk", "08:00"), ("p1", "Write the report", "09:30"),
-    ]
-    assert new[0].firmness == "movable"
-    assert new[1].route is None  # the old leg no longer fits the new time
+        ("p1", "Write the report", "09:30"), ("p3", "Walk", "08:00"),
+    ]  # the order is the plan's: nothing sorts by time
+    assert new[1].firmness == "movable"
+    assert new[0].route is None  # the old leg no longer fits the new time
     kept, _ = plan.apply_changes(items, [{"op": "edit", "id": "p1", "why": "because"}])
     assert kept[0].route == leg  # a change that moves nothing keeps the leg
+
+
+def test_apply_changes_adds_after_moves_and_marks_done_keeping_the_order() -> None:
+    """Add after an id, move after an id or first, edit done; an old payload reads as not done."""
+    items = [_item("p1", start=None), _item("p2", start=None), _item("p3", start="14:00")]
+    new, notes = plan.apply_changes(items, [
+        {"op": "add", "item": {"title": "Call", "minutes": 10}, "after": "p1"},
+        {"op": "move", "id": "p3", "after": None},
+        {"op": "move", "id": "p1", "after": "p2"},
+        {"op": "edit", "id": "p4", "done": True},
+    ])
+    assert notes == []
+    assert [i.item_id for i in new] == ["p3", "p4", "p2", "p1"]
+    assert [i.done for i in new] == [False, True, False, False]
+    assert (new[1].title, new[1].start, new[1].source) == ("Call", None, "his")
+    assert plan.diff(items, new) == "+ Call; order changed"
+    assert plan.diff(items[:1], [replace(items[0], done=True)]) == "Write the report done"
+    appended, _ = plan.apply_changes(items, [{"op": "add", "item": {"title": "Last"}}])
+    assert appended[-1].title == "Last"
+    old = items[0].payload()
+    del old["done"]
+    assert plan.PlanItem.from_payload(old).done is False
+    for bad in (
+        {"op": "move", "id": "p1"},
+        {"op": "move", "id": "p1", "after": "p1"},
+        {"op": "move", "id": "p1", "after": "nope"},
+        {"op": "add", "item": {"title": "x"}, "after": "nope"},
+        {"op": "edit", "id": "p1", "done": "yes"},
+    ):
+        assert plan.apply_changes(items, [bad])[0] == items
+        assert len(plan.apply_changes(items, [bad])[1]) == 1, bad
 
 
 @pytest.mark.parametrize(
@@ -89,6 +133,7 @@ def test_apply_changes_adds_edits_and_drops_and_a_fixed_item_may_change() -> Non
         {"op": "add", "item": {"start": "08:00"}},
         {"op": "add", "item": {"title": "x", "firmness": "soft"}},
         {"op": "move", "id": "p1"},
+        {"op": "move", "id": "p1", "after": "nope"},
         "drop p1",
     ],
 )
@@ -172,6 +217,91 @@ def test_woke_and_new_commitment_and_no_wake_before_noon() -> None:
     assert got["woke"].facts == {"signal": "mac_active", "at": "07:10"}
     late = _plan(_item("p1", start="13:00"))
     assert notice(late, DayFacts(0, None, None, (), (), (), ()), _at("15:00"), set()) == []
+
+
+# --- the budget and the progress notice -----------------------------------------------------
+
+
+def _task(item_id: str, minutes: int = 60, **fields: Any) -> plan.PlanItem:  # noqa: ANN401
+    return _item(item_id, title=f"Task {item_id}", start=None, minutes=minutes, **fields)
+
+
+MEETING = _item(
+    "p9", title="Group meeting", firmness="fixed", start="14:00", minutes=60,
+    route={"from": "Home", "leave_at": "13:20", "arrive_at": "13:55"},
+)
+PAST = _item("p8", title="Standup", firmness="fixed", start="08:00", minutes=60)
+
+
+def test_budget_sets_the_tasks_left_against_the_free_time_with_legs_counted() -> None:
+    """Tasks not done in order; the fixed time ahead (item and leg) comes out, what is past not."""
+    held = _plan(_task("p1", 60), _task("p2", 30, done=True), _task("p3", 90), MEETING, PAST)
+    got = budget(held, _at("10:00"), day_ends=time(18, 0))
+    assert [t.item_id for t in got.tasks] == ["p1", "p3"]
+    assert (got.remaining_min, got.fixed_min, got.free_min) == (150, 95, 385)  # 480 - 60 - 35
+    assert (got.fits, got.next_task, got.next_timed) == (True, got.tasks[0], MEETING)
+    tight = budget(held, _at("10:00"), day_ends=time(12, 0))
+    assert (tight.free_min, tight.fits) == (25, False)  # 120 - 95
+    underway = budget(held, _at("14:30"), day_ends=time(18, 0))
+    assert (underway.fixed_min, underway.free_min, underway.next_timed) == (30, 180, None)
+    skipped = budget(
+        _plan(_task("p1"), replace(MEETING, done=True)), _at("10:00"), day_ends=time(18, 0),
+    )
+    assert (skipped.fixed_min, skipped.free_min) == (0, 480)  # a meeting marked done is not ahead
+    over = budget(held, _at("13:00"), day_ends=time(14, 30))
+    assert (over.free_min, over.fits) == (0, False)  # 90 - 95 is not a negative amount of time
+    finished = budget(_plan(_task("p1", done=True), MEETING), _at("10:00"), day_ends=time(18, 0))
+    assert (finished.next_task, finished.remaining_min, finished.fits) == (None, 0, True)
+
+
+def test_progress_comes_every_two_hours_and_after_a_timed_item_never_inside_one() -> None:
+    """Each key once; the 11:00 checkpoint falls inside the 11:00 meeting and its end covers it."""
+    meeting = _item("p9", title="Group meeting", firmness="fixed", start="11:00", minutes=60)
+    held = _plan(_task("p1"), _task("p2", 30), meeting)
+    facts = DayFacts(0, Wake("focus_off", _ms("07:00")), None, (), (), ("reviewing a PR",), (),
+                     (Commit(_ms("08:10"), "jarvis", "fix the thing"),))
+    seen: set[str] = set()
+    fired: list[tuple[str, str]] = []
+    at = _at("06:00")
+    while at < _at("16:00"):
+        for one in notice(held, facts, at, seen):
+            seen.add(one.key)
+            if one.kind != "woke":
+                assert one.kind == "progress"  # an untimed task is never item_due
+                fired.append((f"{at:%H:%M}", one.key))
+        at += timedelta(minutes=30)
+    assert fired == [
+        ("09:00", "progress:1"), ("12:00", "progress:after:p9"), ("13:00", "progress:3"),
+        ("15:00", "progress:4"),
+    ]
+    first = notice(held, facts, _at("09:00"), set())[-1]
+    assert first.facts["tasks"] == [
+        {"id": "p1", "title": "Task p1", "minutes": 60, "done": False},
+        {"id": "p2", "title": "Task p2", "minutes": 30, "done": False},
+    ]
+    assert (first.facts["remaining_min"], first.facts["free_min"], first.facts["fits"]) == (
+        90, 810, True,  # 09:00 to 23:30 is 870, less the 60-minute meeting
+    )
+    assert first.facts["next_task"] == {"id": "p1", "title": "Task p1", "minutes": 60}
+    assert first.facts["doing"] == ["reviewing a PR"]
+    assert first.facts["commits"] == [{"at": "08:10", "repo": "jarvis", "subject": "fix the thing"}]
+    after = [n for n in notice(held, facts, _at("12:00"), set()) if n.kind == "progress"]
+    assert [(n.key, n.facts["after"]["title"]) for n in after] == [
+        ("progress:after:p9", "Group meeting"),
+    ]
+
+
+def test_progress_needs_a_wake_and_a_task_not_done() -> None:
+    """Before any sign of waking, or with every task done, there is nothing to check."""
+    asleep = DayFacts(0, None, None, (), (), (), ())
+    awake = DayFacts(0, Wake("focus_off", _ms("07:00")), None, (), (), (), ())
+
+    def kinds(held: plan.Plan, facts: DayFacts) -> set[str]:
+        return {n.kind for n in notice(held, facts, _at("09:00"), set())}
+
+    assert "progress" not in kinds(_plan(_task("p1")), asleep)
+    assert "progress" in kinds(_plan(_task("p1")), awake)
+    assert "progress" not in kinds(_plan(_task("p1", done=True), MEETING), awake)
 
 
 # --- the decision --------------------------------------------------------------------------
@@ -268,6 +398,65 @@ def test_facts_at_reads_only_what_the_log_held_at_that_minute(tmp_path: Path) ->
     assert before.payload(ZONE)["here"]["since"] == "07:45"
 
 
+def test_facts_carry_todays_commits_by_repo_name_latest_twenty_up_to_that_minute(
+    tmp_path: Path,
+) -> None:
+    """Yesterday's and later commits are out; the cap keeps the most recent 20."""
+
+    def commit(sha: str, at: datetime, repo: str = "/Users/me/Projects/jarvis/") -> None:
+        emit_event(
+            conn, type="project.commit_seen", ts_epoch_ms=int(at.timestamp() * 1000),
+            payload={"repo_path": repo, "commit_sha": sha, "subject": f"change {sha}",
+                     "committed_at_ms": int(at.timestamp() * 1000), "actor": "observer"},
+        )
+
+    with closing(_log(tmp_path / "events.db")) as conn:
+        commit("old", _at("08:00") - timedelta(days=1))
+        for n in range(22):
+            commit(f"c{n:02d}", _at("08:00") + timedelta(minutes=n))
+        commit("later", _at("12:00"), "/Users/me/Projects/other")
+        before = facts_at(conn, DAY, _ms("10:00"), ZONE, [])
+        after = facts_at(conn, DAY, _ms("13:00"), ZONE, [])
+    assert len(before.commits) == 20
+    assert (before.commits[0].subject, before.commits[-1].subject) == ("change c02", "change c21")
+    assert (before.commits[0].repo, before.commits[0].at_ms) == ("jarvis", _ms("08:02"))
+    assert (after.commits[-1].repo, after.commits[-1].subject) == ("other", "change later")
+
+
+# --- the line in her state block -----------------------------------------------------------
+
+
+def test_the_plan_line_names_the_next_task_the_time_left_and_the_next_fixed_item(
+    tmp_path: Path,
+) -> None:
+    """Settled or not; a private task or item is named by its time only; no plan: no line."""
+    log = tmp_path / "events.db"
+    held = [_task("p1", 60), _task("p2", 30), _item("p9", title="Dentist", start="14:00")]
+
+    def line(clock: str = "10:00") -> str | None:
+        return plan_line(log, ZONE, lambda: _at(clock), time(18, 0))
+
+    with closing(_log(log)) as conn:
+        assert line() is None
+        plan.draft(conn, DAY, held, "d", "m")
+        assert line() == (
+            "Plan today (not settled yet): next task Task p1; 2 tasks left, 90 of 420 free"
+            " minutes; next fixed 14:00 Dentist."
+        )
+        plan.settle(conn, DAY, "him")
+        plan.revise(conn, DAY, [
+            _task("p1", 60, done=True), _task("p2", 30, private=True),
+            _item("p9", title="Dentist", start="14:00", private=True),
+        ], "him", "x")
+        assert line() == (
+            "Plan today (settled): next task a private item; 1 task left, 30 of 420 free"
+            " minutes; next fixed 14:00."
+        )
+        plan.revise(conn, DAY, [_task("p1", done=True), _item("p9", start="14:00")], "him", "x")
+        assert line() == "Plan today (settled): no tasks left; next fixed 14:00 Write the report."
+        assert line("15:00") == "Plan today (settled): nothing more."
+
+
 # --- the day line --------------------------------------------------------------------------
 
 
@@ -342,3 +531,25 @@ def test_the_replay_walks_a_day_with_a_stub_decider_and_writes_nothing(tmp_path:
          "--step-min", "30", "--out", str(out)],
     ) == 0
     assert (out / "2026-10-16.md").is_file()
+
+
+def test_the_replay_shows_the_budget_on_progress_lines(tmp_path: Path) -> None:
+    """Tasks plus a woken day: the 09:00 progress line and its summary carry the budget."""
+    from scripts import plan_day_replay as script  # noqa: PLC0415 - the script is not a package
+
+    log = tmp_path / "events.db"
+    with closing(_log(log)) as conn:
+        emit_event(
+            conn, type="phone.state_observed", ts_epoch_ms=_ms("07:00"), ingestion_node="phone",
+            payload={"signal": "focus", "value": "off"},
+        )
+    path = tmp_path / "plan.json"
+    items = [_task("p1", 60), _task("p2", 30)]
+    path.write_text(json.dumps({"date": DAY.isoformat(), "items": [i.payload() for i in items]}),
+                    encoding="utf-8")
+    with closing(script.open_read_only(log)) as conn:
+        held = script.load_plan(path, DAY)
+        lines = script.replay(DAY, held, conn, [], ZONE, 60, script.stub_decide)
+    [first] = [line for line in lines if line["key"] == "progress:1"]
+    assert first["budget"] == {"remaining_min": 90, "free_min": 870, "fits": True}  # 09:00 to 23:30
+    assert "  - budget: 90 min of tasks, " in script.summary(DAY, lines)
