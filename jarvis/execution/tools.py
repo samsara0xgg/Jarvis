@@ -1894,11 +1894,34 @@ _WEB_SEARCH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
         "max_results": {
             "type": "integer",
             "minimum": 1,
-            "description": "Maximum number of results to return. Default 5, capped at 8.",
+            "description": "Maximum number of results to return. Default 5, capped at 8. "
+            "Only for depth quick.",
+        },
+        "depth": {
+            "type": "string",
+            "enum": ["quick", "deep"],
+            "description": (
+                "quick: one fact or a quick check, a few seconds. "
+                "deep: about 20 seconds; searches many sources and cross-checks them."
+            ),
         },
     },
-    "required": ["query"],
+    "required": ["query", "depth"],
 }
+
+_WEB_DEEP_SUMMARY_MAX_BYTES: Final[int] = 8192
+"""Cap on a deep search's researched summary — the same 8 KiB order as
+`_WEB_SEARCH_TOTAL_MAX_BYTES`, so a long brief cannot dwarf the decision packet."""
+
+
+@dataclass(frozen=True)
+class DeepFindings:
+    """What one deep web search found: a researched summary and where it came from."""
+
+    summary: str
+    sources: tuple[tuple[str, str], ...]  # (title, url)
+    searches: int
+    complete: bool  # False: the provider stopped before it finished its brief
 
 
 def _ddgs_search_backend(
@@ -2123,12 +2146,54 @@ def _with_api_key(backend: _KeyedSearchBackend, api_key: str) -> _SearchBackend:
     return _call
 
 
+class DeepSearch(Protocol):
+    """Injected deep-research seam for `web_search` depth deep.
+
+    L4 cannot import `jarvis.decision.llm.LLMClient` — sibling layers under
+    `.importlinter` — the same seam `VisionClient` is. `jarvis.runtime` builds
+    the real implementation around Anthropic's own web search server tool and
+    binds it into `build_default_registry`. One question in, findings out; any
+    failure is raised, and the handler turns it into an error observation.
+    """
+
+    def research(self, query: str) -> DeepFindings:
+        """Search widely, cross-check, and return the brief with its sources."""
+        ...
+
+
+def _deep_web_search(deep_search: DeepSearch, query: str) -> dict[str, Any]:
+    """One deep search as the tool's result payload."""
+    try:
+        findings = deep_search.research(query)
+    except Exception as exc:
+        # The type only in the message: a provider error can carry request headers or a key.
+        msg = (
+            f"web_search: the deep search failed ({type(exc).__name__}); try a quick "
+            "search, or tell him the search failed"
+        )
+        raise ToolError(msg, code="web_search_backend_error") from exc
+    summary = "".join(_cap_rows_total_bytes([findings.summary], _WEB_DEEP_SUMMARY_MAX_BYTES))
+    payload: dict[str, Any] = {
+        "summary": summary,
+        "sources": [
+            f"{i}. {title} — {url}" for i, (title, url) in enumerate(findings.sources, start=1)
+        ],
+        "provider": "anthropic",
+        "depth": "deep",
+        "searches": findings.searches,
+    }
+    if not findings.complete:
+        payload["incomplete"] = True
+    return payload
+
+
 def _make_web_search(
     *,
     default_max_results: int,
     timeout_s: float,
     provider: str = DEFAULT_WEB_SEARCH_PROVIDER,
     api_key: str | None = None,
+    deep_search: DeepSearch | None = None,
 ) -> Tool:
     """Bind `tools.web.{search_max_results,timeout_s,search_provider}` into `web_search`."""
     backend, provider_used = _resolve_search_backend(provider, api_key)
@@ -2138,6 +2203,9 @@ def _make_web_search(
         if not isinstance(query, str) or not query.strip():
             msg = f"web_search: query must be the words to search for (got {query!r})"
             raise ToolError(msg, code="invalid_argument")
+        deep = args.get("depth") == "deep"
+        if deep and deep_search is not None:
+            return _deep_web_search(deep_search, query)
         max_results = default_max_results
         max_results_arg = args.get("max_results")
         if (
@@ -2148,6 +2216,8 @@ def _make_web_search(
             # `json.loads` accepts Infinity/NaN on the tool-arg path and `int(inf)`
             # raises; a malformed value means "use the default" (ADR-0011 §12).
             max_results = int(max_results_arg)
+        if deep:  # no deep backend on this build: the widest quick search is the nearest thing
+            max_results = _WEB_SEARCH_MAX_RESULTS_CAP
         max_results = max(1, min(max_results, _WEB_SEARCH_MAX_RESULTS_CAP))
         try:
             rows = backend(query, max_results, timeout_s=timeout_s)
@@ -2160,20 +2230,27 @@ def _make_web_search(
             )
             raise ToolError(msg, code="web_search_backend_error") from exc
         # Naming the backend keeps the `_resolve_search_backend` degrade visible
-        # in the event log instead of inferable.
+        # in the event log instead of inferable; `depth` does the same for a deep
+        # request that ran quick.
         return {
             "results": [
                 f"{i}. {title} — {url} — {_collapse_ws(text)[:_WEB_SEARCH_RESULT_TEXT_CAP]}"
                 for i, (title, url, text) in enumerate(rows, start=1)
             ],
             "provider": provider_used,
+            "depth": "quick",
         }
 
     return Tool(
         name="web_search",
         description=(
-            "Search the web and return numbered title — url — snippet rows. "
-            "Use for questions about current events or anything not already known."
+            "Search the web. depth quick returns numbered title — url — text rows. "
+            "depth deep takes about 20 seconds: it searches many sources, cross-checks them "
+            "and returns a researched summary with its sources. Use deep when he wants a "
+            "recommendation or a choice among options, a comparison, anything that costs "
+            "money or is booked, when sources may disagree or the stakes are high, or when he "
+            "asks you to look carefully; also after a quick search came back thin or "
+            "contradictory. Otherwise quick."
         ),
         input_schema=_WEB_SEARCH_INPUT_SCHEMA,
         handler=web_search,
@@ -3903,6 +3980,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     web_fetch_max_bytes: int = DEFAULT_WEB_FETCH_MAX_BYTES,
     web_fetch_max_text_bytes: int = DEFAULT_WEB_FETCH_MAX_TEXT_BYTES,
     web_timeout_s: float = DEFAULT_WEB_TIMEOUT_S,
+    web_deep_search: DeepSearch | None = None,
     vision_client: VisionClient | None = None,
     screen_max_width_px: int = DEFAULT_SCREEN_MAX_WIDTH_PX,
     confirmation_dispatch_outbox: bool = False,
@@ -3961,6 +4039,9 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         web_timeout_s: `tools.web.timeout_s` (ADR-0011 D7) — shared by
             `web_search` and `web_fetch` (see :data:`DEFAULT_WEB_TIMEOUT_S`
             for why D5's per-tool 15s/20s split collapses to one knob).
+        web_deep_search: Injected deep-research seam behind `web_search`
+            depth deep. `None` (no Anthropic preset on Anthropic's host)
+            means a deep request runs the widest quick search instead.
         vision_client: Injected `screen_look` vision seam (ADR-0011
             D5/D7). `None` (the default, and what the two existing
             integration tests pass implicitly) means no usable
@@ -4097,6 +4178,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
                 timeout_s=web_timeout_s,
                 provider=web_search_provider,
                 api_key=web_search_api_key,
+                deep_search=web_deep_search,
             )
         )
     registry.register(
@@ -4272,6 +4354,8 @@ __all__ = [
     "TERMINAL_TOOL_NAMES",
     "ActionLifecycle",
     "CallerNotAllowedError",
+    "DeepFindings",
+    "DeepSearch",
     "DuplicateToolError",
     "IllegalLifecycleTransition",
     "LifecycleState",

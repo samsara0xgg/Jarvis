@@ -116,10 +116,15 @@ _TOOL_LINES: Final = (
 ``commentary.tool.generic``."""
 
 
-def _dispatch_key(tool_name: str | None) -> str | None:
-    """The phrase key a dispatch of ``tool_name`` says, ``None`` for a quiet tool."""
+def _dispatch_key(tool_name: str | None, depth: str | None = None) -> str | None:
+    """The phrase key a dispatch of ``tool_name`` says, ``None`` for a quiet tool.
+
+    A deep ``web_search`` says its own line: it names the wait, about twenty seconds.
+    """
     if tool_name is None or tool_name in CONFIRMED_TOOLS or tool_name.startswith(_QUIET_TOOLS):
         return None
+    if tool_name == "web_search" and depth == "deep":
+        return "commentary.tool.web_deep"
     if tool_name in LONG_WAIT_TOOLS:
         return "commentary.long_wait"
     return next(
@@ -159,11 +164,12 @@ def lead_in_speech_text(line: str | None) -> str | None:
     return f"<voice>{text}</voice>"
 
 
-def commentary_intent_for(
+def commentary_intent_for(  # noqa: PLR0913 — one keyword per fact the row needs
     event: Event,
     *,
     user_text: str = "",
     tool_name: str | None = None,
+    tool_depth: str | None = None,
     still: bool = False,
     pick: Callable[[tuple[str, ...]], str],
 ) -> PresentationIntent | None:
@@ -174,6 +180,8 @@ def commentary_intent_for(
     a dispatch row that carries no usable ``action_id``, since ``subject_ref``
     is that id and an intent about nothing cannot be coalesced or superseded.
     The utterance row's subject is the row itself.
+
+    ``tool_depth`` is the dispatched call's ``depth`` argument, if it has one.
 
     The phrase is English when ``user_text`` (what Allen said this turn) reads
     as English; ``pick`` chooses one of the language's phrases. ``still`` makes
@@ -186,7 +194,7 @@ def commentary_intent_for(
     intent_type, key = row
     if event.type == "action.dispatched":
         action_id = event.payload.get("action_id")
-        dispatch_key = _dispatch_key(tool_name)
+        dispatch_key = _dispatch_key(tool_name, tool_depth)
         if dispatch_key is None or not isinstance(action_id, str) or not action_id:
             return None
         subject = action_id

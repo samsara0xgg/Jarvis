@@ -1225,6 +1225,11 @@ VARIANTS: Final[dict[str, dict[Language, tuple[str, ...]]]] = {
         "zh": ("我搜一下。", "我上网查查。"),
         "en": ("Let me look that up.", "Searching now."),
     },
+    # The fixed line of a deep web search: it carries the wait, so the model's lead-in does not replace it.
+    "commentary.tool.web_deep": {
+        "zh": ("我认真查一下，大概二十秒。", "这个我仔细查查，大概要二十秒。"),
+        "en": ("Let me look into this properly. About twenty seconds.", "I'll dig into this. About twenty seconds."),
+    },
     "commentary.tool.screen": {"zh": ("我看一下屏幕。",), "en": ("Let me look at your screen.",)},
     "commentary.tool.records": {
         "zh": ("我翻一下之前的记录。", "我找找记录。"),

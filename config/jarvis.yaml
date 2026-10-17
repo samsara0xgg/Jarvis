@@ -779,6 +779,13 @@ tools:
     # 两个工具分别写了 15s/20s，但这里只有一个键——D7 定的 schema 就是
     # 一个共享超时，所以两个工具都读这一个值（§12 勘误候选项）。
     timeout_s: 20
+    # web_search 选 depth=deep（查透）时用哪个 llm.presets：交给 Anthropic 自带的联网搜索，
+    # 它多路搜索、交叉核对，回一份带来源的结论。一次约 20 秒、约 10 美分。
+    # 只有这个 preset 是 provider: anthropic 且走 Anthropic 官方地址时才生效；
+    # 否则 deep 退回一次更宽的普通搜索（8 条）。
+    deep_preset: sonnet
+    # 一次 deep 搜索里 Anthropic 最多搜几轮；越大越透、越贵越慢。
+    deep_max_uses: 15
   # open_path（"打开 X"）：search_roots 是 Spotlight 搜索的根目录，bookmarks 是
   # 别名 -> 路径（直接命中），editor_extensions 这些后缀用 editor_app 打开。
   # `~` 会展开。个人书签写在自己的 settings.yaml 里。

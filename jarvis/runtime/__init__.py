@@ -196,6 +196,7 @@ from jarvis.runtime.dashboard import (
     ViewState,
 )
 from jarvis.runtime.decision_state import DecisionStateCache
+from jarvis.runtime.deep_search import build_deep_search
 from jarvis.runtime.departures import Departures
 from jarvis.runtime.highlight_marks import HighlightMarks
 from jarvis.runtime.home import Home, mail_body, mail_summarizer, mail_text, weather_lookup
@@ -3129,6 +3130,12 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         pricing_path=repo_root / "data" / "pricing.json",
         account_cost=wave1_features.exactly_once_cost_accounting,
     )
+    deep_search = build_deep_search(
+        full_config,
+        event_log_path=paths.event_log,
+        pricing_path=repo_root / "data" / "pricing.json",
+        account_cost=wave1_features.exactly_once_cost_accounting,
+    )
     rides = Rides(paths.event_log, bus_live, places=kept_places, offers=transit_offers)  # ADR 0224
     locator = (  # ADR 0281: only where a phone's answer can arrive
         None if phone_events is None
@@ -3170,6 +3177,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         web_fetch_max_bytes=web_fetch_max_bytes,
         web_fetch_max_text_bytes=web_fetch_max_text_bytes,
         web_timeout_s=web_timeout_s,
+        web_deep_search=deep_search,
         vision_client=vision_client,
         screen_max_width_px=screen_max_width_px,
         device_link=device,

@@ -2119,7 +2119,8 @@ def _commentary_turn(
 
 
 _SELECT_ACTION_TOOL_NAME_SQL = (
-    "SELECT id, json_extract(payload_json, '$.tool_name') FROM events "
+    "SELECT id, json_extract(payload_json, '$.tool_name'), "
+    "json_extract(payload_json, '$.arguments.depth') FROM events "
     "WHERE type = 'action.proposed' AND json_extract(payload_json, '$.action_id') = ? LIMIT 1"
 )
 
@@ -2396,24 +2397,28 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
             return None
         turn_id, user_text, said_at_ms = turn
         tool_name: str | None = None
+        tool_depth: str | None = None
         bound_id = _latest_id(conn)
         if not clock:
             row = conn.execute(
                 _SELECT_ACTION_TOOL_NAME_SQL, (trigger_event.payload.get("action_id"),),
             ).fetchone()
             if row is not None:
-                bound_id, tool_name = row
+                bound_id, tool_name, tool_depth = row
         intent = commentary_intent_for(
             trigger_event,
             user_text=user_text,
             tool_name=tool_name,
+            tool_depth=tool_depth,
             still=still,
             pick=secrets.choice,
         )
         if intent is None:  # a quiet tool
             return None
         line = None
-        if not still:  # the model's own line replaces the first line only
+        # The model's own line replaces the first line only, and not a deep search's: that
+        # fixed line carries the wait.
+        if not still and not (tool_name == "web_search" and tool_depth == "deep"):
             lead_in = conn.execute(_SELECT_LEAD_IN_SQL, (turn_id, bound_id)).fetchone()
             line = lead_in_speech_text(lead_in[0] if lead_in is not None else None)
         # A quick answer needs no lead-in: give it until the floor to begin. Jev's predicted

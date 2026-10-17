@@ -531,13 +531,14 @@ def _action_row(
     )
 
 
-def _dispatch(
+def _dispatch(  # noqa: PLR0913 — one keyword per field of the proposal
     conn: sqlite3.Connection,
     *,
     action_id: str,
     turn_id: str,
     tool_name: str = "refresh_work_state",
     lead_in: str | None = None,
+    arguments: dict[str, Any] | None = None,
 ) -> Event:
     """Emit one tool call's proposal and its dispatch; the dispatch is returned."""
     emit_event(
@@ -549,6 +550,7 @@ def _dispatch(
             "turn_id": turn_id,
             "caller_principal": "jarvis_llm",
             "risk_level": "L1",
+            **({"arguments": arguments} if arguments is not None else {}),
             **({"lead_in": lead_in} if lead_in else {}),
         },
         correlation={"action_id": action_id, "turn_id": turn_id},
@@ -1342,6 +1344,47 @@ def test_the_models_own_line_is_said_at_the_clock_too(
         _wait_until_turn_spoke(reader, "T-lead")
 
     assert _only_phrase(reader) == line
+
+
+def test_a_deep_web_search_says_its_fixed_line_and_a_quick_one_the_web_line() -> None:
+    """The deep line names the wait; only web_search with depth deep says it."""
+    event = _action_event("action.dispatched")
+    texts: tuple[tuple[str, lang.Language], ...] = (
+        ("帮我挑个吸尘器", "zh"), ("Help me pick a vacuum", "en"),
+    )
+    for text, language in texts:
+        pool = _tool_pool("web_deep", language)
+        quick = _tool_pool("web", language)
+        for depth, expected in (("deep", pool), ("quick", quick), (None, quick)):
+            intent = commentary_intent_for(
+                event, user_text=text, tool_name="web_search", tool_depth=depth, pick=_first,
+            )
+            assert intent is not None
+            assert intent.content_hint == expected[0], (depth, language)
+    assert all("二十秒" in line for line in _tool_pool("web_deep", "zh"))
+    other = commentary_intent_for(
+        event, tool_name="web_fetch", tool_depth="deep", pick=_first,
+    )
+    assert other is not None
+    assert other.content_hint == _tool_pool("web", "zh")[0]
+
+
+def test_a_deep_dispatch_keeps_its_fixed_line_over_the_models_lead_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fixed line carries the wait, so the model's line before the call does not replace it."""
+    monkeypatch.setattr(inherent_loop, "_COMMENTARY_AFTER_S", _CLOCK_S)
+    runtime = _make_runtime(tmp_path)
+    reader = _reader(runtime)
+    with _Observer(runtime):
+        _user_turn(runtime.conn, "T-deep", transcript="帮我挑个吸尘器")
+        _dispatch(
+            runtime.conn, action_id="ACT-deep", turn_id="T-deep", tool_name="web_search",
+            lead_in="我去搜搜看。", arguments={"query": "吸尘器", "depth": "deep"},
+        )
+        _wait_until_turn_spoke(reader, "T-deep")
+
+    assert _only_phrase(reader) in _tool_pool("web_deep", "zh")
 
 
 def test_a_confirmation_pending_at_the_clock_keeps_it_silent(
