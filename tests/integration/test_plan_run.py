@@ -1,4 +1,4 @@
-"""ADR 0289: the plan watcher at run time, over a real event log and memory.db with stubs.
+"""ADR 0291: the plan watcher at run time, over a real event log and memory.db with stubs.
 
 A fake clock (each ``tick`` is told the minute), a stub model for the opening and the decision,
 and stub say and push hooks (no key, no network, no model). The examples are invented.

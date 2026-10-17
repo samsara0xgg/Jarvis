@@ -1,6 +1,6 @@
 """The day-plan prompts and the parser of the model's answers (ADR 0288). Pure: no I/O, no clock.
 
-The nightly draft, the morning opening and the judgement of a notice (ADR 0289) all use the
+The nightly draft, the morning opening and the judgement of a notice (ADR 0291) all use the
 ``day-plan`` skill. The model's answer is untrusted JSON: :func:`parse_items` keeps only the items
 that read, do not collide with a fixed item and name a known source, and adds back any fixed item
 the model left out; the program, not the model, owns the commitments of the day.

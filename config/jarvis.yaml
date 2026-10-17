@@ -341,7 +341,7 @@ day_experience:
 # 例行、天气、最近三天、他最近两周对计划的改动，让 preset 排出今天，写进事件日志
 # （plan.drafted）。排不出就写 plan.draft_failed，不写空的一天。他已经改过的那天不重排。
 # enabled: false = 不排；morning_push 是晨间开场附带的推送，先关着，等他的信号几个早晨都准时再开。
-# ADR 0289：watch 开着时，每分钟把这一天和日志里发生的事比一比（plan.noticed），每件变化问
+# ADR 0291：watch 开着时，每分钟把这一天和日志里发生的事比一比（plan.noticed），每件变化问
 # decide_preset 一次她说不说、改不改计划（plan.decided）；开场也由它写进对话。先关着。
 # 出门类提醒（outing_soon、left_late）只看静音、对话和通话；别的看安静档，且一天最多
 # told_per_day 次、任何一小时最多 told_per_hour 次，超了只留在对话里不出声。

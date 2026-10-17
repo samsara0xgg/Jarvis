@@ -1,4 +1,4 @@
-"""ADR 0289: his plan of a day, read and changed in conversation by the one tool ``plan``.
+"""ADR 0291: his plan of a day, read and changed in conversation by the one tool ``plan``.
 
 ``read`` gives a day's items in order as compact rows (tasks with a done mark, then the time left
 against the tasks left), ``change`` applies add, edit, move and drop ops as one ``plan.revised``

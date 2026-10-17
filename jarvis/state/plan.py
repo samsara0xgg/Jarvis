@@ -5,7 +5,7 @@ carries the whole item list), marked settled by a ``plan.settled`` and opened by
 ``plan.opened``. ``plan.draft_failed`` says the nightly draft did not come. The nightly job
 (runtime), her ``plan`` tool, the opening and the phone all read the same fold.
 
-The watcher (ADR 0289) adds two more types beside the fold: ``plan.noticed`` (the program saw the
+The watcher (ADR 0291) adds two more types beside the fold: ``plan.noticed`` (the program saw the
 day depart from the plan) and ``plan.decided`` (what she made of it: silent, tell or adjust).
 Both are read back per date, never folded into the plan. :func:`apply_changes` is the one place
 that turns a list of add, edit, move and drop ops into items, for her ``plan`` tool and her

@@ -1382,7 +1382,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
-    # The watcher over a planned day (ADR 0289): `noticed` is what the program saw depart from the
+    # The watcher over a planned day (ADR 0291): `noticed` is what the program saw depart from the
     # plan (once per key and date), `decided` what she made of it (act silent, tell or adjust).
     # Read back per date by `jarvis.state.plan`, never folded into the plan itself.
     EventTypeSchema(

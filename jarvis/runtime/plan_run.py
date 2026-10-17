@@ -1,4 +1,4 @@
-"""The plan watcher at run time (ADR 0289): notice, ask, tell.
+"""The plan watcher at run time (ADR 0291): notice, ask, tell.
 
 Off unless ``day_plan.watch`` is true. Once a minute, in a thread, for a date that has a plan (or a
 failed draft), the watcher reads the facts the log holds (:func:`jarvis.state.plan_facts.facts_at`),
@@ -503,7 +503,7 @@ class PlanWatch:
     # --- legs and settling ------------------------------------------------------------
 
     def _route(self, run: _Run) -> None:
-        """Compute the legs the plan lacks, once per set of places and times (ADR 0289)."""
+        """Compute the legs the plan lacks, once per set of places and times (ADR 0291)."""
         held = run.held
         if held is None or self._open_leg is None:
             return

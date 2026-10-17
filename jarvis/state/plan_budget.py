@@ -1,4 +1,4 @@
-"""Whether the tasks left in a planned day still fit in the time left (ADR 0289). Pure.
+"""Whether the tasks left in a planned day still fit in the time left (ADR 0291). Pure.
 
 A plan is an ordered list: an item with a ``start`` (or a window) sits on the clock, one without
 is a task. :func:`budget` sets the minutes of the tasks not done against the minutes of the day

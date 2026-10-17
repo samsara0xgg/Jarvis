@@ -1,4 +1,4 @@
-"""ADR 0289: the plan watcher's pure core, over invented days (no key, no network, no model).
+"""ADR 0291: the plan watcher's pure core, over invented days (no key, no network, no model).
 
 - ``apply_changes``: add, edit, move and drop, the list order kept (never sorted by time), done,
   a fixed item he may change, an edit that clears the leg, ops that do not read skipped with a note;
@@ -192,7 +192,7 @@ CASES: dict[str, tuple[list[plan.PlanItem], dict[str, Any], str, str]] = {
 
 @pytest.mark.parametrize("kind", list(CASES))
 def test_a_notice_fires_at_its_threshold_and_not_a_minute_before(kind: str) -> None:
-    """The thresholds of ADR 0289: not_up 30 min, outing_soon 25 min, left_late 3 min, ..."""
+    """The thresholds of ADR 0291: not_up 30 min, outing_soon 25 min, left_late 3 min, ..."""
     items, kwargs, fires, before = CASES[kind]
     facts = DayFacts(
         0, kwargs.get("wake"), kwargs.get("here"), kwargs.get("stays", ()),

@@ -1,4 +1,4 @@
-r"""Replay the plan watcher (ADR 0289) over a past day, minute by minute, offline.
+r"""Replay the plan watcher (ADR 0291) over a past day, minute by minute, offline.
 
     .venv/bin/python -m scripts.plan_day_replay --date 2026-10-14 --plan plan.json
         [--step-min 1] [--day-ends 23:30] [--live] [--out DIR] [--event-log PATH] [--memory-db PATH]

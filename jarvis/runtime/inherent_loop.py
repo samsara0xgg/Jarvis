@@ -5880,7 +5880,7 @@ def _her_state(controls: voice_controls.VoiceControls) -> str:
 
 
 def _plan_hooks(runtime: JarvisRuntime, controls: voice_controls.VoiceControls) -> Hooks:
-    """ADR 0289: how the plan watcher tells him: the quiet level, the speakers, the phone.
+    """ADR 0291: how the plan watcher tells him: the quiet level, the speakers, the phone.
 
     It speaks as a reminder does (speech on, no live conversation, not on a call) and pushes only
     while he is away from the Mac. All of it runs on the watcher's thread.
@@ -5900,7 +5900,7 @@ def _plan_hooks(runtime: JarvisRuntime, controls: voice_controls.VoiceControls) 
 
 
 def _say_plan_line(runtime: JarvisRuntime, said: str) -> None:
-    """ADR 0289: one line of the plan watcher, said as a conversation line (no model, no turn)."""
+    """ADR 0291: one line of the plan watcher, said as a conversation line (no model, no turn)."""
     _say_conversation_line(runtime, _new_turn_id(), "plan", "", phrase=said)
 
 
@@ -8304,7 +8304,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 ),
             )
             if day_plan.watch:
-                # ADR 0289: notice what changed in the day, let her decide, tell him within limits.
+                # ADR 0291: notice what changed in the day, let her decide, tell him within limits.
                 watchers.append(
                     asyncio.create_task(
                         build_watch(

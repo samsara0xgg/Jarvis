@@ -140,7 +140,7 @@ PLAN_PREFIX: Final = "Plan today"
 def plan_line(
     event_log: Path, zone: tzinfo, clock: Callable[[], datetime], day_ends: time = DAY_ENDS,
 ) -> str | None:
-    """Today's plan in one line (ADR 0289).
+    """Today's plan in one line (ADR 0291).
 
     Settled or not, the next task, the time left, the next thing on the clock.
 

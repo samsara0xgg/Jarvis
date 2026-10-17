@@ -1,4 +1,4 @@
-"""What changed in a planned day, as the program sees it (ADR 0289). Pure: no I/O, no model.
+"""What changed in a planned day, as the program sees it (ADR 0291). Pure: no I/O, no model.
 
 :func:`notice` compares a day's plan with the facts the log holds (:mod:`jarvis.state.plan_facts`)
 and names each change worth her attention once. It only notices: whether a late start matters
@@ -7,7 +7,7 @@ with the notice, the plan and the facts (:mod:`jarvis.decision.day_plan`). The t
 code's, not settings. A notice is keyed by its kind and item (``left_late:p2``), so each is noticed
 once a day.
 
-A plan is an ordered task list with a few things on the clock (ADR 0289): :func:`budget` works out
+A plan is an ordered task list with a few things on the clock (ADR 0291): :func:`budget` works out
 whether the tasks left still fit in the rest of the day, and the ``progress`` notice asks her to
 look at that every couple of hours and whenever a timed item ends.
 """
@@ -361,7 +361,7 @@ def notice(
 ) -> list[Notice]:
     """The changes in ``plan``'s day at ``now`` (aware, in his zone) that are not in ``seen``.
 
-    ``seen`` holds the keys already noticed today. Kinds (ADR 0289): ``woke``; ``not_up`` (no
+    ``seen`` holds the keys already noticed today. Kinds (ADR 0291): ``woke``; ``not_up`` (no
     wake signal :data:`NOT_UP_AFTER` after a first item that starts before noon);
     ``outing_soon`` (:data:`OUTING_LEAD` before a leg's leave time); ``left_late``
     (:data:`LEFT_LATE_AFTER` after it with no move since, until the item starts);

@@ -1,4 +1,4 @@
-# ADR 0289 — The program notices what changed in a planned day, and she decides whether to say it
+# ADR 0291 — The program notices what changed in a planned day, and she decides whether to say it
 
 **Status:** Accepted
 **Date:** 2026-10-16

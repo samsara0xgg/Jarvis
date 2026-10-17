@@ -3443,7 +3443,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
                 calendar_line, calendar_next, local_zone, speakable.now,
                 partial(next_appointments, paths.event_log, local_zone),
             ),
-            # ADR 0289: today's plan, settled or not, with its next item.
+            # ADR 0291: today's plan, settled or not, with its next item.
             partial(
                 plan_line, paths.event_log, local_zone, speakable.now,
                 day_ends_of(full_config.get("day_plan")),
