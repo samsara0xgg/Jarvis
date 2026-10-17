@@ -1902,7 +1902,7 @@ _WEB_SEARCH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
             "enum": ["quick", "deep"],
             "description": (
                 "quick: one fact or a quick check, a few seconds. "
-                "deep: about 20 seconds; searches many sources and cross-checks them."
+                "deep: about half a minute; searches many sources and cross-checks them."
             ),
         },
     },
@@ -2245,7 +2245,7 @@ def _make_web_search(
         name="web_search",
         description=(
             "Search the web. depth quick returns numbered title — url — text rows. "
-            "depth deep takes about 20 seconds: it searches many sources, cross-checks them "
+            "depth deep takes about half a minute: it searches many sources, cross-checks them "
             "and returns a researched summary with its sources. Use deep when he wants a "
             "recommendation or a choice among options, a comparison, anything that costs "
             "money or is booked, when sources may disagree or the stakes are high, or when he "

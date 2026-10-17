@@ -80,7 +80,7 @@ def test_the_menu_makes_depth_required_and_says_when_to_use_which(tmp_path: Path
     schema = tool.input_schema
     assert schema["required"] == ["query", "depth"]
     assert schema["properties"]["depth"]["enum"] == ["quick", "deep"]
-    assert "about 20 seconds" in tool.description
+    assert "about half a minute" in tool.description
     assert "recommendation" in tool.description
 
 
@@ -218,25 +218,32 @@ def test_only_the_brief_after_the_last_search_is_the_summary() -> None:
     assert findings.complete is True
 
 
-def test_sources_are_cited_pages_first_then_searched_pages_without_repeats() -> None:
-    """Cited pages lead, then every page the searches returned, one row per url."""
-    findings = findings_from(_result(_transcript()))
+def test_sources_are_cited_pages_first_then_the_briefs_own_list_without_repeats() -> None:
+    """Cited pages lead, then the pages the brief lists, not pages the searches merely returned."""
+    raw = _transcript()
+    raw["content"][-1]["text"] = (
+        "B costs 12.\n\nSources:\nhttps://four.example/a\u3002\n- https://three.example\n"
+    )
+    findings = findings_from(_result(raw))
+    assert findings.summary == "A costs 10 yuan. B costs 12."
     assert findings.sources == (
         ("Three", "https://three.example"),
-        ("One", "https://one.example"),
-        ("Two", "https://two.example"),
+        ("https://four.example/a", "https://four.example/a"),
     )
+
+
+def test_a_brief_with_no_citations_and_no_list_has_no_sources() -> None:
+    """Search results alone are not sources: in the live check they were mostly unused pages."""
+    raw = _transcript()
+    raw["content"][-2].pop("citations")
+    assert findings_from(_result(raw)).sources == ()
 
 
 def test_sources_are_capped_at_ten() -> None:
     """Ten sources at most."""
     raw = _transcript()
-    raw["content"].insert(
-        4,
-        {
-            "type": "web_search_tool_result", "tool_use_id": "s1",
-            "content": [_page(f"https://p{i}.example", f"P{i}") for i in range(30)],
-        },
+    raw["content"][-1]["text"] = "B costs 12.\n来源\uff1a\n" + "\n".join(
+        f"https://p{i}.example" for i in range(30)
     )
     assert len(findings_from(_result(raw)).sources) == 10
 

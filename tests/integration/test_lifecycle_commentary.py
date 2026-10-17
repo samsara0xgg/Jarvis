@@ -1361,7 +1361,7 @@ def test_a_deep_web_search_says_its_fixed_line_and_a_quick_one_the_web_line() ->
             )
             assert intent is not None
             assert intent.content_hint == expected[0], (depth, language)
-    assert all("二十秒" in line for line in _tool_pool("web_deep", "zh"))
+    assert all("半分钟" in line for line in _tool_pool("web_deep", "zh"))
     other = commentary_intent_for(
         event, tool_name="web_fetch", tool_depth="deep", pick=_first,
     )

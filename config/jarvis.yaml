@@ -780,7 +780,7 @@ tools:
     # 一个共享超时，所以两个工具都读这一个值（§12 勘误候选项）。
     timeout_s: 20
     # web_search 选 depth=deep（查透）时用哪个 llm.presets：交给 Anthropic 自带的联网搜索，
-    # 它多路搜索、交叉核对，回一份带来源的结论。一次约 20 秒、约 10 美分。
+    # 它多路搜索、交叉核对，回一份带来源的结论。2026-10-17 在 Pi 上实测三题：27–39 秒，每次 15–20 美分。
     # 只有这个 preset 是 provider: anthropic 且走 Anthropic 官方地址时才生效；
     # 否则 deep 退回一次更宽的普通搜索（8 条）。
     deep_preset: sonnet

@@ -39,7 +39,8 @@ DEFAULT_DEEP_PRESET: Final[str] = "sonnet"
 DEFAULT_DEEP_MAX_USES: Final[int] = 15
 
 _DEEP_CALL_TIMEOUT_S: Final[float] = 120.0
-"""A deep search measured ~20 s; this is the ceiling for a slow one, not the expectation."""
+"""A deep search measured 27 to 39 s (live check, 2026-10-17); this is the ceiling
+for a slow one, not the expectation."""
 
 _DEEP_CALL_MAX_RETRIES: Final[int] = 1
 
@@ -62,9 +63,19 @@ _RESEARCH_SYSTEM: Final[str] = (
     "several independent sources, cross-check facts, prices and dates, and note where "
     "sources disagree. Then write the findings as a compact plain-text brief for an "
     "assistant who will answer him: the answer first, then the key facts with numbers and "
-    "dates, then disagreements or caveats. No preamble, no markdown headings. Write the "
-    "findings in the language of the question."
+    "dates, then disagreements or caveats. State findings; do not address him or recommend "
+    "in your own voice. No preamble, no markdown headings. Write the findings in the "
+    "language of the question. End with a line reading only 'Sources:', then the URL of "
+    "each page the brief rests on, one per line."
 )
+
+_SOURCES_LINE: Final = re.compile(
+    r"^[ \t*#]*(?:sources|来源)[ \t*]*[:\uff1a][ \t*]*$", re.IGNORECASE | re.MULTILINE,
+)
+"""The line that closes the brief and opens its own list of the pages it rests on."""
+
+_URL: Final = re.compile(r"https?://[^\s<>()\[\]\u3000-\u303f\uff00-\uffef]+")
+"""A URL stops at CJK punctuation, which a Chinese brief puts right after it."""
 
 
 class DeepSearchError(RuntimeError):
@@ -105,9 +116,13 @@ def _final_text_blocks(blocks: list[Mapping[str, Any]]) -> list[Mapping[str, Any
 
 
 def _sources(
-    blocks: list[Mapping[str, Any]], final_text: list[Mapping[str, Any]],
+    final_text: list[Mapping[str, Any]], listed: str,
 ) -> tuple[tuple[str, str], ...]:
-    """Cited pages first, then every page the searches returned; one row per url."""
+    """Cited pages first, then the pages the brief lists; one row per url.
+
+    Never the pages the searches merely returned: in the live check those were mostly
+    pages the brief did not use (old release notes for "the latest Rust").
+    """
     found: dict[str, str] = {}
 
     def add(url: object, title: object) -> None:
@@ -119,14 +134,18 @@ def _sources(
         for citation in citations if isinstance(citations, list) else ():
             if isinstance(citation, Mapping):
                 add(citation.get("url"), citation.get("title"))
-    for block in blocks:
-        if block.get("type") != "web_search_tool_result":
-            continue
-        results = block.get("content")  # an error object, not a list, when the search failed
-        for result in results if isinstance(results, list) else ():
-            if isinstance(result, Mapping) and result.get("type") == "web_search_result":
-                add(result.get("url"), result.get("title"))
+    for url in _URL.findall(listed):
+        add(url.rstrip(".,;:"), "")
     return tuple((title or url, url) for url, title in found.items())[:_SOURCES_MAX]
+
+
+def _split_sources(text: str) -> tuple[str, str]:
+    """The brief and the text of its closing source list (empty when it wrote none)."""
+    lines = list(_SOURCES_LINE.finditer(text))
+    if not lines:
+        return text, ""
+    last = lines[-1]
+    return text[: last.start()].rstrip(), text[last.end():]
 
 
 def _search_count(raw: Mapping[str, Any], blocks: list[Mapping[str, Any]]) -> int:
@@ -148,14 +167,15 @@ def findings_from(result: ChatResult) -> DeepFindings:
     raw = result.raw
     blocks = _blocks(raw)
     final_text = _final_text_blocks(blocks)
-    summary = "".join(str(block.get("text") or "") for block in final_text).strip()
+    written = "".join(str(block.get("text") or "") for block in final_text).strip()
+    summary, listed = _split_sources(written)
     if not summary:
         msg = "the deep search ended without a written brief"
         raise DeepSearchError(msg)
     stop = result.finish_reason or raw.get("stop_reason")
     return DeepFindings(
         summary=summary,
-        sources=_sources(blocks, final_text),
+        sources=_sources(final_text, listed),
         searches=_search_count(raw, blocks),
         complete=stop not in _INCOMPLETE_STOPS,
     )

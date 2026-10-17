@@ -20,7 +20,12 @@
   ("r is a string; fetch directly.") as part of the answer.
 - A wide probe (max_uses 15, told to search widely and cross-check) ran 4
   searches in parallel, took 21.2 s, cost $0.097, and gave clearly the best
-  answer of the runs.
+  answer of the runs. Run as the nested request this ADR decides (live
+  check, 2026-10-17), three real questions took 27 to 39 s and 7 to 12
+  searches. Each cost $0.15 to $0.20, and no working notes reached a brief.
+- In that check the pages the searches returned were mostly not the ones the
+  brief used. For "the latest Rust" they included the 1.9 and 1.29 release
+  notes.
 - The owner accepts a longer wait for a search that needs it (「如果是让他查东西
   的话，我稍微多等一会儿可以接受」). He chose one tool on which she picks the depth
   herself (「可以」, 2026-10-17), over two tools.
@@ -39,7 +44,9 @@ That request returns a written brief and its sources as the tool's result.
   the brief. Text before or between searches is the model's working notes.
 - When the deep preset is not Anthropic on Anthropic's host, a deep search
   runs the keyed backend at its result cap. The result says it was quick.
-- A deep dispatch says the fixed line 「我认真查一下，大概二十秒」 in place of the
+- The sources are the pages the brief cites or lists at its end, never every
+  page the searches returned.
+- A deep dispatch says the fixed line 「我认真查一下，大概半分钟」 in place of the
   model's own line before the call, because the line carries the wait.
 
 ## Alternatives rejected
@@ -57,11 +64,13 @@ That request returns a written brief and its sources as the tool's result.
 - **A deep search as background work that reports later** (as ADR 0254's
   removed deep pass did). The wide probe answered in 21 s, short enough to
   wait for within the turn, so a second channel for the answer buys nothing.
+  The nested check's 39 s is still within the 58 s `daily_work_report`
+  already waits in a turn.
 
 ## Consequences
 
-- A deep search costs about 10 cents and 20 s, against about 2 cents and 8 s
-  for a quick one. Whether she picks the depth well rests on the tool's
+- A deep search costs 15 to 20 cents and about half a minute, against about
+  2 cents and 8 s for a quick one. Whether she picks the depth well rests on the tool's
   English description, which the tool exam checks.
 - The deep brief is written by a second model call, so the brain answers from
   a summary. A fact the brief left out is not in the turn unless she fetches
