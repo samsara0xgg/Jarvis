@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
@@ -26,9 +27,9 @@ from jarvis.decision.day_plan import (
     parse_items,
 )
 from jarvis.runtime.work_state import build_analyst
-from jarvis.state import commitments, core_memory, places, plan, routines
+from jarvis.state import commitments, core_memory, places, plan, routines, work_state
 from jarvis.state.day_line import day_window, fold_day
-from jarvis.state.event_log import open_runtime_event_log
+from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
 from jarvis.state.memory_db import current_core_memory, local_now
 
 if TYPE_CHECKING:
@@ -48,15 +49,17 @@ MAX_HORIZON_DAYS: Final[int] = 14
 HISTORY_DAYS: Final[int] = 14
 """How far back his changes to plans, and whether each plan settled, are read as preferences."""
 MAX_CHANGES: Final[int] = 20
-RECENT_DAYS: Final[int] = 3
+RECENT_DAYS: Final[int] = 7
+"""A week of lived days, so weekday rhythm shows."""
 MAX_MEMORY_ITEMS: Final[int] = 30
 MAX_UPCOMING: Final[int] = 20
 MAX_TODO: Final[int] = 30
-MAX_EVENTS_PER_DAY: Final[int] = 8
+MAX_LINES_PER_DAY: Final[int] = 200
+MAX_TOPS: Final[int] = 4
+HOUR_MS: Final[int] = 3_600_000
 _ITEM_CHARS: Final[int] = 300
 _CALL_TIMEOUT_S: Final[float] = 300.0
 """A draft reads a few thousand tokens and writes a day; Sonnet at high effort needs minutes."""
-_EVENT_KINDS: Final[frozenset[str]] = frozenset({"event", "departure", "ride", "reminder", "call"})
 
 type Ask = Callable[[str, str], str]
 type RouteLegs = Callable[[list[plan.PlanItem], date], list[plan.PlanItem]]
@@ -133,28 +136,119 @@ def _memory_texts(doc: core_memory.Doc, section: str) -> tuple[str, ...]:
     return tuple(_clip(str(item.get("text") or "")) for item in items if item.get("text"))
 
 
+def _clock(ms: int | None, zone: tzinfo) -> str:
+    return "now" if ms is None else f"{datetime.fromtimestamp(ms / 1000, zone):%H:%M}"
+
+
+def _minutes(seconds: float) -> str:
+    hours, minutes = divmod(round(seconds / 60), 60)
+    return f"{hours}h{minutes:02d}" if hours else f"{minutes}m"
+
+
+def _named(tops: list[dict[str, Any]]) -> str:
+    return ", ".join(f"{top['name']} {_minutes(top['seconds'])}" for top in tops[:MAX_TOPS])
+
+
+def _where(item: Mapping[str, Any]) -> str:
+    kept = item.get("kept_place")
+    if kept:
+        return str(kept["name"])
+    if item.get("place"):
+        return str(item["place"])
+    return f"{item['lat']:.3f},{item['lng']:.3f}"
+
+
+def _work(item: Mapping[str, Any]) -> str:
+    what = f"on the Mac, {_minutes(item['active_s'])} active"
+    if item.get("projects"):
+        what += f"; projects {_named(item['projects'])}"
+    if item.get("apps"):
+        what += f"; apps {_named(item['apps'])}"
+    return what
+
+
+_SAID: Final[dict[str, Callable[[Mapping[str, Any]], str]]] = {
+    "work": _work,
+    "stay": lambda item: f"at {_where(item)}",
+    "move": lambda item: str(item.get("activity") or "moving"),
+    "call": lambda item: f"call ({item.get('app') or 'app unknown'})",
+    "talk": lambda item: f"talked with Jarvis, {item.get('turns', 0)} turns",
+    "payment": lambda item: (
+        f"{item.get('direction')} {item.get('amount')} {item.get('currency')} "
+        f"{item.get('counterparty') or ''} {item.get('text') or ''}"
+    ),
+    "claude_chat": lambda item: f"Claude chat: {item.get('text')}, {item.get('messages')} messages",
+    "picture": lambda item: f"sent a picture: {item.get('note') or 'no note'}",
+}
+
+
+def lived_line(item: Mapping[str, Any]) -> str:
+    """What one item of a lived day was, in a few words."""
+    kind = str(item["kind"])
+    say = _SAID.get(kind)
+    what = say(item) if say else f"{kind}: {item.get('title') or item.get('text') or ''}"
+    return _clip(what.strip())
+
+
+def _doing(conn: Any, first: int, last: int, zone: tzinfo) -> list[str]:  # noqa: ANN401
+    """What the work state said he was doing (ADR 0201's screen reading), hour by hour.
+
+    The last revision of each hour stands for it; an activity already said earlier that day is not
+    said again.
+    """
+    hourly: dict[int, list[str]] = {}
+    for event in iter_events_of_types(conn, (work_state.EVENT_TYPE,), since_epoch_ms=first):
+        if event.ts_epoch_ms >= last:
+            continue
+        item = event.payload.get("item")
+        if isinstance(item, dict):
+            hourly[event.ts_epoch_ms // HOUR_MS] = [
+                str(one.get("text") or "") for one in item.get("activities") or []
+            ]
+    said: dict[str, str] = {}
+    for hour in sorted(hourly):
+        at = f"{datetime.fromtimestamp(hour * HOUR_MS / 1000, zone):%H:00}"
+        for text in hourly[hour]:
+            if text and text not in said:
+                said[text] = f"{at} {_clip(text)}"
+    return list(said.values())
+
+
+def _story(memory_db: Path, day: date) -> str | None:
+    """Her account of that day, written the night after (ADR 0235's prose), or None."""
+    try:
+        with closing(sqlite3.connect(f"file:{memory_db}?mode=ro", uri=True)) as conn:
+            row = conn.execute(
+                "SELECT text FROM day_prose WHERE day = ? AND draft = 0 ORDER BY ts DESC LIMIT 1",
+                (day.isoformat(),),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    return str(row[0]) if row and row[0] else None
+
+
 def _recent(
     conn: Any, sources: DayPlanSources, day: date, now: datetime,  # noqa: ANN401 - a sqlite conn
 ) -> tuple[dict[str, Any], ...]:
-    """The last days summarised: their dated events and a count of every kind of item."""
+    """The last days as he lived them: each day's items in time order, one line each."""
     now_ms = int(now.timestamp() * 1000)
     rows: list[dict[str, Any]] = []
     for back in range(RECENT_DAYS, 0, -1):
         past = day - timedelta(days=back)
         first, last = day_window(past, sources.zone)
         line = fold_day(conn, first, last, now_ms, sources.day_sources)
-        counts: dict[str, int] = {}
-        events: list[str] = []
-        for item in line.items:
-            kind = str(item["kind"])
-            counts[kind] = counts.get(kind, 0) + 1
-            if kind in _EVENT_KINDS and len(events) < MAX_EVENTS_PER_DAY:
-                at = datetime.fromtimestamp(item["start_ms"] / 1000, sources.zone)
-                said = _clip(str(item.get("title") or item.get("text") or kind))
-                events.append(f"{at:%H:%M} {said}")
+        timeline = [
+            f"{_clock(item['start_ms'], sources.zone)}-{_clock(item.get('end_ms'), sources.zone)} "
+            f"{lived_line(item)}"
+            for item in line.items
+        ]
         rows.append({
-            "date": past.isoformat(), "counts": counts, "events": events,
-            "labels": [str(label["title"]) for label in line.labels][:MAX_EVENTS_PER_DAY],
+            "date": past.isoformat(),
+            "weekday": f"{past:%A}",
+            "all_day": [str(label["title"]) for label in line.labels],
+            "story": _story(sources.memory_db, past),
+            "timeline": timeline[:MAX_LINES_PER_DAY],
+            "doing": _doing(conn, first, last, sources.zone)[:MAX_LINES_PER_DAY],
             "unreadable": line.missing,
         })
     return tuple(rows)

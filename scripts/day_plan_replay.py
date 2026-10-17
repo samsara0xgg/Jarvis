@@ -145,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     root = default_runtime_root()
     parser.add_argument("--event-log", type=Path, default=root / "mac_events.db")
     parser.add_argument("--memory-db", type=Path, default=root / "memory.db")
+    parser.add_argument("--timesink", type=Path, help="a TimeSink store, for his work on the Mac")
     parser.add_argument("--config", type=Path, default=REPO / "config" / "jarvis.yaml")
     parser.add_argument("--zone", default=local_zone())
     args = parser.parse_args(argv)
@@ -156,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(msg)
     zone = ZoneInfo(args.zone)
     sources = runtime.DayPlanSources(
-        args.event_log, args.memory_db, zone, DaySources(zone, None, args.memory_db),
+        args.event_log, args.memory_db, zone, DaySources(zone, args.timesink, args.memory_db),
     )
     presets = (config.get("llm") or {}).get("presets") or {}
     model = str((presets.get(settings.preset) or {}).get("model") or "")

@@ -308,8 +308,21 @@ def test_the_opening_is_strict_json_and_short() -> None:
 def test_the_skill_loads_and_carries_the_principles_and_the_preferences() -> None:
     """The skill loads and tells the model to read his changes as preferences."""
     text = load_skill("day-plan").instructions
-    for needle in ("his_changes", "past_plans", "droppable", "3 days", "private", "opening"):
+    for needle in ("his_changes", "past_plans", "droppable", "recent_days", "private", "opening"):
         assert needle in text
+
+
+def test_a_lived_item_reads_as_one_line_with_its_projects_and_place() -> None:
+    """Work names its projects and apps; a stay names the place he keeps."""
+    work = {
+        "kind": "work", "active_s": 5400,
+        "projects": [{"name": "jarvis", "seconds": 4200}],
+        "apps": [{"name": "Ghostty", "seconds": 3000}],
+    }
+    said = runtime.lived_line(work)
+    assert said == "on the Mac, 1h30 active; projects jarvis 1h10; apps Ghostty 50m"
+    stay = {"kind": "stay", "lat": 49.2, "lng": -123.1, "kept_place": {"name": "家"}}
+    assert runtime.lived_line(stay) == "at 家"
 
 
 # --- the inputs ----------------------------------------------------------------------------

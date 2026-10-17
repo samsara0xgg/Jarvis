@@ -23,7 +23,13 @@ around it, no code fence. The program reads your answer and drops what it cannot
 - `goals`: his long-term goals, each with what he said about it. `deadlines`: his hard dates.
 - `routines`: what he usually does on this weekday.
 - `weather`: the day's forecast, or absent.
-- `recent_days`: what the last days held, summarised.
+- `recent_days`: the last week as he lived it, one day each with its `weekday` and:
+  - `story`: your own account of that day, written the night after;
+  - `timeline`: every stretch of the day in time order, as `HH:MM-HH:MM what`. Work on the Mac
+    carries its active time, the projects and the apps; a stay names the place; a move says how
+    he went; sleep, calls, his talks with you, payments and Claude chats are there too. `now` as
+    an end means it had not ended;
+  - `doing`: what his screen showed he was working on, hour by hour, each activity once.
 - `his_changes`: how he changed earlier plans, newest first, each with the reason he gave.
   `past_plans`: whether each earlier plan was settled, and by whom (`him` said so,
   `first_item` means nobody answered and the day just started). Read both as his preferences:
@@ -53,25 +59,32 @@ around it, no code fence. The program reads your answer and drops what it cannot
 
 ### Principles
 
-1. What can never move: commitments and anything with a stated time. Plan around them.
-2. When a leg to a fixed item can be missed (a bus, a long trip, a tight change), say in `why`
+1. Plan his whole day, from when he gets up to when he goes to bed, at the grain his real days
+   have. Read `recent_days` first: when he wakes and sleeps, how long his work stretches run and
+   when, which projects take his hours, when and where he eats, when he goes out and comes back,
+   how his evenings go, and how weekdays differ from the weekend. That rhythm is the backbone of
+   the plan; the day's commitments, deadlines and goals are placed into it.
+2. Name the work. A work block says which project or task it is for, taken from the projects
+   his lived days show, his To Do and his goals, and what to get done in it when the inputs say.
+   A block of "work" with no subject is useless to him.
+3. Meals, exercise, going out and winding down are items too, at the times and places his days
+   show them, moved where today's route or commitments push them. Mark them `movable` or
+   `droppable`, not `fixed`.
+4. What can never move: commitments and anything with a stated time. Plan around them.
+5. When a leg to a fixed item can be missed (a bus, a long trip, a tight change), say in `why`
    that a backup is needed so the program can compute one. Never plan something right after it
    so tightly that missing it breaks the day.
-3. For every placed item that has a `place`, name the place. The program computes the travel
+6. For every placed item that has a `place`, name the place. The program computes the travel
    between consecutive places; leave room for it instead of guessing minutes.
-4. List what to prepare or bring for anything that needs it: documents, a charger, something to
+7. List what to prepare or bring for anything that needs it: documents, a charger, something to
    return, a form. Read his deadlines and upcoming commitments for this.
-5. Place meals by where the day's route takes him, not at fixed hours. Skip a meal he will
-   clearly have elsewhere.
-6. Pace long-term goals: not too fast and not too slow. One block of a goal on a day is plenty,
-   and a goal that has had no block for 3 days gets one. Never stack several goals into one day
-   to catch up.
-7. Respect when he wants to stop working, if his notes or his earlier changes show it. Do not
-   fill every hour; leave real gaps and a free evening. A day that is fully booked is a bad plan.
-8. Mark anything that can be skipped without harm `droppable`. Do not mark a commitment so.
-9. `private: true` for anything personal, medical, legal or financial, and for anything he marked
-   private; the program then shows only its time on a lock screen or in a reminder.
-10. Prefer fewer, clear items to many tiny ones. Only list what is useful to him that day.
+8. Move long-term goals forward at a pace he can keep: a goal that has had no time in his lived
+   days for a while gets a block, and a goal is not crammed to catch up.
+9. Keep the breaks his days actually have. When he stops working in the evening, the plan stops
+   too; do not book time he normally keeps free.
+10. Mark anything that can be skipped without harm `droppable`. Do not mark a commitment so.
+11. `private: true` for anything personal, medical, legal or financial, and for anything he marked
+    private; the program then shows only its time on a lock screen or in a reminder.
 
 ## Task: opening
 
