@@ -83,8 +83,9 @@ class Rig:
         self.said: list[str] = []
         self.pushed: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
         self.quiet = "off"
+        self.at_mac = True
         self.hooks = Hooks(
-            quiet=lambda: self.quiet, may_speak=lambda: True,
+            quiet=lambda: self.quiet, may_speak=lambda: True, at_mac=lambda: self.at_mac,
             say=self.said.append, push=lambda *a, **k: self.pushed.append((a, k)),
         )
         self.sources = runtime.DayPlanSources(
@@ -178,12 +179,13 @@ def test_a_day_with_no_plan_and_no_failure_is_left_alone(rig: Rig) -> None:
 
 
 def test_left_late_is_recorded_spoken_and_pushed_time_sensitively(rig: Rig) -> None:
-    """3 minutes past the leave time: her words in the conversation, on speakers, on the phone."""
+    """3 minutes past the leave time: in the conversation, and on the phone while he is away."""
+    rig.at_mac = False
     rig.drafted(DENTIST)
     rig.watch.tick(_at("07:05"))
     assert "left_late:p9" in rig.watch.tick(_at("13:24"))
     assert rig.record(f"plan-{DAY}-left_late:p9") == "Heads up."
-    assert rig.said == ["Heads up."]
+    assert rig.said == []  # nobody at the Mac to hear it
     (args, kwargs), = rig.pushed
     assert args == ("Jarvis", "Heads up.")
     assert (kwargs["thread"], kwargs["time_sensitive"], kwargs["sound"]) == ("talk", True, True)
@@ -225,13 +227,14 @@ def test_outing_soon_is_asked_with_the_weather_and_the_leg_read_again(tmp_path: 
 
 @pytest.mark.parametrize(
     ("level", "spoken", "pushed", "sound"),
-    [("off", 1, 1, True), ("quiet", 0, 1, False), ("no-pop", 0, 0, None), ("dnd", 0, 0, None)],
+    [("off", 0, 1, True), ("quiet", 0, 1, False), ("no-pop", 0, 0, None), ("dnd", 0, 0, None)],
 )
 def test_a_non_outing_tell_obeys_the_quiet_level_and_is_always_recorded(
     tmp_path: Path, level: str, spoken: int, pushed: int, sound: object,
 ) -> None:
-    """quiet: a push without sound; no-pop and dnd: the conversation record only."""
+    """Away from the Mac. quiet: a push without sound; no-pop and dnd: the record only."""
     rig = Rig(tmp_path)
+    rig.at_mac = False
     rig.quiet = level
     rig.drafted(_item())
     rig.watch.tick(_at("09:05"))
@@ -247,20 +250,27 @@ def test_past_the_hours_cap_a_tell_is_only_recorded(tmp_path: Path) -> None:
     rig = Rig(tmp_path, settings=replace(SETTINGS, told_per_hour=1))
     rig.drafted(_item("p1", title="First"), _item("p2", title="Second"))
     rig.watch.tick(_at("09:05"))
-    assert rig.said == ["Heads up."]
-    assert len(rig.pushed) == 1
+    assert rig.said == ["Heads up."]  # at the Mac: said there, not pushed
+    assert rig.pushed == []
     assert rig.record(f"plan-{DAY}-item_due:p1") == "Heads up."
     assert rig.record(f"plan-{DAY}-item_due:p2") == "Heads up."
 
 
-def test_a_private_item_is_named_by_its_time_on_speakers_and_in_a_push(rig: Rig) -> None:
+def test_a_private_item_is_named_by_its_time_on_speakers_and_in_a_push(
+    rig: Rig, tmp_path: Path,
+) -> None:
     """Her record keeps her words; the speakers and the push say the time only."""
     rig.answers = ['{"act": "tell", "say": "Your therapy starts."}']
     rig.drafted(_item(title="Therapy", private=True))
     rig.watch.tick(_at("09:05"))
     assert rig.record(f"plan-{DAY}-item_due:p1") == "Your therapy starts."
     assert rig.said == ["The 09:00 thing."]
-    assert rig.pushed[0][0][1] == "The 09:00 thing."
+    (tmp_path / "away").mkdir()
+    away = Rig(tmp_path / "away", answers=['{"act": "tell", "say": "Your therapy starts."}'])
+    away.at_mac = False
+    away.drafted(_item(title="Therapy", private=True))
+    away.watch.tick(_at("09:05"))
+    assert away.pushed[0][0][1] == "The 09:00 thing."
 
 
 def test_adjust_revises_the_plan_by_her(rig: Rig) -> None:

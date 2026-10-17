@@ -465,7 +465,9 @@ class PlanWatch:
         if one.facts.get("private") is True:
             pushed = self._private_line(run, one, say)
             spoken = say if self._hooks.private_output() else pushed
-        if (outing or level == "off") and self._hooks.say and self._hooks.may_speak():
+        # out loud only where he is: away from the Mac the phone gets it, not an empty room
+        at_mac = self._hooks.at_mac()
+        if (outing or level == "off") and at_mac and self._hooks.say and self._hooks.may_speak():
             self._call("say", self._hooks.say, spoken)
         if outing or level in ("off", "quiet"):
             self._push(pushed, sound=outing or level == "off", urgent=outing)
