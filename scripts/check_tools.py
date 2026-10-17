@@ -1,0 +1,156 @@
+"""Assert the mechanical half of the tool standard (docs/spec.html#tools, ADR 0290).
+
+Builds the menu this checkout offers the decision model, as ``scripts.tool_exam`` does, and
+checks every built-in tool on it: a name that is lowercase words joined by underscores, a
+description of at most 600 characters written in English that calls him "he", and a
+description on every parameter. Plugin tools (``mcp__``) are their servers' and are not checked.
+
+Tools that predate the standard are listed in ``PRE_STANDARD`` with the rules they still break.
+They are reported, not failed, and each one leaves the list when it is rebuilt to the standard.
+What fails is a rule a tool breaks that its entry does not name, and an entry that no longer
+matches a tool or names a rule the tool now keeps, so the list can only shrink.
+
+    .venv/bin/python -m scripts.check_tools
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+import tempfile
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import yaml
+
+from jarvis.shared import CallerPrincipal
+from scripts.tool_exam import _exam_registry
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+REPO = Path(__file__).resolve().parent.parent
+DESCRIPTION_CAP = 600
+NAME_RE = re.compile(r"[a-z][a-z0-9_]*")
+CJK_RE = re.compile(r"[　-鿿＀-￯]")
+THE_USER_RE = re.compile(r"\bthe user\b", re.IGNORECASE)
+
+# Every built-in tool that broke a rule when the standard was set (2026-10-17), with the rules
+# it breaks. Remove a rule when the tool keeps it, and the entry when it keeps them all.
+PRE_STANDARD: dict[str, frozenset[str]] = {
+    name: frozenset(rules.split())
+    for name, rules in {
+        "ask_user": "long the-user",
+        "bus": "long",
+        "disable_plugin": "the-user undescribed",
+        "end_night_run": "the-user",
+        "get_briefing": "undescribed",
+        "job_ledger": "the-user",
+        "keep": "long not-english",
+        "kept": "undescribed",
+        "list_plugins": "the-user",
+        "look_at_picture": "the-user",
+        "map_search": "long",
+        "open_path": "the-user",
+        "open_plugin": "long the-user undescribed",
+        "open_url": "the-user",
+        "query_activity": "long undescribed",
+        "read_activity": "undescribed",
+        "read_records": "undescribed",
+        "recall": "long the-user undescribed",
+        "refresh_work_state": "long the-user undescribed",
+        "remove_plugin": "the-user undescribed",
+        "save_briefing": "undescribed",
+        "save_knowledge": "the-user undescribed",
+        "save_place": "not-english undescribed",
+        "screen_look": "the-user",
+        "search_knowledge": "undescribed",
+        "search_notes": "the-user",
+        "search_records": "long the-user undescribed",
+        "set_voice": "long the-user undescribed",
+        "show_on_dashboard": "long undescribed",
+        "start_night_run": "the-user",
+        "weather": "long the-user",
+        "where_am_i": "long the-user",
+    }.items()
+}
+
+
+def _undescribed(schema: Mapping[str, Any], path: str = "") -> list[str]:
+    """Parameters, nested ones included, that carry no description."""
+    missing: list[str] = []
+    for name, prop in (schema.get("properties") or {}).items():
+        if not isinstance(prop, dict):
+            continue
+        if not prop.get("description"):
+            missing.append(path + name)
+        if prop.get("type") == "object":
+            missing += _undescribed(prop, f"{path}{name}.")
+        items = prop.get("items")
+        if isinstance(items, dict) and items.get("type") == "object":
+            missing += _undescribed(items, f"{path}{name}[].")
+    return missing
+
+
+def broken_rules(name: str, description: str, schema: Mapping[str, Any]) -> dict[str, str]:
+    """Each rule this tool breaks -> what breaks it."""
+    broken: dict[str, str] = {}
+    if not NAME_RE.fullmatch(name):
+        broken["name"] = name
+    if len(description) > DESCRIPTION_CAP:
+        broken["long"] = f"{len(description)} > {DESCRIPTION_CAP} characters"
+    if CJK_RE.search(description):
+        broken["not-english"] = "Chinese text in the description"
+    if THE_USER_RE.search(description):
+        broken["the-user"] = 'says "the user", not "he"'
+    missing = _undescribed(schema)
+    if missing:
+        broken["undescribed"] = ", ".join(missing)
+    return broken
+
+
+def checked_tools() -> dict[str, dict[str, str]]:
+    """Every built-in tool the decision model is offered -> the rules it breaks."""
+    config = yaml.safe_load((REPO / "config" / "jarvis.yaml").read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory() as tmp:
+        no_plugins = Path(tmp) / "mcp-tools.json"
+        no_plugins.write_text(json.dumps({}), encoding="utf-8")
+        registry = _exam_registry(config, no_plugins)
+    return {
+        tool.name: broken_rules(tool.name, tool.description, tool.input_schema)
+        for tool in registry.for_caller(CallerPrincipal.JARVIS_LLM)
+        if not tool.name.startswith("mcp__")
+    }
+
+
+def failures(tools: Mapping[str, Mapping[str, str]]) -> list[str]:
+    """What fails the gate: a rule broken outside ``PRE_STANDARD``, or a stale entry."""
+    out: list[str] = []
+    for name, broken in sorted(tools.items()):
+        allowed = PRE_STANDARD.get(name, frozenset())
+        out += [f"{name}: {rule} ({why})" for rule, why in broken.items() if rule not in allowed]
+        out += [
+            f"{name}: keeps {rule} now; remove it from PRE_STANDARD"
+            for rule in sorted(allowed - broken.keys())
+        ]
+    out += [f"{name}: no such tool; remove it from PRE_STANDARD" for name in PRE_STANDARD
+            if name not in tools]
+    return out
+
+
+def main() -> int:
+    """Print the counts, then each failure; exit nonzero on any."""
+    tools = checked_tools()
+    legacy = sum(1 for name in tools if name in PRE_STANDARD)
+    sys.stdout.write(f"tools checked: {len(tools)}   pre-standard: {legacy}\n")
+    found = failures(tools)
+    for line in found:
+        sys.stdout.write(f"FAIL {line}\n")
+    if not found:
+        sys.stdout.write("OK\n")
+    return 1 if found else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
