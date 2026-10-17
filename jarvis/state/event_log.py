@@ -1382,6 +1382,25 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    # The watcher over a planned day (ADR 0289): `noticed` is what the program saw depart from the
+    # plan (once per key and date), `decided` what she made of it (act silent, tell or adjust).
+    # Read back per date by `jarvis.state.plan`, never folded into the plan itself.
+    EventTypeSchema(
+        event_type="plan.noticed",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("date", "key", "kind", "item_id", "facts"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="plan.decided",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("date", "key", "act", "say", "why", "model"),
+        optional_payload=(),
+        schema_version=1,
+    ),
     # A pinned bus departure on the notch (ADR 0200, 0204): the pin is a fold over these types
     # (`jarvis.state.departures`); a newer `pinned` (a set of up to three trips) replaces the older,
     # the card's clicks emit `trip_added` / `trip_removed`, the daemon's refresh emits `updated` per

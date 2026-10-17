@@ -1,9 +1,10 @@
 """The day-plan prompts and the parser of the model's answers (ADR 0288). Pure: no I/O, no clock.
 
-The nightly draft and the morning opening both use the ``day-plan`` skill. The model's answer is
-untrusted JSON: :func:`parse_items` keeps only the items that read, do not collide with a fixed
-item and name a known source, and adds back any fixed item the model left out; the program, not
-the model, owns the commitments of the day.
+The nightly draft, the morning opening and the judgement of a notice (ADR 0289) all use the
+``day-plan`` skill. The model's answer is untrusted JSON: :func:`parse_items` keeps only the items
+that read, do not collide with a fixed item and name a known source, and adds back any fixed item
+the model left out; the program, not the model, owns the commitments of the day.
+:func:`parse_decision` turns anything malformed in a notice's answer into silence.
 """
 
 from __future__ import annotations
@@ -17,16 +18,22 @@ from functools import cache
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared.skills import load_skill
-from jarvis.state.plan import MAX_ITEMS, Plan, PlanItem, check_item
+from jarvis.state.plan import ACTS, MAX_ITEMS, Plan, PlanItem, apply_changes, check_item
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
     from datetime import tzinfo
 
+    from jarvis.decision.plan_watch import Notice
     from jarvis.state.commitments import Occurrence
+    from jarvis.state.plan import Decided
+    from jarvis.state.plan_facts import DayFacts
 
 OPENING_CHARS: Final[int] = 600
 """Longest opening the parser accepts; a longer one is not the short message asked for."""
+SAY_CHARS: Final[int] = 300
+"""Longest line the parser accepts for a notice: one or two short sentences."""
+WHY_CHARS: Final[int] = 300
 _DAY_MINUTES: Final[int] = 24 * 60
 _UNPLACED: Final[str] = "99:99"
 _FENCE: Final[re.Pattern[str]] = re.compile(r"^```[a-zA-Z]*\s*|\s*```$")
@@ -151,6 +158,94 @@ def parse_opening(text: str) -> str:
         msg = f"the opening is {len(message)} characters, over {OPENING_CHARS}"
         raise ValueError(msg)
     return message
+
+
+@dataclass(frozen=True)
+class Decision:
+    """What she made of a notice: ``silent``, ``tell`` (``say``) or ``adjust`` (also ``changes``).
+
+    ``changes`` are ops for :func:`jarvis.state.plan.apply_changes`; ``notes`` say why an answer
+    was turned into silence.
+    """
+
+    act: str
+    say: str = ""
+    changes: tuple[dict[str, Any], ...] = ()
+    why: str = ""
+    notes: tuple[str, ...] = ()
+
+
+def build_decide_prompt(  # noqa: PLR0913 - the plan, the notice, the facts, the clock, what was said.
+    plan: Plan, notice: Notice, facts: DayFacts, now: datetime,
+    told_today: Sequence[Decided], *, zone: tzinfo,
+) -> tuple[str, str]:
+    """``(system, user)`` of the notice call: the skill, and what she needs to judge it.
+
+    The plan's items carry their computed ``route`` (read-only for her); ``told_today`` is what she
+    already said today, so she does not say it twice.
+    """
+    local = now.astimezone(zone)
+    body = {
+        "task": "notice",
+        "day": plan.day.isoformat(),
+        "weekday": plan.day.strftime("%A"),
+        "now": local.strftime("%H:%M"),
+        "timezone": _zone_name(zone),
+        "settled": plan.status == "settled",
+        "plan": [item.payload() for item in plan.items],
+        "notice": {
+            "key": notice.key, "kind": notice.kind, "item_id": notice.item_id,
+            "facts": notice.facts,
+        },
+        "facts": facts.payload(zone),
+        "told_today": [
+            {"at": datetime.fromtimestamp(d.at_ms / 1000, zone).strftime("%H:%M"), "say": d.say}
+            for d in told_today if d.act != "silent"
+        ],
+    }
+    return _instructions(), json.dumps(body, ensure_ascii=False, default=str)
+
+
+def _decide(found: Mapping[str, Any], plan: Plan) -> Decision:
+    """The decision ``found`` says; ValueError when it is malformed."""
+    act = found.get("act")
+    if act not in ACTS:
+        msg = f"act {act!r} is not one of {ACTS}"
+        raise ValueError(msg)
+    why = found.get("why")
+    why = why.strip()[:WHY_CHARS] if isinstance(why, str) else ""
+    if act == "silent":
+        return Decision("silent", why=why)
+    say = found.get("say")
+    if not isinstance(say, str) or not say.strip() or len(say.strip()) > SAY_CHARS:
+        msg = f"{act} needs a say of 1 to {SAY_CHARS} characters"
+        raise ValueError(msg)
+    if act == "tell":
+        return Decision("tell", say.strip(), why=why)
+    changes = found.get("changes")
+    if not isinstance(changes, list) or not changes:
+        msg = "adjust needs a non-empty changes list"
+        raise ValueError(msg)
+    if notes := apply_changes(plan.items, changes)[1]:
+        msg = "; ".join(notes)
+        raise ValueError(msg)
+    return Decision("adjust", say.strip(), tuple(changes), why)
+
+
+def parse_decision(text: str, plan: Plan) -> Decision:
+    """The decision in a model's answer to a notice; anything malformed becomes ``silent``.
+
+    ``tell`` and ``adjust`` need a ``say`` of at most :data:`SAY_CHARS`; ``adjust`` needs changes
+    that all apply to ``plan`` (a single op that does not read turns the whole answer to silence:
+    a half-applied adjustment is worse than none). A ``silent`` or ``tell`` carries no changes.
+    """
+    found = _object(text)
+    if found is None:
+        return Decision("silent", notes=("the answer is not a JSON object",))
+    try:
+        return _decide(found, plan)
+    except ValueError as exc:
+        return Decision("silent", notes=(str(exc),))
 
 
 def _minute(text: str) -> int:

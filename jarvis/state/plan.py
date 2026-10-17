@@ -4,12 +4,17 @@ There is no plan table: a date's plan is its last ``plan.drafted`` or ``plan.rev
 carries the whole item list), marked settled by a ``plan.settled`` and opened by a
 ``plan.opened``. ``plan.draft_failed`` says the nightly draft did not come. The nightly job
 (runtime), her ``plan`` tool, the opening and the phone all read the same fold.
+
+The watcher (ADR 0289) adds two more types beside the fold: ``plan.noticed`` (the program saw the
+day depart from the plan) and ``plan.decided`` (what she made of it: silent, tell or adjust).
+Both are read back per date, never folded into the plan. :func:`apply_changes` is the one place
+that turns a list of add, edit and drop ops into items, for her ``plan`` tool and her decisions.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import TYPE_CHECKING, Any, Final
 
@@ -26,6 +31,8 @@ TYPES: Final[tuple[str, ...]] = (
     "plan.opened",
     "plan.draft_failed",
 )
+WATCH_TYPES: Final[tuple[str, ...]] = ("plan.noticed", "plan.decided")
+ACTS: Final[tuple[str, ...]] = ("silent", "tell", "adjust")
 ACTOR: Final[str] = "jarvis_runtime"
 FIRMNESS: Final[tuple[str, ...]] = ("fixed", "movable", "droppable")
 BY: Final[tuple[str, ...]] = ("him", "her", "program")
@@ -36,7 +43,9 @@ TITLE_CHARS: Final[int] = 120
 MAX_ITEMS: Final[int] = 40
 ERROR_CHARS: Final[int] = 200
 CHANGE_CHARS: Final[int] = 200
+NOTE_CHARS: Final[int] = 300
 _DAY_MINUTES: Final[int] = 24 * 60
+_UNPLACED: Final[str] = "99:99"
 _HM: Final[re.Pattern[str]] = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
 
 
@@ -214,6 +223,183 @@ def draft_failed(
     """Append ``plan.draft_failed``: no draft came for ``day``; ``error`` is a short class."""
     payload = {"date": _day(day), "error": error[:ERROR_CHARS]}
     emit_event(conn, type="plan.draft_failed", payload=payload, actor=ACTOR)
+
+
+def noticed(  # noqa: PLR0913 - one notice is these six fields.
+    conn: sqlite3.Connection, day: date, key: str, kind: str, item_id: str | None,
+    facts: Mapping[str, Any],
+) -> None:
+    """Append ``plan.noticed``: the program saw ``kind`` (about ``item_id``, if any) on ``day``."""
+    if not key.strip() or not kind.strip():
+        msg = "plan.noticed needs a key and a kind"
+        raise ValueError(msg)
+    payload = {
+        "date": _day(day), "key": key, "kind": kind, "item_id": item_id, "facts": dict(facts),
+    }
+    emit_event(conn, type="plan.noticed", payload=payload, actor=ACTOR)
+
+
+def decided(  # noqa: PLR0913 - one decision is these seven fields.
+    conn: sqlite3.Connection, day: date, key: str, act: str, say: str, why: str, model: str,
+) -> None:
+    """Append ``plan.decided``: what she made of the notice ``key``, and the model that did."""
+    if act not in ACTS:
+        msg = f"plan decision act must be one of {ACTS}, not {act!r}"
+        raise ValueError(msg)
+    payload = {
+        "date": _day(day), "key": key, "act": act, "say": say, "why": why[:NOTE_CHARS],
+        "model": model,
+    }
+    emit_event(conn, type="plan.decided", payload=payload, actor=ACTOR)
+
+
+@dataclass(frozen=True)
+class Noticed:
+    """One ``plan.noticed`` as the log holds it."""
+
+    key: str
+    kind: str
+    item_id: str | None
+    facts: dict[str, Any]
+    at_ms: int
+
+
+@dataclass(frozen=True)
+class Decided:
+    """One ``plan.decided`` as the log holds it. ``act`` ``tell`` and ``adjust`` were said."""
+
+    key: str
+    act: str
+    say: str
+    why: str
+    model: str
+    at_ms: int
+
+
+def notices(conn: sqlite3.Connection, day: date) -> dict[str, Noticed]:
+    """``day``'s notices by key, the first written for each key."""
+    found: dict[str, Noticed] = {}
+    for event in iter_events_of_types(conn, ("plan.noticed",)):
+        p = event.payload
+        if p["date"] == _day(day) and p["key"] not in found:
+            found[str(p["key"])] = Noticed(
+                str(p["key"]), str(p["kind"]), p.get("item_id"), dict(p["facts"]),
+                event.ts_epoch_ms,
+            )
+    return found
+
+
+def decisions(conn: sqlite3.Connection, day: date) -> list[Decided]:
+    """``day``'s decisions in the order they were written. Told today: ``act`` tell or adjust."""
+    return [
+        Decided(
+            str(p["key"]), str(p["act"]), str(p["say"]), str(p["why"]), str(p["model"]),
+            event.ts_epoch_ms,
+        )
+        for event in iter_events_of_types(conn, ("plan.decided",))
+        if (p := event.payload)["date"] == _day(day)
+    ]
+
+
+_FIELDS: Final[frozenset[str]] = frozenset({
+    "title", "start", "minutes", "window_from", "window_to", "place", "firmness", "why", "goal",
+    "prepare", "source", "private",
+})
+_TEXT_FIELDS: Final[tuple[str, ...]] = ("title", "firmness", "source", "place", "why", "goal")
+
+
+def _coerce(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """``fields`` with the types a PlanItem takes; TypeError or ValueError on anything else."""
+    unknown = set(fields) - _FIELDS
+    if unknown:
+        msg = f"unknown field {sorted(unknown)[0]}"
+        raise ValueError(msg)
+    out: dict[str, Any] = dict(fields)
+    for name in _TEXT_FIELDS:
+        if name in out:
+            if not isinstance(out[name], str):
+                msg = f"{name} must be text"
+                raise TypeError(msg)
+            out[name] = out[name].strip()
+    if "prepare" in out:
+        held = out["prepare"]
+        if not isinstance(held, list) or not all(isinstance(p, str) for p in held):
+            msg = "prepare must be a list of text"
+            raise TypeError(msg)
+        out["prepare"] = tuple(p.strip() for p in out["prepare"] if p.strip())
+    if "private" in out and not isinstance(out["private"], bool):
+        msg = "private must be true or false"
+        raise TypeError(msg)
+    return out  # start, minutes and the windows are checked by check_item
+
+
+def _next_id(items: Iterable[PlanItem]) -> str:
+    numbers = [int(i.item_id[1:]) for i in items if re.fullmatch(r"p\d+", i.item_id)]
+    return f"p{max(numbers, default=0) + 1}"
+
+
+def _sort_key(item: PlanItem) -> tuple[str, str]:
+    return item.start or item.window_from or _UNPLACED, item.title
+
+
+def _apply_op(items: list[PlanItem], op: object) -> list[PlanItem]:
+    """``items`` after one op; ValueError or TypeError when the op cannot be applied."""
+    if not isinstance(op, dict):
+        msg = "not an object"
+        raise TypeError(msg)
+    kind = op.get("op")
+    if kind == "add":
+        if len(items) >= MAX_ITEMS:
+            msg = f"a plan holds at most {MAX_ITEMS} items"
+            raise ValueError(msg)
+        raw = op.get("item")
+        if not isinstance(raw, dict):
+            msg = "add needs an item"
+            raise TypeError(msg)
+        fields = {"firmness": "movable", "source": "his"} | _coerce(raw)
+        item = PlanItem(item_id=_next_id(items), **fields)
+        check_item(item)
+        return [*items, item]
+    target = next((i for i in items if i.item_id == op.get("id")), None)
+    if target is None:
+        msg = f"no item {op.get('id')!r}"
+        raise ValueError(msg)
+    if kind == "drop":
+        return [i for i in items if i is not target]
+    if kind == "edit":
+        fields = _coerce({k: v for k, v in op.items() if k not in ("op", "id")})
+        edited = replace(target, **fields)
+        if edited.start != target.start or edited.place != target.place:
+            edited = replace(edited, route=None)  # the leg was computed for the old time or place
+        check_item(edited)
+        return [edited if i is target else i for i in items]
+    msg = f"unknown op {kind!r}"
+    raise ValueError(msg)
+
+
+def apply_changes(
+    items: Sequence[PlanItem], changes: object,
+) -> tuple[list[PlanItem], list[str]]:
+    """``(new items, notes)``: ``items`` after the ops in ``changes``, in time order.
+
+    An op is ``{"op": "add", "item": {...}}`` (a new id is made; the fields are a PlanItem's but
+    ``item_id`` and ``route``), ``{"op": "edit", "id": ..., <fields>}`` (any field but ``item_id``
+    and ``route``; changing ``start`` or ``place`` clears the item's route, the program computes it
+    again) or ``{"op": "drop", "id": ...}``. ``changes`` is untrusted: an op that does not read, or
+    would leave an item that fails :func:`check_item`, is skipped and noted, and the others still
+    apply. A ``fixed`` item may be edited or dropped like any other: he can change anything.
+    """
+    if not isinstance(changes, list):
+        return list(items), ["changes is not a list"]
+    held = list(items)
+    notes: list[str] = []
+    for index, op in enumerate(changes, 1):
+        try:
+            held = _apply_op(held, op)
+        except (TypeError, ValueError) as exc:
+            notes.append(f"change {index} skipped: {exc}"[:NOTE_CHARS])
+    held.sort(key=_sort_key)
+    return held, notes
 
 
 def _label(item: PlanItem) -> str:
