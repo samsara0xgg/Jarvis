@@ -12,6 +12,7 @@ in as a :class:`RideControl` of plain callables, as it hands the planner its liv
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution import maps_spend, places_api, transit_tool
@@ -43,10 +44,10 @@ _DESCRIPTION: Final = (
     "Use for anything about the bus: times, getting somewhere by bus, pinning a trip, the bus he"
     " is on; not for where he is (where_am_i). No arguments: the ride he is on now (next stop,"
     " his stop, minutes left), else the next buses home. to= (home, school, a place) lists up to"
-    " 3 numbered options with leave time, walk, buses and arrival; at=HH:MM for later today,"
-    " route=39 asks about that one bus. Told you missed a bus: search again with its route= or"
-    " at=, never the same call. pin=[N] puts listed option N on the"
-    " notch. ride=start: he boarded; ride=watch: he is heading out; ride=end: he got off."
+    " 3 numbered options with leave time, walk, buses and arrival; at=HH:MM or arrive_by=HH:MM,"
+    " (day=YYYY-MM-DD); route=39 asks about that one bus. Missed a bus: search"
+    " again with its route= or at=, never the same call. pin=[N] pins listed option N."
+    " ride=start: he boarded; ride=watch: he is heading out; ride=end: he got off."
     " get_off=<stop> sets his stop and warns him before it."
 )
 _FROM_MAC: Final = "here: his location, read from this Mac, which he carries."
@@ -60,7 +61,10 @@ _FROM_BOTH: Final = (
 )
 _STARTS: Final = ("start", "watch", "end")
 _KEYS: Final = frozenset(
-    {"to", "from", "at", "route", "pin", "ride", "option", "get_off", "vehicle_id", "place_id"},
+    {
+        "to", "from", "at", "arrive_by", "day", "route", "pin", "ride", "option", "get_off",
+        "vehicle_id", "place_id",
+    },
 )
 _HOME: Final = "home"
 _RIDE_ONLY: Final = {
@@ -96,9 +100,20 @@ def _schema(here: str) -> dict[str, Any]:
             },
             "at": {
                 "type": "string",
-                "description": "Local time later today, HH:MM; omit for now. If he says you"
-                " missed a bus, search again with that route= or an at=, and compare with what"
-                " you found earlier this turn; never repeat the identical call.",
+                "description": "Local time later today (or on day=), HH:MM; omit for now. If he"
+                " says you missed a bus, search again with that route= or an at=, and compare"
+                " with what you found earlier this turn; never repeat the identical call.",
+            },
+            "arrive_by": {
+                "type": "string",
+                "description": "Local time he must be there by, HH:MM, today or on day=; the"
+                " options are the buses that arrive in time, the one nearest the deadline last."
+                " Not together with at=.",
+            },
+            "day": {
+                "type": "string",
+                "description": "Local date, YYYY-MM-DD, up to 30 days ahead; omit for today. Needs"
+                " at= or arrive_by=. A day other than today lists times only: nothing to pin.",
             },
             "route": {
                 "type": "string",
@@ -172,10 +187,10 @@ def _buses(option: Mapping[str, Any]) -> str:
     return ", then ".join(f"the {leg['route']}" for leg in option["legs"])
 
 
-def _leave(option: Mapping[str, Any]) -> str:
-    if option["spare_min"] <= 0:
+def _leave(option: Mapping[str, Any], day: date | None = None) -> str:
+    if option["spare_min"] <= 0 and day is None:
         return "leave now"
-    return f"leave {transit_tool.said_hhmm(option['leave_at'], soon=True)}"
+    return f"leave {transit_tool.said_hhmm(option['leave_at'], soon=True, day=day)}"
 
 
 def _where(label: str) -> str:
@@ -183,12 +198,12 @@ def _where(label: str) -> str:
     return "here" if label.startswith("here (") else label
 
 
-def _named_line(named: Mapping[str, Any]) -> str:
+def _named_line(named: Mapping[str, Any], day: date | None = None) -> str:
     """The sentence that answers 'can I still catch the 39': catchable or not, how tight, next."""
     route = named["route"]
     if named["verdict"] == "none":
         return f"Google has no route {route} bus then."
-    at = transit_tool.said_hhmm(named["departs"], soon=True)
+    at = transit_tool.said_hhmm(named["departs"], soon=True, day=day)
     first = f"The {route} leaves {named['board_stop']} at {at}"
     if named["verdict"] == "easy":
         first += f"; he has room ({named['spare_min']} min to spare after the walk)."
@@ -198,7 +213,7 @@ def _named_line(named: Mapping[str, Any]) -> str:
         first += "; he has missed it."
     later = named.get("next")
     if later and named["verdict"] == "missed":
-        first += f" The next one is at {transit_tool.said_hhmm(later['departs'])}."
+        first += f" The next one is at {transit_tool.said_hhmm(later['departs'], day=day)}."
     return first
 
 
@@ -213,15 +228,21 @@ def _to_said(raw: Mapping[str, Any]) -> str:
 def _plan_line(raw: Mapping[str, Any]) -> str:
     """The plan in a few words: the named bus if one was asked about, else the first catchable."""
     options = raw["options"]
+    day = date.fromisoformat(raw["day"]) if raw.get("day") else None
     if named := raw.get("named_route"):
-        text = _named_line(named)
+        text = _named_line(named, day)
         return text + (" Other options are listed." if len(options) > 1 else "")
-    pick = next((o for o in options if o["spare_min"] > -_EASY_SPARE_MIN), options[0])
+    if by := raw.get("arrive_by"):
+        # The options are in leave order; the last that is in time is the one nearest the deadline.
+        pick = next((o for o in reversed(options) if o["arrive_at"] <= by), options[0])
+    else:
+        pick = next((o for o in options if o["spare_min"] > -_EASY_SPARE_MIN), options[0])
     leg = pick["legs"][0]
+    said = transit_tool.said_hhmm
     text = (
-        f"To {_to_said(raw)}, option {options.index(pick) + 1}: {_leave(pick)}, take"
-        f" {_buses(pick)} from {leg['board_stop']} at {transit_tool.said_hhmm(leg['departs'])},"
-        f" arrive {transit_tool.said_hhmm(pick['arrive_at'])} ({pick['total_min']} min)."
+        f"To {_to_said(raw)}, option {options.index(pick) + 1}: {_leave(pick, day)}, take"
+        f" {_buses(pick)} from {leg['board_stop']} at {said(leg['departs'], day=day)},"
+        f" arrive {said(pick['arrive_at'], day=day)} ({pick['total_min']} min)."
     )
     if pick["spare_min"] <= -_EASY_SPARE_MIN:
         text += " It is probably too late to catch."
@@ -359,6 +380,9 @@ class _Bus:
             asked["place_id"] = place_id
         if at := _text(given.get("at")):
             asked["depart_at"] = at
+        for name in ("arrive_by", "day"):
+            if value := _text(given.get(name)):
+                asked[name] = value
         if route := _text(given.get("route"), 8):
             asked["route"] = route
         raw = self._plan(asked, ctx)
