@@ -112,9 +112,18 @@ def _row(raw: object) -> Registration | None:
 def register(
     root: Path, name: str, new: Registration, *, carried: frozenset[str] = frozenset(_OPTIONAL),
 ) -> None:
-    """Keep ``new`` as ``name``'s registration; an optional token not in ``carried`` stays."""
+    """Keep ``new`` as ``name``'s registration; an optional token not in ``carried`` stays.
+
+    A device token is one phone: another name holding it (the same phone paired again) is dropped,
+    or every push would reach that phone once per name.
+    """
     with _LOCK:
-        rows = _read(root)
+        rows = {
+            other: raw for other, raw in _read(root).items()
+            if other == name
+            or not isinstance(raw, dict)
+            or raw.get("device_token") != new.device_token
+        }
         kept = _row(rows.get(name))
         same = kept is not None and kept.environment == new.environment
         tokens = {

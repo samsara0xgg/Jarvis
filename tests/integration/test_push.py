@@ -404,7 +404,7 @@ def test_a_paired_phone_registers_its_tokens_and_unpair_removes_them(tmp_path: P
     assert push_tokens.registrations(tmp_path)["phone"].live_activity_token is None
 
     other = pair_device(tmp_path, "ipad")
-    client.post(REGISTER_PATH, json=again, headers=_auth(other))
+    client.post(REGISTER_PATH, json={**again, "device_token": DEVICE_A}, headers=_auth(other))
     assert set(push_tokens.registrations(tmp_path)) == {"phone", "ipad"}
 
     unpair_device(tmp_path, "phone")
@@ -940,6 +940,13 @@ def test_each_device_is_pushed_at_the_endpoint_it_registered_with(world: World) 
     assert world.push.send("t", "b") == 2
     assert [r["device"] for r in world.sandbox.requests] == [DEVICE_A]
     assert [r["device"] for r in world.production.requests] == [DEVICE_B]
+
+
+def test_a_phone_paired_again_under_a_new_name_is_pushed_once(world: World) -> None:
+    """The same device token under a second name replaces the first, so the phone gets one push."""
+    world.register("iphone-2", DEVICE_A, "sandbox")
+    assert world.push.send("t", "b") == 1
+    assert [r["device"] for r in world.sandbox.requests] == [DEVICE_A]
 
 
 # --- the Live Activity -----------------------------------------------------------------------
