@@ -219,25 +219,32 @@ export function peek(model: DayModel, bar: BarModel, ms: number, t: Say): Peek {
 // ---------- the day's numbers, and a range of the bar ----------
 export type Num = { kind: LensKind; label: string; value: string; long: string };
 const LABELS: Record<LensKind, [string, string]> = { sleep: ['Sleep', '睡'], trip: ['On the way', '路上'], workout: ['Workout', '运动'], work: ['Mac', 'Mac'], call: ['Calls', '通话'], talk: ['With her', '和她'], payment: ['Spent', '花'], picture: ['Photos', '照片'] };
-// What the day, or a window of it, adds up to: only what is not nothing. Sleep is counted whole by the day it ends on; in a window,
-// by the share of it inside (as is Mac time: a block's active seconds are spread over its length).
-export function numbers(model: DayModel, t: Say, win?: { a: number; b: number }): Num[] {
+// What each number adds up: the items it counts, each with its end (one still going ends at `limit`), the ms of it inside the window and that
+// as a share of its length (an instant counts whole). Sleep is counted whole by the day it ends on; in a window, by the share of it inside (as
+// is Mac time: a block's active seconds are spread over its length). The chips, a range's card and a number's card all count with this.
+export type Counted = { it: DayItem; s: number; e: number; lap: number; share: number };
+export function counted(model: DayModel, win?: { a: number; b: number }): Record<LensKind, Counted[]> {
   const { reply, today, now } = model, a = win?.a ?? reply.start_ms, b = win?.b ?? reply.end_ms, limit = today ? Math.min(now, b) : b;
-  const sum: Record<LensKind, number> = { sleep: 0, trip: 0, workout: 0, work: 0, call: 0, talk: 0, payment: 0, picture: 0 };
-  const out = new Map<string, { n: number; sum: number }>();
+  const by: Record<LensKind, Counted[]> = { sleep: [], trip: [], workout: [], work: [], call: [], talk: [], payment: [], picture: [] };
   for (const it of model.items) {
     const k = lensOf(it.kind);
     if (!k || it.kind === 'code') continue;
     const s = it.start_ms, e = it.end_ms ?? limit, lap = Math.max(0, Math.min(e, b) - Math.max(s, a)), share = e > s ? lap / (e - s) : 1;
-    if (k === 'sleep') { if (win ? lap > 0 : e > a && e <= b) sum.sleep += (it.minutes ?? (e - s) / MIN) * (win ? share : 1); }
-    else if (k === 'trip' || k === 'call' || k === 'workout') sum[k] += lap / MIN;
-    else if (k === 'work') sum.work += (it.active_s ?? (e - s) / 1000) / 60 * share;
-    else if (k === 'talk') { if (e >= a && s <= b) sum.talk++; }
-    else if (s >= a && s <= b) {
-      sum[k]++;
-      const amount = Number.parseFloat(String(it.amount));
-      if (k === 'payment' && it.direction === 'out' && Number.isFinite(amount)) { const c = clean(it.currency).toUpperCase(), o = out.get(c) ?? { n: 0, sum: 0 }; out.set(c, { n: o.n + 1, sum: o.sum + amount }); }
-    }
+    const counts = k === 'sleep' ? win ? lap > 0 : e > a && e <= b : k === 'talk' ? e >= a && s <= b : k === 'payment' || k === 'picture' ? s >= a && s <= b : k === 'work' ? share > 0 : lap > 0;
+    if (counts) by[k].push({ it, s, e, lap, share });
+  }
+  return by;
+}
+// What the day, or a window of it, adds up to: only what is not nothing.
+export function numbers(model: DayModel, t: Say, win?: { a: number; b: number }): Num[] {
+  const by = counted(model, win), out = new Map<string, { n: number; sum: number }>(), add = (list: Counted[], f: (c: Counted) => number) => list.reduce((n, c) => n + f(c), 0);
+  const sum: Record<LensKind, number> = {
+    sleep: add(by.sleep, c => (c.it.minutes ?? (c.e - c.s) / MIN) * (win ? c.share : 1)), trip: add(by.trip, c => c.lap / MIN), workout: add(by.workout, c => c.lap / MIN), call: add(by.call, c => c.lap / MIN),
+    work: add(by.work, c => (c.it.active_s ?? (c.e - c.s) / 1000) / 60 * c.share), talk: by.talk.length, payment: by.payment.length, picture: by.picture.length,
+  };
+  for (const { it } of by.payment) {
+    const amount = Number.parseFloat(String(it.amount));
+    if (it.direction === 'out' && Number.isFinite(amount)) { const c = clean(it.currency).toUpperCase(), o = out.get(c) ?? { n: 0, sum: 0 }; out.set(c, { n: o.n + 1, sum: o.sum + amount }); }
   }
   const nums: Num[] = [];
   for (const kind of Object.keys(LABELS) as LensKind[]) {

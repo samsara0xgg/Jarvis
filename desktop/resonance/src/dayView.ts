@@ -314,16 +314,18 @@ export function covered(list: { start_ms: number; end_ms: number | null }[], ope
 // ---------- a workout in words ----------
 const SPORTS: [RegExp, Icon, L][] = [[/run/, 'run', ['Running', '跑步']], [/walk/, 'walk', ['Walking', '步行']], [/cycl|bik/, 'bike', ['Cycling', '骑车']], [/hik/, 'hike', ['Hiking', '徒步']],
   [/swim/, 'swim', ['Swimming', '游泳']], [/strength|weight|lift/, 'strength', ['Strength training', '力量训练']], [/yoga/, 'yoga', ['Yoga', '瑜伽']]];
-// The activity's icon and word, and what the watch counted: how far, how much energy, the heart's average. An activity this does not know is
-// a workout with what the phone wrote about it.
+// The activity's icon and word, and what the watch counted: how far, how much energy, the heart's average (`facts` is those that were counted;
+// `dist`, `kcal` and `hr` are each of them, empty when not). `pace` is how fast, only with a distance and a length: minutes per km walking or
+// running (`10'56"/km`), km per hour cycling. An activity this does not know is a workout with what the phone wrote about it.
 export function workoutOf(it: DayItem, t: Say) {
-  const hit = SPORTS.find(([re]) => re.test(clean(it.activity).toLowerCase())), m = it.distance_m ?? 0;
-  const facts = [
-    m > 0 ? m >= 1000 ? t([`${(m / 1000).toFixed(1)} km`, `${(m / 1000).toFixed(1)} 公里`]) : t([`${Math.round(m)} m`, `${Math.round(m)} 米`]) : '',
-    it.energy_kcal ? t([`${Math.round(it.energy_kcal)} kcal`, `${Math.round(it.energy_kcal)} 千卡`]) : '',
-    it.avg_hr ? t([`avg heart rate ${Math.round(it.avg_hr)}`, `平均心率 ${Math.round(it.avg_hr)}`]) : '',
-  ].filter(Boolean);
-  return { icon: hit?.[1] ?? 'sport' as Icon, word: t(hit?.[2] ?? ['Workout', '运动']), facts, note: hit ? '' : clean(it.text).split('\n')[0] };
+  const hit = SPORTS.find(([re]) => re.test(clean(it.activity).toLowerCase())), m = it.distance_m ?? 0, icon = hit?.[1] ?? 'sport' as Icon;
+  const dist = m > 0 ? m >= 1000 ? t([`${(m / 1000).toFixed(1)} km`, `${(m / 1000).toFixed(1)} 公里`]) : t([`${Math.round(m)} m`, `${Math.round(m)} 米`]) : '';
+  const kcal = it.energy_kcal ? t([`${Math.round(it.energy_kcal)} kcal`, `${Math.round(it.energy_kcal)} 千卡`]) : '';
+  const hr = it.avg_hr ? t([`avg heart rate ${Math.round(it.avg_hr)}`, `平均心率 ${Math.round(it.avg_hr)}`]) : '';
+  const min = it.end_ms == null ? 0 : (it.end_ms - it.start_ms) / 60_000, per = Math.round(min * 60 / (m / 1000));
+  const pace = m <= 0 || min < 1 ? '' : icon === 'run' || icon === 'walk' ? t([`${Math.floor(per / 60)}'${String(per % 60).padStart(2, '0')}"/km`, `${Math.floor(per / 60)}'${String(per % 60).padStart(2, '0')}"/公里`])
+    : icon === 'bike' ? t([`${(m / 1000 / (min / 60)).toFixed(1)} km/h`, `${(m / 1000 / (min / 60)).toFixed(1)} 公里/时`]) : '';
+  return { icon, word: t(hit?.[2] ?? ['Workout', '运动']), facts: [dist, kcal, hr].filter(Boolean), dist, kcal, hr, pace, note: hit ? '' : clean(it.text).split('\n')[0] };
 }
 // A Claude Code session's account, as the letter it is known by.
 export const accountOf = (it: DayItem) => /^[ab]$/i.test(clean(it.account)) ? clean(it.account).toUpperCase() : '';

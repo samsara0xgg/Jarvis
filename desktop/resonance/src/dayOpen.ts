@@ -33,7 +33,7 @@ export type Open = { key: string; kind: string; parts: Part[]; rename: { id: str
 export type About = { kind: string; id: string; title: string; start_ms: number };
 export type Ask = { about: About; icon: Icon; at: string };
 
-const ATTACHMENT = /^[0-9a-f]{32}$/;
+export const ATTACHMENT = /^[0-9a-f]{32}$/;
 // A commitment's item is `commitment-<hex>@<day>` (ADR 0274); the route that confirms or drops it takes the hex between the two.
 const COMMITMENT = /^commitment-([0-9a-f]{32})@/;
 const say = (text: string, tone: Tone = 'muted'): Words => ({ text, tone });
@@ -61,12 +61,18 @@ function around(m: DayModel, it: DayItem, t: Say) {
   const after = it.end_ms == null ? undefined : stays.filter(x => x.start_ms >= it.end_ms! - 60_000 && x.start_ms <= it.end_ms! + gap).sort((a, b) => a.start_ms - b.start_ms)[0];
   return [name(before), name(after)];
 }
+// Where a move went from and to, or a ride (by its stops): `家 → A&W`, `From 家`, `To A&W`; nothing when neither is known.
+export function fromTo(m: DayModel, it: DayItem, t: Say) {
+  if (it.kind === 'ride') return [clean(it.board_stop), clean(it.alight_stop)].filter(Boolean).join(' → ');
+  const [from, to] = around(m, it, t);
+  return from && to ? `${from} → ${to}` : from ? t([`From ${from}`, `从 ${from} 出发`]) : to ? t([`To ${to}`, `去 ${to}`]) : '';
+}
 // The biggest five of what the work block was spent on, each as its share of the active time.
-function bars(list: DayItem['projects'], active: number, t: Say): Bar[] {
+export function bars(list: DayItem['projects'], active: number, t: Say): Bar[] {
   const top = (list ?? []).filter(x => clean(x.name) && x.seconds > 0).sort((a, b) => b.seconds - a.seconds).slice(0, 5), base = active > 0 ? active : Math.max(...top.map(x => x.seconds), 1);
   return top.map(x => ({ name: clean(x.name), text: dur(Math.max(1, x.seconds / 60), t), share: Math.max(0, Math.min(1, x.seconds / base)) }));
 }
-function night(it: DayItem, m: DayModel, t: Say): Night | null {
+export function night(it: DayItem, m: DayModel, t: Say): Night | null {
   if (!it.stages?.length) return null;
   const from = it.start_ms, to = it.end_ms ?? m.now, slices = stageSlices(it, from, to), mins = stageMinutes({ ...it, end_ms: to }), awake = slices.filter(x => x.stage === 'awake').length;
   const totals = [mins.deep >= 1 && `${t(['Deep', '深睡'])} ${hm(mins.deep)}`, mins.core >= 1 && `${t(['Core', '核心'])} ${hm(mins.core)}`, mins.rem >= 1 && `REM ${hm(mins.rem)}`, awake > 0 && t([`Awake ${awake}×`, `醒 ${awake} 次`])]
@@ -92,8 +98,8 @@ export function openOf(m: DayModel, key: string, t: Say): Open | null {
       break;
     }
     case 'move': {
-      const [from, to] = around(m, it, t);
-      parts.push(lines((from || to) && say(from && to ? `${from} → ${to}` : from ? t([`From ${from}`, `从 ${from} 出发`]) : t([`To ${to}`, `去 ${to}`]))));
+      const words = fromTo(m, it, t);
+      parts.push(lines(words && say(words)));
       break;
     }
     case 'ride': {
