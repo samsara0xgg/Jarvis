@@ -6,7 +6,7 @@
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDay, clock, dateTitle, fnv, moneyText, shiftDate, wingText, within } from '../src/dayView.ts';
@@ -74,6 +74,15 @@ const richDay = (over = {}) => makeDay({
 });
 // A day of a few items, for the axis.
 const small = (items, over = {}) => makeDay({ items, labels: [], missing: [], line: null, highlights: [], ...over });
+// What a brain we cannot see might send: a missing time, a field in another shape, a list that is not one.
+const brokenItems = () => [
+  { id: 'x-null', lane: 'you', kind: 'move', start_ms: null, end_ms: null, state: 'now', activity: 'walking' },
+  { id: 'x-work', lane: 'you', kind: 'work', start_ms: T(10, 30), end_ms: T(11, 20), state: 'done', active_s: '42 min', projects: 'Jarvis', apps: { name: 'Xcode' } },
+  { id: 'x-stay', lane: 'you', kind: 'stay', start_ms: T(20, 0), end_ms: null, state: 'now', place: 12, kept_place: 'home' },
+  { id: 'x-sleep', lane: 'you', kind: 'sleep', start_ms: T(0, 30), end_ms: T(0, 50), state: 'done', minutes: 'lots' },
+  { id: 'x-ride', lane: 'you', kind: 'ride', start_ms: T(16, 0), end_ms: T(16, 20), state: 'done', route: 27, board_stop: {}, alight_stop: ['x'] },
+  null, 'x', 7,
+];
 // A picture the fake daemon serves for an attachment id: 96 x 96, a warm gradient with a plate on it.
 const PICTURE = (() => {
   const w = 96, h = 96, raw = Buffer.alloc((w * 3 + 1) * h);
@@ -138,6 +147,26 @@ check('the overview bar spans the day from the hour before he woke, and its now 
   const odd = makeDay({ items: [it('bad-1', 'stay', NaN, null, { place: 'X' }), it('bad-2', 'move', T(21, 0), 'later', { activity: 'walking' }), it('unknown-1', 'weather', T(20, 0), null, {}), it('ok-1', 'stay', T(20, 0), null, { place: 'Y' })] });
   const r = flat(buildDay(odd, NOW, zh).blocks).filter(x => x.as !== 'now');
   check('an item the pane cannot read (no time, a time that is not a number, a kind it does not know) is left out, never a crash', r.length === 1 && r[0].title === 'Y' && wingText(odd, NOW, zh).head === 'Y');
+}
+{
+  const bad = makeDay({ items: [...makeDay().items, ...brokenItems()], labels: {}, highlights: 'x', missing: 3 }), told = [], warn = console.warn;
+  console.warn = text => told.push(String(text));
+  let built, said, fallback;
+  try {
+    built = buildDay(bad, NOW, zh);
+    said = wingText(bad, NOW, zh);
+    const sick = { items: [{ get kind() { throw new Error('boom'); }, start_ms: T(18, 50) }] };
+    fallback = [wingText(sick, NOW, zh), wingText(sick, NOW, zh)];
+  } finally { console.warn = warn; }
+  const r = flat(built.blocks).filter(x => x.as === 'row');
+  check('an item in another shape is read as far as it goes: the Mac block without its lists, the stay without a name, the ride without stops', r.some(x => x.title === '在 Mac 上工作' && x.detail === '') && r.some(x => x.title.startsWith('公交')) && flat(built.blocks).some(x => x.as === 'stay' && x.title === '没名字的地方') && r.some(x => x.title === '睡觉'));
+  check('a day the brain sends with a list that is not a list still builds: no labels, no highlights, nothing missing', built.chips.length === 0 && built.stars.size === 0 && built.foot === '' && said.head === '停留');
+  assert.throws(() => buildDay({ ...makeDay(), start_ms: null }, NOW, zh), /no usable bounds/);
+  assert.throws(() => buildDay({ ...makeDay(), end_ms: T(0) }, NOW, zh), /no usable bounds/);
+  assert.throws(() => buildDay(null, NOW, zh), /no usable bounds/);
+  check('a day with no usable bounds cannot be built, and says so', true);
+  check('the wing never throws: a day it cannot read gives the plain place, or nothing, and the log hears of it once', fallback[0].head === '' && fallback[1].head === '' && told.length === 1 && told[0].startsWith('[timeline] the wing: boom'), JSON.stringify(told));
+  check('electron passes the pane\'s [timeline] lines to its log as it does [dashboard] ones', /startsWith\('\[dashboard\]'\) \|\| event\.message\.startsWith\('\[timeline\]'\)/.test(readFileSync(path.join(root, 'electron/companion.ts'), 'utf8')));
 }
 {
   // A day the clocks cut short or stretch: the bar's hour marks still sit at their local hours.
@@ -212,7 +241,7 @@ const browser = await chromium.launch({ headless: true, channel: 'chrome', args:
 const errors = [];
 const NOTCH_R = 412.5, TOP = 32;
 // A page on a fake daemon: `served` is what /inherent/day answers, `board` the sessions, `departure` the pinned trip, `hits` the day reads it got.
-async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = makeDay(), departure = null } = {}) {
+async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = makeDay(), departure = null, init = null } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 640, height: 900 }, deviceScaleFactor: 2 });
   const page = await ctx.newPage();
   const s = { board, served, departure, hits: [], pictures: [], controls: { mic_muted: false, speech_muted: false, conversation: false, quiet: 'off' } };
@@ -233,6 +262,7 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
     window.WebSocket = class { constructor() { window.__sockets.push(this); setTimeout(() => this.onopen?.(), 0); } send() {} close() {} };
     window.__emit = (op, payload) => window.__sockets.at(-1).onmessage({ data: JSON.stringify({ op, payload }) });
   }, [wing || marks ? { ...wing && { wing }, ...marks && { marks } } : null, { lang, ...(openBy ? { openBy } : {}) }]);
+  if (init) await page.addInitScript(init, NOW);
   await page.route(`${daemon}/**`, route => {
     const url = new URL(route.request().url());
     const json = value => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
@@ -651,6 +681,49 @@ try {
     await a.move(mid, 14); await a.page.mouse.down(); await a.page.mouse.up();
     await a.until(() => document.querySelector('.notch-drop.is-open .dt-say'), undefined, 8000);
     check('and the pane says so in a sentence', (await a.page.locator('.dt-say').innerText()).includes('还不会给出一天'));
+    await a.ctx.close();
+  }
+
+
+  // ---- a day the pane cannot read never takes the window with it ----
+  if (all || only === 'guard') {
+    // `boom` makes the clock throw for the one moment the pane's bar writes (now): a failure inside a render, which only a guard can hold.
+    const a = await boot({ served: makeDay({ items: [...makeDay().items, ...brokenItems()], labels: {}, highlights: 'x', missing: 3 }), init: now => {
+      const own = Object.getOwnPropertyDescriptor(Intl.DateTimeFormat.prototype, 'format');
+      Object.defineProperty(Intl.DateTimeFormat.prototype, 'format', { configurable: true, get() { const f = own.get.call(this); return (d, ...rest) => { if (window.__boom && d === now) throw new Error('boom'); return f(d, ...rest); }; } });
+    } });
+    const told = [], caught = errors.length;
+    a.page.on('console', m => { if (m.text().startsWith('[timeline]')) told.push(m.text()); });
+    await a.until(() => document.querySelector('.notch')?.dataset.line === '停留 · 1:50');
+    const seg = await a.lineX();
+    await a.move(seg.mid, 14); await a.page.mouse.down(); await a.page.mouse.up();
+    await a.until(() => document.querySelector('.notch-drop.is-open .dt-row'), undefined, 8000);
+    await a.page.waitForTimeout(500);
+    const her = () => a.page.evaluate(() => !!document.querySelector('main.companion .companion-hit') && !!document.querySelector('.notch .notch-hit') && !!document.querySelector('.companion-canvas'));
+    check('a day with items in other shapes still draws: rows, the bar, her sentence, and she is there', await a.page.locator('.dt-row').count() >= 8 && await a.page.locator('.dt-track').count() === 1 && await a.page.locator('.dt-say').count() === 0 && await her());
+    // a failure while drawing: the pane gives a line, the day buttons work, she stays
+    await a.page.evaluate(() => { window.__boom = true; });
+    await a.page.locator('.dt-row').nth(2).hover();
+    await a.until(() => document.querySelector('.dt-say'), undefined, 3000);
+    const say = await a.page.locator('.dt-say').innerText();
+    check('a failure while drawing the day leaves a quiet line in the pane, the date and day buttons where they were, and her in the window', say === '这一天没画出来' && await a.page.locator('.dt-date').innerText() === '10月19日 周一' && await a.page.locator('.dt-nav button').first().isEnabled() && await her(), say);
+    check('and the log hears of it: a [timeline] line, once', told.filter(x => /^\[timeline\] the pane: boom/.test(x)).length === 1, JSON.stringify(told));
+    await a.shot('guard-01-pane-failed', { x: 40, y: 0, width: 560, height: 300 });
+    await a.page.evaluate(() => { window.__boom = false; });
+    await a.page.locator('.dt-nav button').first().click();
+    await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
+    check('the day before draws again from the same buttons', await a.page.locator('.dt-say').count() === 0 && await her());
+    // a day the brain sends with no bounds at all
+    await a.page.keyboard.press('Escape');
+    await a.until(() => document.querySelector('.notch')?.dataset.tl === '', undefined, 3000);
+    a.s.served = { ...makeDay(), start_ms: null };
+    await a.page.waitForTimeout(400);
+    await a.move(seg.mid, 14); await a.page.mouse.down(); await a.page.mouse.up();
+    await a.until(() => document.querySelector('.notch-drop.is-open .dt-say')?.textContent === '这一天没画出来', undefined, 8000);
+    check('a day with no usable bounds says so in a line, with the day buttons, and the log hears of it', await a.page.locator('.dt-nav button').first().isEnabled() && told.some(x => /^\[timeline\] the day: the day has no usable bounds/.test(x)) && await her());
+    a.page.removeAllListeners('console');
+    check('and none of it was an uncaught error', errors.slice(caught).every(x => /boom|The above error|Error: /.test(x)));
+    errors.length = caught;
     await a.ctx.close();
   }
 

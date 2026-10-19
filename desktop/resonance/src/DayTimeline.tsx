@@ -2,9 +2,10 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { CaretLeft, CaretRight, Star } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { useNow, useRoute, type Route } from './homeData';
-import { buildDay, dateTitle, shiftDate, within, type Block, type DayReply, type Row } from './dayView';
+import { buildDay, dateTitle, report, shiftDate, within, type Block, type DayReply, type Row } from './dayView';
 import { DayBar, useBarState } from './DayBar';
 import { Ic } from './dayIcons';
+import { TimelineGuard } from './TimelineGuard';
 import './day-timeline.css';
 
 // The timeline pane (ADR 0296): the drop pane's other content, grown from the notch's right side. One story top to bottom: the date,
@@ -48,7 +49,13 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
   if (reply) last.current = reply;
   const shown = reply ?? last.current, now = useNow(open ? 30_000 : 3_600_000);
   useEffect(() => { feed.reload(); }, []);
-  const model = useMemo(() => shown ? buildDay(shown, now, t) : null, [shown, now, lang]);
+  // A day that cannot be built (no usable bounds) says so in a line; a day that builds but fails to draw falls to the guards below.
+  const built = useMemo(() => {
+    if (!shown) return { model: null, failed: false };
+    try { return { model: buildDay(shown, now, t), failed: false }; }
+    catch (error) { report('the day', error); return { model: null, failed: true }; }
+  }, [shown, now, lang]);
+  const model = built.model;
   const todayDate = feed.data?.date ?? null, at = date ?? todayDate;
   const step = (days: number) => { if (!at) return; const next = shiftDate(at, days); setDate(next === todayDate ? null : next); };
   // A read that does not come says so after a few seconds; the daemon is asked again on its own.
@@ -95,13 +102,15 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
   return <div className={`dt${shown && !reply ? ' is-loading' : ''}`} data-lens={ui.lens ?? undefined} role="region" aria-label={t(['Day timeline', '一天的时间线'])}>
     <div className="dt-head">
       <b className="dt-date">{title}</b>{date === null && <em className="dt-today">{t(['Today', '今天'])}</em>}
-      <span className="dt-chips">{model?.chips.map(c => <i key={c.text} className={`dt-chip${c.more ? ' is-more' : ''}`}>{c.text}</i>)}</span>
+      <TimelineGuard where="the header" reset={shown} fallback={null}>
+        <span className="dt-chips">{model?.chips.map(c => <i key={c.text} className={`dt-chip${c.more ? ' is-more' : ''}`}>{c.text}</i>)}</span>
+      </TimelineGuard>
       <span className="dt-nav">
         <button type="button" aria-label={t(['The day before', '前一天'])} disabled={!at} onClick={() => step(-1)}><CaretLeft size={13}/></button>
         <button type="button" aria-label={t(['The day after', '后一天'])} disabled={!at || date === null} onClick={() => step(1)}><CaretRight size={13}/></button>
       </span>
     </div>
-    {!model ? <p className="dt-say">{say}</p> : <>
+    {built.failed ? <p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p> : !model ? <p className="dt-say">{say}</p> : <TimelineGuard where="the pane" reset={shown} fallback={<p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p>}>
       {model.line && <p className={`dt-line${model.line.draft ? ' is-draft' : ''}`}>{model.line.text}</p>}
       {model.empty ? <p className="dt-say">{t(['Nothing recorded for this day yet', '这一天还没有记下什么'])}</p> : <>
         <DayBar model={model} port={port} ui={ui} hot={hot} onHot={setHot} onJump={jump}/>
@@ -109,6 +118,6 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
           : ui.filter && <p className="dt-say">{t(['Nothing was recorded in this stretch', '这一段没有记下什么'])}</p>}
       </>}
       {model.foot && <p className="dt-foot">{model.foot}</p>}
-    </>}
+    </TimelineGuard>}
   </div>;
 }
