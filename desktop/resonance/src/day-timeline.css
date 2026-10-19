@@ -20,33 +20,14 @@
 .notch .dt-say { margin:0; padding:10px 2px 14px; font-size:var(--text-detail); color:var(--p-muted); }
 .notch .dt-foot { margin:0; padding-inline:2px; font-size:var(--text-label); line-height:16px; color:var(--p-faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
-/* the day in one bar: what each piece is, above it; the hours, under it */
-.notch .dt-bar { position:relative; display:flex; flex-direction:column; padding-inline:2px; }
-.notch .dt-notes { position:relative; height:18px; }
-.notch .dt-note { position:absolute; top:0; display:flex; align-items:center; box-sizing:border-box; height:16px; gap:3px; font-size:10.5px; font-weight:600; line-height:16px; white-space:nowrap; color:rgb(var(--c) / .95); }
-.notch .dt-note.is-label { justify-content:flex-start; padding-inline:4px; overflow:hidden; }
-.notch .dt-note.is-label > span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
-.notch .dt-note.is-icon { justify-content:center; }
-.notch .dt-note svg { flex:none; }
-.notch .dt-more { position:absolute; right:0; top:0; height:16px; padding:0 6px; border-radius:var(--radius-tag); font:600 10px/16px "JetBrains Mono", Menlo, monospace; color:var(--p-muted); background:rgb(255 255 255 / .09); }
-.notch .dt-more:hover { background:rgb(255 255 255 / .16); color:var(--p-ink); }
-.notch .dt-scale { position:relative; }
-.notch .dt-track { position:relative; height:10px; border-radius:5px; overflow:hidden; background:rgb(255 255 255 / .06); }
-.notch .dt-seg { position:absolute; top:0; bottom:0; background:rgb(var(--c) / var(--a)); box-shadow:inset -1px 0 0 rgb(0 0 0 / .55); cursor:pointer; transition:filter var(--motion-fast); }
-.notch .dt-seg.is-hot { filter:brightness(1.45); }
-.notch .dt-nowtick { position:absolute; top:-3px; bottom:-3px; width:1px; margin-left:-.5px; background:rgb(var(--now)); box-shadow:0 0 6px rgb(var(--now) / .75); pointer-events:none; }
-.notch .dt-hours { position:relative; height:14px; margin-top:3px; font:10px/14px "JetBrains Mono", Menlo, monospace; color:var(--p-faint); }
-.notch .dt-hours span { position:absolute; top:0; transform:translateX(-50%); }
-.notch .dt-hours span.is-start { transform:none; } .notch .dt-hours span.is-end { transform:translateX(-100%); }
-
 /* the day: stays as groups, the ways between them as connectors, the now line, what is still to come muted */
 .notch .dt-list { position:relative; display:flex; flex:0 1 auto; flex-direction:column; min-height:0; margin-inline:-4px; padding-inline:4px; overflow-y:auto; overscroll-behavior:contain;
   scrollbar-width:thin; scrollbar-color:var(--p-line) transparent; }
 .notch .dt-list.more-below { -webkit-mask-image:linear-gradient(#000 calc(100% - 30px),transparent); mask-image:linear-gradient(#000 calc(100% - 30px),transparent); }
-.notch .dt-list.more-above { -webkit-mask-image:linear-gradient(transparent,#000 24px); mask-image:linear-gradient(transparent,#000 24px); }
-.notch .dt-list.more-above.more-below { -webkit-mask-image:linear-gradient(transparent,#000 24px,#000 calc(100% - 30px),transparent); mask-image:linear-gradient(transparent,#000 24px,#000 calc(100% - 30px),transparent); }
+.notch .dt-list.more-above { -webkit-mask-image:linear-gradient(transparent,#000 14px); mask-image:linear-gradient(transparent,#000 14px); }
+.notch .dt-list.more-above.more-below { -webkit-mask-image:linear-gradient(transparent,#000 14px,#000 calc(100% - 30px),transparent); mask-image:linear-gradient(transparent,#000 14px,#000 calc(100% - 30px),transparent); }
 .notch .dt-row,.notch .dt-sh { position:relative; display:grid; grid-template-columns:22px minmax(0,1fr) auto; gap:0 10px; align-items:center; min-height:32px; padding:3px 6px; border-radius:var(--radius-control);
-  font-size:var(--text-detail); line-height:17px; transition:background var(--motion-fast); }
+  font-size:var(--text-detail); line-height:17px; transition:background var(--motion-fast),opacity 150ms; }
 .notch .dt-row.is-hot,.notch .dt-sh.is-hot { background:rgb(255 255 255 / .07); }
 .notch .dt-ic { position:relative; z-index:1; display:grid; place-items:center; box-sizing:border-box; width:22px; height:22px; border:1px solid transparent; border-radius:50%; font-style:normal; color:var(--p-muted); background:rgb(255 255 255 / .07); }
 .notch .dt-tx { display:flex; flex-direction:column; min-width:0; }
@@ -71,9 +52,9 @@
 .notch .dt-row.is-future .dt-ic { background:transparent; border:1px dashed rgb(214 222 250 / .5); }
 .notch .dt-now { display:flex; align-items:center; gap:8px; height:22px; padding-inline:6px; font:600 var(--text-mono)/1 "JetBrains Mono", Menlo, monospace; color:rgb(var(--now)); }
 .notch .dt-now::after { content:''; flex:1; height:1px; background:rgb(var(--now) / .85); box-shadow:0 0 6px rgb(var(--now) / .55); }
-.notch .is-flash { animation:dt-flash .9s var(--ease-out); }
-@keyframes dt-flash { from { background:rgb(255 255 255 / .22); } to { background:transparent; } }
+.notch .is-flash { animation:dt-flash 600ms var(--ease-out); }
+@keyframes dt-flash { from { background:rgb(255 255 255 / .08); } to { background:transparent; } }
 @media (prefers-reduced-motion:reduce) {
-  .notch .dt.is-loading > :not(.dt-head),.notch .dt-nav button,.notch .dt-row,.notch .dt-sh,.notch .dt-seg { transition:none; }
+  .notch .dt.is-loading > :not(.dt-head),.notch .dt-nav button,.notch .dt-row,.notch .dt-sh { transition:none; }
   .notch .is-flash { animation:none; }
 }

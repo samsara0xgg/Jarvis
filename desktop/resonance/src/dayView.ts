@@ -1,9 +1,9 @@
 import type { L } from './companionSettings';
 
 // The owner's day as GET /inherent/day serves it (docs/spec.html; ADR 0199, 0235): items in time order, structured and
-// never worded. This file reads them for the notch's timeline (ADR 0296): the wing's one line, and the pane's rows and bar.
-// Nothing here is made up: a field that did not arrive is a row without it, a kind this file does not know is left out.
-// Pure (no DOM), so scripts/verify-notch-timeline.mjs runs it in node.
+// never worded. This file reads them for the notch's timeline (ADR 0296): the wing's one line and the pane's rows; the bar
+// above the rows is barView.ts. Nothing here is made up: a field that did not arrive is a row without it, a kind this file
+// does not know is left out. Pure (no DOM), so scripts/verify-notch-timeline.mjs runs it in node.
 type Top = { name: string; seconds: number };
 export type DayItem = {
   id: string; lane: 'you' | 'her'; kind: string; start_ms: number; end_ms: number | null; state: 'done' | 'now' | 'next';
@@ -11,7 +11,7 @@ export type DayItem = {
   text?: string; active_s?: number; projects?: Top[]; apps?: Top[]; app?: string;
   route?: string; board_stop?: string; alight_stop?: string | null; turns?: number; note?: string;
   title?: string; source?: string; confirmed?: boolean; private?: boolean; to?: string; leave_at_ms?: number;
-  amount?: string; currency?: string; direction?: string; counterparty?: string; messages?: number; chats?: number;
+  attachment?: string; amount?: string; currency?: string; direction?: string; counterparty?: string; messages?: number; chats?: number;
 };
 export type DayReply = {
   date: string; tz: string; start_ms: number; end_ms: number; now_ms: number; items: DayItem[];
@@ -21,6 +21,10 @@ export type DayReply = {
 export type Say = (l: L) => string;
 export type Rgb = readonly [number, number, number];
 export type Icon = 'moon' | 'walk' | 'run' | 'bike' | 'car' | 'bus' | 'talk' | 'picture' | 'event' | 'reminder' | 'work' | 'call' | 'home' | 'school' | 'pin' | 'payment' | 'chat';
+// What the day's numbers count (the chips under the bar) and what a lens lights: a row or a span of the bar is one of these or none.
+export type LensKind = 'sleep' | 'trip' | 'work' | 'call' | 'talk' | 'payment' | 'picture';
+const LENSES: Record<string, LensKind> = { sleep: 'sleep', move: 'trip', ride: 'trip', work: 'work', call: 'call', talk: 'talk', payment: 'payment', picture: 'picture' };
+export const lensOf = (kind: string): LensKind | null => LENSES[kind] ?? null;
 
 // ---------- time and words ----------
 const clocks = new Map<string, Intl.DateTimeFormat>();
@@ -99,13 +103,18 @@ export function wingText(day: DayReply | null, now: number, t: Say): { head: str
 }
 
 // ---------- the pane ----------
-export type Row = { key: string; icon: Icon; title: string; detail: string; when: string; dur: string; future: boolean; star: boolean; connector: boolean };
+// `kind` and `lens`: what the row is, and which of the day's numbers it is counted in (a lens on the bar dims the rows that are not).
+export type Row = { key: string; kind: string; lens: LensKind | null; icon: Icon; title: string; detail: string; when: string; dur: string; future: boolean; star: boolean; connector: boolean };
 // `star`: null when the stay is not one of the day's highlights, else its label (which may be empty).
 export type StayHead = { key: string; name: string; unnamed: boolean; rgb: Rgb; icon: Icon; when: string; dur: string; star: string | null };
 export type Block = { type: 'row'; t: number; row: Row } | { type: 'now'; t: number; key: string; label: string } | { type: 'stay'; t: number; key: string; head: StayHead; items: Block[] };
-export type BarSeg = { key: string; row: string; kind: 'stay' | 'move' | 'sleep'; f0: number; f1: number; rgb: Rgb; a: number; icon: Icon; label: string; name: string };
-export type Bar = { segs: BarSeg[]; ticks: { label: string; f: number }[]; nowF: number | null };
-export type DayModel = { title: string; today: boolean; chips: { text: string; more: boolean }[]; line: { text: string; draft: boolean } | null; blocks: Block[]; bar: Bar | null; foot: string; empty: boolean };
+// Where a row or a stay header sits in time (ms; a moment has t1 = t0), and what the owner or she marked as what mattered.
+export type Span = { key: string; kind: string; t0: number; t1: number };
+export type Mark = { label: string; by: string };
+export type DayModel = {
+  title: string; today: boolean; now: number; tz: string; reply: DayReply; items: DayItem[]; chips: { text: string; more: boolean }[]; line: { text: string; draft: boolean } | null;
+  blocks: Block[]; foot: string; empty: boolean; span: Map<string, Span>; index: Span[]; stars: Map<string, Mark>;
+};
 
 const SOURCES: Record<string, L> = { phone: ['The phone', '手机'], reminders: ['Reminders', '提醒'], mac: ['Mac time', 'Mac 的时间'], talks: ['Conversations', '对话'], rides: ['Bus rides', '公交乘车'],
   pictures: ['Pictures', '图片'], calendar: ['The calendar', '日历'], departures: ['Pinned buses', '钉着的公交'], commitments: ['What he has to go to', '要去的事'] };
@@ -118,27 +127,30 @@ export function moneyText(amount: unknown, currency?: string) {
 }
 // What can stand inside a stay; moves and rides never do, they are the ways between.
 const NESTED = new Set(['sleep', 'talk', 'picture', 'event', 'reminder', 'work', 'call', 'departure', 'payment', 'claude_chat', 'claude_day']);
-const BAR_KINDS = new Set(['stay', 'sleep', 'move', 'ride']);
-const SLEEP: Rgb = [112, 120, 205], TRANSIT: Rgb = [214, 222, 250];
+// What happens in one moment (the rest has a length).
+const INSTANT = new Set(['reminder', 'picture', 'departure', 'payment']);
+export const SLEEP: Rgb = [112, 120, 205], TRANSIT: Rgb = [196, 208, 255];
 type Ctx = { t: Say; tz: string; reply: DayReply; now: number; today: boolean; marks: Map<string, string> };
 
-const names = (list?: Top[]) => (list ?? []).map(x => clean(x.name)).filter(Boolean);
+export const names = (list?: Top[]) => (list ?? []).map(x => clean(x.name)).filter(Boolean);
+export { clean, moveIcon, moveWords, rideWords };
 // The end of a span: `24:00` at the day's end, `次日 02:10` past it.
-const endText = (ms: number, reply: DayReply, tz: string, t: Say) => ms === reply.end_ms ? '24:00' : (ms > reply.end_ms ? t(['next day ', '次日 ']) : '') + clock(ms, tz);
+export const endText = (ms: number, reply: DayReply, tz: string, t: Say) => ms === reply.end_ms ? '24:00' : (ms > reply.end_ms ? t(['next day ', '次日 ']) : '') + clock(ms, tz);
 const dayBefore = (it: DayItem, c: Ctx) => it.start_ms < c.reply.start_ms ? c.t(['yesterday ', '昨天 ']) : '';
 function rowOf(it: DayItem, c: Ctx): Row | null {
   const { t, tz, reply } = c;
-  let icon: Icon, title: string, detail = '', instant = false, amount = '';
+  let icon: Icon, title: string, detail = '', amount = '';
+  const instant = INSTANT.has(it.kind);
   switch (it.kind) {
     case 'sleep': icon = 'moon'; title = t(['Sleep', '睡觉']); break;
     case 'move': icon = moveIcon(it.activity); title = moveWords(it.activity, t); break;
     case 'ride': icon = 'bus'; title = rideWords(it, t); detail = [clean(it.board_stop), clean(it.alight_stop)].filter(Boolean).join(' → '); break;
     case 'talk': icon = 'talk'; title = t(['Talked with her', '和她说话']); detail = it.turns ? t([`${it.turns} ${it.turns === 1 ? 'line' : 'lines'}`, `${it.turns} 句`]) : ''; break;
-    case 'picture': icon = 'picture'; title = t(['Photo', '照片']); detail = clean(it.note).split('\n')[0]; instant = true; break;
+    case 'picture': icon = 'picture'; title = t(['Photo', '照片']); detail = clean(it.note).split('\n')[0]; break;
     case 'event':
       icon = 'event'; title = it.private ? t(['Private', '私事']) : clean(it.title) || t(['Event', '日程']);
       detail = it.private ? '' : [clean(it.place), it.source === 'mail' && it.confirmed === false ? t(['read from mail, not confirmed', '从邮件里读到，还没确认']) : ''].filter(Boolean).join(' · '); break;
-    case 'reminder': icon = 'reminder'; title = clean(it.text) || t(['Reminder', '提醒']); instant = true; break;
+    case 'reminder': icon = 'reminder'; title = clean(it.text) || t(['Reminder', '提醒']); break;
     case 'work': {
       icon = 'work'; title = t(['Working on the Mac', '在 Mac 上工作']);
       const top = [...new Set([...names(it.projects), ...names(it.apps)])].slice(0, 3).join(' · '), active = it.active_s ? dur(it.active_s / 60, t) : '';
@@ -146,11 +158,11 @@ function rowOf(it: DayItem, c: Ctx): Row | null {
     }
     case 'call': icon = 'call'; title = clean(it.app) ? t([`Call · ${it.app}`, `通话 · ${it.app}`]) : t(['Call', '通话']); break;
     case 'departure':
-      icon = 'bus'; title = clean(it.title) || rideWords(it, t); instant = true;
+      icon = 'bus'; title = clean(it.title) || rideWords(it, t);
       detail = [clean(it.to) && t([`to ${it.to}`, `去 ${it.to}`]), it.leave_at_ms != null && t([`leave ${clock(it.leave_at_ms, tz)}`, `${clock(it.leave_at_ms, tz)} 出门`])].filter(Boolean).join(' · '); break;
     case 'payment': {
       // Plain for now: who, what and through which app on the left, the amount (money out reads −, money in +) where a length would be.
-      icon = 'payment'; instant = true; const who = clean(it.counterparty), what = clean(it.text), via = PAYERS[clean(it.source)];
+      icon = 'payment'; const who = clean(it.counterparty), what = clean(it.text), via = PAYERS[clean(it.source)];
       title = who || what || t(['Payment', '付款']);
       detail = [who && what !== who ? what : '', via ? t(via) : ''].filter(Boolean).join(' · ');
       amount = `${it.direction === 'out' ? '−' : it.direction === 'in' ? '+' : ''}${moneyText(it.amount, it.currency)}`; break;
@@ -177,7 +189,7 @@ function rowOf(it: DayItem, c: Ctx): Row | null {
   if (connector && long) title = `${title} · ${long}`;
   const mark = c.marks.get(it.id);
   if (mark) { detail = [title, detail].filter(Boolean).join(' · '); title = mark; }
-  return { key: it.id, icon, title, detail, when, dur: connector ? '' : amount || long, future: c.today && it.start_ms > c.now, star: c.marks.has(it.id), connector };
+  return { key: it.id, kind: it.kind, lens: lensOf(it.kind), icon, title, detail, when, dur: connector ? '' : amount || long, future: c.today && it.start_ms > c.now, star: c.marks.has(it.id), connector };
 }
 
 function stayHead(it: DayItem, c: Ctx): StayHead {
@@ -194,23 +206,28 @@ const byTime = (a: DayItem, b: DayItem) => a.start_ms - b.start_ms || (a.id < b.
 export function buildDay(reply: DayReply, now: number, t: Say): DayModel {
   const tz = reply.tz, today = now >= reply.start_ms && now < reply.end_ms;
   // A highlight's label is the owner's or hers; with neither, the brain writes `kind HH:MM`, which says less than the row does.
-  const marks = new Map<string, string>();
-  for (const h of reply.highlights ?? []) marks.set(h.id, /^[a-z_]+ \d{1,2}:\d{2}$/i.test(clean(h.label)) ? '' : clean(h.label));
+  const marks = new Map<string, string>(), stars = new Map<string, Mark>();
+  for (const h of reply.highlights ?? []) {
+    marks.set(h.id, /^[a-z_]+ \d{1,2}:\d{2}$/i.test(clean(h.label)) ? '' : clean(h.label));
+    stars.set(h.id, { label: marks.get(h.id)!, by: h.by });
+  }
   const c: Ctx = { t, tz, reply, now, today, marks };
   const seen = new Set<string>(), items: DayItem[] = [];
   for (const it of reply.items ?? []) if (sound(it) && !seen.has(it.id) && (it.kind === 'stay' || it.kind === 'move' || it.kind === 'ride' || NESTED.has(it.kind))) { seen.add(it.id); items.push(it); }
   items.sort(byTime);
   const stays = items.filter(it => it.kind === 'stay'), inside = new Map<string, Block[]>(stays.map(s => [s.id, []]));
-  const tops: { rank: number; block: Block }[] = [];
+  const tops: { rank: number; block: Block }[] = [], span = new Map<string, Span>(), openEnd = today ? now : reply.end_ms;
+  const place = (it: DayItem) => span.set(it.id, { key: it.id, kind: it.kind, t0: it.start_ms, t1: INSTANT.has(it.kind) || it.end_ms == null && it.state === 'next' ? it.start_ms : Math.max(it.start_ms, it.end_ms ?? openEnd) });
   for (const it of items) {
     const row = it.kind === 'stay' ? null : rowOf(it, c);
     if (!row) continue;
+    place(it);
     const block: Block = { type: 'row', t: it.start_ms, row };
     // What began while he was at a place is that place's.
     const home = NESTED.has(it.kind) ? [...stays].reverse().find(s => s.start_ms <= it.start_ms && (s.end_ms == null || it.start_ms < s.end_ms)) : undefined;
     if (home) inside.get(home.id)!.push(block); else tops.push({ rank: it.kind === 'sleep' ? 0 : row.connector ? 2 : 3, block });
   }
-  for (const s of stays) tops.push({ rank: 1, block: { type: 'stay', t: s.start_ms, key: s.id, head: stayHead(s, c), items: inside.get(s.id)! } });
+  for (const s of stays) { place(s); tops.push({ rank: 1, block: { type: 'stay', t: s.start_ms, key: s.id, head: stayHead(s, c), items: inside.get(s.id)! } }); }
   tops.sort((a, b) => a.block.t - b.block.t || a.rank - b.rank);
   const blocks = tops.map(x => x.block);
   if (today) {
@@ -222,53 +239,21 @@ export function buildDay(reply: DayReply, now: number, t: Say): DayModel {
   const down = (reply.missing ?? []).map(k => t(SOURCES[k] ?? [k, k]));
   const foot = down.length ? t([`${down.join(', ')} ${down.length === 1 ? "hasn't" : "haven't"} come in yet`, `${down.join('、')}还没进来`]) : '';
   const line = clean(reply.line?.text) ? { text: clean(reply.line!.text), draft: !!reply.line!.draft } : null;
-  const ok = Number.isFinite(reply.start_ms) && Number.isFinite(reply.end_ms) && reply.end_ms > reply.start_ms;
-  return { title: dateTitle(reply.date, t), today, chips, line, blocks, bar: items.length && ok ? barOf(items, c) : null, foot, empty: !items.length && !line && !chips.length };
+  // Every row and stay header in the order the list shows them (a stay before what began with it), for "which row is at this minute".
+  const index = [...span.values()].sort((a, b) => a.t0 - b.t0 || +(b.kind === 'stay') - +(a.kind === 'stay') || (a.key < b.key ? -1 : 1));
+  return { title: dateTitle(reply.date, t), today, now, tz, reply, items, chips, line, blocks, foot, empty: !items.length && !line && !chips.length, span, index, stars };
 }
 
-// ---------- the overview bar ----------
-// One bar for the day, from the first thing or 06:00, whichever is earlier, to midnight. Where things overlap, the one that wins is
-// painted (a way he went over a sleep over a stay), so every piece is one thing; the track stays empty where nothing was recorded.
-function barOf(items: DayItem[], c: Ctx): Bar {
-  const { reply, now, today, t } = c, delta = (reply.end_ms - reply.start_ms) - 24 * 3_600_000, at = (h: number) => h === 24 ? reply.end_ms : reply.start_ms + h * 3_600_000 + delta;
-  const a0 = Math.max(reply.start_ms, Math.min(items[0].start_ms, at(6))), a1 = reply.end_ms, f = (ms: number) => (ms - a0) / (a1 - a0);
-  const covers: { it: DayItem; s: number; e: number; pr: number }[] = [];
-  for (const it of items) {
-    if (!BAR_KINDS.has(it.kind)) continue;
-    const s = Math.max(it.start_ms, a0), e = Math.min(it.end_ms ?? (today ? now : a1), a1);
-    if (e > s) covers.push({ it, s, e, pr: it.kind === 'stay' ? 1 : it.kind === 'sleep' ? 2 : 3 });
+// The list with only what overlaps [a, b]: a stay stays while it does, with only the rows inside it that do; the now line when now is in.
+// The night's letter on his Claude chats is about the whole day, not a stretch of it, so it never counts as overlapping.
+export function within(blocks: Block[], span: Map<string, Span>, a: number, b: number): Block[] {
+  const out: Block[] = [];
+  for (const block of blocks) {
+    if (block.type === 'now') { if (block.t >= a && block.t <= b) out.push(block); continue; }
+    const s = span.get(block.type === 'row' ? block.row.key : block.key), hit = !!s && (s.t0 === s.t1 ? s.t0 >= a && s.t0 <= b : s.t0 < b && s.t1 > a);
+    if (block.type === 'row') { if (hit && block.row.kind !== 'claude_day') out.push(block); continue; }
+    const items = within(block.items, span, a, b);
+    if (hit || items.length) out.push({ ...block, items });
   }
-  const cuts = [...new Set(covers.flatMap(x => [x.s, x.e]))].sort((x, y) => x - y), pieces: { it: DayItem; s: number; e: number }[] = [];
-  for (let i = 0; i + 1 < cuts.length; i++) {
-    let best: (typeof covers)[number] | undefined;
-    for (const x of covers) if (x.s <= cuts[i] && x.e >= cuts[i + 1] && (!best || x.pr > best.pr || x.pr === best.pr && x.s > best.s)) best = x;
-    if (!best) continue;
-    const last = pieces.at(-1);
-    if (last && last.it === best.it && last.e === cuts[i]) last.e = cuts[i + 1]; else pieces.push({ it: best.it, s: cuts[i], e: cuts[i + 1] });
-  }
-  const segs = pieces.map(({ it, s, e }, i): BarSeg => {
-    const base = { key: `${it.id}#${i}`, row: it.id, f0: f(s), f1: f(e) };
-    if (it.kind === 'stay') { const look = stayLook(it, t); return { ...base, kind: 'stay', rgb: look.rgb, a: look.kept ? .9 : .32, icon: look.icon, label: look.unnamed ? '' : look.name, name: look.name }; }
-    if (it.kind === 'sleep') return { ...base, kind: 'sleep', rgb: SLEEP, a: .9, icon: 'moon', label: t(['Sleep', '睡觉']), name: t(['Sleep', '睡觉']) };
-    const words = it.kind === 'ride' ? rideWords(it, t) : moveWords(it.activity, t);
-    return { ...base, kind: 'move', rgb: TRANSIT, a: .5, icon: it.kind === 'ride' ? 'bus' : moveIcon(it.activity), label: it.kind === 'ride' ? words : '', name: words };
-  });
-  const ticks = [6, 12, 18, 24].map(h => ({ label: String(h).padStart(2, '0'), f: f(at(h)) })).filter(x => x.f >= 0);
-  return { segs, ticks, nowF: today ? Math.min(1, Math.max(0, f(now))) : null };
-}
-
-// Which pieces of the bar carry a name or an icon, by their width in px: a label when it fits, else the icon. A piece too narrow for
-// either (under 8 px), or whose icon would crowd the one before it, is not drawn as a sliver: it is counted in a "+N" chip.
-export const ICON_PX = 12, MIN_PX = 8, NOTE_PAD = 4;
-export function annotate(segs: BarSeg[], width: number, measure: (text: string) => number) {
-  const drawn: { seg: BarSeg; x: number; w: number; label: boolean }[] = [], merged: BarSeg[] = [];
-  let edge = -Infinity;
-  for (const seg of segs) {
-    const x = seg.f0 * width, w = (seg.f1 - seg.f0) * width;
-    if (w < MIN_PX) { merged.push(seg); continue; }
-    if (seg.label && w >= ICON_PX + 3 + Math.ceil(measure(seg.label)) + 2 * NOTE_PAD) { drawn.push({ seg, x, w, label: true }); edge = x + w; continue; }
-    if (x + w / 2 - ICON_PX / 2 < edge) { merged.push(seg); continue; }
-    drawn.push({ seg, x, w, label: false }); edge = x + w / 2 + ICON_PX / 2;
-  }
-  return { drawn, merged };
+  return out;
 }
