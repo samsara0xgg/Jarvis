@@ -719,7 +719,7 @@ const record = () => {
 };
 const anims = a => a.page.evaluate(() => window.__anims.slice());
 // A page on a fake daemon: `served` is what /inherent/day answers, `board` the sessions, `departure` the pinned trip, `hits` the day reads it got.
-async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = makeDay(), departure = null, init = null, at = NOW, fastPolls = false } = {}) {
+async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = makeDay(), departure = null, init = null, at = NOW, fastPolls = false, notchWidth = 185 } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 640, height: 900 }, deviceScaleFactor: 2 });
   const page = await ctx.newPage();
   // `posts`: what the page sent (path and body); `refuse`: routes that answer with an error; `changes`: place renames the daemon can undo; `lag`: how long
@@ -727,12 +727,12 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
   const s = { board, served, departure, hits: [], pictures: [], posts: [], reads: [], refuse: new Set(), changes: new Map(), lag: 0, hidden: new Set(), records: records(), controls: { mic_muted: false, speech_muted: false, conversation: false, quiet: 'off' } };
   page.on('pageerror', e => errors.push(e.message));
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource|net::ERR/.test(m.text())) errors.push(m.text()); });
-  await page.addInitScript(([wardrobe, settings]) => {
+  await page.addInitScript(([wardrobe, settings, notchWidth]) => {
     if (wardrobe) localStorage.setItem('companion-wardrobe-v1', JSON.stringify(wardrobe));
     localStorage.setItem('companion-settings-v1', JSON.stringify(settings));
     window.__audio = 0;
     window.jarvis = {
-      placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
+      placement: async () => ({ docked: false, topInset: 32, notchWidth, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
       onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionSettings: () => {}, wearing: () => {}, onDictation: () => () => {},
       onCursor: callback => { window.__cursor = callback; return () => {}; }, onCommand: () => () => {},
       passthrough: () => {}, focus: async on => { (window.__focus ??= []).push(on); }, material: () => {}, codexTitles: async () => ({}),
@@ -741,7 +741,7 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
     window.__sockets = [];
     window.WebSocket = class { constructor() { window.__sockets.push(this); setTimeout(() => this.onopen?.(), 0); } send() {} close() {} };
     window.__emit = (op, payload) => window.__sockets.at(-1).onmessage({ data: JSON.stringify({ op, payload }) });
-  }, [wing || marks ? { ...wing && { wing }, ...marks && { marks } } : null, { lang, ...(openBy ? { openBy } : {}) }]);
+  }, [wing || marks ? { ...wing && { wing }, ...marks && { marks } } : null, { lang, ...(openBy ? { openBy } : {}) }, notchWidth]);
   if (init) await page.addInitScript(init, NOW);
   await page.route(`${daemon}/**`, async route => {
     const url = new URL(route.request().url());
@@ -988,6 +988,41 @@ try {
     check('a long place gives way to the minutes: cut with …, the line at most 112 pt', r.line.endsWith('… · 3:00') && x1 - x0 <= 112, JSON.stringify(r));
     await long.shot('09-long-place', { x: 300, y: 0, width: 340, height: 60 });
     await long.ctx.close();
+  }
+
+  // ---- a screen without a notch (live 2026-10-19 on his second screen): the pill stays out of sight until the pointer comes near; the line
+  // beside it and the day hanging from it count as near, so neither goes from under the pointer (ONLY=pill) ----
+  if (all || only === 'pill') {
+    const a = await boot({ notchWidth: 0 });
+    const stowed = () => a.page.evaluate(() => document.querySelector('.companion').classList.contains('is-stowed'));
+    await line(a);
+    check('on a screen without a notch she is out of sight while the pointer is away', await stowed());
+    const seg = await a.lineX(), end = { x: seg.x1 - 4, y: 14 };
+    // the pill is 132 wide at the stage's centre (320); its own approach reaches 40 past its right edge
+    check('the line runs past where the pill\'s own approach ends', end.x > 320 + 66 + 40, JSON.stringify(seg));
+    await a.glide(a.far, end, 300);
+    await a.page.waitForTimeout(150);
+    check('a pointer at the far end of the line brings her into sight', !await stowed());
+    let r = await settle(a, 'open');
+    await a.page.waitForTimeout(400);
+    check('a rest there opens the day, and she stays in sight while the pointer rests on the line', r.tl === 'open' && r.dt && !await stowed(), JSON.stringify(r));
+    await a.glide(end, { x: 330, y: 300 }, 300);
+    await a.page.waitForTimeout(900);
+    r = await a.read();
+    check('going down into the day keeps it open and in sight', r.tl === 'open' && r.dropOpen && !await stowed(), JSON.stringify(r));
+    // past the pane's right edge (580) for less than its grace (600 ms) but longer than the pill's own (280 ms)
+    await a.glide({ x: 330, y: 300 }, { x: 620, y: 300 }, 60);
+    await a.page.waitForTimeout(400);
+    r = await a.read();
+    check('a pointer that slips out of the day for less than its grace finds it open and in sight', r.tl === 'open' && !await stowed(), JSON.stringify(r));
+    await a.glide({ x: 620, y: 300 }, { x: 330, y: 300 }, 60);
+    await a.page.waitForTimeout(300);
+    await a.glide({ x: 330, y: 300 }, a.far, 150);
+    r = await settle(a, '', 2500);
+    check('leaving folds the day after its grace', r.tl === '');
+    await a.page.waitForTimeout(700);
+    check('and then she goes out of sight again', await stowed());
+    await a.ctx.close();
   }
 
   // ---- the day's pane summons and dismisses as the Dashboard does ----
