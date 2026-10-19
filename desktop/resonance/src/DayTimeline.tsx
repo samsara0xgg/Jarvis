@@ -358,8 +358,9 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   // The row he presses stays where his hand is. Each frame while rows open and close (and once after), the list scrolls to put that row back where its
   // top was, whatever changes above it; an open row (or one with a line under it) that would end under the list's foot, or under an input that
   // comes up there, is brought up to 24 px clear of it (its top stays in view when it is taller than the list), together with its opening. Where
-  // the list has no scroll left to give (the last row opening, the one above the pressed row closing at the top) it is given room, above its first row or
-  // below its last, which stays only while it is in view (trim), and never more than a third of the list: so nothing moves under the pointer, and the foot is not flush.
+  // the list has no scroll left to give at its foot (the last row opening or closing) it is given room below its last row, which stays only while it is in
+  // view (trim), and never more than a third of the list: so nothing moves under the pointer, and the foot is not flush. At its top there is no room to give
+  // (a blank band above the first row is worse than the rows moving): the rows move with the closing above the pressed row for the part that has no scroll.
   const follow = () => {
     const l = list.current, hold = still.current;
     if (!l) return;
@@ -369,9 +370,8 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
       const view = l.getBoundingClientRect(), box = el.getBoundingClientRect(), top = box.top - view.top, y = hold?.y ?? top, margin = 24;
       const shown = el.getAttribute('aria-expanded') === 'true' || !!el.querySelector(':scope > .dt-fold.is-line'), want = shown ? Math.min(y, Math.max(margin, view.height - margin - box.height)) : y;
       if (Math.abs(top - want) >= .5) {
-        const to = l.scrollTop + top - want, room = (side: 'paddingTop' | 'paddingBottom') => parseFloat(l.style[side]) || 0, grant = (side: 'paddingTop' | 'paddingBottom', more: number) => { l.style[side] = `${Math.min(room(side) + more, Math.max(room(side), view.height / 3))}px`; };
-        if (to < 0) grant('paddingTop', -to);
-        else if (to > l.scrollHeight - l.clientHeight) grant('paddingBottom', to - (l.scrollHeight - l.clientHeight));
+        const to = l.scrollTop + top - want, max = l.scrollHeight - l.clientHeight, room = parseFloat(l.style.paddingBottom) || 0;
+        if (to > max) l.style.paddingBottom = `${Math.min(room + to - max, Math.max(room, view.height / 3))}px`;
         l.scrollTop = Math.max(0, to);
       }
     }
@@ -379,12 +379,11 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   };
   const trim = () => {
     const l = list.current;
-    if (!l || still.current || !l.style.paddingTop && !l.style.paddingBottom) return;
-    const head = Math.min(parseFloat(l.style.paddingTop) || 0, l.scrollTop), foot = Math.min(parseFloat(l.style.paddingBottom) || 0, l.scrollHeight - l.clientHeight - l.scrollTop);
-    if (head > 0) { l.style.paddingTop = `${(parseFloat(l.style.paddingTop) || 0) - head}px`; l.scrollTop -= head; }
+    if (!l || still.current || !l.style.paddingBottom) return;
+    const foot = Math.min(parseFloat(l.style.paddingBottom) || 0, l.scrollHeight - l.clientHeight - l.scrollTop);
     if (foot > 0) l.style.paddingBottom = `${(parseFloat(l.style.paddingBottom) || 0) - foot}px`;
   };
-  const release = () => { const l = list.current; if (l) { l.style.paddingTop = l.style.paddingBottom = ''; } still.current = null; };
+  const release = () => { const l = list.current; if (l) { l.style.paddingBottom = ''; } still.current = null; };
   // A row that is pressed to open or close (the click, the keys, Esc): where its top is in the list's view now. It is held there until the rows have stopped
   // moving (the first frame after the change, which is all there is under reduced motion, arms the end of it).
   const press = (key: string, then: () => void) => {
