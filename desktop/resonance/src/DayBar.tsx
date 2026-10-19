@@ -32,7 +32,8 @@ export function useBarState() {
   const [sel, setSel] = useState<Range | null>(null), [filter, setFilter] = useState<Range | null>(null);
   const live = useRef({ pinned, sel, filter });
   live.current = { pinned, sel, filter };
-  const escape = () => { const s = live.current; if (s.sel) setSel(null); else if (s.pinned) setPinned(null); else if (s.filter) setFilter(null); else return false; return true; };
+  // The pinned lens lets go with the preview of the chip the pointer may still be on, or that chip would hold it.
+  const escape = () => { const s = live.current; if (s.sel) setSel(null); else if (s.pinned) { setPinned(null); setPreview(null); } else if (s.filter) setFilter(null); else return false; return true; };
   return { pinned, setPinned, preview, setPreview, lens: preview ?? pinned, sel, setSel, filter, setFilter, escape };
 }
 export type BarState = ReturnType<typeof useBarState>;
