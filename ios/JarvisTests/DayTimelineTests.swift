@@ -235,6 +235,64 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertTrue(rows[1].opens)
     }
 
+    // MARK: the day's numbers
+
+    private func chips(_ m: DayTimelineModel) -> [String] { m.chips.map { $0.word + " " + $0.value } }
+
+    func testTheDaysNumbersAreChipsInAFixedOrderAndOnlyTheOnesThatAreNotNothing() throws {
+        let m = build(TimelineFixture.today(cal))
+        XCTAssertEqual(chips(m), ["睡 8:05", "路上 3:04", "Mac 2:20", "通话 18 分", "和她 2 次", "花 $12.40", "照片 1"])
+        XCTAssertEqual(m.chips.map(\.lens), TLLens.allCases)
+        XCTAssertEqual(m.chips[2].value, "2:20", "the Mac is the time he was at it (42 and 98 minutes), not the 2:55 the blocks span")
+        // a call of 35 minutes is minutes; a day of places alone has no numbers at all
+        let r = try reply(#"{"id": "c1", "lane": "you", "kind": "call", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(635)), "app": "FaceTime"}, {"id": "s1", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(700)), "end_ms": \#(at(800))}"#)
+        XCTAssertEqual(chips(build(r)), ["通话 35 分"])
+        XCTAssertTrue(build(try reply(#"{"id": "s1", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(700)), "end_ms": \#(at(800))}"#)).chips.isEmpty)
+        XCTAssertTrue(build(try reply("")).chips.isEmpty)
+    }
+
+    func testTheTimeChipsCountWhatIsStillGoingUpToNowAndTheNightAsHeSleptIt() throws {
+        // the night is the minutes the brain says he slept, else its span; a ride that has begun and not ended is counted to now (21:50)
+        let r = try reply(#"{"id": "r", "lane": "you", "kind": "ride", "state": "now", "start_ms": \#(at(1290)), "end_ms": null, "route": "12"}, {"id": "n", "lane": "you", "kind": "sleep", "state": "done", "start_ms": \#(at(-30)), "end_ms": \#(at(420)), "minutes": 400}, {"id": "n2", "lane": "you", "kind": "sleep", "state": "done", "start_ms": \#(at(900)), "end_ms": \#(at(930))}"#)
+        XCTAssertEqual(chips(build(r)), ["睡 7:10", "路上 20 分"])
+        XCTAssertEqual(chips(build(r, now: nil)), ["睡 7:10"], "another day: the ride has no end and no length")
+    }
+
+    func testSpendingIsMoneyOutInTheCurrencyHePaidInMostAndAnotherCurrencyAddsAnEllipsis() throws {
+        func pay(_ id: String, _ amount: String?, _ cur: String, _ way: String = "out") -> String {
+            #"{"id": "\#(id)", "lane": "you", "kind": "payment", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(600)), "currency": "\#(cur)", "direction": "\#(way)"\#(amount.map { #", "amount": "\#($0)""# } ?? "")}"#
+        }
+        func spend(_ items: String...) throws -> String? { build(try reply(items.joined(separator: ","))).chips.first { $0.lens == .payment }?.value }
+        XCTAssertEqual(try spend(pay("a", "12.40", "CAD"), pay("b", "0.10", "CAD")), "$12.50")
+        XCTAssertEqual(try spend(pay("a", "12.40", "CAD"), pay("b", "7.60", "CAD"), pay("c", "68.00", "CNY"), pay("d", "500.00", "CAD", "in")), "$20.00…", "two in CAD against one in CNY; money in is not spending")
+        XCTAssertEqual(try spend(pay("a", "5.00", "CAD"), pay("b", "68.00", "CNY")), "¥68.00…", "a tie in how often goes to the larger sum")
+        XCTAssertEqual(try spend(pay("a", "1234.50", "CNY")), "¥1,234.50")
+        XCTAssertNil(try spend(pay("a", "5.00", "CAD", "in")), "money in only is no spending")
+        XCTAssertNil(try spend(pay("a", nil, "CAD")), "a payment with no amount is not added")
+        XCTAssertEqual(try spend(pay("a", "3.00", "")), "3.00", "no currency, no mark")
+    }
+
+    func testEachLensHoldsTheRowsOfItsKindAndMarksWhereTheyAreOnTheBar() throws {
+        let m = build(TimelineFixture.today(cal))
+        func ids(_ l: TLLens) -> [String] { m.entries.filter { $0.lens == l }.map(\.id) }
+        XCTAssertEqual(ids(.sleep), ["sleep-0"])
+        XCTAssertEqual(ids(.trip), ["move-3", "move-4", "move-6", "ride-8", "ride-12"])
+        XCTAssertEqual(ids(.work), ["work-demo-1", "work-demo-2"])
+        XCTAssertEqual(ids(.call), ["call-demo-1"])
+        XCTAssertEqual(ids(.talk), ["talk-1", "talk-2"])
+        XCTAssertEqual(ids(.payment), ["payment-demo-1"])
+        XCTAssertEqual(ids(.picture), ["picture-pic-demo-1"])
+        XCTAssertTrue(m.entries.filter { [.stay, .now, .event, .reminder, .departure, .claude].contains($0.kind) }.allSatisfy { $0.lens == nil }, "a place, the line for now, what is planned and a chat with Claude are in no lens")
+        XCTAssertEqual(m.marks(of: .work), [TLMark(t0: 630, t1: 680), TLMark(t0: 1175, t1: 1300)])
+        XCTAssertEqual(m.marks(of: .picture), [TLMark(t0: 962, t1: 962)], "a moment: its end is its start")
+        XCTAssertEqual(m.marks(of: .payment), [TLMark(t0: 800, t1: 800)])
+        XCTAssertEqual(m.marks(of: .trip).count, 5)
+        // money in is not in the lens that counts what he spent
+        let r = try reply(#"{"id": "in", "lane": "you", "kind": "payment", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(600)), "amount": "5.00", "currency": "CAD", "direction": "in"}"#)
+        XCTAssertNil(build(r).entries[0].lens)
+        XCTAssertEqual(build(r).entries[0].right, "+$5.00")
+    }
+
     func testWhatMatteredIsNamedByItsLabelAndLit() throws {
         let m = build(TimelineFixture.today(cal))
         let c = try entry(m, "call-demo-1")

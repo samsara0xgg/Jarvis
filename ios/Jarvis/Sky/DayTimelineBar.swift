@@ -183,6 +183,9 @@ struct TLBarView: View {
     let scene: TLBarScene
     var bracket: ClosedRange<Double>?       // the span of the row he has open
     var scrub: Double?                      // the minute under his finger
+    var lens = false                        // a chip is pressed: the bar goes quiet and the things of that kind stand out in their colour
+    var lensColor = RGB(196, 208, 255)
+    var lensMarks: [TLMark] = []
     var reveal = true                       // false until the bar has grown in
     var reduce = false
     var breathe = true
@@ -193,16 +196,20 @@ struct TLBarView: View {
         let rects = TLGeo.rects(scene.pieces, span: scene.span, width: bw, height: bh)
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: TLLayout.barRadius).fill(Color.white.opacity(0.035))
-                BarCanvas(scene: scene, rects: rects)
-                if let b = bracket { bracketView(b) }                   // under the words, so a line never runs through a symbol
-                labels
+                ZStack(alignment: .topLeading) {
+                    RoundedRectangle(cornerRadius: TLLayout.barRadius).fill(Color.white.opacity(0.035))
+                    BarCanvas(scene: scene, rects: rects)
+                    if let b = bracket { bracketView(b) }                   // under the words, so a line never runs through a symbol
+                    labels
+                }
+                .frame(width: bw, height: bh, alignment: .topLeading)       // its own size: the marker and the hours stand outside the bar and would stretch the track
+                .mask(alignment: .leading) { Rectangle().frame(width: reduce || reveal ? bw : 0) }          // grows in from the left
+                .opacity(reduce && !reveal ? 0 : 1)
+                .animation(reduce ? .easeOut(duration: 0.25) : .easeOut(duration: 0.6), value: reveal)
+                stars.opacity(reveal ? 1 : 0).animation(.easeOut(duration: 0.3).delay(reveal && !reduce ? 0.45 : 0), value: reveal)      // once the bar has grown to them
             }
-            .frame(width: bw, height: bh, alignment: .topLeading)       // its own size: the marker and the hours stand outside the bar and would stretch the track
-            .mask(alignment: .leading) { Rectangle().frame(width: reduce || reveal ? bw : 0) }          // grows in from the left
-            .opacity(reduce && !reveal ? 0 : 1)
-            .animation(reduce ? .easeOut(duration: 0.25) : .easeOut(duration: 0.6), value: reveal)
-            stars.opacity(reveal ? 1 : 0).animation(.easeOut(duration: 0.3).delay(reveal && !reduce ? 0.45 : 0), value: reveal)      // once the bar has grown to them
+            .opacity(lens ? 0.25 : 1).animation(.easeOut(duration: 0.15), value: lens)
+            lensLayer
             hours
             if let n = scene.now { nowMarker(n) }
             if let t = scrub { scrubMark(t) }
@@ -248,6 +255,20 @@ struct TLBarView: View {
             Text(String(format: "%02d", h)).font(AT.mono(10)).foregroundStyle(RGB(196, 204, 238).color(0.38)).frame(width: 12)
                 .offset(x: x(Double(h * 60)) - (h == 24 ? 12 : 6), y: bh + 4)
         }
+        .allowsHitTesting(false)
+    }
+
+    /// the things of the lens's kind in its colour over the quiet bar: a span as it is, a moment as a tick of 3 pt, the whole height
+    private var lensLayer: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(lensMarks.enumerated()), id: \.offset) { _, m in
+                let x0 = x(m.t0), x1 = x(m.t1), w = max(x1 - x0, 3)
+                Rectangle().fill(lensColor.color(0.95)).frame(width: w, height: bh).offset(x: (x0 + x1) / 2 - w / 2)
+            }
+        }
+        .frame(width: bw, height: bh, alignment: .topLeading)
+        .clipShape(RoundedRectangle(cornerRadius: TLLayout.barRadius))
+        .opacity(lens ? 1 : 0).animation(.easeOut(duration: 0.15), value: lens)
         .allowsHitTesting(false)
     }
 

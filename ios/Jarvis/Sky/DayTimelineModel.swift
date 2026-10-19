@@ -56,6 +56,7 @@ struct TLEntry: Identifiable, Equatable {
     var talkStart: Int64?           // a talk: when it began, for 全部 ›
     var attachment: String?         // a picture: the brain's name for it
     var about: About?               // the chip it gives a talk while it is the row opened (ADR 0214): only an item of a kind the brain's host knows
+    var lens: TLLens?               // the kind of the day's numbers it is counted in (a stay, an event and the rest are in none)
     var barName: String?            // the word it wears inside the overview bar when there is room: the place, the route, the way he moved, how long he slept, the event
     var barIcon: String?            // and the symbol, for when the word does not fit
 
@@ -78,6 +79,60 @@ struct TLStar: Equatable, Identifiable {
     let t: Double
 }
 
+/// A kind of thing the day's numbers bring forward: pressing its chip dims the rest of the bar and the list.
+enum TLLens: CaseIterable, Equatable {
+    case sleep, trip, work, call, talk, payment, picture
+
+    /// the word on its chip: the same on the Mac
+    var word: String {
+        switch self {
+        case .sleep: "睡"
+        case .trip: "路上"
+        case .work: "Mac"
+        case .call: "通话"
+        case .talk: "和她"
+        case .payment: "花"
+        case .picture: "照片"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .sleep: "moon.fill"
+        case .trip: "figure.walk"
+        case .work: "laptopcomputer"
+        case .call: "phone.fill"
+        case .talk: "bubble.left.fill"
+        case .payment: "creditcard.fill"
+        case .picture: "photo.fill"
+        }
+    }
+    /// its colour on the chip's symbol and, when it is the lens, on the bar
+    var color: RGB {
+        switch self {
+        case .sleep: RGB(112, 120, 205)
+        case .trip: RGB(196, 208, 255)
+        case .work: RGB(108, 156, 255)
+        case .call: RGB(111, 224, 180)
+        case .talk: RGB(172, 124, 255)
+        case .payment: RGB(240, 132, 218)
+        case .picture: RGB(255, 240, 220)
+        }
+    }
+}
+
+/// one of the day's numbers: `睡 8:05`, `路上 3:04`, `Mac 2:20`, `通话 18 分`, `和她 2 次`, `花 $12.40`, `照片 1`
+struct TLChip: Equatable, Identifiable {
+    let lens: TLLens
+    let value: String
+    var id: String { word }
+    var word: String { lens.word }
+}
+
+/// where something of a lens's kind is on the bar: a span, or a moment (its end is its start)
+struct TLMark: Equatable {
+    var t0: Double, t1: Double
+}
+
 /// a span of the day on the overview bar
 struct TLSeg: Equatable {
     enum Kind: Equatable { case place(RGB, kept: Bool), move, sleep }
@@ -97,6 +152,7 @@ struct DayTimelineModel: Equatable {
     var now: Double?                // the minute of now, on today only
     var missing: String?            // "还没读到：Mac 的时间"
     var stars: [TLStar] = []        // what mattered, in the order of the day: a lit star on the bar for each
+    var chips: [TLChip] = []        // the day's numbers, in a fixed order, only the ones that are not nothing
 
     /// the hours the bar is ticked at: every third hour inside its span (06 09 12 15 18 21 24)
     var ticks: [Int] { stride(from: Int((span.lowerBound / 180).rounded(.up)) * 3, through: 24, by: 3).map { $0 } }
@@ -129,6 +185,11 @@ struct DayTimelineModel: Equatable {
     /// its id, or none
     func stretch(at t: Double) -> String { seg(at: t)?.id ?? "" }
 
+    /// where the things of a lens's kind are on the bar
+    func marks(of lens: TLLens) -> [TLMark] {
+        entries.filter { $0.lens == lens }.map { TLMark(t0: $0.t0, t1: max($0.t0, $0.t1 ?? $0.t0)) }
+    }
+
     // MARK: building
 
     /// `day` is the day number (0 is the day `Cal.cur` counts from), `now` the minute of now when this is today. `topic` names a talk by what it was about.
@@ -139,6 +200,8 @@ struct DayTimelineModel: Equatable {
         let marks = Dictionary(r.highlights.map { ($0.id, $0.label) }, uniquingKeysWith: { a, _ in a })
         var out: [(rank: Int, e: TLEntry)] = []
         var segs: [TLSeg] = []
+        var minutes: [TLLens: Double] = [:], counts: [TLLens: Int] = [:]            // what the day's numbers add up
+        var spent: [String: (cents: Int, n: Int)] = [:]                              // money out, by currency
 
         for i in r.items {
             let t0 = m(i.start_ms), t1 = i.end_ms.map(m)
@@ -276,6 +339,18 @@ struct DayTimelineModel: Equatable {
             default:
                 continue            // a kind this phone does not know yet: left out, not guessed at
             }
+            switch e.kind {
+            case .sleep: e.lens = .sleep; minutes[.sleep, default: 0] += i.minutes ?? span ?? 0
+            case .trip: e.lens = .trip; minutes[.trip, default: 0] += span ?? 0
+            case .work: e.lens = .work; minutes[.work, default: 0] += i.active_s.map { $0 / 60 } ?? span ?? 0          // the time he was at it, not the whole stretch
+            case .call: e.lens = .call; minutes[.call, default: 0] += span ?? 0
+            case .talk: e.lens = .talk; counts[.talk, default: 0] += 1
+            case .picture: e.lens = .picture; counts[.picture, default: 0] += 1
+            case .payment where i.direction == "out":
+                e.lens = .payment
+                if let c = i.amount?.cents { let k = text(i.currency)?.uppercased() ?? ""; spent[k] = ((spent[k]?.cents ?? 0) + c, (spent[k]?.n ?? 0) + 1) }
+            default: break
+            }
             if let label = marks[i.id], e.kind != .stay { e.title = label; e.lit = true }
             if About.kinds.contains(i.kind), About.fits(id: i.id) {
                 e.about = About(kind: i.kind, id: i.id, title: e.title, startMs: i.start_ms, mark: Self.mark(i, later: later))
@@ -298,8 +373,23 @@ struct DayTimelineModel: Equatable {
         // what mattered, at the time of each item that did
         var starred = Set<String>()
         let stars = r.highlights.compactMap { h in entries.first { $0.id == h.id }.flatMap { starred.insert(h.id).inserted ? TLStar(id: h.id, t: $0.t0) : nil } }.sorted { $0.t < $1.t }
+        var chips: [TLChip] = []
+        for l in TLLens.allCases {
+            switch l {
+            case .talk, .picture:
+                if let n = counts[l], n > 0 { chips.append(TLChip(lens: l, value: l == .talk ? "\(n) 次" : "\(n)")) }
+            case .payment:
+                // the currency he paid in most often (the larger sum when it is a tie); money in another one adds an ellipsis
+                if let main = spent.max(by: { ($0.value.n, $0.value.cents, $1.key) < ($1.value.n, $1.value.cents, $0.key) }) {
+                    chips.append(TLChip(lens: l, value: tlMoney(main.value.cents, main.key.isEmpty ? nil : main.key) + (spent.count > 1 ? "…" : "")))
+                }
+            default:
+                let n = Int((minutes[l] ?? 0).rounded())
+                if n > 0 { chips.append(TLChip(lens: l, value: tlHM(n))) }
+            }
+        }
         return DayTimelineModel(date: r.date, line: text(r.line?.text), entries: entries, segs: segs,
-                                span: axisStart(wake: wake, early: early)...DAY, now: now, missing: missingText(r.missing), stars: stars)
+                                span: axisStart(wake: wake, early: early)...DAY, now: now, missing: missingText(r.missing), stars: stars, chips: chips)
     }
 
     /// what, starting before the bar's start, brings the start back: where he went and what he did, never a stay alone

@@ -19,8 +19,9 @@ enum TLLayout {
     static let dateShift = 39.0                        // the date starts this far further right, beside her: its first stroke 8 pt clear of her disc, which ends at 62 (47 + 15)
     static let lineY = 108.0, lineH = 40.0             // her sentence: two lines of 15 pt
     static let barY = 176.0, barW = 380.0, barH = 22.0, barRadius = 6.0       // 28 pt over it for now's time (and, under a finger, the time in its chip), 12 pt under it for the hours
-    static let grabberY = 216.0, grabberH = 30.0       // the top of the grabber's hit area: its bar sits half way between the hour labels under the overview bar and the list
-    static let listTop = 240.0, listBottom = 836.0, fade = 24.0
+    static let chipsY = 220.0, chipsH = 24.0, chipsHit = 36.0                    // the day's numbers: chips of 24 pt (the first 8 pt under the hours) in a row of 36 that takes the touch
+    static let grabberY = 248.0, grabberH = 24.0       // the top of the grabber's hit area: its bar sits half way between the chips and the list
+    static let listTop = 272.0, listBottom = 836.0, fade = 24.0, fadeTop = 12.0
     static var viewport: Double { listBottom - listTop }
     /// what is left of the list's height under `pinned` points of cards (and the gap under them)
     static func room(pinned: Double) -> Double { viewport - (pinned > 0 ? pinned + 4 : 0) }
@@ -41,6 +42,7 @@ final class TimelineState {
     /// which way the last change of day went: +1 to an earlier day (the page moves right), -1 to a later one
     var slide = 1
     var openRow: String?                // the row opened in the list, one at a time
+    var lens: TLLens?                   // the day's number he pressed: the bar and the list bring that kind forward
     var openCard: String?               // the waiting card opened over the list
     var focus: String?                  // a waiting card the engine asks to bring up
     var version = 0                     // bumps when the brain's days were adopted again: talk topics may have come
@@ -114,6 +116,7 @@ struct DayTimelineView: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var scrub: Double?                                                // the minute under his finger on the overview bar
     @State private var lastStretch: String?
+    @State private var lastLens = TLLens.trip                                        // the lens that was on last: what fades out when it goes
     @State private var nowInView = true
 
     private var tl: TimelineState { ui.tl }
@@ -185,17 +188,33 @@ struct DayTimelineView: View {
                     .offset(x: 30, y: TLLayout.lineY)
             }
             if let m {
-                TLBarView(scene: m.scene, bracket: bracket(m), scrub: scrub, reveal: tl.reveal, reduce: reduce)
+                let lens = activeLens(m)
+                TLBarView(scene: m.scene, bracket: bracket(m), scrub: scrub, lens: lens != nil, lensColor: (lens ?? lastLens).color, lensMarks: m.marks(of: lens ?? lastLens),
+                          reveal: tl.reveal, reduce: reduce)
                     .gesture(scrubGesture(m))
                     .accessibilityElement().accessibilityLabel("一天的概览，拖动可以翻到那个时间")
                     .id(tl.day).transition(barTransition)
                     .offset(x: 30, y: TLLayout.barY)
+                if !m.chips.isEmpty {
+                    TLChips(chips: m.chips, active: lens) { l in
+                        Haptic.selection()
+                        withAnimation(.easeOut(duration: 0.15)) { tl.lens = tl.lens == l ? nil : l }
+                    }
+                    .id(tl.day).transition(barTransition)
+                    .offset(y: TLLayout.chipsY - (TLLayout.chipsHit - TLLayout.chipsH) / 2)
+                }
             }
         }
+        .onChange(of: tl.lens) { _, l in if let l { lastLens = l } }
         .animation(.easeOut(duration: 0.35), value: m?.line)
         // only once she is in her corner, and gone as soon as she leaves it: she glides across where they stand
         .opacity(ui.tlHome ? 1 : 0).allowsHitTesting(ui.tlHome)
         .animation(.easeOut(duration: ui.tlHome ? (reduce ? 0.2 : 0.3) : 0.06), value: ui.tlHome)
+    }
+
+    /// the lens that is on, if this day has that kind at all
+    private func activeLens(_ m: DayTimelineModel) -> TLLens? {
+        tl.lens.flatMap { l in m.chips.contains { $0.lens == l } ? l : nil }
     }
 
     /// the span of the row he has open, on the bar
@@ -283,7 +302,7 @@ struct DayTimelineView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .mask(VStack(spacing: 0) {
-                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: 12)
+                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fadeTop)
                 Color.black
             })
         }
@@ -313,7 +332,7 @@ struct DayTimelineView: View {
                 .frame(width: TLLayout.barW, alignment: .leading).padding(.top, 28).padding(.horizontal, 30)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .model(let m):
-            TLList(model: m, engine: engine, tl: tl, room: room, nowInView: $nowInView)
+            TLList(model: m, engine: engine, tl: tl, room: room, lens: activeLens(m), nowInView: $nowInView)
         }
     }
 
@@ -342,6 +361,48 @@ struct DayTimelineView: View {
     }
 }
 
+// MARK: - the day's numbers
+
+/// The row of the day's numbers under the hours: a chip for each, pressing one brings that kind forward (and pressing it again lets it go). Sideways when there are more than fit.
+private struct TLChips: View {
+    let chips: [TLChip]
+    let active: TLLens?
+    let toggle: (TLLens) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(chips) { c in chip(c) }
+            }
+            .padding(.horizontal, 30)
+            .frame(height: TLLayout.chipsHit)
+        }
+        .frame(width: W, height: TLLayout.chipsHit)
+        // a chip going off the side goes softly
+        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 24 / W), .init(color: .black, location: 1 - 24 / W), .init(color: .clear, location: 1)],
+                             startPoint: .leading, endPoint: .trailing))
+    }
+
+    private func chip(_ c: TLChip) -> some View {
+        let on = active == c.lens
+        return Button { toggle(c.lens) } label: {
+            HStack(spacing: 5) {
+                Image(systemName: c.lens.symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(c.lens.color.color).frame(width: 12)
+                Text(c.word).font(.system(size: 11.5)).foregroundStyle(ink.opacity(0.86))
+                Text(c.value).font(AT.mono(11.5)).foregroundStyle(ink)
+            }
+            .fixedSize()
+            .padding(.horizontal, 9).frame(height: TLLayout.chipsH)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(on ? 0.13 : 0.06)))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(ink.opacity(on ? 0.6 : 0), lineWidth: 1))
+            .animation(.easeOut(duration: 0.15), value: on)
+        }
+        .buttonStyle(PressScale())
+        .accessibilityLabel(c.word + " " + c.value)
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
 // MARK: - the list
 
 private struct TLList: View {
@@ -349,13 +410,14 @@ private struct TLList: View {
     let engine: StarEngine
     let tl: TimelineState
     let room: Double                    // how tall the list is under the pinned cards
+    let lens: TLLens?                   // the kind brought forward: the rest is dimmed
     @Binding var nowInView: Bool
     @State private var pos: ScrollPosition
     @State private var opened: Double   // the room it was opened in, which the first rows' entry is laid out for
     @Environment(\.accessibilityReduceMotion) private var reduce
 
-    init(model: DayTimelineModel, engine: StarEngine, tl: TimelineState, room: Double, nowInView: Binding<Bool>) {
-        self.model = model; self.engine = engine; self.tl = tl; self.room = room; _nowInView = nowInView
+    init(model: DayTimelineModel, engine: StarEngine, tl: TimelineState, room: Double, lens: TLLens?, nowInView: Binding<Bool>) {
+        self.model = model; self.engine = engine; self.tl = tl; self.room = room; self.lens = lens; _nowInView = nowInView
         _pos = State(initialValue: ScrollPosition(y: Self.restY(model, room: room)))
         _opened = State(initialValue: room)
     }
@@ -380,7 +442,7 @@ private struct TLList: View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 0) {
                 ForEach(model.entries) { e in
-                    TLRowView(e: e, open: tl.openRow == e.id, first: e.id == model.entries.first?.id, engine: engine) { toggle(e) }
+                    TLRowView(e: e, open: tl.openRow == e.id, first: e.id == model.entries.first?.id, dim: dim(e), engine: engine) { toggle(e) }
                         .modifier(Rise(rank: ranks[e.id], on: tl.reveal, reduce: reduce))
                         .transition(reduce ? .opacity : .asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)), removal: .opacity))
                 }
@@ -411,6 +473,12 @@ private struct TLList: View {
         .onAppear { nowInView = true }
     }
 
+    /// under a lens the rows of that kind stay as they are, a place's header goes to 0.6 so the day keeps its shape, the rest to 0.35
+    private func dim(_ e: TLEntry) -> Double {
+        guard let lens else { return 1 }
+        return e.lens == lens || e.kind == .now ? 1 : e.kind == .stay ? 0.6 : 0.35
+    }
+
     private func toggle(_ e: TLEntry) {
         guard e.opens else { return }
         withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.35, dampingFraction: 0.86)) { tl.openRow = tl.openRow == e.id ? nil : e.id }
@@ -437,6 +505,7 @@ private struct TLRowView: View {
     let e: TLEntry
     let open: Bool
     let first: Bool
+    let dim: Double                     // 1, less while a lens is on and this is not of its kind
     let engine: StarEngine
     let tap: () -> Void
 
@@ -456,6 +525,8 @@ private struct TLRowView: View {
             .accessibilityAddTraits(e.opens ? .isButton : [])
             if open { expansion.padding(.leading, 72).padding(.bottom, 12).transition(.opacity.combined(with: .offset(y: -6))) }
         }
+        .opacity(dim)
+        .animation(.easeOut(duration: 0.15), value: dim)
     }
 
     // the title and the like, muted once it is later than now
