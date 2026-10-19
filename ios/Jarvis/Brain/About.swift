@@ -21,7 +21,7 @@ struct About: Equatable {
     var json: [String: Any] { ["kind": kind, "id": id, "title": title, "start_ms": startMs] }
 
     /// what the phone may have open: the kinds of the day line (jarvis/shared/about.py `ABOUT_KINDS`)
-    static let kinds: Set<String> = ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk"]
+    static let kinds: Set<String> = ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture"]
 
     /// the id shape the host accepts: 1-256 of `[A-Za-z0-9_-=+/.|:]`
     static func fits(id: String) -> Bool {

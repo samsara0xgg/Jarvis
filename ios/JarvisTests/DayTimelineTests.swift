@@ -345,6 +345,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(try entry(m, "stay-13").about?.mark, .work, "still on")
         XCTAssertEqual(try entry(m, "sleep-0").about?.kind, "sleep")
         XCTAssertEqual(try entry(m, "move-3").about?.kind, "move")
+        XCTAssertEqual(try entry(m, "picture-pic-demo-1").about, About(kind: "picture", id: "picture-pic-demo-1", title: "照片", startMs: at(962), mark: .lit), "the host takes a picture too")
     }
 
     func testAPrivateEventGivesTheChipNoMoreThanTheRowSays() throws {
@@ -354,7 +355,7 @@ final class DayTimelineTests: XCTestCase {
 
     func testARowOfAKindTheHostDoesNotKnowOrWithAnIdItWouldRefuseGivesNoChip() throws {
         let m = build(TimelineFixture.today(cal))
-        for id in ["ride-8", "picture-pic-demo-1", "now"] { XCTAssertNil(try entry(m, id).about, id) }
+        for id in ["ride-8", "now"] { XCTAssertNil(try entry(m, id).about, id) }
         let dep = try reply(#"{"id": "departure-1", "lane": "you", "kind": "departure", "state": "next", "start_ms": \#(at(1400)), "end_ms": \#(at(1400)), "route": "12"}"#)
         XCTAssertNil(build(dep, now: nil).entries[0].about)
         let odd = try reply(#"{"id": "event a", "lane": "you", "kind": "event", "state": "next", "start_ms": \#(at(1400)), "end_ms": \#(at(1430)), "title": "x"}"#)

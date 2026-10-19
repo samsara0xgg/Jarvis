@@ -45,7 +45,7 @@ final class AboutTests: XCTestCase {
         XCTAssertNil(About.of(star(kind: nil)))
         XCTAssertNil(About.of(star(kind: "flight")), "a kind the host does not know")
         XCTAssertNil(About.of(star(ms: nil)))
-        for k in ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk"] { XCTAssertNotNil(About.of(star(kind: k)), k) }
+        for k in ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture"] { XCTAssertNotNil(About.of(star(kind: k)), k) }
     }
 
     func testTheChipWritesTheDayOnlyOffToday() throws {
