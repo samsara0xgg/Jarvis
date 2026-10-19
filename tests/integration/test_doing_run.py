@@ -962,6 +962,32 @@ REJECTIONS: dict[str, tuple[Callable[[dict[str, Any], str], None], str]] = {
 }
 
 
+def test_a_span_may_not_join_time_at_his_mac_with_time_away_from_it_unless_he_said_so(
+    brief: Brief,
+) -> None:
+    """Time his Mac shows him working and time it does not are two things, unless he said so."""
+    [work] = fact_spans([{
+        "id": "work-1", "lane": "you", "kind": "work", "start_ms": _ms(_at(13, 30)),
+        "end_ms": _ms(_at(14, 45)), "state": "done", "projects": [{"name": "thesis"}], "apps": [],
+    }])
+    at_mac = replace(brief, facts=[*brief.facts, work])
+    prompt = build_messages(at_mac)[0]["content"]
+    joined = _good(prompt)  # 13:00-14:45 holds 13:00-13:30, away, and 13:30-14:45, at his Mac
+    got = read_run(json.dumps(joined, ensure_ascii=False), "stop", at_mac)
+    assert got == (
+        "the span from 13:00 to 14:45 joins time his Mac shows him working (13:30-14:45) with "
+        "time it does not; split it there"
+    )
+    joined["spans"][4].update(basis="stated", clues=[_clue(prompt, "图书馆写论文")])
+    assert not isinstance(read_run(json.dumps(joined, ensure_ascii=False), "stop", at_mac), str)
+    split = _good(prompt)
+    split["spans"][4:5] = [
+        _span(prompt, "13:00:00", "13:30:00", kind="unknown", title=None, confidence="low"),
+        _span(prompt, "13:30:00", "14:45:00", basis="observed", title="写论文"),
+    ]
+    assert not isinstance(read_run(json.dumps(split, ensure_ascii=False), "stop", at_mac), str)
+
+
 @pytest.mark.parametrize("name", REJECTIONS)
 def test_each_gate_rejects_its_answer_whole(name: str, brief: Brief) -> None:
     """Each gate rejects its answer whole."""

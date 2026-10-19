@@ -488,7 +488,8 @@ doing:
       window's start, each next starts where the one before it ended, the last ends at the
       window's end. A span starts and ends only at listed times. Join neighbouring segments when
       they are one thing he was doing; split a segment at a listed time inside it ("inner
-      times") when the facts or clues show it was two.
+      times") when the facts or clues show it was two. Time his Mac shows him working and time
+      it does not are two things, unless his own words say they were one.
     - A span is one thing he was doing, as he would name it looking back on his day; most last
       from half an hour to a few hours. A short call, a switch of app or window, or a few minutes
       on something else inside a longer stretch is not a span of its own: say it in "detail".

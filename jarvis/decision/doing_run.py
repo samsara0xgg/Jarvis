@@ -328,6 +328,41 @@ def _span(  # noqa: PLR0913 — the span, the day, the labels given and what the
     }
 
 
+def _at_mac(segment: Segment, brief: Brief) -> bool:
+    """Whether his Mac shows him working for at least half of the segment."""
+    start, end = segment.start_ms, segment.end_ms
+    worked = sum(
+        max(0, min(_reach(s, brief), end) - max(int(s["start_ms"]), start))
+        for s in brief.facts if s["kind"] == "work"
+    )
+    return 2 * min(worked, end - start) >= end - start
+
+
+def _joined(span: Mapping[str, Any], brief: Brief) -> str | None:
+    """Why a span may not join the segments it holds, else None.
+
+    A segment where his Mac shows him working and one where it does not are two things he did,
+    unless his own words say they were one (a ``stated`` span). A segment counts as held when
+    the span covers at least half of it.
+    """
+    if span["basis"] == "stated":
+        return None
+    start, end = span["start_ms"], span["end_ms"]
+    held = [
+        s for s in brief.segments
+        if 2 * max(0, min(s.end_ms, end) - max(s.start_ms, start)) >= s.end_ms - s.start_ms
+    ]
+    working = [s for s in held if _at_mac(s, brief)]
+    if not working or len(working) == len(held):
+        return None
+    first = working[0]
+    return (
+        f"the span from {_clock(start, brief.zone)} to {_clock(end, brief.zone)} joins time his "
+        f"Mac shows him working ({_clock(first.start_ms, brief.zone)}-"
+        f"{_clock(first.end_ms, brief.zone)}) with time it does not; split it there"
+    )
+
+
 def _tiled(spans: Sequence[Mapping[str, Any]], brief: Brief) -> str | None:
     """Why the spans do not cover the waking window exactly once, else None."""
     at = brief.waking.start_ms
@@ -353,7 +388,9 @@ def read_run(
     something he did, is absent for a stretch unknown, and does not merely say where; the clues it
     cites exist; ``stated`` rests on his words or an answer and ``observed`` on a fact under it;
     a question has text and at most :data:`MAX_OPTIONS` options. Then together: they tile the
-    waking window with no gap and no overlap, and at most :data:`MAX_QUESTIONS` have a question.
+    waking window with no gap and no overlap, none but a stated one joins a segment where his Mac
+    shows him working with one where it does not, and at most :data:`MAX_QUESTIONS` have a
+    question.
     A span's id is ``doing-<start>``, as the program's own segments are named, and its place is
     the one the facts under it say. One bad span rejects the whole answer.
     """
@@ -371,7 +408,8 @@ def read_run(
         spans = [_span(one, brief, labels, clues, bare, held) for one in raw]
     except _Rejected as rejected:
         return str(rejected)
-    if (why := _tiled(spans, brief)) is not None:
+    why = _tiled(spans, brief) or next(filter(None, (_joined(s, brief) for s in spans)), None)
+    if why is not None:
         return why
     if sum(s["question"] is not None for s in spans) > MAX_QUESTIONS:
         return f"more than {MAX_QUESTIONS} questions"
