@@ -8,6 +8,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { daemonToken, registerDaemonBridge, sendDaemonKey } from './bridge.js';
 import { startDaemon } from './daemon.js';
 import { setupDictation } from './dictation.js';
+import { reset as resetFeed, shouldSend, start as startFeed } from './cursorFeed.js';
 import { AGENTS_PORT, setupAgents } from './agentsWindow.js';
 import { setupDashboard } from './dashboardWindow.js';
 import { demoBanner } from './demoBanner.js';
@@ -267,7 +268,10 @@ function companion(shown?: () => void) {
   screen.on('display-added', place); screen.on('display-removed', place); screen.on('display-metrics-changed', place);
   // The hardware cutout and click-through space get no reliable DOM pointer events,
   // so the renderer reads the cursor from here: approach, peek, gaze and hit testing.
-  let last = '', pending: { id: number; since: number } | null = null, moving: ReturnType<typeof setTimeout> | undefined;
+  // Which pointer samples the page is sent (cursorFeed.ts): `awake` is the page's word that something is on show or under way,
+  // and until it has said so, yes.
+  const feed = startFeed();
+  let awake = true, pending: { id: number; since: number } | null = null, moving: ReturnType<typeof setTimeout> | undefined;
   // She follows the cursor to another screen once it has rested there briefly: the renderer
   // sinks her into this island first, answers display-ready, and only then the window moves.
   const move = () => { clearTimeout(moving); moving = undefined; pending = null; current = home(); place(); };
@@ -278,7 +282,7 @@ function companion(shown?: () => void) {
   // cursor went far away, so what hover opened closes and nothing opens behind the glass.
   let command = false, tucked = false, pass = true, untuck: ReturnType<typeof setTimeout> | undefined;
   const tuck = (on: boolean) => {
-    tucked = on; last = '';
+    tucked = on; resetFeed(feed);
     win.setIgnoreMouseEvents(on || pass, { forward: true });
     if (on) win.webContents.send('cursor', { x: -1e4, y: -1e4 });
   };
@@ -315,8 +319,7 @@ function companion(shown?: () => void) {
     pressed = press;
     if (win.isDestroyed() || !win.isVisible()) return;
     const bounds = frame();
-    const value = { x: point.x - bounds.x, y: point.y - bounds.y }, key = `${value.x},${value.y}`;
-    if (key !== last && !tucked) { last = key; win.webContents.send('cursor', value); }
+    if (!tucked && shouldSend(feed, point, bounds, awake, Date.now())) win.webContents.send('cursor', { x: point.x - bounds.x, y: point.y - bounds.y });
     // She fades out in about 130 ms and back in about 200 ms.
     const alpha = win.getOpacity();
     if (alpha !== (tucked ? 0 : 1)) win.setOpacity(tucked ? Math.max(0, alpha - .12) : Math.min(1, alpha + .08));
@@ -367,6 +370,7 @@ function companion(shown?: () => void) {
     execFile('launchctl', ['bootout', `${domain}/com.allen.jarvis`], () =>
       spawn('launchctl', ['bootout', `${domain}/${job}`], { detached: true, stdio: 'ignore' }).unref());
   });
+  ipcMain.on('awake', (event, on) => { if (mine(event) === win && typeof on === 'boolean' && on !== awake) { awake = on; if (on) resetFeed(feed); } });
   ipcMain.on('passthrough', (event, enabled) => { if (mine(event) === win && typeof enabled === 'boolean') { pass = enabled; win.setIgnoreMouseEvents(enabled || tucked, { forward: true }); } });
   ipcMain.handle('focus-input', (event, enabled) => {
     const sender = mine(event);
