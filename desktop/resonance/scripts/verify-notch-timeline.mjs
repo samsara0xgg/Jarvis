@@ -967,6 +967,8 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
     if (url.pathname === '/inherent/day') {
       s.hits.push(url.search);
       const date = url.searchParams.get('date');
+      // `dayLag`: how long the days other than today take to come (ms)
+      if (s.dayLag && date && date !== DATE) await new Promise(r => setTimeout(r, s.dayLag));
       // `days` / `days-404`: the days other than today answer with an error, or with a 404 (a brain that does not serve them)
       if (date && date !== DATE && (s.refuse.has('days') || s.refuse.has('days-404'))) return route.fulfill({ status: s.refuse.has('days-404') ? 404 : 500, contentType: 'application/json', body: '{"detail":"no"}' });
       return json(!date || date === DATE ? s.served : date === YESTERDAY ? yesterday() : { ...yesterday(), date, items: [] });
@@ -1537,6 +1539,8 @@ try {
     await a.page.keyboard.press('Escape');
     await a.until(() => document.querySelector('.notch')?.dataset.tl === '', undefined, 3000);
     a.s.served = { ...makeDay(), start_ms: null };
+    // after a minute the pane opens on today again
+    await a.page.evaluate(() => { const now = performance.now.bind(performance); performance.now = () => now() + 61_000; });
     await a.page.waitForTimeout(400);
     await a.move(seg.mid, 14); await a.page.mouse.down(); await a.page.mouse.up();
     await a.until(() => document.querySelector('.notch-drop.is-open .dt-say')?.textContent === '这一天没画出来', undefined, 8000);
@@ -4099,6 +4103,171 @@ try {
     await b.a.page.waitForFunction(() => document.querySelector('.dt-date')?.innerText === '10月20日 周二', null, { timeout: 8000 });
     check('and the day is drawn with the answer after (the second ask, 5 s on), not 30 s later', b.a.s.hits.length - g0 === 2, String(b.a.s.hits.length - g0));
     await b.a.ctx.close();
+  }
+
+  // ---- pane polish B (2026-10-19): the day comes back as he left it, a cut list and a day change are each one move with the pane, the pane opens without
+  // passing its height, and a duration with words is set in the pane's face (ONLY=polish) ----
+  // Every frame's record of the pane: the list's opacity and rows, the pane, the date over the day and whether it is dimmed (taken in the frame's animation
+  // callback, before the page's own callbacks have run); and every change of the pane's or its content's size as it is laid out for painting (a resize
+  // observer runs after them), which is where the pane and what is in it are compared.
+  const tape = a => a.page.evaluate(() => {
+    window.__tape = []; window.__sizes = []; window.__tapeOn = true;
+    const inn = document.querySelector('.notch-drop .notch-pane-in'), drop = document.querySelector('.notch-drop');
+    window.__tapeRO?.disconnect();
+    window.__tapeRO = new ResizeObserver(() => window.__sizes.push({ t: performance.now(), pane: drop.getBoundingClientRect().height, inn: inn.getBoundingClientRect().height }));
+    window.__tapeRO.observe(drop); window.__tapeRO.observe(inn);
+    const f = now => {
+      if (!window.__tapeOn) return;
+      const l = document.querySelector('.dt-list'), pr = drop.getBoundingClientRect();
+      window.__tape.push({ t: now, op: l ? +getComputedStyle(l).opacity : null, keys: l ? [...l.querySelectorAll('[data-key]')].map(e => e.dataset.key).join() : '', scroll: l?.scrollTop ?? null,
+        pane: pr.height, left: pr.left, width: pr.width, inn: inn.getBoundingClientRect().height, date: document.querySelector('.dt-date')?.textContent ?? null, dim: !!document.querySelector('.dt.is-loading') });
+      requestAnimationFrame(f);
+    };
+    requestAnimationFrame(f);
+  });
+  const untape = a => a.page.evaluate(() => { window.__tapeOn = false; window.__tapeRO.disconnect(); return { frames: window.__tape, sizes: window.__sizes }; });
+  // How much of the pane is empty under its content (2 px of it is the pane's own margin).
+  const emptiest = frames => Math.max(0, ...frames.filter(f => f.pane > 1 && f.inn > 1).map(f => f.pane - f.inn - 2));
+  const emptied = frames => JSON.stringify(frames.filter(f => f.pane > 1 && f.inn > 1 && f.pane - f.inn - 2 > 4).slice(0, 4).map(f => [Math.round(f.t), f.pane, f.inn]));
+  if (all || only === 'polish') {
+    const state = a => a.page.evaluate(() => {
+      const l = document.querySelector('.dt-list'), lr = l?.getBoundingClientRect(), now = l?.querySelector('.dt-now')?.getBoundingClientRect();
+      return { date: document.querySelector('.dt-date')?.textContent, scroll: l ? l.scrollTop : null, open: [...document.querySelectorAll('.dt-list [aria-expanded="true"]')].map(e => e.dataset.key).join(),
+        nowAt: now && lr ? now.top - lr.top : null, view: lr?.height, yesterday: !!document.querySelector('.dt-list [data-key^="y-"]') };
+    });
+    // A click on the line: it opens the day pinned, and folds it again.
+    const press = async a => { const seg = await a.lineX(); await a.move(seg.mid, 14); await a.page.mouse.down(); await a.page.mouse.up(); };
+    const reopened = async a => { await press(a); await settle(a, 'pinned'); await a.until(() => document.querySelector('.notch-drop.is-open .dt-row'), undefined, 8000); await a.page.waitForTimeout(700); };
+    const folded = async a => { await press(a); await settle(a, ''); await a.page.waitForTimeout(400); };
+
+    // 1. the day he left, within a minute of folding it
+    {
+      const a = await boot({ served: fullDay(), init: record });
+      await openDay(a);
+      const first = await state(a);
+      await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 300; });
+      await a.page.waitForTimeout(200);
+      await tap(a, 'talk-1'); await rest(a, 700);
+      const left = await state(a);
+      check('before it is folded: the day is on today, scrolled away from its now line, with the talk at 10:02 open', left.date === '10月19日 周一' && left.open === 'talk-1' && Math.abs(left.scroll - first.scroll) > 50, JSON.stringify({ first, left }));
+      await folded(a);
+      await a.page.evaluate(() => { window.__anims.length = 0; });
+      await reopened(a);
+      const back = await state(a);
+      check('opened again within the minute it is the same day, at the same scroll (within 1 px), with the same row open', back.date === left.date && Math.abs(back.scroll - left.scroll) <= 1 && back.open === 'talk-1', JSON.stringify({ left, back }));
+      const rose = (await anims(a)).filter(x => /dt-row|dt-sh|dt-now/.test(x.cls));
+      check('and its rows come up again as they do on any open (220 ms each, 25 ms apart)', rose.length >= 3 && rose.every((x, i) => x.opt.duration === 220 && x.opt.delay === i * 25), JSON.stringify(rose.map(x => [x.cls.split(' ')[0], x.opt.duration, x.opt.delay])));
+      // the day before, folded and opened again within the minute: the day before
+      await a.page.keyboard.press('ArrowLeft');
+      await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
+      await a.page.waitForTimeout(500);
+      await folded(a); await reopened(a);
+      const yd = await state(a);
+      check('the day before, folded and opened again within the minute, is the day before (its date and its rows)', yd.date === '10月18日 周日' && yd.yesterday, JSON.stringify(yd));
+      // later than a minute: today, at its now line, nothing open (the page's clock is moved on by 61 s while it is folded)
+      await a.page.keyboard.press('ArrowRight');
+      await a.until(() => document.querySelector('.dt-date')?.textContent === '10月19日 周一' && document.querySelector('.dt-now'), undefined, 6000);
+      await a.page.waitForTimeout(500);
+      await tap(a, 'talk-1'); await rest(a, 600);
+      check('before the minute is up: today again, a row open', (await state(a)).open === 'talk-1');
+      await folded(a);
+      await a.page.evaluate(() => { const now = performance.now.bind(performance); performance.now = () => now() + 61_000; });
+      await reopened(a);
+      const late = await state(a);
+      check('opened more than a minute after it folded it is made afresh: today, at its now line (60% down the list), with nothing open', late.date === '10月19日 周一' && late.open === '' && Math.abs(late.nowAt - late.view * .6) <= 2, JSON.stringify({ first, late }));
+      await a.ctx.close();
+    }
+    {
+      // opened on the day before and folded, a day that was asked for later than a minute ago is not kept either
+      const a = await boot({ served: fullDay(), init: record });
+      await openDay(a);
+      await a.page.keyboard.press('ArrowLeft');
+      await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
+      await folded(a);
+      await a.page.evaluate(() => { const now = performance.now.bind(performance); performance.now = () => now() + 61_000; });
+      await reopened(a);
+      check('the day before, opened again more than a minute after it folded, is today again', (await state(a)).date === '10月19日 周一');
+      await a.ctx.close();
+    }
+
+    // 2. showing only a range, and the whole day again: the list fades out (80 ms), is swapped while it is not there, and comes in (140 ms)
+    {
+      const day = () => small([it('c-home', 'stay', T(9, 5), T(14, 0), { place: '12 Example St, Victoria', kept_place: home }), it('c-talk', 'talk', T(10, 0), T(10, 5), { turns: 2 }, 'her'),
+        it('c-lib', 'stay', T(14, 0), T(17, 0), { place: 'Library' }), it('c-end', 'stay', T(17, 0), null, { place: '12 Example St, Victoria', kept_place: home, state: 'now' })]);
+      const { a, y, x } = await barOf(day(), { init: record });
+      await a.move(x(T(14, 0)), y); await a.page.mouse.down(); await a.move(x(T(15, 30)), y); await a.move(x(T(17, 0)), y); await a.page.mouse.up(); await a.page.waitForTimeout(400);
+      const swapped = frames => { const at = frames.findIndex(f => f.keys !== frames[0].keys); return { at, frame: frames[at], out: frames.slice(0, at).filter(f => f.op < .95 && f.op > .02).length, inn: frames.slice(at).filter(f => f.op < .95 && f.op > .02).length, low: Math.min(...frames.map(f => f.op ?? 1)) }; };
+      await tape(a); await a.page.evaluate(() => { window.__anims.length = 0; });
+      await a.page.locator('.dt-cbtn').click(); await a.page.waitForTimeout(700);
+      let { frames, sizes } = await untape(a), s = swapped(frames);
+      const cutKeys = frames.at(-1).keys;
+      check('showing only a range: the list fades out, goes through 0, and is swapped for the cut while it is not there (no frame shows both)', s.at > 0 && s.low <= .02 && s.frame.op <= .05 && frames[0].keys.includes('c-talk') && !cutKeys.includes('c-talk') && cutKeys.includes('c-lib'), JSON.stringify({ at: s.at, low: s.low, op: s.frame?.op, first: frames[0].keys, last: cutKeys }));
+      check('over 80 ms out and 140 ms in: it is seen going and coming (the in is quick: the day change\'s own easing), the list alone, without a slide', s.out >= 3 && s.inn >= 1, JSON.stringify({ out: s.out, inn: s.inn }));
+      let log = (await anims(a)).filter(l => /dt-list/.test(l.cls));
+      check('the animations are the day change\'s own: 80 ms out (ease-in, held), 140 ms in (backwards), at the same place (0 px)', log.length === 2 && log[0].opt.duration === 80 && log[0].opt.fill === 'forwards' && log[0].kf[0].transform === 'translateX(0px)' && log[1].opt.duration === 140 && log[1].opt.fill === 'backwards', JSON.stringify(log.map(l => [l.opt, l.kf])));
+      check('and the pane takes the height of what is in it at once: never more than 4 px of it empty', emptiest(sizes) <= 4, emptied(sizes));
+      await tape(a);
+      await a.page.locator('.dt-filter button').click(); await a.page.waitForTimeout(700);
+      ({ frames, sizes } = await untape(a)); s = swapped(frames);
+      check('and clearing it does the same the other way: out, swapped while the list is not there, in', s.at > 0 && s.low <= .02 && s.frame.op <= .05 && !frames[0].keys.includes('c-talk') && frames.at(-1).keys.includes('c-talk') && s.out >= 3 && s.inn >= 1 && emptiest(sizes) <= 4, JSON.stringify({ at: s.at, low: s.low, op: s.frame?.op, out: s.out, inn: s.inn, empty: emptiest(sizes) }));
+      await a.ctx.close();
+    }
+    {
+      // the bar's tap on a row the cut has left out brings the whole day back first (through the fade) and then goes to the row
+      const day = () => small([it('c-home', 'stay', T(9, 5), T(14, 0), { place: '12 Example St, Victoria', kept_place: home }), it('c-talk', 'talk', T(10, 0), T(10, 5), { turns: 2 }, 'her'),
+        it('c-lib', 'stay', T(14, 0), T(17, 0), { place: 'Library' }), it('c-end', 'stay', T(17, 0), null, { place: '12 Example St, Victoria', kept_place: home, state: 'now' })]);
+      const { a, y, x } = await barOf(day());
+      await a.move(x(T(14, 0)), y); await a.page.mouse.down(); await a.move(x(T(15, 30)), y); await a.move(x(T(17, 0)), y); await a.page.mouse.up(); await a.page.waitForTimeout(300);
+      await a.page.locator('.dt-cbtn').click(); await a.page.waitForTimeout(500);
+      await a.move(x(T(10, 2)), y); await a.page.mouse.down(); await a.page.mouse.up();
+      await a.page.waitForTimeout(900);
+      const got = await a.page.evaluate(() => ({ chip: document.querySelectorAll('.dt-filter').length, keys: [...document.querySelectorAll('.dt-list [data-key]')].map(e => e.dataset.key).join()}));
+      check('a tap on the bar outside the cut still brings the whole day back (the chip gone, the talk there again)', got.chip === 0 && got.keys.includes('c-talk'), JSON.stringify(got));
+      await a.ctx.close();
+    }
+
+    // 3. a day change: the date and the day come together, and the pane has the height of the day that is in it
+    for (const [label, lag] of [['a sparse day', 0], ['a slow one', 300]]) {
+      const a = await boot({ served: fullDay(), init: record });
+      a.s.dayLag = lag;
+      await openDay(a);
+      await tape(a);
+      const t0 = await a.page.evaluate(() => performance.now());
+      await a.page.keyboard.press('ArrowLeft');
+      await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
+      await a.page.waitForTimeout(700);
+      const taped = await untape(a), frames = taped.frames.filter(f => f.t >= t0), sizes = taped.sizes.filter(f => f.t >= t0);
+      const mismatch = frames.filter(f => f.date && f.keys && ((f.date === '10月18日 周日') !== f.keys.split(',').every(k => k.startsWith('y-'))));
+      check(`going to the day before (${label}): in no frame is the date of one day over the rows of the other`, mismatch.length === 0, JSON.stringify(mismatch.slice(0, 2)));
+      check(`and the pane is never more than 4 px empty under what is in it (${label})`, emptiest(sizes) <= 4, emptied(sizes));
+      const flip = frames.find(f => f.date === '10月18日 周日');
+      check(`and the new date comes with the new day: ${lag ? `not before the reply (${lag} ms), the old day dimmed under the old date until then` : 'within the fade out (80 ms) and the fade in'}`,
+        flip && flip.t - t0 >= lag && flip.t - t0 <= lag + 350 && (!lag || frames.filter(f => f.t - t0 > 120 && f.t < flip.t).every(f => f.dim)), JSON.stringify({ at: flip && flip.t - t0, dim: frames.filter(f => f.dim).length }));
+      await tape(a);
+      const t1 = await a.page.evaluate(() => performance.now());
+      await a.page.keyboard.press('ArrowRight');
+      await a.until(() => document.querySelector('.dt-date')?.textContent === '10月19日 周一' && document.querySelector('.dt-now'), undefined, 6000);
+      await a.page.waitForTimeout(700);
+      const tapedBack = await untape(a), back = tapedBack.frames.filter(f => f.t >= t1), backSizes = tapedBack.sizes.filter(f => f.t >= t1);
+      check(`and back to today (${label}): the date and the rows match in every frame, and the pane is not left empty`, back.filter(f => f.date && f.keys && ((f.date === '10月18日 周日') !== f.keys.split(',').every(k => k.startsWith('y-')))).length === 0 && emptiest(backSizes) <= 4, emptied(backSizes));
+      await a.ctx.close();
+    }
+
+    // 4. the pane opens without passing its height, its width or its left edge
+    {
+      const a = await boot({ served: fullDay() });
+      await a.until(() => document.querySelector('.notch')?.dataset.line);
+      await tape(a);
+      const seg = await a.lineX();
+      await a.move(seg.mid, 14); await a.page.mouse.down(); await a.page.mouse.up();
+      await a.until(() => document.querySelector('.notch-drop.is-open .dt-row'), undefined, 8000);
+      await a.page.waitForTimeout(1200);
+      const frames = (await untape(a)).frames.filter(f => f.pane > 1), end = frames.at(-1);
+      check('opening: the pane never goes past the height, the width or the left edge it ends at', Math.max(...frames.map(f => f.pane)) <= end.pane + .5 && Math.max(...frames.map(f => f.width)) <= end.width + .5 && Math.min(...frames.map(f => f.left)) >= end.left - .5 && frames.length > 8,
+        JSON.stringify({ end: [end.pane, end.width, end.left], max: Math.max(...frames.map(f => f.pane)), wide: Math.max(...frames.map(f => f.width)), left: Math.min(...frames.map(f => f.left)), n: frames.length }));
+      check('and it still takes its time: the height is not the end\'s in the first frames', frames[0].pane < end.pane * .6 && frames.filter(f => f.pane < end.pane - 1).length >= 8);
+      await a.ctx.close();
+    }
   }
 
   console.log(`\n${checks.length} checks passed; screenshots in ${dir}`);

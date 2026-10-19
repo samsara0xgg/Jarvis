@@ -97,7 +97,7 @@ function Stars({ stars }: { stars: BarStar[] }) {
   return <>{stars.map(s => one(s, false))}{gone.map(s => one(s, true))}</>;
 }
 
-export function DayBar({ model, port, ui, hot, onHot, onJump, onPicture, onSay }: { model: DayModel; port: string | null; ui: BarState; hot: string | null; onHot: (key: string | null) => void; onJump: (key: string) => void; onPicture: (id: string, note: string) => void; onSay: (said: Said) => void }) {
+export function DayBar({ model, port, ui, cut, hot, onHot, onJump, onPicture, onSay }: { model: DayModel; port: string | null; ui: BarState; cut: Range | null; hot: string | null; onHot: (key: string | null) => void; onJump: (key: string) => void; onPicture: (id: string, note: string) => void; onSay: (said: Said) => void }) {
   const [{ lang }] = useCompanionSettings(), t = (l: L) => tr(lang, l);
   const bar = useMemo(() => buildBar(model, t), [model, lang]), nums = useMemo(() => numbers(model, t), [model, lang]);
   const box = useRef<HTMLDivElement>(null), track = useRef<HTMLDivElement>(null), card = useRef<HTMLDivElement>(null), rcard = useRef<HTMLDivElement>(null), ncard = useRef<HTMLDivElement>(null), nIn = useRef<HTMLDivElement>(null), [width, setWidth] = useState(0);
@@ -278,7 +278,7 @@ export function DayBar({ model, port, ui, hot, onHot, onJump, onPicture, onSay }
         <div ref={nIn} className="dt-card-in"><Swap id={numCard.kind}><CardBody card={numCard} Glyph={KIND_ICON[numCard.kind]} color={`rgb(${rgb(KIND[numCard.kind])})`} port={port} onPicture={onPicture} t={t}/></Swap></div>
       </div>}
     </div>}
-    {ui.filter && <div className="dt-filter"><span>{t(['Only ', '只看 '])}<b>{clock(Math.min(ui.filter.a, ui.filter.b), model.tz)}–{endClock(Math.max(ui.filter.a, ui.filter.b), model.reply, model.tz)}</b></span>
+    {cut && <div className="dt-filter"><span>{t(['Only ', '只看 '])}<b>{clock(Math.min(cut.a, cut.b), model.tz)}–{endClock(Math.max(cut.a, cut.b), model.reply, model.tz)}</b></span>
       <button type="button" aria-label={t(['Show the whole day', '看回整天'])} onClick={() => ui.setFilter(null)}><X size={11} weight="bold"/></button></div>}
   </>;
 }
