@@ -208,7 +208,7 @@ class Built:
     horizons: dict[str, int] = field(default_factory=dict)
 
 
-def _label(device: Mapping[str, Any]) -> str | None:
+def device_label(device: Mapping[str, Any]) -> str | None:
     """The model's name ("iPhone", "iPad"), ``None`` for a Mac or a device with no model."""
     found = re.match(r"[A-Za-z]+", str(device.get("model") or ""))
     return None if found is None or found.group() == "Mac" else found.group()
@@ -226,7 +226,7 @@ def build(
     """
     built = Built()
     for device in data["devices"]:
-        label = _label(device)
+        label = device_label(device)
         events = [e for e in data["events"] if e["device"] == device["id"]]
         if label is None or not events:
             continue
@@ -277,12 +277,13 @@ def build(
 WARNED: set[str] = set()
 
 
-def _held(state: State, prefix: str) -> dict[str, str]:
+def held(state: State, prefix: str) -> dict[str, str]:
+    """The ``meta`` rows under ``prefix``, by the rest of the key."""
     rows = state.conn.execute("SELECT key, value FROM meta WHERE key LIKE ?", (f"{prefix}%",))
     return {key[len(prefix) :]: value for key, value in rows}
 
 
-def _name_entries(
+def name_entries(
     names: Mapping[str, tuple[str, str | None]],
     sent: Mapping[str, str],
     now_ms: int,
@@ -323,12 +324,14 @@ def ship(  # noqa: PLR0913 - the pass's state, sink and report, the clock and tw
     if now_ms - state.meta_int(_LAST) < INTERVAL_MS:
         return
     state.apply([(SET_META, (_LAST, str(now_ms)))])
-    cursors = {i: int(v) for i, v in _held(state, CURSOR_PREFIX).items()}
-    horizons = {i: int(v) for i, v in _held(state, HORIZON_PREFIX).items()}
+    cursors = {i: int(v) for i, v in held(state, CURSOR_PREFIX).items()}
+    horizons = {i: int(v) for i, v in held(state, HORIZON_PREFIX).items()}
     try:
         data = read(min(cursors.values()) - OVERLAP_MS if cursors else None)
         seen = {e["device"] for e in data["events"]}
-        if cursors and any(_label(d) and d["id"] in seen - cursors.keys() for d in data["devices"]):
+        if cursors and any(
+            device_label(d) and d["id"] in seen - cursors.keys() for d in data["devices"]
+        ):
             data = read(None)  # a device the cursors have not met yet: all it has
     except ScreenTimeUnavailable as exc:
         if str(exc) not in WARNED:
@@ -342,7 +345,7 @@ def ship(  # noqa: PLR0913 - the pass's state, sink and report, the clock and tw
     out = Out(SOURCE, sink, state, report)
     for entry in built.entries:
         out.add(entry, [])
-    for entry, kept in _name_entries(known, _held(state, NAME_PREFIX), now_ms):
+    for entry, kept in name_entries(known, held(state, NAME_PREFIX), now_ms):
         out.add(entry, [(SET_META, (NAME_PREFIX + entry["fields"]["bundle_id"], kept))])
     out.note(
         [(SET_META, (f"{CURSOR_PREFIX}{i}", str(c))) for i, c in built.cursors.items()]
@@ -368,4 +371,14 @@ def dry_run(
     return built, data, known
 
 
-__all__ = ["AppNames", "Built", "build", "dry_run", "itunes_lookup", "ship"]
+__all__ = [
+    "AppNames",
+    "Built",
+    "build",
+    "device_label",
+    "dry_run",
+    "held",
+    "itunes_lookup",
+    "name_entries",
+    "ship",
+]

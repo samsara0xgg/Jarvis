@@ -5,7 +5,8 @@
 TimeSink's database read-only (:mod:`mac_ship_timesink`) and the Claude Code logs of the
 configured accounts (:mod:`mac_ship_sessions`), ships the Markdown day reports of his Claude Code
 work (:mod:`mac_ship_days`, ADR 0303), ships the app use of his iPhone and iPad that the Mac's
-Screen Time sync holds (:mod:`mac_ship_devices`, ADR 0304) and sends what changed to the brain's
+Screen Time sync holds (:mod:`mac_ship_devices`, ADR 0304) and what else his devices sync to it
+(:mod:`mac_ship_records`, ADR 0305), and sends what changed to the brain's
 ``/inherent/imports`` routes with this device's token. Its cursors live in
 ``<runtime root>/mac-ship/state.db`` and move only after the brain has kept what they stand for.
 
@@ -23,7 +24,13 @@ from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 
-from jarvis.surface import mac_ship_days, mac_ship_devices, mac_ship_sessions, mac_ship_timesink
+from jarvis.surface import (
+    mac_ship_days,
+    mac_ship_devices,
+    mac_ship_records,
+    mac_ship_sessions,
+    mac_ship_timesink,
+)
 from jarvis.surface.mac_ship_core import Conflict, Report, ShipFailed, Sink, State
 from jarvis.surface.mac_ship_timesink import TimesinkConfig
 
@@ -54,6 +61,8 @@ class ShipConfig:
     days_dir: Path | None = None
     device_names: Path | None = None
     """Where the iPhone/iPad app step keeps its names (ADR 0304); ``None``: that step is off."""
+    device_records: Path | None = None
+    """The same file for the iPhone/iPad records step (ADR 0305); ``None``: that step is off."""
 
 
 def _section(parent: Mapping[str, Any], key: str) -> Mapping[str, Any] | None:
@@ -99,12 +108,14 @@ def ship_config(config: Mapping[str, Any], runtime_root: Path) -> ShipConfig | N
         desktop = Path(titles if isinstance(titles, str) else _DEFAULT_DESKTOP).expanduser()
     days = _section(section, "claude_code_days") or {}
     devices = _section(section, "device_apps") or {}
+    records = _section(section, "device_records") or {}
+    names = runtime_root / STATE_PATH.parent / mac_ship_devices.NAMES_FILE
     return ShipConfig(
         runtime_root / STATE_PATH, max(1.0, _number(section, "poll_interval_s", _DEFAULT_POLL_S)),
         timesink, roots, desktop,
         None if days.get("enabled", True) is False else runtime_root / mac_ship_days.DIRNAME,
-        None if devices.get("enabled", True) is False
-        else runtime_root / STATE_PATH.parent / mac_ship_devices.NAMES_FILE,
+        None if devices.get("enabled", True) is False else names,
+        None if records.get("enabled", True) is False else names,
     )
 
 
@@ -188,6 +199,11 @@ class Shipper:
             steps.append(("device-apps", lambda: mac_ship_devices.ship(
                 names_path, self.state, self._sink, report, now,
             )))
+        records_names = self.config.device_records
+        if records_names is not None:
+            steps.append(("device-records", lambda: mac_ship_records.ship(
+                records_names, self.state, self._sink, report, now,
+            )))
         for name, step in steps:
             try:
                 step()
@@ -204,7 +220,7 @@ async def run_shipper(config: ShipConfig, brain_url: str, token: str) -> None:
     """Pass after pass until cancelled. A pass that raises anything else is logged, not fatal."""
     sink = HttpSink(brain_url, token)
     shipper = Shipper(config, sink)
-    LOGGER.info("mac-ship: copying TimeSink, Claude Code, day reports and device apps to the brain")
+    LOGGER.info("mac-ship: copying TimeSink, Claude Code, day reports, device apps, device records")
     try:
         while True:
             try:

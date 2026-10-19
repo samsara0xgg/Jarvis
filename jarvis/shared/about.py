@@ -17,6 +17,7 @@ from typing import Any, Final
 ABOUT_KINDS: Final = (
     "reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture",
     "ride", "departure", "payment", "claude_chat", "claude_day", "workout", "code", "screen",
+    "media", "earbuds", "messages", "phone_call",
 )
 """What the phone may have open: a reminder, an Outlook event, a task, or a day-line item."""
 MAX_ID_CHARS: Final = 256

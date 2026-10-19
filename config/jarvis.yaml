@@ -325,6 +325,11 @@ mac_ship:
   # mac_ship 开着时默认开；关掉写 enabled: false。
   device_apps:
     enabled: true
+  # ADR 0305 — 同一套同步里 iPhone/iPad 还带来的记录：正在播放、AirPods 连接、发消息和打电话的对象与时间
+  # （Siri 记着的，没有消息正文），每 15 分钟一次按「一条记录一行」发给大脑（来源 device-records）；
+  # 用同一个 JarvisScreenTime.app 和同一份完全磁盘访问权限。mac_ship 开着时默认开；关掉写 enabled: false。
+  device_records:
+    enabled: true
 
 # ADR 0294 — 大脑收下终端抄来的数据后，磁盘剩余低于这个数就回 507，终端留着稍后重发。
 imports:

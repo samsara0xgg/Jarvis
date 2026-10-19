@@ -66,6 +66,13 @@ Each source folds on its own and a source that raises leaves its items out (:fun
   the window (or now), the time its newest record is from: past it the device is not known, which
   is not the same as not used. With a shipped store but no device record at all, ``screen`` is in
   ``missing``; with no shipped store it says nothing;
+- ``device_records``: what else the same sync brings, from what the Mac terminal shipped as
+  ``device-records`` (ADR 0305), in his lane, folded by :mod:`jarvis.state.device_day`: ``media``
+  (an app playing sound on a device), ``earbuds`` (Bluetooth earbuds connected), ``messages``
+  (a burst of messages in one conversation) and ``phone_call`` (a call Siri remembers; ``call``
+  stays TimeSink's). Their devices' records reach the Mac late too. With no such row, or no
+  shipped store, it has nothing to draw and says nothing in ``missing`` (``screen`` is the one that
+  tells the devices are not reaching the Mac);
 - ``departures``: the bus trips he pinned (ADR 0204), each a point at its departure time, from the
   pin as the log held it at the end of the day; the reminder that rings for a trip on the line is
   left out, the departure stands for it.
@@ -92,6 +99,7 @@ from typing import TYPE_CHECKING, Any, Final
 from jarvis.state import (
     commitments,
     departures,
+    device_day,
     imports,
     picture_notes,
     places,
@@ -248,6 +256,10 @@ def fold_day(
         ("code", lambda _conn, first, last, now: _code_items(sources, first, last, now)),
         ("away", lambda _conn, first, last, now: _away_items(sources, first, last, now)),
         ("screen", lambda _conn, first, last, now: _screen_items(sources, first, last, now)),
+        (
+            "device_records",
+            lambda _conn, first, last, now: _record_items(sources, first, last, now),
+        ),
     )
     items: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -853,6 +865,16 @@ def _horizons(conn: sqlite3.Connection) -> dict[str, int]:
     return newest
 
 
+def _app_names(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    """The newest ``app_name`` row's fields of each bundle id (ADR 0304)."""
+    return {
+        str(row.fields["bundle_id"]): row.fields
+        for row in imports.newest(
+            conn, imports.DEVICE_SOURCE, kinds=(imports.DEVICE_NAME,), by_prefix=True,
+        )
+    }
+
+
 def _screen_items(
     sources: DaySources, window_start: int, window_end: int, now_ms: int,
 ) -> list[dict[str, Any]]:
@@ -867,12 +889,7 @@ def _screen_items(
             conn, imports.DEVICE_SOURCE, start_ms=window_start - BLOCK_REACH_MS, end_ms=window_end,
             kinds=(imports.DEVICE_APP,), by_prefix=True,
         )
-        names = {
-            str(row.fields["bundle_id"]): row.fields
-            for row in imports.newest(
-                conn, imports.DEVICE_SOURCE, kinds=(imports.DEVICE_NAME,), by_prefix=True,
-            )
-        }
+        names = _app_names(conn)
     by_device: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_device[str(row.fields["device_id"])].append(row.fields)
@@ -938,6 +955,40 @@ def _screen_synced(sources: DaySources, until_ms: int) -> dict[str, int]:
     with closing(conn):
         newest = _horizons(conn)
     return {device: at for device, at in sorted(newest.items()) if at < until_ms}
+
+
+def _record_items(
+    sources: DaySources, window_start: int, window_end: int, now_ms: int,
+) -> list[dict[str, Any]]:
+    """Media, earbuds, message bursts and Siri's calls, from the records the Mac shipped (0305)."""
+    conn = shipped_conn(sources)
+    if conn is None:
+        return []
+    with closing(conn):
+        def fields(kind: str, *, whole: bool = False) -> list[dict[str, Any]]:
+            return [
+                row.fields for row in imports.newest(
+                    conn, imports.RECORDS_SOURCE, kinds=(kind,), by_prefix=True,
+                    start_ms=None if whole else window_start - BLOCK_REACH_MS,
+                    end_ms=None if whole else window_end + BLOCK_REACH_MS,
+                )
+            ]
+
+        apps = {bundle: str(row.get("app") or bundle) for bundle, row in _app_names(conn).items()}
+        pods = fields(imports.RECORD_BLUETOOTH, whole=True)
+        found = [
+            *device_day.media_items(
+                fields(imports.RECORD_NOW_PLAYING), apps, device_day.bluetooth_names(pods),
+            ),
+            *device_day.earbuds_items(pods, now_ms),
+            *device_day.message_items(fields(imports.RECORD_MESSAGE), apps),
+            *device_day.call_items(fields(imports.RECORD_CALL), apps),
+        ]
+    return [
+        {**item, "lane": "you", "state": _state(item["start_ms"], item["end_ms"], now_ms)}
+        for item in found
+        if _overlaps(item["start_ms"], item["end_ms"], window_start, window_end)
+    ]
 
 
 # --- the pictures he sent ------------------------------------------------------------------

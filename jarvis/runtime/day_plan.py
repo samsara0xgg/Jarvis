@@ -209,6 +209,14 @@ def _screen(item: Mapping[str, Any]) -> str:
 _SAID: Final[dict[str, Callable[[Mapping[str, Any]], str]]] = {
     "work": _work,
     "screen": _screen,
+    "media": lambda item: (
+        f"played {item['app']} on his {item['device']}, {_minutes(item['active_s'])}"
+    ),
+    "earbuds": lambda item: f"{item['device_name']} connected to his {item['device']}",
+    "messages": lambda item: (
+        f"messages in {item['app']}: {item['sent']} sent, {item['received']} received"
+    ),
+    "phone_call": lambda item: f"phone call ({item['direction']}, {_minutes(item['duration_s'])})",
     "stay": lambda item: f"at {_where(item)}",
     "move": lambda item: str(item.get("activity") or "moving"),
     "call": lambda item: f"call ({item.get('app') or 'app unknown'})",

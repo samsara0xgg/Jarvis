@@ -70,13 +70,18 @@ def parse_helper_output(text: str, app: Path | None = None) -> dict[str, Any]:
     if error:
         msg = str(error)
         raise ScreenTimeUnavailable(msg)
-    return {"devices": list(devices), "events": list(events)}
+    answer: dict[str, Any] = {"devices": list(devices), "events": list(events)}
+    if isinstance(data.get("streams"), dict):
+        answer["streams"] = data["streams"]
+    return answer
 
 
-def read_screen_time(since_ms: int | None = None) -> dict[str, Any]:
+def read_screen_time(since_ms: int | None = None, streams: str | None = None) -> dict[str, Any]:
     """``{"devices": [...], "events": [...]}`` for the synced iPhone/iPad, at or after ``since_ms``.
 
     Each event is ``{"device", "bundle_id", "focus": "in"|"out", "at_ms"}`` (unix milliseconds).
+    ``streams`` (comma separated: ``now_playing``, ``bluetooth``, ``interactions``) adds a
+    ``"streams"`` object of those streams' records (ADR 0305, :mod:`mac_ship_records`).
     """
     if sys.platform != "darwin":
         msg = "this machine has no synced device usage"
@@ -88,6 +93,8 @@ def read_screen_time(since_ms: int | None = None) -> dict[str, Any]:
             argv = ["/usr/bin/open", "-W", "-n", str(app), "--args", str(out)]
             if since_ms is not None:
                 argv += ["--since-ms", str(int(since_ms))]
+            if streams:
+                argv += ["--streams", streams]
             subprocess.run(  # noqa: S603 - fixed argv, repo-owned app, our own temp file
                 argv,
                 check=False,  # the answer is the file; the helper's exit code adds nothing

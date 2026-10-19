@@ -45,7 +45,7 @@ LOGGER = logging.getLogger(__name__)
 
 IMPORTS_DIRNAME: Final = "imports"
 """Under the runtime root."""
-SHIPPED_SOURCES: Final = ("timesink", "claude-code", "device-apps")
+SHIPPED_SOURCES: Final = ("timesink", "claude-code", "device-apps", "device-records")
 """Sources a terminal copies in on a schedule (ADR 0294), not exports he hands over. Their rows
 are revisions (the key ends in ``:<12 hex of the row's content>``), so a reader takes
 :func:`newest`. They live in their own database, :data:`SHIPPED_DB` under the imports directory,
@@ -57,6 +57,15 @@ time of a device's newest record the Mac holds, ``DEVICE_NAME`` what a bundle id
 DEVICE_APP: Final = "device_app"
 DEVICE_HORIZON: Final = "device_horizon"
 DEVICE_NAME: Final = "app_name"
+RECORDS_SOURCE: Final = "device-records"
+"""The other streams his iPhone and iPad sync to the Mac (ADR 0305): one row per record, kinds
+``RECORD_NOW_PLAYING``, ``RECORD_BLUETOOTH``, ``RECORD_MESSAGE``, ``RECORD_CALL`` (who and when, no
+words) and ``RECORD_INTENT`` (the other things Siri remembers)."""
+RECORD_NOW_PLAYING: Final = "now_playing"
+RECORD_BLUETOOTH: Final = "bluetooth"
+RECORD_MESSAGE: Final = "message"
+RECORD_CALL: Final = "call"
+RECORD_INTENT: Final = "intent"
 SHIPPED_DB: Final = "shipped.db"
 """Under the imports directory; the same ``import_entries`` table as memory.db's."""
 IMPORT_ENTRIES_DDL: Final = """CREATE TABLE IF NOT EXISTS import_entries (
