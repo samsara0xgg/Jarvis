@@ -1,6 +1,6 @@
 # ADR 0304 — iPhone and iPad app use is read from the Mac's synced Biome streams by a Full-Disk-Access helper
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-19
 **Supersedes:** none
 
