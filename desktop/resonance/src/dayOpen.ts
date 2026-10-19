@@ -8,8 +8,8 @@ import { accountOf, askable, clean, clock, dur, endText, moneyText, rideWords, s
 // rang, a turn that is handed to her). DayTimeline.tsx and RowOpen.tsx draw it.
 // An open row adds to its two lines and its right column, it does not say them again: a move's word and length, a ride's route, a
 // payment's who and what are the row's already. What the row may have cut (a title over 20 characters, a second line over 40) is said in
-// full. The rows that had nothing else to open to say it whole: a call's app, a Claude chat's title and how many messages, and what a
-// workout counted (distance, pace or speed, energy, heart rate), with when it ran.
+// full. The rows that had little else to open to: a call's app, a Claude chat's count of messages, and a workout's pace or speed, each
+// with when it ran.
 export type Tone = 'ink' | 'muted';
 export type Words = { text: string; tone: Tone };
 export type Bar = { name: string; text: string; share: number };
@@ -153,10 +153,10 @@ export function openOf(m: DayModel, key: string, t: Say): Open | null {
       else parts.push(lines(say(span(it, m, t))));
       break;
     }
-    // When it ran, to the minute, and under it what was counted (the row's second line, here with the pace or speed too, which is only with a distance).
+    // When it ran, to the minute, with the pace or speed (only with a distance); what was counted is the row's second line, said again only when long.
     case 'workout': {
-      const w = workoutOf(it, t), counted = [w.dist, w.pace, w.kcal, w.hr].filter(Boolean).join(' · ');
-      parts.push(lines(say(span(it, m, t)), counted && say(counted)));
+      const w = workoutOf(it, t);
+      parts.push(lines(say([span(it, m, t), w.pace].filter(Boolean).join(' · ')), again([w.dist, w.kcal, w.hr].filter(Boolean).join(' · '), WIDE)));
       break;
     }
     case 'call': parts.push(lines(say([span(it, m, t), clean(it.app)].filter(Boolean).join(' · ')))); break;
@@ -168,7 +168,7 @@ export function openOf(m: DayModel, key: string, t: Say): Open | null {
     }
     case 'claude_chat': {
       const title = clean(it.text), n = it.messages ?? 0, count = n > 0 ? t([`${n} ${n === 1 ? 'message' : 'messages'}`, `${n} 条`]) : '';
-      parts.push(lines(title && say(title), say([span(it, m, t), count].filter(Boolean).join(' · '))));
+      parts.push(lines(again(title), say([span(it, m, t), count].filter(Boolean).join(' · '))));
       break;
     }
     case 'claude_day': {

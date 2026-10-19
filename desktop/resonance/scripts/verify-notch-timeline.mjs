@@ -610,24 +610,25 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
     night.from === T(23, 10, 18) && night.to === T(7, 0) && night.at.join() === '23:10,07:00' && night.totals === '深睡 1:10 · 核心 4:30 · REM 1:40 · 醒 3 次' && night.slices.length > 10 && night.slices.every((x, i, l) => x.e > x.s && (i === 0 || l[i - 1].e <= x.s))
     && part('sleep-1', 'night', me).night.totals === 'Deep 1:10 · Core 4:30 · REM 1:40 · Awake 3×' && lines('sleep-1').join() === night.totals);
   check('a night with no stages is only its time and length', lines('sleep-1', buildDay(makeDay(), NOW, zh)).join() === '00:55–09:05 · 8 时 10 分' && !part('sleep-1', 'night', buildDay(makeDay(), NOW, zh)));
-  check('a run: when it ran, to the minute, then what was counted (the distance, the pace, the energy, the heart rate); a call: when it ran and the app; a payment: which way, the amount and the currency (who, what and through what are the row\'s)',
-    lines('workout-1').join('|') === `07:20–07:55 · 35 分|3.2 公里 · 10'56"/公里 · 240 千卡 · 平均心率 142` && lines('workout-1', me).join('|') === `07:20–07:55 · 35 min|3.2 km · 10'56"/km · 240 kcal · avg heart rate 142`
+  check('a run: when it ran, to the minute, with its pace (what was counted is the row\'s); a call: when it ran and the app; a payment: which way, the amount and the currency (who, what and through what are the row\'s)',
+    lines('workout-1').join('|') === `07:20–07:55 · 35 分 · 10'56"/公里` && lines('workout-1', me).join('|') === `07:20–07:55 · 35 min · 10'56"/km`
     && lines('call-1').join('|') === '16:40–16:58 · 18 分 · FaceTime' && lines('call-1', me).join('|') === '16:40–16:58 · 18 min · FaceTime' && lines('pay-1').join('|') === '支出 · $12.40 · CAD' && lines('pay-1', me).join('|') === 'Spent · $12.40 · CAD');
   const wk = (over, say = zh) => lines('w', buildDay(small([it('w', 'workout', T(7, 20), T(7, 55), { activity: 'running', ...over })]), NOW, say), say).join('|');
-  check('a workout says only what the phone counted: no distance, no pace (a pace is a distance over a time); a bike has a speed, not a pace; nothing counted, only when it ran',
-    wk({ energy_kcal: 240, avg_hr: 142 }) === '07:20–07:55 · 35 分|240 千卡 · 平均心率 142' && wk({ distance_m: 3200 }) === `07:20–07:55 · 35 分|3.2 公里 · 10'56"/公里`
-    && wk({ activity: 'cycling', distance_m: 10_000, energy_kcal: 300 }) === '07:20–07:55 · 35 分|10.0 公里 · 17.1 公里/时 · 300 千卡' && wk({ activity: 'cycling', distance_m: 10_000 }, en) === '07:20–07:55 · 35 min|10.0 km · 17.1 km/h' && wk({}) === '07:20–07:55 · 35 分',
-    [wk({ energy_kcal: 240, avg_hr: 142 }), wk({ distance_m: 3200 }), wk({ activity: 'cycling', distance_m: 10_000, energy_kcal: 300 }), wk({})].join(' // '));
+  check('a workout: no distance, no pace (a pace is a distance over a time); a bike has a speed, not a pace; what was counted is the row\'s, and even all of it fits the row\'s 40 characters',
+    wk({ energy_kcal: 240, avg_hr: 142 }) === '07:20–07:55 · 35 分' && wk({ distance_m: 3200 }) === `07:20–07:55 · 35 分 · 10'56"/公里`
+    && wk({ activity: 'cycling', distance_m: 10_000, energy_kcal: 300 }) === '07:20–07:55 · 35 分 · 17.1 公里/时' && wk({ activity: 'cycling', distance_m: 10_000 }, en) === '07:20–07:55 · 35 min · 17.1 km/h' && wk({}) === '07:20–07:55 · 35 分'
+    && wk({ distance_m: 42_195, energy_kcal: 2_400, avg_hr: 158 }, en) === `07:20–07:55 · 35 min · 0'50"/km`,
+    [wk({ energy_kcal: 240, avg_hr: 142 }), wk({ distance_m: 3200 }), wk({ activity: 'cycling', distance_m: 10_000, energy_kcal: 300 }), wk({}), wk({ distance_m: 42_195, energy_kcal: 2_400, avg_hr: 158 }, en)].join(' // '));
   const cl = (over, say = zh) => lines('c', buildDay(small([it('c', 'call', T(16, 40), T(16, 58), over)]), NOW, say), say).join('|');
   check('a call with no app says only when it ran; one still going says since when', cl({}) === '16:40–16:58 · 18 分' && cl({ app: '  ' }) === '16:40–16:58 · 18 分' && lines('c', buildDay(small([it('c', 'call', T(21, 30), null, { app: 'WeChat' })]), NOW, zh)).join('|') === '21:30 起 · WeChat');
   const ch = (over, say = zh) => lines('c', buildDay(small([it('c', 'claude_chat', T(20, 10), T(20, 42), { source: 'claude', ...over })]), NOW, say), say).join('|');
-  check('a Claude chat: its title in full (the row cuts a long one) and when it ran with how many messages; each only if there is one',
-    lines('chat-1').join('|') === 'The bar for the day|20:10–20:42 · 32 分 · 14 条' && lines('chat-1', me).join('|') === 'The bar for the day|20:10–20:42 · 32 min · 14 messages'
+  check('a Claude chat: when it ran with how many messages, and its title in full only when the row may have cut it',
+    lines('chat-1').join('|') === '20:10–20:42 · 32 分 · 14 条' && lines('chat-1', me).join('|') === '20:10–20:42 · 32 min · 14 messages'
     && ch({ text: 'A title that is longer than the twenty characters the row keeps', messages: 1 }, en) === 'A title that is longer than the twenty characters the row keeps|20:10–20:42 · 32 min · 1 message'
-    && ch({ text: '', messages: 3 }) === '20:10–20:42 · 32 分 · 3 条' && ch({ text: 'x' }) === 'x|20:10–20:42 · 32 分' && ch({ text: 'x', messages: 0 }) === 'x|20:10–20:42 · 32 分');
+    && ch({ text: '', messages: 3 }) === '20:10–20:42 · 32 分 · 3 条' && ch({ text: 'x' }) === '20:10–20:42 · 32 分' && ch({ text: 'x', messages: 0 }) === '20:10–20:42 · 32 分');
   check('a Claude day: its titles as a list, in full', JSON.stringify(part('claude-day-1', 'titles').list) === '["The bar for the day","A tool exam"]' && lines('claude-day-1').join() === '');
   const first = key => open(key).parts[0]?.lines?.[0]?.tone, tones = (key, model = m) => open(key, model).parts.flatMap(p => p.type === 'lines' ? p.lines.map(l => l.tone) : []).join();
-  check('what an open row says first is in ink and the rest is muted (a talk\'s 共 N 句, which comes after his line and hers, is muted)', first('stay-home-1') === 'ink' && tones('stay-home-1') === 'ink,muted' && first('call-1') === 'ink' && tones('event-1') === 'ink' && tones('chat-1') === 'ink,muted' && tones('workout-1') === 'ink,muted' && tones('call-1') === 'ink' && tones('talk-1') === 'muted' && tones('sleep-1') === 'muted'
+  check('what an open row says first is in ink and the rest is muted (a talk\'s 共 N 句, which comes after his line and hers, is muted)', first('stay-home-1') === 'ink' && tones('stay-home-1') === 'ink,muted' && first('call-1') === 'ink' && tones('event-1') === 'ink' && tones('chat-1') === 'ink' && tones('workout-1') === 'ink' && tones('call-1') === 'ink' && tones('talk-1') === 'muted' && tones('sleep-1') === 'muted'
     && tones('work-2') === 'ink' && tones('r', buildDay(small([it('r', 'ride', T(14, 50), T(15, 19), { route: '27', board_stop: 'A', alight_stop: 'B', ended_reason: 'left_vehicle', credit: 'BC Transit' })]), NOW, zh)) === 'ink,muted', [first('stay-home-1'), tones('stay-home-1'), tones('talk-1'), tones('sleep-1')].join(' '));
   const home = part('code:stay-home-1', 'sessions').list, uv = part('code:stay-uvic', 'sessions').list;
   check('the sessions folded into a row are listed oldest first, each with when it began, its title, project · account, how long and its recap in full; one alone is its own row and opens to its recap',
@@ -2411,10 +2412,10 @@ try {
       ['event-1', 'open-05-event-mail', '22:30–23:30 · 1 时 · 还没开始|问她'],
       ['event-2', 'open-22-event-said', '23:40–23:55 · 15 分 · 还没开始|问她'],
       ['reminder-2', 'open-06-reminder-waiting', '知道了|问她'],
-      ['workout-1', 'open-24-workout', `07:20–07:55 · 35 分|3.2 公里 · 10'56"/公里 · 240 千卡 · 平均心率 142|问她`],
+      ['workout-1', 'open-24-workout', `07:20–07:55 · 35 分 · 10'56"/公里|问她`],
       ['call-1', 'open-25-call', '16:40–16:58 · 18 分 · FaceTime|问她'],
       ['pay-1', 'open-08-payment', '支出 · $12.40 · CAD|问她'],
-      ['chat-1', 'open-26-claude-chat', 'The bar for the day|20:10–20:42 · 32 分 · 14 条|问她'],
+      ['chat-1', 'open-26-claude-chat', '20:10–20:42 · 32 分 · 14 条|问她'],
       ['claude-day-1', 'open-27-claude-day', 'The bar for the day|A tool exam|问她'],
       ['work-2', 'open-07-work', '活跃 1 时 55 分 · 共 2 时 5 分|项目|Jarvis|1 时 40 分|应用|Ghostty|1 时 10 分|Claude|30 分|让她总结这段|问她'],
       ['sleep-1', 'open-09-sleep', '清醒|REM|核心|深睡|23:10|07:00|深睡 1:10 · 核心 4:30 · REM 1:40 · 醒 3 次|问她'],
