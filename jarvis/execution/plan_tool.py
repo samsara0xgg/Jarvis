@@ -30,7 +30,7 @@ _DESCRIPTION: Final = (
     " with its buses, and settle it once he agrees."
     " It changes only a day that already has a plan, and a change is"
     " saved only when this returns: never say it is changed without calling it. For something"
-    " to remember rather than plan, use keep."
+    " he has to go to or do rather than plan, use schedule."
 )
 _SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
@@ -99,8 +99,8 @@ class _Planner:
             return self._state(day, held)
         if held is None:
             msg = (
-                f"plan: {day} has no plan yet (a day is planned at 04:00); to remember something"
-                " for that day use keep"
+                f"plan: {day} has no plan yet (a day is planned at 04:00); to add something"
+                " for that day use schedule"
             )
             raise ToolError(msg, code="no_plan")
         if action == "settle":

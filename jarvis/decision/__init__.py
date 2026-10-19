@@ -981,13 +981,14 @@ _ABOUT_TAILS: Final[Mapping[str, str]] = {
         "schedule(what=<its words>) finds the thing it rings for; to move or cancel it, call "
         "schedule with action move or cancel and that thing's id."
     ),
-    "event": "read it by this id with the calendar tool before changing it.",
     "picture": (
         "It is a picture he sent; its note is in the conversation, and look_at_picture "
         "takes this id to look at it again."
     ),
 }
 _ABOUT_DAY_TAIL: Final[str] = "It is a fact of his day, not something to change."
+# a plan item on his day line: plan-<day>-<item id> (ADR 0288)
+_PLAN_ITEM: Final = re.compile(r"plan-(\d{4}-\d{2}-\d{2})-(.+)")
 
 
 def _about_line(packet: SituationPacket, record: str | None = None) -> str | None:
@@ -1019,6 +1020,12 @@ def _about_line(packet: SituationPacket, record: str | None = None) -> str | Non
         tail = (
             'schedule(action="cancel", id=<this id>) cancels it; schedule(action="move", '
             "id=<this id>, at=<new time>) moves it."
+        )
+    elif kind == "event" and (planned := _PLAN_ITEM.fullmatch(item_id)):
+        day, item = planned.groups()
+        tail = (
+            f'It is item {item} of his plan for {day}; plan(action="change", day="{day}") edits,'
+            " moves or drops it by that id."
         )
     else:
         tail = _ABOUT_TAILS.get(kind, _ABOUT_DAY_TAIL)

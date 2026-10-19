@@ -380,8 +380,9 @@ def test_the_model_is_told_which_item_he_has_open_on_one_line(tmp_path: Path) ->
 @pytest.mark.parametrize(
     ("about", "tail"),
     [
-        ({"kind": "event", "id": GRAPH_ID, "title": "Review", "start_ms": START},
-         "read it by this id with the calendar tool before changing it."),
+        ({"kind": "event", "id": "plan-2026-10-19-p3", "title": "Gym", "start_ms": START},
+         'It is item p3 of his plan for 2026-10-19; plan(action="change", day="2026-10-19")'
+         " edits, moves or drops it by that id."),
         ({"kind": "todo", "id": "LISTID|TASKID", "title": "Buy milk"},
          "Its list is LISTID and its task is TASKID."),
         ({"kind": "move", "id": "move-1", "title": "Bus 28"},
@@ -390,12 +391,12 @@ def test_the_model_is_told_which_item_he_has_open_on_one_line(tmp_path: Path) ->
          'schedule(action="cancel", id=<this id>) cancels it; schedule(action="move", '
          "id=<this id>, at=<new time>) moves it."),
     ],
-    ids=["event", "todo", "day line", "commitment"],
+    ids=["plan item", "todo", "day line", "commitment"],
 )
 def test_each_kind_ends_with_what_he_may_do_with_it(
     tmp_path: Path, about: dict[str, Any], tail: str,
 ) -> None:
-    """A reminder is moved by setting and cancelling, an event is read first, a fact is left."""
+    """A plan item goes to plan, a thing to schedule, a fact of the day is left as it is."""
     with _Peer([[("final_answer", "好的。")]]) as peer:
         runtime = _spoken_runtime(tmp_path, peer.url)
         _drive(runtime, _open_turn(runtime, "T-kind", "这个是什么", about))
