@@ -61,6 +61,7 @@ function PeekBody({ p, port, t }: { p: Peek; port: string | null; t: (l: L) => s
       <i className={`dt-cdot${stretch.rgb ? '' : ' is-hollow'}`} style={stretch.rgb ? { '--c': rgb(stretch.rgb), '--a': stretch.a } as CSSProperties : undefined}/>
       <b>{stretch.name}</b><span>{[stretch.range, stretch.length].filter(Boolean).join(' · ')}</span>
     </div>
+    {stretch.place && <div className="dt-cnote is-place">{stretch.place}</div>}
     {stretch.note && <div className="dt-cnote">{stretch.note}</div>}
     {p.star && <div className="dt-cmark"><Star size={11} weight="fill" aria-hidden="true"/><span>{p.star.label || (p.star.by === 'her' ? t(['She marked this', '她觉得这段重要']) : t(['You marked this', '你标过这段']))}</span></div>}
     {p.lines.length ? <ul className="dt-cl">{p.lines.map(l => <CardLine key={l.key} l={l} port={port}/>)}</ul> : <p className="dt-cnone">{t(['Nothing else was recorded then', '这段时间没有别的记录'])}</p>}

@@ -32,7 +32,12 @@ export type DayReply = {
   labels?: { title: string; source?: string; private?: boolean }[]; missing?: string[];
   line?: { text: string; draft?: boolean; written_at?: string } | null; highlights?: Highlight[];
   summary?: Vitals | null; weather?: Weather | null;
+  // What he was doing (ADR 0302): the doing lane's stretches, absent from a brain that does not serve it.
+  spans?: DoingSpan[];
 };
+// One stretch of what he was doing, from the day's `doing` lane. `title` is its words and may be missing; `basis` says who wrote them: the program
+// from facts (`observed`), a model (`inferred`) or he did (`stated`). A planned stretch is still to come and is left out.
+export type DoingSpan = { id: string; lane: 'doing'; start_ms: number; end_ms: number | null; title: string | null; category: string; basis: string };
 export type Say = (l: L) => string;
 export type Rgb = readonly [number, number, number];
 export type Icon = 'moon' | 'walk' | 'run' | 'bike' | 'hike' | 'swim' | 'strength' | 'yoga' | 'sport' | 'car' | 'bus' | 'talk' | 'picture' | 'event' | 'reminder' | 'work' | 'code' | 'call' | 'home' | 'school' | 'pin' | 'payment' | 'chat';
@@ -83,6 +88,11 @@ export function tidy(raw: unknown): DayItem | null {
   return out as DayItem;
 }
 const each = <T>(v: unknown, pick: (x: unknown) => T | null): T[] => Array.isArray(v) ? v.flatMap(x => pick(x) ?? []) : [];
+export function doingOf(raw: unknown): DoingSpan | null {
+  if (!isObj(raw) || raw.lane !== 'doing' || raw.kind === 'planned') return null;
+  const { id, start_ms: start, end_ms: end } = raw;
+  return typeof id === 'string' && id && time(start) && (end == null || time(end)) ? { id, lane: 'doing', start_ms: start, end_ms: timeOr(end), title: str(raw.title) ?? null, category: str(raw.category) ?? 'unknown', basis: str(raw.basis) ?? '' } : null;
+}
 // The day's highlights as the brain sends them (in the day, and in the answer to a mark).
 export const marksOf = (v: unknown): Highlight[] => each(v, x => isObj(x) && typeof x.id === 'string' ? { id: x.id, label: str(x.label) ?? '', by: str(x.by) ?? '' } : null);
 export function tidyReply(raw: unknown): DayReply {
@@ -96,6 +106,7 @@ export function tidyReply(raw: unknown): DayReply {
     highlights: marksOf(raw.highlights),
     summary: isObj(raw.summary) ? { steps: fin(raw.summary.steps) ?? null, resting_hr: fin(raw.summary.resting_hr) ?? null, hrv: fin(raw.summary.hrv) ?? null } : null,
     weather: isObj(raw.weather) ? { condition: str(raw.weather.condition) ?? '', high: fin(raw.weather.high) ?? null, low: fin(raw.weather.low) ?? null, sunrise_ms: timeOr(raw.weather.sunrise_ms), sunset_ms: timeOr(raw.weather.sunset_ms) } : null,
+    spans: each(raw.spans, doingOf),
   };
 }
 // A day the pane could not read is said once in the app's log (`[timeline] ...`, which electron/companion.ts passes on), not every frame.
@@ -169,14 +180,16 @@ const moveWords = (activity: string | undefined, t: Say) => t(WAYS[activity ?? '
 const rideWords = (it: DayItem, t: Say) => { const r = clean(it.route).replace(/\s*→\s*/g, '→'); return r ? t([`Bus ${r}`, `${r} 路`]) : t(['Bus', '公交']); };
 
 // ---------- the wing's one line ----------
-// The place of the stay that covers now and how long it has lasted (`家 · 3:12`); while he moves, the move in words and how long
-// (`27 路 · 12 分`, `步行 · 6 分`); else `今天`. It is drawn every frame on a canvas, where nothing catches a throw: a day this cannot read
-// is reported once, and the wing falls back to the plain place, or to nothing.
+// What he is doing, when a doing span covering now has words for it, and how long since it began (`做 Jarvis · 1:05`); else the place of the stay that
+// covers now and how long it has lasted (`家 · 3:12`); while he moves, the move in words and how long (`27 路 · 12 分`, `步行 · 6 分`); else `今天`. It is
+// drawn every frame on a canvas, where nothing catches a throw: a day this cannot read is reported once, and the wing falls back to the plain place, or to nothing.
 export function wingText(day: DayReply | null, now: number, t: Say): { head: string; tail: string } {
   try { return wingLine(day, now, t); }
   catch (error) { report('the wing', error); return { head: plainPlace(day, now), tail: '' }; }
 }
 function wingLine(day: DayReply | null, now: number, t: Say) {
+  const doing = doingAt(each(day?.spans, doingOf), now, t);
+  if (doing) return { head: doing.words, tail: since(now - doing.span.start_ms) };
   let moving: DayItem | undefined, stay: DayItem | undefined;
   for (const it of Array.isArray(day?.items) ? day!.items : []) {
     if (!sound(it) || it.start_ms > now || it.end_ms != null && it.end_ms <= now) continue;
@@ -326,6 +339,32 @@ export function workoutOf(it: DayItem, t: Say) {
   const pace = m <= 0 || min < 1 ? '' : icon === 'run' || icon === 'walk' ? t([`${Math.floor(per / 60)}'${String(per % 60).padStart(2, '0')}"/km`, `${Math.floor(per / 60)}'${String(per % 60).padStart(2, '0')}"/公里`])
     : icon === 'bike' ? t([`${(m / 1000 / (min / 60)).toFixed(1)} km/h`, `${(m / 1000 / (min / 60)).toFixed(1)} 公里/时`]) : '';
   return { icon, word: t(hit?.[2] ?? ['Workout', '运动']), facts: [dist, kcal, hr].filter(Boolean), dist, kcal, hr, pace, note: hit ? '' : clean(it.text).split('\n')[0] };
+}
+// ---------- what he was doing, in words ----------
+// A phrase a model wrote or he said is shown as given; a title the program cut from facts takes the words its category calls for (`做 Jarvis`, `27 路`,
+// `FaceTime 通话`, `跑步`). None when there is no title: nothing then says what he did, and the place stays.
+export function doingWords(span: DoingSpan, t: Say): string | null {
+  const title = clean(span.title);
+  if (!title) return null;
+  if (span.basis !== 'observed') return title;
+  switch (span.category) {
+    case 'work': return t([`Working on ${title}`, `做 ${title}`]);
+    case 'commute': return rideWords({ route: title } as DayItem, t);
+    case 'call': return t([`Call · ${title}`, `${title} 通话`]);
+    case 'exercise': { const hit = SPORTS.find(([re]) => re.test(title.toLowerCase())); return hit ? t(hit[2]) : title; }
+    case 'sleep': return t(['Asleep', '睡觉']);
+    default: return title;
+  }
+}
+// What he was doing at `ms`: the span there that has words (the one that began last, if two do) and its words.
+export function doingAt(spans: readonly DoingSpan[] | undefined, ms: number, t: Say) {
+  let best: { span: DoingSpan; words: string } | null = null;
+  for (const span of spans ?? []) {
+    if (span.start_ms > ms || span.end_ms != null && span.end_ms <= ms || best && span.start_ms < best.span.start_ms) continue;
+    const words = doingWords(span, t);
+    if (words) best = { span, words };
+  }
+  return best;
 }
 // A Claude Code session's account, as the letter it is known by.
 export const accountOf = (it: DayItem) => /^[ab]$/i.test(clean(it.account)) ? clean(it.account).toUpperCase() : '';

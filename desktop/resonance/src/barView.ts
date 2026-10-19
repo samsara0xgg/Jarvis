@@ -1,4 +1,4 @@
-import { clean, clock, covered, dur, endText, lensOf, moneyText, moveIcon, moveWords, names, rideWords, SLEEP, stageLook, stageMinutes, stageSlices, stayLook, TRANSIT, workoutOf, type DayItem, type DayModel, type Icon, type LensKind, type Rgb, type Say } from './dayView.ts';
+import { clean, clock, covered, doingAt, doingWords, dur, endText, lensOf, moneyText, moveIcon, moveWords, names, rideWords, SLEEP, stageLook, stageMinutes, stageSlices, stayLook, TRANSIT, workoutOf, type DayItem, type DayModel, type DoingSpan, type Icon, type LensKind, type Rgb, type Say } from './dayView.ts';
 
 // The day in one bar (ADR 0296): the axis, the pieces the bar is made of, what the pointer finds at a minute (the stretch it is in and
 // what else was going on), a range of the bar, and the day's numbers. Pure (no DOM), so scripts/verify-notch-timeline.mjs runs it in
@@ -38,7 +38,8 @@ export function axisOf(model: DayModel) {
 
 // ---------- the pieces ----------
 // `shade`: a night with stages is painted by stage, each slice the share of the piece it covers (f0 to f1, 0 to 1) in its own colour.
-export type BarSeg = { key: string; row: string; kind: 'stay' | 'trip' | 'sleep'; s: number; e: number; f0: number; f1: number; rgb: Rgb; a: number; tone: 'dark' | 'light'; icon: Icon; name: string; short: string; mono: boolean;
+// `place`: what the piece is without what he was doing: a stay's `name` is the words of the doing span that covers it (colour and icon stay the place's).
+export type BarSeg = { key: string; row: string; kind: 'stay' | 'trip' | 'sleep'; s: number; e: number; f0: number; f1: number; rgb: Rgb; a: number; tone: 'dark' | 'light'; icon: Icon; name: string; place: string; short: string; mono: boolean;
   shade?: { f0: number; f1: number; rgb: Rgb; a: number }[] };
 // What is still to come on today: an event as a dashed box over its time, a reminder or a departure as a tick.
 // `leaving`: an event he has just said is not his, on its way out.
@@ -69,6 +70,16 @@ export function fit(w: number, textW: number, text: string): Fit {
   return text && ICON_PX + GAP_PX + textW <= room ? 'both' : text && textW <= room ? 'name' : ICON_PX <= room ? 'icon' : 'none';
 }
 
+// The words of the one doing span that covers at least half of [s, e] (the one covering most, if two do), when it has words.
+function doingOver(spans: readonly DoingSpan[] | undefined, s: number, e: number, open: number, t: Say) {
+  let words: string | null = null, most = 0;
+  for (const span of spans ?? []) {
+    const lap = Math.min(span.end_ms ?? open, e) - Math.max(span.start_ms, s), w = lap * 2 >= e - s && lap > most ? doingWords(span, t) : null;
+    if (w) { words = w; most = lap; }
+  }
+  return words;
+}
+
 const BAR = new Set(['stay', 'sleep', 'move', 'ride']);
 // Where things overlap the one that wins is painted (sleep, then a way he went, then a place), so every piece is one thing; the
 // track stays empty where nothing was recorded.
@@ -93,17 +104,18 @@ export function buildBar(model: DayModel, t: Say): BarModel | null {
   const segs = pieces.map(({ it, s, e }, i): BarSeg => {
     const base = { key: `${it.id}#${i}`, row: it.id, s, e, f0: f(s), f1: f(e) };
     if (it.kind === 'stay') {
-      const look = stayLook(it, t), a = look.kept ? .9 : .32;
-      return { ...base, kind: 'stay', rgb: look.rgb, a, tone: toneOn(look.rgb, a), icon: look.icon, name: look.name, short: look.unnamed ? '' : look.name, mono: false };
+      const look = stayLook(it, t), a = look.kept ? .9 : .32, doing = doingOver(reply.spans, s, e, limit, t);
+      return { ...base, kind: 'stay', rgb: look.rgb, a, tone: toneOn(look.rgb, a), icon: look.icon, name: doing ?? look.name, place: look.name, short: doing ?? (look.unnamed ? '' : look.name), mono: false };
     }
     if (it.kind === 'sleep') {
       const minutes = it.minutes ?? ((it.end_ms ?? limit) - it.start_ms) / MIN;
       const shade = it.stages?.length ? stageSlices(it, s, e).map(x => ({ f0: (x.s - s) / (e - s), f1: (x.e - s) / (e - s), rgb: stageLook(x.stage).rgb, a: stageLook(x.stage).a })) : undefined;
-      return { ...base, kind: 'sleep', rgb: SLEEP, a: .9, tone: toneOn(SLEEP, .9), icon: 'moon', name: t(['Sleep', '睡觉']), short: hm(minutes), mono: true, shade };
+      const name = t(['Sleep', '睡觉']);
+      return { ...base, kind: 'sleep', rgb: SLEEP, a: .9, tone: toneOn(SLEEP, .9), icon: 'moon', name, place: name, short: hm(minutes), mono: true, shade };
     }
     // A way he went is a light haze with a hatch over it (drawn by the style), so it reads as dark ground.
-    const ride = it.kind === 'ride', route = clean(it.route).replace(/\s*→\s*/g, '→');
-    return { ...base, kind: 'trip', rgb: TRANSIT, a: .28, tone: 'light', icon: ride ? 'bus' : moveIcon(it.activity), name: ride ? rideWords(it, t) : moveWords(it.activity, t), short: ride ? route || t(['Bus', '公交']) : moveWords(it.activity, t), mono: false };
+    const ride = it.kind === 'ride', route = clean(it.route).replace(/\s*→\s*/g, '→'), name = ride ? rideWords(it, t) : moveWords(it.activity, t);
+    return { ...base, kind: 'trip', rgb: TRANSIT, a: .28, tone: 'light', icon: ride ? 'bus' : moveIcon(it.activity), name, place: name, short: ride ? route || t(['Bus', '公交']) : moveWords(it.activity, t), mono: false };
   });
   const sched: Sched[] = [];
   if (today) for (const it of items) {
@@ -173,7 +185,8 @@ function lineOf(it: DayItem, m: DayModel, t: Say): Line {
 }
 export type Peek = {
   ms: number; at: string; id: string; row: string | null; lines: Line[]; star: { label: string; by: string } | null;
-  stretch: { name: string; rgb: Rgb | null; a: number; range: string; length: string; note?: string };
+  // `place`: the piece's own name as a second line, when `name` is what he was doing there instead.
+  stretch: { name: string; place?: string; rgb: Rgb | null; a: number; range: string; length: string; note?: string };
 };
 // A night with stages says its deep sleep and its REM on the card (`深睡 1:10 · REM 1:40`), whichever of them it had.
 function stageNote(it: DayItem, t: Say) {
@@ -191,7 +204,12 @@ export function peek(model: DayModel, bar: BarModel, ms: number, t: Say): Peek {
   const seg = bar.segs.find(x => x.s <= ms && ms < x.e), event = seg ? undefined : bar.sched.find(x => x.kind === 'event' && x.s <= ms && ms <= x.e);
   const item = items.find(x => x.id === (seg?.row ?? event?.key));
   let id: string, stretch: Peek['stretch'];
-  if (seg && item) { id = seg.key; stretch = { name: seg.name, rgb: seg.rgb, a: seg.kind === 'stay' ? Math.max(.6, seg.a) : 1, ...when(item, model, t), note: seg.kind === 'sleep' ? stageNote(item, t) : undefined }; }
+  if (seg && item) {
+    // The title is what he was doing at this minute when there are words for it, and the piece's own name goes under it; else the piece's name, as ever.
+    const doing = doingAt(reply.spans, ms, t);
+    id = doing ? `${seg.key}~${doing.span.id}` : seg.key;
+    stretch = { name: doing?.words ?? seg.place, place: doing && doing.words !== seg.place ? seg.place : undefined, rgb: seg.rgb, a: seg.kind === 'stay' ? Math.max(.6, seg.a) : 1, ...when(item, model, t), note: seg.kind === 'sleep' ? stageNote(item, t) : undefined };
+  }
   else if (event && item) { id = event.key; stretch = { name: event.short, rgb: null, a: 1, ...when(item, model, t) }; }
   else if (ms > limit) { id = 'later'; stretch = { name: t(['Not yet', '还没到']), rgb: null, a: 1, range: '', length: '' }; }
   else {
@@ -272,7 +290,7 @@ export function summarize(model: DayModel, bar: BarModel, a: number, b: number, 
   const by = new Map<string, { rgb: Rgb; min: number }>();
   for (const x of bar.segs) {
     const lap = Math.min(x.e, b) - Math.max(x.s, a);
-    if (x.kind === 'stay' && lap > 0) by.set(x.name, { rgb: x.rgb, min: (by.get(x.name)?.min ?? 0) + lap / MIN });
+    if (x.kind === 'stay' && lap > 0) by.set(x.place, { rgb: x.rgb, min: (by.get(x.place)?.min ?? 0) + lap / MIN });
   }
   const places = [...by].sort((x, y) => y[1].min - x[1].min).slice(0, 3).map(([name, v]) => ({ name, rgb: v.rgb, length: dur(Math.max(1, v.min), t) }));
   return { a, b, range: `${clock(a, model.tz)}–${endClock(b, model.reply, model.tz)}`, length: dur((b - a) / MIN, t), places, nums: numbers(model, t, { a, b }) };
