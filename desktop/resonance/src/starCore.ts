@@ -12,15 +12,16 @@ const rnd = (a: number, b: number) => a + Math.random() * (b - a);
 
 export type Spring = { value: number; velocity: number };
 export const spring = (value: number): Spring => ({ value, velocity: 0 });
-// Damped harmonic spring; damping 1 never overshoots. Returns whether it still moves.
-export function step(s: Spring, goal: number, hz: number, damping: number, dt: number) {
+// Damped harmonic spring; damping 1 never overshoots. Returns whether it still moves; `loose` widens "at rest" for a spring whose last
+// travel nobody can see.
+export function step(s: Spring, goal: number, hz: number, damping: number, dt: number, loose = 1) {
   const w = 2 * Math.PI * hz;
   for (let left = dt; left > 1e-6; left -= 1 / 240) {
     const h = Math.min(left, 1 / 240);
     s.velocity += (-w * w * (s.value - goal) - 2 * damping * w * s.velocity) * h;
     s.value += s.velocity * h;
   }
-  if (Math.abs(s.value - goal) < 1e-3 && Math.abs(s.velocity) < 1e-2) { s.value = goal; s.velocity = 0; return false; }
+  if (Math.abs(s.value - goal) < 1e-3 * loose && Math.abs(s.velocity) < 1e-2 * loose) { s.value = goal; s.velocity = 0; return false; }
   return true;
 }
 
@@ -483,8 +484,10 @@ function sparkle(c: CanvasRenderingContext2D, x: number, y: number, r: number, c
 // ---------- one character: update once per frame, then paint in layers ----------
 // vel: how fast her body travels, in her radii per second (v2 lets the eyes trail it).
 // hear: your voice level 0..1; say: her own voice level (none = the old made-up mouth); dim: fades her light (offline).
+// `ambient` false holds the motion she has on her own all the time (breathing, bob, the head's sway, the stars' turn and twinkle) at rest, for
+// a caller that draws her only when something happens; her blinks, glances and small moments go on.
 export type CoreInput = { expr: ExprId; look: [number, number] | null; still: boolean; pressed: boolean; vel?: [number, number];
-  hear?: number; say?: number; mood?: Mood; poi?: Poi | null; dim?: number; deep?: boolean };
+  hear?: number; say?: number; mood?: Mood; poi?: Poi | null; dim?: number; deep?: boolean; ambient?: boolean };
 type Particle = { k: 'z' | 'spark' | 'star'; x: number; y: number; vx: number; vy: number; age: number; life: number; s: number; r: number; c?: RGB };
 type State = { L: Eye; R: Eye; head: number; gx: number; gy: number; yaw: number; t: number; env: number; sx: number; sy: number; yOff: number; jx: number;
   spin: number; bright: number; blush: number; orbitK: number; voice: number; eyes: EyePose[]; ripple: number; flash: number; lx: number; ly: number; dx: number };
@@ -505,6 +508,8 @@ export class Core {
   light = copyLight(LIGHT.base); bright = 1; blush = 0; orbitK = 0; voiceK = 0;
   seed = Math.random() * 10; spin = Math.random() * TAU; texA = 0; spinStart = -1; spinDur = 1100;
   blinkAt = 0; blinkStart = -1; sacAt = 0; sac: [number, number] = [0, 0];
+  // After an update: whether anything on her is still changing (not counting what `ambient` holds), and what the last one was given.
+  active = false; lookOn = false; press = false; heldT = 0;
   hopStart = -1; hopH = 0; hopDur = 380; anticAt = 0; shakeAt = -1; rippleAt = -1; flashAt = -1; celebrateUntil = 0;
   fx: Particle[] = []; zAt = 0; sparkAt = 0; expr: ExprId | null = null; t0 = 0; fired = new Set<number>();
   // life
@@ -740,7 +745,8 @@ export class Core {
       if (f.fx && !this.fired.has(i)) { this.fired.add(i); this.effect(f.fx, now); }
     }
     const frozen = x.freeze && x.seq && el >= x.seq.end - 200;
-    const calm = reduced.matches || frozen || input.still ? 0 : 1;
+    const calm = reduced.matches || frozen || input.still ? 0 : 1, drift = input.ambient === false ? 0 : calm;
+    this.lookOn = !!input.look; this.press = input.pressed;
     if (calm) this.life(now, id, e, j, input.poi);
     let moving = false;
     // eyes
@@ -766,7 +772,8 @@ export class Core {
     if (this.motion.lead && !fast) {
       // v2: the eyes jump there first; her body and the stars inside turn after them.
       moving = step(s.ex, gx, 12, .9, dt) || moving; moving = step(s.ey, gy, 12, .9, dt) || moving;
-      moving = step(s.gx, gx, 2.1, .95, dt) || moving; moving = step(s.gy, gy, 2.1, .95, dt) || moving;
+      // Her body turns after her eyes: the last of it moves the stars inside by less than a pixel.
+      moving = step(s.gx, gx, 2.1, .95, dt, 50) || moving; moving = step(s.gy, gy, 2.1, .95, dt, 50) || moving;
     } else {
       moving = step(s.gx, gx, fast ? 9 : 3.2, .9, dt) || moving;
       moving = step(s.gy, gy, fast ? 9 : 3.2, .9, dt) || moving;
@@ -774,7 +781,7 @@ export class Core {
     }
     const sway = x.sway ? x.sway[0] * Math.sin(t * TAU / x.sway[1]) : 0;
     const tilt = lean ? 5 * this.tiltSide * Math.min(1, this.hearK * 3) : 0;
-    moving = step(s.head, shape.head + calm * (sway * (1 - .7 * lean) + tilt + 2.2 * Math.sin(t * .37 + this.seed)), 3, .8, dt) || moving;
+    moving = step(s.head, shape.head + calm * (sway * (1 - .7 * lean) + tilt) + drift * 2.2 * Math.sin(t * .37 + this.seed), 3, .8, dt) || moving;
     // blink: quick close, slower open, sometimes twice; the right eye a hair later
     if (x.blink && calm && this.blinkStart < 0 && now >= this.blinkAt && !input.pressed) this.blinkStart = now;
     let bl = 1, br = 1;
@@ -837,12 +844,12 @@ export class Core {
       } else if (a.kind === 'glow') { aBr *= 1 + .35 * env1; aLen *= 1 + .06 * env1; }
     }
     this.acts = this.acts.filter(a => now - a.at < a.dur);
-    const stretch = s.stretch.value * (1 + calm * br0[0] * Math.sin(t * TAU / br0[1]) + .028 * env) * (1 + rise) * aSt * (1 + .035 * lean);
+    const stretch = s.stretch.value * (1 + drift * br0[0] * Math.sin(t * TAU / br0[1]) + .028 * env) * (1 + rise) * aSt * (1 + .035 * lean);
     const bounce = x.bounce && calm ? -x.bounce[0] * Math.abs(Math.sin(PI * now / x.bounce[1])) : 0;
-    const bob = calm * (x.bob ?? .03) * (Lf.alive ? .55 + .75 * e : 1) * Math.sin(t * TAU / 3.3 + this.seed);
+    const bob = drift * (x.bob ?? .03) * (Lf.alive ? .55 + .75 * e : 1) * Math.sin(t * TAU / 3.3 + this.seed);
     const trem = (ov?.tremble ?? x.tremble ?? 0) * (reduced.matches ? 0 : 1);
     const jx = trem * (Math.sin(t * 57.1) + Math.sin(t * 83.7 + 1.3)) * .5 + aJx;
-    step(s.spinV, calm * (ov?.spin ?? x.spin ?? .22) * (Lf.mood ? .45 + .9 * e : 1) * (1 + .9 * effort), 1.2, 1, dt);
+    step(s.spinV, drift * (ov?.spin ?? x.spin ?? .22) * (Lf.mood ? .45 + .9 * e : 1) * (1 + .9 * effort), 1.2, 1, dt);
     this.spin += s.spinV.value * dt;
     // light
     // mood: joy warms her light, low joy or energy dims it; offline dims it further
@@ -895,15 +902,34 @@ export class Core {
     const eyes = eyeSet(eL, eR, s.ex.value, s.ey.value + aGy, yaw, s.head.value + aHead);
     if (ox || oy) for (const e of eyes) { e.c[0] += ox; e.c[1] += oy; for (const p of e.pts) { p[0] += ox; p[1] += oy; } }
     const leanOn = this.motion.lead ? 1 : 0;
+    if (input.ambient !== false) this.heldT = t;
     this.st = {
-      L: eL, R: eR, head: s.head.value + aHead, gx: s.gx.value, gy: s.gy.value + .5 * aGy, yaw, t, env, lx: leanOn * .04 * s.gx.value, ly: leanOn * .025 * s.gy.value,
+      L: eL, R: eR, head: s.head.value + aHead, gx: s.gx.value, gy: s.gy.value + .5 * aGy, yaw, t: this.heldT, env, lx: leanOn * .04 * s.gx.value, ly: leanOn * .025 * s.gy.value,
       sx: (1 + .012 * env) / Math.sqrt(stretch), sy: stretch, yOff: hopY + bob + bounce + s.lift.value + aY + .03 * lean, jx, dx: aX,
       spin: this.spin, bright: this.bright * aBr, blush: this.blush, orbitK: this.orbitK, voice: this.voiceK,
       eyes, ripple: phase(this.rippleAt, 900), flash: phase(this.flashAt, 420),
     };
-    return !input.still || moving || gap > .004 || dim > .004 || this.blinkStart >= 0 || this.hopStart >= 0 || this.spinStart >= 0
+    this.active = moving || gap > .004 || dim > .004 || this.blinkStart >= 0 || this.hopStart >= 0 || this.spinStart >= 0
       || this.shakeAt >= 0 || this.rippleAt >= 0 || this.flashAt >= 0 || this.fx.length > 0 || !!this.morph || seq || this.perkAt >= 0 || now < this.swapUntil
-      || this.acts.length > 0 || !!this.focus || (Lf.alive && calm > 0);
+      || this.acts.length > 0;
+    return !input.still || this.active || !!this.focus || (Lf.alive && calm > 0);
+  }
+  // When the next thing she does by herself falls due (a blink, a glance away from the cursor or back at it, a small moment), for a caller that
+  // sleeps while nothing on her changes; Infinity when nothing is. Her face is the resting one: the others have their own motion all the time.
+  due() {
+    const x = this.expr && EXPRESSIONS[this.expr];
+    if (!x || reduced.matches) return Infinity;
+    let at = Infinity;
+    const soon = (v: number) => { if (v > 0 && v < at) at = v; };
+    if (this.focus) soon(this.focus.until);
+    if (x.blink && this.blinkStart < 0 && !this.press) soon(this.blinkAt);
+    if ((x.gaze ?? 'free') === 'free') {
+      if (!this.lookOn) soon(this.sacAt);
+      else if (this.motion.attend) { const a = this.attn; if (a.on) soon(a.bored); else { soon(a.back); soon(this.sacAt); } }
+    }
+    if (this.layers.alive && IDLE.has(this.expr!)) soon(this.idleAt);
+    soon(this.yawnAt);
+    return at;
   }
   // Her own motion on top of where she is: hop, tremble, breathing, squash. `k` fades it out inside the island.
   pose(k: number): [number, number, number, number] {

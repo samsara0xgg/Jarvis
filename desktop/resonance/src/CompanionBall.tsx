@@ -16,13 +16,20 @@ export type Lobe = { left: number; right: number; height: number; notched: boole
 // but her eyes. Either way her glass lights up only once she drops clear of the island's edge.
 export type HomeLook = 'dark' | 'eyes';
 export type BallTarget = { place: Place; expr: ExprId; pressed: boolean; anchors: Record<Place, Point>; home: HomeLook; homeFinish: HomeFinish; homeFace?: boolean; homeJoined?: boolean;
-  away?: boolean; happy?: boolean; deep?: boolean; attention?: { id: string; point: Point } };
+  away?: boolean; happy?: boolean; deep?: boolean; attention?: { id: string; point: Point }; stowed?: boolean };
+// `stowed`: on a screen without a notch all of her is hidden until the pointer comes; nothing is drawn meanwhile.
+const sameTarget = (a: BallTarget, b: BallTarget) => {
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)]) as Set<keyof BallTarget>) {
+    if (k === 'attention' ? a.attention?.id !== b.attention?.id || a.attention?.point.x !== b.attention?.point.x || a.attention?.point.y !== b.attention?.point.y : a[k] !== b[k]) return false;
+  }
+  return true;
+};
 // This long without the cursor moving sends her to sleep at home.
 const DOZE_MS = 10 * 60_000;
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 const smooth = (a: number, b: number, v: number) => { const k = clamp01((v - a) / (b - a)); return k * k * (3 - 2 * k); };
 const backOut = (e: number, c = 1.6) => 1 + (c + 1) * (e - 1) ** 3 + c * (e - 1) ** 2;
-export type BallHandle = { nudge: () => void; arrive: () => void; change: (skin: Skin) => void; hop: (height: number) => void };
+export type BallHandle = { nudge: () => void; arrive: () => void; change: (skin: Skin) => void; hop: (height: number) => void; look: () => void };
 
 // Vertical travel leads slightly, bending each flight into a curve within the shared flight spring.
 const flightSpring = SPRINGS.flight;
@@ -44,7 +51,14 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
   if (island.current.lobe !== lobe) island.current = { lobe, path: new Path2D(lobeD) };
   moved.current = onMove; size.current = { width, height };
   const wake = useRef(() => {});
-  useEffect(() => { latest.current = target; wake.current(); });
+  // She is drawn again when what she is drawn from has changed, not on every render of the page.
+  const was = useRef<{ target: BallTarget; width: number; height: number; lobe: Lobe; skin: Skin } | null>(null);
+  useEffect(() => {
+    const before = was.current;
+    was.current = { target, width, height, lobe, skin };
+    latest.current = target;
+    if (!before || !sameTarget(before.target, target) || before.width !== width || before.height !== height || before.lobe !== lobe || before.skin !== skin) wake.current();
+  });
   const silhouette = useRef<SVGCircleElement>(null), islandShape = useRef<SVGPathElement>(null), canvas = useRef<HTMLCanvasElement>(null), hit = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const cv = canvas.current!, ctx = cv.getContext('2d')!, core = new Core(firstSkin.current, MOTION_V2, LAYERS_ON);
@@ -56,7 +70,7 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
     const s = { x: spring(start.x), y: spring(start.y), scale: spring(HOME_SCALE), shine: spring(0), pivot: spring(0), dock: spring(0), fold: spring(1), join: spring(0) };
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
     let frame = 0, last = 0, d = 0, wanted: Place = 'home', shown: Place = 'home', switchAt = 0;
-    let tick: ReturnType<typeof setTimeout> | undefined, lit = '';
+    let tick: ReturnType<typeof setTimeout> | undefined, lit = '', asleep = false;
     let movedAt = performance.now(), px = NaN, py = NaN;
     let away = false, awayAt = -1e9, happyUntil = 0, leftHome = true;
     let attentionId: string | undefined, attentionAt = 0;
@@ -72,6 +86,7 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
     const draw = (now: number) => {
       frame = 0; fit();
       const t = latest.current, firm = reduced.matches;
+      if (t.stowed && !warming) { asleep = false; return; }
       const dt = Math.min(last ? (now - last) / 1000 : 1 / 60, 1 / 20);
       last = now;
       // Going home: look up at the island for a beat, then fly.
@@ -127,7 +142,9 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
       if (t.attention?.id !== attentionId) { attentionId = t.attention?.id; attentionAt = now; }
       const interest = t.attention?.point;
       const ix = interest ? interest.x - s.x.value : 0, iy = interest ? interest.y - s.y.value : 0, reach = Math.hypot(ix, iy) + 90;
-      core.update(now, dt, { expr: face, look: gaze, still: false, pressed: t.pressed, deep: t.deep && face !== '10',
+      // Resting in the island she moves only by blinking, glancing and the small moments of her own: between them she is not drawn.
+      const resting = face === 'rest' && !away && !warming;
+      core.update(now, dt, { expr: face, look: gaze, still: false, pressed: t.pressed, deep: t.deep && face !== '10', ambient: !resting,
         vel: [s.x.velocity / R, s.y.velocity / R], mood: dozing ? { energy: .18, joy: .5 } : undefined,
         poi: interest ? { g: [ix / reach, iy / reach], at: attentionAt, why: 'notice' } : null });
 
@@ -243,11 +260,19 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
       // She can slide under a resting cursor; hit testing must follow her, not only the mouse.
       if (moving) moved.current();
       const tripping = (away ? ae < 200 : ae < 1200) || Math.abs(s.fold.value - (away ? 0 : 1)) > .002;
+      asleep = false;
       if (!atHome || moving || now < switchAt || tripping) frame = requestAnimationFrame(draw);
+      // Resting with nothing on her changing, she sleeps until her next blink or glance, the doze, or the page waking her.
+      else if (resting && !core.active) {
+        asleep = true;
+        const at = Math.min(core.due(), movedAt + DOZE_MS);
+        if (at < Infinity) tick = setTimeout(() => { tick = undefined; frame = requestAnimationFrame(draw); }, Math.max(16, at - performance.now()));
+      }
       // Awake at home she needs no more than 30 frames a second, dozing 10.
       else tick = setTimeout(() => { tick = undefined; frame = requestAnimationFrame(draw); }, dozing ? 100 : 33);
     };
     wake.current = () => {
+      asleep = false;
       if (tick) { clearTimeout(tick); tick = undefined; }
       if (!frame) { last = 0; frame = requestAnimationFrame(draw); }
     };
@@ -272,6 +297,13 @@ export function CompanionBall({ width, height, lobe, target, look, handle, skin,
       },
       change: next => { core.change(next, performance.now()); wake.current(); },
       hop: height => { core.hop(performance.now(), height); wake.current(); },
+      // The cursor moved: the doze starts over, and a sleeping her looks if it is near enough for her to follow.
+      look: () => {
+        const p = look.current;
+        if (!p) return;
+        if (p.x !== px || p.y !== py) { px = p.x; py = p.y; movedAt = performance.now(); }
+        if (asleep && (latest.current.homeFace || Math.hypot(p.x - s.x.value, p.y - s.y.value) <= 260)) wake.current();
+      },
     };
     wake.current();
     return () => { typeof requestIdleCallback === 'function' ? cancelIdleCallback(idle) : clearTimeout(idle); cancelAnimationFrame(frame); clearTimeout(tick); wake.current = () => {}; handle.current = null; };
