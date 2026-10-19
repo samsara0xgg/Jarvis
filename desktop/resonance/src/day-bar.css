@@ -38,7 +38,10 @@
 .notch .dt-nowtick { position:absolute; top:-5px; bottom:-5px; width:2px; margin-left:-1px; border-radius:1px; background:rgb(var(--now)); }
 .notch .dt-nowtick::after { content:''; position:absolute; inset:0; border-radius:1px; box-shadow:0 0 6px rgb(var(--now) / .6); animation:dt-breathe 2.4s ease-in-out infinite; }
 @keyframes dt-breathe { 0%,100% { opacity:.5; } 50% { opacity:1; } }
-.notch .dt-lit { position:absolute; top:0; display:grid; place-items:center; width:9px; height:9px; margin:-4.5px 0 0 -4.5px; color:rgb(var(--now)); filter:drop-shadow(0 0 3px rgb(var(--now) / .7)); }
+.notch .dt-lit { position:absolute; top:0; display:grid; place-items:center; width:9px; height:9px; margin:-4.5px 0 0 -4.5px; color:rgb(var(--now)); filter:drop-shadow(0 0 3px rgb(var(--now) / .7)); animation:dt-lit-in 200ms linear; transition:opacity 200ms linear; }
+.notch .dt-lit.is-hers { filter:drop-shadow(0 0 2px rgb(var(--now) / .45)); }
+.notch .dt-lit.is-gone { opacity:0; }
+@media (prefers-reduced-motion:reduce) { .notch .dt-lit { animation-duration:120ms; transition-duration:120ms; } }
 .notch .dt-hair { position:absolute; top:-4px; bottom:-4px; width:1px; margin-left:-.5px; background:rgb(var(--ink) / .7); }
 .notch .dt-bracket { position:absolute; top:0; bottom:0; box-sizing:border-box; border:1.5px solid rgb(var(--ink) / .92); border-radius:5px; }
 .notch .dt-band { position:absolute; top:-3px; bottom:-3px; box-sizing:border-box; border-inline:1px solid rgb(var(--ink) / .5); background:rgb(255 255 255 / .12); }

@@ -5,7 +5,10 @@
 .notch .dt-row.is-still,.notch .dt-sh.is-still { cursor:default; }
 /* what is still to come is drawn quiet; one that is open is looked at, so it is not */
 .notch .dt-row.is-future.is-open { opacity:1; }
-.notch .dt-row:has(> .dt-fold),.notch .dt-sh:has(> .dt-fold) { height:auto; grid-template-rows:var(--head) auto; background:rgb(255 255 255 / .055); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .08); }
+.notch .dt-row:has(> .dt-fold),.notch .dt-sh:has(> .dt-fold) { height:auto; grid-template-rows:var(--head) auto; }
+.notch .dt-row:has(> .dt-fold:not(.is-line)),.notch .dt-sh:has(> .dt-fold:not(.is-line)) { background:rgb(255 255 255 / .055); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .08); }
+/* under a shut row the fold holds only a quiet line, not the open look */
+.notch .dt-fold.is-line > .dt-body { padding-bottom:4px; }
 .notch .dt-fold { grid-column:3 / -1; grid-row:2; min-width:0; overflow:hidden; cursor:default; }
 .notch .dt-body { display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:2px 4px 12px 2px; font-size:13px; line-height:18px; color:var(--p-muted); user-select:text; -webkit-user-select:text; }
 .notch .dt-body > * { max-width:100%; }
@@ -85,11 +88,20 @@
 /* the notch's own ring on a focused field (notices.css) is for its buttons and plain fields; these two show the cursor with a ring of their own */
 .notch input.dt-rename:focus-visible,.notch input.dt-ask-in:focus-visible { outline:none; }
 
-/* the hover 问她 on a stay's header too; where the row is open its own buttons are there */
-.notch .dt-sh.is-hot .dt-ask,.notch .dt-sh.is-pick .dt-ask { opacity:1; pointer-events:auto; }
-.notch .dt-sh.is-hot .dt-ask + .dt-tm,.notch .dt-sh.is-pick .dt-ask + .dt-tm { opacity:0; }
-.notch .dt-row:has(> .dt-fold) > .dt-ask,.notch .dt-sh:has(> .dt-fold) > .dt-ask { display:none; }
-.notch .dt-row:has(> .dt-fold) > .dt-ask + .dt-tm,.notch .dt-sh:has(> .dt-fold) > .dt-ask + .dt-tm { opacity:1; }
+/* the hover's actions on a stay's header too; where the row is open its own buttons are there */
+.notch .dt-sh.is-hot .dt-quick,.notch .dt-sh.is-pick .dt-quick { opacity:1; pointer-events:auto; }
+.notch .dt-sh.is-hot .dt-quick + .dt-tm,.notch .dt-sh.is-pick .dt-quick + .dt-tm { opacity:0; }
+.notch .dt-row:has(> .dt-fold:not(.is-line)) > .dt-quick,.notch .dt-sh:has(> .dt-fold:not(.is-line)) > .dt-quick { display:none; }
+.notch .dt-row:has(> .dt-fold:not(.is-line)) > .dt-quick + .dt-tm,.notch .dt-sh:has(> .dt-fold:not(.is-line)) > .dt-quick + .dt-tm { opacity:1; }
+
+/* the star that marks what mattered: his mark filled warm white, her pick the same outlined, nothing a dim outline; sparks fly from it when it is set */
+.notch .dt-starbtn { position:relative; display:grid; place-items:center; flex:none; width:24px; height:24px; border-radius:50%; background:rgb(255 255 255 / .12); color:var(--p-muted); transition:background var(--motion-fast),color var(--motion-fast); }
+.notch .dt-starbtn:hover { background:rgb(255 255 255 / .2); color:var(--p-ink); }
+.notch .dt-starbtn.is-hers { color:rgb(var(--now) / .85); }
+.notch .dt-starbtn.is-his { color:rgb(var(--now)); }
+.notch .dt-starbtn.is-his svg { filter:drop-shadow(0 0 3px rgb(var(--now) / .6)); }
+.notch .dt-acts .dt-starbtn { width:26px; height:26px; }
+.notch .dt-spark { position:absolute; left:50%; top:50%; width:4px; height:4px; margin:-2px 0 0 -2px; border-radius:50%; background:rgb(var(--now)); box-shadow:0 0 4px rgb(var(--now) / .8); pointer-events:none; }
 
 /* what waits on him goes quietly: the badge fades, the count rolls down */
 .notch .dt-wait { transition:opacity 200ms linear; }

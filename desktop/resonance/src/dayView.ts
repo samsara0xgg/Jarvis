@@ -21,10 +21,12 @@ export type Stage = { stage: string; start_ms: number; end_ms: number };
 // What the day's envelope adds (null when the brain does not know): the body's numbers, and the weather in °C with the sun's times.
 export type Vitals = { steps: number | null; resting_hr: number | null; hrv: number | null };
 export type Weather = { condition: string; high: number | null; low: number | null; sunrise_ms: number | null; sunset_ms: number | null };
+// One of the day's highlights: an item's id, the words for it (his, else hers, else none), and who chose it (`him`, or `her`).
+export type Highlight = { id: string; label: string; by: string };
 export type DayReply = {
   date: string; tz: string; start_ms: number; end_ms: number; now_ms: number; items: DayItem[];
   labels?: { title: string; source?: string; private?: boolean }[]; missing?: string[];
-  line?: { text: string; draft?: boolean; written_at?: string } | null; highlights?: { id: string; label: string; by: string }[];
+  line?: { text: string; draft?: boolean; written_at?: string } | null; highlights?: Highlight[];
   summary?: Vitals | null; weather?: Weather | null;
 };
 export type Say = (l: L) => string;
@@ -70,16 +72,18 @@ export function tidy(raw: unknown): DayItem | null {
   }
   return out as DayItem;
 }
+const each = <T>(v: unknown, pick: (x: unknown) => T | null): T[] => Array.isArray(v) ? v.flatMap(x => pick(x) ?? []) : [];
+// The day's highlights as the brain sends them (in the day, and in the answer to a mark).
+export const marksOf = (v: unknown): Highlight[] => each(v, x => isObj(x) && typeof x.id === 'string' ? { id: x.id, label: str(x.label) ?? '', by: str(x.by) ?? '' } : null);
 export function tidyReply(raw: unknown): DayReply {
   if (!isObj(raw) || typeof raw.date !== 'string' || !time(raw.start_ms) || !time(raw.end_ms) || (raw.end_ms as number) <= (raw.start_ms as number)) throw new Error('the day has no usable bounds');
-  const each = <T>(v: unknown, pick: (x: unknown) => T | null): T[] => Array.isArray(v) ? v.flatMap(x => pick(x) ?? []) : [];
   return {
     date: raw.date, tz: str(raw.tz) ?? '', start_ms: raw.start_ms as number, end_ms: raw.end_ms as number, now_ms: timeOr(raw.now_ms) ?? (raw.start_ms as number),
     items: each(raw.items, tidy),
     labels: each(raw.labels, x => isObj(x) && typeof x.title === 'string' ? { title: x.title, source: str(x.source), private: bool(x.private) } : null),
     missing: each(raw.missing, x => typeof x === 'string' ? x : null),
     line: isObj(raw.line) && typeof raw.line.text === 'string' ? { text: raw.line.text, draft: bool(raw.line.draft), written_at: str(raw.line.written_at) } : null,
-    highlights: each(raw.highlights, x => isObj(x) && typeof x.id === 'string' ? { id: x.id, label: str(x.label) ?? '', by: str(x.by) ?? '' } : null),
+    highlights: marksOf(raw.highlights),
     summary: isObj(raw.summary) ? { steps: fin(raw.summary.steps) ?? null, resting_hr: fin(raw.summary.resting_hr) ?? null, hrv: fin(raw.summary.hrv) ?? null } : null,
     weather: isObj(raw.weather) ? { condition: str(raw.weather.condition) ?? '', high: fin(raw.weather.high) ?? null, low: fin(raw.weather.low) ?? null, sunrise_ms: timeOr(raw.weather.sunrise_ms), sunset_ms: timeOr(raw.weather.sunset_ms) } : null,
   };
@@ -185,6 +189,8 @@ function plainPlace(day: DayReply | null, now: number) {
 // bad one refuses the whole turn. A run and a Claude Code session are not kinds it takes.
 const ABOUT_KINDS = new Set(['reminder', 'event', 'todo', 'stay', 'move', 'sleep', 'work', 'call', 'talk', 'picture', 'ride', 'departure', 'payment', 'claude_chat', 'claude_day']), ITEM_ID = /^[A-Za-z0-9_\-=+/.|:@]{1,256}$/;
 export const askable = (kind: string, id: string) => ABOUT_KINDS.has(kind) && ITEM_ID.test(id);
+// What can be marked as what mattered (ADR 0296): any item of the day with an id the brain takes (the same set).
+export const starrable = (id: string) => ITEM_ID.test(id);
 
 // A row of the list. The time column is `at` (when it began; `ago` marks one that began the day before), the right column `right` (its length, how
 // long until it, or its value, which `value` says to write in ink). `kind` and `lens`: what the row is, and which of the day's numbers it is
@@ -192,10 +198,10 @@ export const askable = (kind: string, id: string) => ABOUT_KINDS.has(kind) && IT
 // something that happened on one: together they are a trip, and the pane draws one rail through them. `wait`: it waits on him.
 export type Row = {
   key: string; kind: string; lens: LensKind | null; icon: Icon | 'dot'; title: string; detail: string; at: string; ago: string; right: string; value: boolean;
-  future: boolean; star: boolean; wait: boolean; connector: boolean; onWay: boolean;
+  future: boolean; star: boolean; hers: boolean; wait: boolean; connector: boolean; onWay: boolean;
 };
-// `star`: null when the stay is not one of the day's highlights, else its label (which may be empty).
-export type StayHead = { key: string; name: string; unnamed: boolean; rgb: Rgb; icon: Icon; when: string; dur: string; star: string | null };
+// `star`: null when the stay is not one of the day's highlights, else its label (which may be empty); `hers`: it is her pick, not his mark.
+export type StayHead = { key: string; name: string; unnamed: boolean; rgb: Rgb; icon: Icon; when: string; dur: string; star: string | null; hers: boolean };
 export type Block = { type: 'row'; t: number; row: Row } | { type: 'now'; t: number; key: string; label: string } | { type: 'stay'; t: number; key: string; head: StayHead; items: Block[] };
 // Where a row or a stay header sits in time (ms; a moment has t1 = t0), and what the owner or she marked as what mattered.
 export type Span = { key: string; kind: string; t0: number; t1: number };
@@ -311,7 +317,8 @@ export function workoutOf(it: DayItem, t: Say) {
 }
 // A Claude Code session's account, as the letter it is known by.
 export const accountOf = (it: DayItem) => /^[ab]$/i.test(clean(it.account)) ? clean(it.account).toUpperCase() : '';
-type Ctx = { t: Say; tz: string; reply: DayReply; now: number; today: boolean; marks: Map<string, string> };
+type Ctx = { t: Say; tz: string; reply: DayReply; now: number; today: boolean; marks: Map<string, string>; stars: Map<string, Mark> };
+const hersOf = (id: string, c: Ctx) => c.stars.get(id)?.by === 'her';
 
 export const names = (list?: Top[]) => (list ?? []).map(x => clean(x.name)).filter(Boolean);
 export { clean, moveIcon, moveWords, rideWords };
@@ -384,14 +391,14 @@ function rowOf(it: DayItem, c: Ctx): Row | null {
   if (future && !value && it.start_ms - c.now <= TWO_HOURS) { const left = dur(Math.ceil((it.start_ms - c.now) / 60_000), t); right = t([`in ${left}`, `还有 ${left}`]); }
   const mark = c.marks.get(it.id);
   if (mark) { detail = [title, detail].filter(Boolean).join(' · '); title = mark; }
-  return { key: it.id, kind: it.kind, lens: lensOf(it.kind), icon, title, detail, at: clock(it.start_ms, tz), ago: it.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right, value, future, star: c.marks.has(it.id), wait,
+  return { key: it.id, kind: it.kind, lens: lensOf(it.kind), icon, title, detail, at: clock(it.start_ms, tz), ago: it.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right, value, future, star: c.marks.has(it.id), hers: hersOf(it.id, c), wait,
     connector: it.kind === 'move' || it.kind === 'ride', onWay: false };
 }
 // A short stop on the way is a row of the trip: how long, and the place the phone called it.
 function stopRow(it: DayItem, c: Ctx): Row {
   const { t } = c, minutes = Math.max(1, (it.end_ms! - it.start_ms) / 60_000), title = t([`Stopped ${dur(minutes, t)}`, `停了 ${dur(minutes, t)}`]), place = clean(it.place).split(/[,，]/)[0].trim(), mark = c.marks.get(it.id);
   return { key: it.id, kind: 'stay', lens: null, icon: 'dot', title: mark || title, detail: mark ? [title, place].filter(Boolean).join(' · ') : place, at: clock(it.start_ms, c.tz), ago: it.start_ms < c.reply.start_ms ? t(['yd', '昨']) : '', right: '', value: false,
-    future: false, star: c.marks.has(it.id), wait: false, connector: true, onWay: false };
+    future: false, star: c.marks.has(it.id), hers: hersOf(it.id, c), wait: false, connector: true, onWay: false };
 }
 
 // The Claude Code sessions of one stay that were not marked, two or more, are one row: how many, the two newest titles, and how long they
@@ -400,14 +407,14 @@ function foldRow(list: DayItem[], stay: DayItem, c: Ctx): Row {
   const { t, tz, reply } = c, n = list.length, first = list[0], open = c.today ? c.now : reply.end_ms;
   const newest = [...list].sort((a, b) => b.start_ms - a.start_ms).slice(0, 2).map(x => clean(x.title)).filter(Boolean);
   return { key: `code:${stay.id}`, kind: 'code', lens: 'work', icon: 'code', title: t([`Claude Code · ${n} sessions`, `Claude Code · ${n} 个会话`]), detail: newest.join(' · '), at: clock(first.start_ms, tz),
-    ago: first.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right: dur(Math.max(1, covered(list, open)), t), value: false, future: false, star: false, wait: false, connector: false, onWay: false };
+    ago: first.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right: dur(Math.max(1, covered(list, open)), t), value: false, future: false, star: false, hers: false, wait: false, connector: false, onWay: false };
 }
 
 function stayHead(it: DayItem, c: Ctx): StayHead {
   const { t, tz, reply } = c, look = stayLook(it, t), before = dayBefore(it, c);
   const end = it.end_ms ?? (c.today ? c.now : reply.end_ms);
   const when = it.end_ms == null ? t([`from ${before}${clock(it.start_ms, tz)}`, `${before}${clock(it.start_ms, tz)} 起`]) : `${before}${clock(it.start_ms, tz)}–${endText(it.end_ms, reply, tz, t)}`;
-  return { key: it.id, name: look.name, unnamed: look.unnamed, rgb: look.rgb, icon: look.icon, when, dur: dur(Math.max(1, (end - it.start_ms) / 60_000), t), star: c.marks.get(it.id) ?? null };
+  return { key: it.id, name: look.name, unnamed: look.unnamed, rgb: look.rgb, icon: look.icon, when, dur: dur(Math.max(1, (end - it.start_ms) / 60_000), t), star: c.marks.get(it.id) ?? null, hers: hersOf(it.id, c) };
 }
 
 const byTime = (a: DayItem, b: DayItem) => a.start_ms - b.start_ms || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -425,7 +432,7 @@ export function buildDay(input: DayReply, now: number, t: Say): DayModel {
     marks.set(h.id, /^[a-z_]+ \d{1,2}:\d{2}$/i.test(clean(h.label)) ? '' : clean(h.label));
     stars.set(h.id, { label: marks.get(h.id)!, by: h.by });
   }
-  const c: Ctx = { t, tz, reply, now, today, marks };
+  const c: Ctx = { t, tz, reply, now, today, marks, stars };
   const seen = new Set<string>(), items: DayItem[] = [];
   for (const it of reply.items) if (!seen.has(it.id) && (it.kind === 'stay' || isWay(it) || NESTED.has(it.kind))) { seen.add(it.id); items.push(it); }
   items.sort(byTime);

@@ -1,6 +1,6 @@
 import type { L } from './companionSettings';
 import { hm } from './barView.ts';
-import { accountOf, askable, clean, clock, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, stayLook, type DayItem, type DayModel, type Icon, type Say } from './dayView.ts';
+import { accountOf, askable, clean, clock, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, starrable, stayLook, type DayItem, type DayModel, type Icon, type Say } from './dayView.ts';
 
 // What a row says when it is opened (ADR 0296, spec-r3 section 8), and what can be done from it. Pure (no DOM), so
 // scripts/verify-notch-timeline.mjs runs it in node. Nothing here is made up: a part exists only where the brain sent what it
@@ -25,8 +25,9 @@ export type Part =
   | { type: 'sessions'; list: Session[] }
   | { type: 'titles'; list: string[] };
 // `rename`: the kept place under a stay, and the name it has; `ack`: the reminder that rang and waits for a `知道了`; `summarize`: a work block
-// can be handed to her at one tap.
-export type Open = { key: string; kind: string; parts: Part[]; rename: { id: string; name: string } | null; ack: string | null; summarize: boolean };
+// can be handed to her at one tap; `star`: the item can be marked as what mattered (every item with an id the brain takes; a folded row of
+// sessions is no one item).
+export type Open = { key: string; kind: string; parts: Part[]; rename: { id: string; name: string } | null; ack: string | null; summarize: boolean; star: boolean };
 // What a turn about a row carries (ADR 0214): exactly these four, the brain refuses a turn whose `about` has more or a bad id.
 export type About = { kind: string; id: string; title: string; start_ms: number };
 export type Ask = { about: About; icon: Icon; at: string };
@@ -161,7 +162,7 @@ export function openOf(m: DayModel, key: string, t: Say): Open | null {
   // What the open row says first is in ink, the rest is muted.
   const shown = parts.filter(p => p.type !== 'lines' || p.lines.length > 0), top = shown[0];
   if (top?.type === 'lines') top.lines[0] = { ...top.lines[0], tone: 'ink' };
-  return { key, kind: sessions ? 'code' : it.kind, parts: shown, rename, ack, summarize };
+  return { key, kind: sessions ? 'code' : it.kind, parts: shown, rename, ack, summarize, star: !sessions && starrable(it.id) };
 }
 
 // One line of the day's conversation as GET /inherent/memory/day/{day}/records gives it (ts read to ms), and what a talk row shows of its span:
@@ -176,7 +177,7 @@ export function talkLines(list: Rec[], from: number, to: number): { you: string;
 }
 
 // Whether opening the row shows anything: a part, or a button that works (so a row never opens to nothing).
-export const hasBody = (o: Open, canAsk: boolean) => o.parts.length > 0 || !!o.rename || !!o.ack || o.summarize || canAsk;
+export const hasBody = (o: Open, canAsk: boolean) => o.parts.length > 0 || !!o.rename || !!o.ack || o.summarize || o.star || canAsk;
 
 // What a turn about this row carries and what the input row shows of it: null when the brain would refuse it (a kind it does not take, an id
 // of the wrong shape, a folded row that is no one item).

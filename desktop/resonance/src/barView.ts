@@ -42,7 +42,7 @@ export type BarSeg = { key: string; row: string; kind: 'stay' | 'trip' | 'sleep'
   shade?: { f0: number; f1: number; rgb: Rgb; a: number }[] };
 // What is still to come on today: an event as a dashed box over its time, a reminder or a departure as a tick.
 export type Sched = { key: string; kind: 'event' | 'reminder' | 'departure'; s: number; e: number; f0: number; f1: number; short: string };
-export type BarStar = { id: string; f: number; label: string };
+export type BarStar = { id: string; f: number; label: string; hers: boolean };
 export type BarModel = {
   t0: number; t1: number; segs: BarSeg[]; sched: Sched[]; stars: BarStar[]; ticks: { label: string; f: number }[]; nowF: number | null;
   lens: Partial<Record<LensKind, { f0: number; f1: number }[]>>; sun: { kind: 'rise' | 'set'; f: number }[];
@@ -116,7 +116,7 @@ export function buildBar(model: DayModel, t: Say): BarModel | null {
   const stars: BarStar[] = [];
   for (const [id, mark] of model.stars) {
     const it = items.find(x => x.id === id);
-    if (it && it.start_ms <= t1 && (it.end_ms ?? limit) >= t0) stars.push({ id, f: clamp(f(it.start_ms), 0, 1), label: mark.label });
+    if (it && it.start_ms <= t1 && (it.end_ms ?? limit) >= t0) stars.push({ id, f: clamp(f(it.start_ms), 0, 1), label: mark.label, hers: mark.by === 'her' });
   }
   stars.sort((x, y) => x.f - y.f);
   // Where each kind of the day's numbers happened (a moment is a point: f0 = f1), for a lens.
