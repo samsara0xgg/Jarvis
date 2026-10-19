@@ -14,6 +14,7 @@ export type DayItem = {
   attachment?: string; amount?: string | number; currency?: string; direction?: string; counterparty?: string; messages?: number; chats?: number;
   fired?: boolean; acknowledged?: boolean;
   stages?: Stage[]; energy_kcal?: number; distance_m?: number; avg_hr?: number; project?: string; account?: string;
+  credit?: string; ended_reason?: string; detail?: string;
 };
 // One stretch of a night as the watch told it; they may overlap (a phone's `in_bed` under the watch's stages).
 export type Stage = { stage: string; start_ms: number; end_ms: number };
@@ -43,7 +44,7 @@ const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 
 const str = (v: unknown) => typeof v === 'string' ? v : undefined;
 const fin = (v: unknown) => typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 const bool = (v: unknown) => typeof v === 'boolean' ? v : undefined;
-const STRINGS = ['place', 'activity', 'text', 'app', 'route', 'board_stop', 'alight_stop', 'note', 'title', 'source', 'to', 'attachment', 'currency', 'direction', 'counterparty', 'project', 'account'] as const;
+const STRINGS = ['place', 'activity', 'text', 'app', 'route', 'board_stop', 'alight_stop', 'note', 'title', 'source', 'to', 'attachment', 'currency', 'direction', 'counterparty', 'project', 'account', 'credit', 'ended_reason', 'detail'] as const;
 const NUMBERS = ['minutes', 'active_s', 'turns', 'leave_at_ms', 'messages', 'chats', 'energy_kcal', 'distance_m', 'avg_hr'] as const;
 const FLAGS = ['confirmed', 'private', 'fired', 'acknowledged'] as const;
 export function tidy(raw: unknown): DayItem | null {
@@ -198,6 +199,8 @@ export type DayModel = {
   title: string; today: boolean; now: number; tz: string; reply: DayReply; items: DayItem[]; chips: { text: string; more: boolean }[]; line: { text: string; draft: boolean } | null;
   blocks: Block[]; foot: string; empty: boolean; span: Map<string, Span>; index: Span[]; stars: Map<string, Mark>; waiting: string[];
   weather: WeatherLook | null; vitals: Vital[];
+  // What an open row reads (dayOpen.ts): each row and each stay's header by key, and the sessions that are folded into one row.
+  rows: Map<string, Row>; heads: Map<string, StayHead>; folds: Map<string, DayItem[]>;
 };
 
 // The weather in a few words and a glyph each. WeatherKit names its conditions in words (`partlyCloudy`, `isolatedThunderstorms`), so a name
@@ -235,7 +238,7 @@ export function vitalsOf(v: Vitals | null | undefined, t: Say): Vital[] {
 // What a source gives the day, named as the phone names it (`还没读到：Mac 的时间`).
 const SOURCES: Record<string, L> = { phone: ['The phone’s records', '手机的记录'], reminders: ['Reminders', '提醒'], mac: ['Mac time', 'Mac 的时间'], talks: ['Conversations', '对话'], rides: ['Bus rides', '公交乘车'],
   pictures: ['Pictures', '图片'], calendar: ['The calendar', '日历'], departures: ['Buses', '公交'], commitments: ['What he has to go to', '要去的事'] };
-const PAYERS: Record<string, L> = { wechat_pay: ['WeChat Pay', '微信'], alipay: ['Alipay', '支付宝'], boc: ['Bank of China', '中国银行'] };
+export const PAYERS: Record<string, L> = { wechat_pay: ['WeChat Pay', '微信'], alipay: ['Alipay', '支付宝'], boc: ['Bank of China', '中国银行'] };
 const SYMBOLS: Record<string, string> = { CAD: '$', USD: 'US$', CNY: '¥', EUR: '€', GBP: '£', JPY: 'JP¥' };
 // `$12.40`, `¥68.00`; a currency with no sign of its own is written after the number (`12.40 CHF`).
 export function moneyText(amount: unknown, currency?: string) {
@@ -308,7 +311,7 @@ export { clean, moveIcon, moveWords, rideWords };
 // The end of a span: `24:00` at the day's end, `次日 02:10` past it.
 export const endText = (ms: number, reply: DayReply, tz: string, t: Say) => ms === reply.end_ms ? '24:00' : (ms > reply.end_ms ? t(['next day ', '次日 ']) : '') + clock(ms, tz);
 const dayBefore = (it: DayItem, c: Ctx) => it.start_ms < c.reply.start_ms ? c.t(['yesterday ', '昨天 ']) : '';
-const EVENT_SOURCES: Record<string, L> = { mail: ['Mail', '邮件'], said: ['You said', '你说的'], plan: ['Plan', '计划'] };
+export const EVENT_SOURCES: Record<string, L> = { mail: ['Mail', '邮件'], said: ['You said', '你说的'], plan: ['Plan', '计划'] };
 const TWO_HOURS = 2 * 3_600_000;
 function rowOf(it: DayItem, c: Ctx): Row | null {
   const { t, tz, reply } = c;
@@ -428,6 +431,7 @@ export function buildDay(input: DayReply, now: number, t: Say): DayModel {
   // What began while he was at a place is that place's.
   const homeOf = (it: DayItem) => NESTED.has(it.kind) ? [...stays].reverse().find(s => s.start_ms <= it.start_ms && (s.end_ms == null || it.start_ms < s.end_ms)) : undefined;
   const sessions = new Map<DayItem, DayItem[]>(), folds = new Map<string, { stay: DayItem; list: DayItem[] }>(), folded = new Set<string>();
+  const rows = new Map<string, Row>(), heads = new Map<string, StayHead>(), foldedRows = new Map<string, DayItem[]>();
   for (const it of items) { const home = it.kind === 'code' && !marks.has(it.id) ? homeOf(it) : undefined; if (home) sessions.set(home, [...sessions.get(home) ?? [], it]); }
   for (const [stay, list] of sessions) if (list.length > 1) { folds.set(list[0].id, { stay, list }); list.forEach(x => folded.add(x.id)); }
   for (const it of items) {
@@ -435,11 +439,13 @@ export function buildDay(input: DayReply, now: number, t: Say): DayModel {
     if (folded.has(it.id) && !fold) continue;
     const row = fold ? foldRow(fold.list, fold.stay, c) : it.kind !== 'stay' ? rowOf(it, c) : stops.has(it.id) ? stopRow(it, c) : null;
     if (!row) continue;
+    rows.set(row.key, row);
+    if (fold) foldedRows.set(row.key, fold.list);
     if (fold) span.set(row.key, { key: row.key, kind: 'code', t0: it.start_ms, t1: Math.max(...fold.list.map(reach)) }); else place(it);
     const block: Block = { type: 'row', t: it.start_ms, row }, home = fold ? fold.stay : homeOf(it);
     if (home) inside.get(home.id)!.push(block); else tops.push({ rank: it.kind === 'sleep' ? 0 : row.connector ? 2 : 3, block });
   }
-  for (const s of stays) { place(s); tops.push({ rank: 1, block: { type: 'stay', t: s.start_ms, key: s.id, head: stayHead(s, c), items: inside.get(s.id)! } }); }
+  for (const s of stays) { place(s); const head = stayHead(s, c); heads.set(s.id, head); tops.push({ rank: 1, block: { type: 'stay', t: s.start_ms, key: s.id, head, items: inside.get(s.id)! } }); }
   tops.sort((a, b) => a.block.t - b.block.t || a.rank - b.rank);
   // What happened while he was on the way belongs to the trip.
   const legs = tops.flatMap(x => x.block.type === 'row' && x.block.row.connector ? [span.get(x.block.row.key)!] : []);
@@ -459,7 +465,7 @@ export function buildDay(input: DayReply, now: number, t: Say): DayModel {
   // What waits on him, in the order the list shows it.
   const waiting: string[] = [], walk = (list: Block[]) => { for (const b of list) { if (b.type === 'row') { if (b.row.wait) waiting.push(b.row.key); } else if (b.type === 'stay') walk(b.items); } };
   walk(blocks);
-  return { title: dateTitle(reply.date, t), today, now, tz, reply, items, chips, line, blocks, foot, empty: !items.length && !line && !chips.length, span, index, stars, waiting, weather: weatherOf(reply.weather, t, tz), vitals: vitalsOf(reply.summary, t) };
+  return { title: dateTitle(reply.date, t), today, now, tz, reply, items, chips, line, blocks, foot, empty: !items.length && !line && !chips.length, span, index, stars, waiting, weather: weatherOf(reply.weather, t, tz), vitals: vitalsOf(reply.summary, t), rows, heads, folds: foldedRows };
 }
 
 // The list with only what overlaps [a, b]: a stay stays while it does, with only the rows inside it that do; the now line when now is in.
