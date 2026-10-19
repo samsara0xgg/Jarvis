@@ -5,9 +5,8 @@ the line said, so "how did I sleep" on a sleep row reached her with no numbers. 
 day the item starts on, the way ``GET /inherent/day`` does, finds the item by its id and writes
 its fields on one line, so she answers from the same record the phone drew.
 
-The fold reads only local stores: no terminal (his Mac's rows come from what it shipped) and no
-calendar (an Outlook event is read with the calendar tool, as its about line says), so a turn
-never waits on another machine for this.
+The fold reads only local stores: no terminal (his Mac's rows come from what it shipped), so a
+turn never waits on another machine for this.
 """
 
 from __future__ import annotations

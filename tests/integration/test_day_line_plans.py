@@ -1,19 +1,16 @@
-"""ADR 0230: the day line shows what is planned, his Outlook events and his pinned departures.
+"""ADR 0230, 0299: the day line draws his Outlook events once, as things, and his pinned departures.
 
-Acceptance checks, each against the real fold, a real event log and the real ``Home`` reader over
-a fake ``microsoft`` server that answers in Graph's calendarView shape (no network):
+Acceptance checks, each against the real fold and a real event log:
 
-- an event is an item in his lane, ``next`` until it starts, ``now`` while it runs and ``done``
-  once the clock passes its end; its id is a short hash, not Graph's long opaque id; a cancelled
-  event is not there; the calendar is only ever read;
-- an all-day event is a label of the day, not an item, and only on the days it covers (Graph also
-  returns the all-day events of the neighbouring days when the window is cut in local midnights);
-- a calendar that cannot be read (a tool error or a timeout, a garbled answer, a row without a
-  start) puts ``calendar`` in ``missing`` and adds nothing while the rest of the day is served;
-  one that is not connected does the same without a log line, and a day with no reader at all
-  says nothing;
-- the Graph read is kept per day: five minutes for today, thirty for any other day, and a failed
-  read is not kept;
+- his Outlook events reach the day line only through the mirror: the real ``ThingsMirror`` reads a
+  fake ``microsoft`` server that answers in Graph's calendarView shape (no network) and writes the
+  ledger of his things, and the fold draws each event once, from the ledger, as an item in his lane
+  with the phone's id ``commitment-<hex>@<day>`` and ``source`` ``outlook``: ``next`` until it
+  starts, ``now`` while it runs and ``done`` once the clock passes its end; a cancelled event is
+  not there, and one that Outlook drops later leaves the line;
+- an all-day event is a label of the day, not an item, with the same fields as a thing's label;
+- the fold has no reader of the calendar: a day whose Outlook was never mirrored (not connected, or
+  a read that failed) is served as it is, with nothing in ``missing``;
 - the pinned trips of a pin are departure items; the reminder that rings for a trip on the line is
   not a second item, but a reminder whose trip is not on the line stays; a past day shows the pin
   that was held at its end, and a trip is only on the day it leaves;
@@ -27,7 +24,6 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-import hashlib
 import json
 import logging
 import re
@@ -40,9 +36,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.execution.tools import ToolError
-from jarvis.runtime.home import Home
 from jarvis.runtime.inherent_loop import _read_day, _serve_day
-from jarvis.state import departures
+from jarvis.runtime.things_mirror import ThingsMirror
+from jarvis.state import departures, things
 from jarvis.state.day_line import DayLine, day_window, fold_day, parse_day
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -51,7 +47,7 @@ from tests.integration.test_day_line import MINUTE, Row, _load, _raw, _stores, f
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable, Mapping
+    from collections.abc import Mapping
     from pathlib import Path
 
 VANCOUVER = "America/Vancouver"
@@ -59,14 +55,14 @@ ZONE = ZoneInfo(VANCOUVER)
 DAY = "2026-10-10"
 ORIGIN = day_window(parse_day(DAY), ZONE)[0]
 LOGGER = "jarvis.state.day_line"
-EVENT_ID = re.compile(r"event-[0-9a-f]{12}")
+PHONE_ID = re.compile(r"commitment-[0-9a-f]{32}@2026-10-10")
 
 
 def _at(minutes: float) -> int:
     return ORIGIN + round(minutes * MINUTE)
 
 
-# --- Graph's answers and the server that gives them ----------------------------------------------
+# --- Graph's answers, the server that gives them and the mirror that reads them -------------------
 
 
 def _utc(minutes: float) -> str:
@@ -113,15 +109,16 @@ class _Microsoft:
     def __init__(self, events: list[dict[str, Any]]) -> None:
         self.events = events
         self.error: Exception | None = None
-        self.text: str | None = None  # an answer that is not Graph's JSON
-        self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
+    def call(self, server: str, tool: str, _args: Mapping[str, Any]) -> dict[str, Any]:
         assert server == "microsoft"
-        self.calls.append((tool, dict(args)))
+        answers = {
+            "get-calendar-view": self.events, "list-todo-task-lists": [], "list-todo-tasks": [],
+        }
+        assert tool in answers, f"the mirror may only read: {tool}"
         if self.error is not None:
             raise self.error
-        return {"text": self.text if self.text is not None else json.dumps({"value": self.events})}
+        return {"text": json.dumps({"value": answers[tool]})}
 
 
 class _Connections:
@@ -135,8 +132,18 @@ class _Connections:
         return self.server
 
 
-def _home(server: _Microsoft | None) -> Home:
-    return Home(cast("Any", _Connections(server)), (VANCOUVER, ZONE), None)
+def _mirror(log: Path, server: _Microsoft | None) -> ThingsMirror:
+    """The real mirror over the log, at the local midnight that opens 2026-10-10."""
+    mirror = ThingsMirror(cast("Any", _Connections(server)), log, ZONE)
+    mirror.now = lambda: datetime.fromtimestamp(ORIGIN / 1000, UTC)
+    return mirror
+
+
+def _phone_id(log: sqlite3.Connection, graph: dict[str, Any], day: str = DAY) -> str:
+    """The id the phone sees for the thing mirrored from ``graph`` on ``day``."""
+    one = things.by_source(log, "outlook", graph["id"])
+    assert one is not None
+    return f"commitment-{one.thing_id.removeprefix(things.ID_PREFIX)}@{day}"
 
 
 # --- the fold -------------------------------------------------------------------------------------
@@ -152,7 +159,8 @@ class Rig:
 
         ``old`` are rows the registry would refuse now, as an older or damaged log holds them.
         """
-        self.conn: sqlite3.Connection = open_event_log(tmp_path / "events.db")
+        self.path = tmp_path / "events.db"
+        self.conn: sqlite3.Connection = open_event_log(self.path)
         _load(self.conn, rows or [], ORIGIN)
         for row in old:
             _raw(self.conn, row.uid, row.type, json.dumps(row.payload), _at(row.ts))
@@ -162,21 +170,17 @@ class Rig:
         """Close the log."""
         self.conn.close()
 
-    def fold(
-        self, now: float, *,
-        calendar: Callable[[int, int, int], list[dict[str, Any]]] | None = None, day: str = DAY,
-    ) -> DayLine:
+    def mirror(self, server: _Microsoft | None) -> int:
+        """One pass of the mirror over Outlook as ``server`` answers; the writes it made."""
+        return _mirror(self.path, server).sync()
+
+    def fold(self, now: float, *, day: str = DAY) -> DayLine:
         """The day as of ``now`` minutes after the midnight that opens 2026-10-10."""
         start_ms, end_ms = day_window(parse_day(day), ZONE)
-        sources = dataclasses.replace(self.stores, calendar=calendar)
-        return fold_day(self.conn, start_ms, end_ms, _at(now), sources)
+        return fold_day(self.conn, start_ms, end_ms, _at(now), self.stores)
 
 
-def _events(line: DayLine) -> list[dict[str, Any]]:
-    return [item for item in line.items if item["kind"] == "event"]
-
-
-# --- the calendar ---------------------------------------------------------------------------------
+# --- his Outlook events, through the mirror -------------------------------------------------------
 
 NOW_CASES: list[tuple[float, dict[str, str]]] = [
     (480, {"Standup": "next", "Dentist": "next"}),
@@ -193,51 +197,55 @@ NOW_CASES: list[tuple[float, dict[str, str]]] = [
 def test_events_are_next_until_they_start_and_past_when_the_clock_passes(
     tmp_path: Path, now: float, states: dict[str, str],
 ) -> None:
-    """Graph's events become items in his lane; the cancelled one and the all-day one are not."""
+    """Graph's events become things, each drawn once; the cancelled one and the all-day one not."""
     server = _Microsoft([STANDUP, CALLED_OFF, READING_WEEK, DENTIST])
     with closing(Rig(tmp_path)) as rig:
-        line = rig.fold(now, calendar=_home(server).calendar)
+        rig.mirror(server)
+        line = rig.fold(now)
+        standup_id = _phone_id(rig.conn, STANDUP)
 
     assert line.missing == []
     assert [item["title"] for item in line.items] == ["Standup", "Dentist"]
     assert {item["title"]: item["state"] for item in line.items} == states
-    standup = line.items[0]
-    assert EVENT_ID.fullmatch(standup.pop("id"))
-    assert standup == {
-        "lane": "you", "kind": "event", "start_ms": _at(540), "end_ms": _at(570),
-        "state": states["Standup"], "title": "Standup",
+    assert line.items[0] == {
+        "id": standup_id, "lane": "you", "kind": "event", "start_ms": _at(540),
+        "end_ms": _at(570), "state": states["Standup"], "title": "Standup", "source": "outlook",
+        "confirmed": True, "private": False, "place": "",
     }
 
 
-def test_an_events_id_is_a_short_hash_of_graphs_that_stays_the_same(tmp_path: Path) -> None:
-    """Graph's id is a long opaque token; the item's is not it, and is the same each request."""
-    server = _Microsoft([STANDUP, DENTIST])
+def test_an_events_id_is_the_things_and_stays_the_same(tmp_path: Path) -> None:
+    """The phone's id for the thing, not Graph's long opaque one, the same on every request."""
     with closing(Rig(tmp_path)) as rig:
-        first = rig.fold(480, calendar=_home(server).calendar)
-        later = rig.fold(700, calendar=_home(_Microsoft([DENTIST, STANDUP])).calendar)
+        assert rig.mirror(_Microsoft([STANDUP, DENTIST])) == 2
+        first = rig.fold(480)
+        assert rig.mirror(_Microsoft([DENTIST, STANDUP])) == 0  # nothing to follow: not twice
+        later = rig.fold(700)
+        expected = {
+            "Standup": _phone_id(rig.conn, STANDUP), "Dentist": _phone_id(rig.conn, DENTIST),
+        }
 
     ids = {item["title"]: item["id"] for item in first.items}
+    assert ids == expected
     assert {item["title"]: item["id"] for item in later.items} == ids
-    assert len(set(ids.values())) == 2
     for title, graph in (("Standup", STANDUP), ("Dentist", DENTIST)):
-        digest = hashlib.sha256(graph["id"].encode()).hexdigest()
-        assert ids[title] == f"event-{digest[:12]}"
+        assert PHONE_ID.fullmatch(ids[title])
         assert graph["id"] not in ids[title]
 
 
-def test_the_calendar_is_only_read_for_the_window_of_the_day(tmp_path: Path) -> None:
-    """One read-only call, asking for the local midnights that bound the day."""
-    server = _Microsoft([STANDUP])
+def test_an_event_moved_in_outlook_is_still_one_item_and_one_dropped_is_gone(
+    tmp_path: Path,
+) -> None:
+    """The mirror follows Outlook; the line draws the ledger, so it never draws a stale copy."""
     with closing(Rig(tmp_path)) as rig:
-        rig.fold(480, calendar=_home(server).calendar)
+        rig.mirror(_Microsoft([STANDUP, DENTIST]))
+        standup_id = _phone_id(rig.conn, STANDUP)
+        rig.mirror(_Microsoft([timed(STANDUP["id"], "Standup", 550, 580)]))  # Dentist is deleted
+        line = rig.fold(720)
 
-    assert len(server.calls) == 1
-    tool, args = server.calls[0]
-    assert tool == "get-calendar-view"
-    assert (args["startDateTime"], args["endDateTime"]) == (
-        "2026-10-10T00:00:00-07:00", "2026-10-11T00:00:00-07:00",
-    )
-    assert args["fetchAllPages"] is True
+    assert [(i["id"], i["title"], i["start_ms"], i["end_ms"]) for i in line.items] == [
+        (standup_id, "Standup", _at(550), _at(580)),
+    ]
 
 
 ALL_DAY_CASES: list[tuple[str, list[dict[str, Any]], list[str]]] = [
@@ -247,15 +255,11 @@ ALL_DAY_CASES: list[tuple[str, list[dict[str, Any]], list[str]]] = [
         [all_day("a", "Yesterday", "2026-10-09", "2026-10-10")], [],
     ),
     (
-        "the day after is not either, though Graph returns it for this window",
+        "the day after is not either",
         [all_day("a", "Tomorrow", "2026-10-11", "2026-10-12")], [],
     ),
     (
-        "a stretch of days is a label on each day it covers",
-        [all_day("a", "Conference", "2026-10-08", "2026-10-13")], ["Conference"],
-    ),
-    (
-        "they are listed in the order Graph gave them",
+        "two on one day are two labels",
         [
             all_day("b", "Birthday", "2026-10-10", "2026-10-11"),
             all_day("a", "Reading week", "2026-10-10", "2026-10-11"),
@@ -272,147 +276,44 @@ ALL_DAY_CASES: list[tuple[str, list[dict[str, Any]], list[str]]] = [
 def test_an_all_day_event_is_a_label_of_the_day_and_not_an_item(
     tmp_path: Path, graph: list[dict[str, Any]], labels: list[str],
 ) -> None:
-    """Only the days an all-day event covers carry it, as ``{title, source}`` in Graph's order."""
-    server = _Microsoft([*graph, STANDUP])
+    """Only its own day carries it, with a thing's label fields and the phone's id."""
     with closing(Rig(tmp_path)) as rig:
-        line = rig.fold(480, calendar=_home(server).calendar)
+        rig.mirror(_Microsoft([*graph, STANDUP]))
+        line = rig.fold(480)
+        held = {one["subject"]: _phone_id(rig.conn, one) for one in graph}
 
-    assert line.labels == [{"title": title, "source": "calendar"} for title in labels]
-    assert [item["kind"] for item in line.items] == ["event"]
+    assert sorted(line.labels, key=lambda label: label["title"]) == [
+        {
+            "title": title, "source": "outlook", "confirmed": True, "private": False,
+            "place": "", "id": held[title],
+        }
+        for title in labels
+    ]
+    assert [item["title"] for item in line.items] == ["Standup"]
     assert line.missing == []
 
 
-# --- a calendar that cannot be read ---------------------------------------------------------------
+# --- an Outlook that was not read -----------------------------------------------------------------
 
 
-def _error(error: Exception) -> Callable[[_Microsoft], None]:
-    """Make the server fail with ``error``."""
-
-    def apply(server: _Microsoft) -> None:
-        server.error = error
-
-    return apply
-
-
-def _garbled(server: _Microsoft) -> None:
-    server.text = "<html>502 Bad Gateway</html>"
-
-
-def _no_start(server: _Microsoft) -> None:
-    server.events = [{"id": "x", "subject": "Broken", "isAllDay": False, "end": STANDUP["end"]}]
-
-
-FAILURES: list[tuple[str, Callable[[_Microsoft], None]]] = [
-    (
-        "the server's tool error",
-        _error(ToolError("microsoft: TimeoutError: ", code="mcp_server")),
-    ),
-    ("a timeout", _error(TimeoutError("graph"))),
-    ("an answer that is not Graph's", _garbled),
-    ("an event with no start", _no_start),
-]
-
-
-@pytest.mark.parametrize(
-    "break_it", [case[1] for case in FAILURES], ids=[case[0] for case in FAILURES],
-)
-def test_a_calendar_that_cannot_be_read_is_missing_and_adds_nothing(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, break_it: Callable[[_Microsoft], None],
+@pytest.mark.parametrize("connected", [False, True], ids=["not connected", "a read that fails"])
+def test_a_day_whose_outlook_was_not_mirrored_serves_everything_else(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, *, connected: bool,
 ) -> None:
-    """The failure is named and logged; the stay and the reminder of the day are still served."""
-    server = _Microsoft([STANDUP, READING_WEEK])
-    break_it(server)
-    rows = [visit("home", 480, place="Home"), *remind("r1", 800, "water the plants")]
-    caplog.set_level(logging.ERROR, logger=LOGGER)
-    with closing(Rig(tmp_path, rows)) as rig:
-        line = rig.fold(720, calendar=_home(server).calendar)
-
-    assert line.missing == ["calendar"]
-    assert line.labels == []
-    assert [item["id"] for item in line.items] == ["home", "r1"]
-    assert any("calendar" in record.getMessage() for record in caplog.records)
-
-
-def test_a_day_with_no_microsoft_connection_serves_everything_else(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Not connected is a state, not a fault: ``calendar`` is missing and nothing is logged."""
+    """The line has no calendar to read: it adds nothing and names nothing in ``missing``."""
+    server = _Microsoft([STANDUP]) if connected else None
+    if server is not None:
+        server.error = ToolError("microsoft: TimeoutError: ", code="mcp_server")
     rows = [visit("home", 480, place="Home"), *remind("r1", 800, "water the plants")]
     caplog.set_level(logging.DEBUG, logger=LOGGER)
     with closing(Rig(tmp_path, rows)) as rig:
-        line = rig.fold(720, calendar=_home(None).calendar)
-
-    assert line.missing == ["calendar"]
-    assert [item["id"] for item in line.items] == ["home", "r1"]
-    assert [r for r in caplog.records if r.name == LOGGER] == []
-
-
-def test_a_day_with_no_calendar_reader_says_nothing_of_it(tmp_path: Path) -> None:
-    """A fold that was given none has nothing to read: not an error, not in ``missing``."""
-    with closing(Rig(tmp_path, [visit("home", 480)])) as rig:
+        assert rig.mirror(server) == 0
         line = rig.fold(720)
 
-    assert (line.missing, line.labels, [item["id"] for item in line.items]) == ([], [], ["home"])
-
-
-# --- the cache ------------------------------------------------------------------------------------
-
-
-def _moved(server: _Microsoft) -> None:
-    """The standup moves ten minutes later in Outlook."""
-    server.events = [timed(STANDUP["id"], "Standup", 550, 580)]
-
-
-def test_todays_read_is_kept_for_five_minutes(tmp_path: Path) -> None:
-    """A second request within the time does not ask Graph; one after it does and sees the move."""
-    server = _Microsoft([STANDUP])
-    calendar = _home(server).calendar
-    with closing(Rig(tmp_path)) as rig:
-        cold = rig.fold(720, calendar=calendar)
-        _moved(server)
-        warm = rig.fold(724, calendar=calendar)
-        assert len(server.calls) == 1
-        assert warm.items == cold.items
-        stale = rig.fold(726, calendar=calendar)
-
-    assert len(server.calls) == 2
-    assert [(item["start_ms"], item["end_ms"]) for item in _events(stale)] == [
-        (_at(550), _at(580)),
-    ]
-
-
-def test_another_days_read_is_kept_for_thirty_minutes_and_each_day_has_its_own(
-    tmp_path: Path,
-) -> None:
-    """Days other than today move slowly; two days are two reads."""
-    server = _Microsoft([STANDUP])
-    calendar = _home(server).calendar
-    now = 3000  # the morning of the 12th: the 10th is past, the 11th is gone
-    with closing(Rig(tmp_path)) as rig:
-        rig.fold(now, calendar=calendar)
-        _moved(server)
-        rig.fold(now + 29, calendar=calendar)
-        assert len(server.calls) == 1
-        rig.fold(now + 29, calendar=calendar, day="2026-10-11")
-        assert len(server.calls) == 2
-        rig.fold(now + 31, calendar=calendar)
-
-    assert len(server.calls) == 3
-
-
-def test_a_failed_read_is_not_kept(tmp_path: Path) -> None:
-    """The next request asks again and gets the day once Graph answers."""
-    server = _Microsoft([STANDUP])
-    server.error = ToolError("microsoft: TimeoutError: ", code="mcp_server")
-    calendar = _home(server).calendar
-    with closing(Rig(tmp_path)) as rig:
-        down = rig.fold(720, calendar=calendar)
-        server.error = None
-        up = rig.fold(721, calendar=calendar)
-
-    assert (down.missing, _events(down)) == (["calendar"], [])
-    assert (up.missing, [item["title"] for item in _events(up)]) == ([], ["Standup"])
-    assert len(server.calls) == 2
+    assert line.missing == []
+    assert line.labels == []
+    assert [item["id"] for item in line.items] == ["home", "r1"]
+    assert [r for r in caplog.records if r.name == LOGGER] == []
 
 
 # --- the pinned departures ------------------------------------------------------------------------
@@ -630,12 +531,13 @@ def test_the_day_route_serves_events_labels_and_departures(tmp_path: Path) -> No
     conn = open_event_log(log)
     pin = [pinned("P1", [trip("a", 520, 515)], "r1", "a", 0), *remind("r1", 515, "go")]
     _load(conn, pin, ORIGIN)
+    _mirror(log, _Microsoft([STANDUP, READING_WEEK, DENTIST])).sync()
+    reading_week = _phone_id(conn, READING_WEEK)
     conn.close()
-    home = _home(_Microsoft([STANDUP, READING_WEEK, DENTIST]))
     client = TestClient(create_app(InherentDeps(
         submit_callable=lambda _text: "T1",
         broadcaster=InherentBroadcaster(),
-        day_read=functools.partial(_serve_day, log, ZONE, None, None, calendar=home.calendar),
+        day_read=functools.partial(_serve_day, log, ZONE, None, None),
     )))
 
     reply = client.get("/inherent/day", params={"date": DAY})
@@ -645,21 +547,23 @@ def test_the_day_route_serves_events_labels_and_departures(tmp_path: Path) -> No
     assert [(item["kind"], item.get("title")) for item in body["items"]] == [
         ("departure", f"28 · {STOP}"), ("event", "Standup"), ("event", "Dentist"),
     ]
-    assert body["labels"] == [{"title": "Reading week", "source": "calendar"}]
+    assert all(PHONE_ID.fullmatch(item["id"]) for item in body["items"] if item["kind"] == "event")
+    assert body["labels"] == [{
+        "title": "Reading week", "source": "outlook", "confirmed": True, "private": False,
+        "place": "", "id": reading_week,
+    }]
     assert body["missing"] == ["mac", "talks"]
 
 
-def test_the_day_route_without_microsoft_names_the_calendar_and_serves_the_rest(
+def test_the_day_route_without_microsoft_serves_the_rest_and_never_names_the_calendar(
     tmp_path: Path,
 ) -> None:
-    """Not connected: ``calendar`` is missing, no labels, and the day is otherwise served."""
+    """Outlook never mirrored: no labels, nothing of the calendar in ``missing``."""
     log = tmp_path / "events.db"
     conn = open_event_log(log)
     _load(conn, [visit("home", 480, place="Home")], ORIGIN)
     conn.close()
-    body = _read_day(
-        log, ZONE, None, None, date(2026, 10, 10), _at(720), calendar=_home(None).calendar,
-    )
+    body = _read_day(log, ZONE, None, None, date(2026, 10, 10), _at(720))
 
     assert [item["id"] for item in body["items"]] == ["home"]
-    assert (body["labels"], body["missing"]) == ([], ["mac", "talks", "calendar"])
+    assert (body["labels"], body["missing"]) == ([], ["mac", "talks"])

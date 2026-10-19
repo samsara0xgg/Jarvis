@@ -25,15 +25,13 @@ Each source folds on its own and a source that raises leaves its items out (:fun
 - ``pictures``: each picture he sent her, at the time of the turn it came with and with the stay
   that covers that time, and its note once written (ADR 0223). With no memory store and no
   attachment store it has nothing to read and says nothing in ``missing``;
-- ``calendar``: his Outlook events, read through the reader the runtime injects
-  (:attr:`DaySources.calendar`), in his lane with state ``next`` until they start (ADR 0230); an
-  all-day event is a label of the day (:attr:`DayLine.labels`), not an item;
 - ``commitments``: what he has to go to or do at a time (ADR 0274, 0299), the occurrences of the
   ledger of his things in the event log, one item per occurrence in his lane as kind ``event``
-  (every build of the phone draws it), with ``source`` (where the ledger had it from),
-  ``confirmed``, ``private`` and ``place`` besides the calendar's fields; its id is
-  ``commitment-<hex>@<day>``, ``<hex>`` being the hex of the thing's id; an all-day one (a date
-  and no hour) is a label of the day instead of an item, with the same extra fields;
+  (every build of the phone draws it), with ``source`` (where the ledger had it from: said by
+  him, read from mail, or mirrored from his Outlook, so his calendar reaches the line only
+  here), ``confirmed``, ``private`` and ``place``; its id is ``commitment-<hex>@<day>``,
+  ``<hex>`` being the hex of the thing's id; an all-day one (a date and no hour) is a label of
+  the day (:attr:`DayLine.labels`) instead of an item, with the same fields;
 - ``plan``: a day with a plan (ADR 0288) draws its items in his lane as kind ``event`` with
   ``source`` ``plan``, id ``plan-<date>-<item id>``, from its start (or its window's start) for
   its minutes, with ``place`` and ``private``; an item with no time is left out, and so is one
@@ -80,13 +78,12 @@ Each source folds on its own and a source that raises leaves its items out (:fun
   left out, the departure stands for it.
 
 A source whose store is not there (no TimeSink path or file, no memory store) is not an error: it
-is named in ``missing`` without a log line; so is a calendar that is not connected. The
-thresholds below belong to the code, not to settings.
+is named in ``missing`` without a log line. The thresholds below belong to the code, not to
+settings.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -125,7 +122,6 @@ if TYPE_CHECKING:
     from jarvis.state.ledger import Activity, ActivitySpan, CachedScreen, TerminalScreen
 
     type Source = Callable[[sqlite3.Connection, int, int, int], list[dict[str, Any]]]
-    type CalendarRead = Callable[[int, int, int], list[dict[str, Any]]]
 
 LOGGER = logging.getLogger(__name__)
 
@@ -169,11 +165,6 @@ class DaySources:
     # a brain's ``timesink``: the terminal's store
     terminal: TerminalScreen | CachedScreen | None = None
     attachments: Path | None = None  # where his pictures are kept (ADR 0223)
-    # ``(window_start_ms, window_end_ms, now_ms)`` to his calendar's events (ADR 0230), each
-    # ``{id, title, start, end}`` with aware ISO times and ``all_day`` on an all-day one. It
-    # raises LookupError when no calendar is connected and any other error when it cannot be
-    # read. None: no calendar to read, and nothing said in ``missing``.
-    calendar: CalendarRead | None = None
     # the imports directory (ADR 0294), whose shipped.db holds what the Mac terminal copied in:
     # TimeSink when the live read has nothing, and the Claude Code sessions. None: not connected.
     shipped: Path | None = None
@@ -187,8 +178,8 @@ class _NotConnected(Exception):  # noqa: N818 — a source's answer, not an erro
 class DayLine:
     """The items of one window, sorted by start then id, and the sources that could not be read.
 
-    ``labels`` are what the day carries without a stretch of time: ``{title, source}``, and for
-    an all-day commitment also ``{confirmed, private, place, id}``. ``synced`` maps a device
+    ``labels`` are what the day carries without a stretch of time: each all-day occurrence of a
+    thing, ``{title, source, confirmed, private, place, id}``. ``synced`` maps a device
     ("iPad") to the time of its newest record when that is before the window's end or now:
     the ``screen`` items of that device are known only up to it (ADR 0304).
     """
@@ -248,7 +239,6 @@ def fold_day(
         ("mac", lambda _conn, first, last, now: _mac_items(sources, first, last, now)),
         ("talks", lambda _conn, first, last, now: _talk_items(sources, first, last, now)),
         ("pictures", lambda db, first, last, now: _picture_items(db, sources, first, last, now)),
-        ("calendar", lambda _conn, first, last, now: _calendar_items(sources, first, last, now)),
         (
             "commitments",
             lambda db, first, last, now: _commitment_items(db, sources, first, last, now),
@@ -275,9 +265,7 @@ def fold_day(
             LOGGER.exception("day line: the %s source could not be read", name)
             missing.append(name)
     labels = [
-        {"title": row["title"], "source": "calendar"}
-        if "confirmed" not in row  # a commitment's label also says whose it is (ADR 0274)
-        else {k: row[k] for k in ("title", "source", "confirmed", "private", "place", "id")}
+        {k: row[k] for k in ("title", "source", "confirmed", "private", "place", "id")}
         for row in items if row["kind"] == "label"
     ]
     items = _without_pin_rings([row for row in items if row["kind"] != "label"])
@@ -384,44 +372,7 @@ def _without_ridden_moves(items: list[dict[str, Any]], now_ms: int) -> list[dict
     return [i for i in items if not ridden(i)]
 
 
-# --- the calendar and the pinned departures ------------------------------------------------
-
-
-def _calendar_items(
-    sources: DaySources, window_start: int, window_end: int, now_ms: int,
-) -> list[dict[str, Any]]:
-    """His Outlook events in his lane, and a ``label`` row for each all-day one (ADR 0230).
-
-    The id is a short hash of the Graph event id, which is a long opaque token.
-    """
-    read = sources.calendar
-    if read is None:
-        return []
-    try:
-        events = read(window_start, window_end, now_ms)
-    except (KeyError, IndexError):  # a malformed answer is a fault, which is logged
-        raise
-    except LookupError:  # no microsoft connection: the usual state of a brain without Outlook
-        raise _NotConnected from None
-    rows: list[dict[str, Any]] = []
-    for event in events:
-        start = _ms(datetime.fromisoformat(event["start"]))
-        end = _ms(datetime.fromisoformat(event["end"]))
-        if not _overlaps(start, end, window_start, window_end):
-            continue
-        if event.get("all_day"):
-            rows.append({"kind": "label", "title": str(event["title"])})
-            continue
-        rows.append({
-            "id": f"event-{hashlib.sha256(str(event['id']).encode()).hexdigest()[:12]}",
-            "lane": "you",
-            "kind": "event",
-            "start_ms": start,
-            "end_ms": end,
-            "state": _state(start, end, now_ms),
-            "title": str(event["title"]),
-        })
-    return rows
+# --- the things and the pinned departures --------------------------------------------------
 
 
 def _commitment_items(

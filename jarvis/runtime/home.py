@@ -60,11 +60,6 @@ _ALTERNATIVES = 2
 _LAT_LNG = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 _WEATHER_TIMEOUT_S = 4.0
 _NEAR_HOME_KM = 100
-CALENDAR_TTL_TODAY_MS: Final = 5 * 60_000
-"""How long the day line keeps today's Graph read (ADR 0230): his plans change during the day."""
-CALENDAR_TTL_OTHER_MS: Final = 30 * 60_000
-"""How long it keeps any other day's read: those days move slowly, and a phone scrubbing the ring
-back and forth should not ask Graph for each swipe."""
 WEATHER_CARD_TTL_S: Final = 6 * 3600
 """How long the day line keeps a day's weather (ADR 0285): one WeatherKit read per day, a few
 times a day at most, however often a phone scrubs back and forth."""
@@ -425,8 +420,7 @@ class Home:
         self._archived_junk: set[str] = set()
         self._kept: set[str] = set()
         self._letters: dict[str, dict[str, str]] = {}
-        self._calendar_lock = threading.Lock()
-        self._calendar: dict[tuple[int, int], tuple[int, list[dict[str, Any]]]] = {}
+        self._cards_lock = threading.Lock()
         self._cards: dict[date, tuple[float, dict[str, Any] | None]] = {}
 
     def _servers(self, server: str = PLAN_SERVER) -> McpServers:
@@ -497,7 +491,7 @@ class Home:
         never an error.
         """
         now = _clock.time()
-        with self._calendar_lock:
+        with self._cards_lock:
             held = self._cards.get(day)
         if held is not None and now - held[0] < (
             WEATHER_CARD_TTL_S if held[1] is not None else WEATHER_CARD_RETRY_S
@@ -517,7 +511,7 @@ class Home:
                     "sunrise_ms": self._clock_ms(day, row["sunrise"]),
                     "sunset_ms": self._clock_ms(day, row["sunset"]),
                 }
-        with self._calendar_lock:
+        with self._cards_lock:
             self._cards = {d: h for d, h in self._cards.items() if now - h[0] < WEATHER_CARD_TTL_S}
             self._cards[day] = (now, card)
         return card
@@ -528,43 +522,6 @@ class Home:
             return None
         moment = datetime.combine(day, time.fromisoformat(text), self._zone)
         return int(moment.timestamp() * 1000)
-
-    def calendar(self, start_ms: int, end_ms: int, now_ms: int) -> list[dict[str, Any]]:
-        """The calendar's events of ``[start_ms, end_ms)`` as ``today()`` words them (ADR 0230).
-
-        An all-day event also holds ``end``, the local midnight after its last day. The day line
-        asks this on a worker thread. A read is kept per window: ``CALENDAR_TTL_TODAY_MS`` when
-        ``now_ms`` is inside the window, ``CALENDAR_TTL_OTHER_MS`` otherwise. A failed read is not
-        kept.
-
-        Raises:
-            LookupError: the ``microsoft`` server is not connected.
-            ToolError: Graph or the server did not answer, or answered with an error.
-        """
-        key = (start_ms, end_ms)
-        ttl = CALENDAR_TTL_TODAY_MS if start_ms <= now_ms < end_ms else CALENDAR_TTL_OTHER_MS
-        with self._calendar_lock:
-            held = self._calendar.get(key)
-        if held is not None and 0 <= now_ms - held[0] < ttl:
-            return held[1]
-        events = []
-        for one in _calendar_view(
-            self._servers(),
-            datetime.fromtimestamp(start_ms / 1000, self._zone),
-            datetime.fromtimestamp(end_ms / 1000, self._zone),
-        ):
-            row = _event(one, self._zone)
-            if row.get("all_day"):
-                last = date.fromisoformat(str(one["end"]["dateTime"])[:10])
-                row["end"] = datetime.combine(last, time(), self._zone).isoformat()
-            events.append(row)
-        with self._calendar_lock:
-            self._calendar = {
-                k: v for k, v in self._calendar.items()
-                if 0 <= now_ms - v[0] < CALENDAR_TTL_OTHER_MS
-            }
-            self._calendar[key] = (now_ms, events)
-        return events
 
     def graph(self, tool: str, args: Mapping[str, Any]) -> list[dict[str, Any]]:
         """The ``value`` list of one read-only Microsoft tool: ``my_schedule``'s reads (ADR 0248).
