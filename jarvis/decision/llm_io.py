@@ -22,7 +22,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.decision.llm_anthropic import files_headers
+from jarvis.decision.llm_anthropic import create_args
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
@@ -111,9 +111,7 @@ async def _pump(
     try:
         client = _IO.client(options, provider)
         if provider == "anthropic":
-            response = await client.messages.create(
-                **body, extra_headers=files_headers(body) or None,
-            )
+            response = await client.messages.create(**create_args(body))
         else:
             response = await (
                 client.responses.create(**body)

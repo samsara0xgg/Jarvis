@@ -4,7 +4,8 @@ The desktop Settings page reads and writes ``<runtime root>/settings.json``
 through ``/inherent/settings``. Every value is read once at boot, so a saved
 change waits for a restart; ``restart_pending`` says whether one does. The
 microphone and speaker are the exception: a running voice chain takes them at
-once (ADR 0054), and so are the reSpeaker board's lights and output levels (ADR 0147).
+once (ADR 0054), and so are the reSpeaker board's lights and output levels (ADR 0147), and the
+conversation model and its effort take effect from the next sentence (ADR 0297).
 """
 
 from __future__ import annotations
@@ -72,6 +73,9 @@ PATHS: dict[str, tuple[str, ...]] = {
     "screenshot_days": ("tools", "screen", "retention_days"),
     # ADR 0154: the memory page's cap on the core memory note, read at boot like the rest.
     "core_memory_max_chars": ("core_memory", "max_chars"),
+    # ADR 0297: the conversation's model (an llm preset) and effort; live; the brain owns ``llm``.
+    "conversation_model": ("llm", "conversation_model"),
+    "conversation_effort": ("llm", "conversation_effort"),
     **{key: ("respeaker", key.removeprefix("board_")) for key in (
         "board_light", "board_brightness", "board_speed", "board_color",
         "board_direction_colors", "board_ring_colors", "board_headphone", "board_lineout",
@@ -86,6 +90,14 @@ _BOARD_DEFAULTS: dict[str, Any] = {
 _DEFAULTS: dict[str, Any] = {
     "reply_language": "follow", "final_asr_language": "", "tts_volume": 1.0,
     "core_memory_max_chars": 40000, **_BOARD_DEFAULTS,
+}
+# ADR 0297: the presets the page offers for the conversation, and the efforts each takes.
+# Claude models take adaptive thinking only (no "none"); OpenAI's luna answers without thinking
+# at "none" and needs the Responses API for any other effort.
+CONVERSATION_MODELS: dict[str, list[str]] = {
+    "opus-fast": ["low", "medium", "high"], "opus": ["low", "medium", "high"],
+    "sonnet": ["low", "medium", "high"], "haiku": ["low", "medium", "high"],
+    "luna": ["none", "low", "medium", "high"],
 }
 _DEVICES = {"output_device": "output", "input_device": "input"}
 _RANGES = {
@@ -119,7 +131,7 @@ def voice_name(voice_id: str) -> str:
     return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)
 
 
-def _valid(key: str, value: object) -> bool:
+def _valid(key: str, value: object) -> bool:  # noqa: PLR0911 — one return per kind of key
     """Whether ``value`` is a storable value for ``key``; devices are checked against the list."""
     if key in _RANGES:
         low, high = _RANGES[key]
@@ -134,6 +146,10 @@ def _valid(key: str, value: object) -> bool:
         return value is None or isinstance(value, str)
     if key == "tts_voice":
         return value in VOICES
+    if key == "conversation_model":
+        return value in CONVERSATION_MODELS
+    if key == "conversation_effort":
+        return value in CONVERSATION_MODELS["luna"]
     return _valid_board(key, value) if key in _BOARD_DEFAULTS else (
         (key == "reply_language" and value in ("follow", "zh", "en"))
         or (key == "final_asr_language" and value in ("", "zh", "en"))
@@ -246,6 +262,8 @@ class Settings:
         self.on_devices: Callable[[str | None, str | None], None] | None = None
         # ADR 0147: set by the runtime; puts a saved board look (see :meth:`board`) on the board.
         self.on_board: Callable[[dict[str, Any]], object] | None = None
+        # ADR 0297: set by the runtime; takes the conversation (model, effort) from the next turn.
+        self.on_conversation: Callable[[str, str], object] | None = None
 
     def read(self) -> dict[str, Any]:
         """``{values, options, defaults, restart_pending}`` in the shapes the page shows."""
@@ -255,16 +273,20 @@ class Settings:
         values["repos"] = list(_get(self._config, ("observer", "repos")) or [])
         report = _get(self._config, ("daily_report", "preset"))
         for key, preset in (
-            ("model_conversation", _get(self._config, ("llm", "default_preset"))),
             ("model_background", _get(self._config, ("work_state", "preset"))),
             ("model_report", report or _get(self._config, ("work_state", "preset"))),
         ):
             model = _get(self._config, ("llm", "presets", str(preset), "model"))
             values[key] = str(model or preset or "")
+        values["conversation_model"], values["conversation_effort"] = self.conversation(current)
+        model = _get(self._config, ("llm", "presets", values["conversation_model"], "model"))
+        values["model_conversation"] = str(model or values["conversation_model"])
         return {
             "values": values,
             "options": {
                 "tts_voice": [voice_name(one) for one in VOICES],
+                "conversation_model": list(CONVERSATION_MODELS),
+                "conversation_effort": CONVERSATION_MODELS,
                 **{key: list(RETENTION_DAYS) for key in _RETENTION},
                 **{key: [SYSTEM_DEFAULT, *self._devices(kind)] for key, kind in _DEVICES.items()},
             },
@@ -280,6 +302,11 @@ class Settings:
     def update(self, changes: Mapping[str, Any]) -> dict[str, Any]:
         """Save the page's changes, then answer like :meth:`read`; ValueError names a bad one."""
         stored = {key: self._stored(key, value) for key, value in changes.items()}
+        if "conversation_effort" in stored:
+            model = str(stored.get("conversation_model") or self.conversation()[0])
+            if stored["conversation_effort"] not in CONVERSATION_MODELS.get(model, ()):
+                msg = f"conversation_effort cannot be {stored['conversation_effort']!r} for {model}"
+                raise ValueError(msg)
         write_private_json(self._root / SETTINGS_FILE, {**_saved(self._root), **stored})
         picked = stored.keys() & _DEVICES.keys()
         if picked and self.on_devices is not None:
@@ -292,7 +319,38 @@ class Settings:
             for key in changed:
                 self._booted[key] = stored[key]
             self.on_board(board)
+        if stored.keys() & {"conversation_model", "conversation_effort"} and self.on_conversation:
+            for key in stored.keys() & {"conversation_model", "conversation_effort"}:
+                self._booted[key] = stored[key]
+            self.on_conversation(*self.conversation())
         return self.read()
+
+    def conversation(self, current: Mapping[str, Any] | None = None) -> tuple[str, str]:
+        """The conversation's ``(model, effort)`` now: the saved choice, else the default preset.
+
+        A saved effort the model does not take (a model picked after it) gives way to the
+        preset's own ``reasoning_effort``, then to ``low`` (``none`` for luna).
+        """
+        current = {**self._booted, **_saved(self._root)} if current is None else current
+        model = current.get("conversation_model") or _get(self._config, ("llm", "default_preset"))
+        own = _get(self._config, ("llm", "presets", str(model), "reasoning_effort"))
+        allowed = CONVERSATION_MODELS.get(str(model), CONVERSATION_MODELS["luna"])
+        fallback = "none" if model == "luna" else "low"
+        effort = next(
+            (one for one in (current.get("conversation_effort"), own, fallback) if one in allowed),
+            fallback,
+        )
+        return str(model), str(effort)
+
+    def conversation_saved(self) -> tuple[str, str] | None:
+        """:meth:`conversation` when a model or effort is saved, else ``None``.
+
+        With neither, the conversation runs as configured.
+        """
+        current = {**self._booted, **_saved(self._root)}
+        if current.get("conversation_model") or current.get("conversation_effort"):
+            return self.conversation(current)
+        return None
 
     def core_memory_cap(self) -> tuple[int, int]:
         """``(saved or booted, booted)`` cap on the core memory note (the gate reads it at boot)."""

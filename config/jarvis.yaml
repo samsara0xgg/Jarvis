@@ -21,7 +21,8 @@ llm:
   # LLM 提供商：openai（兼容 xAI/Kimi/DeepSeek）或 anthropic。
   provider: openai
 
-  # 对话平时用 default_preset。
+  # 对话平时用 default_preset。设置页的“对话模型”（conversation_model / conversation_effort，
+  # ADR 0297）存下后盖过它和该预设的 reasoning_effort，下一句起生效；没存过就是这里的样子。
   default_preset: sonnet
 
   # ADR 0108 深想：Allen 说的这一句里出现 on_words 的词，只这一轮改用 preset（同一个模型，
@@ -148,6 +149,32 @@ llm:
       reasoning_effort: high
       images: true
       spoken_structured: false
+    # Claude Opus 5.5，直连 Anthropic。设置页“对话模型”的一个选项（llm.conversation_model），
+    # 出厂不是默认。和 sonnet 一样只收自适应思考，不收 thinking disabled；价钱 $4/$20 每百万
+    # token，缓存读 0.05 倍。
+    opus:
+      provider: anthropic
+      model: claude-opus-5-5
+      api_key_env: ANTHROPIC_API_KEY
+      max_tokens: 16384
+      context_length: 1000000
+      reasoning_effort: low
+      images: true
+      spoken_structured: false
+    # 同 opus，开快速模式（ADR 0297）：请求体 speed: fast 加 beta 头 fast-mode-2026-02-01。
+    # 2026-10-19 在 Pi 上实测暖连接首 token 1.20 秒、一轮 1.60 秒（Sonnet low 0.82 / 1.74）。
+    # 价钱 $8/$40 每百万 token，缓存读 $0.40，写 $10；快速和标准的缓存是分开的。
+    # 快速模式被限流（429）时，那一次请求按标准速度重发一次。
+    opus-fast:
+      provider: anthropic
+      model: claude-opus-5-5
+      api_key_env: ANTHROPIC_API_KEY
+      max_tokens: 16384
+      context_length: 1000000
+      reasoning_effort: low
+      images: true
+      spoken_structured: false
+      speed: fast
     # 要写得好的后台活：日摘要、账本散文、
     # 核心记忆、对话压缩。同 sonnet，effort medium。
     sonnet-medium:

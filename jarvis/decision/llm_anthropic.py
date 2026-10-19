@@ -84,14 +84,39 @@ FILES_BETA: Final[str] = "files-api-2025-04-14"
 """The beta header a request needs to name an uploaded file in an image block (ADR 0255)."""
 
 
+FAST_BETA: Final[str] = "fast-mode-2026-02-01"
+"""The beta header of fast mode: the body's top-level ``speed: "fast"`` (ADR 0295)."""
+
+
 def files_headers(body: Mapping[str, Any]) -> dict[str, str]:
-    """The extra headers ``body`` needs: the Files beta when an image block names a file."""
+    """The extra headers ``body`` needs.
+
+    The Files beta when an image block names a file, the fast-mode beta for ``speed: "fast"``.
+    """
+    betas = []
     for message in body.get("messages") or ():
         content = message.get("content")
-        for block in content if isinstance(content, list) else ():
-            if block.get("type") == "image" and block.get("source", {}).get("type") == "file":
-                return {"anthropic-beta": FILES_BETA}
-    return {}
+        if any(
+            block.get("type") == "image" and block.get("source", {}).get("type") == "file"
+            for block in (content if isinstance(content, list) else ())
+        ):
+            betas.append(FILES_BETA)
+            break
+    if body.get("speed") == "fast":
+        betas.append(FAST_BETA)
+    return {"anthropic-beta": ",".join(betas)} if betas else {}
+
+
+def create_args(body: Mapping[str, Any]) -> dict[str, Any]:
+    """The kwargs of ``messages.create(**...)`` for ``body``.
+
+    The SDK's ``create`` has no ``speed`` parameter, so it rides ``extra_body``.
+    """
+    args = {k: v for k, v in body.items() if k != "speed"}
+    args["extra_headers"] = files_headers(body) or None
+    if "speed" in body:
+        args["extra_body"] = {"speed": body["speed"]}
+    return args
 
 
 type StaleFiles = Callable[[Sequence[str]], tuple[Mapping[str, str], Callable[[], None]]]
@@ -278,7 +303,7 @@ def _tool_choice(tool_choice: str | None) -> dict[str, str] | None:
     return {"type": "tool", "name": tool_choice}
 
 
-_ADAPTIVE_ONLY = ("claude-sonnet-5",)
+_ADAPTIVE_ONLY = ("claude-sonnet-5", "claude-opus-5")
 """Model id prefixes taking adaptive thinking only: no ``thinking: disabled``, no forced call."""
 
 
@@ -298,11 +323,11 @@ def _system_blocks(system: str, catalog: str = "") -> str | list[dict[str, Any]]
     return blocks
 
 
-def request_fields(  # noqa: PLR0913 — the request's whole variable part, named
+def request_fields(  # noqa: C901, PLR0913 — the request's whole variable part, named
     *, model: str = "", messages: Sequence[Mapping[str, Any]], system: str,
     tools: Sequence[Mapping[str, Any]] | None, max_tokens: int,
     reasoning_effort: str | None, text_format: Mapping[str, Any] | None = None,
-    tool_choice: str | None = None, cache: bool = True,
+    tool_choice: str | None = None, cache: bool = True, fast: bool = False,
 ) -> dict[str, Any]:
     """The /v1/messages fields for one request, from the preset's ``reasoning_effort``.
 
@@ -311,6 +336,7 @@ def request_fields(  # noqa: PLR0913 — the request's whole variable part, name
     takes adaptive thinking only: there the call is left to ``auto`` and the caller checks
     that a tool was called. ``cache`` marks the
     request for automatic prompt caching (the last block, tools -> system -> messages).
+    ``fast`` asks for fast mode (``speed: "fast"``; :func:`files_headers` adds its beta).
     """
     body: dict[str, Any] = {
         "max_tokens": max_tokens, "system": _system_blocks(system, _catalog(tools)),
@@ -341,4 +367,6 @@ def request_fields(  # noqa: PLR0913 — the request's whole variable part, name
         body["output_config"] = output
     if cache:
         body["cache_control"] = {"type": "ephemeral"}
+    if fast:
+        body["speed"] = "fast"
     return body

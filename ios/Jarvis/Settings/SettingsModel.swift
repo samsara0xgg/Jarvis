@@ -32,6 +32,37 @@ final class SettingsModel {
     var statusLine: String { BrainLink.shared.statusLine }
     var brainOnline: Bool { BrainLink.shared.isOnline }
 
+    // 对话模型: kept on the brain (`/inherent/settings`), so these stay nil/empty until a brain that has the keys answers (an older brain: the rows hide)
+    var conversationModel: String?
+    var conversationEffort: String?
+    var modelOptions: [String] = []
+    var effortOptions: [String: [String]] = [:]
+    static let modelNames = ["opus-fast": "Opus 5.5 快速", "opus": "Opus 5.5", "sonnet": "Sonnet 5.5", "haiku": "Haiku 5.5", "luna": "GPT-6 Luna"]
+    static let effortNames = ["none": "关", "low": "低", "medium": "中", "high": "高"]
+    var showsConversationModel: Bool { conversationModel != nil && conversationEffort != nil && !modelOptions.isEmpty }
+    var effortChoices: [String] { conversationModel.flatMap { effortOptions[$0] } ?? [] }
+
+    @MainActor func refreshConversation() async { await talkToBrain(nil) }
+
+    /// Shows the pick at once, saves it, then takes the brain's answer (a model change can reset the effort); a failed save falls back to what the brain holds.
+    @MainActor func saveConversation(model: String? = nil, effort: String? = nil) async {
+        var changes: [String: String] = [:]
+        if let model { conversationModel = model; changes["conversation_model"] = model }
+        if let effort { conversationEffort = effort; changes["conversation_effort"] = effort }
+        await talkToBrain(changes)
+    }
+
+    @MainActor private func talkToBrain(_ changes: [String: String]?) async {
+        let page = try? await BrainLink.shared.call { try await BrainClient.settings(changes, bases: $0, token: $1) }
+        if page == nil && changes != nil { await talkToBrain(nil); return }
+        guard let page else { return }
+        let values = page["values"] as? [String: Any] ?? [:], options = page["options"] as? [String: Any] ?? [:]
+        conversationModel = values["conversation_model"] as? String
+        conversationEffort = values["conversation_effort"] as? String
+        modelOptions = options["conversation_model"] as? [String] ?? []
+        effortOptions = options["conversation_effort"] as? [String: [String]] ?? [:]
+    }
+
     // 和她说话
     var siri = "已添加"
     var actionButton = true
@@ -125,4 +156,14 @@ final class SettingsModel {
     var deleteToday: () -> Void = {}
 
     var version = "Jarvis 1.0 · 只属于你"
+}
+
+extension BrainClient {
+    /// `GET /inherent/settings` (`changes` nil) or `POST /inherent/settings` with `{"changes": {...}}`; both answer `{values, options, restart_pending}`.
+    static func settings(_ changes: [String: String]?, bases: [URL], token: String) async throws -> [String: Any] {
+        let body = try changes.map { try JSONSerialization.data(withJSONObject: ["changes": $0]) }
+        let r = try await send(changes == nil ? "GET" : "POST", "/inherent/settings", body: body, bases: bases, token: token, unauthorized: .revoked)
+        guard let o = try? JSONSerialization.jsonObject(with: r.data) as? [String: Any] else { throw BrainError.garbled }
+        return o
+    }
 }

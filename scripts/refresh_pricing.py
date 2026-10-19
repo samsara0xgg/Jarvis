@@ -122,6 +122,16 @@ TIER_ROWS: dict[str, dict[str, Any]] = {
         "supports_prompt_caching": True,
         "source": "Anthropic API docs (2026-10-06): $2/$10, cache read 0.1x; 5-minute cache write 1.25x. No second rate card is known for long prompts.",
     },
+    "claude-opus-5-5:fast": {
+        "litellm_id": "claude-opus-5-5",
+        "provider": "anthropic",
+        "input_per_1m": 8.0,
+        "output_per_1m": 40.0,
+        "cache_read_per_1m": 0.4,
+        "cache_write_per_1m": 10.0,
+        "supports_prompt_caching": True,
+        "source": "Fast mode prices given by the owner 2026-10-19, not checked against the pricing page: 2x standard, $8/$40, cache read $0.40, 5-minute cache write $10. Anthropic reports usage.speed 'fast'.",
+    },
     "gpt-6-luna:fast": {
         "litellm_id": "gpt-6-luna",
         "provider": "openai",
@@ -251,7 +261,7 @@ def build_pricing(src: dict[str, Any]) -> dict[str, Any]:
             ),
             "service-tier": (
                 "A row named <model>:<tier> prices requests the provider served on that tier "
-                "(OpenAI reports 'fast' for a request sent as 'priority'); a tier with no row "
+                "(OpenAI reports 'fast' for a request sent as 'priority'; Anthropic reports usage.speed 'fast'); a tier with no row "
                 "bills at the model's standard row. Added by hand, kept across refreshes by "
                 "TIER_ROWS in scripts/refresh_pricing.py."
             ),

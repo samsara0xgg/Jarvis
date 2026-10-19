@@ -73,6 +73,8 @@ class LLMPresetSnapshot:
     system_note: str | None = None
     # False: a spoken-route turn on this preset takes the unstructured reply (ADR 0241).
     spoken_structured: bool = True
+    # ``"fast"``: Anthropic fast mode (ADR 0297).
+    speed: str | None = None
 
 
 def _optional_str(value: object) -> str | None:
@@ -98,20 +100,45 @@ class LLMSessionFactory:
     def __init__(self, llm_config: Mapping[str, Any]) -> None:
         """Store a deep copy of the parsed ``llm:`` configuration block."""
         self._config: dict[str, Any] = copy.deepcopy(dict(llm_config))
+        # The Settings page's conversation model and effort (ADR 0297), None until one is saved.
+        self._choice: tuple[str, str] | None = None
 
-    def snapshot(self, preset_name: str | None = None) -> LLMPresetSnapshot:  # noqa: C901, PLR0915 — one branch per optional preset field
+    @property
+    def default_preset(self) -> str | None:
+        """The boot configuration's ``default_preset``, whatever the page has chosen since."""
+        default = self._config.get("default_preset")
+        return str(default) if default else None
+
+    def choose(self, model: str | None, effort: str | None = None) -> None:
+        """Make the conversation use preset ``model`` at ``effort`` from the next ``snapshot``.
+
+        ``None`` returns the conversation to ``default_preset``. Only ``snapshot(None)`` and a
+        ``think`` snapshot follow it; a named preset is always that preset.
+        """
+        self._choice = None if model is None else (model, effort or "")
+
+    def snapshot(  # noqa: C901, PLR0912, PLR0915 — one branch per optional preset field
+        self, preset_name: str | None = None, *, think: bool = False,
+    ) -> LLMPresetSnapshot:
         """Freeze one preset's provider identity.
 
         ``preset_name=None`` resolves ``llm_config["default_preset"]`` — the
         preset ``LLMClient(llm_config)`` would apply at construction — so a
         run started with no explicit preset is identical to the legacy shared
-        client's active configuration.
+        client's active configuration. Once :meth:`choose` has named a model, that
+        preset at the chosen effort stands in for it, and also for ``think`` (a turn
+        asked to think, ``preset_name`` being ``llm.think.preset``): the chosen model
+        at effort ``high``. A reasoning OpenAI preset runs on the Responses API.
 
         Raises:
             UnknownRequestPresetError: ``preset_name`` is not configured.
         """
         presets_raw = self._config.get("presets") or {}
         presets: Mapping[str, Any] = presets_raw if isinstance(presets_raw, Mapping) else {}
+
+        effort: str | None = None
+        if self._choice is not None and (preset_name is None or think):
+            preset_name, effort = self._choice[0], ("high" if think else self._choice[1] or None)
 
         resolved = preset_name
         if resolved is None:
@@ -129,6 +156,7 @@ class LLMSessionFactory:
         api = _optional_str(self._config.get("api"))
         system_note: str | None = None
         spoken_structured = True
+        speed: str | None = None
 
         if resolved is not None:
             preset = presets.get(resolved)
@@ -149,6 +177,11 @@ class LLMSessionFactory:
             api = _optional_str(preset.get("api"))
             system_note = _optional_str(preset.get("system_note"))
             spoken_structured = preset.get("spoken_structured") is not False
+            speed = _optional_str(preset.get("speed"))
+            if effort is not None:
+                reasoning_effort = effort
+                if provider_raw == "openai" and effort != "none":
+                    api = "responses"
         elif preset_name is not None:
             msg = f"preset {preset_name!r} is not configured under llm.presets"
             raise UnknownRequestPresetError(msg)
@@ -192,6 +225,8 @@ class LLMSessionFactory:
             fields["system_note"] = system_note
         if not spoken_structured:
             fields["spoken_structured"] = False
+        if speed is not None:
+            fields["speed"] = speed
         return LLMPresetSnapshot(
             preset_name=resolved,
             provider=provider,
@@ -207,6 +242,7 @@ class LLMSessionFactory:
             api=api,
             system_note=system_note,
             spoken_structured=spoken_structured,
+            speed=speed,
         )
 
     def create(
@@ -253,6 +289,8 @@ class LLMRequestClient(LLMClient):
             preset["api"] = snapshot.api
         if snapshot.system_note is not None:
             preset["system_note"] = snapshot.system_note
+        if snapshot.speed is not None:
+            preset["speed"] = snapshot.speed
         request_config: dict[str, Any] = {
             "provider": snapshot.provider,
             "presets": {preset_name: preset},

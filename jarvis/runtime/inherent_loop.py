@@ -5721,7 +5721,7 @@ async def _serve_day(  # noqa: PLR0913 — the route's stores, its zone, the ter
 async def _set_highlight(
     marks: HighlightMarks, day: date, item_id: str, on: bool, label: str | None,  # noqa: FBT001 — the route's argument.
 ) -> list[dict[str, str]]:
-    """``POST /inherent/day/highlight`` (ADR 0296): his mark, written off the loop thread."""
+    """``POST /inherent/day/highlight`` (ADR 0297): his mark, written off the loop thread."""
     return await asyncio.to_thread(marks.set_item, day, item_id, on, label)
 
 
@@ -5744,7 +5744,7 @@ def _commit_act(event_log_path: Path, commitment_hex: str, action: str) -> bool:
 
 
 async def _act_commitment(event_log_path: Path, commitment_hex: str, action: str) -> bool:
-    """``POST /inherent/commitments/{hex}`` (ADR 0296), off the loop thread."""
+    """``POST /inherent/commitments/{hex}`` (ADR 0297), off the loop thread."""
     return await asyncio.to_thread(_commit_act, event_log_path, commitment_hex, action)
 
 
@@ -6187,8 +6187,8 @@ def _link_pictures(runtime: JarvisRuntime) -> int:
 @functools.cache
 def _default_anthropic(factory: LLMSessionFactory) -> LLMClient | None:
     return (
-        factory.create(factory.snapshot(None), response_id="pictures")
-        if factory.snapshot(None).provider == "anthropic" else None
+        factory.create(factory.snapshot(factory.default_preset), response_id="pictures")
+        if factory.snapshot(factory.default_preset).provider == "anthropic" else None
     )
 
 

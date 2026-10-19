@@ -569,7 +569,10 @@ def test_each_settings_key_goes_to_its_owner(tmp_path: Path) -> None:
     own = _DeviceSettings(settings)
     assert {"input_device", "output_device", "wake_threshold", "final_asr_language", "timesink",
             "board_light", "keep_audio"} <= own.keys
-    assert not own.keys & {"tts_voice", "reply_language", "core_memory_max_chars"}
+    assert not own.keys & {
+        "tts_voice", "reply_language", "core_memory_max_chars",
+        "conversation_model", "conversation_effort",  # ADR 0297: the brain owns them
+    }
     assert own.shared == {"keep_audio", "audio_days"}
     with _rig(tmp_path, Device(settings=own)) as rig:
         page = rig.get("/inherent/settings").json()

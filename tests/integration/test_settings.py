@@ -88,6 +88,8 @@ def test_the_page_reads_what_jarvis_booted_with(tmp_path: Path) -> None:
         "repos": ["~/Projects/jarvis", "~/Projects/typlus"],
         "model_conversation": "gpt-5.6-luna", "model_background": "gpt-6-luna",
         "model_report": "gpt-6-sol",
+        # ADR 0297: nothing saved, so the conversation runs as configured.
+        "conversation_model": "luna", "conversation_effort": "none",
         # ADR 0147: the board's factory look until the page saves one.
         "board_light": "direction", "board_brightness": 1.0, "board_speed": 8,
         "board_color": "#002040", "board_direction_colors": ["#002040", "#00c066"],

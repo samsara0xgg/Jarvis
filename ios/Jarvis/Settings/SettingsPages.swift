@@ -30,9 +30,19 @@ struct SettingsMainPage: View {
     var body: some View {
         VStack(spacing: 0) {
             SetGroup { hero }
-            SetSection(header: "大脑") {
+            SetSection(header: "大脑", footer: model.showsConversationModel ? "下一句起生效" : nil) {
                 InfoRow(label: "连接的大脑", detail: model.brainName)
                 InfoRow(label: "延迟", detail: model.latency)
+                if model.showsConversationModel, let current = model.conversationModel, let effort = model.conversationEffort {
+                    MenuRow(title: "对话模型", options: model.modelOptions.map { ($0, SettingsModel.modelNames[$0] ?? $0) }, selection: current) { id in
+                        Task { await model.saveConversation(model: id) }
+                    }
+                    if model.effortChoices.count > 1 {
+                        SegmentedRow(title: "思考力度", options: model.effortChoices.map { SettingsModel.effortNames[$0] ?? $0 },
+                                     selection: Binding(get: { model.effortChoices.firstIndex(of: effort) ?? 0 },
+                                                        set: { i in Task { await model.saveConversation(effort: model.effortChoices[i]) } }))
+                    }
+                }
                 NavRow(label: "重新配对") { push(.pair) }
             }
             SetSection(header: "和她说话", footer: "「App 打开时喊 Jarvis 唤醒」开着时，App 在前台会一直听，比较费电。") {
@@ -80,7 +90,7 @@ struct SettingsMainPage: View {
         }
         .padding(.top, 14)
         .padding(.bottom, 56)
-        .onChange(of: isCurrent, initial: true) { _, now in if now { BrainLink.shared.ping(); LifelogUploader.shared.refresh() } }
+        .onChange(of: isCurrent, initial: true) { _, now in if now { BrainLink.shared.ping(); LifelogUploader.shared.refresh(); Task { await model.refreshConversation() } } }
     }
 
     private var hero: some View {

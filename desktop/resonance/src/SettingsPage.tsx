@@ -24,14 +24,15 @@ export type Account = { name: string; ok: boolean; text: string };
 // Jarvis's own settings: GET /inherent/settings answers { values, options?, restart_pending? }; POST the same
 // route with { changes: { key: value } } saves and answers the same shape. POST /inherent/restart restarts Jarvis.
 // defaults: what "System default" is right now for each device setting (null: unknown).
-type Daemon = { values: Record<string, unknown>; options?: Record<string, string[]>; defaults?: Record<string, string | null>; restart_pending?: boolean };
+type Daemon = { values: Record<string, unknown>; options?: Record<string, string[] | Record<string, string[]>>; defaults?: Record<string, string | null>; restart_pending?: boolean };
 const DEMO: Daemon = {
   values: { reply_language: 'follow', final_asr_language: '', wake_threshold: .95, tts_voice: 'Warm Bestie', tts_volume: 1, output_device: 'System default', input_device: 'System default',
     gpt_live: true, timesink: true, keep_audio: true, repos: ['jarvis', 'typlus', 'timesink', 'guard-mode', 'drum-machine-pro', 'simple-wiki'],
-    model_conversation: 'gpt-5.6-luna', model_background: 'GPT-6 luna', model_report: 'GPT-6 sol · flex',
+    conversation_model: 'sonnet', conversation_effort: 'low', model_conversation: 'gpt-5.6-luna', model_background: 'GPT-6 luna', model_report: 'GPT-6 sol · flex',
     board_light: 'direction', board_brightness: .4, board_speed: 8, board_color: '#002040', board_direction_colors: ['#002040', '#00c066'],
     board_ring_colors: Array<string>(12).fill('#002040'), board_headphone: 8, board_lineout: 8 },
-  options: { tts_voice: ['Warm Bestie', 'Explorative Girl'], output_device: ['System default', 'Multi-Output Device 2', 'MacBook Pro Speakers'], input_device: ['System default', 'reSpeaker XVF3800', 'MacBook Pro Microphone'] },
+  options: { conversation_model: ['opus-fast', 'opus', 'sonnet', 'haiku', 'luna'], conversation_effort: { 'opus-fast': ['low', 'medium', 'high'], opus: ['low', 'medium', 'high'], sonnet: ['low', 'medium', 'high'], haiku: ['low', 'medium', 'high'], luna: ['none', 'low', 'medium', 'high'] },
+    tts_voice: ['Warm Bestie', 'Explorative Girl'], output_device: ['System default', 'Multi-Output Device 2', 'MacBook Pro Speakers'], input_device: ['System default', 'reSpeaker XVF3800', 'MacBook Pro Microphone'] },
   defaults: { output_device: 'MacBook Pro Speakers', input_device: 'MacBook Pro Microphone' },
 };
 // The reSpeaker board: GET /inherent/board answers whether it is plugged in and what it hears; its settings live in /inherent/settings and apply at once.
@@ -73,7 +74,7 @@ type Ctl =
   | { k: 'seg'; value: string; opts: [string, L][]; set: (value: string) => void }
   | { k: 'range'; value: number; min: number; max: number; step: number; pct?: boolean; set: (value: number) => void }
   | { k: 'colors'; values: string[]; labels?: L[]; set: (values: string[], now?: boolean) => void }
-  | { k: 'pick'; value: string; opts: string[]; set: (value: string) => void; device?: { fallback: string | null } }
+  | { k: 'pick'; value: string; opts: string[]; set: (value: string) => void; device?: { fallback: string | null }; label?: (o: string) => string }
   | { k: 'info'; text: string; tone?: 'ok' | 'warn' }
   | { k: 'act'; label: L; run: () => void }
   | { k: 'key'; provider: Provider; text: string; tone?: 'ok' | 'warn' }
@@ -121,7 +122,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, pairAsk = 0, ctl, a
   };
   // Daemon items: a value, its options, and how to save it; greyed out while the daemon does not serve settings.
   const dSwitch = (key: string): Ctl => ({ k: 'switch', on: v(key) === true, set: on => void save(key, on) });
-  const dPick = (key: string): Ctl => ({ k: 'pick', value: String(v(key) ?? '—'), opts: daemon?.options?.[key] ?? [], set: value => void save(key, value) });
+  const dPick = (key: string): Ctl => ({ k: 'pick', value: String(v(key) ?? '—'), opts: (daemon?.options?.[key] as string[] | undefined) ?? [], set: value => void save(key, value) });
   // A speaker or microphone: the first row names what the system default is now; a saved pick that is unplugged stays selected.
   const dDevice = (key: string): Ctl => ({ ...dPick(key) as Extract<Ctl, { k: 'pick' }>, device: { fallback: daemon?.defaults?.[key] ?? null } });
   const dRange = (key: string, min: number, max: number, step: number, pct?: boolean): Ctl =>
@@ -139,6 +140,10 @@ export function SettingsPage({ lang, port, open, cat, onCat, pairAsk = 0, ctl, a
     } };
   };
   useEffect(() => setPicks(p => { const keep = Object.entries(p).filter(([k, c]) => `${c}`.toLowerCase() !== `${v(k)}`.toLowerCase()); return keep.length === Object.keys(p).length ? p : Object.fromEntries(keep); }), [daemon]);
+  // The conversation model and its effort: the brain's options say which models there are and which efforts each takes (an older brain has neither: read-only text).
+  const MODELS: Record<string, L> = { 'opus-fast': ['Opus 5.5 Fast', 'Opus 5.5 快速'], opus: ['Opus 5.5', 'Opus 5.5'], sonnet: ['Sonnet 5.5', 'Sonnet 5.5'], haiku: ['Haiku 5.5', 'Haiku 5.5'], luna: ['GPT-6 Luna', 'GPT-6 Luna'] };
+  const EFFORTS: [string, L][] = [['none', ['Off', '关']], ['low', ['Low', '低']], ['medium', ['Medium', '中']], ['high', ['High', '高']]];
+  const efforts = (daemon?.options?.conversation_effort as Record<string, string[]> | undefined)?.[String(v('conversation_model'))];
   const dInfo = (key: string): Ctl => ({ k: 'info', text: Array.isArray(v(key)) ? t([`${(v(key) as unknown[]).length} folders`, `${(v(key) as unknown[]).length} 个`]) : String(v(key) ?? '—') });
   // Phone pairing: the code and its address ride a QR code the phone scans. The list is read again every 2 s while the code is live; its name showing up there means the phone claimed it.
   const devs = useRoute<{ devices: Device[] }>(port, '/inherent/devices', open, 30_000);
@@ -207,6 +212,12 @@ export function SettingsPage({ lang, port, open, cat, onCat, pairAsk = 0, ctl, a
     ['rainbow', ['Rainbow', '彩虹'], ['Rainbow: colors go round', '彩虹：几种颜色轮流转']], ['solid', ['Solid', '单色'], ['Solid: one color stays on', '单色：一种颜色常亮']],
     ['direction', ['Direction', '方向'], ['Direction: lights up toward the voice', '方向：朝说话的人那边亮']], ['ring', ['Ring', '环形'], ['Ring: a color for each light', '环形：每颗灯各一种颜色']]];
   const light = String(v('board_light') ?? 'off'), lit = lights.find(([k]) => k === light), lightName = t(lit?.[1] ?? ['—', '—']);
+  const conv: Item[] = efforts ? [
+    { id: 'm-conv', name: ['Conversation', '对话'], note: ['Takes effect from the next sentence', '下一句起生效'], off,
+      ctl: { ...dPick('conversation_model') as Extract<Ctl, { k: 'pick' }>, label: o => MODELS[o] ? t(MODELS[o]) : o } },
+    { id: 'm-effort', name: ['Effort', '思考强度'], off,
+      ctl: { k: 'seg', value: String(v('conversation_effort') ?? ''), opts: EFFORTS.filter(([e]) => efforts.includes(e)), set: value => void save('conversation_effort', value) } },
+  ] : [{ id: 'm-conv', name: ['Conversation', '对话'], ctl: dInfo('model_conversation'), off }];
   const cats: Cat[] = [
     { id: 'general', icon: <Globe/>, name: ['General', '通用'], sum: `${lang === 'zh' ? '中文' : 'English'} · ${replySum}`, items: [
       { id: 'lang', name: ['Interface language', '界面语言'], note: ['Her panel, and what Jarvis says on its own: the time, confirmations, reports', '她的面板，和 Jarvis 自己说的固定句子：报时、确认、日报'], ctl: { k: 'seg', value: lang, opts: [['en', ['English', 'English']], ['zh', ['中文', '中文']]], set: value => {
@@ -303,7 +314,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, pairAsk = 0, ctl, a
       ...(devices ?? []).map(deviceRow),
     ] },
     { id: 'models', icon: <Cpu/>, name: ['Models', '模型'], daemon: true, sum: ready ? String(v('model_conversation') ?? '—') : t(['Not connected yet', '还没接上']), items: [
-      { id: 'm-conv', name: ['Conversation', '对话'], ctl: dInfo('model_conversation'), off },
+      ...conv,
       { id: 'm-bg', name: ['Background analysis', '后台分析'], ctl: dInfo('model_background'), off },
       { id: 'm-report', name: ['Daily report', '日报'], ctl: dInfo('model_report'), off },
     ] },
@@ -351,7 +362,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, pairAsk = 0, ctl, a
           {label(o)}{gone && o === x.value && <small className="st-sub">{t(['(not connected)', '（未连接）'])}</small>}</button>)}</div>;
     }
     if (x.k === 'pick') return <div className="st-opts" role="radiogroup" aria-label={t(i.name)}>{(x.opts.length ? x.opts : [x.value]).map(o =>
-      <button key={o} role="radio" aria-checked={x.value === o} disabled={i.off} onClick={() => x.set(o)}>{o}</button>)}</div>;
+      <button key={o} role="radio" aria-checked={x.value === o} disabled={i.off} onClick={() => x.set(o)}>{x.label?.(o) ?? o}</button>)}</div>;
     if (x.k === 'range') return <input className="st-range" type="range" aria-label={t(i.name)} min={x.min} max={x.max} step={x.step} value={x.value} disabled={i.off}
       onChange={e => x.set(Number(e.target.value))} onPointerUp={() => commit(keyOf(i))} onKeyUp={() => commit(keyOf(i))}/>;
     if (x.k === 'colors') return <Swatches ctl={x} name={t(i.name)} off={i.off} lang={lang}/>;

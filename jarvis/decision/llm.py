@@ -37,7 +37,7 @@ import yaml
 
 from jarvis.decision.llm_anthropic import (
     KEPT_BLOCKS,
-    files_headers,
+    create_args,
     remember_blocks,
     repair_stale_files,
     request_fields,
@@ -276,13 +276,13 @@ def _empty_metadata() -> dict[str, Any]:
 def _create_message(client: Any, kwargs: dict[str, Any]) -> Any:  # noqa: ANN401 — SDK types
     """``messages.create``; a file id the API cannot read is retried once as words (ADR 0255)."""
     try:
-        return client.messages.create(**kwargs, extra_headers=files_headers(kwargs) or None)
+        return client.messages.create(**create_args(kwargs))
     except Exception as exc:
         repaired = repair_stale_files(exc, kwargs)
         if repaired is None:
             raise
         retry, commit = repaired
-    response = client.messages.create(**retry, extra_headers=files_headers(retry) or None)
+    response = client.messages.create(**create_args(retry))
     commit()
     return response
 
@@ -290,13 +290,15 @@ def _create_message(client: Any, kwargs: dict[str, Any]) -> Any:  # noqa: ANN401
 async def _anthropic_events(
     options: dict[str, Any], body: dict[str, Any],
 ) -> AsyncIterator[Mapping[str, Any]]:
-    """One Anthropic stream's chunks; a file id the API cannot read is retried once as words.
+    """One Anthropic stream's chunks; a request rejected before its first chunk may be retried.
 
-    Only a request rejected before its first chunk is retried (ADR 0255). The ids that retry
-    dropped are forgotten once it has been answered.
+    A file id the API cannot read is retried once as words (ADR 0255); the ids that retry dropped
+    are forgotten once it has been answered. A fast-mode request that got a 429 is sent again at
+    standard speed (ADR 0297): fast mode has its own rate limit, and its cache is separate.
     """
     commit = None
-    for attempt in (0, 1):
+    words = False
+    for _ in range(3):
         answered = False
         try:
             async for chunk in stream_openai(options, body, responses=False, provider="anthropic"):
@@ -305,9 +307,15 @@ async def _anthropic_events(
                 answered = True
                 yield chunk
         except Exception as exc:
-            repaired = None if attempt or answered else repair_stale_files(exc, body)
+            if answered:
+                raise
+            if "speed" in body and getattr(exc, "status_code", None) == 429:  # noqa: PLR2004
+                body = {k: v for k, v in body.items() if k != "speed"}
+                continue
+            repaired = None if words else repair_stale_files(exc, body)
             if repaired is None:
                 raise
+            words = True
             body, commit = repaired
         else:
             return
@@ -360,6 +368,8 @@ class LLMClient:
         # A preset's own lines after every system prompt it is sent (ADR 0220): how
         # this model must work, kept out of the shared prompt the other presets read.
         self._system_note = ""
+        # A preset's ``speed: fast`` asks Anthropic's fast mode (ADR 0297).
+        self._fast = False
         # ``"responses"`` sends chat() to OpenAI's /v1/responses: GPT rejects
         # function tools with reasoning on in chat/completions. Streams stay there.
         self._api: str | None = cfg.get("api")
@@ -538,6 +548,7 @@ class LLMClient:
         self._api = preset.get("api")
         note = str(preset.get("system_note") or "").strip()
         self._system_note = f"\n\n{note}" if note else ""
+        self._fast = preset.get("speed") == "fast"
 
         api_key_env = preset.get("api_key_env")
         if api_key_env:
@@ -742,6 +753,7 @@ class LLMClient:
                 model=self._model, messages=messages, system=system, tools=tools,
                 max_tokens=max_tokens,
                 reasoning_effort=self._reasoning_effort, text_format=text_format,
+                fast=self._fast,
             ))
         if tier := self.request_tier(service_tier):
             body["service_tier"] = tier
@@ -1230,7 +1242,7 @@ class LLMClient:
                 model=self._model, messages=messages, system=system, tools=tools,
                 max_tokens=self._max_tokens,
                 reasoning_effort=self._reasoning_effort, tool_choice=tool_choice,
-                cache=bool(tools),
+                cache=bool(tools), fast=self._fast,
             ),
         }
 
@@ -1326,6 +1338,7 @@ class LLMClient:
             llm_request_id=str(self._last_metadata["llm_request_id"]),
             provider_response_id=getattr(response, "id", None),
             usage_status=self.last_usage_status,
+            service_tier="fast" if getattr(usage, "speed", None) == "fast" else None,
         )
 
     def _chat_stream_anthropic(  # noqa: C901, PLR0912, PLR0915 - provider protocol normalization
@@ -1352,7 +1365,7 @@ class LLMClient:
             **request_fields(
                 model=self._model, messages=messages, system=system, tools=tools,
                 max_tokens=self._max_tokens,
-                reasoning_effort=self._reasoning_effort, cache=bool(tools),
+                reasoning_effort=self._reasoning_effort, cache=bool(tools), fast=self._fast,
             ),
         }
 
@@ -1365,7 +1378,7 @@ class LLMClient:
             streaming=True,
             measurement_semantics="immediately_before_sdk_call_not_network_send",
         )
-        with client.messages.stream(**kwargs) as stream:
+        with client.messages.stream(**create_args(kwargs)) as stream:
             for event in stream:
                 etype = getattr(event, "type", None)
                 if etype == "message_start":

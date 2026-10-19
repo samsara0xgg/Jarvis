@@ -3395,7 +3395,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     calendar_next = CalendarCache(
         partial(upcoming_events, home.graph, local_zone, limit=KEPT), speakable.now,
     )
-    return JarvisRuntime(
+    runtime = JarvisRuntime(
         config=full_config,
         runtime_paths=paths,
         conn=conn,
@@ -3523,6 +3523,19 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         places_block=partial(_places_block, memory.db_path, paths.event_log, local_zone),
         sound_output=output,
     )
+    _follow_conversation_setting(runtime.settings, llm_session_factory)
+    return runtime
+
+
+def _follow_conversation_setting(
+    settings: Settings | None, factory: LLMSessionFactory | None,
+) -> None:
+    """ADR 0297: the page's conversation model and effort reach the next turn at once."""
+    if settings is None or factory is None:
+        return
+    settings.on_conversation = factory.choose
+    if chosen := settings.conversation_saved():
+        factory.choose(*chosen)
 
 
 # --- ADR-0008 Wave 4A ResponseRun seams -------------------------------------
@@ -3632,7 +3645,7 @@ def _start_drive_turn_response(
     response_id = new_response_id()
     think = runtime.think_mode
     preset = think.preset_for(runtime.conn, user_intent_event) if think else None
-    snapshot = runtime.llm_session_factory.snapshot(preset)
+    snapshot = runtime.llm_session_factory.snapshot(preset, think=preset is not None)
     request_client = runtime.llm_session_factory.create(snapshot, response_id=response_id)
     policy = legacy_full_text_policy(
         evidence_snapshot_hash=evidence_snapshot_hash(runtime.conn),

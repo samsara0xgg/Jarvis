@@ -180,6 +180,37 @@ struct SwitchRow: View {
     }
 }
 
+/// Label on the left, the chosen option on the right; tapping opens the system menu of `options` (value, shown text).
+struct MenuRow: View {
+    let title: String
+    let options: [(value: String, text: String)]
+    let selection: String
+    let pick: (String) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(options, id: \.value) { o in
+                Button { pick(o.value) } label: {
+                    if o.value == selection { Label(o.text, systemImage: "checkmark") } else { Text(o.text) }
+                }
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Text(title).padding(.vertical, 11)
+                Spacer(minLength: 0)
+                Text(options.first { $0.value == selection }?.text ?? selection).font(.subheadline).foregroundStyle(SetColor.muted).lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 12, weight: .semibold)).foregroundStyle(SetColor.faint)
+            }
+            .font(.body)
+            .foregroundStyle(SetColor.ink)
+            .padding(.horizontal, 16)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(RowPressStyle())
+    }
+}
+
 /// 64 high: title line, then a 44 high track row with the end labels or icons.
 struct SliderRow<Lo: View, Hi: View>: View {
     let title: String

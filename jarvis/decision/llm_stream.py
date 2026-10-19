@@ -500,6 +500,8 @@ class StreamNormalizer:
         return []
 
     def _anthropic_usage(self, usage: object) -> None:
+        if isinstance(usage, dict) and usage.get("speed") == "fast":
+            self._tier("fast")  # fast mode bills on the "<model>:fast" row (ADR 0297)
         self._usage(usage, {
             "input_tokens": "_fresh_input", "output_tokens": "output_tokens",
             "cache_read_input_tokens": "cache_read_tokens",
