@@ -11,19 +11,19 @@ enum TimelineFixture {
         // the night as Health recorded it (every stage uncut: the first starts before the block does)
         b.add("sleep", 55, 545, ["minutes": 485, "stages": b.stages([(40, 55, "in_bed"), (55, 100, "core"), (100, 170, "deep"), (170, 215, "core"), (215, 245, "rem"), (245, 290, "core"), (290, 335, "deep"),
                                                                   (335, 380, "core"), (380, 430, "rem"), (430, 438, "awake"), (438, 490, "core"), (490, 530, "rem"), (530, 545, "awake")])])
-        b.add("stay", 545, 685, ["place": "12 Example St, Town", "kept_place": b.kept("p-home", "家", "home")])
+        b.add("stay", 545, 685, ["place": "12 Example St, Town", "kept_place": b.kept("p-home", "家", "home"), "lat": 48.4516, "lng": -123.3489, "accuracy_m": 18])
         b.add("talk", 612, 622, ["id": "talk-1", "lane": "her", "turns": 6])
         b.add("move", 685, 785, ["activity": "automotive"])
         b.add("move", 785, 795, ["activity": "walking"])
-        b.add("stay", 795, 835, ["place": "A&W, Shelbourne St, Victoria"])
+        b.add("stay", 795, 835, ["place": "A&W, Shelbourne St, Victoria", "lat": 48.4538, "lng": -123.3268, "accuracy_m": 25])
         b.add("move", 835, 845, ["activity": "walking"])
-        b.add("stay", 845, 890, ["place": "12 Example St, Town", "kept_place": b.kept("p-home", "家", "home")])
+        b.add("stay", 845, 890, ["place": "12 Example St, Town", "kept_place": b.kept("p-home", "家", "home"), "lat": 48.4516, "lng": -123.3489])
         b.add("ride", 890, 919, ["route": "27", "board_stop": "Hillside Centre", "alight_stop": "UVic Exchange", "credit": "BC Transit", "ended_reason": "left_vehicle"])
-        b.add("stay", 919, 1095, ["place": "Engineering Lab Wing, Finnerty Rd", "kept_place": b.kept("p-uvic", "UVic", "school")])
+        b.add("stay", 919, 1095, ["place": "Engineering Lab Wing, Finnerty Rd", "kept_place": b.kept("p-uvic", "UVic", "school"), "lat": 48.4634, "lng": -123.3117, "accuracy_m": 20])
         b.add("picture", 962, 962, ["id": "picture-pic-demo-1", "attachment": "pic-demo-1", "note": "黑板上写着积分公式，下面一行是作业要求。\n第三题的符号有些看不清。"])
         b.add("call", 1000, 1018, ["id": "call-demo-1", "app": "FaceTime"])
         b.add("ride", 1095, 1130, ["route": "27", "board_stop": "UVic Exchange", "alight_stop": "Hillside Centre", "ended_reason": "passed_stop"])
-        b.add("stay", 1130, nil, ["place": "12 Example St, Town", "kept_place": b.kept("p-home", "家", "home")])
+        b.add("stay", 1130, nil, ["place": "12 Example St, Town", "kept_place": b.kept("p-home", "家", "home"), "lat": 48.4516, "lng": -123.3489])
         b.add("talk", 1240, 1262, ["id": "talk-2", "lane": "her", "turns": 14])
         if late { b.add("talk", 1305, 1309, ["id": "talk-3", "lane": "her", "turns": 4]) }
         b.add("event", 1320, 1350, ["id": "event-demo-1", "title": "陶艺课", "source": "mail", "confirmed": false, "place": "Studio 4"])
@@ -148,7 +148,7 @@ enum TimelineFixture {
 
 extension StarEngine {
     /// `-scene 时间线` puts the timeline on the made-up day (now 21:50), whatever the setting was; the words after a colon go further:
-    /// `:早上` the list at the morning, `:对话` a talk opened, `:照片` the picture opened, `:工作` the evening's Mac work opened (its span is bracketed on the bar), `:透镜:路上` (or 睡, Mac, 通话, 和她, 花, 照片) that chip pressed, `:拖:1015` a finger held on the bar at that time (a fourth word after it lifts the finger again), `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
+    /// `:早上` the list at the morning, `:开:<id>` any row opened (`:开:ride-8`; a fourth word, `:开:stay-1:有对话` or `:有长对话`, with talk before it), `:改名` the place he keeps opened with the field for its new name, `:碎片` the day with fifteen places, `:只有对话` the day of talks alone, `:对话` a talk opened, `:照片` the picture opened, `:工作` the evening's Mac work opened (its span is bracketed on the bar), `:透镜:路上` (or 睡, 运动, Mac, 通话, 和她, 花, 照片) that chip pressed, `:拖:1015` a finger held on the bar at that time (a fourth word after it lifts the finger again), `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
     /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:新增` a talk coming in a moment later, `:走时` the clock moving on a minute a moment later, `:昨天` the day before (`:昨天:1630` with a finger held on its bar), `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
     func runTimelineScene(_ name: String) {
         RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
@@ -178,14 +178,17 @@ extension StarEngine {
         case "早上": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in
             if let e = model.entry(at: 9 * 60 + 30), let y = model.top(of: e.id) { ui.tl.scroll(to: y, animated: false) } }
         case "对话": show("talk-1", open: true)
+        case "开":                                                                 // any row, by its id: `:开:ride-8` (a fourth word: with a round of talk before it)
+            if parts.count > 3 { earlierRound(cal, long: parts[3] == "有长对话") }
+            show(parts.count > 2 ? parts[2] : "", open: true)
+        case "改名":                                                               // the place he keeps, opened with the field for its new name
+            show("stay-1", open: false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in if let e = model.entries.first(where: { $0.id == "stay-1" }) { ui.tl.beginRename(e) } }
+        case "碎片": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.setDay(ui.tl.today - 2) }
+        case "只有对话": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.setDay(ui.tl.today - 3) }
         case "关于":
             show("event-demo-1", open: true)
-            // an earlier round of talk, so the new one is the second, as it is for him
-            let at = Date().addingTimeInterval(-3 * 3600), stamp = TalkStream.dayId(at, cal.cal) + "T" + TalkStream.clock(at, cal.cal) + ":00"
-            MainActor.assumeIsolated {
-                Conversation.shared.debugSet([ConversationRow(seq: 1, source: "allen", ts: stamp, text: "明天下午有什么安排？"),
-                                              ConversationRow(seq: 2, source: "jarvis", ts: stamp, text: "<voice>下午三点有一个二面，在线上。</voice>")])
-            }
+            earlierRound(cal)           // so the new round is the second, as it is for him
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [self] in
                 captureAbout()              // what a typed turn does as it goes out: the open row is the chip
                 beginTalk(); lingerHold = true
@@ -196,7 +199,7 @@ extension StarEngine {
         case "照片": show("picture-pic-demo-1", open: true)
         case "工作": show("work-demo-2", open: true)
         case "透镜":
-            let lens = [("睡", TLLens.sleep), ("路上", .trip), ("Mac", .work), ("通话", .call), ("和她", .talk), ("花", .payment), ("照片", .picture)].first { $0.0 == (parts.count > 2 ? parts[2] : "") }?.1
+            let lens = [("睡", TLLens.sleep), ("路上", .trip), ("运动", .workout), ("Mac", .work), ("通话", .call), ("和她", .talk), ("花", .payment), ("照片", .picture)].first { $0.0 == (parts.count > 2 ? parts[2] : "") }?.1
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in withAnimation(.easeOut(duration: 0.15)) { ui.tl.lens = lens } }
         case "拖":
             let n = Int(parts.count > 2 ? parts[2] : "") ?? 0, t = Double(n / 100 * 60 + n % 100)
@@ -215,6 +218,20 @@ extension StarEngine {
         default: break
         }
         wake()
+    }
+
+    /// the conversation as it stood three hours ago: one question and its answer; `long`, thirty rows before them, so the panel is full
+    private func earlierRound(_ cal: Cal, long: Bool = false) {
+        let at = Date().addingTimeInterval(-3 * 3600), stamp = TalkStream.dayId(at, cal.cal) + "T" + TalkStream.clock(at, cal.cal) + ":00"
+        let before: [ConversationRow] = long ? (1...30).map { n -> ConversationRow in
+            let c = at.addingTimeInterval(-Double(31 - n) * 20 * 60)
+            return ConversationRow(seq: n, source: n % 2 == 0 ? "allen" : "jarvis", ts: TalkStream.dayId(c, cal.cal) + "T" + TalkStream.clock(c, cal.cal) + ":00",
+                                   text: n % 2 == 0 ? "第 \(n) 行，他说的话" : "<voice>第 \(n) 行，她的回答。</voice>")
+        } : []
+        MainActor.assumeIsolated {
+            Conversation.shared.debugSet(before + [ConversationRow(seq: 31, source: "allen", ts: stamp, text: "明天下午有什么安排？"),
+                                                  ConversationRow(seq: 32, source: "jarvis", ts: stamp, text: "<voice>下午三点有一个二面，在线上。</voice>")])
+        }
     }
 
     /// a made-up picture: a blackboard-green gradient with a few lines of chalk

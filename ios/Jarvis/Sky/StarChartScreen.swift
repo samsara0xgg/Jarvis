@@ -296,6 +296,8 @@ struct StarChrome: View {
             .allowsHitTesting(ui.chipsOn && !at.hasItems && !at.isOpen)
             .animation(.easeOut(duration: 0.3), value: ui.chipsOn && !at.hasItems && !at.isOpen)
         }
+        .opacity(ui.tl.renaming == nil ? 1 : 0).allowsHitTesting(ui.tl.renaming == nil)        // a place being renamed has the keyboard: the composer does not rise over its field
+        .animation(.easeOut(duration: 0.15), value: ui.tl.renaming == nil)
         .offset(x: 20, y: H - StarUI.restGap - 48 - at.rise - ui.kbLift)
     }
 }

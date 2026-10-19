@@ -46,7 +46,7 @@ func tlMoney(_ cents: Int, _ currency: String?) -> String {
 func tlInt(_ x: Double) -> Int { x.isFinite ? Int(max(-1e9, min(1e9, x.rounded()))) : 0 }
 
 /// What opening a row offers to do with it. Each exists only where it works today.
-enum TLAction: Equatable {
+enum TLAction: Hashable {
     case ask                // hand it to her: the row becomes the chip of the next turn, and the composer opens
     case openTalk           // the conversation, at the time of the talk
     case rename             // a place he keeps, under another name

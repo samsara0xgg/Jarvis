@@ -160,6 +160,7 @@ struct DayTimelineView: View {
                     .opacity(ui.panelOpen ? 0 : 1).allowsHitTesting(!ui.panelOpen)
                     .animation(.easeOut(duration: ui.panelOpen ? 0.2 : 0.35), value: ui.panelOpen)
                 listArea(shown, away: away)
+                undoToast(away: away)
                 grabber
                 pill(show: (tl.day != tl.today || !nowInView) && !away)
             }
@@ -347,6 +348,15 @@ struct DayTimelineView: View {
         .offset(x: 30, y: TLLayout.grabberY + 2)
     }
 
+    /// a rename he can take back, for a few seconds, over the foot of the list
+    private func undoToast(away: Bool) -> some View {
+        ZStack {
+            if let u = tl.undo, !away { TLUndoToast(undo: u) { tl.undoRename() }.transition(.move(edge: .bottom).combined(with: .opacity)) }
+        }
+        .frame(width: W, height: 48)
+        .offset(y: TLLayout.listBottom - 56)
+    }
+
     // MARK: the list, and what waits above it
 
     private func listArea(_ shown: Shown, away: Bool) -> some View {
@@ -479,6 +489,7 @@ private struct TLList: View {
     @Binding var nowInView: Bool
     @State private var pos: ScrollPosition
     @State private var opened: Double   // the room it was opened in, which the first rows' entry is laid out for
+    @State private var at = ScrollAt()  // where the list is now (written as it moves, never drawn from)
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     init(model: DayTimelineModel, engine: StarEngine, tl: TimelineState, room: Double, lens: TLLens?, nowInView: Binding<Bool>) {
@@ -501,7 +512,8 @@ private struct TLList: View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 0) {
                 ForEach(model.entries) { e in
-                    TLRowView(e: e, open: tl.openRow == e.id, first: e.id == model.entries.first?.id, dim: dim(e), hot: tl.hot == e.id, engine: engine) { toggle(e) }
+                    TLRowView(e: e, open: tl.openRow == e.id, dim: dim(e), hot: tl.hot == e.id, flashing: tl.flash == e.id, tl: tl, engine: engine,
+                              tap: { toggle(e) }, opened: { ensureVisible(e, height: $0) })
                         .modifier(Rise(rank: ranks[e.id], on: tl.reveal, reduce: reduce))
                         .transition(reduce ? .opacity : .asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)), removal: .opacity))
                 }
@@ -519,9 +531,15 @@ private struct TLList: View {
             guard let ny = nowTop else { return true }
             return ny < g.visibleRect.maxY && ny + TLMetrics.now > g.visibleRect.minY
         } action: { _, v in nowInView = v }
+        .onScrollGeometryChange(for: Double.self) { Double($0.contentOffset.y) } action: { _, y in at.y = y }
         .onChange(of: tl.request) { _, r in
             guard r.y >= 0 else { return }
             if r.animated { withAnimation(.easeOut(duration: 0.45)) { pos.scrollTo(y: r.y) } } else { pos.scrollTo(y: r.y) }
+        }
+        // the field of a rename needs the keyboard, which covers the foot of the list: the row goes up under the header
+        .onChange(of: tl.renaming) { _, id in
+            guard let id, let y = model.top(of: id), let e = model.entries.first(where: { $0.id == id }) else { return }
+            tl.scroll(to: max(0, y + e.gap - TLLayout.fadeTop - 6), animated: true)
         }
         // a swipe along the list is a day before or after; a drag up and down is the list's own
         .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { v in
@@ -538,11 +556,25 @@ private struct TLList: View {
         return e.lens == lens || e.kind == .now ? 1 : e.kind == .stay ? 0.6 : 0.35
     }
 
+    /// one row open at a time, with a light tap of the phone as it opens and a spring of about 260 ms (a plain fade with Reduce Motion)
     private func toggle(_ e: TLEntry) {
         guard e.opens else { return }
-        withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.35, dampingFraction: 0.86)) { tl.openRow = tl.openRow == e.id ? nil : e.id }
+        let opening = tl.openRow != e.id
+        if opening { Haptic.impact(.light) }
+        withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(duration: 0.26, bounce: 0.08)) { tl.openRow = opening ? e.id : nil }
+    }
+
+    /// A row opened is as tall as it is (`h`, without the blank above it): when its foot is below the list, the list goes up as far as that takes, never so far that the row's own top is lost.
+    private func ensureVisible(_ e: TLEntry, height h: Double) {
+        guard tl.openRow == e.id, h > 0, let i = model.entries.firstIndex(where: { $0.id == e.id }) else { return }
+        let top = model.offsets[i] + e.gap, bottom = top + h
+        let want = min(bottom + 8 - room, top - TLLayout.fadeTop - 6)
+        if want > at.y + 0.5 { tl.scroll(to: want, animated: true) }
     }
 }
+
+/// where the list is, kept where nothing is drawn from it
+private final class ScrollAt { var y = 0.0 }
 
 /// a row rising in: from 10 pt below, one after another 30 ms apart; with Reduce Motion a plain fade
 private struct Rise: ViewModifier {
@@ -555,144 +587,6 @@ private struct Rise: ViewModifier {
             .opacity(shown ? 1 : 0)
             .offset(y: shown || reduce ? 0 : 10)
             .animation(rank.map { reduce ? Animation.easeOut(duration: 0.25) : Animation.easeOut(duration: 0.4).delay(Double($0) * 0.03) }, value: on)
-    }
-}
-
-// MARK: - one line of the list
-
-private struct TLRowView: View {
-    let e: TLEntry
-    let open: Bool
-    let first: Bool
-    let dim: Double                     // 1, less while a lens is on and this is not of its kind
-    let hot: Bool                       // the row that covers the minute under his finger on the bar
-    let engine: StarEngine
-    let tap: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Group {
-                switch e.kind {
-                case .stay: stay
-                case .now: nowLine
-                default: item
-                }
-            }
-            .frame(height: e.height, alignment: .top)
-            .background {
-                RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(hot ? 0.07 : 0)).padding(.horizontal, -8)
-                    .animation(.easeOut(duration: 0.1), value: hot)
-            }
-            .contentShape(Rectangle())
-            .onTapGesture(perform: tap)
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(e.opens ? .isButton : [])
-            if open { expansion.padding(.leading, 72).padding(.bottom, 12).transition(.opacity.combined(with: .offset(y: -6))) }
-        }
-        .opacity(dim)
-        .animation(.easeOut(duration: 0.15), value: dim)
-    }
-
-    // the title and the like, muted once it is later than now
-    private var titleColor: Color { e.later ? ink.opacity(0.58) : ink }
-    private var symbolName: String { e.later ? e.symbol.replacingOccurrences(of: ".fill", with: "") : e.symbol }
-
-    /// the place he stayed in: its colour as a dot, its name, and at the right its hours and how long
-    private var stay: some View {
-        HStack(spacing: 0) {
-            Circle().fill((e.color.map { Color(red: $0.r / 255, green: $0.g / 255, blue: $0.b / 255) } ?? muted).opacity(e.kept ? 1 : 0.45)).frame(width: 8, height: 8)
-            Text(e.title).font(.system(size: 15.5, weight: .semibold)).foregroundStyle(ink).lineLimit(1).padding(.leading, 8)
-            Spacer(minLength: 10)
-            Text(e.right).font(AT.mono(12)).foregroundStyle(muted).lineLimit(1).fixedSize().layoutPriority(1)
-        }
-        .padding(.top, 14)
-        .overlay(alignment: .top) { if !first { Rectangle().fill(hair).frame(height: 0.5) } }
-    }
-
-    private var nowLine: some View {
-        HStack(spacing: 10) {
-            Text(e.title).font(AT.mono(11)).foregroundStyle(warm).fixedSize()
-            Rectangle().fill(warm.opacity(0.85)).frame(height: 1)
-        }
-        .frame(maxHeight: .infinity)
-    }
-
-    /// time, symbol, title with its muted line, how long. The block of a row is centred in its height; a trip's rail runs the whole height.
-    private var item: some View {
-        let trip = e.kind == .trip
-        let pad = e.kind == .trip ? 9.0 : e.detail == nil ? (e.height - 18) / 2 : 9.0
-        return HStack(alignment: .top, spacing: 0) {
-            Text(e.time).font(AT.mono(12)).foregroundStyle(muted).frame(width: 40, height: 18, alignment: .leading).padding(.top, pad)
-            Group {
-                if trip { rail } else { symbol.padding(.top, pad) }
-            }.frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    if e.lit { MarkShape(kd: .lit).frame(width: 14, height: 14) }
-                    Text(e.title).font(.system(size: 15)).foregroundStyle(titleColor).lineLimit(1)
-                }.frame(height: 18, alignment: .leading)
-                if let d = e.detail { Text(d).font(.system(size: 12.5)).foregroundStyle(e.later ? muted.opacity(0.8) : muted).lineLimit(1).frame(height: 15, alignment: .leading) }
-            }
-            .padding(.leading, 10).padding(.top, pad)
-            Spacer(minLength: 8)
-            Text(e.right).font(AT.mono(12)).foregroundStyle(e.strongRight ? ink : muted).lineLimit(1).fixedSize().frame(height: 18).padding(.top, pad)
-        }
-    }
-
-    private var symbol: some View {
-        Image(systemName: symbolName).font(.system(size: 15)).foregroundStyle(e.later ? iconColor.opacity(0.6) : iconColor).frame(width: 22, height: 18)
-    }
-
-    /// a trip is a dashed rail through the symbol's column, with the vehicle on it (level with the title, the rail running on to the foot of a taller row)
-    private var rail: some View {
-        VStack(spacing: 0) { dashes(9); symbol; dashes(e.height - 27) }
-    }
-    private func dashes(_ h: Double) -> some View {
-        Path { p in p.move(to: .zero); p.addLine(to: CGPoint(x: 0, y: h)) }
-            .stroke(Color(red: 196 / 255, green: 208 / 255, blue: 255 / 255).opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [2, 3]))
-            .frame(width: 1, height: h)
-    }
-
-    /// what opening it shows: the first exchange of a talk, the picture, or the lines in full
-    @ViewBuilder private var expansion: some View {
-        switch e.kind {
-        case .talk:
-            let x = TalkTopics.shared.exchange(e.id)
-            ExpandView(ex: .talk(his: x?.his ?? "", hers: x?.hers ?? "", start: e.talkStart ?? 0), engine: engine)
-        case .picture:
-            TLPicture(attachment: e.attachment, lines: e.more)
-        default:
-            ExpandView(ex: .note(e.more.joined(separator: "\n")), engine: engine)
-        }
-    }
-}
-
-/// A picture he sent: the picture as the talk shows it (a tap opens it full screen), and what the brain wrote about it. One the brain has swept is a plain line.
-private struct TLPicture: View {
-    let attachment: String?
-    let lines: [String]
-    @State private var swept = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let id = attachment {
-                if swept {
-                    Text("图片已过期").font(.system(size: 13)).foregroundStyle(muted)
-                } else {
-                    PictureCell(item: SentItem(id: id, attachment: id, isImage: true, title: ""), size: nil) {
-                        PictureViewer.present([ViewerPicture(id: id, gone: false, small: PictureStore.shared.peek(id: id, maxPixel: 0))], index: 0)
-                    }
-                }
-            }
-            if !lines.isEmpty {
-                Text(lines.joined(separator: "\n")).font(.system(size: 13.5)).lineSpacing(3).foregroundStyle(Color(red: 226 / 255, green: 230 / 255, blue: 250 / 255).opacity(0.84))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .task(id: attachment) {
-            guard let id = attachment else { return }
-            if case .gone = await PictureStore.shared.source(id: id, gone: false) { swept = true }
-        }
     }
 }
 
