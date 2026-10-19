@@ -29,7 +29,7 @@ import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
@@ -1834,6 +1834,35 @@ def day_records(path: Path, day: str) -> tuple[Record, ...]:
     return tuple((str(rid), str(ts), str(source), str(text)) for rid, ts, source, text in rows)
 
 
+_SPOKEN_SOURCES: Final[tuple[str, ...]] = ("allen", "jarvis", "jarvis_live")
+"""The sources of what was said in a conversation: his, and hers typed and spoken."""
+
+
+def spoken_between(
+    conn: sqlite3.Connection, start_ms: int, end_ms: int,
+) -> list[tuple[int, str, str]]:
+    """``(at_ms, source, words)`` of what was said in ``[start_ms, end_ms)``, oldest first.
+
+    His words and hers; a picture's note and a reaction are not said. The words are the record's
+    text without markup, without the marker line of files that came with it and without a filler
+    the program wrote in place of words, so a turn of files alone has none and is left out.
+    """
+    first = datetime.fromtimestamp(start_ms / 1000, UTC).isoformat()
+    last = datetime.fromtimestamp(end_ms / 1000, UTC).isoformat()
+    marks = ", ".join("?" * len(_SPOKEN_SOURCES))
+    rows = conn.execute(
+        "SELECT ts, source, text FROM records "  # noqa: S608 - fixed placeholders
+        f"WHERE source IN ({marks}) AND datetime(ts) >= datetime(?) AND datetime(ts) < datetime(?) "
+        "ORDER BY datetime(ts), rowid",
+        (*_SPOKEN_SOURCES, first, last),
+    ).fetchall()
+    return [
+        (int(datetime.fromisoformat(str(ts)).timestamp() * 1000), str(source), words)
+        for ts, source, text in rows
+        if (words := _plain(_his_words(str(text))).strip())
+    ]
+
+
 __all__ = [
     "DAY_SUMMARIES_CONTEXT",
     "DEFAULT_SEARCH_LIMIT",
@@ -1883,5 +1912,6 @@ __all__ = [
     "remember_fact",
     "render_context",
     "search_records",
+    "spoken_between",
     "verbatim_stats",
 ]
