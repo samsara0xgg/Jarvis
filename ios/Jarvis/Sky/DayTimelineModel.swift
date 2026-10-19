@@ -75,7 +75,7 @@ struct DayTimelineModel: Equatable {
     var segs: [TLSeg]
     var span: ClosedRange<Double>   // what the overview bar covers: from the first thing of the day (or 06:00) to 24:00
     var now: Double?                // the minute of now, on today only
-    var missing: String?            // "Mac 没连上"
+    var missing: String?            // "还没读到：Mac 的时间"
 
     var isEmpty: Bool { entries.allSatisfy { $0.kind == .now } }
     /// where the line for now stands in the list
@@ -248,7 +248,14 @@ struct DayTimelineModel: Equatable {
         }
         let first = entries.first { $0.kind != .now }?.t0 ?? 360
         return DayTimelineModel(date: r.date, line: text(r.line?.text), entries: entries, segs: segs,
-                                span: max(0, min(first, 360))...DAY, now: now, missing: BrainLink.missingText(r.missing))
+                                span: max(0, min(first, 360))...DAY, now: now, missing: missingText(r.missing))
+    }
+
+    /// the footnote under the list: what has not been read, named by what it gives the day (the dial words it its own way: `BrainLink.missingText`)
+    static func missingText(_ missing: [String]) -> String? {
+        let names = ["phone": "手机的记录", "reminders": "提醒", "mac": "Mac 的时间", "talks": "对话", "calendar": "日历", "departures": "公交"]
+        let m = missing.compactMap { names[$0] }
+        return m.isEmpty ? nil : "还没读到：" + m.joined(separator: "、")
     }
 
     private static let moves: [String: (String, String)] = [

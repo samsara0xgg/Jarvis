@@ -205,7 +205,7 @@ final class DayTimelineTests: XCTestCase {
     func testHerSentenceAndTheSourceThatWasNotReadAreCarried() {
         let m = build(TimelineFixture.today(cal))
         XCTAssertEqual(m.line, "今天去了学校，下午在 UVic 待得最久，晚上回家早点休息。")
-        XCTAssertEqual(m.missing, "Mac 没连上")
+        XCTAssertEqual(m.missing, "还没读到：Mac 的时间")
         XCTAssertEqual(m.height, m.entries.reduce(0) { $0 + $1.height } + TLMetrics.note, "the footnote has its own height under the last row")
         XCTAssertNil(build(TimelineFixture.yesterday(cal), now: nil).missing)
     }
@@ -312,5 +312,12 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(BrainLink.missingText(["mac", "calendar"]), "Mac、日历 没连上")
         XCTAssertNil(BrainLink.missingText([]))
         XCTAssertNil(BrainLink.missingText(["something new"]))
+    }
+
+    func testTheListNamesWhatWasNotReadByWhatItGivesTheDay() {
+        XCTAssertEqual(DayTimelineModel.missingText(["mac"]), "还没读到：Mac 的时间")
+        XCTAssertEqual(DayTimelineModel.missingText(["phone", "reminders", "mac", "talks", "calendar", "departures"]), "还没读到：手机的记录、提醒、Mac 的时间、对话、日历、公交")
+        XCTAssertNil(DayTimelineModel.missingText([]))
+        XCTAssertNil(DayTimelineModel.missingText(["something new"]))
     }
 }
