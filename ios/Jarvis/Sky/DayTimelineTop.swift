@@ -54,6 +54,7 @@ struct TLTopView: View {
                 }
             }
         }
+        .onDisappear { lastStretch = nil; tl.follow(nil, in: nil) }          // a finger that was on the bar when this went away is not on it when it comes back
         .onChange(of: tl.lens) { _, l in if let l { lastLens = l } }
         .onChange(of: tl.scrub) { _, t in if let t { lastScrub = t } }
         .onChange(of: touching) { _, on in

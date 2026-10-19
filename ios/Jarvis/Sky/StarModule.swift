@@ -19,9 +19,10 @@ extension StarEngine {
             if kind == .timeline {
                 if qGoal != 0 { setLevel(0) }
                 ui.tuning = false
-                ui.tl.day = ui.tl.today; ui.tl.openRow = nil
+                ui.tl.letGo(); ui.tl.day = ui.tl.today
                 ui.tl.open()                    // the bar grows in and the rows rise once the day is there
             } else {
+                ui.tl.letGo()                   // a rename's field open when it was left must not keep the composer away from the dial
                 rowKey = ""; viewKey = ""; dateD = nil          // the panel under the dial and the date are built again
             }
         }

@@ -192,6 +192,45 @@ final class DayTimelineActionsTests: XCTestCase {
         XCTAssertEqual(try entry(tl, "stay-1").title, "家", "the brain has had time to say it: what the day says is what shows")
     }
 
+    // MARK: what a day held
+
+    func testWhatWasHeldIsLetGoWhenHeAsksAboutAnotherRowChangesDayOrLeavesTheTimeline() async throws {
+        let tl = state(), e = StarEngine()
+        let home = try entry(tl, "stay-1")
+        // the field of a rename has the keyboard and keeps the composer away: asking about another row takes it back
+        tl.beginRename(home)
+        XCTAssertEqual(tl.renaming, "stay-1")
+        tl.perform(.ask, on: try entry(tl, "work-demo-2"), engine: e)
+        XCTAssertNil(tl.renaming)
+        // another day
+        tl.beginRename(home)
+        tl.setDay(tl.today - 1)
+        XCTAssertNil(tl.renaming)
+        XCTAssertNil(tl.openRow)
+        await until("it is the day before") { tl.day == tl.today - 1 }
+        // the module or the world: all that was held goes together, the minute under a finger with it
+        tl.day = tl.today
+        let m = try model(tl)
+        tl.beginRename(home)
+        tl.follow(600, in: m)
+        tl.sunSaid = true
+        XCTAssertNotNil(tl.scrub)
+        XCTAssertNotNil(tl.hot)
+        tl.letGo()
+        XCTAssertNil(tl.renaming)
+        XCTAssertNil(tl.openRow)
+        XCTAssertNil(tl.scrub)
+        XCTAssertNil(tl.hot)
+        XCTAssertFalse(tl.sunSaid)
+        // the day is asked for again and the place is not in it any more
+        tl.beginRename(home)
+        tl.keep(only: Set(m.entries.map(\.id)))
+        XCTAssertEqual(tl.renaming, "stay-1", "it is still in the list")
+        tl.keep(only: ["a"])
+        XCTAssertNil(tl.renaming)
+        XCTAssertNil(tl.openRow)
+    }
+
     // MARK: what waits
 
     func testTheWaitingCountGoesToTheFirstRowThatWaitsAndFlashesIt() async throws {

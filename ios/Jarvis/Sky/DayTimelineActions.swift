@@ -31,6 +31,7 @@ extension TimelineState {
         guard e.actions.contains(a) else { return }
         switch a {
         case .ask:
+            if renaming != nil { cancelRename() }           // its field has the keyboard and keeps the composer away: asking is for the composer
             if let about = e.about { engine.askAbout(about) }
         case .openTalk:
             if let start = e.talkStart { engine.showTalk(start) }

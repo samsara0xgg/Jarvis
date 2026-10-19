@@ -113,11 +113,24 @@ final class TimelineState {
         withTransaction(t) { reveal = false }
     }
 
+    /// What was held on a day that is not the one on show any more, or on the timeline when it is left: the row opened, the minute under a finger, the field of a rename (which keeps
+    /// the composer away while it is open) and the sun's words.
+    func letGo() {
+        openRow = nil; renaming = nil; renameNote = nil; sunSaid = false
+        follow(nil, in: nil)
+    }
+
+    /// The rows the list has now: a row opened or being renamed that is not among them any more (the day was asked for again and the place is not in it) is let go.
+    func keep(only ids: Set<String>) {
+        if let id = openRow, !ids.contains(id) { openRow = nil }
+        if let id = renaming, !ids.contains(id) { renaming = nil; renameNote = nil }
+    }
+
     /// Another day. The page's direction is set first and the page changes on the next turn, so the page that leaves slides the same way as the one that comes.
     func setDay(_ d: Int) {
         let from = pending ?? day
         guard d != from, d <= today else { return }
-        pending = d; slide = d < from ? 1 : -1; openRow = nil; sunSaid = false
+        pending = d; slide = d < from ? 1 : -1; letGo()
         DispatchQueue.main.async { [self] in
             pending = nil
             withAnimation(.easeOut(duration: 0.35)) { day = d }
@@ -382,6 +395,7 @@ private struct TLList: View {
             guard abs(dx) > 60, abs(dx) > abs(dy) * 1.8 else { return }
             tl.swipe(dx > 0 ? -1 : 1)
         })
+        .onChange(of: model.entries.map(\.id)) { _, ids in tl.keep(only: Set(ids)) }
         .onAppear { nowInView = true }
     }
 

@@ -30,7 +30,7 @@ extension StarEngine {
         fs = Spring(n - 330); goal = n; stiff = 2.6; mode = .seek; byHand = false
         F = n - 330; prevF = F; Trev = n; prevRev = n
         qGoal = 0; openId = nil; rowKey = ""; viewKey = ""; panelKey = ""; dateD = nil; seenVersion = -1; monthAsked = false
-        ui.tl.day = floorDay(n); ui.tl.openRow = nil
+        ui.tl.letGo(); ui.tl.day = floorDay(n)
         epoch += 1; wake()
     }
 
