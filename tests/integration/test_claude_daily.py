@@ -268,10 +268,11 @@ def test_a_draft_a_sent_copy_and_an_edited_draft_are_kept_without_duplicates(
         "Rewrote four resume bullets.", "Rewrote three resume bullets.",
     ]
 
-    # what asked Gmail: reads only, the net query, drafts not excluded, paged to the end
+    # what asked Gmail: reads only, the net query, then the drafts, each paged to the end
     searches = [a for t, a in rig.gmail.calls if t == "gmail_search"]
-    assert [a["query"] for a in searches] == ['subject:"Jarvis Claude" after:2026/10/18'] * 2
-    assert "-in:" not in searches[0]["query"]
+    net = 'subject:"Jarvis Claude" after:2026/10/18'
+    assert [a["query"] for a in searches] == [net] * 2 + [f"{net} in:drafts"] * 2
+    assert all("-in:" not in a["query"] for a in searches)
     assert sorted(rig.gmail.fulls()) == ["d1", "d2", "s1"]  # the other mail's body was never read
 
 

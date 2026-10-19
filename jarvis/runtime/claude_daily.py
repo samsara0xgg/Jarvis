@@ -37,10 +37,13 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 SOURCE: Final[str] = "claude_daily"
-# Gmail's default search covers drafts, sent and received mail (not spam or trash). The phrase is
-# only a net: the subject is checked in code, because Gmail's matching of the Chinese part is not
-# something to lean on.
-_QUERY: Final[str] = 'subject:"Jarvis Claude" after:{day:%Y/%m/%d}'
+# Searched twice: as Gmail searches by default (sent and received copies), and in the drafts, which
+# a default search is not relied on to cover. The phrase is only a net: the subject is checked in
+# code, because Gmail's matching of the Chinese part is not something to lean on.
+_QUERIES: Final[tuple[str, ...]] = (
+    'subject:"Jarvis Claude" after:{day:%Y/%m/%d}',
+    'subject:"Jarvis Claude" after:{day:%Y/%m/%d} in:drafts',
+)
 _SEARCH_LIMIT: Final[int] = 100
 _MAX_PAGES: Final[int] = 30
 
@@ -103,22 +106,25 @@ class ClaudeDailyIntake:
 
     def _unkept(self, servers: McpServers) -> list[str]:
         """Listed ids with no raw file yet, oldest first."""
-        query = _QUERY.format(day=self._settings.backfill_since)
         held = {
             name.partition("-")[2].removesuffix(".json")
             for name in (p.name for p in (self._dir / SOURCE).glob("*-*.json"))
         }
         found: list[str] = []
-        page = ""
-        for _ in range(_MAX_PAGES):
-            args: dict[str, Any] = {"query": query, "maxResults": _SEARCH_LIMIT}
-            if page:
-                args["pageToken"] = page
-            reply = gmail_read(servers, "gmail_search", args)
-            found += [str(one["id"]) for one in reply.get("messages") or []]
-            page = str(reply.get("nextPageToken") or "")
-            if not page:
-                break
+        for query in _QUERIES:
+            page = ""
+            for _ in range(_MAX_PAGES):
+                args: dict[str, Any] = {
+                    "query": query.format(day=self._settings.backfill_since),
+                    "maxResults": _SEARCH_LIMIT,
+                }
+                if page:
+                    args["pageToken"] = page
+                reply = gmail_read(servers, "gmail_search", args)
+                found += [str(one["id"]) for one in reply.get("messages") or []]
+                page = str(reply.get("nextPageToken") or "")
+                if not page:
+                    break
         return [one for one in reversed(list(dict.fromkeys(found))) if one not in held]
 
     def _keep(self, servers: McpServers, message_id: str) -> int:

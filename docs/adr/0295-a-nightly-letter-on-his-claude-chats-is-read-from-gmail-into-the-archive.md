@@ -47,8 +47,8 @@ The brain polls Gmail for the letter and keeps every revision of it, raw and rea
   Any other `- key: value` line is kept in the entry's fields as written. It is read leniently: a
   dash, en dash or `to` in the time, a missing line, a missing header.
 - **The poll.** Off by default (`claude_daily:` in `config/jarvis.yaml`); every `poll_s` it lists
-  mail since `backfill_since` with Gmail's default search, which includes drafts and sent copies,
-  for the subject phrase `Jarvis Claude`, and takes the ones whose subject starts with the title
+  mail since `backfill_since` for the subject phrase `Jarvis Claude` twice, with Gmail's default
+  search (sent and received copies) and in the drafts, and takes the ones whose subject starts with the title
   above. The phrase is a net; the subject is checked in code.
 - **Kept.** For each such message not kept yet it keeps both Gmail answers (metadata and full)
   raw under `imports/claude_daily/` named by the message id (ADR 0259), and reads the body into
