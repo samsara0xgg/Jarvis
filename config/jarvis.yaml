@@ -792,25 +792,25 @@ job_mail:
   # 2026-10-06 (Allen): LinkedIn mail is kept out of the job-mail feature (no Jev call, no ledger
   # row, no alert; existing rows are hidden, never deleted); [] turns it off.
   exclude_domains: [linkedin.com]
-  # 2026-10-06 (Allen): when job mail yields an interview time Jarvis sets two reminders on its own
-  # (evening_at the evening before, before_min before the start) and, with outlook on, writes the
-  # interview into his Outlook calendar (the microsoft server) with an alert before_min before, so
-  # his iPhone's Calendar alerts him with the Mac closed.  ADR 0186: the Outlook part is a
-  # stopgap until the Pi brain pushes reminders to the phone.  enabled: false turns all of it off.
+  # 2026-10-06 (Allen): when job mail yields an interview time Jarvis makes a thing of it in the
+  # ledger of his things (ADR 0299) and rings it on its own twice (evening_at the evening before,
+  # before_min before the start).  It no longer writes the interview into his Outlook calendar
+  # (ADR 0186 did, until the Pi brain pushed reminders to the phone); that comes back with the
+  # ledger's write-back.  enabled: false turns all of it off.
   interview_reminders:
     enabled: true
     evening_at: "20:00"
     before_min: 30
-    outlook: true
 
 # ADR 0274 — what he has to go to.  In the background, every poll_s, Jarvis lists his Gmail since
 # backfill_since (gmail_search and gmail_get only: nothing is ever modified, labelled, trashed or
 # sent), drops what shows no date or hour, and asks the llm preset below about the rest, at most
 # max_mails_per_cycle letters a cycle.  It needs neither Jev nor OpenRouter.  Interview and offer
-# mail stays with job_mail.  A mail-made item is unconfirmed until he confirms it; each item in
-# the next seven days gets one reminder remind_before_min before it (private ones say only the
-# time).  The letter's sender, subject and first 3000 characters of body go to the preset's
-# provider, so it is off here; the Pi turns it on in its own settings.
+# mail stays with job_mail.  A mail-made item is a thing in the ledger of his things (ADR 0299),
+# unconfirmed until he confirms it; the ledger rings each one in the next seven days
+# remind_before_min before it (private ones say only the time).  The letter's sender, subject and
+# first 3000 characters of body go to the preset's provider, so it is off here; the Pi turns it on
+# in its own settings.
 commitments:
   enabled: false
   poll_s: 300

@@ -69,8 +69,9 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
   unmarks one item of a day as a highlight for him; ``{"ok", "highlights"}``
 - ``POST /inherent/day/answer`` — ADR 0302; body ``{"day", "span_id", "choice"?, "text"?}`` is
   his answer about a span of what he was doing; ``{"ok", "span"}``
-- ``POST /inherent/commitments/{hex}`` — ADR 0274, 0296; body ``{"action": "confirm"|"cancel"}``
-  does what ``keep(confirm=)`` / ``keep(cancel=)`` does to that commitment; ``{"ok": true}``
+- ``POST /inherent/commitments/{hex}`` — ADR 0274, 0296, 0299; body ``{"action":
+  "confirm"|"cancel"}`` confirms the thing ``thing-<hex>`` in the ledger of his things, or cancels
+  it as not his; ``{"ok": true}``
 - ``POST /inherent/memory/places`` — ADR 0234, 0296; body ``{"name", "lat", "lng", "role"?}``
   keeps a place at a point, as ``save_place`` does; ``{"ok", "place", "change"}``
 - ``PUT /inherent/lifelog/audio/{id}`` — ADR 0238; one piece of the phone's day recording, kept
@@ -827,8 +828,8 @@ class InherentDeps:
             Awaitable[dict[str, Any]],
         ] | None
     ) = None
-    # ADR 0296: ``(commitment hex, "confirm" | "cancel")`` -> whether anything changed, off the
-    # loop thread. LookupError (none such, or dropped) is 404 and a False is 409; ``None`` leaves
+    # ADR 0296, 0299: ``(thing hex, "confirm" | "cancel")`` -> whether anything changed, off the
+    # loop thread. LookupError (none such, or closed) is 404 and a False is 409; ``None`` leaves
     # ``POST /inherent/commitments/{hex}`` unregistered.
     commitment_act: Callable[[str, str], Awaitable[bool]] | None = None
     # ADR 0051: the companion home's reads and its one write, all off the loop
@@ -1972,7 +1973,7 @@ def _register_doing_answer_route(app: FastAPI, deps: InherentDeps) -> None:
 
 
 def _register_commitment_route(app: FastAPI, deps: InherentDeps) -> None:
-    """ADR 0296: the day line's buttons on a commitment, the effect of ``keep``'s two paths."""
+    """ADR 0296, 0299: the day line's buttons on a thing: confirm it, or cancel it as not his."""
     if deps.commitment_act is None:
         return
     commitment_act = deps.commitment_act
@@ -1981,8 +1982,8 @@ def _register_commitment_route(app: FastAPI, deps: InherentDeps) -> None:
     async def commitment(commitment_hex: str, req: CommitmentActRequest) -> dict[str, bool]:
         """``{ok: true}``.
 
-        404 for a commitment that is not there or was dropped, 409 for a confirm of one that is
-        confirmed already, 422 for any other action.
+        404 for a thing that is not there or is closed, 409 for a confirm of one that is confirmed
+        already, 422 for any other action.
         """
         try:
             changed = await commitment_act(commitment_hex, req.action)
@@ -2228,7 +2229,7 @@ def _register_home_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C9
 
         @app.post("/inherent/today/todo", status_code=200)
         async def todo(req: TodoRequest) -> dict[str, bool]:
-            """Check a to-do off in Microsoft To Do, or open it again."""
+            """Check a to-do off in Microsoft To Do, or open it again; its thing follows."""
             await _home_call(todo_set(req.id, req.done))
             return {"ok": True}
 

@@ -1,26 +1,27 @@
-"""Reminders and an Outlook event for each interview time job mail finds (ADR 0186).
+"""One thing in the ledger for each interview time job mail finds (ADR 0186, 0299).
 
 One pass (:meth:`InterviewReminders.reconcile`) compares the applications' next interview times
-with what was armed for them, kept in the ledger's ``job_interview_reminder`` table, and makes the
-two agree: two reminders (the evening before and ``before_min`` before the start) written as the
-``reminder.scheduled`` / ``reminder.cancelled`` events of ADR 0179, and one event on Allen's
-Outlook calendar. A pass is idempotent, so a restart or a repeat changes nothing; an Outlook
-failure is logged and retried by the next pass and never undoes a reminder.
+with the ``go`` things the ledger holds for them (``source="mail"``, ``source_ref`` ``job:<id>``,
+written ``by="mail"``) and makes the two agree: a new time is a new thing, a changed time a move,
+an interview that is gone (rejected, hidden, no time) a cancel. The thing carries the two rings of
+ADR 0186, the evening before at ``evening_at`` and ``before_min`` before the start; the ledger arms
+them (``things.sync_rings``). A pass is idempotent, so a restart or a repeat changes nothing.
 
-The only Outlook tools called are the three that write one event, and only an event id this module
-itself created and stored is ever updated or deleted.
+No Outlook event is written any more: the interview is in the ledger and rings, and its going into
+Outlook waits for the general write-back (ADR 0299). The first pass after the ledger also settles
+what ADR 0186 armed before it, kept in the ledger's ``job_interview_reminder`` table: its two
+reminders are cancelled (the thing's rings stand in for them), the Outlook event it wrote is put on
+the thing's ``outlook_id`` so the mirror does not read Jarvis's own event back in, and a time
+Allen had cancelled stays cancelled.
 """
 
 from __future__ import annotations
 
 import contextlib
-import hashlib
-import json
 import logging
 import os
 import threading
 import time
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from datetime import time as clock
@@ -31,26 +32,19 @@ from jarvis.decision import job_mail as triage
 from jarvis.shared import lang
 from jarvis.state import job_ledger as ledger
 from jarvis.state import reminders as reminder_state
-from jarvis.state.event_log import emit_event, open_runtime_event_log
+from jarvis.state import things
+from jarvis.state.event_log import open_runtime_event_log
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable, Collection, Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
-
-    from jarvis.execution.mcp_tools import McpServers
-    from jarvis.runtime.plugin_connections import PluginConnections
 
 LOGGER = logging.getLogger(__name__)
 
-OUTLOOK_SERVER: Final[str] = "microsoft"
-# The only Outlook tools this module may call: one event is written, changed or removed.
-CREATE_TOOL: Final[str] = "create-calendar-event"
-WRITE_TOOLS: Final[frozenset[str]] = frozenset(
-    {CREATE_TOOL, "update-calendar-event", "delete-calendar-event"}
-)
+REF_PREFIX: Final[str] = "job:"
+"""A thing made for an interview has ``source_ref`` ``job:<application id>``."""
 _ACTION_ID: Final[str] = "job-interview-reminders"
-_DEFAULT_MINUTES: Final[int] = 60
 _LOG_WAIT_S: Final[float] = 5.0
 
 
@@ -60,20 +54,6 @@ class InterviewSettings:
 
     evening_at: clock
     before_min: int
-    outlook: bool
-
-
-def outlook_write(
-    servers: McpServers, tool: str, args: Mapping[str, Any], owned: Collection[str]
-) -> dict[str, Any]:
-    """One Outlook write; a tool outside ``WRITE_TOOLS`` or a foreign event id is refused unsent."""
-    if tool not in WRITE_TOOLS:
-        msg = f"interview reminders may only write one Outlook event, not call {tool!r}"
-        raise ValueError(msg)
-    if tool != CREATE_TOOL and args.get("eventId") not in owned:
-        msg = f"{tool}: not an event Jarvis created: {args.get('eventId')!r}"
-        raise ValueError(msg)
-    return servers.call(OUTLOOK_SERVER, tool, args)
 
 
 def local_zone() -> str:
@@ -92,19 +72,27 @@ def _at(text: object) -> datetime | None:
         return None
 
 
+def _span(one: things.Thing) -> tuple[datetime | None, datetime | None]:
+    """When a thing starts and ends, as instants, so two spellings of one moment are the same."""
+    return _at(one.start_at) if one.start_at else None, _at(one.end_at) if one.end_at else None
+
+
+def _he_closed(one: things.Thing) -> bool:
+    """Whether the thing is closed and the last word on it was not the mail's."""
+    return one.state != "open" and one.history[-1].by != "mail"
+
+
+def _he_cancelled(one: things.Thing) -> bool:
+    """Whether Allen (or her) cancelled the interview, rather than the mail taking it back."""
+    return one.state == "cancelled" and one.history[-1].by != "mail"
+
+
 class InterviewReminders:
     """The reconciler and the user's cancel; built once beside the job-mail poller."""
 
-    def __init__(
-        self,
-        settings: InterviewSettings,
-        db: Path,
-        event_log: Path,
-        connections: PluginConnections,
-    ) -> None:
-        """``db`` is memory.db (the ledger), ``event_log`` the log reminders are written to."""
+    def __init__(self, settings: InterviewSettings, db: Path, event_log: Path) -> None:
+        """``db`` is memory.db (the job ledger), ``event_log`` the log the things are written to."""
         self._settings, self._db, self._event_log = settings, db, event_log
-        self._connections = connections
         self._lock = threading.Lock()
         self.now: Callable[[], datetime] = lambda: datetime.now(UTC)
         self.zone = local_zone()
@@ -112,7 +100,7 @@ class InterviewReminders:
     # --- the pass ------------------------------------------------------------------------
 
     def reconcile(self, applications: Sequence[Mapping[str, Any]]) -> None:
-        """Arm what is missing and disarm what is gone; each application fails on its own."""
+        """Make the ledger's interview things say the applications' times; each fails on its own."""
         now = self.now()
         wanted: dict[str, tuple[Mapping[str, Any], datetime]] = {}
         for app in applications:
@@ -120,36 +108,62 @@ class InterviewReminders:
             if at is not None and at > now and app["status"] != "rejected":
                 wanted[app["id"]] = (app, at)
         with self._lock, contextlib.closing(self._log()) as conn:
-            known = reminder_state.fold(conn)
-            for app_id, row in ledger.interview_rows(self._db).items():
-                if app_id not in wanted:
-                    self._guarded(self._disarm, conn, known, app_id, row, now)
+            held = self._held(conn)
             for app, at in wanted.values():
-                self._guarded(self._arm, conn, known, app, at, now)
+                self._guarded(self._arm, conn, held, app, at, now)
+            for app_id, one in list(held.items()):
+                if app_id not in wanted and one.state == "open":
+                    self._guarded(self._disarm, conn, one, now)
+            for app_id, row in ledger.interview_rows(self._db).items():
+                self._guarded(self._carry_over, conn, held, app_id, row, now)
 
     def cancel(self, app_id: str) -> None:
-        """Allen's undo: cancel both reminders and delete the event; that time is not re-armed."""
+        """Allen's undo: cancel the thing and its rings; that time is not made again.
+
+        A new time makes a new thing. ``LookupError`` when no interview is armed for the
+        application.
+        """
         with self._lock, contextlib.closing(self._log()) as conn:
-            row = ledger.interview_rows(self._db).get(app_id)
-            if row is None:
+            one = self._held(conn).get(app_id)
+            if one is None or (one.state != "open" and not _he_cancelled(one)):
                 msg = f"no reminders for application {app_id}"
                 raise LookupError(msg)
-            self._cancel_reminders(conn, reminder_state.fold(conn), row)
-            row["cancelled"] = 1
-            self._delete_event(row)
-            ledger.put_interview(self._db, app_id, row)
+            if one.state == "open":
+                things.close(
+                    conn, one.thing_id, "cancelled", why="cancelled on the Jobs card", by="him",
+                    evidence=one.title, ref=app_id, zone=ZoneInfo(self.zone), now=self.now(),
+                )
 
-    def view(self, row: Mapping[str, Any]) -> dict[str, Any]:
-        """What the Jobs card says is armed: the time, which reminders, the Outlook event."""
-        return {
-            "at": row["event_at"],
-            "evening": bool(row["evening_id"]),
-            "before": bool(row["before_id"]),
-            "evening_at": self._settings.evening_at.strftime("%H:%M"),
-            "before_min": self._settings.before_min,
-            "outlook": bool(row["outlook_id"]),
-            "cancelled": bool(row["cancelled"]),
-        }
+    def views(self) -> dict[str, dict[str, Any]]:
+        """What the Jobs card says is armed, by application id: the time, which rings, the undo.
+
+        An interview ahead (or one Allen cancelled) has an entry; ``outlook`` says an Outlook
+        event Jarvis wrote earlier is still on the thing.
+        """
+        now = self.now()
+        with contextlib.closing(self._log()) as conn:
+            held = self._held(conn)
+            rings = [
+                rid for rid, one in reminder_state.fold(conn).items()
+                if rid.startswith(things.RING_PREFIX) and not one.cancelled
+            ]
+        found: dict[str, dict[str, Any]] = {}
+        for app_id, one in held.items():
+            at = _at(one.start_at)
+            if not (_he_cancelled(one) or (one.state == "open" and at is not None and at > now)):
+                continue
+            prefix = f"{things.RING_PREFIX}{one.thing_id.removeprefix(things.ID_PREFIX)[:12]}-"
+            lit = {rid.rpartition("-")[2] for rid in rings if rid.startswith(prefix)}
+            found[app_id] = {
+                "at": one.start_at,
+                "evening": "0" in lit,
+                "before": "1" in lit,
+                "evening_at": self._settings.evening_at.strftime("%H:%M"),
+                "before_min": self._settings.before_min,
+                "outlook": bool(one.outlook_id),
+                "cancelled": one.state == "cancelled",
+            }
+        return found
 
     # --- one application -----------------------------------------------------------------
 
@@ -158,244 +172,130 @@ class InterviewReminders:
         try:
             step(*args)
         except Exception:
-            LOGGER.exception("job mail: interview reminders failed for one application")
+            LOGGER.exception("job mail: interview things failed for one application")
+
+    @staticmethod
+    def _held(conn: sqlite3.Connection) -> dict[str, things.Thing]:
+        """The newest thing made for each application's interview, whatever became of it."""
+        return {
+            one.source_ref.removeprefix(REF_PREFIX): one
+            for one in things.fold(conn).values()
+            if one.source == "mail" and one.source_ref.startswith(REF_PREFIX)
+        }
 
     def _arm(
         self,
         conn: sqlite3.Connection,
-        known: dict[str, reminder_state.Reminder],
+        held: dict[str, things.Thing],
         app: Mapping[str, Any],
         at: datetime,
         now: datetime,
     ) -> None:
-        old = ledger.interview_rows(self._db).get(app["id"])
-        row: dict[str, Any] = old or {"cancelled": 0}
-        if old is not None and _at(old["event_at"]) != at:  # a new time: the old reminders go
-            self._cancel_reminders(conn, known, old)
-            row |= {"evening_id": None, "before_id": None, "cancelled": 0}
-        row["event_at"] = app["next_event_at"]
-        if row["cancelled"]:
-            self._delete_event(row)  # a delete that failed when he cancelled is tried again
-            ledger.put_interview(self._db, app["id"], row)
-            return
-        ledger.put_interview(self._db, app["id"], row)
-        slots = {
-            "evening_id": (self._evening(at), "job.rem.evening"),
-            "before_id": (at - timedelta(minutes=self._settings.before_min), "job.rem.before"),
+        """Make the application's thing say the interview: add it, move it, or change its words."""
+        want, evidence, ref = self._thing(app, at)
+        write: dict[str, Any] = {
+            "by": "mail", "evidence": evidence, "ref": ref, "zone": ZoneInfo(self.zone), "now": now,
         }
-        for key, (due, line) in slots.items():
-            if row.get(key) is None:
-                if due <= now:  # that moment has passed: it is skipped, not made late
-                    continue
-                row[key] = reminder_state.ID_PREFIX + uuid.uuid4().hex[:8]
-                ledger.put_interview(self._db, app["id"], row)  # the id is kept before it is used
-            if row[key] not in known and due > now:
-                self._schedule(conn, known, row[key], due, self._line(line, app, at))
-        if self._settings.outlook:
-            self._sync_event(app, at, row)
-        ledger.put_interview(self._db, app["id"], row)
+        one = held.get(app["id"])
+        if one is not None and one.state != "open":
+            if _he_closed(one) and _span(one)[0] == _span(want)[0]:
+                return  # he cancelled or finished it for this time
+            one = None
+        if one is None:
+            held[app["id"]], _ = things.add(conn, want, **write)
+            return
+        if _span(one) != _span(want):
+            one = things.move(
+                conn, one.thing_id, start_at=want.start_at, end_at=want.end_at, **write,
+            )
+        fields = {
+            name: getattr(want, name) for name in ("title", "place", "link", "rings")
+            if getattr(want, name) != getattr(one, name)
+        }
+        if fields:
+            one = things.change(conn, one.thing_id, fields, **write)
+        held[app["id"]] = one
 
-    def _disarm(
+    def _disarm(self, conn: sqlite3.Connection, one: things.Thing, now: datetime) -> None:
+        """The application is rejected, hidden or has no time: cancel the thing made for it.
+
+        A time already past was an interview that happened: nothing is undone.
+        """
+        at = _at(one.start_at)
+        if at is None or at <= now:
+            return
+        things.close(
+            conn, one.thing_id, "cancelled", why="the interview is no longer on", by="mail",
+            evidence=one.title, ref=one.source_ref, zone=ZoneInfo(self.zone), now=now,
+        )
+
+    def _carry_over(
         self,
         conn: sqlite3.Connection,
-        known: dict[str, reminder_state.Reminder],
+        held: dict[str, things.Thing],
         app_id: str,
         row: dict[str, Any],
         now: datetime,
     ) -> None:
-        """The application is rejected, hidden or has no time: undo what was armed for it.
-
-        A time already past was an interview that happened: nothing is undone and the Outlook
-        event stays in his calendar.
-        """
-        at = _at(row["event_at"])
-        if at is None or at <= now:
-            ledger.drop_interview(self._db, app_id)
-            return
-        self._cancel_reminders(conn, known, row)
-        self._delete_event(row)
-        if row["outlook_id"]:
-            ledger.put_interview(self._db, app_id, row)  # the delete failed: tried again next pass
-        else:
-            ledger.drop_interview(self._db, app_id)
-
-    # --- reminders -----------------------------------------------------------------------
-
-    def _evening(self, at: datetime) -> datetime:
-        """20:00 (``evening_at``) on the day before the interview, in Allen's zone."""
-        zone = ZoneInfo(self.zone)
-        day = at.astimezone(zone).date() - timedelta(days=1)
-        return datetime.combine(day, self._settings.evening_at, tzinfo=zone)
-
-    def _schedule(
-        self,
-        conn: sqlite3.Connection,
-        known: dict[str, reminder_state.Reminder],
-        reminder_id: str,
-        due: datetime,
-        text: str,
-    ) -> None:
-        """Write one ``reminder.scheduled`` event, the payload ``keep`` writes for a reminder."""
-        local = due.astimezone(ZoneInfo(self.zone))
-        epoch_ms = int(due.timestamp() * 1000)
-        emit_event(
-            conn,
-            type="reminder.scheduled",
-            actor="jarvis_runtime",  # no model turn wrote it
-            payload={
-                "reminder_id": reminder_id,
-                "due_at_epoch_ms": epoch_ms,
-                "due_at_local": local.isoformat(timespec="seconds"),
-                "text": text,
-                "action_id": _ACTION_ID,
-            },
-        )
-        known[reminder_id] = reminder_state.Reminder(
-            reminder_id, epoch_ms, local.isoformat(timespec="seconds"), text
-        )
-
-    @staticmethod
-    def _cancel_reminders(
-        conn: sqlite3.Connection,
-        known: dict[str, reminder_state.Reminder],
-        row: Mapping[str, Any],
-    ) -> None:
-        """Write ``reminder.cancelled`` for each of the row's reminders still waiting to ring."""
+        """Settle what ADR 0186 armed for the application before the ledger, then forget it."""
+        known = reminder_state.fold(conn)
         for key in ("evening_id", "before_id"):
-            one = known.get(row.get(key) or "")
-            if one is not None and one.pending:
-                emit_event(
-                    conn,
-                    type="reminder.cancelled",
-                    actor="jarvis_runtime",
-                    payload={"reminder_id": one.reminder_id, "action_id": _ACTION_ID},
+            old = known.get(row.get(key) or "")
+            if old is not None and old.pending:
+                reminder_state.cancel(conn, old.reminder_id, action_id=_ACTION_ID)
+        one = held.get(app_id)
+        if one is not None and one.state == "open":
+            write: dict[str, Any] = {
+                "evidence": one.title, "ref": app_id, "zone": ZoneInfo(self.zone), "now": now,
+            }
+            if row["outlook_id"] and one.outlook_id != row["outlook_id"]:
+                one = things.change(
+                    conn, one.thing_id, {"outlook_id": row["outlook_id"]}, by="mail", **write,
                 )
-                one.cancelled = True
+            if row["cancelled"] and _at(row["event_at"]) == _at(one.start_at):
+                things.close(
+                    conn, one.thing_id, "cancelled", why="cancelled on the Jobs card", by="him",
+                    **write,
+                )
+        ledger.drop_interview(self._db, app_id)
 
-    def _line(self, key: str, app: Mapping[str, Any], at: datetime) -> str:
-        """What the reminder says: the company, how it is held and, for the second, the link."""
+    # --- the thing -----------------------------------------------------------------------
+
+    def _thing(self, app: Mapping[str, Any], at: datetime) -> tuple[things.Thing, str, str]:
+        """The thing an application's next interview is, with the evidence and mail it came from.
+
+        Its title is the interview and who it is with; its place is how it is held (the platform
+        online, the address on site); its end is the invitation's range when it names one.
+        """
         interview = app.get("interview") or {}
-        if interview.get("mode") == "online":
-            platform = interview.get("platform") or ""
-            where = lang.t("job.rem.online", platform=f" {platform}" if platform else "")
-        elif interview.get("mode") == "onsite":
-            place = interview.get("location") or ""
-            where = lang.t("job.rem.onsite", place=f" {place}" if place else "")
-        else:
-            where = ""
-        if key == "job.rem.before" and interview.get("join_url"):
-            platform = interview.get("platform")
-            where = lang.t("job.rem.link", platform=f"{platform} " if platform else "")
-        return lang.t(
-            key,
-            company=app["company"],
-            time=lang.spoken_time(at.astimezone(ZoneInfo(self.zone))),
-            n=self._settings.before_min,
-            where=where,
-        )
-
-    # --- the Outlook event ---------------------------------------------------------------
-
-    def _event(self, app: Mapping[str, Any], at: datetime) -> dict[str, Any]:
-        """The event's fields: subject, start and end in the zone, body, a reminder before."""
-        zone = ZoneInfo(self.zone)
-        text = next(
-            (m["event_text"] for m in app["mails"] if _at(m["event_at"]) == at and m["event_text"]),
-            "",
-        )
-        end = at + timedelta(minutes=triage.event_minutes(text) or _DEFAULT_MINUTES)
-        interview = app.get("interview") or {}
-        subject = (
-            lang.t("job.cal.subject_role", company=app["company"], role=app["role"])
+        mail = next((m for m in app["mails"] if _at(m["event_at"]) == at), None)
+        minutes = triage.event_minutes(mail["event_text"] or "") if mail else None
+        local = at.astimezone(ZoneInfo(self.zone))
+        title = (
+            lang.t("job.thing.title_role", company=app["company"], role=app["role"])
             if app["role"]
-            else lang.t("job.cal.subject", company=app["company"])
+            else lang.t("job.thing.title", company=app["company"])
+        )[: things.TITLE_CHARS]
+        place = (
+            interview.get("platform") if interview.get("mode") == "online"
+            else interview.get("location") if interview.get("mode") == "onsite" else None
         )
-        lines = [
-            lang.t(key, **{field: interview[name]})
-            for key, field, name in (
-                ("job.cal.platform", "platform", "platform"),
-                ("job.cal.link", "url", "join_url"),
-                ("job.cal.place", "place", "location"),
-            )
-            if interview.get(name)
-        ]
-        event: dict[str, Any] = {
-            "subject": subject,
-            "start": {
-                "dateTime": at.astimezone(zone).replace(tzinfo=None).isoformat(timespec="seconds"),
-                "timeZone": self.zone,
-            },
-            "end": {
-                "dateTime": end.astimezone(zone).replace(tzinfo=None).isoformat(timespec="seconds"),
-                "timeZone": self.zone,
-            },
-            "body": {"contentType": "text", "content": "\n".join([*lines, lang.t("job.cal.note")])},
-            "isReminderOn": True,
-            "reminderMinutesBeforeStart": self._settings.before_min,
-            "isOnlineMeeting": False,
-        }
-        if interview.get("location"):
-            event["location"] = {"displayName": interview["location"]}
-        return event
-
-    def _sync_event(self, app: Mapping[str, Any], at: datetime, row: dict[str, Any]) -> None:
-        """Create the Outlook event, or update it when what it shows changed; failure is logged."""
-        event = self._event(app, at)
-        sig = hashlib.sha1(json.dumps(event, sort_keys=True).encode(), usedforsecurity=False)
-        sig_text = sig.hexdigest()[:16]
-        if row.get("outlook_id") and row.get("outlook_sig") == sig_text:
-            return
-        try:
-            servers = self._connections.client_for(OUTLOOK_SERVER)
-            owned = self._owned(row)
-            if not row.get("outlook_id"):
-                reply = outlook_write(servers, CREATE_TOOL, {"body": event}, owned)
-                row["outlook_id"] = _event_id(reply)
-            else:
-                outlook_write(
-                    servers,
-                    "update-calendar-event",
-                    {"eventId": row["outlook_id"], "body": event},
-                    owned,
-                )
-            row["outlook_sig"] = sig_text
-        except Exception:  # noqa: BLE001 - any failure is retried by the next pass
-            LOGGER.warning(
-                "job mail: the Outlook event could not be written; tried again next pass",
-                exc_info=True,
-            )
-
-    def _delete_event(self, row: dict[str, Any]) -> None:
-        """Delete the row's Outlook event; an event already gone is done, a failure is retried."""
-        if not row.get("outlook_id"):
-            return
-        try:
-            servers = self._connections.client_for(OUTLOOK_SERVER)
-            outlook_write(
-                servers, "delete-calendar-event", {"eventId": row["outlook_id"]}, self._owned(row)
-            )
-        except Exception as exc:  # noqa: BLE001 - any failure is retried by the next pass
-            if not any(word in str(exc).lower() for word in ("404", "not found", "notfound")):
-                LOGGER.warning(
-                    "job mail: the Outlook event could not be deleted; tried again next pass",
-                    exc_info=True,
-                )
-                return
-        row["outlook_id"] = row["outlook_sig"] = None
-
-    def _owned(self, row: Mapping[str, Any]) -> set[str]:
-        """The event ids this module created and still holds: the only ones it may change."""
-        stored = {r["outlook_id"] for r in ledger.interview_rows(self._db).values()}
-        return {one for one in (*stored, row.get("outlook_id")) if one}
+        want = things.Thing(
+            things.new_id(), title, "go",
+            start_at=local.isoformat(timespec="seconds"),
+            end_at=(
+                (local + timedelta(minutes=minutes)).isoformat(timespec="seconds")
+                if minutes else ""
+            ),
+            place=place or "", link=interview.get("join_url") or "",
+            rings=(
+                f"-1d@{self._settings.evening_at:%H:%M}", f"-{self._settings.before_min}m",
+            ),
+            source="mail", source_ref=f"{REF_PREFIX}{app['id']}",
+        )
+        if mail is None:
+            return want, title, ""
+        return want, mail["event_text"] or mail["subject"] or title, mail["message_id"]
 
     def _log(self) -> sqlite3.Connection:
         return open_runtime_event_log(self._event_log, deadline=time.monotonic() + _LOG_WAIT_S)
-
-
-def _event_id(reply: Mapping[str, Any]) -> str:
-    """The id of a created event, from the server's JSON text block or structured answer."""
-    body = json.loads(reply["text"]) if "text" in reply else reply
-    if not isinstance(body, dict) or not body.get("id"):
-        msg = "create-calendar-event answered with no event id"
-        raise ValueError(msg)
-    return str(body["id"])

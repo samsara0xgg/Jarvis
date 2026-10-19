@@ -1433,36 +1433,20 @@ def _touch_event(
     )
 
 
-# --- interview reminders (ADR 0186): what was armed for each application's interview time -------
-
-_INTERVIEW_COLUMNS: Final[tuple[str, ...]] = (
-    "event_at",
-    "evening_id",
-    "before_id",
-    "outlook_id",
-    "outlook_sig",
-    "cancelled",
-)
+# --- interview reminders (ADR 0186): what was armed before the ledger of things (ADR 0299) ------
 
 
 def interview_rows(path: Path) -> dict[str, dict[str, Any]]:
-    """Every armed interview by application id: its time, reminder ids, Outlook event id."""
+    """Every interview armed before ADR 0299 and not yet carried over, by application id.
+
+    Its time, reminder ids, Outlook event id and whether Allen cancelled it; nothing writes a row
+    any more, ``drop_interview`` is how the carry-over forgets one.
+    """
     with _db(path) as conn:
         rows = conn.execute(
             "SELECT * FROM job_interview_reminder WHERE event_at IS NOT NULL"
         ).fetchall()
     return {row["app_id"]: dict(row) for row in rows}
-
-
-def put_interview(path: Path, app_id: str, row: Mapping[str, Any]) -> None:
-    """Keep (replace) the armed state of one application's interview."""
-    with _db(path) as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO job_interview_reminder"  # noqa: S608 - fixed names
-            f" (app_id, {', '.join(_INTERVIEW_COLUMNS)})"
-            f" VALUES (?{', ?' * len(_INTERVIEW_COLUMNS)})",
-            (app_id, *(row.get(name) for name in _INTERVIEW_COLUMNS)),
-        )
 
 
 def drop_interview(path: Path, app_id: str) -> None:

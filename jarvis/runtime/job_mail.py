@@ -100,7 +100,7 @@ class JobMailSettings:
     exclude_domains: tuple[str, ...]
     # A fixed first day of mail to read, instead of the last ``backfill_days`` (ADR 0177).
     backfill_since: date | None = None
-    # Reminders and an Outlook event for each interview time found (ADR 0186); None = off.
+    # A ledger thing with two rings for each interview time found (ADR 0186, 0299); None = off.
     interview_reminders: InterviewSettings | None = None
 
 
@@ -134,7 +134,7 @@ class JobMail:
         holds alerts while Allen is in a call or away and is stored with each decision;
         ``timesink_path`` is where the ledger's time column is read (ADR 0161), or, on a brain,
         ``device`` is the link to the terminal whose TimeSink it is (ADR 0170). ``event_log`` is
-        the log interview reminders are written to (ADR 0186); with none they are off.
+        the log the interview things are written to (ADR 0186, 0299); with none they are off.
         """
         self.moment = moment
         self.timesink_path = timesink_path
@@ -156,9 +156,7 @@ class JobMail:
         self.now: Callable[[], datetime] = lambda: datetime.now(UTC)
         self.interviews: InterviewReminders | None = None
         if settings.interview_reminders is not None and event_log is not None:
-            self.interviews = InterviewReminders(
-                settings.interview_reminders, db_path, event_log, connections
-            )
+            self.interviews = InterviewReminders(settings.interview_reminders, db_path, event_log)
             self.interviews.now = lambda: self.now()  # noqa: PLW0108 - a test swaps self.now later
         self._failures = 0
         self._last_ok = self.now()
@@ -248,10 +246,10 @@ class JobMail:
         return kept
 
     def remind(self) -> None:
-        """Arm the reminders and the Outlook event of every interview time (ADR 0186).
+        """Make the ledger's interview things say every interview time (ADR 0186, 0299).
 
-        Runs at start and after each cycle, from the ledger alone (no Gmail); a failure is logged
-        and never stops the poller.
+        Runs at start and after each cycle, from the job ledger alone (no Gmail); a failure is
+        logged and never stops the poller.
         """
         if self.interviews is None:
             return
@@ -685,14 +683,12 @@ class JobMail:
             found = job_time.job_time_on(self.timesink_path, self.device, known, now)
         except device_reads.DeviceUnavailable as exc:
             found, note = None, str(exc)  # the time column is not empty: the device is not there
-        interviews = self.interviews
-        armed = ledger.interview_rows(self._db) if interviews is not None else {}
+        armed = {} if self.interviews is None else self.interviews.views()
         applications = ledger.list_applications(
             self._db, now, triage.is_ats_company, triage.mail_details
         )
-        for app in applications:  # what was armed for the interview ahead (ADR 0186)
-            row = armed.get(app["id"])
-            app["reminders"] = None if row is None or interviews is None else interviews.view(row)
+        for app in applications:  # what is armed for the interview ahead (ADR 0186)
+            app["reminders"] = armed.get(app["id"])
         return {
             "ledger": [{**g, **job_time.spent_view(found, g["company"])} for g in groups],
             "applications": applications,

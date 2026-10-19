@@ -2,21 +2,20 @@
 
 Every ``poll_s`` it lists the mail since ``backfill_since`` newest first, skips what it has read
 (``commitment_mail`` in memory.db), and for each new letter: sets aside what the job ledger types
-as an interview or offer (ADR 0186 reminds those), reads the kept body or fetches it once, drops
+as an interview or offer (ADR 0186 keeps those), reads the kept body or fetches it once, drops
 what has no sign of a date or an hour, and asks the ``commitments.preset`` model about the rest.
-Its actions become ``commitment.*`` events. A mail-made commitment starts unconfirmed unless its
+The model is shown the open mail-made ``go`` things the ledger holds (ADR 0299) and its actions
+are written to that ledger: a new one is a ``go`` thing made by ``mail``, a changed time a move, a
+changed word a change, a called-off one a cancel. A mail-made thing starts unconfirmed unless its
 sender's rule is ``always``; a sender whose rule is ``never`` is not read. The only Gmail tools
-used are ``gmail_search`` and ``gmail_get`` (the guard of :func:`job_mail.gmail_read`).
-
-After each cycle one pass arms the reminders of the next seven days.
-# ponytail: that pass is the interim nudge, replaced by the day plan's own nudges (design step 2).
+used are ``gmail_search`` and ``gmail_get`` (the guard of :func:`job_mail.gmail_read`). The rings
+are the ledger's own (``things.sync_rings``); this module arms nothing.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import json
 import logging
 import time
@@ -29,14 +28,12 @@ from zoneinfo import ZoneInfo
 from jarvis.decision import commitment_mail as triage
 from jarvis.execution.tools import ToolError
 from jarvis.runtime.home import MAIL_SERVER, _letter, mail_body
-from jarvis.runtime.interview_reminders import local_zone
+from jarvis.runtime.interview_reminders import REF_PREFIX, local_zone
 from jarvis.runtime.job_mail import gmail_read
-from jarvis.shared import lang
 from jarvis.state import commitment_mail as seen
-from jarvis.state import commitments
+from jarvis.state import commitments, things
 from jarvis.state import job_ledger as ledger
-from jarvis.state import reminders as reminder_state
-from jarvis.state.event_log import emit_event, open_runtime_event_log
+from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.import_parsers import is_daily_subject
 
 if TYPE_CHECKING:
@@ -58,20 +55,12 @@ _SEARCH_LIMIT: Final[int] = 100
 _MAX_PAGES: Final[int] = 30
 # While unread mail is left over the cap, the next cycle follows this soon.
 _CATCH_UP_S: Final[float] = 5.0
-_AHEAD: Final[timedelta] = timedelta(days=7)
-_ACTION_ID: Final[str] = "commitment-reminders"
-# A reminder this module armed has this id prefix; no other reminder does.
-_RID: Final[str] = commitments.REMINDER_PREFIX
 # A mail this young that the job ledger has not seen yet is left for the next cycle: job mail may
 # be about to call it an interview, and that has its own reminders.
 _JOB_FIRST: Final[timedelta] = timedelta(minutes=30)
-_EVENING: Final[clock] = clock(20, 0)
-_PLACE_SHORT: Final[int] = 40
+# The ring of an all-day thing is the evening before; a timed one rings ``remind_before_min`` ahead.
+_ALL_DAY_RING: Final[str] = "-1d@20:00"
 _LOG_WAIT_S: Final[float] = 5.0
-_FIELDS: Final[tuple[str, ...]] = (
-    "title", "start_at", "end_at", "weekly_until", "skip_dates", "place", "link", "private",
-    "evidence",
-)
 
 
 @dataclass(frozen=True)
@@ -90,7 +79,7 @@ class _ModelFailed(Exception):  # noqa: N818 - the model did not answer; the cyc
 
 
 class CommitmentIntake:
-    """The poller and the interim reminder pass; built once at boot."""
+    """The poller; built once at boot."""
 
     def __init__(
         self,
@@ -120,10 +109,6 @@ class CommitmentIntake:
                     done = await asyncio.to_thread(self.poll_once)
                 except Exception:
                     LOGGER.exception("commitments: cycle failed; trying again next time")
-                try:
-                    await asyncio.to_thread(self.reconcile)
-                except Exception:
-                    LOGGER.exception("commitments: the reminder pass failed")
                 capped = done >= self._settings.max_mails_per_cycle
                 await asyncio.sleep(_CATCH_UP_S if capped else self._settings.poll_s)
         except asyncio.CancelledError:
@@ -214,11 +199,16 @@ class CommitmentIntake:
         received = head["received"] or now.isoformat()
         mail = triage.Mail(head["from"], domain, head["subject"], received, body)
         zone = ZoneInfo(self.zone)
-        live = {c.commitment_id: c for c in commitments.live(conn)}
+        held = {
+            one.thing_id.removeprefix(things.ID_PREFIX): one
+            for one in things.open_things(conn)
+            if one.kind == "go" and one.source == "mail"
+            and not one.source_ref.startswith(REF_PREFIX)  # an interview is ADR 0186's
+        }
         shown = triage.related(
             [
-                triage.Known(c.commitment_id, c.title, c.start_at, c.weekly_until, c.sender_domain)
-                for c in live.values()
+                triage.Known(key, one.title, _start_at(one, zone), one.weekly_until, one.sender)
+                for key, one in held.items()
             ],
             domain,
             datetime.fromisoformat(received),
@@ -233,7 +223,7 @@ class CommitmentIntake:
         actions = triage.parse_actions(
             said, {k.commitment_id for k in shown}, zone=zone, today=today,
         )
-        applied = self._apply(conn, actions, live, domain, message_id, always=rule == "always")
+        applied = self._apply(conn, actions, held, mail, message_id, always=rule == "always")
         return ("noted" if applied else "none"), json.dumps({"user": user}), said
 
     @staticmethod
@@ -242,127 +232,108 @@ class CommitmentIntake:
         message = gmail_read(servers, "gmail_get", {"messageId": message_id, "format": "full"})
         return mail_body(str(message.get("body") or ""))[: triage.BODY_CHARS]
 
-    @staticmethod
+    # --- writing the ledger --------------------------------------------------------------
+
     def _apply(  # noqa: PLR0913 - the actions and what they act on
+        self,
         conn: sqlite3.Connection,
         actions: list[triage.Action],
-        live: Mapping[str, commitments.Commitment],
-        domain: str,
+        held: Mapping[str, things.Thing],
+        mail: triage.Mail,
         message_id: str,
         *,
         always: bool,
     ) -> int:
-        """Write the actions as events; returns how many changed anything."""
+        """Write the actions to the ledger; returns how many changed anything.
+
+        ``held`` is the open mail-made ``go`` things by the hex the model answers with.
+        """
+        zone, now = ZoneInfo(self.zone), self.now()
         applied = 0
         for action in actions:
             fields = action.fields
+            write: dict[str, Any] = {
+                "by": "mail", "evidence": fields.get("evidence") or mail.subject,
+                "ref": message_id, "zone": zone, "now": now,
+            }
             if action.action == "new":
                 first = datetime.fromisoformat(fields["start_at"])
                 if any(
-                    c.sender_domain == domain and datetime.fromisoformat(c.start_at) == first
-                    for c in live.values()
+                    one.sender == mail.sender_domain and _start(one, zone) == first
+                    for one in held.values()
                 ):
                     continue  # a reminder mail for one already held, said as new
-                record = commitments.Commitment(
-                    commitment_id=commitments.new_id(),
-                    title=fields["title"],
-                    start_at=fields["start_at"],
-                    source="mail",
-                    confirmed=always,
-                    private=fields.get("private", False),
-                    end_at=fields.get("end_at", ""),
-                    weekly_until=fields.get("weekly_until", ""),
-                    skip_dates=tuple(fields.get("skip_dates", ())),
-                    all_day=fields.get("all_day", False),
-                    place=fields.get("place", ""),
-                    link=fields.get("link", ""),
-                    source_ref=message_id,
-                    sender_domain=domain,
-                    evidence=fields.get("evidence", ""),
-                )
-                commitments.note(conn, record)
+                _, made = things.add(conn, self._new(fields, mail, message_id, always), **write)
+                applied += made
             elif action.action == "update":
-                old = live[action.commitment_id]
-                changed = dict(fields)
-                if "skip_dates" in changed:
-                    changed["skip_dates"] = tuple(changed["skip_dates"])
-                if "start_at" in changed and "end_at" not in changed and old.end_at:
-                    start = datetime.fromisoformat(changed["start_at"])
-                    changed["end_at"] = (start + timedelta(minutes=old.minutes)).isoformat(
-                        timespec="seconds",
-                    )
-                changed["private"] = old.private or bool(changed.get("private"))
-                record = dataclasses.replace(old, **changed)
-                if record.payload() == old.payload():
-                    continue
-                commitments.note(conn, record)
+                applied += self._update(conn, held[action.commitment_id], fields, zone, write)
             else:
-                commitments.drop(conn, action.commitment_id, "cancelled")
-            applied += 1
+                things.close(
+                    conn, held[action.commitment_id].thing_id, "cancelled",
+                    why="called off in a mail", **write,
+                )
+                applied += 1
         return applied
 
-    # --- the interim reminders -----------------------------------------------------------
+    def _new(
+        self,
+        fields: Mapping[str, Any],
+        mail: triage.Mail,
+        message_id: str,
+        always: bool,  # noqa: FBT001 - the sender's rule
+    ) -> things.Thing:
+        """The ``go`` thing a ``new`` action says; a whole day is its ``on_day``."""
+        whole = bool(fields.get("all_day"))
+        return things.Thing(
+            things.new_id(), fields["title"], "go",
+            start_at="" if whole else fields["start_at"],
+            end_at=fields.get("end_at", ""),
+            on_day=datetime.fromisoformat(fields["start_at"]).date().isoformat() if whole else "",
+            weekly_until=fields.get("weekly_until", ""),
+            skip_dates=tuple(fields.get("skip_dates", ())),
+            place=fields.get("place", ""), link=fields.get("link", ""),
+            rings=(_ALL_DAY_RING,) if whole else (f"-{self._settings.remind_before_min}m",),
+            private=fields.get("private", False), confirmed=always, source="mail",
+            source_ref=message_id, sender=mail.sender_domain,
+        )
 
-    def reconcile(self) -> None:
-        """Make the pending reminders match the next seven days; running it twice changes nothing.
-
-        One reminder, ``remind_before_min`` before each occurrence still ahead (an all-day one at
-        20:00 the evening before). One that no occurrence wants any more (dropped, changed,
-        skipped) is cancelled.
-        """
-        now = self.now()
-        zone = ZoneInfo(self.zone)
-        wanted: dict[str, tuple[datetime, str]] = {}
-        with contextlib.closing(self._log()) as conn:
-            for occ in commitments.occurrences(
-                conn, int(now.timestamp() * 1000), int((now + _AHEAD).timestamp() * 1000),
-                zone=zone,
-            ):
-                start = datetime.fromtimestamp(occ.start_ms / 1000, zone)
-                if start > now:  # one that has begun is not reminded of
-                    tail = occ.commitment.commitment_id.removeprefix("commitment-")[:12]
-                    due = (
-                        datetime.combine(start.date() - timedelta(days=1), _EVENING, zone)
-                        if occ.commitment.all_day
-                        else start - timedelta(minutes=self._settings.remind_before_min)
-                    )
-                    line = self._line(occ.commitment, start)
-                    wanted[f"{_RID}{tail}-{occ.start_ms}"] = (due, line)
-            known = reminder_state.fold(conn)
-            for rid, held in known.items():
-                if rid.startswith(_RID) and held.pending and rid not in wanted:
-                    emit_event(
-                        conn, type="reminder.cancelled", actor="jarvis_runtime",
-                        payload={"reminder_id": rid, "action_id": _ACTION_ID},
-                    )
-            for rid, (due, text) in wanted.items():
-                one = known.get(rid)
-                if due <= now and one is None:
-                    continue  # that moment has passed: skipped, not made late
-                if one is None or one.cancelled or (one.pending and one.text != text):
-                    emit_event(
-                        conn, type="reminder.scheduled", actor="jarvis_runtime",
-                        payload={
-                            "reminder_id": rid,
-                            "due_at_epoch_ms": int(due.timestamp() * 1000),
-                            "due_at_local": due.isoformat(timespec="seconds"),
-                            "text": text,
-                            "action_id": _ACTION_ID,
-                        },
-                    )
-
-    @staticmethod
-    def _line(c: commitments.Commitment, start: datetime) -> str:
-        """The reminder's words: a private commitment is only its time (an all-day one, nothing)."""
-        at = f"{start:%H:%M}"
-        place = f" · {c.place}" if c.place and len(c.place) <= _PLACE_SHORT else ""
-        if c.all_day:
-            if c.private:
-                return lang.t("commitment.rem.private_day")
-            return lang.t("commitment.rem.day", title=c.title, place=place)
-        if c.private:
-            return lang.t("commitment.rem.private", time=at)
-        return lang.t("commitment.rem.line", time=at, title=c.title, place=place)
+    def _update(
+        self,
+        conn: sqlite3.Connection,
+        old: things.Thing,
+        fields: Mapping[str, Any],
+        zone: ZoneInfo,
+        write: Mapping[str, Any],
+    ) -> int:
+        """Move and change a held thing to what an ``update`` says; 0 when it says what it has."""
+        moved = _moved(old, fields)
+        changed: dict[str, Any] = {
+            name: fields[name] for name in ("title", "place", "link", "weekly_until")
+            if name in fields and fields[name] != getattr(old, name)
+        }
+        if "skip_dates" in fields and tuple(fields["skip_dates"]) != old.skip_dates:
+            changed["skip_dates"] = list(fields["skip_dates"])
+        if fields.get("private") and not old.private:  # a mail can make it private, never public
+            changed["private"] = True
+        if moved and bool(moved["on_day"]) != bool(old.on_day):  # a day became an hour, or back
+            changed["rings"] = [
+                _ALL_DAY_RING if moved["on_day"] else f"-{self._settings.remind_before_min}m",
+            ]
+        # A last date before the first day reads back only once the series has moved.
+        change_first = (
+            not moved or "weekly_until" not in changed
+            or changed["weekly_until"] >= _first_day(old, zone)
+        )
+        if changed and change_first:
+            things.change(conn, old.thing_id, changed, **write)
+        if moved:
+            things.move(
+                conn, old.thing_id, start_at=moved["start_at"], end_at=moved["end_at"],
+                on_day=moved["on_day"], **write,
+            )
+        if changed and not change_first:
+            things.change(conn, old.thing_id, changed, **write)
+        return int(bool(moved or changed))
 
     # --- plumbing ------------------------------------------------------------------------
 
@@ -373,3 +344,60 @@ class CommitmentIntake:
 
     def _log(self) -> sqlite3.Connection:
         return open_runtime_event_log(self._event_log, deadline=time.monotonic() + _LOG_WAIT_S)
+
+
+def _start(one: things.Thing, zone: ZoneInfo) -> datetime | None:
+    """When a ``go`` thing starts: its ``start_at``, or the local midnight of its ``on_day``."""
+    if one.start_at:
+        return datetime.fromisoformat(one.start_at)
+    if one.on_day:
+        return datetime.combine(date.fromisoformat(one.on_day), clock(), zone)
+    return None
+
+
+def _start_at(one: things.Thing, zone: ZoneInfo) -> str:
+    """:func:`_start` as the model is shown it; empty for a thing with no start."""
+    start = _start(one, zone)
+    return "" if start is None else start.isoformat(timespec="seconds")
+
+
+def _first_day(one: things.Thing, zone: ZoneInfo) -> str:
+    """The date a ``go`` thing starts on, in his zone."""
+    return one.on_day or datetime.fromisoformat(one.start_at).astimezone(zone).date().isoformat()
+
+
+def _moved(old: things.Thing, fields: Mapping[str, Any]) -> dict[str, str] | None:
+    """The time an ``update`` gives, as ``things.move`` takes it; None when it is the time held.
+
+    A new start with no new end keeps the length the held one had.
+    """
+    if "start_at" not in fields and "end_at" not in fields:
+        return None
+    if fields.get("all_day", bool(old.on_day)):
+        moved = {
+            "start_at": "", "end_at": "",
+            "on_day": fields["start_at"][:10] if "start_at" in fields else old.on_day,
+        }
+    else:
+        start = fields.get("start_at") or old.start_at
+        end = fields.get("end_at") or ("" if "start_at" in fields else old.end_at)
+        if "start_at" in fields and not end and old.end_at and old.start_at:
+            span = datetime.fromisoformat(old.end_at) - datetime.fromisoformat(old.start_at)
+            end = (datetime.fromisoformat(start) + span).isoformat(timespec="seconds")
+        moved = {"start_at": start, "end_at": end, "on_day": ""}
+    if not (moved["start_at"] or moved["on_day"]):
+        return None
+    if _when(**moved) == _when(old.start_at, old.end_at, old.on_day):
+        return None
+    return moved
+
+
+def _when(
+    start_at: str, end_at: str, on_day: str,
+) -> tuple[datetime | None, datetime | None, str]:
+    """A time as instants, so two spellings of one moment are the same."""
+    return (
+        datetime.fromisoformat(start_at) if start_at else None,
+        datetime.fromisoformat(end_at) if end_at else None,
+        on_day,
+    )

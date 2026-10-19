@@ -41,11 +41,11 @@ from jarvis.runtime import RuntimeBootstrapError, _job_mail, audio_output
 from jarvis.runtime import terminal as terminal_runtime
 from jarvis.runtime.audio_output import TerminalOutput
 from jarvis.runtime.inherent_loop import _job_mail_deps, _say_job_line
-from jarvis.runtime.interview_reminders import InterviewSettings, outlook_write
+from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import JobMail, JobMailSettings, gmail_read, repair
 from jarvis.shared import lang
 from jarvis.shared.device_link import DeviceCallError
-from jarvis.state import job_ledger
+from jarvis.state import job_ledger, things
 from jarvis.state import reminders as reminder_state
 from jarvis.state.event_log import open_event_log, open_runtime_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -366,37 +366,15 @@ class _Gmail:
 
 
 class _Outlook:
-    """The connected ``microsoft`` server: keeps the events written to it, can fail on demand."""
+    """The connected ``microsoft`` server: keeps every call made to it (ADR 0299 makes none)."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
-        self.events: dict[str, dict[str, Any]] = {}
-        self.failures = 0
-        self.gone = False  # answer a delete as Graph does for an event already removed
 
     def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
         assert server == "microsoft"
         self.calls.append((tool, json.loads(json.dumps(args))))
-        if self.failures:
-            self.failures -= 1
-            msg = "microsoft: Graph is down"
-            raise ToolError(msg, code="mcp_server")
-        if tool == "create-calendar-event":
-            event_id = f"ev-{len(self.events) + len(self.calls)}"
-            self.events[event_id] = args["body"]
-            return {"text": json.dumps({"id": event_id, **args["body"]})}
-        if self.gone:
-            msg = "microsoft: 404 ErrorItemNotFound"
-            raise ToolError(msg, code="mcp_tool_error")
-        if tool == "update-calendar-event":
-            self.events[args["eventId"]] = args["body"]
-        else:
-            assert tool == "delete-calendar-event", f"only one event is written: {tool}"
-            del self.events[args["eventId"]]
         return {"text": "{}"}
-
-    def tools(self) -> list[str]:
-        return [tool for tool, _args in self.calls]
 
 
 class _Connections:
@@ -3241,24 +3219,26 @@ def test_the_loop_reads_old_bodies_after_the_repair_and_a_start_reads_at_most_tw
     assert h.sql("SELECT count(*) FROM job_decision WHERE stage = 'reread'") == [(20,)]
 
 
-# --- ADR 0186: reminders and an Outlook event for each interview time -----------------------
+# --- ADR 0186, 0299: one thing with two rings for each interview time -------------------------
 
 _VANCOUVER = ZoneInfo("America/Vancouver")
 _TUE_NOON = datetime(2026, 10, 6, 12, 0, tzinfo=_VANCOUVER)  # two days before the interview
 _INTERVIEW = "2026-10-08T13:00-07:00"
 _RANGE = "Thursday October 8th, 1:00pm - 2:30pm"
+_JOIN = "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_abc/0?context=x"
+_OLD_ACTION = "job-interview-reminders"
 
 
 def _reminding(
     tmp_path: Path, jev: _Jev, *, event_text: str = _RANGE, **settings: Any  # noqa: ANN401
 ) -> _Harness:
-    """A harness with interview reminders on, a fixed clock and Reliable Controls' invitation."""
+    """A harness with interview things on, a fixed clock and Reliable Controls' invitation."""
     h = _harness(
         tmp_path,
         jev,
         [],
         outlook=_Outlook(),
-        interview_reminders=InterviewSettings(evening_at=clock(20, 0), before_min=30, outlook=True),
+        interview_reminders=InterviewSettings(evening_at=clock(20, 0), before_min=30),
         **settings,
     )
     assert h.job.interviews is not None
@@ -3282,78 +3262,77 @@ def _rung(h: _Harness) -> list[reminder_state.Reminder]:
         return list(reminder_state.fold(conn).values())
 
 
+def _things(h: _Harness) -> list[things.Thing]:
+    """Every thing in the log, open or not, in the order it was made."""
+    with contextlib.closing(open_runtime_event_log(h.event_log)) as conn:
+        return list(things.fold(conn).values())
+
+
 def _utc(text: str) -> int:
     return int(datetime.fromisoformat(text).timestamp() * 1000)
 
 
-_EVENT = {
-    "subject": "面试：Reliable Controls — Firmware QA",  # noqa: RUF001 - Allen's own wording
-    "start": {"dateTime": "2026-10-08T13:00:00", "timeZone": "America/Vancouver"},
-    "end": {"dateTime": "2026-10-08T14:30:00", "timeZone": "America/Vancouver"},
-    "body": {
-        "contentType": "text",
-        "content": "平台：Teams\n"  # noqa: RUF001 - Allen's own wording
-        "链接：https://teams.microsoft.com/l/meetup-join/19%3Ameeting_abc/0?context=x\n"  # noqa: RUF001
-        "由 Jarvis 根据面试邮件添加。",
-    },
-    "isReminderOn": True,
-    "reminderMinutesBeforeStart": 30,
-    "isOnlineMeeting": False,
-}
-
-
-def test_an_interview_time_arms_two_reminders_and_one_outlook_event_once(
-    tmp_path: Path, jev: _Jev
-) -> None:
-    """The evening before at 20:00 and 30 minutes ahead, one event; a second pass does nothing."""
+def test_an_interview_time_makes_one_thing_with_two_rings_once(tmp_path: Path, jev: _Jev) -> None:
+    """One ``go`` thing; the evening before at 20:00 and 30 minutes ahead; no Outlook write."""
     h = _reminding(tmp_path, jev)
     assert h.outlook is not None
 
     h.job.remind()
 
+    (one,) = _things(h)
+    app_id = job_ledger.application_id("Reliable Controls")
+    title = "面试：Reliable Controls — Firmware QA"  # noqa: RUF001 - Allen's own wording
+    assert (one.title, one.kind, one.state, one.confirmed) == (title, "go", "open", True)
+    assert (one.source, one.source_ref) == ("mail", f"job:{app_id}")
+    assert (one.start_at, one.end_at) == ("2026-10-08T13:00:00-07:00", "2026-10-08T14:30:00-07:00")
+    assert (one.place, one.link, one.rings) == ("Teams", _JOIN, ("-1d@20:00", "-30m"))
+    assert [(s.what, s.by, s.ref, s.evidence) for s in one.history] == [
+        ("added", "mail", "m-rc", _RANGE),
+    ]
     evening, before = sorted(_rung(h), key=lambda r: r.due_at_ms)
+    hexed = one.thing_id.removeprefix(things.ID_PREFIX)[:12]
+    assert evening.reminder_id.startswith(f"{things.RING_PREFIX}{hexed}-")
     assert evening.due_at_ms == _utc("2026-10-07T20:00:00-07:00")
     assert before.due_at_ms == _utc("2026-10-08T12:30:00-07:00")
     assert evening.due_at_local == "2026-10-07T20:00:00-07:00"
-    assert evening.text == "明天下午1点整 Reliable Controls 面试，线上 Teams。"  # noqa: RUF001
-    assert before.text == "30 分钟后 Reliable Controls 面试，Teams 链接在 Jobs 页。"  # noqa: RUF001
-    assert h.outlook.calls == [("create-calendar-event", {"body": _EVENT})]
+    assert evening.text == f"10-08 13:00 {title} · Teams"
+    assert before.text == f"13:00 {title} · Teams"
     app = _apps(h)[("Reliable Controls", "Firmware QA")]
     assert app["reminders"] == {
-        "at": _INTERVIEW,
+        "at": "2026-10-08T13:00:00-07:00",
         "evening": True,
         "before": True,
         "evening_at": "20:00",
         "before_min": 30,
-        "outlook": True,
+        "outlook": False,
         "cancelled": False,
     }
 
     h.job.remind()
     h.job.remind()
+    assert len(_things(h)) == 1
     assert len(_rung(h)) == 2
-    assert all(one.pending for one in _rung(h))
-    assert h.outlook.tools() == ["create-calendar-event"]
+    assert all(r.pending for r in _rung(h))
+    assert len(_things(h)[0].history) == 1
+    assert h.outlook.calls == []  # the interview is not written into Outlook any more
+    assert job_ledger.interview_rows(h.db) == {}
 
 
-def test_an_interview_with_no_end_runs_an_hour_and_the_text_is_english_in_english(
+def test_an_interview_with_no_end_has_none_and_the_words_are_english_in_english(
     tmp_path: Path, jev: _Jev, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No range in the invitation: start plus 60 minutes; the words follow Allen's language."""
+    """No range in the invitation: no end (an hour in the ledger); the words follow his language."""
     monkeypatch.setattr(lang, "_current", "en")
     h = _reminding(tmp_path, jev, event_text="Thursday, October 8, 2026 1:00 PM (PDT)")
-    assert h.outlook is not None
 
     h.job.remind()
 
-    event = h.outlook.calls[0][1]["body"]
-    assert event["end"]["dateTime"] == "2026-10-08T14:00:00"
-    assert event["subject"] == "Interview: Reliable Controls — Firmware QA"
+    (one,) = _things(h)
+    assert (one.start_at, one.end_at) == ("2026-10-08T13:00:00-07:00", "")
+    assert one.title == "Interview: Reliable Controls — Firmware QA"
     evening, before = sorted(_rung(h), key=lambda r: r.due_at_ms)
-    assert evening.text == "Tomorrow at 1 PM: interview with Reliable Controls, online Teams."
-    assert before.text == (
-        "In 30 minutes: interview with Reliable Controls, the Teams link is on the Jobs page."
-    )
+    assert evening.text == "10-08 13:00 Interview: Reliable Controls — Firmware QA · Teams"
+    assert before.text == "13:00 Interview: Reliable Controls — Firmware QA · Teams"
 
 
 def test_event_minutes_reads_only_a_clear_range() -> None:
@@ -3369,12 +3348,9 @@ def test_event_minutes_reads_only_a_clear_range() -> None:
         assert triage.event_minutes(sentence) == minutes, sentence
 
 
-def test_a_changed_time_cancels_the_old_reminders_and_moves_the_event(
-    tmp_path: Path, jev: _Jev
-) -> None:
-    """New time: the two old reminders are cancelled, two new ones set, the one event updated."""
+def test_a_changed_time_moves_the_thing_and_its_rings(tmp_path: Path, jev: _Jev) -> None:
+    """New time: the one thing is moved, the two old rings are cancelled and two new ones set."""
     h = _reminding(tmp_path, jev)
-    assert h.outlook is not None
     h.job.remind()
     old = {one.reminder_id for one in _rung(h)}
 
@@ -3385,37 +3361,30 @@ def test_a_changed_time_cancels_the_old_reminders_and_moves_the_event(
     )
     h.job.remind()
 
+    (one,) = _things(h)
+    assert (one.start_at, one.end_at) == ("2026-10-09T10:00:00-07:00", "2026-10-09T11:00:00-07:00")
+    assert [(m.start_at, m.by) for m in one.moves] == [("2026-10-08T13:00:00-07:00", "mail")]
     rung = _rung(h)
-    assert {one.reminder_id for one in rung if one.cancelled} == old
-    fresh = sorted((one for one in rung if one.pending), key=lambda r: r.due_at_ms)
-    assert [one.due_at_ms for one in fresh] == [
+    assert {r.reminder_id for r in rung if r.cancelled} == old
+    fresh = sorted((r for r in rung if r.pending), key=lambda r: r.due_at_ms)
+    assert [r.due_at_ms for r in fresh] == [
         _utc("2026-10-08T20:00:00-07:00"),
         _utc("2026-10-09T09:30:00-07:00"),
     ]
-    assert h.outlook.tools() == ["create-calendar-event", "update-calendar-event"]
-    args = h.outlook.calls[1][1]
-    assert args["eventId"] == next(iter(h.outlook.events))
-    assert args["body"]["start"] == {
-        "dateTime": "2026-10-09T10:00:00",
-        "timeZone": "America/Vancouver",
-    }
-    assert args["body"]["end"]["dateTime"] == "2026-10-09T11:00:00"
-    assert len(h.outlook.events) == 1
     h.job.remind()
     assert len(_rung(h)) == 4
-    assert len(h.outlook.calls) == 2
+    assert len(_things(h)) == 1
+    assert [s.what for s in _things(h)[0].history] == ["added", "moved"]
 
 
-def test_a_rejected_or_hidden_application_cancels_its_reminders_and_deletes_the_event(
-    tmp_path: Path, jev: _Jev
-) -> None:
-    """A rejection (or hiding it) takes everything back; a time already past is left alone."""
+def test_a_rejected_or_hidden_application_cancels_its_thing(tmp_path: Path, jev: _Jev) -> None:
+    """A rejection (or hiding it) takes the thing back; a time already past is left alone."""
     h = _reminding(tmp_path, jev)
     assert h.outlook is not None
     _stored(h, "b-1", "Beta", "Dev", "interview", timedelta(days=3), event_at=_INTERVIEW)
     h.job.remind()
+    assert len(_things(h)) == 2
     assert len(_rung(h)) == 4
-    assert len(h.outlook.events) == 2
     beta = job_ledger.application_id("Beta")
 
     _stored(h, "m-no", "Reliable Controls", "", "rejection", timedelta(days=1))
@@ -3423,124 +3392,142 @@ def test_a_rejected_or_hidden_application_cancels_its_reminders_and_deletes_the_
     assert hide.status_code == 200
     h.job.remind()
 
+    assert [(one.state, one.history[-1].by, one.history[-1].why) for one in _things(h)] == [
+        ("cancelled", "mail", "the interview is no longer on"),
+    ] * 2
     assert [one.cancelled for one in _rung(h)] == [True] * 4
-    assert h.outlook.tools() == ["create-calendar-event"] * 2 + ["delete-calendar-event"] * 2
-    assert h.outlook.events == {}
-    assert job_ledger.interview_rows(h.db) == {}
     h.job.remind()
-    assert len(h.outlook.calls) == 4
+    assert len(_rung(h)) == 4
+    assert h.outlook.calls == []
 
-    # An interview whose time has passed is not undone: its event stays in the calendar.
+    # An interview whose time has passed is not undone.
     past = _reminding(tmp_path / "past", jev)
-    assert past.outlook is not None
     past.job.remind()
     past.job.now = lambda: datetime(2026, 10, 9, 9, 0, tzinfo=UTC)
     past.job.remind()
-    assert past.outlook.tools() == ["create-calendar-event"]
-    assert job_ledger.interview_rows(past.db) == {}
+    (done,) = _things(past)
+    assert (done.state, len(done.history)) == ("open", 1)
 
 
-def test_a_slot_already_past_is_skipped_not_set_late(tmp_path: Path, jev: _Jev) -> None:
-    """Mail read after 20:00 the evening before: only the 30-minute reminder is set."""
+def test_a_ring_already_past_is_skipped_not_set_late(tmp_path: Path, jev: _Jev) -> None:
+    """Mail read after 20:00 the evening before: only the 30-minute ring is set."""
     h = _reminding(tmp_path, jev)
-    assert h.outlook is not None
     h.job.now = lambda: datetime(2026, 10, 7, 21, 0, tzinfo=_VANCOUVER).astimezone(UTC)
 
     h.job.remind()
 
     assert [one.due_at_ms for one in _rung(h)] == [_utc("2026-10-08T12:30:00-07:00")]
-    assert h.outlook.tools() == ["create-calendar-event"]
     reminders = _apps(h)[("Reliable Controls", "Firmware QA")]["reminders"]
     assert (reminders["evening"], reminders["before"]) == (False, True)
     h.job.remind()
     assert len(_rung(h)) == 1
 
     h.job.now = lambda: datetime(2026, 10, 8, 12, 45, tzinfo=_VANCOUVER).astimezone(UTC)
-    h.job.remind()  # the 30 minute mark has gone too: nothing to set, the event stays
+    h.job.remind()  # the 30 minute mark has gone too: nothing to set, the thing stays
     assert len(_rung(h)) == 1
+    assert len(_things(h)) == 1
 
 
-def test_the_cancel_route_undoes_both_and_that_time_is_not_armed_again(
+def test_the_cancel_route_closes_the_thing_and_that_time_is_not_armed_again(
     tmp_path: Path, jev: _Jev
 ) -> None:
-    """Cancel: reminders cancelled, event deleted, the card says so; a new time arms again."""
+    """Cancel: the thing and its rings cancelled, the card says so; a new time is a new thing."""
     h = _reminding(tmp_path, jev)
-    assert h.outlook is not None
     h.job.remind()
     app_id = job_ledger.application_id("Reliable Controls")
     url = f"/inherent/jobs/applications/{app_id}/cancel-reminders"
 
     assert h.client.post(url).status_code == 200
 
-    assert all(one.cancelled for one in _rung(h))
-    assert h.outlook.tools() == ["create-calendar-event", "delete-calendar-event"]
-    assert h.outlook.events == {}
+    (one,) = _things(h)
+    assert (one.state, one.history[-1].by, one.history[-1].why) == (
+        "cancelled", "him", "cancelled on the Jobs card",
+    )
+    assert all(r.cancelled for r in _rung(h))
     reminders = _apps(h)[("Reliable Controls", "Firmware QA")]["reminders"]
     assert (reminders["cancelled"], reminders["outlook"]) == (True, False)
     h.job.remind()
+    assert len(_things(h)) == 1
     assert len(_rung(h)) == 2
-    assert len(h.outlook.calls) == 2
+    assert h.client.post(url).status_code == 200  # again: nothing more to undo
 
     h.sql("UPDATE job_mail SET event_at = ?", "2026-10-09T10:00-07:00")
     h.job.remind()
-    assert len([one for one in _rung(h) if one.pending]) == 2
-    assert h.outlook.tools()[2:] == ["create-calendar-event"]
+    assert [one.state for one in _things(h)] == ["cancelled", "open"]
+    assert len([r for r in _rung(h) if r.pending]) == 2
     assert _apps(h)[("Reliable Controls", "Firmware QA")]["reminders"]["cancelled"] is False
 
     assert h.client.post("/inherent/jobs/applications/nothere/cancel-reminders").status_code == 404
 
 
-def test_the_outlook_writer_refuses_any_other_tool_and_any_event_it_did_not_create() -> None:
-    """Only the three event writes go through, and only on an id this module stored."""
-    outlook = _Outlook()
-    for tool in ("send-mail", "delete-calendar", "list-calendar-events", "get-calendar-view"):
-        with pytest.raises(ValueError, match="may only write one Outlook event"):
-            outlook_write(outlook, tool, {}, set())  # type: ignore[arg-type]
-    for tool in ("update-calendar-event", "delete-calendar-event"):
-        with pytest.raises(ValueError, match="not an event Jarvis created"):
-            outlook_write(outlook, tool, {"eventId": "someone-elses"}, {"mine"})  # type: ignore[arg-type]
-    assert outlook.calls == []
+def _old_interview(h: _Harness, *, cancelled: bool = False) -> tuple[str, str]:
+    """What ADR 0186 left for Reliable Controls: two pending reminders, an Outlook event, a row."""
+    with contextlib.closing(open_runtime_event_log(h.event_log)) as conn:
+        evening, before = (
+            reminder_state.schedule(conn, due=due, text=text, action_id=_OLD_ACTION)
+            for due, text in (
+                (datetime(2026, 10, 7, 20, 0, tzinfo=_VANCOUVER), "old evening"),
+                (datetime(2026, 10, 8, 12, 30, tzinfo=_VANCOUVER), "old before"),
+            )
+        )
+    h.sql(
+        "INSERT INTO job_interview_reminder"
+        " (app_id, event_at, evening_id, before_id, outlook_id, outlook_sig, cancelled)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        job_ledger.application_id("Reliable Controls"), _INTERVIEW, evening, before, "AAMk-old",
+        "sig", int(cancelled),
+    )
+    return evening, before
 
 
-def test_an_outlook_failure_keeps_the_reminders_and_is_retried_next_pass(
-    tmp_path: Path, jev: _Jev
-) -> None:
-    """Graph down: the reminders stand, nothing raises; the next pass writes the event once."""
+def test_the_first_pass_settles_what_the_old_reminders_armed(tmp_path: Path, jev: _Jev) -> None:
+    """The old reminders are cancelled, the Outlook event goes on the thing, the row goes."""
     h = _reminding(tmp_path, jev)
     assert h.outlook is not None
-    h.outlook.failures = 1
+    evening, before = _old_interview(h)
 
     h.job.remind()
 
-    assert len(_rung(h)) == 2
-    assert h.outlook.events == {}
-    assert _apps(h)[("Reliable Controls", "Firmware QA")]["reminders"]["outlook"] is False
+    known = {r.reminder_id: r for r in _rung(h)}
+    assert known[evening].cancelled
+    assert known[before].cancelled
+    pending = [r for r in known.values() if r.pending]
+    assert len(pending) == 2
+    assert all(r.reminder_id.startswith(things.RING_PREFIX) for r in pending)
+    (one,) = _things(h)
+    assert (one.state, one.outlook_id) == ("open", "AAMk-old")
+    assert [s.what for s in one.history] == ["added", "changed"]
+    assert job_ledger.interview_rows(h.db) == {}
+    reminders = _apps(h)[("Reliable Controls", "Firmware QA")]["reminders"]
+    assert (reminders["outlook"], reminders["cancelled"]) == (True, False)
     h.job.remind()
+    assert len(_rung(h)) == 4
+    assert len(_things(h)[0].history) == 2
+    assert h.outlook.calls == []
+
+
+def test_a_time_he_cancelled_before_the_ledger_stays_cancelled(tmp_path: Path, jev: _Jev) -> None:
+    """The Jobs-card cancel of ADR 0186 is carried over; that time is not made again."""
+    h = _reminding(tmp_path, jev)
+    _old_interview(h, cancelled=True)
+
     h.job.remind()
-    assert len(_rung(h)) == 2
-    # The failed try, then the one that held.
-    assert h.outlook.tools() == ["create-calendar-event"] * 2
-    assert len(h.outlook.events) == 1
-    assert _apps(h)[("Reliable Controls", "Firmware QA")]["reminders"]["outlook"] is True
 
-    # An event deleted in Outlook by hand is gone for good: cancelling still finishes.
-    h.outlook.gone = True
-    app_id = job_ledger.application_id("Reliable Controls")
-    cancel = h.client.post(f"/inherent/jobs/applications/{app_id}/cancel-reminders")
-    assert cancel.status_code == 200
-    assert job_ledger.interview_rows(h.db)[app_id]["outlook_id"] is None
-
-    # No Microsoft connection at all: the reminders are still set.
-    bare = _reminding(tmp_path / "bare", jev)
-    bare.job._connections = _Connections(None)  # type: ignore[assignment]  # noqa: SLF001
-    bare.job.remind()
-    assert len(_rung(bare)) == 2
+    (one,) = _things(h)
+    assert (one.state, one.history[-1].by, one.history[-1].why) == (
+        "cancelled", "him", "cancelled on the Jobs card",
+    )
+    assert not [r for r in _rung(h) if r.pending]
+    reminders = _apps(h)[("Reliable Controls", "Firmware QA")]["reminders"]
+    assert (reminders["cancelled"], reminders["outlook"]) == (True, True)
+    h.job.remind()
+    assert len(_things(h)) == 1
 
 
 def test_the_loop_arms_at_start_and_after_each_cycle_without_gmail(
     tmp_path: Path, jev: _Jev, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The reminders pass does not wait on Gmail or a key: the run loop calls it by itself."""
+    """The interview pass does not wait on Gmail or a key: the run loop calls it by itself."""
     monkeypatch.delenv("OPENROUTER_API_KEY")
     h = _reminding(tmp_path, jev, poll_s=0.05)
 
@@ -3574,7 +3561,6 @@ def test_the_interview_reminders_block_is_validated_like_the_other_job_mail_keys
         "enabled": True,
         "evening_at": "20:00",
         "before_min": 30,
-        "outlook": True,
     }
     config_path, db = tmp_path / "jarvis.yaml", tmp_path / "memory.db"
     connections: Any = _Connections(None)
@@ -3595,7 +3581,6 @@ def test_the_interview_reminders_block_is_validated_like_the_other_job_mail_keys
         {**block["interview_reminders"], "evening_at": 20},
         {**block["interview_reminders"], "before_min": 0},
         {**block["interview_reminders"], "before_min": 1.5},
-        {**block["interview_reminders"], "outlook": "yes"},
     ):
         bad = {"job_mail": {**on["job_mail"], "interview_reminders": value}}
         with pytest.raises(RuntimeBootstrapError, match=r"job_mail\.interview_reminders"):

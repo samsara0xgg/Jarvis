@@ -1,38 +1,45 @@
-"""ADR 0296 — the day timeline's three buttons are routes a paired device can press.
+"""ADR 0296, 0299 — the day timeline's three buttons are routes a paired device can press.
 
 Through the real FastAPI app, guarded as the daemon guards it (local key on loopback, a paired
 device's token from any other peer), over a real event log and memory.db in ``tmp_path``:
 
 - ``POST /inherent/day/highlight``: his mark, written as the ``mark_highlight`` tool writes it; his
   marks win over hers; the cap of five is a 409 that drops nothing; idempotent;
-- ``POST /inherent/commitments/{hex}``: ``keep(confirm=)`` and ``keep(cancel=)``, same events;
-- ``POST /inherent/memory/places``: ``places.save``, as ``save_place`` writes it, origin ``page``.
+- ``POST /inherent/commitments/{hex}``: confirms ``thing-<hex>`` in the ledger of his things, or
+  closes it as cancelled, "not mine", both by him;
+- ``POST /inherent/memory/places``: ``places.save``, as ``save_place`` writes it, origin ``page``;
+- ``POST /inherent/today/todo`` (the desktop checkbox): To Do is written, and the thing mirrored
+  for the task is done or open again, by him.
 """
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import sqlite3
 from contextlib import closing
+from datetime import UTC
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.runtime.inherent_loop import _act_commitment, _set_highlight
+from jarvis.runtime.inherent_loop import _act_commitment, _set_highlight, _set_todo
 from jarvis.runtime.memory_page import MemoryPage
+from jarvis.runtime.things_mirror import ThingsMirror
 from jarvis.shared import lang
-from jarvis.state import commitments, places
+from jarvis.state import places, things
+from jarvis.state import reminders as reminder_state
 from jarvis.state.device_tokens import device_token_matches, pair_device
-from jarvis.state.event_log import iter_events_of_types
 from jarvis.state.memory_db import append_day_prose, open_memory_db
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from tests.integration.test_commitments import NOW as COMMITMENT_NOW
+from tests.integration.test_commitments import ZONE as COMMITMENT_ZONE
 from tests.integration.test_commitments import _at as commitment_at
-from tests.integration.test_commitments import _Keep, _Log, _record
+from tests.integration.test_commitments import _Log
 from tests.integration.test_day_highlights import (
     DAY_KEY,
     Dispatcher,
@@ -44,6 +51,10 @@ from tests.integration.test_day_highlights import (
     _visit,
     _work,
 )
+from tests.integration.test_home_routes import LIST as TODO_LIST
+from tests.integration.test_home_routes import _Connections as HomeConnections
+from tests.integration.test_home_routes import _home
+from tests.integration.test_home_routes import _Microsoft as HomeMicrosoft
 from tests.integration.test_ledger import _at, _world
 from tests.integration.test_terminal_voice import REMOTE
 
@@ -300,11 +311,22 @@ def test_a_brain_without_a_memory_store_has_no_highlight_route(tmp_path: Path) -
 
 
 class Appointments(NamedTuple):
-    """A runtime root with a mail-made appointment and the route wired to its log."""
+    """A runtime root with a mail-made thing and the route wired to its log."""
 
     log: _Log
     peers: Peers
     hex: str
+
+
+def _mail_made(day: int, hour: int, thing_id: str, **extra: Any) -> things.Thing:  # noqa: ANN401 - fields
+    """An unconfirmed thing a mail made, ringing an hour ahead."""
+    fields: dict[str, Any] = {
+        "thing_id": thing_id, "title": "Pottery class", "kind": "go",
+        "start_at": commitment_at(10, day, hour).isoformat(timespec="seconds"),
+        "rings": ("-60m",), "confirmed": False, "source": "mail", "source_ref": "m2",
+        "sender": "studio.example",
+    }
+    return things.Thing(**(fields | extra))
 
 
 @pytest.fixture
@@ -313,82 +335,82 @@ def appointments(tmp_path: Path) -> Iterator[Appointments]:
     before = lang.language()
     lang.set_language("en")
     log = _Log(tmp_path)
-    one = _record(commitment_at(10, 20, 19), commitment_id="commitment-" + "ab" * 16)
-    commitments.note(log.conn, one)
-    peers = _peers(tmp_path, commitment_act=functools.partial(_act_commitment, log.paths.event_log))
+    things.add(
+        log.conn, _mail_made(20, 19, "thing-" + "ab" * 16), by="mail", evidence="Tuesdays 7 PM",
+        ref="m2", zone=COMMITMENT_ZONE, now=COMMITMENT_NOW,
+    )
+    peers = _peers(tmp_path, commitment_act=functools.partial(
+        _act_commitment, log.paths.event_log, COMMITMENT_ZONE,
+    ))
     yield Appointments(log, peers, "ab" * 16)
     log.conn.close()
     lang.set_language(before)
 
 
 def _events(log: _Log) -> list[tuple[str, dict[str, Any], str]]:
-    """Every commitment event as (type, payload, actor)."""
+    """Every thing event as (type, payload, actor)."""
     with closing(sqlite3.connect(log.paths.event_log)) as conn:
         found = conn.execute(
-            "SELECT type, payload_json, actor FROM events WHERE type LIKE 'commitment.%' "
-            "ORDER BY id",
+            "SELECT type, payload_json, actor FROM events WHERE type LIKE 'thing.%' ORDER BY id",
         ).fetchall()
     return [(t, json.loads(p), a) for t, p, a in found]
 
 
-def test_confirm_writes_the_noted_the_keep_tool_writes_and_a_second_press_is_a_409(
-    appointments: Appointments, tmp_path_factory: pytest.TempPathFactory,
+def test_confirm_writes_him_as_the_one_who_confirmed_and_a_second_press_is_a_409(
+    appointments: Appointments,
 ) -> None:
-    """Same ``commitment.noted`` payload as ``keep(confirm=)``; the actor is the one who pressed."""
+    """``thing.changed`` of ``confirmed``, by him; the actor is the one who pressed."""
     log, peers, hex_id = appointments
     reply = peers.local.post(f"/inherent/commitments/{hex_id}", json={"action": "confirm"})
     assert (reply.status_code, reply.json()) == (200, {"ok": True})
-    assert commitments.fold(log.conn)[f"commitment-{hex_id}"].confirmed is True
+    assert things.get(log.conn, f"thing-{hex_id}").confirmed is True
     events = _events(log)
-    assert [e[0] for e in events] == ["commitment.noted", "commitment.noted"]
-    assert events[-1][2] == "user"
+    assert [e[0] for e in events] == ["thing.added", "thing.changed"]
+    changed, actor = events[-1][1], events[-1][2]
+    assert (changed["fields"], changed["by"], changed["evidence"]) == (
+        {"confirmed": True}, "him", "confirmed on the phone",
+    )
+    assert actor == "user"
 
     again = peers.local.post(f"/inherent/commitments/{hex_id}", json={"action": "confirm"})
     assert again.status_code == 409
     assert len(_events(log)) == 2
 
-    other = _Log(tmp_path_factory.mktemp("tool"))
-    commitments.note(other.conn, _record(
-        commitment_at(10, 20, 19), commitment_id="commitment-" + "ab" * 16,
-    ))
-    _Keep(other).call("keep", confirm="commitment-" + "ab" * 16)
-    assert [e[:2] for e in _events(other)] == [e[:2] for e in events]
-    other.conn.close()
 
-
-def test_cancel_writes_the_drop_the_keep_tool_writes_and_it_leaves_the_day(
-    appointments: Appointments, tmp_path_factory: pytest.TempPathFactory,
+def test_cancel_closes_the_thing_as_not_his_and_it_leaves_the_day(
+    appointments: Appointments,
 ) -> None:
-    """``commitment.dropped`` with ``he_dropped``; a cancelled one is not found again."""
+    """``thing.closed`` as cancelled, "not mine", by him; its ring goes; a cancelled one is 404."""
     log, peers, hex_id = appointments
+    assert len(reminder_state.pending(log.conn)) == 1  # the ring an hour before
     reply = peers.paired.post(f"/inherent/commitments/{hex_id}", json={"action": "cancel"})
     assert (reply.status_code, reply.json()) == (200, {"ok": True})
-    assert commitments.live(log.conn) == []
-    dropped = {"commitment_id": f"commitment-{hex_id}", "why": "he_dropped"}
-    assert _events(log)[-1] == ("commitment.dropped", dropped, "user")
+    assert things.open_things(log.conn) == []
+    closed = _events(log)[-1]
+    assert closed[0] == "thing.closed"
+    assert (closed[1]["state"], closed[1]["why"], closed[1]["by"]) == (
+        "cancelled", "not mine", "him",
+    )
+    assert closed[2] == "user"
+    assert reminder_state.pending(log.conn) == []
     for action in ("cancel", "confirm"):
         gone = peers.local.post(f"/inherent/commitments/{hex_id}", json={"action": action})
         assert gone.status_code == 404
     assert len(_events(log)) == 2
 
-    other = _Log(tmp_path_factory.mktemp("tool"))
-    commitments.note(other.conn, _record(
-        commitment_at(10, 20, 19), commitment_id="commitment-" + "ab" * 16,
-    ))
-    _Keep(other).call("keep", cancel="commitment-" + "ab" * 16)
-    assert _events(other)[-1][:2] == _events(log)[-1][:2]
-    other.conn.close()
 
-
-def test_a_cancel_of_a_confirmed_appointment_and_a_confirm_of_a_confirmed_one(
+def test_a_cancel_of_a_confirmed_thing_and_a_confirm_of_a_confirmed_one(
     appointments: Appointments,
 ) -> None:
     """Cancel works whatever its state; confirm of one he made himself is a 409."""
     log, peers, _hex = appointments
-    said = _record(commitment_at(10, 21, 10), source="said", confirmed=True)
-    commitments.note(log.conn, said)
-    hex_said = said.commitment_id.removeprefix("commitment-")
-    path = f"/inherent/commitments/{hex_said}"
+    said = _mail_made(
+        21, 10, things.new_id(), source="said", source_ref="", sender="", confirmed=True,
+    )
+    things.add(
+        log.conn, said, by="her", evidence="he said so", zone=COMMITMENT_ZONE, now=COMMITMENT_NOW,
+    )
+    path = f"/inherent/commitments/{said.thing_id.removeprefix(things.ID_PREFIX)}"
     assert peers.local.post(path, json={"action": "confirm"}).status_code == 409
     assert peers.local.post(path, json={"action": "cancel"}).status_code == 200
 
@@ -405,14 +427,13 @@ def test_a_cancel_of_a_confirmed_appointment_and_a_confirm_of_a_confirmed_one(
         ("ab" * 16, {"action": ["confirm"]}, 422),
     ],
 )
-def test_an_unknown_commitment_is_a_404_and_an_action_that_is_not_one_is_a_422(
+def test_an_unknown_thing_is_a_404_and_an_action_that_is_not_one_is_a_422(
     appointments: Appointments, hex_id: str, body: dict[str, Any], status: int,
 ) -> None:
     """Nothing is written for a refusal."""
     log, peers, _hex = appointments
     assert peers.local.post(f"/inherent/commitments/{hex_id}", json=body).status_code == status
-    kept = iter_events_of_types(log.conn, ("commitment.noted", "commitment.dropped"))
-    assert len(list(kept)) == 1
+    assert [e[0] for e in _events(log)] == ["thing.added"]
 
 
 def test_the_commitment_route_is_for_the_local_key_and_paired_devices_alone(
@@ -428,15 +449,117 @@ def test_the_commitment_route_is_for_the_local_key_and_paired_devices_alone(
     )
 
 
-def test_the_keep_tool_still_says_what_it_did_with_the_shared_confirm(
-    appointments: Appointments,
+# --- the desktop checkbox --------------------------------------------------------------------
+
+
+class Checkbox(NamedTuple):
+    """The real Home over a fake Microsoft, the mirror over a real log, and the route."""
+
+    log: _Log
+    peers: Peers
+    microsoft: HomeMicrosoft
+    mirror: ThingsMirror
+    todo: str  # the id the desktop sends: ``<list id>|<task id>``
+
+
+def _todo_peers(root: Path, microsoft: HomeMicrosoft, mirror: ThingsMirror | None) -> Peers:
+    """The checkbox route as the runtime wires it: ``Home`` writes To Do, the mirror follows."""
+    home = _home(microsoft)
+    return _peers(
+        root, today_read=functools.partial(asyncio.to_thread, home.today),
+        todo_set=functools.partial(_set_todo, home, mirror),
+    )
+
+
+@pytest.fixture
+def checkbox(tmp_path: Path) -> Iterator[Checkbox]:
+    """To Do's tasks already mirrored into the ledger, the route wired as the runtime wires it."""
+    before = lang.language()
+    lang.set_language("en")
+    log = _Log(tmp_path)
+    microsoft = HomeMicrosoft()
+    mirror = ThingsMirror(HomeConnections(microsoft), log.paths.event_log, COMMITMENT_ZONE)  # type: ignore[arg-type]
+    mirror.now = lambda: COMMITMENT_NOW.astimezone(UTC)
+    assert mirror.sync() > 0
+    microsoft.calls.clear()
+    peers = _todo_peers(tmp_path, microsoft, mirror)
+    yield Checkbox(log, peers, microsoft, mirror, f"{TODO_LIST['id']}|AQMkADAw-repack=")
+    log.conn.close()
+    lang.set_language(before)
+
+
+def _tick(box: Checkbox, *, done: bool, todo: str = "") -> int:
+    body = {"id": todo or box.todo, "done": done}
+    return box.peers.local.post("/inherent/today/todo", json=body).status_code
+
+
+def test_the_checkbox_ticks_to_do_and_closes_the_thing_and_unticking_reopens_it(
+    checkbox: Checkbox,
 ) -> None:
-    """``keep(confirm=)`` is the same call: confirmed once, then 'already confirmed'."""
-    log, _peers, hex_id = appointments
-    keep = _Keep(log)
-    assert "Confirmed" in keep.call("keep", confirm=f"commitment-{hex_id}")["summary"]
-    assert "Already confirmed" in keep.call("keep", confirm=f"commitment-{hex_id}")["summary"]
-    assert COMMITMENT_NOW.year == 2026  # the tool's clock is the test module's
+    """To Do gets its write as before; the mirrored thing is done, then open, by him."""
+    box = checkbox
+    assert _tick(box, done=True) == 200
+    assert [(tool, args["body"]) for tool, args in box.microsoft.calls] == [
+        ("update-todo-task", {"status": "completed"}),
+    ]
+    one = things.by_source(box.log.conn, "todo", box.todo)
+    assert one is not None
+    last = one.history[-1]
+    assert (one.state, last.what, last.by, last.evidence) == (
+        "done", "done", "him", "ticked on the desktop",
+    )
+    assert _events(box.log)[-1][2] == "user"
+    assert _tick(box, done=True) == 200  # ticked again: To Do is told, the ledger has it already
+    assert len(things.get(box.log.conn, one.thing_id).history) == len(one.history)
+
+    assert _tick(box, done=False) == 200
+    one = things.get(box.log.conn, one.thing_id)
+    assert (one.state, one.history[-1].what, one.history[-1].by) == ("open", "reopened", "him")
+    assert box.microsoft.calls[-1][1]["body"] == {"status": "notStarted"}
+
+
+def test_a_task_the_ledger_does_not_know_is_still_written_to_do_and_a_bad_id_writes_nothing(
+    checkbox: Checkbox,
+) -> None:
+    """No thing for the task: only To Do is written. A malformed id is a 400 and writes nothing."""
+    box = checkbox
+    before = len(_events(box.log))
+    assert _tick(box, done=True, todo=f"{TODO_LIST['id']}|AQMkADAw-new=") == 200
+    assert len(box.microsoft.calls) == 1
+    assert len(_events(box.log)) == before
+
+    assert _tick(box, done=True, todo="no-bar") == 400
+    assert len(box.microsoft.calls) == 1
+    assert len(_events(box.log)) == before
+
+
+def test_a_ledger_that_cannot_be_written_does_not_fail_the_click(
+    checkbox: Checkbox, tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """To Do holds the click; the next mirror pass makes the ledger agree with it."""
+    box = checkbox
+    root = tmp_path_factory.mktemp("lost")
+    lost = ThingsMirror(
+        HomeConnections(box.microsoft), root / "missing" / "events.db", COMMITMENT_ZONE,  # type: ignore[arg-type]
+    )
+    peers = _todo_peers(root, box.microsoft, lost)
+    body = {"id": box.todo, "done": True}
+    assert peers.local.post("/inherent/today/todo", json=body).status_code == 200
+    assert [tool for tool, _ in box.microsoft.calls] == ["update-todo-task"]
+    one = things.by_source(box.log.conn, "todo", box.todo)
+    assert one is not None
+    assert one.state == "open"
+
+
+def test_a_brain_with_no_mirror_still_ticks_to_do(
+    checkbox: Checkbox, tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """The mirror is optional: with none, the route is To Do's alone."""
+    box = checkbox
+    peers = _todo_peers(tmp_path_factory.mktemp("bare"), box.microsoft, None)
+    body = {"id": box.todo, "done": True}
+    assert peers.local.post("/inherent/today/todo", json=body).status_code == 200
+    assert [tool for tool, _ in box.microsoft.calls] == ["update-todo-task"]
 
 
 # --- places ----------------------------------------------------------------------------------

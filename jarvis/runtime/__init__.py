@@ -231,6 +231,7 @@ from jarvis.runtime.settings_owner import SettingsDrift, check_own, page_keys
 from jarvis.runtime.setup import write_setting
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.things_ledger import ThingsLedger
+from jarvis.runtime.things_mirror import ThingsMirror
 from jarvis.runtime.weatherkit import WeatherKit
 from jarvis.runtime.whereabouts import Whereabouts
 from jarvis.runtime.work_state import WorkStateService, build_analyst
@@ -757,6 +758,8 @@ class JarvisRuntime:
     commitments: CommitmentIntake | None = None
     # ADR 0299: the ledger of his things: its carry-in and its rings pass. None = hand-assembled.
     things: ThingsLedger | None = None
+    # ADR 0299: Outlook and To Do read into the ledger. None = hand-assembled.
+    things_mirror: ThingsMirror | None = None
     # ADR 0295, 0303: the poller of the nightly letter on his Claude chats (Gmail part off unless
     # enabled) and reader of the Mac's day report on his Claude Code work. None = hand-assembled.
     claude_daily: ClaudeDailyIntake | None = None
@@ -2040,10 +2043,7 @@ def _interview_reminders(block: object, config_path: Path) -> InterviewSettings 
     if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 1440:  # noqa: PLR2004 - a day
         msg = f"{where}.before_min must be a whole number of minutes from 1 to 1440"
         raise RuntimeBootstrapError(msg)
-    if not isinstance(block.get("outlook"), bool):
-        msg = f"{where}.outlook must be true or false"
-        raise RuntimeBootstrapError(msg)
-    return InterviewSettings(evening, minutes, block["outlook"])
+    return InterviewSettings(evening, minutes)
 
 
 def _register_job_ledger(registry: ToolRegistry, job_mail: JobMail | None) -> None:
@@ -3417,6 +3417,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         full_config, config_path, plugin_connections, memory.db_path, paths.root,
     )
     things_ledger = _things_ledger(full_config, paths.event_log, memory.db_path, local_zone)
+    things_mirror = ThingsMirror(plugin_connections, paths.event_log, local_zone)
     reminders = Reminders(
         paths.event_log,
         moment=moment,
@@ -3560,6 +3561,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         commitments=commitments,
         claude_daily=claude_daily,
         things=things_ledger,
+        things_mirror=things_mirror,
         moment=moment,
         push=Push.from_config(full_config, paths.root, paths.event_log),
         whereabouts=Whereabouts(

@@ -106,6 +106,7 @@ if TYPE_CHECKING:
     from jarvis.runtime.rides import Rides
     from jarvis.runtime.settings import Settings
     from jarvis.runtime.settings_owner import SettingsDrift
+    from jarvis.runtime.things_mirror import ThingsMirror
     from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.realtime import PresentationIntent, Wave1FeatureFlags, Wave4ResponseFlags
     from jarvis.state.attachments import AttachmentRef
@@ -219,13 +220,13 @@ from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.shared.steps import EVENT_TYPES as STEP_EVENT_TYPES
 from jarvis.shared.steps import StepFold
 from jarvis.state import (
-    commitments,
     embedding,
     meaning,
     picture_notes,
     places,
     quiet_mode,
     reactions,
+    things,
 )
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_highlights import day_notes
@@ -5623,9 +5624,17 @@ def _start_meaning_index(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
     ]
 
 
-async def _set_todo(home: Home, todo_id: str, done: bool) -> None:  # noqa: FBT001 — the route's body.
-    """``POST /inherent/today/todo``: one To Do write, off the loop thread."""
+async def _set_todo(
+    home: Home, mirror: ThingsMirror | None, todo_id: str, done: bool,  # noqa: FBT001 — the route's body.
+) -> None:
+    """``POST /inherent/today/todo``: one To Do write, and the ledger's thing for it (ADR 0299).
+
+    Both are off the loop thread. To Do is written first and the route answers by that write: the
+    ledger follows the click if it can, and the mirror's next pass makes it agree if it cannot.
+    """
     await asyncio.to_thread(functools.partial(home.set_todo, todo_id, done=done))
+    if mirror is not None:
+        await asyncio.to_thread(functools.partial(mirror.tick, todo_id, done=done))
 
 
 async def _archive_mail(home: Home, ids: list[str], archive: bool) -> None:  # noqa: FBT001 — the route's body.
@@ -5763,27 +5772,39 @@ def _day_sources(runtime: JarvisRuntime, memory_db: Path) -> DaySources:
     )
 
 
-def _commit_act(event_log_path: Path, commitment_hex: str, action: str) -> bool:
-    """He confirms or cancels a commitment: what ``keep(confirm=)`` / ``keep(cancel=)`` writes.
+def _commit_act(event_log_path: Path, zone: tzinfo, commitment_hex: str, action: str) -> bool:
+    """He confirms or cancels a thing the day line shows: ``thing-<hex>`` in the ledger.
 
-    Whether anything was written; ``LookupError`` when no live commitment has the id. The events
-    are the tool's, with ``user`` as the actor.
+    Whether anything was written; ``LookupError`` when no open thing has the id (none such, or
+    one already closed). A cancel is closed as ``cancelled`` with the reason "not mine".
     """
-    commitment_id = commitments.ID_PREFIX + commitment_hex
+    thing_id = things.ID_PREFIX + commitment_hex
     conn = open_runtime_event_log(event_log_path)
     try:
+        held = things.get(conn, thing_id)
+        if held.state != "open":
+            msg = f"{thing_id} is {held.state}"
+            raise LookupError(msg)
         if action == "confirm":
-            return commitments.confirm(conn, commitment_id, actor="user")
-        commitments.cancel(conn, commitment_id, actor="user")
+            return things.confirm(
+                conn, thing_id, by="him", evidence="confirmed on the phone", zone=zone,
+                actor="user",
+            )
+        things.close(
+            conn, thing_id, "cancelled", why="not mine", by="him",
+            evidence="cancelled on the phone", zone=zone, actor="user",
+        )
         return True
     finally:
         with contextlib.suppress(sqlite3.Error):
             conn.close()
 
 
-async def _act_commitment(event_log_path: Path, commitment_hex: str, action: str) -> bool:
-    """``POST /inherent/commitments/{hex}`` (ADR 0297), off the loop thread."""
-    return await asyncio.to_thread(_commit_act, event_log_path, commitment_hex, action)
+async def _act_commitment(
+    event_log_path: Path, zone: tzinfo, commitment_hex: str, action: str,
+) -> bool:
+    """``POST /inherent/commitments/{hex}`` (ADR 0297, 0299), off the loop thread."""
+    return await asyncio.to_thread(_commit_act, event_log_path, zone, commitment_hex, action)
 
 
 async def _ride_act(rides: Rides, body: dict[str, Any]) -> dict[str, Any]:
@@ -7964,12 +7985,18 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     ),
                 )
             ),
-            commitment_act=functools.partial(_act_commitment, runtime.runtime_paths.event_log),
+            commitment_act=functools.partial(
+                _act_commitment, runtime.runtime_paths.event_log,
+                resolve_zone(None, _work_state_timezone(runtime.config))[1],
+            ),
             today_read=(
                 None if runtime.home is None
                 else functools.partial(asyncio.to_thread, runtime.home.today)
             ),
-            todo_set=None if runtime.home is None else functools.partial(_set_todo, runtime.home),
+            todo_set=(
+                None if runtime.home is None
+                else functools.partial(_set_todo, runtime.home, runtime.things_mirror)
+            ),
             mail_read=(
                 None if runtime.home is None
                 else functools.partial(asyncio.to_thread, runtime.home.mail)
@@ -8314,6 +8341,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         if runtime.things is not None:
             # ADR 0299: the rings of his things for the next seven days, now and every 15 minutes.
             watchers.append(asyncio.create_task(runtime.things.run(), name="things"))
+        if runtime.things_mirror is not None:
+            # ADR 0299: Outlook and To Do read into the ledger, now and every 15 minutes.
+            watchers.append(asyncio.create_task(runtime.things_mirror.run(), name="things_mirror"))
         if runtime.claude_daily is not None:
             watchers.append(asyncio.create_task(runtime.claude_daily.run(), name="claude_daily"))
         if spend is not None and runtime.memory is not None:

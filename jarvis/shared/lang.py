@@ -1117,13 +1117,6 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "job.title.rejection": {"zh": "申请结果 · {company}", "en": "Application update · {company}"},
     "job.title.receipt": {"zh": "申请已收到 · {company}", "en": "Application received · {company}"},
     "job.title.job_other": {"zh": "求职邮件 · {company}", "en": "Job mail · {company}"},
-    # ADR 0274: the reminder before a commitment; a private one says only its time.
-    "commitment.rem.private": {"zh": "{time} 有一件事", "en": "{time} you have something on"},
-    "commitment.rem.private_day": {
-        "zh": "明天有一件事要办", "en": "you have something to do tomorrow",
-    },
-    "commitment.rem.day": {"zh": "明天 {title}{place}", "en": "Tomorrow: {title}{place}"},
-    "commitment.rem.line": {"zh": "{time} {title}{place}", "en": "{time} {title}{place}"},
     # ADR 0299: the ring before a thing in the ledger. ``line``/``private`` for a timed thing rung
     # the same day, ``line_on``/``private_on`` when the ring is an earlier day; for a thing with no
     # hour, ``today``, ``day`` (the evening before) and ``on_day`` (earlier still). A private
@@ -1148,32 +1141,13 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "thing.rem.private_on_day": {
         "zh": "{date} 有一件事要办", "en": "you have something to do on {date}",
     },
-    # ADR 0186: the two interview reminders and the Outlook event written for an interview time.
-    "job.rem.evening": {
-        "zh": "明天{time} {company} 面试{where}。",
-        "en": "Tomorrow at {time}: interview with {company}{where}.",
-    },
-    "job.rem.before": {
-        "zh": "{n} 分钟后 {company} 面试{where}。",
-        "en": "In {n} minutes: interview with {company}{where}.",
-    },
-    "job.rem.online": {"zh": "，线上{platform}", "en": ", online{platform}"},
-    "job.rem.onsite": {"zh": "，现场{place}", "en": ", in person{place}"},
-    "job.rem.link": {
-        "zh": "，{platform}链接在 Jobs 页",
-        "en": ", the {platform}link is on the Jobs page",
-    },
-    "job.cal.subject": {"zh": "面试：{company}", "en": "Interview: {company}"},
-    "job.cal.subject_role": {
+    # ADR 0299: the title of a thing mirrored from an Outlook event or a To Do task with no subject.
+    "thing.untitled": {"zh": "（无标题）", "en": "(untitled)"},
+    # ADR 0186, 0299: the title of the thing an interview time becomes (its rings say it).
+    "job.thing.title": {"zh": "面试：{company}", "en": "Interview: {company}"},
+    "job.thing.title_role": {
         "zh": "面试：{company} — {role}",
         "en": "Interview: {company} — {role}",
-    },
-    "job.cal.platform": {"zh": "平台：{platform}", "en": "Platform: {platform}"},
-    "job.cal.link": {"zh": "链接：{url}", "en": "Link: {url}"},
-    "job.cal.place": {"zh": "地点：{place}", "en": "Location: {place}"},
-    "job.cal.note": {
-        "zh": "由 Jarvis 根据面试邮件添加。",
-        "en": "Added by Jarvis from the interview email.",
     },
     "job.part.role": {"zh": "（{role}）", "en": " ({role})"},
     "job.part.when": {"zh": "，{when}", "en": ", {when}"},

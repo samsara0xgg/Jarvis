@@ -6,10 +6,10 @@ fake model (no key, no network, no provider). The examples are invented.
 - the local filter: letters with and without a sign of a date or an hour, zh and en;
 - the model's answer: each shape of action that is kept or dropped;
 - the fold: a weekly series, a skipped day, a drop, an update that wins, a clock change;
-- the poller: filtered mail never reaches the model, interview and never-rule mail neither, a
-  reminder mail updates and does not duplicate, one unreadable mail does not stop the cycle, a
-  backfill is paged and read oldest first;
-- the interim reminders: one per occurrence, idempotent, private ones only a time;
+- the poller (ADR 0299): filtered mail never reaches the model, interview and never-rule mail
+  neither, a reminder mail moves or changes the thing it is about and does not duplicate, a cancel
+  closes it, one unreadable mail does not stop the cycle, a backfill is paged and read oldest
+  first; the rings are the ledger's and nothing arms ``reminder-cm*``;
 - the readers: ``my_schedule``, the state block, ``GET /inherent/day``'s fold and ``keep``.
 """
 
@@ -32,11 +32,11 @@ from jarvis.execution.tools import ActionLifecycle, ToolError, ToolRegistry
 from jarvis.runtime.commitment_intake import CommitmentIntake, CommitmentSettings
 from jarvis.runtime.now_block import calendar_line, next_appointments
 from jarvis.shared import ActionRequest, CallerPrincipal, lang
-from jarvis.state import commitments
+from jarvis.state import commitments, things
 from jarvis.state import job_ledger as ledger
 from jarvis.state import reminders as reminder_state
 from jarvis.state.day_line import DaySources, day_window, fold_day
-from jarvis.state.event_log import open_event_log
+from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.memory_db import open_memory_db
 
 if TYPE_CHECKING:
@@ -370,10 +370,11 @@ def test_a_cycle_reads_each_mail_by_its_own_rule_and_a_reminder_mail_updates(log
 
     def ask(system: str, user: str) -> str:
         if _REMIND in user:  # read after the class mail: the known list names what it made
-            (held,) = commitments.live(log.conn)
-            assert held.commitment_id in user
+            (held,) = things.open_things(log.conn)
+            key = held.thing_id.removeprefix(things.ID_PREFIX)
+            assert key in user
             model.answers[_REMIND] = [
-                {"action": "update", "commitment_id": held.commitment_id, "place": "Studio 5"},
+                {"action": "update", "commitment_id": key, "place": "Studio 5"},
             ]
         return model(system, user)
 
@@ -384,13 +385,16 @@ def test_a_cycle_reads_each_mail_by_its_own_rule_and_a_reminder_mail_updates(log
     assert _verdicts(log) == {
         "m1": "filtered", "m2": "noted", "m3": "interview", "m4": "filtered", "m5": "noted",
     }
-    (held,) = commitments.live(log.conn)
-    assert (held.title, held.place, held.confirmed, held.source) == (
-        "Pottery class", "Studio 5", False, "mail",
+    (held,) = things.open_things(log.conn)
+    assert (held.title, held.kind, held.place, held.confirmed, held.source) == (
+        "Pottery class", "go", "Studio 5", False, "mail",
     )
-    assert (held.source_ref, held.sender_domain, held.weekly_until) == (
-        "m2", "studio.example", "2026-11-24",
+    assert (held.source_ref, held.sender, held.weekly_until, held.rings) == (
+        "m2", "studio.example", "2026-11-24", ("-60m",),
     )
+    assert [(s.what, s.by, s.ref) for s in held.history] == [
+        ("added", "mail", "m2"), ("changed", "mail", "m5"),
+    ]
     assert intake.poll_once() == 0  # nothing is read twice
     assert model.asked == [_CLASS, _REMIND]
     assert {tool for tool, _ in gmail.calls} == {"gmail_search", "gmail_get"}
@@ -420,11 +424,11 @@ def test_a_new_that_repeats_a_held_time_is_not_a_second_commitment(log: _Log) ->
     model = _Model({_CLASS: [_NEW_CLASS], _REMIND: [{**_NEW_CLASS, "weekly_until": ""}]})
     assert _intake(log, gmail, model).poll_once() == 2
     assert _verdicts(log) == {"m2": "noted", "m5": "none"}
-    assert len(commitments.live(log.conn)) == 1
+    assert len(things.open_things(log.conn)) == 1
 
 
-def test_a_sender_marked_always_is_confirmed_and_a_cancel_drops(log: _Log) -> None:
-    """A sender marked always is confirmed and a cancel drops."""
+def test_a_sender_marked_always_is_confirmed_and_a_cancel_closes(log: _Log) -> None:
+    """A sender marked always is confirmed and a cancel closes the thing as cancelled."""
     commitments.set_sender_rule(log.conn, "studio.example", "always")
     gmail = _Gmail([
         _mail("m2", "Studio <hello@studio.example>", _CLASS, "Tuesdays 7 PM.", 2),
@@ -433,14 +437,18 @@ def test_a_sender_marked_always_is_confirmed_and_a_cancel_drops(log: _Log) -> No
 
     def ask(_system: str, user: str) -> str:
         if "Class cancelled" in user:
-            (held,) = commitments.live(log.conn)
-            return json.dumps([{"action": "cancel", "commitment_id": held.commitment_id}])
+            (held,) = things.open_things(log.conn)
+            key = held.thing_id.removeprefix(things.ID_PREFIX)
+            return json.dumps([{"action": "cancel", "commitment_id": key}])
         return json.dumps([_NEW_CLASS])
 
     assert _intake(log, gmail, ask).poll_once() == 2
-    (record,) = commitments.fold(log.conn).values()
-    assert (record.confirmed, record.dropped) == (True, "cancelled")
-    assert commitments.live(log.conn) == []
+    (record,) = things.fold(log.conn).values()
+    assert (record.confirmed, record.state) == (True, "cancelled")
+    assert (record.history[-1].what, record.history[-1].by, record.history[-1].why) == (
+        "cancelled", "mail", "called off in a mail",
+    )
+    assert things.open_things(log.conn) == []
 
 
 def test_one_unreadable_mail_does_not_stop_the_cycle_and_is_tried_three_times(log: _Log) -> None:
@@ -458,7 +466,7 @@ def test_one_unreadable_mail_does_not_stop_the_cycle_and_is_tried_three_times(lo
     assert intake.poll_once() == 1  # only the error is read again
     assert intake.poll_once() == 1
     assert intake.poll_once() == 0  # third try was the last
-    assert len(commitments.live(log.conn)) == 1
+    assert len(things.open_things(log.conn)) == 1
 
 
 def test_a_model_that_does_not_answer_ends_the_cycle_after_one_try(log: _Log) -> None:
@@ -510,63 +518,84 @@ def test_a_poller_with_no_model_reads_nothing(log: _Log) -> None:
     assert gmail.calls == []
 
 
-# --- the interim reminders -----------------------------------------------------------------
+# --- the rings -----------------------------------------------------------------------------
 
 
-def _pending(log: _Log) -> list[reminder_state.Reminder]:
-    return [r for r in reminder_state.pending(log.conn) if r.reminder_id.startswith("reminder-cm")]
-
-
-def test_the_reminders_are_one_per_occurrence_idempotent_and_follow_the_commitment(
-    log: _Log,
-) -> None:
-    """The reminders are one per occurrence idempotent and follow the commitment."""
-    series = _record(_at(10, 14, 18, 30), weekly_until="2026-10-28", place="Studio 4")
-    private = _record(_at(10, 15, 10), title="Group", private=True, place="Hidden room")
-    for one in (series, private):
-        commitments.note(log.conn, one)
-    intake = _intake(log, _Gmail([]), _Model({}))
-    intake.reconcile()
-    intake.reconcile()  # nothing new the second time
-    rings = {r.due_at_local: r.text for r in _pending(log)}
-    assert rings == {
-        "2026-10-14T17:30:00-07:00": "18:30 Pottery class · Studio 4",
-        "2026-10-15T09:00:00-07:00": "10:00 you have something on",
-    }  # the Oct 21 one is past the seven days
-    assert "Hidden room" not in " ".join(rings.values())
-    # a changed time cancels the old ring and arms the new
-    commitments.note(log.conn, commitments.Commitment(**{
-        **series.payload(), "start_at": _at(10, 14, 19).isoformat(), "skip_dates": (),
-    }))
-    intake.reconcile()
-    assert sorted(r.due_at_local for r in _pending(log)) == [
-        "2026-10-14T18:00:00-07:00", "2026-10-15T09:00:00-07:00",
+def _rings(log: _Log) -> dict[str, str]:
+    """The pending reminders as ``due -> words``; all are the ledger's, none ``reminder-cm*``."""
+    pending = reminder_state.pending(log.conn)
+    assert all(r.reminder_id.startswith(things.RING_PREFIX) for r in pending)
+    assert not [
+        r for r in reminder_state.fold(log.conn) if r.startswith(commitments.REMINDER_PREFIX)
     ]
-    # a drop cancels every ring it had
-    commitments.drop(log.conn, series.commitment_id, "he_dropped")
-    intake.reconcile()
-    assert [r.due_at_local for r in _pending(log)] == ["2026-10-15T09:00:00-07:00"]
-    assert {r.text for r in reminder_state.fold(log.conn).values()
-            if r.cancelled and r.reminder_id.startswith("reminder-cm")} >= {
-        "18:30 Pottery class · Studio 4",
-    }
+    return {r.due_at_local: r.text for r in pending}
 
 
-def test_a_moment_already_past_is_skipped_and_an_unfired_ring_is_kept(log: _Log) -> None:
-    """A moment already past is skipped and an unfired ring is kept."""
-    commitments.note(log.conn, _record(_at(10, 14, 9, 30)))  # ring due 8:30
-    commitments.note(log.conn, _record(_at(10, 14, 8, 30), title="Begun"))
-    intake = _intake(log, _Gmail([]), _Model({}))
-    intake.reconcile()  # 9:00: the ring's moment has passed and the other has begun
-    assert _pending(log) == []
-    intake.now = lambda: _at(10, 14, 7).astimezone(UTC)
-    intake.reconcile()  # 7:00: both rings are still ahead
-    assert sorted(r.due_at_local for r in _pending(log)) == [
-        "2026-10-14T07:30:00-07:00", "2026-10-14T08:30:00-07:00",
-    ]
-    intake.now = lambda: NOW.astimezone(UTC)
-    intake.reconcile()  # 9:00: the one for 9:30 is due and not rung yet: it stays
-    assert [r.due_at_local for r in _pending(log)] == ["2026-10-14T08:30:00-07:00"]
+def test_a_noted_thing_rings_by_the_ledger_and_a_move_and_a_cancel_follow(log: _Log) -> None:
+    """The poller arms nothing: the ring is the thing's, moved with it and gone with its cancel."""
+    studio = "Studio <hello@studio.example>"
+    gmail = _Gmail([
+        _mail("m2", studio, _CLASS, "Tomorrow 7 PM.", 2),
+        _mail("m5", studio, _REMIND, "Moved to 8 PM.", 5),
+        _mail("m6", studio, "Class cancelled", "No class tomorrow 7 PM", 6),
+    ])
+    once = {k: v for k, v in _NEW_CLASS.items() if k != "weekly_until"}
+    once["start_at"] = "2026-10-15T19:00:00-07:00"
+
+    def ask(_system: str, user: str) -> str:
+        if _CLASS in user:
+            return json.dumps([once])
+        (held,) = things.open_things(log.conn)
+        key = held.thing_id.removeprefix(things.ID_PREFIX)
+        if _REMIND in user:
+            at = "2026-10-15T20:00:00-07:00"
+            return json.dumps([{"action": "update", "commitment_id": key, "start_at": at}])
+        return json.dumps([{"action": "cancel", "commitment_id": key}])
+
+    intake = _intake(log, gmail, ask, cap=1)
+    assert intake.poll_once() == 1
+    assert _rings(log) == {"2026-10-15T18:00:00-07:00": "19:00 Pottery class · Studio 4"}
+    assert intake.poll_once() == 1
+    (held,) = things.open_things(log.conn)
+    assert (held.start_at, [m.start_at for m in held.moves]) == (
+        "2026-10-15T20:00:00-07:00", ["2026-10-15T19:00:00-07:00"],
+    )
+    assert _rings(log) == {"2026-10-15T19:00:00-07:00": "20:00 Pottery class · Studio 4"}
+    assert intake.poll_once() == 1
+    assert things.open_things(log.conn) == []
+    assert _rings(log) == {}
+
+
+def test_an_update_that_gives_a_day_an_hour_swaps_its_ring_for_the_hour_before(log: _Log) -> None:
+    """A whole day rings the evening before; once a mail says the hour, it rings before that."""
+    gmail = _Gmail([
+        _mail("m2", "Bank <a@bank.example>", "Security", "Enable 2FA by Oct 15.", 2),
+        _mail("m5", "Bank <a@bank.example>", "Security call", "Your call is Oct 15 at 10 AM.", 5),
+    ])
+    due = {**_DUE, "start_at": "2026-10-15"}
+
+    def ask(_system: str, user: str) -> str:
+        if "Security call" not in user:
+            return json.dumps([due])
+        (held,) = things.open_things(log.conn)
+        key = held.thing_id.removeprefix(things.ID_PREFIX)
+        timed = {
+            "action": "update", "commitment_id": key, "all_day": False,
+            "start_at": "2026-10-15T10:00:00-07:00",
+        }
+        return json.dumps([timed])
+
+    intake = _intake(log, gmail, ask, cap=1)
+    assert intake.poll_once() == 1
+    (held,) = things.open_things(log.conn)
+    assert (held.on_day, held.start_at, held.rings) == ("2026-10-15", "", ("-1d@20:00",))
+    assert _rings(log) == {"2026-10-14T20:00:00-07:00": "Tomorrow: Enable 2FA"}
+    assert intake.poll_once() == 1
+    (held,) = things.open_things(log.conn)
+    assert (held.on_day, held.start_at, held.rings) == (
+        "", "2026-10-15T10:00:00-07:00", ("-60m",),
+    )
+    assert _rings(log) == {"2026-10-15T09:00:00-07:00": "10:00 Enable 2FA"}
 
 
 # --- the readers ---------------------------------------------------------------------------
@@ -857,29 +886,40 @@ def test_an_all_day_occurrence_is_its_whole_day(log: _Log) -> None:
     assert first.end_ms - first.start_ms == 24 * 3_600_000
 
 
-def test_the_poller_notes_an_all_day_item_and_its_reminder_is_the_evening_before(
+def test_the_poller_notes_an_all_day_item_as_a_day_and_its_ring_is_the_evening_before(
     log: _Log,
 ) -> None:
-    """Evening 20:00 the day before, time-free words when private, nothing once the day begins."""
+    """A day with no hour is the thing's ``on_day``; its ring is 20:00 the evening before."""
     gmail = _Gmail([_mail("m2", "Bank <a@bank.example>", "Security", "Enable 2FA by Oct 31.", 2)])
     assert _intake(log, gmail, _Model({"Security": [_DUE]})).poll_once() == 1
-    (held,) = commitments.live(log.conn)
-    assert (held.all_day, held.start_at) == (True, "2026-10-31T00:00:00-07:00")
-    private = _record(_at(10, 15, 0), title="Check-in", all_day=True, private=True)
-    commitments.note(log.conn, private)
-    intake = _intake(log, _Gmail([]), _Model({}))
-    intake.reconcile()
-    intake.reconcile()
-    rings = {r.due_at_local: r.text for r in _pending(log)}
-    assert rings == {"2026-10-14T20:00:00-07:00": "you have something to do tomorrow"}
-    intake.now = lambda: _at(10, 30, 9).astimezone(UTC)
-    intake.reconcile()
-    assert sorted((r.due_at_local, r.text) for r in _pending(log)) == [
-        ("2026-10-30T20:00:00-07:00", "Tomorrow: Enable 2FA"),
-    ]
-    intake.now = lambda: _at(10, 31, 9).astimezone(UTC)
-    intake.reconcile()  # the day has begun
-    assert _pending(log) == []
+    (held,) = things.open_things(log.conn)
+    assert (held.on_day, held.start_at, held.end_at) == ("2026-10-31", "", "")
+    assert (held.kind, held.rings) == ("go", ("-1d@20:00",))
+    assert _rings(log) == {}  # Oct 30 is more than a week away: the ring waits
+    things.sync_rings(log.conn, zone=ZONE, now=_at(10, 30, 9).astimezone(UTC))
+    assert _rings(log) == {"2026-10-30T20:00:00-07:00": "Tomorrow: Enable 2FA"}
+
+
+def test_a_private_all_day_ring_says_no_more_than_that_something_is_to_do(log: _Log) -> None:
+    """A mail that makes a thing private gives the ring no title."""
+    private = {**_DUE, "private": True, "start_at": "2026-10-15"}
+    gmail = _Gmail([_mail("m2", "Bank <a@bank.example>", "Security", "Enable 2FA by Oct 15.", 2)])
+    assert _intake(log, gmail, _Model({"Security": [private]})).poll_once() == 1
+    assert _rings(log) == {"2026-10-14T20:00:00-07:00": "you have something to do tomorrow"}
+
+
+def _old_ring(log: _Log) -> None:
+    """A ``reminder-cm`` ring as an earlier build armed it: still pending, and not an item."""
+    due = _at(10, 14, 20)
+    action = {"action_id": "commitment-reminders"}
+    emit_event(
+        log.conn, type="reminder.scheduled", correlation=action,
+        payload={
+            "reminder_id": f"{commitments.REMINDER_PREFIX}old-1", "due_at_epoch_ms": _ms(due),
+            "due_at_local": due.isoformat(timespec="seconds"), "text": "Tomorrow: Enable 2FA",
+            **action,
+        },
+    )
 
 
 def test_the_readers_show_an_all_day_item_as_due_and_leave_its_ring_out(log: _Log) -> None:
@@ -888,8 +928,7 @@ def test_the_readers_show_an_all_day_item_as_due_and_leave_its_ring_out(log: _Lo
     timed = _record(_at(10, 15, 10), title="Dentist", confirmed=True)
     for rec in (one, timed):
         commitments.note(log.conn, rec)
-    _intake(log, _Gmail([]), _Model({})).reconcile()
-    assert _pending(log), "the interim rings exist"
+    _old_ring(log)
     rows = {r["id"]: r for r in _schedule(log)["items"] if "id" in r}
     assert rows[one.commitment_id]["when"] == "due tomorrow (Thu), all day"
     assert not [r for r in _schedule(log)["items"] if r["source"] == "reminder"]
@@ -908,7 +947,7 @@ def test_the_readers_show_an_all_day_item_as_due_and_leave_its_ring_out(log: _Lo
         'Next on his calendar (read just now): due tomorrow (Thu) "Enable 2FA (not confirmed)";'
         ' tomorrow (Thu) 10:00 am "Dentist".'
     )
-    # kept can still list the rings
+    # kept can still list the ring
     kept = _Keep(log).call("kept", kind="reminder")
     assert kept["items"]
 
