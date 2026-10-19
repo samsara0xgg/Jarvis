@@ -418,9 +418,11 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     rename: rename && { key: rename.key, draft: rename.draft, busy: rename.state === 'busy', set: text => setRename(r => r && { ...r, draft: text, state: r.state === 'failed' ? 'edit' : r.state }), save: () => void saveRename(), field: on => setLeft(!on) } };
 
   // Esc lets go of one thing at a time, nearest first: the picture, the input, the name being changed, the open row, the bar's lens, its range and
-  // the list's cut to a range, and then the pane itself (the pane's own Esc listener was added after this one, so this one answers first).
+  // the list's cut to a range, and then the pane itself (the pane's own Esc listener was added after this one, so this one answers first). A folded
+  // pane, which stays mounted, answers nothing.
   const back = useRef<() => boolean>(() => false);
   back.current = () => {
+    if (!open) return false;
     if (viewer) setViewer(null);
     else if (dock) { setDock(null); setDraft(''); }
     else if (rename) setRename(null);
@@ -476,7 +478,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   const title = at ? dateTitle(at, t) : model?.title ?? '';
   const say = !port ? t(['Not connected to Jarvis yet', '还没连上 Jarvis']) : route.missing ? t(["This Jarvis can't give a day yet", '这台 Jarvis 还不会给出一天']) : slow || route.failed ? t(["Couldn't read this day. Trying again.", '没读到这一天，会再试一次']) : t(['Reading the day…', '读着这一天…']);
   const kept = note ?? lastNote.current, shownDock = dock ?? lastDock.current;
-  return <div ref={root} className={`dt${shown && at && shown.date !== at ? ' is-loading' : ''}`} data-lens={ui.lens && lensKinds.has(ui.lens) ? ui.lens : undefined} role="region" aria-label={t(['Day timeline', '一天的时间线'])}>
+  return <div ref={root} className={`dt${shown && at && shown.date !== at ? ' is-loading' : ''}${open ? '' : ' is-folded'}`} data-lens={ui.lens && lensKinds.has(ui.lens) ? ui.lens : undefined} role="region" aria-label={t(['Day timeline', '一天的时间线'])}>
     <div className="dt-head">
       <b className="dt-date">{title}</b>{date === null ? <em className="dt-today">{t(['Today', '今天'])}</em> : <button type="button" className="dt-back" onClick={() => setDate(null)}>{t(['Back to today', '回到今天'])}</button>}
       <TimelineGuard where="the header" reset={shown} fallback={null}>

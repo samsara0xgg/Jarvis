@@ -2653,6 +2653,25 @@ try {
     await a.ctx.close();
   }
 
+  // a folded pane stays mounted holding what it had (a pinned lens): it must not swallow the next Esc anywhere, and nothing in it keeps moving
+  if (all || only === 'review') {
+    const a = await boot({ served: fullDay() });
+    await openDay(a);
+    const running = () => a.page.evaluate(() => document.getAnimations().filter(x => x.playState === 'running' && x.effect?.target?.closest?.('.dt')).length);
+    const breath = () => a.page.evaluate(() => getComputedStyle(document.querySelector('.dt-nowtick'), '::after').animationPlayState);
+    check('open, the now marker breathes (its animation is running)', await breath() === 'running' && await running() >= 1);
+    await a.page.locator('.dt-num', { hasText: 'Mac' }).click(); await a.page.waitForTimeout(100);
+    await a.move(a.far.x, a.far.y);
+    const folded = await seen(a, r => r.tl === '' && r.dt, 5000);
+    await a.page.waitForTimeout(800);
+    check('the pane folds with its lens still pinned, and stays mounted', folded.tl === '' && await a.page.evaluate(() => document.querySelector('.dt')?.dataset.lens) === 'work');
+    check('folded, nothing in it is running: the breathing of the now marker is paused', await breath() === 'paused' && await running() === 0, JSON.stringify({ breath: await breath(), running: await running() }));
+    await a.page.evaluate(() => { window.__esc = 0; document.addEventListener('keydown', e => { if (e.key === 'Escape') window.__esc++; }); });
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(100);
+    check('an Esc anywhere reaches the rest of the page: the folded pane does not swallow it', await a.page.evaluate(() => window.__esc) === 1);
+    await a.ctx.close();
+  }
+
   console.log(`\n${checks.length} checks passed; screenshots in ${dir}`);
 } finally {
   await browser.close();
