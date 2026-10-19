@@ -129,6 +129,11 @@ def test_a_revised_row_counts_once_with_its_newest_end(tmp_path: Path) -> None:
     _ship(tmp_path, live.timesink, _ms(start_ms, 3000))
     with closing(imports.open_shipped(directory)) as conn:
         assert len(imports.entries(conn, source="timesink", kinds=("span",))) == 2
+        # the bounded scan finds the same newest rows as the whole one
+        for kinds in (("span",), ("span", "stateEvent"), ("callSpan",)):
+            assert imports.newest(conn, "timesink", kinds=kinds, by_prefix=True) == imports.newest(
+                conn, "timesink", kinds=kinds,
+            )
 
     line = _fold(
         DaySources(ZONE, None, None, None, shipped=directory), tmp_path, "2026-10-10",

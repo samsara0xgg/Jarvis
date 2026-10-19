@@ -722,7 +722,9 @@ def _code_items(
     if conn is None:
         return []
     with closing(conn):
-        rows = imports.newest(conn, "claude-code", end_ms=window_end, kinds=("session",))
+        rows = imports.newest(
+            conn, "claude-code", end_ms=window_end, kinds=("session",), by_prefix=True,
+        )
     items: list[dict[str, Any]] = []
     for row in rows:
         f = row.fields

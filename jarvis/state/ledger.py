@@ -1834,9 +1834,11 @@ def shipped_activity(conn: sqlite3.Connection, begin: datetime, end: datetime) -
         return None  # no table: nothing was ever shipped
     first, last = _ms(begin) - int(SHIPPED_REACH.total_seconds() * 1000), _ms(end)
     rows = imports.newest(
-        conn, "timesink", start_ms=first, end_ms=last, kinds=("span", "callSpan"),
+        conn, "timesink", start_ms=first, end_ms=last, kinds=("span", "callSpan"), by_prefix=True,
     )
-    held = imports.newest(conn, "timesink", kinds=("project", "jevProjectVerdict"))
+    held = imports.newest(
+        conn, "timesink", kinds=("project", "jevProjectVerdict"), by_prefix=True,
+    )
     projects = {r.fields["id"]: r.fields["name"] for r in held if r.kind == "project"}
     verdict = {
         (str(f["appBundleID"]), str(f["domain"] or ""), str(f["title"] or ""),

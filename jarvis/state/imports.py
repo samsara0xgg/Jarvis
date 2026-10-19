@@ -346,22 +346,31 @@ def around(conn: sqlite3.Connection, one: Entry, count: int) -> tuple[list[Entry
     return rows[max(0, at - count) : at], rows[at + 1 : at + 1 + count]
 
 
-def newest(
+def newest(  # noqa: PLR0913 — the source, a window, the kinds and how the scan is bounded.
     conn: sqlite3.Connection, source: str, *,
     start_ms: int | None = None, end_ms: int | None = None, kinds: tuple[str, ...] = (),
+    by_prefix: bool = False,
 ) -> list[Entry]:
     """The newest revision of each row of a shipped ``source`` (ADR 0294), oldest moment first.
 
     ``conn`` is :func:`open_shipped`'s.
 
     A row is its key without the content hash; the revision kept last is the newest. Rows whose
-    newest revision has no text are included.
+    newest revision has no text are included. Finding the newest of every row reads every key of
+    the source, hundreds of thousands for TimeSink; ``by_prefix`` limits that read to the keys
+    that start ``<kind>:`` (what a terminal ships, ADR 0294) for the ``kinds`` asked, an index
+    range instead of a scan, and gives the same rows when every such key does.
     """
     row = f"substr(key, 1, length(key) - {REVISION_SUFFIX})"
-    clauses = [
-        f"rowid IN (SELECT max(rowid) FROM import_entries WHERE source = ? GROUP BY {row})",  # noqa: S608 - constant expression
-    ]
+    held = ["source = ?"]
     params: list[Any] = [source]
+    if by_prefix and kinds:
+        held.append(f"({' OR '.join('(key >= ? AND key < ?)' for _ in kinds)})")
+        params.extend(bound for one in kinds for bound in (f"{one}:", f"{one};"))
+    newest_of_each = (
+        f"SELECT max(rowid) FROM import_entries WHERE {' AND '.join(held)} GROUP BY {row}"  # noqa: S608 - constant expressions
+    )
+    clauses = [f"rowid IN ({newest_of_each})"]
     if start_ms is not None:
         clauses.append("at_ms >= ?")
         params.append(start_ms)
