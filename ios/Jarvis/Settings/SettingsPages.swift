@@ -30,6 +30,11 @@ struct SettingsMainPage: View {
     var body: some View {
         VStack(spacing: 0) {
             SetGroup { hero }
+            SetSection(header: "首页") {
+                SegmentedRow(title: "中间显示", options: ["星盘", "时间线"],
+                             selection: Binding(get: { HomeModule.shared.isTimeline ? 1 : 0 },
+                                                set: { HomeModule.shared.kind = $0 == 1 ? .timeline : .stars }))
+            }
             SetSection(header: "大脑", footer: model.showsConversationModel ? "下一句起生效" : nil) {
                 InfoRow(label: "连接的大脑", detail: model.brainName)
                 InfoRow(label: "延迟", detail: model.latency)
@@ -85,7 +90,7 @@ struct SettingsMainPage: View {
                 NavRow(label: "查看手机报给大脑的记录") { push(.log) }
                 DeleteRow(count: model.todayCount, onDelete: model.deleteToday)
             }
-            SetSection { NavRow(label: "调整近景视角", action: tuneNear) }
+            if !HomeModule.shared.isTimeline { SetSection { NavRow(label: "调整近景视角", action: tuneNear) } }       // the near view is the dial's
             Text(model.version).font(.footnote).foregroundStyle(SetColor.muted).padding(.top, 32)
         }
         .padding(.top, 14)
