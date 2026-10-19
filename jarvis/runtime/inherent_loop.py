@@ -6072,14 +6072,12 @@ def _lifelog_coverage(runtime: JarvisRuntime, lifelog: Lifelog) -> Callable[[], 
     def read() -> dict[str, Any]:
         hub = runtime.terminal_hub
         names = [] if hub is None else [name for name, _tools in hub.connected()]
-        home = None
-        if runtime.memory is not None:
-            homes = [
-                one for one in places.read_kept(runtime.memory.db_path)
-                if one.role == "home" and one.lat is not None and one.lng is not None
-            ]
-            if homes:  # when two share the role, the newer one is the one he means
-                home = {"lat": homes[-1].lat, "lng": homes[-1].lng, "radius_m": homes[-1].radius_m}
+        home: dict[str, float] | None = None
+        kept = [] if runtime.memory is None else places.read_kept(runtime.memory.db_path)
+        for one in reversed(kept):  # when two share the role, the newer one is the one he means
+            if one.role == "home" and one.lat is not None and one.lng is not None:
+                home = {"lat": one.lat, "lng": one.lng, "radius_m": one.radius_m}
+                break
         return lifelog.coverage(names, home, int(time.time() * 1000))
 
     return read
