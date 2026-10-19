@@ -149,7 +149,7 @@ enum TimelineFixture {
 extension StarEngine {
     /// `-scene 时间线` puts the timeline on the made-up day (now 21:50), whatever the setting was; the words after a colon go further:
     /// `:早上` the list at the morning, `:开:<id>` any row opened (`:开:ride-8`; a fourth word, `:开:stay-1:有对话` or `:有长对话`, with talk before it), `:改名` the place he keeps opened with the field for its new name, `:日出` the weather tapped (the sun's times in the header), `:碎片` the day with fifteen places, `:只有对话` the day of talks alone, `:对话` a talk opened, `:照片` the picture opened, `:工作` the evening's Mac work opened (its span is bracketed on the bar), `:透镜:路上` (or 睡, 运动, Mac, 通话, 和她, 花, 照片) that chip pressed, `:拖:1015` a finger held on the bar at that time (a fourth word after it lifts the finger again), `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
-    /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:新增` a talk coming in a moment later, `:走时` the clock moving on a minute a moment later, `:昨天` the day before (`:昨天:1630` with a finger held on its bar), `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
+    /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:新增` a talk coming in a moment later, `:测帧` the frame times of the motion (Sky/StarTimelineProbe.swift; `:测帧:拖`, `:甩` or `:换日` runs that kind alone, over and over), `:走时` the clock moving on a minute a moment later, `:昨天` the day before (`:昨天:1630` with a finger held on its bar), `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
     func runTimelineScene(_ name: String) {
         RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
         switchWorld(real: true)
@@ -213,12 +213,43 @@ extension StarEngine {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { [self] in ui.tl.follow(Double(n / 100 * 60 + n % 100), in: past) }
             }
         case "新增": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in ui.tl.fixture?.replies[0] = TimelineFixture.today(cal, late: true) }
+        case "测帧": runProbe(today, model, cal, only: parts.count > 2 ? parts[2] : "")
         case "走时": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in ui.tl.fixture?.now += 1 }
         case "切换": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { HomeModule.shared.kind = .timeline }
         case "切回": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { HomeModule.shared.kind = .stars }
         default: break
         }
         wake()
+    }
+
+    /// The motion run the way a hand does it, and the frames it takes: the launch, a scrub across the bar and back, a fling of the list down and up, a day change each way, a talk coming in, a row
+    /// opened and shut. Each reports its median and 95th percentile frame time and its worst frame. A word after `:测帧:` runs one kind alone, over and over (`拖`, `甩`, `换日`), so that something
+    /// can be watched at work while it does.
+    private func runProbe(_ reply: DayReply, _ model: DayTimelineModel, _ cal: Cal, only: String) {
+        let tl = ui.tl, lo = model.span.lowerBound, hi = model.span.upperBound
+        let ymax = max(0, (model.offsets.last ?? 0) + (model.entries.last?.height ?? 0) - 400)
+        let probe = FrameProbe()
+        let t0 = CACurrentMediaTime()
+        for _ in 0..<20 { _ = tl.model(reply) }
+        probe.note(String(format: "building the day's model: %.2f ms (mean of 20)", (CACurrentMediaTime() - t0) * 50))
+        func pause(_ s: Double, start: @escaping () -> Void = {}) -> FrameProbe.Step { .init(label: nil, seconds: s, start: start) }
+        let fling: (Double) -> Double = { (1 - exp(-4 * $0)) / (1 - exp(-4)) }          // a fast fling that slows as it goes
+        let launch = [FrameProbe.Step(label: "launch: the bar grows and the rows rise", seconds: 1.3), pause(0.8)]
+        let idle = [FrameProbe.Step(label: "idle: nothing moves", seconds: 1.5)]
+        let bare = [FrameProbe.Step(label: "the finger alone: the bar's hairline and the readout, no list", seconds: 2, frame: { p in tl.scrub = lo + (p < 0.5 ? 2 * p : 2 - 2 * p) * (hi - lo) }),
+                    pause(0.6, start: { tl.scrub = nil })]
+        let scrub = [FrameProbe.Step(label: "scrub across the bar and back (2 s)", seconds: 2, frame: { p in tl.follow(lo + (p < 0.5 ? 2 * p : 2 - 2 * p) * (hi - lo), in: model) }),
+                     pause(0.6, start: { withAnimation(.easeOut(duration: 0.2)) { tl.follow(nil, in: nil) } })]
+        let flings = [FrameProbe.Step(label: "list fling down (1 s)", seconds: 1, frame: { p in tl.scroll(to: ymax * fling(p), animated: false) }), pause(0.4),
+                      FrameProbe.Step(label: "list fling up (1 s)", seconds: 1, frame: { p in tl.scroll(to: ymax * (1 - fling(p)), animated: false) }), pause(0.8)]
+        let days = [FrameProbe.Step(label: "day change to yesterday", seconds: 0.9, start: { tl.setDay(tl.today - 1) }), pause(0.5),
+                    FrameProbe.Step(label: "day change back to today", seconds: 0.9, start: { tl.setDay(tl.today) }), pause(0.8)]
+        let rest = [FrameProbe.Step(label: "a talk comes in", seconds: 0.9, start: { tl.fixture?.replies[0] = TimelineFixture.today(cal, late: true) }), pause(0.5),
+                    FrameProbe.Step(label: "a row opens", seconds: 0.7, start: { withAnimation(.spring(duration: 0.26, bounce: 0.08)) { tl.openRow = "event-demo-1" } }),
+                    FrameProbe.Step(label: "a row shuts", seconds: 0.7, start: { withAnimation(.spring(duration: 0.26, bounce: 0.08)) { tl.openRow = nil } })]
+        let alone: [String: [FrameProbe.Step]] = ["拖": scrub, "甩": flings, "换日": days, "静": idle, "指": bare]
+        let steps = alone[only].map { launch + Array(repeating: $0, count: 6).flatMap { $0 } } ?? launch + idle + bare + scrub + flings + days + rest
+        probe.run(steps) { _ in }
     }
 
     /// the conversation as it stood three hours ago: one question and its answer; `long`, thirty rows before them, so the panel is full
