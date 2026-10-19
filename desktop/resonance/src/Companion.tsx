@@ -383,7 +383,8 @@ export function Companion() {
   const noticeLook = carded || nightShown ? { x: geo.center, y: placement.topInset + 90 } : notice ? { x: notice.kind === 'pop' ? geo.wingX + 80 : geo.center, y: placement.topInset + 90 } : null;
   const live = useRef({ geo, dashboard, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu, stowed: false });
   // Stowed: on a screen without a notch, with nothing going on and the pointer away, all of her is hidden and takes no clicks.
-  const stowed = !detached && !geo.lobe.notched && !near && place === 'home' && !dashboard && !menu && !notice && !nightShown && !carded && !moving;
+  // The day's pane hanging is something going on, as the Dashboard is: it folds by itself once the pointer has left it.
+  const stowed = !detached && !geo.lobe.notched && !near && place === 'home' && !dashboard && !timelineOpen && !menu && !notice && !nightShown && !carded && !moving;
   live.current = { geo, dashboard, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu, stowed };
   const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 });
   const input = useRef<HTMLTextAreaElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
@@ -733,9 +734,11 @@ export function Companion() {
       cursor.current = point;
       intent.sample(point, performance.now());
       if (!composer) look.current = live.current.noticeLook ?? point;
-      // The pill comes into sight once the pointer is about as near as the old approach that brought her out, and goes after it has left.
+      // The pill comes into sight once the pointer is about as near as the old approach that brought her out, or is on what hangs from
+      // it (the wing beside it, a pane below it), and goes after it has left.
       if (!geo.lobe.notched) {
-        const close = point.x >= geo.lobe.left - 40 && point.x <= geo.lobe.right + 40 && point.y >= -2 && point.y <= geo.lobe.height + 24;
+        const close = point.x >= geo.lobe.left - 40 && point.x <= geo.lobe.right + 40 && point.y >= -2 && point.y <= geo.lobe.height + 24
+          || !!document.elementFromPoint(point.x, point.y)?.closest('.notch [data-hit]');
         clearTimeout(nearTimer.current);
         if (close) setNear(true); else nearTimer.current = setTimeout(() => setNear(false), HOVER_EXIT_MS);
       }
