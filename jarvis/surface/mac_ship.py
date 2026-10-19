@@ -3,7 +3,8 @@
 ``mac_ship`` in the terminal's config turns it on (off by default). One asyncio task wakes every
 ``poll_interval_s``, runs one pass on a worker thread, and goes back to sleep; the pass reads
 TimeSink's database read-only (:mod:`mac_ship_timesink`) and the Claude Code logs of the
-configured accounts (:mod:`mac_ship_sessions`) and sends what changed to the brain's
+configured accounts (:mod:`mac_ship_sessions`), ships the Markdown day reports of his Claude Code
+work (:mod:`mac_ship_days`, ADR 0299) and sends what changed to the brain's
 ``/inherent/imports`` routes with this device's token. Its cursors live in
 ``<runtime root>/mac-ship/state.db`` and move only after the brain has kept what they stand for.
 
@@ -21,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 
-from jarvis.surface import mac_ship_sessions, mac_ship_timesink
+from jarvis.surface import mac_ship_days, mac_ship_sessions, mac_ship_timesink
 from jarvis.surface.mac_ship_core import Conflict, Report, ShipFailed, Sink, State
 from jarvis.surface.mac_ship_timesink import TimesinkConfig
 
@@ -49,6 +50,7 @@ class ShipConfig:
     timesink: TimesinkConfig | None = None
     session_roots: tuple[tuple[str, Path], ...] = ()
     desktop_titles: Path | None = None
+    days_dir: Path | None = None
 
 
 def _section(parent: Mapping[str, Any], key: str) -> Mapping[str, Any] | None:
@@ -92,9 +94,11 @@ def ship_config(config: Mapping[str, Any], runtime_root: Path) -> ShipConfig | N
         roots = tuple((account, Path(where).expanduser()) for account, where in pairs)
         titles = code.get("desktop_titles")
         desktop = Path(titles if isinstance(titles, str) else _DEFAULT_DESKTOP).expanduser()
+    days = _section(section, "claude_code_days") or {}
     return ShipConfig(
         runtime_root / STATE_PATH, max(1.0, _number(section, "poll_interval_s", _DEFAULT_POLL_S)),
         timesink, roots, desktop,
+        None if days.get("enabled", True) is False else runtime_root / mac_ship_days.DIRNAME,
     )
 
 
@@ -168,6 +172,11 @@ class Shipper:
                 mac_ship_sessions.desktop_titles(self.config.desktop_titles, self._desktop),
                 self.state, self._sink, report, now,
             )))
+        days_dir = self.config.days_dir
+        if days_dir is not None:
+            steps.append(("claude-code-days", lambda: mac_ship_days.ship(
+                days_dir, self.state, self._sink, report, now,
+            )))
         for name, step in steps:
             try:
                 step()
@@ -184,7 +193,7 @@ async def run_shipper(config: ShipConfig, brain_url: str, token: str) -> None:
     """Pass after pass until cancelled. A pass that raises anything else is logged, not fatal."""
     sink = HttpSink(brain_url, token)
     shipper = Shipper(config, sink)
-    LOGGER.info("mac-ship: copying TimeSink and Claude Code sessions to the brain")
+    LOGGER.info("mac-ship: copying TimeSink, Claude Code sessions and day reports to the brain")
     try:
         while True:
             try:

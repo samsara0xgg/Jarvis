@@ -305,6 +305,11 @@ mac_ship:
       - {account: a, dir: "~/.claude/projects"}
       - {account: b, dir: "~/.claude-b/projects"}
     # desktop_titles: "~/Library/Application Support/Claude/claude-code-sessions"
+  # ADR 0299 — 把 <运行目录>/claude-code-days/*.md（只取这一层，material/ 不发）里 Claude 每天写的
+  # 「Claude Code 日报」整份发给大脑（来源 claude-code-daily，内容变了才重发，单份不超过 256 KiB）。
+  # mac_ship 开着时默认开；关掉写 enabled: false。
+  claude_code_days:
+    enabled: true
 
 # ADR 0294 — 大脑收下终端抄来的数据后，磁盘剩余低于这个数就回 507，终端留着稍后重发。
 imports:
@@ -719,6 +724,8 @@ commitments:
 # backfill_since (gmail_search and gmail_get only: nothing is ever modified or sent), keeps each
 # such letter raw under imports/claude_daily/ and reads it into the archive and the day line.
 # No model is asked.  Drafts and every revision are kept.  Off here; the Pi turns it on.
+# ADR 0299 — enabled only switches the Gmail part: the Mac's day report of his Claude Code work
+# (shipped to imports/claude-code-daily/files/) is read into the archive every few minutes either way.
 claude_daily:
   enabled: false
   poll_s: 3600
