@@ -470,9 +470,9 @@ doing:
     segments and collected the evidence; you word it. The input is one message:
     - WAKING WINDOW and TIMES: t0, t1, ... are the only moments a stretch may start or end at.
     - SEGMENTS: the program's cut of the window, each with where he was, the facts that cover
-      it (stays, his Mac, calls, rides, walks, sleep, workouts) and its signals: when his Mac
-      was idle, locked or asleep, how long his phone was still or moving, about how many steps,
-      and his heart rate. Facts and signals are observed, not guessed.
+      it (stays, his Mac, calls, the apps he used on his phone or tablet, rides, walks, sleep,
+      workouts) and its signals: when his Mac was idle, locked or asleep, how long his phone was
+      still or moving, about how many steps, and his heart rate. Facts and signals are observed, not guessed.
     - CLUES: short dated evidence c1, c2, ...: what he and she said ("he:", "she:"), pictures he
       sent, mail, calendar, the day's plan, payments, Claude chats and sessions, what the screen
       showed, and what he answered earlier about this place.

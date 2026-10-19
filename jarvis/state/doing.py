@@ -60,8 +60,8 @@ _MINUTE_MS: Final = 60_000
 _HOUR_MS: Final = 60 * _MINUTE_MS
 
 CUT_MIN_MS: Final = 10 * _MINUTE_MS
-"""A segment shorter than this is folded into a neighbour; a work block or call cuts
-the day only when it lasts at least this long."""
+"""A segment shorter than this is folded into a neighbour; a work block, a call or a block of
+phone or tablet use cuts the day only when it lasts at least this long."""
 WAKING_DEFAULT_START_MS: Final = 6 * _HOUR_MS
 """Where the waking part starts, from the day's start, when no sleep ended in the morning."""
 WAKING_WAKE_REACH_MS: Final = 14 * _HOUR_MS
@@ -76,7 +76,7 @@ ANSWER_TEXT_MAX_CHARS: Final = 200
 _MOVE_KINDS: Final = {
     "walking": "walk", "running": "run", "cycling": "cycle", "automotive": "drive",
 }
-_CUTTING_USE_KINDS: Final = frozenset({"work", "call"})
+_CUTTING_USE_KINDS: Final = frozenset({"work", "call", "screen"})
 _UNATTENDED_KINDS: Final = frozenset({"code"})
 """Use spans that show a program ran, not that he was there: a Claude Code session goes on while
 he rests, so it is a clue of the doing lane, never one of its facts."""
@@ -176,6 +176,7 @@ _BUILDERS: Final[dict[str, Callable[[Mapping[str, Any]], Span]]] = {
     "ride": lambda i: _span(i, "place", "ride", title=i.get("route"), category="commute"),
     "work": lambda i: _span(i, "use", "work", title=_top_name(i)),
     "call": lambda i: _span(i, "use", "call", title=i.get("app")),
+    "screen": lambda i: _span(i, "use", "screen", title=_top_name(i)),
     "code": lambda i: _span(i, "use", "code", title=i.get("title")),
     "talk": lambda i: _span(i, "use", "talk"),
     "sleep": lambda i: _span(i, "body", "sleep", category="sleep"),
@@ -190,10 +191,11 @@ def fact_spans(items: Iterable[Mapping[str, Any]]) -> list[Span]:
     """The day-line items that last a while, as spans of the place, use and body lanes.
 
     A stay is a place span; a move or a ride is a place span in the category ``commute``. A work
-    block, a call, a Claude Code session and a talk are use spans; a sleep block and a workout are
-    body spans. Every one is observed, with high confidence, unconfirmed, with no clues and no
-    question, and ``item_ids`` is its own item. A picture, payment, event, reminder, departure,
-    Claude chat or Claude day, and a label, are points or notes of the day, not spans.
+    block, a call, a block of phone or tablet use, a Claude Code session and a talk are use
+    spans; a sleep block and a workout are body spans. Every one is observed, with high
+    confidence, unconfirmed, with no clues and no question, and ``item_ids`` is its own item. A
+    picture, payment, event, reminder, departure, Claude chat or Claude day, and a label, are
+    points or notes of the day, not spans.
     """
     found = [_BUILDERS[item["kind"]](item) for item in items if item["kind"] in _BUILDERS]
     return sorted(found, key=_order)
@@ -285,12 +287,12 @@ def _segment(facts: Sequence[Span], start: int, end: int, horizon: int) -> Segme
 def cut(facts: Sequence[Span], waking: Waking) -> list[Segment]:
     """The waking window cut into segments, none shorter than ten minutes unless alone.
 
-    The boundaries are the edges of every place span, of every work block and call
-    that lasts at least ten minutes, and of every workout, inside the window. Between two
-    boundaries is an interval; an interval shorter than ten minutes is folded into the neighbour
-    that shares its primary place span, else the longer neighbour (the earlier on a tie), until
-    none is. The segments cover the window with no gap and no overlap; a stretch no fact covers
-    is a segment too. A span still going reaches the end of the window.
+    The boundaries are the edges of every place span, of every work block, call and block of
+    phone or tablet use that lasts at least ten minutes, and of every workout, inside the
+    window. Between two boundaries is an interval; an interval shorter than ten minutes is folded
+    into the neighbour that shares its primary place span, else the longer neighbour (the earlier
+    on a tie), until none is. The segments cover the window with no gap and no overlap; a
+    stretch no fact covers is a segment too. A span still going reaches the end of the window.
     """
     start, end = waking
     if end <= start:
@@ -348,7 +350,7 @@ def _doing_span(  # noqa: PLR0913 — the served shape of a span of the doing la
 
 
 _ACTIVITY_ORDER: Final = (
-    ("work",), ("ride",), ("walk", "run", "cycle", "drive"), ("call",),
+    ("work",), ("ride",), ("walk", "run", "cycle", "drive"), ("call",), ("screen",),
     ("sleep", "workout"),
 )
 """The facts that say what he was doing, strongest first; a stay says only where."""
@@ -361,9 +363,10 @@ def _dominant(
 
     The first kind of activity in :data:`_ACTIVITY_ORDER` with a fact that covers at least half
     of the segment says what he was doing (``known``), with its title (a project, a route, an
-    app, an activity; a walk, run, cycle or drive has none) and its category (``work`` for a work
-    block). With none, nothing says what he did: no title, and the category of its primary place
-    span (a home stay alone is ``home``), else of the fact with most of it, as a colour.
+    app, the app he used most on his phone or tablet, an activity; a walk, run, cycle or drive
+    has none) and its category (``work`` for a work block). With none, nothing says what he did:
+    no title, and the category of its primary place span (a home stay alone is ``home``), else of
+    the fact with most of it, as a colour.
     """
     start, end = segment.start_ms, segment.end_ms
     held = [by_id[i] for i in segment.item_ids]

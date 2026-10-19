@@ -59,7 +59,7 @@ from jarvis.state import picture_notes as note_records
 from jarvis.state import places
 from jarvis.state.attachments import AttachmentRef
 from jarvis.state.day_line import DaySources, day_window
-from jarvis.state.doing import CATEGORIES, CLUE_KINDS
+from jarvis.state.doing import CATEGORIES, CLUE_KINDS, cut, fact_spans
 from jarvis.state.doing_clues import (
     CLUE_TEXT_MAX_CHARS,
     MAX_CLUES_PER_KIND,
@@ -570,6 +570,23 @@ def test_a_final_day_says_so_and_offers_the_edge_of_a_short_stay_as_a_time_insid
     held = next(line for line in lines if "| 16:00-00:00 |" in line)
     assert "inner times: t" in held
     assert "stay Corner Cafe 16:00-16:05" in held
+
+
+def test_phone_or_tablet_use_reads_with_its_device_and_its_apps(brief: Brief) -> None:
+    """A block of phone or tablet use reads with the device it was on and the apps used most."""
+    item = {
+        "id": "screen-iPad-1", "lane": "you", "kind": "screen", "device": "iPad",
+        "start_ms": brief.waking.start_ms, "end_ms": brief.waking.start_ms + 30 * 60_000,
+        "state": "done", "active_s": 1500,
+        "apps": [{"name": "抖音", "bundle": "b", "minutes": 20, "category": "Entertainment"},
+                 {"name": "微信", "bundle": "w", "minutes": 5, "category": "Social Networking"}],
+    }
+    facts = sorted([*brief.facts, *fact_spans([item])], key=lambda s: (s["start_ms"], s["id"]))
+    shown = replace(
+        brief, items=[*brief.items, item], facts=facts, segments=cut(facts, brief.waking),
+    )
+    content = build_messages(shown)[0]["content"]
+    assert "screen iPad: 抖音, 微信 06:00-06:30" in content
 
 
 def test_an_unnamed_place_reads_as_unnamed(world: World) -> None:

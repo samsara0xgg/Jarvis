@@ -131,6 +131,8 @@ def _fact_text(span: Span, item: Mapping[str, Any] | None, brief: Brief) -> str:
     """One fact as the writer reads it: its kind, what it was about and when."""
     names = [] if item is None else [*_names(item.get("projects")), *_names(item.get("apps"))]
     about = ", ".join(names) or span["title"] or ""
+    if item is not None and item.get("device"):
+        about = f"{item['device']}: {about}"
     end = "now" if span["end_ms"] is None else _clock(int(span["end_ms"]), brief.zone)
     when = f"{_clock(int(span['start_ms']), brief.zone)}-{end}"
     return f"{span['kind']} {about} {when}".replace("  ", " ")

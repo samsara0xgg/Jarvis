@@ -146,6 +146,16 @@ FACT_CASES = [
     (_item("a", "work", 0, 60, projects=[], apps=[]), ("use", "work", None, "unknown", None)),
     (_item("a", "call", 0, 30, app="Zoom"), ("use", "call", "Zoom", "unknown", None)),
     (
+        _item("a", "screen", 0, 40, device="iPad", active_s=2100,
+              apps=[{"name": "抖音", "bundle": "com.ss.iphone.ugc.Aweme", "minutes": 30,
+                     "category": "Entertainment"}]),
+        ("use", "screen", "抖音", "unknown", None),
+    ),
+    (
+        _item("a", "screen", 0, 40, device="iPhone", apps=[]),
+        ("use", "screen", None, "unknown", None),
+    ),
+    (
         _item("a", "code", 0, 90, title="Fix the cut"),
         ("use", "code", "Fix the cut", "unknown", None),
     ),
@@ -274,6 +284,13 @@ CUT_CASES = {
         [_stay("s1", 540, 900), _item("k1", "work", 600, 610, projects=[], apps=[])],
         [
             (480, 540, ()), (540, 600, ("s1",)), (600, 610, ("s1", "k1")),
+            (610, 900, ("s1",)), (900, 1080, ()),
+        ],
+    ),
+    "a block of phone or tablet use of ten minutes cuts": (
+        [_stay("s1", 540, 900), _item("p1", "screen", 600, 610, device="iPad", apps=[])],
+        [
+            (480, 540, ()), (540, 600, ("s1",)), (600, 610, ("s1", "p1")),
             (610, 900, ("s1",)), (900, 1080, ()),
         ],
     ),
@@ -460,6 +477,7 @@ JARVIS = _item("k", "work", 400, 1200, projects=[{"name": "jarvis"}], apps=[])
 RIDE = _item("r", "ride", 400, 1200, route="99")
 WALK = _item("m", "move", 400, 1200, activity="walking")
 ZOOM = _item("z", "call", 400, 1200, app="Zoom")
+IPAD = _item("p", "screen", 400, 1200, device="iPad", apps=[{"name": "抖音", "minutes": 600}])
 
 DOMINANT_CASES = {
     # facts over the whole window (no edge inside it) to the (title, category) of its one segment
@@ -482,6 +500,12 @@ DOMINANT_CASES = {
         [_item("m", "move", 400, 1200, activity="automotive"), ZOOM], (None, "commute"),
     ),
     "a call names itself by its app": ([HOME_STAY, ZOOM], ("Zoom", "unknown")),
+    "phone or tablet use names it by the app used most": ([HOME_STAY, IPAD], ("抖音", "unknown")),
+    "work comes before phone or tablet use": ([HOME_STAY, JARVIS, IPAD], ("jarvis", "work")),
+    "a call comes before phone or tablet use": ([HOME_STAY, ZOOM, IPAD], ("Zoom", "unknown")),
+    "phone or tablet use comes before sleep": (
+        [IPAD, _item("s", "sleep", 400, 1200, minutes=1)], ("抖音", "unknown"),
+    ),
     "a workout": (
         [HOME_STAY, _item("w", "workout", 400, 1200, activity="Badminton")],
         ("Badminton", "exercise"),
