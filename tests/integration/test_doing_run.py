@@ -1169,11 +1169,10 @@ def test_the_doing_block_of_the_config(name: str) -> None:
     assert DoingSettings.from_config(raw) == expected
 
 
-def test_the_shipped_block_is_off_on_haiku_and_holds_the_prompt() -> None:
-    """The shipped block is off on haiku and holds the prompt."""
+def test_the_shipped_block_is_on_on_haiku_and_holds_the_prompt() -> None:
+    """The shipped block is on, on haiku, and holds the prompt."""
     block = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))["doing"]
-    assert DoingSettings.from_config(block) is None  # off until the live replay is read
-    settings = DoingSettings.from_config({**block, "enabled": True})
+    settings = DoingSettings.from_config(block)
     assert settings is not None
     assert settings.preset == "haiku-bg"
     for needle in ("TITLE LANGUAGE", "never says where", "at most 5", "unknown", "stated"):

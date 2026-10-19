@@ -463,7 +463,7 @@ day_summary:
 # 写一份终稿，之后晚到的数据让输入变了就再写一份；只看最近 3 天。enabled 不是 true 或没有 prompt
 # = 不写（doing 线只有程序切的段）。
 doing:
-  enabled: false
+  enabled: true
   preset: haiku-bg
   prompt: |
     You write what the user was doing through one waking day. A program has cut the day into
