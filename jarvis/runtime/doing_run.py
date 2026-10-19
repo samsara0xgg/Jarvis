@@ -29,7 +29,7 @@ from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.doing_run import Brief, build_messages, inputs_digest, read_run
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.shared import lang
-from jarvis.state.day_line import DaySources, day_window, fold_day
+from jarvis.state.day_line import DayLine, DaySources, day_window, fold_day, shipped_conn
 from jarvis.state.doing import cut, fact_spans, his_facts, waking_window
 from jarvis.state.doing_clues import HIS_WORDS, gather
 from jarvis.state.doing_signals import gather as gather_signals
@@ -83,6 +83,15 @@ class DoingSettings:
         )
 
 
+def _screen_reach(line: DayLine, sources: DaySources) -> dict[str, int] | None:
+    """How far his phone and tablet use is known: None when none of it reaches the brain."""
+    conn = shipped_conn(sources)
+    if conn is None:
+        return None
+    conn.close()
+    return None if "screen" in line.missing else line.synced
+
+
 def _title_language(clues: Sequence[Clue], memory_db: Path | None) -> str:
     """The English name of the language of his words that day, else of his latest words."""
     heard = " ".join(c.text for c in clues if c.kind == "words" and c.text.startswith(HIS_WORDS))
@@ -104,7 +113,8 @@ def read_brief(
     start_ms, end_ms = day_window(day, zone)
     now_ms = int(now.timestamp() * 1000)
     with closing(open_runtime_event_log(event_log_path)) as conn:
-        items = fold_day(conn, start_ms, end_ms, now_ms, sources).items
+        line = fold_day(conn, start_ms, end_ms, now_ms, sources)
+        items = line.items
         facts = his_facts(fact_spans(items))
         waking = waking_window(facts, start_ms, end_ms, now_ms)
         if waking.end_ms <= waking.start_ms:
@@ -116,6 +126,7 @@ def read_brief(
         day=day.isoformat(), weekday=f"{day:%A}", zone=zone, now_ms=now_ms,
         final=waking.end_ms < now_ms, language=_title_language(clues, sources.memory_db),
         waking=waking, segments=segments, facts=facts, items=items, clues=clues, signals=signals,
+        screen=_screen_reach(line, sources),
     )
 
 

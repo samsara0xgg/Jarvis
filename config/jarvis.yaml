@@ -479,6 +479,8 @@ doing:
       it (stays, his Mac, calls, the apps he used on his phone or tablet, rides, walks, sleep,
       workouts) and its signals: when his Mac was idle, locked or asleep, how long his phone was
       still or moving, about how many steps, and his heart rate. Facts and signals are observed, not guessed.
+    - PHONE AND TABLET APP USE: how far the apps he used on his phone and tablet are known.
+      They reach Jarvis hours late; where they are not known yet, finding none shows nothing.
     - CLUES: short dated evidence c1, c2, ...: what he and she said ("he:", "she:"), pictures he
       sent, mail, calendar, the day's plan, payments, Claude chats and sessions, what the screen
       showed, and what he answered earlier about this place.

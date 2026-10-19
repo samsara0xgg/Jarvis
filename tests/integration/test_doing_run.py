@@ -595,6 +595,26 @@ def test_phone_or_tablet_use_reads_with_its_device_and_its_apps(brief: Brief) ->
     assert "screen iPad: 抖音, 微信 06:00-06:30" in content
 
 
+def test_the_writer_is_told_how_far_his_phone_and_tablet_use_is_known(brief: Brief) -> None:
+    """None of it, all of it, or each device that lags with where its records stop."""
+    def said(shown: Brief) -> str:
+        content = build_messages(shown)[0]["content"]
+        return next(
+            line for line in content.split("\n") if line.startswith("PHONE AND TABLET APP USE:")
+        )
+
+    assert brief.screen is None  # no shipped store: nothing of it reaches the brain
+    assert said(brief).endswith("none of it reaches Jarvis; its absence shows nothing")
+    assert said(replace(brief, screen={})).endswith("known through the window")
+    lagging = replace(brief, screen={"iPad": _ms(_at(10, 34)), "iPhone": _ms(_at(2, 38))})
+    assert said(lagging) == (
+        "PHONE AND TABLET APP USE: iPad known only up to 10-07 10:34; iPhone known only up to "
+        "10-07 02:38; later use on it is not known yet"
+    )
+    digests = {inputs_digest(b) for b in (brief, replace(brief, screen={}), lagging)}
+    assert len(digests) == 3
+
+
 def test_an_unnamed_place_reads_as_unnamed(world: World) -> None:
     """An unnamed place reads as unnamed."""
     _visit(world.log, "v5", _at(14, 45), _at(14, 59), "", lat=1.2)

@@ -58,7 +58,9 @@ class Brief:
 
     ``final`` says the day is over; ``language`` is the one the titles are written in; ``items``
     are the day line's, which give a fact its details; ``signals`` are the observed signals of a
-    segment that has any (its Mac, phone and watch), by the segment's start.
+    segment that has any (its Mac, phone and watch), by the segment's start. ``screen`` says how
+    far his phone and tablet app use is known: ``None`` when none of it reaches the brain, else
+    each device whose records stop before the window does, with where they stop.
     """
 
     day: str
@@ -73,6 +75,7 @@ class Brief:
     items: Sequence[Mapping[str, Any]]
     clues: Sequence[Clue]
     signals: Mapping[int, str]
+    screen: Mapping[str, int] | None
 
 
 def _reach(span: Mapping[str, Any], brief: Brief) -> int:
@@ -110,6 +113,7 @@ def inputs_digest(brief: Brief) -> str:
         ],
         "clues": [list(c) for c in brief.clues],
         "signals": sorted(brief.signals.items()),
+        "screen": None if brief.screen is None else sorted(brief.screen.items()),
     }
     text = json.dumps(body, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -160,6 +164,18 @@ def _segment_line(segment: Segment, labels: Mapping[int, str], brief: Brief) -> 
     return " | ".join(parts)
 
 
+def _screen_line(brief: Brief) -> str:
+    if brief.screen is None:
+        return "none of it reaches Jarvis; its absence shows nothing"
+    if not brief.screen:
+        return "known through the window"
+    behind = "; ".join(
+        f"{device} known only up to {datetime.fromtimestamp(ms / 1000, brief.zone):%m-%d %H:%M}"
+        for device, ms in brief.screen.items()
+    )
+    return f"{behind}; later use on it is not known yet"
+
+
 def _clue_line(index: int, clue: Clue, brief: Brief) -> str:
     start, end = brief.waking
     moment = datetime.fromtimestamp(clue.at_ms / 1000, brief.zone)
@@ -187,6 +203,7 @@ def build_messages(brief: Brief) -> list[dict[str, Any]]:
         "TIMES (local; a span starts and ends only at one of these):\n" + "\n".join(time_lines),
         "SEGMENTS (the program's cut of the window; times | local | place | facts | signals):\n"
         + "\n".join(segment_lines),
+        f"PHONE AND TABLET APP USE: {_screen_line(brief)}",
         "CLUES (id | local time | kind | text):\n" + ("\n".join(clue_lines) or "(none)"),
     ))
     return [{"role": "user", "content": content}]
