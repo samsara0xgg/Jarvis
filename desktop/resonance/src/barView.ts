@@ -150,7 +150,7 @@ export function buildBar(model: DayModel, t: Say): BarModel | null {
 }
 
 // ---------- what the pointer finds ----------
-const when = (it: DayItem, m: DayModel, t: Say) => {
+const when = (it: Pick<DayItem, 'kind' | 'start_ms' | 'end_ms' | 'minutes'>, m: DayModel, t: Say) => {
   const { reply, tz } = m, limit = m.today ? m.now : reply.end_ms, ago = it.start_ms < reply.start_ms ? t(['yesterday ', '昨天 ']) : '', from = ago + clock(it.start_ms, tz);
   if (it.end_ms == null) return { range: t([`from ${from}`, `${from} 起`]), length: dur(Math.max(1, (limit - it.start_ms) / MIN), t) };
   const minutes = it.kind === 'sleep' && it.minutes != null ? it.minutes : (it.end_ms - it.start_ms) / MIN;
@@ -205,18 +205,21 @@ export function peek(model: DayModel, bar: BarModel, ms: number, t: Say): Peek {
   const item = items.find(x => x.id === (seg?.row ?? event?.key));
   let id: string, stretch: Peek['stretch'];
   if (seg && item) {
-    // The title is what he was doing at this minute when there are words for it, and the piece's own name goes under it; else the piece's name, as ever.
+    // The title is what he was doing at this minute when there are words for it, with its own time, and the piece's own name goes under it; else the piece's name, as ever.
     const doing = doingAt(reply.spans, ms, t);
     id = doing ? `${seg.key}~${doing.span.id}` : seg.key;
-    stretch = { name: doing?.words ?? seg.place, place: doing && doing.words !== seg.place ? seg.place : undefined, rgb: seg.rgb, a: seg.kind === 'stay' ? Math.max(.6, seg.a) : 1, ...when(item, model, t), note: seg.kind === 'sleep' ? stageNote(item, t) : undefined };
+    const own = doing && seg.kind === 'stay' ? when({ ...doing.span, kind: 'doing' }, model, t) : when(item, model, t);          // in a stay, the time is that of what he was doing
+    stretch = { name: doing?.words ?? seg.place, place: doing && doing.words !== seg.place ? seg.place : undefined, rgb: seg.rgb, a: seg.kind === 'stay' ? Math.max(.6, seg.a) : 1, ...own, note: seg.kind === 'sleep' ? stageNote(item, t) : undefined };
   }
   else if (event && item) { id = event.key; stretch = { name: event.short, rgb: null, a: 1, ...when(item, model, t) }; }
   else if (ms > limit) { id = 'later'; stretch = { name: t(['Not yet', '还没到']), rgb: null, a: 1, range: '', length: '' }; }
   else {
     // Nothing was recorded here: say how long, from the piece before to the piece after.
     const lo = Math.max(bar.t0, ...bar.segs.filter(x => x.e <= ms).map(x => x.e)), hi = Math.min(limit, ...bar.segs.filter(x => x.s > ms).map(x => x.s));
-    id = `gap:${lo}`;
-    stretch = { name: t(['Nothing recorded', '没有记录']), rgb: null, a: 1, range: `${clock(lo, model.tz)}–${endClock(hi, reply, model.tz)}`, length: dur(Math.max(1, (hi - lo) / MIN), t) };
+    const doing = doingAt(reply.spans, ms, t);          // unless he said (or a model wrote) what he was doing then: that, with its own time
+    id = doing ? `gap:${lo}~${doing.span.id}` : `gap:${lo}`;
+    stretch = doing ? { name: doing.words, rgb: null, a: 1, ...when({ ...doing.span, kind: 'doing' }, model, t) }
+      : { name: t(['Nothing recorded', '没有记录']), rgb: null, a: 1, range: `${clock(lo, model.tz)}–${endClock(hi, reply, model.tz)}`, length: dur(Math.max(1, (hi - lo) / MIN), t) };
   }
   const near: { it: DayItem; rank: number; d: number; at: boolean }[] = [];
   for (const it of items) {

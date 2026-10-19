@@ -405,14 +405,14 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
 // ---------- what he was doing, in node (ADR 0302) ----------
 {
   const span = (category, title, basis = 'observed') => doingOf(sp('x', 900, 1000, { category, title, basis })), say = (category, title, basis, t) => doingWords(span(category, title, basis), t);
-  check('a span without a title has no words: the title missing, empty or blank is none, in every category and basis', ['work', 'commute', 'call', 'exercise', 'sleep', 'home', 'unknown'].every(c => ['observed', 'inferred', 'stated'].every(b => [null, undefined, '', '  \n'].every(title => say(c, title, b, zh) === null))));
-  check('work the program cut is 做 <project> / Working on <project>', say('work', 'Jarvis', 'observed', zh) === '做 Jarvis' && say('work', 'Jarvis', 'observed', en) === 'Working on Jarvis');
+  check('a span without a title has no words: the title missing, empty or blank is none, in every category and basis', ['work', 'commute', 'exercise', 'sleep', 'home', 'unknown'].every(c => ['observed', 'inferred', 'stated'].every(b => [null, undefined, '', '  \n'].every(title => say(c, title, b, zh) === null))));
+  check('work the program cut is 做 <project> / On <project>', say('work', 'Jarvis', 'observed', zh) === '做 Jarvis' && say('work', 'Jarvis', 'observed', en) === 'On Jarvis');
   check('a ride is by its route as the pane words it: 27 路 / Bus 27', say('commute', '27', 'observed', zh) === '27 路' && say('commute', '27', 'observed', en) === 'Bus 27' && say('commute', '27 → 14', 'observed', zh) === '27→14 路');
-  check('a call is <app> 通话 / Call · <app>', say('call', 'FaceTime', 'observed', zh) === 'FaceTime 通话' && say('call', 'FaceTime', 'observed', en) === 'Call · FaceTime');
+  check('a call is <app> 通话 / Call · <app>: the program titles it with the app and gives it no category of its own', say('unknown', 'FaceTime', 'observed', zh) === 'FaceTime 通话' && say('unknown', 'FaceTime', 'observed', en) === 'Call · FaceTime');
   check('a workout is its activity as the pane words it (跑步 / Running), else the title as it came', say('exercise', 'running', 'observed', zh) === '跑步' && say('exercise', 'Running', 'observed', en) === 'Running' && say('exercise', 'cycling', 'observed', zh) === '骑车' && say('exercise', 'pickleball', 'observed', zh) === 'pickleball');
   check('sleep is 睡觉 / Asleep', say('sleep', 'sleep', 'observed', zh) === '睡觉' && say('sleep', 'sleep', 'observed', en) === 'Asleep');
-  check('any other category the program cut says its title as it is', say('home', 'Home', 'observed', zh) === 'Home' && say('study', 'COMP 101', 'observed', en) === 'COMP 101' && say('unknown', ' 吃饭 ', 'observed', zh) === '吃饭');
-  check('what a model wrote or he said is a phrase already: shown as given, whatever the category', ['work', 'commute', 'call', 'exercise', 'sleep', 'meal'].every(c => say(c, '考驾照笔试', 'inferred', zh) === '考驾照笔试' && say(c, '下午打羽毛球', 'stated', en) === '下午打羽毛球'));
+  check('any other category the program cut says its title as it is', say('home', 'Home', 'observed', zh) === 'Home' && say('study', 'COMP 101', 'observed', en) === 'COMP 101' && say('meal', ' 吃饭 ', 'observed', zh) === '吃饭');
+  check('what a model wrote or he said is a phrase already: shown as given, whatever the category', ['work', 'commute', 'unknown', 'exercise', 'sleep', 'meal'].every(c => say(c, '考驾照笔试', 'inferred', zh) === '考驾照笔试' && say(c, '下午打羽毛球', 'stated', en) === '下午打羽毛球'));
   check('a basis it does not know is shown as given too', say('work', 'x', '', zh) === 'x' && say('work', 'x', 'guessed', zh) === 'x' && doingOf(sp('x', 900, 1000, { basis: undefined, title: 'x' })).basis === '');
   check('the doing lane is read field by field: only its own lane, not a planned one, an id and times are needed, a title that is not text is none, no category is unknown',
     doingOf(sp('a', 900, 1000, { lane: 'place' })) === null && doingOf(sp('a', 900, 1000, { kind: 'planned' })) === null && doingOf({ ...sp('a', 900, 1000), id: 7 }) === null && doingOf({ ...sp('a', 900, 1000), id: '' }) === null
@@ -426,10 +426,10 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
 
   // the wing
   const dd = doingDay(), w = (at, t = zh, d = dd) => JSON.stringify(wingText(d, at, t));
-  check('the wing says what he is doing inside a work span, and since when: 做 Jarvis · 0:30 (Working on Jarvis in English)', w(T(10, 0)) === '{"head":"做 Jarvis","tail":"0:30"}' && wingText(dd, T(10, 0), en).head === 'Working on Jarvis');
+  check('the wing says what he is doing inside a work span, and since when: 做 Jarvis · 0:30 (On Jarvis in English)', w(T(10, 0)) === '{"head":"做 Jarvis","tail":"0:30"}' && wingText(dd, T(10, 0), en).head === 'On Jarvis');
   check('a span with no title leaves the place: 家 for a home span with nothing to call it', w(T(14, 20)) === '{"head":"家","tail":"0:15"}');
   check('his own answer leads, as he said it', w(T(16, 0)) === '{"head":"在图书馆写作业","tail":"0:41"}' && w(T(13, 20)) === '{"head":"吃午饭","tail":"0:05"}');
-  check('a ride says the route, and the minutes since it began are the span\'s (0:07)', w(T(14, 57)) === '{"head":"27 路","tail":"0:07"}' && wingText(dd, T(14, 57), en).head === 'Bus 27');
+  check('a ride says the route, and the minutes since it began, as a move\'s (7 分)', w(T(14, 57)) === '{"head":"27 路","tail":"7 分"}' && wingText(dd, T(14, 57), en).head === 'Bus 27');
   check('the span that goes on covers now: 做 Jarvis · 2:15, and neither the planned span over now nor the span of another lane is heard', w(NOW) === '{"head":"做 Jarvis","tail":"2:15"}');
   check('past a span\'s end (to the minute) the place is back, and a ride or a drive with no span is worded as it was: 家 · 2:17, 27 路 · 15 分, 开车 · 40 分',
     w(T(11, 20)) === '{"head":"家","tail":"2:15"}' && w(T(11, 22)) === '{"head":"家","tail":"2:17"}' && w(T(18, 30)) === '{"head":"27 路","tail":"15 分"}' && w(T(12, 5)) === '{"head":"开车","tail":"40 分"}');
@@ -458,12 +458,14 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
 
   // the hover card
   const hp = (at, t = zh, m = dm, b = dbar) => peek(m, b, at, t), tx = x => `${x.stretch.name}|${x.stretch.place ?? ''}|${x.stretch.range}|${x.stretch.length}`;
-  check('hovering the work: the title is what he was doing, the place its second line, the stay\'s range and length as ever', tx(hp(T(10, 0))) === '做 Jarvis|家|09:05–11:25|2 时 20 分' && hp(T(10, 0)).row === 'stay-home-1');
-  check('in English', tx(hp(T(10, 0), en, buildDay(doingDay(), NOW, en), buildBar(buildDay(doingDay(), NOW, en), en))).startsWith('Working on Jarvis|家|'));
+  check('hovering the work: the title is what he was doing with its own time, the place its second line', tx(hp(T(10, 0))) === '做 Jarvis|家|09:30–11:20|1 时 50 分' && hp(T(10, 0)).row === 'stay-home-1');
+  check('in English', tx(hp(T(10, 0), en, buildDay(doingDay(), NOW, en), buildBar(buildDay(doingDay(), NOW, en), en))).startsWith('On Jarvis|家|'));
   check('a minute of the same stay outside the span is the place as it was, with no second line (11:22 is after the work; 14:20 has a span with no title)', tx(hp(T(11, 22))) === '家||09:05–11:25|2 时 20 分' && tx(hp(T(14, 20))) === '家||14:05–14:50|45 分');
-  check('hovering where his answer is, and where it is not on the same stay: 吃午饭 over A&W at 13:20, A&W at 13:40', tx(hp(T(13, 20))) === '吃午饭|A&W|13:15–13:55|40 分' && tx(hp(T(13, 40))) === 'A&W||13:15–13:55|40 分');
+  check('hovering where his answer is, and where it is not on the same stay: 吃午饭 over A&W at 13:20, A&W at 13:40', tx(hp(T(13, 20))) === '吃午饭|A&W|13:15–13:35|20 分' && tx(hp(T(13, 40))) === 'A&W||13:15–13:55|40 分');
   check('a ride says its route once: the span\'s words are the piece\'s name, so there is no second line; the sleep likewise', tx(hp(T(14, 57))) === '27 路||14:50–15:19|29 分' && hp(T(8, 30)).stretch.name === '睡觉' && hp(T(8, 30)).stretch.place === undefined);
   const tripDay = buildDay(small([ev('r', 'ride', 1000, 1030, { route: '27' })], { spans: [sp('k', 1000, 1030, { title: '去考驾照', basis: 'stated' })] }), NOW, zh);
+  const holeDay = (spans) => { const m = buildDay(small([ev('a', 'stay', 900, 1000, { place: 'X' }), ev('b', 'stay', 1100, 1200, { place: 'Y' })], { spans }), NOW, zh); return tx(peek(m, buildBar(m, zh), T(10, 30), zh)); };
+  check('where nothing was recorded but he said what he did, the card says that with its own time; else 没有记录 from piece to piece', holeDay([sp('g', 1015, 1045, { title: '吃饭', basis: 'stated' })]) === '吃饭||10:15–10:45|30 分' && holeDay([]) === '没有记录||10:00–11:00|1 时');
   check('a way he went with his words over it leads with them and keeps its own name under: 去考驾照 over 27 路', tx(peek(tripDay, buildBar(tripDay, zh), T(10, 10), zh)).startsWith('去考驾照|27 路|'));
   check('the card\'s id changes with the span, so its words swap as they do for another stretch, and it is the piece\'s when there is no span', hp(T(10, 0)).id.includes('~d-work') && hp(T(13, 20)).id !== hp(T(13, 40)).id && !hp(T(11, 22)).id.includes('~') && hp(T(10, 0)).id === hp(T(10, 1)).id);
   const peeks = [T(10, 0), T(14, 20), T(16, 50), T(20, 15), T(22, 35), T(22, 10), T(8, 30)].map(at => peek(buildDay(makeDay(), NOW, zh), plain, at, zh)), peeks0 = [T(10, 0), T(14, 20), T(16, 50), T(20, 15), T(22, 35), T(22, 10), T(8, 30)].map(at => peek(buildDay(makeDay({ spans: [] }), NOW, zh), buildBar(buildDay(makeDay({ spans: [] }), NOW, zh), zh), at, zh));
@@ -2429,18 +2431,18 @@ try {
     });
     const over = async (h, m) => { await a.move(xAt(h, m), y); await a.page.waitForTimeout(260); return card(); };
     let c = await over(10, 0);
-    check('hovering the work: the title is 做 Jarvis, the stay\'s range and length as ever, and the place 家 under it', c && c.head === '做 Jarvis 09:05–11:25 · 2 时 20 分' && c.place === '家', JSON.stringify(c));
+    check('hovering the work: the title is 做 Jarvis with its own time, and the place 家 under it', c && c.head === '做 Jarvis 09:30–11:20 · 1 时 50 分' && c.place === '家', JSON.stringify(c));
     await a.shot('doing-03-hover-work', { x: 40, y: 0, width: 560, height: 700 });
     c = await over(14, 20);
     check('hovering the home span that has no title: the place as ever, no second line', c && c.head === '家 14:05–14:50 · 45 分' && c.place === null && c.notes === 0, JSON.stringify(c));
     c = await over(13, 20);
-    check('hovering his answer over A&W: 吃午饭 with A&W under it; a minute later in the stay, past the answer, A&W alone', c && c.head === '吃午饭 13:15–13:55 · 40 分' && c.place === 'A&W' && (await over(13, 45))?.head === 'A&W 13:15–13:55 · 40 分', JSON.stringify(c));
+    check('hovering his answer over A&W: 吃午饭 with A&W under it; a minute later in the stay, past the answer, A&W alone', c && c.head === '吃午饭 13:15–13:35 · 20 分' && c.place === 'A&W' && (await over(13, 45))?.head === 'A&W 13:15–13:55 · 40 分', JSON.stringify(c));
     c = await over(14, 57);
     check('hovering the ride: its route once, no second line', c && c.head === '27 路 14:50–15:19 · 29 分' && c.place === null, JSON.stringify(c));
     await a.ctx.close();
     const b = await boot({ served: doingDay(), lang: 'en' });
-    const en1 = await seen(b, r => /^Working .* · 2:15$/.test(r.line ?? ''), 6000);
-    check('in English the wing starts Working on Jarvis and ends 2:15; a line is at most 112 pt, so the words give way (Working o…) as a long place does', /^Working o/.test(en1.line) && en1.line.endsWith(' · 2:15') && wingText(doingDay(), NOW, en).head === 'Working on Jarvis', JSON.stringify(en1));
+    const en1 = await seen(b, r => /^On Jarvis · 2:15$/.test(r.line ?? ''), 6000);
+    check('in English the wing reads On Jarvis · 2:15, whole', en1.line === 'On Jarvis · 2:15' && wingText(doingDay(), NOW, en).head === 'On Jarvis', JSON.stringify(en1));
     await b.ctx.close();
   }
 

@@ -189,7 +189,7 @@ export function wingText(day: DayReply | null, now: number, t: Say): { head: str
 }
 function wingLine(day: DayReply | null, now: number, t: Say) {
   const doing = doingAt(each(day?.spans, doingOf), now, t);
-  if (doing) return { head: doing.words, tail: since(now - doing.span.start_ms) };
+  if (doing) return { head: doing.words, tail: doing.span.category === 'commute' ? dur(Math.floor((now - doing.span.start_ms) / 60_000), t) : since(now - doing.span.start_ms) };
   let moving: DayItem | undefined, stay: DayItem | undefined;
   for (const it of Array.isArray(day?.items) ? day!.items : []) {
     if (!sound(it) || it.start_ms > now || it.end_ms != null && it.end_ms <= now) continue;
@@ -348,9 +348,9 @@ export function doingWords(span: DoingSpan, t: Say): string | null {
   if (!title) return null;
   if (span.basis !== 'observed') return title;
   switch (span.category) {
-    case 'work': return t([`Working on ${title}`, `做 ${title}`]);
+    case 'work': return t([`On ${title}`, `做 ${title}`]);
     case 'commute': return rideWords({ route: title } as DayItem, t);
-    case 'call': return t([`Call · ${title}`, `${title} 通话`]);
+    case 'unknown': return t([`Call · ${title}`, `${title} 通话`]);   // the one fact the program titles without a category: a call, by its app
     case 'exercise': { const hit = SPORTS.find(([re]) => re.test(title.toLowerCase())); return hit ? t(hit[2]) : title; }
     case 'sleep': return t(['Asleep', '睡觉']);
     default: return title;
