@@ -74,6 +74,26 @@ final class TLClockTests: XCTestCase {
         XCTAssertEqual(TLClock(try JSONDecoder().decode(DayReply.self, from: Data(json.utf8))).cal.timeZone, Cal.cur.cal.timeZone)
     }
 
+    func testAStayThatBeganOnAnEarlierDayNamesTheDayBySayingHowFarBackItIs() throws {
+        let tokyo = "Asia/Tokyo"
+        func stay(_ id: String, from day: Int, to end: Int? = 8) -> String {
+            #"{"id": "\#(id)", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(ms(instant(tokyo, 2026, 10, day, 22))), "end_ms": \#(end.map { String(ms(instant(tokyo, 2026, 10, 19, $0))) } ?? "null")}"#
+        }
+        let r = try reply(tokyo, 2026, 10, 19, [stay("day-1", from: 18), stay("day-2", from: 17), stay("day-3", from: 16), stay("day-9", from: 10), stay("open-2", from: 17, to: nil)])
+        let m = DayTimelineModel.build(r, now: nil)
+        func right(_ id: String) throws -> String { try XCTUnwrap(m.entries.first { $0.id == id }, id).right }
+        XCTAssertEqual(try right("day-1"), "昨天 22:00–08:00 · 10 时")
+        XCTAssertEqual(try right("day-2"), "前天 22:00–08:00 · 34 时", "it said 昨天 for any day before")
+        XCTAssertEqual(try right("day-3"), "10月16日 22:00–08:00 · 58 时")
+        XCTAssertEqual(try right("day-9"), "10月10日 22:00–08:00 · 202 时")
+        XCTAssertEqual(try right("open-2"), "前天 22:00 起")
+        let c = TLClock(r)
+        XCTAssertEqual(c.before(1), "昨天")
+        XCTAssertEqual(c.before(2), "前天")
+        XCTAssertEqual(c.before(3), "10月16日")
+        XCTAssertEqual(c.before(19), "9月30日", "across a month")
+    }
+
     func testNowIsTheMinuteOfTheBrainsDayWhenNowIsInIt() throws {
         let tl = TimelineState(), zone = "Pacific/Auckland", c = cal(zone), here = Cal.now()
         let r = try reply(zone, c.component(.year, from: here), c.component(.month, from: here), c.component(.day, from: here))

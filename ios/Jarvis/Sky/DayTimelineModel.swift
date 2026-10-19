@@ -20,6 +20,15 @@ struct TLClock {
     }
     func minute(_ at: Date) -> Double { Cal.wall(at, in: cal, from: origin) }
     func minute(ms: Int64) -> Double { minute(Date(timeIntervalSince1970: Double(ms) / 1000)) }
+
+    /// How a day `n` days before this one is said: 昨天, 前天, then by its date (`10月15日`).
+    func before(_ n: Int) -> String {
+        if n == 1 { return "昨天" }
+        if n == 2 { return "前天" }
+        guard let d = cal.date(byAdding: .day, value: -n, to: origin) else { return "\(n) 天前" }
+        let c = cal.dateComponents([.month, .day], from: d)
+        return "\(c.month ?? 1)月\(c.day ?? 1)日"
+    }
 }
 
 /// the heights of the list's rows, in design points: fixed, so where a row stands is known without asking the view. A row someone can touch is at least 44 high.
@@ -463,7 +472,7 @@ struct DayTimelineModel: Equatable {
             let label = tlText(h.label) ?? ""
             marks[h.id] = label.range(of: #"^[a-z_]+ \d{1,2}:\d{2}$"#, options: [.regularExpression, .caseInsensitive]) == nil ? label : ""
         }
-        let frame = TLFrame(now: now, m: m, topic: topic, marks: marks, acked: acked, renamed: renamed)
+        let frame = TLFrame(now: now, m: m, before: wall.before, topic: topic, marks: marks, acked: acked, renamed: renamed)
         // what a day can hold, with a month either side: a time beyond it is not a time of this day's list
         let reach = 30 * DAY, window = 31.0 * 86_400_000
         var taken: Set<String> = ["now"]

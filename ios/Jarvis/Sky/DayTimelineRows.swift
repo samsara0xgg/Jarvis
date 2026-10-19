@@ -8,6 +8,7 @@ import Foundation
 struct TLFrame {
     let now: Double?                            // the minute of now, on today only
     let m: (Int64) -> Double                    // epoch milliseconds to minutes from the day's own midnight
+    let before: (Int) -> String                 // how a day that many days before this one is said: 昨天, 前天, 10月15日
     let topic: (String) -> String?              // what a talk was about
     let marks: [String: String]                 // the labels of what mattered, by item (an empty one is a star with no words of its own)
     var acked: Set<String> = []                 // the reminders he has just said he knows, before the brain's next answer says it
@@ -46,7 +47,7 @@ extension DayTimelineModel {
             e.kind = .sleep
             e.title = "睡觉"
             e.symbol = "moon.fill"
-            e.detail = rangeText(t0, t1, running: running)
+            e.detail = rangeText(t0, t1, running: running, f)
             let asleep = i.minutes ?? span
             e.right = asleep.map { tlDur(tlInt($0)) } ?? ""
             e.barName = asleep.map { tlHM(tlInt($0)) }; e.barIcon = "moon.fill"
@@ -66,7 +67,7 @@ extension DayTimelineModel {
             e.barName = ring?.name
             e.barIcon = ["home": "house.fill", "school": "graduationcap.fill"][i.kept_place?.role ?? ""] ?? "mappin"
             // a stay still on has its start and how long it has gone; one that ended, its hours and its length
-            e.right = [t1 == nil ? "\(clockDay(t0)) 起" : rangeText(t0, t1, running: false), dur].compactMap { $0 }.joined(separator: " · ")
+            e.right = [t1 == nil ? "\(clockDay(t0, f)) 起" : rangeText(t0, t1, running: false, f), dur].compactMap { $0 }.joined(separator: " · ")
             let where_ = tlText(i.place)
             e.more = [where_, e.kept ? "常去的地方 · " + (given ?? e.title) : nil].compactMap { $0 }
             // where it was: coordinates that are not on the earth are not coordinates
@@ -127,7 +128,7 @@ extension DayTimelineModel {
             let parts = hidden ? [] : [word, unconfirmed ? "还没确认" : nil, tlText(i.place)].compactMap { $0 }
             e.detail = parts.isEmpty ? nil : parts.joined(separator: " · ")
             // opened it says what the line does not: the hours (the row has when it began), that he has said it is his, and for a private one where it came from
-            e.more = [t1 != nil && (span ?? 0) >= 1 ? rangeText(t0, t1, running: false) : nil, hidden ? "来自" + (eventSources[tlText(i.source) ?? ""] ?? "日历") : nil,
+            e.more = [t1 != nil && (span ?? 0) >= 1 ? rangeText(t0, t1, running: false, f) : nil, hidden ? "来自" + (eventSources[tlText(i.source) ?? ""] ?? "日历") : nil,
                       i.source == "mail" && i.confirmed == true ? "你确认过了" : nil].compactMap { $0 }
             e.right = dur ?? ""
             e.waiting = unconfirmed && (now.map { (t1 ?? t0) > $0 } ?? false)
@@ -231,7 +232,7 @@ extension DayTimelineModel {
         switch e.kind {
         case .stay: e.head = e.title + " · " + e.right
         case .sleep: e.head = [e.title, e.detail, e.right.isEmpty ? nil : e.right].compactMap { $0 }.joined(separator: " · ")
-        case .trip: e.head = [e.title, rangeText(t0, t1, running: running), e.right.isEmpty ? nil : e.right].compactMap { $0 }.joined(separator: " · ")
+        case .trip: e.head = [e.title, rangeText(t0, t1, running: running, f), e.right.isEmpty ? nil : e.right].compactMap { $0 }.joined(separator: " · ")
         default: break
         }
         // what mattered: its label is its name (the brain writes `kind HH:MM` when nobody did, which says less than the row does: a star and no new name)
@@ -326,10 +327,14 @@ extension DayTimelineModel {
         }
     }
 
-    /// `09:05–11:25`; a stay that began the evening before says so, and one still on reads `18:50 起`
-    static func rangeText(_ t0: Double, _ t1: Double?, running: Bool) -> String {
-        guard let t1, !running else { return clockDay(t0) + " 起" }
-        return clockDay(t0) + "–" + tlEnd(t1)
+    /// `09:05–11:25`; a stay that began on an earlier day says which, and one still on reads `18:50 起`
+    static func rangeText(_ t0: Double, _ t1: Double?, running: Bool, _ f: TLFrame) -> String {
+        guard let t1, !running else { return clockDay(t0, f) + " 起" }
+        return clockDay(t0, f) + "–" + tlEnd(t1)
     }
-    static func clockDay(_ t: Double) -> String { (t < 0 ? "昨天 " : "") + clock(t) }
+    /// a time of this day as `09:05`, and one before it with its day: `昨天 22:00`, `前天 22:00`, `10月15日 22:00`
+    static func clockDay(_ t: Double, _ f: TLFrame) -> String {
+        guard t < 0 else { return clock(t) }
+        return f.before(Int((-t / DAY).rounded(.up))) + " " + clock(t)
+    }
 }
