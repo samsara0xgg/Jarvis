@@ -1,6 +1,6 @@
 # ADR 0248 — What is on for him is one read-only tool for the rest of today, a day, a span and a find
 
-**Status:** Accepted
+**Status:** Superseded-by-0299
 **Date:** 2026-10-11
 **Supersedes:** the clause of ADR 0127 that puts `get-calendar-view`, `list-todo-task-lists` and `list-todo-tasks` in the shipped `always_loaded` list. Everything else in ADR 0127 stands, and ADR 0036 and ADR 0055 (his calendar and to-dos live in Microsoft; the home reads them without a model) stand as they are.
 
