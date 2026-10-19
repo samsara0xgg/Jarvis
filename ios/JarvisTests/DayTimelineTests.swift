@@ -332,4 +332,101 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertNil(DayTimelineModel.missingText([]))
         XCTAssertNil(DayTimelineModel.missingText(["something new"]))
     }
+
+    // MARK: what a row he has open tells the brain (ADR 0214)
+
+    func testARowOfAKindTheHostKnowsIsTheChipWithItsTitleAsTheRowShowsItAndItsStart() throws {
+        let m = build(TimelineFixture.today(cal))
+        XCTAssertEqual(try entry(m, "event-demo-1").about, About(kind: "event", id: "event-demo-1", title: "陶艺课", startMs: at(1320), mark: .next), "not yet")
+        XCTAssertEqual(try entry(m, "reminder-demo-1").about, About(kind: "reminder", id: "reminder-demo-1", title: "给 Mia 回电话", startMs: at(1380), mark: .next))
+        XCTAssertEqual(try entry(m, "talk-1").about, About(kind: "talk", id: "talk-1", title: "明天下午有什么安排？", startMs: at(612), mark: .done), "named for its topic; hers, and over")
+        XCTAssertEqual(try entry(m, "call-demo-1").about, About(kind: "call", id: "call-demo-1", title: "和 Mia 聊了很久", startMs: at(1000), mark: .lit), "named for the label it was given; his, and over")
+        XCTAssertEqual(try entry(m, "stay-1").about?.title, "家")
+        XCTAssertEqual(try entry(m, "stay-13").about?.mark, .work, "still on")
+        XCTAssertEqual(try entry(m, "sleep-0").about?.kind, "sleep")
+        XCTAssertEqual(try entry(m, "move-3").about?.kind, "move")
+    }
+
+    func testAPrivateEventGivesTheChipNoMoreThanTheRowSays() throws {
+        let r = try reply(#"{"id": "event-p", "lane": "you", "kind": "event", "state": "next", "start_ms": \#(at(1400)), "end_ms": \#(at(1430)), "title": "Counselling", "private": true, "place": "Clinic"}"#)
+        XCTAssertEqual(build(r).entries.first { $0.id == "event-p" }?.about?.title, "私事")
+    }
+
+    func testARowOfAKindTheHostDoesNotKnowOrWithAnIdItWouldRefuseGivesNoChip() throws {
+        let m = build(TimelineFixture.today(cal))
+        for id in ["ride-8", "picture-pic-demo-1", "now"] { XCTAssertNil(try entry(m, id).about, id) }
+        let dep = try reply(#"{"id": "departure-1", "lane": "you", "kind": "departure", "state": "next", "start_ms": \#(at(1400)), "end_ms": \#(at(1400)), "route": "12"}"#)
+        XCTAssertNil(build(dep, now: nil).entries[0].about)
+        let odd = try reply(#"{"id": "event a", "lane": "you", "kind": "event", "state": "next", "start_ms": \#(at(1400)), "end_ms": \#(at(1430)), "title": "x"}"#)
+        XCTAssertEqual(build(odd).entries.first { $0.id == "event a" }?.title, "x", "the row is there")
+        XCTAssertNil(build(odd).entries.first { $0.id == "event a" }?.about, "a space is not in the id set")
+    }
+
+    /// the engine, as it is when he talks with the timeline on: `HomeModule` timeline, the day on show the made-up one
+    private func withTimeline(_ body: (StarEngine) -> Void) {
+        let kept = HomeModule.shared.kind
+        HomeModule.shared.kind = .timeline
+        defer { HomeModule.shared.kind = kept; MainActor.assumeIsolated { AboutNow.current = nil } }
+        let e = StarEngine()
+        e.ui.tl.fixture = .init(replies: [0: TimelineFixture.today(cal)], now: TimelineFixture.now)
+        e.ui.tl.day = e.ui.tl.today
+        body(e)
+    }
+
+    func testTheRowOpenInTheListIsTheChipWhenATurnGoesOut() {
+        withTimeline { e in
+            e.captureAbout()
+            XCTAssertNil(e.ui.about, "no row open, no chip")
+            e.ui.tl.openRow = "event-demo-1"
+            e.captureAbout()
+            XCTAssertEqual(e.ui.about, About(kind: "event", id: "event-demo-1", title: "陶艺课", startMs: at(1320), mark: .next))
+            MainActor.assumeIsolated { XCTAssertEqual(AboutNow.current?.id, "event-demo-1", "the voice says it too") }
+            // another row opened is another item; one of a kind the host does not know leaves the chip as it is
+            e.ui.tl.openRow = "talk-1"
+            e.captureAbout()
+            XCTAssertEqual(e.ui.about?.id, "talk-1")
+            e.ui.tl.openRow = "ride-8"
+            e.captureAbout()
+            XCTAssertEqual(e.ui.about?.id, "talk-1")
+        }
+    }
+
+    func testTheChipHeTookOffStaysOffWhileThatRowIsTheOpenOne() {
+        withTimeline { e in
+            e.ui.tl.openRow = "event-demo-1"
+            e.captureAbout()
+            e.dropAbout()
+            XCTAssertNil(e.ui.about)
+            e.captureAbout()
+            XCTAssertNil(e.ui.about)
+            e.ui.tl.openRow = "talk-1"
+            e.captureAbout()
+            XCTAssertEqual(e.ui.about?.id, "talk-1")
+        }
+    }
+
+    func testAWaitingCardIsNotARowOfTheDayAndGivesNoChip() {
+        withTimeline { e in
+            e.ui.tl.openCard = "clarification-Qdebug01"
+            e.captureAbout()
+            XCTAssertNil(e.ui.about)
+            e.ui.tl.openRow = "no-such-row"
+            e.captureAbout()
+            XCTAssertNil(e.ui.about)
+        }
+    }
+
+    func testTheDialsOwnOpenStarIsTheChipOnlyWhileTheDialIsTheMiddle() {
+        withTimeline { e in
+            let star = Ev("R-1", 900, .her, .next, "提醒：给 Mia 回电话", "15:00")
+            star.live = true; star.kind = "reminder"; star.startMs = at(900)
+            e.EV.append(star)
+            e.openId = "R-1"
+            e.captureAbout()
+            XCTAssertNil(e.ui.about, "the dial is out of sight: what it had open is not what he is looking at")
+            HomeModule.shared.kind = .stars
+            e.captureAbout()
+            XCTAssertEqual(e.ui.about?.id, "R-1")
+        }
+    }
 }

@@ -63,6 +63,18 @@ final class TimelineState {
         return NOW1 - Double(day) * DAY
     }
 
+    /// what the brain told of the day on show (a debug build's made-up day stands in for it)
+    var reply: DayReply? {
+        #if DEBUG
+        if let f = fixture { return f.replies[day - today] }
+        #endif
+        return BrainLink.shared.days[Cal.cur.iso(day)]
+    }
+    /// the day on show as the list has it
+    func model(_ r: DayReply) -> DayTimelineModel {
+        DayTimelineModel.build(r, day: day, now: nowMinute(), topic: { TalkTopics.shared.topic($0) })
+    }
+
     func scroll(to y: Double, animated: Bool) { request = ScrollRequest(y: y, animated: animated, n: request.n + 1) }
 
     /// The timeline opens afresh: the bar and the rows are put back to before their entry, with no motion, and run it when the day is there.
@@ -145,19 +157,16 @@ struct DayTimelineView: View {
 
     private func shownNow() -> Shown {
         #if DEBUG
-        if let f = tl.fixture {
-            guard let r = f.replies[tl.day - tl.today] else { return .sentence("这一天没有记下什么。") }
-            return .model(build(r))
+        if tl.fixture != nil {
+            guard let r = tl.reply else { return .sentence("这一天没有记下什么。") }
+            return .model(tl.model(r))
         }
         #endif
         let link = BrainLink.shared
         guard link.hasToken else { return .sentence("还没连上大脑，连上以后这里会排出你的一天。") }
-        guard let r = link.days[Cal.cur.iso(tl.day)] else { return link.errorMessage.map { .sentence($0) } ?? .loading }
-        let m = build(r)
+        guard let r = tl.reply else { return link.errorMessage.map { .sentence($0) } ?? .loading }
+        let m = tl.model(r)
         return m.isEmpty ? .sentence("这一天没有记下什么。") : .model(m)
-    }
-    private func build(_ r: DayReply) -> DayTimelineModel {
-        DayTimelineModel.build(r, day: tl.day, now: tl.nowMinute(), topic: { TalkTopics.shared.topic($0) })
     }
     private func isReady(_ s: Shown) -> Bool { if case .loading = s { return false }; return true }
     /// once the day is there, the bar grows in and the first rows rise (on the next turn, so they have been drawn as they were before)

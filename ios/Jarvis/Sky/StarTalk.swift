@@ -26,11 +26,27 @@ extension StarEngine {
         wake()
     }
 
-    /// The chip for the star that is open, when a turn is about to go out and the phone is paired (ADR 0214). He can take it off; it stays off for that star.
+    /// The chip for the item that is open, when a turn is about to go out and the phone is paired (ADR 0214): the star the dial has open, or the row the timeline has open.
+    /// He can take it off; it stays off for that item.
     func captureAbout() {
-        guard BrainLink.shared.hasToken, let id = openId, let e = byId(id), var a = About.of(e), a.id != ui.about?.id, a.id != aboutDropped else { return }
-        a.mark = kdOf(e)
+        guard paired, let a = openAbout(), a.id != ui.about?.id, a.id != aboutDropped else { return }
         setAbout(a)
+    }
+    private var paired: Bool {
+        #if DEBUG
+        if ui.tl.fixture != nil { return true }         // the timeline's made-up day stands for a paired phone
+        #endif
+        return BrainLink.shared.hasToken
+    }
+    /// what is open, as the host is told of it: in the timeline the row opened in the list, as that row shows it; else the star the dial has open
+    private func openAbout() -> About? {
+        if HomeModule.shared.isTimeline {
+            guard let id = ui.tl.openRow, let r = ui.tl.reply else { return nil }
+            return ui.tl.model(r).entries.first { $0.id == id }?.about
+        }
+        guard let id = openId, let e = byId(id), var a = About.of(e) else { return nil }
+        a.mark = kdOf(e)
+        return a
     }
     func setAbout(_ a: About?) {
         ui.about = a

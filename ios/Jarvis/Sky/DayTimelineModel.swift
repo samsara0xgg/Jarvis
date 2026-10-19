@@ -35,6 +35,7 @@ struct TLEntry: Identifiable, Equatable {
     var later = false               // not yet: after the line for now
     var talkStart: Int64?           // a talk: when it began, for 全部 ›
     var attachment: String?         // a picture: the brain's name for it
+    var about: About?               // the chip it gives a talk while it is the row opened (ADR 0214): only an item of a kind the brain's host knows
 
     var height: Double {
         switch kind {
@@ -234,6 +235,9 @@ struct DayTimelineModel: Equatable {
                 continue            // a kind this phone does not know yet: left out, not guessed at
             }
             if let label = marks[i.id], e.kind != .stay { e.title = label; e.lit = true }
+            if About.kinds.contains(i.kind), About.fits(id: i.id) {
+                e.about = About(kind: i.kind, id: i.id, title: e.title, startMs: i.start_ms, mark: Self.mark(i, later: later))
+            }
             out.append((e.kind == .sleep ? 0 : e.kind == .stay ? 1 : e.kind == .trip ? 2 : 3, e))
         }
 
@@ -256,6 +260,16 @@ struct DayTimelineModel: Equatable {
         let names = ["phone": "手机的记录", "reminders": "提醒", "mac": "Mac 的时间", "talks": "对话", "calendar": "日历", "departures": "公交"]
         let m = missing.compactMap { names[$0] }
         return m.isEmpty ? nil : "还没读到：" + m.joined(separator: "、")
+    }
+
+    /// the mark the chip wears: the one the dial gives the same item (`StarEngine.kdOf`)
+    private static func mark(_ i: DayItem, later: Bool) -> Kd {
+        if later { return .next }
+        switch i.state {
+        case "done": return i.lane == "her" ? .done : .lit
+        case "now": return .work
+        default: return .next
+        }
     }
 
     private static let moves: [String: (String, String)] = [

@@ -74,7 +74,7 @@ enum TimelineFixture {
 extension StarEngine {
     /// `-scene 时间线` puts the timeline on the made-up day (now 21:50), whatever the setting was; the words after a colon go further:
     /// `:早上` the list at the morning, `:对话` a talk opened, `:照片` the picture opened, `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
-    /// a moment later), `:新增` a talk coming in a moment later, `:走时` the clock moving on a minute a moment later, `:昨天` the day before, `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
+    /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:新增` a talk coming in a moment later, `:走时` the clock moving on a minute a moment later, `:昨天` the day before, `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
     func runTimelineScene(_ name: String) {
         RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
         switchWorld(real: true)
@@ -103,6 +103,21 @@ extension StarEngine {
         case "早上": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in
             if let e = model.entry(at: 9 * 60 + 30), let y = model.top(of: e.id) { ui.tl.scroll(to: y, animated: false) } }
         case "对话": show("talk-1", open: true)
+        case "关于":
+            show("event-demo-1", open: true)
+            // an earlier round of talk, so the new one is the second, as it is for him
+            let at = Date().addingTimeInterval(-3 * 3600), stamp = TalkStream.dayId(at, cal.cal) + "T" + TalkStream.clock(at, cal.cal) + ":00"
+            MainActor.assumeIsolated {
+                Conversation.shared.debugSet([ConversationRow(seq: 1, source: "allen", ts: stamp, text: "明天下午有什么安排？"),
+                                              ConversationRow(seq: 2, source: "jarvis", ts: stamp, text: "<voice>下午三点有一个二面，在线上。</voice>")])
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [self] in
+                captureAbout()              // what a typed turn does as it goes out: the open row is the chip
+                beginTalk(); lingerHold = true
+                addTurn(his: true, "把它推到明天")
+                addTurn(his: false, "好，我把陶艺课推到明天晚上十点。")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.6) { [self] in openPanel(quiet: true) }
         case "照片": show("picture-pic-demo-1", open: true)
         case "昨天": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.setDay(ui.tl.today - 1) }
         case "新增": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in ui.tl.fixture?.replies[0] = TimelineFixture.today(cal, late: true) }
