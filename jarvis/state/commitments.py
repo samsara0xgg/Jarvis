@@ -9,7 +9,7 @@ day line all read the same fold.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
@@ -143,6 +143,40 @@ def live(conn: sqlite3.Connection) -> list[Commitment]:
     return sorted(
         (c for c in fold(conn).values() if c.dropped is None), key=lambda c: c.start_at
     )
+
+
+def live_one(conn: sqlite3.Connection, commitment_id: str) -> Commitment:
+    """The commitment ``commitment_id`` names, not dropped; ``LookupError`` when there is none."""
+    one = fold(conn).get(commitment_id)
+    if one is None or one.dropped is not None:
+        msg = f"no commitment {commitment_id!r}, or it was dropped"
+        raise LookupError(msg)
+    return one
+
+
+def confirm(
+    conn: sqlite3.Connection, commitment_id: str, *, actor: str = "jarvis_runtime",
+) -> bool:
+    """He says a commitment a mail made is his: a ``noted`` with ``confirmed`` set.
+
+    Whether anything was written: False when it was confirmed already. ``LookupError`` when there
+    is no such live commitment. ``keep(confirm=)`` and the day line's button are this call.
+    """
+    one = live_one(conn, commitment_id)
+    if one.confirmed:
+        return False
+    note(conn, replace(one, confirmed=True), actor=actor)
+    return True
+
+
+def cancel(conn: sqlite3.Connection, commitment_id: str, *, actor: str = "jarvis_runtime") -> None:
+    """He says a live commitment is off: a ``dropped`` with ``he_dropped``; the day line's button.
+
+    ``LookupError`` when there is no such live commitment. ``keep(cancel=)`` drops with the same
+    reason (``not_his`` when it also stops that sender's later mail).
+    """
+    live_one(conn, commitment_id)
+    drop(conn, commitment_id, "he_dropped", actor=actor)
 
 
 def sender_rules(conn: sqlite3.Connection) -> dict[str, str]:

@@ -9,7 +9,6 @@ nothing.
 
 from __future__ import annotations
 
-import dataclasses
 import threading
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
@@ -409,13 +408,10 @@ class _Keeper:
         with self._lock:
             one = self._appointment_by_id(commitment_id, ctx, whole=whole)
             what = f'the appointment "{_cut(one.title, _SHOWN_CHARS)}"'
-            if one.confirmed:
-                summary = f"Already confirmed, nothing changed: {what}."
-            else:
-                commitments.note(
-                    ctx.conn, dataclasses.replace(one, confirmed=True), actor="jarvis_llm",
-                )
+            if commitments.confirm(ctx.conn, commitment_id, actor="jarvis_llm"):
                 summary = f"Confirmed {what}."
+            else:
+                summary = f"Already confirmed, nothing changed: {what}."
             if whole:
                 summary += self._sender_rule(one, "always", ctx)
         return {"summary": summary, "kind": "appointment", "id": commitment_id, "text": one.title}
@@ -437,13 +433,14 @@ class _Keeper:
         commitment_id: str, ctx: ToolContext, *, whole: bool,
     ) -> commitments.Commitment:
         """The live appointment; with ``whole``, a mail-made one, before anything is written."""
-        one = commitments.fold(ctx.conn).get(commitment_id)
-        if one is None or one.dropped is not None:
+        try:
+            one = commitments.live_one(ctx.conn, commitment_id)
+        except LookupError:
             msg = (
                 f'keep: no appointment has the id "{commitment_id}" or it was dropped;'
                 ' kept(kind="appointment") lists them with their ids'
             )
-            raise ToolError(msg, code="not_found")
+            raise ToolError(msg, code="not_found") from None
         if whole and not one.sender_domain:
             msg = "keep: that appointment did not come from a mail, so it has no sender to remember"
             raise ToolError(msg, code="invalid_arguments")
