@@ -1,11 +1,11 @@
-"""ADR 0055 — the companion home's routes over replayed Microsoft and Gmail answers.
+"""ADR 0055, 0299 — the companion home's routes over replayed Microsoft and Gmail answers.
 
 The To Do list and task are the services' answers of 2026-09-25 (ids shortened); the weather
-is a faked WeatherKit (ADR 0285); the calendar is empty on the real account, so its events are
-written in Graph's calendarView shape, and the mail in the JSON text blocks the
-Google Workspace server's gmail_search and gmail_get answer. Each check asserts
-what a route serves (what the home renders) or what Jarvis sent to Microsoft or
-Gmail.
+is a faked WeatherKit (ADR 0285); the mail is in the JSON text blocks the Google Workspace
+server's gmail_search and gmail_get answer. Today's events and to-dos are his things (ADR 0299):
+a real event log written through ``things`` and filled from To Do by the real mirror. Each check
+asserts what a route serves (what the home renders), what Jarvis sent to Microsoft or Gmail, or
+what the ledger holds.
 """
 
 from __future__ import annotations
@@ -17,10 +17,10 @@ import json
 import sqlite3
 import threading
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from datetime import time as clock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -31,6 +31,9 @@ from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.execution.tools import ToolError
 from jarvis.runtime.dashboard import MailDrafts, ViewState
 from jarvis.runtime.home import Home
+from jarvis.runtime.inherent_loop import _serve_today, _set_todo
+from jarvis.runtime.things_mirror import ThingsMirror
+from jarvis.state import things
 from jarvis.state.daily_report import save_report
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -51,23 +54,6 @@ TASKS = [
     {
         "status": "notStarted", "title": "CSC370 A3", "id": "AQMkADAw-a3=",
         "dueDateTime": {"dateTime": "2026-09-26T00:00:00.0000000", "timeZone": "UTC"},
-    },
-]
-EVENTS = [
-    {
-        "id": "ev-call", "subject": "Call with Mom", "isAllDay": False, "isCancelled": False,
-        "start": {"dateTime": "2026-09-26T01:00:00.0000000", "timeZone": "UTC"},
-        "end": {"dateTime": "2026-09-26T01:30:00.0000000", "timeZone": "UTC"},
-    },
-    {
-        "id": "ev-day", "subject": "Reading week", "isAllDay": True, "isCancelled": False,
-        "start": {"dateTime": "2026-09-25T00:00:00.0000000", "timeZone": "UTC"},
-        "end": {"dateTime": "2026-09-26T00:00:00.0000000", "timeZone": "UTC"},
-    },
-    {
-        "id": "ev-off", "subject": "Cancelled", "isAllDay": False, "isCancelled": True,
-        "start": {"dateTime": "2026-09-25T20:00:00.0000000", "timeZone": "UTC"},
-        "end": {"dateTime": "2026-09-25T21:00:00.0000000", "timeZone": "UTC"},
     },
 ]
 # gmail_get's metadata answers; gmail_search lists them in this order, which is not
@@ -110,10 +96,11 @@ LETTERS: list[dict[str, Any]] = [
         "to": "allen@example.com", "date": "Thu, 25 Sep 2026 09:00:00 -0700",
     },
 ]
+# The calendar is empty on the real account: the mirror reads no event, so Today's events are
+# the ones a test writes to the ledger.
 ANSWERS = {
     "list-todo-task-lists": [LIST],
     "list-todo-tasks": TASKS,
-    "get-calendar-view": EVENTS,
 }
 
 
@@ -175,25 +162,56 @@ def _flag(call: Any, name: str) -> Any:  # noqa: ANN401 — a route's (ids, flag
     return run
 
 
+LOCAL = ZoneInfo(ZONE)
+WROTE = datetime(2026, 10, 14, 9, 0, tzinfo=LOCAL)  # a test's things are written from here
+TODO = f"{LIST['id']}|AQMkADAw-repack="  # the mirrored to-do with no time
+TODO_DUE = f"{LIST['id']}|AQMkADAw-a3="  # the mirrored to-do due 2026-09-26
+
+
+class Ledger(NamedTuple):
+    """His things in a real event log, and the real mirror that reads the fake To Do into it."""
+
+    path: Path
+    conn: sqlite3.Connection
+    server: _Microsoft
+    mirror: ThingsMirror
+
+
+@pytest.fixture
+def ledger(tmp_path: Path) -> Iterator[Ledger]:
+    """An empty event log for his things, with the mirror between it and a fake Microsoft."""
+    path = tmp_path / "events.db"
+    conn = open_event_log(path)
+    server = _Microsoft()
+    mirror = ThingsMirror(_Connections(server), path, LOCAL)  # type: ignore[arg-type]
+    mirror.now = lambda: (WROTE + timedelta(hours=1)).astimezone(UTC)  # after every _put
+    yield Ledger(path, conn, server, mirror)
+    conn.close()
+
+
 def _client(
     home: Home, conn: sqlite3.Connection | None = None, view: ViewState | None = None,
+    *, ledger: Ledger | None = None,
 ) -> TestClient:
-    """The routes wired the way the daemon wires them (runtime/inherent_loop.py)."""
+    """The routes wired the way the daemon wires them (runtime/inherent_loop.py).
 
-    async def set_todo(todo_id: str, done: bool) -> None:  # noqa: FBT001 — the route's body.
-        await asyncio.to_thread(functools.partial(home.set_todo, todo_id, done=done))
+    Today's two read and tick his things, so they are there only with a ``ledger``.
+    """
 
     async def archive(ids: list[str], archive: bool) -> None:  # noqa: FBT001 — the route's body.
         await asyncio.to_thread(functools.partial(home.archive, ids, undo=not archive))
 
+    today: dict[str, Any] = {} if ledger is None else {
+        "today_read": functools.partial(_serve_today, ledger.path, LOCAL, home.weather),
+        "todo_set": functools.partial(_set_todo, home, ledger.mirror, ledger.path, LOCAL),
+    }
     return TestClient(create_app(InherentDeps(
         submit_callable=lambda _text: None,
         broadcaster=InherentBroadcaster(),
-        today_read=functools.partial(asyncio.to_thread, home.today),
-        todo_set=set_todo,
         mail_read=functools.partial(asyncio.to_thread, home.mail),
         mail_archive=archive,
         brief_read=None if conn is None else functools.partial(home.brief, conn),
+        **today,
         # ADR 0148: the mail page's routes, wired as inherent_loop wires them.
         **({} if view is None else {
             "mail_letter": functools.partial(asyncio.to_thread, home.letter),
@@ -215,38 +233,119 @@ def _home(
 ) -> Home:
     return Home(
         _Connections(server, gmail),  # type: ignore[arg-type]
-        (ZONE, ZoneInfo(ZONE)),
+        (ZONE, LOCAL),
         {"latitude": 49.28, "longitude": -123.12, "country_code": "CA"},
         weatherkit=kit,
     )
 
 
-def test_today_serves_calendar_open_todos_and_weather(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+def _day() -> date:
+    """Today on his clock: the day the route reads."""
+    return datetime.now(LOCAL).date()
+
+
+def _at(day: date, hour: int, minute: int = 0) -> datetime:
+    return datetime.combine(day, clock(hour, minute), LOCAL)
+
+
+def _iso(moment: datetime) -> str:
+    return moment.isoformat(timespec="seconds")
+
+
+def _put(  # noqa: PLR0913 — a thing's words, and its one kind of time.
+    ledger: Ledger, number: int, title: str, kind: str = "go", *, start_at: str = "",
+    end_at: str = "", on_day: str = "", last_day: str = "", due: str = "",
+) -> str:
+    """One thing of his, written as her tool writes it; ``number`` makes its id and its minute."""
+    thing_id = f"thing-{number:032x}"
+    held = things.Thing(
+        thing_id, title, kind, start_at=start_at, end_at=end_at, on_day=on_day,
+        last_day=last_day, due=due,
+    )
+    things.add(
+        ledger.conn, held, by="her", evidence="said", zone=LOCAL,
+        now=WROTE + timedelta(minutes=number),
+    )
+    return thing_id
+
+
+def _close(ledger: Ledger, thing_id: str, state: str = "done") -> None:
+    things.close(
+        ledger.conn, thing_id, state, by="her", evidence="said", zone=LOCAL,
+        now=WROTE + timedelta(minutes=30),
+    )
+
+
+def _thing_events(ledger: Ledger) -> list[tuple[str, str]]:
+    """Every write to a thing as (event type, actor), oldest first."""
+    with contextlib.closing(sqlite3.connect(ledger.path)) as conn:
+        return conn.execute(
+            "SELECT type, actor FROM events WHERE type LIKE 'thing.%' ORDER BY id",
+        ).fetchall()
+
+
+def _todo_ids(client: TestClient) -> list[str]:
+    return [one["id"] for one in client.get("/inherent/today").json()["todos"]]
+
+
+def test_today_serves_his_events_and_to_dos_from_the_ledger_and_the_weather(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ledger: Ledger,
 ) -> None:
-    """GET /inherent/today: timed and all-day events, open to-dos due by day's end, 3-hourly sky."""
+    """GET /inherent/today: his things on the local day, those with no hour, and 3-hourly sky."""
+    day = _day()
+    yesterday, tomorrow = day - timedelta(days=1), day + timedelta(days=1)
+    put = functools.partial(_put, ledger)
+    # On the card, soonest first: one that began last night, an all-day one, a timed one with no
+    # end (an hour) and one with an end.
+    night = put(1, "Night shift", start_at=_iso(_at(yesterday, 23)), end_at=_iso(_at(day, 0, 30)))
+    reading = put(2, "Reading week", on_day=day.isoformat())
+    call = put(3, "Call with Mom", start_at=_iso(_at(day, 8, 30)))
+    dentist = put(4, "Dentist", start_at=_iso(_at(day, 15)), end_at=_iso(_at(day, 16)))
+    # Left out: tomorrow's, one that starts as tomorrow does, one that ended as today began, one
+    # done and one cancelled.
+    put(5, "Lunch with Sam", start_at=_iso(_at(tomorrow, 12)))
+    put(6, "Midnight start", start_at=_iso(_at(tomorrow, 0)))
+    put(7, "Late class", start_at=_iso(_at(yesterday, 22)), end_at=_iso(_at(day, 0)))
+    _close(ledger, put(8, "Standup", start_at=_iso(_at(day, 10))))
+    _close(ledger, put(9, "Cancelled meeting", start_at=_iso(_at(day, 11))), "cancelled")
+    # The to-dos: no time, a date, an instant (kept in UTC, shown in his zone), one done, and
+    # the two the mirror makes from To Do (its completed task is not made).
+    buy = put(10, "Buy milk", "do")
+    rent = put(11, "Pay rent", "do", due=(day + timedelta(days=3)).isoformat())
+    form = put(12, "Send form", "do", due=_at(tomorrow, 20).astimezone(UTC).isoformat())
+    _close(ledger, put(13, "Old chore", "do"))
+    assert ledger.mirror.sync() == 2
+    ledger.server.calls.clear()
+
     net = _weather_answers(monkeypatch)
-    server = _Microsoft()
     kit = kit_for(make_key(tmp_path)[0])
-    reply = _client(_home(server, kit=kit)).get("/inherent/today")
+    reply = _client(_home(ledger.server, kit=kit), ledger=ledger).get("/inherent/today")
     assert reply.status_code == 200
     body = reply.json()
+    assert set(body) == {"events", "todos", "weather"}
     assert body["events"] == [
         {
-            "id": "ev-call", "title": "Call with Mom",
-            "start": "2026-09-26T01:00:00+00:00", "end": "2026-09-26T01:30:00+00:00",
+            "id": night, "title": "Night shift",
+            "start": _iso(_at(yesterday, 23)), "end": _iso(_at(day, 0, 30)),
+        },
+        {"id": reading, "title": "Reading week", "start": _iso(_at(day, 0)), "all_day": True},
+        {
+            "id": call, "title": "Call with Mom",
+            "start": _iso(_at(day, 8, 30)), "end": _iso(_at(day, 9, 30)),
         },
         {
-            "id": "ev-day", "title": "Reading week",
-            "start": "2026-09-25T00:00:00-07:00", "all_day": True,
+            "id": dentist, "title": "Dentist",
+            "start": _iso(_at(day, 15)), "end": _iso(_at(day, 16)),
         },
     ]
+    # In the ledger's order: the ones with a date or an instant, soonest first, then the ones with
+    # none, oldest first. A to-do made from To Do keeps To Do's id, so a tick on it reaches To Do.
     assert body["todos"] == [
-        {"id": "AQMkADAw-list=|AQMkADAw-repack=", "title": "repack jarvis"},
-        {
-            "id": "AQMkADAw-list=|AQMkADAw-a3=", "title": "CSC370 A3",
-            "due": "2026-09-26T23:59:00-07:00",
-        },
+        {"id": TODO_DUE, "title": "CSC370 A3", "due": "2026-09-26T23:59:00-07:00"},
+        {"id": form, "title": "Send form", "due": _iso(_at(tomorrow, 20))},
+        {"id": rent, "title": "Pay rent", "due": _iso(_at(day + timedelta(days=3), 23, 59))},
+        {"id": buy, "title": "Buy milk"},
+        {"id": TODO, "title": "repack jarvis"},
     ]
     first = NOW.replace(minute=0, second=0).astimezone(UTC)
     assert body["weather"] == {
@@ -257,7 +356,7 @@ def test_today_serves_calendar_open_todos_and_weather(
                 "at": (first + timedelta(hours=3 * n)).isoformat(),
                 "kind": "cloud" if n == 0 else "rain",
                 "temp_c": round(
-                    10.0 + (first + timedelta(hours=3 * n)).astimezone(ZoneInfo(ZONE)).hour / 4,
+                    10.0 + (first + timedelta(hours=3 * n)).astimezone(LOCAL).hour / 4,
                     1,
                 ),
             }
@@ -268,58 +367,147 @@ def test_today_serves_calendar_open_todos_and_weather(
     assert net.hosts() == ["weatherkit.apple.com"]
     assert "/49.28/-123.12" in net.asked[0]
     assert "countryCode=CA" in net.asked[0]
-    # The calendar is read for the local day the request falls on.
-    view = next(args for tool, args in server.calls if tool == "get-calendar-view")
-    start = datetime.fromisoformat(view["startDateTime"])
-    assert start.timetz() == clock(tzinfo=start.tzinfo)
-    assert start.date() == datetime.now(ZoneInfo(ZONE)).date()
-    assert datetime.fromisoformat(view["endDateTime"]) - start == timedelta(days=1)
-    assert {"todoTaskListId": "AQMkADAw-list=", "fetchAllPages": True} in [
-        args for tool, args in server.calls if tool == "list-todo-tasks"
-    ]
+    # The card is the ledger's: Microsoft is not asked.
+    assert ledger.server.calls == []
 
 
-def test_weather_failure_keeps_the_calendar(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+@pytest.mark.parametrize(
+    ("first", "last", "shown"),
+    [(0, 0, True), (-1, 1, True), (0, 2, True), (-3, 0, True), (-3, -1, False), (1, 3, False)],
+)
+def test_an_all_day_thing_over_several_days_is_on_each_day_from_that_days_midnight(
+    ledger: Ledger, first: int, last: int, shown: bool,  # noqa: FBT001 — a table row.
+) -> None:
+    """On any of its days the card starts it at that day's midnight, not where it began."""
+    day = _day()
+    begin, end = day + timedelta(days=first), day + timedelta(days=last)
+    conference = _put(
+        ledger, 1, "Conference", on_day=begin.isoformat(),
+        last_day=end.isoformat() if last > first else "",
+    )
+    body = _client(_home(None), ledger=ledger).get("/inherent/today").json()
+    assert body["events"] == (
+        [{"id": conference, "title": "Conference", "start": _iso(_at(day, 0)), "all_day": True}]
+        if shown else []
+    )
+
+
+def test_today_does_not_need_microsoft(ledger: Ledger) -> None:
+    """Microsoft not connected: the card still has the ledger's rows, and a To Do tick is a 404."""
+    day = _day()
+    visit = _put(ledger, 1, "Dentist", start_at=_iso(_at(day, 15)), end_at=_iso(_at(day, 16)))
+    assert ledger.mirror.sync() == 2  # while it was connected
+    client = _client(_home(None), ledger=ledger)
+    reply = client.get("/inherent/today")
+    assert reply.status_code == 200
+    assert reply.json() == {
+        "events": [{
+            "id": visit, "title": "Dentist",
+            "start": _iso(_at(day, 15)), "end": _iso(_at(day, 16)),
+        }],
+        "todos": [
+            {"id": TODO_DUE, "title": "CSC370 A3", "due": "2026-09-26T23:59:00-07:00"},
+            {"id": TODO, "title": "repack jarvis"},
+        ],
+        "weather": None,
+    }
+    assert client.post("/inherent/today/todo", json={"id": TODO, "done": True}).status_code == 404
+    one = things.by_source(ledger.conn, "todo", TODO)
+    assert one is not None
+    assert one.state == "open"
+
+
+def test_weather_failure_keeps_the_ledgers_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ledger: Ledger,
 ) -> None:
     """WeatherKit down: Today still answers, without weather."""
     _weather_answers(monkeypatch, reachable=False)
     kit = kit_for(make_key(tmp_path)[0])
-    body = _client(_home(_Microsoft(), kit=kit)).get("/inherent/today").json()
+    _put(ledger, 1, "Dentist", start_at=_iso(_at(_day(), 15)))
+    assert ledger.mirror.sync() == 2
+    body = _client(_home(ledger.server, kit=kit), ledger=ledger).get("/inherent/today").json()
     assert body["weather"] is None
-    assert [t["title"] for t in body["todos"]] == ["repack jarvis", "CSC370 A3"]
+    assert [e["title"] for e in body["events"]] == ["Dentist"]
+    assert [t["title"] for t in body["todos"]] == ["CSC370 A3", "repack jarvis"]
 
 
 def test_with_no_weatherkit_key_the_home_shows_no_weather_and_asks_nobody(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, ledger: Ledger,
 ) -> None:
     """No key: Today answers without weather and no request is made."""
     net = _weather_answers(monkeypatch)
-    body = _client(_home(_Microsoft())).get("/inherent/today").json()
-    assert body["weather"] is None
+    body = _client(_home(ledger.server), ledger=ledger).get("/inherent/today").json()
+    assert body == {"events": [], "todos": [], "weather": None}
     assert net.asked == []
 
 
-def test_the_checkbox_writes_the_task_status_to_todo() -> None:
-    """POST /inherent/today/todo sends one update-todo-task per click; a bad id sends none."""
-    server = _Microsoft()
-    client = _client(_home(server))
-    todo = "AQMkADAw-list=|AQMkADAw-repack="
-    assert client.post("/inherent/today/todo", json={"id": todo, "done": True}).status_code == 200
-    assert client.post("/inherent/today/todo", json={"id": todo, "done": False}).status_code == 200
-    assert server.calls == [
+def test_the_checkbox_on_a_to_do_id_writes_the_task_to_todo_and_the_card_follows(
+    ledger: Ledger,
+) -> None:
+    """One update-todo-task per click, To Do first; the mirrored thing and the card follow."""
+    assert ledger.mirror.sync() == 2
+    ledger.server.calls.clear()
+    client = _client(_home(ledger.server), ledger=ledger)
+    assert TODO in _todo_ids(client)
+    assert client.post("/inherent/today/todo", json={"id": TODO, "done": True}).status_code == 200
+    assert TODO not in _todo_ids(client)
+    assert client.post("/inherent/today/todo", json={"id": TODO, "done": False}).status_code == 200
+    assert TODO in _todo_ids(client)
+    assert ledger.server.calls == [
         ("update-todo-task", {
-            "todoTaskListId": "AQMkADAw-list=", "todoTaskId": "AQMkADAw-repack=",
+            "todoTaskListId": LIST["id"], "todoTaskId": "AQMkADAw-repack=",
             "body": {"status": "completed"},
         }),
         ("update-todo-task", {
-            "todoTaskListId": "AQMkADAw-list=", "todoTaskId": "AQMkADAw-repack=",
+            "todoTaskListId": LIST["id"], "todoTaskId": "AQMkADAw-repack=",
             "body": {"status": "notStarted"},
         }),
     ]
-    bad = client.post("/inherent/today/todo", json={"id": "no-bar", "done": True})
-    assert bad.status_code == 400
-    assert len(server.calls) == 2
+    one = things.by_source(ledger.conn, "todo", TODO)
+    assert one is not None
+    assert [(s.what, s.by) for s in one.history] == [
+        ("added", "mirror"), ("done", "him"), ("reopened", "him"),
+    ]
+
+
+def test_the_checkbox_on_a_thing_closes_and_reopens_it_in_the_ledger_alone(
+    ledger: Ledger,
+) -> None:
+    """Done closes it and open reopens it, by him; a click that changes nothing writes nothing."""
+    buy = _put(ledger, 1, "Buy milk", "do")
+    client = _client(_home(ledger.server), ledger=ledger)
+    # (done, the state after it, the writes to the ledger so far)
+    for done, state, writes in [
+        (True, "done", 2), (True, "done", 2), (False, "open", 3), (False, "open", 3),
+    ]:
+        reply = client.post("/inherent/today/todo", json={"id": buy, "done": done})
+        assert reply.status_code == 200
+        assert reply.json() == {"ok": True}
+        assert things.get(ledger.conn, buy).state == state
+        assert len(_thing_events(ledger)) == writes
+        assert (buy in _todo_ids(client)) is (state == "open")
+    clicked = things.get(ledger.conn, buy).history[1:]
+    assert [(s.what, s.by, s.evidence, s.ref) for s in clicked] == [
+        ("done", "him", "ticked on the desktop", buy),
+        ("reopened", "him", "ticked on the desktop", buy),
+    ]
+    assert [actor for _type, actor in _thing_events(ledger)[1:]] == ["user", "user"]
+    assert ledger.server.calls == []
+
+
+@pytest.mark.parametrize(
+    ("todo_id", "status"),
+    [(f"thing-{0xF:032x}", 404), ("no-bar", 400), ("|task", 400), ("list|", 400)],
+)
+def test_a_tick_on_a_thing_that_is_not_there_is_a_404_and_on_a_bad_id_a_400_and_writes_nothing(
+    ledger: Ledger, todo_id: str, status: int,
+) -> None:
+    """The ledger and Microsoft are left as they were."""
+    client = _client(_home(ledger.server), ledger=ledger)
+    reply = client.post("/inherent/today/todo", json={"id": todo_id, "done": True})
+    assert reply.status_code == status
+    assert _thing_events(ledger) == []
+    assert ledger.server.calls == []
 
 
 def test_mail_is_unread_primary_gmail_from_people() -> None:
@@ -615,10 +803,10 @@ def test_a_gmail_error_answer_is_the_homes_502() -> None:
     assert [tool for tool, _args in gmail.calls] == ["gmail_search"]
 
 
-def test_without_microsoft_or_gmail_the_home_says_not_connected() -> None:
-    """No Microsoft or Gmail connection: 404, which the home shows as not connected."""
-    client = _client(_home(None))
-    assert client.get("/inherent/today").status_code == 404
+def test_without_microsoft_or_gmail_the_home_says_not_connected(ledger: Ledger) -> None:
+    """No Microsoft or Gmail: mail and a To Do tick are 404 (not connected); Today answers."""
+    client = _client(_home(None), ledger=ledger)
+    assert client.get("/inherent/today").json() == {"events": [], "todos": [], "weather": None}
     assert client.get("/inherent/mail").status_code == 404
     assert client.post("/inherent/today/todo", json={"id": "a|b", "done": True}).status_code == 404
 

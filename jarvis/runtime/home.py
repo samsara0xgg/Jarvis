@@ -1,9 +1,10 @@
-"""The companion home's reads (ADR 0055): Today, unread mail and the morning brief.
+"""The companion home's reads (ADR 0055): the weather, unread mail and the morning brief.
 
-Calendar and To Do come through the live ``microsoft`` connection's tools and mail
-through the live ``gmail`` connection's, outside any model turn; the weather from
-Apple WeatherKit (ADR 0285). The writes are a to-do's status and a letter's INBOX label, each
-only because Allen clicked it on the home (ADR 0124 for the letters).
+Mail comes through the live ``gmail`` connection's tools, outside any model turn; the weather
+from Apple WeatherKit (ADR 0285). Today's events and to-dos are the ledger of his things
+(ADR 0299), read by the Today route in ``inherent_loop``, not here. The writes are a To Do task's
+status and a letter's INBOX label, each only because Allen clicked it on the home (ADR 0124 for
+the letters).
 """
 
 from __future__ import annotations
@@ -383,7 +384,7 @@ def weather_lookup(
 
 
 class Home:
-    """What the home's Today, mail and brief blocks read; built once at boot."""
+    """What the home's weather, mail and brief blocks read; built once at boot."""
 
     def __init__(  # noqa: PLR0913 — the connections, the zone and the optional parts.
         self,
@@ -429,34 +430,6 @@ class Home:
             return self._connections.client_for(server)
         except ToolError as exc:
             raise LookupError(str(exc)) from exc
-
-    def today(self) -> dict[str, Any]:
-        """Today's calendar, every open to-do and the weather; a weather failure only drops it."""
-        servers = self._servers()
-        start = datetime.combine(datetime.now(self._zone).date(), time(), self._zone)
-        events = [
-            _event(one, self._zone)
-            for one in _calendar_view(servers, start, start + timedelta(days=1))
-        ]
-        return {"events": events, "todos": self.open_todos(), "weather": self._weather()}
-
-    def open_todos(self) -> list[dict[str, Any]]:
-        """Every To Do task not completed, as ``today()`` words them (``id``, ``title``, ``due``).
-
-        Raises:
-            LookupError: the ``microsoft`` server is not connected.
-            ToolError: the server did not answer, or answered with an error.
-        """
-        servers = self._servers()
-        todos = []
-        for one in _graph(servers, "list-todo-task-lists", {"fetchAllPages": True}):
-            tasks = {"todoTaskListId": one["id"], "fetchAllPages": True}
-            todos += [
-                _todo(one["id"], task, self._zone)
-                for task in _graph(servers, "list-todo-tasks", tasks)
-                if task.get("status") != "completed"
-            ]
-        return todos
 
     def day_weather(self, day: date) -> dict[str, Any] | None:
         """WeatherKit's daily row for ``day`` at home (ADR 0285); None without a place or key.
@@ -533,7 +506,8 @@ class Home:
         """
         return _graph(self._servers(), tool, args)
 
-    def _weather(self) -> dict[str, Any] | None:
+    def weather(self) -> dict[str, Any] | None:
+        """Today's weather line; None without a place or key, or when it cannot be read."""
         if self._weather_at is None or self._weatherkit is None:
             return None
         try:
@@ -545,7 +519,7 @@ class Home:
                 first=today, last=today + timedelta(days=1),
             )
             return home_line(body, self._zone_name, kit.clock())
-        except Exception as exc:  # noqa: BLE001 — the calendar and to-dos still show without it.
+        except Exception as exc:  # noqa: BLE001 — Today's events and to-dos still show without it.
             LOGGER.warning("home: weather unreadable: %s: %s", type(exc).__name__, exc)
             return None
 
@@ -777,45 +751,3 @@ def _letter(message: Mapping[str, Any]) -> dict[str, str]:
         "subject": str(message.get("subject") or ""),
         "received": received,
     }
-
-
-def _calendar_view(servers: McpServers, start: datetime, end: datetime) -> list[dict[str, Any]]:
-    """Graph's events of ``[start, end)``, the cancelled ones left out."""
-    view = {
-        "startDateTime": start.isoformat(),
-        "endDateTime": end.isoformat(),
-        "select": "id,subject,start,end,isAllDay,isCancelled",
-        "fetchAllPages": True,
-    }
-    return [one for one in _graph(servers, "get-calendar-view", view) if not one.get("isCancelled")]
-
-
-def _event(event: Mapping[str, Any], zone: tzinfo) -> dict[str, Any]:
-    """Graph answers calendarView in UTC; an all-day event starts at local midnight."""
-    if event.get("isAllDay"):
-        day = date.fromisoformat(str(event["start"]["dateTime"])[:10])
-        return {
-            "id": event["id"],
-            "title": str(event.get("subject") or ""),
-            "start": datetime.combine(day, time(), zone).isoformat(),
-            "all_day": True,
-        }
-    stamp = [
-        datetime.fromisoformat(str(event[key]["dateTime"])).replace(tzinfo=UTC).isoformat()
-        for key in ("start", "end")
-    ]
-    return {
-        "id": event["id"],
-        "title": str(event.get("subject") or ""),
-        "start": stamp[0],
-        "end": stamp[1],
-    }
-
-
-def _todo(list_id: str, task: Mapping[str, Any], zone: tzinfo) -> dict[str, Any]:
-    """To Do keeps a due date, not an instant: it is due by the end of that local day."""
-    row = {"id": f"{list_id}{_ID_SEP}{task['id']}", "title": str(task.get("title") or "")}
-    if task.get("dueDateTime"):
-        day = date.fromisoformat(str(task["dueDateTime"]["dateTime"])[:10])
-        row["due"] = datetime.combine(day, time(23, 59), zone).isoformat()
-    return row

@@ -14,7 +14,6 @@ device's token from any other peer), over a real event log and memory.db in ``tm
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import json
 import sqlite3
@@ -25,7 +24,12 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.runtime.inherent_loop import _act_commitment, _set_highlight, _set_todo
+from jarvis.runtime.inherent_loop import (
+    _act_commitment,
+    _serve_today,
+    _set_highlight,
+    _set_todo,
+)
 from jarvis.runtime.memory_page import MemoryPage
 from jarvis.runtime.things_mirror import ThingsMirror
 from jarvis.shared import lang
@@ -462,12 +466,14 @@ class Checkbox(NamedTuple):
     todo: str  # the id the desktop sends: ``<list id>|<task id>``
 
 
-def _todo_peers(root: Path, microsoft: HomeMicrosoft, mirror: ThingsMirror | None) -> Peers:
+def _todo_peers(
+    root: Path, microsoft: HomeMicrosoft, mirror: ThingsMirror | None, event_log: Path,
+) -> Peers:
     """The checkbox route as the runtime wires it: ``Home`` writes To Do, the mirror follows."""
     home = _home(microsoft)
     return _peers(
-        root, today_read=functools.partial(asyncio.to_thread, home.today),
-        todo_set=functools.partial(_set_todo, home, mirror),
+        root, today_read=functools.partial(_serve_today, event_log, COMMITMENT_ZONE, home.weather),
+        todo_set=functools.partial(_set_todo, home, mirror, event_log, COMMITMENT_ZONE),
     )
 
 
@@ -482,7 +488,7 @@ def checkbox(tmp_path: Path) -> Iterator[Checkbox]:
     mirror.now = lambda: COMMITMENT_NOW.astimezone(UTC)
     assert mirror.sync() > 0
     microsoft.calls.clear()
-    peers = _todo_peers(tmp_path, microsoft, mirror)
+    peers = _todo_peers(tmp_path, microsoft, mirror, log.paths.event_log)
     yield Checkbox(log, peers, microsoft, mirror, f"{TODO_LIST['id']}|AQMkADAw-repack=")
     log.conn.close()
     lang.set_language(before)
@@ -542,7 +548,7 @@ def test_a_ledger_that_cannot_be_written_does_not_fail_the_click(
     lost = ThingsMirror(
         HomeConnections(box.microsoft), root / "missing" / "events.db", COMMITMENT_ZONE,  # type: ignore[arg-type]
     )
-    peers = _todo_peers(root, box.microsoft, lost)
+    peers = _todo_peers(root, box.microsoft, lost, root / "missing" / "events.db")
     body = {"id": box.todo, "done": True}
     assert peers.local.post("/inherent/today/todo", json=body).status_code == 200
     assert [tool for tool, _ in box.microsoft.calls] == ["update-todo-task"]
@@ -556,7 +562,9 @@ def test_a_brain_with_no_mirror_still_ticks_to_do(
 ) -> None:
     """The mirror is optional: with none, the route is To Do's alone."""
     box = checkbox
-    peers = _todo_peers(tmp_path_factory.mktemp("bare"), box.microsoft, None)
+    peers = _todo_peers(
+        tmp_path_factory.mktemp("bare"), box.microsoft, None, box.log.paths.event_log,
+    )
     body = {"id": box.todo, "done": True}
     assert peers.local.post("/inherent/today/todo", json=body).status_code == 200
     assert [tool for tool, _ in box.microsoft.calls] == ["update-todo-task"]

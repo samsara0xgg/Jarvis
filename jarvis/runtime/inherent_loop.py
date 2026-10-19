@@ -5623,14 +5623,107 @@ def _start_meaning_index(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
     ]
 
 
-async def _set_todo(
-    home: Home, mirror: ThingsMirror | None, todo_id: str, done: bool,  # noqa: FBT001 — the route's body.
-) -> None:
-    """``POST /inherent/today/todo``: one To Do write, and the ledger's thing for it (ADR 0299).
+def _today_local(ms: int, zone: tzinfo) -> str:
+    """Epoch milliseconds as ISO 8601 in his zone, to the second."""
+    return datetime.fromtimestamp(ms / 1000, zone).isoformat(timespec="seconds")
 
-    Both are off the loop thread. To Do is written first and the route answers by that write: the
-    ledger follows the click if it can, and the mirror's next pass makes it agree if it cannot.
+
+def _today_event(found: things.Occurrence, midnight_ms: int, zone: tzinfo) -> dict[str, Any]:
+    """One occurrence as the Today card words it.
+
+    An all-day one starts at the day's local midnight, so one over several days is on each.
     """
+    row: dict[str, Any] = {"id": found.thing.thing_id, "title": found.thing.title}
+    if found.all_day:
+        row["start"] = _today_local(max(found.start_ms, midnight_ms), zone)
+        row["all_day"] = True
+    else:
+        row["start"] = _today_local(found.start_ms, zone)
+        row["end"] = _today_local(found.end_ms, zone)
+    return row
+
+
+def _today_todo(one: things.Thing, zone: tzinfo) -> dict[str, Any]:
+    """An open thing with no hour and no day as the Today card words it.
+
+    The id is the To Do id (``<listId>|<taskId>``) for a thing the mirror made from a task, so a
+    tick on it writes To Do. A date-only due is by the end of that local day (23:59), as To Do
+    keeps it.
+    """
+    row: dict[str, Any] = {
+        "id": one.source_ref if one.source == "todo" else one.thing_id, "title": one.title,
+    }
+    if one.due:
+        due = datetime.fromisoformat(one.due)
+        if due.tzinfo is None:  # a bare date
+            due = due.replace(hour=23, minute=59, tzinfo=zone)
+        row["due"] = due.astimezone(zone).isoformat()
+    return row
+
+
+def _read_today(
+    event_log: Path, zone: tzinfo, now_ms: int, weather: Callable[[], dict[str, Any] | None],
+) -> dict[str, Any]:
+    """``GET /inherent/today`` (ADR 0055, 0299): today's events, his open to-dos and the weather.
+
+    Events and to-dos are the ledger of his things, read on a connection of its own, so this runs
+    on a worker thread. ``events`` are the open occurrences of the local day ``now_ms`` is in,
+    soonest first: ``{id, title, start, end}``, or ``{id, title, start, all_day: true}`` with
+    ``start`` the day's midnight. ``todos`` are the open things with no ``start_at`` and no
+    ``on_day`` (a due date, or no time), in :func:`jarvis.state.things.open_things` order:
+    ``{id, title, due?}``. An id is the thing's, but a to-do the mirror made from To Do keeps its
+    To Do id. ``weather`` is the home's line, ``None`` when it has none.
+    """
+    start_ms, end_ms = day_window(datetime.fromtimestamp(now_ms / 1000, zone).date(), zone)
+    with contextlib.closing(open_runtime_event_log(event_log)) as conn:
+        found = things.occurrences(conn, start_ms, end_ms, zone=zone)
+        untimed = [one for one in things.open_things(conn) if not (one.start_at or one.on_day)]
+    return {
+        "events": [_today_event(one, start_ms, zone) for one in found],
+        "todos": [_today_todo(one, zone) for one in untimed],
+        "weather": weather(),
+    }
+
+
+async def _serve_today(
+    event_log: Path, zone: tzinfo, weather: Callable[[], dict[str, Any] | None],
+) -> dict[str, Any]:
+    """:func:`_read_today` off the loop thread, at the brain's clock."""
+    return await asyncio.to_thread(_read_today, event_log, zone, int(time.time() * 1000), weather)
+
+
+def _tick_thing(event_log: Path, zone: tzinfo, thing_id: str, done: bool) -> None:  # noqa: FBT001 — the route's body.
+    """His tick on a thing of the Today card: done closes it, not done opens it again.
+
+    Written by him as "ticked on the desktop"; a thing already as he asked is left alone and
+    nothing is written. ``LookupError`` when no thing has the id.
+    """
+    with contextlib.closing(open_runtime_event_log(event_log)) as conn:
+        state = things.get(conn, thing_id).state
+        write: dict[str, Any] = {
+            "by": "him", "evidence": "ticked on the desktop", "ref": thing_id, "zone": zone,
+            "actor": "user",
+        }
+        if done and state == "open":
+            things.close(conn, thing_id, "done", **write)
+        elif not done and state != "open":
+            things.reopen(conn, thing_id, **write)
+
+
+async def _set_todo(  # noqa: PLR0913 — the route's body, and the log and zone a thing's tick needs.
+    home: Home, mirror: ThingsMirror | None, event_log: Path, zone: tzinfo, todo_id: str,
+    done: bool,  # noqa: FBT001 — the route's body.
+) -> None:
+    """``POST /inherent/today/todo``: a thing's tick in the ledger, or a To Do task's write.
+
+    A ``thing-<hex>`` id is the ledger's alone (:func:`_tick_thing`). Any other id is a To Do
+    task's (ADR 0299): To Do is written first and the route answers by that write, then the thing
+    mirrored for it follows if it can, and the mirror's next pass makes it agree if it cannot.
+    Both are off the loop thread.
+    """
+    if todo_id.startswith(things.ID_PREFIX):
+        await asyncio.to_thread(_tick_thing, event_log, zone, todo_id, done)
+        return
     await asyncio.to_thread(functools.partial(home.set_todo, todo_id, done=done))
     if mirror is not None:
         await asyncio.to_thread(functools.partial(mirror.tick, todo_id, done=done))
@@ -7889,6 +7982,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         if phone_hub is not None and runtime.whereabouts is not None:
             # ADR 0217: a device with its conversation socket open is a phone, and that is said.
             runtime.whereabouts.phone_open = phone_hub.connected
+        local_zone = resolve_zone(None, _work_state_timezone(runtime.config))[1]
         deps = InherentDeps(
             submit_callable=submit_callable,
             attachments=runtime.attachments,
@@ -7982,16 +8076,21 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 )
             ),
             commitment_act=functools.partial(
-                _act_commitment, runtime.runtime_paths.event_log,
-                resolve_zone(None, _work_state_timezone(runtime.config))[1],
+                _act_commitment, runtime.runtime_paths.event_log, local_zone,
             ),
             today_read=(
                 None if runtime.home is None
-                else functools.partial(asyncio.to_thread, runtime.home.today)
+                else functools.partial(
+                    _serve_today, runtime.runtime_paths.event_log, local_zone,
+                    runtime.home.weather,
+                )
             ),
             todo_set=(
                 None if runtime.home is None
-                else functools.partial(_set_todo, runtime.home, runtime.things_mirror)
+                else functools.partial(
+                    _set_todo, runtime.home, runtime.things_mirror,
+                    runtime.runtime_paths.event_log, local_zone,
+                )
             ),
             mail_read=(
                 None if runtime.home is None
