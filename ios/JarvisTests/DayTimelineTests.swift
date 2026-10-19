@@ -429,4 +429,27 @@ final class DayTimelineTests: XCTestCase {
             XCTAssertEqual(e.ui.about?.id, "R-1")
         }
     }
+
+    // MARK: she and her sentence
+
+    func testHerSentenceAndTheBarWaitForHerToGetHomeAndGoWithTheFirstFrameOfHerLeaving() {
+        let kept = HomeModule.shared.kind
+        HomeModule.shared.kind = .stars
+        defer { HomeModule.shared.kind = kept }
+        let e = StarEngine()
+        XCTAssertFalse(e.ui.tlHome)
+        HomeModule.shared.kind = .timeline
+        var waited = 0
+        for _ in 0..<300 {
+            e.syncModule(1.0 / 60)
+            let away = (1 - e.tm) * hypot(TLLayout.her.x - CX, TLLayout.her.y - CY)
+            XCTAssertEqual(e.ui.tlHome, away < 20, "drawn only once she is within 20 pt of her corner")
+            if !e.ui.tlHome { waited += 1 }
+        }
+        XCTAssertGreaterThan(waited, 10, "she is on her way for a while")
+        XCTAssertTrue(e.ui.tlHome)
+        HomeModule.shared.kind = .stars
+        e.syncModule(1.0 / 60)
+        XCTAssertFalse(e.ui.tlHome, "she has hardly moved, and they are gone")
+    }
 }

@@ -29,6 +29,7 @@ extension StarEngine {
         crit(&tms, goal, UIAccessibility.isReduceMotionEnabled ? 30 : 7.5, dt)
         if abs(tms.value - goal) < 0.0005 && abs(tms.velocity) < 0.001 { tms.value = goal; tms.velocity = 0 }
         put(\.tlShow, kind == .timeline || tms.value > 0.001)
+        put(\.tlHome, kind == .timeline && (1 - tm) * hypot(TLLayout.her.x - CX, TLLayout.her.y - CY) < 20)
         if timelineFull {
             // nothing draws the trails any more, and they are only removed when drawn
             sonar.removeAll()

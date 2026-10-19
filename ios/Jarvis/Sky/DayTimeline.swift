@@ -145,12 +145,13 @@ struct DayTimelineView: View {
             }
             .onChange(of: isReady(shown), initial: true) { _, ready in release(ready) }
             .onChange(of: tl.enter) { _, _ in release(isReady(shown)) }
+            .onChange(of: ui.tlHome) { _, _ in release(isReady(shown)) }
             .onChange(of: tl.request) { _, r in if r.y < 0, let m = model { tl.scroll(to: restY(m), animated: true) } }
             .onChange(of: tl.focus) { _, id in if let id { tl.openCard = id; tl.focus = nil } }
         }
         .opacity(on ? 1 : 0)
         .allowsHitTesting(on)
-        .animation(.easeOut(duration: 0.35), value: on)
+        .animation(.easeOut(duration: on ? 0.35 : 0.15), value: on)         // out quickly: she is about to glide down across it
     }
 
     // MARK: what there is to show
@@ -169,9 +170,9 @@ struct DayTimelineView: View {
         return m.isEmpty ? .sentence("这一天没有记下什么。") : .model(m)
     }
     private func isReady(_ s: Shown) -> Bool { if case .loading = s { return false }; return true }
-    /// once the day is there, the bar grows in and the first rows rise (on the next turn, so they have been drawn as they were before)
+    /// once the day is there and she is in her corner, the bar grows in and the first rows rise (on the next turn, so they have been drawn as they were before)
     private func release(_ ready: Bool) {
-        guard ready, !tl.reveal else { return }
+        guard ready, ui.tlHome, !tl.reveal else { return }
         DispatchQueue.main.async { tl.reveal = true }
     }
     /// where the list rests on today: the line for now 60% of the way down what is left under the pinned cards
@@ -194,6 +195,9 @@ struct DayTimelineView: View {
             if let m { bar(m, cells: cells).offset(x: 30, y: TLLayout.barY) }
         }
         .animation(.easeOut(duration: 0.35), value: m?.line)
+        // only once she is in her corner, and gone as soon as she leaves it: she glides across where they stand
+        .opacity(ui.tlHome ? 1 : 0).allowsHitTesting(ui.tlHome)
+        .animation(.easeOut(duration: ui.tlHome ? (reduce ? 0.2 : 0.3) : 0.06), value: ui.tlHome)
     }
 
     private func bar(_ m: DayTimelineModel, cells: [TLCell]) -> some View {

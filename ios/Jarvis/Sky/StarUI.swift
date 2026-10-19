@@ -125,4 +125,5 @@ final class StarUI {
     // the whole-day timeline, which can take the dial's place in the middle of the screen (Sky/DayTimeline.swift)
     let tl = TimelineState()
     var tlShow = HomeModule.shared.isTimeline       // the timeline is drawn: it is the middle of the screen, or the dial is still giving way to it
+    var tlHome = HomeModule.shared.isTimeline       // she is in the timeline's corner (within 20 pt of it): her sentence and the bar are drawn only then, so she never glides over them
 }
