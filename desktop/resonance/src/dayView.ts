@@ -55,6 +55,8 @@ const bool = (v: unknown) => typeof v === 'boolean' ? v : undefined;
 const STRINGS = ['place', 'activity', 'text', 'app', 'route', 'board_stop', 'alight_stop', 'note', 'title', 'source', 'to', 'attachment', 'currency', 'direction', 'counterparty', 'project', 'account', 'credit', 'ended_reason', 'detail'] as const;
 const NUMBERS = ['minutes', 'active_s', 'turns', 'messages', 'chats', 'energy_kcal', 'distance_m', 'avg_hr'] as const;
 const FLAGS = ['confirmed', 'private', 'fired', 'acknowledged'] as const;
+// The id of the change a place write made, to take it back: the brain says it as a string (`place-change:<hex>`), or null when nothing changed.
+export const changeId = (raw: unknown) => typeof raw === 'string' && raw ? raw : isObj(raw) && typeof raw.id === 'string' ? raw.id : null;
 export function tidy(raw: unknown): DayItem | null {
   if (!isObj(raw)) return null;
   const { id, kind, start_ms: start, end_ms: end } = raw;
