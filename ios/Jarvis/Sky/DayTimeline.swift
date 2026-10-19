@@ -177,6 +177,8 @@ struct DayTimelineView: View {
             if let line = m?.line {
                 Text(line).font(.system(size: 15)).lineSpacing(3).foregroundStyle(ink.opacity(0.9)).lineLimit(2)
                     .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
+                    .opacity(scrub == nil ? 1 : 0.3)                // a finger on the bar: the time over it reads clearly
+                    .animation(.easeOut(duration: 0.15), value: scrub == nil)
                     .id(line).transition(.opacity)
                     .offset(x: 30, y: TLLayout.lineY)
             }
