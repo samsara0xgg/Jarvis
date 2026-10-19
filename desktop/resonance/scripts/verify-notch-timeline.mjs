@@ -999,6 +999,12 @@ try {
       await a.page.waitForTimeout(700);
       const placed = await a.page.evaluate(() => { const l = document.querySelector('.dt-list'), r = document.querySelector('[data-key="reminder-2"]'); return r.getBoundingClientRect().top - l.getBoundingClientRect().top; });
       check('a click on the pill takes the first row that waits to the top of the list, and it flashes', flashing && Math.abs(placed - 12) <= 2, String(placed));
+      // the edges fade over 16 px where there is more beyond them
+      const edge = async top => { await a.page.evaluate(top => { const l = document.querySelector('.dt-list'); l.scrollTop = top < 0 ? l.scrollHeight : top; }, top); await a.page.waitForTimeout(150); return a.page.evaluate(() => { const l = document.querySelector('.dt-list'); return { above: l.classList.contains('more-above'), below: l.classList.contains('more-below'), mask: getComputedStyle(l).webkitMaskImage }; }); };
+      const e0 = await edge(0), e1 = await edge(300), e2 = await edge(-1);
+      check('the list fades at an edge that has more past it, over 16 px: the bottom alone at the top, both in the middle, the top alone at the end, so a row half under the chips reads as scrolling',
+        !e0.above && e0.below && /rgb\(0, 0, 0\) calc\(100% - 16px\)/.test(e0.mask) && e1.above && e1.below && /16px.*calc\(100% - 16px\)/.test(e1.mask) && e2.above && !e2.below && /rgb\(0, 0, 0\) 16px/.test(e2.mask) && ![e0, e1, e2].some(e => /30px|14px/.test(e.mask)), JSON.stringify([e0, e1, e2]));
+      await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; });
       await a.shot('list-01-rest', { x: 40, y: 0, width: 560, height: 700 });
       await a.ctx.close();
     }
@@ -1021,14 +1027,28 @@ try {
       await openDay(a);
       const au = await audit(a);
       check('a day of talks alone: seven rows and the now line one under another, nothing crowds', au.n === 8 && au.bad.length === 0 && await a.page.locator('.dt-sh').count() === 0, au.bad.join('; '));
+      const vd = await a.page.evaluate(() => { const v = document.querySelector('.dt-void'), tb = document.querySelector('.dt-track').getBoundingClientRect(), now = document.querySelector('.dt-nowtick').getBoundingClientRect(), r = v?.getBoundingClientRect(); return v && { text: v.textContent, color: getComputedStyle(v).color, size: getComputedStyle(v).fontSize, inTrack: r.left >= tb.left - .5 && r.right <= tb.right + .5 && r.top >= tb.top - .5 && r.bottom <= tb.bottom + .5, past: r.right <= now.left + 1.5, centred: Math.abs((r.left + r.right) / 2 - (tb.left + now.left + 1) / 2) < 2, segs: document.querySelectorAll('.dt-seg').length, still: getComputedStyle(v).pointerEvents, faint: getComputedStyle(document.querySelector('.dt-hours')).color }; });
+      check('a day with talks and no place says 没有位置记录 in the empty past of its bar: as faint as the hours under it, centred in the past, inside the bar, and the pointer goes through it',
+        vd && vd.text === '没有位置记录' && vd.segs === 0 && vd.inTrack && vd.past && vd.centred && vd.still === 'none' && vd.size === '11px' && vd.color === vd.faint, JSON.stringify(vd));
       await a.shot('list-04-talks-only', { x: 40, y: 0, width: 560, height: 520 });
       await a.ctx.close();
+    }
+    {
+      // in English; and where the past is too short to hold the words (a talk at 02:10, now 02:30) there are none
+      const a = await boot({ served: talkDay(), lang: 'en' });
+      await openDay(a);
+      check('in English: No location recorded', (await text(a, '.dt-void'))[0] === 'No location recorded');
+      await a.ctx.close();
+      const b = await boot({ served: makeDay({ now_ms: EARLY, items: [ev('n-talk', 'talk', 210, 215, { turns: 2 }, 'her')], labels: [], missing: [], line: null, highlights: [] }), at: EARLY });
+      await openDay(b);
+      check('where the past is too short to hold the words (02:30, the bar from 02:00) there are none', await b.page.locator('.dt-void').count() === 0 && await b.page.locator('.dt-bar').getAttribute('data-from') === '02:00' && await b.page.locator('.dt-seg').count() === 0);
+      await b.ctx.close();
     }
     {
       const a = await boot({ served: earlyDay(), at: EARLY });
       await openDay(a);
       const au = await audit(a);
-      check('at 02:30 with one stay since midnight and an event this afternoon: the now line inside the stay on its rail, the event below it, nothing crowds', au.bad.length === 0 && await a.page.locator('.dt-sh').count() === 1 && (await text(a, '.dt-now'))[0].trim() === '现在 02:30' && (await text(a, '.dt-sh .dt-tm'))[0] === '00:00 起 · 2 时 30 分' && await a.page.locator('.dt-now ~ .dt-row.is-future').count() === 1 && await a.page.locator('.dt-now.is-rail').count() === 1, au.bad.join('; '));
+      check('at 02:30 with one stay since midnight and an event this afternoon: the bar starts at 02:00 (the hour now is in), the now line is inside the stay on its rail, the event below it, nothing crowds', au.bad.length === 0 && await a.page.locator('.dt-bar').getAttribute('data-from') === '02:00' && await a.page.locator('.dt-void').count() === 0 && await a.page.locator('.dt-sh').count() === 1 && (await text(a, '.dt-now'))[0].trim() === '现在 02:30' && (await text(a, '.dt-sh .dt-tm'))[0] === '00:00 起 · 2 时 30 分' && await a.page.locator('.dt-now ~ .dt-row.is-future').count() === 1 && await a.page.locator('.dt-now.is-rail').count() === 1, au.bad.join('; '));
       await a.shot('list-05-early-morning', { x: 40, y: 0, width: 560, height: 520 });
       await a.ctx.close();
     }
@@ -1554,8 +1574,33 @@ try {
       return { span, between: seen.filter(([v]) => Math.abs(v - from) > span * .1 && Math.abs(v - to) > span * .1).length, fading: seen.filter(([, p, q]) => p > .05 && p < .95 || q > .05 && q < .95).length };
     };
     const fl = await follow(xAt(10), xAt(20));
-    check('the card follows the pointer on a spring (on its way for a few frames, then there) and its words cross-fade when the stretch changes', fl.span > 60 && fl.between >= 1 && fl.fading >= 1, JSON.stringify(fl));
+    check('the card follows the pointer on a spring (on its way for a few frames, then there) and its words fade when the stretch changes', fl.span > 60 && fl.between >= 1 && fl.fading >= 1, JSON.stringify(fl));
     await a.move(away.x, away.y); await a.page.waitForTimeout(300);
+
+    // the words change as a fade through, never a cross-fade: every animation of the card is held and its clock set, so the same instants are read each time
+    {
+      await a.move(xAt(14, 20), y); await a.page.waitForTimeout(400);
+      const h0 = (await card()).rect.height;
+      await a.move(xAt(16, 50), y);
+      const got = await a.page.evaluate(async () => {
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const c = document.querySelector('.dt-card:not(.is-range)'), inner = c.querySelector('.dt-card-in'), slots = [...c.querySelectorAll('.dt-slot')], cur = slots.find(e => e.classList.contains('is-cur')), old = slots.find(e => e !== cur);
+        const anims = c.getAnimations({ subtree: true });
+        anims.forEach(x => x.pause());
+        const read = t => { anims.forEach(x => { x.currentTime = t; }); return { t, old: +getComputedStyle(old).opacity, now: +getComputedStyle(cur).opacity, y: new DOMMatrix(getComputedStyle(cur).transform).m42, h: inner.getBoundingClientRect().height }; };
+        const out = [0, 30, 60, 75, 105, 150, 180].map(read);
+        const kinds = anims.map(x => x.transitionProperty ?? 'height');
+        anims.forEach(x => x.cancel());
+        return { out, kinds };
+      });
+      const hf = (await card()).rect.height, [s0, s30, s60, s75, s105, s150, s180] = got.out, apart = (x, v) => Math.abs(x - v) < .06;
+      check('a change of words is a fade through: the old are fading at 30 ms and gone at 60, the new have not begun until 60 and are whole at 150, and never are both seen (the least of the two is 0 at every instant)',
+        apart(s0.old, 1) && apart(s0.now, 0) && apart(s30.old, .5) && apart(s30.now, 0) && apart(s60.old, 0) && apart(s60.now, 0) && s75.old === 0 && s75.now > 0 && s75.now < .3 && apart(s105.now, .5) && apart(s150.now, 1) && apart(s180.now, 1)
+        && got.out.every(x => Math.min(x.old, x.now) < .02), JSON.stringify(got.out));
+      check('the new words come 2 px up: 2 px down while the old go, 0 when they are whole', apart(s60.y, 2) && s105.y > 0 && s105.y < 2 && apart(s150.y, 0), JSON.stringify(got.out.map(x => x.y)));
+      check('and the card\'s height goes from the old words\' to the new words\' over the 150 ms (so the card never jumps)', Math.abs(hf - h0) > 10 && Math.abs(s0.h - h0) < 1 && Math.abs(s150.h - hf) < 1 && s75.h > Math.min(h0, hf) + .5 && s75.h < Math.max(h0, hf) - .5 && got.kinds.includes('height'), JSON.stringify({ h0, hf, hs: got.out.map(x => x.h), kinds: got.kinds }));
+      await a.move(away.x, away.y); await a.page.waitForTimeout(300);
+    }
 
     // a frame sheet of the card, frame by frame (a CDP screencast): coming in under the pointer, then following it to the next stretch
     {
@@ -1743,6 +1788,24 @@ try {
     await a.page.waitForTimeout(100); await a.move(xAt(20), y);
     const lefts = await done, from = lefts[0], to = lefts.at(-1), span = Math.abs(to - from);
     check('and the card is under the pointer from the next frame, with no spring', span > 60 && lefts.filter(v => Math.abs(v - from) > span * .1 && Math.abs(v - to) > span * .1).length === 0, JSON.stringify({ span, lefts: lefts.slice(0, 8) }));
+    {
+      // a change of words under reduced motion: still one after the other, but only fades: no slide, and the card's height does not run
+      await a.move(xAt(14, 20), y); await a.page.waitForTimeout(400);
+      await a.move(xAt(16, 50), y);
+      const got = await a.page.evaluate(async () => {
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const c = document.querySelector('.dt-card:not(.is-range)'), inner = c.querySelector('.dt-card-in'), slots = [...c.querySelectorAll('.dt-slot')], cur = slots.find(e => e.classList.contains('is-cur')), old = slots.find(e => e !== cur);
+        const anims = c.getAnimations({ subtree: true });
+        anims.forEach(x => x.pause());
+        const read = t => { anims.forEach(x => { x.currentTime = t; }); return { t, old: +getComputedStyle(old).opacity, now: +getComputedStyle(cur).opacity, y: new DOMMatrix(getComputedStyle(cur).transform).m42, h: inner.getBoundingClientRect().height }; };
+        const out = [0, 30, 60, 120, 180, 240].map(read), kinds = anims.map(x => x.transitionProperty ?? 'height');
+        anims.forEach(x => x.cancel());
+        return { out, kinds };
+      });
+      const apart = (x, v) => Math.abs(x - v) < .06;
+      check('under reduced motion the words are still not seen together, they only fade (old out in 60 ms, new in over 120 ms after them), they do not slide, and the card\'s height does not run',
+        got.out.every(x => Math.min(x.old, x.now) < .02 && x.y === 0) && apart(got.out[1].old, .5) && apart(got.out[3].now, .5) && apart(got.out[5].now, 1) && !got.kinds.includes('height') && new Set(got.out.map(x => Math.round(x.h))).size === 1, JSON.stringify(got));
+    }
     await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = document.querySelector('.dt-list').scrollHeight; });
     await a.move(xAt(15, 30), y); await a.page.waitForTimeout(100); await a.page.mouse.down(); await a.page.mouse.up(); await a.page.waitForTimeout(100);
     const inst = await a.page.evaluate(() => { const l = document.querySelector('.dt-list'), h = document.querySelector('[data-key="stay-uvic"]'); return { top: h.getBoundingClientRect().top - l.getBoundingClientRect().top, anim: getComputedStyle(h).animationName }; });

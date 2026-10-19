@@ -43,6 +43,7 @@
 .notch .dt-bracket { position:absolute; top:0; bottom:0; box-sizing:border-box; border:1.5px solid rgb(var(--ink) / .92); border-radius:5px; }
 .notch .dt-band { position:absolute; top:-3px; bottom:-3px; box-sizing:border-box; border-inline:1px solid rgb(var(--ink) / .5); background:rgb(255 255 255 / .12); }
 .notch .dt-band.is-applied { border-color:rgb(var(--ink) / .3); background:rgb(255 255 255 / .07); }
+.notch .dt-void { position:absolute; top:0; bottom:0; left:0; display:grid; place-items:center; font-size:11px; white-space:nowrap; color:var(--p-faint); pointer-events:none; }
 .notch .dt-hours { position:relative; flex:none; height:14px; margin-top:3px; font:10px/14px "JetBrains Mono", Menlo, monospace; color:var(--p-faint); }
 .notch .dt-hours span { position:absolute; top:0; transform:translateX(-50%); }
 .notch .dt-hours span.is-start { transform:none; } .notch .dt-hours span.is-end { transform:translateX(-100%); }
@@ -58,8 +59,9 @@
 .notch .dt-card-in { position:relative; box-sizing:border-box; overflow:hidden; padding:10px 12px; border:1px solid rgb(255 255 255 / .08); border-radius:12px; background:rgb(16 18 30); box-shadow:0 10px 28px rgb(0 0 0 / .5);
   transform:translateY(-4px); transition:transform 120ms var(--ease-out); }
 .notch .dt-card.is-on .dt-card-in { transform:none; }
-.notch .dt-slot { transition:opacity 80ms linear; }
-.notch .dt-slot:not(.is-cur) { position:absolute; top:10px; left:12px; right:12px; opacity:0; pointer-events:none; }
+/* a change of words is a fade through: the old are gone in 60 ms, then the new come in over 90 ms and 2 px up; never both at once */
+.notch .dt-slot.is-cur { transition:opacity 90ms linear 60ms, transform 90ms var(--ease-out) 60ms; }
+.notch .dt-slot:not(.is-cur) { position:absolute; top:10px; left:12px; right:12px; opacity:0; transform:translateY(2px); pointer-events:none; transition:opacity 60ms linear, transform 0s linear 60ms; }
 .notch .dt-ch { display:flex; align-items:center; gap:7px; min-width:0; }
 .notch .dt-ch b { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:600; color:var(--p-ink); }
 .notch .dt-ch span { flex:none; font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; color:var(--p-faint); }
@@ -108,5 +110,9 @@
   .notch .dt-nowtick::after { animation:none; }
   .notch .dt-card-in { transform:none; transition:none; }
   .notch .dt-seg,.notch .dt-sched { transition:none; }
-  .notch .dt-card { transition-duration:120ms; }
+  /* style.css turns every transition off under reduced motion; what is only a fade is allowed back: the card's, and its words' (out in 60 ms, in over 120) */
+  .notch .dt-card { transition:opacity 120ms linear, visibility 0s linear 120ms !important; }
+  .notch .dt-card.is-on { transition:opacity 120ms linear !important; }
+  .notch .dt-slot.is-cur { transition:opacity 120ms linear 60ms !important; }
+  .notch .dt-slot:not(.is-cur) { transform:none; transition:opacity 60ms linear !important; }
 }
