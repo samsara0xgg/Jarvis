@@ -29,6 +29,7 @@ try {
     line: `${keys.length} setting(s) on macbook differ from the brain's: ${keys.join(', ')}`,
     choices: [{ id: 'device', label: "Use this computer's" }, { id: 'brain', label: "Use the brain's" }] });
   await page.addInitScript(() => {
+    localStorage.setItem('companion-wardrobe-v1', JSON.stringify({ wing: 'marks', ...JSON.parse(localStorage.getItem('companion-wardrobe-v1') ?? '{}') })); // the stars: the timeline is the default (ADR 0296)
     window.jarvis = {
       placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
       onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionSettings: () => {},

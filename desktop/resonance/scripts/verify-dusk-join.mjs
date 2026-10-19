@@ -95,7 +95,7 @@ async function runCase(dpr, notch, finish) {
     await page.addInitScript(({ notch, finish }) => {
       let seed = 41;
       Math.random = () => { seed = (1664525 * seed + 1013904223) >>> 0; return seed / 4294967296; };
-      localStorage.setItem('companion-wardrobe-v1', JSON.stringify({ skin: 'glass', auto: false, home: 'dark', homeFinish: finish, marks: 'spark' }));
+      localStorage.setItem('companion-wardrobe-v1', JSON.stringify({ skin: 'glass', auto: false, home: 'dark', homeFinish: finish, marks: 'spark', wing: 'marks' }));
       const subscribers = new Set();
       let state = { detached: false, open: false };
       window.jarvis = {
