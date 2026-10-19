@@ -2640,6 +2640,19 @@ try {
     await zhc.a.ctx.close();
   }
 
+  // a tap on the bar outside the cut the list is in did nothing (its row was not there); it brings the whole day back and goes to the row, as the waiting pill does
+  if (all || only === 'review') {
+    const { a, g, y, x } = await barOf(small([it('ha', 'stay', T(9, 5), T(13, 0), { place: 'Home', kept_place: home }), it('ht', 'talk', T(10, 0), T(10, 5), { turns: 2 }, 'her'), it('hb', 'stay', T(13, 0), null, { place: 'Library', kept_place: uvic })]));
+    await a.move(x(T(14, 0)), y); await a.page.mouse.down(); await a.move(x(T(15, 30)), y); await a.move(x(T(17, 0)), y); await a.page.mouse.up(); await a.page.waitForTimeout(300);
+    await a.page.locator('.dt-cbtn').click(); await a.page.waitForTimeout(500);
+    const heads = () => a.page.evaluate(() => [...document.querySelectorAll('.dt-list [data-key]')].map(e => e.dataset.key).join());
+    check('the list is cut to 14:00–17:00: only the stay that overlaps it, with a chip', await a.page.locator('.dt-filter').count() === 1 && await heads() === 'hb', await heads());
+    await a.move(x(T(11, 30)), y); await a.page.mouse.down(); await a.page.mouse.up(); await a.page.waitForTimeout(600);
+    check('a tap on the stay at 11:30 (outside the cut) lifts the cut and takes the list to its row, which flashes', await a.page.locator('.dt-filter').count() === 0 && (await heads()).split(',').includes('ha') && await orow(a, 'ha').evaluate(el => el.classList.contains('is-flash')), await heads());
+    await a.move(x(T(15, 0)), y); await a.page.waitForTimeout(100);
+    await a.ctx.close();
+  }
+
   console.log(`\n${checks.length} checks passed; screenshots in ${dir}`);
 } finally {
   await browser.close();
