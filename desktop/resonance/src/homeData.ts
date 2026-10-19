@@ -32,7 +32,9 @@ const RETRY_MS = 10_000;
 // Polled while the panel is open. A 404 means the daemon does not serve the route; any other failure keeps what was shown.
 export function useRoute<T>(port: string | null, path: string, open: boolean, everyMs: number): Route<T> {
   const [data, setData] = useState<T | null>(null), [missing, setMissing] = useState(false), [failed, setFailed] = useState(false);
-  const [tick, setTick] = useState(0);
+  const [tick, setTick] = useState(0), [read, setRead] = useState(path);
+  // What was learned of one path (it failed, the daemon does not serve it) is not known of the next one a view asks for.
+  if (read !== path) { setRead(path); setMissing(false); setFailed(false); }
   useEffect(() => {
     if (!port || !open) return;
     let stop = false, timer: ReturnType<typeof setTimeout>;

@@ -651,6 +651,8 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
     if (url.pathname === '/inherent/day') {
       s.hits.push(url.search);
       const date = url.searchParams.get('date');
+      // `days` / `days-404`: the days other than today answer with an error, or with a 404 (a brain that does not serve them)
+      if (date && date !== DATE && (s.refuse.has('days') || s.refuse.has('days-404'))) return route.fulfill({ status: s.refuse.has('days-404') ? 404 : 500, contentType: 'application/json', body: '{"detail":"no"}' });
       return json(!date || date === DATE ? s.served : date === YESTERDAY ? yesterday() : { ...yesterday(), date, items: [] });
     }
     if (url.pathname.startsWith('/inherent/attachments/')) {
@@ -2669,6 +2671,33 @@ try {
     await a.page.evaluate(() => { window.__esc = 0; document.addEventListener('keydown', e => { if (e.key === 'Escape') window.__esc++; }); });
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(100);
     check('an Esc anywhere reaches the rest of the page: the folded pane does not swallow it', await a.page.evaluate(() => window.__esc) === 1);
+    await a.ctx.close();
+  }
+
+  // a day that cannot be read is said, under its own date, with the day buttons to leave by; it is not today's rows left dimmed, silently, to be tried for ever
+  if (all || only === 'review') {
+    const a = await boot({ served: fullDay() });
+    await openDay(a);
+    const state = () => a.page.evaluate(() => ({ title: document.querySelector('.dt-date')?.innerText, say: document.querySelector('.dt > .dt-say')?.innerText ?? null, rows: document.querySelectorAll('.dt-row, .dt-sh').length, loading: !!document.querySelector('.dt.is-loading'),
+      prev: !document.querySelector('.dt-nav button:first-child').disabled, next: !document.querySelector('.dt-nav button:last-child').disabled, chips: document.querySelectorAll('.dt-chip, .dt-wx, .dt-wait').length }));
+    const settled = async want => { await a.page.waitForFunction(w => document.querySelector('.dt > .dt-say')?.innerText === w, want, { timeout: 8000 }); await a.page.waitForTimeout(150); return state(); };
+    a.s.refuse.add('days');
+    await a.page.keyboard.press('ArrowLeft');
+    let st = await settled('没读到这一天，会再试一次');
+    check('the day before cannot be read: its date is the title and the line says so, in place of the rows of today, with no dimming and the day buttons live', st.title === '10月18日 周日' && st.rows === 0 && !st.loading && st.prev && st.next, JSON.stringify(st));
+    await a.shot('review-day-unread', { x: 40, y: 0, width: 560, height: 420 });
+    await a.page.locator('.dt-nav button:last-child').click(); await a.page.waitForTimeout(700);
+    check('the day after takes him back to today: its rows are there', (await state()).title === '10月19日 周一' && (await state()).rows > 10 && (await state()).say === null);
+    a.s.refuse.delete('days'); a.s.refuse.add('days-404');
+    await a.page.keyboard.press('ArrowLeft');
+    st = await settled('这台 Jarvis 还不会给出一天');
+    check('a brain that does not serve days says so the same way (and not that it will try again)', st.title === '10月18日 周日' && st.rows === 0 && !st.loading && st.prev && st.next, JSON.stringify(st));
+    a.s.refuse.delete('days-404');
+    await a.page.locator('.dt-nav button:last-child').click(); await a.page.waitForTimeout(500);
+    await a.page.keyboard.press('ArrowLeft');
+    await a.page.waitForFunction(() => document.querySelector('[data-key="y-sleep"]') && !document.querySelector('.dt > .dt-say'), null, { timeout: 8000 });
+    st = await state();
+    check('and a day that can be read again is drawn, with no line left over from the one before', st.title === '10月18日 周日' && st.say === null && st.rows >= 2 && !st.loading, JSON.stringify(st));
     await a.ctx.close();
   }
 
