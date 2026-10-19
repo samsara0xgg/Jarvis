@@ -50,6 +50,11 @@ Each source folds on its own and a source that raises leaves its items out (:fun
   midnight is on both days under one id), with the best of its titles, its project, its account
   and Claude Code's latest recap as ``detail``; a sidechain is left out. With no shipped store
   it has nothing to read and says nothing in ``missing``;
+- ``away_note``: what he wrote in TimeSink for a stretch he was away from his Mac, from what the
+  Mac terminal shipped (ADR 0294), in his lane: one item per note, its stretch clipped to the
+  day, its words as ``title``. One line for a whole stretch, it is a clue to what he was doing
+  (ADR 0302), not his answer for all of it. With no shipped store it says nothing in
+  ``missing``;
 - ``departures``: the bus trips he pinned (ADR 0204), each a point at its departure time, from the
   pin as the log held it at the end of the day; the reminder that rings for a trip on the line is
   left out, the departure stands for it.
@@ -220,6 +225,7 @@ def fold_day(
         ("plan", lambda db, first, last, now: _plan_items(db, sources, first, last, now)),
         ("imports", lambda _conn, first, last, now: _import_items(sources, first, last, now)),
         ("code", lambda _conn, first, last, now: _code_items(sources, first, last, now)),
+        ("away", lambda _conn, first, last, now: _away_items(sources, first, last, now)),
     )
     items: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -770,6 +776,38 @@ def _code_items(
         if recap := _newest([a.get("content") for a in f.get("away_summaries") or []]):
             item["detail"] = recap
         items.append(item)
+    return items
+
+
+def _away_items(
+    sources: DaySources, window_start: int, window_end: int, now_ms: int,
+) -> list[dict[str, Any]]:
+    """Each note he wrote in TimeSink for a stretch away from his Mac, clipped to the day."""
+    conn = _shipped_conn(sources)
+    if conn is None:
+        return []
+    with closing(conn):
+        rows = imports.newest(conn, "timesink", kinds=("awayNote",), by_prefix=True)
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        f = row.fields
+        label = str(f.get("label") or "").strip()
+        if not label or not f.get("start") or not f.get("end"):
+            continue
+        first = _ms(datetime.fromisoformat(timesink.moment(str(f["start"]))))
+        last = _ms(datetime.fromisoformat(timesink.moment(str(f["end"]))))
+        if last <= first or not _overlaps(first, last, window_start, window_end):
+            continue
+        start, end = max(first, window_start), min(last, window_end)
+        items.append({
+            "id": f"away-{f['id']}",
+            "lane": "you",
+            "kind": "away_note",
+            "start_ms": start,
+            "end_ms": end,
+            "state": _state(start, end, now_ms),
+            "title": label,
+        })
     return items
 
 

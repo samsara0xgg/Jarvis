@@ -25,6 +25,7 @@ import pytest
 
 from jarvis.state import imports
 from jarvis.state.day_line import DaySources, day_window, fold_day, parse_day
+from jarvis.state.doing import read_doing
 from jarvis.state.event_log import open_event_log
 from jarvis.state.ledger import TerminalScreen
 from jarvis.state.shipments import Shipments
@@ -367,3 +368,45 @@ def test_the_day_route_serves_the_shipped_sessions_and_lane(tmp_path: Path) -> N
 
     assert sorted(i["kind"] for i in body["items"]) == ["code", "work"]
     assert "mac" not in body["missing"]
+
+
+def _ship_away_notes(directory: Path, notes: list[tuple[int, str, str, str]]) -> Path:
+    """TimeSink ``awayNote`` rows ``(id, start, end, label)``, UTC as GRDB writes them, shipped."""
+    lines = [
+        {
+            "key": f"awayNote:{ident}:{'b' * 12}", "kind": "awayNote", "zone": "UTC",
+            "at_ms": _utc_ms(start.replace(" ", "T") + "Z"), "text": label,
+            "fields": {"id": ident, "start": start, "end": end, "label": label, "symbol": "pencil"},
+        }
+        for ident, start, end, label in notes
+    ]
+    body = b"\n".join(json.dumps(line).encode() for line in lines)
+    Shipments(directory, min_free_bytes=0).receive_entries("timesink", body)
+    return directory
+
+
+def test_his_timesink_notes_are_away_items_and_only_clues_to_the_doing_lane(tmp_path: Path) -> None:
+    """A note is an item of his lane clipped to the day; one line for a stretch, not his answer."""
+    directory = _ship_away_notes(tmp_path / "imports", [
+        (1, "2026-10-10 17:00:00.000", "2026-10-10 17:40:00.000", "lay down"),
+        (2, "2026-10-10 06:30:00.000", "2026-10-10 07:30:00.000", "walking"),  # from 23:30 PDT
+        (3, "2026-10-10 19:00:00.000", "2026-10-10 19:20:00.000", " "),  # no words: no note
+    ])
+    start_ms, end_ms = day_window(parse_day("2026-10-10"), ZONE)
+    now = end_ms + MINUTE
+    line = _fold(DaySources(ZONE, shipped=directory), tmp_path, "2026-10-10", now)
+    away = {i["id"]: i for i in line.items if i["kind"] == "away_note"}
+    assert away == {
+        "away-1": {
+            "id": "away-1", "lane": "you", "kind": "away_note", "state": "done",
+            "start_ms": _utc_ms("2026-10-10T17:00:00Z"), "end_ms": _utc_ms("2026-10-10T17:40:00Z"),
+            "title": "lay down",
+        },
+        "away-2": {
+            "id": "away-2", "lane": "you", "kind": "away_note", "state": "done",
+            "start_ms": start_ms, "end_ms": _utc_ms("2026-10-10T07:30:00Z"), "title": "walking",
+        },
+    }
+    served = read_doing(None, "2026-10-10", line.items, start_ms, end_ms, now).served
+    said = [s for s in served if s["start_ms"] <= _utc_ms("2026-10-10T17:10:00Z") < s["end_ms"]]
+    assert [(s["title"], s["confirmed"]) for s in said] == [(None, False)]

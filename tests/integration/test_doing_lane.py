@@ -577,17 +577,17 @@ def test_the_ids_of_the_program_cut_do_not_move_when_a_run_is_added() -> None:
     ("answers", "expected_title"),
     [
         ([_said(540, 600, text="Quiz")], "Quiz"),  # all of it
-        ([_said(540, 570, choice="Gym")], "Gym"),  # exactly half
-        ([_said(540, 569, text="Quiz")], None),  # a little under half
+        ([_said(540, 570, choice="Gym")], "Gym"),  # half of it, from its start
+        ([_said(545, 569, text="Quiz")], "Quiz"),  # five minutes before it go to the answer
         ([_said(500, 600, text="Quiz"), _said(540, 600, choice="Gym")], "Gym"),  # the latest wins
         ([_said(540, 600, text="Quiz"), _said(900, 940, text="Elsewhere")], "Quiz"),
         ([_said(0, 400, text="Before the day")], None),
     ],
 )
-def test_his_answer_wins_over_a_span_it_covers_by_half(
+def test_his_answer_wins_over_the_time_it_covers(
     answers: list[DoingAnswer], expected_title: str | None,
 ) -> None:
-    """Title, ``stated``, ``high``, confirmed, no question; under half covered is left alone."""
+    """Title, ``stated``, ``high``, confirmed, no question; time it does not cover is untouched."""
     span = next(s for s in _served_spans(answers=answers) if s["start_ms"] == 540 * MIN)
     assert span["title"] == expected_title
     if expected_title is not None:
@@ -597,6 +597,18 @@ def test_his_answer_wins_over_a_span_it_covers_by_half(
         assert span["category"] == "study"  # what the span was; he did not change it
     else:
         assert (span["basis"], span["confirmed"]) == ("observed", False)
+
+
+def test_an_answer_is_carved_in_by_its_time_and_the_rest_stays_around_it() -> None:
+    """Inside one long stretch: the time before and after stays what it was; a sliver goes."""
+    run = _run(1020, [_run_span("a", 480, 1020)])
+    spans = [s for s in _served_spans(run, [_said(600, 1015, text="Lay down")])
+             if s["basis"] != "planned"]
+    assert [(s["id"], s["start_ms"] // MIN, s["end_ms"] // MIN, s["title"]) for s in spans][:2] == [
+        ("a", 480, 600, "Study"), (f"doing-{600 * MIN}", 600, 1020, "Lay down"),
+    ]
+    assert (spans[1]["confirmed"], spans[1]["basis"]) == (True, "stated")
+    assert (bool(spans[0]["item_ids"]), spans[0]["confirmed"]) == (True, False)
 
 
 def test_his_answer_lands_on_a_run_span_and_takes_its_question_away() -> None:

@@ -72,8 +72,6 @@ NIGHT_MIN_MS: Final = 3 * _HOUR_MS
 """A sleep at least this long is a night; a shorter one is a nap inside the waking part."""
 ANSWER_TEXT_MAX_CHARS: Final = 200
 """The most characters of an answer he types."""
-ANSWER_COVER: Final = 0.5
-"""The share of a span an answer must cover to be about it."""
 
 _MOVE_KINDS: Final = {
     "walking": "walk", "running": "run", "cycling": "cycle", "automotive": "drive",
@@ -438,19 +436,48 @@ def _run_span(
     )
 
 
-def _answered(span: Span, answers: Sequence[DoingAnswer]) -> Span:
-    """The span with his latest answer that covers at least half of it, else as it was."""
-    length = span["end_ms"] - span["start_ms"]
-    if length <= 0:
-        return span
-    for answer in reversed(answers):  # a later answer wins
-        shared = min(span["end_ms"], answer.end_ms) - max(span["start_ms"], answer.start_ms)
-        if shared / length >= ANSWER_COVER:
-            return {
-                **span, "kind": "doing", "title": answer.text or answer.choice,
-                "basis": "stated", "confidence": "high", "confirmed": True, "question": None,
-            }
-    return span
+def _piece(span: Span, start: int, end: int, facts: Sequence[Span], horizon: int) -> Span:
+    """The part of a span from ``start`` to ``end``, with the facts it still overlaps."""
+    return {
+        **span, "id": span["id"] if start == span["start_ms"] else f"doing-{start}",
+        "start_ms": start, "end_ms": end,
+        "item_ids": [s["id"] for s in facts if _touches(s, start, end, horizon)],
+    }
+
+
+def _answered(
+    spans: list[Span], answer: DoingAnswer, facts: Sequence[Span], horizon: int,
+) -> list[Span]:
+    """The spans with ``answer`` carved in: his words over his time, the rest cut around them.
+
+    The stretch the answer covers inside the spans becomes one span with his words, ``stated``,
+    ``high`` and ``confirmed``, no question, and the category and place of the span that held
+    most of it. What is left of a span on either side stays; a piece shorter than ten minutes
+    goes to the answer instead.
+    """
+    inside = [s for s in spans if s["start_ms"] < answer.end_ms and s["end_ms"] > answer.start_ms]
+    if not inside:
+        return spans
+    first, last = inside[0], inside[-1]
+    start = max(answer.start_ms, first["start_ms"])
+    end = min(answer.end_ms, last["end_ms"])
+    if start - first["start_ms"] < CUT_MIN_MS:
+        start = first["start_ms"]
+    if last["end_ms"] - end < CUT_MIN_MS:
+        end = last["end_ms"]
+    base = max(inside, key=lambda s: min(s["end_ms"], end) - max(s["start_ms"], start))
+    said = {
+        **_piece(first if first["start_ms"] == start else base, start, end, facts, horizon),
+        "kind": "doing", "title": answer.text or answer.choice, "category": base["category"],
+        "place_id": base["place_id"], "basis": "stated", "confidence": "high",
+        "confirmed": True, "question": None,
+    }
+    kept = [s for s in spans if s not in inside]
+    if first["start_ms"] < start:
+        kept.append(_piece(first, first["start_ms"], start, facts, horizon))
+    if last["end_ms"] > end:
+        kept.append(_piece(last, end, last["end_ms"], facts, horizon))
+    return sorted([*kept, said], key=_order)
 
 
 def _planned(items: Iterable[Mapping[str, Any]], now_ms: int) -> list[Span]:
@@ -476,10 +503,10 @@ def serve(  # noqa: PLR0913 — what the lane is made of: cut, facts, run, answe
     """The spans of the doing lane, by start and then id.
 
     The latest ``run`` speaks up to the time it covers and the program's own segments, with
-    the facts they overlap and no words, after it. ``answers`` (oldest first) win over both: a span
-    that an answer covers by at least half takes its words as ``stated``, ``confirmed`` and
-    ``high``, and its question goes. The plan and commitments among ``items`` that start after
-    ``now_ms`` are planned spans. Raises ValueError when a run holds what the lane cannot serve.
+    the facts they overlap and no words, after it. ``answers`` (oldest first) win over both:
+    each is carved into the lane over its own time (:func:`_answered`). The plan and commitments
+    among ``items`` that start after ``now_ms`` are planned spans. Raises ValueError when a run
+    holds what the lane cannot serve.
     """
     horizon = segments[-1].end_ms if segments else now_ms
     by_id = {s["id"]: s for s in facts}
@@ -496,7 +523,8 @@ def serve(  # noqa: PLR0913 — what the lane is made of: cut, facts, run, answe
         if covers is not None and segment.start_ms < covers:
             segment = _segment(facts, covers, segment.end_ms, horizon)  # noqa: PLW2901
         spans.append(_program_span(segment, by_id, horizon))
-    spans = [_answered(span, answers) for span in spans]
+    for answer in answers:  # a later answer is carved over an earlier one
+        spans = _answered(sorted(spans, key=_order), answer, facts, horizon)
     spans.extend(_planned(items, now_ms))
     return sorted(spans, key=_order)
 
@@ -564,7 +592,6 @@ def primary_place(doing: Doing, span: Span) -> Span | None:
 
 
 __all__ = [
-    "ANSWER_COVER",
     "ANSWER_TEXT_MAX_CHARS",
     "BASES",
     "CATEGORIES",
