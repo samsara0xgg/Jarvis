@@ -52,8 +52,9 @@ _SCHEMA: Final[Mapping[str, Any]] = {
         "what": {
             "type": "string",
             "description": (
-                "add: his words for the thing. read: words to find in titles, places and notes,"
-                " over everything open and the next 60 days. Other actions: his reason, optional."
+                "add: his words for the thing, in the language he used. read: words to find in"
+                " titles, places and notes, over everything open and the next 60 days. Other"
+                " actions: his reason, optional."
             ),
         },
         "id": {

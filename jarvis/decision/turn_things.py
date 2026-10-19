@@ -64,7 +64,7 @@ An action is one change to the list of his things:
 he sent,
  "sure": true if he said it plainly, false if you infer it or he hedged,
  "kind": "go" if he goes to it, "do" if he does it ("new" only),
- "title": his words for it, short ("new" only),
+ "title": his words for it, short, in the language he used ("new" only),
  "place": where, only if he said it ("new" only),
  "start_at", "end_at", "on_day", "due": when ("new" and "move"),
  "weekly_until": the last day of a thing that repeats every week ("new" only),
