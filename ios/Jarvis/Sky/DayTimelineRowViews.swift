@@ -36,17 +36,23 @@ extension TLAction {
     static let menu: [TLAction] = [.ask, .openTalk, .rename, .acknowledge]
 }
 
-struct TLRowView: View {
+struct TLRowView: View, Equatable {
     let e: TLEntry
     let open: Bool
     let dim: Double                     // 1, less while a lens is on and this is not of its kind
-    let hot: Bool                       // the row that covers the minute under his finger on the bar
-    let flashing: Bool                  // the row the way to what waits just arrived at
+    let top: Double                     // where the row stands in the list and how tall the list is: what its closures were made with
+    let room: Double
     let tl: TimelineState
     let engine: StarEngine
     let tap: () -> Void
     let opened: (Double) -> Void        // how tall the row is while it is open (its line, which wraps, and what it opened to), for the list to bring it into view
     @Environment(\.accessibilityReduceMotion) private var reduce
+
+    /// Two rows are the same when what they draw is, and where they stand (the closures come from the list and know where): a row that is the same is not drawn again, which is what keeps
+    /// the list cheap while it is scrolled to the minute under a finger. What lights a row is read by the row's own `TLRowHeat`.
+    static func == (a: TLRowView, b: TLRowView) -> Bool {
+        a.e == b.e && a.open == b.open && a.dim == b.dim && a.top == b.top && a.room == b.room
+    }
 
     /// the circle's size: a place's header has a dot, a stop on the way a smaller one
     private var beadSize: Double { e.kind == .stay ? 8 : e.kind == .pause ? 7 : TLColumns.bead }
@@ -58,13 +64,7 @@ struct TLRowView: View {
             Color.clear.frame(height: e.gap)
             line
                 .frame(minHeight: e.base, maxHeight: open ? .infinity : e.base, alignment: .top)        // opened, its words wrap and the line grows to them
-                .background {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(hot ? 0.07 : 0)).animation(.easeOut(duration: 0.1), value: hot)
-                        RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(flashing ? 0.12 : 0)).animation(flashing ? nil : .easeOut(duration: 0.6), value: flashing)
-                    }
-                    .padding(.horizontal, -8)
-                }
+                .background { TLRowHeat(id: e.id, tl: tl) }
                 .contentShape(Rectangle())
                 .onTapGesture(perform: tap)
                 .accessibilityElement(children: .combine)
@@ -239,5 +239,21 @@ private struct TLPreview: View {
         .frame(width: 344, alignment: .leading)
         .background(Color(red: 16 / 255, green: 18 / 255, blue: 30 / 255))
         .environment(\.colorScheme, .dark)
+    }
+}
+
+/// What lights a row: the finger on the bar over it (`hot`), and the way to what waits having just arrived at it (`flash`). It reads them itself, so that the minute moving across the bar
+/// draws these small views and not the list and its rows.
+private struct TLRowHeat: View {
+    let id: String
+    let tl: TimelineState
+
+    var body: some View {
+        let hot = tl.hot == id, flashing = tl.flash == id
+        ZStack {
+            RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(hot ? 0.07 : 0)).animation(.easeOut(duration: 0.1), value: hot)
+            RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(flashing ? 0.12 : 0)).animation(flashing ? nil : .easeOut(duration: 0.6), value: flashing)
+        }
+        .padding(.horizontal, -8)
     }
 }

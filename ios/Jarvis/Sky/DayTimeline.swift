@@ -141,10 +141,6 @@ struct DayTimelineView: View {
     let ui: StarUI
     @Binding var pull: Double?
     @Environment(\.accessibilityReduceMotion) private var reduce
-    @GestureState private var touching = false                                       // a finger is on the bar
-    @State private var lastScrub = 0.0                                               // where his finger was last: what the readout shows while it fades out
-    @State private var lastStretch: String?
-    @State private var lastLens = TLLens.trip                                        // the lens that was on last: what fades out when it goes
     @State private var nowInView = true
 
     private var tl: TimelineState { ui.tl }
@@ -158,7 +154,7 @@ struct DayTimelineView: View {
             let model: DayTimelineModel? = { if case .model(let m) = shown { return m } else { return nil } }()
             ZStack(alignment: .topLeading) {
                 scrim(away: away)
-                header(model)
+                TLTopView(ui: ui, model: model, scene: model?.scene ?? .empty)
                     .opacity(ui.panelOpen ? 0 : 1).allowsHitTesting(!ui.panelOpen)
                     .animation(.easeOut(duration: ui.panelOpen ? 0.2 : 0.35), value: ui.panelOpen)
                 listArea(shown, away: away)
@@ -172,7 +168,6 @@ struct DayTimelineView: View {
             .onChange(of: isReady(shown), initial: true) { _, ready in release(ready) }
             .onChange(of: tl.enter) { _, _ in release(isReady(shown)) }
             .onChange(of: ui.tlHome) { _, _ in release(isReady(shown)) }
-            .onChange(of: tl.request) { _, r in if r.y < 0, let m = model { tl.scroll(to: restY(m), animated: true) } }
             .onChange(of: tl.focus) { _, id in if let id { tl.openCard = id; tl.focus = nil } }
         }
         .opacity(on ? 1 : 0)
@@ -201,111 +196,8 @@ struct DayTimelineView: View {
         guard ready, ui.tlHome, !tl.reveal else { return }
         DispatchQueue.main.async { tl.reveal = true }
     }
-    /// where the list rests on today: the line for now 60% of the way down what is left under the pinned cards
-    private func restY(_ m: DayTimelineModel) -> Double { m.restY(room: room) }
     private var room: Double { TLLayout.room(pinned: pinnedHeight) }
     private var pinnedHeight: Double { Waiting.shared.cards.isEmpty ? 0 : min(tl.waitH > 0 ? tl.waitH : Double(Waiting.shared.cards.count) * TLMetrics.rowDetail, TLLayout.waitingMax) }
-
-    // MARK: her sentence and the overview bar
-
-    private func header(_ m: DayTimelineModel?) -> some View {
-        let holding = tl.scrub != nil
-        return ZStack(alignment: .topLeading) {
-            // her sentence, and in its place while a finger is on the bar the readout of the minute under it: a fade-through, not a cross-fade (the two are never both on show)
-            if let line = m?.line {
-                Text(line).font(.system(size: 15)).lineSpacing(3).foregroundStyle(ink.opacity(0.9)).lineLimit(2)
-                    .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
-                    .fadeThrough(on: !holding, reduce: reduce)
-                    .id(line).transition(.opacity)
-                    .offset(x: 30, y: TLLayout.lineY)
-            }
-            if let m {
-                readout(m.readout(at: tl.scrub ?? lastScrub)).fadeThrough(on: holding, reduce: reduce)
-                    .offset(x: 30, y: TLLayout.lineY)
-                    .allowsHitTesting(false).accessibilityHidden(!holding)
-            }
-            if let m {
-                let lens = activeLens(m)
-                TLBarView(scene: m.scene, bracket: bracket(m), scrub: tl.scrub, lens: lens != nil, lensColor: (lens ?? lastLens).color, lensMarks: m.marks(of: lens ?? lastLens),
-                          reveal: tl.reveal, reduce: reduce)
-                    .animation(holding ? .easeOut(duration: 0.08) : .easeInOut(duration: 0.15), value: holding)       // the hairline and its time come and go with the finger
-                    .gesture(scrubGesture(m))
-                    .accessibilityElement().accessibilityLabel("一天的概览，拖动可以翻到那个时间")
-                    .id(tl.day).transition(barTransition)
-                    .offset(x: 30, y: TLLayout.barY)
-                if !m.chips.isEmpty || !m.body.isEmpty {
-                    TLChips(chips: m.chips, health: m.body, active: lens) { l in
-                        Haptic.selection()
-                        withAnimation(.easeOut(duration: 0.15)) { tl.lens = tl.lens == l ? nil : l }
-                    }
-                    .id(tl.day).transition(barTransition)
-                    .offset(y: TLLayout.chipsY - (TLLayout.chipsHit - TLLayout.chipsH) / 2)
-                }
-            }
-        }
-        .onChange(of: tl.lens) { _, l in if let l { lastLens = l } }
-        .onChange(of: tl.scrub) { _, t in if let t { lastScrub = t } }
-        .onChange(of: touching) { _, on in
-            guard !on else { return }
-            lastStretch = nil
-            withAnimation(.easeOut(duration: 0.2)) { tl.follow(nil, in: nil) }
-        }
-        .animation(.easeOut(duration: 0.35), value: m?.line)
-        // only once she is in her corner, and gone as soon as she leaves it: she glides across where they stand
-        .opacity(ui.tlHome ? 1 : 0).allowsHitTesting(ui.tlHome)
-        .animation(.easeOut(duration: ui.tlHome ? (reduce ? 0.2 : 0.3) : 0.06), value: ui.tlHome)
-    }
-
-    /// the minute under his finger in words, where her sentence is: the stretch with its hours and length, under it what else was going on
-    private func readout(_ r: TLReadout) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 7) {
-                Circle().fill((r.hue ?? RGB(196, 204, 238)).color(r.hue == nil ? 0 : r.strong ? 1 : 0.5)).frame(width: 8, height: 8)
-                    .overlay(Circle().stroke(ink.opacity(r.hue == nil ? 0.4 : 0), lineWidth: 1))
-                HStack(spacing: 0) {
-                    Text(r.name).lineLimit(1)
-                    Text(r.tail).fixedSize().layoutPriority(1)
-                }
-                .font(.system(size: 15, weight: .semibold)).foregroundStyle(ink)
-            }
-            .frame(height: 19, alignment: .leading)
-            Text(r.second).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).frame(height: 15, alignment: .leading)
-        }
-        .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
-        .contentTransition(.identity)           // the words follow the finger at once: a change of them is not a fade of its own, which would show the last stretch's words through the new ones
-    }
-
-    /// the lens that is on, if this day has that kind at all
-    private func activeLens(_ m: DayTimelineModel) -> TLLens? {
-        tl.lens.flatMap { l in m.chips.contains { $0.lens == l } ? l : nil }
-    }
-
-    /// the stretch under his finger, else the span of the row he has open, on the bar
-    private func bracket(_ m: DayTimelineModel) -> ClosedRange<Double>? {
-        if let t = tl.scrub { return m.seg(at: t).map { $0.t0...$0.t1 } }
-        guard let id = tl.openRow, let e = m.entries.first(where: { $0.id == id }), e.kind != .now else { return nil }
-        return e.t0...max(e.t0, e.t1 ?? e.t0)
-    }
-
-    /// a finger on the bar: the list follows it, with a tick of the phone for each stretch it crosses
-    private func scrubGesture(_ m: DayTimelineModel) -> some Gesture {
-        let lo = m.span.lowerBound, w = m.span.upperBound - lo
-        return DragGesture(minimumDistance: 0)
-            .updating($touching) { _, on, _ in on = true }          // goes back to false when the touch ends or is taken away (a call, the app leaving), which lets the readout go
-            .onChanged { v in
-                let t = lo + clamp(v.location.x / TLLayout.barW, 0, 1) * w
-                tl.follow(t, in: m)
-                let s = m.stretch(at: t)
-                if lastStretch != s { lastStretch = s; Haptic.selection() }
-            }
-    }
-
-    /// another day's bar comes in from the way time goes, a hair, as the list does
-    private var barTransition: AnyTransition {
-        if reduce { return .opacity }
-        let d = 8.0 * Double(tl.slide)
-        return .asymmetric(insertion: .opacity.combined(with: .offset(x: -d)), removal: .opacity.combined(with: .offset(x: d)))
-    }
 
     /// From the chips row down the sky is covered by black, none under the hours and 0.8 by the middle of the chips, so the record sits on near-black as it does on the Mac
     /// (the stars nearly gone under the list) while the header, her, the date, her sentence and the bar, keeps the sky; it goes as it came at the foot of the list.
@@ -394,7 +286,7 @@ struct DayTimelineView: View {
                 .frame(width: TLLayout.barW, alignment: .leading).padding(.top, 28).padding(.horizontal, 30)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .model(let m):
-            TLList(model: m, engine: engine, tl: tl, room: room, lens: activeLens(m), nowInView: $nowInView)
+            TLList(model: m, engine: engine, tl: tl, room: room, lens: tl.activeLens(in: m), nowInView: $nowInView)
         }
     }
 
@@ -423,60 +315,6 @@ struct DayTimelineView: View {
     }
 }
 
-/// The change of what the header says as a fade-through: what goes out leaves over 50 ms (ease-in) and what comes in arrives over 90 ms from 40 ms on (ease-out, 2 pt up
-/// into its place), so the two are not on show together for more than a frame. With Reduce Motion a plain 120 ms fade.
-private extension View {
-    func fadeThrough(on: Bool, reduce: Bool) -> some View {
-        let enter = reduce ? Animation.easeOut(duration: 0.12) : .easeOut(duration: 0.09).delay(0.04), leave = reduce ? Animation.easeOut(duration: 0.12) : .easeIn(duration: 0.05)
-        return opacity(on ? 1 : 0).animation(on ? enter : leave, value: on)
-            .offset(y: on || reduce ? 0 : 2).animation(on ? enter : nil, value: on)
-    }
-}
-
-// MARK: - the day's numbers
-
-/// The row of the day's numbers under the hours: a chip for each, pressing one brings that kind forward (and pressing it again lets it go). Sideways when there are more than fit.
-private struct TLChips: View {
-    let chips: [TLChip]
-    let health: [TLBody]                // what Health reported, after them
-    let active: TLLens?
-    let toggle: (TLLens) -> Void
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(chips) { c in chip(c) }
-                if !health.isEmpty { TLBodyValues(values: health).padding(.leading, chips.isEmpty ? 0 : 8) }        // after the numbers, quiet
-            }
-            .padding(.horizontal, 30)
-            .frame(height: TLLayout.chipsHit)
-        }
-        .frame(width: W, height: TLLayout.chipsHit)
-        // a chip going off the side goes softly
-        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 24 / W), .init(color: .black, location: 1 - 24 / W), .init(color: .clear, location: 1)],
-                             startPoint: .leading, endPoint: .trailing))
-    }
-
-    private func chip(_ c: TLChip) -> some View {
-        let on = active == c.lens
-        return Button { toggle(c.lens) } label: {
-            HStack(spacing: 5) {
-                Image(systemName: c.lens.symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(c.lens.color.color).frame(width: 12)
-                Text(c.word).font(.system(size: 11.5)).foregroundStyle(ink.opacity(0.86))
-                Text(c.value).font(AT.mono(11.5)).foregroundStyle(ink)
-            }
-            .fixedSize()
-            .padding(.horizontal, 9).frame(height: TLLayout.chipsH)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(on ? 0.13 : 0.06)))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(ink.opacity(on ? 0.6 : 0), lineWidth: 1))
-            .animation(.easeOut(duration: 0.15), value: on)
-        }
-        .buttonStyle(PressScale())
-        .accessibilityLabel(c.word + " " + c.value)
-        .accessibilityAddTraits(on ? .isSelected : [])
-    }
-}
-
 // MARK: - the list
 
 private struct TLList: View {
@@ -498,21 +336,22 @@ private struct TLList: View {
     }
 
     /// the first twelve rows in view when it opens rise in one after another; the rest are simply there
-    private func ranks() -> [String: Int] {
-        let y0 = model.restY(room: opened), offs = model.offsets
+    private func ranks(_ offs: [Double]) -> [String: Int] {
+        let y0 = model.restY(room: opened)
         var out: [String: Int] = [:]
         for (i, e) in model.entries.enumerated() where offs[i] + e.height > y0 && offs[i] < y0 + opened && out.count < 12 { out[e.id] = out.count }
         return out
     }
 
     var body: some View {
-        let ranks = ranks()
-        let nowTop = model.nowIndex.map { model.offsets[$0] }
+        let offs = model.offsets, ranks = ranks(offs)
+        let nowTop = model.nowIndex.map { offs[$0] }
         ScrollView(showsIndicators: false) {
             VStack(spacing: 0) {
-                ForEach(model.entries) { e in
-                    TLRowView(e: e, open: tl.openRow == e.id, dim: dim(e), hot: tl.hot == e.id, flashing: tl.flash == e.id, tl: tl, engine: engine,
+                ForEach(Array(model.entries.enumerated()), id: \.element.id) { i, e in
+                    TLRowView(e: e, open: tl.openRow == e.id, dim: dim(e), top: offs[i], room: room, tl: tl, engine: engine,
                               tap: { toggle(e) }, opened: { ensureVisible(e, height: $0) })
+                        .equatable()
                         .modifier(Rise(rank: ranks[e.id], on: tl.reveal, reduce: reduce))
                         .transition(reduce ? .opacity : .asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)), removal: .opacity))
                 }
@@ -531,10 +370,7 @@ private struct TLList: View {
             return ny < g.visibleRect.maxY && ny + TLMetrics.now > g.visibleRect.minY
         } action: { _, v in nowInView = v }
         .onScrollGeometryChange(for: Double.self) { Double($0.contentOffset.y) } action: { _, y in at.y = y }
-        .onChange(of: tl.request) { _, r in
-            guard r.y >= 0 else { return }
-            if r.animated { withAnimation(.easeOut(duration: 0.45)) { pos.scrollTo(y: r.y) } } else { pos.scrollTo(y: r.y) }
-        }
+        .modifier(ScrollsOnRequest(tl: tl, model: model, room: room, pos: $pos))
         // the field of a rename needs the keyboard, which covers the foot of the list: the row goes up under the header
         .onChange(of: tl.renaming) { _, id in
             guard let id, let y = model.top(of: id), let e = model.entries.first(where: { $0.id == id }) else { return }
@@ -574,6 +410,22 @@ private struct TLList: View {
 
 /// where the list is, kept where nothing is drawn from it
 private final class ScrollAt { var y = 0.0 }
+
+/// The list goes where it is asked to (`tl.request`): to a place, or with a place under 0 to where now rests (the line for now 60% of the way down what is left under the pinned cards). It is a
+/// modifier of its own so that a request, which a finger on the bar makes on nearly every frame, draws this and not the list.
+private struct ScrollsOnRequest: ViewModifier {
+    let tl: TimelineState
+    let model: DayTimelineModel
+    let room: Double
+    @Binding var pos: ScrollPosition
+
+    func body(content: Content) -> some View {
+        content.onChange(of: tl.request) { _, r in
+            let y = r.y < 0 ? model.restY(room: room) : r.y
+            if r.animated || r.y < 0 { withAnimation(.easeOut(duration: 0.45)) { pos.scrollTo(y: y) } } else { pos.scrollTo(y: y) }
+        }
+    }
+}
 
 /// a row rising in: from 10 pt below, one after another 30 ms apart; with Reduce Motion a plain fade
 private struct Rise: ViewModifier {
