@@ -11,7 +11,7 @@ export type DayItem = {
   text?: string; active_s?: number; projects?: Top[]; apps?: Top[]; app?: string;
   route?: string; board_stop?: string; alight_stop?: string | null; turns?: number; note?: string;
   title?: string; source?: string; confirmed?: boolean; private?: boolean; to?: string; leave_at_ms?: number;
-  attachment?: string; amount?: string; currency?: string; direction?: string; counterparty?: string; messages?: number; chats?: number;
+  attachment?: string; amount?: string | number; currency?: string; direction?: string; counterparty?: string; messages?: number; chats?: number;
 };
 export type DayReply = {
   date: string; tz: string; start_ms: number; end_ms: number; now_ms: number; items: DayItem[];
@@ -25,6 +25,55 @@ export type Icon = 'moon' | 'walk' | 'run' | 'bike' | 'car' | 'bus' | 'talk' | '
 export type LensKind = 'sleep' | 'trip' | 'work' | 'call' | 'talk' | 'payment' | 'picture';
 const LENSES: Record<string, LensKind> = { sleep: 'sleep', move: 'trip', ride: 'trip', work: 'work', call: 'call', talk: 'talk', payment: 'payment', picture: 'picture' };
 export const lensOf = (kind: string): LensKind | null => LENSES[kind] ?? null;
+
+// ---------- what the brain sends is read, never trusted ----------
+// The day arrives over the network from a brain that keeps changing: a field may be missing, null or another shape. `tidy` copies an
+// item field by field with the type it should have, so nothing downstream has to ask; an item with no id, kind or time is left out.
+// An envelope with no usable bounds cannot be drawn at all: `tidyReply` throws, and the pane says so in a line (TimelineGuard.tsx).
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const str = (v: unknown) => typeof v === 'string' ? v : undefined;
+const fin = (v: unknown) => typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+const bool = (v: unknown) => typeof v === 'boolean' ? v : undefined;
+const STRINGS = ['place', 'activity', 'text', 'app', 'route', 'board_stop', 'alight_stop', 'note', 'title', 'source', 'to', 'attachment', 'currency', 'direction', 'counterparty'] as const;
+const NUMBERS = ['minutes', 'active_s', 'turns', 'leave_at_ms', 'messages', 'chats'] as const;
+const FLAGS = ['confirmed', 'private'] as const;
+export function tidy(raw: unknown): DayItem | null {
+  if (!isObj(raw)) return null;
+  const { id, kind, start_ms: start, end_ms: end } = raw;
+  if (typeof id !== 'string' || !id || typeof kind !== 'string' || !Number.isFinite(start) || end != null && !Number.isFinite(end)) return null;
+  const out: Record<string, unknown> = { id, kind, lane: raw.lane === 'her' ? 'her' : 'you', start_ms: start, end_ms: end ?? null, state: raw.state === 'now' || raw.state === 'next' ? raw.state : 'done' };
+  for (const k of STRINGS) { const v = str(raw[k]); if (v !== undefined) out[k] = v; }
+  for (const k of NUMBERS) { const v = fin(raw[k]); if (v !== undefined) out[k] = v; }
+  for (const k of FLAGS) { const v = bool(raw[k]); if (v !== undefined) out[k] = v; }
+  if (typeof raw.amount === 'string' || fin(raw.amount) !== undefined) out.amount = raw.amount;
+  const kept = raw.kept_place;
+  if (isObj(kept) && typeof kept.id === 'string' && typeof kept.name === 'string') out.kept_place = { id: kept.id, name: kept.name, role: str(kept.role) ?? '' };
+  for (const k of ['projects', 'apps'] as const) {
+    const v = raw[k];
+    if (Array.isArray(v)) out[k] = v.flatMap(x => isObj(x) && typeof x.name === 'string' ? [{ name: x.name, seconds: fin(x.seconds) ?? 0 }] : []);
+  }
+  return out as DayItem;
+}
+export function tidyReply(raw: unknown): DayReply {
+  if (!isObj(raw) || typeof raw.date !== 'string' || !Number.isFinite(raw.start_ms) || !Number.isFinite(raw.end_ms) || (raw.end_ms as number) <= (raw.start_ms as number)) throw new Error('the day has no usable bounds');
+  const each = <T>(v: unknown, pick: (x: unknown) => T | null): T[] => Array.isArray(v) ? v.flatMap(x => pick(x) ?? []) : [];
+  return {
+    date: raw.date, tz: str(raw.tz) ?? '', start_ms: raw.start_ms as number, end_ms: raw.end_ms as number, now_ms: fin(raw.now_ms) ?? (raw.start_ms as number),
+    items: each(raw.items, tidy),
+    labels: each(raw.labels, x => isObj(x) && typeof x.title === 'string' ? { title: x.title, source: str(x.source), private: bool(x.private) } : null),
+    missing: each(raw.missing, x => typeof x === 'string' ? x : null),
+    line: isObj(raw.line) && typeof raw.line.text === 'string' ? { text: raw.line.text, draft: bool(raw.line.draft), written_at: str(raw.line.written_at) } : null,
+    highlights: each(raw.highlights, x => isObj(x) && typeof x.id === 'string' ? { id: x.id, label: str(x.label) ?? '', by: str(x.by) ?? '' } : null),
+  };
+}
+// A day the pane could not read is said once in the app's log (`[timeline] ...`, which electron/companion.ts passes on), not every frame.
+const told = new Set<string>();
+export function report(where: string, error: unknown) {
+  const frame = error instanceof Error ? error.stack?.split('\n').find(x => /^\s+at /.test(x))?.trim().slice(0, 140) : '';
+  const text = `[timeline] ${where}: ${error instanceof Error ? error.message : String(error)}${frame ? ` ${frame}` : ''}`;
+  if (told.has(text)) return;
+  told.add(text); console.warn(text);
+}
 
 // ---------- time and words ----------
 const clocks = new Map<string, Intl.DateTimeFormat>();
@@ -69,9 +118,9 @@ export function fnv(text: string) {
   for (const b of new TextEncoder().encode(text)) { h ^= b; h = Math.imul(h, 16777619) >>> 0; }
   return h >>> 0;
 }
-const clean = (s?: string | null) => (s ?? '').trim();
+const clean = (s?: unknown) => typeof s === 'string' ? s.trim() : '';
 // An item whose times are not numbers is left out: a time that cannot be formatted would take the whole pane down with it.
-const sound = (it: DayItem) => Number.isFinite(it.start_ms) && (it.end_ms == null || Number.isFinite(it.end_ms));
+const sound = (it: unknown): it is DayItem => isObj(it) && Number.isFinite(it.start_ms) && (it.end_ms == null || Number.isFinite(it.end_ms));
 export type StayLook = { name: string; unnamed: boolean; kept: boolean; rgb: Rgb; icon: Icon };
 // The name he gave the place, else the first comma-separated part of what the phone called it, else none.
 export function stayLook(it: DayItem, t: Say): StayLook {
@@ -89,10 +138,15 @@ const rideWords = (it: DayItem, t: Say) => { const r = clean(it.route).replace(/
 
 // ---------- the wing's one line ----------
 // The place of the stay that covers now and how long it has lasted (`家 · 3:12`); while he moves, the move in words and how long
-// (`27 路 · 12 分`, `步行 · 6 分`); else `今天`.
+// (`27 路 · 12 分`, `步行 · 6 分`); else `今天`. It is drawn every frame on a canvas, where nothing catches a throw: a day this cannot read
+// is reported once, and the wing falls back to the plain place, or to nothing.
 export function wingText(day: DayReply | null, now: number, t: Say): { head: string; tail: string } {
+  try { return wingLine(day, now, t); }
+  catch (error) { report('the wing', error); return { head: plainPlace(day, now), tail: '' }; }
+}
+function wingLine(day: DayReply | null, now: number, t: Say) {
   let moving: DayItem | undefined, stay: DayItem | undefined;
-  for (const it of day?.items ?? []) {
+  for (const it of Array.isArray(day?.items) ? day!.items : []) {
     if (!sound(it) || it.start_ms > now || it.end_ms != null && it.end_ms <= now) continue;
     if ((it.kind === 'ride' || it.kind === 'move') && (!moving || it.start_ms >= moving.start_ms)) moving = it;
     else if (it.kind === 'stay' && (!stay || it.start_ms >= stay.start_ms)) stay = it;
@@ -100,6 +154,12 @@ export function wingText(day: DayReply | null, now: number, t: Say): { head: str
   if (moving) return { head: moving.kind === 'ride' ? rideWords(moving, t) : moveWords(moving.activity, t), tail: dur(Math.floor((now - moving.start_ms) / 60_000), t) };
   if (stay) { const look = stayLook(stay, t); return { head: look.unnamed ? t(['Staying', '停留']) : look.name, tail: since(now - stay.start_ms) }; }
   return { head: t(['Today', '今天']), tail: '' };
+}
+function plainPlace(day: DayReply | null, now: number) {
+  try {
+    for (const it of day!.items) if (sound(it) && it.kind === 'stay' && it.start_ms <= now && (it.end_ms == null || it.end_ms > now)) return clean(it.kept_place?.name) || clean(it.place).split(/[,，]/)[0].trim();
+  } catch { /* nothing to say */ }
+  return '';
 }
 
 // ---------- the pane ----------
@@ -203,8 +263,8 @@ const byTime = (a: DayItem, b: DayItem) => a.start_ms - b.start_ms || (a.id < b.
 // The day as the pane reads it: each stay as a group with what happened inside it, the ways he went between stays (a move, a bus
 // ride) and whatever fell outside any stay (a sleep before he got home), all in time order; on today a now line, with what is
 // still to come below it.
-export function buildDay(reply: DayReply, now: number, t: Say): DayModel {
-  const tz = reply.tz, today = now >= reply.start_ms && now < reply.end_ms;
+export function buildDay(input: DayReply, now: number, t: Say): DayModel {
+  const reply = tidyReply(input), tz = reply.tz, today = now >= reply.start_ms && now < reply.end_ms;
   // A highlight's label is the owner's or hers; with neither, the brain writes `kind HH:MM`, which says less than the row does.
   const marks = new Map<string, string>(), stars = new Map<string, Mark>();
   for (const h of reply.highlights ?? []) {
@@ -213,7 +273,7 @@ export function buildDay(reply: DayReply, now: number, t: Say): DayModel {
   }
   const c: Ctx = { t, tz, reply, now, today, marks };
   const seen = new Set<string>(), items: DayItem[] = [];
-  for (const it of reply.items ?? []) if (sound(it) && !seen.has(it.id) && (it.kind === 'stay' || it.kind === 'move' || it.kind === 'ride' || NESTED.has(it.kind))) { seen.add(it.id); items.push(it); }
+  for (const it of reply.items) if (!seen.has(it.id) && (it.kind === 'stay' || it.kind === 'move' || it.kind === 'ride' || NESTED.has(it.kind))) { seen.add(it.id); items.push(it); }
   items.sort(byTime);
   const stays = items.filter(it => it.kind === 'stay'), inside = new Map<string, Block[]>(stays.map(s => [s.id, []]));
   const tops: { rank: number; block: Block }[] = [], span = new Map<string, Span>(), openEnd = today ? now : reply.end_ms;

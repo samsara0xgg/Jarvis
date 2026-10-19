@@ -240,8 +240,8 @@ function companion(shown?: () => void) {
   win.setIgnoreMouseEvents(true, { forward: true });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
-  // The page's own R&D lines reach the log: when and why the Dashboard closed.
-  win.webContents.on('console-message', event => { if (event.message.startsWith('[dashboard]')) console.log(`${new Date().toISOString()} ${event.message}`); });
+  // The page's own R&D lines reach the log: when and why the Dashboard closed, and a day the timeline could not draw.
+  win.webContents.on('console-message', event => { if (event.message.startsWith('[dashboard]') || event.message.startsWith('[timeline]')) console.log(`${new Date().toISOString()} ${event.message}`); });
   const dashboard = setupDashboard({ parent: win, stage: () => { const d = current ?? target(); return stageRect(d, placement(d).topInset); }, preload: path.join(here, 'preload.cjs'), page: path.join(here, '../dist/index.html'), demo, port,
     mouseDown: material?.leftMouseDown ? () => material.leftMouseDown() : undefined,
     onAttach: display => { clearTimeout(moving); moving = undefined; pending = null; current = display; place(); } });
