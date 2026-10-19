@@ -24,9 +24,10 @@ enum TLMotion {
         reduce ? .easeOut(duration: reducedFade) : .easeOut(duration: riseDuration).delay(Double(rank) * riseStagger)
     }
     /// words that are replaced by other words in the same place (her sentence, the tag after the date, the weather): the old ones leave over 70 ms and the new ones arrive over 140 ms
-    /// after them, so that the two are never readable together; with Reduce Motion a plain fade
+    /// after them, so that the two are never readable together; under Reduce Motion the same in 120 ms (a fade moves nothing)
     static func swapWords(reduce: Bool) -> AnyTransition {
-        reduce ? .opacity : .asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.14).delay(0.07)), removal: .opacity.animation(.easeIn(duration: 0.07)))
+        let out = reduce ? 0.05 : 0.07, into = reduce ? 0.07 : 0.14
+        return .asymmetric(insertion: .opacity.animation(.easeOut(duration: into).delay(out)), removal: .opacity.animation(.easeIn(duration: out)))
     }
 
     /// what stands beside the bar's stretches (the hours, the sun, the stars, the line for now) comes in as they grow: a fade of 200 ms that begins once the growth has gone `after` of its way
