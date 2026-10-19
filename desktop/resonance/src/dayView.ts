@@ -11,6 +11,7 @@ export type DayItem = {
   text?: string; active_s?: number; projects?: Top[]; apps?: Top[]; app?: string;
   route?: string; board_stop?: string; alight_stop?: string | null; turns?: number; note?: string;
   title?: string; source?: string; confirmed?: boolean; private?: boolean; to?: string; leave_at_ms?: number;
+  amount?: string; currency?: string; direction?: string; counterparty?: string; messages?: number; chats?: number;
 };
 export type DayReply = {
   date: string; tz: string; start_ms: number; end_ms: number; now_ms: number; items: DayItem[];
@@ -19,7 +20,7 @@ export type DayReply = {
 };
 export type Say = (l: L) => string;
 export type Rgb = readonly [number, number, number];
-export type Icon = 'moon' | 'walk' | 'run' | 'bike' | 'car' | 'bus' | 'talk' | 'picture' | 'event' | 'reminder' | 'work' | 'call' | 'home' | 'school' | 'pin';
+export type Icon = 'moon' | 'walk' | 'run' | 'bike' | 'car' | 'bus' | 'talk' | 'picture' | 'event' | 'reminder' | 'work' | 'call' | 'home' | 'school' | 'pin' | 'payment' | 'chat';
 
 // ---------- time and words ----------
 const clocks = new Map<string, Intl.DateTimeFormat>();
@@ -108,8 +109,15 @@ export type DayModel = { title: string; today: boolean; chips: { text: string; m
 
 const SOURCES: Record<string, L> = { phone: ['The phone', '手机'], reminders: ['Reminders', '提醒'], mac: ['Mac time', 'Mac 的时间'], talks: ['Conversations', '对话'], rides: ['Bus rides', '公交乘车'],
   pictures: ['Pictures', '图片'], calendar: ['The calendar', '日历'], departures: ['Pinned buses', '钉着的公交'], commitments: ['What he has to go to', '要去的事'] };
+const PAYERS: Record<string, L> = { wechat_pay: ['WeChat Pay', '微信'], alipay: ['Alipay', '支付宝'], boc: ['Bank of China', '中国银行'] };
+const SYMBOLS: Record<string, string> = { CAD: '$', USD: 'US$', CNY: '¥', EUR: '€', GBP: '£', JPY: 'JP¥' };
+// `$12.40`, `¥68.00`; a currency with no sign of its own is written after the number (`12.40 CHF`).
+export function moneyText(amount: unknown, currency?: string) {
+  const a = clean(typeof amount === 'number' ? amount.toFixed(2) : String(amount ?? '')), c = clean(currency).toUpperCase();
+  return !a ? '' : c in SYMBOLS ? `${SYMBOLS[c]}${a}` : `${a} ${c}`.trim();
+}
 // What can stand inside a stay; moves and rides never do, they are the ways between.
-const NESTED = new Set(['sleep', 'talk', 'picture', 'event', 'reminder', 'work', 'call', 'departure']);
+const NESTED = new Set(['sleep', 'talk', 'picture', 'event', 'reminder', 'work', 'call', 'departure', 'payment', 'claude_chat', 'claude_day']);
 const BAR_KINDS = new Set(['stay', 'sleep', 'move', 'ride']);
 const SLEEP: Rgb = [112, 120, 205], TRANSIT: Rgb = [214, 222, 250];
 type Ctx = { t: Say; tz: string; reply: DayReply; now: number; today: boolean; marks: Map<string, string> };
@@ -120,7 +128,7 @@ const endText = (ms: number, reply: DayReply, tz: string, t: Say) => ms === repl
 const dayBefore = (it: DayItem, c: Ctx) => it.start_ms < c.reply.start_ms ? c.t(['yesterday ', '昨天 ']) : '';
 function rowOf(it: DayItem, c: Ctx): Row | null {
   const { t, tz, reply } = c;
-  let icon: Icon, title: string, detail = '', instant = false;
+  let icon: Icon, title: string, detail = '', instant = false, amount = '';
   switch (it.kind) {
     case 'sleep': icon = 'moon'; title = t(['Sleep', '睡觉']); break;
     case 'move': icon = moveIcon(it.activity); title = moveWords(it.activity, t); break;
@@ -140,6 +148,21 @@ function rowOf(it: DayItem, c: Ctx): Row | null {
     case 'departure':
       icon = 'bus'; title = clean(it.title) || rideWords(it, t); instant = true;
       detail = [clean(it.to) && t([`to ${it.to}`, `去 ${it.to}`]), it.leave_at_ms != null && t([`leave ${clock(it.leave_at_ms, tz)}`, `${clock(it.leave_at_ms, tz)} 出门`])].filter(Boolean).join(' · '); break;
+    case 'payment': {
+      // Plain for now: who, what and through which app on the left, the amount (money out reads −, money in +) where a length would be.
+      icon = 'payment'; instant = true; const who = clean(it.counterparty), what = clean(it.text), via = PAYERS[clean(it.source)];
+      title = who || what || t(['Payment', '付款']);
+      detail = [who && what !== who ? what : '', via ? t(via) : ''].filter(Boolean).join(' · ');
+      amount = `${it.direction === 'out' ? '−' : it.direction === 'in' ? '+' : ''}${moneyText(it.amount, it.currency)}`; break;
+    }
+    case 'claude_chat':
+      icon = 'chat'; title = clean(it.text) || t(['Claude chat', 'Claude 对话']);
+      detail = [t(['With Claude', '和 Claude']), it.messages ? t([`${it.messages} ${it.messages === 1 ? 'message' : 'messages'}`, `${it.messages} 条消息`]) : ''].filter(Boolean).join(' · '); break;
+    case 'claude_day': {
+      icon = 'chat'; const n = it.chats ?? 0;
+      title = n ? t([`Talked with Claude · ${n} ${n === 1 ? 'chat' : 'chats'}`, `和 Claude 聊了 ${n} 个对话`]) : t(['Talked with Claude', '和 Claude 聊过']);
+      detail = clean(it.text).split(/\s*;\s*/).filter(Boolean).join(' · '); break;
+    }
     default: return null;
   }
   const connector = it.kind === 'move' || it.kind === 'ride';
@@ -154,7 +177,7 @@ function rowOf(it: DayItem, c: Ctx): Row | null {
   if (connector && long) title = `${title} · ${long}`;
   const mark = c.marks.get(it.id);
   if (mark) { detail = [title, detail].filter(Boolean).join(' · '); title = mark; }
-  return { key: it.id, icon, title, detail, when, dur: connector ? '' : long, future: c.today && it.start_ms > c.now, star: c.marks.has(it.id), connector };
+  return { key: it.id, icon, title, detail, when, dur: connector ? '' : amount || long, future: c.today && it.start_ms > c.now, star: c.marks.has(it.id), connector };
 }
 
 function stayHead(it: DayItem, c: Ctx): StayHead {

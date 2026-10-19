@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Bell, Bicycle, Bus, CalendarBlank, Car, CaretLeft, CaretRight, ChatCircleDots, GraduationCap, House, Image as PictureIcon, Laptop, MapPin, Moon, PersonSimpleRun, PersonSimpleWalk, Phone, Star, type Icon as PhosphorIcon } from '@phosphor-icons/react';
+import { Bell, Bicycle, Bus, CalendarBlank, Car, CaretLeft, CaretRight, ChatCircleDots, Coins, GraduationCap, House, Image as PictureIcon, Laptop, MapPin, Moon, PersonSimpleRun, PersonSimpleWalk, Phone, Sparkle, Star, type Icon as PhosphorIcon } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { useNow, useRoute, type Route } from './homeData';
 import { annotate, buildDay, dateTitle, shiftDate, type Bar, type Block, type DayReply, type Icon, type Row } from './dayView';
@@ -9,7 +9,7 @@ import './day-timeline.css';
 // her sentence about the day, one bar for the whole day, and the day itself as a list; on today a now line, with what is still to come
 // below it. `feed` is today as the wing already reads it; other days are read here.
 const ICONS: Record<Icon, PhosphorIcon> = { moon: Moon, walk: PersonSimpleWalk, run: PersonSimpleRun, bike: Bicycle, car: Car, bus: Bus, talk: ChatCircleDots, picture: PictureIcon, event: CalendarBlank,
-  reminder: Bell, work: Laptop, call: Phone, home: House, school: GraduationCap, pin: MapPin };
+  reminder: Bell, work: Laptop, call: Phone, home: House, school: GraduationCap, pin: MapPin, payment: Coins, chat: Sparkle };
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const NOTE_FONT = '600 10.5px -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif';
 const rgb = (c: readonly number[]) => c.join(' ');
