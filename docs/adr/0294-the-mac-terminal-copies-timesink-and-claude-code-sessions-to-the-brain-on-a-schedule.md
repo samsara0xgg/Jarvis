@@ -28,7 +28,8 @@
   difference he accepts a trade (2026-10-18): fewer intermediate revisions of rows still changing.
   Screenshots he wants original, byte for byte.
 - The brain's disk is an SD card (ADR 0170), and its databases must never run out of room
-  (ADR 0238).
+  (ADR 0238). memory.db is the database every turn reads (about 40 MB on the Pi), and the daily
+  backup stages each database in the Pi's 2 GB of RAM disk.
 
 ## Decision
 
@@ -54,8 +55,10 @@ append-only.
 - **Cursors on the Mac.** The terminal keeps its own cursors and per-row memory and advances them
   only after the brain has kept what they stand for, so a restart, a refusal or a lost answer sends
   again and never skips. The brain refuses at its disk floor and the terminal retries later.
-- **Off by default,** and the brain's readers that were built for what he hands over leave these
-  sources out unless asked for them by name.
+- **Its own database.** The entries go into `imports/shipped.db`, the same `import_entries`
+  table in a file beside the raw shipments, never into memory.db; readers take the newest
+  revision of each row.
+- **Off by default.**
 
 ## Alternatives rejected
 
@@ -63,6 +66,9 @@ append-only.
   are already lost to it; a day record built from it has holes the brain cannot see.
 - **A table per TimeSink table on the brain** — each TimeSink release that adds a column or table
   would need a migration here (its database has 27 tables today); one entries table with the row as JSON takes a new table with no change.
+- **Put the entries in memory.db** — a first pass adds about 360 MB and a day about 10 MB to a
+  database that is 40 MB today and is opened on every turn; backing it up daily would stage all
+  of it in RAM.
 - **Ship every revision of a changing row** — an open span or an extended capture changes on
   every poll, 12 revisions an hour per row, for a difference nobody reads.
 - **Ship session transcripts, or summarise them on the Mac** — the transcripts hold code and his
@@ -81,4 +87,7 @@ append-only.
   skipped with a warning.
 - TimeSink's settings table holds his account email; it is copied like every other row, and the
   entries (not the raw shipments) have key-shaped strings masked like all imports.
-- Anything that wants these sources reads them with `newest`, by name; nothing reads them yet.
+- Anything that wants these sources opens `shipped.db` and reads with `newest`; nothing does yet,
+  and the `archive` tool and the semantic index cannot see them.
+- The daily backup copies `shipped.db` like every other database, one at a time, and stages one
+  too big for the RAM disk on the Pi's disk instead.
