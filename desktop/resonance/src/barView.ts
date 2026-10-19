@@ -178,11 +178,11 @@ function stageNote(it: DayItem, t: Say) {
   const mins = stageMinutes(it);
   return ([['deep', t(['Deep', '深睡'])], ['rem', 'REM']] as const).filter(([k]) => (mins[k] ?? 0) >= 1).map(([k, word]) => `${word} ${hm(mins[k])}`).join(' · ') || undefined;
 }
-// The list row that covers a minute: the piece of the bar there, an event still to come, else the next row after it (or the last).
-export function rowAt(model: DayModel, bar: BarModel, ms: number): string | null {
-  const seg = bar.segs.find(x => x.s <= ms && ms < x.e), event = seg ? undefined : bar.sched.find(x => x.kind === 'event' && x.s <= ms && ms <= x.e);
-  return seg?.row ?? event?.key ?? (model.index.find(x => x.t0 >= ms) ?? model.index.at(-1))?.key ?? null;
-}
+// The row of the piece of the bar at a minute: the stretch there, or an event still to come. A gap has none, so the pointer in one lifts nothing.
+export const pieceAt = (bar: BarModel, ms: number): string | null =>
+  bar.segs.find(x => x.s <= ms && ms < x.e)?.row ?? bar.sched.find(x => x.kind === 'event' && x.s <= ms && ms <= x.e)?.key ?? null;
+// The list row a click at a minute takes the list to: the piece there, else the next row after it (or the last).
+export const rowAt = (model: DayModel, bar: BarModel, ms: number): string | null => pieceAt(bar, ms) ?? (model.index.find(x => x.t0 >= ms) ?? model.index.at(-1))?.key ?? null;
 export function peek(model: DayModel, bar: BarModel, ms: number, t: Say): Peek {
   const { items, today, now, reply } = model, limit = today ? now : reply.end_ms;
   const seg = bar.segs.find(x => x.s <= ms && ms < x.e), event = seg ? undefined : bar.sched.find(x => x.kind === 'event' && x.s <= ms && ms <= x.e);
@@ -210,7 +210,7 @@ export function peek(model: DayModel, bar: BarModel, ms: number, t: Say): Peek {
   const lines = near.filter(x => !lead || x === lead || !codes.includes(x)).slice(0, 4).map(x => x !== lead ? lineOf(x.it, model, t)
     : { key: `code:${x.it.id}`, kind: 'code', icon: 'code' as Icon, text: t([`Claude Code · ${codes.length} sessions`, `Claude Code · ${codes.length} 个会话`]), side: dur(Math.max(1, covered(codes.map(c => c.it), limit)), t), star: false, picture: null });
   const mark = item ? model.stars.get(item.id) ?? null : null;
-  return { ms, at: clock(ms, model.tz), id, row: rowAt(model, bar, ms), lines, star: mark, stretch };
+  return { ms, at: clock(ms, model.tz), id, row: pieceAt(bar, ms), lines, star: mark, stretch };
 }
 
 // ---------- the day's numbers, and a range of the bar ----------
