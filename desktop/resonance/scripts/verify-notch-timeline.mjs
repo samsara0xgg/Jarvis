@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { askable, buildDay, clock, covered, dateTitle, fnv, lensOf, moneyText, shiftDate, stageLook, stageMinutes, stageSlices, tidy, tidyReply, weatherOf, wingText, within } from '../src/dayView.ts';
+import { askable, buildDay, changeId, clock, covered, dateTitle, fnv, lensOf, moneyText, shiftDate, stageLook, stageMinutes, stageSlices, tidy, tidyReply, weatherOf, wingText, within } from '../src/dayView.ts';
 import { axisOf, buildBar, fit, fOf, hm, msOf, numbers, peek, pieceAt, rowAt, summarize, toneOn } from '../src/barView.ts';
 import { askOf, hasBody, openOf, talkLines } from '../src/dayOpen.ts';
 import { deflateSync, crc32 } from 'node:zlib';
@@ -675,6 +675,10 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
     && row({ ...un, you: true, leaving: true }).leaving === false && row({ ...un, you: true, leaving: true }).detail === '邮件 · 还没确认 · Library');
 }
 
+// ---------- the change a place write answers (ADR 0234): a string, which the rename's 撤销 is shown from ----------
+check('the change a place write answers is read as the string it is (an id inside an object is read too), and none when nothing changed',
+  changeId('place-change:ab') === 'place-change:ab' && changeId({ id: 'chg-1' }) === 'chg-1' && changeId(null) === null && changeId('') === null && changeId({ id: 3 }) === null);
+
 // ---------- the built page ----------
 const server = spawn(path.join(root, 'node_modules/.bin/vite'), ['preview', '--port', String(web), '--strictPort'], { cwd: root, stdio: 'ignore' });
 const browser = await chromium.launch({ headless: true, channel: 'chrome', args: ['--disable-web-security', '--mute-audio'] });
@@ -745,7 +749,7 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
       if (s.refuse.has('rename')) return refused('refused');
       const was = s.served.items.find(x => x.kept_place?.id === place)?.kept_place?.name, change = `chg-${s.changes.size + 1}`;
       s.changes.set(change, { place, from: was }); rename(place, body.name);
-      return json({ ok: true, place: { id: place, name: body.name }, change: { id: change } });
+      return json({ ok: true, place: { id: place, name: body.name }, change });
     }
     if (post && url.pathname.startsWith('/inherent/notices/')) {
       const body = sent(), id = decodeURIComponent(url.pathname.split('/').pop()), item = s.served.items.find(x => x.id === id); s.posts.push({ path: url.pathname, body });

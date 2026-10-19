@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { CaretLeft, CaretRight, Star } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { postRoute, useRoute, type Route } from './homeData';
-import { askable, buildDay, dateTitle, marksOf, report, shiftDate, starrable, within, type Block, type DayItem, type DayModel, type DayReply, type Highlight, type Row, type WeatherLook } from './dayView';
+import { askable, buildDay, changeId, dateTitle, marksOf, report, shiftDate, starrable, within, type Block, type DayItem, type DayModel, type DayReply, type Highlight, type Row, type WeatherLook } from './dayView';
 import { askOf, hasBody, openOf, type About, type Ask, type Rec } from './dayOpen';
 import { AskDock, type DockState } from './AskDock';
 import { DayBar, useBarState } from './DayBar';
@@ -448,8 +448,8 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     if (name === r.from) { setRename(null); return; }
     setRename({ ...r, state: 'busy' });
     try {
-      const out = await postRoute(port, `/inherent/memory/places/${encodeURIComponent(r.place)}`, { name }) as { change?: { id?: unknown } | null };
-      setNames(m => new Map(m).set(r.place, name)); setNote({ place: r.place, from: r.from, change: typeof out.change?.id === 'string' ? out.change.id : null, state: 'done' }); setRename(null); again();
+      const out = await postRoute(port, `/inherent/memory/places/${encodeURIComponent(r.place)}`, { name }) as { change?: unknown };
+      setNames(m => new Map(m).set(r.place, name)); setNote({ place: r.place, from: r.from, change: changeId(out.change), state: 'done' }); setRename(null); again();
     } catch { setRename(x => x && { ...x, state: 'failed' }); }
   };
   const undo = async () => {
