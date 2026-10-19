@@ -1,6 +1,6 @@
 # ADR 0199 — The brain serves each day as one timeline, folded when asked
 
-**Status:** Accepted
+**Status:** Superseded-by-0302
 **Date:** 2026-10-10
 **Supersedes:** none
 
