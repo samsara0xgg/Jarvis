@@ -1,4 +1,4 @@
-"""ADR 0299: the day report of his Claude Code work, from material to the day line.
+"""ADR 0303: the day report of his Claude Code work, from material to the day line.
 
 Invented sessions and reports only. The material command runs over synthetic session logs of two
 accounts with the brain's sleep faked (no network, no token): the day is cut by his sleep, and
@@ -226,7 +226,7 @@ timezone: America/Vancouver
 - decisions: cut at sleep
 - open: live test
 - learned: prefers one logical commit
-- mentions: ADR 0299
+- mentions: ADR 0303
 
 ## Yana
 - sessions: 1

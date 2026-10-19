@@ -503,7 +503,7 @@ def claude_daily(
 ) -> Iterator[Parsed]:
     """A day's letter of his Claude chats (ADR 0295): one entry for the day, one per chat section.
 
-    The same shape is the day's report of his Claude Code work (ADR 0299, ``source``
+    The same shape is the day's report of his Claude Code work (ADR 0303, ``source``
     ``claude_code_daily``): its sections are projects.
 
     Read leniently: a letter with no header, no sections or neither is still one whole-day entry
@@ -587,7 +587,7 @@ def _dialogue_instant(window_start: int, zone: ZoneInfo, hour: str, minute: str)
 
 
 def claude_dialogue(name: str, data: bytes, fallback_ms: int) -> Iterator[Parsed]:
-    """A day's cut Claude Code dialogue (ADR 0299): one entry per session section.
+    """A day's cut Claude Code dialogue (ADR 0303): one entry per session section.
 
     The file is a preface (``date``, ``timezone``, ``window_start_ms``) and the sessions' files
     one after another, each starting ``# Session <id>`` and its header lines. A section's start

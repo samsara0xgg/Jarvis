@@ -73,7 +73,7 @@ def _days(conn: sqlite3.Connection) -> Iterator[Text]:
 
 def _imports(conn: sqlite3.Connection) -> Iterator[Text]:
     for one in imports.entries(conn):  # as the tools read them: no export stand-ins
-        if one.source != "claude_code_dialogue":  # ADR 0299: found by words only, far too much text
+        if one.source != "claude_code_dialogue":  # ADR 0303: found by words only, far too much text
             yield one.id, one.text
 
 

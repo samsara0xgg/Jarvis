@@ -42,7 +42,7 @@ Each source folds on its own and a source that raises leaves its items out (:fun
   its first to its last message of the window (the title as text), and each day's nightly letter
   on his Claude chats (ADR 0295) as kind ``claude_day``, a span over the chats' times with their
   titles as text and ``chats`` their number, and each day's report on his Claude Code work
-  (ADR 0299) the same way, id ``claude-code-day-<date>``, ``source`` ``claude_code_daily``, the
+  (ADR 0303) the same way, id ``claude-code-day-<date>``, ``source`` ``claude_code_daily``, the
   projects' titles as text and ``projects`` their number; with no memory store it has nothing to
   read and says nothing in ``missing``;
 - ``code``: his Claude Code sessions, from what the Mac terminal shipped (ADR 0294), in his lane:
@@ -690,7 +690,7 @@ def _import_items(
             "text": "; ".join(row.fields["titles"]) or row.text[:120],
             "chats": int(row.fields["sections"]),
         })
-    for row in code_days:  # the day's report on his Claude Code work (ADR 0299), by project
+    for row in code_days:  # the day's report on his Claude Code work (ADR 0303), by project
         first, last = int(row.fields["start_ms"]), int(row.fields["end_ms"])
         items.append({
             "id": f"claude-code-day-{row.fields['date']}",

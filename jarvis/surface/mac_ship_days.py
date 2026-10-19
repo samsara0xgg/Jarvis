@@ -1,4 +1,4 @@
-"""The Mac ships the day reports of his Claude Code work whole (ADR 0299).
+"""The Mac ships the day reports of his Claude Code work whole (ADR 0303).
 
 ``<runtime root>/claude-code-days/<date>.md`` (``material/`` beside them is the input of the
 report task and never leaves the Mac) and ``dialogue/<date>.md`` (the day's cut dialogue, kept on

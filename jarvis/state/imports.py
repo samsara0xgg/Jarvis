@@ -310,7 +310,7 @@ def latest_daily(
     """The day entries of the Claude daily letters (ADR 0295) in ``[start_ms, end_ms)``, one a day.
 
     ``source`` is ``claude_daily`` (the letter on his chats) or ``claude_code_daily`` (the report
-    on his Claude Code work, ADR 0299). A day written again is a new entry; the one added last
+    on his Claude Code work, ADR 0303). A day written again is a new entry; the one added last
     stands for the day. Oldest day first.
     """
     sql = (

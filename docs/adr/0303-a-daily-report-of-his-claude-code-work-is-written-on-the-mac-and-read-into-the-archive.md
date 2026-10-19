@@ -1,4 +1,4 @@
-# ADR 0299 — A daily report of his Claude Code work is written on the Mac and read into the archive
+# ADR 0303 — A daily report of his Claude Code work is written on the Mac and read into the archive
 
 **Status:** Accepted
 **Date:** 2026-10-19

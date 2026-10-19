@@ -11,7 +11,7 @@ Two intakes, both append-only and both answered only after the bytes are safe:
 - :meth:`Shipments.receive_file`: one binary file (a TimeSink screenshot) under
   ``imports/<source>/files/<relative path>``, written whole or not at all, answered with its
   SHA-256 so the Mac keeps its cursor until the digest matches. The one other file source is
-  ``claude-code-daily`` (ADR 0299): a Markdown day report (``<date>.md``, at most 256 KiB) or
+  ``claude-code-daily`` (ADR 0303): a Markdown day report (``<date>.md``, at most 256 KiB) or
   the day's kept dialogue (``dialogue/<date>.md``, at most 8 MiB), which may be sent again with
   other bytes (the newest stands) and is read by ``ClaudeDailyIntake``.
 
@@ -46,7 +46,7 @@ MAX_SHIPMENT_BYTES: Final = 16 * 1024 * 1024
 MAX_FILE_BYTES: Final = 16 * 1024 * 1024
 FILES_DIRNAME: Final = "files"
 CODE_DAY_SOURCE: Final = "claude-code-daily"
-"""The Mac's day report of his Claude Code work (ADR 0299), shipped as ``<date>.md`` files."""
+"""The Mac's day report of his Claude Code work (ADR 0303), shipped as ``<date>.md`` files."""
 FILE_SOURCES: Final = ("timesink", CODE_DAY_SOURCE)
 MAX_REPORT_BYTES: Final = 256 * 1024
 MAX_DIALOGUE_BYTES: Final = 8 * 1024 * 1024
@@ -241,7 +241,7 @@ class Shipments:
 
 
 def _report_error(relpath: str, data: bytes) -> ShipRefused | None:
-    """Why ``data`` is not a day report to keep at ``relpath`` (ADR 0299), or ``None``."""
+    """Why ``data`` is not a day report to keep at ``relpath`` (ADR 0303), or ``None``."""
     kept_dialogue = relpath.startswith(f"{DIALOGUE_DIRNAME}/")
     if not re.fullmatch(rf"(?:{DIALOGUE_DIRNAME}/)?{_DAY_FILE}", relpath):
         return ShipRefused(422, "the path is not <YYYY-MM-DD>.md or dialogue/<YYYY-MM-DD>.md")

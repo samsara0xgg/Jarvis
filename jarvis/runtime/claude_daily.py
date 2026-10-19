@@ -9,7 +9,7 @@ message id, so a letter is read again until it is fully kept, never twice. The o
 used are ``gmail_search`` and ``gmail_get`` (the guard of :func:`job_mail.gmail_read`). No model
 is asked; nothing of a letter's content is logged.
 
-The same intake also reads the day report of his Claude Code work (ADR 0299) that his Mac shipped
+The same intake also reads the day report of his Claude Code work (ADR 0303) that his Mac shipped
 to ``imports/claude-code-daily/files/``: no Gmail is involved, so :meth:`read_code_reports` runs
 every cycle whether or not Gmail is connected or ``claude_daily`` is enabled.
 """
@@ -51,7 +51,7 @@ LOGGER = logging.getLogger(__name__)
 
 SOURCE: Final[str] = "claude_daily"
 CODE_SOURCE: Final[str] = "claude_code_daily"
-"""The entries' source of the Mac's day report (ADR 0299); its shipped files are under
+"""The entries' source of the Mac's day report (ADR 0303); its shipped files are under
 ``imports/claude-code-daily/files/``."""
 _CODE_POLL_S: Final[float] = 300.0
 # Searched twice: as Gmail searches by default (sent and received copies), and in the drafts, which
@@ -98,7 +98,7 @@ class ClaudeDailyIntake:
         db_path: Path,
         imports_dir: Path,
     ) -> ClaudeDailyIntake:
-        """An intake that reads the Mac's day report and never touches Gmail (ADR 0299)."""
+        """An intake that reads the Mac's day report and never touches Gmail (ADR 0303)."""
         return cls(
             ClaudeDailySettings(_CODE_POLL_S, date.min, 1, gmail=False),
             connections,
@@ -156,7 +156,7 @@ class ClaudeDailyIntake:
     def read_code_reports(self) -> int:
         """Read each new or changed file the Mac shipped; how many were read.
 
-        Two kinds (ADR 0299): the day report (``<date>.md``, source ``claude_code_daily``) and the
+        Two kinds (ADR 0303): the day report (``<date>.md``, source ``claude_code_daily``) and the
         day's kept dialogue (``dialogue/<date>.md``, source ``claude_code_dialogue``, never on the
         day line). A file is read once per content: the entries are committed first, then the
         bytes are kept under ``imports/<source>/`` (named by SHA-256), so a crash in between is

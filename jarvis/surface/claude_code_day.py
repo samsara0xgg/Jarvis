@@ -1,4 +1,4 @@
-"""The Mac cuts each day's Claude Code dialogue into material for the day's report (ADR 0299).
+"""The Mac cuts each day's Claude Code dialogue into material for the day's report (ADR 0303).
 
 ``python -m jarvis.surface.claude_code_day material`` writes, for every closed day of the last
 ``--days`` that has no report ``<out>/<date>.md`` yet, one file per Claude Code session under
@@ -396,7 +396,7 @@ def _write_dialogue(out: Path, window: Window, zone: tzinfo, sessions: list[str]
     """``<out>/dialogue/<date>.md``: the day's session files in index order, after a preface.
 
     The preface carries the zone and the window so the brain can read the ``HH:MM`` stamps back
-    into instants (ADR 0299). Kept: unlike ``material/`` nothing deletes it.
+    into instants (ADR 0303). Kept: unlike ``material/`` nothing deletes it.
     """
     preface = (
         f"{DIALOGUE_HEADER}\ndate: {window.day.isoformat()}\ntimezone: {zone}\n"

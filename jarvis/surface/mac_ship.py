@@ -4,7 +4,7 @@
 ``poll_interval_s``, runs one pass on a worker thread, and goes back to sleep; the pass reads
 TimeSink's database read-only (:mod:`mac_ship_timesink`) and the Claude Code logs of the
 configured accounts (:mod:`mac_ship_sessions`), ships the Markdown day reports of his Claude Code
-work (:mod:`mac_ship_days`, ADR 0299) and sends what changed to the brain's
+work (:mod:`mac_ship_days`, ADR 0303) and sends what changed to the brain's
 ``/inherent/imports`` routes with this device's token. Its cursors live in
 ``<runtime root>/mac-ship/state.db`` and move only after the brain has kept what they stand for.
 

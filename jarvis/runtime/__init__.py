@@ -754,7 +754,7 @@ class JarvisRuntime:
     mail_codes: MailCodes | None = None
     # ADR 0274: the poller that reads his mail for things he has to go to. None = off.
     commitments: CommitmentIntake | None = None
-    # ADR 0295, 0299: the poller of the nightly letter on his Claude chats (Gmail part off unless
+    # ADR 0295, 0303: the poller of the nightly letter on his Claude chats (Gmail part off unless
     # enabled) and reader of the Mac's day report on his Claude Code work. None = hand-assembled.
     claude_daily: ClaudeDailyIntake | None = None
     # ADR 0161: the situation TimeSink last recorded, read on demand. None = off.
@@ -1944,11 +1944,11 @@ def _claude_daily(
 ) -> ClaudeDailyIntake:
     """``claude_daily`` (ADR 0295): Gmail letters off unless enabled; bad values stop boot.
 
-    Always built (ADR 0299): the Mac's day report is read whether or not Gmail letters are on.
+    Always built (ADR 0303): the Mac's day report is read whether or not Gmail letters are on.
     """
     block = config.get("claude_daily")
     if not isinstance(block, Mapping) or block.get("enabled") is not True:
-        # Gmail letters are off, but the Mac's day report of his Claude Code work (ADR 0299) is
+        # Gmail letters are off, but the Mac's day report of his Claude Code work (ADR 0303) is
         # still read from the imports archive: an intake that never touches Gmail.
         return ClaudeDailyIntake.code_reports_only(
             connections, db_path, root / imports.IMPORTS_DIRNAME,
