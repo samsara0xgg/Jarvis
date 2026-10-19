@@ -72,7 +72,7 @@
 .notch .dt-ch { display:flex; align-items:center; gap:7px; min-width:0; }
 .notch .dt-ch b { flex:1; min-width:3em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:600; color:var(--p-ink); }
 /* the range is whole where it fits; where it is long (English: `yesterday 23:10–07:00 · 7 h 20 min`) it gives way with an ellipsis, and the name keeps 3 em */
-.notch .dt-ch span { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; color:var(--p-faint); }
+.notch .dt-ch span { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11.5px; line-height:16px; font-variant-numeric:tabular-nums; color:var(--p-faint); }
 .notch .dt-cdot { flex:none; box-sizing:border-box; width:8px; height:8px; border-radius:50%; background:rgb(var(--c) / var(--a)); }
 .notch .dt-cdot.is-hollow { border:1px dashed rgb(var(--ink) / .5); background:transparent; }
 .notch .dt-cnote { margin:3px 0 0 15px; font-size:12px; line-height:16px; color:var(--p-muted); }
@@ -85,7 +85,7 @@
 .notch .dt-thumb { display:block; width:48px; height:48px; border-radius:8px; object-fit:cover; background:rgb(255 255 255 / .06); }
 .notch .dt-ctx { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--p-ink); }
 .notch .dt-cstar { margin-right:5px; vertical-align:-1px; color:rgb(var(--now)); }
-.notch .dt-cside { font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--p-faint); }
+.notch .dt-cside { font-size:11.5px; line-height:16px; font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--p-faint); }
 .notch .dt-cnone { margin:9px 0 0; padding-top:9px; border-top:1px solid rgb(255 255 255 / .06); font-size:12.5px; line-height:18px; color:var(--p-faint); }
 .notch .dt-cfoot { margin:10px 0 0; font-size:11px; line-height:14px; color:var(--p-faint); }
 .notch .dt-cbtns { display:flex; align-items:center; gap:12px; margin-top:10px; }
@@ -102,12 +102,12 @@
 .notch .dt-ncs { display:flex; flex-wrap:wrap; gap:3px 16px; }
 .notch .dt-nc { display:inline-flex; align-items:baseline; gap:6px; min-width:0; max-width:100%; font-size:12.5px; line-height:18px; white-space:nowrap; }
 .notch .dt-nc small { flex:none; font-size:11.5px; color:var(--p-faint); }
-.notch .dt-nc b { min-width:0; overflow:hidden; text-overflow:ellipsis; font:500 12px/18px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; color:var(--p-ink); }
+.notch .dt-nc b { min-width:0; overflow:hidden; text-overflow:ellipsis; font-size:12px; font-weight:500; line-height:18px; font-variant-numeric:tabular-nums; color:var(--p-ink); }
 .notch .dt-nes { display:flex; flex-direction:column; gap:4px; margin:0; padding:0; list-style:none; }
 .notch .dt-nes li { display:flex; flex-wrap:wrap; align-items:baseline; gap:1px 10px; min-width:0; font-size:12.5px; line-height:18px; }
 .notch .dt-nic { display:inline-grid; place-items:center; align-self:center; width:20px; height:18px; margin-right:-4px; color:var(--p-muted); }
 .notch .dt-nes b { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; color:var(--p-ink); }
-.notch .dt-nes em { font:11.5px/18px "JetBrains Mono", Menlo, monospace; font-style:normal; font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--p-muted); }
+.notch .dt-nes em { font-size:11.5px; line-height:18px; font-style:normal; font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--p-muted); }
 .notch .dt-nmore { font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-style:normal; color:var(--p-faint); }
 .notch .dt-nbars { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:6px 20px; align-items:start; }
 .notch .dt-nbars .dt-bars { grid-template-columns:minmax(0, 72px) minmax(0, 1fr) max-content; gap:4px 8px; }
@@ -123,7 +123,7 @@
 .notch .dt-numbers { position:relative; display:flex; flex-wrap:wrap; gap:6px; }
 .notch .dt-num { display:inline-flex; align-items:center; gap:5px; height:24px; padding:0 9px; border-radius:12px; background:rgb(255 255 255 / .06); font-size:11.5px; white-space:nowrap; color:rgb(var(--ink) / .86); transition:background 120ms,box-shadow 120ms; }
 .notch .dt-num svg { flex:none; color:rgb(var(--k)); }
-.notch .dt-num em { font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-style:normal; font-variant-numeric:tabular-nums; color:var(--p-ink); }
+.notch .dt-num em { font-size:11.5px; line-height:16px; font-style:normal; font-variant-numeric:tabular-nums; color:var(--p-ink); }
 .notch .dt-num:hover,.notch .dt-num.is-pinned { background:rgb(255 255 255 / .1); }
 .notch .dt-num.is-pinned { box-shadow:inset 0 0 0 1px rgb(var(--ink) / .6); }
 .notch .dt-vitals { display:flex; align-items:center; gap:10px; height:24px; padding-inline:4px; }

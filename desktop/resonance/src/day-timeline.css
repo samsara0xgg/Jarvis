@@ -73,7 +73,7 @@
 .notch .dt-tx > em { overflow:hidden; font-style:normal; font-size:12px; line-height:16px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-faint); }
 .notch .dt-wait { flex:none; padding:0 6px; border-radius:var(--radius-tag); background:rgb(255 201 143 / .14); font-style:normal; font-size:10.5px; font-weight:600; line-height:16px; color:rgb(255 201 143); }
 .notch .dt-star { flex:none; color:rgb(var(--now)); filter:drop-shadow(0 0 3px rgb(var(--now) / .6)); }
-.notch .dt-tm { font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; color:var(--p-muted); }
+.notch .dt-tm { font-size:11.5px; line-height:16px; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; color:var(--p-muted); }
 .notch .dt-tm.is-value { color:var(--p-ink); }
 .notch .dt-tm small { font-size:inherit; color:var(--p-faint); }
 .notch .dt-stay { display:flex; flex-direction:column; }
