@@ -3137,7 +3137,7 @@ try {
         const l = document.querySelector('.dt-list'), probe = document.createElement('i'), out = window.__frames = [];
         probe.style.cssText = 'position:fixed;left:-9px;top:0;width:1px;height:1px;opacity:0;pointer-events:none';
         document.body.append(probe);
-        const grab = () => { const lr = l.getBoundingClientRect(), r = document.querySelector(`[data-key="${k}"]`)?.getBoundingClientRect(); out.push({ top: r ? r.top - lr.top : null, under: r ? lr.bottom - r.bottom : null, st: l.scrollTop }); };
+        const grab = () => { const lr = l.getBoundingClientRect(), r = document.querySelector(`[data-key="${k}"]`)?.getBoundingClientRect(); out.push({ top: r ? r.top - lr.top : null, under: r ? lr.bottom - r.bottom : null, st: l.scrollTop, ft: l.firstElementChild.getBoundingClientRect().top - lr.top }); };
         let on = true;
         const tick = () => { if (!on) return; const look = new ResizeObserver(() => { look.disconnect(); if (on) grab(); }); look.observe(probe); requestAnimationFrame(tick); };
         grab(); requestAnimationFrame(tick);
@@ -3177,16 +3177,23 @@ try {
     const e0 = await spot(a, 'stay-home-2'), ef = await frames(a, 'stay-home-2', () => a.page.keyboard.press('Escape'));
     check('Esc closes the open row where it is', dev(ef) <= 1 && Math.abs((await spot(a, 'stay-home-2')).top - e0.top) <= 1 && await expanded(a, 'stay-home-2') === 'false', JSON.stringify({ dev: dev(ef) }));
 
-    // at the top of the list there is no scroll to give back: the list is given room above its first row, which goes when he scrolls
+    // at the top of the list there is no scroll to give back and no room is made above the first row (a blank band is worse than rows that move): the rows move with the closing, only by the part that has no scroll
+    const firstTop = () => a.page.evaluate(() => { const l = document.querySelector('.dt-list'); return l.firstElementChild.getBoundingClientRect().top - l.getBoundingClientRect().top + l.scrollTop; });
     await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; }); await rest(a, 300);
+    const ft0 = await firstTop();
     await press(a, 'stay-home-1'); await rest(a, 700);
     const Z = await below(a, 'stay-home-1', 120), z0 = await spot(a, Z), zf = await frames(a, Z, () => press(a, Z)), z1 = await spot(a, Z);
-    check('at the top of the list the pressed row still does not move, the list making room above its first row (no more than a third of the view)',
-      Z && dev(zf) <= 1 && Math.abs(z1.top - z0.top) <= 1 && z1.head > 20 && z1.head <= z1.lh / 3 + 1 && z1.st === 0, JSON.stringify({ Z, z0, z1, dev: dev(zf) }));
-    await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 200; }); await rest(a, 250);
-    const z2 = await spot(a, Z);
-    check('the room goes as he scrolls away from it, and nothing moves for it going: the row is where scrolling 200 px puts it', z2.head === 0 && Math.abs(z2.top - (z1.top - 200)) <= 1, JSON.stringify({ z1, z2 }));
+    check('at the top of the list no room is made above the first row: its top is the list\'s top in every frame, and there is no padding above it; the pressed row moves with the closing above it',
+      Z && zf.length > 8 && zf.every(f => f.st === 0 && Math.abs(f.ft - ft0) <= .5) && z1.head === 0 && z1.st === 0 && z0.top - z1.top > 30, JSON.stringify({ Z, z0, z1, ft0, fts: zf.map(f => +f.ft.toFixed(1)) }));
     await press(a, Z); await rest(a, 500);
+    // with some scroll to give (here 40 px) the pressed row holds while there is any, and moves only by the rest
+    await press(a, 'stay-home-1'); await rest(a, 700);
+    await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 40; }); await rest(a, 300);
+    const W = await below(a, 'stay-home-1', 120), w0 = await spot(a, W), wf = await frames(a, W, () => press(a, W)), w1 = await spot(a, W);
+    const held = wf.filter(f => f.st > .5);
+    check('with only some scroll to give, the pressed row stays within 1 px in every frame that has scroll left, and the list ends at its top with no band above the first row',
+      W && held.length >= 2 && held.every(f => Math.abs(f.top - w0.top) <= 1) && wf.every(f => f.st > .5 || Math.abs(f.ft - ft0) <= .5) && w1.st === 0 && w1.head === 0 && w0.top - w1.top > 30, JSON.stringify({ W, w0, w1, held: held.length, tops: wf.map(f => +f.top.toFixed(1)), sts: wf.map(f => +f.st.toFixed(1)) }));
+    await press(a, W); await rest(a, 500);
 
     await a.ctx.close();
     const b = await boot({ served: bigDay() });
