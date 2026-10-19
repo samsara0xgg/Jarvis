@@ -204,10 +204,12 @@ class _Writer:
         self.reply = reply
         self.prompts: list[str] = []
         self.systems: list[str] = []
+        self.asked: list[list[dict[str, Any]]] = []
 
     def chat(self, *, messages: list[dict[str, Any]], system: str, **_kwargs: object) -> ChatResult:
         prompt = str(messages[0]["content"])
         self.prompts.append(prompt)
+        self.asked.append(messages)
         self.systems.append(system)
         return ChatResult(
             text=self.reply(prompt), tool_calls=(), finish_reason="stop", input_tokens=100,
@@ -1114,6 +1116,11 @@ def test_a_rejected_answer_is_asked_again_once_and_a_second_failure_stores_nothi
         composed = compose_run(brief, SETTINGS, writer, recorder)
         assert composed.spans is not None
         assert (len(writer.prompts), composed.tokens_in) == (2, 200)
+        # the second ask shows the refused answer and why, after the same day
+        assert [m["role"] for m in writer.asked[1]] == ["user", "assistant", "user"]
+        assert writer.asked[1][0] == writer.asked[0][0]
+        assert writer.asked[1][1]["content"] == "not json"
+        assert "The gates refused that answer: not valid JSON." in writer.asked[1][2]["content"]
         always = _Writer(lambda _p: "not json")
         failed = compose_run(brief, SETTINGS, always, recorder)
     assert (failed.spans, failed.why, len(always.prompts)) == (None, "not valid JSON", 2)

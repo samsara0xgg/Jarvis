@@ -211,6 +211,23 @@ def build_messages(brief: Brief) -> list[dict[str, Any]]:
     return [{"role": "user", "content": content}]
 
 
+_REFUSED: Final = (
+    "[From the program, not the user] The gates refused that answer: {why}. Write the whole "
+    "answer again as one JSON object, with that fixed and every rule kept."
+)
+
+
+def asked_again(
+    messages: Sequence[Mapping[str, Any]], answer: str | None, why: str,
+) -> list[dict[str, Any]]:
+    """The writer's messages to ask once more: its refused answer, then why it was refused."""
+    return [
+        *(dict(m) for m in messages),
+        {"role": "assistant", "content": answer or "(no answer)"},
+        {"role": "user", "content": _REFUSED.format(why=why)},
+    ]
+
+
 # --- the gates -----------------------------------------------------------------------------
 
 
@@ -440,8 +457,9 @@ def read_run(
         spans = [_span(one, brief, labels, clues, bare, held) for one in raw]
     except _Rejected as rejected:
         return str(rejected)
-    why = _tiled(spans, brief) or next(filter(None, (_joined(s, brief) for s in spans)), None)
-    if why is not None:
+    # every join is named at once, so the one retry can split them all
+    why = _tiled(spans, brief) or "; ".join(filter(None, (_joined(s, brief) for s in spans)))
+    if why:
         return why
     if sum(s["question"] is not None for s in spans) > MAX_QUESTIONS:
         return f"more than {MAX_QUESTIONS} questions"
@@ -457,6 +475,7 @@ __all__ = [
     "QUESTION_MAX_CHARS",
     "TITLE_MAX_CHARS",
     "Brief",
+    "asked_again",
     "build_messages",
     "inputs_digest",
     "read_run",

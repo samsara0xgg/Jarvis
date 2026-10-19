@@ -26,7 +26,13 @@ from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from jarvis.decision.cost_guard import CostRecorder
-from jarvis.decision.doing_run import Brief, build_messages, inputs_digest, read_run
+from jarvis.decision.doing_run import (
+    Brief,
+    asked_again,
+    build_messages,
+    inputs_digest,
+    read_run,
+)
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.shared import lang
 from jarvis.state.day_line import DayLine, DaySources, day_window, fold_day, shipped_conn
@@ -145,7 +151,9 @@ def compose_run(
 ) -> Composed:
     """Ask the model for ``brief``'s day and gate the answer; a rejected one is asked once more.
 
-    Blocking. A call that raises propagates, with nothing stored.
+    The second ask shows the model its answer and why the gates refused it, so it fixes that
+    rather than writing the day afresh. Blocking. A call that raises propagates, with nothing
+    stored.
     """
     messages = build_messages(brief)
     why, model, spent_in, spent_out = "", None, 0, 0
@@ -161,6 +169,7 @@ def compose_run(
             return Composed(found, "", model, spent_in, spent_out)
         why = found
         LOGGER.warning("doing: %s rejected (%s)", brief.day, why)
+        messages = asked_again(messages, result.text, why)
     return Composed(None, why, model, spent_in, spent_out)
 
 
