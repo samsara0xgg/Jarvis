@@ -1,14 +1,15 @@
 import type { L } from './companionSettings';
 import { hm } from './barView.ts';
-import { accountOf, askable, clean, clock, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, starrable, stayLook, type DayItem, type DayModel, type Icon, type Say } from './dayView.ts';
+import { accountOf, askable, clean, clock, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, starrable, stayLook, workoutOf, type DayItem, type DayModel, type Icon, type Say } from './dayView.ts';
 
 // What a row says when it is opened (ADR 0296, spec-r3 section 8), and what can be done from it. Pure (no DOM), so
 // scripts/verify-notch-timeline.mjs runs it in node. Nothing here is made up: a part exists only where the brain sent what it
 // shows, and an action exists only where its route works today (the rename of a kept place, the acknowledgement of a reminder that
 // rang, a turn that is handed to her). DayTimeline.tsx and RowOpen.tsx draw it.
 // An open row adds to its two lines and its right column, it does not say them again: a move's word and length, a ride's route, a
-// call's app, a payment's who and what are the row's already. What the row may have cut (a title over 20 characters, a second line
-// over 40) is said in full.
+// payment's who and what are the row's already. What the row may have cut (a title over 20 characters, a second line over 40) is said in
+// full. The rows that had nothing else to open to say it whole: a call's app, a Claude chat's title and how many messages, and what a
+// workout counted (distance, pace or speed, energy, heart rate), with when it ran.
 export type Tone = 'ink' | 'muted';
 export type Words = { text: string; tone: Tone };
 export type Bar = { name: string; text: string; share: number };
@@ -152,17 +153,24 @@ export function openOf(m: DayModel, key: string, t: Say): Open | null {
       else parts.push(lines(say(span(it, m, t))));
       break;
     }
-    // What was counted (distance, energy, heart rate) is the row's second line; when it ran, to the minute, is new.
-    case 'workout': case 'call': parts.push(lines(say(span(it, m, t)))); break;
+    // When it ran, to the minute, and under it what was counted (the row's second line, here with the pace or speed too, which is only with a distance).
+    case 'workout': {
+      const w = workoutOf(it, t), counted = [w.dist, w.pace, w.kcal, w.hr].filter(Boolean).join(' · ');
+      parts.push(lines(say(span(it, m, t)), counted && say(counted)));
+      break;
+    }
+    case 'call': parts.push(lines(say([span(it, m, t), clean(it.app)].filter(Boolean).join(' · ')))); break;
     case 'payment': {
       // Who, what and through which app are the row's; which way the money went and in what currency are new.
       const way = it.direction === 'in' ? t(['Received', '收入']) : it.direction === 'out' ? t(['Spent', '支出']) : '', cur = clean(it.currency).toUpperCase();
       parts.push(lines(say([way, moneyText(it.amount, it.currency), cur].filter(Boolean).join(' · '))));
       break;
     }
-    case 'claude_chat':
-      parts.push(lines(again(clean(it.text)), say(span(it, m, t))));
+    case 'claude_chat': {
+      const title = clean(it.text), n = it.messages ?? 0, count = n > 0 ? t([`${n} ${n === 1 ? 'message' : 'messages'}`, `${n} 条`]) : '';
+      parts.push(lines(title && say(title), say([span(it, m, t), count].filter(Boolean).join(' · '))));
       break;
+    }
     case 'claude_day': {
       const titles = clean(it.text).split(/\s*;\s*/).filter(Boolean);
       if (titles.length) parts.push({ type: 'titles', list: titles });
