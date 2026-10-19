@@ -87,8 +87,8 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
     setWidth(el.clientWidth); ro.observe(el);
     return () => ro.disconnect();
   }, [!!bar]);
-  // A lens whose number the day does not have (the day was changed) lets go.
-  useEffect(() => { if (ui.pinned && !nums.some(n => n.kind === ui.pinned)) ui.setPinned(null); }, [nums]);
+  // A lens whose number the day does not have (the day was changed) lets go, pinned or previewed by a chip that is not there to say it has left.
+  useEffect(() => { if (ui.pinned && !nums.some(n => n.kind === ui.pinned)) ui.setPinned(null); if (ui.preview && !nums.some(n => n.kind === ui.preview)) ui.setPreview(null); }, [nums]);
 
   // The card opens after the pointer has rested 50 ms on the bar.
   useEffect(() => {

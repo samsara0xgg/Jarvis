@@ -6,6 +6,7 @@ import { askable, buildDay, dateTitle, report, shiftDate, within, type Block, ty
 import { askOf, hasBody, openOf, type About, type Ask, type Rec } from './dayOpen';
 import { AskDock, type DockState } from './AskDock';
 import { DayBar, useBarState } from './DayBar';
+import { numbers } from './barView';
 import { Ic, SKIES } from './dayIcons';
 import { EASE, OpenBody, reduced, Unfold, Viewer, type Acts } from './RowOpen';
 import { TimelineGuard } from './TimelineGuard';
@@ -239,6 +240,8 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     catch (error) { report('the day', error); return { model: null, failed: true }; }
   }, [laid, now, lang]);
   const model = built.model;
+  // The kinds the day has a number for: a lens that is not one of them (its chip is not there) lights nothing.
+  const lensKinds = useMemo(() => new Set(model ? numbers(model, t).map(n => n.kind) : []), [model, lang]);
   const todayDate = feed.data?.date ?? null, at = date ?? todayDate;
   const step = (days: number) => { if (!at) return; const next = shiftDate(at, days); setDate(next === todayDate ? null : next); };
   // A read that does not come says so after a few seconds; the daemon is asked again on its own.
@@ -428,7 +431,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     window.addEventListener('keydown', key, true);
     return () => { window.removeEventListener('keydown', key, true); cancelAnimationFrame(glide.current); };
   }, []);
-  useEffect(() => { ui.setSel(null); ui.setFilter(null); }, [date]);
+  useEffect(() => { ui.setSel(null); ui.setFilter(null); ui.setPreview(null); }, [date]);
 
   // The keys of an open day (the window has key focus only after a click pinned it: Notch.tsx): ← → the day before and after, ↑ ↓ the row
   // before and after, which the bar brackets and the list keeps in view, Enter or Space opens the one chosen (or closes it). With nothing
@@ -471,7 +474,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   const title = at ? dateTitle(at, t) : model?.title ?? '';
   const say = !port ? t(['Not connected to Jarvis yet', '还没连上 Jarvis']) : route.missing ? t(["This Jarvis can't give a day yet", '这台 Jarvis 还不会给出一天']) : slow || route.failed ? t(["Couldn't read this day. Trying again.", '没读到这一天，会再试一次']) : t(['Reading the day…', '读着这一天…']);
   const kept = note ?? lastNote.current, shownDock = dock ?? lastDock.current;
-  return <div ref={root} className={`dt${shown && at && shown.date !== at ? ' is-loading' : ''}`} data-lens={ui.lens ?? undefined} role="region" aria-label={t(['Day timeline', '一天的时间线'])}>
+  return <div ref={root} className={`dt${shown && at && shown.date !== at ? ' is-loading' : ''}`} data-lens={ui.lens && lensKinds.has(ui.lens) ? ui.lens : undefined} role="region" aria-label={t(['Day timeline', '一天的时间线'])}>
     <div className="dt-head">
       <b className="dt-date">{title}</b>{date === null ? <em className="dt-today">{t(['Today', '今天'])}</em> : <button type="button" className="dt-back" onClick={() => setDate(null)}>{t(['Back to today', '回到今天'])}</button>}
       <TimelineGuard where="the header" reset={shown} fallback={null}>

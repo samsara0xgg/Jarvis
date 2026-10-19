@@ -2606,6 +2606,21 @@ try {
     await a.ctx.close();
   }
 
+  // a lens previewed by a chip the day then loses (the day was changed with the keys, the pointer resting where the chip was) goes with it
+  if (all || only === 'review') {
+    const a = await boot({ served: fullDay() });
+    await openDay(a);
+    const lens = () => a.page.evaluate(() => document.querySelector('.dt').dataset.lens ?? null);
+    await a.page.locator('.dt-num', { hasText: 'Mac' }).hover(); await a.page.waitForTimeout(150);
+    const rowsDimmed = () => a.page.evaluate(() => [...document.querySelectorAll('.dt-row')].filter(r => getComputedStyle(r).opacity !== '1').length);
+    check('the pointer on the Mac chip previews its lens: the rows that are not Mac time step back', await lens() === 'work' && await rowsDimmed() > 5);
+    await a.page.keyboard.press('ArrowLeft');
+    await a.page.waitForFunction(() => document.querySelector('.dt-date')?.innerText === '10月18日 周日' && document.querySelector('[data-key="y-sleep"]') && !document.querySelector('.dt.is-loading'), null, { timeout: 6000 });
+    await a.page.waitForTimeout(300);
+    check('the day before has no Mac time, no chip and no lens: the rows are as they are', await lens() === null && await a.page.locator('.dt-num').count() === 1 && await rowsDimmed() === 0, JSON.stringify({ lens: await lens(), chips: await a.page.locator('.dt-num').allInnerTexts(), dimmed: await rowsDimmed() }));
+    await a.ctx.close();
+  }
+
   console.log(`\n${checks.length} checks passed; screenshots in ${dir}`);
 } finally {
   await browser.close();
