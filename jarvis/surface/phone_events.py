@@ -61,6 +61,9 @@ SIGNAL_VALUES: Final[Mapping[str, tuple[str, ...]]] = {
     "headphones": ("connected", "disconnected"),
     "call": ("started", "ended"),
 }
+BATTERY_SIGNAL: Final = "battery"
+"""The one signal whose ``value`` is not an enum: the charge as a whole percent, in text."""
+BATTERY_DETAILS: Final = ("charging", "full", "unplugged")
 
 _FUTURE_MS: Final = 5 * 60 * 1000
 _FRAME_KEYS: Final = frozenset({"type", "event_uid", "event_type", "ts_epoch_ms", "payload"})
@@ -133,8 +136,8 @@ _CHECKS: Final[Mapping[str, Mapping[str, Check]]] = {
         "value": _non_negative, "detail": _DETAIL,
     },
     STATE_EVENT: {
-        "signal": _one_of(tuple(SIGNAL_VALUES)),
-        "value": _one_of(tuple({v for values in SIGNAL_VALUES.values() for v in values})),
+        "signal": _one_of((*SIGNAL_VALUES, BATTERY_SIGNAL)),
+        "value": _DETAIL,  # which texts fit which signal is checked in payload_valid
         "detail": _DETAIL,
     },
 }
@@ -167,8 +170,22 @@ def payload_valid(event_type: str, payload: Mapping[str, object], now_ms: int) -
         if not (isinstance(start, int) and isinstance(end, int) and end >= start):
             return False
     if event_type == STATE_EVENT:
-        return payload["value"] in SIGNAL_VALUES[str(payload["signal"])]
+        return _state_valid(str(payload["signal"]), payload["value"], payload.get("detail"))
     return True
+
+
+def _state_valid(signal: str, value: object, detail: object) -> bool:
+    """Whether ``value`` (and ``detail``) is what ``signal`` carries."""
+    if signal == BATTERY_SIGNAL:
+        return (
+            isinstance(value, str)
+            and value.isascii()
+            and value.isdigit()
+            and str(int(value)) == value  # no leading zeros
+            and int(value) <= 100  # noqa: PLR2004 — a percent
+            and (detail is None or detail in BATTERY_DETAILS)
+        )
+    return value in SIGNAL_VALUES[signal]
 
 
 def frame_shaped(frame: Mapping[str, object]) -> bool:

@@ -147,6 +147,10 @@ VALID: list[tuple[str, dict[str, Any]]] = [
     (STATE, {"signal": "headphones", "value": "disconnected"}),
     (STATE, {"signal": "focus", "value": "off"}),
     (STATE, {"signal": "call", "value": "started"}),
+    (STATE, {"signal": "battery", "value": "0"}),
+    (STATE, {"signal": "battery", "value": "100", "detail": "full"}),
+    (STATE, {"signal": "battery", "value": "57", "detail": "charging"}),
+    (STATE, {"signal": "battery", "value": "9", "detail": "unplugged"}),
     *((MOTION, _changed(MOTION, activity=a))
       for a in ("stationary", "walking", "running", "cycling", "automotive", "unknown")),
     *((MOTION, _changed(MOTION, confidence=c)) for c in ("low", "medium", "high")),
@@ -211,6 +215,17 @@ INVALID: list[tuple[str, dict[str, Any]]] = [
     (STATE, {"signal": "power", "value": "started"}),
     (STATE, {"signal": "headphones", "value": "on"}),
     (STATE, {"signal": "call", "value": "connected"}),
+    # the battery's value is a whole percent in text, its detail one of three states
+    (STATE, {"signal": "battery", "value": "101"}),
+    (STATE, {"signal": "battery", "value": "-1"}),
+    (STATE, {"signal": "battery", "value": "57.5"}),
+    (STATE, {"signal": "battery", "value": "057"}),
+    (STATE, {"signal": "battery", "value": ""}),
+    (STATE, {"signal": "battery", "value": "٥٧"}),  # Arabic-Indic digits
+    (STATE, {"signal": "battery", "value": 57}),
+    (STATE, {"signal": "battery", "value": "connected"}),
+    (STATE, {"signal": "battery", "value": "57", "detail": "Work"}),
+    (STATE, {"signal": "focus", "value": "57"}),
     # a string over its cap
     (LOCATION, _changed(LOCATION, place="p" * 201)),
     (VISIT, _changed(VISIT, place="é" * 201)),
