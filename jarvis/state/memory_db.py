@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from jarvis.shared import lang
 from jarvis.shared.html_tags import strip_html
-from jarvis.state import NewerDataError, core_memory
+from jarvis.state import NewerDataError, core_memory, imports
 
 if TYPE_CHECKING:
     from jarvis.state.attachments import AttachmentRef, Attachments
@@ -159,21 +159,7 @@ CREATE TABLE IF NOT EXISTS meaning_vectors (
     vec    BLOB NOT NULL,
     PRIMARY KEY (kind, ref, piece)
 );
-CREATE TABLE IF NOT EXISTS import_entries (
-    id          TEXT PRIMARY KEY,
-    source      TEXT NOT NULL,
-    key         TEXT NOT NULL,
-    file_digest TEXT NOT NULL,
-    pos         TEXT NOT NULL,
-    at_ms       INTEGER NOT NULL,
-    zone        TEXT NOT NULL,
-    kind        TEXT NOT NULL,
-    text        TEXT NOT NULL,
-    fields      TEXT NOT NULL,
-    UNIQUE (source, key)
-);
-CREATE INDEX IF NOT EXISTS import_entries_at ON import_entries (at_ms);
-CREATE TABLE IF NOT EXISTS voiceprints (
+""" + imports.IMPORT_ENTRIES_DDL + """CREATE TABLE IF NOT EXISTS voiceprints (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     device  TEXT NOT NULL,
     mic     TEXT NOT NULL,

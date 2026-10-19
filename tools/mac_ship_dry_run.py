@@ -20,7 +20,6 @@ import time
 from pathlib import Path
 
 from jarvis.state import imports
-from jarvis.state.memory_db import open_memory_db
 from jarvis.state.shipments import Shipments, ShipRefused
 from jarvis.surface.mac_ship import ShipConfig, Shipper, ship_config
 from jarvis.surface.mac_ship_core import Conflict, Report, ShipFailed, State
@@ -89,14 +88,13 @@ def main() -> None:
             None if args.no_timesink else timesink,
             () if args.no_sessions else base.session_roots, base.desktop_titles,
         )
-        memory = root / "memory.db"
-        intake = Shipments(root / imports.IMPORTS_DIRNAME, memory, min_free_bytes=0)
+        intake = Shipments(root / imports.IMPORTS_DIRNAME, min_free_bytes=0)
         shipper = Shipper(config, LocalSink(intake), State(config.state_path))
         for title in ("first pass", "second pass (nothing new expected)"):
             started = time.monotonic()
             report = shipper.poll()
             _show(title, report, time.monotonic() - started)
-        conn = open_memory_db(memory)
+        conn = imports.open_shipped(root / imports.IMPORTS_DIRNAME)
         print("--- brain side")
         rows = conn.execute(
             "SELECT source, kind, count(*), sum(length(fields) + length(text)) "
@@ -110,7 +108,8 @@ def main() -> None:
             )
         archive = root / imports.IMPORTS_DIRNAME
         size = sum(f.stat().st_size for f in archive.rglob("*") if f.is_file())
-        print(f"  imports archive {size:,} bytes; memory.db {memory.stat().st_size:,} bytes")
+        shipped_db = (archive / imports.SHIPPED_DB).stat().st_size
+        print(f"  imports archive {size:,} bytes, of which shipped.db {shipped_db:,}")
         print(f"  temporary root {root}{' (kept)' if args.keep else ''}")
     finally:
         if not args.keep:

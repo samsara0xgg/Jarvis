@@ -9,7 +9,8 @@ Two stores, both append-only:
 - ``import_entries`` in memory.db: one row per payment, message, memory or reflection, unique on
   ``(source, key)``. A row already held is not added again; a held row whose content differs is
   kept as it was and the names of what differs are logged (never the values). Nothing is updated
-  or deleted.
+  or deleted. What a terminal copies on a schedule (ADR 0294) is the same table in
+  ``<root>/imports/shipped.db`` instead, read with :func:`newest`.
 
 Parsing is :mod:`jarvis.state.import_parsers`; reading is :func:`entries`, :func:`entry` and
 :func:`around`.
@@ -46,8 +47,28 @@ IMPORTS_DIRNAME: Final = "imports"
 """Under the runtime root."""
 SHIPPED_SOURCES: Final = ("timesink", "claude-code")
 """Sources a terminal copies in on a schedule (ADR 0294), not exports he hands over. Their rows
-are revisions (the key ends in ``:<12 hex of the row's content>``), so a reader asks for them by
-name and takes :func:`newest`; the default :func:`entries` leaves them out."""
+are revisions (the key ends in ``:<12 hex of the row's content>``), so a reader takes
+:func:`newest`. They live in their own database, :data:`SHIPPED_DB` under the imports directory,
+never in memory.db: a few hundred megabytes of screen text must not slow the database every
+turn reads."""
+SHIPPED_DB: Final = "shipped.db"
+"""Under the imports directory; the same ``import_entries`` table as memory.db's."""
+IMPORT_ENTRIES_DDL: Final = """CREATE TABLE IF NOT EXISTS import_entries (
+    id          TEXT PRIMARY KEY,
+    source      TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    file_digest TEXT NOT NULL,
+    pos         TEXT NOT NULL,
+    at_ms       INTEGER NOT NULL,
+    zone        TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    fields      TEXT NOT NULL,
+    UNIQUE (source, key)
+);
+CREATE INDEX IF NOT EXISTS import_entries_at ON import_entries (at_ms);
+"""
+"""The one definition of the table, run by memory.db's schema and by :func:`open_shipped`."""
 REVISION_SUFFIX: Final = 13
 """``:`` and the 12 hex digits that end a shipped key; what comes before is the source row."""
 
@@ -121,6 +142,14 @@ class Counts:
     held: int = 0
     conflicting: int = 0
     unreadable: int = 0
+
+
+def open_shipped(directory: Path) -> sqlite3.Connection:
+    """The shipped sources' database under the imports ``directory``, created on first use."""
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    conn = sqlite3.connect(directory / SHIPPED_DB, timeout=5.0)
+    conn.executescript(IMPORT_ENTRIES_DDL)
+    return conn
 
 
 def entry_id(source: str, key: str) -> str:
@@ -250,19 +279,12 @@ def entries(
     conn: sqlite3.Connection, *, source: str | None = None,
     start_ms: int | None = None, end_ms: int | None = None, kinds: tuple[str, ...] = (),
 ) -> list[Entry]:
-    """Entries of ``source`` in ``[start_ms, end_ms)``, newest first; none without the table.
-
-    Without ``source`` the shipped sources (:data:`SHIPPED_SOURCES`) are left out: their rows are
-    screen text and session records, not what he handed over, and are read with :func:`newest`.
-    """
+    """Entries of ``source`` in ``[start_ms, end_ms)``, newest first; none without the table."""
     clauses: list[str] = []
     params: list[Any] = []
     if source:
         clauses.append("source = ?")
         params.append(source)
-    else:
-        clauses.append(f"source NOT IN ({', '.join('?' * len(SHIPPED_SOURCES))})")
-        params.extend(SHIPPED_SOURCES)
     if start_ms is not None:
         clauses.append("at_ms >= ?")
         params.append(start_ms)
@@ -329,6 +351,8 @@ def newest(
     start_ms: int | None = None, end_ms: int | None = None, kinds: tuple[str, ...] = (),
 ) -> list[Entry]:
     """The newest revision of each row of a shipped ``source`` (ADR 0294), oldest moment first.
+
+    ``conn`` is :func:`open_shipped`'s.
 
     A row is its key without the content hash; the revision kept last is the newest. Rows whose
     newest revision has no text are included.

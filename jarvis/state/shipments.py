@@ -5,7 +5,8 @@ Two intakes, both append-only and both answered only after the bytes are safe:
 - :meth:`Shipments.receive_entries`: one JSONL body of dated entries for a source in
   :data:`~jarvis.state.imports.SHIPPED_SOURCES`. The body is kept raw whole-or-nothing
   (``imports/<source>/<sha256[:16]>-shipment.jsonl``) and its lines are read into
-  ``import_entries`` in one transaction; a line is refused as a whole body, never half-read.
+  ``import_entries`` of ``imports/shipped.db`` (never memory.db) in one transaction; a bad line
+  refuses the whole body, never half of it.
   Sending the same bytes again adds nothing and is answered ``already_held``.
 - :meth:`Shipments.receive_file`: one binary file (a TimeSink screenshot) under
   ``imports/<source>/files/<relative path>``, written whole or not at all, answered with its
@@ -33,7 +34,6 @@ from jarvis.state import imports
 from jarvis.state.import_parsers import Parsed
 from jarvis.state.imports import SHIPPED_SOURCES, Counts, keep_raw
 from jarvis.state.lifelog import DEFAULT_MIN_FREE_BYTES
-from jarvis.state.memory_db import open_memory_db
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -131,14 +131,12 @@ class Shipments:
     def __init__(
         self,
         directory: Path,
-        memory_db: Path,
         *,
         min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
         free_bytes: Callable[[Path], int] | None = None,
     ) -> None:
         """``directory`` is the imports archive; ``free_bytes`` reads a disk's free space."""
         self.directory = directory
-        self.memory_db = memory_db
         self.min_free_bytes = min_free_bytes
         self._free_bytes = free_bytes or (lambda path: shutil.disk_usage(path).free)
 
@@ -148,7 +146,7 @@ class Shipments:
             raise ShipRefused(507, "the disk is too full to keep more")
 
     def receive_entries(self, source: str, body: bytes) -> Received:
-        """Keep ``body`` raw and read its lines into ``import_entries``.
+        """Keep ``body`` raw and read its lines into ``import_entries`` of ``shipped.db``.
 
         Raises:
             ShipRefused: the source is unknown, the body is empty, over the cap, or has a line
@@ -172,7 +170,7 @@ class Shipments:
             self._room(folder, len(body))
         _, created = keep_raw(self.directory, source, SHIPMENT_NAME, body)
         counts = Counts()
-        with contextlib.closing(open_memory_db(self.memory_db)) as conn:
+        with contextlib.closing(imports.open_shipped(self.directory)) as conn:
             imports.add_entries(conn, digest, parsed, counts)
             conn.commit()
         return Received(

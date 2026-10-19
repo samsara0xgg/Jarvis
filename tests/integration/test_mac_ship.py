@@ -8,7 +8,8 @@ shipper and a fixture TimeSink database and synthetic session logs:
   a bad line refuses the whole body; a disk below the floor refuses with 507 and keeps nothing;
 - a picture is kept whole under its path with its SHA-256, the same bytes again are 200, other
   bytes under the path 409;
-- ``newest`` takes the last revision of each row, and the default reader leaves shipped sources out;
+- ``newest`` takes the last revision of each row; everything lands in ``imports/shipped.db`` and
+  memory.db is never created or touched;
 - the mirror copies every table of a fixture database from its schema (a table added later too),
   with UTC times, keeps a row that changes only when it first appears, settles or is an hour old,
   and ships a changed old row at once;
@@ -45,7 +46,6 @@ from jarvis.state.device_tokens import (
     pair_device,
     unpair_device,
 )
-from jarvis.state.memory_db import open_memory_db
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.shipments import Shipments, ShipRefused
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -107,7 +107,7 @@ class Brain:
 
     def rows(self) -> list[tuple[str, str]]:
         """``(source, key)`` of every entry, in the order they were kept."""
-        with closing(open_memory_db(self.root / "memory.db")) as conn:
+        with closing(imports.open_shipped(self.root / imports.IMPORTS_DIRNAME)) as conn:
             return list(conn.execute("SELECT source, key FROM import_entries ORDER BY rowid"))
 
 
@@ -117,9 +117,7 @@ def brain(tmp_path: Path) -> Iterator[Brain]:
     root = tmp_path / "brain"
     root.mkdir()
     free = [100 * 1024**3]
-    intake = Shipments(
-        root / imports.IMPORTS_DIRNAME, root / "memory.db", free_bytes=lambda _p: free[0],
-    )
+    intake = Shipments(root / imports.IMPORTS_DIRNAME, free_bytes=lambda _p: free[0])
     app = create_app(InherentDeps(
         submit_callable=lambda _t: "T", broadcaster=InherentBroadcaster(),
         device_name=functools.partial(device_name_for_token, root), imports_intake=intake,
@@ -158,7 +156,7 @@ def test_only_a_paired_devices_own_token_opens_the_routes(brain: Brain) -> None:
 
 
 def test_a_body_is_kept_raw_and_sent_again_it_adds_nothing(brain: Brain) -> None:
-    """Raw bytes on disk, entries in memory.db; the same bytes again are 200 already held."""
+    """Raw bytes on disk, entries in shipped.db and none in memory.db; again is 200 already held."""
     body = _line("span:1:aaaaaaaaaaaa", title="a") + b"\n" + _line("span:2:bbbbbbbbbbbb")
     first = brain.post("timesink", body)
     again = brain.post("timesink", body)
@@ -175,22 +173,22 @@ def test_a_body_is_kept_raw_and_sent_again_it_adds_nothing(brain: Brain) -> None
     kept = list((brain.root / "imports" / "timesink").glob("*-shipment.jsonl"))
     assert [p.read_bytes() for p in kept] == [body]
     assert len(brain.rows()) == 2
+    assert not (brain.root / "memory.db").exists()
 
 
 def test_a_changed_row_is_a_new_revision_and_newest_takes_the_last(brain: Brain) -> None:
-    """Revision keys keep both versions; ``newest`` gives one per row; ``entries`` skips them."""
+    """Revision keys keep both versions; ``newest`` gives one per row; memory.db is untouched."""
     brain.post("timesink", _line("span:1:aaaaaaaaaaaa", end="05:00"))
     brain.post("timesink", _line("span:1:bbbbbbbbbbbb", end="05:05"))
     brain.post("timesink", _line("span:2:cccccccccccc", end="05:01"))
 
-    with closing(open_memory_db(brain.root / "memory.db")) as conn:
+    with closing(imports.open_shipped(brain.root / imports.IMPORTS_DIRNAME)) as conn:
         newest = imports.newest(conn, "timesink")
-        default = imports.entries(conn)
         everything = imports.entries(conn, source="timesink")
 
     assert len(brain.rows()) == 3
     assert sorted(e.fields["end"] for e in newest) == ["05:01", "05:05"]
-    assert default == []
+    assert not (brain.root / "memory.db").exists()
     assert len(everything) == 3
 
 
@@ -616,7 +614,7 @@ def test_through_http_a_refused_batch_is_sent_again_and_a_kept_one_never_twice(
 
     shipper.poll(now + 2 * MIN)
     assert brain.rows() == held
-    with closing(open_memory_db(brain.root / "memory.db")) as conn:
+    with closing(imports.open_shipped(brain.root / imports.IMPORTS_DIRNAME)) as conn:
         assert len(imports.newest(conn, "timesink")) == 4
         assert [e.kind for e in imports.newest(conn, "claude-code")] == ["session"]
     assert imports.SHIPPED_SOURCES == ("timesink", "claude-code")

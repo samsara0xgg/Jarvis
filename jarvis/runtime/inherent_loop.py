@@ -6085,23 +6085,15 @@ def _lifelog_coverage(runtime: JarvisRuntime, lifelog: Lifelog) -> Callable[[], 
     return read
 
 
-def _shipments(runtime: JarvisRuntime) -> Shipments | None:
-    """ADR 0294: the intake for a terminal's scheduled copies, in the imports archive.
-
-    ``None`` without a memory store: the entries have nowhere to go.
-    """
-    if runtime.memory is None:
-        return None
+def _shipments(runtime: JarvisRuntime) -> Shipments:
+    """ADR 0294: the intake for a terminal's scheduled copies, in the imports archive."""
     section = runtime.config.get("imports")
     floor = section.get("min_free_gb") if isinstance(section, dict) else None
     min_free = (
         int(floor * 1024 ** 3) if isinstance(floor, (int, float)) and floor >= 0
         else DEFAULT_MIN_FREE_BYTES
     )
-    return Shipments(
-        runtime.runtime_paths.root / IMPORTS_DIRNAME, runtime.memory.db_path,
-        min_free_bytes=min_free,
-    )
+    return Shipments(runtime.runtime_paths.root / IMPORTS_DIRNAME, min_free_bytes=min_free)
 
 
 def _media_dirs(runtime: JarvisRuntime) -> dict[Path, int | None]:
