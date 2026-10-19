@@ -63,6 +63,8 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
   or null}`` puts his reaction on a message or takes it off; never starts a turn
 - ``GET /inherent/lifelog/coverage`` — ADR 0292; whether a connected terminal is recording his
   room now, and his saved home, for the phone to decide by
+- ``POST /inherent/imports/{source}`` and ``PUT /inherent/imports/{source}/files/{path}`` —
+  ADR 0294; a paired terminal's scheduled copy of TimeSink and Claude Code sessions, kept raw
 - ``PUT /inherent/lifelog/audio/{id}`` — ADR 0238; one piece of the phone's day recording, kept
 """
 
@@ -125,6 +127,13 @@ from jarvis.state.shares import (
     MAX_SHARE_TEXT_CHARS,
     MAX_TITLE_CHARS,
     MAX_URL_CHARS,
+)
+from jarvis.state.shipments import (
+    MAX_FILE_BYTES,
+    MAX_SHIPMENT_BYTES,
+    Shipments,
+    ShipRefused,
+    answer,
 )
 from jarvis.surface.apns import MAX_REGISTER_BYTES, REGISTER_PATH
 from jarvis.surface.claude_hooks import ClaudeHooks
@@ -665,6 +674,10 @@ class InherentDeps:
     # and SQLite read, called off the loop thread. Needs ``lifelog`` and ``device_name``;
     # ``None`` leaves the route unregistered (404).
     lifelog_coverage: Callable[[], dict[str, Any]] | None = None
+    # ADR 0294: where a paired terminal's scheduled copy of TimeSink and Claude Code sessions
+    # goes, at ``POST /inherent/imports/{source}`` and ``PUT /inherent/imports/{source}/files/..``.
+    # Needs ``device_name``; ``None`` leaves the routes unregistered (404).
+    imports_intake: Shipments | None = None
     images_ok: bool = False
     submit_attachments: Callable[[str, Sequence[str]], str] | None = None
     # ADR 0212: ``submit_as_device(device, text, ids, about)`` starts the same turn with the
@@ -2826,6 +2839,63 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
                     status_code=403, detail="a paired device's token is required",
                 )
             return await asyncio.to_thread(coverage_read)
+    if deps.imports_intake is not None and deps.device_name is not None:
+        ship_name, intake = deps.device_name, deps.imports_intake
+
+        def _shipper(request: Request) -> str:
+            token = _v2_presented_token(request.headers.get("authorization"))
+            name = None if token is None else ship_name(token)
+            if name is None:
+                raise HTTPException(
+                    status_code=403, detail="a paired device's token is required",
+                )
+            if not request.headers.get("content-length", "").isdigit():
+                raise HTTPException(status_code=411, detail="send a Content-Length")
+            return name
+
+        @app.post("/inherent/imports/{source}")
+        async def post_imports(source: str, request: Request) -> JSONResponse:
+            """ADR 0294: one JSONL body of a paired terminal's entries, kept raw and read in.
+
+            Only a paired device's own token opens it, as on the lifelog route. 201 when the
+            body added entries or was new, 200 when the same bytes were already held; a body with
+            a bad line is refused whole (422) and nothing is kept.
+            """
+            name = _shipper(request)
+            body = await _capped_body(request, MAX_SHIPMENT_BYTES)
+            try:
+                got = await asyncio.to_thread(intake.receive_entries, source, body)
+            except ShipRefused as exc:
+                LOGGER.warning(
+                    "imports: refused %s from %s with %d: %s", source, name, exc.status, exc,
+                )
+                raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+            LOGGER.info(
+                "imports: %s from %s: %d added, %d held (%d bytes)",
+                source, name, got.added, got.held, got.size,
+            )
+            return JSONResponse(answer(got), status_code=200 if got.already_held else 201)
+
+        @app.put("/inherent/imports/{source}/files/{relpath:path}")
+        async def put_imports_file(source: str, relpath: str, request: Request) -> JSONResponse:
+            """ADR 0294: one picture of a paired terminal, kept whole or not at all.
+
+            201 when new, 200 when the path already holds the same bytes; the terminal advances
+            only once the answer's ``sha256`` matches its own.
+            """
+            name = _shipper(request)
+            data = await _capped_body(request, MAX_FILE_BYTES)
+            try:
+                kept = await asyncio.to_thread(intake.receive_file, source, relpath, data)
+            except ShipRefused as exc:
+                LOGGER.warning(
+                    "imports: refused a file from %s with %d: %s", name, exc.status, exc,
+                )
+                raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+            return JSONResponse(
+                {"sha256": kept.sha256, "bytes": kept.size},
+                status_code=201 if kept.created else 200,
+            )
 
     if deps.push_register is not None and deps.device_name is not None:
         push_name, push_register = deps.device_name, deps.push_register

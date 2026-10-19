@@ -44,6 +44,12 @@ LOGGER = logging.getLogger(__name__)
 
 IMPORTS_DIRNAME: Final = "imports"
 """Under the runtime root."""
+SHIPPED_SOURCES: Final = ("timesink", "claude-code")
+"""Sources a terminal copies in on a schedule (ADR 0294), not exports he hands over. Their rows
+are revisions (the key ends in ``:<12 hex of the row's content>``), so a reader asks for them by
+name and takes :func:`newest`; the default :func:`entries` leaves them out."""
+REVISION_SUFFIX: Final = 13
+"""``:`` and the 12 hex digits that end a shipped key; what comes before is the source row."""
 
 
 MASK: Final = "[secret removed]"
@@ -244,12 +250,19 @@ def entries(
     conn: sqlite3.Connection, *, source: str | None = None,
     start_ms: int | None = None, end_ms: int | None = None, kinds: tuple[str, ...] = (),
 ) -> list[Entry]:
-    """Entries of ``source`` in ``[start_ms, end_ms)``, newest first; none without the table."""
+    """Entries of ``source`` in ``[start_ms, end_ms)``, newest first; none without the table.
+
+    Without ``source`` the shipped sources (:data:`SHIPPED_SOURCES`) are left out: their rows are
+    screen text and session records, not what he handed over, and are read with :func:`newest`.
+    """
     clauses: list[str] = []
     params: list[Any] = []
     if source:
         clauses.append("source = ?")
         params.append(source)
+    else:
+        clauses.append(f"source NOT IN ({', '.join('?' * len(SHIPPED_SOURCES))})")
+        params.extend(SHIPPED_SOURCES)
     if start_ms is not None:
         clauses.append("at_ms >= ?")
         params.append(start_ms)
@@ -309,3 +322,35 @@ def around(conn: sqlite3.Connection, one: Entry, count: int) -> tuple[list[Entry
     ]
     at = next((i for i, row in enumerate(rows) if row.id == one.id), len(rows))
     return rows[max(0, at - count) : at], rows[at + 1 : at + 1 + count]
+
+
+def newest(
+    conn: sqlite3.Connection, source: str, *,
+    start_ms: int | None = None, end_ms: int | None = None, kinds: tuple[str, ...] = (),
+) -> list[Entry]:
+    """The newest revision of each row of a shipped ``source`` (ADR 0294), oldest moment first.
+
+    A row is its key without the content hash; the revision kept last is the newest. Rows whose
+    newest revision has no text are included.
+    """
+    row = f"substr(key, 1, length(key) - {REVISION_SUFFIX})"
+    clauses = [
+        f"rowid IN (SELECT max(rowid) FROM import_entries WHERE source = ? GROUP BY {row})",  # noqa: S608 - constant expression
+    ]
+    params: list[Any] = [source]
+    if start_ms is not None:
+        clauses.append("at_ms >= ?")
+        params.append(start_ms)
+    if end_ms is not None:
+        clauses.append("at_ms < ?")
+        params.append(end_ms)
+    if kinds:
+        clauses.append(f"kind IN ({', '.join('?' * len(kinds))})")
+        params.extend(kinds)
+    sql = f"SELECT {_COLUMNS} FROM import_entries WHERE {' AND '.join(clauses)} ORDER BY at_ms, id"  # noqa: S608 - fixed clauses, bound values
+    try:
+        return [_entry(row) for row in conn.execute(sql, params)]
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return []
+        raise

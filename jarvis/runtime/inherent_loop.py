@@ -235,6 +235,7 @@ from jarvis.state.event_log import (
     turn_intent_channel,
     turn_origin,
 )
+from jarvis.state.imports import IMPORTS_DIRNAME
 from jarvis.state.input_claim import (
     REALTIME_INTENT_CONSUMER,
     ConflictingTurnClaimError,
@@ -276,6 +277,7 @@ from jarvis.state.projections import (
 )
 from jarvis.state.push_tokens import register_body
 from jarvis.state.reminders import ID_PREFIX
+from jarvis.state.shipments import Shipments
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.state.turn_overlap import any_turn_in_flight, turns_in_flight
 from jarvis.state.turn_steps import answer_places, answer_steps
@@ -6083,6 +6085,25 @@ def _lifelog_coverage(runtime: JarvisRuntime, lifelog: Lifelog) -> Callable[[], 
     return read
 
 
+def _shipments(runtime: JarvisRuntime) -> Shipments | None:
+    """ADR 0294: the intake for a terminal's scheduled copies, in the imports archive.
+
+    ``None`` without a memory store: the entries have nowhere to go.
+    """
+    if runtime.memory is None:
+        return None
+    section = runtime.config.get("imports")
+    floor = section.get("min_free_gb") if isinstance(section, dict) else None
+    min_free = (
+        int(floor * 1024 ** 3) if isinstance(floor, (int, float)) and floor >= 0
+        else DEFAULT_MIN_FREE_BYTES
+    )
+    return Shipments(
+        runtime.runtime_paths.root / IMPORTS_DIRNAME, runtime.memory.db_path,
+        min_free_bytes=min_free,
+    )
+
+
 def _media_dirs(runtime: JarvisRuntime) -> dict[Path, int | None]:
     """ADR 0067: the recordings, screenshots and phone attachments, each with its days to keep."""
     tools = runtime.config.get("tools") or {}
@@ -7961,6 +7982,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             lifelog_coverage=(
                 None if lifelog_archive is None else _lifelog_coverage(runtime, lifelog_archive)
             ),
+            imports_intake=_shipments(runtime) if runtime.listen_addresses else None,
             phone=phone_hub,
             push_register=(
                 functools.partial(register_body, runtime.runtime_paths.root)
