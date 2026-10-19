@@ -392,6 +392,34 @@ def test_an_all_day_thing_over_several_days_is_on_each_day_from_that_days_midnig
     )
 
 
+def test_a_thing_a_mail_made_is_on_the_card_only_once_he_confirms_it(ledger: Ledger) -> None:
+    """The card cannot mark one as his to confirm, so an unconfirmed thing is not on it."""
+    day = _day()
+    made = [
+        things.Thing(
+            f"thing-{number:032x}", title, kind, start_at=start_at, due=due, source="mail",
+            confirmed=False,
+        )
+        for number, title, kind, start_at, due in (
+            (1, "Visa interview", "go", _iso(_at(day, 15)), ""),
+            (2, "Pay invoice", "do", "", (day + timedelta(days=2)).isoformat()),
+        )
+    ]
+    for one in made:
+        things.add(ledger.conn, one, by="mail", evidence="mail", zone=LOCAL, now=WROTE)
+    client = _client(_home(None), ledger=ledger)
+    body = client.get("/inherent/today").json()
+    assert (body["events"], body["todos"]) == ([], [])
+
+    for one in made:
+        things.confirm(
+            ledger.conn, one.thing_id, by="her", evidence="said", zone=LOCAL, now=WROTE,
+        )
+    body = client.get("/inherent/today").json()
+    assert [one["id"] for one in body["events"]] == [made[0].thing_id]
+    assert _todo_ids(client) == [made[1].thing_id]
+
+
 def test_today_does_not_need_microsoft(ledger: Ledger) -> None:
     """Microsoft not connected: the card still has the ledger's rows, and a To Do tick is a 404."""
     day = _day()

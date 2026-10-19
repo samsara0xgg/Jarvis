@@ -5672,12 +5672,19 @@ def _read_today(
     ``start`` the day's midnight. ``todos`` are the open things with no ``start_at`` and no
     ``on_day`` (a due date, or no time), in :func:`jarvis.state.things.open_things` order:
     ``{id, title, due?}``. An id is the thing's, but a to-do the mirror made from To Do keeps its
-    To Do id. ``weather`` is the home's line, ``None`` when it has none.
+    To Do id. A thing a mail made that he has not confirmed is left out of both: the card has no
+    way to mark it as his to confirm. ``weather`` is the home's line, ``None`` when it has none.
     """
     start_ms, end_ms = day_window(datetime.fromtimestamp(now_ms / 1000, zone).date(), zone)
     with contextlib.closing(open_runtime_event_log(event_log)) as conn:
-        found = things.occurrences(conn, start_ms, end_ms, zone=zone)
-        untimed = [one for one in things.open_things(conn) if not (one.start_at or one.on_day)]
+        found = [
+            occ for occ in things.occurrences(conn, start_ms, end_ms, zone=zone)
+            if occ.thing.confirmed
+        ]
+        untimed = [
+            one for one in things.open_things(conn)
+            if one.confirmed and not (one.start_at or one.on_day)
+        ]
     return {
         "events": [_today_event(one, start_ms, zone) for one in found],
         "todos": [_today_todo(one, zone) for one in untimed],

@@ -31,7 +31,7 @@ from tzfpy import get_tz
 from jarvis.decision.daily_report import brief_of
 from jarvis.execution.tools import ToolError
 from jarvis.execution.weather_tool import DAYS_AHEAD, DAYS_BACK
-from jarvis.runtime.daily_report import PLAN_SERVER, _graph
+from jarvis.runtime.daily_report import PLAN_SERVER
 from jarvis.runtime.weatherkit import NOT_SET_UP, home_line
 from jarvis.runtime.weatherkit import report as wk_report
 from jarvis.shared import lang
@@ -495,16 +495,6 @@ class Home:
             return None
         moment = datetime.combine(day, time.fromisoformat(text), self._zone)
         return int(moment.timestamp() * 1000)
-
-    def graph(self, tool: str, args: Mapping[str, Any]) -> list[dict[str, Any]]:
-        """The ``value`` list of one read-only Microsoft tool: ``my_schedule``'s reads (ADR 0248).
-
-        Raises:
-            LookupError: the ``microsoft`` server is not connected.
-            ToolError: the server did not answer, or answered with an error.
-            ValueError: the answer is not Graph's JSON.
-        """
-        return _graph(self._servers(), tool, args)
 
     def weather(self) -> dict[str, Any] | None:
         """Today's weather line; None without a place or key, or when it cannot be read."""
