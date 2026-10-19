@@ -4,6 +4,13 @@ import Foundation
 protocol ReportTransport {
     /// Sends one batch (within `ReportBatch` limits) and returns one ack per frame, in order.
     func send(_ frames: [ReportFrame]) async throws -> [FrameAck]
+    /// The request `send` would make, for a batch the network refused: the background session (ReportUploads) delivers it when the network is
+    /// back. nil where there is no such thing (a transport that is not HTTP).
+    func backgroundRequest(for frames: [ReportFrame]) -> URLRequest?
+}
+
+extension ReportTransport {
+    func backgroundRequest(for frames: [ReportFrame]) -> URLRequest? { nil }
 }
 
 enum ReportTransportError: Error {
@@ -39,15 +46,27 @@ struct HTTPReportTransport: ReportTransport {
         return URLSession(configuration: c)
     }()
 
-    func send(_ frames: [ReportFrame]) async throws -> [FrameAck] {
+    /// The POST for a batch, without its body (the body is `ReportBatch.body(frames)`).
+    func request() throws -> URLRequest {
         guard let endpoint = endpoint() else { throw ReportTransportError.notConfigured }
         var request = URLRequest(url: endpoint.base.appending(path: Self.path))
         request.httpMethod = "POST"
         request.setValue("Bearer \(endpoint.token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return request
+    }
+
+    func backgroundRequest(for frames: [ReportFrame]) -> URLRequest? { try? request() }
+
+    func send(_ frames: [ReportFrame]) async throws -> [FrameAck] {
+        var request = try request()
         request.httpBody = ReportBatch.body(frames)
         let (data, response) = try await session.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        return try Self.interpret(status: (response as? HTTPURLResponse)?.statusCode ?? 0, data: data)
+    }
+
+    /// The brain's answer to a batch, from a request made here or by the background session.
+    static func interpret(status: Int, data: Data) throws -> [FrameAck] {
         switch status {
         case 200: break
         case 401, 403: throw ReportTransportError.unauthorized

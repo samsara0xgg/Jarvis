@@ -249,11 +249,20 @@ enum ReportBatch {
 
     /// The uids to drop after a batch was answered: every frame acked ok or refused. A frame acked `retry`,
     /// or without an answer, stays. Acks come one per frame in request order; a short answer is matched by uid.
-    static func settled(_ frames: [ReportFrame], _ acks: [FrameAck]) -> [String] {
-        if acks.count == frames.count {
-            return zip(frames, acks).filter { !$0.1.retry }.map(\.0.eventUid)
+    static func settled(_ frames: [ReportFrame], _ acks: [FrameAck]) -> [String] { settled(uids: frames.map(\.eventUid), acks) }
+
+    /// The same for a batch known only by its uids in request order (one the background session delivered).
+    static func settled(uids: [String], _ acks: [FrameAck]) -> [String] {
+        if acks.count == uids.count {
+            return zip(uids, acks).filter { !$0.1.retry }.map(\.0)
         }
         let answered = Dictionary(acks.compactMap { a in a.eventUid.map { ($0, a) } }, uniquingKeysWith: { $1 })
-        return frames.filter { answered[$0.eventUid].map { !$0.retry } ?? false }.map(\.eventUid)
+        return uids.filter { answered[$0].map { !$0.retry } ?? false }
+    }
+
+    /// The uids of the frames in a request body written by `body`, in order; empty if it is not one.
+    static func uids(inBody body: Data) -> [String] {
+        guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any], let events = obj["events"] as? [[String: Any]] else { return [] }
+        return events.compactMap { $0["event_uid"] as? String }
     }
 }

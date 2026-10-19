@@ -418,6 +418,183 @@ final class ReporterFlushTests: XCTestCase {
     }
 }
 
+/// A transport that always fails the same way and can say what it would send.
+private final class FailingTransport: ReportTransport {
+    let error: Error
+    init(_ error: Error) { self.error = error }
+    func send(_ frames: [ReportFrame]) async throws -> [FrameAck] { throw error }
+    func backgroundRequest(for frames: [ReportFrame]) -> URLRequest? { URLRequest(url: URL(string: "http://brain.example.ts.net:8765/inherent/device/events")!) }
+}
+
+@MainActor
+private final class RecordingUploads: ReportUploading {
+    var batches: [[String]] = []
+    func submit(_ frames: [ReportFrame], request: URLRequest) { batches.append(frames.map(\.eventUid)) }
+}
+
+/// Reports reach the brain as soon as the network returns: a batch refused for want of it goes to the background session, whose answer settles
+/// the queue exactly as a flush does.
+@MainActor
+final class BackgroundUploadTests: XCTestCase {
+    private var dir: URL!
+
+    override func setUp() async throws {
+        dir = FileManager.default.temporaryDirectory.appending(path: "report-test-\(UUID().uuidString)")
+    }
+
+    override func tearDown() async throws { try? FileManager.default.removeItem(at: dir) }
+
+    private func reporter() -> (Reporter, RecordingUploads) {
+        let r = Reporter(queue: ReportQueue(url: dir.appending(path: "q.sqlite")))
+        r.autoFlush = false
+        let u = RecordingUploads()
+        r.uploads = u
+        return (r, u)
+    }
+
+    private func events(_ n: Int) -> [Sensed] { (0..<n).map { .state(.focus(on: true), at: Date() - Double($0 + 1), detail: nil) } }
+
+    private func answer(_ acks: [(String, String?)]) -> Data {
+        let items = acks.map { uid, code in
+            code.map { #"{"type":"ack","event_uid":"\#(uid)","ok":false,"code":"\#($0)"}"# } ?? #"{"type":"ack","event_uid":"\#(uid)","ok":true}"#
+        }
+        return Data(#"{"acks":[\#(items.joined(separator: ","))]}"#.utf8)
+    }
+
+    func testABatchRefusedForWantOfANetworkIsHandedOverAndStaysQueued() async {
+        let (r, u) = reporter()
+        r.emit(events(3))
+        let uids = r.queue.head().map(\.eventUid)
+        r.transport = FailingTransport(URLError(.notConnectedToInternet))
+        await r.flush()
+        XCTAssertEqual(u.batches, [uids])
+        XCTAssertEqual(r.queue.count, 3, "the frames leave the queue only with the brain's answer")
+        XCTAssertEqual(r.status.problem, .offline)
+    }
+
+    func testOnlyAConnectivityFailureIsHandedOver() async {
+        let errors: [Error] = [ReportTransportError.server(502), ReportTransportError.unauthorized, ReportTransportError.rejected(413), ReportTransportError.notConfigured]
+        for error in errors {
+            let (r, u) = reporter()
+            r.emit(events(2))
+            r.transport = FailingTransport(error)
+            await r.flush()
+            XCTAssertTrue(u.batches.isEmpty, "\(error)")
+        }
+    }
+
+    func testNoUploaderMeansTheOldBehaviour() async {
+        let (r, _) = reporter()
+        r.uploads = nil
+        r.emit(events(2))
+        r.transport = FailingTransport(URLError(.timedOut))
+        await r.flush()
+        XCTAssertEqual(r.queue.count, 2)
+    }
+
+    func testTheBackgroundAnswerSettlesTheQueueAsAFlushWould() {
+        let (r, _) = reporter()
+        r.emit(events(5))
+        let uids = r.queue.head().map(\.eventUid)
+        r.settleBackground(uids: uids, status: 200, body: answer([(uids[0], nil), (uids[1], "bad_event"), (uids[2], "retry"), (uids[3], "event_type_not_allowed"), (uids[4], "retry")]))
+        XCTAssertEqual(r.queue.head().map(\.eventUid), [uids[2], uids[4]], "only the retry frames stay")
+        XCTAssertNotNil(r.status.lastSentAt)
+        XCTAssertNil(r.status.problem)
+    }
+
+    func testAShortBackgroundAnswerIsMatchedByUid() {
+        let (r, _) = reporter()
+        r.emit(events(3))
+        let uids = r.queue.head().map(\.eventUid)
+        r.settleBackground(uids: uids, status: 200, body: answer([(uids[2], nil), (uids[0], "retry")]))
+        XCTAssertEqual(r.queue.head().map(\.eventUid), [uids[0], uids[1]], "a frame with no answer stays")
+    }
+
+    func testABackgroundAnswerThatIsNotAnAckKeepsEverything() {
+        let (r, _) = reporter()
+        r.emit(events(3))
+        let uids = r.queue.head().map(\.eventUid)
+        r.settleBackground(uids: uids, status: nil, body: Data())                      // the task failed
+        r.settleBackground(uids: uids, status: 502, body: Data("{}".utf8))
+        r.settleBackground(uids: uids, status: 200, body: Data("not json".utf8))
+        XCTAssertEqual(r.queue.count, 3)
+        r.settleBackground(uids: uids, status: 401, body: Data())
+        XCTAssertEqual(r.queue.count, 3)
+        XCTAssertEqual(r.status.problem, .unauthorized)
+        r.settleBackground(uids: uids, status: 413, body: Data())
+        XCTAssertEqual(r.queue.count, 0, "a batch the brain refuses as a whole is dropped, as a flush drops it")
+        XCTAssertEqual(r.status.problem, .rejected)
+    }
+
+    func testTheUploadFileCarriesTheBatchAndItsAnswerSettlesItThenTheFileGoes() throws {
+        let (r, _) = reporter()
+        r.emit(events(4))
+        let batch = r.queue.head()
+        let file = try XCTUnwrap(ReportUploads.write(ReportBatch.body(batch), id: "b1", in: dir))
+        XCTAssertEqual(try Data(contentsOf: file), ReportBatch.body(batch))
+        XCTAssertEqual(ReportBatch.uids(inBody: try Data(contentsOf: file)), batch.map(\.eventUid))
+
+        let uploads = ReportUploads()
+        uploads.reporter = { r }
+        let uids = batch.map(\.eventUid)
+        uploads.finished(id: "b1", status: 200, body: answer(uids.map { ($0, nil) }), in: dir)
+        XCTAssertEqual(r.queue.count, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        // an answer heard twice (a relaunch replays it) finds no file and changes nothing
+        r.emit(events(1))
+        uploads.finished(id: "b1", status: 200, body: answer(uids.map { ($0, nil) }), in: dir)
+        XCTAssertEqual(r.queue.count, 1)
+    }
+
+    func testAKilledAppLosesNothing() throws {
+        // the app dies after the handover and before any answer: the queue file still holds every frame, and a new process reads them back
+        let url = dir.appending(path: "q.sqlite")
+        var first: Reporter? = Reporter(queue: ReportQueue(url: url))
+        first?.autoFlush = false
+        first?.emit(events(3))
+        let uids = first!.queue.head().map(\.eventUid)
+        first = nil
+        let second = Reporter(queue: ReportQueue(url: url))
+        XCTAssertEqual(second.queue.head().map(\.eventUid), uids)
+        // and the answer the system delivers to the relaunched app settles them
+        second.settleBackground(uids: uids, status: 200, body: answer(uids.map { ($0, nil) }))
+        XCTAssertEqual(second.queue.count, 0)
+    }
+
+    func testOldUploadFilesAreSweptAndNewOnesKept() throws {
+        let old = try XCTUnwrap(ReportUploads.write(Data("{}".utf8), id: "old", in: dir))
+        let new = try XCTUnwrap(ReportUploads.write(Data("{}".utf8), id: "new", in: dir))
+        ReportUploads.sweep(in: dir, olderThan: 3600, now: Date().addingTimeInterval(7200))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: new.path), "both are older than an hour two hours on")
+        let kept = try XCTUnwrap(ReportUploads.write(Data("{}".utf8), id: "kept", in: dir))
+        ReportUploads.sweep(in: dir, olderThan: 3600, now: Date())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path))
+    }
+
+    func testTheRequestForTheBackgroundIsThePostWithoutABody() throws {
+        let t = HTTPReportTransport(endpoint: { (URL(string: "http://brain.example.ts.net:8765")!, "test-token") })
+        let req = try XCTUnwrap(t.backgroundRequest(for: [frame(samples()[4])]))
+        XCTAssertEqual(req.url?.absoluteString, "http://brain.example.ts.net:8765/inherent/device/events")
+        XCTAssertEqual(req.httpMethod, "POST")
+        XCTAssertEqual(req.value(forHTTPHeaderField: "Authorization"), "Bearer test-token")
+        XCTAssertNil(req.httpBody)
+        XCTAssertNil(HTTPReportTransport(endpoint: { nil }).backgroundRequest(for: [frame(samples()[4])]), "unpaired: nothing to hand over")
+    }
+
+    func testTheNetworkComingBackFlushesWhatWaited() async throws {
+        let (r, _) = reporter()
+        r.networkBack()                                         // nothing queued: nothing happens
+        r.emit(events(2))
+        let t = ScriptedTransport { frames in frames.map { FrameAck(eventUid: $0.eventUid, ok: true, code: nil) } }
+        r.transport = t
+        r.networkBack()
+        for _ in 0..<60 where r.queue.count > 0 { try await Task.sleep(for: .milliseconds(100)) }
+        XCTAssertEqual(r.queue.count, 0)
+        XCTAssertEqual(t.sent.count, 1)
+    }
+}
+
 final class HTTPTransportTests: XCTestCase {
     final class Stub: URLProtocol {
         nonisolated(unsafe) static var handler: ((URLRequest, Data) -> (Int, Data))?

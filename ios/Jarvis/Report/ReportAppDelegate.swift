@@ -16,6 +16,8 @@ final class ReportAppDelegate: NSObject, UIApplicationDelegate {
         #endif
         // the paired brain's address and token, read when a batch goes out (nil until paired: frames wait in the queue)
         if Reporter.shared.transport == nil { Reporter.shared.transport = HTTPReportTransport { BrainLink.shared.voiceEndpoint } }
+        Reporter.shared.uploads = ReportUploads.shared
+        ReportUploads.sweep()
         Reporter.shared.launchedForLocation = launchOptions?[.location] != nil
         Reporter.shared.launch()
         // before launch returns: a button pressed on a notification can launch the app in the background
@@ -48,9 +50,13 @@ final class ReportAppDelegate: NSObject, UIApplicationDelegate {
         }
     }
 
-    /// iOS relaunched the app for the lifelog upload session (a piece finished while the app was not running).
+    /// iOS relaunched the app for a background upload session: the lifelog's (a piece finished while the app was not running) or the reporter's
+    /// (a batch refused for want of a network went out when it returned).
     func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
-        guard identifier == LifelogUploader.sessionID else { return completionHandler() }
-        LifelogUploader.shared.handleBackgroundEvents(completion: completionHandler)
+        switch identifier {
+        case LifelogUploader.sessionID: LifelogUploader.shared.handleBackgroundEvents(completion: completionHandler)
+        case ReportUploads.sessionID: ReportUploads.shared.handleBackgroundEvents(completion: completionHandler)
+        default: completionHandler()
+        }
     }
 }

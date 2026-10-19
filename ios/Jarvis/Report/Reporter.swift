@@ -1,4 +1,5 @@
 import BackgroundTasks
+import Network
 import Observation
 import UIKit
 import os
@@ -152,6 +153,8 @@ final class Reporter {
     private(set) var status = Status()
 
     @ObservationIgnored var transport: ReportTransport?
+    /// Takes a batch the network refused and sends it when the network is back, even with the app suspended (ReportUploads). Nil in tests.
+    @ObservationIgnored var uploads: ReportUploading?
     /// Off in tests, which flush by hand.
     @ObservationIgnored var autoFlush = true
     /// iOS launched the app in the background for a location event (`launchOptions[.location]`).
@@ -162,6 +165,7 @@ final class Reporter {
     @ObservationIgnored private var waking = false
     @ObservationIgnored private var flushing = false
     @ObservationIgnored private var flushTask: Task<Void, Never>?
+    @ObservationIgnored private var path: NWPathMonitor?
     @ObservationIgnored private let log = Logger(subsystem: "com.allen.jarvis", category: "report")
 
     init(queue: ReportQueue) {
@@ -190,8 +194,29 @@ final class Reporter {
         nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
             Task { @MainActor in Reporter.shared.scheduleRefresh() }
         }
+        watchNetwork()
         refreshStatus()
         Task { await wake() }
+    }
+
+    /// The network came back while the app runs (it runs all day while he records): what waited for it goes now, not at the next wake.
+    private func watchNetwork() {
+        let monitor = NWPathMonitor()
+        var satisfied: Bool?
+        monitor.pathUpdateHandler = { path in
+            let now = path.status == .satisfied
+            let back = now && satisfied == false
+            satisfied = now
+            if back { Task { @MainActor in Reporter.shared.networkBack() } }
+        }
+        monitor.start(queue: DispatchQueue(label: "jarvis.report.path"))
+        path = monitor
+    }
+
+    func networkBack() {
+        guard queue.count > 0 else { return }
+        log.info("network is back, \(self.queue.count) frames waiting")
+        flushSoon()
     }
 
     func isEnabled(_ s: ReportSense) -> Bool { ReportMemory.isOn(s) }
@@ -332,23 +357,23 @@ final class Reporter {
         }
     }
 
-    /// Sends queued frames in batches. Frames the brain stored or refused are dropped; only `retry` ones stay.
+    /// Batches one flush may send. A day of Watch heart rate is a few thousand frames; a wake lasts seconds, so the loop also stops when the time
+    /// iOS gave is nearly spent, and the next wake sends the rest.
+    static let maxBatchesPerFlush = 50
+
+    /// Sends queued frames in batches. Frames the brain stored or refused are dropped; only `retry` ones stay. A batch the network refused is also
+    /// handed to the background session, which sends it when the network is back; its frames stay queued until the brain's answer settles them.
     func flush() async {
         guard !flushing, let transport else { return }
         flushing = true
         defer { flushing = false; refreshStatus() }
-        // ponytail: five batches (1000 frames) per flush; the next wake sends the rest.
-        for _ in 0..<5 {
+        for _ in 0..<Self.maxBatchesPerFlush {
             let batch = queue.head()
             if batch.isEmpty { break }
+            if UIApplication.shared.applicationState == .background, UIApplication.shared.backgroundTimeRemaining < 4 { break }
             do {
-                let done = ReportBatch.settled(batch, try await transport.send(batch))
-                queue.remove(done)
-                log.info("sent \(batch.count) frames, \(done.count) settled")
-                status.lastSentAt = Date()
-                ReportMemory.set(date: status.lastSentAt, for: "lastSentAt")
-                status.problem = nil
-                if done.count < batch.count { break }  // a frame answered `retry`: next wake
+                let done = accept(batch.map(\.eventUid), try await transport.send(batch))
+                if done < batch.count { break }  // a frame answered `retry`: next wake
             } catch ReportTransportError.notConfigured {
                 break
             } catch ReportTransportError.unauthorized {
@@ -358,11 +383,44 @@ final class Reporter {
             } catch ReportTransportError.rejected {
                 queue.remove(batch.map(\.eventUid))  // the same bytes would be rejected again
                 status.problem = .rejected
+            } catch let error as URLError {
+                status.problem = .offline
+                log.info("send failed: \(error.localizedDescription, privacy: .public)")
+                if let request = transport.backgroundRequest(for: batch) { uploads?.submit(batch, request: request) }
+                break
             } catch {
                 status.problem = .offline
                 log.info("send failed: \(error.localizedDescription, privacy: .public)")
                 break
             }
+        }
+    }
+
+    /// The brain answered a batch: drops the frames it stored or refused, and returns how many that was.
+    @discardableResult
+    private func accept(_ uids: [String], _ acks: [FrameAck]) -> Int {
+        let done = ReportBatch.settled(uids: uids, acks)
+        queue.remove(done)
+        log.info("sent \(uids.count) frames, \(done.count) settled")
+        status.lastSentAt = Date()
+        ReportMemory.set(date: status.lastSentAt, for: "lastSentAt")
+        status.problem = nil
+        return done.count
+    }
+
+    /// The answer of a batch the background session delivered (`status` nil: the task failed, the frames stay queued): settled as `flush` does.
+    func settleBackground(uids: [String], status code: Int?, body: Data) {
+        defer { refreshStatus() }
+        guard let code else { return }
+        do {
+            accept(uids, try HTTPReportTransport.interpret(status: code, data: body))
+        } catch ReportTransportError.unauthorized {
+            status.problem = .unauthorized
+        } catch ReportTransportError.rejected {
+            queue.remove(uids)
+            status.problem = .rejected
+        } catch {
+            log.info("background send answered \(code)")
         }
     }
 
