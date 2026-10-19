@@ -275,7 +275,7 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
   const secs = ([{ key: 'turn', label: t(['Your turn', '轮到你']), ts: turn, gs: glows }, { key: 'work', label: t(['Working', '在干活']), ts: work }, { key: 'done', label: t(['Finished', '做完了']), ts: fin },
     { key: 'moon', label: t(['Parked', '先放着']), ts: moon }] as Sec[]).filter(s => s.ts.length || s.gs?.length);
   const order = secs.flatMap(s => s.ts.map(a => a.id));
-  const [open, setOpen] = useState(false), [hot, setHot] = useState(''), [dragging, setDragging] = useState(false), [tlOpen, setTlOpen] = useState(false), [tlKey, setTlKey] = useState(0);
+  const [open, setOpen] = useState(false), [hot, setHot] = useState(''), [dragging, setDragging] = useState(false), [tlOpen, setTlOpen] = useState(false), [tlPinned, setTlPinned] = useState(false), [tlKey, setTlKey] = useState(0);
   const [kb, setKb] = useState<Keys | null>(null), [kbCard, setKbCard] = useState(''), [drafts] = useState(() => new Map<string, string>()), [, redraw] = useState(0);
   // The row under the keys can leave (parked, archived, answered elsewhere): the keys stay at the same height.
   if (kb && kb.view === 'list' && order.length && !order.includes(kb.id)) { kb.i = Math.min(kb.i, order.length - 1); kb.id = order[kb.i]; }
@@ -312,13 +312,13 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
   const closeTl = () => {
     const T = st.tl;
     if (!T.open) return;
-    T.open = false; T.pinned = false; T.closedHere = true; st.dirty = true; setTlOpen(false); L.current.timeline?.onOpenChange(false);
+    T.open = false; T.pinned = false; T.closedHere = true; st.dirty = true; setTlOpen(false); setTlPinned(false); L.current.timeline?.onOpenChange(false);
   };
   const openTl = (pinned: boolean) => {
     const T = st.tl;
     setPanel(false);
     if (!T.open) { T.open = true; T.leftAt = -1; setTlKey(k => k + 1); setTlOpen(true); L.current.timeline?.onOpenChange(true); }
-    T.pinned = pinned; st.dirty = true;
+    T.pinned = pinned; st.dirty = true; setTlPinned(pinned);
   };
   // Where a point on the timeline wing is: the pinned trip, the turn mark (and the edge before it), or the line.
   const zoneAt = (x: number) => st.pin && x >= st.pin.x0 && x < st.pin.x1 ? 'pin' : st.boxes[0] && x < st.boxes[0].x1 ? 'turn' : 'line';
@@ -410,6 +410,15 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
     window.addEventListener('keydown', key, true); window.addEventListener('blur', blur);
     return () => { window.removeEventListener('keydown', key, true); window.removeEventListener('blur', blur); };
   });
+  // A click that pins the day takes the window's key focus (without activating the app, as the list's keys do) so the day's keys work; it
+  // is given back when the day folds or is unpinned, unless the list's keys have taken it over. A rest on the line never takes it.
+  const keysHeld = useRef(false);
+  keysHeld.current = !!kb;
+  useEffect(() => {
+    if (!tlPinned) return;
+    onKeys(true);
+    return () => { if (!keysHeld.current) onKeys(false); };
+  }, [tlPinned]);
   // The day folds on Esc, when the Dashboard comes up, and when the setting goes back to the stars. A press that began in it (a drag on
   // its scroll bar) keeps it up until it ends.
   useEffect(() => {

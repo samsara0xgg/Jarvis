@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildDay, clock, dateTitle, fnv, moneyText, shiftDate, wingText, within } from '../src/dayView.ts';
+import { askable, buildDay, clock, dateTitle, fnv, moneyText, shiftDate, wingText, within } from '../src/dayView.ts';
 import { axisOf, buildBar, fit, fOf, hm, msOf, numbers, peek, rowAt, summarize, toneOn } from '../src/barView.ts';
 import { deflateSync, crc32 } from 'node:zlib';
 
@@ -302,6 +302,9 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
     && r('27 · Shelbourne at Pear').right === '22:33 出门' && r('27 · Shelbourne at Pear').value && r('27 · Shelbourne at Pear').detail === '去 UVic');
   check('beyond two hours a row says its own length, and what is over has no countdown', flat(buildDay(day, T(19, 0), zh).blocks).find(x => x.title === '私事').right === '15 分' && !/还有/.test(rs.filter(x => !x.future).map(x => x.right).join()));
   check('a payment is plain when it is money out and has a + when it is money in', flat(buildDay(small([it('p', 'payment', T(10, 0), T(10, 0), { source: 'alipay', amount: '12.40', currency: 'CAD', direction: 'out', counterparty: 'X' }), it('q', 'payment', T(11, 0), T(11, 0), { source: 'alipay', amount: '50.00', currency: 'CAD', direction: 'in', counterparty: 'Y' })]), NOW, zh).blocks).filter(x => x.as === 'row').map(x => x.right).join() === '$12.40,+$50.00');
+    check('only what the brain\'s about takes can be handed to her: a kind it knows with an id of its shape (no @, 1 to 256 characters); a ride, a payment and a commitment cannot',
+    askable('stay', 'stay-home-1') && askable('talk', 'talk-1') && askable('picture', 'a'.repeat(32)) && askable('event', 'cal|2026-10-19:1/x=y+z.w') && askable('todo', 'T_1-2')
+    && !askable('ride', 'ride-1') && !askable('payment', 'pay-1') && !askable('claude_chat', 'chat-1') && !askable('event', 'cal-1@example.com') && !askable('talk', '') && !askable('talk', 'x'.repeat(257)) && askable('talk', 'x'.repeat(256)) && !askable('stay', 'a b'));
   check('a row that began the day before says so beside its time', (x => x.at === '23:20' && x.ago === '昨')(flat(buildDay(small([it('sl', 'sleep', T(23, 20, 18), T(7, 0), { minutes: 400 })]), NOW, zh).blocks).find(y => y.as === 'row')));
 
   const fm = buildDay(fragmentedDay(), NOW, zh), fr = flat(fm.blocks), stops = fr.filter(x => x.icon === 'dot');
@@ -337,7 +340,7 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
       placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
       onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionSettings: () => {}, wearing: () => {}, onDictation: () => () => {},
       onCursor: callback => { window.__cursor = callback; return () => {}; }, onCommand: () => () => {},
-      passthrough: () => {}, focus: async () => {}, material: () => {}, codexTitles: async () => ({}),
+      passthrough: () => {}, focus: async on => { (window.__focus ??= []).push(on); }, material: () => {}, codexTitles: async () => ({}),
       watchGhostty: () => {}, onGhostty: () => () => {}, onAgentsPresence: cb => { window.__presence = cb; return () => {}; }, onMouseDown: cb => { window.__down = cb; return () => {}; }, onClaudeFront: cb => { window.__front = cb; return () => {}; }, plugins: async () => ({}),
     };
     window.__sockets = [];
@@ -937,6 +940,138 @@ try {
       check('and 回到今天 is today again, with its tag', await a.page.locator('.dt-back').count() === 0 && await a.page.locator('.dt-today').count() === 1);
       await a.ctx.close();
     }
+  }
+
+  // ---- the list under the pointer, what the keys choose, the day's keys, and the window's key focus ----
+  if (all || only === 'keys') {
+    const rich = buildDay(richDay(), NOW, zh), rbar = buildBar(rich, zh);
+    const a = await boot({ served: richDay() });
+    const seg = await line(a), on = { x: seg.mid, y: 14 };
+    let r;
+    const focusCalls = () => a.page.evaluate(() => (window.__focus ?? []).join());
+    await a.glide(a.far, on, 300);
+    await settle(a, 'open');
+    await a.until(() => document.querySelector('.notch-drop.is-open .dt-row'), undefined, 8000);
+    await a.page.waitForTimeout(700);
+    const geo = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, width: r.width }; });
+    const px = ms => geo.left + Math.min(1, Math.max(0, fOf(rbar, ms))) * geo.width;
+    const reveal = key => a.page.evaluate(k => { const l = document.querySelector('.dt-list'), el = document.querySelector(`[data-key="${k}"]`); l.scrollTop += el.getBoundingClientRect().top - l.getBoundingClientRect().top - 120; }, key);
+    const centre = async key => { const b = await a.page.locator(`[data-key="${key}"]`).boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
+    const lit = () => a.page.evaluate(() => {
+      const b = document.querySelector('.dt-bracket')?.getBoundingClientRect();
+      return { hot: [...document.querySelectorAll('.dt-row.is-hot, .dt-sh.is-hot')].map(e => e.dataset.key), pick: [...document.querySelectorAll('.dt-row.is-pick, .dt-sh.is-pick')].map(e => e.dataset.key), current: [...document.querySelectorAll('[aria-current="true"]')].map(e => e.dataset.key),
+        bracket: b ? { left: b.left, width: b.width } : null, lifted: document.querySelectorAll('.dt-seg.is-hot, .dt-sched.is-hot').length };
+    });
+    const want = key => { const x = rich.span.get(key); return { left: px(x.t0), width: Math.max(3, px(x.t1) - px(x.t0)) }; };
+    const sameSpan = (b, key) => { const w = want(key); return !!b && Math.abs(b.left - w.left) < 1.6 && Math.abs(b.width - w.width) < 1.6; };
+    const away = async () => { const b = await a.page.locator('.dt-head').boundingBox(); await a.move(b.x + 60, b.y + b.height / 2); await a.page.waitForTimeout(350); };
+    const date = () => a.page.locator('.dt-date').innerText();
+
+    check('a rest on the line opens the day and asks for no key focus', (await a.read()).tl === 'open' && await focusCalls() === '');
+    await reveal('ride-1'); await a.page.waitForTimeout(150);
+    await a.move(...Object.values(await centre('ride-1'))); await a.page.waitForTimeout(350);
+    let m = await lit();
+    const look = await a.page.evaluate(() => { const r = getComputedStyle(document.querySelector('[data-key="ride-1"]')), s = document.querySelector('.dt-seg.is-hot'), b = getComputedStyle(document.querySelector('.dt-bracket')); return { bg: r.backgroundColor, radius: r.borderTopLeftRadius, filter: s && getComputedStyle(s).filter, ring: b.borderTopColor }; });
+    check('a pointer on a row lights it (white .04, radius 10), brackets its span on the bar with a 1.5 px ink outline and lifts the piece 12%', m.hot.join() === 'ride-1' && look.bg === 'rgba(255, 255, 255, 0.04)' && look.radius === '10px' && sameSpan(m.bracket, 'ride-1') && m.lifted === 1 && look.filter === 'brightness(1.12)' && look.ring === 'rgba(238, 240, 251, 0.92)'
+      && /\.dt-bracket \{[^}]*border:1\.5px solid rgb\(var\(--ink\) \/ \.92\)/.test(readFileSync(path.join(root, 'src/day-bar.css'), 'utf8')), JSON.stringify({ m, look, want: want('ride-1') }));
+    check('and hovering asks for no key focus', await focusCalls() === '');
+    await a.shot('keys-01-hover-row', { x: 40, y: 0, width: 560, height: 700 });
+    await reveal('stay-uvic'); await a.page.waitForTimeout(150);
+    await a.move(...Object.values(await centre('stay-uvic'))); await a.page.waitForTimeout(350);
+    m = await lit();
+    check('a pointer on a stay\'s header brackets the whole stay (15:19 to 18:15)', m.hot.join() === 'stay-uvic' && sameSpan(m.bracket, 'stay-uvic'), JSON.stringify({ m, want: want('stay-uvic') }));
+    await away();
+    m = await lit();
+    check('leaving the row clears the light and the bracket', m.hot.length === 0 && m.pick.length === 0 && m.bracket === null && m.lifted === 0, JSON.stringify(m));
+
+    // a click on the line pins the day, and that click (only) takes the window's key focus
+    await a.move(on.x, on.y); await a.page.mouse.down(); await a.page.mouse.up();
+    check('a click that pins the day takes key focus, once', (await settle(a, 'pinned', 2000)).tl === 'pinned' && await focusCalls() === 'true', await focusCalls());
+
+    const press = async (k, n = 1) => { for (let i = 0; i < n; i++) await a.page.keyboard.press(k); await a.page.waitForTimeout(n > 4 ? 600 : 330); };
+    // with nothing chosen and the now line out of view the keys start from the top of the list (↓) or its bottom (↑)
+    await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; }); await a.page.waitForTimeout(200);
+    await press('ArrowDown'); m = await lit();
+    check('↓ with nothing chosen and the now line out of view takes the first row in view, and brackets its stretch of the bar', m.pick.join() === 'sleep-1' && sameSpan(m.bracket, 'sleep-1'), JSON.stringify({ m, want: want('sleep-1') }));
+    // ← → are days; they are not read in a text field or with a modifier
+    await press('ArrowLeft');
+    await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
+    m = await lit();
+    check('← is the day before, and the row chosen goes with the day', await date() === '10月18日 周日' && m.pick.length === 0 && m.bracket === null);
+    await press('ArrowRight');
+    await a.until(() => document.querySelector('.dt-date')?.textContent === '10月19日 周一' && document.querySelector('.dt-today'), undefined, 6000);
+    await press('ArrowRight');
+    check('→ is the day after, and on today it does nothing (tomorrow is never read)', await date() === '10月19日 周一' && !a.s.hits.some(h => h.includes('2026-10-20')), a.s.hits.join());
+    await a.page.evaluate(() => { const i = document.createElement('input'); i.id = 'probe'; document.querySelector('.dt').append(i); i.focus(); });
+    await press('ArrowLeft'); await press('ArrowDown'); m = await lit();
+    check('in a text field the arrows are the field\'s: no day changes, no row is chosen', await date() === '10月19日 周一' && m.pick.length === 0);
+    await a.page.evaluate(() => document.getElementById('probe').remove());
+    await a.page.keyboard.press('Meta+ArrowLeft'); await a.page.keyboard.press('Alt+ArrowDown'); await a.page.waitForTimeout(300); m = await lit();
+    check('with ⌘ or ⌥ held they are not the pane\'s either', await date() === '10月19日 周一' && m.pick.length === 0);
+
+    // with the now line in view they start from it: ↑ at the last row above it, ↓ at the first row below it
+    await press('ArrowUp'); m = await lit();
+    check('↑ with nothing chosen and the now line in view takes the last row above it (the Claude chat of 20:10)', m.pick.join() === 'chat-1' && sameSpan(m.bracket, 'chat-1'), JSON.stringify({ m, want: want('chat-1') }));
+    await press('ArrowLeft'); await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
+    await press('ArrowRight'); await a.until(() => document.querySelector('.dt-date')?.textContent === '10月19日 周一' && document.querySelector('.dt-today'), undefined, 6000);
+    await press('ArrowDown');
+    m = await lit();
+    const ring = await a.page.evaluate(() => { const c = getComputedStyle(document.querySelector('.is-pick')); return { bg: c.backgroundColor, shadow: c.boxShadow }; });
+    check('↓ with nothing chosen takes the first row under the now line (the 22:00 reminder), rings it, brackets its moment on the bar, and says so to a screen reader', m.pick.join() === 'reminder-1' && m.current.join() === 'reminder-1' && sameSpan(m.bracket, 'reminder-1') && ring.bg === 'rgba(255, 255, 255, 0.07)' && /inset/.test(ring.shadow), JSON.stringify({ m, ring }));
+    await a.shot('keys-02-picked-row', { x: 40, y: 0, width: 560, height: 700 });
+    await press('ArrowDown'); m = await lit();
+    check('↓ again is the next row: the event at 22:30, its hour on the bar', m.pick.join() === 'event-1' && sameSpan(m.bracket, 'event-1'), JSON.stringify(m));
+    await press('ArrowUp', 2); m = await lit();
+    check('↑ twice goes back past the reminder and over the now line to the chat before it', m.pick.join() === 'chat-1' && sameSpan(m.bracket, 'chat-1'), JSON.stringify(m));
+    await press('ArrowUp', 60); m = await lit();
+    const top = await a.page.evaluate(() => document.querySelector('.dt-list').scrollTop);
+    check('↑ stops at the first row of the day and the list is at its top', m.pick.join() === 'sleep-1' && top === 0, JSON.stringify({ m, top }));
+
+    // down through the day: the row is always inside the list, clear of the fades, and the list eases to it
+    const where = () => a.page.evaluate(() => { const l = document.querySelector('.dt-list'), r = l.getBoundingClientRect(), p = document.querySelector('.is-pick').getBoundingClientRect();
+      return { top: p.top - r.top, bottom: r.bottom - p.bottom, atTop: l.scrollTop < 1, atEnd: l.scrollTop > l.scrollHeight - l.clientHeight - 1, key: document.querySelector('.is-pick').dataset.key }; });
+    let bad = [], visited = [];
+    for (let i = 0; i < 40; i++) {
+      await a.page.keyboard.press('ArrowDown'); await a.page.waitForTimeout(260);
+      const w = await where(); visited.push(w.key);
+      if (w.top < -.5 || w.bottom < -.5 || w.top < 20 && !w.atTop || w.bottom < 20 && !w.atEnd) bad.push(`${w.key} ${w.top.toFixed(0)}/${w.bottom.toFixed(0)}`);
+    }
+    const everyRow = await a.page.evaluate(() => [...document.querySelectorAll('.dt-list [data-key]')].map(e => e.dataset.key));
+    check('going down the whole day, each row chosen is fully inside the list, 20 px clear of its fading edges unless the list can go no further, and every row is reached in order', bad.length === 0 && visited.slice(0, everyRow.length - 1).join() === everyRow.slice(1).join() && visited.at(-1) === everyRow.at(-1), bad.join('; ') + ' | ' + visited.length + ' ' + everyRow.length);
+    await press('ArrowUp', 6);
+    const sampled = a.page.evaluate(() => new Promise(resolve => { const l = document.querySelector('.dt-list'), seen = [], t0 = performance.now(); const tick = now => { seen.push(l.scrollTop); if (now - t0 < 420) requestAnimationFrame(tick); else resolve(seen); }; requestAnimationFrame(tick); }));
+    await a.page.keyboard.press('ArrowUp'); await a.page.keyboard.press('ArrowUp'); await a.page.keyboard.press('ArrowUp'); await a.page.keyboard.press('ArrowUp'); await a.page.keyboard.press('ArrowUp'); await a.page.keyboard.press('ArrowUp');
+    const trace = await sampled, steps = new Set(trace.map(v => Math.round(v))).size;
+    check('the list eases to the row (several positions on the way, none going back) rather than jumping', steps >= 4 && trace.every((v, i) => i === 0 || v <= trace[i - 1] + .5) && trace[0] > trace.at(-1) + 20, JSON.stringify({ steps, trace: trace.filter((_, i) => i % 3 === 0) }));
+
+    // what the pointer is on wins while it is on something, and what the keys chose comes back when it leaves
+    await press('ArrowDown', 3); m = await lit();
+    const chosen = m.pick[0];
+    await reveal('move-1'); await a.page.waitForTimeout(200);
+    await a.move(...Object.values(await centre('move-1'))); await a.page.waitForTimeout(350);
+    m = await lit();
+    const over = sameSpan(m.bracket, 'move-1') && m.hot.join() === 'move-1' && m.pick.join() === chosen;
+    await away(); m = await lit();
+    check('the pointer\'s row has the bracket while it is on it; the keys\' row has it back when the pointer leaves', over && m.hot.length === 0 && sameSpan(m.bracket, chosen), JSON.stringify({ m, chosen }));
+
+    // a list that scrolls under a resting pointer does not move what the keys chose
+    await press('ArrowUp', 60);
+    const rest = await centre('stay-home-1'); await a.move(rest.x, rest.y); await a.page.waitForTimeout(300);
+    await press('ArrowDown', 14); m = await lit();
+    const under = await a.page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-key]')?.dataset.key ?? null, [rest.x, rest.y]);
+    check('and a list scrolling under a pointer at rest does not take the choice or the bracket from the keys', m.pick.length === 1 && m.hot.length === 0 && under !== null && under !== m.pick[0] && sameSpan(m.bracket, m.pick[0]), JSON.stringify({ m, under }));
+    check('through all of it no key focus was asked for but the pinning click\'s', await focusCalls() === 'true', await focusCalls());
+    check('nothing in the list offers 问她 yet: the button waits for B2 behind a flag', await a.page.locator('.dt-ask').count() === 0);
+    await a.page.keyboard.press('Escape');
+    r = await settle(a, '', 2000);
+    check('Esc folds the day and gives the key focus back', r.tl === '' && await focusCalls() === 'true,false', await focusCalls());
+    // unpinned by the same click that pinned it
+    await a.move(on.x, on.y); await a.page.mouse.down(); await a.page.mouse.up();
+    await settle(a, 'pinned', 2000);
+    await a.page.mouse.down(); await a.page.mouse.up();
+    r = await settle(a, '', 2000);
+    check('a click on the pinned day closes it and gives the focus back too', r.tl === '' && await focusCalls() === 'true,false,true,false', await focusCalls());
+    await a.ctx.close();
   }
 
   // ---- the bar: what it draws, what the pointer finds on it, a range of it, a lens ----
