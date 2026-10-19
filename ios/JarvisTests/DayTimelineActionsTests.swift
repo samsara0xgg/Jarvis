@@ -113,6 +113,18 @@ final class DayTimelineActionsTests: XCTestCase {
         XCTAssertEqual(brain.turns.count, 1)
     }
 
+    func testSumUpWaitsForATurnOnItsWayAndLeavesNoChipForTheNextOne() throws {
+        let tl = state(), e = StarEngine()
+        let brain = Brain()
+        e.deliver = { u, t, i, a in await brain.deliver(u, t, i, a) }
+        let work = try entry(tl, "work-demo-2")
+        e.sendingToBrain = true                         // a turn is on its way: this one would be swallowed
+        tl.perform(.summarize, on: work, engine: e)
+        XCTAssertNil(e.ui.about, "the chip is not put on for a turn that is not sent")
+        XCTAssertEqual(e.brainNote, "上一句还在发，等它发完再点")
+        XCTAssertTrue(brain.turns.isEmpty)
+    }
+
     // MARK: a reminder that rang
 
     func testAReminderHeKnowsStopsWaitingAtOnceAndTheCountGoesDown() throws {

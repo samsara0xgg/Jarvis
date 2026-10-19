@@ -41,6 +41,8 @@ extension TimelineState {
             acknowledge(e)
         case .summarize:
             guard let about = e.about else { return }
+            // a turn still on its way would take no second one, and the chip put on for this row would be left for whatever he says next: wait for it, and say so
+            guard !engine.sendingToBrain else { engine.trouble("上一句还在发，等它发完再点"); return }
             engine.aboutDropped = nil
             engine.setAbout(about)
             engine.sendToBrain(Self.summarizeWords)
