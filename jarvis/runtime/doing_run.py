@@ -127,7 +127,7 @@ def read_brief(
             return None
         clues = gather(conn, sources.memory_db, day, items, (waking.start_ms, waking.end_ms), zone)
         segments = cut(facts, waking)
-        signals = gather_signals(conn, sources, segments)
+        signals = gather_signals(conn, sources, segments, items)
     return Brief(
         day=day.isoformat(), weekday=f"{day:%A}", zone=zone, now_ms=now_ms,
         final=waking.end_ms < now_ms, language=_title_language(clues, sources.memory_db),

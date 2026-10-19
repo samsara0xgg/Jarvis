@@ -145,6 +145,7 @@ FACT_CASES = [
     ),
     (_item("a", "work", 0, 60, projects=[], apps=[]), ("use", "work", None, "unknown", None)),
     (_item("a", "call", 0, 30, app="Zoom"), ("use", "call", "Zoom", "unknown", None)),
+    (_item("a", "phone_call", 0, 5, app="Phone"), ("use", "call", "Phone", "unknown", None)),
     (
         _item("a", "screen", 0, 40, device="iPad", active_s=2100,
               apps=[{"name": "抖音", "bundle": "com.ss.iphone.ugc.Aweme", "minutes": 30,

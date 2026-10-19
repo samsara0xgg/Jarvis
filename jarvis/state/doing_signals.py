@@ -9,6 +9,12 @@ the source has nothing for the segment:
   ``Mac idle 12:41-13:13``. A stretch not closed by the mark that ends it is closed where
   TimeSink itself stopped or restarted, else it runs to the segment's end; where two kinds overlap
   the one that implies the others (asleep, then locked, then idle) names the time.
+- messages he sent: the messages his phone or tablet logged him sending in each app, from the
+  day line's ``messages`` bursts that overlap the segment (ADR 0305), as ``sent 5 messages
+  (WeChat)``. A burst that runs over two segments counts in both. What he received is left out:
+  many received rows are an app's notifications, not someone writing to him.
+- playing: what his devices played (``media``, ADR 0305), the minutes each app covers inside
+  the segment and the title heard most, as ``playing Podcasts 20m: The Daily``.
 - phone motion: the minutes of the segment each activity covers, as ``phone: still 32m, walking
   6m``. Only a motion segment of medium or high confidence counts, as it does for a move
   (:data:`~jarvis.state.phone_day.MOVE_CONFIDENCES`).
@@ -57,7 +63,9 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-SIGNALS_MAX_CHARS: Final = 120
+SIGNALS_MAX_CHARS: Final = 160
+_TITLE_MAX_CHARS: Final = 30
+"""The most of a played title a segment's signals hold; a longer one is cut with an ellipsis."""
 """The most characters of a segment's signals; whole parts are left off the end until they fit."""
 MAX_STRETCHES: Final = 3
 """The most Mac stretches of a segment, the longest, shown in time order."""
@@ -219,6 +227,47 @@ def _heart(samples: Sequence[Mapping[str, Any]], segment: Segment) -> str:
     return f"heart {low if low == high else f'{low}-{high}'}{context}"
 
 
+def _sent(items: Sequence[Mapping[str, Any]], segment: Segment) -> str:
+    """``sent 5 messages (WeChat, Messages)``: what he sent in the bursts touching the segment."""
+    per_app: Counter[str] = Counter()
+    for item in items:
+        if item["kind"] == "messages" and item.get("sent") and _touches(item, segment):
+            per_app[str(item.get("app") or "")] += int(item["sent"])
+    total = sum(per_app.values())
+    if not total:
+        return ""
+    apps = ", ".join(app for app, _count in per_app.most_common() if app)
+    return f"sent {total} message{'s' if total > 1 else ''}" + (f" ({apps})" if apps else "")
+
+
+def _playing(items: Sequence[Mapping[str, Any]], segment: Segment) -> str:
+    """``playing Podcasts 20m: The Daily``: the app played most inside the segment."""
+    per_app: Counter[str] = Counter()
+    titles: dict[str, str] = {}
+    for item in items:
+        if item["kind"] != "media":
+            continue
+        app = str(item.get("app") or "")
+        per_app[app] += _overlap(segment.start_ms, segment.end_ms, item["start_ms"], item["end_ms"])
+        heard = item.get("titles") or []
+        if heard and app not in titles:
+            title = str(heard[0]["title"]).strip()
+            cut = len(title) > _TITLE_MAX_CHARS
+            titles[app] = title[: _TITLE_MAX_CHARS - 1].rstrip() + "…" if cut else title
+    if not per_app:
+        return ""
+    app, ms = per_app.most_common(1)[0]
+    if (minutes := round(ms / _MINUTE_MS)) < 1:
+        return ""
+    title = f": {titles[app]}" if app in titles else ""
+    return f"playing {app} {minutes}m{title}"
+
+
+def _touches(item: Mapping[str, Any], segment: Segment) -> bool:
+    start, end = int(item["start_ms"]), int(item["end_ms"] or item["start_ms"])
+    return start < segment.end_ms and end >= segment.start_ms
+
+
 # --- the segments -------------------------------------------------------------------------
 
 
@@ -240,11 +289,13 @@ def _guarded[T](name: str, read: Callable[[], T], empty: T) -> T:
 
 def gather(
     event_log: sqlite3.Connection, sources: DaySources, segments: Sequence[Segment],
+    items: Sequence[Mapping[str, Any]] = (),
 ) -> dict[int, str]:
     """The signals of each segment that has any, by the segment's start.
 
     ``event_log`` holds the phone's rows; the Mac's marks are read from what the terminal
-    shipped (``sources.shipped``). A segment's text is at most :data:`SIGNALS_MAX_CHARS`.
+    shipped (``sources.shipped``); ``items`` are the day line's, which hold what his devices
+    sent and played. A segment's text is at most :data:`SIGNALS_MAX_CHARS`.
     """
     if not segments:
         return {}
@@ -278,6 +329,8 @@ def gather(
     for segment in segments:
         text = _fitted([
             _mac(stretches, segment, sources.zone),
+            _sent(items, segment),
+            _playing(items, segment),
             _motion(activities, segment),
             _steps(totals, segment),
             _heart(heart, segment),

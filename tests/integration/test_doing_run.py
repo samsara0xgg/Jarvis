@@ -69,6 +69,7 @@ from jarvis.state.doing_clues import (
     gather,
 )
 from jarvis.state.doing_signals import SIGNALS_MAX_CHARS
+from jarvis.state.doing_signals import gather as gather_signals
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.job_ledger import upsert_mail
 from jarvis.state.memory_db import (
@@ -796,7 +797,7 @@ def test_a_mac_stretch_is_closed_by_its_mark_or_by_timesinks_own_stop_else_runs_
 def test_the_signals_stay_within_the_cap_by_dropping_the_last_parts(
     world: World, tmp_path: Path,
 ) -> None:
-    """Three Mac stretches, two activities, steps and heart rate: too long, so the heart goes."""
+    """Mac stretches, a long title, activities, steps, heart rate: the title is cut, heart goes."""
     marks = [
         (_at(8, 10), "idle"), (_at(8, 40), "active"), (_at(9), "lock"), (_at(9, 30), "unlock"),
         (_at(10), "sleep"), (_at(10, 30), "wake"),
@@ -812,12 +813,47 @@ def test_the_signals_stay_within_the_cap_by_dropping_the_last_parts(
     _heart(signalled, _at(10), 120, "active")
     found = read_brief(DAY, signalled.sources, world.log, NOW)
     assert found is not None
-    text = found.signals[_ms(_at(8))]
+    played = [{
+        "id": "media-1", "kind": "media", "start_ms": _ms(_at(8)), "end_ms": _ms(_at(8, 45)),
+        "app": "Podcasts", "titles": [{"title": "A Very Long Episode Title " * 2, "artist": None}],
+    }]
+    with closing(open_event_log(world.log)) as conn:
+        signals = gather_signals(conn, signalled.sources, found.segments, played)
+    text = signals[_ms(_at(8))]
     assert text == (
         "Mac idle 08:10-08:40, locked 09:00-09:30, asleep 10:00-10:30; "
+        "playing Podcasts 45m: A Very Long Episode Title A V…; "
         "phone: still 120m, walking 20m; ~350 steps"
     )
     assert len(text) <= SIGNALS_MAX_CHARS
+
+
+def test_what_he_sent_and_what_played_are_signals_and_what_he_received_is_not(
+    world: World,
+) -> None:
+    """Messages he sent per app, received ones left out; the app played most, with its title."""
+    def burst(n: int, app: str, start: datetime, end: datetime, sent: int) -> dict[str, Any]:
+        return {
+            "id": f"messages-{n}", "kind": "messages", "start_ms": _ms(start), "end_ms": _ms(end),
+            "app": app, "sent": sent, "received": 9,
+        }
+
+    items = [
+        burst(1, "WeChat", _at(12, 5), _at(12, 20), 3),
+        burst(2, "Messages", _at(12, 50), _at(13, 10), 1),  # runs into the next segment too
+        burst(3, "Xiaohongshu", _at(12, 30), _at(12, 30), 0),  # only notifications came in
+        {"id": "media-1", "kind": "media", "start_ms": _ms(_at(11, 50)),
+         "end_ms": _ms(_at(12, 20)), "app": "Music",
+         "titles": [{"title": "Song A", "artist": "X"}]},
+        {"id": "media-2", "kind": "media", "start_ms": _ms(_at(12, 30)),
+         "end_ms": _ms(_at(12, 35)), "app": "Podcasts", "titles": []},
+    ]
+    found = read_brief(DAY, world.sources, world.log, NOW)
+    assert found is not None
+    with closing(open_event_log(world.log)) as conn:
+        signals = gather_signals(conn, world.sources, found.segments, items)
+    assert signals[_ms(_at(12))] == "sent 4 messages (WeChat, Messages); playing Music 20m: Song A"
+    assert signals[_ms(_at(13))] == "sent 1 message (Messages)"
 
 
 def test_a_source_that_cannot_be_read_leaves_the_other_parts(

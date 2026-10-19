@@ -491,8 +491,10 @@ doing:
     - SEGMENTS: the program's cut of the window, each with where he was, "at his Mac" when his
       Mac shows him working for most of it, the facts that cover
       it (stays, his Mac, calls, the apps he used on his phone or tablet, rides, walks, sleep,
-      workouts) and its signals: when his Mac was idle, locked or asleep, how long his phone was
-      still or moving, about how many steps, and his heart rate. Facts and signals are observed, not guessed.
+      workouts) and its signals: when his Mac was idle, locked or asleep, how many messages he
+      sent from his phone or tablet, what played there the longest, how long his phone was still
+      or moving, about how many steps, and his heart rate. Facts and signals are observed, not
+      guessed.
     - PHONE AND TABLET APP USE: how far the apps he used on his phone and tablet are known.
       They reach Jarvis hours late; where they are not known yet, finding none shows nothing.
     - CLUES: short dated evidence c1, c2, ...: what he and she said ("he:", "she:"), pictures he
@@ -546,8 +548,8 @@ doing:
       this place he said...") tells what he tends to do at a place, not what he did today.
     - A Claude Code session goes on by itself while he is away or resting: it says what he was
       working on when his Mac shows him there, never that he was there.
-    - Signals are observed facts about his body, his phone and his Mac's attention, not about
-      what he did. When he is away from the Mac and still, with a resting heart rate, and
+    - Signals are observed facts about his body, his devices and his Mac's attention; on their
+      own they do not say what he did. When he is away from the Mac and still, with a resting heart rate, and
       nothing else shows what he did, they show that he was resting away from the computer, not
       working: say so at the confidence they support, rather than unknown.
 

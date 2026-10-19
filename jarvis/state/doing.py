@@ -176,6 +176,7 @@ _BUILDERS: Final[dict[str, Callable[[Mapping[str, Any]], Span]]] = {
     "ride": lambda i: _span(i, "place", "ride", title=i.get("route"), category="commute"),
     "work": lambda i: _span(i, "use", "work", title=_top_name(i)),
     "call": lambda i: _span(i, "use", "call", title=i.get("app")),
+    "phone_call": lambda i: _span(i, "use", "call", title=i.get("app")),
     "screen": lambda i: _span(i, "use", "screen", title=_top_name(i)),
     "code": lambda i: _span(i, "use", "code", title=i.get("title")),
     "talk": lambda i: _span(i, "use", "talk"),
