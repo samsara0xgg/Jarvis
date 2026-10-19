@@ -370,9 +370,10 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
     && r('27 · Shelbourne at Pear').right === '22:33 出门' && r('27 · Shelbourne at Pear').value && r('27 · Shelbourne at Pear').detail === '去 UVic');
   check('beyond two hours a row says its own length, and what is over has no countdown', flat(buildDay(day, T(19, 0), zh).blocks).find(x => x.title === '私事').right === '15 分' && !/还有/.test(rs.filter(x => !x.future).map(x => x.right).join()));
   check('a payment is plain when it is money out and has a + when it is money in', flat(buildDay(small([it('p', 'payment', T(10, 0), T(10, 0), { source: 'alipay', amount: '12.40', currency: 'CAD', direction: 'out', counterparty: 'X' }), it('q', 'payment', T(11, 0), T(11, 0), { source: 'alipay', amount: '50.00', currency: 'CAD', direction: 'in', counterparty: 'Y' })]), NOW, zh).blocks).filter(x => x.as === 'row').map(x => x.right).join() === '$12.40,+$50.00');
-    check('only what the brain\'s about takes can be handed to her: a kind it knows with an id of its shape (no @, 1 to 256 characters); a ride, a payment and a commitment cannot',
+    check('only what the brain\'s about takes can be handed to her: a kind it knows (a ride, a bus, a payment, a Claude chat and day among them; not a run or a session) with an id of its shape (1 to 256 characters of its set, an @ among them: a commitment\'s)',
     askable('stay', 'stay-home-1') && askable('talk', 'talk-1') && askable('picture', 'a'.repeat(32)) && askable('event', 'cal|2026-10-19:1/x=y+z.w') && askable('todo', 'T_1-2')
-    && !askable('ride', 'ride-1') && !askable('payment', 'pay-1') && !askable('claude_chat', 'chat-1') && !askable('event', 'cal-1@example.com') && !askable('talk', '') && !askable('talk', 'x'.repeat(257)) && askable('talk', 'x'.repeat(256)) && !askable('stay', 'a b'));
+    && askable('ride', 'ride-1') && askable('departure', 'departure-1') && askable('payment', 'pay-1') && askable('claude_chat', 'chat-1') && askable('claude_day', 'claude-day-1') && askable('event', `commitment-${'ab'.repeat(16)}@2026-10-19`) && askable('event', 'cal-1@example.com')
+    && !askable('workout', 'workout-1') && !askable('code', 'code-1') && !askable('weather', 'w-1') && !askable('event', 'a b@c') && !askable('event', 'a#b') && !askable('talk', '') && !askable('talk', 'x'.repeat(257)) && askable('talk', 'x'.repeat(256)) && !askable('stay', 'a b'));
   check('a row that began the day before says so beside its time', (x => x.at === '23:20' && x.ago === '昨')(flat(buildDay(small([it('sl', 'sleep', T(23, 20, 18), T(7, 0), { minutes: 400 })]), NOW, zh).blocks).find(y => y.as === 'row')));
 
   const fm = buildDay(fragmentedDay(), NOW, zh), fr = flat(fm.blocks), stops = fr.filter(x => x.icon === 'dot');
@@ -541,7 +542,7 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   const lines = (key, model = m) => open(key, model).parts.filter(p => p.type === 'lines').flatMap(p => p.lines.map(l => l.text)), part = (key, type, model = m) => open(key, model).parts.find(p => p.type === type);
   const heads = [...m.heads.keys()], keys = [...m.rows.keys(), ...heads];
   const empty = keys.filter(k => !open(k)?.parts.length), bare = keys.filter(k => !hasBody(open(k), !!askOf(m, k, zh)));
-  check('every row of the day and every stay is known; a key that is no row opens nothing; the departure, whose two lines and right column say it all, is the one row with nothing to show and nothing to do (the reminders have their buttons)', keys.length >= 28 && keys.every(k => open(k) !== null) && open('now') === null && open('nope') === null && open('') === null && bare.join() === 'departure-1' && empty.includes('reminder-2') && empty.includes('departure-1'), `${bare} | ${empty}`);
+  check('every row of the day and every stay is known; a key that is no row opens nothing; the departure, whose two lines and right column say it all, has nothing to show (its button is 问她, as the reminders have theirs)', keys.length >= 28 && keys.every(k => open(k) !== null) && open('now') === null && open('nope') === null && open('') === null && bare.length === 0 && empty.includes('reminder-2') && empty.includes('departure-1'), `${bare} | ${empty}`);
   check('a stay he keeps: the place text, then 常去的地方 · 家, and the kept place to rename; one he did not name has the place text only and nothing to rename',
     lines('stay-home-1').join('|') === '12 Example St, Victoria|常去的地方 · 家' && JSON.stringify(open('stay-home-1').rename) === '{"id":"p-home","name":"家"}' && lines('stay-aw').join('|') === 'A&W, 1234 Douglas St, Victoria' && open('stay-aw').rename === null);
   check('a move: from and to by the names of the stays either side (within half an hour), one side alone says which; its word and length are the row\'s and are not said again',
@@ -607,12 +608,19 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   const ask = (key, model = m) => askOf(model, key, model === me ? en : zh);
   check('what is handed to her is exactly {kind, id, title, start_ms} (the title as the row says it, the time as a whole number), with the icon and time the input shows',
     JSON.stringify(ask('talk-1')) === JSON.stringify({ about: { kind: 'talk', id: 'talk-1', title: '和她说话', start_ms: T(10, 2) }, icon: 'talk', at: '10:02' }) && JSON.stringify(ask('stay-home-1').about) === JSON.stringify({ kind: 'stay', id: 'stay-home-1', title: '家', start_ms: T(7, 0) })
-    && ask('stay-home-1').icon === 'home' && ask('reminder-2').about.title === '给银行打电话' && ask('sleep-1').about.title === '睡觉' && ask('pay-1') === null
+    && ask('stay-home-1').icon === 'home' && ask('reminder-2').about.title === '给银行打电话' && ask('sleep-1').about.title === '睡觉'
     && Number.isInteger(ask('picture-1').about.start_ms) && Object.keys(ask('event-1').about).join() === 'kind,id,title,start_ms', JSON.stringify(ask('talk-1')));
-  const refused = ['ride-1', 'departure-1', 'pay-1', 'chat-1', 'claude-day-1', 'workout-1', 'code:stay-home-1', 'now', 'nope'], fits = ['stay-home-1', 'stay-aw', 'move-1', 'sleep-1', 'work-1', 'call-1', 'talk-1', 'picture-1', 'event-1', 'reminder-1'];
-  check('a row whose kind the brain does not take, or whose id it would refuse, has nothing to hand over: rides, buses, money, Claude, runs, sessions, and a commitment with an @ in its id; the rest do',
-    refused.every(k => ask(k) === null) && fits.every(k => ask(k)?.about.id === k) && askOf(buildDay(small([it('commitment-ab12@2026-10-19', 'event', T(22, 0), T(23, 0), { title: 'x', source: 'mail', confirmed: false })]), NOW, zh), 'commitment-ab12@2026-10-19', zh) === null
-    && askOf(buildDay(small([it('x'.repeat(257), 'talk', T(10, 0), T(10, 5), { turns: 1 })]), NOW, zh), 'x'.repeat(257), zh) === null, refused.filter(k => ask(k) !== null).join());
+  const refused = ['workout-1', 'code:stay-home-1', 'now', 'nope'], fits = ['stay-home-1', 'stay-aw', 'move-1', 'sleep-1', 'work-1', 'call-1', 'talk-1', 'picture-1', 'event-1', 'reminder-1', 'ride-1', 'departure-1', 'pay-1', 'chat-1', 'claude-day-1'];
+  const COMMIT = `commitment-${'ab12'.repeat(8)}@${DATE}`, cm = buildDay(small([it(COMMIT, 'event', T(22, 0), T(23, 0), { title: '导师见面', source: 'mail', confirmed: false })]), NOW, zh);
+  check('a row whose kind the brain does not take, or whose id it would refuse, has nothing to hand over: runs, sessions, and an id of the wrong shape; every other kind does, a ride, a bus, money, Claude and a commitment (its id has an @) among them',
+    refused.every(k => ask(k) === null) && fits.every(k => ask(k)?.about.id === k) && askOf(buildDay(small([it('x'.repeat(257), 'talk', T(10, 0), T(10, 5), { turns: 1 })]), NOW, zh), 'x'.repeat(257), zh) === null
+    && askOf(buildDay(small([it('a b', 'talk', T(10, 0), T(10, 5), { turns: 1 })]), NOW, zh), 'a b', zh) === null && askOf(cm, COMMIT, zh)?.about.id === COMMIT, refused.filter(k => ask(k) !== null).join());
+  const handed = key => JSON.stringify(ask(key)?.about);
+  check('what is handed over for the kinds that can be asked since the brain took them is exactly {kind, id, title, start_ms}, titled as the row says it: a ride by its route, a bus by its title, money by who, a Claude chat by its name, a Claude day, and a commitment with its @ id',
+    handed('ride-1') === JSON.stringify({ kind: 'ride', id: 'ride-1', title: '27 路', start_ms: T(14, 50) }) && handed('departure-1') === JSON.stringify({ kind: 'departure', id: 'departure-1', title: '27 · Shelbourne at Pear', start_ms: T(22, 40) })
+    && handed('pay-1') === JSON.stringify({ kind: 'payment', id: 'pay-1', title: 'A&W', start_ms: T(13, 20) }) && handed('chat-1') === JSON.stringify({ kind: 'claude_chat', id: 'chat-1', title: 'The bar for the day', start_ms: T(20, 10) })
+    && handed('claude-day-1') === JSON.stringify({ kind: 'claude_day', id: 'claude-day-1', title: 'Claude 日报', start_ms: T(9, 40) }) && JSON.stringify(askOf(cm, COMMIT, zh).about) === JSON.stringify({ kind: 'event', id: COMMIT, title: '导师见面', start_ms: T(22, 0) })
+    && ask('pay-1').icon === 'payment' && ask('chat-1').at === '20:10', [handed('ride-1'), handed('departure-1'), handed('pay-1')].join(' '));
   check('in English the input says Ask her about the row it holds, with its own title', ask('talk-1', me).about.title === 'Talked with her' && ask('stay-home-1', me).about.title === '家');
 }
 
@@ -1554,7 +1562,7 @@ try {
     const under = await a.page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-key]')?.dataset.key ?? null, [rest.x, rest.y]);
     check('and a list scrolling under a pointer at rest does not take the choice or the bracket from the keys', m.pick.length === 1 && m.hot.length === 0 && under !== null && under !== m.pick[0] && sameSpan(m.bracket, m.pick[0]), JSON.stringify({ m, under }));
     check('through all of it no key focus was asked for but the pinning click\'s', await focusCalls() === 'true', await focusCalls());
-    check('the quick 问她 is only on rows the brain takes a turn about: none on a ride, a departure, a payment, a Claude chat or day, a workout or the sessions', await a.page.evaluate(() => { const no = ['ride', 'departure', 'payment', 'claude_chat', 'claude_day', 'workout', 'code'], rows = [...document.querySelectorAll('.dt-ask')].map(b => b.parentElement); return rows.length > 0 && rows.every(r => !no.includes(r.dataset.kind)); }));
+    check('the quick 问她 is only on rows the brain takes a turn about: none on a workout or the sessions', await a.page.evaluate(() => { const no = ['workout', 'code'], rows = [...document.querySelectorAll('.dt-ask')].map(b => b.parentElement); return rows.length > 0 && rows.every(r => !no.includes(r.dataset.kind)); }));
     await a.page.keyboard.press('Escape');
     r = await settle(a, '', 2000);
     check('Esc folds the day and gives the key focus back', r.tl === '' && await focusCalls() === 'true,false', await focusCalls());
@@ -2144,15 +2152,15 @@ try {
       ['stay-home-1', 'open-01-stay-kept', '12 Example St, Victoria|常去的地方 · 家|改名字|问她'],
       ['stay-aw', 'open-20-stay-plain', 'A&W, 1234 Douglas St, Victoria|问她'],
       ['move-1', 'open-21-move', '家 → A&W|问她'],
-      ['ride-1', 'open-02-ride', '你下车了'],
+      ['ride-1', 'open-02-ride', '你下车了|问她'],
       ['event-1', 'open-05-event-mail', '22:30–23:30 · 1 时 · 还没开始|问她'],
       ['event-2', 'open-22-event-said', '23:40–23:55 · 15 分 · 还没开始|问她'],
       ['reminder-2', 'open-06-reminder-waiting', '知道了|问她'],
       ['workout-1', 'open-24-workout', '07:20–07:55 · 35 分'],
       ['call-1', 'open-25-call', '16:40–16:58 · 18 分|问她'],
-      ['pay-1', 'open-08-payment', '支出 · $12.40 · CAD'],
-      ['chat-1', 'open-26-claude-chat', '20:10–20:42 · 32 分'],
-      ['claude-day-1', 'open-27-claude-day', 'The bar for the day|A tool exam'],
+      ['pay-1', 'open-08-payment', '支出 · $12.40 · CAD|问她'],
+      ['chat-1', 'open-26-claude-chat', '20:10–20:42 · 32 分|问她'],
+      ['claude-day-1', 'open-27-claude-day', 'The bar for the day|A tool exam|问她'],
       ['work-2', 'open-07-work', '活跃 1 时 55 分 · 共 2 时 5 分|项目|Jarvis|1 时 40 分|应用|Ghostty|1 时 10 分|Claude|30 分|让她总结这段|问她'],
       ['sleep-1', 'open-09-sleep', '清醒|REM|核心|深睡|23:10|07:00|深睡 1:10 · 核心 4:30 · REM 1:40 · 醒 3 次|问她'],
     ];
@@ -2163,11 +2171,8 @@ try {
       if (got !== want) bad.push(`${key}: ${got}`);
       if (name) await shotRow(a, name, key);
     }
-    check('each kind says what it has when opened, in lines of its own, with only the buttons that work for it (ride, bus, money, runs and Claude have none to ask)', bad.length === 0, bad.join('\n'));
-    // what the row says in its two lines is not said again; a row with nothing to show and nothing to do stays as it is
-    const still = await a.page.evaluate(() => { const r = document.querySelector('[data-key="departure-1"]'); return { cursor: getComputedStyle(r).cursor, expanded: r.getAttribute('aria-expanded'), still: r.classList.contains('is-still') }; });
-    await tap(a, 'departure-1'); await rest(a, 400);
-    check('a row with nothing to show and nothing to do (the departure: its route, stop, where to and when to leave are its own two lines) is drawn as it is: no pointer, no expanded state, and a click opens nothing', still.cursor === 'default' && still.expanded === null && still.still && await orow(a, 'departure-1').getAttribute('aria-expanded') === null && await folds(a) === 1 && await expanded(a, 'workout-1') === 'false', JSON.stringify(still));
+    check('each kind says what it has when opened, in lines of its own, with only the buttons that work for it (a run has none to ask)', bad.length === 0, bad.join('\n'));
+    // what the row says in its two lines is not said again
     const lit = await a.page.evaluate(() => { const r = document.querySelector('[data-key="event-1"]'); return { cursor: getComputedStyle(r).cursor, expanded: r.getAttribute('aria-expanded') }; });
     await tap(a, 'event-1'); await rest(a, 480);
     check('a row that opens has the pointer and says whether it is open; a row still to come is drawn at full strength while it is open (and quiet again when it is closed)', lit.cursor === 'pointer' && lit.expanded === 'false' && await orow(a, 'event-1').evaluate(r => getComputedStyle(r).opacity) === '1', JSON.stringify(lit));
@@ -2220,6 +2225,15 @@ try {
     check('another session opens its own and closes the first; the row itself stays open', sv.recaps.join() === '给 verify 加 fixtures 的小结' && sv.open === 1 && await expanded(a, 'code:stay-home-1') === 'true', JSON.stringify(sv));
     await orow(a, 'code:stay-home-1').locator('.dt-sess button').nth(2).click(); await rest(a, 420);
     check('and a click on the open session closes it', (await sess()).recaps.length === 0);
+    await a.ctx.close();
+  }
+  // a row with nothing to show and nothing to do (a bus whose id the brain would refuse in a turn, and whose two lines and right column say it all) stays as it is
+  if (all || only === 'open') {
+    const a = await boot({ served: makeDay({ items: [...makeDay().items, it('bus 27', 'departure', T(22, 50), T(22, 50), { title: '27 · Shelbourne at Pear', route: '27', board_stop: 'Shelbourne at Pear', to: 'UVic', leave_at_ms: T(22, 43) })] }) });
+    await openDay(a);
+    const still = await a.page.evaluate(() => { const r = document.querySelector('[data-key="bus 27"]'); r.scrollIntoView({ block: 'center' }); return { cursor: getComputedStyle(r).cursor, expanded: r.getAttribute('aria-expanded'), still: r.classList.contains('is-still') }; });
+    await tap(a, 'bus 27'); await rest(a, 400);
+    check('a row with nothing to show and nothing to do is drawn as it is: no pointer, no expanded state, and a click opens nothing', still.cursor === 'default' && still.expanded === null && still.still && await orow(a, 'bus 27').getAttribute('aria-expanded') === null && await folds(a) === 0 && await orow(a, 'bus 27').locator('.dt-ask').count() === 0, JSON.stringify(still));
     await a.ctx.close();
   }
   // the talk's words, when the day's records cannot be read
@@ -2355,8 +2369,8 @@ try {
     const a = await boot({ served: bigDay() });
     await hoverDay(a);
     const marks = await a.page.evaluate(() => { const by = {}; for (const el of document.querySelectorAll('.dt-row, .dt-sh')) { const k = el.classList.contains('dt-sh') ? 'stay' : el.dataset.kind; by[k] ??= { rows: 0, asks: 0 }; by[k].rows++; if (el.querySelector(':scope > .dt-ask')) by[k].asks++; } return by; });
-    const yes = ['stay', 'move', 'sleep', 'talk', 'picture', 'reminder', 'event', 'work', 'call'], no = ['ride', 'departure', 'payment', 'claude_chat', 'claude_day', 'workout', 'code'];
-    check('only what the brain takes a turn about has 问她 (stays, moves, sleep, talks, pictures, reminders, events, work, calls); a ride, a departure, a payment, a Claude chat, a workout and the sessions have none', yes.every(k => marks[k]?.rows > 0 && marks[k].asks === marks[k].rows) && no.every(k => marks[k]?.rows > 0 && marks[k].asks === 0), JSON.stringify(marks));
+    const yes = ['stay', 'move', 'sleep', 'talk', 'picture', 'reminder', 'event', 'work', 'call', 'ride', 'departure', 'payment', 'claude_chat', 'claude_day'], no = ['workout', 'code'];
+    check('only what the brain takes a turn about has 问她 (stays, moves, sleep, talks, pictures, reminders, events, work, calls, rides, buses, payments, Claude chats and days); a workout and the sessions have none', yes.every(k => marks[k]?.rows > 0 && marks[k].asks === marks[k].rows) && no.every(k => marks[k]?.rows > 0 && marks[k].asks === 0), JSON.stringify(marks));
     await orow(a, 'talk-1').scrollIntoViewIfNeeded();
     await orow(a, 'talk-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 300);
     const lit = await a.page.evaluate(() => { const r = document.querySelector('[data-key="talk-1"]'), b = r.querySelector(':scope > .dt-ask'), tm = r.querySelector(':scope > .dt-tm'); return { ask: getComputedStyle(b).opacity, tm: getComputedStyle(tm).opacity, text: b.textContent }; });
