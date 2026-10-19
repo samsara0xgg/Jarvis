@@ -73,7 +73,8 @@ def _days(conn: sqlite3.Connection) -> Iterator[Text]:
 
 def _imports(conn: sqlite3.Connection) -> Iterator[Text]:
     for one in imports.entries(conn):  # as the tools read them: no export stand-ins
-        yield one.id, one.text
+        if one.source != "claude_code_dialogue":  # ADR 0299: found by words only, far too much text
+            yield one.id, one.text
 
 
 def _wordings(item: core_memory.Item) -> Iterator[str]:

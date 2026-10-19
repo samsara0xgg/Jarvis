@@ -566,6 +566,70 @@ def claude_daily(
     yield from chats
 
 
+# --- the Claude Code dialogue archive ------------------------------------------------------
+
+DIALOGUE_SOURCE: Final = "claude_code_dialogue"
+_SESSION_HEAD: Final = re.compile(
+    r"^# Session (\S+)\n\n- account: (.*)\n- title: (.*)\n- project folder: (.*)\n"
+    r"- first-last message: (\d{2}):(\d{2})-(\d{2}):(\d{2})\n",
+    re.MULTILINE,
+)
+
+
+def _dialogue_instant(window_start: int, zone: ZoneInfo, hour: str, minute: str) -> int:
+    """The first instant at or after ``window_start`` whose local clock reads ``hour:minute``."""
+    first = datetime.fromtimestamp(window_start / 1000, zone)
+    clock = dtime(int(hour), int(minute))
+    found = datetime.combine(first.date(), clock, zone)
+    if _ms(found) < window_start:
+        found = datetime.combine(first.date() + timedelta(days=1), clock, zone)
+    return _ms(found)
+
+
+def claude_dialogue(name: str, data: bytes, fallback_ms: int) -> Iterator[Parsed]:
+    """A day's cut Claude Code dialogue (ADR 0299): one entry per session section.
+
+    The file is a preface (``date``, ``timezone``, ``window_start_ms``) and the sessions' files
+    one after another, each starting ``# Session <id>`` and its header lines. A section's start
+    and end are its header's first and last message times read inside the day's window; with no
+    preface they are the day's noon. The key is the day, the session and a hash of the section,
+    so a rewritten day adds only the sessions that changed.
+    """
+    text = data.decode("utf-8", "replace").lstrip("\ufeff")
+    cut = _SESSION_HEAD.search(text)
+    header = _daily_fields((text[: cut.start()] if cut else text).splitlines())
+    zone_name = header.get("timezone", "").strip() or "UTC"
+    zone = _daily_zone(zone_name)
+    day = datetime.fromtimestamp(fallback_ms / 1000, zone).date()
+    for where in (header.get("date", ""), name):
+        if (found := _DAILY_DAY.search(where)) is not None:
+            with contextlib.suppress(ValueError):
+                day = date.fromisoformat(found.group(0))
+                break
+    noon = _ms(datetime.combine(day, dtime(12), zone))
+    try:
+        window_start = int(header["window_start_ms"])
+    except (KeyError, ValueError):
+        window_start = None
+    heads = list(_SESSION_HEAD.finditer(text))
+    for n, head in enumerate(heads, 1):
+        body = text[head.start() : heads[n].start() if n < len(heads) else len(text)].rstrip()
+        sid, account, title, folder, *clock = head.groups()
+        start = end = noon
+        if window_start is not None:
+            start = _dialogue_instant(window_start, zone, clock[0], clock[1])
+            end = _dialogue_instant(start, zone, clock[2], clock[3])
+        yield Parsed(
+            DIALOGUE_SOURCE, f"{day}:{sid}:{_squash(body)}", f"session {n}", start, zone_name,
+            "session_dialogue", body,
+            {
+                "date": str(day), "session": sid, "account": account, "title": title,
+                "folder": folder, "time": f"{clock[0]}:{clock[1]}-{clock[2]}:{clock[3]}",
+                "start_ms": start, "end_ms": end,
+            },
+        )
+
+
 PARSERS: Final[dict[str, Callable[[str, bytes, int], Iterator[Parsed]]]] = {
     "wechat_pay": wechat_pay,
     "alipay": alipay,

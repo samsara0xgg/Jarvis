@@ -32,7 +32,9 @@ _DESCRIPTION: Final = (
     "China), his past conversations with Claude and the nightly summary of his Claude chats of "
     "each day (claude_daily: per chat its summary, decisions, to-dos and mentions), and the "
     "daily report of his Claude Code work (claude_code_daily: per project what was done, "
-    "decided and left open). Not for "
+    "decided and left open) and the words of that work itself (claude_code_dialogue: one "
+    "entry per session and day, found by words, shown as a short stretch around the match; "
+    "open one for its first part). Not for "
     "what he said to you (conversation) "
     "or what he did on his devices (my_day). query finds the closest entries by meaning and by "
     "words; date and to limit the span; source limits to one app. Returns up "
@@ -41,7 +43,10 @@ _DESCRIPTION: Final = (
     "count and the totals spent and received over every match, not just the page. open: an id "
     "from a result; for a Claude message, the messages around it."
 )
-_SOURCES: Final = ("claude", "claude_daily", "claude_code_daily", "wechat_pay", "alipay", "boc")
+_SOURCES: Final = (
+    "claude", "claude_daily", "claude_code_daily", "claude_code_dialogue", "wechat_pay", "alipay",
+    "boc",
+)
 _SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
     "properties": {
@@ -69,6 +74,7 @@ _SCHEMA: Final[Mapping[str, Any]] = {
 }
 _PAGE: Final = 8
 _EXCERPT_CHARS: Final = 200
+_DIALOGUE_LEAD: Final = 60
 _BUDGET: Final = 4000
 _FOCUS_CHARS: Final = 1800
 _NEAR_CHARS: Final = 300
@@ -111,6 +117,40 @@ def _totals(rows: list[imports.Entry]) -> dict[str, Any] | None:
             if len(moved) < len(pays) else "all counted"
         ),
     }
+
+
+def _excerpt(row: imports.Entry, words: list[str]) -> str:
+    """The text a result shows: the first ``_EXCERPT_CHARS`` characters.
+
+    A Claude Code dialogue entry is a whole session of a day, far longer than that; it shows its
+    title and the stretch of the same length, starting just before a word found, that holds the
+    most of the words asked (the earliest such stretch).
+    """
+    text = " ".join(mask_secrets(row.text).split())
+    if row.source != "claude_code_dialogue" or len(text) <= _EXCERPT_CHARS:
+        return speakable.cut(text, _EXCERPT_CHARS)
+    folded = text.casefold()
+    starts = sorted({
+        max(0, i - _DIALOGUE_LEAD)
+        for w in words
+        for i in _occurrences(folded, w)
+    })
+
+    def held(begin: int) -> int:
+        return sum(w in folded[begin : begin + _EXCERPT_CHARS] for w in words)
+
+    best = max(starts, key=lambda begin: (held(begin), -begin), default=0)
+    return f"{row.fields.get('title', '-')} … {speakable.cut(text[best:], _EXCERPT_CHARS)}"
+
+
+def _occurrences(text: str, word: str, limit: int = 200) -> list[int]:
+    """Where ``word`` occurs in ``text``, the first ``limit`` places."""
+    found: list[int] = []
+    at = text.find(word)
+    while at >= 0 and len(found) < limit:
+        found.append(at)
+        at = text.find(word, at + 1)
+    return found
 
 
 def _masked_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
@@ -236,7 +276,7 @@ class _Archive:
                     "id": row.id,
                     "when": speakable.when(self._at(row), now, self._zone),
                     "source": row.source,
-                    "text": speakable.cut(" ".join(mask_secrets(row.text).split()), _EXCERPT_CHARS),
+                    "text": _excerpt(row, words),
                 }
                 for row in shown
             ],

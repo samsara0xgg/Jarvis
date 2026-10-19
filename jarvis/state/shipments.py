@@ -11,8 +11,9 @@ Two intakes, both append-only and both answered only after the bytes are safe:
 - :meth:`Shipments.receive_file`: one binary file (a TimeSink screenshot) under
   ``imports/<source>/files/<relative path>``, written whole or not at all, answered with its
   SHA-256 so the Mac keeps its cursor until the digest matches. The one other file source is
-  ``claude-code-daily`` (ADR 0299): a Markdown day report, at most 256 KiB, which may be sent
-  again with other bytes (the newest stands) and is read by ``ClaudeDailyIntake``.
+  ``claude-code-daily`` (ADR 0299): a Markdown day report (``<date>.md``, at most 256 KiB) or
+  the day's kept dialogue (``dialogue/<date>.md``, at most 8 MiB), which may be sent again with
+  other bytes (the newest stands) and is read by ``ClaudeDailyIntake``.
 
 Both stop at the disk floor, like the lifelog archive (ADR 0238), so the brain's databases never
 run out of room; the refusal is 507 and the Mac keeps what it holds and tries later.
@@ -48,6 +49,9 @@ CODE_DAY_SOURCE: Final = "claude-code-daily"
 """The Mac's day report of his Claude Code work (ADR 0299), shipped as ``<date>.md`` files."""
 FILE_SOURCES: Final = ("timesink", CODE_DAY_SOURCE)
 MAX_REPORT_BYTES: Final = 256 * 1024
+MAX_DIALOGUE_BYTES: Final = 8 * 1024 * 1024
+DIALOGUE_DIRNAME: Final = "dialogue"
+_DAY_FILE: Final = r"\d{4}-\d{2}-\d{2}\.md"
 SHIPMENT_NAME: Final = "shipment.jsonl"
 _MAX_KEY: Final = 1024
 _MAX_TEXT: Final = 4 * 1024 * 1024
@@ -238,12 +242,13 @@ class Shipments:
 
 def _report_error(relpath: str, data: bytes) -> ShipRefused | None:
     """Why ``data`` is not a day report to keep at ``relpath`` (ADR 0299), or ``None``."""
-    if not re.fullmatch(_PART, relpath) or not relpath.endswith(".md"):
-        return ShipRefused(422, "the path is not a flat .md file name")
+    kept_dialogue = relpath.startswith(f"{DIALOGUE_DIRNAME}/")
+    if not re.fullmatch(rf"(?:{DIALOGUE_DIRNAME}/)?{_DAY_FILE}", relpath):
+        return ShipRefused(422, "the path is not <YYYY-MM-DD>.md or dialogue/<YYYY-MM-DD>.md")
     if not data:
         return ShipRefused(400, "the file is empty")
-    if len(data) > MAX_REPORT_BYTES:
-        return ShipRefused(413, "the report is larger than 256 KiB")
+    if len(data) > (MAX_DIALOGUE_BYTES if kept_dialogue else MAX_REPORT_BYTES):
+        return ShipRefused(413, "the file is larger than its cap (256 KiB; 8 MiB for dialogue)")
     try:
         data.decode("utf-8")
     except UnicodeDecodeError:

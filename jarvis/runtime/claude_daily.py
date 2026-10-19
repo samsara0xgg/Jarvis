@@ -30,15 +30,22 @@ from jarvis.execution.tools import ToolError
 from jarvis.runtime.home import MAIL_SERVER, _letter, mail_text
 from jarvis.runtime.job_mail import gmail_read
 from jarvis.state import imports
-from jarvis.state.import_parsers import claude_daily, is_daily_subject
+from jarvis.state.import_parsers import (
+    DIALOGUE_SOURCE,
+    claude_daily,
+    claude_dialogue,
+    is_daily_subject,
+)
 from jarvis.state.memory_db import open_memory_db
-from jarvis.state.shipments import CODE_DAY_SOURCE, FILES_DIRNAME
+from jarvis.state.shipments import CODE_DAY_SOURCE, DIALOGUE_DIRNAME, FILES_DIRNAME
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from jarvis.execution.mcp_tools import McpServers
     from jarvis.runtime.plugin_connections import PluginConnections
+    from jarvis.state.import_parsers import Parsed
 
 LOGGER = logging.getLogger(__name__)
 
@@ -86,12 +93,17 @@ class ClaudeDailyIntake:
 
     @classmethod
     def code_reports_only(
-        cls, connections: PluginConnections, db_path: Path, imports_dir: Path,
+        cls,
+        connections: PluginConnections,
+        db_path: Path,
+        imports_dir: Path,
     ) -> ClaudeDailyIntake:
         """An intake that reads the Mac's day report and never touches Gmail (ADR 0299)."""
         return cls(
             ClaudeDailySettings(_CODE_POLL_S, date.min, 1, gmail=False),
-            connections, db_path, imports_dir,
+            connections,
+            db_path,
+            imports_dir,
         )
 
     async def run(self) -> None:
@@ -101,7 +113,9 @@ class ClaudeDailyIntake:
         """
         gmail = self._settings.gmail
         LOGGER.info(
-            "claude daily started (gmail: %s, code reports every %.0f s)", gmail, _CODE_POLL_S,
+            "claude daily started (gmail: %s, code reports every %.0f s)",
+            gmail,
+            _CODE_POLL_S,
         )
         last_mail = float("-inf")
         try:
@@ -140,39 +154,46 @@ class ClaudeDailyIntake:
         return kept
 
     def read_code_reports(self) -> int:
-        """Read each new or changed day report the Mac shipped; how many were read.
+        """Read each new or changed file the Mac shipped; how many were read.
 
-        A report file is read once per content: the entries are committed first, then the bytes
-        are kept under ``imports/claude_code_daily/`` (named by SHA-256), so a crash in between is
+        Two kinds (ADR 0299): the day report (``<date>.md``, source ``claude_code_daily``) and the
+        day's kept dialogue (``dialogue/<date>.md``, source ``claude_code_dialogue``, never on the
+        day line). A file is read once per content: the entries are committed first, then the
+        bytes are kept under ``imports/<source>/`` (named by SHA-256), so a crash in between is
         mended next cycle and a revision is never read twice. Oldest first, so the report written
         last is the one added last (:func:`imports.latest_daily`: the newest stands for the day).
         An edit back to an earlier text is not a new revision and does not stand.
         """
         shipped = self._dir / CODE_DAY_SOURCE / FILES_DIRNAME
+        return self._read_shipped(
+            shipped, CODE_SOURCE, lambda n, d, ms: claude_daily(n, d, ms, CODE_SOURCE)
+        ) + (self._read_shipped(shipped / DIALOGUE_DIRNAME, DIALOGUE_SOURCE, claude_dialogue))
+
+    def _read_shipped(
+        self,
+        folder: Path,
+        source: str,
+        parse: Callable[[str, bytes, int], Iterator[Parsed]],
+    ) -> int:
         read = 0
-        for path in sorted(shipped.glob("*.md"), key=lambda p: (p.stat().st_mtime_ns, p.name)):
+        for path in sorted(folder.glob("*.md"), key=lambda p: (p.stat().st_mtime_ns, p.name)):
             data = path.read_bytes()
             digest = hashlib.sha256(data).hexdigest()
-            if any((self._dir / CODE_SOURCE).glob(f"{digest[:16]}-*")):
+            if any((self._dir / source).glob(f"{digest[:16]}-*")):
                 continue
-            try:
-                parsed = list(claude_daily(
-                    path.name, data, int(path.stat().st_mtime * 1000), CODE_SOURCE,
-                ))
-            except ValueError as exc:
-                LOGGER.warning(
-                    "claude daily: report %s cannot be read (%s)", digest[:16], type(exc).__name__,
-                )
-                continue
+            parsed = list(parse(path.name, data, int(path.stat().st_mtime * 1000)))
             counts = imports.Counts()
             with contextlib.closing(open_memory_db(self._db)) as conn:
                 imports.add_entries(conn, digest, parsed, counts)
                 conn.commit()
-            imports.keep_raw(self._dir, CODE_SOURCE, path.name, data)
+            imports.keep_raw(self._dir, source, path.name, data)
             read += 1
             LOGGER.info(
-                "claude daily: code report %s read: %d entries added, %d already held",
-                digest[:16], counts.added, counts.held,
+                "claude daily: %s file %s read: %d entries added, %d already held",
+                source,
+                digest[:16],
+                counts.added,
+                counts.held,
             )
         return read
 
@@ -208,7 +229,9 @@ class ClaudeDailyIntake:
         full = gmail_read(servers, "gmail_get", {"messageId": message_id, "format": "full"})
         data = json.dumps(
             {"message_id": message_id, "metadata": meta, "full": full},
-            ensure_ascii=False, sort_keys=True, indent=1,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=1,
         ).encode()
         digest = hashlib.sha256(data).hexdigest()
         body = mail_text(str(full.get("body") or ""))
@@ -229,6 +252,8 @@ class ClaudeDailyIntake:
             )
         LOGGER.info(
             "claude daily: letter %s kept: %d entries added, %d already held",
-            digest[:16], counts.added, counts.held,
+            digest[:16],
+            counts.added,
+            counts.held,
         )
         return 1
