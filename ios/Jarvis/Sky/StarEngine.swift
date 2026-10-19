@@ -52,6 +52,7 @@ final class StarEngine {
     var qs = Spring(0)                // zoom: -1 close, 0 a day, 1 a week, 2 the month
     var tms = Spring(HomeModule.shared.isTimeline ? 1 : 0)      // the middle of the screen: 0 the dial, 1 the timeline (Sky/StarModule.swift)
     var moduleSeen = HomeModule.shared.kind
+    var gazing = false                  // her eyes were on a finger on the timeline's bar (Sky/DayTimelineGaze.swift)
     var mode: Mode = .seek
     var goal = NOW1, stiff = 2.6, qGoal = 0.0, qHeld = false
     var F = NOW1 - 330, z = 1.0, amp = 8.5, k = TAU / DAY, q = 0.0, mon = 0.0, fl = 0.0

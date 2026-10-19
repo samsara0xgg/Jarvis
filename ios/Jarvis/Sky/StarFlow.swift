@@ -538,7 +538,7 @@ extension StarEngine {
         if herFresh {
             herN = 0
             herDrive?.herUpdate(now: now, dt: herDt, expr: expr ?? (q > 0.5 ? "deep" : focusWait ? "ask" : "02"),
-                                look: look ?? (spin > 0.2 ? (clamp(-omegaS * 0.5, -0.8, 0.8), 0.4) : nil), hear: hear, pressed: pressed, say: said)
+                                look: look ?? timelineGaze ?? (spin > 0.2 ? (clamp(-omegaS * 0.5, -0.8, 0.8), 0.4) : nil), hear: hear, pressed: pressed, say: said)
             herDt = 0
         }
         // close up the middle of the ring is out of sight, so she rises into the empty sky at the upper right, a small sun you can still touch

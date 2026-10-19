@@ -26,6 +26,7 @@ extension StarEngine {
                 rowKey = ""; viewKey = ""; dateD = nil          // the panel under the dial and the date are built again
             }
         }
+        syncGaze()
         let goal = kind == .timeline ? 1.0 : 0.0
         crit(&tms, goal, UIAccessibility.isReduceMotionEnabled ? 30 : 7.5, dt)
         if abs(tms.value - goal) < 0.0005 && abs(tms.velocity) < 0.001 { tms.value = goal; tms.velocity = 0 }

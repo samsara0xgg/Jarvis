@@ -44,6 +44,7 @@ final class TimelineState {
     var openRow: String?                // the row opened in the list, one at a time
     var lens: TLLens?                   // the day's number he pressed: the bar and the list bring that kind forward
     var scrub: Double?                  // the minute under his finger on the overview bar
+    @ObservationIgnored var finger: CGPoint?        // and where that finger is, in the chrome's design points: where her eyes look (Sky/DayTimelineGaze.swift); nothing draws from it
     var hot: String?                    // the row that covers it, lit in the list
     @ObservationIgnored private var seen: String?       // the row the list was last sent to while the finger is down
     @ObservationIgnored private var scrubHold: Task<Void, Never>?
@@ -102,6 +103,7 @@ final class TimelineState {
     /// A finger on the overview bar at minute `t` (none: it has lifted): the list goes to the row that covers it and lights it, and a row he had open is closed.
     func follow(_ t: Double?, in m: DayTimelineModel?) {
         scrub = t
+        if t == nil { finger = nil }
         guard let t, let m else { hot = nil; seen = nil; return }
         if openRow != nil { openRow = nil }
         hot = m.lit(at: t)?.id
@@ -447,7 +449,10 @@ private struct TLList: View {
     private func toggle(_ e: TLEntry) {
         guard e.opens else { return }
         let opening = tl.openRow != e.id
-        if opening { Haptic.impact(.light) }
+        if opening {
+            Haptic.impact(.light)
+            if let top = model.top(of: e.id) { engine.glance(at: TLGaze.row(top: top + e.gap, height: e.base, scrolled: at.y)) }        // her eyes go to it once
+        }
         withAnimation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .spring(duration: 0.26, bounce: 0.08)) { tl.openRow = opening ? e.id : nil }
     }
 

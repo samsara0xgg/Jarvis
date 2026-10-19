@@ -125,6 +125,7 @@ struct TLTopView: View {
             .onChanged { v in
                 let t = lo + clamp(v.location.x / TLLayout.barW, 0, 1) * w
                 tl.follow(t, in: m)
+                tl.finger = TLGaze.bar(x: v.location.x)
                 let s = m.stretch(at: t)
                 if lastStretch != s { lastStretch = s; Haptic.selection() }
             }
