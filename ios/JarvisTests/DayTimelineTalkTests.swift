@@ -219,6 +219,30 @@ final class DayTimelineTalkTests: XCTestCase {
         }
     }
 
+    // MARK: no chat in the middle
+
+    @MainActor func testOnTheTimelineNothingOpensThePanelByItself() {
+        withTimeline { e in
+            e.beginTalk()
+            e.addTurn(his: false, "## 本周\n- 周五 10:00 周会\n- 周六 09:00 爬山")
+            XCTAssertFalse(e.ui.panelOpen, "a list in her answer")
+            e.measureLive(10_000)
+            XCTAssertFalse(e.ui.panelOpen, "rows taller than the place under the dial")
+            e.showAnswer(nil)
+            XCTAssertTrue(e.ui.panelOpen, "it opens when he asks")
+        }
+    }
+
+    @MainActor func testUnderTheDialRowsTallerThanItsPlaceStillOpenThePanel() {
+        let kept = HomeModule.shared.kind
+        HomeModule.shared.kind = .stars
+        defer { HomeModule.shared.kind = kept }
+        let e = StarEngine()
+        e.beginTalk()
+        e.measureLive(10_000)
+        XCTAssertTrue(e.ui.panelOpen)
+    }
+
     // MARK: the history at her answer
 
     @MainActor func testTheHistoryOpensAtHerAnswer() async {

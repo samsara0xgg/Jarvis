@@ -337,7 +337,7 @@ struct TalkPanel: View {
         // The stream's frame goes straight to where the panel is heading: a scroll view resized every frame of the spring loses its rows for a few frames. The older rows above it fade in with the panel.
         let topTo = held ? top : ui.panelOpen ? StarEngine.panelOpen : StarEngine.panelHome
         let streamTo = topTo + (Self.grabH + chipH + pinH) * panelOpenness(topTo)
-        let shown = ui.talking || ui.panelOpen || held
+        let shown = (ui.talking && !HomeModule.shared.isTimeline) || ui.panelOpen || held          // on the timeline a talk is in her place over the day (Sky/DayTimelineTalk.swift): the panel is the history, there when it is opened
         ZStack(alignment: .topLeading) {
             background.opacity(p).animation(held ? nil : panelSpring(reduce), value: top).frame(width: W, height: H - top + 60).offset(y: top)
             topPart(p: p, held: held, chip: chip, pinH: pinH).frame(width: W, height: Self.grabH + chipH + pinH, alignment: .top).offset(y: top)
@@ -561,7 +561,7 @@ struct TalkPanel: View {
 
     /// Until the panel has opened by itself once, a copy of the talk's rows (unseen) tells whether they are taller than the place under the dial.
     @ViewBuilder private var measure: some View {
-        if ui.talking && !ui.panelOpen && !engine.autoOpenSpent {
+        if ui.talking && !ui.panelOpen && !engine.autoOpenSpent && !HomeModule.shared.isTimeline {
             VStack(alignment: .leading, spacing: 14) { if let a = ui.about { AboutChip(about: a, drop: {}) }; ForEach(ui.liveTurns) { TalkRowView(row: TalkStream.row($0)).equatable() } }
                 .padding(.horizontal, 32).frame(width: W, alignment: .topLeading).fixedSize(horizontal: false, vertical: true)
                 .onGeometryChange(for: Double.self) { Double($0.size.height) } action: { engine.measureLive($0) }

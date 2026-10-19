@@ -215,7 +215,7 @@ struct DayTimelineView: View {
 
     var body: some View {
         let on = HomeModule.shared.isTimeline
-        let away = ui.talking || ui.typing || ui.panelOpen || ui.tuning
+        let away = ui.panelOpen || ui.tuning          // a talk and the keyboard leave the day where it is: it is the history, over the day, that takes its place
         _ = tl.version
         return TimelineView(.everyMinute) { context in
             let shown = shownNow()
@@ -345,7 +345,7 @@ struct DayTimelineView: View {
             Color.black
             LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
         })
-        // a talk takes the place of the list, the way it takes the place of what is under the dial: it goes up and out, and comes back when the talk has gone
+        // the history takes the place of the list when it opens: it goes up and out, and comes back when the history has gone
         .opacity(away ? 0 : 1).offset(y: away && !reduce ? -6 : 0)
         .allowsHitTesting(!away)
         .animation(.easeOut(duration: away ? 0.2 : 0.35), value: away)

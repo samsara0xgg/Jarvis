@@ -109,9 +109,9 @@ extension StarEngine {
         if let reveal, ui.liveTurns[i].reveal != reveal { ui.liveTurns[i].reveal = reveal }
     }
 
-    /// a document, a list, a table or code needs room: the panel opens by itself, once per talk
+    /// a document, a list, a table or code needs room: the panel opens by itself, once per talk. On the timeline it never does: her place for the talk shows it (a long one in part), and the history opens when he asks.
     private func openForWritten(_ text: String) {
-        if ui.talking && !ui.panelOpen && !autoOpenSpent && AnswerBlocks.isRich(text) { openPanel(auto: true) }
+        if ui.talking && !ui.panelOpen && !autoOpenSpent && !HomeModule.shared.isTimeline && AnswerBlocks.isRich(text) { openPanel(auto: true) }
     }
 
     /// Her words in a row of their own, laid out whole and lit a word at a time (`Reveal`) at `cps` words a second; without `cps` (a typed answer that came whole, not
@@ -273,7 +273,7 @@ extension StarEngine {
     }
     /// the live rows are taller than the talk's place under the dial: the panel opens by itself, once per talk
     func measureLive(_ h: Double) {
-        if ui.talking && !ui.panelOpen && !autoOpenSpent && h > 836 - Self.panelHome - 16 { openPanel(auto: true) }
+        if ui.talking && !ui.panelOpen && !autoOpenSpent && !HomeModule.shared.isTimeline && h > 836 - Self.panelHome - 16 { openPanel(auto: true) }
     }
     /// 全文 ›, or a tap on her answer in the timeline's place for the talk: the history, at that answer. The talk's rows are listed live while it is on show, as `l<id>`, and the stream is
     /// asked to go there once the panel has come up (as `showTalk` does).

@@ -74,7 +74,10 @@ struct StarChrome: View {
             TapbackOverlay(engine: engine, ui: ui).animation(.easeOut(duration: 0.15), value: ui.tapback != nil)
         }
         .frame(width: W, height: H, alignment: .topLeading)
-        .onChange(of: focused) { _, f in StallLog.mark(f ? "keyboard up" : "keyboard down"); ui.typing = f; if f { engine.openPanel() } else { engine.closePanel() } }     // the panel comes with the keyboard and goes with it
+        .onChange(of: focused) { _, f in
+            StallLog.mark(f ? "keyboard up" : "keyboard down"); ui.typing = f
+            if !HomeModule.shared.isTimeline { if f { engine.openPanel() } else { engine.closePanel() } }       // under the dial the panel comes with the keyboard and goes with it; on the timeline the day stays, and the history is his to open
+        }
         .onChange(of: phase) { _, p in
             // away for five minutes, it comes back to the star chart as it was first opened
             if p == .background { leftAt = Date() }
