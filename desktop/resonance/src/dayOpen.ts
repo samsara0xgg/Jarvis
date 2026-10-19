@@ -26,13 +26,15 @@ export type Part =
   | { type: 'titles'; list: string[] };
 // `rename`: the kept place under a stay, and the name it has; `ack`: the reminder that rang and waits for a `知道了`; `summarize`: a work block
 // can be handed to her at one tap; `star`: the item can be marked as what mattered (every item with an id the brain takes; a folded row of
-// sessions is no one item).
-export type Open = { key: string; kind: string; parts: Part[]; rename: { id: string; name: string } | null; ack: string | null; summarize: boolean; star: boolean };
+// sessions is no one item); `commit`: the hex of a commitment mail noted that is not his yet, which he can say is his or is not.
+export type Open = { key: string; kind: string; parts: Part[]; rename: { id: string; name: string } | null; ack: string | null; summarize: boolean; star: boolean; commit: string | null };
 // What a turn about a row carries (ADR 0214): exactly these four, the brain refuses a turn whose `about` has more or a bad id.
 export type About = { kind: string; id: string; title: string; start_ms: number };
 export type Ask = { about: About; icon: Icon; at: string };
 
 const ATTACHMENT = /^[0-9a-f]{32}$/;
+// A commitment's item is `commitment-<hex>@<day>` (ADR 0274); the route that confirms or drops it takes the hex between the two.
+const COMMITMENT = /^commitment-([0-9a-f]{32})@/;
 const say = (text: string, tone: Tone = 'muted'): Words => ({ text, tone });
 const lines = (...list: (Words | false | '' | null | undefined)[]): Part => ({ type: 'lines', lines: list.filter((x): x is Words => !!x) });
 // The words the row already has (its title: 20 characters, its second line: 40) are said again in the open row only when they are long enough that the row's one line may have cut them.
@@ -77,7 +79,7 @@ export function openOf(m: DayModel, key: string, t: Say): Open | null {
   const sessions = m.folds.get(key), it = sessions ? sessions[0] : m.items.find(x => x.id === key);
   if (!it) return null;
   const parts: Part[] = [];
-  let rename: Open['rename'] = null, ack: string | null = null, summarize = false;
+  let rename: Open['rename'] = null, ack: string | null = null, summarize = false, commit: string | null = null;
   switch (sessions ? 'fold' : it.kind) {
     case 'fold': parts.push({ type: 'sessions', list: [...sessions!].sort((a, b) => a.start_ms - b.start_ms).map(x => session(x, m, t)) }); break;
     case 'code': parts.push({ type: 'sessions', list: [session(it, m, t)] }); break;
@@ -112,6 +114,7 @@ export function openOf(m: DayModel, key: string, t: Say): Open | null {
       const sure = it.source === 'mail' && it.confirmed === true;
       const state = it.state === 'now' ? t(['Happening now', '正在进行']) : it.state === 'next' ? t(['Not yet', '还没开始']) : t(['Over', '已结束']);
       parts.push(lines(say([span(it, m, t), sure ? t(['confirmed', '已确认']) : '', state].filter(Boolean).join(' · ')), !it.private && again(clean(it.place))));
+      if (it.source === 'mail' && it.confirmed === false && !it.leaving) commit = COMMITMENT.exec(it.id)?.[1] ?? null;
       break;
     }
     case 'reminder': {
@@ -162,7 +165,7 @@ export function openOf(m: DayModel, key: string, t: Say): Open | null {
   // What the open row says first is in ink, the rest is muted.
   const shown = parts.filter(p => p.type !== 'lines' || p.lines.length > 0), top = shown[0];
   if (top?.type === 'lines') top.lines[0] = { ...top.lines[0], tone: 'ink' };
-  return { key, kind: sessions ? 'code' : it.kind, parts: shown, rename, ack, summarize, star: !sessions && starrable(it.id) };
+  return { key, kind: sessions ? 'code' : it.kind, parts: shown, rename, ack, summarize, star: !sessions && starrable(it.id), commit };
 }
 
 // One line of the day's conversation as GET /inherent/memory/day/{day}/records gives it (ts read to ms), and what a talk row shows of its span:
@@ -177,7 +180,7 @@ export function talkLines(list: Rec[], from: number, to: number): { you: string;
 }
 
 // Whether opening the row shows anything: a part, or a button that works (so a row never opens to nothing).
-export const hasBody = (o: Open, canAsk: boolean) => o.parts.length > 0 || !!o.rename || !!o.ack || o.summarize || o.star || canAsk;
+export const hasBody = (o: Open, canAsk: boolean) => o.parts.length > 0 || !!o.rename || !!o.ack || o.summarize || o.star || !!o.commit || canAsk;
 
 // What a turn about this row carries and what the input row shows of it: null when the brain would refuse it (a kind it does not take, an id
 // of the wrong shape, a folded row that is no one item).

@@ -162,6 +162,19 @@ const fullDay = (over = {}) => richDay({
   summary: { steps: 8240, resting_hr: 58, hrv: 42 },
   ...over,
 });
+// What mail noted that he has to go to (ADR 0274): the item is `commitment-<hex>@<day>`, and the hex is what the brain's route takes. Two that mail has not
+// confirmed (22:10 and 23:00, both still to come: they wait on him) and one he said himself.
+const HEX = { a: 'c1'.repeat(16), b: 'd2'.repeat(16), c: 'e3'.repeat(16) };
+const CM = Object.fromEntries(Object.entries(HEX).map(([k, h]) => [k, `commitment-${h}@${DATE}`]));
+const commitDay = (over = {}) => fullDay({
+  items: [
+    ...fullDay().items.filter(x => x.kind !== 'event'),
+    it(CM.a, 'event', T(22, 10), T(22, 50), { title: '组会', place: 'Library', private: false, source: 'mail', confirmed: false }),
+    it(CM.b, 'event', T(23, 0), T(23, 30), { title: '牙医', place: 'Clinic', private: false, source: 'mail', confirmed: false }),
+    it(CM.c, 'event', T(23, 40), T(23, 55), { title: '跑步', private: false, source: 'said', confirmed: true }),
+  ],
+  ...over,
+});
 // A picture the fake daemon serves for an attachment id: 96 x 96, a warm gradient with a plate on it.
 const PICTURE = (() => {
   const w = 96, h = 96, raw = Buffer.alloc((w * 3 + 1) * h);
@@ -642,6 +655,26 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   check('what the brain sends of the highlights is read field by field: an id is needed, a label that is not text is none, a `by` that is not text is none', tidyReply({ ...makeDay(), highlights: [{ id: 'a', label: 7, by: 'her' }, { label: 'x' }, { id: 'b', label: 'y', by: 3 }, null] }).highlights.map(h => `${h.id}:${h.label}:${h.by}`).join() === 'a::her,b:y:');
 }
 
+// ---------- what mail said, in node (ADR 0274, 0296): the two buttons are there only where the route works ----------
+{
+  const mk = (id, extra) => it(id, 'event', T(22, 10), T(22, 50), { title: '组会', place: 'Library', private: false, ...extra });
+  const day = (item, t = zh, local) => buildDay(small([item]), NOW, t, local), openIt = (item, local) => openOf(day(item, zh, local), item.id, zh), row = (item, t = zh, local) => day(item, t, local).rows.get(item.id);
+  const un = mk(CM.a, { source: 'mail', confirmed: false }), you = { you: new Set([CM.a]) }, going = { leaving: new Set([CM.a]) }, sure = { ...un, confirmed: true };
+  check('an event mail noted that is not his yet has the two buttons, and what the brain takes is the hex of its id; the row opens to them even with nothing to ask',
+    openIt(un).commit === HEX.a && hasBody({ ...openIt(un), parts: [], rename: null, ack: null, summarize: false, star: false }, false));
+  check('none for one mail has confirmed, one he said himself, a calendar event, an event whose id is no commitment\'s (or not a whole hex), a commitment that is on its way out',
+    [sure, mk(CM.a, { source: 'said', confirmed: true }), mk(CM.a, {}), mk('event-1', { source: 'mail', confirmed: false }), mk('commitment-ab@2026-10-19', { source: 'mail', confirmed: false })].every(x => openIt(x).commit === null) && openIt(un, going).commit === null);
+  check('it waits on him (the badge, the count) and its second line says it is not confirmed; once he has confirmed it neither does, and the line says he did; one on its way out waits no longer',
+    row(un).wait && row(un).detail === '邮件 · 还没确认 · Library' && !row(sure, zh, you).wait && row(sure, zh, you).detail === '邮件 · 你确认了 · Library' && !row(un, zh, going).wait && row(un, zh, going).leaving && !row(un).leaving
+    && day(un).waiting.join() === CM.a && day(sure, zh, you).waiting.length === 0 && day(un, zh, going).waiting.length === 0, JSON.stringify([row(un), row(sure, zh, you), row(un, zh, going)].map(r => [r.wait, r.detail, r.leaving])));
+  check('the open row of one he has confirmed says confirmed, in English the line says you confirmed it, and a private one says no more than before',
+    openIt(sure, you).parts[0].lines[0].text.includes('已确认') && row(sure, en, you).detail === 'Mail · you confirmed it · Library' && row({ ...sure, private: true }, zh, you).detail === '');
+  check('on the bar the box of one on its way out knows it, so it can fade; the others do not', buildBar(day(un, zh, going), zh).sched.find(x => x.key === CM.a).leaving === true && buildBar(day(un), zh).sched.find(x => x.key === CM.a).leaving === false);
+  check('what the pane lays over an item is never read from the brain: a `you` or a `leaving` in a day it sends changes nothing',
+    tidy({ id: 'x', kind: 'event', start_ms: T(9), end_ms: T(10), you: true, leaving: true }).you === undefined && tidy({ id: 'x', kind: 'event', start_ms: T(9), end_ms: T(10), you: true, leaving: true }).leaving === undefined
+    && row({ ...un, you: true, leaving: true }).leaving === false && row({ ...un, you: true, leaving: true }).detail === '邮件 · 还没确认 · Library');
+}
+
 // ---------- the built page ----------
 const server = spawn(path.join(root, 'node_modules/.bin/vite'), ['preview', '--port', String(web), '--strictPort'], { cwd: root, stdio: 'ignore' });
 const browser = await chromium.launch({ headless: true, channel: 'chrome', args: ['--disable-web-security', '--mute-audio'] });
@@ -718,6 +751,17 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
       const body = sent(), id = decodeURIComponent(url.pathname.split('/').pop()), item = s.served.items.find(x => x.id === id); s.posts.push({ path: url.pathname, body });
       if (s.refuse.has('notices') || !item?.fired) return refused('not a notice', 404);
       item.acknowledged = true; return json({ ok: true });
+    }
+    // ADR 0296: what mail said he has to go to. As the brain does it: the path's hex is the id's between `commitment-` and `@`; a commitment no one has is a 404, a
+    // confirm of one confirmed already a 409, a cancel drops it. `commitments` refuses the whole route.
+    if (post && url.pathname.startsWith('/inherent/commitments/')) {
+      const body = sent(), hex = decodeURIComponent(url.pathname.split('/').pop()); s.posts.push({ path: url.pathname, body });
+      if (s.refuse.has('commitments')) return refused('refused', 502);
+      const item = s.served.items.find(x => x.id.startsWith(`commitment-${hex}@`));
+      if (!item) return refused('no such commitment', 404);
+      if (body?.action === 'confirm') { if (item.confirmed) return refused('it is confirmed already', 409); item.confirmed = true; return json({ ok: true }); }
+      if (body?.action !== 'cancel') return refused('bad action', 422);
+      s.served.items = s.served.items.filter(x => x !== item); return json({ ok: true });
     }
     // ADR 0296: his mark on an item of a day. As the brain does it: his marks first (five at most, a sixth is a 409; marking what he marked answers 200), her picks
     // in the room he leaves, one he took off is hidden; an id no item has is a 404. The answer is the day's highlights after it.
@@ -2578,6 +2622,13 @@ try {
     await page.close();
   };
   const crop = async (a, label, box, pad = 0) => ({ png: await a.page.screenshot({ clip: { x: Math.max(0, box.x - pad), y: Math.max(0, box.y - pad), width: box.width + 2 * pad, height: box.height + 2 * pad } }), label, w: box.width + 2 * pad, h: box.height + 2 * pad });
+  // A row with what the pane says up top about it beside it, in one sheet: `top` is [selector, label, scale] of the header or the bar, `label` is the row's.
+  const sheetRow = async (a, name, key, top, label) => {
+    const tiles = [];
+    for (const [sel, text, k] of top) tiles.push({ ...await crop(a, text, await a.page.locator(sel).first().boundingBox(), 4), k });
+    tiles.push({ ...await crop(a, label, await orow(a, key).boundingBox(), 6), k: 1.2 });
+    await sheetOf(a, name, tiles, 1);
+  };
   const writes = a => a.s.posts.filter(p => p.path === '/inherent/day/highlight');
   const marksOn = a => a.s.served.highlights.map(h => `${h.id}:${h.by}`).sort().join();
   // the bar's lit stars (each: whose, and whether it is on its way out), and what a row or a stay's header wears
@@ -2760,6 +2811,112 @@ try {
     await hoverOn(a, 'ride-1'); const no = await starOf(a, quickStar(a, 'ride-1'));
     await quickStar(a, 'ride-1').click(); await rest(a, 500);
     check('in English the star says Unmark or Mark as important, and a sixth mark says At most 5 marks. Unmark one first', his.label === 'Unmark' && no.label === 'Mark as important' && await under(a, 'ride-1') === 'At most 5 marks. Unmark one first', `${his.label} ${no.label} ${await under(a, 'ride-1')}`);
+    await a.ctx.close();
+  }
+
+  // ---- 是我的 / 不是: what mail said he has to go to is confirmed or dropped on the brain (ADR 0274, 0296) ----
+  const cm = a => a.s.posts.filter(p => p.path.startsWith('/inherent/commitments/')).map(p => `${p.path} ${JSON.stringify(p.body)}`);
+  const pillOf = a => a.page.locator('.dt-waits').innerText().catch(() => null);
+  const watchRow = (a, key, ms = 800) => a.page.evaluate(async ([key, ms]) => {
+    const out = { rolled: false, faded: false, box: false, heights: [] }, end = performance.now() + ms;
+    while (performance.now() < end) {
+      out.rolled ||= !!document.querySelector('.dt-roll .is-old');
+      out.faded ||= !!document.querySelector(`[data-key="${key}"] .dt-wait.is-gone`);
+      const leaving = document.querySelector(`[data-sched="${key}"].is-leaving`);
+      out.box ||= !!leaving; if (leaving && out.boxTransition === undefined) out.boxTransition = getComputedStyle(leaving).transitionDuration;
+      const r = document.querySelector(`[data-key="${key}"]`); if (r) out.heights.push(Math.round(r.getBoundingClientRect().height));
+      await new Promise(r => requestAnimationFrame(r));
+    }
+    out.gone = !document.querySelector(`[data-key="${key}"]`); out.boxGone = !document.querySelector(`[data-sched="${key}"]`); out.badge = !!document.querySelector(`[data-key="${key}"] .dt-wait`);
+    return out;
+  }, [key, ms]);
+  const btn = (a, key, name) => orow(a, key).locator('.dt-acts').getByRole('button', { name, exact: true });
+  if (all || only === 'write') {
+    const a = await boot({ served: commitDay(), init: record });
+    await openDay(a);
+    check('three things wait on him at first: the reminder that rang and the two events mail has not confirmed, each with its badge and a dashed box on the bar', await pillOf(a) === '3 件等你' && await a.page.locator('.dt-wait').count() === 3 && await a.page.locator('[data-sched]').count() === 3, await pillOf(a));
+    await tap(a, CM.a); await rest(a, 520);
+    const btns = await orow(a, CM.a).locator('.dt-acts').first().evaluate(el => [...el.children].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
+    check('an unconfirmed mail event opens to 是我的 and 不是, before the star and 问她, under its time range and state (its source, that it is not confirmed and its place are the row\'s second line already)', btns === '是我的|不是|star|问她' && (await said(a, CM.a))[0] === '22:10–22:50 · 40 分 · 还没开始' && await orow(a, CM.a).locator('.dt-tx em').innerText() === '邮件 · 还没确认 · Library', `${btns} ${(await said(a, CM.a)).join('|')}`);
+    await sheetRow(a, 'd-04-commitment-open', CM.a, [['.dt-head', 'the header: three things wait on him (the reminder that rang and the two events mail has not confirmed)', 1.3]], 'the commitment opened: 是我的 and 不是 before the star and 问她, the amber 等你 badge on the row');
+    const reads = a.s.hits.length, watching = watchRow(a, CM.a, 900);
+    await btn(a, CM.a, '是我的').click();
+    const seen = await watching;
+    check('是我的 sends the commitment\'s hex in the path and {"action":"confirm"}, nothing else', cm(a).join('|') === `/inherent/commitments/${HEX.a} {"action":"confirm"}`, cm(a).join('|'));
+    check('the amber badge fades and goes, the header count rolls down (3 to 2), and the row is not dropped: it is still his, still to come, its dashed box stays', seen.rolled && seen.faded && !seen.badge && !seen.gone && await pillOf(a) === '2 件等你' && await a.page.locator(`[data-sched="${CM.a}"]`).count() === 1, JSON.stringify({ seen: { ...seen, heights: undefined }, pill: await pillOf(a) }));
+    await rest(a, 300);
+    const lines = await said(a, CM.a);
+    check('the row\'s second line says he confirmed it, the open lines say confirmed, the two buttons are gone (the star and 问她 stay), the day was read again and the brain has it confirmed',
+      await orow(a, CM.a).locator('.dt-tx em').innerText() === '邮件 · 你确认了 · Library' && lines.join('|').includes('已确认') && await btn(a, CM.a, '是我的').count() === 0 && await btn(a, CM.a, '不是').count() === 0 && await orow(a, CM.a).locator('.dt-acts .dt-starbtn').count() === 1 && a.s.hits.length > reads && a.s.served.items.find(x => x.id === CM.a).confirmed === true, `${lines.join('|')} ${a.s.hits.length} ${reads}`);
+    await sheetRow(a, 'd-05-commitment-confirmed', CM.a, [['.dt-head', 'the header after 是我的: two wait now', 1.3]], 'the same row after 是我的: no badge, the second line says 你确认了, the two buttons are gone');
+    // he is the one who confirmed it: the words stay when the day is read again (the brain only says it is confirmed)
+    await a.page.waitForTimeout(100);
+    check('and after another read of the day the row still says he confirmed it (what the brain sends does not say who)', await orow(a, CM.a).locator('.dt-tx em').innerText() === '邮件 · 你确认了 · Library');
+
+    // 不是: the row collapses out (240 ms), the bar's box fades, the count rolls down; the day is read again once the row has gone
+    await tap(a, CM.b); await rest(a, 520);
+    const reads2 = a.s.hits.length, h0 = (await orow(a, CM.b).boundingBox()).height, ranks = watchRow(a, CM.b, 1800);
+    await btn(a, CM.b, '不是').click();
+    const went = await ranks;
+    check('不是 sends the hex in the path and {"action":"cancel"}', cm(a).at(-1) === `/inherent/commitments/${HEX.b} {"action":"cancel"}` && cm(a).length === 2, cm(a).join('|'));
+    const out = (await anims(a)).filter(x => x.key === CM.b && x.kf.some(k => k.height === '0px'));
+    check('the row collapses out over 240 ms (its height to nothing, a fade), frame by frame and never back, and is gone; the bar\'s dashed box fades and goes with it; the count rolls down (2 to 1)',
+      out.length === 1 && out[0].opt.duration === 240 && out[0].kf.at(-1).opacity === 0 && went.gone && went.boxGone && went.box && went.boxTransition === '0.24s' && went.rolled && went.heights[0] >= h0 - 1 && went.heights.every((x, i, l) => i === 0 || x <= l[i - 1] + 1) && went.heights.at(-1) < 4 && await pillOf(a) === '1 件等你', JSON.stringify({ out, went: { ...went, heights: went.heights.slice(0, 20) }, h0 }));
+    check('the day was read again after the row had gone, and the brain no longer has it; the other rows are as they were (the confirmed one, the one he said)', a.s.hits.length > reads2 && !a.s.served.items.some(x => x.id === CM.b) && await orow(a, CM.a).count() === 1 && await orow(a, CM.c).count() === 1 && await a.page.locator(`[data-sched="${CM.b}"]`).count() === 0);
+
+    // 问她 on a commitment event: the id with its @ and the brain's own kind
+    await hoverOn(a, CM.c);
+    await orow(a, CM.c).locator(':scope > .dt-quick .dt-ask').click(); await rest(a, 520);
+    await a.page.keyboard.type('这个几点开始'); await a.page.keyboard.press('Enter'); await rest(a, 350);
+    check('问她 is on a commitment event too, and the turn carries exactly its kind (event), its id with the @, its title and its start', turns(a).length === 1 && JSON.stringify(turns(a)[0].body) === JSON.stringify({ text: '这个几点开始', about: { kind: 'event', id: CM.c, title: '跑步', start_ms: T(23, 40) } }), JSON.stringify(turns(a)));
+    await a.ctx.close();
+  }
+  if (all || only === 'write') {
+    // the brain did not take it (a 502): the row stays as it was, the buttons come back, and the line under them says so; no day is read again for it
+    const a = await boot({ served: commitDay(), init: record });
+    await openDay(a);
+    a.s.refuse.add('commitments');
+    await tap(a, CM.a); await rest(a, 520);
+    const reads = a.s.hits.length;
+    await btn(a, CM.a, '是我的').click(); await rest(a, 450);
+    check('a refusal leaves the row, its badge and the count as they were, the two buttons are there again, and the line says so', await btn(a, CM.a, '是我的').isEnabled() && await btn(a, CM.a, '不是').isEnabled() && await orow(a, CM.a).locator('.dt-wait').count() === 1 && await pillOf(a) === '3 件等你'
+      && await orow(a, CM.a).locator('.dt-body .dt-hint').innerText() === '没成功，再试一次' && await orow(a, CM.a).locator('.dt-tx em').innerText() === '邮件 · 还没确认 · Library' && a.s.hits.length === reads, await orow(a, CM.a).locator('.dt-body .dt-hint').innerText().catch(() => '-'));
+    await btn(a, CM.a, '不是').click(); await rest(a, 450);
+    check('so does a refused 不是: the row is still there', await orow(a, CM.a).count() === 1 && await a.page.locator(`[data-sched="${CM.a}"]`).count() === 1 && cm(a).length === 2);
+    a.s.refuse.delete('commitments');
+    await btn(a, CM.a, '是我的').click(); await rest(a, 500);
+    check('and when the brain takes it the next time the line is gone with the buttons', await orow(a, CM.a).locator('.dt-body .dt-hint').count() === 0 && await btn(a, CM.a, '是我的').count() === 0 && await pillOf(a) === '2 件等你');
+    await a.ctx.close();
+  }
+  if (all || only === 'write') {
+    // it was confirmed somewhere else meanwhile (the brain says 409): that is what he asked for, so it is shown as his
+    const a = await boot({ served: commitDay(), init: record });
+    await openDay(a);
+    await tap(a, CM.a); await rest(a, 520);
+    a.s.served.items.find(x => x.id === CM.a).confirmed = true;
+    await btn(a, CM.a, '是我的').click(); await rest(a, 600);
+    check('a confirm of one that is confirmed already (409) is shown as confirmed, with no failure line', await orow(a, CM.a).locator('.dt-tx em').innerText() === '邮件 · 你确认了 · Library' && await orow(a, CM.a).locator('.dt-body .dt-hint').count() === 0 && await pillOf(a) === '2 件等你', await pillOf(a));
+    // and one the brain no longer has (a 404) goes the way of one he dropped
+    await tap(a, CM.b); await rest(a, 520);
+    a.s.served.items = a.s.served.items.filter(x => x.id !== CM.b);
+    await btn(a, CM.b, '是我的').click(); await rest(a, 1400);
+    check('a commitment the brain no longer has (404) goes out the way a dropped one does: the row, its box and its count (the reminder that rang still waits)', await orow(a, CM.b).count() === 0 && await a.page.locator(`[data-sched="${CM.b}"]`).count() === 0 && await pillOf(a) === '1 件等你' && cm(a).at(-1) === `/inherent/commitments/${HEX.b} {"action":"confirm"}`, await pillOf(a));
+    await a.ctx.close();
+  }
+  if (all || only === 'write') {
+    // reduced motion: the row only fades (120 ms), nothing collapses; and in English
+    const a = await boot({ served: commitDay(), init: record, lang: 'en' });
+    await a.page.emulateMedia({ reducedMotion: 'reduce' });
+    await openDay(a);
+    await tap(a, CM.a); await rest(a, 400);
+    const names = await orow(a, CM.a).locator('.dt-acts').first().evaluate(el => [...el.children].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
+    await btn(a, CM.a, 'Mine').click(); await rest(a, 400);
+    check('in English the buttons say Mine and Not mine, and the row says you confirmed it', names === 'Mine|Not mine|star|Ask her' && await orow(a, CM.a).locator('.dt-tx em').innerText() === 'Mail · you confirmed it · Library', `${names} ${await orow(a, CM.a).locator('.dt-tx em').innerText()}`);
+    await tap(a, CM.b); await rest(a, 400);
+    const watching = watchRow(a, CM.b, 1400);
+    await btn(a, CM.b, 'Not mine').click();
+    const w = await watching, fade = (await anims(a)).filter(x => x.key === CM.b && x.opt.duration === 120 && x.kf.some(k => k.opacity === 0));
+    check('with reduced motion the dropped row only fades (120 ms, no height) and the bar\'s box fades over 120 ms too; both are gone', fade.length === 1 && fade[0].kf.every(k => k.height === undefined) && w.boxTransition === '0.12s' && w.gone && w.boxGone, JSON.stringify({ fade, w: { ...w, heights: undefined } }));
     await a.ctx.close();
   }
 

@@ -13,6 +13,8 @@ export type DayItem = {
   title?: string; source?: string; confirmed?: boolean; private?: boolean; to?: string; leave_at_ms?: number;
   attachment?: string; amount?: string | number; currency?: string; direction?: string; counterparty?: string; messages?: number; chats?: number;
   fired?: boolean; acknowledged?: boolean;
+  // The pane's own, laid on by `buildDay` (`tidy` never reads them from the brain): `you`, he confirmed this commitment here; `leaving`, he said it is not his and it is on its way out.
+  you?: boolean; leaving?: boolean;
   stages?: Stage[]; energy_kcal?: number; distance_m?: number; avg_hr?: number; project?: string; account?: string;
   credit?: string; ended_reason?: string; detail?: string;
 };
@@ -195,10 +197,10 @@ export const starrable = (id: string) => ITEM_ID.test(id);
 // A row of the list. The time column is `at` (when it began; `ago` marks one that began the day before), the right column `right` (its length, how
 // long until it, or its value, which `value` says to write in ink). `kind` and `lens`: what the row is, and which of the day's numbers it is
 // counted in (a lens on the bar dims the rows that are not). A `connector` is a way he went (a move, a ride, a short stop) and `onWay` is
-// something that happened on one: together they are a trip, and the pane draws one rail through them. `wait`: it waits on him.
+// something that happened on one: together they are a trip, and the pane draws one rail through them. `wait`: it waits on him; `leaving`: it is on its way out.
 export type Row = {
   key: string; kind: string; lens: LensKind | null; icon: Icon | 'dot'; title: string; detail: string; at: string; ago: string; right: string; value: boolean;
-  future: boolean; star: boolean; hers: boolean; wait: boolean; connector: boolean; onWay: boolean;
+  future: boolean; star: boolean; hers: boolean; wait: boolean; leaving: boolean; connector: boolean; onWay: boolean;
 };
 // `star`: null when the stay is not one of the day's highlights, else its label (which may be empty); `hers`: it is her pick, not his mark.
 export type StayHead = { key: string; name: string; unnamed: boolean; rgb: Rgb; icon: Icon; when: string; dur: string; star: string | null; hers: boolean };
@@ -344,8 +346,8 @@ function rowOf(it: DayItem, c: Ctx): Row | null {
       // Where it came from (no source: his calendar), that it is not his yet (read from mail), and where; a private one says no more.
       icon = 'event'; title = it.private ? t(['Private', '私事']) : clean(it.title) || t(['Event', '日程']);
       const unsure = it.source === 'mail' && it.confirmed === false, word = it.source === undefined ? t(['Calendar', '日历']) : EVENT_SOURCES[it.source] ? t(EVENT_SOURCES[it.source]) : '';
-      wait = unsure && (it.end_ms ?? it.start_ms) > c.now;
-      detail = it.private ? '' : [word, unsure && t(['not confirmed', '还没确认']), clean(it.place)].filter(Boolean).join(' · '); break;
+      wait = unsure && !it.leaving && (it.end_ms ?? it.start_ms) > c.now;
+      detail = it.private ? '' : [word, unsure && t(['not confirmed', '还没确认']), it.you && t(['you confirmed it', '你确认了']), clean(it.place)].filter(Boolean).join(' · '); break;
     }
     case 'reminder':
       icon = 'reminder'; title = clean(it.text) || t(['Reminder', '提醒']);
@@ -391,14 +393,14 @@ function rowOf(it: DayItem, c: Ctx): Row | null {
   if (future && !value && it.start_ms - c.now <= TWO_HOURS) { const left = dur(Math.ceil((it.start_ms - c.now) / 60_000), t); right = t([`in ${left}`, `还有 ${left}`]); }
   const mark = c.marks.get(it.id);
   if (mark) { detail = [title, detail].filter(Boolean).join(' · '); title = mark; }
-  return { key: it.id, kind: it.kind, lens: lensOf(it.kind), icon, title, detail, at: clock(it.start_ms, tz), ago: it.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right, value, future, star: c.marks.has(it.id), hers: hersOf(it.id, c), wait,
+  return { key: it.id, kind: it.kind, lens: lensOf(it.kind), icon, title, detail, at: clock(it.start_ms, tz), ago: it.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right, value, future, star: c.marks.has(it.id), hers: hersOf(it.id, c), wait, leaving: it.leaving === true,
     connector: it.kind === 'move' || it.kind === 'ride', onWay: false };
 }
 // A short stop on the way is a row of the trip: how long, and the place the phone called it.
 function stopRow(it: DayItem, c: Ctx): Row {
   const { t } = c, minutes = Math.max(1, (it.end_ms! - it.start_ms) / 60_000), title = t([`Stopped ${dur(minutes, t)}`, `停了 ${dur(minutes, t)}`]), place = clean(it.place).split(/[,，]/)[0].trim(), mark = c.marks.get(it.id);
   return { key: it.id, kind: 'stay', lens: null, icon: 'dot', title: mark || title, detail: mark ? [title, place].filter(Boolean).join(' · ') : place, at: clock(it.start_ms, c.tz), ago: it.start_ms < c.reply.start_ms ? t(['yd', '昨']) : '', right: '', value: false,
-    future: false, star: c.marks.has(it.id), hers: hersOf(it.id, c), wait: false, connector: true, onWay: false };
+    future: false, star: c.marks.has(it.id), hers: hersOf(it.id, c), wait: false, leaving: false, connector: true, onWay: false };
 }
 
 // The Claude Code sessions of one stay that were not marked, two or more, are one row: how many, the two newest titles, and how long they
@@ -407,7 +409,7 @@ function foldRow(list: DayItem[], stay: DayItem, c: Ctx): Row {
   const { t, tz, reply } = c, n = list.length, first = list[0], open = c.today ? c.now : reply.end_ms;
   const newest = [...list].sort((a, b) => b.start_ms - a.start_ms).slice(0, 2).map(x => clean(x.title)).filter(Boolean);
   return { key: `code:${stay.id}`, kind: 'code', lens: 'work', icon: 'code', title: t([`Claude Code · ${n} sessions`, `Claude Code · ${n} 个会话`]), detail: newest.join(' · '), at: clock(first.start_ms, tz),
-    ago: first.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right: dur(Math.max(1, covered(list, open)), t), value: false, future: false, star: false, hers: false, wait: false, connector: false, onWay: false };
+    ago: first.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right: dur(Math.max(1, covered(list, open)), t), value: false, future: false, star: false, hers: false, wait: false, leaving: false, connector: false, onWay: false };
 }
 
 function stayHead(it: DayItem, c: Ctx): StayHead {
@@ -424,8 +426,11 @@ const keptName = (it: DayItem) => it.kept_place ? clean(it.kept_place.name) : ''
 // The day as the pane reads it: each stay as a group with what happened inside it, the ways he went between stays (a move, a bus ride,
 // a short stop) and whatever fell outside any stay (a sleep before he got home), all in time order; on today a now line, with what is
 // still to come below it. An unnamed place he stayed at for under 15 minutes between two ways is a stop on the way, not a place.
-export function buildDay(input: DayReply, now: number, t: Say): DayModel {
+// What the pane has just done to items of the day that the brain has not said back yet: the commitments he confirmed here (`you`) and those he said are not his (`leaving`).
+export type Local = { you?: ReadonlySet<string>; leaving?: ReadonlySet<string> };
+export function buildDay(input: DayReply, now: number, t: Say, local: Local = {}): DayModel {
   const reply = tidyReply(input), tz = reply.tz, today = now >= reply.start_ms && now < reply.end_ms;
+  if (local.you?.size || local.leaving?.size) reply.items = reply.items.map(it => ({ ...it, ...local.you?.has(it.id) && { you: true }, ...local.leaving?.has(it.id) && { leaving: true } }));
   // A highlight's label is the owner's or hers; with neither, the brain writes `kind HH:MM`, which says less than the row does.
   const marks = new Map<string, string>(), stars = new Map<string, Mark>();
   for (const h of reply.highlights ?? []) {

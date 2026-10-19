@@ -25,6 +25,7 @@
 .notch .dt-seg.is-dark .dt-sl { color:rgb(11 13 26 / .9); }
 /* still to come: an event is a dashed box over its time, a reminder or a departure a tick with a dot */
 .notch .dt-sched { position:absolute; top:0; bottom:0; transition:filter 120ms,opacity 150ms; }
+.notch .dt-sched.is-leaving { opacity:0; transition:opacity 240ms linear; pointer-events:none; }
 .notch .dt-sched.is-event { box-sizing:border-box; border:1px dashed rgb(var(--ink) / .45); border-radius:4px; }
 .notch .dt-sched.is-event .dt-sl { padding-inline:5px; color:rgb(var(--ink) / .86); }
 .notch .dt-sched.is-tick { width:2px; margin-left:-1px; background:rgb(var(--ink) / .5); }
@@ -117,6 +118,7 @@
   .notch .dt-nowtick::after { animation:none; }
   .notch .dt-card-in { transform:none; transition:none; }
   .notch .dt-seg,.notch .dt-sched { transition:none; }
+  .notch .dt-sched.is-leaving { transition:opacity 120ms linear !important; }
   /* style.css turns every transition off under reduced motion; what is only a fade is allowed back: the card's, and its words' (out in 60 ms, in over 120) */
   .notch .dt-card { transition:opacity 120ms linear, visibility 0s linear 120ms !important; }
   .notch .dt-card.is-on { transition:opacity 120ms linear !important; }
