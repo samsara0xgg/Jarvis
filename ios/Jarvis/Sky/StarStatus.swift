@@ -41,9 +41,10 @@ extension StarEngine {
 /// opacity changes, so her words take its place with nothing moving.
 struct StatusRow: View {
     let line: StatusLine
+    var size = 15.0             // the step's text; the row is as high as a line of her words 3 pt larger (under the dial 18, in the timeline's place for the talk 16)
 
     var body: some View {
-        Text("　").font(.system(size: 18)).hidden()
+        Text("　").font(.system(size: size + 3)).hidden()
             .frame(maxWidth: .infinity, alignment: .leading)
             .overlay(alignment: .leading) {
                 ZStack(alignment: .leading) {
@@ -59,7 +60,7 @@ struct StatusRow: View {
     private func step(_ label: String) -> some View {
         TimelineView(.periodic(from: Date(timeIntervalSinceNow: line.since - Double(uptimeNs()) / 1e9), by: 1)) { _ in
             let s = Int(max(0, Double(uptimeNs()) / 1e9 - line.since))
-            Text(s >= 1 ? "\(label) · \(s) 秒" : label).font(.system(size: 15)).monospacedDigit().foregroundStyle(muted).lineLimit(1)
+            Text(s >= 1 ? "\(label) · \(s) 秒" : label).font(.system(size: size)).monospacedDigit().foregroundStyle(muted).lineLimit(1)
         }
     }
 }

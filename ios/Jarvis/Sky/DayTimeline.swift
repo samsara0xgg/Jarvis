@@ -222,9 +222,12 @@ struct DayTimelineView: View {
             let model: DayTimelineModel? = { if case .model(let m) = shown { return m } else { return nil } }()
             ZStack(alignment: .topLeading) {
                 scrim(away: away)
-                TLTopView(ui: ui, model: model, scene: model?.scene ?? .empty, loading: !isReady(shown))
-                    .opacity(ui.panelOpen ? 0 : 1).allowsHitTesting(!ui.panelOpen)
-                    .animation(.easeOut(duration: ui.panelOpen ? 0.2 : 0.35), value: ui.panelOpen)
+                ZStack(alignment: .topLeading) {
+                    TLTopView(ui: ui, model: model, scene: model?.scene ?? .empty, loading: !isReady(shown))
+                    TLTalkArea(engine: engine, ui: ui, model: model)            // a talk takes the place of her sentence, the bar and the chips
+                }
+                .opacity(ui.panelOpen ? 0 : 1).allowsHitTesting(!ui.panelOpen)
+                .animation(.easeOut(duration: ui.panelOpen ? 0.2 : 0.35), value: ui.panelOpen)
                 listArea(shown, away: away)
                 undoToast(away: away)
                 grabber

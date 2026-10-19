@@ -385,7 +385,7 @@ extension StarEngine {
             try await nap(380, ok)
             let qc = Array(sc.q)
             for i in 1...qc.count {
-                if let id = his { setTurn(id, text: String(qc[0..<i])) } else { his = addTurn(his: true, String(qc[0..<i])) }
+                if let id = his { setTurn(id, text: String(qc[0..<i])) } else { his = addTurn(his: true, String(qc[0..<i]), heard: true) }
                 hear = 0.3 + 0.7 * voiceLevel(nowMs() / 1000 * 1.3)
                 if hear > 0.55 && (sonar.isEmpty || nowMs() - sonar.last! > 360) { sonar.append(nowMs()) }
                 try await nap("，。？".contains(qc[i - 1]) ? 170 : 88, ok)

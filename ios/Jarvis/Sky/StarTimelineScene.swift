@@ -168,7 +168,7 @@ extension TLBrain {
 extension StarEngine {
     /// `-scene 时间线` puts the timeline on the made-up day (now 21:50), whatever the setting was; the words after a colon go further:
     /// `:早上` the list at the morning, `:开:<id>` any row opened (`:开:ride-8`; a fourth word, `:开:stay-1:有对话` or `:有长对话`, with talk before it), `:改名` the place he keeps opened with the field for its new name, `:日出` the weather tapped (the sun's times in the header), `:碎片` the day with fifteen places, `:只有对话` the day of talks alone, `:对话` a talk opened, `:照片` the picture opened, `:工作` the evening's Mac work opened (its span is bracketed on the bar), `:透镜:路上` (or 睡, 运动, Mac, 通话, 和她, 花, 照片) that chip pressed, `:拖:1015` a finger held on the bar at that time (a fourth word after it lifts the finger again), `:星:talk-1` that row opened (a fourth word: `:点` with its star tapped once it is open, `:满` with five of his marks standing and the star of a sixth tapped, `:二` with his mark on one row and hers on the one opened), `:确认` the class his mail made, opened with 是我的 and 不是 (a third word: `:点是` with 是我的 tapped once it is open, `:点否` with 不是; a last word `:败` and the brain will not take it), `:命名` the stay no place he keeps is at, opened with the field for its first name and the kinds of place (a third word: `:点` with it named as 其他 once it is open, `:点学校` or `:点家` as that kind; a last word `:败` and the brain will not keep it), `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
-    /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:加载` the day still being asked for (the bar's empty track shimmers) until it arrives three seconds later, `:新增` a talk coming in a moment later, `:测帧` the frame times of the motion (Sky/StarTimelineProbe.swift; `:测帧:拖`, `:甩` or `:换日` runs that kind alone, over and over), `:走时` the clock moving on a minute a moment later, `:昨天` the day before (`:昨天:1630` with a finger held on its bar), `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
+    /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:总结` 总结 sent over the evening's Mac work (`:总结:列表` her answer has a list), `:长答` an answer taller than her place for the talk (`:长答:开` with 全文 › tapped a moment later), `:语音` a round he speaks and she answers aloud (`:语音:文档` her answer has a document that says more), `:卡片` a card she puts up in the round, `:失败` a message that did not go out (`:失败:答` a turn she failed), `:加载` the day still being asked for (the bar's empty track shimmers) until it arrives three seconds later, `:新增` a talk coming in a moment later, `:测帧` the frame times of the motion (Sky/StarTimelineProbe.swift; `:测帧:拖`, `:甩` or `:换日` runs that kind alone, over and over), `:走时` the clock moving on a minute a moment later, `:昨天` the day before (`:昨天:1630` with a finger held on its bar), `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
     func runTimelineScene(_ name: String) {
         RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
         switchWorld(real: true)
@@ -217,6 +217,69 @@ extension StarEngine {
                 addTurn(his: false, "好，我把陶艺课推到明天晚上十点。")
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.6) { [self] in openPanel(quiet: true) }
+        case "总结":                                                               // 总结 on the evening's Mac work, her answer as a typed turn brings it (`:总结:列表` one with a list), and the talk left to end by itself
+            show("work-demo-2", open: true)
+            earlierRound(cal, long: true)          // a day of talk before it: the stream has rows to scroll
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [self] in
+                captureAbout()
+                beginTalk()
+                addTurn(his: true, TimelineState.summarizeWords)
+                showStatus()                        // her typing line until her words come, as a turn on its way has it
+                talk = "speak"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [self] in
+                    startSay(parts.count > 2 ? "这段时间你在 Mac 上主要做了三件事：\n\n- 改时间线的悬停，修好了外接屏上一闪就没的问题\n- 跑了五百多项检查，全过了\n- 看了一会儿星盘的代码"
+                                             : "这段时间你在 Mac 上主要在改时间线：先修好了外接屏上悬停一闪就没的问题，又跑了五百多项检查，全过了。中间看了一会儿星盘的代码，大概二十分钟。后面一直在终端里，和 Claude Code 来回改了几轮。")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in endTalk() }
+                }
+            }
+        case "长答":                                                               // a typed answer taller than her place for the talk: the last line fades and 全文 › stands in the corner (`:长答:开` taps it a moment later)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+                beginTalk()
+                addTurn(his: true, "这周还剩下哪些安排，帮我列出来")
+                showStatus()
+                talk = "speak"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in
+                    startSay("这周剩下的安排：\n\n- 周三 10:00 线性代数小测，在 ECS 123，带计算器\n- 周四 09:30 和 Mia 通电话，聊毕业旅行的事\n- 周五 14:00 作品集评审，首页还差最后两张图\n- 周六 09:00 爬山，我会提前看天气，有雨就改到周日\n- 周日 21:00 整理这一周的记忆\n\n最要紧的是周五的评审，别的都可以往后放。要不要我把评审前一晚的时间空出来，帮你把图做完？")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in endTalk() }
+                    if parts.count > 2, parts[2] == "开" { DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [self] in showAnswer(TLTalk.of(ui.liveTurns).answer) } }
+                }
+            }
+        case "语音": runSpokenRound(cal, document: parts.count > 2 && parts[2] == "文档")
+        case "卡片":                                                               // a typed round in which she puts a card up while she answers: her words, and under them the one amber line (the card itself is in the list's place for what waits)
+            let json = #"{"clarification": {"id": "Qdebug01", "question": "哪一天，几位？", "fields": [{"label": "哪一天", "choices": ["周五", "周六"]}]}}"#
+            let cards = WaitingCards.parse(Data(json.utf8)) ?? []
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+                beginTalk()
+                addTurn(his: true, "帮我订周五晚上的位子")
+                showStatus()
+                talk = "speak"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in
+                    startSay("好，订位之前我要先问你一件事，卡片在下面。")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+                        MainActor.assumeIsolated { Waiting.shared.debugSet(cards) }
+                        if let c = cards.first { phoneEvent(.card(c)) }
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in endTalk() }
+                }
+            }
+        case "失败":                                                               // a message that did not go out (`:失败:答` a turn she failed): the line says so, with 点重试 (重试)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+                beginTalk()
+                talk = "listen"
+                let his = addTurn(his: true, "帮我订周五晚上的位子")
+                markSend(his, .sending)
+                showStatus()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [self] in
+                    if parts.count > 2, parts[2] == "答" {
+                        showFailed(); markSend(his, .sent)
+                        endTalk(); lingerUntil = nowMs() + Self.lingerFailed
+                    } else {
+                        unsent[his] = SentTurn(words: "帮我订周五晚上的位子", shown: "帮我订周五晚上的位子", ids: [], pics: [], about: nil, his: his, utterance: "scene", taken: false)
+                        markSend(his, .failed); dropStatus()
+                        talk = nil; lingerFrom(nowMs()); trouble("连不上 Jarvis")
+                    }
+                }
+            }
         case "星":
             let id = parts.count > 2 ? parts[2] : "", how = parts.count > 3 ? parts[3] : ""
             var marks = today.highlights
@@ -311,6 +374,33 @@ extension StarEngine {
         let alone: [String: [FrameProbe.Step]] = ["拖": scrub, "甩": flings, "换日": days, "静": idle, "指": bare]
         let steps = alone[only].map { launch + Array(repeating: $0, count: 6).flatMap { $0 } } ?? launch + idle + bare + scrub + flings + days + rest
         probe.run(steps) { _ in }
+    }
+
+    /// A round he speaks and she answers aloud, as the voice session lives it, with made-up states: his words grow as the recognizer hands them over, she thinks, her words come at the pace of her
+    /// voice, and the microphone stays open for what he says next. With `document`, the conversation's row of her answer has a written part that says more than she said.
+    private func runSpokenRound(_ cal: Cal, document: Bool) {
+        earlierRound(cal)
+        let t0 = nowMs(), ask = "明天下午三点有什么安排，顺便提醒我晚上给 Mia 回电话"
+        let said = "明天下午三点有一个二面，在线上，大概四十五分钟。晚上八点半给 Mia 回电话，我到时候提醒你。"
+        let speechEnd = 3.8 + Double(said.count) / 8 + 0.3
+        voiceFake = { now in
+            var v = VoiceShot()
+            let s = (now - t0) / 1000
+            if s < 2.6 { v.state = .listening; v.partial = String(ask.prefix(Int(s * 12) + 1)); v.input = 0.3 + 0.7 * voiceLevel(now / 1000 * 1.3) }
+            else if s < 3.8 { v.state = .thinking; v.transcript = ask }
+            else if s < speechEnd { v.state = .speaking; v.transcript = ask; v.reply = String(said.prefix(Int((s - 3.8) * 8))); v.full = said; v.output = voiceLevel(now / 1000) }
+            else if s < speechEnd + 10 { v.state = .listening; v.reply = said; v.full = said }          // the window for what he says next is ten seconds
+            return v
+        }
+        // the conversation's rows of this round, which her row takes when the session is over (`adoptWritten`): the voice part alone, or with a document
+        let at = Date().addingTimeInterval(-60), stamp = TalkStream.dayId(at, cal.cal) + "T" + TalkStream.clock(at, cal.cal) + ":00"
+        let doc = "<voice>\(said)</voice><document>## 明天\n- 15:00 和 Lumen Labs 的二面，线上，约四十五分钟\n- 20:30 给 Mia 回电话，我到时候提醒你\n\n二面之前我会把你上次面试的笔记整理出来，放在日程里。</document>"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [self] in
+            let base = MainActor.assumeIsolated { Conversation.shared.rows }
+            MainActor.assumeIsolated {
+                Conversation.shared.debugSet(base + [ConversationRow(seq: 33, source: "allen", ts: stamp, text: ask), ConversationRow(seq: 34, source: "jarvis", ts: stamp, text: document ? doc : "<voice>\(said)</voice>")])
+            }
+        }
     }
 
     /// the conversation as it stood three hours ago: one question and its answer; `long`, thirty rows before them, so the panel is full

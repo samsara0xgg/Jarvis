@@ -2,6 +2,7 @@ import SwiftUI
 
 // Her sentence, the overview bar under it and the day's numbers under that: the part of the timeline that follows his finger. It is a view of its own because the minute under a finger
 // changes on every frame and whatever reads that minute is drawn again on every frame: kept here, that is this and nothing else of the screen, not the model of the day and not the list.
+// While a talk is on show (`ui.tlTalk`) the three give way to it, the way they give way to the readout of a finger: Sky/DayTimelineTalk.swift draws it in their place.
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
@@ -20,13 +21,14 @@ struct TLTopView: View {
     private var tl: TimelineState { ui.tl }
 
     var body: some View {
-        let holding = tl.scrub != nil
+        let holding = tl.scrub != nil, talk = ui.tlTalk
         return ZStack(alignment: .topLeading) {
             // her sentence, and in its place while a finger is on the bar the readout of the minute under it: a fade-through, not a cross-fade (the two are never both on show)
             if let line = model?.line {
                 Text(line).font(.system(size: 15)).lineSpacing(3).foregroundStyle(ink.opacity(0.9)).lineLimit(2)
                     .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
-                    .fadeThrough(on: !holding, reduce: reduce)
+                    .fadeThrough(on: !holding && !talk, reduce: reduce)
+                    .accessibilityHidden(talk)
                     .id(line).transition(TLMotion.swapWords(reduce: reduce))
                     .offset(x: 30, y: TLLayout.lineY)
             }
@@ -48,6 +50,7 @@ struct TLTopView: View {
                     .accessibilityHint("拖动可以翻到那个时间，上下滑动一段一段地看")
                     .accessibilityValue(tl.scrub.map { spoken(m.readout(at: $0)) } ?? "")
                     .accessibilityAdjustableAction { nudge($0, m) }
+                    .fadeThrough(on: !talk, reduce: reduce).allowsHitTesting(!talk).accessibilityHidden(talk)
                     .id(tl.day).transition(barTransition)
                     .offset(x: 30, y: TLLayout.barY)
                 if !m.chips.isEmpty || !m.body.isEmpty {
@@ -56,6 +59,7 @@ struct TLTopView: View {
                         withAnimation(.easeOut(duration: 0.15)) { tl.lens = tl.lens == l ? nil : l }
                     }
                     .equatable()
+                    .fadeThrough(on: !talk, reduce: reduce).allowsHitTesting(!talk).accessibilityHidden(talk)
                     .id(tl.day).transition(barTransition)
                     .offset(y: TLLayout.chipsY - (TLLayout.chipsHit - TLLayout.chipsH) / 2)
                 }
@@ -196,7 +200,7 @@ extension TimelineState {
 
 /// The change of what the header says as a fade-through: what goes out leaves over 50 ms (ease-in) and what comes in arrives over 90 ms from 40 ms on (ease-out, 2 pt up
 /// into its place), so the two are not on show together for more than a frame. With Reduce Motion a plain 120 ms fade.
-private extension View {
+extension View {
     func fadeThrough(on: Bool, reduce: Bool) -> some View {
         let enter = reduce ? Animation.easeOut(duration: 0.12) : .easeOut(duration: 0.09).delay(0.04), leave = reduce ? Animation.easeOut(duration: 0.12) : .easeIn(duration: 0.05)
         return opacity(on ? 1 : 0).animation(on ? enter : leave, value: on)

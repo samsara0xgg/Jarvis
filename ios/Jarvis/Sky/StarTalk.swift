@@ -68,7 +68,7 @@ extension StarEngine {
         if !on { lingerFrom(nowMs()) }
     }
 
-    @discardableResult func addTurn(his: Bool, _ text: String, reveal: Reveal? = nil, pics: [SentItem] = [], leadIn: Bool = false, growing: Bool = false, steps: StepsInfo? = nil, recordId: String? = nil) -> Int {
+    @discardableResult func addTurn(his: Bool, _ text: String, reveal: Reveal? = nil, pics: [SentItem] = [], leadIn: Bool = false, growing: Bool = false, heard: Bool = false, steps: StepsInfo? = nil, recordId: String? = nil) -> Int {
         // her first words take the place of the typing line, in the same row, so nothing moves
         if !his, let id = statusTurn {
             statusTurn = nil
@@ -79,7 +79,7 @@ extension StarEngine {
             }
         }
         turnSeq += 1
-        let t = LiveTurn(id: turnSeq, his: his, text: text, reveal: reveal, pics: pics, leadIn: leadIn, growing: growing, steps: steps, recordId: recordId)
+        let t = LiveTurn(id: turnSeq, his: his, text: text, reveal: reveal, pics: pics, leadIn: leadIn, growing: growing, heard: heard, steps: steps, recordId: recordId)
         withAnimation(.easeOut(duration: 0.25)) { ui.liveTurns.append(t) }
         if !his { openForWritten(text) }
         return turnSeq
@@ -118,6 +118,7 @@ extension StarEngine {
     func stepTalk(_ now: Double) {
         if ui.talking && talk == nil && voiceState == .idle && !lingerHold && unsent.isEmpty && now > lingerUntil { ui.talking = false; rowKey = ""; setAbout(nil); aboutDropped = nil }
         put(\.topTime, clock(F))
+        put(\.tlTalk, HomeModule.shared.isTimeline && ui.talking && !TLTalk.of(ui.liveTurns).isEmpty)
         syncStatus()
         for e in MainActor.assumeIsolated({ PhoneRows.take() }) { phoneEvent(e) }
         updateStream()
@@ -179,7 +180,7 @@ extension StarEngine {
             vShown = min(n, vShown + dt * (14 + 8 * max(0, n - vShown)))
             his = String(his.prefix(Int(vShown)))
         }
-        if !his.isEmpty { if let id = vHis { setTurn(id, text: his, growing: listening) } else { vHis = addTurn(his: true, his, growing: listening) } }
+        if !his.isEmpty { if let id = vHis { setTurn(id, text: his, growing: listening) } else { vHis = addTurn(his: true, his, growing: listening, heard: true) } }
         // he is done and she has not said a word: the typing line, under his
         if v.state == .thinking, v.reply.isEmpty, vHis != nil, vHer == nil { showStatus() }
         if !listening && !v.reply.isEmpty { sayHers(v.reply, of: v.full.isEmpty ? v.reply : v.full) }
@@ -252,6 +253,16 @@ extension StarEngine {
     /// the live rows are taller than the talk's place under the dial: the panel opens by itself, once per talk
     func measureLive(_ h: Double) {
         if ui.talking && !ui.panelOpen && !autoOpenSpent && h > 836 - Self.panelHome - 16 { openPanel(auto: true) }
+    }
+    /// 全文 ›, or a tap on her answer in the timeline's place for the talk: the history, at that answer. The talk's rows are listed live while it is on show, as `l<id>`, and the stream is
+    /// asked to go there once the panel has come up (as `showTalk` does).
+    func showAnswer(_ turn: Int?) {
+        openPanel()
+        guard let turn else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            if ui.panelOpen { ui.scrollTo = "l\(turn)" }
+        }
     }
     /// A talk star's `全部 ›`: the panel, at the first row of the talk (or the nearest after it).
     func showTalk(_ startMs: Int64) {

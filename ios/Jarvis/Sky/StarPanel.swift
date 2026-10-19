@@ -209,9 +209,14 @@ struct HisText: View {
 /// A written answer: paragraphs, headings, lists with a hanging indent, code and tables in mono boxes (a table scrolls sideways), inline marks as markdown.
 struct AnswerView: View {
     let blocks: [AnswerBlock]
+    var size = 18.0                     // the size of her words, which the rest follows (the timeline's place for the talk reads at 15, with a line spacing of 3)
+    var lineSpacing = 5.0
+
+    /// code and tables keep their size down to 11.5, however small her words are
+    private var monoSize: Double { max(11.5, size - 5) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: size * 2 / 3) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, b in block(b) }
         }
         .tint(amber)
@@ -220,20 +225,20 @@ struct AnswerView: View {
 
     @ViewBuilder private func block(_ b: AnswerBlock) -> some View {
         switch b {
-        case .paragraph(let s): herText(s, base: ink.opacity(0.92)).font(.system(size: 18)).lineSpacing(5)
-        case .heading(let s): herText(s, base: ink).font(.system(size: 17, weight: .semibold)).padding(.top, 4)
+        case .paragraph(let s): herText(s, base: ink.opacity(0.92)).font(.system(size: size)).lineSpacing(lineSpacing)
+        case .heading(let s): herText(s, base: ink).font(.system(size: size - 1, weight: .semibold)).padding(.top, 4)
         case .list(let items):
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, it in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(it.marker).font(it.marker == "•" ? .system(size: 18) : AT.mono(15)).foregroundStyle(muted).frame(minWidth: 22, alignment: .trailing)
-                        herText(it.text, base: ink.opacity(0.92)).font(.system(size: 18)).lineSpacing(5)
+                        Text(it.marker).font(it.marker == "•" ? .system(size: size) : AT.mono(size - 3)).foregroundStyle(muted).frame(minWidth: 22, alignment: .trailing)
+                        herText(it.text, base: ink.opacity(0.92)).font(.system(size: size)).lineSpacing(lineSpacing)
                     }
                     .padding(.leading, 20 * Double(min(it.level, 3)))
                 }
             }
         case .quote(let s):
-            herText(s, base: muted).font(.system(size: 17)).lineSpacing(5)
+            herText(s, base: muted).font(.system(size: size - 1)).lineSpacing(lineSpacing)
                 .padding(.leading, 14).overlay(alignment: .leading) { Capsule().fill(Color.white.opacity(0.22)).frame(width: 3) }
         case .rule: Color.white.opacity(0.14).frame(height: 0.5)
         case .code(let s): mono(s)
@@ -248,7 +253,7 @@ struct AnswerView: View {
                 ForEach(Array(rows.enumerated()), id: \.offset) { r, cells in
                     GridRow {
                         ForEach(Array(cells.enumerated()), id: \.offset) { _, c in
-                            herText(c, base: r == 0 ? ink : ink.opacity(0.8)).font(AT.mono(13)).fixedSize()
+                            herText(c, base: r == 0 ? ink : ink.opacity(0.8)).font(AT.mono(monoSize)).fixedSize()
                         }
                     }
                     if r == 0 { Color.white.opacity(0.14).frame(height: 0.5) }
@@ -262,7 +267,7 @@ struct AnswerView: View {
     /// code keeps its lines and columns: a box that scrolls sideways
     private func mono(_ s: String) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            Text(s).font(AT.mono(13)).foregroundStyle(ink.opacity(0.88)).fixedSize().padding(.horizontal, 12).padding(.vertical, 10)
+            Text(s).font(AT.mono(monoSize)).foregroundStyle(ink.opacity(0.88)).fixedSize().padding(.horizontal, 12).padding(.vertical, 10)
         }
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.06)))
     }

@@ -57,6 +57,7 @@ struct LiveTurn: Identifiable, Equatable {
     var pics: [SentItem] = []           // what he sent with the words
     var leadIn = false                  // a line before the answer ("我上网查查"): more follows
     var growing = false                 // his words still coming in (the recognizer's partial)
+    var heard = false                   // his words are what the phone's recognizer heard, not typed or sent by a button: the timeline's place for the talk shows them so that he can see whether she understood
     var card: WaitingCard?              // a card she put up, in the place of words
     var status: StatusLine?             // not words yet: she is typing, or working on a step (Brain/TurnStatus); her first words take this row
     var steps: StepsInfo?               // what she did to answer, for the small line under it
@@ -126,4 +127,5 @@ final class StarUI {
     let tl = TimelineState()
     var tlShow = HomeModule.shared.isTimeline       // the timeline is drawn: it is the middle of the screen, or the dial is still giving way to it
     var tlHome = HomeModule.shared.isTimeline       // she is in the timeline's corner (within 20 pt of it): her sentence and the bar are drawn only then, so she never glides over them
+    var tlTalk = false                  // the timeline's place for a talk is on show: her sentence, the bar and the chips have given way to the latest round (Sky/DayTimelineTalk.swift)
 }
