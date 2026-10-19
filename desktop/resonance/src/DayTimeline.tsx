@@ -52,10 +52,11 @@ function away(el: HTMLElement) {
 }
 // A day change is a shared axis: the day that was slides away the way time came from, fading (80 ms), and the day that is slides in from the
 // other side (140 ms). Never both at once, so two days' words are never on top of each other. The list moves 16 px, the rest of the pane 8.
+// The list cut to a range, or whole again, goes the same way without the slide (`dir` 0): only the list fades.
 const parts = (root: HTMLElement | null) => [...(root?.children ?? [])].filter((el): el is HTMLElement => el instanceof HTMLElement && !el.classList.contains('dt-head'));
 const reach = (el: HTMLElement) => el.classList.contains('dt-list') ? 16 : 8;
-const leave = (root: HTMLElement | null, dir: number) => parts(root).map(el => el.animate([{ opacity: 0, transform: `translateX(${-dir * reach(el)}px)` }], { duration: 80, easing: 'ease-in', fill: 'forwards' }));
-const enter = (root: HTMLElement | null, dir: number) => parts(root).forEach(el => el.animate(reduced.matches ? [{ opacity: 0 }, {}] : [{ opacity: 0, transform: `translateX(${dir * reach(el)}px)` }, {}], { duration: reduced.matches ? 120 : 140, easing: EASE, fill: 'backwards' }));
+const leave = (els: HTMLElement[], dir: number) => els.map(el => el.animate([{ opacity: 0, transform: `translateX(${-dir * reach(el)}px)` }], { duration: 80, easing: 'ease-in', fill: 'forwards' }));
+const enter = (els: HTMLElement[], dir: number) => els.forEach(el => el.animate(reduced.matches ? [{ opacity: 0 }, {}] : [{ opacity: 0, transform: `translateX(${dir * reach(el)}px)` }, {}], { duration: reduced.matches ? 120 : 140, easing: EASE, fill: 'backwards' }));
 
 // What the rows and the stays' headers share: which one is open, what a click on one does, what an open one holds, which can be asked about and
 // which marked, the quiet line under a row, and the name being changed in a stay's header.
@@ -235,22 +236,23 @@ type Note = { place: string; from: string; change: string | null; state: 'done' 
 type Naming = { key: string; draft: string; role: string | null; state: 'edit' | 'busy' | 'failed' };
 type Docked = { ask: Ask | null; say: Said | null; state: DockState; nonce: number };
 
-export function DayTimeline({ port, feed, open, ask, hold }: { port: string | null; feed: Route<DayReply>; open: boolean; ask?: (text: string, about?: About) => Promise<void>; hold?: (on: boolean) => void }) {
+// `swap`: said when what the pane shows has just been swapped for other content in one frame (a day, a cut list), so the pane takes the new height with it.
+export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: string | null; feed: Route<DayReply>; open: boolean; ask?: (text: string, about?: About) => Promise<void>; hold?: (on: boolean) => void; swap?: () => void }) {
   const [{ lang }] = useCompanionSettings(), t = (l: L) => tr(lang, l);
   // null is today, which the wing already reads; another day is read here.
   const [date, setDate] = useState<string | null>(null);
   const other = useRoute<DayReply>(port, `/inherent/day?date=${date ?? ''}`, open && date !== null, 60_000);
   const route = date === null ? feed : other;
   const reply = route.data && (date === null || route.data.date === date) ? route.data : null;
-  // What is drawn is the last reply that came. While the next day is on its way it stays, dimmed, so the pane does not jump; when it has come
-  // the day that was leaves and the new one enters. An update of the day already drawn is drawn at once.
+  // What is drawn is the last reply that came, under its own date. While the next day is on its way it stays, dimmed, so the pane does not jump; when
+  // it has come the day that was leaves and the new one enters, with its date and the pane's new height. An update of the day already drawn is drawn at once.
   const [shown, setShown] = useState<DayReply | null>(reply), now = useMinute(open), root = useRef<HTMLDivElement>(null), entering = useRef(0), leaving = useRef<Animation[]>([]);
   useEffect(() => {
     if (!reply || reply === shown) return;
     const dir = shown && shown.date !== reply.date ? reply.date > shown.date ? 1 : -1 : 0;
     if (!dir || reduced.matches) { entering.current = dir; setShown(reply); return; }
     let live = true;
-    leaving.current = leave(root.current, dir);
+    leaving.current = leave(parts(root.current), dir);
     void Promise.all(leaving.current.map(a => a.finished)).then(() => { if (live) { entering.current = dir; setShown(reply); } }, () => {});
     return () => { live = false; leaving.current.forEach(a => a.cancel()); leaving.current = []; };
   }, [reply]);
@@ -258,9 +260,10 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     const dir = entering.current;
     entering.current = 0;
     leaving.current.forEach(a => a.cancel()); leaving.current = [];
-    if (dir) enter(root.current, dir);
+    if (dir) { enter(parts(root.current), dir); swap?.(); }
   }, [shown]);
-  useEffect(() => { feed.reload(); }, []);
+  // Every time it opens, today is read again (the pane stays mounted through a short fold: Notch.tsx).
+  useEffect(() => { if (open) feed.reload(); }, [open]);
   // Left open past midnight, the pane is on a day that has ended: today is read at once, not at the next poll, and again every 5 s for as long as
   // the brain still answers with the old day.
   const ends = feed.data?.end_ms, over = open && typeof ends === 'number' && now >= ends;
@@ -304,7 +307,8 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   const lensKinds = useMemo(() => new Set(model ? numbers(model, t).map(n => n.kind) : []), [model, lang]);
   const todayDate = feed.data?.date ?? null, at = date ?? todayDate;
   // What is drawn is not the day asked for: it is on its way, or (`lost`) it did not come and the day that is drawn is not to be left under the new date.
-  const stale = !!shown && !!at && shown.date !== at, lost = stale && !reply && (route.failed || route.missing);
+  // The date over the day is that of the day drawn until the one asked for is drawn; one that did not come is said under its own date.
+  const stale = !!shown && !!at && shown.date !== at, lost = stale && !reply && (route.failed || route.missing), here = stale && !lost && shown ? shown.date : at;
   const step = (days: number) => { if (!at) return; const next = shiftDate(at, days); setDate(next === todayDate ? null : next); };
   // A read that does not come says so after a few seconds; the daemon is asked again on its own.
   const [slow, setSlow] = useState(false);
@@ -312,18 +316,24 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
 
   const [hot, setHot] = useState<string | null>(null), [pick, setPick] = useState<string | null>(null), [opened, setOpened] = useState<string | null>(null), list = useRef<HTMLDivElement>(null), placed = useRef(''), ui = useBarState(), uiRef = useRef(ui);
   uiRef.current = ui;
+  // The range the list is cut to as it is drawn: it follows `ui.filter` once the list has faded out (the bar answers at once; the list and the chip that
+  // says so change together), and the list comes in cut, or whole, as a day does. `wanted` is a row to go to when the whole day is back.
+  const [cut, setCut] = useState(ui.filter), fading = useRef<Animation[]>([]), cutting = useRef(false), wanted = useRef<string | null>(null);
   const edges = () => { const l = list.current; if (!l) return; l.classList.toggle('more-below', l.scrollTop + l.clientHeight < l.scrollHeight - 2); l.classList.toggle('more-above', l.scrollTop > 2); };
   // A day opens where it matters: today at its now line, another day from the top; so does the list cut to a range, and the whole day again.
-  // The first time the list is there its rows in view come up.
+  // Each time the pane opens its rows in view come up; a pane that folded and opened again keeps its place (it is the one he left).
   const rose = useRef(false), stopRise = useRef(() => {});
   useEffect(() => () => stopRise.current(), []);
+  useEffect(() => { if (!open) rose.current = false; }, [open]);
   useLayoutEffect(() => {
-    const l = list.current, spot = `${shown?.date}:${date}:${ui.filter ? 'cut' : ''}`;
-    if (l && model && shown && placed.current !== spot) {
-      placed.current = spot; release();
-      const line = l.querySelector<HTMLElement>('.dt-now');
-      l.scrollTop = line ? Math.max(0, offsetIn(line, l) - l.clientHeight * .6) : 0;
-      if (!rose.current) { rose.current = true; stopRise.current = rise(l); }
+    const l = list.current, spot = `${shown?.date}:${date}:${cut ? 'cut' : ''}`;
+    if (l && model && shown) {
+      if (placed.current !== spot) {
+        placed.current = spot; release();
+        const line = l.querySelector<HTMLElement>('.dt-now');
+        l.scrollTop = line ? Math.max(0, offsetIn(line, l) - l.clientHeight * .6) : 0;
+      }
+      if (open && !rose.current) { rose.current = true; stopRise.current(); stopRise.current = rise(l); }
     }
     edges();
   });
@@ -348,11 +358,15 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     const tick = (at: number) => { const k = Math.min(1, (at - began) / ms); l.scrollTop = from + (end - from) * (1 - (1 - k) ** 3); if (k < 1) glide.current = requestAnimationFrame(tick); };
     glide.current = requestAnimationFrame(tick);
   };
+  // The row's class is rewritten when a render changes it (the pointer leaving what it was on), so a flash in progress is put back.
+  const flashed = useRef<HTMLElement | null>(null), flashEnd = useRef(0);
+  useLayoutEffect(() => { const el = flashed.current; if (el && !el.classList.contains('is-flash')) el.classList.add('is-flash'); });
   // A click on the bar, or on a piece of it, takes the row there to the top of the list in 300 ms, and the row flashes.
   const jump = (key: string) => {
     const l = list.current, el = l?.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`);
     if (!l || !el) return;
     el.classList.remove('is-flash'); void el.offsetWidth; el.classList.add('is-flash');
+    flashed.current = el; clearTimeout(flashEnd.current); flashEnd.current = window.setTimeout(() => { flashed.current = null; }, 600);
     slide(offsetIn(el, l) - 12, 300);
   };
   // The row he presses stays where his hand is. Each frame while rows open and close (and once after), the list scrolls to put that row back where its
@@ -396,9 +410,29 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     then();
   };
   // The waiting pill takes the first row that waits on him to the top of the list (the whole day again when the list is cut).
-  const waitFirst = (key: string) => { if (ui.filter) { ui.setFilter(null); requestAnimationFrame(() => jump(key)); } else jump(key); };
+  const waitFirst = (key: string) => { if (cut) { wanted.current = key; ui.setFilter(null); } else jump(key); };
   // A tap on the bar goes to its row; a row the cut has left out is not there to go to, so the whole day comes back first.
-  const reveal = (key: string) => { if (ui.filter && !list.current?.querySelector(`[data-key="${CSS.escape(key)}"]`)) { ui.setFilter(null); requestAnimationFrame(() => jump(key)); } else jump(key); };
+  const reveal = (key: string) => { if (cut && !list.current?.querySelector(`[data-key="${CSS.escape(key)}"]`)) { wanted.current = key; ui.setFilter(null); } else jump(key); };
+  // What shows the rows (the list, or the line that says the cut has none) fades out, is swapped for the new cut, and comes in; a row asked for is gone to once it is there.
+  const rowsEl = () => root.current?.querySelector<HTMLElement>(':scope > .dt-list, :scope > .dt-say') ?? null;
+  useEffect(() => {
+    if (ui.filter === cut) return;
+    const el = rowsEl();
+    cutting.current = true;
+    if (!el || reduced.matches) { setCut(ui.filter); return; }
+    let live = true;
+    fading.current = leave([el], 0);
+    void Promise.all(fading.current.map(a => a.finished)).then(() => { if (live) setCut(ui.filter); }, () => {});
+    return () => { live = false; cutting.current = false; fading.current.forEach(a => a.cancel()); fading.current = []; };
+  }, [ui.filter]);
+  useLayoutEffect(() => {
+    if (!cutting.current) return;
+    cutting.current = false;
+    fading.current.forEach(a => a.cancel()); fading.current = [];
+    const el = rowsEl();
+    if (el) { enter([el], 0); swap?.(); }
+    if (wanted.current) { const key = wanted.current; wanted.current = null; jump(key); }
+  }, [cut]);
 
   // ---- opening a row, and what can be done from it (RowOpen.tsx, AskDock.tsx) ----
   // Which rows can be asked about: those whose kind and id the brain takes (dayOpen.askOf says what is handed over).
@@ -562,13 +596,14 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   const [left, setLeft] = useState(false);
   const holding = !!viewer || (!!dock || !!rename || !!naming) && !left;
   useEffect(() => { hold?.(holding); return () => hold?.(false); }, [holding]);
-  // The open row, the field, the input and the picture are the day's: they go with it, and with the pane.
-  useEffect(() => { setPick(null); setHot(null); setOpened(null); }, [date, shown?.date, ui.filter]);
+  // The open row, the field, the input and the picture are the day's: they go with it. The field, the input and the picture go with the pane
+  // too; the open row stays through a fold, for the pane that comes back as it was (one that comes back later is made afresh, with nothing open).
+  useEffect(() => { setPick(null); setHot(null); setOpened(null); }, [date, shown?.date, cut]);
   useEffect(() => { if (dock?.say) { setDock(null); setDraft(''); } }, [date, shown?.date]);
   useEffect(() => { if (opened && model && !model.rows.has(opened) && !model.heads.has(opened)) setOpened(null); }, [model]);
   useEffect(() => { if (rename && opened !== rename.key) setRename(null); }, [opened]);
   useEffect(() => { if (naming && opened !== naming.key) setNaming(null); }, [opened]);
-  useEffect(() => { if (!open) { release(); setOpened(null); setRename(null); setNaming(null); setDock(null); setDraft(''); setViewer(null); setNote(null); } }, [open]);
+  useEffect(() => { if (!open) { release(); setRename(null); setNaming(null); setDock(null); setDraft(''); setViewer(null); setNote(null); } }, [open]);
   // The body of an open row: what dayOpen made of it, and the buttons that work for it, each with what it is doing.
   const body = (key: string): ReactNode => {
     const o = model && openOf(model, key, t);
@@ -613,7 +648,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   }, []);
   // His range, the cut and the lens in the hand belong to the day they were made on: they go when another day is asked for and again when it is
   // drawn (a day that rolls over at midnight is a new day with nobody asking), before it is painted so the new day never shows the old cut.
-  useLayoutEffect(() => { ui.setSel(null); ui.setFilter(null); ui.setPreview(null); }, [date, shown?.date]);
+  useLayoutEffect(() => { ui.setSel(null); ui.setFilter(null); ui.setPreview(null); setCut(null); }, [date, shown?.date]);
 
   // The keys of an open day (the window has key focus only after a click pinned it: Notch.tsx): ← → the day before and after, ↑ ↓ the row
   // before and after, which the bar brackets and the list keeps in view, Enter or Space opens the one chosen (or closes it), S marks it (or takes the mark off). With nothing
@@ -652,14 +687,14 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     window.addEventListener('keydown', key, true);
     return () => window.removeEventListener('keydown', key, true);
   }, []);
-  const rows = model && ui.filter ? within(model.blocks, model.span, Math.min(ui.filter.a, ui.filter.b), Math.max(ui.filter.a, ui.filter.b)) : model?.blocks ?? [];
+  const rows = model && cut ? within(model.blocks, model.span, Math.min(cut.a, cut.b), Math.max(cut.a, cut.b)) : model?.blocks ?? [];
 
-  const title = at ? dateTitle(at, t) : model?.title ?? '';
+  const title = here ? dateTitle(here, t) : model?.title ?? '';
   const say = !port ? t(['Not connected to Jarvis yet', '还没连上 Jarvis']) : route.missing ? t(["This Jarvis can't give a day yet", '这台 Jarvis 还不会给出一天']) : slow || route.failed ? t(["Couldn't read this day. Trying again.", '没读到这一天，会再试一次']) : t(['Reading the day…', '读着这一天…']);
   const kept = note ?? lastNote.current, shownDock = dock ?? lastDock.current;
   return <div ref={root} className={`dt${stale && !lost ? ' is-loading' : ''}${open ? '' : ' is-folded'}`} data-lens={ui.lens && lensKinds.has(ui.lens) ? ui.lens : undefined} role="region" aria-label={t(['Day timeline', '一天的时间线'])}>
     <div className="dt-head">
-      <b className="dt-date">{title}</b>{date === null ? <em className="dt-today">{t(['Today', '今天'])}</em> : <button type="button" className="dt-back" onClick={() => setDate(null)}>{t(['Back to today', '回到今天'])}</button>}
+      <b className="dt-date">{title}</b>{here === todayDate ? <em className="dt-today">{t(['Today', '今天'])}</em> : <button type="button" className="dt-back" onClick={() => setDate(null)}>{t(['Back to today', '回到今天'])}</button>}
       <TimelineGuard where="the header" reset={shown} fallback={null}>
         {!lost && model?.weather && <Forecast w={model.weather}/>}
         {!lost && model && <Chips key={model.chips.map(c => c.text).join('|')} chips={model.chips}/>}
@@ -673,9 +708,9 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     {built.failed ? <p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p> : !model || lost ? <p className="dt-say">{say}</p> : <TimelineGuard where="the pane" reset={shown} fallback={<p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p>}>
       {model.line && <p className={`dt-line${model.line.draft ? ' is-draft' : ''}`}>{model.line.text}</p>}
       {model.empty ? <p className="dt-say">{t(['Nothing recorded for this day yet', '这一天还没有记下什么'])}</p> : <>
-        <DayBar model={model} port={port} ui={ui} hot={hot ?? pick ?? opened} onHot={setHot} onJump={reveal} onPicture={(id, note) => setViewer({ id, note })} onSay={openSay}/>
+        <DayBar model={model} port={port} ui={ui} cut={cut} hot={hot ?? pick ?? opened} onHot={setHot} onJump={reveal} onPicture={(id, note) => setViewer({ id, note })} onSay={openSay}/>
         {rows.length > 0 ? <div ref={list} className="dt-list" onScroll={() => { trim(); edges(); }} onWheel={() => { cancelAnimationFrame(glide.current); still.current = null; }}><Blocks blocks={rows} hot={hot} onHot={setHot} pick={pick} t={t} cx={cx}/></div>
-          : ui.filter && <p className="dt-say">{t(['Nothing was recorded in this stretch', '这一段没有记下什么'])}</p>}
+          : cut && <p className="dt-say">{t(['Nothing was recorded in this stretch', '这一段没有记下什么'])}</p>}
       </>}
       {model.foot && <p className="dt-foot">{model.foot}</p>}
       <Unfold className="dt-fold is-dock" open={!!note} tick={cx.tick} onSettle={cx.tick} render={() => kept && <div className="dt-note" role="status"><span>{kept.state === 'failed' ? t(["Couldn't undo it", '没撤销成功']) : t(['Renamed', '改好了'])}</span>

@@ -65,7 +65,7 @@ const TURN_ORDER: AgentState[] = ['wait', 'err', 'done'];
 const PAD = 4, DONE_FADE_MS = 10 * 60_000, GCELL = 26, GCX = 6, WING_W = 112, DOT_WING_W = 64, DOT_R = 2.6, DOT_COUNT_X = 7.5, DOT_GAP = 5, DIGIT_W = 6.1, POP_W = 360, ALL_W = 440, PAGE_W = 560, CARD_W = 440, DRAG_OUT = 30, DWELL_MS = 1500, PIN_H = 16, PIN_PAD = 6, PIN_GAP = 5, PIN_TIP_MS = 250;
 const PIN_FONT = '600 10px "JetBrains Mono", Menlo, monospace';
 // The timeline's line: the place or the way in the sans face, how long in the mono face, dimmer. At most SEG_MAX wide; the place gives way.
-const TL_W = 520, SEG_MAX = 112, TL_GAP = 7, SEP = ' · ';
+const TL_W = 520, SEG_MAX = 112, TL_GAP = 7, SEP = ' · ', TL_KEEP_MS = 60_000;
 const SEG_FONT = '600 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif', SEG_MONO = '600 10.5px "JetBrains Mono", Menlo, monospace';
 const KINDS: readonly Kind[] = ['turn', 'work', 'done', 'moon'];
 const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
@@ -297,15 +297,19 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
     bumpAt: { turn: -1e9, work: -1e9, done: -1e9, moon: -1e9 }, parkedIds: new Set<string>(),
     pin: null as { x0: number; x1: number } | null, pinOn: -1e9, pinId: '', pinLabel: '',
     // The timeline wing's line (where it is drawn, and how its words are cut), the wing the layout was made for, and the day's pane:
-    // `closedHere` is the day just closed under a pointer still on the line (a rest does not open it again), `leftAt` since when the pointer has been away.
+    // `closedHere` is the day just closed under a pointer still on the line (a rest does not open it again), `leftAt` since when the pointer has been away,
+    // `closedAt` when it last folded (a day that folded less than TL_KEEP_MS ago comes back as it was left).
     seg: null as { x0: number; x1: number; room: number } | null, laid: '' as '' | Wing,
-    tl: { open: false, pinned: false, closedHere: false, enterAt: -1, leftAt: -1, press: false, hold: false },
+    tl: { open: false, pinned: false, closedHere: false, enterAt: -1, leftAt: -1, closedAt: -1e9, press: false, hold: false },
     popOrigins: new Map<string, Point>(), intent: new PointerIntent(), resolvedNote: '', workLandingUntil: 0, joined: false, asideKey: null as Kind | null,
     // Whether a mark drawn last frame is still animating, where the pointer matters to the loop, and the last path drawn.
     anim: false, reach: { l: 0, r: 0, b: 0 }, shapeD: '',
+    // The day was just swapped for other content in one frame: the pane takes its new height at once, not by spring.
+    snap: false,
   }).current;
   // Wakes the loop below when it sleeps.
   const kick = useRef((_now?: boolean) => {});
+  const tickNow = useRef(() => {});
   const mode: Wing = tlMode ? 'timeline' : 'marks';
   const L = useRef({ look, turn, work, fin, moon, glows, pin, geo, note, quiet, edge, aside, timeline, mode, onNoteHover, onJoinedChange, held: false, pageW: false, say: t });
   L.current = { look, turn, work, fin, moon, glows, pin, geo, note, quiet, edge, aside, timeline, mode, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged, say: t };
@@ -318,7 +322,7 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
   const closeTl = () => {
     const T = st.tl;
     if (!T.open) return;
-    T.open = false; T.pinned = false; T.closedHere = true; st.dirty = true; setTlOpen(false); setTlPinned(false); L.current.timeline?.onOpenChange(false);
+    T.open = false; T.pinned = false; T.closedHere = true; T.closedAt = performance.now(); st.dirty = true; setTlOpen(false); setTlPinned(false); L.current.timeline?.onOpenChange(false);
     if (T.hold) { T.hold = false; if (!keysHeld.current) onKeys(false); }
   };
   // The day holds itself open while something in it needs the pointer to be free to leave: a field with the text cursor (the input of 问她, a
@@ -330,10 +334,12 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
     T.hold = on;
     if (on) onKeys(true); else if (!T.pinned && !keysHeld.current) onKeys(false);
   };
+  // The swap commits after the frame's rAF phase, so the snap runs its frame here, before the paint.
+  const snapTl = () => { st.snap = true; st.dirty = true; tickNow.current(); };
   const openTl = (pinned: boolean) => {
     const T = st.tl;
     setPanel(false);
-    if (!T.open) { T.open = true; T.leftAt = -1; setTlKey(k => k + 1); setTlOpen(true); L.current.timeline?.onOpenChange(true); }
+    if (!T.open) { T.open = true; T.leftAt = -1; if (performance.now() - T.closedAt > TL_KEEP_MS) setTlKey(k => k + 1); setTlOpen(true); L.current.timeline?.onOpenChange(true); }
     T.pinned = pinned; st.dirty = true; setTlPinned(pinned);
   };
   // Where a point on the timeline wing is: the pinned trip, the turn mark (and the edge before it), or the line.
@@ -592,7 +598,11 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
         if (sp.velocity * (goal - sp.value) < 0) sp.velocity = 0;
       }
       const panelHz = SPRINGS.panel.frequency / (on ? 1 : MOTION.exit);
+      if (st.snap) { st.snap = false; if (on && s.dd.value > top) { s.dd.value = dg.d; s.dd.velocity = 0; } }
+      const from = [s.dx.value, s.dw.value, s.dd.value];
       moving = go(s.dx, dg.l, panelHz, SPRINGS.panel.damping) || moving; moving = go(s.dw, dg.w, panelHz, SPRINGS.panel.damping) || moving; moving = go(s.dd, dg.d, panelHz, SPRINGS.panel.damping) || moving;
+      // Open, the pane stops where it is going: the spring would pass its goal by a few px and come back (an empty strip under the list).
+      if (on) ([[s.dx, dg.l], [s.dw, dg.w], [s.dd, dg.d]] as const).forEach(([sp, goal], i) => { if ((from[i] - goal) * (sp.value - goal) < 0) { sp.value = goal; sp.velocity = 0; } });
       const noteOpen = !!note && !held && note.key !== st.resolvedNote;
       const ng = noteOpen ? { l: st.noteL, w: st.noteGoal.w, d: st.noteGoal.d } : rest;
       if (noteOpen && s.nd.value < top) { s.nx.value = isl.l; s.nw.value = isl.w; }
@@ -786,10 +796,15 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
       else { raf = 0; timer = setTimeout(() => { raf = requestAnimationFrame(tick); }, st.boxes.length || L.current.note ? 33 : 100); }
     };
     // After a render the page is still, so the frame runs at once; a resize or a cursor sample asks for the next one.
-    kick.current = (now = false) => { if (!asleep) return; clearTimeout(timer); if (now) tick(performance.now()); else { asleep = false; raf = requestAnimationFrame(tick); } };
+    // A resize (or the day swapping its content) does not wait for the slow pace either: the next frame takes it.
+    kick.current = (now = false) => {
+      if (!asleep) { if (!now && !raf) { clearTimeout(timer); raf = requestAnimationFrame(tick); } return; }
+      clearTimeout(timer); if (now) tick(performance.now()); else { asleep = false; raf = requestAnimationFrame(tick); }
+    };
+    tickNow.current = () => { cancelAnimationFrame(raf); clearTimeout(timer); asleep = false; tick(performance.now()); };
     if (wake) wake.current = () => { const p = cursor.current, r = st.reach; if (asleep && p.x >= r.l && p.x <= r.r && p.y <= r.b) kick.current(); };
     raf = requestAnimationFrame(tick);
-    return () => { cancelAnimationFrame(raf); clearTimeout(timer); kick.current = () => {}; if (wake) wake.current = null; st.joined = false; L.current.onJoinedChange?.(false); };
+    return () => { cancelAnimationFrame(raf); clearTimeout(timer); kick.current = () => {}; tickNow.current = () => {}; if (wake) wake.current = null; st.joined = false; L.current.onJoinedChange?.(false); };
   }, []);
   // The props, the pane's content and the marks are read from the render that just happened.
   useEffect(() => { kick.current(true); });
@@ -817,8 +832,9 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
   const lastNote = useRef<NotchNote | null>(null), lastPanel = useRef<ReactNode>(null), lastDrop = useRef<'sessions' | 'timeline'>('sessions');
   if (note) lastNote.current = note;
   if (open && panel) lastPanel.current = panel;
-  // The drop holds the sessions or the day, never both; the day is mounted afresh at each opening (it starts on today).
-  const dayPane = timeline && <DayTimeline key={tlKey} port={port} feed={timeline.day} open={tlOpen} ask={timeline.ask} hold={holdTl}/>;
+  // The drop holds the sessions or the day, never both; the day is mounted afresh when it opens more than a minute after it folded (it starts on
+  // today), and within the minute it is the one he left (the same day, scroll and open row).
+  const dayPane = timeline && <DayTimeline key={tlKey} port={port} feed={timeline.day} open={tlOpen} ask={timeline.ask} hold={holdTl} swap={snapTl}/>;
   if (tlOpen) lastDrop.current = 'timeline'; else if (open) lastDrop.current = 'sessions';
   const dropBody = tlOpen ? dayPane : open ? panel : lastDrop.current === 'timeline' ? dayPane : lastPanel.current;
   const shownNote = note ?? lastNote.current;
