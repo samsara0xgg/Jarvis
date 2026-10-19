@@ -65,6 +65,19 @@ VALID: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
         {"kind": "todo", "id": "AQMkADA|AQMkADB", "title": "Buy milk"},
         {"kind": "todo", "id": "AQMkADA|AQMkADB", "title": "Buy milk"},
     ),
+    "a recurring commitment of the day line, id@date": (
+        {"kind": "event", "id": f"commitment-{'ab' * 16}@2026-10-19", "title": "Dentist"},
+        {"kind": "event", "id": f"commitment-{'ab' * 16}@2026-10-19", "title": "Dentist"},
+    ),
+    "a ride": ({"kind": "ride", "id": "ride-1"}, {"kind": "ride", "id": "ride-1"}),
+    "a departure": (
+        {"kind": "departure", "id": "departure-1"}, {"kind": "departure", "id": "departure-1"},
+    ),
+    "a payment": ({"kind": "payment", "id": "pay-1"}, {"kind": "payment", "id": "pay-1"}),
+    "a Claude chat": ({"kind": "claude_chat", "id": "c-1"}, {"kind": "claude_chat", "id": "c-1"}),
+    "a Claude day": (
+        {"kind": "claude_day", "id": "2026-10-19"}, {"kind": "claude_day", "id": "2026-10-19"},
+    ),
     "an id of exactly 256 characters": (
         {"kind": "move", "id": "a" * 256}, {"kind": "move", "id": "a" * 256},
     ),
@@ -360,8 +373,10 @@ def test_the_model_is_told_which_item_he_has_open_on_one_line(tmp_path: Path) ->
          "Its list is LISTID and its task is TASKID."),
         ({"kind": "move", "id": "move-1", "title": "Bus 28"},
          "It is a fact of his day, not something to change."),
+        ({"kind": "event", "id": "commitment-" + "ab" * 16 + "@2026-10-19", "title": "Dentist"},
+         'kept(kind="appointment") has it; to drop it, call keep(cancel=<the id before "@">).'),
     ],
-    ids=["event", "todo", "day line"],
+    ids=["event", "todo", "day line", "commitment"],
 )
 def test_each_kind_ends_with_what_he_may_do_with_it(
     tmp_path: Path, about: dict[str, Any], tail: str,

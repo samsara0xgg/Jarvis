@@ -16,6 +16,7 @@ from typing import Any, Final
 
 ABOUT_KINDS: Final = (
     "reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture",
+    "ride", "departure", "payment", "claude_chat", "claude_day",
 )
 """What the phone may have open: a reminder, an Outlook event, a task, or a day-line item."""
 MAX_ID_CHARS: Final = 256
@@ -24,7 +25,7 @@ MAX_START_MS: Final = 4_102_444_800_000
 """2100-01-01 UTC in epoch ms; the phone's times are well inside it."""
 PROMPT_TITLE_CHARS: Final = 80
 
-_ID: Final = re.compile(r"[A-Za-z0-9_\-=+/.|:]{1,256}")
+_ID: Final = re.compile(r"[A-Za-z0-9_\-=+/.|:@]{1,256}")
 _KEYS: Final = frozenset({"kind", "id", "title", "start_ms"})
 
 
@@ -51,7 +52,7 @@ def clean_about(raw: object) -> dict[str, Any]:
         msg = f"about.kind is one of {', '.join(ABOUT_KINDS)}"
         raise ValueError(msg)
     if not isinstance(about_id, str) or _ID.fullmatch(about_id) is None:
-        msg = f"about.id is 1-{MAX_ID_CHARS} characters of [A-Za-z0-9_-=+/.|:]"
+        msg = f"about.id is 1-{MAX_ID_CHARS} characters of [A-Za-z0-9_-=+/.|:@]"
         raise ValueError(msg)
     cleaned: dict[str, Any] = {"kind": kind, "id": about_id}
     if "title" in raw:

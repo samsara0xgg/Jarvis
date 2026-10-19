@@ -1011,6 +1011,10 @@ def _about_line(packet: SituationPacket) -> str | None:
     if kind == "todo" and "|" in item_id:
         list_id, task_id = item_id.split("|", 1)
         tail = f"Its list is {list_id} and its task is {task_id}."
+    elif kind == "event" and item_id.startswith("commitment-"):
+        tail = (
+            'kept(kind="appointment") has it; to drop it, call keep(cancel=<the id before "@">).'
+        )
     else:
         tail = _ABOUT_TAILS.get(kind, _ABOUT_DAY_TAIL)
     return (
