@@ -95,7 +95,8 @@ class State:
     def __init__(self, path: Path) -> None:
         """Open (creating) the state file at ``path``."""
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(path, timeout=5.0)
+        # each pass runs on a worker thread (asyncio.to_thread), one pass at a time
+        self.conn = sqlite3.connect(path, timeout=5.0, check_same_thread=False)
         self.conn.executescript(_SCHEMA)
         self.conn.commit()
 
