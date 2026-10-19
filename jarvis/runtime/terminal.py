@@ -130,6 +130,7 @@ from jarvis.state.projects import Project, gather, parse_catalog, window_to_wire
 from jarvis.surface.claude_sessions import ClaudeSessions
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.lifelog_recorder import LANE_CAPACITY, OUTBOX_DIRNAME, LifelogRecorder
+from jarvis.surface.mac_ship import ShipConfig, run_shipper, ship_config
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.terminal_events import EventOutbox
 from jarvis.surface.terminal_link import (
@@ -969,7 +970,7 @@ async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
     base_url: str, token: str, *, tools: frozenset[str], execute: Execute,
     watched: _Watched | None, speaking: _Speaking | None = None, ui: _Ui | None = None,
     night: NightRun | None = None, settings: Mapping[str, Any] | None = None,
-    page: Settings | None = None,
+    page: Settings | None = None, ship: ShipConfig | None = None,
 ) -> None:
     """The link, and beside it the observers, the voice and the UI when there is anything to run.
 
@@ -981,6 +982,7 @@ async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
     observing = None if outbox is None or watched is None else asyncio.create_task(
         _observe(outbox, watched),
     )
+    shipping = None if ship is None else asyncio.create_task(run_shipper(ship, base_url, token))
     speech = _Speech()
     serving: asyncio.Task[None] | None = None
     server: _UiServer | None = None
@@ -1015,7 +1017,7 @@ async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
             settings=settings,
         )
     finally:
-        for task in (nights, boarding, observing):
+        for task in (nights, boarding, observing, shipping):
             await _cancel(task)
         await _stop_speech(speech)
         if server is not None and serving is not None:
@@ -1084,6 +1086,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
         repos = configured_repos if observers else ()
         store = configured_store if observers else None
         usage_interval_s = _usage_poll_interval_s(config) if observers else None
+        ship = ship_config(config, runtime_root) if observers else None
     except (RuntimeBootstrapError, ValueError) as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")
         return 1
@@ -1145,6 +1148,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
                 config, runtime_root, config_path.parent, brain_url=base_url, brain_token=token,
             ) if voice else None,
             ui=ui, night=night, settings=terminal_report(settings_yaml, runtime_root), page=page,
+            ship=ship,
         ))
     except TerminalRefusedError as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")

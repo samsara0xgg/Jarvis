@@ -257,6 +257,32 @@ lifelog:
 lifelog_capture:
   enabled: false
 
+# ADR 0294 — 这台 Mac 的终端按时把 TimeSink 的数据库和截图、Claude Code 的会话摘要抄给大脑，
+# 原样存档（路由 POST /inherent/imports/{source}、PUT /inherent/imports/{source}/files/..）。
+# 只读 TimeSink 的库；会话只取元数据（标题、分支、模型、花费、away_summary 等），不取任何对话内容。
+# 进度存在运行目录的 mac-ship/state.db，大脑确认收到才往前走。默认关；在这台机器的 settings.yaml 里打开。
+mac_ship:
+  enabled: false
+  poll_interval_s: 300
+  timesink:
+    enabled: true
+    # db_path: "~/Library/Application Support/TimeSink/timesink.sqlite"
+    images:
+      enabled: true
+      scale: 1.0          # 1.0 且 quality 1.0 = 截图原样发；<1 才用 sips 缩小重编码
+      quality: 1.0
+      per_poll: 1000      # 每轮最多发多少张，首次回填分几轮发完
+  claude_code:
+    enabled: true
+    roots:
+      - {account: a, dir: "~/.claude/projects"}
+      - {account: b, dir: "~/.claude-b/projects"}
+    # desktop_titles: "~/Library/Application Support/Claude/claude-code-sessions"
+
+# ADR 0294 — 大脑收下终端抄来的数据后，磁盘剩余低于这个数就回 507，终端留着稍后重发。
+imports:
+  min_free_gb: 5
+
 # Supervisor sweep（ADR-0009 D4 / spec §3.4.8）：扫 open actions，超过
 # deadline 且无 terminal event 的 emit action.timeout_assumed。
 supervisor:
