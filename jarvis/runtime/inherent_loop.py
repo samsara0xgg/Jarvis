@@ -7925,6 +7925,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                                 else runtime.attachments.directory
                             ),
                             None if runtime.home is None else runtime.home.calendar,
+                            shipped=runtime.runtime_paths.root / IMPORTS_DIRNAME,
                         ),
                     ),
                 )
