@@ -549,7 +549,7 @@ def _live_activity(sources: DaySources, begin: datetime, end: datetime) -> Activ
     return activity
 
 
-def _shipped_conn(sources: DaySources) -> sqlite3.Connection | None:
+def shipped_conn(sources: DaySources) -> sqlite3.Connection | None:
     """A read-only connection to what the Mac shipped (ADR 0294), or ``None`` without the file."""
     if sources.shipped is None:
         return None
@@ -570,7 +570,7 @@ def _mac_items(
     lo, hi = _moment(window_start - BLOCK_REACH_MS), _moment(window_end + BLOCK_REACH_MS)
     activity = _live_activity(sources, lo, hi)
     if activity is None or not (activity.spans or activity.calls):
-        conn = _shipped_conn(sources)
+        conn = shipped_conn(sources)
         if conn is not None:
             with closing(conn):
                 activity = shipped_activity(conn, lo, hi) or activity
@@ -741,7 +741,7 @@ def _code_items(
     sources: DaySources, window_start: int, window_end: int, now_ms: int,
 ) -> list[dict[str, Any]]:
     """Each Claude Code session of the window as a ``code`` item, clipped to the day (ADR 0294)."""
-    conn = _shipped_conn(sources)
+    conn = shipped_conn(sources)
     if conn is None:
         return []
     with closing(conn):
@@ -783,7 +783,7 @@ def _away_items(
     sources: DaySources, window_start: int, window_end: int, now_ms: int,
 ) -> list[dict[str, Any]]:
     """Each note he wrote in TimeSink for a stretch away from his Mac, clipped to the day."""
-    conn = _shipped_conn(sources)
+    conn = shipped_conn(sources)
     if conn is None:
         return []
     with closing(conn):

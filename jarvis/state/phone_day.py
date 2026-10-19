@@ -442,7 +442,7 @@ def health_totals(events: Iterable[Event], metric: str) -> list[tuple[int, int, 
     return [(start, end, value) for (start, end), value in latest.items()]
 
 
-def _payloads(
+def payloads(
     conn: sqlite3.Connection, event_type: str, metric: str, since_ms: int, until_ms: int,
 ) -> list[dict[str, Any]]:
     """The payloads of one metric of one phone type reported in ``[since_ms, until_ms)``."""
@@ -469,10 +469,10 @@ def day_summary(conn: sqlite3.Connection, start_ms: int, end_ms: int) -> dict[st
         return [row for row in rows if start_ms <= int(row["start_ms"]) < end_ms]
 
     steps: dict[tuple[int, int], float] = {}
-    for row in inside(_payloads(conn, HEALTH_EVENT, "steps", start_ms, until)):
+    for row in inside(payloads(conn, HEALTH_EVENT, "steps", start_ms, until)):
         steps[(int(row["start_ms"]), int(row["end_ms"]))] = float(row["value"])
-    resting = inside(_payloads(conn, MEASURE_EVENT, "resting_heart_rate", start_ms, until))
-    rows = _payloads(conn, MEASURE_EVENT, "heart_rate_variability_sdnn", start_ms, until)
+    resting = inside(payloads(conn, MEASURE_EVENT, "resting_heart_rate", start_ms, until))
+    rows = payloads(conn, MEASURE_EVENT, "heart_rate_variability_sdnn", start_ms, until)
     sdnn = [float(row["value"]) for row in inside(rows)]
     return {
         "steps": round(sum(steps.values())) if steps else None,

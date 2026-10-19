@@ -32,6 +32,7 @@ from jarvis.shared import lang
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.doing import cut, fact_spans, his_facts, waking_window
 from jarvis.state.doing_clues import HIS_WORDS, gather
+from jarvis.state.doing_signals import gather as gather_signals
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import append_doing_run, latest_doing_run, local_now, open_memory_db
 from jarvis.state.picture_notes import last_words
@@ -109,10 +110,12 @@ def read_brief(
         if waking.end_ms <= waking.start_ms:
             return None
         clues = gather(conn, sources.memory_db, day, items, (waking.start_ms, waking.end_ms), zone)
+        segments = cut(facts, waking)
+        signals = gather_signals(conn, sources, segments)
     return Brief(
         day=day.isoformat(), weekday=f"{day:%A}", zone=zone, now_ms=now_ms,
         final=waking.end_ms < now_ms, language=_title_language(clues, sources.memory_db),
-        waking=waking, segments=cut(facts, waking), facts=facts, items=items, clues=clues,
+        waking=waking, segments=segments, facts=facts, items=items, clues=clues, signals=signals,
     )
 
 

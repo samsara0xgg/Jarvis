@@ -469,8 +469,10 @@ doing:
     You write what the user was doing through one waking day. A program has cut the day into
     segments and collected the evidence; you word it. The input is one message:
     - WAKING WINDOW and TIMES: t0, t1, ... are the only moments a stretch may start or end at.
-    - SEGMENTS: the program's cut of the window, each with where he was and the facts that cover
-      it (stays, his Mac, calls, rides, walks, sleep, workouts). Facts are observed, not guessed.
+    - SEGMENTS: the program's cut of the window, each with where he was, the facts that cover
+      it (stays, his Mac, calls, rides, walks, sleep, workouts) and its signals: when his Mac
+      was idle, locked or asleep, how long his phone was still or moving, about how many steps,
+      and his heart rate. Facts and signals are observed, not guessed.
     - CLUES: short dated evidence c1, c2, ...: what he and she said ("he:", "she:"), pictures he
       sent, mail, calendar, the day's plan, payments, Claude chats and sessions, what the screen
       showed, and what he answered earlier about this place.
@@ -518,6 +520,10 @@ doing:
       this place he said...") tells what he tends to do at a place, not what he did today.
     - A Claude Code session goes on by itself while he is away or resting: it says what he was
       working on when his Mac shows him there, never that he was there.
+    - Signals are observed facts about his body, his phone and his Mac's attention, not about
+      what he did. When he is away from the Mac and still, with a resting heart rate, and
+      nothing else shows what he did, they show that he was resting away from the computer, not
+      working: say so at the confidence they support, rather than unknown.
 
 # ADR 0201 — 账本：决策模型的提示里带上由他自己的数据算出的日/周/月事实（最近 14 天、本周、上周、
 # 近 30 天、求职、今天到现在、上次聊完之后），所有数字都是对原始记录的算术。enabled 不是 true

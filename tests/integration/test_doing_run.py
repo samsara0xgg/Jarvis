@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import re
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from itertools import pairwise
 from pathlib import Path
@@ -67,6 +67,7 @@ from jarvis.state.doing_clues import (
     Clue,
     gather,
 )
+from jarvis.state.doing_signals import SIGNALS_MAX_CHARS
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.job_ledger import upsert_mail
 from jarvis.state.memory_db import (
@@ -75,6 +76,7 @@ from jarvis.state.memory_db import (
     latest_doing_run,
     open_memory_db,
 )
+from jarvis.state.shipments import Shipments
 from scripts import doing_replay
 
 if TYPE_CHECKING:
@@ -597,6 +599,208 @@ def test_the_digest_follows_the_facts_and_clues_and_not_the_clock(
     moved = read_brief(DAY, world.sources, world.log, NOW)
     assert moved is not None
     assert inputs_digest(moved) not in (inputs_digest(brief), inputs_digest(changed))
+
+
+# --- the signals -------------------------------------------------------------------------------
+
+
+def _phone(world: World, uid: str, kind: str, payload: dict[str, Any], ts: datetime) -> None:
+    with closing(open_event_log(world.log)) as conn:
+        emit_event(
+            conn, type=f"phone.{kind}_observed", payload=payload, ts_epoch_ms=_ms(ts),
+            event_uid=uid, ingestion_node="phone",
+        )
+
+
+def _motion(
+    world: World, activity: str, start: datetime, end: datetime | None,
+    confidence: str = "high",
+) -> None:
+    payload: dict[str, Any] = {
+        "activity": activity, "confidence": confidence, "started_at_ms": _ms(start),
+    }
+    if end is not None:
+        payload["ended_at_ms"] = _ms(end)
+    uid = f"m-{activity}-{_ms(start)}"
+    _phone(world, uid, "motion", payload, end or start)
+
+
+def _steps(world: World, start: datetime, end: datetime, value: float, uid: str) -> None:
+    payload = {"metric": "steps", "start_ms": _ms(start), "end_ms": _ms(end), "value": value}
+    _phone(world, uid, "health", payload, end)
+
+
+def _heart(world: World, at: datetime, value: float, context: str | None) -> None:
+    payload: dict[str, Any] = {
+        "metric": "heart_rate", "start_ms": _ms(at), "end_ms": _ms(at), "value": value,
+        "unit": "count/min", "sample_uuid": f"hr-{_ms(at)}",
+    }
+    if context is not None:
+        payload["meta"] = {"motion_context": context}
+    _phone(world, f"hr-{_ms(at)}", "measure", payload, at)
+
+
+def _marks(directory: Path, marks: list[tuple[datetime, str]]) -> DaySources:
+    """TimeSink ``stateEvent`` rows (UTC as GRDB writes them), shipped to ``directory``."""
+    lines = [
+        {
+            "key": f"stateEvent:{number}:{'a' * 12}", "kind": "stateEvent", "zone": "UTC",
+            "at_ms": _ms(at), "text": "",
+            "fields": {
+                "id": number, "kind": kind,
+                "at": at.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.000"),
+            },
+        }
+        for number, (at, kind) in enumerate(marks, 1)
+    ]
+    Shipments(directory, min_free_bytes=0).receive_entries(
+        "timesink", b"\n".join(json.dumps(line).encode() for line in lines),
+    )
+    return DaySources(VANCOUVER, None, None, shipped=directory)
+
+
+def _signalled(world: World, directory: Path, marks: list[tuple[datetime, str]]) -> World:
+    """The world with his Mac's marks shipped, and the phone and watch rows of 12:00-13:00."""
+    _motion(world, "stationary", _at(12), _at(12, 40))
+    _motion(world, "walking", _at(12, 40), _at(12, 46), "medium")
+    _motion(world, "automotive", _at(12, 46), _at(12, 50), "low")  # doubtful: not counted
+    _motion(world, "stationary", _at(12, 50), None)  # still going: to the segment's end
+    _steps(world, _at(11), _at(12), 30, "s1")
+    _steps(world, _at(12), _at(13), 9, "s2")
+    _steps(world, _at(12), _at(13), 18, "s2b")  # the hour reported again: the later total
+    _steps(world, _at(13), _at(14), 120, "s3")
+    for at, value, context in (
+        (_at(12, 5), 58, "sedentary"), (_at(12, 30), 68, "sedentary"), (_at(12, 45), 55, "not_set"),
+        (_at(13, 0), 90, "active"),  # the next segment's
+    ):
+        _heart(world, at, value, context)
+    return replace(world, sources=_marks(directory, marks))
+
+
+MARKS = [
+    (_at(12, 10), "idle"), (_at(12, 25), "lock"), (_at(12, 30), "active"), (_at(12, 50), "unlock"),
+]
+
+
+def _start(brief: Brief, hour: int, minute: int = 0) -> int:
+    return next(s.start_ms for s in brief.segments if s.start_ms == _ms(_at(hour, minute)))
+
+
+def test_a_segment_carries_the_signals_of_his_mac_phone_and_watch_in_a_fixed_order(
+    world: World, tmp_path: Path,
+) -> None:
+    """Each part is computed from stored rows; the ones with no data are left out."""
+    signalled = _signalled(world, tmp_path / "imports", MARKS)
+    found = read_brief(DAY, signalled.sources, world.log, NOW)
+    assert found is not None
+    assert found.signals == {
+        # idle 12:10-12:30 and locked 12:25-12:50: the lock names the time both cover
+        _ms(_at(12)): (
+            "Mac idle 12:10-12:25, locked 12:25-12:50; phone: still 50m, walking 6m; "
+            "~18 steps; heart 55-68 sedentary"
+        ),
+        # the 11:00 hour's 30 steps, half in the segment before 11:30 and half in the one after
+        _ms(_at(8)): "~15 steps",
+        _ms(_at(11, 30)): "~15 steps",
+        # the still that began at 12:50 has no end, so it goes on through the rest of the day;
+        # the 13:00 hour's 120 steps fall half in 13:00-13:30 and half in 13:30-14:45
+        _ms(_at(13)): "phone: still 30m; ~60 steps; heart 90 active",
+        _ms(_at(13, 30)): "phone: still 75m; ~60 steps",
+        _ms(_at(14, 45)): "phone: still 15m",
+    }
+    line = next(
+        row for row in build_messages(found)[0]["content"].split("\n")
+        if "| 12:00-13:00 |" in row
+    )
+    assert line.split(" | ", 1)[1] == (
+        "12:00-13:00 | place: Corner Cafe [unknown] | facts: stay Corner Cafe 12:00-13:00 | "
+        "signals: " + found.signals[_ms(_at(12))]
+    )
+    assert len(found.signals[_ms(_at(12))]) <= SIGNALS_MAX_CHARS
+
+
+def test_a_segment_with_no_signals_has_no_signals_part(brief: Brief) -> None:
+    """With no phone rows and no shipped store the segment lines are what they were."""
+    assert brief.signals == {}
+    assert "signals:" not in build_messages(brief)[0]["content"]
+
+
+def test_a_mac_stretch_is_closed_by_its_mark_or_by_timesinks_own_stop_else_runs_to_the_end(
+    world: World, tmp_path: Path,
+) -> None:
+    """The ways a stretch ends, and an asleep Mac naming the time an idle one also covers."""
+    cases = {
+        "open": ([(_at(11, 40), "idle")], "Mac idle 12:00-13:00"),
+        "stopped": ([(_at(11, 40), "idle"), (_at(12, 30), "stop")], "Mac idle 12:00-12:30"),
+        "woken": (
+            [(_at(11, 40), "idle"), (_at(12, 10), "sleep"), (_at(12, 40), "wake"),
+             (_at(12, 45), "active")],
+            "Mac idle 12:00-12:10, asleep 12:10-12:40, idle 12:40-12:45",
+        ),
+        "a blip": ([(_at(12, 10), "idle"), (_at(12, 10), "active")], None),
+        "before the day's reach": ([(_at(13, 5), "idle")], None),
+    }
+    for number, (marks, expected) in enumerate(cases.values()):
+        sources = _marks(tmp_path / f"case-{number}", marks)
+        found = read_brief(DAY, sources, world.log, NOW)
+        assert found is not None
+        assert found.signals.get(_ms(_at(12))) == expected
+
+
+def test_the_signals_stay_within_the_cap_by_dropping_the_last_parts(
+    world: World, tmp_path: Path,
+) -> None:
+    """Three Mac stretches, two activities, steps and heart rate: too long, so the heart goes."""
+    marks = [
+        (_at(8, 10), "idle"), (_at(8, 40), "active"), (_at(9), "lock"), (_at(9, 30), "unlock"),
+        (_at(10), "sleep"), (_at(10, 30), "wake"),
+    ]
+    signalled = replace(world, sources=_marks(tmp_path / "imports", marks))
+    _motion(signalled, "stationary", _at(8), _at(10))
+    _motion(signalled, "walking", _at(10), _at(10, 20))
+    _steps(signalled, _at(8), _at(9), 100, "a")
+    _steps(signalled, _at(9), _at(10), 100, "b")
+    _steps(signalled, _at(10), _at(11), 100, "c")
+    _steps(signalled, _at(11), _at(12), 100, "d")
+    _heart(signalled, _at(9), 48, "sedentary")
+    _heart(signalled, _at(10), 120, "active")
+    found = read_brief(DAY, signalled.sources, world.log, NOW)
+    assert found is not None
+    text = found.signals[_ms(_at(8))]
+    assert text == (
+        "Mac idle 08:10-08:40, locked 09:00-09:30, asleep 10:00-10:30; "
+        "phone: still 120m, walking 20m; ~350 steps"
+    )
+    assert len(text) <= SIGNALS_MAX_CHARS
+
+
+def test_a_source_that_cannot_be_read_leaves_the_other_parts(
+    world: World, tmp_path: Path,
+) -> None:
+    """A shipped store that is not a database loses the Mac part and nothing else."""
+    directory = tmp_path / "imports"
+    directory.mkdir()
+    (directory / "shipped.db").write_bytes(b"this is not a database" * 100)
+    broken = replace(world, sources=DaySources(VANCOUVER, None, world.memory, shipped=directory))
+    _heart(broken, _at(12, 30), 61, None)
+    found = read_brief(DAY, broken.sources, world.log, NOW)
+    assert found is not None
+    assert found.signals == {_ms(_at(12)): "heart 61"}
+
+
+def test_the_digest_changes_when_a_late_heart_rate_arrives(world: World, tmp_path: Path) -> None:
+    """The signals are part of what is shown, so a watch that syncs late asks for a rewrite."""
+    signalled = _signalled(world, tmp_path / "imports", MARKS)
+    before = read_brief(DAY, signalled.sources, world.log, NOW)
+    assert before is not None
+    _heart(signalled, _at(12, 20), 75, "active")
+    after = read_brief(DAY, signalled.sources, world.log, NOW)
+    assert after is not None
+    assert after.signals[_ms(_at(12))].endswith("heart 55-75 sedentary")
+    assert inputs_digest(after) != inputs_digest(before)
+    again = read_brief(DAY, signalled.sources, world.log, NOW)
+    assert again is not None
+    assert inputs_digest(again) == inputs_digest(after)
 
 
 # --- the gates ---------------------------------------------------------------------------------

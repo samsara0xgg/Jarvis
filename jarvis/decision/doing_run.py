@@ -57,7 +57,8 @@ class Brief:
     """One day as the writer is shown it.
 
     ``final`` says the day is over; ``language`` is the one the titles are written in; ``items``
-    are the day line's, which give a fact its details.
+    are the day line's, which give a fact its details; ``signals`` are the observed signals of a
+    segment that has any (its Mac, phone and watch), by the segment's start.
     """
 
     day: str
@@ -71,6 +72,7 @@ class Brief:
     facts: Sequence[Span]
     items: Sequence[Mapping[str, Any]]
     clues: Sequence[Clue]
+    signals: Mapping[int, str]
 
 
 def _reach(span: Mapping[str, Any], brief: Brief) -> int:
@@ -93,10 +95,11 @@ def times(brief: Brief) -> list[int]:
 
 
 def inputs_digest(brief: Brief) -> str:
-    """A short hash of what the writer is shown: the facts, the clues and where the window starts.
+    """A short hash of what the writer is shown: facts, clues, signals and where the window starts.
 
     The window's end is left out: for a day under way it is the clock, which moves on its own,
-    and for a day that is over it follows from the facts.
+    and for a day that is over it follows from the facts. The signals of the segment still going
+    do grow with the clock, so a day under way is told apart as often as it may be written.
     """
     body = {
         "start_ms": brief.waking.start_ms,
@@ -106,6 +109,7 @@ def inputs_digest(brief: Brief) -> str:
             for s in brief.facts
         ],
         "clues": [list(c) for c in brief.clues],
+        "signals": sorted(brief.signals.items()),
     }
     text = json.dumps(body, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -147,6 +151,8 @@ def _segment_line(segment: Segment, labels: Mapping[int, str], brief: Brief) -> 
         where,
         f"facts: {held or 'none'}",
     ]
+    if segment.start_ms in brief.signals:
+        parts.append(f"signals: {brief.signals[segment.start_ms]}")
     if inner:
         parts.append(f"inner times: {' '.join(inner)}")
     return " | ".join(parts)
@@ -177,7 +183,7 @@ def build_messages(brief: Brief) -> list[dict[str, Any]]:
         f"WAKING WINDOW: {labels[start]} {_clock(start, brief.zone, seconds=True)} to "
         f"{labels[end]} {_clock(end, brief.zone, seconds=True)}",
         "TIMES (local; a span starts and ends only at one of these):\n" + "\n".join(time_lines),
-        "SEGMENTS (the program's cut of the window; times | local | place | facts):\n"
+        "SEGMENTS (the program's cut of the window; times | local | place | facts | signals):\n"
         + "\n".join(segment_lines),
         "CLUES (id | local time | kind | text):\n" + ("\n".join(clue_lines) or "(none)"),
     ))
