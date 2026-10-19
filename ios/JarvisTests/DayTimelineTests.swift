@@ -525,6 +525,16 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(m.stretch(at: 500), "s")
     }
 
+    func testTheListRestsWithTheLineForNowAboutSixtyPercentDownAndARowBeginningAtTheTop() throws {
+        let m = build(TimelineFixture.today(cal)), room = TLLayout.viewport
+        let y = m.restY(room: room)
+        XCTAssertTrue(m.offsets.contains { abs($0 - 8 - y) < 0.001 }, "a whole row begins 8 pt down, so the row above leaves nothing in the fade")
+        XCTAssertEqual((m.offsets[m.nowIndex!] + TLMetrics.now / 2 - y) / room, 0.6, accuracy: 0.07, "the line for now stays about 60% of the way down")
+        XCTAssertEqual(build(TimelineFixture.yesterday(cal), now: nil).restY(room: room), 0, "another day opens at its top")
+        let short = try reply(#"{"id": "t", "lane": "her", "kind": "talk", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(610)), "turns": 2}"#)
+        XCTAssertEqual(build(short).restY(room: room), 0, "a day that fits does not scroll")
+    }
+
     func testTheRowAtAMinuteIsTheLastOneBegunByThenElseTheFirst() throws {
         let m = build(TimelineFixture.today(cal))
         XCTAssertEqual(m.entry(at: 700)?.id, "move-3", "in the drive")

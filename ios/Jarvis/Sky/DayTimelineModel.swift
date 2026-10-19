@@ -171,6 +171,14 @@ struct DayTimelineModel: Equatable {
     var height: Double { entries.reduce(0) { $0 + $1.height } + (missing == nil ? 0 : TLMetrics.note) }
     func top(of id: String) -> Double? { entries.firstIndex { $0.id == id }.map { offsets[$0] } }
 
+    /// Where the list rests on today, from its top: the line for now about 60% of the way down `room`, and a row beginning at the top rather than half of one (the row
+    /// boundary nearest to that, 8 pt down: the blank under a row's last line, so the row above leaves nothing in the list's fade). Another day rests at its top.
+    func restY(room: Double) -> Double {
+        guard let i = nowIndex else { return 0 }
+        let want = offsets[i] + TLMetrics.now / 2 - 0.6 * room
+        return max(0, (offsets.min { abs($0 - want) < abs($1 - want) } ?? 0) - 8)
+    }
+
     /// the entry that covers minute `t`: the last one begun by then, else the first
     func entry(at t: Double) -> TLEntry? {
         let list = entries.filter { $0.kind != .now }

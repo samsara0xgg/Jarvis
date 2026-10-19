@@ -171,7 +171,7 @@ struct DayTimelineView: View {
         DispatchQueue.main.async { tl.reveal = true }
     }
     /// where the list rests on today: the line for now 60% of the way down what is left under the pinned cards
-    private func restY(_ m: DayTimelineModel) -> Double { TLList.restY(m, room: room) }
+    private func restY(_ m: DayTimelineModel) -> Double { m.restY(room: room) }
     private var room: Double { TLLayout.room(pinned: pinnedHeight) }
     private var pinnedHeight: Double { Waiting.shared.cards.isEmpty ? 0 : min(tl.waitH > 0 ? tl.waitH : Double(Waiting.shared.cards.count) * TLMetrics.rowDetail, TLLayout.waitingMax) }
 
@@ -418,19 +418,13 @@ private struct TLList: View {
 
     init(model: DayTimelineModel, engine: StarEngine, tl: TimelineState, room: Double, lens: TLLens?, nowInView: Binding<Bool>) {
         self.model = model; self.engine = engine; self.tl = tl; self.room = room; self.lens = lens; _nowInView = nowInView
-        _pos = State(initialValue: ScrollPosition(y: Self.restY(model, room: room)))
+        _pos = State(initialValue: ScrollPosition(y: model.restY(room: room)))
         _opened = State(initialValue: room)
-    }
-
-    /// Today opens with the line for now 60% of the way down; another day opens at its top.
-    static func restY(_ m: DayTimelineModel, room: Double) -> Double {
-        guard let i = m.nowIndex else { return 0 }
-        return max(0, m.offsets[i] + TLMetrics.now / 2 - 0.6 * room)
     }
 
     /// the first twelve rows in view when it opens rise in one after another; the rest are simply there
     private func ranks() -> [String: Int] {
-        let y0 = Self.restY(model, room: opened), offs = model.offsets
+        let y0 = model.restY(room: opened), offs = model.offsets
         var out: [String: Int] = [:]
         for (i, e) in model.entries.enumerated() where offs[i] + e.height > y0 && offs[i] < y0 + opened && out.count < 12 { out[e.id] = out.count }
         return out
