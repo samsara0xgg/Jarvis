@@ -100,7 +100,7 @@ function Picture({ part, acts }: { part: Extract<Part, { type: 'picture' }>; act
 }
 
 // The biggest of what the block was spent on: a name, a thin bar for its share of the active time, its length.
-function Bars({ heading, bars }: { heading: string; bars: Bar[] }) {
+export function Bars({ heading, bars }: { heading: string; bars: Bar[] }) {
   return <div className="dt-bars" role="list" aria-label={heading}>
     <h4>{heading}</h4>
     {bars.map(b => <div key={b.name} className="dt-bar-row" role="listitem"><span>{b.name}</span><i><u style={{ width: `${Math.max(2, b.share * 100)}%` }}/></i><em>{b.text}</em></div>)}
@@ -111,7 +111,7 @@ function Bars({ heading, bars }: { heading: string; bars: Bar[] }) {
 // time scale, and where one stage gives way to another a hairline between the lanes. What the phone only said "in bed" for is not drawn;
 // a stretch no stage was reported for sits in the core lane, paler.
 const LANE: Record<string, number> = { awake: 0, rem: 1, core: 2, unspecified: 2, deep: 3 };
-function Hypnogram({ night, t }: { night: Night; t: (l: L) => string }) {
+export function Hypnogram({ night, t }: { night: Night; t: (l: L) => string }) {
   const span = Math.max(1, night.to - night.from), drawn = night.slices.filter(x => x.stage in LANE), at = (ms: number) => `${((ms - night.from) / span) * 100}%`;
   const names = [t(['Awake', '清醒']), 'REM', t(['Core', '核心']), t(['Deep', '深睡'])];
   return <div className="dt-hyp" role="img" aria-label={t([`Sleep stages, ${night.at[0]} to ${night.at[1]}`, `睡眠分期，${night.at[0]} 到 ${night.at[1]}`])}>

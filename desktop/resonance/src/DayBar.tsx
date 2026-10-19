@@ -4,6 +4,9 @@ import { tr, useCompanionSettings, type L } from './companionSettings';
 import { spring, step } from './starCore';
 import { buildBar, endClock, fit, fOf, msOf, numbers, PAD_PX, peek, pieceAt, rowAt, snap, summarize, type BarSeg, type BarStar, type Line, type Peek, type Summary } from './barView';
 import { clock, type DayModel, type Icon, type LensKind, type Rgb } from './dayView';
+import { cardOf } from './numberCard';
+import { CardBody, Swap } from './CardView';
+import { EASE } from './RowOpen';
 import { Ic } from './dayIcons';
 import './day-bar.css';
 
@@ -91,11 +94,13 @@ function Stars({ stars }: { stars: BarStar[] }) {
   return <>{stars.map(s => one(s, false))}{gone.map(s => one(s, true))}</>;
 }
 
-export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayModel; port: string | null; ui: BarState; hot: string | null; onHot: (key: string | null) => void; onJump: (key: string) => void }) {
+export function DayBar({ model, port, ui, hot, onHot, onJump, onPicture }: { model: DayModel; port: string | null; ui: BarState; hot: string | null; onHot: (key: string | null) => void; onJump: (key: string) => void; onPicture: (id: string, note: string) => void }) {
   const [{ lang }] = useCompanionSettings(), t = (l: L) => tr(lang, l);
   const bar = useMemo(() => buildBar(model, t), [model, lang]), nums = useMemo(() => numbers(model, t), [model, lang]);
-  const box = useRef<HTMLDivElement>(null), track = useRef<HTMLDivElement>(null), card = useRef<HTMLDivElement>(null), rcard = useRef<HTMLDivElement>(null), [width, setWidth] = useState(0);
+  const box = useRef<HTMLDivElement>(null), track = useRef<HTMLDivElement>(null), card = useRef<HTMLDivElement>(null), rcard = useRef<HTMLDivElement>(null), ncard = useRef<HTMLDivElement>(null), nIn = useRef<HTMLDivElement>(null), [width, setWidth] = useState(0);
   const [hover, setHover] = useState<{ x: number; left: number } | null>(null), [on, setOn] = useState(false), [band, setBand] = useState<Range | null>(null);
+  // The pinned number's card hangs under the numbers; a range being chosen or chosen has the room (its card wins), and the number's comes back when the range goes.
+  const numCard = useMemo(() => ui.pinned ? cardOf(model, ui.pinned, t, nums) : null, [model, lang, nums, ui.pinned]), numKind = numCard && !ui.sel && !band ? numCard.kind : null;
   useLayoutEffect(() => {
     const el = track.current;
     if (!el) return;
@@ -112,13 +117,19 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
     const timer = setTimeout(() => setOn(true), 50);
     return () => clearTimeout(timer);
   }, [!!hover]);
-  // The pane is as tall as what is in it: on a short day the range card, which hangs over the list, makes room for itself.
+  // The pane is as tall as what is in it: on a short day the range card and a number's, which hang over the list, make room for themselves.
   useLayoutEffect(() => {
-    const dt = box.current?.closest<HTMLElement>('.dt'), c = rcard.current;
+    const dt = box.current?.closest<HTMLElement>('.dt'), c = rcard.current ?? ncard.current;
     if (!dt || !c) return;
     dt.style.minHeight = `${Math.ceil(c.getBoundingClientRect().bottom - dt.getBoundingClientRect().top) + 12}px`;
     return () => { dt.style.minHeight = ''; };
-  }, [ui.sel]);
+  }, [ui.sel, numKind]);
+  // A number's card comes in over 180 ms on the pane's ease, rising 4 px; under reduced motion it fades in over 120.
+  useLayoutEffect(() => {
+    if (!numKind) return;
+    const quiet = reduced.matches;
+    nIn.current?.animate(quiet ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: quiet ? 120 : 180, easing: quiet ? 'linear' : EASE });
+  }, [!numKind]);
   // A click away from the range card lets it go.
   useEffect(() => {
     if (!ui.sel) return;
@@ -260,6 +271,9 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
         onPointerEnter={() => ui.setPreview(n.kind)} onPointerLeave={() => ui.setPreview(null)} onClick={() => ui.setPinned(ui.pinned === n.kind ? null : n.kind)}>
         <Glyph size={12} aria-hidden="true"/><span>{n.label}</span><em>{n.value}</em></button>; })}
       {model.vitals.length > 0 && <div className="dt-vitals">{model.vitals.map(v => <span key={v.key} className="dt-vit" data-vital={v.key}>{v.before && <small>{v.before}</small>}<em>{v.value}</em>{v.after && <small>{v.after}</small>}</span>)}</div>}
+      {numCard && numKind && <div ref={ncard} className="dt-card is-num is-on" role="region" aria-label={numCard.label}>
+        <div ref={nIn} className="dt-card-in"><Swap id={numCard.kind}><CardBody card={numCard} Glyph={KIND_ICON[numCard.kind]} color={`rgb(${rgb(KIND[numCard.kind])})`} port={port} onPicture={onPicture} t={t}/></Swap></div>
+      </div>}
     </div>}
     {ui.filter && <div className="dt-filter"><span>{t(['Only ', '只看 '])}<b>{clock(Math.min(ui.filter.a, ui.filter.b), model.tz)}–{endClock(Math.max(ui.filter.a, ui.filter.b), model.reply, model.tz)}</b></span>
       <button type="button" aria-label={t(['Show the whole day', '看回整天'])} onClick={() => ui.setFilter(null)}><X size={11} weight="bold"/></button></div>}

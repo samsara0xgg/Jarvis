@@ -2796,6 +2796,196 @@ try {
     await a.ctx.close();
   }
 
+  // ---- the numbers' cards (ONLY=density): a click on a number hangs what is behind it under the numbers ----
+  if (all || only === 'density') {
+    const fz = buildDay(fullDay(), NOW, zh), fe = buildDay(fullDay(), NOW, en), eq = (x, y) => JSON.stringify(x) === JSON.stringify(y), near = (x, y, d = 1.5) => Math.abs(x - y) <= d;
+    const CHIPS = [['睡', 'sleep'], ['路上', 'trip'], ['运动', 'workout'], ['Mac', 'work'], ['通话', 'call'], ['和她', 'talk'], ['花', 'payment'], ['照片', 'picture']];
+    const chip = (a, word) => a.page.locator('.dt-num', { hasText: word });
+    const settle = a => a.page.waitForTimeout(350);
+    // the card on the page, read into the shape numberCard's lines have (cardLines)
+    const onPage = a => a.page.evaluate(() => {
+      const s = document.querySelector('.dt-card.is-num .dt-slot.is-cur');
+      if (!s) return null;
+      const txt = e => e.textContent.trim(), head = s.querySelector('.dt-ch');
+      return [`${txt(head.querySelector('b'))}|${txt(head.lastElementChild)}`, ...[...s.querySelectorAll('.dt-nb > *')].map(p => {
+        if (p.classList.contains('dt-ncs')) return [...p.children].map(c => `${txt(c.querySelector('small'))} ${txt(c.querySelector('b'))}`).join('/');
+        if (p.classList.contains('dt-hyp')) return `night ${[...p.querySelectorAll('.dt-hyp-ends em')].map(txt).join('-')}`;
+        if (p.classList.contains('dt-nbars')) return [...p.querySelectorAll('.dt-bars')].map(g => `${txt(g.querySelector('h4'))}: ${[...g.querySelectorAll('.dt-bar-row')].map(r => `${txt(r.querySelector('span'))} ${txt(r.querySelector('em'))}`).join(', ')}`).join('//');
+        if (p.classList.contains('dt-nes')) { const more = p.querySelector('.dt-nmore'); return [...p.querySelectorAll('li:not(.dt-nmore)')].map(li => `${txt(li.querySelector('b'))}: ${[...li.querySelectorAll('em')].map(txt).join(' · ')}`).join('//') + (more ? ` ${txt(more)}` : ''); }
+        const more = p.querySelector('.dt-nmore');
+        return `pictures ${[...p.querySelectorAll('.dt-npic')].map(b => `${b.dataset.id[0]}@${txt(b.querySelector('time'))}`).join(',')}${more ? ` ${txt(more)}` : ''}`;
+      })];
+    });
+    const state = a => a.page.evaluate(() => ({ lens: document.querySelector('.dt')?.dataset.lens ?? null, pressed: [...document.querySelectorAll('.dt-num[aria-pressed="true"]')].map(e => e.innerText.split('\n')[0]), nums: document.querySelectorAll('.dt-card.is-num').length, range: document.querySelectorAll('.dt-card.is-range.is-on').length, open: document.querySelector('.notch-drop')?.classList.contains('is-open') ?? false }));
+    // a change of number, as a fade through: the card's clocks are held and set, so the same instants are read each time
+    const swap = (a, word) => a.page.evaluate(async word => {
+      const c = document.querySelector('.dt-card.is-num'); c.dataset.mark = 'kept';
+      [...document.querySelectorAll('.dt-num')].find(e => e.textContent.includes(word)).click();
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const slots = [...c.querySelectorAll('.dt-slot')], cur = slots.find(e => e.classList.contains('is-cur')), old = slots.find(e => e !== cur), anims = c.getAnimations({ subtree: true });
+      anims.forEach(x => x.pause());
+      const read = t => { anims.forEach(x => { x.currentTime = t; }); return { t, old: +getComputedStyle(old).opacity, now: +getComputedStyle(cur).opacity, oy: new DOMMatrix(getComputedStyle(old).transform).m42, ny: new DOMMatrix(getComputedStyle(cur).transform).m42 }; };
+      const out = [0, 30, 60, 75, 90, 120, 150].map(read);
+      anims.forEach(x => x.cancel());
+      return { out, kept: document.querySelector('.dt-card.is-num') === c && c.dataset.mark === 'kept', head: cur.querySelector('.dt-ch b').textContent, cards: document.querySelectorAll('.dt-card.is-num').length, slots: slots.length };
+    }, word);
+    const apart = (x, v) => Math.abs(x - v) < .06;
+
+    // the eight cards of a full day, each as numberCard.ts says it, one number after the next (the card is the same one, its words swapped)
+    const a = await boot({ served: fullDay(), init: record });
+    await openDay(a);
+    const g = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width }; });
+    const away = { x: g.left + 200, y: g.top - 48 };
+    await a.move(away.x, away.y);
+    const rest0 = await state(a);
+    check('with no number pinned there is no card', rest0.nums === 0 && rest0.lens === null && rest0.pressed.length === 0);
+    let p0 = await chip(a, '睡').boundingBox(); await a.move(p0.x + p0.width / 2, p0.y + p0.height / 2); await settle(a);
+    const hov = await state(a);
+    check('a number under the pointer only previews its lens: the lens is drawn, no card hangs', hov.lens === 'sleep' && hov.nums === 0 && hov.pressed.length === 0, JSON.stringify(hov));
+    await a.move(away.x, away.y); await settle(a);
+
+    await a.page.evaluate(() => { window.__anims.length = 0; });
+    await chip(a, '睡').click(); await a.page.waitForFunction(() => document.querySelector('.dt-card.is-num .dt-slot.is-cur')); await a.page.waitForTimeout(400);
+    const enter = (await anims(a)).filter(x => /dt-card-in/.test(x.cls));
+    const first = await state(a);
+    check('a click pins the number (aria-pressed, the lens) and hangs its card; the card is not there before it', first.nums === 1 && first.lens === 'sleep' && first.pressed.join() === '睡' && rest0.nums === 0, JSON.stringify(first));
+    check('the card comes in over 180 ms on the pane\'s ease, rising 4 px as it fades in', enter.length === 1 && enter[0].opt.duration === 180 && enter[0].opt.easing === 'cubic-bezier(.16, 1, .3, 1)' && enter[0].kf.length === 2 && enter[0].kf[0].opacity === 0 && enter[0].kf[0].transform === 'translateY(4px)' && enter[0].kf[1].opacity === 1 && enter[0].kf[1].transform === 'none', JSON.stringify(enter));
+    const geo = await a.page.evaluate(() => {
+      const q = s => document.querySelector(s).getBoundingClientRect().toJSON(), c = q('.dt-card.is-num'), n = q('.dt-numbers'), l = q('.dt-list'), p = q('.notch-drop'), top = document.elementFromPoint(c.left + c.width / 2, c.top + 6);
+      return { c, n, l, p, over: !!top?.closest('.dt-card.is-num'), rowsUnder: [...document.querySelectorAll('.dt-row')].filter(r => { const b = r.getBoundingClientRect(); return b.bottom > c.top && b.top < c.bottom; }).length };
+    });
+    check('it hangs under the numbers (6 px below their row), the width of the pane\'s content, inside the pane, over the list and no taller than about 170', near(geo.c.top, geo.n.bottom + 6) && near(geo.c.left, geo.n.left) && near(geo.c.right, geo.n.right) && geo.c.height <= 176 && geo.c.height > 60 && geo.c.bottom <= geo.p.bottom && geo.c.bottom > geo.l.top && geo.over, JSON.stringify(geo));
+    await a.shot('density-sleep', { x: 40, y: 0, width: 560, height: 700 });
+    const look = await a.page.evaluate(() => { const s = getComputedStyle(document.querySelector('.dt-card.is-num .dt-card-in')); return [s.backgroundColor, s.borderTopColor, s.borderTopWidth, s.borderRadius, s.boxShadow]; });
+
+    // the list keeps scrolling under the card
+    const sc0 = await a.page.evaluate(() => { const l = document.querySelector('.dt-list'); return { top: l.scrollTop, room: l.scrollHeight - l.clientHeight, rect: l.getBoundingClientRect().toJSON(), card: document.querySelector('.dt-card.is-num').getBoundingClientRect().toJSON() }; });
+    await a.page.mouse.move(sc0.rect.left + sc0.rect.width / 2, sc0.rect.bottom - 30); await a.page.mouse.wheel(0, 240); await a.page.waitForTimeout(500);
+    const sc1 = await a.page.evaluate(() => ({ top: document.querySelector('.dt-list').scrollTop, card: document.querySelector('.dt-card.is-num')?.getBoundingClientRect().toJSON() }));
+    check('the list keeps scrolling under the card, and the card stays where it was', sc0.room > 100 && sc1.top > sc0.top + 50 && sc1.card && sc1.card.top === sc0.card.top && sc1.card.height === sc0.card.height, JSON.stringify({ sc0: sc0.top, sc1 }));
+    await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; });
+
+    // every number's card, as the model says it
+    const bad = [];
+    for (const [word, kind] of CHIPS) {
+      if (kind !== 'sleep') { await chip(a, word).click(); await a.page.waitForTimeout(450); }
+      const got = await onPage(a), want = cardLines(cardOf(fz, kind, zh)), s = await state(a);
+      if (!eq(got, want) || s.lens !== kind || s.nums !== 1 || s.pressed.join() !== word) bad.push({ kind, got, want, s });
+      if (kind !== 'sleep') await a.shot(`density-${kind}`, { x: 40, y: 0, width: 560, height: 700 });
+    }
+    check('each of the eight numbers hangs the card the model says (numberCard.ts), in the pane\'s own words: the same lines, the same figures', bad.length === 0, JSON.stringify(bad));
+    check('the card is the one card throughout: the next number swaps its words and does not bring another', (await state(a)).nums === 1);
+
+    // a change of number is a fade through of 120 ms, in the same card
+    await chip(a, '睡').click(); await a.page.waitForTimeout(450);
+    const sw = await swap(a, '路上'), [s0, s30, s60, s75, s90, s120, s150] = sw.out;
+    check('a change of number is a fade through in the same card: the old words are fading at 30 ms and gone at 60, the new have not begun until 60 and are whole at 120, and never are both seen',
+      sw.kept && sw.cards === 1 && sw.head === '路上' && apart(s0.old, 1) && apart(s0.now, 0) && apart(s30.old, .5) && apart(s30.now, 0) && apart(s60.old, 0) && apart(s60.now, 0) && s75.now > 0 && s75.now < .3 && apart(s90.now, .5) && apart(s120.now, 1) && apart(s150.now, 1)
+      && sw.out.every(x => Math.min(x.old, x.now) < .02), JSON.stringify(sw));
+    check('and the new words come up 2 px as they appear: 2 px down while the old go, nearer at 75 ms, in place at 120', apart(s60.ny, 2) && s75.ny > 0 && s75.ny < 2 && apart(s120.ny, 0) && apart(s150.ny, 0), JSON.stringify(sw.out.map(x => [x.t, x.ny])));
+
+    // hover over another number while one is pinned: the lens previews, the card is still the pinned one's
+    p0 = await chip(a, '通话').boundingBox(); await a.move(p0.x + p0.width / 2, p0.y + p0.height / 2); await settle(a);
+    const over = await state(a), pinnedHead = (await onPage(a))[0];
+    await a.move(away.x, away.y); await settle(a);
+    check('another number under the pointer previews its lens and leaves the card to the pinned one', over.lens === 'call' && over.nums === 1 && pinnedHead.startsWith('路上|') && (await state(a)).lens === 'trip', JSON.stringify({ over, pinnedHead }));
+
+    // the range wins the room: while one is drawn or hung its card is the only one; the number's comes back when the range goes
+    const rbar = buildBar(fz, zh), t0 = rbar.t0, t1 = T(24), xAt = (h, m = 0) => g.left + (T(h, m) - t0) / (t1 - t0) * g.width, y = g.top + 12;
+    const tripCard = await onPage(a);
+    await a.move(xAt(14) + .1, y); await a.page.mouse.down(); await a.move(xAt(16), y); await a.move(xAt(18) + .1, y); await a.page.waitForTimeout(150);
+    const during = await state(a);
+    await a.page.mouse.up(); await a.page.waitForTimeout(450);
+    const ranged = await state(a), rlook = await a.page.evaluate(() => { const s = getComputedStyle(document.querySelector('.dt-card.is-range .dt-card-in')); return [s.backgroundColor, s.borderTopColor, s.borderTopWidth, s.borderRadius, s.boxShadow]; });
+    await a.shot('density-with-range', { x: 40, y: 0, width: 560, height: 700 });
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(450);
+    const back = await state(a), backCard = await onPage(a);
+    check('the range card wins: dragging a range takes the number\'s card away, the range\'s card is the only one when it comes, and the number stays pinned', during.nums === 0 && during.range === 0 && ranged.nums === 0 && ranged.range === 1 && ranged.pressed.join() === '路上' && ranged.lens === 'trip', JSON.stringify({ during, ranged }));
+    check('and when the range goes the number\'s card is back with the same words (the first Esc is for the range; the number stays pinned)', back.nums === 1 && back.range === 0 && back.pressed.join() === '路上' && eq(backCard, tripCard) && back.open, JSON.stringify({ back }));
+    check('the number\'s card is in the look of the range\'s: the same ground, edge, corners and shadow', eq(look, rlook) && look[1] !== 'rgba(0, 0, 0, 0)', JSON.stringify({ look, rlook }));
+    // a number clicked while a range is hung lets the range go (it is a click away from its card) and hangs its own card, so never the two
+    await a.move(xAt(14) + .1, y); await a.page.mouse.down(); await a.move(xAt(16), y); await a.move(xAt(18) + .1, y); await a.page.mouse.up(); await a.page.waitForTimeout(400);
+    const free = await a.page.evaluate(() => { for (const e of document.querySelectorAll('.dt-num')) { const r = e.getBoundingClientRect(), t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2), name = e.innerText.split('\n')[0]; if (e.contains(t) && name !== '路上') return name; } return null; });
+    const hung = await state(a);
+    if (free) { await chip(a, free).click(); await a.move(away.x, away.y); await a.page.waitForTimeout(450); }
+    const swapped = await state(a);
+    check('a number clicked while a range is hung takes the room: the range goes, the number\'s card hangs, and never are the two seen together', hung.range === 1 && hung.nums === 0 && free !== null && swapped.range === 0 && swapped.nums === 1 && swapped.pressed.join() === free, JSON.stringify({ hung, free, swapped }));
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(350);
+
+    // a second click on the pinned number lets both go; so does Esc, and the pane stays
+    await chip(a, '路上').click(); await a.page.waitForTimeout(350); await chip(a, '路上').click(); await a.move(away.x, away.y); await a.page.waitForTimeout(400);
+    const closedBy = await state(a);
+    check('a second click on the pinned number lets go of the lens and the card', closedBy.nums === 0 && closedBy.lens === null && closedBy.pressed.length === 0 && closedBy.open, JSON.stringify(closedBy));
+    await chip(a, '通话').click(); await a.move(away.x, away.y); await a.page.waitForTimeout(450);
+    const pinnedCall = await state(a);
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(400);
+    const escaped = await state(a);
+    check('Esc lets go of the lens and the card and leaves the pane open', pinnedCall.nums === 1 && pinnedCall.lens === 'call' && escaped.nums === 0 && escaped.lens === null && escaped.pressed.length === 0 && escaped.open, JSON.stringify({ pinnedCall, escaped }));
+
+    // the card follows the day: pinned on the Sleep, the day before is a day with a sleep and nothing else, and its card is that one's
+    const paneBottom = () => a.page.evaluate(() => document.querySelector('.notch-drop').getBoundingClientRect().bottom), cardBottom = () => a.page.evaluate(() => document.querySelector('.dt-card.is-num')?.getBoundingClientRect().bottom ?? null);
+    await chip(a, '睡').click(); await a.move(away.x, away.y); await a.page.waitForTimeout(400);
+    await a.page.keyboard.press('ArrowLeft');
+    await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track') && document.querySelector('.dt-card.is-num .dt-slot.is-cur'), undefined, 6000);
+    await a.page.waitForTimeout(900);
+    const ydayWant = cardLines(cardOf(buildDay(yesterday(), NOW, zh), 'sleep', zh)), ydayGot = await onPage(a), withCard = { card: await cardBottom(), pane: await paneBottom() };
+    check('the card follows the day: on the day before, with the Sleep still pinned, it is that day\'s sleep (clocks only, nothing the phone did not say)', eq(ydayGot, ydayWant) && ydayGot.length === 2, JSON.stringify({ ydayGot, ydayWant }));
+    await a.shot('density-yesterday', { x: 40, y: 0, width: 560, height: 520 });
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(900);
+    const short = await paneBottom(), none = await state(a);
+    await chip(a, '睡').click(); await a.move(away.x, away.y); await a.page.waitForTimeout(900);
+    const again = { card: await cardBottom(), pane: await paneBottom() };
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(900);
+    check('on a short day the card is inside the pane, which makes room for it when it must and gives the room back when the card goes', none.nums === 0 && withCard.card <= withCard.pane - 6 && again.card <= again.pane - 6 && again.pane >= short - 1 && Math.abs(await paneBottom() - short) < 2, JSON.stringify({ withCard, short, again }));
+    await a.ctx.close();
+
+    // the same in English (the Sleep and the Mac) and the photos (a thumbnail each; a click on one is the picture row's click)
+    {
+      const e = await boot({ served: fullDay(), lang: 'en' });
+      await openDay(e);
+      const names = Object.fromEntries(numbers(fe, en).map(n => [n.kind, n.label])), badEn = [];
+      for (const kind of ['sleep', 'work']) {
+        await e.page.locator('.dt-num', { hasText: names[kind] }).first().click(); await e.page.waitForTimeout(450);
+        const got = await onPage(e), want = cardLines(cardOf(fe, kind, en));
+        if (!eq(got, want)) badEn.push({ kind, got, want });
+        await e.shot(`density-${kind}-en`, { x: 40, y: 0, width: 560, height: 700 });
+      }
+      check('in English the Sleep\'s card and the Mac\'s say it in English, the same lines as the model', badEn.length === 0, JSON.stringify(badEn));
+      await e.ctx.close();
+    }
+    {
+      const pics = fullDay({ items: [...fullDay().items, it('picture-2', 'picture', T(16, 20), T(16, 20), { attachment: BIG, note: '傍晚的海边，风很大' }), it('picture-3', 'picture', T(17, 5), T(17, 5), { attachment: 'b'.repeat(32), note: '没有了的' })] });
+      const p = await boot({ served: pics });
+      await openDay(p);
+      await chip(p, '照片').click(); await p.page.waitForTimeout(700);
+      const got = await onPage(p), want = cardLines(cardOf(buildDay(pics, NOW, zh), 'picture', zh));
+      const thumbs = await p.page.evaluate(() => [...document.querySelectorAll('.dt-card.is-num .dt-slot.is-cur .dt-npic')].map(b => { const i = b.querySelector('img'), r = (i ?? b.firstElementChild).getBoundingClientRect(); return { img: !!i, ok: i ? i.complete && i.naturalWidth > 0 : null, w: Math.round(r.width), h: Math.round(r.height), cursor: getComputedStyle(b).cursor, label: b.getAttribute('aria-label') }; }));
+      check('the photos card: its head the count, a thumbnail for each with its time (the pictures that the daemon has load; one it no longer has leaves a plain icon, not a broken image)', eq(got, want) && got.length === 2 && thumbs.length === 3 && thumbs.filter(t => t.ok === true).length === 2 && thumbs.filter(t => !t.img).length === 1 && thumbs.every(t => t.w === 56 && t.h === 56 && t.cursor === 'zoom-in'), JSON.stringify({ got, want, thumbs }));
+      await p.shot('density-pictures', { x: 40, y: 0, width: 560, height: 700 });
+      await p.page.locator('.dt-card.is-num .dt-npic').first().click(); await p.page.waitForTimeout(400);
+      const viewer = await p.page.evaluate(() => ({ src: document.querySelector('.dt-viewer img')?.src ?? null, note: document.querySelector('.dt-viewer p')?.textContent ?? null }));
+      check('a click on a thumbnail opens the picture large, with its note, as the picture row does', viewer.src?.endsWith(`/inherent/attachments/${PIC}`) && viewer.note === '汉堡和薯条\n在 A&W 吃的午饭', JSON.stringify(viewer));
+      await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(350);
+      const afterViewer = await state(p);
+      check('and Esc closes the picture first and leaves the card', await p.page.locator('.dt-viewer').count() === 0 && afterViewer.nums === 1 && afterViewer.pressed.join() === '照片', JSON.stringify(afterViewer));
+      await p.ctx.close();
+    }
+
+    // Reduced Motion: the card comes in with a 120 ms fade and does not rise; a change of number is a fade through and nothing moves
+    {
+      const r = await boot({ served: fullDay(), init: record });
+      await r.page.emulateMedia({ reducedMotion: 'reduce' });
+      await openDay(r);
+      await r.page.evaluate(() => { window.__anims.length = 0; });
+      await chip(r, '睡').click(); await r.page.waitForFunction(() => document.querySelector('.dt-card.is-num .dt-slot.is-cur')); await r.page.waitForTimeout(400);
+      const enter = (await anims(r)).filter(x => /dt-card-in/.test(x.cls));
+      check('with reduced motion the card fades in over 120 ms and does not rise', enter.length === 1 && enter[0].opt.duration === 120 && enter[0].kf.length === 2 && enter[0].kf.every(f => f.transform === undefined) && enter[0].kf[0].opacity === 0 && enter[0].kf[1].opacity === 1, JSON.stringify(enter));
+      const sw = await swap(r, '路上'), [s0, , s60, , s90, s120] = sw.out;
+      check('and a change of number is a fade through of 120 ms that moves nothing', sw.kept && sw.head === '路上' && apart(s0.old, 1) && apart(s60.old, 0) && apart(s60.now, 0) && apart(s90.now, .5) && apart(s120.now, 1) && sw.out.every(x => Math.min(x.old, x.now) < .02 && x.oy === 0 && x.ny === 0), JSON.stringify(sw));
+      await r.ctx.close();
+    }
+  }
+
   // ---- phase D: what he can write to the day (ADR 0296): the star, what mail said, a place with no name of his (ONLY=write) ----
   // A sheet of labelled tiles (screenshots, or crops of them) in one picture.
   // (a tile may have its own scale `k`; the label is under it)
