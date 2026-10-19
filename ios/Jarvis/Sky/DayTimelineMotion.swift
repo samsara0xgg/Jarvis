@@ -37,6 +37,13 @@ enum TLMotion {
     }
     /// a change of day
     static func dayChange(reduce: Bool) -> Animation { .easeOut(duration: reduce ? reducedFade : dayDuration) }
+    /// the page that another day's page takes the place of goes in half that time, so that two days are never on show at the strength of one
+    static func dayLeave(reduce: Bool) -> Animation { .easeOut(duration: (reduce ? reducedFade : dayDuration) / 2) }
+    /// another day's list, or its bar: it comes in the way time goes, `slide` pt, fading in as `dayChange`, and the old one leaves the other way as `dayLeave`; under Reduce Motion both only fade
+    static func page(slide: Double, reduce: Bool) -> AnyTransition {
+        let come = reduce ? AnyTransition.opacity : .opacity.combined(with: .offset(x: -slide)), go = reduce ? AnyTransition.opacity : .opacity.combined(with: .offset(x: slide))
+        return .asymmetric(insertion: come.animation(dayChange(reduce: reduce)), removal: go.animation(dayLeave(reduce: reduce)))
+    }
     /// what is new in the list, and the rows that make room for it
     static func listChange(reduce: Bool) -> Animation { .easeOut(duration: reduce ? reducedFade : grow) }
 }

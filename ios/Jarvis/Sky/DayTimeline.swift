@@ -333,11 +333,7 @@ struct DayTimelineView: View {
         .offset(y: TLLayout.listTop)
     }
 
-    private var slideTransition: AnyTransition {
-        if reduce { return .opacity }
-        let d = TLMotion.daySlide * Double(tl.slide)
-        return .asymmetric(insertion: .opacity.combined(with: .offset(x: -d)), removal: .opacity.combined(with: .offset(x: d)))
-    }
+    private var slideTransition: AnyTransition { TLMotion.page(slide: TLMotion.daySlide * Double(tl.slide), reduce: reduce) }
 
     @ViewBuilder private func page(_ shown: Shown) -> some View {
         switch shown {

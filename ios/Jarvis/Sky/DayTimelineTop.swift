@@ -132,11 +132,7 @@ struct TLTopView: View {
     }
 
     /// another day's bar comes in from the way time goes, a hair, as the list does
-    private var barTransition: AnyTransition {
-        if reduce { return .opacity }
-        let d = TLMotion.barSlide * Double(tl.slide)
-        return .asymmetric(insertion: .opacity.combined(with: .offset(x: -d)), removal: .opacity.combined(with: .offset(x: d)))
-    }
+    private var barTransition: AnyTransition { TLMotion.page(slide: TLMotion.barSlide * Double(tl.slide), reduce: reduce) }
 }
 
 extension StarUI {
