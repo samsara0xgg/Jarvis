@@ -873,12 +873,13 @@ try {
     await a.ctx.close();
   }
 
-  // The pinned trip keeps its place after the line, and a rest or a click on it never brings the day.
-  if (all) {
+  // The pinned trip keeps its place after the line, and a rest or a click on it never brings the day (ONLY=pin runs it alone).
+  if (all || only === 'pin') {
     const trip = { id: 'dep-1', route: '27', board_stop: 'Shelbourne at Pear', leave_at_ms: NOW + 12 * 60_000, departs_at_ms: NOW + 15 * 60_000, leave_at: '22:02', departs: '22:05', arrive_at: '22:40', to: 'school', stale: false };
     const a = await boot({ departure: trip });
     await a.until(() => { const n = document.querySelector('.notch'); return n?.dataset.marks === 'line pin' && n.dataset.line === '家 · 3:00' && n.dataset.pin; }, undefined, 8000);
-    const r = await a.read(), seg = await a.lineX(), pill = { x: seg.x1 + 5 + 14, y: 14 };
+    // The wing grows on a spring: read it once it has reached the room the pill needs, not on the frame the pill arrives (it is 150 ms from there to its width).
+    const seg = await a.lineX(), r = await seen(a, v => v.hit.right >= seg.x1 + 5 + 60, 8000), pill = { x: seg.x1 + 5 + 14, y: 14 };
     check('the pinned trip is a pill after the line, in the same wing', r.marks === 'line pin' && /27 · 12 分/.test(r.pin) && r.hit.right >= seg.x1 + 5 + 60, JSON.stringify({ ...r, seg }));
     await a.shot('11-line-and-pill', { x: 200, y: 0, width: 400, height: 60 });
     await a.glide(a.far, pill, 250);
@@ -1052,7 +1053,7 @@ try {
     // The Dashboard leaves 87.5 pt beside the notch: a line too long for it folds the whole wing, as four marks would (ADR 0187).
     const a = await boot({ served: makeDay({ items: [it('s', 'stay', T(18, 50), null, { place: 'x', kept_place: { id: 'p-long', name: 'Mayfair Mall Shopping Centre Victoria', role: 'other' } })] }) });
     await a.until(() => /…/.test(document.querySelector('.notch')?.dataset.line ?? ''));
-    const before = await a.read();
+    const before = await seen(a, r => r.hit.right - r.hit.left > 100, 8000);
     await a.move(320, 14);
     await a.page.locator('.companion-dashboard.is-open').waitFor();
     await a.move(320, 200);
