@@ -22,6 +22,8 @@ enum StateChange {
     case power(connected: Bool)
     case headphones(connected: Bool)
     case call(started: Bool)
+    /// The charge in whole percent; the charging state goes along as the frame's detail (`charging`, `full`, `unplugged`)
+    case battery(percent: Int)
 
     var signal: String {
         switch self {
@@ -30,6 +32,7 @@ enum StateChange {
         case .power: "power"
         case .headphones: "headphones"
         case .call: "call"
+        case .battery: "battery"
         }
     }
 
@@ -39,6 +42,7 @@ enum StateChange {
         case .alarm(let snoozed): snoozed ? "snoozed" : "stopped"
         case .power(let connected), .headphones(let connected): connected ? "connected" : "disconnected"
         case .call(let started): started ? "started" : "ended"
+        case .battery(let percent): String(percent)
         }
     }
 }
@@ -165,6 +169,7 @@ extension ReportFrame {
                     metric: metric.rawValue, startMs: s, endMs: e, value: value,
                     detail: Self.text(detail, Self.maxDetailChars)))
             case let .state(change, when, detail):
+                if case .battery(let percent) = change, !(0...100).contains(percent) { return nil }
                 let t = Self.at(when, now)
                 type = "phone.state_observed"
                 key = "\(change.signal),\(change.value),\(t)"

@@ -260,6 +260,7 @@ final class Reporter {
             switch change {
             case .focus, .alarm, .power: .focusAlarm
             case .headphones, .call: .headphonesCalls
+            case .battery: .focusAlarm
             }
         }
     }

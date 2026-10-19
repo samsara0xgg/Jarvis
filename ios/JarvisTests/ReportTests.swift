@@ -55,7 +55,14 @@ private enum Contract {
         case "phone.health_observed":
             XCTAssertTrue(metrics.contains(payload["metric"] as! String), file: file, line: line)
         case "phone.state_observed":
-            XCTAssertTrue(signals[payload["signal"] as! String]?.contains(payload["value"] as! String) == true, file: file, line: line)
+            let signal = payload["signal"] as! String, value = payload["value"] as! String
+            if signal == "battery" {
+                XCTAssertEqual(Int(value).map(String.init), value, "a whole percent without leading zeros", file: file, line: line)
+                XCTAssertTrue((0...100).contains(Int(value) ?? -1), file: file, line: line)
+                XCTAssertTrue(["charging", "full", "unplugged"].contains(payload["detail"] as? String ?? "unplugged"), file: file, line: line)
+            } else {
+                XCTAssertTrue(signals[signal]?.contains(value) == true, file: file, line: line)
+            }
         default: break
         }
         for (s, e) in [("arrived_at_ms", "departed_at_ms"), ("started_at_ms", "ended_at_ms"), ("start_ms", "end_ms")] {
@@ -85,6 +92,9 @@ private func samples() -> [Sensed] {
         .state(.power(connected: false), at: t0, detail: nil),
         .state(.headphones(connected: true), at: t0, detail: "AirPods Pro"),
         .state(.call(started: true), at: t0, detail: "incoming"),
+        .state(.battery(percent: 57), at: t0, detail: "charging"),
+        .state(.battery(percent: 100), at: t0, detail: "full"),
+        .state(.battery(percent: 0), at: t0, detail: nil),
     ]
 }
 
@@ -162,6 +172,30 @@ final class ReportFrameTests: XCTestCase {
         for w in PhoneSignalChange.allCases {
             XCTAssertTrue(Contract.signals[w.change.signal]?.contains(w.change.value) == true)
         }
+    }
+}
+
+final class BatteryTests: XCTestCase {
+    func testTheLevelAndStateAreWhatTheBrainTakes() {
+        let r = PowerCollector.reading(level: 0.574, state: .unplugged)
+        XCTAssertEqual(r?.percent, 57)
+        XCTAssertEqual(r?.detail, "unplugged")
+        XCTAssertEqual(PowerCollector.reading(level: 0.996, state: .charging)?.percent, 100)
+        XCTAssertEqual(PowerCollector.reading(level: 1, state: .full)?.detail, "full")
+        XCTAssertNil(PowerCollector.reading(level: -1, state: .unplugged), "level unknown (a simulator)")
+        XCTAssertNil(PowerCollector.reading(level: 0.5, state: .unknown))
+    }
+
+    func testAFrameCarriesThePercentAsTextAndTheStateAsDetail() throws {
+        let f = frame(.state(.battery(percent: 57), at: t0, detail: "charging"))
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: f.json) as? [String: Any])
+        let payload = try XCTUnwrap(obj["payload"] as? [String: Any])
+        XCTAssertEqual(payload["signal"] as? String, "battery")
+        XCTAssertEqual(payload["value"] as? String, "57")
+        XCTAssertEqual(payload["detail"] as? String, "charging")
+        XCTAssertNotEqual(f.eventUid, frame(.state(.battery(percent: 56), at: t0, detail: "charging")).eventUid)
+        XCTAssertNil(ReportFrame(.state(.battery(percent: 101), at: t0, detail: nil), now: now))
+        XCTAssertNil(ReportFrame(.state(.battery(percent: -1), at: t0, detail: nil), now: now))
     }
 }
 
