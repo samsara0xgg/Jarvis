@@ -527,7 +527,7 @@ final class DayTimelineTests: XCTestCase {
 
     func testTheMadeUpDaysPiecesWearWhatFitsThemAtTheBarsWidth() throws {
         let sc = build(TimelineFixture.today(cal)).scene
-        let words = Dictionary(uniqueKeysWithValues: TLBarLabel.placed(sc, width: TLLayout.barW, measure: measure).map { ($0.id, $0) })
+        let words = Dictionary(uniqueKeysWithValues: TLBarLabel.placed(sc, width: TLLayout.barW, measure: measure).map { ($0.item, $0) })
         XCTAssertEqual(words["sleep-0"]?.fit, .icon, "25 points: room for the moon, not for 8:05 too")
         XCTAssertEqual(words["stay-1"]?.fit, .iconName)
         XCTAssertEqual(words["stay-9"]?.fit, .iconName, "UVic")
@@ -537,6 +537,16 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(words["sleep-0"]?.dark, false, "light text on the night's indigo")
         XCTAssertEqual(words["stay-1"]?.dark, true, "dark ink on the pale hue of home")
         XCTAssertEqual(words["stay-9"]?.dark, true)
+    }
+
+    func testAStayTheNightCutsInTwoHasAWordOnEachPieceUnderIdsOfItsOwn() {
+        let home = TLPiece.Fill.place(RGB(255, 168, 150), kept: true)
+        let pieces = [TLPiece(id: "s0", t0: 360, t1: 700, fill: home, name: "Home", icon: "house.fill"), TLPiece(id: "n", t0: 700, t1: 900, fill: .sleep, name: nil, icon: "moon.fill"),
+                      TLPiece(id: "s0", t0: 900, t1: 1440, fill: home, name: "Home", icon: "house.fill")]
+        let scene = TLBarScene(span: 360...DAY, now: nil, pieces: pieces, ahead: [], stars: [], ticks: [])
+        let placed = TLBarLabel.placed(scene, width: TLLayout.barW, measure: measure)
+        XCTAssertEqual(placed.map(\.item), ["s0", "n", "s0"], "a word on each piece of home")
+        XCTAssertEqual(Set(placed.map(\.id)).count, 3, "and none under another's id, which the bar's ForEach would take for one view")
     }
 
     func testTextIsDarkOnALightFillAndLightOnADarkOne() {

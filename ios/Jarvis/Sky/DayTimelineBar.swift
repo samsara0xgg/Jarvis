@@ -9,7 +9,7 @@ import SwiftUI
 /// a span of the bar and what fills it
 struct TLPiece: Equatable, Identifiable {
     enum Fill: Equatable { case place(RGB, kept: Bool), trip, sleep, blank, ahead }
-    let id: String                  // the item it is (a stay, a trip, the night), or what it is not
+    let id: String                  // the item it is (a stay, a trip, the night), or what it is not; a stay that the night cuts in two is two pieces of one id
     var t0: Double, t1: Double
     var fill: Fill
     var name: String?               // the word it may wear: the place, the route, the way he moved, how long he slept
@@ -155,11 +155,12 @@ enum TLBarLabel {
     }
 
     struct Placed: Equatable, Identifiable {
-        let id: String
+        let item: String                // the piece or box it is on (a stay the night cuts in two has a piece on each side of it, and a word on each that has room)
         var x: Double                   // where its icon or word begins
         var fit: Fit
         var name: String?, icon: String?
         var dark: Bool                  // dark ink on a light fill
+        var id: String { "\(item)@\(Int(x))" }       // one place on the bar: the same item may stand there twice, never at the same x
     }
 
     /// what each piece (and each box of an event) wears at this width of bar
@@ -167,12 +168,12 @@ enum TLBarLabel {
         var out: [Placed] = []
         for (p, r) in zip(scene.pieces, TLGeo.rects(scene.pieces, span: scene.span, width: width, height: 1)) {
             let f = fit(name: p.name, icon: p.icon != nil, width: r.width, measure: measure)
-            if f != .none { out.append(Placed(id: p.id, x: r.minX + pad, fit: f, name: p.name, icon: p.icon, dark: TLPaint.textIsDark(p.fill))) }
+            if f != .none { out.append(Placed(item: p.id, x: r.minX + pad, fit: f, name: p.name, icon: p.icon, dark: TLPaint.textIsDark(p.fill))) }
         }
         for a in scene.ahead where a.shape == .box {
             let x0 = TLGeo.x(a.t0, scene.span, width), x1 = TLGeo.x(a.t1, scene.span, width)
             let f = fit(name: a.name, icon: a.icon != nil, width: x1 - x0, measure: measure)
-            if f != .none { out.append(Placed(id: a.id, x: x0 + pad, fit: f, name: a.name, icon: a.icon, dark: false)) }
+            if f != .none { out.append(Placed(item: a.id, x: x0 + pad, fit: f, name: a.name, icon: a.icon, dark: false)) }
         }
         return out
     }
