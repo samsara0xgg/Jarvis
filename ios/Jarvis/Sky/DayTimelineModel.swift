@@ -59,6 +59,8 @@ struct TLEntry: Identifiable, Equatable {
     var lens: TLLens?               // the kind of the day's numbers it is counted in (a stay, an event and the rest are in none)
     var barName: String?            // the word it wears inside the overview bar when there is room: the place, the route, the way he moved, how long he slept, the event
     var barIcon: String?            // and the symbol, for when the word does not fit
+    var head: String?               // a stretch (the night, a place, a trip) as the readout under a finger opens with it: `家 · 09:05–11:25 · 2 时 20 分`
+    var glance: String?             // what the readout says of it when it was going on at the minute under a finger: `Jarvis · Xcode`, `A&W · $12.40`
 
     var height: Double {
         switch kind {
@@ -128,6 +130,17 @@ struct TLChip: Equatable, Identifiable {
     var word: String { lens.word }
 }
 
+/// What a finger on the bar reads out: the stretch of the day under it, and what else was going on there.
+struct TLReadout: Equatable {
+    var hue: RGB?                   // the colour of the stretch (a dot); none when there is no stretch
+    var strong = true               // a place he keeps or a trip: the dot is full
+    var head: String                // `家 · 09:05–11:25 · 2 时 20 分`
+    var elsewhere: [String]         // up to four things that were going on, the most telling first
+    var ahead = false               // it has not happened yet
+    /// the line under it on a phone: the first two things, or that there was nothing
+    var second: String { elsewhere.isEmpty ? (ahead ? "这段时间没有安排" : "这段时间没有别的记录") : elsewhere.prefix(2).joined(separator: " · ") }
+}
+
 /// where something of a lens's kind is on the bar: a span, or a moment (its end is its start)
 struct TLMark: Equatable {
     var t0: Double, t1: Double
@@ -192,6 +205,34 @@ struct DayTimelineModel: Equatable {
     }
     /// its id, or none
     func stretch(at t: Double) -> String { seg(at: t)?.id ?? "" }
+
+    /// What a finger on the bar at minute `t` reads out. The stretch there (a place, a trip, the night) opens it, or how long nothing was recorded, or that it has not happened;
+    /// then what else was going on: what covers `t`, else what is within 10 minutes of it, the most telling first (work, a call, a talk, a picture, a payment, an event, Claude, a reminder, a bus).
+    func readout(at t: Double) -> TLReadout {
+        var hue: RGB?, strong = true, head: String
+        let ahead = now.map { t > $0 } ?? false
+        if ahead {
+            head = "还没到"
+        } else if let s = seg(at: t), let e = entries.first(where: { $0.id == s.id }) {
+            switch s.kind {
+            case .place(let c, let kept): hue = c; strong = kept
+            case .move: hue = TLPaint.trip
+            case .sleep: hue = TLPaint.sleep
+            }
+            head = e.head ?? e.title
+        } else {
+            let lo = segs.filter { $0.t1 <= t }.map(\.t1).max() ?? span.lowerBound
+            let hi = min(segs.filter { $0.t0 > t }.map(\.t0).min() ?? DAY, now ?? DAY)
+            head = "没有记录 · \(clock(lo))–\(clock(hi)) · \(tlDur(Int((hi - lo).rounded())))"
+        }
+        func gap(_ e: TLEntry) -> Double { let end = max(e.t1 ?? e.t0, e.t0); return t < e.t0 ? e.t0 - t : t > end ? t - end : 0 }
+        let told = entries.filter { $0.glance != nil }
+        var near = told.filter { gap($0) == 0 }
+        if near.isEmpty { near = told.filter { gap($0) <= 10 } }
+        let order: [TLEntry.Kind] = [.work, .call, .talk, .picture, .payment, .event, .claude, .reminder, .departure]
+        near.sort { (order.firstIndex(of: $0.kind) ?? 99, gap($0), $0.t0) < (order.firstIndex(of: $1.kind) ?? 99, gap($1), $1.t0) }
+        return TLReadout(hue: hue, strong: strong, head: head, elsewhere: near.prefix(4).compactMap(\.glance), ahead: ahead)
+    }
 
     /// where the things of a lens's kind are on the bar
     func marks(of lens: TLLens) -> [TLMark] {
@@ -261,9 +302,11 @@ struct DayTimelineModel: Equatable {
                 if let end { segs.append(TLSeg(id: i.id, t0: max(0, t0), t1: min(DAY, end), kind: .move)) }
             case "talk":
                 e.kind = .talk
-                e.title = topic(i.id) ?? "和她说话"
+                let said = topic(i.id)
+                e.title = said ?? "和她说话"
                 e.symbol = "bubble.left.fill"
                 e.detail = "\(i.turns ?? 1) 句"
+                e.glance = said ?? "和她说话 · " + e.detail!
                 e.right = dur ?? ""
                 e.talkStart = i.start_ms
             case "picture":
@@ -273,13 +316,14 @@ struct DayTimelineModel: Equatable {
                 let lines = (i.note ?? "").split(whereSeparator: \.isNewline).compactMap { text(String($0)) }
                 e.detail = lines.first
                 e.more = lines
+                e.glance = ["照片", e.detail].compactMap { $0 }.joined(separator: " · ")
                 e.attachment = i.id.hasPrefix("picture-") ? String(i.id.dropFirst("picture-".count)) : i.id
             case "event":
                 e.kind = .event
                 let hidden = i.private == true
                 e.title = hidden ? "私事" : text(i.title) ?? "日程"
                 e.symbol = "calendar.circle.fill"
-                e.barName = e.title; e.barIcon = "calendar"
+                e.barName = e.title; e.barIcon = "calendar"; e.glance = e.title
                 // a mail made it and he has not said it is his: say so, and where (a private one names no place)
                 let parts = [i.confirmed == false && i.source != "plan" ? "从邮件里收的，还没确认" : nil, hidden ? nil : text(i.place)].compactMap { $0 }
                 e.detail = parts.isEmpty ? nil : parts.joined(separator: " · ")
@@ -288,11 +332,13 @@ struct DayTimelineModel: Equatable {
             case "reminder":
                 e.kind = .reminder
                 e.title = text(i.text) ?? "提醒"
+                e.glance = "提醒 · " + e.title
                 e.symbol = "bell.fill"
                 e.detail = i.fired == true ? (i.acknowledged == true ? "已经响过，你确认过了" : "已经响过，你还没确认") : "还没到点"
             case "departure":
                 e.kind = .departure
                 e.title = text(i.route).map { "\($0) 路 发车" } ?? text(i.title) ?? "发车"
+                e.glance = e.title
                 e.symbol = "bus.fill"
                 let parts = [text(i.board_stop).map { "在\($0)上车" }, text(i.to).map { "去\($0)" }, i.leave_at_ms.map { clock(m($0)) + " 出门" }].compactMap { $0 }
                 e.detail = parts.isEmpty ? nil : parts.joined(separator: " · ")
@@ -310,11 +356,14 @@ struct DayTimelineModel: Equatable {
                 }
                 e.detail = parts.isEmpty ? nil : parts.joined(separator: " · ")
                 e.more = parts
+                let tops = [i.projects?.first?.name, i.apps?.first?.name].compactMap(text)
+                e.glance = tops.isEmpty ? "在 Mac 上工作" : tops.joined(separator: " · ")
             case "call":
                 e.kind = .call
                 e.title = "通话"
                 e.symbol = "phone.fill"
                 e.detail = text(i.app)
+                e.glance = ["通话", e.detail].compactMap { $0 }.joined(separator: " · ")
                 e.right = dur ?? ""
             case "payment":
                 e.kind = .payment
@@ -325,6 +374,7 @@ struct DayTimelineModel: Equatable {
                 // what it came to: money out is the plain amount, money in has a plus
                 e.right = cents.map { (i.direction == "in" ? "+" : "") + tlMoney($0, i.currency) } ?? ""
                 e.strongRight = true
+                e.glance = [e.title, e.right.isEmpty ? nil : e.right].compactMap { $0 }.joined(separator: " · ")
                 // opened: which way, the amount (with its currency's code when the mark alone does not say it), and where the import came from
                 let way = i.direction == "in" ? "收入" : "支出", code = text(i.currency)?.uppercased()
                 let sum = cents.map { tlMoney($0, i.currency) }
@@ -334,6 +384,7 @@ struct DayTimelineModel: Equatable {
                 e.symbol = "sparkles"
                 let name = text(i.text)
                 e.title = name == nil || name == "Claude conversation" ? "Claude 对话" : name!
+                e.glance = "Claude · " + e.title
                 e.detail = i.messages.map { "\($0) 条消息" }
                 e.right = dur ?? ""
             case "claude_day":
@@ -359,7 +410,13 @@ struct DayTimelineModel: Equatable {
                 if let c = i.amount?.cents { let k = text(i.currency)?.uppercased() ?? ""; spent[k] = ((spent[k]?.cents ?? 0) + c, (spent[k]?.n ?? 0) + 1) }
             default: break
             }
-            if let label = marks[i.id], e.kind != .stay { e.title = label; e.lit = true }
+            switch e.kind {
+            case .stay: e.head = e.title + " · " + e.right
+            case .sleep: e.head = [e.title, e.detail, e.right.isEmpty ? nil : e.right].compactMap { $0 }.joined(separator: " · ")
+            case .trip: e.head = [e.title, rangeText(t0, t1, running: running), e.right.isEmpty ? nil : e.right].compactMap { $0 }.joined(separator: " · ")
+            default: break
+            }
+            if let label = marks[i.id], e.kind != .stay { e.title = label; e.lit = true; e.glance = label }
             if About.kinds.contains(i.kind), About.fits(id: i.id) {
                 e.about = About(kind: i.kind, id: i.id, title: e.title, startMs: i.start_ms, mark: Self.mark(i, later: later))
             }

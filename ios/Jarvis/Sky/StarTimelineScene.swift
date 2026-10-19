@@ -81,7 +81,7 @@ enum TimelineFixture {
 
 extension StarEngine {
     /// `-scene 时间线` puts the timeline on the made-up day (now 21:50), whatever the setting was; the words after a colon go further:
-    /// `:早上` the list at the morning, `:对话` a talk opened, `:照片` the picture opened, `:工作` the evening's Mac work opened (its span is bracketed on the bar), `:透镜:路上` (or 睡, Mac, 通话, 和她, 花, 照片) that chip pressed, `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
+    /// `:早上` the list at the morning, `:对话` a talk opened, `:照片` the picture opened, `:工作` the evening's Mac work opened (its span is bracketed on the bar), `:透镜:路上` (or 睡, Mac, 通话, 和她, 花, 照片) that chip pressed, `:拖:1015` a finger held on the bar at that time (a fourth word after it lifts the finger again), `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
     /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:新增` a talk coming in a moment later, `:走时` the clock moving on a minute a moment later, `:昨天` the day before, `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
     func runTimelineScene(_ name: String) {
         RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
@@ -131,6 +131,10 @@ extension StarEngine {
         case "透镜":
             let lens = [("睡", TLLens.sleep), ("路上", .trip), ("Mac", .work), ("通话", .call), ("和她", .talk), ("花", .payment), ("照片", .picture)].first { $0.0 == (parts.count > 2 ? parts[2] : "") }?.1
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in withAnimation(.easeOut(duration: 0.15)) { ui.tl.lens = lens } }
+        case "拖":
+            let n = Int(parts.count > 2 ? parts[2] : "") ?? 0, t = Double(n / 100 * 60 + n % 100)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.follow(t, in: model) }
+            if parts.count > 3 { DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { [self] in withAnimation(.easeOut(duration: 0.2)) { ui.tl.follow(nil, in: nil) } } }
         case "昨天": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.setDay(ui.tl.today - 1) }
         case "新增": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in ui.tl.fixture?.replies[0] = TimelineFixture.today(cal, late: true) }
         case "走时": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in ui.tl.fixture?.now += 1 }

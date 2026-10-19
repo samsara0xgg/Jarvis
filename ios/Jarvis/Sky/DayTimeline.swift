@@ -43,6 +43,8 @@ final class TimelineState {
     var slide = 1
     var openRow: String?                // the row opened in the list, one at a time
     var lens: TLLens?                   // the day's number he pressed: the bar and the list bring that kind forward
+    var scrub: Double?                  // the minute under his finger on the overview bar
+    var hot: String?                    // the row that covers it, lit in the list
     var openCard: String?               // the waiting card opened over the list
     var focus: String?                  // a waiting card the engine asks to bring up
     var version = 0                     // bumps when the brain's days were adopted again: talk topics may have come
@@ -79,6 +81,16 @@ final class TimelineState {
 
     func scroll(to y: Double, animated: Bool) { request = ScrollRequest(y: y, animated: animated, n: request.n + 1) }
 
+    /// A finger on the overview bar at minute `t` (none: it has lifted): the list goes to the row that covers it and lights it, and a row he had open is closed.
+    func follow(_ t: Double?, in m: DayTimelineModel?) {
+        scrub = t
+        guard let t, let m else { hot = nil; return }
+        if openRow != nil { openRow = nil }
+        guard let e = m.entry(at: t) else { hot = nil; return }
+        hot = e.id
+        if let y = m.top(of: e.id) { scroll(to: y, animated: false) }
+    }
+
     /// The timeline opens afresh: the bar and the rows are put back to before their entry, with no motion, and run it when the day is there.
     func open() {
         enter += 1
@@ -114,7 +126,7 @@ struct DayTimelineView: View {
     let ui: StarUI
     @Binding var pull: Double?
     @Environment(\.accessibilityReduceMotion) private var reduce
-    @State private var scrub: Double?                                                // the minute under his finger on the overview bar
+    @State private var lastScrub = 0.0                                               // where his finger was last: what the readout shows while it fades out
     @State private var lastStretch: String?
     @State private var lastLens = TLLens.trip                                        // the lens that was on last: what fades out when it goes
     @State private var nowInView = true
@@ -178,18 +190,24 @@ struct DayTimelineView: View {
     // MARK: her sentence and the overview bar
 
     private func header(_ m: DayTimelineModel?) -> some View {
-        ZStack(alignment: .topLeading) {
+        let holding = tl.scrub != nil
+        return ZStack(alignment: .topLeading) {
+            // her sentence, and in its place while a finger is on the bar the readout of the minute under it; they cross-fade (in 80 ms, back in 150)
             if let line = m?.line {
                 Text(line).font(.system(size: 15)).lineSpacing(3).foregroundStyle(ink.opacity(0.9)).lineLimit(2)
                     .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
-                    .opacity(scrub == nil ? 1 : 0.3)                // a finger on the bar: the time over it reads clearly
-                    .animation(.easeOut(duration: 0.15), value: scrub == nil)
+                    .opacity(holding ? 0 : 1)
                     .id(line).transition(.opacity)
                     .offset(x: 30, y: TLLayout.lineY)
             }
             if let m {
+                readout(m.readout(at: tl.scrub ?? lastScrub)).opacity(holding ? 1 : 0)
+                    .offset(x: 30, y: TLLayout.lineY)
+                    .allowsHitTesting(false)
+            }
+            if let m {
                 let lens = activeLens(m)
-                TLBarView(scene: m.scene, bracket: bracket(m), scrub: scrub, lens: lens != nil, lensColor: (lens ?? lastLens).color, lensMarks: m.marks(of: lens ?? lastLens),
+                TLBarView(scene: m.scene, bracket: bracket(m), scrub: tl.scrub, lens: lens != nil, lensColor: (lens ?? lastLens).color, lensMarks: m.marks(of: lens ?? lastLens),
                           reveal: tl.reveal, reduce: reduce)
                     .gesture(scrubGesture(m))
                     .accessibilityElement().accessibilityLabel("一天的概览，拖动可以翻到那个时间")
@@ -205,11 +223,27 @@ struct DayTimelineView: View {
                 }
             }
         }
+        .animation(holding ? .easeOut(duration: 0.08) : .easeInOut(duration: 0.15), value: holding)
         .onChange(of: tl.lens) { _, l in if let l { lastLens = l } }
+        .onChange(of: tl.scrub) { _, t in if let t { lastScrub = t } }
         .animation(.easeOut(duration: 0.35), value: m?.line)
         // only once she is in her corner, and gone as soon as she leaves it: she glides across where they stand
         .opacity(ui.tlHome ? 1 : 0).allowsHitTesting(ui.tlHome)
         .animation(.easeOut(duration: ui.tlHome ? (reduce ? 0.2 : 0.3) : 0.06), value: ui.tlHome)
+    }
+
+    /// the minute under his finger in words, where her sentence is: the stretch with its hours and length, under it what else was going on
+    private func readout(_ r: TLReadout) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 7) {
+                Circle().fill((r.hue ?? RGB(196, 204, 238)).color(r.hue == nil ? 0 : r.strong ? 1 : 0.5)).frame(width: 8, height: 8)
+                    .overlay(Circle().stroke(ink.opacity(r.hue == nil ? 0.4 : 0), lineWidth: 1))
+                Text(r.head).font(.system(size: 15, weight: .semibold)).foregroundStyle(ink).lineLimit(1)
+            }
+            .frame(height: 19, alignment: .leading)
+            Text(r.second).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).frame(height: 15, alignment: .leading)
+        }
+        .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
     }
 
     /// the lens that is on, if this day has that kind at all
@@ -217,9 +251,10 @@ struct DayTimelineView: View {
         tl.lens.flatMap { l in m.chips.contains { $0.lens == l } ? l : nil }
     }
 
-    /// the span of the row he has open, on the bar
+    /// the stretch under his finger, else the span of the row he has open, on the bar
     private func bracket(_ m: DayTimelineModel) -> ClosedRange<Double>? {
-        guard scrub == nil, let id = tl.openRow, let e = m.entries.first(where: { $0.id == id }), e.kind != .now else { return nil }
+        if let t = tl.scrub { return m.seg(at: t).map { $0.t0...$0.t1 } }
+        guard let id = tl.openRow, let e = m.entries.first(where: { $0.id == id }), e.kind != .now else { return nil }
         return e.t0...max(e.t0, e.t1 ?? e.t0)
     }
 
@@ -229,15 +264,13 @@ struct DayTimelineView: View {
         return DragGesture(minimumDistance: 0)
             .onChanged { v in
                 let t = lo + clamp(v.location.x / TLLayout.barW, 0, 1) * w
-                scrub = t
-                if tl.openRow != nil { tl.openRow = nil }
+                tl.follow(t, in: m)
                 let s = m.stretch(at: t)
                 if lastStretch != s { lastStretch = s; Haptic.selection() }
-                if let e = m.entry(at: t), let y = m.top(of: e.id) { tl.scroll(to: y, animated: false) }
             }
             .onEnded { _ in
                 lastStretch = nil
-                withAnimation(.easeOut(duration: 0.2)) { scrub = nil }
+                withAnimation(.easeOut(duration: 0.2)) { tl.follow(nil, in: nil) }
             }
     }
 
@@ -436,7 +469,7 @@ private struct TLList: View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 0) {
                 ForEach(model.entries) { e in
-                    TLRowView(e: e, open: tl.openRow == e.id, first: e.id == model.entries.first?.id, dim: dim(e), engine: engine) { toggle(e) }
+                    TLRowView(e: e, open: tl.openRow == e.id, first: e.id == model.entries.first?.id, dim: dim(e), hot: tl.hot == e.id, engine: engine) { toggle(e) }
                         .modifier(Rise(rank: ranks[e.id], on: tl.reveal, reduce: reduce))
                         .transition(reduce ? .opacity : .asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)), removal: .opacity))
                 }
@@ -500,6 +533,7 @@ private struct TLRowView: View {
     let open: Bool
     let first: Bool
     let dim: Double                     // 1, less while a lens is on and this is not of its kind
+    let hot: Bool                       // the row that covers the minute under his finger on the bar
     let engine: StarEngine
     let tap: () -> Void
 
@@ -513,6 +547,10 @@ private struct TLRowView: View {
                 }
             }
             .frame(height: e.height, alignment: .top)
+            .background {
+                RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(hot ? 0.07 : 0)).padding(.horizontal, -8)
+                    .animation(.easeOut(duration: 0.1), value: hot)
+            }
             .contentShape(Rectangle())
             .onTapGesture(perform: tap)
             .accessibilityElement(children: .combine)

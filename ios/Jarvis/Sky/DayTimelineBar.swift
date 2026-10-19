@@ -199,9 +199,10 @@ struct TLBarView: View {
                 ZStack(alignment: .topLeading) {
                     RoundedRectangle(cornerRadius: TLLayout.barRadius).fill(Color.white.opacity(0.035))
                     BarCanvas(scene: scene, rects: rects)
-                    if let b = bracket { bracketView(b) }                   // under the words, so a line never runs through a symbol
+                    if let b = bracket { bracketView(b).transition(.opacity) }      // under the words, so a line never runs through a symbol
                     labels
                 }
+                .animation(.easeOut(duration: 0.12), value: bracket != nil)  // it comes and goes with a fade; moving from one span to the next is as quick as the finger
                 .frame(width: bw, height: bh, alignment: .topLeading)       // its own size: the marker and the hours stand outside the bar and would stretch the track
                 .mask(alignment: .leading) { Rectangle().frame(width: reduce || reveal ? bw : 0) }          // grows in from the left
                 .opacity(reduce && !reveal ? 0 : 1)
@@ -304,10 +305,10 @@ struct TLBarView: View {
     private func scrubMark(_ t: Double) -> some View {
         ZStack(alignment: .topLeading) {
             Rectangle().fill(TLPaint.ink.color(0.7)).frame(width: 1, height: bh + 8).offset(x: x(t) - 0.5, y: -4)
-            Text(clock(t)).font(AT.mono(11)).foregroundStyle(TLPaint.ink.color).padding(.horizontal, 8).frame(height: 20)
+            Text(clock(t)).font(AT.mono(11)).foregroundStyle(TLPaint.ink.color).padding(.horizontal, 8).frame(height: 19)
                 .background(Capsule().fill(Color(red: 28 / 255, green: 31 / 255, blue: 58 / 255)))
                 .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.5))
-                .fixedSize().offset(x: clamp(x(t) - 22, 0, bw - 44), y: -29)
+                .fixedSize().offset(x: clamp(x(t) - 22, 0, bw - 44), y: -27)
         }
         .allowsHitTesting(false)
     }

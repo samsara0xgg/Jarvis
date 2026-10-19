@@ -544,6 +544,95 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(m.entry(at: 1439)?.id, "departure-demo-1")
     }
 
+    // MARK: a finger on the bar
+
+    func testAFingerOnAStayReadsItsHoursAndLengthAndWhatElseWentOnThen() {
+        let r = build(TimelineFixture.today(cal)).readout(at: 615)
+        XCTAssertEqual(r.head, "家 · 09:05–11:25 · 2 时 20 分")
+        XCTAssertEqual(r.second, "明天下午有什么安排？", "the talk that covers 10:15; the Mac work 15 minutes on is too far")
+        XCTAssertNotNil(r.hue)
+        XCTAssertTrue(r.strong, "a place he keeps")
+        XCTAssertFalse(r.ahead)
+        let night = build(TimelineFixture.today(cal)).readout(at: 420)
+        XCTAssertEqual(night.head, "睡觉 · 00:55–09:05 · 8 时 5 分", "07:00: the night, with the hours it really had, though the bar begins at 06:00")
+        XCTAssertEqual(night.second, "这段时间没有别的记录")
+    }
+
+    func testAFingerOnATripReadsTheTripAndSaysWhenNothingElseWasThere() {
+        let r = build(TimelineFixture.today(cal)).readout(at: 720)
+        XCTAssertEqual(r.head, "开车 · 11:25–13:05 · 1 时 40 分")
+        XCTAssertEqual(r.second, "这段时间没有别的记录")
+        XCTAssertEqual(r.hue, TLPaint.trip)
+        XCTAssertTrue(r.elsewhere.isEmpty)
+    }
+
+    func testAFingerOnTheMinuteOfAPaymentReadsThePlaceItWasAtAndThePayment() {
+        let r = build(TimelineFixture.today(cal)).readout(at: 800)
+        XCTAssertEqual(r.head, "A&W · 13:15–13:55 · 40 分")
+        XCTAssertEqual(r.second, "A&W · $12.40")
+        XCTAssertFalse(r.strong, "a place he does not keep")
+    }
+
+    func testAtMostTwoThingsAreToldAndTheMostTellingComeFirst() {
+        let r = build(TimelineFixture.today(cal)).readout(at: 1245)
+        XCTAssertEqual(r.head, "家 · 18:50 起 · 3 时", "a stay still going has its start and how long so far")
+        XCTAssertEqual(r.elsewhere, ["Jarvis · Xcode", "和她说话 · 14 句"], "Mac work, then the talk: both cover 20:45")
+        XCTAssertEqual(r.second, "Jarvis · Xcode · 和她说话 · 14 句")
+        XCTAssertEqual(r.elsewhere.count, 2)
+        let more = build(TimelineFixture.today(cal)).readout(at: 1225)
+        XCTAssertEqual(more.elsewhere, ["Jarvis · Xcode", "Claude · 积分换元的符号问题"], "the Mac work and the chat with Claude cover 20:25; the talk 15 minutes on does not")
+        XCTAssertEqual(more.second, "Jarvis · Xcode · Claude · 积分换元的符号问题")
+    }
+
+    func testWhatMatteredIsToldByItsLabelAndWhatIsNearButNotOverIsTold() {
+        let m = build(TimelineFixture.today(cal))
+        XCTAssertEqual(m.readout(at: 1005).second, "和 Mia 聊了很久", "the call that covers 16:45, by the label that was put on it")
+        XCTAssertEqual(m.readout(at: 1025).second, "和 Mia 聊了很久", "seven minutes after it ended, and nothing covers 17:05")
+        XCTAssertEqual(m.readout(at: 1035).second, "这段时间没有别的记录", "17 minutes after")
+    }
+
+    func testAFingerPastNowReadsThatItHasNotHappenedAndWhatWasPlanned() {
+        let m = build(TimelineFixture.today(cal))
+        let planned = m.readout(at: 1335)
+        XCTAssertEqual(planned.head, "还没到")
+        XCTAssertTrue(planned.ahead)
+        XCTAssertNil(planned.hue)
+        XCTAssertEqual(planned.second, "陶艺课")
+        XCTAssertEqual(m.readout(at: 1420).second, "这段时间没有安排", "nothing is planned for then")
+    }
+
+    func testWhereNothingWasRecordedTheFingerReadsHowLongNothingWas() throws {
+        let m = build(try reply(#"""
+            {"id": "a", "lane": "you", "kind": "move", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(700)), "activity": "walking"},
+            {"id": "b", "lane": "you", "kind": "move", "state": "done", "start_ms": \#(at(760)), "end_ms": \#(at(800)), "activity": "walking"}
+            """#))
+        let r = m.readout(at: 730)
+        XCTAssertEqual(r.head, "没有记录 · 11:40–12:40 · 1 时")
+        XCTAssertNil(r.hue)
+        XCTAssertEqual(r.second, "这段时间没有别的记录")
+        XCTAssertEqual(m.readout(at: 400).head, "没有记录 · 06:00–10:00 · 4 时", "before the first stretch: from the bar's start")
+    }
+
+    func testAFingerOnTheBarLightsTheRowThereAndClosesTheOpenOneAndLettingGoClearsBoth() {
+        withTimeline { e in
+            let m = build(TimelineFixture.today(cal))
+            e.ui.tl.openRow = "talk-1"
+            let n = e.ui.tl.request.n
+            e.ui.tl.follow(700, in: m)
+            XCTAssertEqual(e.ui.tl.scrub, 700)
+            XCTAssertEqual(e.ui.tl.hot, "move-3", "the drive covers 11:40")
+            XCTAssertNil(e.ui.tl.openRow, "a row that was open is closed: the list goes where the finger goes")
+            XCTAssertEqual(e.ui.tl.request.y, m.top(of: "move-3"))
+            XCTAssertFalse(e.ui.tl.request.animated)
+            XCTAssertEqual(e.ui.tl.request.n, n + 1)
+            e.ui.tl.follow(1000, in: m)
+            XCTAssertEqual(e.ui.tl.hot, "call-demo-1")
+            e.ui.tl.follow(nil, in: nil)
+            XCTAssertNil(e.ui.tl.scrub)
+            XCTAssertNil(e.ui.tl.hot)
+        }
+    }
+
     // MARK: the setting
 
     func testTheHomeScreenShowsTheTimelineUntilHeChoosesTheDialAndKeepsWhatHeChose() {
