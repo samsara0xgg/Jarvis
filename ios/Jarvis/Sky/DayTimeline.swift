@@ -82,6 +82,10 @@ final class TimelineState {
     var markBusy = false                            // his word on a mark is on its way to the brain: another waits for it
     var notes: [String: String] = [:]               // why what he did to a row did not go, by row: said under the row while it is open
     var pop: [String: Int] = [:]                    // bumps when a row has just been starred: its star in the open row bursts
+    // what he says of a stretch (Sky/DayTimelineSayWhat.swift)
+    var sayWhat: TLSayWhat?                         // the stretch the sheet is open for
+    var sayBusy = false                             // his words are on their way to the brain
+    var sayNote: String?                            // why they did not go
     @ObservationIgnored var brain = TLBrain.live    // where his words go (a test or a debug scene gives another)
     var flash: String?                              // the row just scrolled to: it flashes
     var sunSaid = false                             // the weather in the header was just tapped: it says when the sun rose and set, in its place
@@ -255,6 +259,7 @@ struct DayTimelineView: View {
         .opacity(on ? 1 : 0)
         .allowsHitTesting(on)
         .animation(.easeOut(duration: on ? 0.35 : 0.15), value: on)         // out quickly: she is about to glide down across it
+        .sheet(item: Bindable(tl).sayWhat) { TLSayWhatSheet(tl: tl, s: $0) }
     }
 
     // MARK: what there is to show

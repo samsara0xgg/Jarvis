@@ -83,6 +83,7 @@ enum TLAction: Hashable {
     case summarize          // what he did on the Mac, put to her at once
     case mark               // it mattered: his star on it
     case unmark             // it did not: the star, his or hers, taken off
+    case sayWhat            // a stretch of the day: what he was doing, in his own words (the last of them, and the rare one)
 }
 
 /// the kinds of place he can name a place as: the brain's own roles (jarvis/state/places.py), which are three
@@ -592,7 +593,7 @@ struct DayTimelineModel: Equatable {
             entries.insert(line, at: entries.firstIndex { $0.t0 > now } ?? entries.count)
         }
         space(&entries)
-        for k in entries.indices { entries[k].actions = actions(of: entries[k]); entries[k].cut = entries[k].cutShort }
+        for k in entries.indices { entries[k].actions = actions(of: entries[k], now: now); entries[k].cut = entries[k].cutShort }
 
         // the night that ended on this day says when he woke; what began before the bar's start brings it back
         let wake = items.compactMap { $0.kind == "sleep" ? $0.end_ms.map(m) : nil }.filter { $0 >= 0 && $0 < DAY }.min()
@@ -746,7 +747,7 @@ struct DayTimelineModel: Equatable {
     }
 
     /// what opening a row offers: each only where it works today
-    static func actions(of e: TLEntry) -> [TLAction] {
+    static func actions(of e: TLEntry, now: Double?) -> [TLAction] {
         var a: [TLAction] = []
         switch e.kind {
         case .talk: if e.talkStart != nil { a.append(.openTalk) }
@@ -759,6 +760,7 @@ struct DayTimelineModel: Equatable {
         if e.about != nil { a.append(.ask) }
         // his star: on a row nobody marked, or that only she picked; off a row with a star, whose it is (a pick of hers can be adopted as well as put away)
         if e.starrable { a += e.lit ? (e.hers ? [.mark, .unmark] : [.unmark]) : [.mark] }
+        if TLSayWhat.range(of: e, now: now) != nil { a.append(.sayWhat) }
         return a
     }
 

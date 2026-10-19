@@ -7,9 +7,11 @@ final class TLStubBrain {
     var marked: [(day: String, id: String, on: Bool)] = []
     var committed: [(hex: String, action: CommitAction)] = []
     var named: [(name: String, lat: Double, lng: Double, role: String)] = []
+    var answered: [(day: String, startMs: Int64, endMs: Int64, text: String)] = []
     var markAnswer: HighlightAnswer = .done(nil)
     var commitAnswer: CommitAnswer = .done
     var nameAnswer: PlaceAdd = .done(nil, change: nil)
+    var spanAnswer: SpanAnswer = .done
     var refetches = 0
     /// when set, an answer waits for `release()`
     var hold = false
@@ -20,6 +22,7 @@ final class TLStubBrain {
             mark: { [self] day, id, on in marked.append((day, id, on)); await pause(); return markAnswer },
             commit: { [self] hex, action in committed.append((hex, action)); await pause(); return commitAnswer },
             name: { [self] name, lat, lng, role in named.append((name, lat, lng, role)); await pause(); return nameAnswer },
+            answer: { [self] day, startMs, endMs, text in answered.append((day, startMs, endMs, text)); await pause(); return spanAnswer },
             refetch: { [self] in refetches += 1 })
     }
 

@@ -119,7 +119,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(b.map(\.title), ["公交", "12 路"], "no route is just a bus")
         XCTAssertEqual(b.map(\.detail), [nil, nil])
         XCTAssertEqual(b.map(\.base), [TLMetrics.row, TLMetrics.row], "no second line, no taller row")
-        XCTAssertTrue(b.allSatisfy { $0.more.isEmpty && $0.actions == [.ask, .mark] }, "nothing to say, but she can be asked about it and it can be starred")
+        XCTAssertTrue(b.allSatisfy { $0.more.isEmpty && $0.actions == [.ask, .mark, .sayWhat] }, "nothing to say, but she can be asked about it, starred, and told what the stretch was")
     }
 
     func testTheNightIsARowWithItsHoursAndHowLongHeSlept() throws {

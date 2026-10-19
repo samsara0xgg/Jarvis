@@ -2,7 +2,7 @@ import SwiftUI
 
 // What a row of the day opens to, in place under it: a place's map and words, what a trip, a ride, an event or a payment says that its line does not, the first lines of a talk, the picture,
 // how a stretch of Mac work was spent, a night's stages, the sessions of Claude Code, and the buttons of what can be done with it (only those the row offers: `TLEntry.actions`) with the
-// star at their right. The row's own title and line are not said again: they wrap, in the row, while it is open.
+// star at their right and, for a stretch, 这段在干嘛 under them. The row's own title and line are not said again: they wrap, in the row, while it is open.
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
@@ -24,6 +24,7 @@ struct TLOpenView: View {
             if interactive, tl.renaming == e.id { renameField }         // first, so that it is up under the place's name whatever else the place has to show, clear of the keyboard
             content
             if interactive, tl.renaming != e.id { buttons }
+            if interactive, tl.renaming != e.id, e.actions.contains(.sayWhat) { sayWhatLink }
             if interactive, let note = tl.notes[e.id] { Text(note).font(.system(size: 12.5)).foregroundStyle(SetColor.red.opacity(0.92)).fixedSize(horizontal: false, vertical: true).transition(.opacity) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -188,9 +189,9 @@ struct TLOpenView: View {
     // MARK: what can be done with it
 
     @ViewBuilder private var buttons: some View {
-        if !e.actions.isEmpty {
+        if e.actions.contains(where: { $0 != .sayWhat }) {
             HStack(spacing: 8) {
-                ForEach(e.actions.filter { $0 != .mark && $0 != .unmark }.sorted { rank($0) < rank($1) }, id: \.self) { a in
+                ForEach(e.actions.filter { $0 != .mark && $0 != .unmark && $0 != .sayWhat }.sorted { rank($0) < rank($1) }, id: \.self) { a in
                     Button { tl.perform(a, on: e, engine: engine) } label: {
                         Text(a.title).font(.system(size: 14, weight: .semibold)).lineLimit(1).fixedSize()
                             .foregroundStyle(strong(a) ? AT.navy : ink)
@@ -205,6 +206,17 @@ struct TLOpenView: View {
             }
             .animation(.easeOut(duration: reduce ? TLMotion.reducedFade : 0.2), value: e.actions)          // 是我的 and 不是 go when one of them is said
         }
+    }
+    /// 这段在干嘛, the last and the quietest: a line of its own under the buttons (they have no room left for it beside them) and not a capsule, for a stretch where he goes looking for it
+    private var sayWhatLink: some View {
+        Button { tl.perform(.sayWhat, on: e, engine: engine) } label: {
+            HStack(spacing: 6) {
+                Image(systemName: TLAction.sayWhat.symbol).font(.system(size: 12))
+                Text(TLAction.sayWhat.title).font(.system(size: 13))
+            }
+            .foregroundStyle(muted).frame(minHeight: 38, alignment: .leading).contentShape(Rectangle().inset(by: -4))
+        }
+        .buttonStyle(.plain)
     }
     /// what the row opened is for comes first, and in the light fill; asking her is always there and quieter
     private func strong(_ a: TLAction) -> Bool { a == .acknowledge || a == .openTalk || a == .summarize || a == .confirm }

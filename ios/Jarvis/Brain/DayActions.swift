@@ -1,7 +1,8 @@
 import Foundation
 
 // What he can do to a row of the day on the brain (ADR 0296, jarvis/surface/inherent_server.py): mark an item as what mattered (`POST /inherent/day/highlight`), say that an event his mail
-// made is his or is not (`POST /inherent/commitments/{hex}`), and keep a place he was at under a name of his (`POST /inherent/memory/places`). Each answers by its status. A 404 that
+// made is his or is not (`POST /inherent/commitments/{hex}`), keep a place he was at under a name of his (`POST /inherent/memory/places`), and say what he was doing in a stretch of the
+// day (`POST /inherent/day/answer`, ADR 0302). Each answers by its status. A 404 that
 // is the route's own (no such item, no such commitment) is told from the framework's, which a brain without the route gives (`{"detail": "Not Found"}`): that one is no answer.
 
 /// the brain's answer to his mark on an item of a day
@@ -62,6 +63,14 @@ enum PlaceAdd: Equatable {
     }
 }
 
+/// the brain's answer to what he said he was doing in a stretch
+enum SpanAnswer: Equatable {
+    case done                       // 200: the brain wrote it as a span of the doing lane; the days are asked for again, and its reply (not the phone) says how it stands
+    case failed                     // 422 (a time out of the day, a stretch no span touches, words empty or too long), 502 (it could not be written), a brain without the route, or no answer at all
+
+    static func read(status: Int, data: Data) -> SpanAnswer { (200...299).contains(status) ? .done : .failed }
+}
+
 enum BrainRoute {
     /// A 404 that says `Not Found` and nothing else is the framework's: this brain has no such route. A route's own 404 says what it did not find.
     static func missing(_ body: Data) -> Bool {
@@ -82,6 +91,13 @@ extension BrainClient {
         let body = try JSONSerialization.data(withJSONObject: ["action": action.rawValue])
         let r = try await send("POST", "/inherent/commitments/" + hex, body: body, also: [404, 409, 422], bases: bases, token: token, unauthorized: .revoked)
         return CommitAnswer.read(status: r.status, data: r.data)
+    }
+
+    /// What he was doing from `startMs` to `endMs` (epoch milliseconds inside `day`, `YYYY-MM-DD`): his words, 1 to 200 characters, as they are to stand.
+    static func stateSpan(day: String, startMs: Int64, endMs: Int64, text: String, bases: [URL], token: String) async throws -> SpanAnswer {
+        let body = try JSONSerialization.data(withJSONObject: ["day": day, "start_ms": startMs, "end_ms": endMs, "text": text])
+        let r = try await send("POST", "/inherent/day/answer", body: body, also: [422, 502], bases: bases, token: token, unauthorized: .revoked)
+        return SpanAnswer.read(status: r.status, data: r.data)
     }
 
     /// Keep the point (`lat`, `lng`) of a stay under his name for it; `role` is `home`, `school` or `other`.
