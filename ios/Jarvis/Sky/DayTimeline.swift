@@ -20,7 +20,8 @@ enum TLLayout {
     static let lineY = 108.0, lineH = 40.0             // her sentence: two lines of 15 pt
     static let barY = 176.0, barW = 380.0, barH = 22.0, barRadius = 6.0       // 28 pt over it for now's time (and, under a finger, the time in its chip), 12 pt under it for the hours
     static let chipsY = 220.0, chipsH = 24.0, chipsHit = 36.0                    // the day's numbers: chips of 24 pt (the first 8 pt under the hours) in a row of 36 that takes the touch
-    static let grabberY = 248.0, grabberH = 24.0       // the top of the grabber's hit area: its bar sits half way between the chips and the list
+    static let pillsY = 248.0                          // the row of the pills (the way back, what waits) between the chips and the list
+    static let handleH = 36.0                          // the history's handle over the composer: its hit area
     static let listTop = 272.0, listBottom = 836.0, fade = 24.0, fadeTop = 12.0
     static var viewport: Double { listBottom - listTop }
     /// what is left of the list's height under `pinned` points of cards (and the gap under them)
@@ -230,9 +231,9 @@ struct DayTimelineView: View {
                 .animation(.easeOut(duration: ui.panelOpen ? 0.2 : 0.35), value: ui.panelOpen)
                 listArea(shown, away: away)
                 undoToast(away: away)
-                grabber
+                handle
                 TLWaitPill(count: away ? 0 : model?.waiting.count ?? 0) { if let model { tl.revealWaiting(in: model) } }
-                    .frame(width: W - 60, alignment: .leading).offset(x: 30, y: TLLayout.grabberY + 2)
+                    .frame(width: W - 60, alignment: .leading).offset(x: 30, y: TLLayout.pillsY + 2)
                 pill(show: tl.day == tl.today && !nowInView && !away)
             }
             .frame(width: W, height: H, alignment: .topLeading)
@@ -286,30 +287,32 @@ struct DayTimelineView: View {
             .allowsHitTesting(false)
     }
 
-    // MARK: the grabber and the way back
+    // MARK: the history's handle and the way back
 
-    /// the same grabber as under the dial, between the bar and the list
-    private var grabber: some View {
-        let hide = ui.typing || ui.panelOpen
-        return Capsule().fill(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.28)).frame(width: 36, height: 5)
-            .frame(width: 120, height: TLLayout.grabberH)
+    /// The way into the history, which opens from the bottom: a chevron over the composer, where there is room (not while he types, the panel is open, the voice's line is up or a place is being named).
+    /// A tap opens the panel, and so does a pull up; it rises with the composer.
+    private var handle: some View {
+        let hide = ui.typing || ui.panelOpen || ui.voiceNote != nil || tl.renaming != nil
+        return Image(systemName: "chevron.compact.up").font(.system(size: 22, weight: .semibold))
+            .foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.4))
+            .frame(width: 120, height: TLLayout.handleH)
             .contentShape(Rectangle())
             .gesture(panelDrag(engine, $pull, opens: true, tap: true))
             .opacity(hide ? 0 : 1)
             .allowsHitTesting(!hide)
             .animation(.easeOut(duration: 0.3), value: hide)
-            .offset(x: (W - 120) / 2, y: TLLayout.grabberY)
+            .offset(x: (W - 120) / 2, y: H - StarUI.restGap - 48 - TLLayout.handleH - ui.attach.rise - ui.kbLift)
             .accessibilityLabel("展开对话")
     }
 
-    /// 回到现在, in the look of the one under the dial, on the grabber's row at the right: on today, when the line for now is out of view (another day has its way back in the header)
+    /// 回到现在, in the look of the one under the dial, on the row of the pills at the right: on today, when the line for now is out of view (another day has its way back in the header)
     private func pill(show: Bool) -> some View {
         Button { tl.goToday() } label: { TLBackLabel(text: "回到现在") }
         .buttonStyle(PressScale())
         .frame(width: W - 60, alignment: .trailing)
         .opacity(show ? 1 : 0).scaleEffect(show || reduce ? 1 : 0.92).allowsHitTesting(show)
         .animation(.easeOut(duration: 0.25), value: show)
-        .offset(x: 30, y: TLLayout.grabberY + 2)
+        .offset(x: 30, y: TLLayout.pillsY + 2)
     }
 
     /// a rename he can take back, for a few seconds, over the foot of the list
