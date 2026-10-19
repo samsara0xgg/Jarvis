@@ -231,6 +231,23 @@ def _uncovered(start: int, end: int | None, held: list[Span]) -> list[tuple[int,
     return pieces
 
 
+def _off_moves(first: int, last: int | None, going: list[Span]) -> tuple[int, int | None]:
+    """``[first, last)`` with the ends of moves that cross its edges taken off.
+
+    The first fix of a run often comes while he is still walking in, and the last while he is
+    already walking off; the move owns those minutes. A move wholly inside or wholly around the
+    piece changes nothing here.
+    """
+    for move in going:
+        inside_start = move.start <= first < _reach(move.end) < _reach(last)
+        if inside_start and move.end is not None:
+            first = move.end
+    for move in going:
+        if first < move.start < _reach(last) <= _reach(move.end):
+            last = move.start
+    return first, last
+
+
 def _cut_stays(rows: PhoneRows, held: list[Span], now_ms: int) -> list[Span]:
     """The stays the fixes show where no visit in ``held`` covers the time (ADR 0301).
 
@@ -238,7 +255,8 @@ def _cut_stays(rows: PhoneRows, held: list[Span], now_ms: int) -> list[Span]:
     left at the start of the last move (as :func:`moves` counts them) that starts after this run's
     last fix and before the next run's first fix, the move that carried him away, else at that
     first fix: a short walk about the flat at night does not end the stay. A run with no next run
-    is open, whatever moves follow its last fix. What a visit covers is cut out of it, and a piece
+    is open, whatever moves follow its last fix. What a visit covers is cut out of it, a move that
+    crosses a piece's start or end keeps its minutes (:func:`_off_moves`), and a piece
     left under :data:`STAY_MIN_MS`, or wholly inside one move (a slow walk sends fixes close enough
     to look like a run), is dropped. The first piece keeps the first fix's ``event_uid``
     as its id; a later one, which a visit in the middle makes, adds ``@`` and its start.
@@ -265,7 +283,9 @@ def _cut_stays(rows: PhoneRows, held: list[Span], now_ms: int) -> list[Span]:
         fields[CUT_FROM_KEY] = CUT_FROM_FIXES
         place, uid = run[0].origin
         kept = [
-            piece for piece in _uncovered(run[0].at, left, held)
+            piece for piece in (
+                _off_moves(first, last, going) for first, last in _uncovered(run[0].at, left, held)
+            )
             if (now_ms if piece[1] is None else piece[1]) - piece[0] >= STAY_MIN_MS
             and not any(
                 move.start <= piece[0] and _reach(piece[1]) <= _reach(move.end) for move in going

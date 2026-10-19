@@ -42,7 +42,9 @@ read, and give every reader of stays the one merged list.
   the flat at 23:00 does not end a night whose next fix, already outside, comes at 09:00. A
   run with no run after it stays open, with `end_ms` null, as an open visit does, whatever
   moves follow its last fix, and is measured to now.
-- Visits win. A cut stay is clipped to the time no visit covers, and what is left is
+- Visits win. A cut stay is clipped to the time no visit covers. A move that crosses a
+  piece's start or end keeps its minutes, since the first fix of a run often comes while he
+  is still walking in. What is left is
   dropped when it is under 5 minutes or lies wholly inside one move: a slow walk sends
   fixes close enough together to look like runs, and no one rests inside a walk.
 - A cut stay has the same shape as a visit stay and is told apart only by its origin: its

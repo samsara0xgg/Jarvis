@@ -183,7 +183,7 @@ CASES: list[Case] = [
             motion("flat", "walking", -60, -56, "medium"),
             motion("go", "automotive", 530, 545), fix("out", 540, FAR),
         ],
-        [cut("e1", -150, 530), went("go", 530, 545), cut("out", 540, None)],
+        [cut("e1", -150, 530), went("go", 530, 545), cut("out", 545, None)],
     ),
     Case(
         "with no move between the runs (a doubtful walk is none) the stay ends at the next fix",
@@ -192,6 +192,17 @@ CASES: list[Case] = [
             motion("flat", "walking", -60, -56, "low"), fix("out", 540, FAR),
         ],
         [cut("e1", -150, 540), cut("out", 540, None)],
+    ),
+    Case(
+        "a move that crosses a stay's edges keeps its minutes: the first fix of the next run came "
+        "while he was still walking in, the last of this run while he was already walking off",
+        [
+            fix("a1", 540), fix("a2", 545), fix("a3", 601),
+            motion("w1", "walking", 600, 609),
+            fix("b1", 604, SCHOOL), fix("b2", 612, SCHOOL), motion("w2", "walking", 700, 720),
+            fix("far", 1198, FAR),
+        ],
+        [cut("a1", 540, 600), went("w1", 600, 609), cut("b1", 609, 700), went("w2", 700, 720)],
     ),
     Case(
         "a run with no run after it is open, whatever moves follow its last fix",
@@ -294,7 +305,7 @@ CASES: list[Case] = [
             *line("p", 600, 639, 1, 55),
             fix("q1", 645, spot(2145)), fix("q2", 650, spot(2145)),
         ],
-        [went("w1", 600, 640), cut("p35", 635, None)],
+        [went("w1", 600, 640), cut("p35", 640, None)],
     ),
     # --- visits win -----------------------------------------------------------------------
     Case(
