@@ -16,6 +16,18 @@ enum PlaceTint {
         }
     }
     private static let others: [RGB] = [.done, .dial, .next, .wait]
+
+    /// The timeline lists the same places in colours of its own (the dial's above stay as they are): home and school are fixed, any other place keeps the hue its id picks,
+    /// and a stay in no place he keeps is a neutral haze.
+    static func line(role: String?, id: String) -> RGB {
+        switch role {
+        case "home": return RGB(255, 168, 150)
+        case "school": return RGB(100, 200, 255)
+        default: return lineOthers[Int(fnv(id) % UInt32(lineOthers.count))]
+        }
+    }
+    static let lineNeutral = RGB(196, 204, 238)
+    private static let lineOthers = [RGB(240, 132, 218), RGB(132, 152, 255), RGB(172, 124, 255), RGB(111, 224, 180)]
     /// FNV-1a, because `hashValue` is different on every launch
     static func fnv(_ s: String) -> UInt32 { s.utf8.reduce(2166136261) { ($0 ^ UInt32($1)) &* 16777619 } }
 }
