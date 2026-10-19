@@ -29,7 +29,9 @@ LOGGER = logging.getLogger(__name__)
 
 _DESCRIPTION: Final = (
     "Use for what he handed over from other apps: his payments (WeChat Pay, Alipay, Bank of "
-    "China) and his past conversations with Claude. Not for what he said to you (conversation) "
+    "China), his past conversations with Claude and the nightly summary of his Claude chats of "
+    "each day (claude_daily: per chat its summary, decisions, to-dos and mentions). Not for "
+    "what he said to you (conversation) "
     "or what he did on his devices (my_day). query finds the closest entries by meaning and by "
     "words; date and to limit the span; source limits to one app. Returns up "
     "to 8 entries per page, each with its id, time (in the same time zone as the rest of your "
@@ -37,7 +39,7 @@ _DESCRIPTION: Final = (
     "count and the totals spent and received over every match, not just the page. open: an id "
     "from a result; for a Claude message, the messages around it."
 )
-_SOURCES: Final = ("claude", "wechat_pay", "alipay", "boc")
+_SOURCES: Final = ("claude", "claude_daily", "wechat_pay", "alipay", "boc")
 _SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
     "properties": {

@@ -13,6 +13,7 @@ Layer rules: stdlib only (L2).
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import hashlib
 import io
@@ -20,7 +21,8 @@ import json
 import re
 import zipfile
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from datetime import time as dtime
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Final
 from xml.etree import ElementTree as ET
@@ -445,9 +447,124 @@ def boc(_name: str, data: bytes, _fallback_ms: int) -> Iterator[Parsed]:
     yield from boc_text(text)
 
 
+# --- the Claude daily letter ---------------------------------------------------------------
+
+DAILY_SUBJECT: Final = "Jarvis Claude 日报"
+"""A daily letter's subject starts with this, then the day (ADR 0295)."""
+_DAILY_KEY: Final = r"[A-Za-z][\w -]{0,40}?"
+_DAILY_LINE: Final = re.compile(rf"^(?:[-*]\s*)?({_DAILY_KEY})\s*[:\uff1a]\s*(.*)$")
+_DAILY_SECTION: Final = re.compile(r"^##\s*(.*)$")
+_DAILY_DAY: Final = re.compile(r"\d{4}-\d{2}-\d{2}")
+_DAILY_TIME: Final = re.compile(
+    r"(\d{1,2}):(\d{2})(?:\s*(?:[-\u2013\u2014~]|to)\s*(\d{1,2}):(\d{2}))?",
+)
+
+
+def is_daily_subject(subject: str) -> bool:
+    """Whether a mail's subject is a daily letter's: every other reader of mail leaves it alone."""
+    return subject.strip().casefold().startswith(DAILY_SUBJECT.casefold())
+
+
+def _daily_fields(lines: list[str]) -> dict[str, str]:
+    """``key: value`` lines (a leading dash allowed); a line that is none continues the last."""
+    found: dict[str, str] = {}
+    last = ""
+    for line in lines:
+        hit = _DAILY_LINE.match(line.strip())
+        if hit:
+            last = re.sub(r"[ -]+", "_", hit.group(1).strip().lower())
+            found[last] = f"{found[last]}\n{hit.group(2)}" if last in found else hit.group(2)
+        elif line.strip() and last:
+            found[last] += f"\n{line.strip()}"
+    return found
+
+
+def _squash(text: str) -> str:
+    """A short hash of ``text`` that ignores spacing: other line breaks are the same revision."""
+    return _digest(" ".join(text.split()))[:10]
+
+
+def _daily_zone(name: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(name)
+    except (ValueError, KeyError, OSError):
+        return ZoneInfo("UTC")
+
+
+def _daily_clock(day: date, hour: str, minute: str, zone: ZoneInfo) -> int | None:
+    try:
+        return _ms(datetime.combine(day, dtime(int(hour), int(minute)), zone))
+    except ValueError:
+        return None
+
+
+def claude_daily(name: str, data: bytes, fallback_ms: int) -> Iterator[Parsed]:
+    """A day's letter of his Claude chats (ADR 0295): one entry for the day, one per chat section.
+
+    Read leniently: a letter with no header, no sections or neither is still one whole-day entry
+    (``parsed`` false). The day comes from the ``date:`` line, else from ``name`` (the subject),
+    else from ``fallback_ms``; the zone from ``timezone:``, else UTC. A chat's keys carry the day,
+    its id (else a digest of its title) and a hash of its text, so a revised chat is a new entry.
+    """
+    # blank lines go: a letter re-sent as HTML has them between every line, and is the same one
+    lines = data.decode("utf-8", "replace").lstrip("\ufeff").splitlines()
+    text = "\n".join(line.rstrip() for line in lines if line.strip())
+    head: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
+    for line in text.split("\n"):
+        if (hit := _DAILY_SECTION.match(line)) is not None:
+            sections.append((hit.group(1).strip(), []))
+        else:
+            (sections[-1][1] if sections else head).append(line)
+    header = _daily_fields(head)
+    zone_name = header.get("timezone", "").strip() or "UTC"
+    zone = _daily_zone(zone_name)
+    day = datetime.fromtimestamp(fallback_ms / 1000, zone).date()
+    for where in (header.get("date", ""), name):
+        if (found := _DAILY_DAY.search(where)) is not None:
+            with contextlib.suppress(ValueError):  # 2026-13-45 is no day: the next source is tried
+                day = date.fromisoformat(found.group(0))
+                break
+    noon = _ms(datetime.combine(day, dtime(12), zone))
+    chats: list[Parsed] = []
+    for n, (title, lines) in enumerate(sections, 1):
+        body = "\n".join(lines).strip()
+        fields = _daily_fields(lines)
+        ident = fields.get("id", "").strip() or f"title-{_digest(title)[:12]}"
+        start, end = noon, noon
+        if (when := _DAILY_TIME.search(fields.get("time", ""))) is not None:
+            begin = _daily_clock(day, when.group(1), when.group(2), zone)
+            finish = (
+                _daily_clock(day, when.group(3), when.group(4), zone) if when.group(3) else None
+            )
+            if begin is not None:
+                start = end = begin
+                if finish is not None:
+                    end = finish if finish >= begin else finish + 86_400_000
+        whole = f"{title}\n{body}".strip()
+        chats.append(Parsed(
+            "claude_daily", f"chat:{day}:{ident}:{_squash(whole)}", f"section {n}", start,
+            zone_name, "daily_chat", whole,
+            {**fields, "title": title, "date": str(day), "timezone": zone_name, "end_ms": end},
+        ))
+    span = (min(c.at_ms for c in chats), max(c.fields["end_ms"] for c in chats)) if chats else (
+        noon, noon,
+    )
+    yield Parsed(
+        "claude_daily", f"day:{day}:{_squash(text)}", "day", noon, zone_name, "daily", text,
+        {
+            **header, "date": str(day), "timezone": zone_name, "parsed": bool(sections),
+            "sections": len(chats), "titles": [c.fields["title"] for c in chats],
+            "start_ms": span[0], "end_ms": span[1],
+        },
+    )
+    yield from chats
+
+
 PARSERS: Final[dict[str, Callable[[str, bytes, int], Iterator[Parsed]]]] = {
     "wechat_pay": wechat_pay,
     "alipay": alipay,
     "boc": boc,
+    "claude_daily": claude_daily,
 }
 """Sources that are one file each. ``claude`` is a directory of files, read by :func:`claude`."""

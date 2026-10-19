@@ -34,8 +34,10 @@ Each source folds on its own and a source that raises leaves its items out (:fun
   that stands for a commitment (``source`` ``commitment:*``), which is drawn once, as itself;
 - ``imports``: what he handed over (ADR 0259), in his lane: each payment that moved money as a
   point (amount, direction, counterparty, item), and each conversation with Claude as a span from
-  its first to its last message of the window (the title as text); with no memory store it has
-  nothing to read and says nothing in ``missing``;
+  its first to its last message of the window (the title as text), and each day's nightly letter
+  on his Claude chats (ADR 0295) as kind ``claude_day``, a span over the chats' times with their
+  titles as text and ``chats`` their number; with no memory store it has nothing to read and says
+  nothing in ``missing``;
 - ``departures``: the bus trips he pinned (ADR 0204), each a point at its departure time, from the
   pin as the log held it at the end of the day; the reminder that rings for a trip on the line is
   left out, the departure stands for it.
@@ -602,7 +604,7 @@ def _talk_items(
 def _import_items(
     sources: DaySources, window_start: int, window_end: int, now_ms: int,
 ) -> list[dict[str, Any]]:
-    """His payments as points and his Claude conversations as spans, from the imported entries."""
+    """His payments as points, his Claude chats as spans and his Claude days, from the imports."""
     path = sources.memory_db
     if path is None or not path.is_file():
         return []  # no memory store: ``talks`` already says so in ``missing``
@@ -610,6 +612,7 @@ def _import_items(
         rows = imports.entries(
             conn, start_ms=window_start, end_ms=window_end, kinds=("payment", "message"),
         )
+        days = imports.latest_daily(conn, window_start, window_end)
     items: list[dict[str, Any]] = []
     chats: dict[str, list[imports.Entry]] = defaultdict(list)
     for row in rows:
@@ -631,6 +634,19 @@ def _import_items(
                 "counterparty": fields["counterparty"],
                 "text": fields["item"],
             })
+    for row in days:  # the night's letter on his Claude chats (ADR 0295): the newest one a day
+        first, last = int(row.fields["start_ms"]), int(row.fields["end_ms"])
+        items.append({
+            "id": f"claude-day-{row.fields['date']}",
+            "lane": "you",
+            "kind": "claude_day",
+            "start_ms": first,
+            "end_ms": last,
+            "state": _state(first, last, now_ms),
+            "source": "claude_daily",
+            "text": "; ".join(row.fields["titles"]) or row.text[:120],
+            "chats": int(row.fields["sections"]),
+        })
     for chat, messages in chats.items():
         first, last = min(m.at_ms for m in messages), max(m.at_ms for m in messages)
         items.append({

@@ -351,7 +351,7 @@ def test_the_imports_directory_is_outside_sweep_clear_and_export(tmp_path: Path)
     kept = tmp_path / imports.IMPORTS_DIRNAME
     assert not any(d == kept or kept in d.parents or d in kept.parents for d in media)
     assert len(list((kept / "wechat_pay").iterdir())) == 1
-    assert json.loads(json.dumps(sorted(imports.SOURCES))) == ["alipay", "boc", "claude", "wechat_pay"]
+    assert json.loads(json.dumps(sorted(imports.SOURCES))) == ["alipay", "boc", "claude", "claude_daily", "wechat_pay"]
 
 
 FAKE_KEYS = [
