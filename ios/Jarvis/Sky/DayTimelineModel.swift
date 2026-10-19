@@ -454,18 +454,20 @@ struct DayTimelineModel: Equatable {
             }
         }
         return DayTimelineModel(date: r.date, line: text(r.line?.text), entries: entries, segs: segs,
-                                span: axisStart(wake: wake, early: early)...DAY, now: now, missing: missingText(r.missing), stars: stars, chips: chips)
+                                span: axisStart(wake: wake, early: early, now: now)...DAY, now: now, missing: missingText(r.missing), stars: stars, chips: chips)
     }
 
     /// what, starting before the bar's start, brings the start back: where he went and what he did, never a stay alone
-    private static let axisKinds: Set<String> = ["move", "ride", "talk", "picture", "event", "work", "call", "payment"]
+    private static let axisKinds: Set<String> = ["move", "ride", "talk", "picture", "event", "work", "call", "payment", "workout", "code"]
 
-    /// Where the bar starts, in minutes: the earlier of 06:00 and the hour before he woke (`wake`, the end of the night that ended on this day: none is 06:00),
-    /// never before 00:00. Something in `early` (when the things of the day began) before that moves it back to its hour.
-    static func axisStart(wake: Double?, early: [Double]) -> Double {
+    /// Where the bar starts, in minutes: the later of 06:00 and the hour before he woke (`wake`, the end of the night that ended on this day: none is 06:00), so the
+    /// waking day gets the width. Something in `early` (when the things of the day began) before that moves it back to its hour, and on today (`now`) it is
+    /// never later than the hour now is in, so that the line for now is always on the bar.
+    static func axisStart(wake: Double?, early: [Double], now: Double? = nil) -> Double {
         var lo = 360.0
-        if let wake { lo = min(lo, max(0, ((wake - 60) / 60).rounded(.down) * 60)) }
+        if let wake { lo = max(lo, ((wake - 60) / 60).rounded(.down) * 60) }
         if let first = early.filter({ $0 >= 0 && $0 < lo }).min() { lo = (first / 60).rounded(.down) * 60 }
+        if let now { lo = min(lo, max(0, (now / 60).rounded(.down) * 60)) }
         return lo
     }
 
