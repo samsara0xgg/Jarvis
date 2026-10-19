@@ -22,12 +22,12 @@ final class DayTimelineTests: XCTestCase {
     func testTheFixtureDayIsSleepGroupsAndTripsInTheOrderOfTheDayWithNowBetween() {
         let m = build(TimelineFixture.today(cal))
         let kinds = m.entries.map(\.kind)
-        XCTAssertEqual(kinds, [.sleep, .stay, .talk, .trip, .trip, .stay, .trip, .stay, .trip, .stay, .picture, .call, .trip, .stay, .talk, .now, .event, .reminder])
-        XCTAssertEqual(m.entries.map(\.title).prefix(4), ["睡觉", "家", "明天下午有什么安排？", "开车"])
+        XCTAssertEqual(kinds, [.sleep, .stay, .talk, .work, .trip, .trip, .stay, .payment, .trip, .stay, .trip, .stay, .picture, .call, .trip, .stay, .work, .claude, .talk, .now, .event, .reminder, .departure])
+        XCTAssertEqual(m.entries.map(\.title).prefix(4), ["睡觉", "家", "明天下午有什么安排？", "Jarvis"])
         let t = m.entries.map(\.t0)
         XCTAssertEqual(t, t.sorted(), "the list runs forward in time")
-        XCTAssertEqual(m.nowIndex, 15)
-        XCTAssertEqual(m.entries[15].title, "现在 21:50")
+        XCTAssertEqual(m.nowIndex, 19)
+        XCTAssertEqual(m.entries[19].title, "现在 21:50")
     }
 
     func testWhatIsAfterTheLineForNowIsLaterAndWhatIsBeforeIsNot() {
@@ -192,6 +192,49 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(m.entries[1].right, "30 分")
     }
 
+    func testAPaymentIsNamedForWhoGotTheMoneySaysWhatItWasForAndShowsWhatItCameTo() throws {
+        let m = build(TimelineFixture.today(cal))
+        let p = try entry(m, "payment-demo-1")
+        XCTAssertEqual([p.title, p.detail, p.right, p.time], ["A&W", "Teen Burger Combo", "$12.40", "13:20"])
+        XCTAssertEqual(p.more, ["支出 $12.40 CAD", "来自支付宝"])
+        XCTAssertEqual(p.symbol, "creditcard.fill")
+        XCTAssertTrue(p.strongRight && p.opens)
+        XCTAssertNil(p.about, "the host does not take a payment yet")
+        // money in has a plus; no shop leaves what it was for as the title; a source with no word here is said as it came; no amount is no amount
+        let r = try reply(#"{"id": "pay-2", "lane": "you", "kind": "payment", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(600)), "source": "wechat_pay", "amount": "1234.50", "currency": "CNY", "direction": "in", "text": "转账"}, {"id": "pay-3", "lane": "you", "kind": "payment", "state": "done", "start_ms": \#(at(700)), "end_ms": \#(at(700)), "source": "venmo", "amount": "5.00", "currency": "AUD", "direction": "out", "counterparty": "Cafe"}, {"id": "pay-4", "lane": "you", "kind": "payment", "state": "done", "start_ms": \#(at(800)), "end_ms": \#(at(800))}"#)
+        let rows = build(r, now: nil).entries
+        XCTAssertEqual(rows.map(\.title), ["转账", "Cafe", "付款"])
+        XCTAssertEqual(rows.map(\.right), ["+¥1,234.50", "AUD 5.00", ""])
+        XCTAssertEqual(rows.map(\.more), [["收入 ¥1,234.50 CNY", "来自微信"], ["支出 AUD 5.00", "来自venmo"], []])
+        XCTAssertEqual(rows.map(\.detail), [nil, nil, nil])
+    }
+
+    func testMoneyIsWrittenWithTheMarkOfItsCurrency() {
+        XCTAssertEqual(tlMoney(1240, "CAD"), "$12.40")
+        XCTAssertEqual(tlMoney(1240, "usd"), "$12.40")
+        XCTAssertEqual(tlMoney(123450, "CNY"), "¥1,234.50")
+        XCTAssertEqual(tlMoney(5, "EUR"), "€0.05")
+        XCTAssertEqual(tlMoney(500, "AUD"), "AUD 5.00")
+        XCTAssertEqual(tlMoney(500, nil), "5.00")
+        XCTAssertEqual(tlMoney(-1240, "CAD"), "-$12.40")
+        XCTAssertEqual(tlMoney(100_000_000, "CAD"), "$1,000,000.00")
+    }
+
+    func testAClaudeChatIsNamedForTheConversationAndCountsItsMessagesAndADayListsItsChats() throws {
+        let m = build(TimelineFixture.today(cal))
+        let c = try entry(m, "claude-demo-1")
+        XCTAssertEqual([c.title, c.detail, c.right, c.time], ["积分换元的符号问题", "14 条消息", "25 分", "20:10"])
+        XCTAssertEqual(c.symbol, "sparkles")
+        XCTAssertNil(c.about)
+        let r = try reply(#"{"id": "claude-x-1", "lane": "you", "kind": "claude_chat", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(620)), "text": "Claude conversation", "messages": 3}, {"id": "claude-day-2026-10-08", "lane": "you", "kind": "claude_day", "state": "done", "start_ms": \#(at(700)), "end_ms": \#(at(800)), "source": "claude_daily", "text": "微积分; 论文提纲 ;", "chats": 2}"#)
+        let rows = build(r, now: nil).entries
+        XCTAssertEqual(rows.map(\.title), ["Claude 对话", "Claude 对话小结"], "a conversation with no name is only one")
+        XCTAssertEqual(rows[1].detail, "微积分、论文提纲")
+        XCTAssertEqual(rows[1].more, ["微积分", "论文提纲"], "its titles as a list when it is opened")
+        XCTAssertEqual(rows[1].right, "2 段")
+        XCTAssertTrue(rows[1].opens)
+    }
+
     func testWhatMatteredIsNamedByItsLabelAndLit() throws {
         let m = build(TimelineFixture.today(cal))
         let c = try entry(m, "call-demo-1")
@@ -206,7 +249,7 @@ final class DayTimelineTests: XCTestCase {
     }
 
     func testAKindThisPhoneDoesNotKnowIsLeftOut() throws {
-        let r = try reply(#"{"id": "p", "lane": "you", "kind": "payment", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(600))}"#)
+        let r = try reply(#"{"id": "p", "lane": "you", "kind": "flight", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(600))}"#)
         XCTAssertTrue(build(r).entries.filter { $0.kind != .now }.isEmpty)
         XCTAssertTrue(build(r).isEmpty)
     }
@@ -216,7 +259,7 @@ final class DayTimelineTests: XCTestCase {
     func testHerSentenceAndTheSourceThatWasNotReadAreCarried() {
         let m = build(TimelineFixture.today(cal))
         XCTAssertEqual(m.line, "今天去了学校，下午在 UVic 待得最久，晚上回家早点休息。")
-        XCTAssertEqual(m.missing, "还没读到：Mac 的时间")
+        XCTAssertEqual(m.missing, "还没读到：日历")
         XCTAssertEqual(m.height, m.entries.reduce(0) { $0 + $1.height } + TLMetrics.note, "the footnote has its own height under the last row")
         XCTAssertNil(build(TimelineFixture.yesterday(cal), now: nil).missing)
     }
@@ -289,7 +332,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(m.entry(at: 600)?.id, "stay-1", "at home before the talk")
         XCTAssertEqual(m.entry(at: 620)?.id, "talk-1")
         XCTAssertEqual(m.entry(at: 10)?.id, "sleep-0", "before anything: the first")
-        XCTAssertEqual(m.entry(at: 1439)?.id, "reminder-demo-1")
+        XCTAssertEqual(m.entry(at: 1439)?.id, "departure-demo-1")
     }
 
     // MARK: the setting

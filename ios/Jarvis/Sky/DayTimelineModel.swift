@@ -17,9 +17,21 @@ func tlDur(_ minutes: Int) -> String {
     return m % 60 == 0 ? "\(m / 60) 时" : "\(m / 60) 时 \(m % 60) 分"
 }
 
+/// $12.40, ¥68.00, `AUD 5.00`: an amount with the mark of its currency (a currency this phone has no mark for is written by its code)
+func tlMoney(_ cents: Int, _ currency: String?) -> String {
+    let whole = String(abs(cents) / 100), frac = String(format: "%02d", abs(cents) % 100)
+    var grouped = ""
+    for (k, ch) in whole.reversed().enumerated() { if k > 0, k % 3 == 0 { grouped.append(",") }; grouped.append(ch) }
+    let num = String(grouped.reversed()) + "." + frac, sign = cents < 0 ? "-" : ""
+    let code = (currency ?? "").trimmingCharacters(in: .whitespaces).uppercased()
+    let marks = ["CAD": "$", "USD": "$", "CNY": "¥", "EUR": "€", "GBP": "£", "JPY": "JP¥", "HKD": "HK$"]
+    if code.isEmpty { return sign + num }
+    return sign + (marks[code] ?? code + " ") + num
+}
+
 /// one line of the list
 struct TLEntry: Identifiable, Equatable {
-    enum Kind: Equatable { case sleep, stay, trip, talk, picture, event, reminder, departure, work, call, now }
+    enum Kind: Equatable { case sleep, stay, trip, talk, picture, event, reminder, departure, work, call, payment, claude, now }
     let id: String
     var kind: Kind
     var t0: Double
@@ -31,6 +43,7 @@ struct TLEntry: Identifiable, Equatable {
     var right = ""                  // the mono text at the right: how long, and for a stay its hours too
     var color: RGB?                 // a stay: the colour of its place
     var kept = false                // a stay in a place he keeps (a stay in none is a neutral haze)
+    var strongRight = false         // the mono text at the right is the point of the row (what a payment came to), so it is not muted
     var lit = false                 // marked as what mattered: a lit star before the title
     var later = false               // not yet: after the line for now
     var talkStart: Int64?           // a talk: when it began, for 全部 ›
@@ -231,6 +244,34 @@ struct DayTimelineModel: Equatable {
                 e.symbol = "phone.fill"
                 e.detail = text(i.app)
                 e.right = dur ?? ""
+            case "payment":
+                e.kind = .payment
+                e.symbol = "creditcard.fill"
+                let shop = text(i.counterparty), item = text(i.text), cents = i.amount?.cents
+                e.title = shop ?? item ?? "付款"
+                e.detail = shop == nil ? nil : item
+                // what it came to: money out is the plain amount, money in has a plus
+                e.right = cents.map { (i.direction == "in" ? "+" : "") + tlMoney($0, i.currency) } ?? ""
+                e.strongRight = true
+                // opened: which way, the amount (with its currency's code when the mark alone does not say it), and where the import came from
+                let way = i.direction == "in" ? "收入" : "支出", code = text(i.currency)?.uppercased()
+                let sum = cents.map { tlMoney($0, i.currency) }
+                e.more = [sum.map { way + " " + $0 + (code.map { $0.isEmpty || sum!.contains($0) ? "" : " " + $0 } ?? "") }, text(i.source).map { "来自" + (Self.sources[$0] ?? $0) }].compactMap { $0 }
+            case "claude_chat":
+                e.kind = .claude
+                e.symbol = "sparkles"
+                let name = text(i.text)
+                e.title = name == nil || name == "Claude conversation" ? "Claude 对话" : name!
+                e.detail = i.messages.map { "\($0) 条消息" }
+                e.right = dur ?? ""
+            case "claude_day":
+                e.kind = .claude
+                e.symbol = "sparkles"
+                let titles = (i.text ?? "").split(separator: ";").compactMap { text(String($0)) }
+                e.title = "Claude 对话小结"
+                e.detail = titles.isEmpty ? nil : titles.joined(separator: "、")
+                e.more = titles
+                e.right = i.chats.map { "\($0) 段" } ?? ""
             default:
                 continue            // a kind this phone does not know yet: left out, not guessed at
             }
@@ -271,6 +312,9 @@ struct DayTimelineModel: Equatable {
         default: return .next
         }
     }
+
+    /// where an imported payment came from, in the words the Mac uses
+    private static let sources = ["alipay": "支付宝", "wechat_pay": "微信", "boc": "中国银行"]
 
     private static let moves: [String: (String, String)] = [
         "walking": ("走路", "figure.walk"), "running": ("跑步", "figure.run"), "cycling": ("骑车", "bicycle"), "automotive": ("开车", "car.fill"),

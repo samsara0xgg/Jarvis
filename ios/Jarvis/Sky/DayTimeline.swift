@@ -538,7 +538,7 @@ private struct TLRowView: View {
             }
             .padding(.leading, 10).padding(.top, pad)
             Spacer(minLength: 8)
-            Text(e.right).font(AT.mono(12)).foregroundStyle(muted).lineLimit(1).fixedSize().frame(height: 18).padding(.top, pad)
+            Text(e.right).font(AT.mono(12)).foregroundStyle(e.strongRight ? ink : muted).lineLimit(1).fixedSize().frame(height: 18).padding(.top, pad)
         }
     }
 

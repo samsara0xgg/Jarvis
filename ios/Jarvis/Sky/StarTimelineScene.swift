@@ -5,7 +5,7 @@ import UIKit
 enum TimelineFixture {
     static let now = 21 * 60 + 50.0
 
-    /// today: the night, home, a drive, a bite, home again, the bus to school, school, the bus home, and the evening still going (`late`: a talk that has just ended is there too)
+    /// today: the night, home, a drive, a bite, home again, the bus to school, school, the bus home, and the evening still going, with his Mac work, what he spent and a chat with Claude along the way (`late`: a talk that has just ended is there too)
     static func today(_ cal: Cal, late: Bool = false) -> DayReply { build(cal, day: 0) { b in
         b.add("sleep", 55, 545, ["minutes": 485])
         b.add("stay", 545, 685, ["place": "12 Example St, Town", "kept_place": b.kept("p-home", "家", "home")])
@@ -25,9 +25,16 @@ enum TimelineFixture {
         if late { b.add("talk", 1305, 1309, ["id": "talk-3", "lane": "her", "turns": 4]) }
         b.add("event", 1320, 1350, ["id": "event-demo-1", "title": "陶艺课", "source": "mail", "confirmed": false, "place": "Studio 4"])
         b.add("reminder", 1380, nil, ["id": "reminder-demo-1", "lane": "her", "text": "给 Mia 回电话", "fired": false])
+        // what he did on the Mac, what he spent, a chat with Claude, and the bus he means to take (explicit ids: the ones above are numbered by their place in this list)
+        b.add("work", 630, 680, ["id": "work-demo-1", "active_s": 2520, "projects": [["name": "Jarvis", "seconds": 2520]], "apps": [["name": "Xcode", "seconds": 1560], ["name": "Ghostty", "seconds": 960]]])
+        b.add("work", 1175, 1300, ["id": "work-demo-2", "active_s": 5880, "projects": [["name": "Jarvis", "seconds": 3300], ["name": "论文", "seconds": 2580]],
+                                   "apps": [["name": "Xcode", "seconds": 2700], ["name": "Safari", "seconds": 2100], ["name": "Ghostty", "seconds": 1080]]])
+        b.add("payment", 800, 800, ["id": "payment-demo-1", "source": "alipay", "amount": "12.40", "currency": "CAD", "direction": "out", "counterparty": "A&W", "text": "Teen Burger Combo"])
+        b.add("claude_chat", 1210, 1235, ["id": "claude-demo-1", "source": "claude", "text": "积分换元的符号问题", "messages": 14])
+        b.add("departure", 1400, 1400, ["id": "departure-demo-1", "title": "12 · Hillside Centre", "route": "12", "board_stop": "Hillside Centre", "to": "UVic", "leave_at_ms": b.ms(1390)])
         b.extra["line"] = ["text": "今天去了学校，下午在 UVic 待得最久，晚上回家早点休息。", "draft": true, "written_at": "2026-10-19T21:30:00+00:00"]
         b.extra["highlights"] = [["id": "call-demo-1", "label": "和 Mia 聊了很久", "by": "her"]]
-        b.extra["missing"] = ["mac"]
+        b.extra["missing"] = ["calendar"]
     } }
 
     /// the day before: a quieter one, with the night that began the evening before and a stay that is still going
