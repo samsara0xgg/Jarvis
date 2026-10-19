@@ -138,7 +138,7 @@ enum TimelineFixture {
     private static func build(_ cal: Cal, day: Int, _ fill: (Builder) -> Void) -> DayReply {
         let b = Builder(cal, day)
         fill(b)
-        var reply: [String: Any] = ["date": cal.iso(day), "tz": "UTC", "start_ms": b.ms(0), "end_ms": b.ms(1440), "now_ms": b.ms(day == 0 ? now : 1440),
+        var reply: [String: Any] = ["date": cal.iso(day), "tz": cal.cal.timeZone.identifier, "start_ms": b.ms(0), "end_ms": b.ms(1440), "now_ms": b.ms(day == 0 ? now : 1440),
                                     "items": b.items, "missing": [String]()]
         reply.merge(b.extra) { $1 }
         let data = try! JSONSerialization.data(withJSONObject: reply)
@@ -167,7 +167,7 @@ extension StarEngine {
             if mode == "等你晚到" { DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: put) } else { put() }
             if mode == "等你展开" { ui.tl.openCard = "clarification-Qdebug01" }
         }
-        let model = DayTimelineModel.build(today, day: ui.tl.today, now: TimelineFixture.now)
+        let model = DayTimelineModel.build(today, now: TimelineFixture.now)
         func show(_ id: String, open: Bool) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in
                 if open { ui.tl.openRow = id }
@@ -209,7 +209,7 @@ extension StarEngine {
         case "昨天":
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.setDay(ui.tl.today - 1) }
             if parts.count > 2 {                // `:昨天:1630` with a finger held on the bar at that time, once the day is there
-                let n = Int(parts[2]) ?? 0, past = DayTimelineModel.build(yesterday, day: ui.tl.today - 1, now: nil)
+                let n = Int(parts[2]) ?? 0, past = DayTimelineModel.build(yesterday, now: nil)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { [self] in ui.tl.follow(Double(n / 100 * 60 + n % 100), in: past) }
             }
         case "新增": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in ui.tl.fixture?.replies[0] = TimelineFixture.today(cal, late: true) }

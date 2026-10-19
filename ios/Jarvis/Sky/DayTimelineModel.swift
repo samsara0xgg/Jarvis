@@ -3,7 +3,24 @@ import Foundation
 // The whole day as one list for the home screen (Sky/DayTimeline.swift draws it), built from the brain's answer for that day (`DayReply`).
 // One story: sleep, then the places he stayed in as groups with what happened there as rows, the trips between the groups as rows of their own,
 // a line for now, and what is still to come after it. Plain values only, so the order, the words and the places on the day can be tested without a screen.
-// The words of each row are in Sky/DayTimelineRows.swift. Times are minutes from the day's own midnight (a stay that began the evening before starts below 0).
+// The words of each row are in Sky/DayTimelineRows.swift. Times are minutes from the day's own midnight by the wall clock of the brain's zone (a stay that began the evening before
+// starts below 0).
+
+/// The minutes of one day of the brain's: counted by the wall clock of the zone the brain wrote the day in (`DayReply.tz`) from that day's midnight, so 09:00 is 540 on a day with a clock
+/// change as on any other, and a phone in another zone reads the same day. A time before the day began is below 0, one after it 1440 or more.
+struct TLClock {
+    let cal: Calendar
+    let origin: Date                    // the midnight that begins the day, in the brain's zone
+
+    init(_ r: DayReply) {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: r.tz) ?? Cal.cur.cal.timeZone
+        cal = c
+        origin = c.startOfDay(for: Date(timeIntervalSince1970: Double(r.start_ms) / 1000))
+    }
+    func minute(_ at: Date) -> Double { Cal.wall(at, in: cal, from: origin) }
+    func minute(ms: Int64) -> Double { minute(Date(timeIntervalSince1970: Double(ms) / 1000)) }
+}
 
 /// the heights of the list's rows, in design points: fixed, so where a row stands is known without asking the view. A row someone can touch is at least 44 high.
 enum TLMetrics {
@@ -421,13 +438,13 @@ struct DayTimelineModel: Equatable {
 
     // MARK: building
 
-    /// `day` is the day number (0 is the day `Cal.cur` counts from), `now` the minute of now when this is today. `topic` names a talk by what it was about. `acked` and `renamed`
-    /// are what he has just done to a reminder and to a place he keeps, which the brain's next answer will say too. An item that cannot be
-    /// placed (a time that is not one, an end before its start, an id taken already) is left out, and so is one of a kind this phone does not know.
-    static func build(_ r: DayReply, day: Int, now: Double?, topic: @escaping (String) -> String? = { _ in nil },
+    /// `now` is the minute of now when this is today (`TimelineState.nowMinute`). `topic` names a talk by what it was about. `acked` and `renamed` are what he has just done to a reminder
+    /// and to a place he keeps, which the brain's next answer will say too. An item that cannot be placed (a time that is not one, an end before its start, an id taken already) is left
+    /// out, and so is one of a kind this phone does not know. The minutes are those of the brain's day (`TLClock`).
+    static func build(_ r: DayReply, now: Double?, topic: @escaping (String) -> String? = { _ in nil },
                       acked: Set<String> = [], renamed: [String: String] = [:]) -> DayTimelineModel {
-        let base = Double(day) * DAY
-        func m(_ ms: Int64) -> Double { Cal.cur.t(ms: ms) - base }
+        let wall = TLClock(r)
+        func m(_ ms: Int64) -> Double { wall.minute(ms: ms) }
         // what mattered, by item: the label of the owner or hers, or none (the brain writes `kind HH:MM` when nobody did, which says less than the row does)
         var marks: [String: String] = [:]
         for h in r.highlights where marks[h.id] == nil {
@@ -670,7 +687,7 @@ struct DayTimelineModel: Equatable {
     }
 
     /// when the sun rose and set on `day` (the header's weather says it when it is tapped)
-    static func sun(of r: DayReply, day: Int) -> TLSun? { sunOf(r.weather) { Cal.cur.t(ms: $0) - Double(day) * DAY } }
+    static func sun(of r: DayReply) -> TLSun? { let c = TLClock(r); return sunOf(r.weather) { c.minute(ms: $0) } }
 
     /// when the sun rose and set, where that is on this day
     private static func sunOf(_ w: DayWeather?, _ m: (Int64) -> Double) -> TLSun? {

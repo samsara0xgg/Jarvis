@@ -57,10 +57,15 @@ final class Cal {
         let c = cal.dateComponents([.year, .month, .day], from: date(d))
         return String(format: "%04d-%02d-%02d", c.year!, c.month!, c.day!)
     }
-    /// the engine time of a real instant; counted by the calendar, so a day with a clock change is as long as it was
-    func t(_ at: Date) -> Double {
+    /// The engine time of a real instant: the day by the calendar and the minute by the clock on the wall, so 09:00 is 540 on a day with a clock change as on any other (that day has the
+    /// minutes it shows, 1440 of them, and not the hours it lasted).
+    func t(_ at: Date) -> Double { Cal.wall(at, in: cal, from: origin) }
+    /// minutes by the wall clock of `cal`: the whole days from the day `origin` is in, and the minute of the day that the clock on the wall shows (the repeated hour of a clock going back
+    /// counts as the hour it shows)
+    static func wall(_ at: Date, in cal: Calendar, from origin: Date) -> Double {
         let start = cal.startOfDay(for: at), d = cal.dateComponents([.day], from: origin, to: start).day ?? 0
-        return Double(d) * DAY + at.timeIntervalSince(start) / 60
+        let c = cal.dateComponents([.hour, .minute, .second, .nanosecond], from: at)
+        return Double(d) * DAY + Double(c.hour ?? 0) * 60 + Double(c.minute ?? 0) + (Double(c.second ?? 0) + Double(c.nanosecond ?? 0) / 1e9) / 60
     }
     func t(ms: Int64) -> Double { t(Date(timeIntervalSince1970: Double(ms) / 1000)) }
     /// now, in engine minutes; the calendar is asked once every few seconds and the clock carries it between

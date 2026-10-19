@@ -42,7 +42,7 @@ struct TLDayHead: View {
         let today = tl.day == tl.today
         let reply = tl.reply
         let weather = reply.flatMap { DayTimelineModel.weatherOf($0.weather) }
-        let sun = reply.flatMap { DayTimelineModel.sun(of: $0, day: tl.day) }?.text
+        let sun = reply.flatMap { DayTimelineModel.sun(of: $0) }?.text
         let saying = tl.sunSaid && sun != nil
         let fit = weather.map { Self.weatherFit($0, today: today, room: room) } ?? 0
         HStack(spacing: 10) {

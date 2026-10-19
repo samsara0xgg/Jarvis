@@ -70,13 +70,13 @@ final class TimelineState {
     #endif
 
     var today: Int { floorDay(NOW1) }                   // the engine's own now: the phone's today, or the sample world's Thursday
-    /// the minute of now on the day on show, if that is today
-    func nowMinute() -> Double? {
-        guard day == today else { return nil }
+    /// the minute of now in the brain's day `r`, if now is in it
+    func nowMinute(in r: DayReply) -> Double? {
         #if DEBUG
-        if let f = fixture { return f.now }
+        if let f = fixture { return day == today ? f.now : nil }
         #endif
-        return NOW1 - Double(day) * DAY
+        let minute = TLClock(r).minute(Cal.now())
+        return minute >= 0 && minute < DAY ? minute : nil
     }
 
     /// what the brain told of the day on show (a debug build's made-up day stands in for it)
@@ -89,7 +89,7 @@ final class TimelineState {
     /// the day on show as the list has it
     func model(_ r: DayReply) -> DayTimelineModel {
         let now = Date()
-        return DayTimelineModel.build(r, day: day, now: nowMinute(), topic: { TalkTopics.shared.topic($0) }, acked: acked,
+        return DayTimelineModel.build(r, now: nowMinute(in: r), topic: { TalkTopics.shared.topic($0) }, acked: acked,
                                       renamed: renamed.compactMapValues { $0.until > now ? $0.name : nil })
     }
 

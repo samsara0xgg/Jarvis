@@ -212,7 +212,7 @@ final class DayTimelineActionsTests: XCTestCase {
         XCTAssertTrue(flashed, "the row flashes where the eye arrives")
         await until("and the flash is over") { tl.flash == nil }
         // nothing waits, nothing to go to
-        let calm = DayTimelineModel.build(TimelineFixture.yesterday(cal), day: -1, now: nil)
+        let calm = DayTimelineModel.build(TimelineFixture.yesterday(cal), now: nil)
         XCTAssertTrue(calm.waiting.isEmpty)
         let n = tl.request.n
         tl.revealWaiting(in: calm)

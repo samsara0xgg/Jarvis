@@ -9,11 +9,11 @@ final class DayTimelineTests: XCTestCase {
     private let now = TimelineFixture.now
 
     private func reply(_ items: String, _ extra: String = "") throws -> DayReply {
-        let day = #"{"date": "2026-10-08", "tz": "UTC", "start_ms": \#(base), "end_ms": \#(base + 86_400_000), "now_ms": \#(at(now)), "missing": [], "items": [\#(items)]\#(extra)}"#
+        let day = #"{"date": "2026-10-08", "tz": "\#(Cal.cur.cal.timeZone.identifier)", "start_ms": \#(base), "end_ms": \#(base + 86_400_000), "now_ms": \#(at(now)), "missing": [], "items": [\#(items)]\#(extra)}"#
         return try JSONDecoder().decode(DayReply.self, from: Data(day.utf8))
     }
     private func build(_ r: DayReply, now: Double? = TimelineFixture.now) -> DayTimelineModel {
-        DayTimelineModel.build(r, day: 0, now: now, topic: { $0 == "talk-1" ? "明天下午有什么安排？" : nil })
+        DayTimelineModel.build(r, now: now, topic: { $0 == "talk-1" ? "明天下午有什么安排？" : nil })
     }
     private func entry(_ m: DayTimelineModel, _ id: String) throws -> TLEntry { try XCTUnwrap(m.entries.first { $0.id == id }, id) }
 
@@ -615,7 +615,7 @@ final class DayTimelineTests: XCTestCase {
     }
 
     func testYesterdaysAfternoonHasAHoleAndTheFingerReadsHowLongNothingWasRecorded() {
-        let m = DayTimelineModel.build(TimelineFixture.yesterday(cal), day: -1, now: nil)
+        let m = DayTimelineModel.build(TimelineFixture.yesterday(cal), now: nil)
         XCTAssertNil(m.seg(at: 1000))
         let r = m.readout(at: 1000)
         XCTAssertEqual(r.head, "没有记录 · 16:20–17:30 · 1 时 10 分")

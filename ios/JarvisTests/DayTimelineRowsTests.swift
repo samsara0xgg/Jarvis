@@ -10,11 +10,11 @@ final class DayTimelineRowsTests: XCTestCase {
     private let now = TimelineFixture.now
 
     private func reply(_ items: String, _ extra: String = "") throws -> DayReply {
-        let day = #"{"date": "2026-10-08", "tz": "UTC", "start_ms": \#(base), "end_ms": \#(base + 86_400_000), "now_ms": \#(at(now)), "missing": [], "items": [\#(items)]\#(extra)}"#
+        let day = #"{"date": "2026-10-08", "tz": "\#(Cal.cur.cal.timeZone.identifier)", "start_ms": \#(base), "end_ms": \#(base + 86_400_000), "now_ms": \#(at(now)), "missing": [], "items": [\#(items)]\#(extra)}"#
         return try JSONDecoder().decode(DayReply.self, from: Data(day.utf8))
     }
     private func build(_ r: DayReply, now: Double? = TimelineFixture.now, acked: Set<String> = [], renamed: [String: String] = [:]) -> DayTimelineModel {
-        DayTimelineModel.build(r, day: 0, now: now, topic: { $0 == "talk-1" ? "明天下午有什么安排？" : nil }, acked: acked, renamed: renamed)
+        DayTimelineModel.build(r, now: now, topic: { $0 == "talk-1" ? "明天下午有什么安排？" : nil }, acked: acked, renamed: renamed)
     }
     /// one item as the brain serves it: its fields after the common ones are `more` (as JSON, without the braces)
     private func item(_ id: String, _ kind: String, _ from: Double, _ to: Double?, _ more: String = "") -> String {
@@ -69,7 +69,7 @@ final class DayTimelineRowsTests: XCTestCase {
     }
 
     func testTheFragmentedDayIsFifteenStaysFourOfThemStopsOnTheWayElevenMovesAndTwoRides() throws {
-        let m = DayTimelineModel.build(TimelineFixture.fragmented(cal), day: -2, now: nil)
+        let m = DayTimelineModel.build(TimelineFixture.fragmented(cal), now: nil)
         XCTAssertEqual(m.entries.filter { $0.kind == .stay }.count, 11)
         XCTAssertEqual(m.entries.filter { $0.kind == .pause }.count, 4, "the stays under 15 minutes in no place he keeps, between two ways")
         XCTAssertEqual(m.entries.filter { $0.kind == .trip }.count, 13)
@@ -89,7 +89,7 @@ final class DayTimelineRowsTests: XCTestCase {
     }
 
     func testADayOfTalksAlone() throws {
-        let m = DayTimelineModel.build(TimelineFixture.talkOnly(cal), day: -3, now: nil)
+        let m = DayTimelineModel.build(TimelineFixture.talkOnly(cal), now: nil)
         XCTAssertEqual(m.entries.map(\.kind), [.talk, .talk, .talk])
         XCTAssertEqual(m.entries.map(\.gap), [0, 0, 0], "no group, no blank")
         XCTAssertTrue(m.segs.isEmpty)
@@ -353,7 +353,7 @@ final class DayTimelineRowsTests: XCTestCase {
     func testTheSunRisesAndSetsOnTheBarWhereThoseTimesAreOnThisDay() throws {
         let m = build(TimelineFixture.today(cal))
         XCTAssertEqual(m.sun, TLSun(rise: 454, set: 1091))
-        let y = DayTimelineModel.build(TimelineFixture.yesterday(cal), day: -1, now: nil)
+        let y = DayTimelineModel.build(TimelineFixture.yesterday(cal), now: nil)
         XCTAssertEqual(y.sun, TLSun(rise: 453, set: 1092))
         XCTAssertNil(build(try reply("", #", "weather": {"condition": "clear", "high": 1, "low": 0}"#)).sun)
         let far = try reply("", ", \"weather\": {\"sunrise_ms\": \(at(-500)), \"sunset_ms\": \(at(1500))}")
@@ -732,7 +732,7 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(TLSun(rise: nil, set: 1100).text, "日落 18:20")
         XCTAssertNil(TLSun(rise: nil, set: nil).text)
         // the header asks for it by the day on show
-        XCTAssertEqual(DayTimelineModel.sun(of: TimelineFixture.today(cal), day: 0)?.text, m.sun?.text)
-        XCTAssertNil(DayTimelineModel.sun(of: try reply(""), day: 0), "a brain that serves no weather")
+        XCTAssertEqual(DayTimelineModel.sun(of: TimelineFixture.today(cal))?.text, m.sun?.text)
+        XCTAssertNil(DayTimelineModel.sun(of: try reply("")), "a brain that serves no weather")
     }
 }
