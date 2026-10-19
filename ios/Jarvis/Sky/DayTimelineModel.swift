@@ -68,8 +68,9 @@ struct TLPlace: Equatable {
     var keptId: String?             // the place he keeps it is in, and the name he gave it
     var keptName: String?
     var onMap: Bool { lat != nil && lng != nil }
-    /// the place can be renamed: he keeps it, and its id is one that can stand in a path (the brain's are slugs; one with a slash or a space is not offered, not guessed at)
-    var canRename: Bool { keptId.map { !$0.isEmpty && $0.count <= 128 && $0.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "-_.:".unicodeScalars.contains($0)) } } ?? false }
+    /// the place can be renamed: he keeps it, and its id is one that can stand in a path (the brain's are slugs; one with a slash or a space is not offered, not guessed at, and `undo` is
+    /// the brain's own route there)
+    var canRename: Bool { keptId.map { $0 != "undo" && !$0.isEmpty && $0.count <= 128 && $0.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "-_.:".unicodeScalars.contains($0)) } } ?? false }
 }
 
 /// one of what he spent the time of a stretch of Mac work on: a project, an app

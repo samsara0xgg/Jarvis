@@ -209,6 +209,8 @@ final class DayTimelineRowsTests: XCTestCase {
         // a place whose id could not stand in a path is not renamed, though he keeps it
         let odd = try reply(item("s", "stay", 600, 700, #""place": "X", "kept_place": {"id": "a/b", "name": "家", "role": "home"}"#))
         XCTAssertEqual(try entry(build(odd, now: nil), "s").actions, [.ask])
+        let route = try reply(item("s", "stay", 600, 700, #""place": "X", "kept_place": {"id": "undo", "name": "家", "role": "home"}"#))
+        XCTAssertEqual(try entry(build(route, now: nil), "s").actions, [.ask], "its id is the brain's own route")
         // an event from his mail has an id with an @ in it, which the host would refuse: nothing to hand over
         let mail = try reply(item("commitment-ab12@2026-10-08", "event", 1320, 1350, #""title": "X", "source": "mail", "confirmed": false"#))
         XCTAssertEqual(try entry(build(mail), "commitment-ab12@2026-10-08").actions, [])

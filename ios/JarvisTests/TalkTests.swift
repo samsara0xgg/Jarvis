@@ -51,6 +51,27 @@ final class TalkTests: XCTestCase {
         XCTAssertEqual(next.last?.rows.first?.stamp, "00:30")
     }
 
+    /// 问她 puts the chip on before a word is said: it waits at the end of the conversation, and it is not a row of the talk, so the dial's reading zone shows nothing for it.
+    func testAChipPutOnBeforeTheFirstLineWaitsAfterTheDaysAndIsNotARowOfTheTalk() throws {
+        let rows = try XCTUnwrap(ConversationRow.parse(Data(ordered.utf8)))
+        let days = TalkStream.convDays(rows, cal: cal, now: date("2026-10-09T23:55:00"))
+        let about = About(kind: "stay", id: "stay-1", title: "家", startMs: 1_791_500_000_000)
+        let now = date("2026-10-09T23:55:00")
+        XCTAssertEqual(TalkStream.compose(days, live: [], about: nil, cal: cal, now: now), days, "no chip, no change")
+        let waiting = TalkStream.compose(days, live: [], about: about, cal: cal, now: now)
+        XCTAssertEqual(waiting.count, days.count, "it joins today, whose last row it follows")
+        XCTAssertEqual(waiting.last?.rows.map(\.id), ["c8", "c9", "about"])
+        let chip = try XCTUnwrap(waiting.last?.rows.last)
+        XCTAssertEqual(chip.about, about)
+        XCTAssertFalse(chip.current, "not a row of the talk yet")
+        XCTAssertTrue(TalkStream.reading(waiting.flatMap(\.rows)).allSatisfy { $0 == 0 }, "the dial's reading zone does not take the last round for the newest")
+        // his first line goes out: the chip is the same row, now the talk's first
+        let live = [LiveTurn(id: 1, his: true, text: "它是哪年买的", at: now)]
+        let said = TalkStream.compose(days, live: live, about: about, cal: cal, now: now)
+        XCTAssertEqual(said.last?.rows.map(\.id), ["c8", "c9", "about", "l1"])
+        XCTAssertTrue(try XCTUnwrap(said.last?.rows[2]).current)
+    }
+
     /// The talk's own rows are on the screen as live rows while it lasts; once the conversation has them the live rows go: nothing is said twice.
     func testNoRowIsListedTwiceBeforeDuringOrAfterTheConversationBringsTheTalk() throws {
         let rows = try XCTUnwrap(ConversationRow.parse(Data(ordered.utf8)))        // seq 7, 8, 9

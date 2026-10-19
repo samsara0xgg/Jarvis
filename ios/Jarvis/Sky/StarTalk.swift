@@ -54,6 +54,12 @@ extension StarEngine {
     }
     /// the chip's ×
     func dropAbout() { aboutDropped = ui.about?.id; setAbout(nil); Haptic.selection() }
+    /// 问她 on an item: it is the chip of the next turn (also when he took the chip of this item off before), and the composer opens with the keyboard up
+    func askAbout(_ a: About) {
+        aboutDropped = nil
+        setAbout(a)
+        beginEditing?()
+    }
 
     /// The talk is over; its rows stay for `linger`, and a finger on them keeps them longer.
     func lingerFrom(_ now: Double) { lingerUntil = now + Self.linger }
@@ -238,6 +244,7 @@ extension StarEngine {
         wake()
         if ui.talking { autoOpenSpent = true }      // he closed it during this talk: it does not open itself again
         if ui.typing { endEditing?() }              // the panel goes with the keyboard, and the keyboard with the panel
+        if !ui.talking && !sendingToBrain && ui.about != nil { setAbout(nil) }      // a chip put on by 问她 and not used: the panel shutting takes it back (the open row is the chip again when a turn goes out)
         StallLog.mark("panel close")
         if !quiet { sound(.close, 0.7); Haptic.selection() }
         ui.panelOpen = false; panelSince = nowMs()

@@ -94,9 +94,13 @@ enum TalkStream {
         return rows.indices.map { $0 >= cur ? 1 : $0 >= prev ? 0.5 : 0 }
     }
 
-    /// The days with the live talk after them, under today's date.
+    /// The days with the live talk after them, under today's date. A chip put on before his first line (问她) waits after the days, where the line will go: it is not a row of the talk
+    /// yet, so the dial's reading zone does not take the conversation's last round for the newest.
     static func compose(_ days: [TalkDay], live: [LiveTurn], about: About? = nil, overlay: ReactionOverlay = ReactionOverlay(), cal: Calendar, now: Date) -> [TalkDay] {
-        if live.isEmpty { return reacted(days, overlay) }
+        if live.isEmpty {
+            guard let about else { return reacted(days, overlay) }
+            return reacted(group([TalkRow(id: "about", his: false, text: about.title, at: now.timeIntervalSince1970, about: about)], days, cal: cal, now: now), overlay)
+        }
         var rows = live.map(row)
         if let about { rows.insert(TalkRow(id: "about", his: false, text: about.title, at: rows[0].at, current: true, about: about), at: 0) }
         return reacted(group(rows, days, cal: cal, now: now), overlay)

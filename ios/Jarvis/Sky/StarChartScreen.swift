@@ -83,9 +83,7 @@ struct StarChrome: View {
         .onAppear {
             engine.endEditing = { focused = false }
             StallLog.context = { [engine] in engine.stallContext() }
-            #if DEBUG
             engine.beginEditing = { focused = true }
-            #endif
             engine.watchVoice()
             if CardsRequest.pending { openCards() }
             #if DEBUG
