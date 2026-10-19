@@ -115,24 +115,38 @@ export function drawMark(ctx: CanvasRenderingContext2D, look: MarkLook, st: Mark
 }
 export const seedOf = (key: string) => [...key].reduce((a, ch) => a + ch.charCodeAt(0), 0) * .37 % 7;
 
-// One clock for every mark on screen, about 30 frames a second. A painter says whether it drew; with nothing
-// visible the clock only checks back every 100 ms.
+// One clock for every mark on screen, about 30 frames a second. A painter says whether it drew. With nothing visible the clock checks back
+// every 100 ms for 2 s (a pane fading in), then once a second with no frame at all, until a mark is mounted or drawn again, or a pane that
+// may show one opens (`wakeMarks`).
 type Painter = (now: number) => boolean;
 const painters = new Set<Painter>();
-let pending = false;
+let pending = false, slow = false, awakeAt = 0, clock: ReturnType<typeof setTimeout> | undefined;
+const pass = (now: number) => {
+  pending = false;
+  let drew = false;
+  painters.forEach(p => { drew = p(now) || drew; });
+  if (drew) awakeAt = now;
+  schedule(drew ? 30 : now - awakeAt < 2000 ? 100 : 1000);
+};
 const schedule = (ms: number) => {
   if (pending || !painters.size) return;
-  pending = true;
-  setTimeout(() => requestAnimationFrame(now => { pending = false; let drew = false; painters.forEach(p => { drew = p(now) || drew; }); schedule(drew ? 30 : 100); }), ms);
+  pending = true; slow = ms >= 1000;
+  clock = setTimeout(() => { if (slow) pass(performance.now()); else requestAnimationFrame(pass); }, ms);
+};
+export const wakeMarks = () => {
+  awakeAt = performance.now();
+  if (pending && slow) { clearTimeout(clock); pending = false; schedule(0); }
 };
 export function useClock(paint: Painter) {
   const latest = useRef(paint);
   latest.current = paint;
   useEffect(() => {
     const painter: Painter = now => latest.current(now);
-    painters.add(painter); schedule(0);
+    painters.add(painter); wakeMarks(); schedule(0);
     return () => { painters.delete(painter); };
   }, []);
+  // Rendered again: its pane may be opening.
+  useEffect(wakeMarks);
 }
 export const dpr = () => Math.min(2, devicePixelRatio || 1);
 export const shown = (el: HTMLElement) => el.checkVisibility({ opacityProperty: true, visibilityProperty: true });

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import { Archive, ArrowSquareOut, ArrowUUpLeft, ArrowUp, CaretLeft, CaretRight, Moon, X } from '@phosphor-icons/react';
 import { ago, readConversation, requestLine, sendReply, type Agent, type AgentState, type Said } from './agents';
-import { AgentMark, COLOR, drawMark, dpr, seedOf, useClock, type MarkLook } from './AgentMarks';
+import { AgentMark, COLOR, drawMark, dpr, seedOf, useClock, wakeMarks, type MarkLook } from './AgentMarks';
 import { DOT_RING_S, drawMoon, drawTurnIcon, hueAt, MOON_RGB, rgba, tint } from './beacon';
 import { Markdown } from './Markdown';
 import { ended, NoticeFlightContext, openTip, type Glow } from './Notices';
@@ -261,9 +261,10 @@ function Pop({ agents, look, act, rate, onClose }: { agents: Agent[]; look: Mark
     <div className="u-list">{agents.map(a => <PopRow key={a.id} a={a} look={look} act={act} tag={a.state === 'err' && !all ? <em> {t(['stopped', '出错停了'])}</em> : null}/>)}</div>{rate}</div>;
 }
 
-export function Notch({ look, wing = 'marks', agents, unread, parked, archived, geo, cursor, note, quiet, edge, aside, act, glow, pin, timeline, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
+export function Notch({ look, wing = 'marks', agents, unread, parked, archived, geo, cursor, wake, note, quiet, edge, aside, act, glow, pin, timeline, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
   look: MarkLook; wing?: Wing; agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; geo: NotchGeo;
-  cursor: RefObject<Point>; note: NotchNote | null; quiet: boolean; edge: number | null; aside?: NotchAside; act: NotchAct; glow?: NotchGlow; pin?: NotchPin; timeline?: NotchTimeline; onNoteHover: (on: boolean) => void;
+  // `wake`: filled with what the page calls after each cursor sample, so a sleeping loop looks again when the pointer comes near.
+  cursor: RefObject<Point>; wake?: RefObject<(() => void) | null>; note: NotchNote | null; quiet: boolean; edge: number | null; aside?: NotchAside; act: NotchAct; glow?: NotchGlow; pin?: NotchPin; timeline?: NotchTimeline; onNoteHover: (on: boolean) => void;
   port: string | null; keys: number; onKeys: (on: boolean) => void; onViewing: (id: string | null) => void;
   onJoinedChange?: (joined: boolean) => void;
 }) {
@@ -300,7 +301,11 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
     seg: null as { x0: number; x1: number; room: number } | null, laid: '' as '' | Wing,
     tl: { open: false, pinned: false, closedHere: false, enterAt: -1, leftAt: -1, press: false, hold: false },
     popOrigins: new Map<string, Point>(), intent: new PointerIntent(), resolvedNote: '', workLandingUntil: 0, joined: false, asideKey: null as Kind | null,
+    // Whether a mark drawn last frame is still animating, where the pointer matters to the loop, and the last path drawn.
+    anim: false, reach: { l: 0, r: 0, b: 0 }, shapeD: '',
   }).current;
+  // Wakes the loop below when it sleeps.
+  const kick = useRef((_now?: boolean) => {});
   const mode: Wing = tlMode ? 'timeline' : 'marks';
   const L = useRef({ look, turn, work, fin, moon, glows, pin, geo, note, quiet, edge, aside, timeline, mode, onNoteHover, onJoinedChange, held: false, pageW: false, say: t });
   L.current = { look, turn, work, fin, moon, glows, pin, geo, note, quiet, edge, aside, timeline, mode, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged, say: t };
@@ -448,13 +453,13 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
   }, []);
   useLayoutEffect(() => { st.dirty = true; });
   useEffect(() => {
-    const ro = new ResizeObserver(() => { st.dirty = true; });
+    const ro = new ResizeObserver(() => { st.dirty = true; kick.current(); });
     [dropIn.current!, noteIn.current!].forEach(el => ro.observe(el));
     return () => ro.disconnect();
   }, []);
 
   useEffect(() => {
-    let raf = 0, timer: ReturnType<typeof setTimeout> | undefined, last = 0;
+    let raf = 0, timer: ReturnType<typeof setTimeout> | undefined, last = 0, asleep = false, calm = false;
     // The wing never reaches past `edge` (the Dashboard's side while it hangs below): one that would folds into
     // the notch, and the panel's Agents row shows the same marks.
     const wingGoal = () => { const e = L.current.edge; return e !== null && L.current.geo.notchR + st.wingTarget > e ? 0 : st.wingTarget; };
@@ -611,7 +616,8 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
       if (wingR > g.notchR + .5 || dropOut || noteOut) rects.push({ l: g.lobeL, r: Math.max(g.notchR, wingR), d: top });
       if (dropOut) rects.push({ l: s.dx.value, r: s.dx.value + s.dw.value, d: s.dd.value });
       if (noteOut) rects.push({ l: s.nx.value, r: s.nx.value + s.nw.value, d: s.nd.value });
-      shape.current!.setAttribute('d', skyline(rects));
+      const outline = skyline(rects);
+      if (outline !== st.shapeD) { st.shapeD = outline; shape.current!.setAttribute('d', outline); }
       if (on) st.innerL = dg.l;
       place(drop.current!, dIn, s.dx.value, s.dw.value, s.dd.value, st.innerL, st.dropGoal.d, on, top);
       place(noteP.current!, nIn, s.nx.value, s.nw.value, s.nd.value, st.noteL, st.noteGoal.d, noteOpen, top);
@@ -620,10 +626,17 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
       if (root.current!.dataset.wing !== mode) root.current!.dataset.wing = mode;
       const tlState = st.tl.open ? st.tl.pinned ? 'pinned' : 'open' : '';
       if (root.current!.dataset.tl !== tlState) root.current!.dataset.tl = tlState;
-      return moving || !!st.drag || st.puffs.length > 0 || st.flights.length > 0 || Object.values(st.bumpAt).some(at => now - at < MOTION.medium);
+      const motion = moving || !!st.drag || st.puffs.length > 0 || st.flights.length > 0 || Object.values(st.bumpAt).some(at => now - at < MOTION.medium);
+      // Calm: nothing moves, every pane is shut, no mark is animating and the pointer is away from all that hangs here. The loop then
+      // sleeps (see `tick`).
+      const reach = 40, right = Math.max(wingR, s.dx.value + s.dw.value, s.nx.value + s.nw.value), bottom = Math.max(top, s.dd.value, s.nd.value);
+      st.reach = { l: g.lobeL - reach, r: right + reach, b: bottom + reach };
+      calm = !motion && !st.anim && !joined && !held && st.pinOn < 0 && now >= st.workLandingUntil && !(p && p.x >= st.reach.l && p.x <= st.reach.r && p.y <= st.reach.b);
+      return motion;
     };
     const place = (pane: HTMLElement, inner: HTMLElement, left: number, w: number, d: number, goalL: number, goalD: number, open: boolean, top: number) => {
       const h = Math.max(0, d - top), k = open ? clamp(h / Math.max(1, goalD - top)) : 0;
+      if (h >= 1) wakeMarks();
       pane.style.transform = `translate(${left}px,${top}px)`; pane.style.width = `${Math.max(0, w)}px`; pane.style.height = `${h}px`;
       pane.style.visibility = h < 1 ? 'hidden' : 'visible';
       pane.classList.toggle('is-open', open && k > .6);
@@ -646,6 +659,7 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
       st.turnIds = new Set(turnIds); st.workN = work.length;
       ctx.save(); ctx.beginPath(); ctx.rect(g.notchR, 0, Math.max(0, st.s.ww.value), top); ctx.clip();
       const counts: string[] = [];
+      let animates = false;
       for (const b of st.boxes) {
         const ts = members(b.key);
         if (!size(b.key) && !(b.key === 'work' && now < st.workLandingUntil)) continue;
@@ -657,8 +671,15 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
         if (b.key === 'turn' && lead !== 'wait') {
           if (lead === 'done' && ts.every(a => Date.now() - (a.at ?? Date.now()) > DONE_FADE_MS)) ctx.globalAlpha = .55;
           drawMark(ctx, look, lead, 0, (now - st.turnAt) / 1000, d);
-        } else if (b.key === 'turn') drawTurnIcon(ctx, look, t, (now - st.turnAt) / 1000, d, now - st.turnAt > 4000);
-        else if (b.key === 'work') drawMark(ctx, look, ts.length && ts.every(a => a.state === 'pack') ? 'pack' : 'work', t + seedOf('work'), (now - st.workAt) / 1000, d);
+          if (now - st.turnAt < 600) animates = true;
+        } else if (b.key === 'turn') {
+          drawTurnIcon(ctx, look, t, (now - st.turnAt) / 1000, d, now - st.turnAt > 4000);
+          // 点线环 holds still once its rings are over; the other looks drift in colour for as long as they are there.
+          if (look !== 'dot' || now - st.turnAt < 2000 * DOT_RING_S) animates = true;
+        } else if (b.key === 'work') {
+          drawMark(ctx, look, ts.length && ts.every(a => a.state === 'pack') ? 'pack' : 'work', t + seedOf('work'), (now - st.workAt) / 1000, d);
+          animates = true;
+        }
         else if (b.key === 'done') { ctx.globalAlpha = .55; drawMark(ctx, look, ts.every(a => a.state === 'err') ? 'err' : 'done', 0, 99, d); }
         else { ctx.globalAlpha = .85; drawMoon(ctx, 99, d); }
         ctx.restore();
@@ -676,6 +697,7 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
           ctx.beginPath(); ctx.roundRect(b.cx - 5, top - 3.5, 10, 1.6, .8); ctx.fill(); ctx.shadowBlur = 0;
         }
       }
+      st.anim = animates;
       // The timeline wing's line: where he is and for how long (the length dimmer, in the mono face), or the way he is going.
       const lineTl = L.current.mode === 'timeline' && st.seg ? L.current.timeline : undefined;
       if (lineTl && st.seg) {
@@ -729,8 +751,9 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
         drawMark(ctx, look, f.st, t, 99, d); ctx.restore();
         return true;
       });
-      root.current!.dataset.counts = counts.join(' ');
-      root.current!.dataset.flights = String(st.flights.length);
+      const tally = counts.join(' '), flying = String(st.flights.length);
+      if (root.current!.dataset.counts !== tally) root.current!.dataset.counts = tally;
+      if (root.current!.dataset.flights !== flying) root.current!.dataset.flights = flying;
       const ringing = look === 'dot' ? turnLead(look, turn, glows.length) === 'wait' && now - st.turnAt < 2000 * DOT_RING_S : now - st.turnAt <= 4000;
       root.current!.dataset.rings = st.boxes.some(b => b.key === 'turn') && ringing ? '1' : '';
       const dr = st.drag;
@@ -753,16 +776,23 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
         for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2, r = 4 + 14 * k; ctx.beginPath(); ctx.arc(f.x + Math.cos(a) * r, f.y + Math.sin(a) * r, 1.6 * (1 - k * .6), 0, Math.PI * 2); ctx.fill(); }
       }
     };
-    // Full speed while anything moves; otherwise the marks' 30 fps, and 10 fps with nothing beside the notch.
+    // Full speed while anything moves; otherwise the marks' 30 fps, and 10 fps with nothing beside the notch. Calm, it sleeps: a render, a
+    // resize or a cursor sample near the notch wakes it at once, and the clock's words (the line's length, the trip's minutes) look again every second.
     const tick = (now: number) => {
       const dt = Math.min(last ? (now - last) / 1000 : 1 / 60, 1 / 20);
-      last = now;
+      last = now; asleep = false;
       if (frame(now, dt)) raf = requestAnimationFrame(tick);
+      else if (calm) { raf = 0; asleep = true; last = 0; timer = setTimeout(() => tick(performance.now()), 1000); }
       else { raf = 0; timer = setTimeout(() => { raf = requestAnimationFrame(tick); }, st.boxes.length || L.current.note ? 33 : 100); }
     };
+    // After a render the page is still, so the frame runs at once; a resize or a cursor sample asks for the next one.
+    kick.current = (now = false) => { if (!asleep) return; clearTimeout(timer); if (now) tick(performance.now()); else { asleep = false; raf = requestAnimationFrame(tick); } };
+    if (wake) wake.current = () => { const p = cursor.current, r = st.reach; if (asleep && p.x >= r.l && p.x <= r.r && p.y <= r.b) kick.current(); };
     raf = requestAnimationFrame(tick);
-    return () => { cancelAnimationFrame(raf); clearTimeout(timer); st.joined = false; L.current.onJoinedChange?.(false); };
+    return () => { cancelAnimationFrame(raf); clearTimeout(timer); kick.current = () => {}; if (wake) wake.current = null; st.joined = false; L.current.onJoinedChange?.(false); };
   }, []);
+  // The props, the pane's content and the marks are read from the render that just happened.
+  useEffect(() => { kick.current(true); });
 
   // Press the finished mark and pull it down out of the menu bar to archive them all; anywhere higher, it goes back.
   const letGo = (keep: boolean) => {
