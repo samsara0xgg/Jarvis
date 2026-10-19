@@ -284,3 +284,22 @@ def test_recall_returns_the_current_summary_of_each_day_before_the_lines(
     assert daily.call("recall", {"from": TODAY.isoformat()})["summaries"] == []
     with closing(open_memory_db(daily.memory)) as conn:
         assert latest_day_summaries(conn, day, day) == [(day, "current")]
+
+
+def test_a_restart_does_not_ask_again_for_a_day_already_tried(tmp_path: Path) -> None:
+    """The log's summary calls since ``at`` today stand for the run a restart forgot."""
+    path = tmp_path / "memory.db"
+    _insert(path, [(_rid(2, 1), _stamp(2, 9), "allen", "第二天")], pad=True)
+    summariser = _Summariser()
+    summariser.replies[_day(2).isoformat()] = f"## x\n{GOOD}\n[record_id={'f' * 32}]"  # rejected
+    five = datetime.now().astimezone().replace(hour=5, minute=0)
+    assert _run_once(_schedule(tmp_path, summariser), five) is not None
+    assert summariser.asked == [_day(2).isoformat()] * 2
+    restarted = _schedule(tmp_path, summariser)
+    assert restarted.due(five.replace(hour=14)) is None, "tried at 05:00: the restart waits"
+    assert summariser.asked == [_day(2).isoformat()] * 2
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    assert _schedule(fresh, _Summariser()).due(five.replace(hour=14)) == five.date(), (
+        "a log with no call today: a start still writes"
+    )

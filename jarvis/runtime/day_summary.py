@@ -218,11 +218,31 @@ class DaySummarySchedule:
         self._last: date | None = None
 
     def due(self, now: datetime) -> date | None:
-        """Today (this Mac's zone) once ``at`` has passed and today was not tried yet."""
+        """Today (this Mac's zone) once ``at`` has passed and today was not tried yet.
+
+        A start learns whether today was tried from the log: a summary call recorded since
+        ``at`` today means it was, so a day that was rejected is not asked again on every
+        restart (the brain restarted eleven times on 2026-10-19, each one paying for the same
+        rejected day twice).
+        """
         local = now.astimezone()
         if local.time() < self._settings.at or local.date() == self._last:
             return None
+        since = datetime.combine(local.date(), self._settings.at, local.tzinfo)
+        if self._last is None and self._tried_since(since):
+            self._last = local.date()
+            return None
         return local.date()
+
+    def _tried_since(self, moment: datetime) -> bool:
+        """Whether the log holds a summary call recorded at or after ``moment``."""
+        with closing(open_runtime_event_log(self._event_log_path)) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM events WHERE type = 'cost.recorded' AND ts_epoch_ms >= ? "
+                "AND json_extract(payload_json, '$.kind') = ? LIMIT 1",
+                (int(moment.timestamp() * 1000), KIND),
+            ).fetchone()
+        return row is not None
 
     def write(self, today: date) -> dict[str, str]:
         """One attempt per local date: a day that fails waits for tomorrow's run."""
