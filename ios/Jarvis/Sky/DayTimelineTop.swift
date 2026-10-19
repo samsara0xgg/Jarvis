@@ -65,10 +65,10 @@ struct TLTopView: View {
             lastStretch = nil
             withAnimation(.easeOut(duration: 0.2)) { tl.follow(nil, in: nil) }
         }
-        .animation(.easeOut(duration: 0.35), value: model?.line)
+        .animation(TLMotion.dayChange(reduce: reduce), value: model?.line)
         // only once she is in her corner, and gone as soon as she leaves it: she glides across where they stand
         .opacity(ui.tlHome ? 1 : 0).allowsHitTesting(ui.tlHome)
-        .animation(.easeOut(duration: ui.tlHome ? (reduce ? 0.2 : 0.3) : 0.06), value: ui.tlHome)
+        .animation(.easeOut(duration: ui.tlHome ? (reduce ? TLMotion.reducedFade : 0.3) : 0.06), value: ui.tlHome)
     }
 
     /// the minute under his finger in words, where her sentence is: the stretch with its hours and length, under it what else was going on
@@ -129,7 +129,7 @@ struct TLTopView: View {
     /// another day's bar comes in from the way time goes, a hair, as the list does
     private var barTransition: AnyTransition {
         if reduce { return .opacity }
-        let d = 8.0 * Double(tl.slide)
+        let d = TLMotion.barSlide * Double(tl.slide)
         return .asymmetric(insertion: .opacity.combined(with: .offset(x: -d)), removal: .opacity.combined(with: .offset(x: d)))
     }
 }

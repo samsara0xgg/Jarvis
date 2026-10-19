@@ -146,7 +146,7 @@ final class TimelineState {
         pending = d; slide = d < from ? 1 : -1; letGo()
         DispatchQueue.main.async { [self] in
             pending = nil
-            withAnimation(.easeOut(duration: 0.35)) { day = d }
+            withAnimation(TLMotion.dayChange(reduce: TLMotion.reduced)) { day = d }
         }
     }
     func swipe(_ delta: Int) { setDay((pending ?? day) + delta) }
@@ -330,7 +330,7 @@ struct DayTimelineView: View {
 
     private var slideTransition: AnyTransition {
         if reduce { return .opacity }
-        let d = 24.0 * Double(tl.slide)
+        let d = TLMotion.daySlide * Double(tl.slide)
         return .asymmetric(insertion: .opacity.combined(with: .offset(x: -d)), removal: .opacity.combined(with: .offset(x: d)))
     }
 
@@ -354,7 +354,7 @@ struct DayTimelineView: View {
                 VStack(spacing: 0) {
                     ForEach(cards) { c in
                         TLWaitingRow(card: c, open: tl.openCard == c.id) {
-                            withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.35, dampingFraction: 0.86)) { tl.openCard = tl.openCard == c.id ? nil : c.id }
+                            withAnimation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .spring(response: 0.35, dampingFraction: 0.86)) { tl.openCard = tl.openCard == c.id ? nil : c.id }
                         }
                     }
                 }
@@ -391,11 +391,11 @@ private struct TLList: View {
         _opened = State(initialValue: room)
     }
 
-    /// the first twelve rows in view when it opens rise in one after another; the rest are simply there
+    /// the first ten rows in view when it opens rise in one after another; the rest are simply there
     private func ranks(_ offs: [Double]) -> [String: Int] {
         let y0 = model.restY(room: opened)
         var out: [String: Int] = [:]
-        for (i, e) in model.entries.enumerated() where offs[i] + e.height > y0 && offs[i] < y0 + opened && out.count < 12 { out[e.id] = out.count }
+        for (i, e) in model.entries.enumerated() where offs[i] + e.height > y0 && offs[i] < y0 + opened && out.count < TLMotion.riseCount { out[e.id] = out.count }
         return out
     }
 
@@ -447,7 +447,7 @@ private struct TLList: View {
         guard e.opens else { return }
         let opening = tl.openRow != e.id
         if opening { Haptic.impact(.light) }
-        withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(duration: 0.26, bounce: 0.08)) { tl.openRow = opening ? e.id : nil }
+        withAnimation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .spring(duration: 0.26, bounce: 0.08)) { tl.openRow = opening ? e.id : nil }
     }
 
     /// A row opened is as tall as it is (`h`, without the blank above it): when its foot is below the list, the list goes up as far as that takes, never so far that the row's own top is lost.
@@ -478,7 +478,7 @@ private struct ScrollsOnRequest: ViewModifier {
     }
 }
 
-/// a row rising in: from 10 pt below, one after another 30 ms apart; with Reduce Motion a plain fade
+/// a row rising in: from 6 pt below over 220 ms, one after another 25 ms apart; with Reduce Motion a plain fade
 private struct Rise: ViewModifier {
     let rank: Int?
     let on: Bool
@@ -487,8 +487,8 @@ private struct Rise: ViewModifier {
         let shown = rank == nil || on
         content
             .opacity(shown ? 1 : 0)
-            .offset(y: shown || reduce ? 0 : 10)
-            .animation(rank.map { reduce ? Animation.easeOut(duration: 0.25) : Animation.easeOut(duration: 0.4).delay(Double($0) * 0.03) }, value: on)
+            .offset(y: shown || reduce ? 0 : TLMotion.riseOffset)
+            .animation(rank.map { TLMotion.rise(rank: $0, reduce: reduce) }, value: on)
     }
 }
 

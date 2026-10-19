@@ -239,10 +239,10 @@ struct TLBarView: View {
                 }
                 .animation(.easeOut(duration: 0.12), value: bracket != nil)  // it comes and goes with a fade; moving from one span to the next is as quick as the finger
                 .frame(width: bw, height: bh, alignment: .topLeading)       // its own size: the marker and the hours stand outside the bar and would stretch the track
-                .mask(alignment: .leading) { Rectangle().frame(width: reduce || reveal ? bw : 0) }          // grows in from the left
+                .mask(alignment: .leading) { GrowMask(shown: reduce || reveal) }          // grows in from the left, in the order of time, its leading edge soft
                 .opacity(reduce && !reveal ? 0 : 1)
-                .animation(reduce ? .easeOut(duration: 0.25) : .easeOut(duration: 0.6), value: reveal)
-                stars.opacity(reveal ? 1 : 0).animation(.easeOut(duration: 0.3).delay(reveal && !reduce ? 0.45 : 0), value: reveal)      // once the bar has grown to them
+                .animation(TLMotion.barGrowth(reduce: reduce), value: reveal)
+                stars.opacity(reveal ? 1 : 0).animation(.easeOut(duration: 0.2).delay(reveal && !reduce ? 0.7 * TLMotion.barGrow : 0), value: reveal)      // once the bar has grown to them
             }
             .opacity(lens ? 0.25 : 1).animation(.easeOut(duration: 0.15), value: lens)
             lensLayer
@@ -376,6 +376,21 @@ struct TLBarView: View {
                 .fixedSize().offset(x: clamp(x(t) - 22, 0, bw - 44), y: -27)
         }
         .allowsHitTesting(false)
+    }
+}
+
+/// What shows of the bar while it grows in: from the left, with a soft leading edge 28 pt wide that sweeps along it, so that the stretches appear in the order of time and none with a hard cut.
+/// It is a fixed gradient that slides, so the sweep costs nothing to draw on every frame.
+private struct GrowMask: View {
+    let shown: Bool
+    private let edge = 28.0
+
+    var body: some View {
+        let w = TLLayout.barW
+        LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: w / (w + edge)), .init(color: .clear, location: 1)],
+                       startPoint: .leading, endPoint: .trailing)
+            .frame(width: w + edge, height: TLLayout.barH + 40)          // taller than the bar: the stars and the line for now stand outside it
+            .offset(x: shown ? 0 : -(w + edge))
     }
 }
 
