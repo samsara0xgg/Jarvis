@@ -15,6 +15,7 @@ import { pinLabel, pinTrip, pinWidest, type Departure } from './pin';
 import { DayTimeline } from './DayTimeline';
 import { wingText, type DayReply } from './dayView';
 import type { Route } from './homeData';
+import type { About } from './dayOpen';
 
 // Beside the notch, after the notch lab (ADR 0069, 0070). Right of the camera, one mark per group with its count:
 // your turn (the beacon), working, finished, parked (the moon). Only working moves; the beacon sends out its rings
@@ -54,7 +55,7 @@ export type Wing = 'marks' | 'timeline';
 export const isWing = (value: unknown): value is Wing => value === 'marks' || value === 'timeline';
 // With the timeline on the wing: today as the daemon serves it, the companion's way of opening the Dashboard (a rest on the line
 // opens nothing when it is `click`), and what the pane opening or folding tells her (the Dashboard folds; notices wait).
-export type NotchTimeline = { day: Route<DayReply>; openBy: 'both' | 'click' | 'hover'; onOpenChange: (open: boolean) => void };
+export type NotchTimeline = { day: Route<DayReply>; openBy: 'both' | 'click' | 'hover'; onOpenChange: (open: boolean) => void; ask?: (text: string, about?: About) => Promise<void> };
 // A pop names sessions; a card is a needs-you card the companion builds, for session `id` when it has one.
 // A pop carries its 合适吗 row in `rate` (ADR 0160).
 export type NotchNote = { key: string; id?: string; pop?: string[]; card?: ReactNode; rate?: ReactNode; onClose: () => void };
@@ -297,7 +298,7 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
     // The timeline wing's line (where it is drawn, and how its words are cut), the wing the layout was made for, and the day's pane:
     // `closedHere` is the day just closed under a pointer still on the line (a rest does not open it again), `leftAt` since when the pointer has been away.
     seg: null as { x0: number; x1: number; room: number } | null, laid: '' as '' | Wing,
-    tl: { open: false, pinned: false, closedHere: false, enterAt: -1, leftAt: -1, press: false },
+    tl: { open: false, pinned: false, closedHere: false, enterAt: -1, leftAt: -1, press: false, hold: false },
     popOrigins: new Map<string, Point>(), intent: new PointerIntent(), resolvedNote: '', workLandingUntil: 0, joined: false, asideKey: null as Kind | null,
   }).current;
   const mode: Wing = tlMode ? 'timeline' : 'marks';
@@ -313,6 +314,16 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
     const T = st.tl;
     if (!T.open) return;
     T.open = false; T.pinned = false; T.closedHere = true; st.dirty = true; setTlOpen(false); setTlPinned(false); L.current.timeline?.onOpenChange(false);
+    if (T.hold) { T.hold = false; if (!keysHeld.current) onKeys(false); }
+  };
+  // The day holds itself open while something in it needs the pointer to be free to leave: a field with the text cursor (the input of 问她, a
+  // name being changed) or a picture shown large. It takes the window's key focus for that (the typing needs it, and so does the Esc that
+  // lets go), and gives it back as it was (a pin keeps it) when the day lets go.
+  const holdTl = (on: boolean) => {
+    const T = st.tl;
+    if (T.hold === on) return;
+    T.hold = on;
+    if (on) onKeys(true); else if (!T.pinned && !keysHeld.current) onKeys(false);
   };
   const openTl = (pinned: boolean) => {
     const T = st.tl;
@@ -548,7 +559,7 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
           if (!onLine) { T.closedHere = false; T.enterAt = -1; } else if (T.enterAt < 0) T.enterAt = now;
           if (T.open) {
             if (blocked) closeTl();
-            else if (onLine || inPane || T.press) T.leftAt = -1;
+            else if (onLine || inPane || T.press || T.hold) T.leftAt = -1;
             else if (T.leftAt < 0 || st.intent.headingTo(rect)) T.leftAt = now;
             if (T.open && T.leftAt >= 0 && now - T.leftAt >= DASHBOARD_EXIT_MS) closeTl();
           } else if (onLine && !blocked && !dash && tl!.openBy !== 'click' && !T.closedHere && now - T.enterAt >= DASHBOARD_DWELL_MS && speed < HOVER_SPEED) openTl(false);
@@ -770,7 +781,7 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
   if (note) lastNote.current = note;
   if (open && panel) lastPanel.current = panel;
   // The drop holds the sessions or the day, never both; the day is mounted afresh at each opening (it starts on today).
-  const dayPane = timeline && <DayTimeline key={tlKey} port={port} feed={timeline.day} open={tlOpen}/>;
+  const dayPane = timeline && <DayTimeline key={tlKey} port={port} feed={timeline.day} open={tlOpen} ask={timeline.ask} hold={holdTl}/>;
   if (tlOpen) lastDrop.current = 'timeline'; else if (open) lastDrop.current = 'sessions';
   const dropBody = tlOpen ? dayPane : open ? panel : lastDrop.current === 'timeline' ? dayPane : lastPanel.current;
   const shownNote = note ?? lastNote.current;

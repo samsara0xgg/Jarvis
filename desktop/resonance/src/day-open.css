@@ -1,0 +1,134 @@
+/* An open row (RowOpen.tsx, AskDock.tsx; ADR 0296, spec-r3 section 8). The row's own two lines stay as they were and its content hangs under
+   them from the title's column; the row that holds one is a little lighter and has a hairline. Under the list: the note that a name was
+   changed, and the input. All of it black and quiet like the pane; amber only where something waits on him (the 知道了 button). */
+.notch .dt-row,.notch .dt-sh { cursor:pointer; }
+.notch .dt-row.is-still,.notch .dt-sh.is-still { cursor:default; }
+/* what is still to come is drawn quiet; one that is open is looked at, so it is not */
+.notch .dt-row.is-future.is-open { opacity:1; }
+.notch .dt-row:has(> .dt-fold),.notch .dt-sh:has(> .dt-fold) { height:auto; grid-template-rows:var(--head) auto; background:rgb(255 255 255 / .055); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .08); }
+.notch .dt-fold { grid-column:3 / -1; grid-row:2; min-width:0; overflow:hidden; cursor:default; }
+.notch .dt-body { display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:2px 4px 12px 2px; font-size:13px; line-height:18px; color:var(--p-muted); user-select:text; -webkit-user-select:text; }
+.notch .dt-body > * { max-width:100%; }
+.notch .dt-body p { margin:0; overflow-wrap:anywhere; }
+.notch .dt-lines { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.notch .dt-lines p.is-ink,.notch .dt-body p.is-note { color:var(--p-ink); }
+.notch .dt-body p.is-note { white-space:pre-line; }
+
+/* the buttons, and the line under them */
+.notch .dt-acts { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:2px; }
+.notch .dt-btn { height:26px; padding:0 12px; border-radius:13px; background:rgb(255 255 255 / .1); font-size:12px; font-weight:600; line-height:26px; white-space:nowrap; color:var(--p-ink); transition:background var(--motion-fast),opacity var(--motion-fast); }
+.notch .dt-btn:hover:not(:disabled) { background:rgb(255 255 255 / .18); }
+.notch .dt-btn:disabled { opacity:.5; }
+.notch .dt-btn:focus-visible { outline-offset:1px; }
+.notch .dt-btn.is-amber { background:rgb(255 201 143 / .14); color:rgb(255 201 143); }
+.notch .dt-btn.is-amber:hover:not(:disabled) { background:rgb(255 201 143 / .24); }
+.notch .dt-sent { display:inline-flex; align-items:center; gap:5px; height:26px; padding:0 2px; font-size:12px; font-weight:600; color:var(--p-muted); }
+.notch .dt-hint { margin:0; font-size:12px; line-height:16px; color:var(--p-faint); }
+.notch .dt-hint.is-bad { color:var(--p-ink); }
+
+/* his first line and her first reply, one line each; two bars of the same height stand in while they are read */
+.notch .dt-said { display:flex; flex-direction:column; gap:3px; width:100%; min-width:0; }
+.notch .dt-said p { display:grid; grid-template-columns:20px minmax(0,1fr); gap:6px; align-items:baseline; }
+.notch .dt-said small { font-size:11px; color:var(--p-faint); }
+.notch .dt-said span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--p-ink); }
+.notch .dt-said p + p span { color:var(--p-muted); }
+.notch .dt-said.is-wait i { display:block; height:18px; border-radius:5px; background:rgb(255 255 255 / .06); animation:dt-pulse 1.3s ease-in-out infinite; }
+.notch .dt-said.is-wait i:last-child { width:64%; animation-delay:.15s; }
+@keyframes dt-pulse { 50% { opacity:.45; } }
+
+/* the picture: 240 tall at most, 10 px round; while it comes a quiet box of about its size */
+.notch .dt-pic { display:block; align-self:flex-start; max-width:100%; padding:0; border-radius:10px; overflow:hidden; background:rgb(255 255 255 / .06); cursor:zoom-in; }
+.notch .dt-pic img { display:block; width:auto; height:auto; max-width:100%; max-height:240px; border-radius:10px; transition:opacity 160ms linear; }
+.notch .dt-pic.is-wait { width:min(100%, 260px); height:150px; animation:dt-pulse 1.3s ease-in-out infinite; }
+.notch .dt-pic.is-wait img { opacity:0; }
+
+/* work: the biggest projects and apps as thin bars, each against the active time */
+.notch .dt-bars { display:grid; grid-template-columns:minmax(0,132px) minmax(0,1fr) max-content; gap:6px 10px; align-items:center; width:100%; }
+.notch .dt-bars h4 { grid-column:1 / -1; margin:0; font-size:11px; font-weight:600; line-height:14px; color:var(--p-faint); }
+.notch .dt-bar-row { display:contents; }
+.notch .dt-bar-row span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:12.5px; color:var(--p-ink); }
+.notch .dt-bar-row i { position:relative; height:4px; border-radius:2px; background:rgb(255 255 255 / .08); }
+.notch .dt-bar-row u { position:absolute; inset:0 auto 0 0; border-radius:2px; background:rgb(108 156 255 / .9); }
+.notch .dt-bar-row em { min-width:58px; font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-style:normal; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; color:var(--p-muted); }
+
+/* the night: four lanes, awake on top and deep at the foot, a block where each stage was, a hairline where one gives way to another */
+.notch .dt-hyp { display:grid; grid-template-columns:30px minmax(0,1fr); column-gap:8px; width:100%; }
+.notch .dt-hyp-l { display:grid; grid-template-rows:repeat(4,12px); font-size:9.5px; line-height:12px; text-align:right; white-space:nowrap; color:var(--p-faint); }
+.notch .dt-hyp-plot { position:relative; height:48px; background:linear-gradient(rgb(255 255 255 / .06) 1px, transparent 1px) 0 5.5px / 100% 12px; }
+.notch .dt-hyp-plot i { position:absolute; height:8px; border-radius:2px; background:rgb(var(--c) / var(--a)); }
+.notch .dt-hyp-plot u { position:absolute; width:1px; margin-left:-.5px; background:rgb(255 255 255 / .18); }
+.notch .dt-hyp-ends { display:flex; grid-column:2; justify-content:space-between; margin-top:4px; }
+.notch .dt-hyp-ends em { font:10.5px/12px "JetBrains Mono", Menlo, monospace; font-style:normal; color:var(--p-faint); }
+
+/* Claude Code: when, the title over project · account, how long; a session with a recap opens to it in full */
+.notch .dt-sess { display:flex; flex-direction:column; width:100%; margin:0; padding:0; list-style:none; }
+.notch .dt-sess li + li { border-top:1px solid rgb(255 255 255 / .06); }
+.notch .dt-sess button,.notch .dt-sess-h { display:grid; grid-template-columns:40px minmax(0,1fr) auto 10px; gap:8px; align-items:center; width:100%; min-height:38px; padding:0; text-align:left; }
+.notch .dt-sess-h { padding-right:0; }
+.notch .dt-sess time,.notch .dt-sess-l { font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--p-muted); }
+.notch .dt-sess-l { grid-column:3; }
+.notch .dt-sess-t { display:flex; flex-direction:column; min-width:0; }
+.notch .dt-sess-t b { overflow:hidden; font-size:13px; font-weight:500; line-height:17px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-ink); }
+.notch .dt-sess-t em { overflow:hidden; font-style:normal; font-size:11.5px; line-height:15px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-faint); }
+.notch .dt-sess button svg { color:var(--p-faint); transition:transform var(--motion-fast) var(--ease-out); }
+.notch .dt-sess button[aria-expanded="true"] svg { transform:rotate(90deg); }
+.notch .dt-sess button:hover .dt-sess-t b { color:#fff; }
+.notch .dt-body .dt-recap { margin:0 0 10px 48px; font-size:12.5px; line-height:1.6; white-space:pre-wrap; color:var(--p-muted); }
+.notch .dt-titles { display:flex; flex-direction:column; gap:2px; margin:0; padding:0; list-style:none; }
+.notch .dt-titles li { color:var(--p-ink); }
+.notch .dt-titles li::before { content:'·'; margin-right:6px; color:var(--p-faint); }
+
+/* the name of a kept place, being changed in the stay's own header */
+.notch .dt-rename { flex:1; min-width:0; height:26px; margin:-1px 0 -1px -7px; padding:0 6px; border:0; border-radius:7px; background:rgb(255 255 255 / .1); box-shadow:inset 0 0 0 1px rgb(var(--ink) / .32);
+  font-size:15px; font-weight:600; line-height:26px; color:var(--p-ink); caret-color:rgb(var(--ink)); outline:none; }
+.notch .dt-rename:disabled { opacity:.6; }
+/* the notch's own ring on a focused field (notices.css) is for its buttons and plain fields; these two show the cursor with a ring of their own */
+.notch input.dt-rename:focus-visible,.notch input.dt-ask-in:focus-visible { outline:none; }
+
+/* the hover 问她 on a stay's header too; where the row is open its own buttons are there */
+.notch .dt-sh.is-hot .dt-ask,.notch .dt-sh.is-pick .dt-ask { opacity:1; pointer-events:auto; }
+.notch .dt-sh.is-hot .dt-ask + .dt-tm,.notch .dt-sh.is-pick .dt-ask + .dt-tm { opacity:0; }
+.notch .dt-row:has(> .dt-fold) > .dt-ask,.notch .dt-sh:has(> .dt-fold) > .dt-ask { display:none; }
+.notch .dt-row:has(> .dt-fold) > .dt-ask + .dt-tm,.notch .dt-sh:has(> .dt-fold) > .dt-ask + .dt-tm { opacity:1; }
+
+/* what waits on him goes quietly: the badge fades, the count rolls down */
+.notch .dt-wait { transition:opacity 200ms linear; }
+.notch .dt-wait.is-gone { opacity:0; }
+.notch .dt-waits { transition:background var(--motion-fast),opacity 200ms linear; }
+.notch .dt-waits.is-gone { opacity:0; pointer-events:none; }
+.notch .dt-roll { position:relative; display:inline-block; overflow:hidden; height:20px; vertical-align:top; }
+.notch .dt-roll i { display:inline-block; font-style:normal; }
+.notch .dt-roll i.is-old { position:absolute; left:0; top:0; animation:dt-roll-out 220ms var(--ease-out) forwards; }
+.notch .dt-roll i.is-new { animation:dt-roll-in 220ms var(--ease-out); }
+@keyframes dt-roll-out { to { transform:translateY(100%); opacity:0; } }
+@keyframes dt-roll-in { from { transform:translateY(-100%); opacity:0; } }
+
+/* at the pane's foot: a name was changed (undo for 5 s), and the input about a row */
+.notch .dt-fold.is-dock { margin-top:-9px; }
+.notch .dt-fold.is-dock > .dt-body { display:block; padding:9px 0 0; }
+.notch .dt-note { padding:0 4px; font-size:12px; line-height:22px; color:var(--p-muted); }
+.notch .dt-note button { font-size:12px; font-weight:600; text-decoration:underline; text-decoration-color:rgb(255 255 255 / .3); text-underline-offset:2px; color:var(--p-ink); }
+.notch .dt-dock { display:flex; align-items:center; gap:8px; box-sizing:border-box; height:40px; padding:0 7px 0 8px; border-radius:14px; background:rgb(255 255 255 / .07); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .09); transition:background var(--motion-fast),box-shadow var(--motion-fast); }
+.notch .dt-dock:focus-within { background:rgb(255 255 255 / .09); box-shadow:inset 0 0 0 1px rgb(var(--ink) / .3); }
+.notch .dt-dock.is-sent { gap:6px; padding:0 14px; font-size:13px; font-weight:600; color:var(--p-ink); }
+.notch .dt-dock + .dt-hint { padding:5px 4px 0; }
+.notch .dt-about { display:flex; flex:0 1 auto; align-items:center; gap:6px; min-width:0; max-width:46%; height:26px; padding:0 4px 0 9px; border-radius:13px; background:rgb(255 255 255 / .1); font-size:12px; color:var(--p-muted); }
+.notch .dt-about svg { flex:none; color:rgb(var(--ink) / .82); }
+.notch .dt-about b { min-width:0; overflow:hidden; font-weight:500; white-space:nowrap; text-overflow:ellipsis; color:var(--p-ink); }
+.notch .dt-about time { flex:none; font:11px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; color:var(--p-faint); }
+.notch .dt-about button { display:grid; place-items:center; flex:none; width:18px; height:18px; border-radius:50%; color:var(--p-muted); transition:background var(--motion-fast),color var(--motion-fast); }
+.notch .dt-about button:hover { background:rgb(255 255 255 / .16); color:var(--p-ink); }
+.notch .dt-ask-in { flex:1; min-width:0; height:100%; padding:0; border:0; background:transparent; font-size:13.5px; color:var(--p-ink); caret-color:rgb(var(--ink)); outline:none; }
+.notch .dt-ask-in::placeholder { color:var(--p-faint); }
+.notch .dt-send { display:grid; place-items:center; flex:none; width:26px; height:26px; border-radius:50%; background:var(--p-ink); color:#10131d; transition:opacity var(--motion-fast),background var(--motion-fast); }
+.notch .dt-send:hover:not(:disabled) { background:#fff; }
+.notch .dt-send:disabled { opacity:.22; }
+
+/* the picture large, over the window */
+.dt-viewer { position:fixed; inset:0; z-index:30; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; box-sizing:border-box; padding:3vh 4vw; background:rgb(0 0 0 / .8); cursor:zoom-out; animation:dt-viewer-in 160ms ease-out; }
+.dt-viewer img { display:block; width:88vw; height:78vh; object-fit:contain; border-radius:12px; }
+.dt-viewer p { margin:0; max-width:min(88vw, 640px); font:13px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; text-align:center; white-space:pre-line; color:rgb(238 240 251 / .92); }
+@keyframes dt-viewer-in { from { opacity:0; } }
+@media (prefers-reduced-motion:reduce) {
+  .notch .dt-wait,.notch .dt-waits { transition:none; }
+}

@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { askable, buildDay, clock, covered, dateTitle, fnv, lensOf, moneyText, shiftDate, stageMinutes, stageSlices, weatherOf, wingText, within } from '../src/dayView.ts';
 import { axisOf, buildBar, fit, fOf, hm, msOf, numbers, peek, rowAt, summarize, toneOn } from '../src/barView.ts';
-import { askOf, openOf } from '../src/dayOpen.ts';
+import { askOf, hasBody, openOf, talkLines } from '../src/dayOpen.ts';
 import { deflateSync, crc32 } from 'node:zlib';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -175,6 +175,30 @@ const PICTURE = (() => {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', head), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
 })();
 const PIC = 'a'.repeat(32);
+// A second, larger picture (640 x 420) for the one that has to be cut to 240 tall and shown large.
+const BIG = 'c'.repeat(32);
+const BIGPICTURE = (() => {
+  const w = 640, h = 420, raw = Buffer.alloc((w * 3 + 1) * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const sky = y < 210, d = Math.hypot(x - 430, y - 150), sun = d < 54;
+    const [r, g, b] = sun ? [255, 226, 160] : sky ? [70 + y * .35 + x * .05, 110 + y * .3, 190 - y * .2] : [50 + (y - 210) * .25, 96 + Math.sin(x / 40) * 16 + (y - 210) * .3, 70 + x * .03];
+    raw.set([r, g, b], y * (w * 3 + 1) + 1 + x * 3);
+  }
+  const chunk = (type, data) => { const len = Buffer.alloc(4), crc = Buffer.alloc(4), body = Buffer.concat([Buffer.from(type), data]); len.writeUInt32BE(data.length); crc.writeUInt32BE(crc32(body)); return Buffer.concat([len, body, crc]); };
+  const head = Buffer.alloc(13); head.writeUInt32BE(w, 0); head.writeUInt32BE(h, 4); head[8] = 8; head[9] = 2;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', head), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+})();
+// The day's conversation as the records route gives it (oldest first, `ts` an ISO string): an earlier talk, the one at 10:02 (his first line, her
+// long first reply, then more), and the one at 14:55 with one line of his; one record of the brain's own kind that is neither his nor hers is left out.
+const iso = ms => new Date(ms).toISOString();
+const records = () => [
+  { id: 'r-1', ts: iso(T(8, 31)), who: 'user', text: '早' }, { id: 'r-2', ts: iso(T(8, 31) + 3000), who: 'jarvis', text: '早，今天降温，带件外套。' },
+  { id: 'r-3', ts: iso(T(10, 2)), who: 'user', text: '帮我看看今天下午有什么安排，顺便提醒我给银行打电话\n这件事别忘了' },
+  { id: 'r-4', ts: iso(T(10, 2) + 5000), who: 'jarvis', text: '下午三点有一个小组讨论，在图书馆；银行的电话我已经提醒过你一次，九点半的那条到现在还没有确认，需要的话我可以改成中午再提醒一次。' },
+  { id: 'r-5', ts: iso(T(10, 4)), who: 'user', text: '好' }, { id: 'r-6', ts: iso(T(10, 4) + 2000), who: 'jarvis', text: '好的。' },
+  { id: 'r-7', ts: iso(T(14, 55)), who: 'user', text: '27 路下一班什么时候' }, { id: 'r-8', ts: iso(T(14, 55) + 4000), who: 'jarvis', text: '还有 6 分钟。' },
+  { id: 'r-9', ts: iso(T(19, 30)), who: 'user', text: '今天先到这里' },
+];
 // The day before: two stays and a ride, no sentence yet.
 const YESTERDAY = '2026-10-18';
 const yesterday = () => ({
@@ -437,27 +461,39 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   const m = buildDay(fullDay(), NOW, zh), me = buildDay(fullDay(), NOW, en), open = (key, model = m) => openOf(model, key, model === me ? en : zh);
   const lines = (key, model = m) => open(key, model).parts.filter(p => p.type === 'lines').flatMap(p => p.lines.map(l => l.text)), part = (key, type, model = m) => open(key, model).parts.find(p => p.type === type);
   const heads = [...m.heads.keys()], keys = [...m.rows.keys(), ...heads];
-  check('every row of the day and every stay opens; a key that is no row opens nothing', keys.length >= 28 && keys.every(k => open(k)?.parts.length > 0) && open('now') === null && open('nope') === null && open('') === null, keys.filter(k => !open(k)?.parts.length).join());
+  const empty = keys.filter(k => !open(k)?.parts.length), bare = keys.filter(k => !hasBody(open(k), !!askOf(m, k, zh)));
+  check('every row of the day and every stay is known; a key that is no row opens nothing; the departure, whose two lines and right column say it all, is the one row with nothing to show and nothing to do (the reminders have their buttons)', keys.length >= 28 && keys.every(k => open(k) !== null) && open('now') === null && open('nope') === null && open('') === null && bare.join() === 'departure-1' && empty.includes('reminder-2') && empty.includes('departure-1'), `${bare} | ${empty}`);
   check('a stay he keeps: the place text, then 常去的地方 · 家, and the kept place to rename; one he did not name has the place text only and nothing to rename',
     lines('stay-home-1').join('|') === '12 Example St, Victoria|常去的地方 · 家' && JSON.stringify(open('stay-home-1').rename) === '{"id":"p-home","name":"家"}' && lines('stay-aw').join('|') === 'A&W, 1234 Douglas St, Victoria' && open('stay-aw').rename === null);
-  check('a move: its word and length, and from and to by the names of the stays either side (within half an hour); one side alone says which',
-    lines('move-1').join('|') === '开车 · 1 时 40 分|家 → A&W' && lines('move-2').join('|') === '步行 · 10 分|去 A&W' && lines('move-3').join('|') === '步行 · 10 分|A&W → 家'
-    && lines('f-w11', buildDay(fragmentedDay(), NOW, zh)).join('|') === '步行 · 20 分|从 家 出发' && lines('move-3', me).join('|') === 'Walking · 10 min|A&W → 家');
+  check('a move: from and to by the names of the stays either side (within half an hour), one side alone says which; its word and length are the row\'s and are not said again',
+    lines('move-1').join('|') === '家 → A&W' && lines('move-2').join('|') === '去 A&W' && lines('move-3').join('|') === 'A&W → 家'
+    && lines('f-w11', buildDay(fragmentedDay(), NOW, zh)).join('|') === '从 家 出发' && lines('move-3', me).join('|') === 'A&W → 家');
   const ride = (reason, over = {}) => lines('r', buildDay(small([it('r', 'ride', T(14, 50), T(15, 19), { route: '27', board_stop: 'A', alight_stop: 'B', ended_reason: reason, credit: null, ...over })]), NOW, zh)).join('|');
-  check('a ride: board → alight, and how it ended in plain words for each reason the brain has; a reason it does not know says nothing; one still going is still on',
-    ride('left_vehicle') === 'A → B|你下车了' && ride('passed_stop') === 'A → B|到了你要下的站' && ride('said') === 'A → B|你说你下车了' && ride('schedule_end') === 'A → B|这趟车跑完了' && ride('replaced') === 'A → B|你换了另一班车' && ride('mystery') === 'A → B'
-    && lines('r', buildDay(small([it('r', 'ride', T(21, 30), null, { route: '27', board_stop: 'A', alight_stop: null })]), NOW, zh)).join('|') === 'A|还在车上');
-  check('and when it is credited, 实时：BC Transit; in English Live: BC Transit, You got off', ride('left_vehicle', { credit: 'BC Transit' }) === 'A → B|实时：BC Transit|你下车了' && lines('ride-1', me).join('|') === 'Shelbourne at Pear → UVic Exchange|You got off');
+  check('a ride: how it ended in plain words for each reason the brain has; a reason it does not know says nothing; one still going is still on; the route is the row\'s second line and is not said again',
+    ride('left_vehicle') === '你下车了' && ride('passed_stop') === '到了你要下的站' && ride('said') === '你说你下车了' && ride('schedule_end') === '这趟车跑完了' && ride('replaced') === '你换了另一班车' && ride('mystery') === ''
+    && lines('r', buildDay(small([it('r', 'ride', T(21, 30), null, { route: '27', board_stop: 'A', alight_stop: null })]), NOW, zh)).join('|') === '还在车上');
+  const far = { board_stop: 'Shelbourne Street at Mckenzie Avenue', alight_stop: 'University of Victoria Exchange Bay 4' };
+  check('and when it is credited, 实时：BC Transit; in English Live: BC Transit, You got off; a route too long for the row\'s line (over 40) is said in full, first', ride('left_vehicle', { credit: 'BC Transit' }) === '实时：BC Transit|你下车了' && lines('ride-1', me).join('|') === 'You got off'
+    && ride('left_vehicle', far) === 'Shelbourne Street at Mckenzie Avenue → University of Victoria Exchange Bay 4|你下车了');
   check('a talk is read from the day\'s records between its first and last line (the part says which), and says 共 6 句 under them',
     JSON.stringify(part('talk-1', 'talk')) === JSON.stringify({ type: 'talk', day: DATE, from: T(10, 2), to: T(10, 9) }) && lines('talk-1').join() === '共 6 句' && lines('talk-3').join() === '共 1 句' && lines('talk-1', me).join() === '6 lines in all');
-  check('a picture: its id and the note in full, lines and all; one with no id kept shows the note', JSON.stringify(part('picture-1', 'picture')) === JSON.stringify({ type: 'picture', id: PIC, note: '汉堡和薯条\n在 A&W 吃的午饭' })
-    && part('p', 'picture', buildDay(small([it('p', 'picture', T(13, 30), T(13, 30), { attachment: 'zz', note: '一张' })]), NOW, zh)).id === '');
-  check('an event: its time, the place, where it came from and its state; from mail it says whether it is yours yet; a private one says no place',
-    lines('event-1').join('|') === '22:30–23:30 · 1 时|Library|来源：邮件 · 还没确认 · 还没开始' && lines('event-2').join('|') === '23:40–23:55 · 15 分|来源：你说的 · 还没开始' && lines('event-1', me).join('|') === '22:30–23:30 · 1 h|Library|Source: Mail · not confirmed yet · Not yet');
-  check('a reminder: its text and when and how it stands; only one that rang and was not acknowledged has a 知道了 to press (and says which)',
-    lines('reminder-2').join('|') === '给银行打电话|提醒时间 09:30 · 响过了' && open('reminder-2').ack === 'reminder-2' && lines('reminder-1').join('|') === '把垃圾拿出去|提醒时间 22:00 · 还没到点' && open('reminder-1').ack === null
-    && open('f-remind', buildDay(fragmentedDay(), NOW, zh)).ack === null && lines('f-remind', buildDay(fragmentedDay(), NOW, zh)).join('|') === '交房租|提醒时间 19:00 · 你知道了');
-  check('a departure: route and stop, where to, and when to leave and when it goes', lines('departure-1').join('|') === '27 路 · Shelbourne at Pear|去 UVic|22:33 出门 · 22:40 发车');
+  check('a picture: its id and the note in full, lines and all (the row has said the first line: a note of one short line is not said again); one with no id kept shows the note; one with neither has nothing to show',
+    JSON.stringify(part('picture-1', 'picture')) === JSON.stringify({ type: 'picture', id: PIC, note: '汉堡和薯条\n在 A&W 吃的午饭', show: true })
+    && JSON.stringify(part('p', 'picture', buildDay(small([it('p', 'picture', T(13, 30), T(13, 30), { attachment: PIC, note: '一张' })]), NOW, zh))) === JSON.stringify({ type: 'picture', id: PIC, note: '一张', show: false })
+    && part('p', 'picture', buildDay(small([it('p', 'picture', T(13, 30), T(13, 30), { attachment: 'zz', note: '一张\n两行' })]), NOW, zh)).id === ''
+    && openOf(buildDay(small([it('p', 'picture', T(13, 30), T(13, 30), { attachment: 'zz', note: '一张' })]), NOW, zh), 'p', zh).parts.length === 0);
+  const ev = (extra, state = 'next') => lines('e', buildDay(small([it('e', 'event', T(22, 30), T(23, 30), { title: 'x', ...extra })]), NOW, zh)).join('|');
+  check('an event: its time range and where it stands (what the row has, the source, whether mail has it unconfirmed, and the place, is not said again); mail that is confirmed says so; a place too long for the row\'s line is said in full; a private one never says its place',
+    lines('event-1').join('|') === '22:30–23:30 · 1 时 · 还没开始' && lines('event-2').join('|') === '23:40–23:55 · 15 分 · 还没开始' && lines('event-1', me).join('|') === '22:30–23:30 · 1 h · Not yet'
+    && ev({ source: 'mail', confirmed: true }) === '22:30–23:30 · 1 时 · 已确认 · 还没开始' && ev({ place: '1234 Douglas Street, Victoria, British Columbia' }) === '22:30–23:30 · 1 时 · 还没开始|1234 Douglas Street, Victoria, British Columbia'
+    && ev({ place: '1234 Douglas Street, Victoria, British Columbia', private: true }) === '22:30–23:30 · 1 时 · 还没开始');
+  check('a reminder: its time, its text and how it stands are the row\'s; only one that rang and was not acknowledged has a 知道了 to press (and says which)',
+    lines('reminder-2').join('|') === '' && open('reminder-2').ack === 'reminder-2' && lines('reminder-1').join('|') === '' && open('reminder-1').ack === null
+    && open('f-remind', buildDay(fragmentedDay(), NOW, zh)).ack === null && lines('f-remind', buildDay(fragmentedDay(), NOW, zh)).join('|') === '');
+  const wordy = '把下周三要交的那份课程报告的第二稿发给 Prof. Lee 之前先过一遍参考文献';
+  check('the words the row already has for its title are not said again, unless they are long enough for the row to have cut them (over 20): then the reminder says them in full, and a Claude chat too, before when it ran', lines('r', buildDay(small([it('r', 'reminder', T(22, 0), null, { text: wordy, fired: false, acknowledged: false }, 'her')]), NOW, zh)).join('|') === `${wordy}`);
+  const dep = extra => lines('d', buildDay(small([it('d', 'departure', T(22, 40), T(22, 40), { route: '27', board_stop: 'Shelbourne at Pear', to: 'UVic', leave_at_ms: T(22, 33), ...extra })]), NOW, zh)).join('|');
+  check('a departure: the route, the stop, where to and when to leave are the row\'s; the stop is said only when the row\'s title does not carry it', lines('departure-1').join('|') === '' && dep({ title: '27 · Shelbourne at Pear' }) === '' && dep({ title: '' }) === '27 路 · Shelbourne at Pear' && dep({ title: '', board_stop: '' }) === '');
   const w = part('work-2', 'bars') && m.items.find(x => x.id === 'work-2'), bars = key => open(key).parts.filter(p => p.type === 'bars');
   check('a work block: active and whole time, then its projects and its apps as bars with their lengths and their share of the active time',
     lines('work-2').join() === '活跃 1 时 55 分 · 共 2 时 5 分' && bars('work-2').map(b => `${b.heading}:${b.bars.map(x => `${x.name} ${x.text} ${x.share.toFixed(2)}`).join('/')}`).join('|') === '项目:Jarvis 1 时 40 分 0.87|应用:Ghostty 1 时 10 分 0.61/Claude 30 分 0.26' && open('work-2').summarize === true);
@@ -469,15 +505,25 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
     night.from === T(23, 10, 18) && night.to === T(7, 0) && night.at.join() === '23:10,07:00' && night.totals === '深睡 1:10 · 核心 4:30 · REM 1:40 · 醒 3 次' && night.slices.length > 10 && night.slices.every((x, i, l) => x.e > x.s && (i === 0 || l[i - 1].e <= x.s))
     && part('sleep-1', 'night', me).night.totals === 'Deep 1:10 · Core 4:30 · REM 1:40 · Awake 3×' && lines('sleep-1').join() === night.totals);
   check('a night with no stages is only its time and length', lines('sleep-1', buildDay(makeDay(), NOW, zh)).join() === '00:55–09:05 · 8 时 10 分' && !part('sleep-1', 'night', buildDay(makeDay(), NOW, zh)));
-  check('a run: its word and length, and what was counted; a call: when, and its app; a payment: which way, the amount and currency, who and what, and through what',
-    lines('workout-1').join('|') === '跑步 · 35 分|3.2 公里 · 240 千卡 · 平均心率 142' && lines('call-1').join('|') === '16:40–16:58 · 18 分|FaceTime' && lines('pay-1').join('|') === '支出 · $12.40 · CAD|A&W · Teen Burger combo|支付宝'
-    && lines('pay-1', me).join('|') === 'Spent · $12.40 · CAD|A&W · Teen Burger combo|Alipay');
-  check('a Claude chat: its name, then who with, how many messages and when; a Claude day: its titles as a list and how many chats',
-    lines('chat-1').join('|') === 'The bar for the day|和 Claude · 14 条 · 20:10–20:42 · 32 分' && JSON.stringify(part('claude-day-1', 'titles').list) === '["The bar for the day","A tool exam"]' && lines('claude-day-1').join() === '2 个对话');
+  check('a run and a call: when it ran, to the minute (what was counted and the app are the row\'s); a payment: which way, the amount and the currency (who, what and through what are the row\'s)',
+    lines('workout-1').join('|') === '07:20–07:55 · 35 分' && lines('call-1').join('|') === '16:40–16:58 · 18 分' && lines('pay-1').join('|') === '支出 · $12.40 · CAD' && lines('pay-1', me).join('|') === 'Spent · $12.40 · CAD');
+  check('a Claude chat: when it ran (its name, who with and how many messages are the row\'s); a Claude day: its titles as a list, in full',
+    lines('chat-1').join('|') === '20:10–20:42 · 32 分' && JSON.stringify(part('claude-day-1', 'titles').list) === '["The bar for the day","A tool exam"]' && lines('claude-day-1').join() === '');
+  const first = key => open(key).parts[0]?.lines?.[0]?.tone, tones = (key, model = m) => open(key, model).parts.flatMap(p => p.type === 'lines' ? p.lines.map(l => l.tone) : []).join();
+  check('what an open row says first is in ink and the rest is muted (a talk\'s 共 N 句, which comes after his line and hers, is muted)', first('stay-home-1') === 'ink' && tones('stay-home-1') === 'ink,muted' && first('call-1') === 'ink' && tones('event-1') === 'ink' && tones('talk-1') === 'muted' && tones('sleep-1') === 'muted'
+    && tones('work-2') === 'ink' && tones('r', buildDay(small([it('r', 'ride', T(14, 50), T(15, 19), { route: '27', board_stop: 'A', alight_stop: 'B', ended_reason: 'left_vehicle', credit: 'BC Transit' })]), NOW, zh)) === 'ink,muted', [first('stay-home-1'), tones('stay-home-1'), tones('talk-1'), tones('sleep-1')].join(' '));
   const home = part('code:stay-home-1', 'sessions').list, uv = part('code:stay-uvic', 'sessions').list;
   check('the sessions folded into a row are listed oldest first, each with when it began, its title, project · account, how long and its recap in full; one alone is its own row and opens to its recap',
     home.map(x => `${x.at} ${x.meta} ${x.length}`).join() === '08:10 jarvis · A 55 分,08:40 jarvis-ios · B 55 分,09:50 jarvis · A 50 分,10:20 notes · B 45 分' && home[0].title === 'Phase A 的 review 修复' && home[0].recap === 'Phase A 的 review 修复 的小结' && uv.length === 2
     && JSON.stringify(part('s', 'sessions', buildDay(small([code(1, 'a', 810, 905, 'T', 'jarvis')].map(x => ({ ...x, id: 's' }))), NOW, zh)).list.map(x => [x.title, x.meta, x.recap])) === '[["T","jarvis · A","T 的小结"]]');
+  // what a talk row says of its span, from the day's records
+  const recs = records().map(r => ({ ...r, ts: Date.parse(r.ts) })), said = (from, to) => talkLines(recs, from, to);
+  check('a talk shows his first line in its span and her first reply to it, one line each (a line break is a space), and nothing of another talk; a span with no line of his shows nothing; a reply that is not there is left out',
+    JSON.stringify(said(T(10, 2), T(10, 9))) === JSON.stringify({ you: '帮我看看今天下午有什么安排，顺便提醒我给银行打电话 这件事别忘了', her: records()[3].text }) && said(T(14, 55), T(14, 55)).you === '27 路下一班什么时候' && said(T(14, 55), T(14, 55)).her === '还有 6 分钟。'
+    && said(T(8, 31), T(8, 31)).you === '早' && said(T(16, 0), T(16, 5)) === null && said(T(19, 30), T(19, 30)).her === '' && said(T(19, 30), T(19, 30)).you === '今天先到这里');
+  check('a record with nothing in it but its marker is no line, and a row opens to something only when it has a part or a button that works', talkLines([{ id: 'a', ts: 5, who: 'user', text: '  [record_id=abc]  ' }, { id: 'b', ts: 6, who: 'user', text: '嗯' }], 0, 10).you === '嗯'
+    && hasBody(open('stay-aw'), true) && hasBody(open('stay-aw'), false) && !hasBody(openOf(buildDay(small([it('p', 'picture', T(13, 30), T(13, 30), { attachment: 'zz' })]), NOW, zh), 'p', zh), false) && hasBody(openOf(buildDay(small([it('p', 'picture', T(13, 30), T(13, 30), { attachment: 'zz' })]), NOW, zh), 'p', zh), true)
+    && !hasBody(openOf(buildDay(small([it('s', 'stay', T(13, 30), T(14, 30), {})]), NOW, zh), 's', zh), false));
   // what a turn about a row carries
   const ask = (key, model = m) => askOf(model, key, model === me ? en : zh);
   check('what is handed to her is exactly {kind, id, title, start_ms} (the title as the row says it, the time as a whole number), with the icon and time the input shows',
@@ -500,7 +546,8 @@ const NOTCH_R = 412.5, TOP = 32;
 async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = makeDay(), departure = null, init = null, at = NOW, fastPolls = false } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 640, height: 900 }, deviceScaleFactor: 2 });
   const page = await ctx.newPage();
-  const s = { board, served, departure, hits: [], pictures: [], controls: { mic_muted: false, speech_muted: false, conversation: false, quiet: 'off' } };
+  // `posts`: what the page sent (path and body); `refuse`: routes that answer with an error; `changes`: place renames the daemon can undo.
+  const s = { board, served, departure, hits: [], pictures: [], posts: [], reads: [], refuse: new Set(), changes: new Map(), records: records(), controls: { mic_muted: false, speech_muted: false, conversation: false, quiet: 'off' } };
   page.on('pageerror', e => errors.push(e.message));
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource|net::ERR/.test(m.text())) errors.push(m.text()); });
   await page.addInitScript(([wardrobe, settings]) => {
@@ -529,7 +576,39 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
     }
     if (url.pathname.startsWith('/inherent/attachments/')) {
       s.pictures.push(url.pathname);
-      return url.pathname.endsWith(`/${PIC}`) ? route.fulfill({ status: 200, contentType: 'image/png', body: PICTURE }) : route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"gone"}' });
+      return url.pathname.endsWith(`/${PIC}`) ? route.fulfill({ status: 200, contentType: 'image/png', body: PICTURE }) : url.pathname.endsWith(`/${BIG}`) ? route.fulfill({ status: 200, contentType: 'image/png', body: BIGPICTURE }) : route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"gone"}' });
+    }
+    // what the page writes: the routes the brain has today for a rename, its undo, an acknowledgement and a turn about a row
+    const req = route.request(), post = req.method() === 'POST', refused = (why, status = 500) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ detail: why }) });
+    const sent = () => { try { return JSON.parse(req.postData() ?? 'null'); } catch { return null; } };
+    const rename = (place, name) => { for (const x of s.served.items) if (x.kept_place?.id === place) x.kept_place = { ...x.kept_place, name }; };
+    if (post && url.pathname === '/inherent/memory/places/undo') {
+      const body = sent(); s.posts.push({ path: url.pathname, body });
+      const was = s.changes.get(body?.change_id);
+      if (s.refuse.has('undo') || !was) return refused('no such change', 404);
+      rename(was.place, was.from); return json({ ok: true });
+    }
+    if (post && url.pathname.startsWith('/inherent/memory/places/')) {
+      const body = sent(), place = decodeURIComponent(url.pathname.split('/').pop()); s.posts.push({ path: url.pathname, body });
+      if (s.refuse.has('rename')) return refused('refused');
+      const was = s.served.items.find(x => x.kept_place?.id === place)?.kept_place?.name, change = `chg-${s.changes.size + 1}`;
+      s.changes.set(change, { place, from: was }); rename(place, body.name);
+      return json({ ok: true, place: { id: place, name: body.name }, change: { id: change } });
+    }
+    if (post && url.pathname.startsWith('/inherent/notices/')) {
+      const body = sent(), id = decodeURIComponent(url.pathname.split('/').pop()), item = s.served.items.find(x => x.id === id); s.posts.push({ path: url.pathname, body });
+      if (s.refuse.has('notices') || !item?.fired) return refused('not a notice', 404);
+      item.acknowledged = true; return json({ ok: true });
+    }
+    if (post && url.pathname === '/inherent/submit') {
+      s.posts.push({ path: url.pathname, body: sent() });
+      return s.refuse.has('submit') ? refused('refused', 422) : json({ turn_id: `turn-${s.posts.length}` });
+    }
+    if (url.pathname.startsWith('/inherent/memory/day/') && url.pathname.endsWith('/records')) {
+      s.reads.push(url.pathname + url.search);
+      if (s.refuse.has('records')) return refused('down');
+      const offset = Number(url.searchParams.get('offset') ?? 0), limit = Number(url.searchParams.get('limit') ?? 120);
+      return json({ day: url.pathname.split('/')[4], total: s.records.length, offset, records: s.records.slice(offset, offset + limit) });
     }
     if (url.pathname === '/inherent/controls') return json(s.controls);
     if (url.pathname === '/inherent/claude-sessions') return json({ sessions: s.board, error: null });
@@ -1394,7 +1473,7 @@ try {
     const under = await a.page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-key]')?.dataset.key ?? null, [rest.x, rest.y]);
     check('and a list scrolling under a pointer at rest does not take the choice or the bracket from the keys', m.pick.length === 1 && m.hot.length === 0 && under !== null && under !== m.pick[0] && sameSpan(m.bracket, m.pick[0]), JSON.stringify({ m, under }));
     check('through all of it no key focus was asked for but the pinning click\'s', await focusCalls() === 'true', await focusCalls());
-    check('nothing in the list offers 问她 yet: the button waits for B2 behind a flag', await a.page.locator('.dt-ask').count() === 0);
+    check('the quick 问她 is only on rows the brain takes a turn about: none on a ride, a departure, a payment, a Claude chat or day, a workout or the sessions', await a.page.evaluate(() => { const no = ['ride', 'departure', 'payment', 'claude_chat', 'claude_day', 'workout', 'code'], rows = [...document.querySelectorAll('.dt-ask')].map(b => b.parentElement); return rows.length > 0 && rows.every(r => !no.includes(r.dataset.kind)); }));
     await a.page.keyboard.press('Escape');
     r = await settle(a, '', 2000);
     check('Esc folds the day and gives the key focus back', r.tl === '' && await focusCalls() === 'true,false', await focusCalls());
@@ -1889,6 +1968,464 @@ try {
     await a.move(xAt(15, 30), y); await a.page.waitForTimeout(100); await a.page.mouse.down(); await a.page.mouse.up(); await a.page.waitForTimeout(100);
     const inst = await a.page.evaluate(() => { const l = document.querySelector('.dt-list'), h = document.querySelector('[data-key="stay-uvic"]'); return { top: h.getBoundingClientRect().top - l.getBoundingClientRect().top, anim: getComputedStyle(h).animationName }; });
     check('a click jumps at once (no glide) and the row does not flash', Math.abs(inst.top - 12) <= 2 && inst.anim === 'none', JSON.stringify(inst));
+    await a.ctx.close();
+  }
+
+  // ---- the open rows (spec-r3 section 8): a click opens a row in place, and what it says and can do depends on what it is ----
+  // The full day and a picture that has to be cut to 240 tall (640 x 420), at 16:20.
+  const bigDay = () => fullDay({ items: [...fullDay().items, it('picture-2', 'picture', T(16, 20), T(16, 20), { attachment: BIG, note: '傍晚的海边，风很大' })] });
+  const orow = (a, key) => a.page.locator(`[data-key="${key}"]`).first();
+  const tap = async (a, key) => { await orow(a, key).scrollIntoViewIfNeeded(); await orow(a, key).click({ position: { x: 170, y: 14 } }); };
+  const rest = (a, ms = 520) => a.page.waitForTimeout(ms);
+  const folds = a => a.page.locator('.dt-list .dt-fold').count();
+  const expanded = (a, key) => orow(a, key).getAttribute('aria-expanded');
+  const said = async (a, key) => (await orow(a, key).locator('.dt-body').first().innerText()).split('\n').filter(Boolean);
+  const shotRow = async (a, name, key) => {
+    const box = await orow(a, key).boundingBox(), list = await a.page.locator('.dt-list').boundingBox(), top = Math.max(0, Math.min(box.y, list.y + list.height - 60) - 150);
+    await a.shot(name, { x: 40, y: top, width: 560, height: Math.min(560, 760 - top) });
+  };
+  if (all || only === 'open') {
+    const full = buildDay(bigDay(), NOW, zh), fbar = buildBar(full, zh);
+    const a = await boot({ served: bigDay() });
+    await openDay(a);
+    const geo = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, width: r.width }; });
+    const px = ms => geo.left + Math.min(1, Math.max(0, fOf(fbar, ms))) * geo.width;
+    const bracket = () => a.page.evaluate(() => { const b = document.querySelector('.dt-bracket')?.getBoundingClientRect(); return b ? { left: b.left, width: b.width } : null; });
+    const sameSpan = (b, key) => { const x = full.span.get(key), w = { left: px(x.t0), width: Math.max(3, px(x.t1) - px(x.t0)) }; return !!b && Math.abs(b.left - w.left) < 1.6 && Math.abs(b.width - w.width) < 1.6; };
+
+    // ---- opening and closing ----
+    const before = await a.page.evaluate(() => { const r = document.querySelector('[data-key="move-1"]'); r.scrollIntoView({ block: 'center' }); const q = el => el.getBoundingClientRect(); return { top: q(r).top, h: q(r).height, next: q(document.querySelector('[data-key="move-1"]').nextElementSibling).top }; });
+    // the open is read as it runs: the height of the content frame by frame, its opacity, and the timings the animations were given
+    const run = await a.page.evaluate(async () => {
+      const el = document.querySelector('[data-key="move-1"]');
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise(r => requestAnimationFrame(r));
+      const fold = el.querySelector('.dt-fold'), body = fold.querySelector('.dt-body'), t0 = performance.now(), samples = [];
+      const timings = fold.getAnimations({ subtree: true }).map(x => { const t = x.effect.getTiming(); return { on: x.effect.target === fold ? 'fold' : 'body', duration: t.duration, delay: t.delay, easing: t.easing }; });
+      await new Promise(done => { const tick = () => { samples.push({ t: performance.now() - t0, h: fold.getBoundingClientRect().height, o: Number(getComputedStyle(body).opacity) }); if (performance.now() - t0 < 420) requestAnimationFrame(tick); else done(); }; tick(); });
+      return { timings, samples, final: body.getBoundingClientRect().height };
+    });
+    const first = run.samples[0], last = run.samples.at(-1), grown = run.samples.find(x => x.h >= run.final - .5);
+    check('a row opens with a spring of 260 ms and its words fade in after 60 ms (200 ms long), the same ease the rest of the pane uses', run.timings.some(x => x.on === 'fold' && x.duration === 260 && x.delay === 0 && x.easing === 'cubic-bezier(0.16, 1, 0.3, 1)') && run.timings.some(x => x.on === 'body' && x.duration === 200 && x.delay === 60), JSON.stringify(run.timings));
+    check('what it holds grows from nothing to its height frame by frame, never back, and the words are not there at first', first.h < run.final * .5 && run.samples.every((x, i, l) => i === 0 || x.h >= l[i - 1].h - .5) && first.o < .05 && last.h >= run.final - .5 && last.o > .99 && grown.t > 120 && grown.t < 380, JSON.stringify({ first, last, final: run.final, grown: grown?.t }));
+    const after = await a.page.evaluate(() => { const r = document.querySelector('[data-key="move-1"]'), q = el => el.getBoundingClientRect(), b = r.querySelector('.dt-body p'), title = r.querySelector('.dt-tx b'); return { top: q(r).top, h: q(r).height, bodyLeft: q(b).left, titleLeft: q(title).left, open: r.getAttribute('aria-expanded'), next: q(r.nextElementSibling).top, folds: document.querySelectorAll('.dt-list .dt-fold').length }; });
+    check('the row stays where it was and grows downward by its content: the content hangs from the title\'s column and the rows under it move down by as much', Math.abs(after.top - before.top) < 40 && after.h > before.h + 60 && Math.abs(after.bodyLeft - after.titleLeft) < 1.5 && after.open === 'true' && after.folds === 1 && Math.abs((after.next - before.next) - (after.h - before.h)) < 2, JSON.stringify({ before, after }));
+    await rest(a, 200);
+    await tap(a, 'talk-1'); await rest(a);
+    check('only one row is open at a time: opening another closes the one that was', await folds(a) === 1 && await expanded(a, 'move-1') === 'false' && await expanded(a, 'talk-1') === 'true');
+    await tap(a, 'talk-1'); await rest(a, 450);
+    check('a click on the open row closes it (it folds away, and nothing is left of it)', await folds(a) === 0 && await expanded(a, 'talk-1') === 'false');
+    await tap(a, 'stay-home-1'); await rest(a);
+    await orow(a, 'stay-home-1').locator('.dt-lines p').first().click(); await rest(a, 300);
+    check('a click inside what is open does not close it', await expanded(a, 'stay-home-1') === 'true' && await folds(a) === 1);
+    await a.move(...Object.values(await a.page.locator('.dt-head').boundingBox().then(b => [b.x + 60, b.y + b.height / 2]))); await a.page.waitForTimeout(350);
+    check('and the open row keeps its bracket on the bar when the pointer goes away', sameSpan(await bracket(), 'stay-home-1'), JSON.stringify(await bracket()));
+
+    // ---- the keys: Enter or Space opens the row they chose; Esc lets go of one thing at a time ----
+    const key = async (k, ms = 420) => { await a.page.keyboard.press(k); await a.page.waitForTimeout(ms); };
+    const chosen = () => a.page.evaluate(() => document.querySelector('.is-pick')?.dataset.key);
+    await key('Escape');
+    check('Esc closes the open row first, and the pane stays up', await folds(a) === 0 && (await a.read()).tl === 'pinned', JSON.stringify(await a.read()));
+    await key('ArrowDown');
+    const next = await chosen();
+    check('↓ chooses the row after the one the click chose', next === 'workout-1', next);
+    await key('Enter');
+    check('Enter opens the row the keys chose', await expanded(a, next) === 'true' && await folds(a) === 1);
+    await key('Enter');
+    check('Enter again closes it', await expanded(a, next) === 'false' && await folds(a) === 0);
+    await key(' ');
+    check('Space opens it too', await expanded(a, next) === 'true' && await folds(a) === 1);
+    await key('ArrowDown');
+    check('moving the choice on leaves what is open open, and the bar\'s bracket follows the choice', await expanded(a, next) === 'true' && await chosen() !== next && sameSpan(await bracket(), await chosen()), `${await chosen()} ${JSON.stringify(await bracket())}`);
+    await key('Enter');
+    check('and Enter on the new choice opens that one and closes the first', await folds(a) === 1 && await expanded(a, next) === 'false' && await expanded(a, await chosen()) === 'true');
+    await key('Escape');
+    // the order of Esc: the open row, then the lens, then the pane
+    await a.page.locator('.dt-num').first().click(); await a.page.waitForTimeout(250);
+    await tap(a, 'move-1'); await rest(a);
+    const lens = () => a.page.locator('.dt').getAttribute('data-lens');
+    check('a lens can be pinned while a row is open', !!await lens() && await folds(a) === 1, `${await lens()} ${await folds(a)}`);
+    await key('Escape');
+    check('Esc: the open row first, the lens stays', await folds(a) === 0 && !!await lens() && (await a.read()).tl === 'pinned');
+    await key('Escape');
+    check('Esc: then the lens, the pane stays', !await lens() && (await a.read()).tl === 'pinned');
+    await key('Escape', 700);
+    check('Esc: and then the pane', (await a.read()).tl === '', JSON.stringify(await a.read()));
+    await a.ctx.close();
+  }
+
+  // ---- each kind opened: what it says, and the buttons that work for it ----
+  if (all || only === 'open') {
+    const full = buildDay(bigDay(), NOW, zh);
+    const a = await boot({ served: bigDay() });
+    await openDay(a);
+    const kinds = [
+      ['stay-home-1', 'open-01-stay-kept', '12 Example St, Victoria|常去的地方 · 家|改名字|问她'],
+      ['stay-aw', 'open-20-stay-plain', 'A&W, 1234 Douglas St, Victoria|问她'],
+      ['move-1', 'open-21-move', '家 → A&W|问她'],
+      ['ride-1', 'open-02-ride', '你下车了'],
+      ['event-1', 'open-05-event-mail', '22:30–23:30 · 1 时 · 还没开始|问她'],
+      ['event-2', 'open-22-event-said', '23:40–23:55 · 15 分 · 还没开始|问她'],
+      ['reminder-2', 'open-06-reminder-waiting', '知道了|问她'],
+      ['workout-1', 'open-24-workout', '07:20–07:55 · 35 分'],
+      ['call-1', 'open-25-call', '16:40–16:58 · 18 分|问她'],
+      ['pay-1', 'open-08-payment', '支出 · $12.40 · CAD'],
+      ['chat-1', 'open-26-claude-chat', '20:10–20:42 · 32 分'],
+      ['claude-day-1', 'open-27-claude-day', 'The bar for the day|A tool exam'],
+      ['work-2', 'open-07-work', '活跃 1 时 55 分 · 共 2 时 5 分|项目|Jarvis|1 时 40 分|应用|Ghostty|1 时 10 分|Claude|30 分|让她总结这段|问她'],
+      ['sleep-1', 'open-09-sleep', '清醒|REM|核心|深睡|23:10|07:00|深睡 1:10 · 核心 4:30 · REM 1:40 · 醒 3 次|问她'],
+    ];
+    const bad = [];
+    for (const [key, name, want] of kinds) {
+      await tap(a, key); await rest(a, 480);
+      const got = (await said(a, key)).join('|');
+      if (got !== want) bad.push(`${key}: ${got}`);
+      if (name) await shotRow(a, name, key);
+    }
+    check('each kind says what it has when opened, in lines of its own, with only the buttons that work for it (ride, bus, money, runs and Claude have none to ask)', bad.length === 0, bad.join('\n'));
+    // what the row says in its two lines is not said again; a row with nothing to show and nothing to do stays as it is
+    const still = await a.page.evaluate(() => { const r = document.querySelector('[data-key="departure-1"]'); return { cursor: getComputedStyle(r).cursor, expanded: r.getAttribute('aria-expanded'), still: r.classList.contains('is-still') }; });
+    await tap(a, 'departure-1'); await rest(a, 400);
+    check('a row with nothing to show and nothing to do (the departure: its route, stop, where to and when to leave are its own two lines) is drawn as it is: no pointer, no expanded state, and a click opens nothing', still.cursor === 'default' && still.expanded === null && still.still && await orow(a, 'departure-1').getAttribute('aria-expanded') === null && await folds(a) === 1 && await expanded(a, 'workout-1') === 'false', JSON.stringify(still));
+    const lit = await a.page.evaluate(() => { const r = document.querySelector('[data-key="event-1"]'); return { cursor: getComputedStyle(r).cursor, expanded: r.getAttribute('aria-expanded') }; });
+    await tap(a, 'event-1'); await rest(a, 480);
+    check('a row that opens has the pointer and says whether it is open; a row still to come is drawn at full strength while it is open (and quiet again when it is closed)', lit.cursor === 'pointer' && lit.expanded === 'false' && await orow(a, 'event-1').evaluate(r => getComputedStyle(r).opacity) === '1', JSON.stringify(lit));
+    await tap(a, 'event-1'); await rest(a, 500);
+    check('and quiet again when it is closed', Number(await orow(a, 'event-1').evaluate(r => getComputedStyle(r).opacity)) < .7);
+
+    // the talk: his line and hers from the day's records, one line each, clipped; the records were read once
+    await tap(a, 'talk-1'); await rest(a, 520);
+    const talk = await orow(a, 'talk-1').locator('.dt-body').evaluate(b => ({ lines: [...b.querySelectorAll('.dt-said p')].map(p => ({ who: p.querySelector('small').textContent, text: p.querySelector('span').textContent, h: p.getBoundingClientRect().height, clipped: p.querySelector('span').scrollWidth > p.querySelector('span').clientWidth })), all: b.innerText.split('\n').filter(Boolean) }));
+    check('a talk shows his first line in it and her first reply to that, one line each and clipped to the row (his line break is a space), and 共 6 句 under them', talk.lines.length === 2 && talk.lines[0].who === '你' && talk.lines[0].text === '帮我看看今天下午有什么安排，顺便提醒我给银行打电话 这件事别忘了' && talk.lines[1].who === '她' && talk.lines[1].text.startsWith('下午三点有一个小组讨论')
+      && talk.lines.every(x => x.h <= 20) && talk.lines[1].clipped && talk.all.includes('共 6 句'), JSON.stringify(talk));
+    await shotRow(a, 'open-03-talk', 'talk-1');
+    check('the day\'s records were read once for it, a page of 300 from the start', a.s.reads.length === 1 && a.s.reads[0] === '/inherent/memory/day/2026-10-19/records?limit=300&offset=0', a.s.reads.join());
+    await tap(a, 'talk-3'); await rest(a, 480);
+    check('another talk of the same day does not read them again', a.s.reads.length === 1 && (await said(a, 'talk-3')).join('|') === '你|27 路下一班什么时候|她|还有 6 分钟。|共 1 句|问她', (await said(a, 'talk-3')).join('|'));
+
+    // pictures
+    await tap(a, 'picture-1'); await rest(a, 600);
+    const small = await orow(a, 'picture-1').evaluate(r => { const b = r.querySelector('.dt-pic'), i = b.querySelector('img'), c = getComputedStyle(i), q = x => x.getBoundingClientRect(), note = r.querySelector('.is-note'); return { w: Math.round(q(i).width), h: Math.round(q(i).height), max: c.maxHeight, radius: c.borderRadius, box: getComputedStyle(b).borderRadius, nat: [i.naturalWidth, i.naturalHeight], cursor: getComputedStyle(b).cursor, note: note.innerText, noteBreaks: getComputedStyle(note).whiteSpace }; });
+    check('a picture is read from the daemon by its id and shown as it is (96 x 96 here), with a 240 tall cap and 10 px round, and its note in full under it, line break and all', small.nat.join('x') === '96x96' && small.w === 96 && small.h === 96 && small.max === '240px' && small.radius === '10px' && small.box === '10px' && small.note === '汉堡和薯条\n在 A&W 吃的午饭' && small.cursor === 'zoom-in' && a.s.pictures.some(x => x.endsWith(PIC)), JSON.stringify(small));
+    await tap(a, 'picture-2'); await rest(a, 700);
+    const big = await orow(a, 'picture-2').evaluate(r => { const i = r.querySelector('.dt-pic img'), q = i.getBoundingClientRect(); return { w: Math.round(q.width), h: Math.round(q.height), nat: [i.naturalWidth, i.naturalHeight] }; });
+    check('one taller than 240 is cut to 240 and keeps its proportions (640 x 420 shows at 366 x 240); its note is one short line, which the row already says, so it is not said again', big.nat.join('x') === '640x420' && big.h === 240 && Math.abs(big.w - 366) <= 1 && await orow(a, 'picture-2').locator('.is-note').count() === 0, JSON.stringify(big));
+    await shotRow(a, 'open-04-picture', 'picture-2');
+
+    // the bars of a work block: the same columns on every line, a bar as long as its share of the active time
+    await tap(a, 'work-2'); await rest(a, 520);
+    const bars = await orow(a, 'work-2').evaluate(r => [...r.querySelectorAll('.dt-bar-row')].map(x => { const [name, track, len] = x.children; return { name: name.textContent, track: Math.round(track.getBoundingClientRect().width * 10) / 10, left: Math.round(track.getBoundingClientRect().left), share: Math.round(track.firstElementChild.getBoundingClientRect().width / track.getBoundingClientRect().width * 100), len: len.textContent }; }));
+    check('work: Jarvis 87 % of the active time, Ghostty 61 %, Claude 26 %, in tracks of one width that start at one place', bars.map(x => `${x.name} ${x.share}`).join() === 'Jarvis 87,Ghostty 61,Claude 26' && new Set(bars.map(x => x.track)).size === 1 && new Set(bars.map(x => x.left)).size === 1, JSON.stringify(bars));
+
+    // the night
+    await tap(a, 'sleep-1'); await rest(a, 520);
+    const night = await orow(a, 'sleep-1').evaluate(r => { const plot = r.querySelector('.dt-hyp-plot'), w = plot.getBoundingClientRect().width; return { n: plot.querySelectorAll('i').length, joins: plot.querySelectorAll('u').length, tops: [...new Set([...plot.querySelectorAll('i')].map(x => x.style.top))].sort(), lefts: [...plot.querySelectorAll('i')].map(x => parseFloat(x.style.left)), h: Math.round(plot.getBoundingClientRect().height), w, labels: [...r.querySelectorAll('.dt-hyp-l span')].map(x => x.textContent) }; });
+    const slices = openOf(full, 'sleep-1', zh).parts.find(x => x.type === 'night').night.slices.filter(x => x.stage !== 'in_bed');
+    check('a night is drawn as a hypnogram 48 tall: four lanes (清醒, REM, 核心, 深睡), a block for each stretch of a stage in the order they happened, and a hairline where a stage gives way to another',
+      night.h === 48 && night.labels.join() === '清醒,REM,核心,深睡' && night.n === slices.length && night.tops.join() === '14px,2px,26px,38px'.split(',').sort().join() && night.lefts.every((x, i, l) => i === 0 || x >= l[i - 1]) && night.joins > 5 && night.joins < night.n, JSON.stringify(night));
+
+    // Claude Code: four sessions, each opens to its recap in full, one at a time
+    await tap(a, 'code:stay-home-1'); await rest(a, 520);
+    await shotRow(a, 'open-10-claude-code', 'code:stay-home-1');
+    const sess = () => orow(a, 'code:stay-home-1').evaluate(r => ({ n: r.querySelectorAll('.dt-sess li').length, recaps: [...r.querySelectorAll('.dt-recap')].map(x => x.textContent), open: [...r.querySelectorAll('.dt-sess button[aria-expanded="true"]')].length }));
+    let sv = await sess();
+    check('a folded row opens to its sessions: four, none opened yet', sv.n === 4 && sv.recaps.length === 0 && sv.open === 0, JSON.stringify(sv));
+    await orow(a, 'code:stay-home-1').locator('.dt-sess button').first().click(); await rest(a, 420);
+    sv = await sess();
+    check('a session opens to its recap in full', sv.recaps.join() === 'Phase A 的 review 修复 的小结' && sv.open === 1, JSON.stringify(sv));
+    await shotRow(a, 'open-11-claude-code-recap', 'code:stay-home-1');
+    await orow(a, 'code:stay-home-1').locator('.dt-sess button').nth(2).click(); await rest(a, 420);
+    sv = await sess();
+    check('another session opens its own and closes the first; the row itself stays open', sv.recaps.join() === '给 verify 加 fixtures 的小结' && sv.open === 1 && await expanded(a, 'code:stay-home-1') === 'true', JSON.stringify(sv));
+    await orow(a, 'code:stay-home-1').locator('.dt-sess button').nth(2).click(); await rest(a, 420);
+    check('and a click on the open session closes it', (await sess()).recaps.length === 0);
+    await a.ctx.close();
+  }
+  // the talk's words, when the day's records cannot be read
+  if (all || only === 'open') {
+    const a = await boot({ served: bigDay() });
+    a.s.refuse.add('records');
+    await openDay(a);
+    await tap(a, 'talk-1'); await rest(a, 600);
+    check('when the records cannot be read the talk says so, in one line, and still has its count and its button', (await said(a, 'talk-1')).join('|') === '这段对话的字还没读到|共 6 句|问她', (await said(a, 'talk-1')).join('|'));
+    await a.ctx.close();
+  }
+
+  // ---- the name of a place he keeps, changed from the stay's own row ----
+  // These run on a day opened by a rest (not a click), so the window has no key focus until a field asks for it.
+  const hoverDay = async a => {
+    await a.until(() => document.querySelector('.notch')?.dataset.line);
+    const seg = await a.lineX();
+    await a.glide(a.far, { x: seg.mid, y: 14 }, 300);
+    await a.until(() => document.querySelector('.notch-drop.is-open .dt-row'), undefined, 8000);
+    await a.page.waitForTimeout(800);
+    return seg;
+  };
+  const focusLog = a => a.page.evaluate(() => (window.__focus ?? []).join());
+  const sent = a => a.s.posts.map(p => `${p.path} ${JSON.stringify(p.body)}`);
+  if (all || only === 'open') {
+    const a = await boot({ served: bigDay() });
+    await hoverDay(a);
+    const names = () => a.page.evaluate(() => ({ heads: [...document.querySelectorAll('.dt-sh')].map(h => h.querySelector('.dt-tx b')?.textContent ?? h.dataset.key).filter(Boolean), bar: [...document.querySelectorAll('.dt-seg b')].map(b => b.textContent) }));
+    await tap(a, 'stay-home-1'); await rest(a, 480);
+    check('a hover-opened pane has no key focus, and opening a row asks for none', await focusLog(a) === '' && (await a.read()).tl === 'open', await focusLog(a));
+    await orow(a, 'stay-home-1').getByRole('button', { name: '改名字' }).click(); await rest(a, 400);
+    const field = await a.page.evaluate(() => { const f = document.querySelector('.dt-rename'), q = f.getBoundingClientRect(), b = f.closest('.dt-sh').querySelector('.dt-dot').getBoundingClientRect(); return { value: f.value, sel: [f.selectionStart, f.selectionEnd], focused: document.activeElement === f, h: Math.round(q.height), font: getComputedStyle(f).fontSize + '/' + getComputedStyle(f).fontWeight, outline: getComputedStyle(f).outlineStyle, hint: document.querySelector('.dt-hint')?.textContent, buttons: [...document.querySelectorAll('[data-key="stay-home-1"] .dt-acts .dt-btn')].map(x => x.textContent) }; });
+    check('改名字 turns the name in the stay\'s header into a field with the cursor in it and the name selected, in the header\'s own type, and says Enter saves and Esc cancels', field.value === '家' && field.sel.join() === '0,1' && field.focused && field.h === 26 && field.font === '15px/600' && field.outline === 'none' && field.hint === '回车保存 · Esc 取消' && field.buttons.join() === '问她', JSON.stringify(field));
+    check('the field takes the window\'s key focus (it was a pane opened by a rest, with none)', (await focusLog(a)).endsWith('true'), await focusLog(a));
+    await shotRow(a, 'open-13-rename-field', 'stay-home-1');
+    // the pane is held while the field is there, wherever the pointer goes
+    await a.move(a.far.x, a.far.y); await a.page.waitForTimeout(1300);
+    check('and the pane stays up while the field has the cursor, though the pointer has gone', (await a.read()).tl === 'open' && (await a.read()).dt, JSON.stringify(await a.read()));
+    const back = await orow(a, 'stay-home-1').boundingBox();
+    await a.move(back.x + back.width / 2, back.y + 20);
+    await a.page.keyboard.type('新家'); await a.page.keyboard.press('Enter'); await a.page.waitForTimeout(500);
+    check('Enter saves it: the one route the brain has for it, with exactly the new name', sent(a).join('|') === '/inherent/memory/places/p-home {"name":"新家"}', sent(a).join('|'));
+    const renamed = await names();
+    check('the day is read again and every home shows it at once: the three stays\' headers and the bar', renamed.heads.filter(x => x === '新家').length === 3 && !renamed.heads.includes('家') && renamed.bar.includes('新家') && !renamed.bar.includes('家'), JSON.stringify(renamed));
+    const note = await a.page.locator('.dt-note').innerText();
+    check('a quiet line says 改好了 · 撤销, and the field is gone, the row still open', note === '改好了 · 撤销' && await a.page.locator('.dt-rename').count() === 0 && await expanded(a, 'stay-home-1') === 'true', note);
+    await a.shot('open-14-rename-note', { x: 40, y: 0, width: 560, height: 760 });
+    await a.page.waitForTimeout(900);
+    await a.shot('open-14b-wing-after-rename', { x: 200, y: 0, width: 300, height: 60 });
+    await a.page.getByRole('button', { name: '撤销' }).click(); await a.page.waitForTimeout(500);
+    const undone = await names();
+    check('撤销 asks the brain to undo that change by its id, and the name comes back everywhere', sent(a).at(-1) === '/inherent/memory/places/undo {"change_id":"chg-1"}' && undone.heads.filter(x => x === '家').length === 3 && undone.bar.includes('家') && await a.page.locator('.dt-note').count() === 0, `${sent(a).at(-1)} ${JSON.stringify(undone)}`);
+    // Esc lets go of the field and leaves the row; nothing is sent
+    await orow(a, 'stay-home-1').getByRole('button', { name: '改名字' }).click(); await rest(a, 300);
+    await a.page.keyboard.type('乱写的'); await a.page.keyboard.press('Escape'); await rest(a, 300);
+    check('Esc lets go of the name being changed first: nothing is sent, the name is as it was, and the row stays open', sent(a).length === 2 && (await names()).heads.filter(x => x === '家').length === 3 && await a.page.locator('.dt-rename').count() === 0 && await expanded(a, 'stay-home-1') === 'true', sent(a).join('|'));
+    check('and the key focus goes back when the field is gone', (await focusLog(a)).endsWith('false'), await focusLog(a));
+    // the same name, or none, sends nothing
+    await orow(a, 'stay-home-1').getByRole('button', { name: '改名字' }).click(); await rest(a, 300);
+    await a.page.keyboard.press('Enter'); await rest(a, 300);
+    check('Enter on the name as it was sends nothing and closes the field', sent(a).length === 2 && await a.page.locator('.dt-rename').count() === 0);
+    // a refusal says so and keeps the field
+    a.s.refuse.add('rename');
+    await orow(a, 'stay-home-1').getByRole('button', { name: '改名字' }).click(); await rest(a, 300);
+    await a.page.keyboard.type('新家'); await a.page.keyboard.press('Enter'); await rest(a, 500);
+    const refusedView = { field: await a.page.locator('.dt-rename').inputValue(), hint: await a.page.locator('.dt-hint').innerText(), heads: (await names()).heads, notes: await a.page.locator('.dt-note').count() };
+    check('a rename the brain refuses says so under the field, keeps the field with what was typed, and changes no name', refusedView.field === '新家' && refusedView.hint === '没改成，再试一次' && refusedView.heads.filter(x => x === '家').length === 2 && refusedView.notes === 0, JSON.stringify(refusedView));
+    a.s.refuse.delete('rename');
+    await a.page.keyboard.press('Enter'); await rest(a, 500);
+    check('and Enter again, when it can, saves it', (await names()).heads.filter(x => x === '新家').length === 3 && await a.page.locator('.dt-note').innerText() === '改好了 · 撤销');
+    await a.page.waitForTimeout(5300);
+    check('the line goes by itself after 5 s', await a.page.locator('.dt-note').count() === 0);
+    await a.ctx.close();
+  }
+
+  // ---- 知道了: a reminder that rang is acknowledged on the brain; the badge fades and the count rolls down ----
+  if (all || only === 'open') {
+    const a = await boot({ served: bigDay() });
+    await hoverDay(a);
+    const pill = () => a.page.locator('.dt-waits').innerText().catch(() => null);
+    check('two things wait on him at first: the reminder that rang and the event that is not his yet', await pill() === '2 件等你' && await orow(a, 'reminder-2').locator('.dt-wait').count() === 1, await pill());
+    await tap(a, 'reminder-2'); await rest(a, 480);
+    const reads = a.s.hits.length;
+    // read while it happens: the old number still in the pill rolling out, the badge going (not cut), then gone
+    const watching = a.page.evaluate(async () => { const out = { rolled: false, faded: false }; const end = performance.now() + 900; while (performance.now() < end) { out.rolled ||= !!document.querySelector('.dt-roll .is-old'); out.faded ||= !!document.querySelector('[data-key="reminder-2"] .dt-wait.is-gone'); await new Promise(r => requestAnimationFrame(r)); } out.gone = !document.querySelector('[data-key="reminder-2"] .dt-wait'); return out; });
+    await orow(a, 'reminder-2').getByRole('button', { name: '知道了' }).click();
+    const seen = await watching;
+    check('知道了 sends the one thing the brain takes for it: the reminder\'s id and "dismissed"', sent(a).join('|') === '/inherent/notices/reminder-2 {"action":"dismissed"}', sent(a).join('|'));
+    check('the amber badge fades out and goes, and the count in the header rolls down (2 to 1) instead of changing', seen.rolled && seen.faded && seen.gone && await pill() === '1 件等你', JSON.stringify({ seen, pill: await pill() }));
+    check('the button is gone from the row, which says it is known (the row\'s own second line: 你知道了); the day was read again, and the brain has it acknowledged', (await said(a, 'reminder-2')).join('|') === '问她' && await orow(a, 'reminder-2').locator('.dt-tx em').innerText() === '你知道了' && a.s.hits.length > reads && a.s.served.items.find(x => x.id === 'reminder-2').acknowledged === true, `${(await said(a, 'reminder-2')).join('|')} ${a.s.hits.length} ${reads}`);
+    await a.ctx.close();
+  }
+  if (all || only === 'open') {
+    // when the brain refuses (a 404: it was not a reminder that rang), the button stays and says so; nothing changes
+    const a = await boot({ served: bigDay() });
+    a.s.refuse.add('notices');
+    await hoverDay(a);
+    await tap(a, 'reminder-2'); await rest(a, 480);
+    await orow(a, 'reminder-2').getByRole('button', { name: '知道了' }).click(); await rest(a, 500);
+    check('a refusal leaves the button and the badge and the count as they were, and says so under the button', await orow(a, 'reminder-2').getByRole('button', { name: '知道了' }).count() === 1 && await orow(a, 'reminder-2').locator('.dt-wait').count() === 1 && await a.page.locator('.dt-waits').innerText() === '2 件等你' && await orow(a, 'reminder-2').locator('.dt-hint').innerText() === '没成功，再试一次');
+    await a.ctx.close();
+  }
+  if (all || only === 'open') {
+    // the last thing that waited: the pill goes, fading, instead of showing 0
+    const a = await boot({ served: small([it('rm', 'reminder', T(9, 30), null, { text: '给银行打电话', fired: true, acknowledged: false }, 'her')]) });
+    await hoverDay(a);
+    check('with one thing waiting the pill says 1 件等你', await a.page.locator('.dt-waits').innerText() === '1 件等你');
+    await tap(a, 'rm'); await rest(a, 480);
+    const watching = a.page.evaluate(async () => { let faded = false; const end = performance.now() + 900; while (performance.now() < end) { faded ||= !!document.querySelector('.dt-waits.is-gone'); await new Promise(r => requestAnimationFrame(r)); } return faded; });
+    await orow(a, 'rm').getByRole('button', { name: '知道了' }).click();
+    check('and when it is known the pill fades away and is gone: no 0', await watching && await a.page.locator('.dt-waits').count() === 0);
+    await a.ctx.close();
+  }
+
+  // ---- 问她: an input at the pane's foot about a row; Enter hands the turn to the daemon's one submit route, with `about` (ADR 0214) ----
+  const dockOf = a => a.page.evaluate(() => {
+    const d = document.querySelector('.dt-dock'), c = d?.querySelector('.dt-about'), f = d?.querySelector('.dt-ask-in'), go = d?.querySelector('.dt-send');
+    return d && { sent: d.classList.contains('is-sent'), text: d.textContent, chip: c ? { title: c.querySelector('b').textContent, at: c.querySelector('time').textContent, icon: !!c.querySelector('svg'), x: c.querySelector('button').getAttribute('aria-label') } : null,
+      draft: f ? f.value : null, focused: !!f && document.activeElement === f, placeholder: f?.placeholder ?? null, canSend: go ? !go.disabled : null };
+  });
+  const turns = a => a.s.posts.filter(p => p.path === '/inherent/submit');
+  const noDock = a => a.page.waitForFunction(() => !document.querySelector('.dt-dock'), null, { timeout: 4000 });
+  if (all || only === 'open') {
+    const m = buildDay(bigDay(), NOW, zh), about = key => askOf(m, key, zh);
+    const a = await boot({ served: bigDay() });
+    await hoverDay(a);
+    const marks = await a.page.evaluate(() => { const by = {}; for (const el of document.querySelectorAll('.dt-row, .dt-sh')) { const k = el.classList.contains('dt-sh') ? 'stay' : el.dataset.kind; by[k] ??= { rows: 0, asks: 0 }; by[k].rows++; if (el.querySelector(':scope > .dt-ask')) by[k].asks++; } return by; });
+    const yes = ['stay', 'move', 'sleep', 'talk', 'picture', 'reminder', 'event', 'work', 'call'], no = ['ride', 'departure', 'payment', 'claude_chat', 'claude_day', 'workout', 'code'];
+    check('only what the brain takes a turn about has 问她 (stays, moves, sleep, talks, pictures, reminders, events, work, calls); a ride, a departure, a payment, a Claude chat, a workout and the sessions have none', yes.every(k => marks[k]?.rows > 0 && marks[k].asks === marks[k].rows) && no.every(k => marks[k]?.rows > 0 && marks[k].asks === 0), JSON.stringify(marks));
+    await orow(a, 'talk-1').scrollIntoViewIfNeeded();
+    await orow(a, 'talk-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 300);
+    const lit = await a.page.evaluate(() => { const r = document.querySelector('[data-key="talk-1"]'), b = r.querySelector(':scope > .dt-ask'), tm = r.querySelector(':scope > .dt-tm'); return { ask: getComputedStyle(b).opacity, tm: getComputedStyle(tm).opacity, text: b.textContent }; });
+    check('under the pointer a row says 问她 in the place of its length', lit.ask === '1' && lit.tm === '0' && lit.text === '问她', JSON.stringify(lit));
+    await orow(a, 'talk-1').locator(':scope > .dt-ask').click(); await rest(a, 520);
+    const d1 = await dockOf(a);
+    check('it slides an input up at the pane\'s foot: what it is about as a chip (the row\'s glyph, its title, its time, a ×), the cursor in the field, send greyed while nothing is typed; the row itself did not open', d1 && d1.chip.title === '和她说话' && d1.chip.at === '10:02' && d1.chip.icon && d1.chip.x === '去掉这一条' && d1.focused && d1.placeholder === '问她这一条…' && d1.canSend === false && await expanded(a, 'talk-1') === 'false' && await folds(a) === 0, JSON.stringify(d1));
+    check('the field takes the window\'s key focus (the pane was opened by a rest and had none)', (await focusLog(a)).endsWith('true'), await focusLog(a));
+    await a.page.keyboard.type('明天下午有空吗'); await rest(a, 150);
+    check('typing enables send', (await dockOf(a)).canSend === true && (await dockOf(a)).draft === '明天下午有空吗');
+    await a.shot('open-15-ask-input', { x: 40, y: 0, width: 560, height: 760 });
+    await a.move(a.far.x, a.far.y); await a.page.waitForTimeout(1300);
+    check('the pane stays up while the field has the cursor, though the pointer has gone', (await a.read()).tl === 'open' && (await a.read()).dt && !!await dockOf(a), JSON.stringify(await a.read()));
+    const t0 = Date.now();
+    await a.page.keyboard.press('Enter'); await rest(a, 350);
+    check('Enter hands her the turn: one submit with the text and what it is about (kind, id, title, start) and nothing else', turns(a).length === 1 && JSON.stringify(turns(a)[0].body) === JSON.stringify({ text: '明天下午有空吗', about: about('talk-1').about }) && about('talk-1').about.start_ms === T(10, 2), JSON.stringify(turns(a)));
+    const s1 = await dockOf(a);
+    check('then 已发给她 stands where the input was (the field and the chip are gone)', s1.sent && s1.text.trim() === '已发给她' && s1.chip === null && s1.draft === null, JSON.stringify(s1));
+    check('the pane is still up while it says so', (await a.read()).tl === 'open');
+    await noDock(a); const gone = Date.now() - t0;
+    check('1.5 s after it was sent the line slides away', gone >= 1450 && gone < 2500, String(gone));
+    check('with the pointer away the pane folds once the input is gone', (await seen(a, r => r.tl === '', 2500)).tl === '');
+    check('the key focus goes back with it', (await focusLog(a)).endsWith('false'), await focusLog(a));
+
+    // a second look: the button in an open row, asking about another row while one is asked, the ×, and the field being held
+    await hoverDay(a);
+    await tap(a, 'stay-aw'); await rest(a, 480);
+    await orow(a, 'stay-aw').getByRole('button', { name: '问她' }).click(); await rest(a, 520);
+    const d2 = await dockOf(a);
+    check('the 问她 button of an open row does the same, and the row stays open', d2 && d2.chip.title === about('stay-aw').about.title && d2.chip.at === about('stay-aw').at && d2.focused && await expanded(a, 'stay-aw') === 'true', JSON.stringify(d2));
+    await a.page.keyboard.type('abc');
+    await orow(a, 'event-1').scrollIntoViewIfNeeded();
+    await orow(a, 'event-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 250);
+    await orow(a, 'event-1').locator(':scope > .dt-ask').click(); await rest(a, 450);
+    const d3 = await dockOf(a);
+    check('asking about another row swaps the chip and keeps what was typed, the cursor back in the field', d3 && d3.chip.title === about('event-1').about.title && d3.chip.at === about('event-1').at && d3.draft === 'abc' && d3.focused && turns(a).length === 1, JSON.stringify(d3));
+    await a.page.locator('.dt-about button').click(); await rest(a, 250);
+    const d4 = await dockOf(a);
+    check('the × lets go of the chip: the turn is then asked alone, and the words and the cursor stay', d4.chip === null && d4.draft === 'abc' && d4.focused && d4.placeholder === '问她…', JSON.stringify(d4));
+    await a.page.keyboard.press('Enter'); await rest(a, 350);
+    check('and it goes with the text alone, no about', turns(a).length === 2 && JSON.stringify(turns(a)[1].body) === '{"text":"abc"}', JSON.stringify(turns(a)));
+    await noDock(a);
+
+    // a turn the daemon refuses, and the order of Esc
+    await tap(a, 'move-1'); await rest(a, 480);
+    await orow(a, 'move-1').getByRole('button', { name: '问她' }).click(); await rest(a, 500);
+    a.s.refuse.add('submit');
+    await a.page.keyboard.type('xyz'); await a.page.keyboard.press('Enter'); await rest(a, 450);
+    const d5 = await dockOf(a), hint = await a.page.locator('.dt-dock + .dt-hint').innerText().catch(() => null);
+    check('a turn the daemon refuses says so under the input and keeps the chip and the words', hint === '没发出去，再按一次回车试试' && d5.draft === 'xyz' && !!d5.chip && !d5.sent && d5.focused, JSON.stringify({ hint, d5 }));
+    await a.page.keyboard.type('!'); await rest(a, 150);
+    check('the next key takes the hint away', await a.page.locator('.dt-dock + .dt-hint').count() === 0);
+    a.s.refuse.delete('submit');
+    await a.page.keyboard.press('Enter'); await rest(a, 350);
+    check('and Enter again, when it can, sends the same words', turns(a).length === 4 && JSON.stringify(turns(a)[3].body) === JSON.stringify({ text: 'xyz!', about: about('move-1').about }) && (await dockOf(a)).sent, JSON.stringify(turns(a).slice(2)));
+    await noDock(a);
+    await orow(a, 'move-1').getByRole('button', { name: '问她' }).click(); await rest(a, 500);
+    check('the words that were sent do not come back into the next input', (await dockOf(a)).draft === '');
+    await a.page.keyboard.type('half'); await a.page.keyboard.press('Escape'); await rest(a, 450);
+    check('Esc lets go of the input first (and what was typed in it); the open row and the pane stay', await a.page.locator('.dt-dock').count() === 0 && await expanded(a, 'move-1') === 'true' && (await a.read()).tl === 'open' && turns(a).length === 4, JSON.stringify(await a.read()));
+    await a.page.keyboard.press('Escape'); await rest(a, 450);
+    check('and the next Esc closes the row', await folds(a) === 0 && (await a.read()).tl === 'open');
+    await orow(a, 'move-1').getByRole('button', { name: '问她' }).count();
+    await tap(a, 'move-1'); await rest(a, 480);
+    await orow(a, 'move-1').getByRole('button', { name: '问她' }).click(); await rest(a, 500);
+    check('and the words left in a closed input are gone', (await dockOf(a)).draft === '');
+    await a.ctx.close();
+  }
+
+  // ---- 让她总结这段: one tap hands her the work block, no input ----
+  if (all || only === 'open') {
+    const m = buildDay(bigDay(), NOW, zh), want = JSON.stringify({ text: '总结一下这一段', about: askOf(m, 'work-2', zh).about });
+    const a = await boot({ served: bigDay() });
+    await hoverDay(a);
+    await tap(a, 'work-2'); await rest(a, 520);
+    const buttons = () => orow(a, 'work-2').locator('.dt-acts').first().innerText().then(x => x.split('\n').map(y => y.trim()).filter(Boolean).join('|'));
+    check('a work block offers 让她总结这段, and 问她 after it', await buttons() === '让她总结这段|问她', await buttons());
+    a.s.refuse.add('submit');
+    await orow(a, 'work-2').getByRole('button', { name: '让她总结这段' }).click(); await rest(a, 450);
+    check('one tap is one submit; the daemon refusing it leaves the button, which says 没发出去，再试一次', turns(a).length === 1 && await buttons() === '没发出去，再试一次|问她', `${turns(a).length} ${await buttons()}`);
+    a.s.refuse.delete('submit');
+    await orow(a, 'work-2').getByRole('button', { name: '没发出去，再试一次' }).click(); await rest(a, 450);
+    check('and the next tap sends the same: the words and the block as `about` (work, its id, its title, its start), without any input opening', turns(a).length === 2 && turns(a).every(x => JSON.stringify(x.body) === want) && (await dockOf(a)) === null, JSON.stringify(turns(a)));
+    check('then 已发给她 stands where the button was; 问她 stays', await buttons() === '已发给她|问她', await buttons());
+    await shotRow(a, 'open-12-work-sent', 'work-2');
+    await a.ctx.close();
+  }
+
+  // ---- the picture large: a click on it, over the window; Esc or a click closes it ----
+  if (all || only === 'open') {
+    const a = await boot({ served: bigDay() });
+    await hoverDay(a);
+    await tap(a, 'picture-2'); await rest(a, 700);
+    await a.page.locator('[data-key="picture-2"] .dt-pic').click(); await rest(a, 500);
+    const v = await a.page.evaluate(() => { const d = document.querySelector('.dt-viewer'), i = d?.querySelector('img'), r = i?.getBoundingClientRect(); return d && { hit: d.hasAttribute('data-hit'), body: d.parentElement === document.body, src: i.getAttribute('src'), w: Math.round(r.width), h: Math.round(r.height), vw: innerWidth, vh: innerHeight, note: d.querySelector('p')?.textContent, role: d.getAttribute('role'), covers: (b => b.width === innerWidth && b.height === innerHeight)(d.getBoundingClientRect()) }; });
+    check('a click on the picture opens it large over the whole window: the daemon\'s picture at 88% of the width and 78% of the height, its note in full under it, on a surface of its own', v && v.hit && v.body && v.src.endsWith(`/inherent/attachments/${BIG}`) && v.w === Math.round(v.vw * .88) && v.h === Math.round(v.vh * .78) && v.note === '傍晚的海边，风很大' && v.role === 'dialog' && v.covers, JSON.stringify(v));
+    check('it takes the window\'s key focus, and the row under it stays open', (await focusLog(a)).endsWith('true') && await expanded(a, 'picture-2') === 'true', await focusLog(a));
+    await a.shot('open-16-picture-large', { x: 0, y: 0, width: 640, height: 900 });
+    await a.page.keyboard.press('Escape'); await rest(a, 350);
+    check('Esc closes the picture first: the row stays open and so does the pane, and the key focus goes back', await a.page.locator('.dt-viewer').count() === 0 && await expanded(a, 'picture-2') === 'true' && (await a.read()).tl === 'open' && (await focusLog(a)).endsWith('false'), `${JSON.stringify(await a.read())} ${await focusLog(a)}`);
+    await a.page.locator('[data-key="picture-2"] .dt-pic').click(); await rest(a, 400);
+    await a.page.mouse.click(320, 450); await rest(a, 350);
+    check('a click on it closes it too', await a.page.locator('.dt-viewer').count() === 0 && await expanded(a, 'picture-2') === 'true');
+    await a.ctx.close();
+  }
+
+  // ---- English ----
+  if (all || only === 'open') {
+    const m = buildDay(bigDay(), NOW, en);
+    const a = await boot({ served: bigDay(), lang: 'en' });
+    await hoverDay(a);
+    const btns = key => orow(a, key).locator('.dt-acts .dt-btn, .dt-acts .dt-sent').allInnerTexts();
+    await tap(a, 'stay-home-1'); await rest(a, 480);
+    check('in English a kept place (named as he named it) says Rename and Ask her', (await btns('stay-home-1')).join() === 'Rename,Ask her' && (await said(a, 'stay-home-1')).includes('A place you keep · 家'), (await said(a, 'stay-home-1')).join('|'));
+    await orow(a, 'stay-home-1').getByRole('button', { name: 'Rename' }).click(); await rest(a, 350);
+    check('and Rename says how it ends', await orow(a, 'stay-home-1').locator('.dt-hint').innerText() === 'Enter saves · Esc cancels');
+    await a.page.keyboard.type('My place'); await a.page.keyboard.press('Enter'); await rest(a, 500);
+    check('a name changed says Renamed · Undo', await a.page.locator('.dt-note').innerText() === 'Renamed · Undo', await a.page.locator('.dt-note').innerText());
+    await tap(a, 'reminder-2'); await rest(a, 480);
+    check('a reminder that rang offers Got it, and Ask her', (await btns('reminder-2')).join() === 'Got it,Ask her' && (await said(a, 'reminder-2')).join('|') === 'Got it|Ask her', (await said(a, 'reminder-2')).join('|'));
+    await tap(a, 'talk-1'); await rest(a, 700);
+    const talk = await a.page.evaluate(() => { const r = document.querySelector('[data-key="talk-1"]'); return { who: [...r.querySelectorAll('.dt-said small')].map(x => x.textContent), text: r.querySelector('.dt-body').innerText }; });
+    check('a talk labels the two lines You and Her and counts its lines', talk.who.join() === 'You,Her' && /6 lines in all/.test(talk.text), JSON.stringify(talk));
+    await tap(a, 'work-2'); await rest(a, 520);
+    check('a work block offers Have her sum this up', (await btns('work-2')).join() === 'Have her sum this up,Ask her' && (await said(a, 'work-2')).includes('Active 1 h 55 min · 2 h 5 min in all'), (await said(a, 'work-2')).join('|'));
+    await orow(a, 'work-2').getByRole('button', { name: 'Have her sum this up' }).click(); await rest(a, 450);
+    check('it hands her the words in English, with the block as about; then Sent to her', turns(a).length === 1 && JSON.stringify(turns(a)[0].body) === JSON.stringify({ text: 'Summarize this stretch', about: askOf(m, 'work-2', en).about }) && (await btns('work-2')).join() === 'Sent to her,Ask her', `${JSON.stringify(turns(a))} ${(await btns('work-2')).join()}`);
+    await orow(a, 'work-2').getByRole('button', { name: 'Ask her' }).click(); await rest(a, 500);
+    const d = await dockOf(a);
+    check('the input is Ask her about this…, with the chip in English', d && d.placeholder === 'Ask her about this…' && d.chip.title === askOf(m, 'work-2', en).about.title && d.chip.x === 'Take it off', JSON.stringify(d));
+    a.s.refuse.add('submit');
+    await a.page.keyboard.type('hi'); await a.page.keyboard.press('Enter'); await rest(a, 450);
+    check('and a refusal says Press Enter to try again', await a.page.locator('.dt-dock + .dt-hint').innerText() === "Didn't send. Press Enter to try again.");
+    await a.ctx.close();
+  }
+
+  // ---- reduced motion: a row does not grow, its words fade in over 120 ms; nothing slides ----
+  if (all || only === 'open') {
+    const a = await boot({ served: bigDay() });
+    await hoverDay(a);
+    await a.page.emulateMedia({ reducedMotion: 'reduce' }); await a.page.waitForTimeout(150);
+    const run = await a.page.evaluate(async () => {
+      const el = document.querySelector('[data-key="reminder-2"]');
+      el.scrollIntoView({ block: 'center' });
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise(r => requestAnimationFrame(r));
+      const fold = el.querySelector('.dt-fold'), body = fold.querySelector('.dt-body');
+      const live = fold.getAnimations({ subtree: true }).map(x => ({ on: x.effect.target === fold ? 'fold' : 'body', duration: x.effect.getTiming().duration, props: [...new Set(x.effect.getKeyframes().flatMap(k => Object.keys(k)).filter(k => !['offset', 'easing', 'composite', 'computedOffset'].includes(k)))].join() }));
+      return { live, h: fold.getBoundingClientRect().height, final: body.getBoundingClientRect().height };
+    });
+    check('with reduced motion an opening row does not grow (its height is its height at once) and its words fade in over 120 ms', run.live.length === 1 && run.live[0].on === 'body' && run.live[0].duration === 120 && run.live[0].props === 'opacity' && Math.abs(run.h - run.final) < 1, JSON.stringify(run));
+    await rest(a, 250);
+    await orow(a, 'reminder-2').click({ position: { x: 170, y: 14 } }); await a.page.waitForTimeout(80);
+    check('and closing it takes it away at once', await folds(a) === 0 && await expanded(a, 'reminder-2') === 'false');
+    await orow(a, 'talk-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 200);
+    await orow(a, 'talk-1').locator(':scope > .dt-ask').click(); await a.page.waitForTimeout(80);
+    const dockRun = await a.page.evaluate(() => { const f = document.querySelector('.dt-fold.is-dock .dt-dock')?.closest('.dt-fold'); return f && { anims: f.getAnimations({ subtree: true }).map(x => x.effect.getTiming().duration), h: f.getBoundingClientRect().height, full: f.firstElementChild.getBoundingClientRect().height }; });
+    check('the input comes at once too, with a 120 ms fade of its words', dockRun && dockRun.anims.join() === '120' && Math.abs(dockRun.h - dockRun.full) < 1, JSON.stringify(dockRun));
     await a.ctx.close();
   }
 
