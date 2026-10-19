@@ -67,7 +67,7 @@ let TRACE0 = -7 * DAY
 let WD = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
 func clock(_ m0: Double) -> String {
-    let m = ((Int(m0.rounded()) % 1440) + 1440) % 1440
+    let m = ((tlInt(m0) % 1440) + 1440) % 1440          // a time that is not a number reads as midnight, never a stop
     return "\(two(m / 60)):\(two(m % 60))"
 }
 // the calendar is `Cal.cur`: the prototype's Thursday 10.8 unpaired, the phone's own today paired (Brain/Cal.swift)

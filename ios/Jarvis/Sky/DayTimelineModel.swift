@@ -3,11 +3,13 @@ import Foundation
 // The whole day as one list for the home screen (Sky/DayTimeline.swift draws it), built from the brain's answer for that day (`DayReply`).
 // One story: sleep, then the places he stayed in as groups with what happened there as rows, the trips between the groups as rows of their own,
 // a line for now, and what is still to come after it. Plain values only, so the order, the words and the places on the day can be tested without a screen.
-// Times are minutes from the day's own midnight (a stay that began the evening before starts below 0).
+// The words of each row are in Sky/DayTimelineRows.swift. Times are minutes from the day's own midnight (a stay that began the evening before starts below 0).
 
-/// the heights of the list's rows, in design points: fixed, so where a row stands is known without asking the view
+/// the heights of the list's rows, in design points: fixed, so where a row stands is known without asking the view. A row someone can touch is at least 44 high.
 enum TLMetrics {
-    static let sleep = 52.0, stay = 40.0, trip = 36.0, row = 44.0, rowDetail = 52.0, now = 30.0, note = 44.0
+    static let row = 44.0, rowDetail = 56.0, stay = 44.0, now = 30.0, note = 44.0
+    /// between one group (a place, a run of trips) and the next
+    static let gap = 12.0
 }
 
 /// 1 时 40 分, 40 分: the length of a span in the list
@@ -40,9 +42,89 @@ func tlMoney(_ cents: Int, _ currency: String?) -> String {
     return marks[code].map { sign + $0 + num } ?? sign + num + " " + code
 }
 
+/// a whole number from a double, which a malformed item could make anything: not a number is 0, and it is kept to a size a clock and a list can hold
+func tlInt(_ x: Double) -> Int { x.isFinite ? Int(max(-1e9, min(1e9, x.rounded()))) : 0 }
+
+/// What opening a row offers to do with it. Each exists only where it works today.
+enum TLAction: Equatable {
+    case ask                // hand it to her: the row becomes the chip of the next turn, and the composer opens
+    case openTalk           // the conversation, at the time of the talk
+    case rename             // a place he keeps, under another name
+    case acknowledge        // a reminder that rang: he knows
+    case summarize          // what he did on the Mac, put to her at once
+}
+
+/// how the rail on the left of the list runs through a row: a place's, as a line in its hue, or a trip's, dashed
+enum TLRail: Equatable {
+    case none
+    case place(RGB)
+    case trip
+}
+
+/// where a stay was, for the small map when it is opened, and the place he keeps it is in
+struct TLPlace: Equatable {
+    var lat: Double?, lng: Double?
+    var text: String?               // the phone's own words for the place
+    var keptId: String?             // the place he keeps it is in, and the name he gave it
+    var keptName: String?
+    var onMap: Bool { lat != nil && lng != nil }
+    /// the place can be renamed: he keeps it, and its id is one that can stand in a path (the brain's are slugs; one with a slash or a space is not offered, not guessed at)
+    var canRename: Bool { keptId.map { !$0.isEmpty && $0.count <= 128 && $0.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "-_.:".unicodeScalars.contains($0)) } } ?? false }
+}
+
+/// one of what he spent the time of a stretch of Mac work on: a project, an app
+struct TLTop: Equatable {
+    var name: String
+    var minutes: Int
+    var share: Double               // of the biggest of its list: 1 for that one
+}
+struct TLWork: Equatable {
+    var projects: [TLTop], apps: [TLTop]
+    var active: Int?                // minutes at it
+    var total: Int?                 // minutes of the whole stretch
+}
+
+/// one stretch of a night as Health recorded it
+struct TLStage: Equatable {
+    enum Kind: Equatable {
+        case deep, core, rem, awake, inBed, unspecified
+        init?(name: String) {
+            switch name {
+            case "deep": self = .deep
+            case "core": self = .core
+            case "rem": self = .rem
+            case "awake": self = .awake
+            case "in_bed": self = .inBed
+            case "unspecified": self = .unspecified
+            default: return nil         // a stage this phone does not know: not drawn
+            }
+        }
+    }
+    var kind: Kind
+    var t0: Double, t1: Double
+}
+struct TLSleep: Equatable {
+    var stages: [TLStage]
+    var deep = 0, core = 0, rem = 0         // minutes in each, inside the night
+    var awake = 0                           // how many times he was awake
+    var summary: String?                    // `深睡 1:10 · 核心 4:30 · REM 1:40 · 醒 3 次`
+    var short: String?                      // `深睡 1:10 · REM 1:40`
+}
+
+/// one Claude Code session of the day
+struct TLSession: Equatable, Identifiable {
+    let id: String
+    var t0: Double, t1: Double
+    var time: String
+    var title: String
+    var project: String?, account: String?  // `A` or `B`
+    var right: String                       // how long
+    var recap: String?                      // Claude Code's latest recap of it
+}
+
 /// one line of the list
 struct TLEntry: Identifiable, Equatable {
-    enum Kind: Equatable { case sleep, stay, trip, talk, picture, event, reminder, departure, work, call, payment, claude, now }
+    enum Kind: Equatable { case sleep, stay, trip, pause, talk, picture, event, reminder, departure, work, call, payment, claude, workout, code, now }
     let id: String
     var kind: Kind
     var t0: Double
@@ -52,32 +134,55 @@ struct TLEntry: Identifiable, Equatable {
     var detail: String?             // the one muted line under the title
     var more: [String] = []         // what opening the row says in full, a line each
     var symbol = ""                 // an SF Symbol, drawn filled once it has happened and as an outline while it has not
-    var right = ""                  // the mono text at the right: how long, and for a stay its hours too
+    var right = ""                  // the mono text at the right: how long, a point's value, or how long until it
     var color: RGB?                 // a stay: the colour of its place
     var kept = false                // a stay in a place he keeps (a stay in none is a neutral haze)
     var strongRight = false         // the mono text at the right is the point of the row (what a payment came to), so it is not muted
-    var lit = false                 // marked as what mattered: a lit star before the title
+    var lit = false                 // marked as what mattered: a lit star on its icon
     var later = false               // not yet: after the line for now
-    var talkStart: Int64?           // a talk: when it began, for 全部 ›
+    var soon = false                // later, and within two hours: the text at the right is the time left
+    var going = false               // today, begun, no end yet: it goes on, and its end is now
+    var ride = false                // a trip on a bus
+    var waiting = false             // waits on him (a reminder that rang, an event from his mail he has not confirmed): the amber `等你`
+    var talkStart: Int64?           // a talk: when it began, for opening the conversation there
+    var turns: Int?                 // a talk: how many lines it had
     var attachment: String?         // a picture: the brain's name for it
     var about: About?               // the chip it gives a talk while it is the row opened (ADR 0214): only an item of a kind the brain's host knows
+    var actions: [TLAction] = []    // what opening it offers
     var lens: TLLens?               // the kind of the day's numbers it is counted in (a stay, an event and the rest are in none)
     var barName: String?            // the word it wears inside the overview bar when there is room: the place, the route, the way he moved, how long he slept, the event
     var barIcon: String?            // and the symbol, for when the word does not fit
     var head: String?               // a stretch (the night, a place, a trip) as the readout under a finger opens with it: `家 · 09:05–11:25 · 2 时 20 分`
     var glance: String?             // what the readout says of it when it was going on at the minute under a finger: `Jarvis · Xcode`, `A&W · $12.40`
+    var group: String?              // the place it belongs to (its stay's id)
+    var rail = TLRail.none          // the rail through its icon, and whether it comes in from the row above and goes on to the one below
+    var railIn = false, railOut = false
+    var onWay = false               // something that happened while he was on the way: it stands on the trip's rail
+    var gap = 0.0                   // the blank above it, between one group and the next
+    var place: TLPlace?             // a stay: where it was
+    var work: TLWork?               // work: what it was spent on
+    var sleep: TLSleep?             // a night: its stages
+    var sessions: [TLSession] = []  // Claude Code: its session, or, for one row that stands for several, each of them
+    var spans: [TLMark] = []        // where it is on the bar when that is not one span
 
-    var height: Double {
+    /// the height of the row without the gap above it
+    var base: Double {
         switch kind {
-        case .sleep: TLMetrics.sleep
         case .stay: TLMetrics.stay
-        case .trip: detail == nil ? TLMetrics.trip : TLMetrics.rowDetail
         case .now: TLMetrics.now
         default: detail == nil ? TLMetrics.row : TLMetrics.rowDetail
         }
     }
-    /// a tap on it opens something: the first exchange of a talk, the picture, or lines that do not fit on one
-    var opens: Bool { kind == .talk || kind == .picture || !more.isEmpty }
+    var height: Double { base + gap }
+    /// one row that stands for several Claude Code sessions
+    var holdsSessions: Bool { kind == .code && sessions.count > 1 }
+    /// a tap on it opens something: what it says in full, the first exchange of a talk, the picture, a map, or what can be done with it
+    var opens: Bool {
+        switch kind {
+        case .now, .pause: false
+        default: kind == .talk || kind == .picture || !more.isEmpty || !actions.isEmpty || place != nil || work != nil || sleep != nil || holdsSessions
+        }
+    }
 }
 
 /// an item that mattered (a highlight of the day) and when it was
@@ -88,13 +193,14 @@ struct TLStar: Equatable, Identifiable {
 
 /// A kind of thing the day's numbers bring forward: pressing its chip dims the rest of the bar and the list.
 enum TLLens: CaseIterable, Equatable {
-    case sleep, trip, work, call, talk, payment, picture
+    case sleep, trip, workout, work, call, talk, payment, picture
 
     /// the word on its chip: the same on the Mac
     var word: String {
         switch self {
         case .sleep: "睡"
         case .trip: "路上"
+        case .workout: "运动"
         case .work: "Mac"
         case .call: "通话"
         case .talk: "和她"
@@ -106,6 +212,7 @@ enum TLLens: CaseIterable, Equatable {
         switch self {
         case .sleep: "moon.fill"
         case .trip: "figure.walk"
+        case .workout: "figure.run"
         case .work: "laptopcomputer"
         case .call: "phone.fill"
         case .talk: "bubble.left.fill"
@@ -118,6 +225,7 @@ enum TLLens: CaseIterable, Equatable {
         switch self {
         case .sleep: RGB(112, 120, 205)
         case .trip: RGB(196, 208, 255)
+        case .workout: RGB(156, 224, 120)
         case .work: RGB(108, 156, 255)
         case .call: RGB(111, 224, 180)
         case .talk: RGB(172, 124, 255)
@@ -127,12 +235,37 @@ enum TLLens: CaseIterable, Equatable {
     }
 }
 
-/// one of the day's numbers: `睡 8:05`, `路上 3:04`, `Mac 2:20`, `通话 18 分`, `和她 2 次`, `花 $12.40`, `照片 1`
+/// one of the day's numbers: `睡 8:05`, `路上 3:04`, `运动 45 分`, `Mac 2:20`, `通话 18 分`, `和她 2 次`, `花 $12.40`, `照片 1`
 struct TLChip: Equatable, Identifiable {
     let lens: TLLens
     let value: String
     var id: String { word }
     var word: String { lens.word }
+}
+
+/// What Health reported for the day, as the quiet values after the chips: `8,240 步`, `静息 58`, `HRV 42`
+struct TLBody: Equatable, Identifiable {
+    var prefix: String, value: String, suffix: String
+    var id: String { prefix + suffix }
+}
+
+/// the day's weather for the header: `多云 14° / 8°`
+struct TLWeather: Equatable {
+    var word: String?, symbol: String?
+    var high: Int?, low: Int?
+    var temps: String { [high, low].compactMap { $0.map { "\($0)°" } }.joined(separator: " / ") }
+    var text: String { [word, temps.isEmpty ? nil : temps].compactMap { $0 }.joined(separator: " ") }
+}
+/// when the sun rose and set, in minutes from the day's midnight
+struct TLSun: Equatable {
+    var rise: Double?, set: Double?
+}
+
+/// something that was going on, for the readout to say of the minute under a finger
+struct TLTold: Equatable {
+    var kind: TLEntry.Kind
+    var t0: Double, t1: Double
+    var text: String
 }
 
 /// What a finger on the bar reads out: the stretch of the day under it, and what else was going on there.
@@ -174,6 +307,11 @@ struct DayTimelineModel: Equatable {
     var missing: String?            // "还没读到：Mac 的时间"
     var stars: [TLStar] = []        // what mattered, in the order of the day: a lit star on the bar for each
     var chips: [TLChip] = []        // the day's numbers, in a fixed order, only the ones that are not nothing
+    var body: [TLBody] = []         // what Health reported, after the chips
+    var weather: TLWeather?
+    var sun: TLSun?
+    var waiting: [String] = []      // the rows that wait on him, in the order of the day
+    var told: [TLTold] = []         // what the readout can say of a minute: what each row was doing, a Claude Code session each
 
     /// the hours the bar is ticked at: every third hour inside its span (06 09 12 15 18 21 24)
     var ticks: [Int] { stride(from: Int((span.lowerBound / 180).rounded(.up)) * 3, through: 24, by: 3).map { $0 } }
@@ -190,6 +328,7 @@ struct DayTimelineModel: Equatable {
         return entries.map { e in defer { y += e.height }; return y }
     }
     var height: Double { entries.reduce(0) { $0 + $1.height } + (missing == nil ? 0 : TLMetrics.note) }
+    /// where the row stands, and where its own line begins under the blank above it
     func top(of id: String) -> Double? { entries.firstIndex { $0.id == id }.map { offsets[$0] } }
 
     /// Where the list rests on today, from its top: the line for now about 60% of the way down `room`, and a row beginning at the top rather than half of one (the row
@@ -200,10 +339,12 @@ struct DayTimelineModel: Equatable {
         return max(0, (offsets.min { abs($0 - want) < abs($1 - want) } ?? 0) - 8)
     }
 
-    /// the entry that covers minute `t`: the last one begun by then, else the first
+    /// the entry that covers minute `t`: the last one begun by then (of those begun together, the later in the list), else the first
     func entry(at t: Double) -> TLEntry? {
         let list = entries.filter { $0.kind != .now }
-        return list.last { $0.t0 <= t } ?? list.first
+        var best: Int?
+        for (k, e) in list.enumerated() where e.t0 <= t && (best.map { list[$0].t0 <= e.t0 } ?? true) { best = k }
+        return best.map { list[$0] } ?? list.first
     }
     /// the stretch (a stay, a trip, the night) minute `t` is in: the night is on top of a trip, a trip of a stay
     func seg(at t: Double) -> TLSeg? {
@@ -223,7 +364,8 @@ struct DayTimelineModel: Equatable {
     }
 
     /// What a finger on the bar at minute `t` reads out. The stretch there (a place, a trip, the night) opens it, or how long nothing was recorded, or that it has not happened;
-    /// then what else was going on: what covers `t`, else what is within 10 minutes of it, the most telling first (work, a call, a talk, a picture, a payment, an event, Claude, a reminder, a bus).
+    /// then what else was going on: what covers `t`, else what is within 10 minutes of it, the most telling first (work, Claude Code, a call, a talk, a workout, a picture, a payment,
+    /// an event, Claude, a reminder, a bus, the night's stages).
     func readout(at t: Double) -> TLReadout {
         var hue: RGB?, strong = true, head: String
         let ahead = now.map { t > $0 } ?? false
@@ -239,218 +381,100 @@ struct DayTimelineModel: Equatable {
         } else {
             let lo = segs.filter { $0.t1 <= t }.map(\.t1).max() ?? span.lowerBound
             let hi = min(segs.filter { $0.t0 > t }.map(\.t0).min() ?? DAY, now ?? DAY)
-            head = "没有记录 · \(clock(lo))–\(clock(hi)) · \(tlDur(Int((hi - lo).rounded())))"
+            head = "没有记录 · \(clock(lo))–\(tlEnd(hi)) · \(tlDur(tlInt(hi - lo)))"
         }
-        func gap(_ e: TLEntry) -> Double { let end = max(e.t1 ?? e.t0, e.t0); return t < e.t0 ? e.t0 - t : t > end ? t - end : 0 }
-        let told = entries.filter { $0.glance != nil }
+        func gap(_ x: TLTold) -> Double { t < x.t0 ? x.t0 - t : t > x.t1 ? t - x.t1 : 0 }
         var near = told.filter { gap($0) == 0 }
         if near.isEmpty { near = told.filter { gap($0) <= 10 } }
-        let order: [TLEntry.Kind] = [.work, .call, .talk, .picture, .payment, .event, .claude, .reminder, .departure]
-        near.sort { (order.firstIndex(of: $0.kind) ?? 99, gap($0), $0.t0) < (order.firstIndex(of: $1.kind) ?? 99, gap($1), $1.t0) }
-        return TLReadout(hue: hue, strong: strong, head: head, elsewhere: near.prefix(4).compactMap(\.glance), ahead: ahead)
+        let order: [TLEntry.Kind] = [.work, .code, .call, .talk, .workout, .picture, .payment, .event, .claude, .reminder, .departure, .sleep]
+        func rank(_ x: TLTold) -> Int { order.firstIndex(of: x.kind) ?? 99 }
+        near.sort { (rank($0), gap($0), $0.t0) < (rank($1), gap($1), $1.t0) }
+        return TLReadout(hue: hue, strong: strong, head: head, elsewhere: near.prefix(4).map(\.text), ahead: ahead)
     }
 
     /// where the things of a lens's kind are on the bar
     func marks(of lens: TLLens) -> [TLMark] {
-        entries.filter { $0.lens == lens }.map { TLMark(t0: $0.t0, t1: max($0.t0, $0.t1 ?? $0.t0)) }
+        entries.filter { $0.lens == lens }.flatMap { e in e.spans.isEmpty ? [TLMark(t0: e.t0, t1: max(e.t0, e.t1 ?? e.t0))] : e.spans }
     }
 
     // MARK: building
 
-    /// `day` is the day number (0 is the day `Cal.cur` counts from), `now` the minute of now when this is today. `topic` names a talk by what it was about.
-    static func build(_ r: DayReply, day: Int, now: Double?, topic: (String) -> String? = { _ in nil }) -> DayTimelineModel {
+    /// `day` is the day number (0 is the day `Cal.cur` counts from), `now` the minute of now when this is today. `topic` names a talk by what it was about. `acked` and `renamed`
+    /// are what he has just done to a reminder and to a place he keeps, which the brain's next answer will say too. An item that cannot be
+    /// placed (a time that is not one, an end before its start, an id taken already) is left out, and so is one of a kind this phone does not know.
+    static func build(_ r: DayReply, day: Int, now: Double?, topic: @escaping (String) -> String? = { _ in nil },
+                      acked: Set<String> = [], renamed: [String: String] = [:]) -> DayTimelineModel {
         let base = Double(day) * DAY
         func m(_ ms: Int64) -> Double { Cal.cur.t(ms: ms) - base }
-        func text(_ s: String?) -> String? { s.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 } }
-        let marks = Dictionary(r.highlights.map { ($0.id, $0.label) }, uniquingKeysWith: { a, _ in a })
-        var out: [(rank: Int, e: TLEntry)] = []
-        var segs: [TLSeg] = []
-        var minutes: [TLLens: Double] = [:], counts: [TLLens: Int] = [:]            // what the day's numbers add up
-        var spent: [String: (cents: Int, n: Int)] = [:]                              // money out, by currency
-
+        // what mattered, by item: the label of the owner or hers, or none (the brain writes `kind HH:MM` when nobody did, which says less than the row does)
+        var marks: [String: String] = [:]
+        for h in r.highlights where marks[h.id] == nil {
+            let label = tlText(h.label) ?? ""
+            marks[h.id] = label.range(of: #"^[a-z_]+ \d{1,2}:\d{2}$"#, options: [.regularExpression, .caseInsensitive]) == nil ? label : ""
+        }
+        let frame = TLFrame(now: now, m: m, topic: topic, marks: marks, acked: acked, renamed: renamed)
+        // what a day can hold, with a month either side: a time beyond it is not a time of this day's list
+        let reach = 30 * DAY, window = 31.0 * 86_400_000
+        var taken: Set<String> = ["now"]
+        var items: [DayItem] = [], rows: [TLEntry] = []
         for i in r.items {
+            guard !i.id.isEmpty, abs(Double(i.start_ms) - Double(r.start_ms)) <= window, i.end_ms.map({ abs(Double($0) - Double(r.start_ms)) <= window }) ?? true,
+                  taken.insert(i.id).inserted else { continue }
             let t0 = m(i.start_ms), t1 = i.end_ms.map(m)
-            let begun = now.map { t0 <= $0 } ?? true
-            let later = now.map { t0 > $0 } ?? false
-            let running = t1 == nil && begun && now != nil          // today, begun, no end yet: it goes on
-            let end = t1 ?? (running ? now : nil)
-            let span = end.map { max(0, $0 - t0) }
-            let dur = span.flatMap { $0 >= 1 ? tlDur(Int($0.rounded())) : nil }
-            var e = TLEntry(id: i.id, kind: .work, t0: t0, title: "")
-            e.time = clock(t0); e.t1 = end; e.later = later
-            switch i.kind {
-            case "sleep":
-                e.kind = .sleep
-                e.title = "睡觉"
-                e.symbol = "moon.fill"
-                e.detail = rangeText(t0, t1, running: running)
-                e.right = i.minutes.map { tlDur(Int($0.rounded())) } ?? dur ?? ""
-                e.barName = (i.minutes ?? span).map { tlHM(Int($0.rounded())) }; e.barIcon = "moon.fill"
-                if let end { segs.append(TLSeg(id: i.id, t0: max(0, t0), t1: min(DAY, end), kind: .sleep)) }
-            case "stay":
-                e.kind = .stay
-                e.title = i.ringName?.name ?? "没名字的地方"
-                if let k = i.kept_place {
-                    e.color = PlaceTint.line(role: k.role, id: k.id); e.kept = true
-                } else { e.color = PlaceTint.lineNeutral }
-                e.barName = i.ringName?.name
-                e.barIcon = ["home": "house.fill", "school": "graduationcap.fill"][i.kept_place?.role ?? ""] ?? "mappin"
-                // a stay still on has its start and how long it has gone; one that ended, its hours and its length
-                e.right = [t1 == nil ? "\(clockDay(t0)) 起" : rangeText(t0, t1, running: false), dur].compactMap { $0 }.joined(separator: " · ")
+            guard t0.isFinite, abs(t0) <= reach, t1.map({ $0.isFinite && abs($0) <= reach && $0 >= t0 }) ?? true, let e = row(i, t0: t0, t1: t1, frame) else { continue }
+            items.append(i); rows.append(e)
+        }
+
+        // what the bar is made of, and what the day's numbers add up
+        var segs: [TLSeg] = []
+        var minutes: [TLLens: Double] = [:], counts: [TLLens: Int] = [:]
+        var spent: [String: (cents: Int, n: Int)] = [:]                              // money out, by currency
+        func seg(_ id: String, _ a: Double, _ b: Double, _ kind: TLSeg.Kind) {
+            let lo = max(0, a), hi = min(DAY, b)
+            if hi > lo { segs.append(TLSeg(id: id, t0: lo, t1: hi, kind: kind)) }
+        }
+        func length(_ x: Double) -> Double { x.isFinite ? max(0, min(x, 3 * DAY)) : 0 }
+        for k in rows.indices {
+            let i = items[k]
+            let span = rows[k].t1.map { max(0, $0 - rows[k].t0) } ?? 0
+            switch rows[k].kind {
+            case .sleep:
+                rows[k].lens = .sleep; minutes[.sleep, default: 0] += length(i.minutes ?? span)
+                if let end = rows[k].t1 { seg(rows[k].id, rows[k].t0, end, .sleep) }
+            case .stay:
                 // on another day a stay with no end goes on to that day's midnight
-                if let end = end ?? (now == nil ? DAY : nil) { segs.append(TLSeg(id: i.id, t0: max(0, t0), t1: min(DAY, end), kind: .place(e.color!, kept: e.kept))) }
-            case "move", "ride":
-                e.kind = .trip
-                e.right = dur ?? ""
-                if i.kind == "ride" {
-                    e.symbol = "bus.fill"
-                    let stops = [text(i.board_stop), text(i.alight_stop)]
-                    let trail = stops.compactMap { $0 }.joined(separator: " → ")
-                    e.title = text(i.route).map { "\($0) 路" } ?? "公交"
-                    e.barName = text(i.route); e.barIcon = "bus.fill"
-                    e.detail = trail.isEmpty ? nil : trail          // one stop is that stop alone, none no line at all
-                    e.more = [stops[0].map { "上车 " + $0 }, stops[1].map { "下车 " + $0 }].compactMap { $0 }
-                } else {
-                    let (word, symbol) = Self.moves[i.activity ?? ""] ?? ("移动", "arrow.right")
-                    e.title = word; e.symbol = symbol
-                    e.barName = word; e.barIcon = symbol
-                }
-                if let end { segs.append(TLSeg(id: i.id, t0: max(0, t0), t1: min(DAY, end), kind: .move)) }
-            case "talk":
-                e.kind = .talk
-                let said = topic(i.id)
-                e.title = said ?? "和她说话"
-                e.symbol = "bubble.left.fill"
-                e.detail = "\(i.turns ?? 1) 句"
-                e.glance = said ?? "和她说话 · " + e.detail!
-                e.right = dur ?? ""
-                e.talkStart = i.start_ms
-            case "picture":
-                e.kind = .picture
-                e.title = "照片"
-                e.symbol = "photo.fill"
-                let lines = (i.note ?? "").split(whereSeparator: \.isNewline).compactMap { text(String($0)) }
-                e.detail = lines.first
-                e.more = lines
-                e.glance = ["照片", e.detail].compactMap { $0 }.joined(separator: " · ")
-                e.attachment = i.id.hasPrefix("picture-") ? String(i.id.dropFirst("picture-".count)) : i.id
-            case "event":
-                e.kind = .event
-                let hidden = i.private == true
-                e.title = hidden ? "私事" : text(i.title) ?? "日程"
-                e.symbol = "calendar.circle.fill"
-                e.barName = e.title; e.barIcon = "calendar"; e.glance = e.title
-                // a mail made it and he has not said it is his: say so, and where (a private one names no place)
-                let parts = [i.confirmed == false && i.source != "plan" ? "从邮件里收的，还没确认" : nil, hidden ? nil : text(i.place)].compactMap { $0 }
-                e.detail = parts.isEmpty ? nil : parts.joined(separator: " · ")
-                e.more = parts
-                e.right = dur ?? ""
-            case "reminder":
-                e.kind = .reminder
-                e.title = text(i.text) ?? "提醒"
-                e.glance = "提醒 · " + e.title
-                e.symbol = "bell.fill"
-                e.detail = i.fired == true ? (i.acknowledged == true ? "已经响过，你确认过了" : "已经响过，你还没确认") : "还没到点"
-            case "departure":
-                e.kind = .departure
-                e.title = text(i.route).map { "\($0) 路 发车" } ?? text(i.title) ?? "发车"
-                e.glance = e.title
-                e.symbol = "bus.fill"
-                let parts = [text(i.board_stop).map { "在\($0)上车" }, text(i.to).map { "去\($0)" }, i.leave_at_ms.map { clock(m($0)) + " 出门" }].compactMap { $0 }
-                e.detail = parts.isEmpty ? nil : parts.joined(separator: " · ")
-                e.more = parts
-            case "work":
-                e.kind = .work
-                e.symbol = "laptopcomputer"
-                let top = i.projects?.first?.name ?? i.apps?.first?.name
-                e.title = text(top) ?? "在 Mac 上工作"
-                // how long he was at it is the active time, not the whole stretch
-                e.right = i.active_s.map { tlDur(Int(($0 / 60).rounded())) } ?? dur ?? ""
-                let parts = [("项目", i.projects), ("应用", i.apps)].compactMap { name, tops -> String? in
-                    guard let tops, !tops.isEmpty else { return nil }
-                    return name + " " + tops.map { "\($0.name) \(tlDur(max(1, Int(($0.seconds / 60).rounded()))))" }.joined(separator: "、")
-                }
-                e.detail = parts.isEmpty ? nil : parts.joined(separator: " · ")
-                e.more = parts
-                let tops = [i.projects?.first?.name, i.apps?.first?.name].compactMap(text)
-                e.glance = tops.isEmpty ? "在 Mac 上工作" : tops.joined(separator: " · ")
-            case "call":
-                e.kind = .call
-                e.title = "通话"
-                e.symbol = "phone.fill"
-                e.detail = text(i.app)
-                e.glance = ["通话", e.detail].compactMap { $0 }.joined(separator: " · ")
-                e.right = dur ?? ""
-            case "payment":
-                e.kind = .payment
-                e.symbol = "creditcard.fill"
-                let shop = text(i.counterparty), item = text(i.text), cents = i.amount?.cents
-                e.title = shop ?? item ?? "付款"
-                e.detail = shop == nil ? nil : item
-                // what it came to: money out is the plain amount, money in has a plus
-                e.right = cents.map { (i.direction == "in" ? "+" : "") + tlMoney(abs($0), i.currency) } ?? ""
-                e.strongRight = true
-                e.glance = [e.title, e.right.isEmpty ? nil : e.right].compactMap { $0 }.joined(separator: " · ")
-                // opened: which way, the amount (with its currency's code when the mark alone does not say it), and where the import came from
-                let way = i.direction == "in" ? "收入" : "支出", code = text(i.currency)?.uppercased()
-                let sum = cents.map { tlMoney(abs($0), i.currency) }
-                e.more = [sum.map { way + " " + $0 + (code.map { $0.isEmpty || sum!.contains($0) ? "" : " " + $0 } ?? "") }, text(i.source).map { "来自" + (Self.sources[$0] ?? $0) }].compactMap { $0 }
-            case "claude_chat":
-                e.kind = .claude
-                e.symbol = "sparkles"
-                let name = text(i.text)
-                e.title = name == nil || name == "Claude conversation" ? "Claude 对话" : name!
-                e.glance = "Claude · " + e.title
-                e.detail = i.messages.map { "\($0) 条消息" }
-                e.right = dur ?? ""
-            case "claude_day":
-                e.kind = .claude
-                e.symbol = "sparkles"
-                let titles = (i.text ?? "").split(separator: ";").compactMap { text(String($0)) }
-                e.title = "Claude 对话小结"
-                e.detail = titles.isEmpty ? nil : titles.joined(separator: "、")
-                e.more = titles
-                e.right = i.chats.map { "\($0) 段" } ?? ""
-            default:
-                continue            // a kind this phone does not know yet: left out, not guessed at
-            }
-            switch e.kind {
-            case .sleep: e.lens = .sleep; minutes[.sleep, default: 0] += i.minutes ?? span ?? 0
-            case .trip: e.lens = .trip; minutes[.trip, default: 0] += span ?? 0
-            case .work: e.lens = .work; minutes[.work, default: 0] += i.active_s.map { $0 / 60 } ?? span ?? 0          // the time he was at it, not the whole stretch
-            case .call: e.lens = .call; minutes[.call, default: 0] += span ?? 0
-            case .talk: e.lens = .talk; counts[.talk, default: 0] += 1
-            case .picture: e.lens = .picture; counts[.picture, default: 0] += 1
+                if let hue = rows[k].color, let end = rows[k].t1 ?? (now == nil ? DAY : nil) { seg(rows[k].id, rows[k].t0, end, .place(hue, kept: rows[k].kept)) }
+            case .trip:
+                rows[k].lens = .trip; minutes[.trip, default: 0] += length(span)
+                if let end = rows[k].t1 { seg(rows[k].id, rows[k].t0, end, .move) }
+            case .work: rows[k].lens = .work; minutes[.work, default: 0] += length(i.active_s.map { $0 / 60 } ?? span)      // the time he was at it, not the whole stretch
+            case .code: rows[k].lens = .work                                                                                // lit with the Mac's work, not added to it
+            case .call: rows[k].lens = .call; minutes[.call, default: 0] += length(span)
+            case .workout: rows[k].lens = .workout; minutes[.workout, default: 0] += length(span)
+            case .talk: rows[k].lens = .talk; counts[.talk, default: 0] += 1
+            case .picture: rows[k].lens = .picture; counts[.picture, default: 0] += 1
             case .payment where i.direction == "out":
-                e.lens = .payment
-                if let c = i.amount?.cents { let k = text(i.currency)?.uppercased() ?? ""; spent[k] = ((spent[k]?.cents ?? 0) + abs(c), (spent[k]?.n ?? 0) + 1) }
+                rows[k].lens = .payment
+                if let c = i.amount?.cents { let key = tlText(i.currency)?.uppercased() ?? ""; spent[key] = ((spent[key]?.cents ?? 0) + abs(c), (spent[key]?.n ?? 0) + 1) }
             default: break
             }
-            switch e.kind {
-            case .stay: e.head = e.title + " · " + e.right
-            case .sleep: e.head = [e.title, e.detail, e.right.isEmpty ? nil : e.right].compactMap { $0 }.joined(separator: " · ")
-            case .trip: e.head = [e.title, rangeText(t0, t1, running: running), e.right.isEmpty ? nil : e.right].compactMap { $0 }.joined(separator: " · ")
-            default: break
-            }
-            if let label = marks[i.id], e.kind != .stay { e.title = label; e.lit = true; e.glance = label }
-            if About.kinds.contains(i.kind), About.fits(id: i.id) {
-                e.about = About(kind: i.kind, id: i.id, title: e.title, startMs: i.start_ms, mark: Self.mark(i, later: later))
-            }
-            out.append((e.kind == .sleep ? 0 : e.kind == .stay ? 1 : e.kind == .trip ? 2 : 3, e))
         }
 
         // in the order of the day; at the same minute a night comes first, then the place, then the trip, then what happened
-        var seen = Set<String>()
-        var entries = out.enumerated().sorted { ($0.element.e.t0, $0.element.rank, $0.offset) < ($1.element.e.t0, $1.element.rank, $1.offset) }
-            .map { $0.element.e }.filter { seen.insert($0.id).inserted }
+        func rank(_ k: TLEntry.Kind) -> Int { k == .sleep ? 0 : k == .stay ? 1 : k == .trip ? 2 : 3 }
+        let sorted = rows.enumerated().sorted { ($0.element.t0, rank($0.element.kind), $0.offset) < ($1.element.t0, rank($1.element.kind), $1.offset) }.map(\.element)
+        var entries = arrange(sorted, now: now)
         if let now {
             var line = TLEntry(id: "now", kind: .now, t0: now, title: "现在 " + clock(now))
             line.time = clock(now)
             entries.insert(line, at: entries.firstIndex { $0.t0 > now } ?? entries.count)
         }
+        space(&entries)
+        for k in entries.indices { entries[k].actions = actions(of: entries[k]) }
+
         // the night that ended on this day says when he woke; what began before the bar's start brings it back
-        let wake = r.items.filter { $0.kind == "sleep" }.compactMap { $0.end_ms.map(m) }.filter { $0 >= 0 && $0 < DAY }.min()
-        let early = r.items.filter { Self.axisKinds.contains($0.kind) }.map { m($0.start_ms) }
+        let wake = items.compactMap { $0.kind == "sleep" ? $0.end_ms.map(m) : nil }.filter { $0 >= 0 && $0 < DAY }.min()
+        let early = zip(items, rows).filter { axisKinds.contains($0.0.kind) }.map { $0.1.t0 }
         // what mattered, at the time of each item that did
         var starred = Set<String>()
         let stars = r.highlights.compactMap { h in entries.first { $0.id == h.id }.flatMap { starred.insert(h.id).inserted ? TLStar(id: h.id, t: $0.t0) : nil } }.sorted { $0.t < $1.t }
@@ -465,12 +489,170 @@ struct DayTimelineModel: Equatable {
                     chips.append(TLChip(lens: l, value: tlMoney(main.value.cents, main.key.isEmpty ? nil : main.key) + (spent.count > 1 ? "…" : "")))
                 }
             default:
-                let n = Int((minutes[l] ?? 0).rounded())
+                let n = tlInt(minutes[l] ?? 0)
                 if n > 0 { chips.append(TLChip(lens: l, value: tlHM(n))) }
             }
         }
-        return DayTimelineModel(date: r.date, line: text(r.line?.text), entries: entries, segs: segs,
-                                span: axisStart(wake: wake, early: early, now: now)...DAY, now: now, missing: missingText(r.missing), stars: stars, chips: chips)
+        // what each row was doing, for the readout: a Claude Code row that stands for several says each of them
+        var told: [TLTold] = []
+        for e in entries where e.kind != .now {
+            if e.holdsSessions { told += e.sessions.map { TLTold(kind: .code, t0: $0.t0, t1: $0.t1, text: "Claude Code · " + $0.title) } }
+            else if let g = e.glance { told.append(TLTold(kind: e.kind, t0: e.t0, t1: max(e.t1 ?? e.t0, e.t0), text: g)) }
+        }
+        var model = DayTimelineModel(date: r.date, line: tlText(r.line?.text), entries: entries, segs: segs,
+                                     span: axisStart(wake: wake, early: early, now: now)...DAY, now: now, missing: missingText(r.missing), stars: stars, chips: chips)
+        model.body = bodyValues(r.summary)
+        model.weather = weatherOf(r.weather)
+        model.sun = sunOf(r.weather, m)
+        model.waiting = entries.filter(\.waiting).map(\.id)
+        model.told = told
+        return model
+    }
+
+    // MARK: grouping
+
+    /// The entries in the order of the day, put into groups. A stop under 15 minutes, in no place he keeps and not still going, between two ways he went, is a row of the trip and not a
+    /// place. What began while he was in a place is that place's, and the day's Claude Code sessions in one place are one row. The places and the trips carry their rails, and a trip
+    /// says where it began and where it went by the places next to it. What is still to come within two hours says how long it is until it.
+    private static func arrange(_ sorted: [TLEntry], now: Double?) -> [TLEntry] {
+        var list = sorted
+        // a short stop is a row of the way
+        let ways = list.indices.filter { list[$0].kind == .stay || list[$0].kind == .trip }
+        for (n, k) in ways.enumerated() where list[k].kind == .stay {
+            let before = n > 0 ? list[ways[n - 1]].kind : nil, after = n + 1 < ways.count ? list[ways[n + 1]].kind : nil
+            guard let t1 = list[k].t1, !list[k].going, !list[k].kept, t1 - list[k].t0 < 15, before == .trip, after == .trip else { continue }
+            list[k].kind = .pause
+            list[k].title = "停了 " + tlDur(max(1, tlInt(t1 - list[k].t0)))
+            list[k].detail = list[k].barName                     // what the phone called the place, if it did
+            list[k].symbol = "circle.fill"
+            list[k].right = ""; list[k].more = []; list[k].color = nil; list[k].place = nil; list[k].about = nil
+        }
+        // what began while he was in a place is that place's: the latest place that holds its start (what is still to come is no place's)
+        let stays = list.indices.filter { list[$0].kind == .stay }
+        let nested: Set<TLEntry.Kind> = [.sleep, .talk, .picture, .event, .reminder, .departure, .work, .call, .payment, .claude, .workout, .code]
+        var members: [Int: [Int]] = [:]
+        var holder: [Int: Int] = [:]
+        for k in list.indices where nested.contains(list[k].kind) && !list[k].later {
+            guard let s = stays.last(where: { list[$0].t0 <= list[k].t0 && list[k].t0 < (list[$0].going ? .infinity : list[$0].t1 ?? .infinity) }) else { continue }
+            holder[k] = s; members[s, default: []].append(k)
+        }
+        // the sessions of Claude Code in one place are one row, which opens to them
+        var stands: [Int: TLEntry] = [:]
+        var gone: Set<Int> = []
+        for s in stays {
+            let codes = (members[s] ?? []).filter { list[$0].kind == .code }
+            guard codes.count > 1 else { continue }
+            let sessions = codes.flatMap { list[$0].sessions }
+            var g = TLEntry(id: "code-group-" + list[s].id, kind: .code, t0: sessions.map(\.t0).min() ?? list[codes[0]].t0, title: "Claude Code · \(codes.count) 个会话")
+            g.time = clock(g.t0); g.t1 = sessions.map(\.t1).max(); g.symbol = "terminal.fill"; g.lens = .work
+            g.detail = sessions.sorted { $0.t1 > $1.t1 }.prefix(2).map(\.title).joined(separator: " · ")
+            g.sessions = sessions
+            g.spans = sessions.map { TLMark(t0: $0.t0, t1: $0.t1) }
+            var union = 0.0, edge = -Double.infinity
+            for x in sessions.sorted(by: { $0.t0 < $1.t0 }) { union += max(0, x.t1 - max(x.t0, edge)); edge = max(edge, x.t1) }
+            g.right = union >= 1 ? tlDur(tlInt(union)) : ""
+            stands[codes[0]] = g; gone.formUnion(codes.dropFirst())
+        }
+        var out: [TLEntry] = []
+        for k in list.indices where holder[k] == nil && !gone.contains(k) {
+            let e = stands[k] ?? list[k]
+            out.append(e)
+            guard e.kind == .stay else { continue }
+            for x in members[k] ?? [] where !gone.contains(x) { var y = stands[x] ?? list[x]; y.group = e.id; out.append(y) }
+        }
+        // what happened while he was on the way belongs to the trip
+        let legs = out.filter { $0.kind == .trip || $0.kind == .pause }
+        let apart: Set<TLEntry.Kind> = [.stay, .trip, .pause, .sleep, .now]
+        for k in out.indices where out[k].group == nil && !apart.contains(out[k].kind) && !out[k].later {
+            out[k].onWay = legs.contains { $0.t0 <= out[k].t0 && out[k].t0 < ($0.t1 ?? $0.t0) }
+        }
+        // the rails: a place's runs from its dot through its rows, the trips' is dashed through all of a run
+        let hues = Dictionary(out.compactMap { e in e.kind == .stay ? e.color.map { (e.id, $0) } : nil }, uniquingKeysWith: { a, _ in a })
+        func way(_ k: Int) -> Bool { out.indices.contains(k) && (out[k].kind == .trip || out[k].kind == .pause || out[k].onWay) }
+        for k in out.indices {
+            if out[k].kind == .stay {
+                out[k].rail = hues[out[k].id].map { .place($0) } ?? .none
+                out[k].railOut = out.indices.contains(k + 1) && out[k + 1].group == out[k].id
+            } else if let g = out[k].group {
+                out[k].rail = hues[g].map { .place($0) } ?? .none
+                out[k].railIn = true
+                out[k].railOut = out.indices.contains(k + 1) && out[k + 1].group == g
+            } else if way(k) {
+                out[k].rail = .trip
+                out[k].railIn = way(k - 1); out[k].railOut = way(k + 1)
+            }
+        }
+        // a trip says where it began and where it went by the places next to it in the day (a place the phone has no name for is not one)
+        for k in out.indices where out[k].kind == .trip && !out[k].ride {
+            func named(_ range: [Int]) -> String? {
+                guard let j = range.first(where: { out[$0].kind == .stay || out[$0].kind == .trip || out[$0].kind == .pause }), out[j].kind == .stay, out[j].barName != nil else { return nil }
+                return out[j].title
+            }
+            let from = named(Array(out.indices.prefix(k).reversed())), to = named(Array(out.indices.dropFirst(k + 1)))
+            let line = from != nil && to != nil ? "\(from ?? "") → \(to ?? "")" : from.map { "从 \($0) 出发" } ?? to.map { "到 \($0)" }
+            out[k].more = line.map { [out[k].right.isEmpty ? out[k].title : out[k].title + " · " + out[k].right, $0] } ?? []
+        }
+        // what is still to come within two hours says how long it is until it (a point with a value of its own keeps it)
+        if let now {
+            for k in out.indices where out[k].later && !out[k].strongRight && out[k].t0 - now <= 120 {
+                out[k].right = "还有 " + tlDur(max(1, tlInt((out[k].t0 - now).rounded(.up)))); out[k].soon = true
+            }
+        }
+        return out
+    }
+
+    /// the blank between one group and the next: above a place, above the first leg of a run of trips, and above a row that is in no place after a place or a run
+    private static func space(_ list: inout [TLEntry]) {
+        for k in list.indices.dropFirst() {
+            let p = list[k - 1], e = list[k]
+            if e.kind == .now || p.kind == .now { continue }
+            let afterBlock = p.group != nil || p.kind == .stay || p.rail == .trip
+            switch e.kind {
+            case .stay: list[k].gap = TLMetrics.gap
+            case .trip, .pause: if !e.railIn { list[k].gap = TLMetrics.gap }
+            default: if e.group == nil && afterBlock && !(e.rail == .trip && e.railIn) { list[k].gap = TLMetrics.gap }
+            }
+        }
+    }
+
+    /// what opening a row offers: each only where it works today
+    static func actions(of e: TLEntry) -> [TLAction] {
+        var a: [TLAction] = []
+        switch e.kind {
+        case .talk: if e.talkStart != nil { a.append(.openTalk) }
+        case .stay: if e.place?.canRename == true { a.append(.rename) }
+        case .reminder: if e.waiting { a.append(.acknowledge) }
+        case .work: if e.about != nil { a.append(.summarize) }
+        default: break
+        }
+        if e.about != nil { a.append(.ask) }
+        return a
+    }
+
+    // MARK: the rest of the day's numbers
+
+    private static func bodyValues(_ s: DaySummary?) -> [TLBody] {
+        guard let s else { return [] }
+        var out: [TLBody] = []
+        if let v = s.steps, v.isFinite, v >= 0 { out.append(TLBody(prefix: "", value: tlGroup(tlInt(v)), suffix: " 步")) }
+        if let v = s.resting_hr, v.isFinite, v > 0 { out.append(TLBody(prefix: "静息 ", value: "\(tlInt(v))", suffix: "")) }
+        if let v = s.hrv, v.isFinite, v > 0 { out.append(TLBody(prefix: "HRV ", value: "\(tlInt(v))", suffix: "")) }
+        return out
+    }
+
+    private static func weatherOf(_ w: DayWeather?) -> TLWeather? {
+        guard let w else { return nil }
+        let words = weatherWords(w.condition)
+        let hi = w.high.flatMap { $0.isFinite ? tlInt($0) : nil }, lo = w.low.flatMap { $0.isFinite ? tlInt($0) : nil }
+        return words == nil && hi == nil && lo == nil ? nil : TLWeather(word: words?.word, symbol: words?.symbol, high: hi, low: lo)
+    }
+
+    /// when the sun rose and set, where that is on this day
+    private static func sunOf(_ w: DayWeather?, _ m: (Int64) -> Double) -> TLSun? {
+        guard let w else { return nil }
+        func inside(_ ms: Int64?) -> Double? { ms.map(m).flatMap { $0.isFinite && $0 >= 0 && $0 < DAY ? $0 : nil } }
+        let rise = inside(w.sunrise_ms), set = inside(w.sunset_ms)
+        return rise == nil && set == nil ? nil : TLSun(rise: rise, set: set)
     }
 
     /// what, starting before the bar's start, brings the start back: where he went and what he did, never a stay alone
@@ -493,28 +675,4 @@ struct DayTimelineModel: Equatable {
         let m = missing.compactMap { names[$0] }
         return m.isEmpty ? nil : "还没读到：" + m.joined(separator: "、")
     }
-
-    /// the mark the chip wears: the one the dial gives the same item (`StarEngine.kdOf`)
-    private static func mark(_ i: DayItem, later: Bool) -> Kd {
-        if later { return .next }
-        switch i.state {
-        case "done": return i.lane == "her" ? .done : .lit
-        case "now": return .work
-        default: return .next
-        }
-    }
-
-    /// where an imported payment came from, in the words the Mac uses
-    private static let sources = ["alipay": "支付宝", "wechat_pay": "微信", "boc": "中国银行"]
-
-    private static let moves: [String: (String, String)] = [
-        "walking": ("走路", "figure.walk"), "running": ("跑步", "figure.run"), "cycling": ("骑车", "bicycle"), "automotive": ("开车", "car.fill"),
-    ]
-
-    /// `09:05–11:25`; a stay that began the evening before says so, and one still on reads `18:50 起`
-    private static func rangeText(_ t0: Double, _ t1: Double?, running: Bool) -> String {
-        guard let t1, !running else { return clockDay(t0) + " 起" }
-        return clockDay(t0) + "–" + clock(t1)
-    }
-    private static func clockDay(_ t: Double) -> String { (t < 0 ? "昨天 " : "") + clock(t) }
 }

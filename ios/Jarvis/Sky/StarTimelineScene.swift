@@ -8,7 +8,9 @@ enum TimelineFixture {
 
     /// today: the night, home, a drive, a bite, home again, the bus to school, school, the bus home, and the evening still going, with his Mac work, what he spent and a chat with Claude along the way (`late`: a talk that has just ended is there too)
     static func today(_ cal: Cal, late: Bool = false) -> DayReply { build(cal, day: 0) { b in
-        b.add("sleep", 55, 545, ["minutes": 485])
+        // the night as Health recorded it (every stage uncut: the first starts before the block does)
+        b.add("sleep", 55, 545, ["minutes": 485, "stages": b.stages([(40, 55, "in_bed"), (55, 100, "core"), (100, 170, "deep"), (170, 215, "core"), (215, 245, "rem"), (245, 290, "core"), (290, 335, "deep"),
+                                                                  (335, 380, "core"), (380, 430, "rem"), (430, 438, "awake"), (438, 490, "core"), (490, 530, "rem"), (530, 545, "awake")])])
         b.add("stay", 545, 685, ["place": "12 Example St, Town", "kept_place": b.kept("p-home", "家", "home")])
         b.add("talk", 612, 622, ["id": "talk-1", "lane": "her", "turns": 6])
         b.add("move", 685, 785, ["activity": "automotive"])
@@ -16,11 +18,11 @@ enum TimelineFixture {
         b.add("stay", 795, 835, ["place": "A&W, Shelbourne St, Victoria"])
         b.add("move", 835, 845, ["activity": "walking"])
         b.add("stay", 845, 890, ["place": "12 Example St, Town", "kept_place": b.kept("p-home", "家", "home")])
-        b.add("ride", 890, 919, ["route": "27", "board_stop": "Hillside Centre", "alight_stop": "UVic Exchange"])
+        b.add("ride", 890, 919, ["route": "27", "board_stop": "Hillside Centre", "alight_stop": "UVic Exchange", "credit": "BC Transit", "ended_reason": "left_vehicle"])
         b.add("stay", 919, 1095, ["place": "Engineering Lab Wing, Finnerty Rd", "kept_place": b.kept("p-uvic", "UVic", "school")])
         b.add("picture", 962, 962, ["id": "picture-pic-demo-1", "attachment": "pic-demo-1", "note": "黑板上写着积分公式，下面一行是作业要求。\n第三题的符号有些看不清。"])
         b.add("call", 1000, 1018, ["id": "call-demo-1", "app": "FaceTime"])
-        b.add("ride", 1095, 1130, ["route": "27", "board_stop": "UVic Exchange", "alight_stop": "Hillside Centre"])
+        b.add("ride", 1095, 1130, ["route": "27", "board_stop": "UVic Exchange", "alight_stop": "Hillside Centre", "ended_reason": "passed_stop"])
         b.add("stay", 1130, nil, ["place": "12 Example St, Town", "kept_place": b.kept("p-home", "家", "home")])
         b.add("talk", 1240, 1262, ["id": "talk-2", "lane": "her", "turns": 14])
         if late { b.add("talk", 1305, 1309, ["id": "talk-3", "lane": "her", "turns": 4]) }
@@ -33,9 +35,29 @@ enum TimelineFixture {
         b.add("payment", 800, 800, ["id": "payment-demo-1", "source": "alipay", "amount": "12.40", "currency": "CAD", "direction": "out", "counterparty": "A&W", "text": "Teen Burger Combo"])
         b.add("claude_chat", 1210, 1235, ["id": "claude-demo-1", "source": "claude", "text": "积分换元的符号问题", "messages": 14])
         b.add("departure", 1400, 1400, ["id": "departure-demo-1", "title": "12 · Hillside Centre", "route": "12", "board_stop": "Hillside Centre", "to": "UVic", "leave_at_ms": b.ms(1390)])
+        // a calendar event, money in, a reminder he answered and one that rang and waits for him, a run, and six sessions of Claude Code in two stays (a recap for most)
+        b.add("event", 930, 980, ["id": "event-demo-2", "title": "线性代数小测", "place": "ECS 123"])
+        b.add("payment", 1205, 1205, ["id": "payment-demo-2", "source": "wechat_pay", "amount": "50.00", "currency": "CAD", "direction": "in", "counterparty": "Mia", "text": "饭钱"])
+        b.add("reminder", 560, nil, ["id": "reminder-demo-3", "lane": "her", "text": "带伞", "fired": true, "acknowledged": true])
+        b.add("reminder", 1290, nil, ["id": "reminder-demo-2", "lane": "her", "text": "吃药", "fired": true, "acknowledged": false])
+        b.add("workout", 1020, 1055, ["id": "workout-demo-1", "activity": "running", "text": "Outdoor Run", "distance_m": 3200, "energy_kcal": 240, "avg_hr": 142])
+        for (n, from, to, title, project, account, recap) in [
+            (1, 570.0, 605.0, "统一时间线的行高", "Jarvis", "a", "单行 44、带说明 56、地点标题 44 写进了 TLMetrics，旧的 40 和 52 不再用。测试都过了，下一步是行内的图标圈。"),
+            (2, 612.0, 650.0, "接上天气和身体数据", "Jarvis", "a", "DayReply 多了 weather 和 summary，解码时每个字段单独容错，坏一个不会带走整天。"),
+            (3, 656.0, 680.0, "整理 spec 第 11 节", "Jarvis", "b", nil),
+            (4, 1180.0, 1218.0, "对照桌面端的行文案", "Jarvis", "a", "手机和 Mac 的行用同一套词：响过了、你知道了、还没确认。"),
+            (5, 1235.0, 1268.0, "论文第三章的数据", "论文", "b", "把三组实验的结果合成一张表，图还没画。"),
+            (6, 1276.0, 1306.0, "给等你的卡片补测试", "Jarvis", "a", nil),
+        ] as [(Int, Double, Double, String, String, String, String?)] {
+            var more: [String: Any] = ["id": "code-s\(n)", "title": title, "project": project, "account": account, "session_id": "s\(n)"]
+            if let recap { more["detail"] = recap }
+            b.add("code", from, to, more)
+        }
         b.extra["line"] = ["text": "今天去了学校，下午在 UVic 待得最久，晚上回家早点休息。", "draft": true, "written_at": "2026-10-19T21:30:00+00:00"]
         b.extra["highlights"] = [["id": "call-demo-1", "label": "和 Mia 聊了很久", "by": "her"]]
         b.extra["missing"] = ["calendar"]
+        b.extra["weather"] = ["condition": "mostly cloudy", "high": 14, "low": 8, "sunrise_ms": b.ms(454), "sunset_ms": b.ms(1091)]
+        b.extra["summary"] = ["steps": 8240, "resting_hr": 58, "hrv": 42]
     } }
 
     /// the day before: a quieter one, with the night that began the evening before, a stretch of the afternoon nothing was recorded for, and a stay that is still going
@@ -47,7 +69,50 @@ enum TimelineFixture {
         b.add("move", 1050, 1065, ["activity": "walking"])
         b.add("stay", 1065, nil, ["place": "12 Example St, Town", "kept_place": b.kept("p-home", "家", "home")])
         b.add("talk", 1325, 1330, ["id": "talk-y1", "lane": "her", "turns": 3])
+        b.add("claude_day", 1430, 1440, ["id": "claude-day-demo", "source": "claude_daily", "text": "积分换元的符号问题;论文第三章结构;周末买菜清单", "chats": 3])
         b.extra["line"] = ["text": "安静的一天，大部分时间在学校。", "draft": false, "written_at": "2026-10-18T23:30:00+00:00"]
+        b.extra["weather"] = ["condition": "clear", "high": 16, "low": 9, "sunrise_ms": b.ms(453), "sunset_ms": b.ms(1092)]
+    } }
+
+    /// two days back: errands on foot, by bike and by bus. Fifteen stays, four of them a few minutes at nowhere in particular between two ways (two of those with a label from the phone), eleven moves and two bus rides
+    static func fragmented(_ cal: Cal) -> DayReply { build(cal, day: -2) { b in
+        let home = b.kept("p-home", "家", "home"), uvic = b.kept("p-uvic", "UVic", "school")
+        b.add("stay", 510, 580, ["place": "12 Example St, Town", "kept_place": home])
+        b.add("move", 580, 592, ["activity": "walking"])
+        b.add("stay", 592, 625, ["place": "Starbucks, Douglas St, Victoria"])
+        b.add("move", 625, 631, ["activity": "walking"])
+        b.add("stay", 631, 638, [:])
+        b.add("move", 638, 646, ["activity": "walking"])
+        b.add("stay", 646, 668, ["place": "Shoppers Drug Mart, Fort St, Victoria"])
+        b.add("move", 668, 673, ["activity": "walking"])
+        b.add("stay", 673, 681, ["place": "Yates St, Victoria"])
+        b.add("ride", 681, 704, ["route": "14", "board_stop": "Yates & Douglas", "alight_stop": "UVic Exchange", "credit": "BC Transit", "ended_reason": "left_vehicle"])
+        b.add("stay", 704, 738, ["place": "UVic Bookstore, Ring Rd, Victoria"])
+        b.add("move", 738, 744, ["activity": "walking"])
+        b.add("stay", 744, 830, ["place": "McPherson Library, Ring Rd, Victoria", "kept_place": uvic])
+        b.add("stay", 830, 872, ["place": "Student Union Building, Ring Rd, Victoria"])
+        b.add("move", 872, 880, ["activity": "walking"])
+        b.add("stay", 880, 889, [:])
+        b.add("move", 889, 897, ["activity": "walking"])
+        b.add("stay", 897, 950, ["place": "Cadboro Bay Village, Sinclair Rd, Victoria"])
+        b.add("move", 950, 972, ["activity": "cycling"])
+        b.add("stay", 972, 981, ["place": "Beach Dr, Victoria"])
+        b.add("move", 981, 1003, ["activity": "cycling"])
+        b.add("stay", 1003, 1050, ["place": "Oak Bay Recreation Centre, Hampshire Rd, Victoria"])
+        b.add("ride", 1050, 1078, ["route": "7", "board_stop": "Oak Bay Ave & Foul Bay", "alight_stop": "Hillside Centre", "ended_reason": "passed_stop"])
+        b.add("stay", 1078, 1100, ["place": "Hillside Centre, Hillside Ave, Victoria"])
+        b.add("move", 1100, 1118, ["activity": "walking"])
+        b.add("stay", 1118, 1150, ["place": "Fairfield Plaza, Fairfield Rd, Victoria"])
+        b.add("move", 1150, 1172, ["activity": "walking"])
+        b.add("stay", 1172, nil, ["place": "12 Example St, Town", "kept_place": home])
+        b.extra["line"] = ["text": "跑了一天的腿，书店、图书馆、海边都去了一趟。", "draft": false, "written_at": "2026-10-17T23:30:00+00:00"]
+    } }
+
+    /// three days back: only what he said to her
+    static func talkOnly(_ cal: Cal) -> DayReply { build(cal, day: -3) { b in
+        b.add("talk", 495, 503, ["id": "talk-a", "lane": "her", "turns": 4])
+        b.add("talk", 770, 790, ["id": "talk-b", "lane": "her", "turns": 12])
+        b.add("talk", 1290, 1301, ["id": "talk-c", "lane": "her", "turns": 7])
     } }
 
     final class Builder {
@@ -57,6 +122,8 @@ enum TimelineFixture {
         init(_ cal: Cal, _ day: Int) { self.cal = cal; self.day = day }
         func ms(_ minute: Double) -> Int64 { Int64(cal.date(day).timeIntervalSince1970 * 1000 + minute * 60_000) }
         func kept(_ id: String, _ name: String, _ role: String) -> [String: Any] { ["id": id, "name": name, "role": role] }
+        /// a night's stages: from minute, to minute, which
+        func stages(_ list: [(Double, Double, String)]) -> [[String: Any]] { list.map { ["stage": $0.2, "start_ms": ms($0.0), "end_ms": ms($0.1)] } }
         /// a span of the day; `to` nil: it goes on (a stay he is still in, a reminder that has not rung)
         func add(_ kind: String, _ from: Double, _ to: Double?, _ more: [String: Any] = [:]) {
             // the state a brain would have said at the fixed now
@@ -87,9 +154,9 @@ extension StarEngine {
         RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
         switchWorld(real: true)
         let cal = Cal.cur, parts = name.split(separator: ":").map(String.init), mode = parts.count > 1 ? parts[1] : ""
-        let today = TimelineFixture.today(cal), yesterday = TimelineFixture.yesterday(cal)
+        let today = TimelineFixture.today(cal), yesterday = TimelineFixture.yesterday(cal), fragmented = TimelineFixture.fragmented(cal), talkOnly = TimelineFixture.talkOnly(cal)
         MainActor.assumeIsolated {
-            ui.tl.fixture = .init(replies: [0: today, -1: yesterday], now: TimelineFixture.now)
+            ui.tl.fixture = .init(replies: [0: today, -1: yesterday, -2: fragmented, -3: talkOnly], now: TimelineFixture.now)
             TalkTopics.shared.debugSet("talk-1", "明天下午有什么安排？", "下午三点有一个二面，在线上，大概四十五分钟。")      // the other talk has no topic yet
         }
         // the picture he sent, kept on this phone under its id, so nothing is asked of the brain
