@@ -290,11 +290,12 @@ struct DayTimelineView: View {
         return .asymmetric(insertion: .opacity.combined(with: .offset(x: -d)), removal: .opacity.combined(with: .offset(x: d)))
     }
 
-    /// From the bar down the sky is covered by black, none at the bar and 0.55 over 40 pt, so the list sits on near-black as it does on the Mac; it is as faint as the list at the foot.
+    /// From the chips row down the sky is covered by black, none under the hours and 0.8 by the middle of the chips, so the record sits on near-black as it does on the Mac
+    /// (the stars nearly gone under the list) while the header, her, the date, her sentence and the bar, keeps the sky; it goes as it came at the foot of the list.
     private func scrim(away: Bool) -> some View {
-        let top = TLLayout.barY, h = TLLayout.listBottom + TLLayout.fade - top
-        return LinearGradient(stops: [.init(color: .black.opacity(0), location: 0), .init(color: .black.opacity(0.55), location: 40 / h),
-                                      .init(color: .black.opacity(0.55), location: 1 - TLLayout.fade / h), .init(color: .black.opacity(0), location: 1)],
+        let top = TLLayout.chipsY - 6, ramp = 22.0, h = TLLayout.listBottom + TLLayout.fade - top
+        return LinearGradient(stops: [.init(color: .black.opacity(0), location: 0), .init(color: .black.opacity(0.8), location: ramp / h),
+                                      .init(color: .black.opacity(0.8), location: 1 - TLLayout.fade / h), .init(color: .black.opacity(0), location: 1)],
                               startPoint: .top, endPoint: .bottom)
             .frame(width: W, height: h).offset(y: top)
             .opacity(away ? 0 : 1).animation(.easeOut(duration: away ? 0.2 : 0.35), value: away)
