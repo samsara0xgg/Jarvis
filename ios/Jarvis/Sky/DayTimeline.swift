@@ -351,10 +351,14 @@ struct DayTimelineView: View {
             })
         }
         .frame(width: W, height: TLLayout.viewport + TLLayout.fade, alignment: .top)
-        .mask(VStack(spacing: 0) {
-            Color.black
-            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
-        })
+        // the foot fades out over the composer, and goes up with it when the keyboard (or what he is sending) raises it: no row shows through the field
+        .mask(alignment: .top) {
+            VStack(spacing: 0) {
+                Color.black.frame(height: max(0, TLLayout.viewport - ui.kbLift - ui.attach.rise))
+                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
+                Color.clear
+            }
+        }
         // the history takes the place of the list when it opens: it goes up and out, and comes back when the history has gone
         .opacity(away ? 0 : 1).offset(y: away && !reduce ? -6 : 0)
         .allowsHitTesting(!away)
