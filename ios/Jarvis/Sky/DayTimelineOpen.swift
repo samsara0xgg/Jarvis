@@ -161,7 +161,7 @@ struct TLOpenView: View {
             HStack(alignment: .center, spacing: 10) {
                 Text(s.time).font(AT.mono(11.5)).foregroundStyle(muted).frame(width: 40, alignment: .leading)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(s.title).font(.system(size: 14)).foregroundStyle(ink).lineLimit(1)
+                    Text(s.name).font(.system(size: 14)).foregroundStyle(ink).lineLimit(1)
                     let meta = [s.project, s.account].compactMap { $0 }.joined(separator: " · ")
                     if !meta.isEmpty { Text(meta).font(.system(size: 11.5)).foregroundStyle(muted).lineLimit(1) }
                 }

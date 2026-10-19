@@ -333,6 +333,39 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(try entry(build(try reply(code(9, 610, 620, recap: "R")), now: nil), "code-s9").more, ["R"])
     }
 
+    func testASessionWithNoTitleIsClaudeCodeAloneInItsRowItsGlanceAndTheReadoutAndAGroupDoesNotNameItsLineAfterIt() throws {
+        // the title the brain leaves out, leaves empty or fills with blanks: a session nobody named (the project and the account are still said)
+        func code(_ n: Int, _ from: Double, _ to: Double, _ title: String?) -> String {
+            item("code-s\(n)", "code", from, to, #""project": "Jarvis", "account": "b", "session_id": "s\#(n)""# + (title.map { #", "title": "\#($0)""# } ?? ""))
+        }
+        // alone
+        let alone = build(try reply([code(1, 610, 640, ""), code(2, 700, 730, nil), code(3, 800, 830, "  "), code(4, 900, 930, "T4")].joined(separator: ",")), now: nil)
+        for id in ["code-s1", "code-s2", "code-s3"] {
+            let e = try entry(alone, id)
+            XCTAssertEqual([e.title, e.glance, e.detail], ["Claude Code", "Claude Code", "Jarvis · B"], id)
+            XCTAssertEqual(e.sessions.map(\.name), ["Claude Code"], id)
+            XCTAssertEqual(e.sessions.map(\.title), [nil], id)
+        }
+        XCTAssertEqual([try entry(alone, "code-s4").title, try entry(alone, "code-s4").glance], ["T4", "Claude Code · T4"], "a title still goes after it")
+        XCTAssertEqual(alone.readout(at: 620).elsewhere, ["Claude Code"])
+        XCTAssertEqual(alone.readout(at: 910).elsewhere, ["Claude Code · T4"])
+        // in a group: each line of it, and the readout, say the same of one with no title; the group's own line names the two newest that have one
+        let r = try reply([item("s1", "stay", 600, 700, home), code(1, 610, 640, "T1"), code(2, 630, 660, ""), code(3, 670, 690, nil), code(4, 675, 695, "T4")].joined(separator: ","))
+        let m = build(r, now: nil)
+        let g = try entry(m, "code-group-s1")
+        XCTAssertEqual(g.title, "Claude Code · 4 个会话")
+        XCTAssertEqual(g.detail, "T4 · T1", "the empty and the missing are skipped, not counted among the two")
+        XCTAssertEqual(g.sessions.map(\.title), ["T1", nil, nil, "T4"])
+        XCTAssertEqual(g.sessions.map(\.name), ["T1", "Claude Code", "Claude Code", "T4"], "an opened one with no title shows Claude Code")
+        XCTAssertEqual(g.sessions.map(\.project), ["Jarvis", "Jarvis", "Jarvis", "Jarvis"])
+        XCTAssertEqual(m.readout(at: 635).elsewhere, ["Claude Code · T1", "Claude Code"])
+        XCTAssertEqual(m.readout(at: 680).elsewhere, ["Claude Code", "Claude Code · T4"])
+        // none of them has a title: the group says its count and no line under it
+        let bare = try entry(build(try reply([item("s1", "stay", 600, 700, home), code(1, 610, 640, nil), code(2, 630, 660, "")].joined(separator: ",")), now: nil), "code-group-s1")
+        XCTAssertEqual(bare.title, "Claude Code · 2 个会话")
+        XCTAssertNil(bare.detail)
+    }
+
     func testASessionThatMatteredStaysARowOfItsOwnWithItsStarWhileTheOthersAreOneRow() throws {
         func code(_ n: Int, _ from: Double, _ to: Double) -> String {
             item("code-s\(n)", "code", from, to, #""title": "T\#(n)", "project": "Jarvis", "account": "a", "session_id": "s\#(n)""#)
@@ -609,7 +642,7 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(try e("odd-rem").title, "提醒")
         XCTAssertFalse(try e("odd-rem").waiting)
         XCTAssertEqual([try e("odd-workout").title, try e("odd-workout").detail], ["运动", nil])
-        XCTAssertEqual([try e("odd-code").title, try e("odd-code").detail], ["Claude Code 会话", nil])
+        XCTAssertEqual([try e("odd-code").title, try e("odd-code").detail], ["Claude Code", nil])
         XCTAssertEqual([try e("odd-ride").title, try e("odd-ride").detail], ["公交", nil])
         XCTAssertEqual([try e("odd-picture").detail, try e("odd-picture").attachment], [nil, "odd-picture"])
         XCTAssertEqual([try e("odd-event").title, try e("odd-event").detail], ["日程", "日历"])

@@ -240,14 +240,15 @@ extension DayTimelineModel {
         case "code":
             e.kind = .code
             e.symbol = "terminal.fill"
-            e.title = tlText(i.title) ?? "Claude Code 会话"
             let project = tlText(i.project), account = tlText(i.account)?.uppercased()
+            let s = TLSession(id: i.id, t0: t0, t1: max(t0, end ?? t0), time: e.time, title: tlText(i.title), project: project, account: account, right: dur ?? "", recap: tlText(i.detail))
+            e.title = s.name
             e.detail = [project, account].compactMap { $0 }.joined(separator: " · ")
             if e.detail?.isEmpty == true { e.detail = nil }
             e.right = dur ?? ""
             e.more = tlText(i.detail).map { [$0] } ?? []
-            e.glance = "Claude Code · " + e.title
-            e.sessions = [TLSession(id: i.id, t0: t0, t1: max(t0, end ?? t0), time: e.time, title: e.title, project: project, account: account, right: dur ?? "", recap: tlText(i.detail))]
+            e.glance = s.told
+            e.sessions = [s]
         default:
             return nil              // a kind this phone does not know yet: left out, not guessed at
         }

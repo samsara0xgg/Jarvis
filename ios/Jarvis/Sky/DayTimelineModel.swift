@@ -191,10 +191,15 @@ struct TLSession: Equatable, Identifiable {
     let id: String
     var t0: Double, t1: Double
     var time: String
-    var title: String
+    var title: String?                      // none for a session nobody named: the Mac says `Claude Code` alone, and so does the phone
     var project: String?, account: String?  // `A` or `B`
     var right: String                       // how long
     var recap: String?                      // Claude Code's latest recap of it
+
+    /// what its row and its line in a group are called
+    var name: String { title ?? "Claude Code" }
+    /// what the glance and the readout say of it
+    var told: String { title.map { "Claude Code · " + $0 } ?? "Claude Code" }
 }
 
 /// one line of the list
@@ -592,7 +597,7 @@ struct DayTimelineModel: Equatable {
         // what each row was doing, for the readout: a Claude Code row that stands for several says each of them
         var told: [TLTold] = []
         for e in entries where e.kind != .now {
-            if e.holdsSessions { told += e.sessions.map { TLTold(kind: .code, t0: $0.t0, t1: $0.t1, text: "Claude Code · " + $0.title) } }
+            if e.holdsSessions { told += e.sessions.map { TLTold(kind: .code, t0: $0.t0, t1: $0.t1, text: $0.told) } }
             else if let g = e.glance { told.append(TLTold(kind: e.kind, t0: e.t0, t1: max(e.t1 ?? e.t0, e.t0), text: g)) }
         }
         var model = DayTimelineModel(date: r.date, line: tlText(r.line?.text), entries: entries, segs: segs,
@@ -641,7 +646,8 @@ struct DayTimelineModel: Equatable {
             let sessions = codes.flatMap { list[$0].sessions }
             var g = TLEntry(id: "code-group-" + list[s].id, kind: .code, t0: sessions.map(\.t0).min() ?? list[codes[0]].t0, title: "Claude Code · \(codes.count) 个会话")
             g.time = clock(g.t0); g.t1 = sessions.map(\.t1).max(); g.symbol = "terminal.fill"; g.lens = .work
-            g.detail = sessions.sorted { $0.t1 > $1.t1 }.prefix(2).map(\.title).joined(separator: " · ")
+            let titled = sessions.sorted { $0.t1 > $1.t1 }.compactMap(\.title).prefix(2)      // the two newest that have a title
+            g.detail = titled.isEmpty ? nil : titled.joined(separator: " · ")
             g.sessions = sessions
             g.spans = sessions.map { TLMark(t0: $0.t0, t1: $0.t1) }
             var union = 0.0, edge = -Double.infinity
