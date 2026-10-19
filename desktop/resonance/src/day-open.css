@@ -135,6 +135,8 @@
 .notch .dt-dock.is-sent { gap:6px; padding:0 14px; font-size:13px; font-weight:600; color:var(--p-ink); }
 .notch .dt-dock + .dt-hint { padding:5px 4px 0; }
 .notch .dt-about { display:flex; flex:0 1 auto; align-items:center; gap:6px; min-width:0; max-width:46%; height:26px; padding:0 4px 0 9px; border-radius:13px; background:rgb(255 255 255 / .1); font-size:12px; color:var(--p-muted); }
+.notch .dt-about.is-range { padding:0 10px; }
+.notch .dt-about.is-range time { color:var(--p-ink); }
 .notch .dt-about svg { flex:none; color:rgb(var(--ink) / .82); }
 .notch .dt-about b { min-width:0; overflow:hidden; font-weight:500; white-space:nowrap; text-overflow:ellipsis; color:var(--p-ink); }
 .notch .dt-about time { flex:none; font:11px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; color:var(--p-faint); }

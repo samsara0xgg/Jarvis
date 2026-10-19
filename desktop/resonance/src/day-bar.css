@@ -91,6 +91,8 @@
 .notch .dt-cbtns { display:flex; gap:6px; margin-top:10px; }
 .notch .dt-cbtn { height:26px; padding:0 12px; border-radius:var(--radius-control); background:var(--p-ink); font-size:12px; font-weight:600; color:#10131d; }
 .notch .dt-cbtn:hover { background:#fff; }
+.notch .dt-cquiet { height:26px; padding:0 12px; border-radius:var(--radius-control); background:rgb(255 255 255 / .1); font-size:12px; font-weight:600; color:var(--p-ink); transition:background var(--motion-fast); }
+.notch .dt-cquiet:hover { background:rgb(255 255 255 / .18); }
 
 /* a number's card (CardView.tsx): under the numbers, the pane's width, over the list (the pointer's card, one up, can lie across it). Its parts are labelled
    figures, lists, bars, the night and thumbnails, each only if it has something to say; at most about 170 px, what does not fit scrolls inside it. It comes in

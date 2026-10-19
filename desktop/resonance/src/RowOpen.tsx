@@ -65,6 +65,8 @@ export type Acts = {
   ack: { state: 'idle' | 'busy' | 'failed'; press: () => void } | null;
   commit: { state: 'idle' | 'busy' | 'failed'; confirm: () => void; cancel: () => void } | null;
   summarize: { state: 'idle' | 'busy' | 'sent' | 'failed'; press: () => void } | null;
+  // 这段在干嘛: only on a stretch (dayOpen.sayOf), the last and quietest of the buttons.
+  say: (() => void) | null;
   star: ReactNode;
   line: string;
 };
@@ -169,7 +171,7 @@ function NameField({ name, t }: { name: NonNullable<Acts['name']>; t: (l: L) => 
 
 // The buttons: what can be done from the row, only where the route to do it works today; under them a line when there is something to say.
 function Buttons({ acts, say }: { acts: Acts; say: string }) {
-  const { t, rename, name, ack, commit, summarize, star } = acts, any = !!(acts.ask || rename?.state === 'idle' || name?.state === 'idle' || ack || commit || summarize || star);
+  const { t, rename, name, ack, commit, summarize, star } = acts, any = !!(acts.ask || acts.say || rename?.state === 'idle' || name?.state === 'idle' || ack || commit || summarize || star);
   return <>
     {any && <div className="dt-acts">
       {rename?.state === 'idle' && <button type="button" className="dt-btn" onClick={rename.start}>{t(['Rename', '改名字'])}</button>}
@@ -184,6 +186,7 @@ function Buttons({ acts, say }: { acts: Acts; say: string }) {
         : <button type="button" className="dt-btn" disabled={summarize.state === 'busy'} onClick={summarize.press}>{summarize.state === 'failed' ? t(["Didn't send. Try again", '没发出去，再试一次']) : t(['Have her sum this up', '让她总结这段'])}</button>)}
       {star}
       {acts.ask && <button type="button" className="dt-btn" onClick={acts.ask}>{t(['Ask her', '问她'])}</button>}
+      {acts.say && <button type="button" className="dt-btn" onClick={acts.say}>{t(['What was this', '这段在干嘛'])}</button>}
     </div>}
     {name && name.state !== 'idle' && <NameField name={name} t={t}/>}
     {say && <p className="dt-hint" role="status">{say}</p>}

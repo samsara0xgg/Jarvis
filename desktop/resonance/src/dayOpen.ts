@@ -1,5 +1,5 @@
 import type { L } from './companionSettings';
-import { hm } from './barView.ts';
+import { endClock, hm } from './barView.ts';
 import { accountOf, askable, clean, clock, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, starrable, stayLook, workoutOf, type DayItem, type DayModel, type Icon, type Say } from './dayView.ts';
 
 // What a row says when it is opened (ADR 0296, spec-r3 section 8), and what can be done from it. Pure (no DOM), so
@@ -205,4 +205,26 @@ export function askOf(m: DayModel, key: string, t: Say): Ask | null {
   if (!it || !askable(it.kind, it.id)) return null;
   const head = m.heads.get(key), row = m.rows.get(key), title = (head?.name ?? row?.title ?? '').trim();
   return { about: { kind: it.kind, id: it.id, title: title || t(['An item of the day', '这一条']), start_ms: Math.round(it.start_ms) }, icon: row?.icon && row.icon !== 'dot' ? row.icon : head?.icon ?? 'pin', at: clock(it.start_ms, m.tz) };
+}
+
+// What he can say about a stretch of the day (ADR 0302): a range of the shown day, cut to the day and to now, that he may tell her was this or that. A stretch is
+// what lasts and has begun: a stay, a way he went, the night, work, a call, a run, a session. Not her rows (a reminder, a talk), a point (a picture, a payment,
+// a bus to catch), an event, the day's letter on his chats, or anything still to come. A range is at least a minute (the chip says it to the minute).
+export type Said = { day: string; a: number; b: number; range: string };
+const NOT_STRETCH = new Set(['reminder', 'talk', 'picture', 'payment', 'departure', 'event', 'claude_day']);
+export function sayRange(m: DayModel, a: number, b: number): Said | null {
+  const lo = Math.round(Math.max(a, m.reply.start_ms)), hi = Math.round(Math.min(b, m.today ? m.now : m.reply.end_ms));
+  return hi - lo >= 60_000 ? { day: m.reply.date, a: lo, b: hi, range: `${clock(lo, m.tz)}–${endClock(hi, m.reply, m.tz)}` } : null;
+}
+// The range of a row that is one item (a folded row of sessions is none), or null when the row is no stretch.
+export function sayOf(m: DayModel, key: string): Said | null {
+  const it = m.items.find(x => x.id === key);
+  return !it || it.lane === 'her' || NOT_STRETCH.has(it.kind) ? null : sayRange(m, it.start_ms, it.end_ms ?? Infinity);
+}
+// The body of POST /inherent/day/answer: his words for the range, trimmed, 1 to 200 characters counted as the brain counts them (by character, not by UTF-16 unit);
+// null when there are none or too many, so nothing is sent.
+export const SAY_MAX = 200;
+export function answerOf(said: Said, text: string) {
+  const words = text.trim();
+  return words && [...words].length <= SAY_MAX ? { day: said.day, start_ms: said.a, end_ms: said.b, text: words } : null;
 }
