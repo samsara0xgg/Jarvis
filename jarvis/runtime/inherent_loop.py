@@ -5650,6 +5650,7 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
     event_log: Path, configured: tzinfo | None, memory_db: Path | None, timesink: Path | None,
     day: date | None, now_ms: int, terminal: TerminalScreen | None = None,
     attachments: Path | None = None, calendar: CalendarRead | None = None,
+    shipped: Path | None = None,
 ) -> dict[str, Any]:
     """``GET /inherent/day`` (ADR 0199): the day asked for, or today in the owner's zone.
 
@@ -5660,13 +5661,14 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
     brain ``terminal`` is his Mac's TimeSink. ``calendar`` reads his Outlook through Graph
     (``Home.calendar``, ADR 0230) and holds this worker thread while it waits. ``line`` and
     ``highlights`` (ADR 0235) are the day's line to him and its marked items, read from
-    ``memory_db``.
+    ``memory_db``. ``shipped`` is the imports directory (ADR 0294): what his Mac copied to it fills
+    in his Mac's lane when TimeSink cannot be read live, and gives his Claude Code sessions.
     """
     zone_name, zone = resolve_zone(None, configured)
     on = datetime.fromtimestamp(now_ms / 1000, zone).date() if day is None else day
     start_ms, end_ms = day_window(on, zone)
     with contextlib.closing(open_runtime_event_log(event_log)) as conn:
-        sources = DaySources(zone, timesink, memory_db, terminal, attachments, calendar)
+        sources = DaySources(zone, timesink, memory_db, terminal, attachments, calendar, shipped)
         line = fold_day(conn, start_ms, end_ms, now_ms, sources)
     told, highlights = day_notes(memory_db, on.isoformat(), line.items, zone)
     return {
@@ -5686,12 +5688,12 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
 async def _serve_day(  # noqa: PLR0913 — the route's stores, its zone, the terminal and the day.
     event_log: Path, configured: tzinfo | None, memory_db: Path | None, timesink: Path | None,
     day: date | None, *, terminal: TerminalScreen | None = None, attachments: Path | None = None,
-    calendar: CalendarRead | None = None,
+    calendar: CalendarRead | None = None, shipped: Path | None = None,
 ) -> dict[str, Any]:
     """:func:`_read_day` off the loop thread, at the brain's clock."""
     return await asyncio.to_thread(
         _read_day, event_log, configured, memory_db, timesink, day, int(time.time() * 1000),
-        terminal, attachments, calendar,
+        terminal, attachments, calendar, shipped,
     )
 
 
@@ -7850,6 +7852,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 ),
                 attachments=None if runtime.attachments is None else runtime.attachments.directory,
                 calendar=None if runtime.home is None else runtime.home.calendar,
+                shipped=runtime.runtime_paths.root / IMPORTS_DIRNAME,
             ),
             today_read=(
                 None if runtime.home is None

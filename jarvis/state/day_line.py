@@ -15,7 +15,9 @@ Each source folds on its own and a source that raises leaves its items out (:fun
 - ``rides``: the bus rides he was on (ADR 0224); one replaces the phone's generic automotive
   ``move`` for the span it covers;
 - ``mac``: work blocks and calls from TimeSink, read through the ledger's own loading
-  (:func:`jarvis.state.ledger.window_activity`) so the numbers are the ones she is told;
+  (:func:`jarvis.state.ledger.window_activity`) so the numbers are the ones she is told; when
+  TimeSink cannot be read live, or has nothing for the stretch, the rows the Mac terminal shipped
+  to the brain (ADR 0294, :func:`jarvis.state.ledger.shipped_activity`) give the same items;
 - ``talks``: his conversations with her, from the records of his in memory.db;
 - ``pictures``: each picture he sent her, at the time of the turn it came with and with the stay
   that covers that time, and its note once written (ADR 0223). With no memory store and no
@@ -38,6 +40,11 @@ Each source folds on its own and a source that raises leaves its items out (:fun
   on his Claude chats (ADR 0295) as kind ``claude_day``, a span over the chats' times with their
   titles as text and ``chats`` their number; with no memory store it has nothing to read and says
   nothing in ``missing``;
+- ``code``: his Claude Code sessions, from what the Mac terminal shipped (ADR 0294), in his lane:
+  one item per session, from its first to its last message clipped to the day (a session across
+  midnight is on both days under one id), with the best of its titles, its project, its account
+  and Claude Code's latest recap as ``detail``; a sidechain is left out. With no shipped store
+  it has nothing to read and says nothing in ``missing``;
 - ``departures``: the bus trips he pinned (ADR 0204), each a point at its departure time, from the
   pin as the log held it at the end of the day; the reminder that rings for a trip on the line is
   left out, the departure stands for it.
@@ -58,6 +65,7 @@ from collections import defaultdict
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.state import (
@@ -73,7 +81,7 @@ from jarvis.state import (
 from jarvis.state import rides as ride_state
 from jarvis.state.attachments import Attachments
 from jarvis.state.import_parsers import money
-from jarvis.state.ledger import CALL_FLOOR_S, TOP_FLOOR_S, window_activity
+from jarvis.state.ledger import CALL_FLOOR_S, TOP_FLOOR_S, shipped_activity, window_activity
 from jarvis.state.phone_day import LOOKBACK_MS, read_rows, sleeps, stays
 from jarvis.state.phone_day import moves as phone_moves
 
@@ -82,7 +90,7 @@ if TYPE_CHECKING:
     from datetime import tzinfo
     from pathlib import Path
 
-    from jarvis.state.ledger import ActivitySpan, CachedScreen, TerminalScreen
+    from jarvis.state.ledger import Activity, ActivitySpan, CachedScreen, TerminalScreen
 
     type Source = Callable[[sqlite3.Connection, int, int, int], list[dict[str, Any]]]
     type CalendarRead = Callable[[int, int, int], list[dict[str, Any]]]
@@ -127,6 +135,9 @@ class DaySources:
     # raises LookupError when no calendar is connected and any other error when it cannot be
     # read. None: no calendar to read, and nothing said in ``missing``.
     calendar: CalendarRead | None = None
+    # the imports directory (ADR 0294), whose shipped.db holds what the Mac terminal copied in:
+    # TimeSink when the live read has nothing, and the Claude Code sessions. None: not connected.
+    shipped: Path | None = None
 
 
 class _NotConnected(Exception):  # noqa: N818 — a source's answer, not an error
@@ -203,6 +214,7 @@ def fold_day(
         ("departures", _departure_items),
         ("plan", lambda db, first, last, now: _plan_items(db, sources, first, last, now)),
         ("imports", lambda _conn, first, last, now: _import_items(sources, first, last, now)),
+        ("code", lambda _conn, first, last, now: _code_items(sources, first, last, now)),
     )
     items: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -509,25 +521,50 @@ def _blocks(spans: list[ActivitySpan]) -> list[list[ActivitySpan]]:
     return groups
 
 
-def _mac_items(
-    sources: DaySources, window_start: int, window_end: int, now_ms: int,
-) -> list[dict[str, Any]]:
-    """Work blocks and calls from TimeSink, in the lane of him."""
+def _live_activity(sources: DaySources, begin: datetime, end: datetime) -> Activity | None:
+    """The Mac's activity read live (TimeSink here, or his terminal's); ``None`` when it is away."""
     path = sources.timesink
     if path is None and sources.terminal is None:
-        raise _NotConnected
+        return None
     if path is not None:
         with timesink.snapshot(path) as snap:
             opened = snap is not None
         if not opened:
-            raise _NotConnected
+            return None
     missed = sources.terminal.misses if sources.terminal else 0
-    activity = window_activity(
-        _moment(window_start - BLOCK_REACH_MS), _moment(window_end + BLOCK_REACH_MS),
-        sources.zone, timesink=path, terminal=sources.terminal,
-    )
+    activity = window_activity(begin, end, sources.zone, timesink=path, terminal=sources.terminal)
     if sources.terminal and sources.terminal.misses != missed:
-        raise _NotConnected  # the terminal is away, or has no store
+        return None  # the terminal is away, or has no store
+    return activity
+
+
+def _shipped_conn(sources: DaySources) -> sqlite3.Connection | None:
+    """A read-only connection to what the Mac shipped (ADR 0294), or ``None`` without the file."""
+    if sources.shipped is None:
+        return None
+    path = sources.shipped / imports.SHIPPED_DB
+    if not path.is_file():
+        return None
+    return sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5.0)
+
+
+def _mac_items(
+    sources: DaySources, window_start: int, window_end: int, now_ms: int,
+) -> list[dict[str, Any]]:
+    """Work blocks and calls from TimeSink, in the lane of him.
+
+    Read live when the Mac can be; when it cannot, or it answers with nothing for the stretch
+    (it has dropped the day), from the rows the terminal shipped to the brain (ADR 0294).
+    """
+    lo, hi = _moment(window_start - BLOCK_REACH_MS), _moment(window_end + BLOCK_REACH_MS)
+    activity = _live_activity(sources, lo, hi)
+    if activity is None or not (activity.spans or activity.calls):
+        conn = _shipped_conn(sources)
+        if conn is not None:
+            with closing(conn):
+                activity = shipped_activity(conn, lo, hi) or activity
+    if activity is None:
+        raise _NotConnected
     items: list[dict[str, Any]] = []
     for group in _blocks(activity.spans):
         active = _union_s((span.start, span.end) for span in group)
@@ -660,6 +697,58 @@ def _import_items(
             "text": messages[0].fields.get("conversation_name") or "Claude conversation",
             "messages": len(messages),
         })
+    return items
+
+
+# --- his Claude Code sessions --------------------------------------------------------------
+
+
+def _newest(*lists: Any) -> str:  # noqa: ANN401 - a shipped record's fields, each a list or a text
+    """The first non-empty of the lists' (or texts') newest values, else an empty text."""
+    for one in lists:
+        last = (one[-1:] or [""])[0] if isinstance(one, list) else one
+        if last:
+            return str(last)
+    return ""
+
+
+def _code_items(
+    sources: DaySources, window_start: int, window_end: int, now_ms: int,
+) -> list[dict[str, Any]]:
+    """Each Claude Code session of the window as a ``code`` item, clipped to the day (ADR 0294)."""
+    conn = _shipped_conn(sources)
+    if conn is None:
+        return []
+    with closing(conn):
+        rows = imports.newest(conn, "claude-code", end_ms=window_end, kinds=("session",))
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        f = row.fields
+        if f.get("is_sidechain") or not f.get("first_timestamp") or not f.get("last_timestamp"):
+            continue
+        first = _ms(datetime.fromisoformat(f["first_timestamp"]))
+        last = _ms(datetime.fromisoformat(f["last_timestamp"]))
+        if not _overlaps(first, last, window_start, window_end):
+            continue
+        start, end = max(first, window_start), min(last, window_end)
+        item: dict[str, Any] = {
+            "id": f"code-{f['session_id']}",
+            "lane": "you",
+            "kind": "code",
+            "start_ms": start,
+            "end_ms": end,
+            "state": _state(start, end, now_ms),
+            "title": _newest(
+                f.get("custom_title"), f.get("desktop_title"), f.get("ai_title"),
+                f.get("agent_name"),
+            ),
+            "project": PurePosixPath(f.get("git_toplevel") or f.get("cwd") or "").name,
+            "account": f["account"],
+            "session_id": f["session_id"],
+        }
+        if recap := _newest([a.get("content") for a in f.get("away_summaries") or []]):
+            item["detail"] = recap
+        items.append(item)
     return items
 
 

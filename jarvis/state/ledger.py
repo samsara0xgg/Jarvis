@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 from urllib.parse import parse_qsl, urlsplit
 
-from jarvis.state import device_reads, phone_day, places, reminders, timesink
+from jarvis.state import device_reads, imports, phone_day, places, reminders, timesink
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
 
@@ -1820,6 +1820,61 @@ def window_activity(  # noqa: PLR0913 — the window, its zone and the three sou
     if memory_db is not None:
         talks = sorted(_Data._memory(src, begin, end)[0])  # noqa: SLF001 — this module's loader
     return Activity(spans, sorted(calls), talks)
+
+
+SHIPPED_REACH: Final[timedelta] = timedelta(days=1)
+"""How far before a window a shipped span or call may have started and still be found: the entries
+are timed by their start, and nothing in TimeSink runs longer."""
+
+
+def shipped_activity(conn: sqlite3.Connection, begin: datetime, end: datetime) -> Activity | None:
+    """:func:`window_activity`'s spans and calls, read from what the Mac shipped (ADR 0294).
+
+    ``conn`` is :func:`~jarvis.state.imports.open_shipped`'s. The rows are TimeSink's own, newest
+    revision of each, read with the project verdicts and app names the live reader uses, so the
+    same rows give the same activity either way. ``None`` when nothing of TimeSink was ever
+    shipped (the Mac copies nothing in), so a caller can tell that from a quiet window.
+    """
+    try:
+        shipped = conn.execute(
+            "SELECT 1 FROM import_entries WHERE source = 'timesink' LIMIT 1",
+        ).fetchone()
+        if shipped is None:
+            return None
+    except sqlite3.OperationalError:
+        return None  # no table: nothing was ever shipped
+    first, last = _ms(begin) - int(SHIPPED_REACH.total_seconds() * 1000), _ms(end)
+    rows = imports.newest(
+        conn, "timesink", start_ms=first, end_ms=last, kinds=("span", "callSpan"),
+    )
+    held = imports.newest(conn, "timesink", kinds=("project", "jevProjectVerdict"))
+    projects = {r.fields["id"]: r.fields["name"] for r in held if r.kind == "project"}
+    verdict = {
+        (str(f["appBundleID"]), str(f["domain"] or ""), str(f["title"] or ""),
+         str(f["document"] or "")): str(projects.get(f["projectID"], "none"))
+        for f in (r.fields for r in held if r.kind == "jevProjectVerdict")
+    }
+
+    def moment(text: object) -> datetime:
+        return datetime.fromisoformat(timesink.moment(str(text)))
+
+    spans: list[ActivitySpan] = []
+    calls: list[ActivityCall] = []
+    for row in rows:
+        f = row.fields
+        start, stop = moment(f["start"]), moment(f["end"])
+        if not (stop > begin and start < end):
+            continue
+        app = _app_name(str(f["appBundleID"]), str(f["appName"]))
+        if row.kind == "callSpan":
+            calls.append(ActivityCall(start, stop, app))
+        elif stop > start:
+            key = (
+                str(f["appBundleID"]), str(f["domain"] or ""), str(f["title"] or ""),
+                str(f["document"] or ""),
+            )
+            spans.append(ActivitySpan(start, stop, app, verdict.get(key, "none")))
+    return Activity(sorted(spans), sorted(calls), [])
 
 
 # ------------------------------------------------------------------ days as figures (ADR 0244)

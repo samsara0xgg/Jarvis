@@ -1391,6 +1391,7 @@ def _highlight_marks(
             zone, _timesink_db_path(full_config), memory.db_path,
             None if device is None else TerminalScreen(device, wait_s=TURN_WAIT_S),
             paths.artifacts_root / ATTACHMENTS_DIRNAME,
+            shipped=paths.root / imports.IMPORTS_DIRNAME,
         ),
     )
 
