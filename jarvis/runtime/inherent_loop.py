@@ -192,6 +192,7 @@ from jarvis.runtime.dictation import (
     whisper_ears,
 )
 from jarvis.runtime.doing_answers import DoingAnswers
+from jarvis.runtime.doing_run import DoingSchedule, DoingSettings
 from jarvis.runtime.highlight_marks import HighlightMarks
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.job_mail import served_notices, settle_notice
@@ -8396,7 +8397,24 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     name="day_summary_schedule",
                 ),
             )
-        day_experience = DayExperienceSettings.from_config(runtime.config.get("day_experience"))
+        doing = DoingSettings.from_config(runtime.config.get("doing"))
+        if doing is not None and runtime.memory is not None:
+            # ADR 0302: what he was doing, written for the days under way and just past.
+            llm_config = runtime.config.get("llm")
+            watchers.append(
+                asyncio.create_task(
+                    DoingSchedule(
+                        settings=doing,
+                        sources=_day_sources(runtime, runtime.memory.db_path),
+                        memory_db=runtime.memory.db_path,
+                        event_log_path=runtime.runtime_paths.event_log,
+                        llm_config=llm_config if isinstance(llm_config, Mapping) else {},
+                        pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+                    ).run(),
+                    name="doing_schedule",
+                ),
+            )
+        day_experience =DayExperienceSettings.from_config(runtime.config.get("day_experience"))
         if day_experience is not None and runtime.memory is not None:
             # ADR 0280: past days' experience table, folded from the event log once a day.
             watchers.append(

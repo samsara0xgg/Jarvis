@@ -47,7 +47,7 @@ _TABLE: Final[dict[Owner, tuple[str, ...]]] = {
         "llm", "attachments", "lifelog", "imports", "supervisor", "work_state.preset",
         "work_state.auto",
         "daily_report.preset", "daily_report.at", "day_summary", "day_experience", "day_plan",
-        "ledger",
+        "doing", "ledger",
         "core_memory", "home", "job_mail", "mail_codes", "commitments", "claude_daily", "moment",
         "spend_cap",
         "dashboard", "agents", "jev_log", "maps", "weather", "voiceprint",
