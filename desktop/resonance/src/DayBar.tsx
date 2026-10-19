@@ -173,14 +173,15 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
   const live = hover && bar ? peek(model, bar, ms(hover.x), t) : null;
   const slots = useRef<{ cur: 0 | 1; at: [Peek | null, Peek | null] }>({ cur: 0, at: [null, null] });
   if (live) { const s = slots.current; if (s.at[s.cur]?.id !== live.id) s.cur = s.cur ? 0 : 1; s.at[s.cur] = live; }
-  const cardIn = useRef<HTMLDivElement>(null), needed = useRef<number | null>(null);
+  // Only the height's own animation is kept in hand and started again: the card's CSS transitions (its rise) are not this effect's to cancel.
+  const cardIn = useRef<HTMLDivElement>(null), needed = useRef<number | null>(null), sizing = useRef<Animation | null>(null);
   useLayoutEffect(() => {
     const el = cardIn.current, before = needed.current;
     if (!el || !live) { needed.current = null; return; }
-    const moving = el.getAnimations().length > 0, from = moving ? el.getBoundingClientRect().height : before;
-    el.getAnimations().forEach(a => a.cancel());
+    const moving = sizing.current?.playState === 'running', from = moving ? el.getBoundingClientRect().height : before;
+    sizing.current?.cancel();
     const to = needed.current = el.getBoundingClientRect().height;
-    if (from != null && Math.abs(from - to) > .5 && !reduced.matches) el.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: 150, easing: 'cubic-bezier(.16, 1, .3, 1)' });
+    sizing.current = from != null && Math.abs(from - to) > .5 && !reduced.matches ? el.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: 150, easing: 'cubic-bezier(.16, 1, .3, 1)' }) : null;
   });
 
   if (!bar) return null;
