@@ -52,7 +52,7 @@ final class TimelineState {
     var request = ScrollRequest()       // where the list is asked to go
     var waitH = 0.0                     // how tall the pinned cards over the list are
     // what a row does when it is opened (Sky/DayTimelineActions.swift)
-    var acked: Set<String> = []                     // the reminders he has just said he knows: the row says so before the brain's next answer does
+    var acked: [String: Date] = [:]                 // the reminders he has just said he knows, until when the row says so before the brain's next answer does (`ackHolds`)
     var renamed: [String: Renamed] = [:]            // the places he keeps that he has just renamed, by the place's id
     struct Renamed: Equatable { var name: String; var until: Date }
     var renaming: String?                           // the row whose place is being renamed: its field is open
@@ -92,7 +92,7 @@ final class TimelineState {
     /// the day on show as the list has it
     func model(_ r: DayReply) -> DayTimelineModel {
         let now = Date()
-        return DayTimelineModel.build(r, now: nowMinute(in: r), topic: { TalkTopics.shared.topic($0) }, acked: acked,
+        return DayTimelineModel.build(r, now: nowMinute(in: r), topic: { TalkTopics.shared.topic($0) }, acked: Set(acked.filter { $0.value > now }.keys),
                                       renamed: renamed.compactMapValues { $0.until > now ? $0.name : nil })
     }
 

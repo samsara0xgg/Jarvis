@@ -14,8 +14,8 @@ struct PlaceUndo: Equatable {
 extension TimelineState {
     /// the one turn [让她总结这段] sends, with the work item as what it is about
     static let summarizeWords = "帮我总结一下这段时间我在 Mac 上做了什么"
-    /// how long a rename can be taken back, and how long a rename shows as his before the brain's own answer has come
-    static let undoFor = 5.0, renameHolds = 120.0
+    /// how long a rename can be taken back, and how long a rename or a reminder he knows shows as his before the brain's own answer has come
+    static let undoFor = 5.0, renameHolds = 120.0, ackHolds = 120.0
 
     /// a debug build's made-up day has no brain to tell: what he does to it stays on the phone
     private var madeUp: Bool {
@@ -49,18 +49,22 @@ extension TimelineState {
 
     // MARK: a reminder that rang
 
+    /// he said he knows this reminder and the time for the brain's own answer is not up
+    func isAcked(_ id: String, at now: Date = Date()) -> Bool { (acked[id] ?? .distantPast) > now }
+
     /// He knows. The row says so at once and the count of what waits goes down; the brain is told on the card route (`CardAnswer.acknowledge`, which asks for the days again), and if it
-    /// does not take it the row waits again.
+    /// does not take it the row waits again. When the brain answers that there is nothing to take (it was not waiting any more) and its next answer still has the reminder waiting, the
+    /// row waits again once the time for that answer is up (`ackHolds`), and does not say he knows for good.
     func acknowledge(_ e: TLEntry) {
-        guard !acked.contains(e.id) else { return }
-        withAnimation(.easeOut(duration: 0.25)) { _ = acked.insert(e.id) }
+        guard !isAcked(e.id) else { return }
+        withAnimation(.easeOut(duration: 0.25)) { acked[e.id] = Date().addingTimeInterval(Self.ackHolds) }
         if madeUp { Haptic.notify(.success); return }
         let card = WaitingCard(id: "notice-" + e.id, kind: .notice, brainId: e.id, short: "提醒", title: e.title, meta: "", body: "",
                                actions: [CardAction(label: "知道了", answer: .acknowledge)])
         Waiting.shared.answer(card, .acknowledge)
         Task { @MainActor in
             while Waiting.shared.sending.contains(card.id) { try? await Task.sleep(nanoseconds: 100_000_000) }
-            if Waiting.shared.failures[card.id] != nil { withAnimation(.easeOut(duration: 0.25)) { _ = acked.remove(e.id) } }
+            if Waiting.shared.failures[card.id] != nil { withAnimation(.easeOut(duration: 0.25)) { _ = acked.removeValue(forKey: e.id) } }
         }
     }
 

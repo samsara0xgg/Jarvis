@@ -121,14 +121,31 @@ final class DayTimelineActionsTests: XCTestCase {
         let rang = try entry(tl, "reminder-demo-2")
         XCTAssertTrue(rang.actions.contains(.acknowledge))
         tl.perform(.acknowledge, on: rang, engine: e)
-        XCTAssertEqual(tl.acked, ["reminder-demo-2"])
+        XCTAssertEqual(Set(tl.acked.keys), ["reminder-demo-2"])
         XCTAssertEqual(try model(tl).waiting, ["event-demo-1"], "one fewer")
         let known = try entry(tl, "reminder-demo-2")
         XCTAssertFalse(known.waiting)
         XCTAssertEqual(known.detail, "你知道了")
         XCTAssertFalse(known.actions.contains(.acknowledge), "and offers nothing more to answer")
         tl.perform(.acknowledge, on: rang, engine: e)       // twice is once
-        XCTAssertEqual(tl.acked, ["reminder-demo-2"])
+        XCTAssertEqual(Set(tl.acked.keys), ["reminder-demo-2"])
+    }
+
+    func testAReminderHeSaidHeKnowsWaitsAgainWhenItsTimeIsUpAndTheBrainHasNotSaidSo() throws {
+        let tl = state(), e = StarEngine()
+        let rang = try entry(tl, "reminder-demo-2")
+        tl.perform(.acknowledge, on: rang, engine: e)
+        XCTAssertTrue(tl.isAcked("reminder-demo-2"))
+        XCTAssertEqual(try model(tl).waiting, ["event-demo-1"])
+        let until = try XCTUnwrap(tl.acked["reminder-demo-2"])
+        XCTAssertEqual(until.timeIntervalSinceNow, TimelineState.ackHolds, accuracy: 5)
+        // the brain answered that there was nothing to take and its day still has the reminder waiting: when the time is up the row waits again
+        tl.acked["reminder-demo-2"] = Date().addingTimeInterval(-1)
+        XCTAssertFalse(tl.isAcked("reminder-demo-2"))
+        XCTAssertEqual(try model(tl).waiting, ["reminder-demo-2", "event-demo-1"], "what the day says is what shows")
+        XCTAssertTrue(try entry(tl, "reminder-demo-2").actions.contains(.acknowledge))
+        tl.perform(.acknowledge, on: try entry(tl, "reminder-demo-2"), engine: e)       // and he can say it again
+        XCTAssertTrue(tl.isAcked("reminder-demo-2"))
     }
 
     func testAnAnswerTheBrainDoesNotTakeMakesTheReminderWaitAgain() async throws {
@@ -137,8 +154,8 @@ final class DayTimelineActionsTests: XCTestCase {
         var rang = TLEntry(id: "reminder-x", kind: .reminder, t0: 600, title: "吃药")
         rang.waiting = true; rang.actions = [.acknowledge]
         tl.acknowledge(rang)
-        XCTAssertTrue(tl.acked.contains("reminder-x"), "the row says so at once")
-        await until("the brain did not take it, so it waits again") { !tl.acked.contains("reminder-x") }
+        XCTAssertTrue(tl.isAcked("reminder-x"), "the row says so at once")
+        await until("the brain did not take it, so it waits again") { !tl.isAcked("reminder-x") }
     }
 
     // MARK: a place he keeps
