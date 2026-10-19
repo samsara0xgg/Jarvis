@@ -13,6 +13,7 @@
 .notch .dt-ground.is-future { right:0; width:auto; background:rgb(255 255 255 / .035); }
 .notch .dt-seg { position:absolute; top:0; bottom:0; background:rgb(var(--c) / var(--a)); transition:filter 120ms,opacity 150ms; }
 .notch .dt-seg.is-trip { background:repeating-linear-gradient(45deg, rgb(var(--ink) / .16) 0 2px, transparent 2px 5px), rgb(var(--c) / var(--a)); }
+.notch .dt-seg.has-shade { background:var(--shade); }
 .notch .dt-seg.is-lift { filter:brightness(1.22); }
 .notch .dt-seg.is-hot,.notch .dt-sched.is-hot { filter:brightness(1.12); }
 /* the words in a stretch: icon and name, or one of them, 6 px in from each side */
@@ -45,6 +46,9 @@
 .notch .dt-hours { position:relative; flex:none; height:14px; margin-top:3px; font:10px/14px "JetBrains Mono", Menlo, monospace; color:var(--p-faint); }
 .notch .dt-hours span { position:absolute; top:0; transform:translateX(-50%); }
 .notch .dt-hours span.is-start { transform:none; } .notch .dt-hours span.is-end { transform:translateX(-100%); }
+/* the sun's marks: where it comes up and goes down, a hairline from the bar and a little sun on the horizon (no words) */
+.notch .dt-sun { display:grid; place-items:center; width:11px; height:14px; color:rgb(var(--ink) / .5); }
+.notch .dt-sun::before { content:''; position:absolute; left:5px; top:-3px; width:1px; height:5px; background:rgb(var(--ink) / .3); }
 
 /* the card: 280 pt at the pointer, under the bar and its hours (it never cuts through their words), over the list (it never pushes anything);
    the pointer's own is for reading, a range's has a button */
@@ -61,6 +65,7 @@
 .notch .dt-ch span { flex:none; font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; color:var(--p-faint); }
 .notch .dt-cdot { flex:none; box-sizing:border-box; width:8px; height:8px; border-radius:50%; background:rgb(var(--c) / var(--a)); }
 .notch .dt-cdot.is-hollow { border:1px dashed rgb(var(--ink) / .5); background:transparent; }
+.notch .dt-cnote { margin:3px 0 0 15px; font-size:12px; line-height:16px; color:var(--p-muted); }
 .notch .dt-cmark { display:flex; align-items:center; gap:6px; margin-top:6px; font-size:12.5px; line-height:18px; color:rgb(var(--now)); }
 .notch .dt-cmark svg { flex:none; }
 .notch .dt-cl { display:flex; flex-direction:column; gap:6px; margin:9px 0 0; padding:9px 0 0; border-top:1px solid rgb(255 255 255 / .06); list-style:none; }
@@ -84,12 +89,16 @@
 .notch .dt-num em { font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-style:normal; font-variant-numeric:tabular-nums; color:var(--p-ink); }
 .notch .dt-num:hover,.notch .dt-num.is-pinned { background:rgb(255 255 255 / .1); }
 .notch .dt-num.is-pinned { box-shadow:inset 0 0 0 1px rgb(var(--ink) / .6); }
+.notch .dt-vitals { display:flex; align-items:center; gap:10px; height:24px; padding-inline:4px; }
+.notch .dt-vit { display:inline-flex; align-items:baseline; gap:4px; font-size:11.5px; line-height:16px; white-space:nowrap; color:var(--p-faint); }
+.notch .dt-vit small { font-size:inherit; }
+.notch .dt-vit em { font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-style:normal; font-variant-numeric:tabular-nums; color:var(--p-muted); }
 .notch .dt-filter { display:flex; align-items:center; gap:6px; align-self:flex-start; height:22px; padding:0 4px 0 10px; border-radius:11px; background:rgb(255 255 255 / .08); font-size:11.5px; color:var(--p-muted); }
 .notch .dt-filter b { font:500 11.5px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; color:var(--p-ink); }
 .notch .dt-filter button { display:grid; place-items:center; width:16px; height:16px; border-radius:50%; color:var(--p-muted); transition:background 120ms; }
 .notch .dt-filter button:hover { background:rgb(255 255 255 / .14); color:var(--p-ink); }
 /* the list under a lens: what is the kind stays, the rest steps back, stay headers a little */
-.notch .dt[data-lens="sleep"] .dt-row:not([data-lk="sleep"]),.notch .dt[data-lens="trip"] .dt-row:not([data-lk="trip"]),.notch .dt[data-lens="work"] .dt-row:not([data-lk="work"]),
+.notch .dt[data-lens="sleep"] .dt-row:not([data-lk="sleep"]),.notch .dt[data-lens="trip"] .dt-row:not([data-lk="trip"]),.notch .dt[data-lens="workout"] .dt-row:not([data-lk="workout"]),.notch .dt[data-lens="work"] .dt-row:not([data-lk="work"]),
 .notch .dt[data-lens="call"] .dt-row:not([data-lk="call"]),.notch .dt[data-lens="talk"] .dt-row:not([data-lk="talk"]),.notch .dt[data-lens="payment"] .dt-row:not([data-lk="payment"]),
 .notch .dt[data-lens="picture"] .dt-row:not([data-lk="picture"]) { opacity:.35; }
 .notch .dt[data-lens] .dt-sh { opacity:.6; }

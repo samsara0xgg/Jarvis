@@ -13,18 +13,26 @@ export type DayItem = {
   title?: string; source?: string; confirmed?: boolean; private?: boolean; to?: string; leave_at_ms?: number;
   attachment?: string; amount?: string | number; currency?: string; direction?: string; counterparty?: string; messages?: number; chats?: number;
   fired?: boolean; acknowledged?: boolean;
+  stages?: Stage[]; energy_kcal?: number; distance_m?: number; avg_hr?: number; project?: string; account?: string;
 };
+// One stretch of a night as the watch told it; they may overlap (a phone's `in_bed` under the watch's stages).
+export type Stage = { stage: string; start_ms: number; end_ms: number };
+// What the day's envelope adds (null when the brain does not know): the body's numbers, and the weather in °C with the sun's times.
+export type Vitals = { steps: number | null; resting_hr: number | null; hrv: number | null };
+export type Weather = { condition: string; high: number | null; low: number | null; sunrise_ms: number | null; sunset_ms: number | null };
 export type DayReply = {
   date: string; tz: string; start_ms: number; end_ms: number; now_ms: number; items: DayItem[];
   labels?: { title: string; source?: string; private?: boolean }[]; missing?: string[];
   line?: { text: string; draft?: boolean; written_at?: string } | null; highlights?: { id: string; label: string; by: string }[];
+  summary?: Vitals | null; weather?: Weather | null;
 };
 export type Say = (l: L) => string;
 export type Rgb = readonly [number, number, number];
-export type Icon = 'moon' | 'walk' | 'run' | 'bike' | 'car' | 'bus' | 'talk' | 'picture' | 'event' | 'reminder' | 'work' | 'call' | 'home' | 'school' | 'pin' | 'payment' | 'chat';
+export type Icon = 'moon' | 'walk' | 'run' | 'bike' | 'hike' | 'swim' | 'strength' | 'yoga' | 'sport' | 'car' | 'bus' | 'talk' | 'picture' | 'event' | 'reminder' | 'work' | 'code' | 'call' | 'home' | 'school' | 'pin' | 'payment' | 'chat';
 // What the day's numbers count (the chips under the bar) and what a lens lights: a row or a span of the bar is one of these or none.
-export type LensKind = 'sleep' | 'trip' | 'work' | 'call' | 'talk' | 'payment' | 'picture';
-const LENSES: Record<string, LensKind> = { sleep: 'sleep', move: 'trip', ride: 'trip', work: 'work', call: 'call', talk: 'talk', payment: 'payment', picture: 'picture' };
+export type LensKind = 'sleep' | 'trip' | 'workout' | 'work' | 'call' | 'talk' | 'payment' | 'picture';
+// A Claude Code session is Mac work: it lights with the Mac lens, but the Mac's number is its own (barView.numbers leaves sessions out).
+const LENSES: Record<string, LensKind> = { sleep: 'sleep', move: 'trip', ride: 'trip', workout: 'workout', work: 'work', code: 'work', call: 'call', talk: 'talk', payment: 'payment', picture: 'picture' };
 export const lensOf = (kind: string): LensKind | null => LENSES[kind] ?? null;
 
 // ---------- what the brain sends is read, never trusted ----------
@@ -35,8 +43,8 @@ const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 
 const str = (v: unknown) => typeof v === 'string' ? v : undefined;
 const fin = (v: unknown) => typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 const bool = (v: unknown) => typeof v === 'boolean' ? v : undefined;
-const STRINGS = ['place', 'activity', 'text', 'app', 'route', 'board_stop', 'alight_stop', 'note', 'title', 'source', 'to', 'attachment', 'currency', 'direction', 'counterparty'] as const;
-const NUMBERS = ['minutes', 'active_s', 'turns', 'leave_at_ms', 'messages', 'chats'] as const;
+const STRINGS = ['place', 'activity', 'text', 'app', 'route', 'board_stop', 'alight_stop', 'note', 'title', 'source', 'to', 'attachment', 'currency', 'direction', 'counterparty', 'project', 'account'] as const;
+const NUMBERS = ['minutes', 'active_s', 'turns', 'leave_at_ms', 'messages', 'chats', 'energy_kcal', 'distance_m', 'avg_hr'] as const;
 const FLAGS = ['confirmed', 'private', 'fired', 'acknowledged'] as const;
 export function tidy(raw: unknown): DayItem | null {
   if (!isObj(raw)) return null;
@@ -49,6 +57,7 @@ export function tidy(raw: unknown): DayItem | null {
   if (typeof raw.amount === 'string' || fin(raw.amount) !== undefined) out.amount = raw.amount;
   const kept = raw.kept_place;
   if (isObj(kept) && typeof kept.id === 'string' && typeof kept.name === 'string') out.kept_place = { id: kept.id, name: kept.name, role: str(kept.role) ?? '' };
+  if (Array.isArray(raw.stages)) out.stages = raw.stages.flatMap(x => isObj(x) && typeof x.stage === 'string' && Number.isFinite(x.start_ms) && Number.isFinite(x.end_ms) ? [{ stage: x.stage, start_ms: x.start_ms as number, end_ms: x.end_ms as number }] : []);
   for (const k of ['projects', 'apps'] as const) {
     const v = raw[k];
     if (Array.isArray(v)) out[k] = v.flatMap(x => isObj(x) && typeof x.name === 'string' ? [{ name: x.name, seconds: fin(x.seconds) ?? 0 }] : []);
@@ -65,6 +74,8 @@ export function tidyReply(raw: unknown): DayReply {
     missing: each(raw.missing, x => typeof x === 'string' ? x : null),
     line: isObj(raw.line) && typeof raw.line.text === 'string' ? { text: raw.line.text, draft: bool(raw.line.draft), written_at: str(raw.line.written_at) } : null,
     highlights: each(raw.highlights, x => isObj(x) && typeof x.id === 'string' ? { id: x.id, label: str(x.label) ?? '', by: str(x.by) ?? '' } : null),
+    summary: isObj(raw.summary) ? { steps: fin(raw.summary.steps) ?? null, resting_hr: fin(raw.summary.resting_hr) ?? null, hrv: fin(raw.summary.hrv) ?? null } : null,
+    weather: isObj(raw.weather) ? { condition: str(raw.weather.condition) ?? '', high: fin(raw.weather.high) ?? null, low: fin(raw.weather.low) ?? null, sunrise_ms: fin(raw.weather.sunrise_ms) ?? null, sunset_ms: fin(raw.weather.sunset_ms) ?? null } : null,
   };
 }
 // A day the pane could not read is said once in the app's log (`[timeline] ...`, which electron/companion.ts passes on), not every frame.
@@ -186,7 +197,38 @@ export type Mark = { label: string; by: string };
 export type DayModel = {
   title: string; today: boolean; now: number; tz: string; reply: DayReply; items: DayItem[]; chips: { text: string; more: boolean }[]; line: { text: string; draft: boolean } | null;
   blocks: Block[]; foot: string; empty: boolean; span: Map<string, Span>; index: Span[]; stars: Map<string, Mark>; waiting: string[];
+  weather: WeatherLook | null; vitals: Vital[];
 };
+
+// The weather in a few words and a glyph each. WeatherKit names its conditions in words (`partlyCloudy`, `isolatedThunderstorms`), so a name
+// is read without case or separators; one this does not know (`frigid`, `hot`) leaves only the temperatures.
+export type Sky = 'sun' | 'cloudSun' | 'cloud' | 'rain' | 'storm' | 'snow' | 'fog' | 'wind';
+const RAIN: [Sky, L] = ['rain', ['Rain', '雨']], DRIZZLE: [Sky, L] = ['rain', ['Light rain', '小雨']], STORM: [Sky, L] = ['storm', ['Thunderstorms', '雷雨']], SNOW: [Sky, L] = ['snow', ['Snow', '雪']],
+  FOG: [Sky, L] = ['fog', ['Fog', '雾']], WIND: [Sky, L] = ['wind', ['Windy', '风']];
+const CONDITIONS: Record<string, [Sky, L]> = {
+  clear: ['sun', ['Clear', '晴']], mostlyclear: ['cloudSun', ['Mostly clear', '少云']], partlycloudy: ['cloudSun', ['Partly cloudy', '多云']], mostlycloudy: ['cloud', ['Mostly cloudy', '多云']], cloudy: ['cloud', ['Overcast', '阴']],
+  drizzle: DRIZZLE, sunshowers: DRIZZLE, freezingdrizzle: DRIZZLE, rain: RAIN, heavyrain: RAIN, freezingrain: RAIN,
+  isolatedthunderstorms: STORM, scatteredthunderstorms: STORM, thunderstorms: STORM, strongstorms: STORM, tropicalstorm: STORM, hurricane: STORM,
+  snow: SNOW, heavysnow: SNOW, flurries: SNOW, sunflurries: SNOW, sleet: SNOW, wintrymix: SNOW, blizzard: SNOW, blowingsnow: SNOW, hail: SNOW,
+  foggy: FOG, haze: FOG, smoky: FOG, blowingdust: FOG, breezy: WIND, windy: WIND,
+};
+// `sky` is null for a condition this does not know (its word is then empty); `temps` is `14° / 8°` (high, low), or what of it there is.
+export type WeatherLook = { sky: Sky | null; word: string; temps: string };
+export function weatherOf(w: Weather | null | undefined, t: Say): WeatherLook | null {
+  if (!w) return null;
+  const hit = CONDITIONS[clean(w.condition).toLowerCase().replace(/[^a-z]/g, '')];
+  const temps = [w.high, w.low].filter((x): x is number => x != null).map(x => `${Math.round(x) || 0}°`).join(' / ');
+  return hit || temps ? { sky: hit?.[0] ?? null, word: hit ? t(hit[1]) : '', temps } : null;
+}
+// The body's numbers for the day, as quiet values (`8,240 步`, `静息 58`, `HRV 42`): only the ones that were reported.
+export type Vital = { key: string; before: string; value: string; after: string };
+export function vitalsOf(v: Vitals | null | undefined, t: Say): Vital[] {
+  const out: Vital[] = [];
+  if (v?.steps != null) out.push({ key: 'steps', before: '', value: Math.round(v.steps).toLocaleString('en-US'), after: t(['steps', '步']) });
+  if (v?.resting_hr != null) out.push({ key: 'resting', before: t(['Resting', '静息']), value: String(Math.round(v.resting_hr)), after: '' });
+  if (v?.hrv != null) out.push({ key: 'hrv', before: 'HRV', value: String(Math.round(v.hrv)), after: '' });
+  return out;
+}
 
 const SOURCES: Record<string, L> = { phone: ['The phone', '手机'], reminders: ['Reminders', '提醒'], mac: ['Mac time', 'Mac 的时间'], talks: ['Conversations', '对话'], rides: ['Bus rides', '公交乘车'],
   pictures: ['Pictures', '图片'], calendar: ['The calendar', '日历'], departures: ['Pinned buses', '钉着的公交'], commitments: ['What he has to go to', '要去的事'] };
@@ -198,10 +240,64 @@ export function moneyText(amount: unknown, currency?: string) {
   return !a ? '' : c in SYMBOLS ? `${SYMBOLS[c]}${a}` : `${a} ${c}`.trim();
 }
 // What can stand inside a stay; moves and rides never do, they are the ways between.
-const NESTED = new Set(['sleep', 'talk', 'picture', 'event', 'reminder', 'work', 'call', 'departure', 'payment', 'claude_chat', 'claude_day']);
+const NESTED = new Set(['sleep', 'workout', 'talk', 'picture', 'event', 'reminder', 'work', 'code', 'call', 'departure', 'payment', 'claude_chat', 'claude_day']);
 // What happens in one moment (the rest has a length).
 const INSTANT = new Set(['reminder', 'picture', 'departure', 'payment']);
-export const SLEEP: Rgb = [112, 120, 205], TRANSIT: Rgb = [196, 208, 255];
+export const SLEEP: Rgb = [112, 120, 205], TRANSIT: Rgb = [196, 208, 255], REM: Rgb = [150, 160, 235];
+
+// ---------- a night's stages ----------
+// What each stage looks like on the bar (the sleep hue at an alpha; REM the lighter hue) and which wins where stages overlap: the watch's
+// own stages over a phone's `in_bed`. A name this does not know is read as unspecified.
+const STAGES: Record<string, { rgb: Rgb; a: number; rank: number }> = {
+  deep: { rgb: SLEEP, a: 1, rank: 5 }, rem: { rgb: REM, a: .8, rank: 4 }, core: { rgb: SLEEP, a: .78, rank: 3 },
+  awake: { rgb: SLEEP, a: .25, rank: 2 }, unspecified: { rgb: SLEEP, a: .6, rank: 1 }, in_bed: { rgb: SLEEP, a: .25, rank: 0 },
+};
+export const stageLook = (stage: string) => STAGES[stage] ?? STAGES.unspecified;
+// The night between `a` and `b` as stretches that do not overlap, each with the stage that wins there; where no stage was reported it is
+// unspecified. Pure and cheap (a night has under a hundred stages), so the bar and the hover card both ask.
+export function stageSlices(it: DayItem, a: number, b: number): { stage: string; s: number; e: number }[] {
+  const segs = (it.stages ?? []).flatMap(x => { const s = Math.max(x.start_ms, a), e = Math.min(x.end_ms, b); return e > s ? [{ stage: x.stage in STAGES ? x.stage : 'unspecified', s, e }] : []; });
+  const cuts = [...new Set([a, b, ...segs.flatMap(x => [x.s, x.e])])].sort((x, y) => x - y), out: { stage: string; s: number; e: number }[] = [];
+  for (let i = 0; i + 1 < cuts.length; i++) {
+    let best: (typeof segs)[number] | undefined;
+    for (const x of segs) if (x.s <= cuts[i] && x.e >= cuts[i + 1] && (!best || STAGES[x.stage].rank > STAGES[best.stage].rank)) best = x;
+    const stage = best?.stage ?? 'unspecified', last = out.at(-1);
+    if (last && last.stage === stage && last.e === cuts[i]) last.e = cuts[i + 1]; else out.push({ stage, s: cuts[i], e: cuts[i + 1] });
+  }
+  return out;
+}
+// How long the night was in each stage, in minutes.
+export function stageMinutes(it: DayItem) {
+  const minutes: Record<string, number> = {};
+  for (const x of stageSlices(it, it.start_ms, it.end_ms ?? it.start_ms)) minutes[x.stage] = (minutes[x.stage] ?? 0) + (x.e - x.s) / 60_000;
+  return minutes;
+}
+// How long a set of sessions that may overlap covered, in minutes: two that ran side by side count once.
+export function covered(list: { start_ms: number; end_ms: number | null }[], open: number) {
+  let total = 0, to = -Infinity;
+  for (const x of [...list].sort((a, b) => a.start_ms - b.start_ms)) {
+    const end = Math.max(x.start_ms, x.end_ms ?? open);
+    total += Math.max(0, end - Math.max(x.start_ms, to)); to = Math.max(to, end);
+  }
+  return total / 60_000;
+}
+
+// ---------- a workout in words ----------
+const SPORTS: [RegExp, Icon, L][] = [[/run/, 'run', ['Running', '跑步']], [/walk/, 'walk', ['Walking', '步行']], [/cycl|bik/, 'bike', ['Cycling', '骑车']], [/hik/, 'hike', ['Hiking', '徒步']],
+  [/swim/, 'swim', ['Swimming', '游泳']], [/strength|weight|lift/, 'strength', ['Strength training', '力量训练']], [/yoga/, 'yoga', ['Yoga', '瑜伽']]];
+// The activity's icon and word, and what the watch counted: how far, how much energy, the heart's average. An activity this does not know is
+// a workout with what the phone wrote about it.
+export function workoutOf(it: DayItem, t: Say) {
+  const hit = SPORTS.find(([re]) => re.test(clean(it.activity).toLowerCase())), m = it.distance_m ?? 0;
+  const facts = [
+    m > 0 ? m >= 1000 ? t([`${(m / 1000).toFixed(1)} km`, `${(m / 1000).toFixed(1)} 公里`]) : t([`${Math.round(m)} m`, `${Math.round(m)} 米`]) : '',
+    it.energy_kcal ? t([`${Math.round(it.energy_kcal)} kcal`, `${Math.round(it.energy_kcal)} 千卡`]) : '',
+    it.avg_hr ? t([`avg heart rate ${Math.round(it.avg_hr)}`, `平均心率 ${Math.round(it.avg_hr)}`]) : '',
+  ].filter(Boolean);
+  return { icon: hit?.[1] ?? 'sport' as Icon, word: t(hit?.[2] ?? ['Workout', '运动']), facts, note: hit ? '' : clean(it.text).split('\n')[0] };
+}
+// A Claude Code session's account, as the letter it is known by.
+export const accountOf = (it: DayItem) => /^[ab]$/i.test(clean(it.account)) ? clean(it.account).toUpperCase() : '';
 type Ctx = { t: Say; tz: string; reply: DayReply; now: number; today: boolean; marks: Map<string, string> };
 
 export const names = (list?: Top[]) => (list ?? []).map(x => clean(x.name)).filter(Boolean);
@@ -218,6 +314,10 @@ function rowOf(it: DayItem, c: Ctx): Row | null {
     case 'sleep': icon = 'moon'; title = t(['Sleep', '睡觉']); break;
     case 'move': icon = moveIcon(it.activity); title = moveWords(it.activity, t); break;
     case 'ride': icon = 'bus'; title = rideWords(it, t); detail = [clean(it.board_stop), clean(it.alight_stop)].filter(Boolean).join(' → '); break;
+    case 'workout': { const w = workoutOf(it, t); icon = w.icon; title = w.word; detail = w.facts.join(' · ') || w.note; break; }
+    case 'code':
+      icon = 'code'; title = [t(['Claude Code', 'Claude Code']), clean(it.title)].filter(Boolean).join(' · ');
+      detail = [clean(it.project), accountOf(it)].filter(Boolean).join(' · '); break;
     case 'talk': icon = 'talk'; title = t(['Talked with her', '和她说话']); detail = it.turns ? t([`${it.turns} ${it.turns === 1 ? 'line' : 'lines'}`, `${it.turns} 句`]) : ''; break;
     case 'picture': icon = 'picture'; title = t(['Photo', '照片']); detail = clean(it.note).split('\n')[0]; break;
     case 'event': {
@@ -281,6 +381,15 @@ function stopRow(it: DayItem, c: Ctx): Row {
     future: false, star: c.marks.has(it.id), wait: false, connector: true, onWay: false };
 }
 
+// The Claude Code sessions of one stay that were not marked, two or more, are one row: how many, the two newest titles, and how long they
+// covered together (sessions that ran side by side count once).
+function foldRow(list: DayItem[], stay: DayItem, c: Ctx): Row {
+  const { t, tz, reply } = c, n = list.length, first = list[0], open = c.today ? c.now : reply.end_ms;
+  const newest = [...list].sort((a, b) => b.start_ms - a.start_ms).slice(0, 2).map(x => clean(x.title)).filter(Boolean);
+  return { key: `code:${stay.id}`, kind: 'code', lens: 'work', icon: 'code', title: t([`Claude Code · ${n} sessions`, `Claude Code · ${n} 个会话`]), detail: newest.join(' · '), at: clock(first.start_ms, tz),
+    ago: first.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right: dur(Math.max(1, covered(list, open)), t), value: false, future: false, star: false, wait: false, connector: false, onWay: false };
+}
+
 function stayHead(it: DayItem, c: Ctx): StayHead {
   const { t, tz, reply } = c, look = stayLook(it, t), before = dayBefore(it, c);
   const end = it.end_ms ?? (c.today ? c.now : reply.end_ms);
@@ -311,14 +420,20 @@ export function buildDay(input: DayReply, now: number, t: Say): DayModel {
   seq.forEach((it, i) => { if (it.kind === 'stay' && !keptName(it) && it.end_ms != null && it.end_ms - it.start_ms < SHORT_STOP && isWay(seq[i - 1]) && isWay(seq[i + 1])) stops.add(it.id); });
   const stays = items.filter(it => it.kind === 'stay' && !stops.has(it.id)), inside = new Map<string, Block[]>(stays.map(s => [s.id, []]));
   const tops: { rank: number; block: Block }[] = [], span = new Map<string, Span>(), openEnd = today ? now : reply.end_ms;
-  const place = (it: DayItem) => span.set(it.id, { key: it.id, kind: it.kind, t0: it.start_ms, t1: INSTANT.has(it.kind) || it.end_ms == null && it.state === 'next' ? it.start_ms : Math.max(it.start_ms, it.end_ms ?? openEnd) });
+  const reach = (it: DayItem) => INSTANT.has(it.kind) || it.end_ms == null && it.state === 'next' ? it.start_ms : Math.max(it.start_ms, it.end_ms ?? openEnd);
+  const place = (it: DayItem) => span.set(it.id, { key: it.id, kind: it.kind, t0: it.start_ms, t1: reach(it) });
+  // What began while he was at a place is that place's.
+  const homeOf = (it: DayItem) => NESTED.has(it.kind) ? [...stays].reverse().find(s => s.start_ms <= it.start_ms && (s.end_ms == null || it.start_ms < s.end_ms)) : undefined;
+  const sessions = new Map<DayItem, DayItem[]>(), folds = new Map<string, { stay: DayItem; list: DayItem[] }>(), folded = new Set<string>();
+  for (const it of items) { const home = it.kind === 'code' && !marks.has(it.id) ? homeOf(it) : undefined; if (home) sessions.set(home, [...sessions.get(home) ?? [], it]); }
+  for (const [stay, list] of sessions) if (list.length > 1) { folds.set(list[0].id, { stay, list }); list.forEach(x => folded.add(x.id)); }
   for (const it of items) {
-    const row = it.kind !== 'stay' ? rowOf(it, c) : stops.has(it.id) ? stopRow(it, c) : null;
+    const fold = folds.get(it.id);
+    if (folded.has(it.id) && !fold) continue;
+    const row = fold ? foldRow(fold.list, fold.stay, c) : it.kind !== 'stay' ? rowOf(it, c) : stops.has(it.id) ? stopRow(it, c) : null;
     if (!row) continue;
-    place(it);
-    const block: Block = { type: 'row', t: it.start_ms, row };
-    // What began while he was at a place is that place's.
-    const home = NESTED.has(it.kind) ? [...stays].reverse().find(s => s.start_ms <= it.start_ms && (s.end_ms == null || it.start_ms < s.end_ms)) : undefined;
+    if (fold) span.set(row.key, { key: row.key, kind: 'code', t0: it.start_ms, t1: Math.max(...fold.list.map(reach)) }); else place(it);
+    const block: Block = { type: 'row', t: it.start_ms, row }, home = fold ? fold.stay : homeOf(it);
     if (home) inside.get(home.id)!.push(block); else tops.push({ rank: it.kind === 'sleep' ? 0 : row.connector ? 2 : 3, block });
   }
   for (const s of stays) { place(s); tops.push({ rank: 1, block: { type: 'stay', t: s.start_ms, key: s.id, head: stayHead(s, c), items: inside.get(s.id)! } }); }
@@ -341,7 +456,7 @@ export function buildDay(input: DayReply, now: number, t: Say): DayModel {
   // What waits on him, in the order the list shows it.
   const waiting: string[] = [], walk = (list: Block[]) => { for (const b of list) { if (b.type === 'row') { if (b.row.wait) waiting.push(b.row.key); } else if (b.type === 'stay') walk(b.items); } };
   walk(blocks);
-  return { title: dateTitle(reply.date, t), today, now, tz, reply, items, chips, line, blocks, foot, empty: !items.length && !line && !chips.length, span, index, stars, waiting };
+  return { title: dateTitle(reply.date, t), today, now, tz, reply, items, chips, line, blocks, foot, empty: !items.length && !line && !chips.length, span, index, stars, waiting, weather: weatherOf(reply.weather, t), vitals: vitalsOf(reply.summary, t) };
 }
 
 // The list with only what overlaps [a, b]: a stay stays while it does, with only the rows inside it that do; the now line when now is in.

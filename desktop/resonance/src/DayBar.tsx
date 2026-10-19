@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
-import { Coins, ChatCircleDots, Image as PictureIcon, Laptop, Moon, Path, Phone, Star, X, type Icon as PhosphorIcon } from '@phosphor-icons/react';
+import { Coins, ChatCircleDots, Image as PictureIcon, Laptop, Moon, Path, PersonSimpleRun, Phone, Star, SunHorizon, X, type Icon as PhosphorIcon } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { spring, step } from './starCore';
-import { buildBar, fit, fOf, msOf, numbers, peek, rowAt, snap, summarize, type Line, type Peek, type Summary } from './barView';
+import { buildBar, fit, fOf, msOf, numbers, peek, rowAt, snap, summarize, type BarSeg, type Line, type Peek, type Summary } from './barView';
 import { clock, type DayModel, type Icon, type LensKind, type Rgb } from './dayView';
 import { Ic } from './dayIcons';
 import './day-bar.css';
@@ -19,8 +19,10 @@ let measuring: CanvasRenderingContext2D | null = null;
 const textWidth = (text: string, mono: boolean) => { const ctx = measuring ??= document.createElement('canvas').getContext('2d')!; ctx.font = mono ? MONO : LABEL; return Math.ceil(ctx.measureText(text).width); };
 
 // Kind colours belong to a lens and to the numbers' icons only.
-const KIND: Record<LensKind, Rgb> = { sleep: [112, 120, 205], trip: [196, 208, 255], work: [108, 156, 255], call: [111, 224, 180], talk: [172, 124, 255], payment: [240, 132, 218], picture: [255, 240, 220] };
-const KIND_ICON: Record<LensKind, PhosphorIcon> = { sleep: Moon, trip: Path, work: Laptop, call: Phone, talk: ChatCircleDots, payment: Coins, picture: PictureIcon };
+const KIND: Record<LensKind, Rgb> = { sleep: [112, 120, 205], trip: [196, 208, 255], workout: [156, 224, 120], work: [108, 156, 255], call: [111, 224, 180], talk: [172, 124, 255], payment: [240, 132, 218], picture: [255, 240, 220] };
+const KIND_ICON: Record<LensKind, PhosphorIcon> = { sleep: Moon, trip: Path, workout: PersonSimpleRun, work: Laptop, call: Phone, talk: ChatCircleDots, payment: Coins, picture: PictureIcon };
+// A night's stages as one gradient of hard stops, each stage's share of the piece in its own colour.
+const shading = (shade: NonNullable<BarSeg['shade']>) => `linear-gradient(to right, ${shade.map(x => `rgb(${rgb(x.rgb)} / ${x.a}) ${(x.f0 * 100).toFixed(2)}% ${(x.f1 * 100).toFixed(2)}%`).join(', ')})`;
 
 // What the bar's controls hold, kept by the pane: the lens (pinned by a click, or previewed while a chip is under the pointer), the range
 // being chosen, the range the list is cut to. Esc lets go of one at a time.
@@ -55,6 +57,7 @@ function PeekBody({ p, port, t }: { p: Peek; port: string | null; t: (l: L) => s
       <i className={`dt-cdot${stretch.rgb ? '' : ' is-hollow'}`} style={stretch.rgb ? { '--c': rgb(stretch.rgb), '--a': stretch.a } as CSSProperties : undefined}/>
       <b>{stretch.name}</b><span>{[stretch.range, stretch.length].filter(Boolean).join(' · ')}</span>
     </div>
+    {stretch.note && <div className="dt-cnote">{stretch.note}</div>}
     {p.star && <div className="dt-cmark"><Star size={11} weight="fill" aria-hidden="true"/><span>{p.star.label || (p.star.by === 'her' ? t(['She marked this', '她觉得这段重要']) : t(['You marked this', '你标过这段']))}</span></div>}
     {p.lines.length ? <ul className="dt-cl">{p.lines.map(l => <CardLine key={l.key} l={l} port={port}/>)}</ul> : <p className="dt-cnone">{t(['Nothing else was recorded then', '这段时间没有别的记录'])}</p>}
     <p className="dt-cfoot">{t(['Click to jump here · drag to pick a range', '点一下跳到这里 · 拖动框一段'])}</p>
@@ -167,6 +170,9 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
   if (!bar) return null;
   const sel = band ?? ui.sel, shown = sel ?? ui.filter, a = shown && Math.min(shown.a, shown.b), b = shown && Math.max(shown.a, shown.b);
   const summary = ui.sel ? summarize(model, bar, ui.sel.a, ui.sel.b, t) : null, lens = ui.lens && nums.some(n => n.kind === ui.lens) ? ui.lens : null;
+  // The sun's marks sit in the hours row; an hour's number that would sit on one leaves room for it.
+  const suns = bar.sun.map(x => ({ ...x, px: clamp(x.f * width, 6, Math.max(6, width - 6)) }));
+  const hours = bar.ticks.map(k => { const px = k.f < .02 ? 6 : k.f > .98 ? width - 6 : k.f * width; return { k, hide: suns.some(x => Math.abs(x.px - px) < 14) }; });
   const bx = (x: number) => `${clamp(x, 0, 1) * 100}%`, edge = (x: number) => ({ left: `clamp(16px, ${x}px, calc(100% - 16px))` });
   const lifted = live?.row ?? null, spanned = hot && hot !== lifted ? model.span.get(hot) : null;
   return <>
@@ -182,8 +188,8 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
         <div ref={track} className="dt-track" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { press.current = null; setBand(null); }} onPointerLeave={leave}>
           <i className="dt-ground" style={{ width: bar.nowF === null ? '100%' : bx(bar.nowF) }}/>
           {bar.nowF !== null && <i className="dt-ground is-future" style={{ left: bx(bar.nowF) }}/>}
-          {laid.map(({ s, w, how }) => <i key={s.key} className={`dt-seg is-${s.kind} is-${s.tone}${lifted === s.row ? ' is-lift' : ''}${spanned && hot === s.row ? ' is-hot' : ''}`}
-            style={{ left: `calc(${s.f0 * 100}% + .5px)`, width: `max(1px, calc(${(s.f1 - s.f0) * 100}% - 1px))`, '--c': rgb(s.rgb), '--a': s.a } as CSSProperties}>
+          {laid.map(({ s, w, how }) => <i key={s.key} className={`dt-seg is-${s.kind} is-${s.tone}${s.shade ? ' has-shade' : ''}${lifted === s.row ? ' is-lift' : ''}${spanned && hot === s.row ? ' is-hot' : ''}`}
+            style={{ left: `calc(${s.f0 * 100}% + .5px)`, width: `max(1px, calc(${(s.f1 - s.f0) * 100}% - 1px))`, '--c': rgb(s.rgb), '--a': s.a, '--shade': s.shade && shading(s.shade) } as CSSProperties}>
             {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}>{how !== 'name' && <Ic icon={s.icon} size={12}/>}{how !== 'icon' && <b className={s.mono ? 'is-mono' : ''}>{s.short}</b>}</span>}
           </i>)}
           {boxes.map(({ x, how }) => <i key={x.key} className={`dt-sched is-event${spanned && hot === x.key ? ' is-hot' : ''}`} style={{ left: `${x.f0 * 100}%`, width: `${(x.f1 - x.f0) * 100}%` }}>
@@ -201,7 +207,10 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
           {hover && !band && <i className="dt-hair" style={{ left: hover.x }}/>}
         </div>
       </div>
-      <div className="dt-hours" aria-hidden="true">{bar.ticks.map(k => <span key={k.label} className={k.f < .02 ? 'is-start' : k.f > .98 ? 'is-end' : ''} style={{ left: `${k.f * 100}%` }}>{k.label}</span>)}</div>
+      <div className="dt-hours" aria-hidden="true">
+        {hours.map(({ k, hide }) => !hide && <span key={k.label} className={k.f < .02 ? 'is-start' : k.f > .98 ? 'is-end' : ''} style={{ left: `${k.f * 100}%` }}>{k.label}</span>)}
+        {suns.map(x => <span key={x.kind} className="dt-sun" data-sun={x.kind} style={{ left: x.px }}><SunHorizon size={11}/></span>)}
+      </div>
       <div ref={card} className={`dt-card${on && !ui.sel && !band ? ' is-on' : ''}`} aria-hidden="true">
         <div className="dt-card-in">{slots.current.at.map((p, i) => <div key={i} className={`dt-slot${i === slots.current.cur ? ' is-cur' : ''}`}>{p && <PeekBody p={p} port={port} t={t}/>}</div>)}</div>
       </div>
@@ -209,10 +218,11 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
         <div className="dt-card-in"><div className="dt-slot is-cur"><RangeBody s={summary} t={t} onOnly={() => { ui.setFilter({ a: summary.a, b: summary.b }); ui.setSel(null); }}/></div></div>
       </div>}
     </div>
-    {nums.length > 0 && <div className="dt-numbers" role="group" aria-label={t(['The day in numbers', '这一天的数字'])}>
+    {nums.length + model.vitals.length > 0 && <div className="dt-numbers" role="group" aria-label={t(['The day in numbers', '这一天的数字'])}>
       {nums.map(n => { const Glyph = KIND_ICON[n.kind]; return <button key={n.kind} type="button" className={`dt-num${ui.pinned === n.kind ? ' is-pinned' : ''}`} aria-pressed={ui.pinned === n.kind} style={{ '--k': rgb(KIND[n.kind]) } as CSSProperties}
         onPointerEnter={() => ui.setPreview(n.kind)} onPointerLeave={() => ui.setPreview(null)} onClick={() => ui.setPinned(ui.pinned === n.kind ? null : n.kind)}>
         <Glyph size={12} aria-hidden="true"/><span>{n.label}</span><em>{n.value}</em></button>; })}
+      {model.vitals.length > 0 && <div className="dt-vitals">{model.vitals.map(v => <span key={v.key} className="dt-vit" data-vital={v.key}>{v.before && <small>{v.before}</small>}<em>{v.value}</em>{v.after && <small>{v.after}</small>}</span>)}</div>}
     </div>}
     {ui.filter && <div className="dt-filter"><span>{t(['Only ', '只看 '])}<b>{clock(Math.min(ui.filter.a, ui.filter.b), model.tz)}–{Math.max(ui.filter.a, ui.filter.b) >= model.reply.end_ms ? '24:00' : clock(Math.max(ui.filter.a, ui.filter.b), model.tz)}</b></span>
       <button type="button" aria-label={t(['Show the whole day', '看回整天'])} onClick={() => ui.setFilter(null)}><X size={11} weight="bold"/></button></div>}

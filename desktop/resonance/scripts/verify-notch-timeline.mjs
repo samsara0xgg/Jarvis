@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { askable, buildDay, clock, dateTitle, fnv, moneyText, shiftDate, wingText, within } from '../src/dayView.ts';
+import { askable, buildDay, clock, covered, dateTitle, fnv, lensOf, moneyText, shiftDate, stageMinutes, stageSlices, weatherOf, wingText, within } from '../src/dayView.ts';
 import { axisOf, buildBar, fit, fOf, hm, msOf, numbers, peek, rowAt, summarize, toneOn } from '../src/barView.ts';
 import { deflateSync, crc32 } from 'node:zlib';
 
@@ -139,6 +139,27 @@ const EARLY = T(2, 30);
 const earlyDay = () => makeDay({
   now_ms: EARLY, labels: [], missing: ['mac'], line: null, highlights: [],
   items: [ev('e-home', 'stay', 0, null, { place: '12 Example St, Victoria', kept_place: home, state: 'now' }), ev('e-event', 'event', 1500, 1600, { title: '牙医', state: 'next' })],
+});
+// What the brain added (spec-r3 section 11), on one day: the weather and the body's numbers on the envelope; a night with its stages (23:10 to 07:00:
+// 70 min of deep sleep, 100 of REM, 270 of core, three times awake for 30, and a phone's `in_bed` under all of it that begins before and ends after);
+// a 35 min run; six Claude Code sessions, four at home (two pairs side by side) and two at UVic (side by side).
+// Each stage runs from the end of the one before (the first from 23:10 the day before) to the time given (hhmm).
+const NIGHT = [['core', 5], ['deep', 45], ['core', 145], ['awake', 155], ['rem', 225], ['core', 320], ['deep', 350], ['rem', 425], ['core', 510], ['awake', 520], ['core', 550], ['rem', 625], ['core', 650], ['awake', 700]]
+  .map(([stage, end], i, list) => ({ stage, start_ms: i ? at4(list[i - 1][1]) : T(23, 10, 18), end_ms: at4(end) }));
+const code = (n, account, from, to, title, project) => it(`code-s${n}`, 'code', at4(from), at4(to), { title, project, account, session_id: `s${n}`, detail: `${title} 的小结` });
+const CODE = [code(1, 'a', 810, 905, 'Phase A 的 review 修复', 'jarvis'), code(2, 'b', 840, 935, 'iOS 时间线的列表', 'jarvis-ios'), code(3, 'a', 950, 1040, '给 verify 加 fixtures', 'jarvis'),
+  code(4, 'b', 1020, 1105, '周报草稿', 'notes'), code(5, 'b', 1540, 1630, 'Notch 的 hover 卡', 'jarvis'), code(6, 'a', 1600, 1710, '读论文做笔记', 'thesis')];
+const fullDay = (over = {}) => richDay({
+  items: [
+    ...richDay().items.filter(x => x.id !== 'sleep-1' && x.id !== 'stay-home-1'),
+    it('sleep-1', 'sleep', T(23, 10, 18), T(7, 0), { minutes: 440, stages: [{ stage: 'in_bed', start_ms: T(23, 0, 18), end_ms: T(7, 10) }, ...NIGHT] }),
+    it('stay-home-1', 'stay', T(7, 0), T(11, 25), { place: '12 Example St, Victoria', kept_place: home }),
+    it('workout-1', 'workout', T(7, 20), T(7, 55), { activity: 'running', text: 'Outdoor Run', energy_kcal: 240, distance_m: 3200, avg_hr: 142 }),
+    ...CODE,
+  ],
+  weather: { condition: 'partlyCloudy', high: 14.2, low: 7.6, sunrise_ms: T(7, 25), sunset_ms: T(18, 5) },
+  summary: { steps: 8240, resting_hr: 58, hrv: 42 },
+  ...over,
 });
 // A picture the fake daemon serves for an attachment id: 96 x 96, a warm gradient with a plate on it.
 const PICTURE = (() => {
@@ -318,6 +339,88 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   check('what happened during a stop stays in the trip with it, after it', stopTalk.map(x => x.title).join() === '步行,停了 6 分,和她说话,14 路,现在 21:50');
   const tm = buildDay(talkDay(), NOW, zh);
   check('a day of talks alone: seven rows, no stay, a sentence for the missing Mac', flat(tm.blocks).filter(x => x.title === '和她说话').length === 7 && !flat(tm.blocks).some(x => x.as === 'stay') && tm.foot === 'Mac 的时间还没进来');
+}
+
+// ---------- the new data, in node (spec-r3 section 11) ----------
+{
+  const sky = (condition, high = 14, low = 8, t = zh) => weatherOf({ condition, high, low, sunrise_ms: null, sunset_ms: null }, t);
+  const names = [['clear', '晴', 'sun'], ['mostlyClear', '少云', 'cloudSun'], ['partlyCloudy', '多云', 'cloudSun'], ['MostlyCloudy', '多云', 'cloud'], ['cloudy', '阴', 'cloud'], ['drizzle', '小雨', 'rain'], ['sunShowers', '小雨', 'rain'],
+    ['rain', '雨', 'rain'], ['heavyRain', '雨', 'rain'], ['isolatedThunderstorms', '雷雨', 'storm'], ['snow', '雪', 'snow'], ['wintry_mix', '雪', 'snow'], ['foggy', '雾', 'fog'], ['haze', '雾', 'fog'], ['windy', '风', 'wind'], ['breezy', '风', 'wind']];
+  check('the weather is a glyph and a word for each WeatherKit name, whatever its case or separators: 晴 少云 多云 阴 小雨 雨 雷雨 雪 雾 风', names.every(([name, word, glyph]) => { const w = sky(name); return w.word === word && w.sky === glyph && w.temps === '14° / 8°'; }));
+  check('the temperatures are the high and the low, rounded; a name it does not know shows only them, and nothing known shows nothing', sky('partlyCloudy', 14.2, 7.6).temps === '14° / 8°' && sky('frigid', -3, -9).temps === '-3° / -9°' && sky('frigid', -3, -9).sky === null && sky('frigid', -3, -9).word === ''
+    && sky('clear', 14, null).temps === '14°' && sky('clear', -0.4, null).temps === '0°' && sky('clear', null, null).temps === '' && sky('clear', null, null).word === '晴' && sky('frigid', null, null) === null && weatherOf(null, zh) === null && weatherOf(undefined, zh) === null);
+  check('in English the words are English', sky('partlyCloudy', 14, 8, en).word === 'Partly cloudy' && sky('thunderstorms', 14, 8, en).word === 'Thunderstorms' && sky('cloudy', 14, 8, en).word === 'Overcast');
+
+  const fm = buildDay(fullDay(), NOW, zh), fb = buildBar(fm, zh), fr = flat(fm.blocks), fk = key => fr.find(r => r.key === key);
+  check('the body\'s numbers are quiet values in order, steps with its thousands comma; a null value is left out, and so is a day with none', fm.vitals.map(v => `${v.before}|${v.value}|${v.after}`).join() === '|8,240|步,静息|58|,HRV|42|'
+    && buildDay(fullDay({ summary: { steps: null, resting_hr: 61.4, hrv: null } }), NOW, zh).vitals.map(v => v.value).join() === '61' && buildDay(fullDay({ summary: { steps: null, resting_hr: null, hrv: null } }), NOW, zh).vitals.length === 0
+    && buildDay(fullDay({ summary: null }), NOW, zh).vitals.length === 0 && buildDay(fullDay({ summary: 'x', weather: 3 }), NOW, zh).vitals.length === 0 && buildDay(fullDay({ weather: 3 }), NOW, zh).weather === null
+    && buildDay(fullDay(), NOW, en).vitals.map(v => `${v.before}${v.after}`).join() === 'steps,Resting,HRV');
+
+  // a night with stages
+  const piece = fb.segs.find(x => x.row === 'sleep-1'), item = fm.items.find(x => x.id === 'sleep-1'), night = stageSlices(item, item.start_ms, item.end_ms);
+  const mins = stageMinutes(item);
+  check('a night\'s stages: 70 min of deep sleep, 100 of REM, 270 of core, 30 awake; the phone\'s in_bed that runs past both ends is cut to the night and never counts', Math.round(mins.deep) === 70 && Math.round(mins.rem) === 100 && Math.round(mins.core) === 270 && Math.round(mins.awake) === 30 && !mins.in_bed && Object.values(mins).reduce((x, y) => x + y, 0) === 470);
+  const wide = stageSlices(item, T(23, 0, 18), T(7, 10));
+  check('where stages overlap the watch\'s wins over in_bed; in_bed shows only where nothing else was told; the slices run on without a gap or an overlap', wide.length === 16 && wide[0].stage === 'in_bed' && wide.at(-1).stage === 'in_bed' && wide.every((x, i) => i === 0 || x.s === wide[i - 1].e) && wide[0].s === T(23, 0, 18) && wide.at(-1).e === T(7, 10) && wide.slice(1, -1).map(x => x.stage).join() === 'core,deep,core,awake,rem,core,deep,rem,core,awake,core,rem,core,awake');
+  check('a stretch nobody told, a stage it does not know and a night with no stages at all are all unspecified', stageSlices({ ...item, stages: [{ stage: 'asleep', start_ms: T(1, 0), end_ms: T(2, 0) }] }, T(0, 30), T(2, 30)).map(x => `${x.stage}:${(x.e - x.s) / 60_000}`).join() === 'unspecified:120'
+    && stageSlices({ ...item, stages: [{ stage: 'deep', start_ms: T(1, 0), end_ms: T(2, 0) }] }, T(0, 30), T(2, 30)).map(x => `${x.stage}:${(x.e - x.s) / 60_000}`).join() === 'unspecified:30,deep:60,unspecified:30' && stageSlices({ ...item, stages: undefined }, T(1, 0), T(2, 0)).map(x => x.stage).join() === 'unspecified');
+  const sh = piece.shade.map(x => `${x.rgb.join(' ')}@${x.a}:${x.f0.toFixed(4)}-${x.f1.toFixed(4)}`).join();
+  check('the bar\'s sleep piece (06:00 to 07:00 of the axis) is shaded by stage under its label: REM the lighter hue at .8, core at .78, awake at .25, in the share each took', clock(fb.t0, TZ) === '06:00' && sh === '150 160 235@0.8:0.0000-0.4167,112 120 205@0.78:0.4167-0.8333,112 120 205@0.25:0.8333-1.0000', sh);
+  check('deep sleep is the sleep hue at 1 and unspecified at .6; a night with no stages keeps its one fill', [['deep', 1], ['unspecified', .6]].every(([stage, a]) => { const d = buildBar(buildDay(fullDay({ items: [it('sleep-1', 'sleep', T(5, 0), T(7, 0), { minutes: 120, stages: [{ stage, start_ms: T(5, 0), end_ms: T(7, 0) }] }), it('s', 'stay', T(7, 0), null, { place: 'X', kept_place: home })] }), NOW, zh), zh); return d.segs[0].shade.length === 1 && d.segs[0].shade[0].a === a && d.segs[0].shade[0].rgb.join() === '112,120,205'; })
+    && buildBar(buildDay(richDay(), NOW, zh), zh).segs.find(x => x.kind === 'sleep').shade === undefined);
+  const note = t => peek(fm, buildBar(fm, t), T(6, 30), t).stretch;
+  check('on the sleep the hover card adds its deep sleep and REM: 深睡 1:10 · REM 1:40 (Deep 1:10 · REM 1:40); the night without stages adds nothing', note(zh).name === '睡觉' && note(zh).note === '深睡 1:10 · REM 1:40' && note(en).note === 'Deep 1:10 · REM 1:40' && note(zh).range === '昨天 23:10–07:00' && note(zh).length === '7 时 20 分'
+    && peek(buildDay(richDay(), NOW, zh), buildBar(buildDay(richDay(), NOW, zh), zh), T(8, 30), zh).stretch.note === undefined);
+  const only1 = (stage, mn) => { const d = buildDay(fullDay({ items: [it('sleep-1', 'sleep', T(5, 0), T(7, 0), { minutes: 120, stages: [{ stage, start_ms: T(5, 0), end_ms: T(5, 0) + mn * 60_000 }] }), it('s', 'stay', T(7, 0), null, { place: 'X', kept_place: home })] }), NOW, zh); return peek(d, buildBar(d, zh), T(6, 30), zh).stretch.note; };
+  check('and says only the one it had: REM alone, deep alone, neither when it was core and awake', only1('rem', 90) === 'REM 1:30' && only1('deep', 45) === '深睡 0:45' && only1('core', 90) === undefined);
+
+  // a workout
+  const run = fk('workout-1');
+  check('a workout is a row with the activity\'s glyph, the activity in Chinese, what was counted and its length: 跑步, 3.2 公里 · 240 千卡 · 平均心率 142, 35 分', run.title === '跑步' && run.icon === 'run' && run.detail === '3.2 公里 · 240 千卡 · 平均心率 142' && run.right === '35 分' && run.lens === 'workout' && run.at === '07:20' && !run.connector);
+  const one = (extra, t = zh) => flat(buildDay(small([it('w', 'workout', T(9, 0), T(9, 20), extra)]), NOW, t).blocks).find(r => r.key === 'w');
+  const sports = [['walking', '步行', 'walk'], ['cycling', '骑车', 'bike'], ['hiking', '徒步', 'hike'], ['swimming', '游泳', 'swim'], ['functionalStrengthTraining', '力量训练', 'strength'], ['traditionalStrengthTraining', '力量训练', 'strength'], ['yoga', '瑜伽', 'yoga'], ['Running', '跑步', 'run'], ['elliptical', '运动', 'sport'], [undefined, '运动', 'sport']];
+  check('each activity has its word and glyph (running, walking, cycling, hiking, swimming, strength, yoga); any other is 运动', sports.every(([activity, word, icon]) => { const r = one({ activity }); return r.title === word && r.icon === icon; }));
+  check('the detail is only what is there: metres under a kilometre, kilometres above; no detail for a known activity with nothing counted; the phone\'s words for one it does not know', one({ activity: 'swimming', distance_m: 800 }).detail === '800 米' && one({ activity: 'running', distance_m: 10_000 }).detail === '10.0 公里'
+    && one({ activity: 'yoga', energy_kcal: 90.4 }).detail === '90 千卡' && one({ activity: 'running', avg_hr: 150.6 }).detail === '平均心率 151' && one({ activity: 'yoga', text: 'Yoga' }).detail === '' && one({ activity: 'elliptical', text: 'Elliptical\nsecond line' }).detail === 'Elliptical'
+    && one({ activity: 'running', distance_m: 3200, energy_kcal: 240 }, en).detail === '3.2 km · 240 kcal' && one({ activity: 'running', avg_hr: 142 }, en).detail === 'avg heart rate 142' && one({ activity: 'hiking' }, en).title === 'Hiking');
+  check('a workout and a Claude Code session are counted in a lens: 运动 is the workout\'s length (the chip, in its place); the Mac\'s own number is the Mac\'s alone', lensOf('workout') === 'workout' && lensOf('code') === 'work'
+    && numbers(fm, zh).map(n => `${n.label} ${n.value}`).join() === '睡 7:20,路上 3:04,运动 35 分,Mac 2:37,通话 18 分,和她 3 次,花 $12.40,照片 1' && numbers(fm, en).map(n => n.label).join() === 'Sleep,On the way,Workout,Mac,Calls,With her,Spent,Photos');
+  check('the lens draws a workout on the bar though it is not a piece of it: one span, 07:20 to 07:55; the Mac\'s spans are the blocks and the sessions', !fb.segs.some(x => x.row === 'workout-1') && fb.lens.workout.length === 1 && Math.abs(msOf(fb, fb.lens.workout[0].f0) - T(7, 20)) < 1000 && Math.abs(msOf(fb, fb.lens.workout[0].f1) - T(7, 55)) < 1000 && fb.lens.work.length === 8);
+
+  // Claude Code
+  const home1 = fk('code:stay-home-1'), uvic1 = fk('code:stay-uvic');
+  check('six sessions across two stays are two rows: Claude Code · 4 个会话 at home (the two newest titles, the time they covered together, 2 时 40 分) and Claude Code · 2 个会话 at UVic (1 时 30 分); side by side they count once',
+    home1.title === 'Claude Code · 4 个会话' && home1.detail === '周报草稿 · 给 verify 加 fixtures' && home1.right === '2 时 40 分' && home1.at === '08:10' && home1.icon === 'code' && home1.lens === 'work' && home1.kind === 'code' && !home1.connector && !home1.wait
+    && uvic1.title === 'Claude Code · 2 个会话' && uvic1.detail === '读论文做笔记 · Notch 的 hover 卡' && uvic1.right === '1 时 30 分' && uvic1.at === '15:40' && fr.filter(r => r.kind === 'code').length === 2 && !fr.some(r => /^code-s/.test(r.key ?? '')));
+  check('a folded row stands where its first session began, inside the stay: between the run and the reminder at home', (keys => keys.indexOf('workout-1') < keys.indexOf('code:stay-home-1') && keys.indexOf('code:stay-home-1') < keys.indexOf('reminder-2'))(fr.map(r => r.key)) && fm.span.get('code:stay-home-1').t0 === T(8, 10) && fm.span.get('code:stay-home-1').t1 === T(11, 5) && fm.span.get('code:stay-uvic').t1 === T(17, 10)
+    && !fm.span.has('code-s1') && fm.index.some(x => x.key === 'code:stay-home-1') && !fm.index.some(x => /^code-s/.test(x.key)));
+  const lone = (extra, more = []) => flat(buildDay(small([it('h', 'stay', T(8, 0), T(12, 0), { place: 'X', kept_place: home }), ...more, it('c1', 'code', T(9, 0), T(9, 45), { title: '周报草稿', project: 'notes', account: 'b', ...extra })]), NOW, zh).blocks);
+  check('one session alone is a normal row: Claude Code · its title, its project and account, its length; an account that is not a or b, or no project, leaves that out', (r => r.title === 'Claude Code · 周报草稿' && r.detail === 'notes · B' && r.right === '45 分' && r.icon === 'code' && r.lens === 'work' && r.key === 'c1')(lone({}).find(x => x.key === 'c1'))
+    && lone({ account: 'x' }).find(x => x.key === 'c1').detail === 'notes' && lone({ project: undefined }).find(x => x.key === 'c1').detail === 'B' && lone({ title: undefined, project: undefined, account: undefined }).find(x => x.key === 'c1').title === 'Claude Code');
+  const two = [it('c2', 'code', T(9, 30), T(10, 0), { title: '第二个', project: 'p', account: 'a' }), it('c3', 'code', T(10, 20), T(10, 50), { title: '第三个', project: 'p', account: 'a' })];
+  check('three in one stay are one row: how many, the two newest titles, and the time they covered between them (09:00 to 10:00 and 10:20 to 10:50)', (r => r.length === 1 && r[0].key === 'code:h' && r[0].title === 'Claude Code · 3 个会话' && r[0].detail === '第三个 · 第二个' && r[0].right === '1 时 30 分')(lone({}, two).filter(r => r.kind === 'code')));
+  const marked = buildDay(small([it('h', 'stay', T(8, 0), T(12, 0), { place: 'X', kept_place: home }), it('c1', 'code', T(9, 0), T(9, 45), { title: '周报草稿', project: 'notes', account: 'b' }), ...two], { highlights: [{ id: 'c2', label: '最重要的一次', by: 'him' }] }), NOW, zh);
+  const mr = flat(marked.blocks).filter(r => r.kind === 'code');
+  check('with one of three marked: the marked one is its own row under his words, the other two fold', mr.map(r => r.key).join() === 'code:h,c2' && mr.find(r => r.key === 'c2').title === '最重要的一次' && mr.find(r => r.key === 'c2').star && mr.find(r => r.key === 'code:h').title === 'Claude Code · 2 个会话', mr.map(r => r.key).join());
+  const strays = flat(buildDay(small([it('c1', 'code', T(9, 0), T(9, 45), { title: 'a' }), it('c2', 'code', T(9, 30), T(10, 0), { title: 'b' })]), NOW, zh).blocks).filter(r => r.kind === 'code');
+  check('sessions that began outside any stay are rows of their own', strays.map(r => r.key).join() === 'c1,c2');
+  check('a session is Mac work in the lens, never in the Mac\'s number: with sessions alone the day has no Mac chip', numbers(buildDay(small([it('c1', 'code', T(9, 0), T(9, 45), { title: 'a' })]), NOW, zh), zh).length === 0 && numbers(buildDay(small([it('c1', 'code', T(9, 0), T(9, 45), { title: 'a' }), it('w', 'workout', T(7, 0), T(7, 30), { activity: 'yoga' })]), NOW, zh), zh).map(n => n.label).join() === '运动');
+  check('the covered time of sessions that overlap counts once', covered([{ start_ms: 0, end_ms: 60_000 * 55 }, { start_ms: 60_000 * 30, end_ms: 60_000 * 85 }, { start_ms: 60_000 * 100, end_ms: null }], 60_000 * 110) === 95);
+
+  // the card
+  const lines = (p) => p.lines.map(l => `${l.kind}:${l.text}|${l.side}`).join();
+  check('the card at 07:35, in the run: the workout as 跑步 · 3.2 公里 with its length', lines(peek(fm, fb, T(7, 35), zh)) === 'workout:跑步 · 3.2 公里|35 分');
+  check('the card at 08:30 with sessions side by side: one line, how many and how long together, never one line for each', lines(peek(fm, fb, T(8, 30), zh)) === 'code:Claude Code · 2 个会话|1 时 25 分' && lines(peek(fm, fb, T(16, 20), zh)) === 'code:Claude Code · 2 个会话|1 时 30 分');
+  check('the card\'s order is work, code, call, talk, workout, picture, payment, event: at 10:30 the Mac block before the sessions', lines(peek(fm, fb, T(10, 30), zh)) === 'work:Jarvis · Xcode|活跃 42 分,code:Claude Code · 2 个会话|1 时 15 分');
+  const solo = buildDay(small([it('h', 'stay', T(8, 0), T(12, 0), { place: 'X', kept_place: home }), it('c1', 'code', T(9, 0), T(9, 45), { title: '周报草稿', project: 'notes', account: 'b' }), it('t', 'talk', T(9, 20), T(9, 25), { turns: 2 }, 'her'), it('p', 'picture', T(9, 22), T(9, 22), { note: '一张图' })]), NOW, zh);
+  check('one session near is its own line: Claude Code · its title; before the talk and the photo', lines(peek(solo, buildBar(solo, zh), T(9, 23), zh)) === 'code:Claude Code · 周报草稿|45 分,talk:和她说话 · 2 句|5 分,picture:一张图|09:22', lines(peek(solo, buildBar(solo, zh), T(9, 23), zh)));
+  check('what a workout or a session did before the day\'s start takes the bar back to its hour (a run at 05:20 to 05:00, a session at 04:10 to 04:00)', (d => clock(axisOf(buildDay(small(d), NOW, zh)).t0, TZ))([it('sl', 'sleep', T(22, 0, 18), T(5, 10), { minutes: 400 }), it('w', 'workout', T(5, 20), T(5, 50), { activity: 'running' })]) === '05:00'
+    && (d => clock(axisOf(buildDay(small(d), NOW, zh)).t0, TZ))([it('sl', 'sleep', T(22, 0, 18), T(5, 10), { minutes: 400 }), it('c', 'code', T(4, 10), T(4, 50), { title: 'x' })]) === '04:00');
+  const cut = within(fm.blocks, fm.span, T(8, 0), T(9, 0)), ks = (bs, out = []) => { for (const b of bs) { out.push(b.type === 'row' ? b.row.key : b.key); if (b.type === 'stay') ks(b.items, out); } return out; };
+  check('the list cut to 08:00–09:00 keeps the folded row and its stay, and not the run before it', ks(cut).join() === 'stay-home-1,code:stay-home-1' && !ks(cut).includes('workout-1'));
+  check('the bar\'s sun: sunrise and sunset where they fall on the axis (07:25 and 18:05 from 06:00), none off it', fb.sun.map(x => `${x.kind}@${Math.round(msOf(fb, x.f) / 60_000)}`).join() === `rise@${Math.round(T(7, 25) / 60_000)},set@${Math.round(T(18, 5) / 60_000)}` && buildBar(buildDay(fullDay({ weather: { condition: 'clear', high: 1, low: 0, sunrise_ms: T(4, 0), sunset_ms: null } }), NOW, zh), zh).sun.length === 0
+    && buildBar(buildDay(fullDay({ weather: null }), NOW, zh), zh).sun.length === 0);
 }
 
 // ---------- the built page ----------
@@ -815,34 +918,35 @@ try {
   }
 
 
+  // What the list must hold on any day: rows and headers one under another, none crossing another, nothing between them but a gap of 12 or none,
+  // every word inside its row, the heights of the design (40, 52 with a second line, a stay's header 40, the now line 28).
+  const audit = a => a.page.evaluate(() => {
+    const list = document.querySelector('.dt-list'), kids = [...list.querySelectorAll('.dt-row, .dt-sh, .dt-now')], bad = [], box = el => el.getBoundingClientRect();
+    kids.sort((x, y) => box(x).top - box(y).top);
+    kids.forEach((el, i) => {
+      const r = box(el), name = el.dataset.key ?? el.className, want = el.classList.contains('dt-now') ? 28 : el.classList.contains('has-detail') ? 52 : 40;
+      if (Math.abs(r.height - want) > .5) bad.push(`${name} is ${r.height} tall, not ${want}`);
+      if (i) { const gap = r.top - box(kids[i - 1]).bottom; if (Math.abs(gap) > .5 && Math.abs(gap - 12) > .5) bad.push(`${name} is ${gap} under the one before`); }
+      for (const part of el.querySelectorAll('.dt-at, .dt-ttl, .dt-tx > em, .dt-tm')) { const p = box(part); if (p.left < r.left - .5 || p.right > r.right + .5 || p.top < r.top - .5 || p.bottom > r.bottom + .5) bad.push(`${name} ${part.className} is outside its row`); }
+      const tx = el.querySelector('.dt-tx'), tm = el.querySelector('.dt-tm'), at = el.querySelector('.dt-at');
+      if (tx && tm && box(tx).right > box(tm).left + .5) bad.push(`${name}: the words run into the right column`);
+      if (at && at.scrollWidth > at.clientWidth + 1 || tm && tm.scrollWidth > tm.clientWidth + 1) bad.push(`${name}: a time or a length is cut`);
+      const ttl = el.querySelector('.dt-ttl'), em = el.querySelector('.dt-tx > em'); if (ttl && em && box(ttl).bottom > box(em).top + .5) bad.push(`${name}: the title runs into its second line`);
+    });
+    return { n: kids.length, bad };
+  });
+  const openDay = async a => {
+    await a.until(() => document.querySelector('.notch')?.dataset.line);
+    const seg = await a.lineX();
+    await a.move(seg.mid, 14); await a.page.mouse.down(); await a.page.mouse.up();
+    await a.until(() => document.querySelector('.notch-drop.is-open .dt-row, .notch-drop.is-open .dt-say'), undefined, 8000);
+    await a.page.waitForTimeout(800);
+  };
+  const text = (a, sel) => a.page.locator(sel).allInnerTexts();
+  const rect = (a, sel) => a.page.locator(sel).first().evaluate(el => el.getBoundingClientRect().toJSON());
+
   // ---- the list: every row has the same anatomy, on any day ----
   if (all || only === 'list') {
-    // What the list must hold on any day: rows and headers one under another, none crossing another, nothing between them but a gap of 12 or none,
-    // every word inside its row, the heights of the design (40, 52 with a second line, a stay's header 40, the now line 28).
-    const audit = a => a.page.evaluate(() => {
-      const list = document.querySelector('.dt-list'), kids = [...list.querySelectorAll('.dt-row, .dt-sh, .dt-now')], bad = [], box = el => el.getBoundingClientRect();
-      kids.sort((x, y) => box(x).top - box(y).top);
-      kids.forEach((el, i) => {
-        const r = box(el), name = el.dataset.key ?? el.className, want = el.classList.contains('dt-now') ? 28 : el.classList.contains('has-detail') ? 52 : 40;
-        if (Math.abs(r.height - want) > .5) bad.push(`${name} is ${r.height} tall, not ${want}`);
-        if (i) { const gap = r.top - box(kids[i - 1]).bottom; if (Math.abs(gap) > .5 && Math.abs(gap - 12) > .5) bad.push(`${name} is ${gap} under the one before`); }
-        for (const part of el.querySelectorAll('.dt-at, .dt-ttl, .dt-tx > em, .dt-tm')) { const p = box(part); if (p.left < r.left - .5 || p.right > r.right + .5 || p.top < r.top - .5 || p.bottom > r.bottom + .5) bad.push(`${name} ${part.className} is outside its row`); }
-        const tx = el.querySelector('.dt-tx'), tm = el.querySelector('.dt-tm'), at = el.querySelector('.dt-at');
-        if (tx && tm && box(tx).right > box(tm).left + .5) bad.push(`${name}: the words run into the right column`);
-        if (at && at.scrollWidth > at.clientWidth + 1 || tm && tm.scrollWidth > tm.clientWidth + 1) bad.push(`${name}: a time or a length is cut`);
-        const ttl = el.querySelector('.dt-ttl'), em = el.querySelector('.dt-tx > em'); if (ttl && em && box(ttl).bottom > box(em).top + .5) bad.push(`${name}: the title runs into its second line`);
-      });
-      return { n: kids.length, bad };
-    });
-    const openDay = async a => {
-      await a.until(() => document.querySelector('.notch')?.dataset.line);
-      const seg = await a.lineX();
-      await a.move(seg.mid, 14); await a.page.mouse.down(); await a.page.mouse.up();
-      await a.until(() => document.querySelector('.notch-drop.is-open .dt-row, .notch-drop.is-open .dt-say'), undefined, 8000);
-      await a.page.waitForTimeout(800);
-    };
-    const text = (a, sel) => a.page.locator(sel).allInnerTexts();
-    const rect = (a, sel) => a.page.locator(sel).first().evaluate(el => el.getBoundingClientRect().toJSON());
 
     {
       const a = await boot({ served: richDay() });
@@ -940,6 +1044,134 @@ try {
       await a.page.locator('.dt-back').click();
       await a.until(() => document.querySelector('.dt-date')?.textContent === '10月19日 周一' && document.querySelector('.dt-today'), undefined, 6000);
       check('and 回到今天 is today again, with its tag', await a.page.locator('.dt-back').count() === 0 && await a.page.locator('.dt-today').count() === 1);
+      await a.ctx.close();
+    }
+  }
+
+  // ---- the new data: the weather and the body's numbers, a night's stages, a run, the sessions of Claude Code ----
+  if (all || only === 'data') {
+    // The colour of the page at points (CSS px from the clip's top left): the clip is screenshotted, drawn on a canvas in the page and read there.
+    const pixels = async (a, clip, points) => {
+      const png = (await a.page.screenshot({ clip })).toString('base64');
+      return a.page.evaluate(async ([png, points]) => {
+        const img = new Image(); img.src = `data:image/png;base64,${png}`; await img.decode();
+        const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+        const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+        return points.map(([x, y]) => [...g.getImageData(Math.round(x * 2), Math.round(y * 2), 1, 1).data].slice(0, 3));
+      }, [png, points]);
+    };
+    const near = (got, want, tol = 8) => got.every((v, i) => Math.abs(v - want[i]) <= tol);
+    {
+      const a = await boot({ served: fullDay() });
+      await openDay(a);
+      const au = await audit(a);
+      check('the full day (a night with stages, a run, six sessions as two rows, the weather and the body): no row crosses another, every word is inside its row, the heights hold', au.n >= 25 && au.bad.length === 0, `${au.n} ${au.bad.join('; ')}`);
+      const head = await a.page.evaluate(() => {
+        const h = document.querySelector('.dt-head'), wx = h.querySelector('.dt-wx'), box = e => e.getBoundingClientRect(), hb = box(h);
+        return { order: [...h.children].map(e => e.className.split(' ')[0]).join(), words: [...wx.querySelectorAll('span, em')].map(e => e.textContent).join('|'), sky: wx.dataset.sky, svg: !!wx.querySelector('svg'), mono: /JetBrains|Menlo|monospace/.test(getComputedStyle(wx.querySelector('em')).fontFamily),
+          afterTag: Math.round(box(wx).left - box(h.querySelector('.dt-today')).right), beforeChips: Math.round(box(h.querySelector('.dt-chips')).left - box(wx).right), inside: [...h.children].every(e => box(e).left >= hb.left - .5 && box(e).right <= hb.right + .5) };
+      });
+      check('the header: the weather after the date and its tag, before the chips: a glyph, 多云, and 14° / 8° in mono; nothing leaves the header', head.order === 'dt-date,dt-today,dt-wx,dt-chips,dt-waits,dt-nav' && head.words === '多云|14° / 8°' && head.sky === 'cloudSun' && head.svg && head.mono && head.afterTag === 8 && head.beforeChips === 8 && head.inside, JSON.stringify(head));
+      const nums = await a.page.evaluate(() => {
+        const box = document.querySelector('.dt-numbers'), g = box.querySelector('.dt-vitals'), vit = [...g.querySelectorAll('.dt-vit')], cs = getComputedStyle(vit[0]);
+        return { chips: [...box.querySelectorAll('.dt-num')].map(b => [...b.querySelectorAll('span, em')].map(e => e.textContent).join(' ')), vitals: vit.map(v => [...v.children].map(c => c.textContent).join(' ')), after: g.previousElementSibling?.className.split(' ')[0],
+          bg: cs.backgroundColor, tag: vit[0].tagName, controls: g.querySelectorAll('button, a, input').length, mono: /JetBrains|Menlo|monospace/.test(getComputedStyle(vit[0].querySelector('em')).fontFamily), faint: getComputedStyle(vit[0].querySelector('small')).color, value: getComputedStyle(vit[0].querySelector('em')).color,
+          row: [...box.children].map(e => Math.round(e.getBoundingClientRect().top)).filter((v, i, l) => l.indexOf(v) === i).length };
+      });
+      check('after the lens chips, the body\'s numbers as quiet values: 8,240 步, 静息 58, HRV 42 (a faint label and a mono value, no background, nothing to press), on the chips\' own line', nums.chips.join() === '睡 7:20,路上 3:04,运动 35 分,Mac 2:37,通话 18 分,和她 3 次,花 $12.40,照片 1' && nums.vitals.join() === '8,240 步,静息 58,HRV 42' && nums.after === 'dt-num' && nums.bg === 'rgba(0, 0, 0, 0)' && nums.controls === 0 && nums.mono && nums.faint !== nums.value, JSON.stringify(nums));
+      const rowsOf = await a.page.evaluate(() => {
+        const q = key => { const r = document.querySelector(`[data-key="${key}"]`); return r && { title: r.querySelector('.dt-tx b').textContent, detail: r.querySelector('.dt-tx > em')?.textContent ?? '', right: r.querySelector('.dt-tm').textContent, h: r.getBoundingClientRect().height, lk: r.dataset.lk, svg: !!r.querySelector('.dt-ic svg'), at: r.querySelector('.dt-at').textContent, rail: r.classList.contains('is-rail') }; };
+        return { run: q('workout-1'), home: q('code:stay-home-1'), uvic: q('code:stay-uvic'), strays: document.querySelectorAll('[data-key^="code-s"]').length };
+      });
+      check('the run is a row: 跑步, 3.2 公里 · 240 千卡 · 平均心率 142, 35 分, 52 tall, a glyph, the 运动 lens; each stay\'s sessions are one row: Claude Code · 4 个会话 (the two newest titles, 2 时 40 分) and · 2 个会话 (1 时 30 分), a terminal glyph, the Mac lens; no session shows on its own',
+        rowsOf.run.title === '跑步' && rowsOf.run.detail === '3.2 公里 · 240 千卡 · 平均心率 142' && rowsOf.run.right === '35 分' && rowsOf.run.h === 52 && rowsOf.run.lk === 'workout' && rowsOf.run.svg && rowsOf.run.at === '07:20'
+        && rowsOf.home.title === 'Claude Code · 4 个会话' && rowsOf.home.detail === '周报草稿 · 给 verify 加 fixtures' && rowsOf.home.right === '2 时 40 分' && rowsOf.home.h === 52 && rowsOf.home.lk === 'work' && rowsOf.home.svg && rowsOf.home.rail
+        && rowsOf.uvic.title === 'Claude Code · 2 个会话' && rowsOf.uvic.right === '1 时 30 分' && rowsOf.strays === 0, JSON.stringify(rowsOf));
+
+      // the bar: the night shaded by stage, the sun
+      const sb = await a.page.locator('.dt-seg.is-sleep').boundingBox();
+      const sleep = await a.page.evaluate(() => { const e = document.querySelector('.dt-seg.is-sleep'); return { has: e.classList.contains('has-shade'), shade: e.style.getPropertyValue('--shade'), image: getComputedStyle(e).backgroundImage.slice(0, 15) }; });
+      check('the night on the bar is painted by stage: a gradient of hard stops, REM the lighter hue, core, then awake', sleep.has && sleep.image === 'linear-gradient' && sleep.shade === 'linear-gradient(to right, rgb(150 160 235 / 0.8) 0.00% 41.67%, rgb(112 120 205 / 0.78) 41.67% 83.33%, rgb(112 120 205 / 0.25) 83.33% 100.00%)', JSON.stringify(sleep));
+      await a.page.mouse.move(5, 5); await a.page.waitForTimeout(300);
+      const clip = { x: sb.x - 3, y: sb.y - 3, width: sb.width + 6, height: sb.height + 6 };
+      const [rem, core, awake] = await pixels(a, clip, [[3 + sb.width * .12, 5], [3 + sb.width * .78 * .98, 5], [3 + sb.width * .94, 5]].map(([x, y]) => [x, y]));
+      check('and it shows: the REM stretch is the lightest, core darker, awake the faintest of the three (the sleep hue at .8, .78 and .25 over the ground)', near(rem, [123, 131, 191], 10) && near(core, [91, 97, 163], 10) && near(awake, [39, 41, 63], 10) && rem[2] > core[2] && core[2] > awake[2], JSON.stringify({ rem, core, awake }));
+      await a.page.mouse.move(sb.x + sb.width / 2, sb.y + sb.height / 2); await a.page.waitForTimeout(400);
+      const card = await a.page.evaluate(() => { const c = document.querySelector('.dt-card.is-on .dt-slot.is-cur'); return { head: c?.querySelector('.dt-ch b')?.textContent, note: c?.querySelector('.dt-cnote')?.textContent, range: c?.querySelector('.dt-ch span')?.textContent }; });
+      check('hovering the sleep says what the night had: 睡觉, 昨天 23:10–07:00 · 7 时 20 分, and 深睡 1:10 · REM 1:40 under it', card.head === '睡觉' && card.note === '深睡 1:10 · REM 1:40' && card.range === '昨天 23:10–07:00 · 7 时 20 分', JSON.stringify(card));
+      await a.shot('data-02-sleep-card', { x: 40, y: 0, width: 560, height: 300 });
+      await a.page.mouse.move(5, 5); await a.page.waitForTimeout(300);
+      const sun = await a.page.evaluate(() => {
+        const hours = document.querySelector('.dt-hours'), tb = document.querySelector('.dt-track').getBoundingClientRect(), mark = e => { const r = e.getBoundingClientRect(); return r.left + r.width / 2 - tb.left; };
+        const marks = [...hours.querySelectorAll('.dt-sun')];
+        return { kinds: marks.map(e => e.dataset.sun).join(), at: marks.map(e => mark(e) / tb.width), glyph: marks.every(e => e.querySelector('svg')), text: marks.map(e => e.textContent).join(''), tick: getComputedStyle(marks[0], '::before').width, tickColor: getComputedStyle(marks[0], '::before').backgroundColor,
+          labels: [...hours.querySelectorAll('span:not(.dt-sun)')].map(e => e.textContent).join(), clear: marks.every(m => [...hours.querySelectorAll('span:not(.dt-sun)')].every(l => Math.abs(mark(l) - mark(m)) > 11)) };
+      });
+      const f = ms => (ms - T(6, 0)) / (18 * 3_600_000);
+      check('the sun: a hairline and a little sun on the horizon in the hours row at 07:25 and 18:05, no words; the 18 that would sit on the sunset leaves room for it, the rest stay', sun.kinds === 'rise,set' && Math.abs(sun.at[0] - f(T(7, 25))) < .004 && Math.abs(sun.at[1] - f(T(18, 5))) < .004 && sun.glyph && sun.text === '' && sun.tick === '1px' && sun.labels === '06,09,12,15,21,24' && sun.clear, JSON.stringify(sun));
+      await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; }); await a.page.waitForTimeout(300);
+      await a.shot('data-01-full-day-top', { x: 40, y: 0, width: 560, height: 700 });
+      await a.shot('data-03-header-and-bar', { x: 40, y: 20, width: 560, height: 190 });
+      await a.page.evaluate(() => { const l = document.querySelector('.dt-list'); l.scrollTop = l.scrollHeight; }); await a.page.waitForTimeout(300);
+      await a.shot('data-04-full-day-bottom', { x: 40, y: 0, width: 560, height: 700 });
+
+      // the lens: 运动 lights the run on the bar and keeps its row; Mac lights the blocks, the sessions and their rows
+      const op = key => a.page.locator(`[data-key="${key}"]`).evaluate(el => getComputedStyle(el).opacity);
+      await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; });
+      await a.page.locator('.dt-num', { hasText: '运动' }).click(); await a.page.waitForTimeout(400);
+      const lens1 = await a.page.evaluate(() => ({ lens: document.querySelector('.dt').dataset.lens, spans: document.querySelectorAll('.dt-lm').length, k: getComputedStyle(document.querySelector('.dt-lm')).backgroundColor }));
+      check('the 运动 lens lights the run on the bar in (156, 224, 120) and keeps its row, the rest steps back', lens1.lens === 'workout' && lens1.spans === 1 && lens1.k === 'rgb(156, 224, 120)' && await op('workout-1') === '1' && await op('talk-1') === '0.35' && await op('code:stay-home-1') === '0.35', JSON.stringify(lens1));
+      await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(200);
+      await a.page.locator('.dt-num', { hasText: 'Mac' }).click(); await a.page.waitForTimeout(400);
+      const lens2 = await a.page.evaluate(() => ({ lens: document.querySelector('.dt').dataset.lens, spans: document.querySelectorAll('.dt-lm').length }));
+      check('the Mac lens lights the sessions with the work: 8 spans on the bar (2 blocks, 6 sessions), and the folded rows stay as the blocks do', lens2.lens === 'work' && lens2.spans === 8 && await op('code:stay-home-1') === '1' && await op('code:stay-uvic') === '1' && await op('work-1') === '1' && await op('talk-1') === '0.35' && await op('workout-1') === '0.35', JSON.stringify(lens2));
+      await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(200);
+      await a.ctx.close();
+    }
+    {
+      // a name the weather does not have, and a body that reported one number
+      const a = await boot({ served: fullDay({ weather: { condition: 'frigid', high: 3, low: -4, sunrise_ms: null, sunset_ms: null }, summary: { steps: null, resting_hr: 58, hrv: null } }) });
+      await openDay(a);
+      const r = await a.page.evaluate(() => ({ wx: document.querySelector('.dt-wx')?.textContent, svg: !!document.querySelector('.dt-wx svg'), sky: document.querySelector('.dt-wx')?.dataset.sky, vit: [...document.querySelectorAll('.dt-vit')].map(v => v.textContent), suns: document.querySelectorAll('.dt-sun').length, labels: document.querySelector('.dt-hours').textContent }));
+      check('an unknown weather shows only 3° / -4° with no glyph; a body with one number shows that one; no sun times, no sun marks, all seven hours', r.wx === '3° / -4°' && !r.svg && r.sky === undefined && r.vit.join() === '静息58' && r.suns === 0 && r.labels === '06091215182124', JSON.stringify(r));
+      await a.ctx.close();
+    }
+    {
+      const a = await boot({ served: fullDay({ weather: null, summary: null }) });
+      await openDay(a);
+      const r = await a.page.evaluate(() => ({ wx: document.querySelectorAll('.dt-wx').length, vit: document.querySelectorAll('.dt-vitals, .dt-vit').length, suns: document.querySelectorAll('.dt-sun').length, chips: document.querySelectorAll('.dt-num').length }));
+      check('without the weather and the body the header and the chips are as they were: nothing drawn, nothing empty', r.wx === 0 && r.vit === 0 && r.suns === 0 && r.chips === 8, JSON.stringify(r));
+      await a.ctx.close();
+    }
+    {
+      const a = await boot({ served: fullDay(), lang: 'en' });
+      await openDay(a);
+      const r = await a.page.evaluate(() => ({ wx: [...document.querySelectorAll('.dt-wx span, .dt-wx em')].map(e => e.textContent).join('|'), vit: [...document.querySelectorAll('.dt-vit')].map(v => [...v.children].map(c => c.textContent).join(' ')),
+        chip: [...document.querySelectorAll('.dt-num')].map(b => [...b.querySelectorAll('span, em')].map(e => e.textContent).join(' ')).join(), run: document.querySelector('[data-key="workout-1"] .dt-tx b').textContent, runDetail: document.querySelector('[data-key="workout-1"] .dt-tx > em').textContent,
+        fold: document.querySelector('[data-key="code:stay-home-1"] .dt-tx b').textContent, head: document.querySelector('.dt-head').scrollWidth <= document.querySelector('.dt-head').clientWidth }));
+      check('in English: Partly cloudy 14° / 8°, 8,240 steps, Resting 58, HRV 42, Workout 35 min, Running 3.2 km · 240 kcal · avg heart rate 142, Claude Code · 4 sessions; the header still holds',
+        r.wx === 'Partly cloudy|14° / 8°' && r.vit.join() === '8,240 steps,Resting 58,HRV 42' && /Workout 35 min/.test(r.chip) && r.run === 'Running' && r.runDetail === '3.2 km · 240 kcal · avg heart rate 142' && r.fold === 'Claude Code · 4 sessions' && r.head, JSON.stringify(r));
+      await a.ctx.close();
+    }
+    {
+      // the header on a crowded day: the weather, three labels, two things waiting. Labels are whole or they are a +N, and they stay between the weather and the pill.
+      const a = await boot({ served: fullDay({ labels: [{ title: '期中周' }, { title: '黄金周假期' }, { title: '牙医' }] }) });
+      await openDay(a);
+      const r = await a.page.evaluate(() => {
+        const h = document.querySelector('.dt-head'), hb = h.getBoundingClientRect(), box = q => h.querySelector(q).getBoundingClientRect(), chips = box('.dt-chips');
+        return { inside: [...h.children].every(e => e.getBoundingClientRect().right <= hb.right + .5 && e.getBoundingClientRect().left >= hb.left - .5), between: chips.left >= box('.dt-wx').right + 7.5 && chips.right <= box('.dt-waits').left - 7.5,
+          labels: [...document.querySelectorAll('.dt-chip')].map(c => c.textContent).join(), cut: [...document.querySelectorAll('.dt-chip')].some(c => c.scrollWidth > c.clientWidth), waits: document.querySelector('.dt-waits').textContent, one: h.getBoundingClientRect().height };
+      });
+      check('the header on a crowded day (weather, three labels, 2 件等你, the day buttons): nothing leaves it, the labels that do not fit whole become +2, none shows half a word, and the header stays one line', r.inside && r.between && r.labels === '期中周,+2' && !r.cut && r.waits === '2 件等你' && r.one < 30, JSON.stringify(r));
+      await a.shot('data-05-crowded-header', { x: 40, y: 20, width: 560, height: 190 });
+      await a.ctx.close();
+    }
+    {
+      // one label, the usual case: it is whole
+      const a = await boot({ served: fullDay() });
+      await openDay(a);
+      const r = await a.page.evaluate(() => { const c = document.querySelector('.dt-chip'); return { cut: c.scrollWidth > c.clientWidth, text: c.textContent }; });
+      check('with one label, the usual case, the label is whole beside the weather', r.text === '期中周' && !r.cut, JSON.stringify(r));
       await a.ctx.close();
     }
   }

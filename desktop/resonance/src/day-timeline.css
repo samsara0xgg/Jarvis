@@ -7,6 +7,9 @@
 .notch .dt-head { display:flex; align-items:center; gap:8px; min-height:26px; }
 .notch .dt-date { flex:none; font-size:15px; font-weight:600; line-height:24px; white-space:nowrap; }
 .notch .dt-today,.notch .dt-back { flex:none; padding:0 6px; border-radius:var(--radius-tag); font-style:normal; font-size:var(--text-label); font-weight:600; line-height:17px; color:var(--p-muted); background:rgb(255 255 255 / .08); }
+.notch .dt-wx { display:flex; flex:none; align-items:center; gap:5px; font-size:12px; line-height:17px; white-space:nowrap; color:var(--p-muted); }
+.notch .dt-wx svg { flex:none; color:rgb(var(--ink) / .72); }
+.notch .dt-wx em { margin-left:2px; font:11.5px/17px "JetBrains Mono", Menlo, monospace; font-style:normal; font-variant-numeric:tabular-nums; }
 .notch .dt-back { cursor:pointer; transition:background var(--motion-fast),color var(--motion-fast); }
 .notch .dt-back:hover { background:rgb(255 255 255 / .14); color:var(--p-ink); }
 .notch .dt-waits { flex:none; height:20px; padding:0 9px; border-radius:10px; background:rgb(255 201 143 / .14); font-size:11.5px; font-weight:600; line-height:20px; white-space:nowrap; color:rgb(255 201 143); transition:background var(--motion-fast); }
@@ -25,7 +28,7 @@
 .notch .dt-foot { margin:0; padding-inline:2px; font-size:var(--text-label); line-height:16px; color:var(--p-faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
 /* the day: stays as groups, the ways between them as trips, the now line, what is still to come muted */
-.notch .dt { --tcol:44px; }
+.notch .dt { --tcol:50px; }
 .notch .dt-list { position:relative; display:flex; flex:0 1 auto; flex-direction:column; min-height:0; margin-inline:-4px; padding-inline:4px; overflow-y:auto; overscroll-behavior:contain;
   scrollbar-width:thin; scrollbar-color:var(--p-line) transparent; }
 .notch .dt-list.more-below { -webkit-mask-image:linear-gradient(#000 calc(100% - 30px),transparent); mask-image:linear-gradient(#000 calc(100% - 30px),transparent); }

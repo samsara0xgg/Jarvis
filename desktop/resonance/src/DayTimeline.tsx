@@ -2,9 +2,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { CaretLeft, CaretRight, Star } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { useRoute, type Route } from './homeData';
-import { askable, buildDay, dateTitle, report, shiftDate, within, type Block, type DayReply, type Row } from './dayView';
+import { askable, buildDay, dateTitle, report, shiftDate, within, type Block, type DayModel, type DayReply, type Row, type WeatherLook } from './dayView';
 import { DayBar, useBarState } from './DayBar';
-import { Ic } from './dayIcons';
+import { Ic, SKIES } from './dayIcons';
 import { TimelineGuard } from './TimelineGuard';
 import './day-timeline.css';
 
@@ -62,6 +62,27 @@ function RowView({ row, hot, onHot, pick, t, how }: { row: Row; how: string } & 
     {ASK_HER && askable(row.kind, row.key) && <button type="button" className="dt-ask" tabIndex={-1}>{t(['Ask her', '问她'])}</button>}
     <span className={`dt-tm${row.value ? ' is-value' : ''}`}>{row.right}</span>
   </div>;
+}
+// The day's weather after its date: a glyph, a word, the high and the low. A condition this does not know is just the temperatures.
+function Forecast({ w }: { w: WeatherLook }) {
+  const Glyph = w.sky ? SKIES[w.sky] : null;
+  return <span className="dt-wx" data-sky={w.sky ?? undefined}>{Glyph && <Glyph size={14} aria-hidden="true"/>}{w.word && <span>{w.word}</span>}{w.temps && <em>{w.temps}</em>}</span>;
+}
+// The day's labels (all-day events) in the room the header leaves them: whole ones, and a +N for those that do not fit (never half a word). The room
+// changes with the day (the pill that comes or goes), so it starts again from all of them when it does; the first label always stays, cut to fit if it must.
+function Chips({ chips }: { chips: DayModel['chips'] }) {
+  const box = useRef<HTMLSpanElement>(null), [drop, setDrop] = useState(0);
+  const labels = chips.filter(c => !c.more), rest = chips.reduce((n, c) => n + (c.more ? Number(c.text.slice(1)) || 0 : 0), 0) + drop;
+  useLayoutEffect(() => { if (drop < labels.length - 1 && [...box.current?.children ?? []].some(c => c.scrollWidth > c.clientWidth + 1)) setDrop(drop + 1); });
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    let width = el.clientWidth;
+    const ro = new ResizeObserver(() => { if (el.clientWidth !== width) { width = el.clientWidth; setDrop(0); } });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return <span ref={box} className="dt-chips">{labels.slice(0, labels.length - drop).map(c => <i key={c.text} className="dt-chip">{c.text}</i>)}{rest > 0 && <i className="dt-chip is-more">+{rest}</i>}</span>;
 }
 const onWay = (b?: Block) => b?.type === 'row' && (b.row.connector || b.row.onWay);
 // The blocks of one level, told apart in units: a stay with what is in it, a trip (the ways he went and what happened on them), and the
@@ -243,7 +264,8 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
     <div className="dt-head">
       <b className="dt-date">{title}</b>{date === null ? <em className="dt-today">{t(['Today', '今天'])}</em> : <button type="button" className="dt-back" onClick={() => setDate(null)}>{t(['Back to today', '回到今天'])}</button>}
       <TimelineGuard where="the header" reset={shown} fallback={null}>
-        <span className="dt-chips">{model?.chips.map(c => <i key={c.text} className={`dt-chip${c.more ? ' is-more' : ''}`}>{c.text}</i>)}</span>
+        {model?.weather && <Forecast w={model.weather}/>}
+        {model && <Chips key={model.chips.map(c => c.text).join('|')} chips={model.chips}/>}
         {model && model.waiting.length > 0 && <button type="button" className="dt-waits" onClick={() => waitFirst(model.waiting[0])}>{t([`${model.waiting.length} waiting`, `${model.waiting.length} 件等你`])}</button>}
       </TimelineGuard>
       <span className="dt-nav">
