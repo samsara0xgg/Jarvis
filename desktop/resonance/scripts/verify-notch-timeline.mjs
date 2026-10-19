@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { askable, buildDay, clock, covered, dateTitle, fnv, lensOf, moneyText, shiftDate, stageMinutes, stageSlices, weatherOf, wingText, within } from '../src/dayView.ts';
+import { askable, buildDay, clock, covered, dateTitle, fnv, lensOf, moneyText, shiftDate, stageLook, stageMinutes, stageSlices, weatherOf, wingText, within } from '../src/dayView.ts';
 import { axisOf, buildBar, fit, fOf, hm, msOf, numbers, peek, rowAt, summarize, toneOn } from '../src/barView.ts';
 import { askOf, hasBody, openOf, talkLines } from '../src/dayOpen.ts';
 import { deflateSync, crc32 } from 'node:zlib';
@@ -407,6 +407,63 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
     && peek(buildDay(richDay(), NOW, zh), buildBar(buildDay(richDay(), NOW, zh), zh), T(8, 30), zh).stretch.note === undefined);
   const only1 = (stage, mn) => { const d = buildDay(fullDay({ items: [it('sleep-1', 'sleep', T(5, 0), T(7, 0), { minutes: 120, stages: [{ stage, start_ms: T(5, 0), end_ms: T(5, 0) + mn * 60_000 }] }), it('s', 'stay', T(7, 0), null, { place: 'X', kept_place: home })] }), NOW, zh); return peek(d, buildBar(d, zh), T(6, 30), zh).stretch.note; };
   check('and says only the one it had: REM alone, deep alone, neither when it was core and awake', only1('rem', 90) === 'REM 1:30' && only1('deep', 45) === '深睡 0:45' && only1('core', 90) === undefined);
+
+  // a night two sources told: the watch's stages and a second source's overlap. Every minute takes ONE stage (awake over REM over deep over core
+  // over unspecified over in_bed) and the totals, the hover card, the hypnogram and the bar all read that one timeline, so nothing counts twice.
+  {
+    const ORDER = ['awake', 'rem', 'deep', 'core', 'unspecified', 'in_bed'], N0 = T(23, 0, 18), M = n => N0 + n * 60_000;
+    // minutes from 23:00: the watch (core 23:00, deep 01:00, core 02:30, REM 04:00, core 05:00, awake 06:30, then off the wrist) and a second source over it
+    const watch = [['core', 0, 120], ['deep', 120, 210], ['core', 210, 300], ['rem', 300, 360], ['core', 360, 450], ['awake', 450, 460]];
+    const other = [['in_bed', -10, 490], ['deep', 90, 240], ['awake', 180, 190], ['rem', 270, 330], ['unspecified', 450, 470]];
+    const told = [...watch, ...other].sort((x, y) => x[1] - y[1] || x[2] - y[2]);
+    const stages = told.map(([stage, from, to]) => ({ stage, start_ms: M(from), end_ms: M(to) }));
+    // the oracle: one minute at a time, the first stage in the order that covers it
+    const oracle = n => ORDER.find(s => told.some(([stage, from, to]) => stage === s && from <= n && n < to)) ?? 'unspecified';
+    const per = {}, runs = [];
+    for (let n = 0; n < 480; n++) { const s = oracle(n); per[s] = (per[s] ?? 0) + 1; if (runs.at(-1)?.[0] === s) runs.at(-1)[2] = n + 1; else runs.push([s, n, n + 1]); }
+    const sleep = it('sleep-2', 'sleep', M(0), M(480), { minutes: 460, stages });
+    const d = buildDay(small([sleep, it('talk-e', 'talk', T(0, 10), T(0, 12), { turns: 1 }, 'her'), it('home', 'stay', T(7, 0), null, { place: 'X', kept_place: home })]), NOW, zh);
+    const item2 = d.items.find(x => x.id === 'sleep-2'), mins2 = stageMinutes(item2), naive = {};
+    for (const [stage, from, to] of told) naive[stage] = (naive[stage] ?? 0) + Math.max(0, Math.min(to, 480) - Math.max(from, 0));
+    check('the fixture night does overlap: counting every stage as told would give the deep sleep twice (240 min for 140) and 1180 minutes for a night of 480', naive.deep === 240 && per.deep === 140 && Object.values(naive).reduce((x, y) => x + y, 0) === 1180, JSON.stringify({ naive, per }));
+    check('a night is counted once: each stage\'s minutes are the oracle\'s, minute by minute (awake over REM over deep over core over unspecified over in_bed), and together they are the night, 480', ORDER.every(s => Math.round(mins2[s] ?? 0) === (per[s] ?? 0)) && Math.round(Object.values(mins2).reduce((x, y) => x + y, 0)) === 480 && per.deep === 140 && per.core === 210 && per.rem === 90 && per.awake === 20, JSON.stringify({ mins2, per }));
+    check('the slices are that timeline in runs, with no gap and no overlap, and the same stage next to itself is one run (the deep sleep both sources told, the REM, the awake of 06:30)',
+      JSON.stringify(stageSlices(item2, M(0), M(480)).map(x => [x.stage, (x.s - N0) / 60_000, (x.e - N0) / 60_000])) === JSON.stringify(runs) && runs.length === 10, JSON.stringify(runs));
+    const n2 = openOf(d, 'sleep-2', zh).parts.find(x => x.type === 'night').night;
+    check('the open row\'s totals read it: 深睡 2:20 · 核心 3:30 · REM 1:30 · 醒 2 次, in English too', n2.totals === '深睡 2:20 · 核心 3:30 · REM 1:30 · 醒 2 次' && openOf(buildDay(small([sleep]), NOW, en), 'sleep-2', en).parts.find(x => x.type === 'night').night.totals === 'Deep 2:20 · Core 3:30 · REM 1:30 · Awake 2×', n2.totals);
+    check('and its hypnogram is those runs', JSON.stringify(n2.slices.map(x => [x.stage, (x.s - N0) / 60_000, (x.e - N0) / 60_000])) === JSON.stringify(runs) && n2.at.join() === '23:00,07:00');
+    const b2 = buildBar(d, zh), p2 = b2.segs.find(x => x.row === 'sleep-2'), cover = (b2.t0 - N0) / 60_000, span2 = (p2.e - p2.s) / 60_000;
+    check('the hover card adds its deep sleep and REM from it: 深睡 2:20 · REM 1:30', peek(d, b2, T(3, 0), zh).stretch.note === '深睡 2:20 · REM 1:30');
+    check('the bar\'s shading reads it: one slice per run inside the piece, joined end to end from 0 to 1, each in the look of the stage that wins there',
+      clock(b2.t0, TZ) === '00:00' && p2.shade.length === runs.filter(r => r[2] > cover).length && p2.shade[0].f0 === 0 && Math.abs(p2.shade.at(-1).f1 - 1) < 1e-9 && p2.shade.every((x, i) => i === 0 || Math.abs(x.f0 - p2.shade[i - 1].f1) < 1e-9)
+      && p2.shade.every(x => { const look = stageLook(oracle(Math.floor(cover + (x.f0 + x.f1) / 2 * span2))); return x.rgb.join() === look.rgb.join() && x.a === look.a; }), JSON.stringify(p2.shade.map(x => `${x.a}:${x.f0.toFixed(3)}-${x.f1.toFixed(3)}`)));
+  }
+
+  // the two days the clocks change (2026-03-08 and 2026-11-01 in Vancouver): a time is the wall clock's, a minute is a real minute, and the
+  // last hour, 23:00 to 24:00, is on the bar
+  for (const [name, date, start, end, hours] of [['the 23-hour day', '2026-03-08', Date.UTC(2026, 2, 8, 8), Date.UTC(2026, 2, 9, 7), 23], ['the 25-hour day', '2026-11-01', Date.UTC(2026, 10, 1, 7), Date.UTC(2026, 10, 2, 8), 25]]) {
+    const spring = hours === 23, U = spring ? (h, m = 0) => Date.UTC(2026, 2, 8, h, m) : (h, m = 0) => Date.UTC(2026, 10, 1, h, m), later = spring ? Date.UTC(2026, 2, 9, 6) : Date.UTC(2026, 10, 2, 7);
+    const mk = (id, kind, from, to, extra = {}) => ({ id, lane: 'you', kind, start_ms: from, end_ms: to, state: 'done', ...extra }), stg = (stage, a, b) => ({ stage, start_ms: a, end_ms: b });
+    // the night began at 23:30 the evening before (7 h of it on the 23-hour day, 9 on the 25-hour one); the clocks change at 02:00, inside the deep sleep
+    const nightFrom = spring ? U(7, 30) : U(6, 30), nightTo = spring ? U(14, 30) : U(15, 30);
+    const stagesDst = spring ? [stg('core', U(7, 30), U(9, 30)), stg('deep', U(9, 30), U(10, 30)), stg('core', U(10, 30), U(13)), stg('rem', U(13), U(14)), stg('awake', U(14), U(14, 30))]
+      : [stg('core', U(6, 30), U(9, 30)), stg('deep', U(9, 30), U(11)), stg('core', U(11), U(13)), stg('rem', U(13), U(14, 30)), stg('core', U(14, 30), U(15, 30))];
+    const items = [mk('sl', 'sleep', nightFrom, nightTo, { minutes: 400, stages: stagesDst }), spring ? mk('ev', 'event', U(9, 30), U(10, 30), { title: '夜班' }) : mk('ev', 'event', U(7, 45), U(9, 15), { title: '夜班' }),
+      mk('early', 'stay', start, U(11), { place: 'X' }), mk('home', 'stay', U(11), later, { place: 'Y' }), mk('late', 'stay', later, end, { place: 'Library' })];
+    const dm = buildDay({ date, tz: TZ, start_ms: start, end_ms: end, now_ms: end + 3_600_000, items, labels: [], missing: [], line: null, highlights: [] }, end + 3_600_000, zh), db = buildBar(dm, zh);
+    const ngt = openOf(dm, 'sl', zh).parts.find(x => x.type === 'night').night, real = (spring ? 7 : 9) * 60;
+    check(`on ${name} the night\'s times are the wall clock's, 23:30 to 07:30, and its minutes are real: ${real / 60} h, and the stages add up to them`,
+      ngt.at.join() === '23:30,07:30' && Math.round(Object.values(stageMinutes(dm.items.find(x => x.id === 'sl'))).reduce((x, y) => x + y, 0)) === real && ngt.slices.at(-1).e - ngt.slices[0].s === real * 60_000, JSON.stringify(ngt.slices.map(x => `${x.stage}:${(x.e - x.s) / 60_000}`)));
+    check(`${name}: the totals are real minutes (${spring ? '深睡 1:00 · 核心 4:30 · REM 1:00 · 醒 1 次' : '深睡 1:30 · 核心 6:00 · REM 1:30'})`, ngt.totals === (spring ? '深睡 1:00 · 核心 4:30 · REM 1:00 · 醒 1 次' : '深睡 1:30 · 核心 6:00 · REM 1:30'), ngt.totals);
+    const evText = openOf(dm, 'ev', zh).parts[0].lines[0].text;
+    check(`${name}: an event over the change says ${spring ? '01:30–03:30 for 1 时' : '00:45–01:15 for 1 时 30 分'}, the minutes it ran`, evText.startsWith(spring ? '01:30–03:30 · 1 时 ·' : '00:45–01:15 · 1 时 30 分 ·'), evText);
+    check(`${name}: a stay over the change is as long as the minutes it ran, not the clock's difference (${spring ? '00:00–04:00 is 3 时' : '00:00–03:00 is 4 时'})`, dm.heads.get('early').when === (spring ? '00:00–04:00' : '00:00–03:00') && dm.heads.get('early').dur === (spring ? '3 时' : '4 时'), JSON.stringify(dm.heads.get('early')));
+    const lastHour = db.segs.find(x => x.row === 'late'), hit = peek(dm, db, lastHour.s + 30 * 60_000, zh);
+    check(`${name}: the bar ends where the day does and the last hour, 23:00 to 24:00, is on it: a piece of one real hour that reaches the end`, db.t1 === end && lastHour.e === end && lastHour.f1 === 1 && lastHour.e - lastHour.s === 3_600_000 && clock(lastHour.s, TZ) === '23:00' && db.ticks.at(-1).label === '24' && db.ticks.at(-1).f === 1,
+      JSON.stringify({ t1: db.t1 - end, f1: lastHour.f1, len: (lastHour.e - lastHour.s) / 60_000, from: clock(lastHour.s, TZ) }));
+    check(`${name}: the pointer in the middle of it finds 23:30 and the stretch 23:00–24:00 of an hour, and so does a range over it`, hit.at === '23:30' && hit.stretch.range === '23:00–24:00' && hit.stretch.length === '1 时' && hit.row === 'late' && rowAt(dm, db, end - 60_000) === 'late'
+      && (r => r.range === '23:00–24:00' && r.length === '1 时')(summarize(dm, db, lastHour.s, end, zh)), JSON.stringify({ at: hit.at, stretch: hit.stretch, row: hit.row }));
+  }
 
   // a workout
   const run = fk('workout-1');
