@@ -214,25 +214,29 @@ final class StarStage: UIView, HerDrive {
         defer { CATransaction.commit() }
         // the compositor turns the field and moves the dial and her for the month
         if e.sky != skyKey { rot.transform = CATransform3DMakeRotation(e.sky, 0, 0, 1); skyKey = e.sky }
+        // the timeline instead of the dial (`tm` 1): the star disc dims to a third, the dial fades and shrinks a little, and she glides up to the corner, smaller
+        let tm = e.tm, tlFull = e.timelineFull
         let em = Ease.inOut(e.mon), cell = e.cellOf(Int(clamp(Double(floorDay(e.F)), Double(M_FIRST), Double(M_LAST)))), intro = smooth(0, 900, now - e.born)
-        let dk = String(format: "%.4f|%.0f|%.3f", em, cell.x * 10 + cell.y, intro)
+        let dk = String(format: "%.4f|%.0f|%.3f|%.4f", em, cell.x * 10 + cell.y, intro, tm)
         if dk != dialKey {
             dialKey = dk
-            let s = 1 + (MR / R_BEZ - 1) * em
-            dial.transform = em > 0 ? CATransform3DConcat(CATransform3DMakeScale(s, s, 1), CATransform3DMakeTranslation((cell.x - CX) * em, (cell.y - CY) * em, 0)) : CATransform3DIdentity
-            dial.opacity = Float((1 - smooth(0.5, 0.95, e.mon)) * intro)
-            starsBox.opacity = Float(0.35 + 0.65 * intro)
+            let s = (1 + (MR / R_BEZ - 1) * em) * (1 - 0.03 * tm)
+            dial.transform = em > 0 || tm > 0 ? CATransform3DConcat(CATransform3DMakeScale(s, s, 1), CATransform3DMakeTranslation((cell.x - CX) * em, (cell.y - CY) * em, 0)) : CATransform3DIdentity
+            dial.opacity = Float((1 - smooth(0.5, 0.95, e.mon)) * intro * (1 - tm))
+            starsBox.opacity = Float(lerp(0.35 + 0.65 * intro, 0.35, tm))
         }
-        let pk = String(format: "%.4f|%.2f|%.2f|%.4f", em, e.herP.0, e.herP.1, e.herP.2)
+        let pk = String(format: "%.4f|%.2f|%.2f|%.4f|%.4f", em, e.herP.0, e.herP.1, e.herP.2, tm)
         if pk != poleKey {
             poleKey = pk
-            if em > 0 {
-                let s = 1 - 0.52 * em
-                pole.transform = CATransform3DConcat(CATransform3DMakeScale(s, s, 1), CATransform3DMakeTranslation(0, (POLE_MY - CY) * em, 0))
-            } else if e.cam != nil {
-                pole.transform = CATransform3DConcat(CATransform3DMakeScale(e.herP.2, e.herP.2, 1), CATransform3DMakeTranslation(e.herP.0 - CX, e.herP.1 - CY, 0))
-            } else { pole.transform = CATransform3DIdentity }
+            var s = 1.0, dx = 0.0, dy = 0.0
+            if em > 0 { s = 1 - 0.52 * em; dy = (POLE_MY - CY) * em }
+            else if e.cam != nil { s = e.herP.2; dx = e.herP.0 - CX; dy = e.herP.1 - CY }
+            if tm > 0 { s = lerp(s, TLLayout.herScale, tm); dx = lerp(dx, TLLayout.her.x - CX, tm); dy = lerp(dy, TLLayout.her.y - CY, tm) }
+            pole.transform = s == 1 && dx == 0 && dy == 0 ? CATransform3DIdentity : CATransform3DConcat(CATransform3DMakeScale(s, s, 1), CATransform3DMakeTranslation(dx, dy, 0))
+            halo.opacity = Float(lerp(1, 0.6, tm))
         }
+        // the dial given way, nothing of it is drawn; when it comes back it is drawn again at once
+        if dial.isHidden != tlFull { dial.isHidden = tlFull; if !tlFull { mapSig = nil } }
         base.isHidden = e.baseOff
         // the sky comes a little closer too
         let ss = e.fl > 0 ? 1 + 0.2 * e.camE : 1
@@ -253,7 +257,7 @@ final class StarStage: UIView, HerDrive {
             }
         }
         // the dial is drawn again when something on it moved; at rest only its slow pulses (a waiting star breathing) need it, ten times a second
-        if e.mon <= 0.985 {
+        if e.mon <= 0.985 && !tlFull {
             let sig = MapSig(F: Int((e.F * 1e4).rounded()), q: Int((e.q * 1e5).rounded()), ls: Int((e.ls.value * 1e4).rounded()), lensTh: Int((e.lensTh * 1e4).rounded()),
                              open: e.openId, n: e.EV.count, px: laidPx, calm: Int((e.calmK * 20).rounded()), epoch: e.epoch)
             let hot = sig != mapSig || now < e.wakeUntil || e.flyer != nil || e.EV.contains { now - $0.flash < 700 || now - $0.ign < 900 || now - $0.born < 650 }
@@ -261,9 +265,9 @@ final class StarStage: UIView, HerDrive {
         }
         map.isHidden = e.mon > 0.985
         // trails, her listening, a star flying out
-        let fb = e.fxBusy
+        let fb = e.fxBusy && !tlFull
         if fb { fxLayer.isHidden = false; fxLayer.setNeedsDisplay(); fxOn = true } else if fxOn { fxLayer.isHidden = true; fxOn = false }
-        if e.mon < 0.004 { if monOn { monthBox.isHidden = true; monOn = false; monKey = "" } } else {
+        if e.mon < 0.004 || tlFull { if monOn { monthBox.isHidden = true; monOn = false; monKey = "" } } else {
             let key = String(format: "%.3f|%.2f|%d|%d", e.mon, laidPx, floorDay(e.F), e.epoch)
             if key != monKey { monKey = key; monthBox.isHidden = false; monOn = true; layoutMonth() }
         }
@@ -318,6 +322,7 @@ final class StarStage: UIView, HerDrive {
     /// the dial's hit area: the band between the top row and the panel's grabber, running past the screen's sides
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         let p = CGPoint(x: (Double(point.x) - ox) / k, y: (Double(point.y) - oy) / k)
+        if engine.tm > 0.5 { return hypot(Double(p.x) - TLLayout.her.x, Double(p.y) - TLLayout.her.y) < 26 }        // the timeline: only she is touched here
         return p.y >= 58 && p.y <= 528
     }
     private func id(_ t: UITouch) -> Int { ObjectIdentifier(t).hashValue }

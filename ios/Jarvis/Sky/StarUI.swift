@@ -122,4 +122,7 @@ final class StarUI {
     var voiceNote: String?              // the voice's one status line: the model download, or what went wrong
     // what is attached to the words, and the panel that picks it (Attach/)
     let attach = AttachModel()
+    // the whole-day timeline, which can take the dial's place in the middle of the screen (Sky/DayTimeline.swift)
+    let tl = TimelineState()
+    var tlShow = HomeModule.shared.isTimeline       // the timeline is drawn: it is the middle of the screen, or the dial is still giving way to it
 }

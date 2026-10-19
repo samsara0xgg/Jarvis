@@ -30,6 +30,7 @@ extension StarEngine {
         fs = Spring(n - 330); goal = n; stiff = 2.6; mode = .seek; byHand = false
         F = n - 330; prevF = F; Trev = n; prevRev = n
         qGoal = 0; openId = nil; rowKey = ""; viewKey = ""; panelKey = ""; dateD = nil; seenVersion = -1; monthAsked = false
+        ui.tl.day = floorDay(n); ui.tl.openRow = nil
         epoch += 1; wake()
     }
 
@@ -44,6 +45,7 @@ extension StarEngine {
         EV = fresh
         if let l = lightRef { if nowMs() < l.until { lightStar(l.id) } else { lightRef = nil } }
         sprites.minis.removeAll(); epoch += 1; rowKey = ""; panelKey = ""; wake()
+        ui.tl.version += 1
         let days = b.days
         Task { @MainActor in await TalkTopics.shared.ensure(days) }                           // what the talks were about
     }
@@ -51,7 +53,7 @@ extension StarEngine {
     /// The day in focus and the week round it (nearest first), today, and the whole month while the month is open. The brain skips what it served since the app was opened.
     func askDays() {
         guard Cal.cur.real else { return }
-        let c = Cal.cur, d = floorDay(F)
+        let c = Cal.cur, d = HomeModule.shared.isTimeline ? ui.tl.day : floorDay(F)
         var days = Set((d - 3)...(d + 3))
         days.insert(floorDay(nowT()))
         if qGoal > 1.5 { days.formUnion(M_FIRST...M_LAST) }

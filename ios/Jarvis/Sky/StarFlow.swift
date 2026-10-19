@@ -108,7 +108,7 @@ extension StarEngine {
 
     func onHer(_ p: CGPoint) -> Bool {
         let (x, y) = poleXY()
-        return hypot(Double(p.x) - x, Double(p.y) - y) < max(30, mon > 0.5 ? 26 : 46 * herP.2)
+        return hypot(Double(p.x) - x, Double(p.y) - y) < (tm > 0.5 ? 26 : max(30, mon > 0.5 ? 26 : 46 * herP.2))
     }
     func letGo(_ v: Double) {
         // where an iOS-style deceleration would come to rest, nudged onto the nearest thing worth stopping on
@@ -142,7 +142,7 @@ extension StarEngine {
                     if s.talk == nil { if BrainLink.shared.hasToken { s.micTap() } else { s.holdTalk() } }      // paired, she listens for real; the scripted talks are the unpaired demo
                 }
                 ng.timer = w; DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: w)
-            } else if talk == nil && mon < 0.5 && fl < 0.05 {
+            } else if talk == nil && mon < 0.5 && fl < 0.05 && tm < 0.5 {
                 let w = DispatchWorkItem { [weak self] in
                     guard let s = self, let g = s.g, g.kind == .press else { return }
                     s.g?.kind = .lens; s.lensGoal = 1; s.lensTh = atan2(Double(g.p0.y) - CY, Double(g.p0.x) - CX); s.prevLensT = nil
@@ -152,7 +152,7 @@ extension StarEngine {
                 ng.timer = w; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: w)
             }
             g = ng
-        } else if ptr.count == 2, let cur = g, cur.kind != .hold {
+        } else if ptr.count == 2, tm < 0.5, let cur = g, cur.kind != .hold {
             cur.timer?.cancel(); lensGoal = 0
             let (d0, a0) = two2()
             g = Gest(kind: .pinch, d0: d0, a0: a0, q0: qs.value, F0: fs.value); qHeld = true; pressed = false; mode = .drag; byHand = true
@@ -165,7 +165,7 @@ extension StarEngine {
         ptr[id] = p
         if cur.kind == .press && hypot(Double(p.x - cur.p0.x), Double(p.y - cur.p0.y)) > 7 {
             cur.timer?.cancel(); pressed = false
-            if (talk != nil && voiceState == .idle) || mon > 0.5 { cur.kind = .none; g = cur; return }       // a scripted talk drives the dial itself; his voice talk leaves it to his finger
+            if (talk != nil && voiceState == .idle) || mon > 0.5 || tm > 0.5 { cur.kind = .none; g = cur; return }       // a scripted talk drives the dial itself; his voice talk leaves it to his finger
             cur.kind = .drag; mode = .drag; byHand = true; fs.velocity = 0; cur.a = nil
             if openId != nil { openId = nil; rowKey = "" }
         }
@@ -216,6 +216,7 @@ extension StarEngine {
             if BrainLink.shared.hasToken { return micTap() }
             return run { ok in try await self.talkFlow(ok, self.nextTalk(), nil, false) }
         }
+        if tm > 0.5 { return }          // the timeline has no dial to tap
         if mon > 0.5 { if let d = cellAt(Double(p.x), Double(p.y)) { openDay(d) }; return }
         var best: Ev?, bd = 22.0
         for e in EV where e.on && e.v >= 0.2 {
@@ -269,6 +270,7 @@ extension StarEngine {
         for _ in 0..<10 {
             if let e = EV.first(where: { $0.card?.id == id }) {
                 closePanel(quiet: true); setLevel(0); openId = e.id; rowKey = ""; panelKey = ""; seek(e.t)
+                if HomeModule.shared.isTimeline { ui.tl.goToday(); ui.tl.focus = id }       // there it is the pinned row, opened
                 return
             }
             try? await Task.sleep(nanoseconds: 100_000_000)
@@ -483,6 +485,7 @@ extension StarEngine {
     func step(now: Double, dt: Double, scale: Double) {
         px = scale
         syncBrain()
+        syncModule(dt)
         // zoom
         if !qHeld { crit(&qs, qGoal, 7.5, dt) }
         q = qs.value; z = pow(7, clamp(q, 0, 1)); mon = clamp(q - 1, 0, 1); k = TAU / (DAY * z)
@@ -542,12 +545,12 @@ extension StarEngine {
         herP = cam != nil ? (lerp(CX, 372, camE), lerp(CY, 132, camE), lerp(1, 0.42, camE)) : (CX, CY, 1)
         baseOff = cam != nil || lensM > 1.002           // close up or under the lens, the fixed rings are drawn with everything else
         // the panel under the dial
-        updateDetail()
+        if !timelineFull { updateDetail() }
         let at = q < 0.5 && abs(F - nowT()) < 8 && mode != .drag, gone = at || talk != nil
         put(\.showBack, !gone)
         put(\.level, Int(clamp(qGoal.rounded(), -1, 2)))
         put(\.camE, camE)
-        let dd = floorDay(F)
+        let dd = HomeModule.shared.isTimeline ? ui.tl.day : floorDay(F)       // the timeline's own day, else the one the dial is turned to
         if dd != dateD || epoch != dateEpoch {      // the date, and the day's all-day events when the days change
             if dd != dateD { dateD = dd; askDays() }
             dateEpoch = epoch

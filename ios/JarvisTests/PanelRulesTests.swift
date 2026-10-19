@@ -3,6 +3,11 @@ import XCTest
 
 /// The talk panel while he types (spec-2c): where the composer sits over the keys, the chip, keeping to the bottom, and when the panel is there.
 final class PanelRulesTests: XCTestCase {
+    // the dial and the panel under it are the star dial's: the home screen's default is the timeline, which has neither
+    private let kept = HomeModule.shared.kind
+    override func setUp() { HomeModule.shared.kind = .stars }
+    override func tearDown() { HomeModule.shared.kind = kept }
+
     func testTheComposerSitsEightPointsOverTheKeysNotThirtyFour() {
         for h in [0.0, 300, 345, 410] {
             let bottom = H - StarUI.restGap - StarUI.lift(keyboardHeight: h)       // the composer's bottom, in the layout's own terms

@@ -50,6 +50,8 @@ final class StarEngine {
     // ---------- state ----------
     var fs = Spring(NOW1 - 330)       // the focus time, in minutes; the sky turns in from earlier tonight
     var qs = Spring(0)                // zoom: -1 close, 0 a day, 1 a week, 2 the month
+    var tms = Spring(HomeModule.shared.isTimeline ? 1 : 0)      // the middle of the screen: 0 the dial, 1 the timeline (Sky/StarModule.swift)
+    var moduleSeen = HomeModule.shared.kind
     var mode: Mode = .seek
     var goal = NOW1, stiff = 2.6, qGoal = 0.0, qHeld = false
     var F = NOW1 - 330, z = 1.0, amp = 8.5, k = TAU / DAY, q = 0.0, mon = 0.0, fl = 0.0
@@ -138,6 +140,7 @@ final class StarEngine {
     var isBusy: Bool {
         mode != .idle || abs(omegaS) > 0.01 || qHeld || abs(qs.value - qGoal) > 0.002 || abs(qs.velocity) > 0.002 || abs(ls.value - lensGoal) > 0.002
             || g != nil || talk != nil || flyer != nil || !sonar.isEmpty || speaking != nil || (ui.panelOpen && nowMs() - panelSince < 450)
+            || abs(tms.value - (HomeModule.shared.isTimeline ? 1 : 0)) > 0.002 || abs(tms.velocity) > 0.002
     }
 
     func sound(_ cue: SoundCue, _ gain: Float) { Sound.shared.play(cue, gain: gain) }
@@ -206,7 +209,7 @@ final class StarEngine {
 
     // MARK: the pole (her) and the month's cells
 
-    func poleXY() -> (Double, Double) { mon > 0.5 ? (CX, POLE_MY) : (herP.0, herP.1) }
+    func poleXY() -> (Double, Double) { tm > 0.5 ? (TLLayout.her.x, TLLayout.her.y) : mon > 0.5 ? (CX, POLE_MY) : (herP.0, herP.1) }
     func cellOf(_ d: Int) -> (x: Double, y: Double, row: Int, col: Int) {
         let c = Cal.cur, i = d - c.mFirst + c.firstCol, row = i / 7, col = i % 7
         return (GX0 + GW * (Double(col) + 0.5), GY0 + GH * Double(row) + MR + 2, row, col)

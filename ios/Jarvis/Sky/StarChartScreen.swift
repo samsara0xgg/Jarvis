@@ -63,6 +63,8 @@ struct StarChrome: View {
             topRow
             detail
                 grabber
+            Group { if ui.tlShow { DayTimelineView(engine: engine, ui: ui, pull: $pull).transition(.opacity) } }
+                .animation(.easeOut(duration: 0.35), value: ui.tlShow)
             TalkPanel(engine: engine, ui: ui, pull: $pull)
             voiceNote
             AttachDim(model: ui.attach)
@@ -116,15 +118,17 @@ struct StarChrome: View {
     // MARK: the top row: the day you are looking at, the scale, settings
 
     private var topRow: some View {
-        HStack(spacing: 8) {
+        let tlOn = HomeModule.shared.isTimeline          // the timeline in the dial's place: she stands in the corner, so the date starts further right, and there is no scale to pick
+        return HStack(spacing: 8) {
             HStack(spacing: 0) {
                 Text(ui.dateText).font(.system(size: 15, weight: .semibold)).foregroundStyle(ink).lineLimit(1).layoutPriority(1)
                 if let l = ui.dateLabel, !ui.talking { Text(" · " + l).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).fixedSize() }      // short enough to fit beside the date; the talk's time takes its place
                 Text("  " + ui.topTime).font(monoF(14)).foregroundStyle(ink).lineLimit(1)
-                    .opacity(ui.talking ? 1 : 0).animation(.easeOut(duration: 0.25), value: ui.talking)
+                    .opacity(ui.talking && !tlOn ? 1 : 0).animation(.easeOut(duration: 0.25), value: ui.talking)
             }
             Spacer(minLength: 0)
             SegControl(level: ui.level) { engine.setLevel(Double($0)) }
+                .opacity(tlOn ? 0 : 1).allowsHitTesting(!tlOn)
             Button { ui.settingsOpen = true } label: {
                 Image(systemName: "gearshape").font(.system(size: 18, weight: .regular)).foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.8))
                     .frame(width: 36, height: 36).glass(Circle())
@@ -134,7 +138,8 @@ struct StarChrome: View {
             }.buttonStyle(PressScale())
             .accessibilityLabel(LifelogRecorder.shared.recording ? "设置，正在随身录音" : "设置")
         }
-        .padding(.horizontal, 30)
+        .padding(.leading, tlOn ? 30 + TLLayout.dateShift : 30).padding(.trailing, 30)
+        .animation(.easeOut(duration: 0.35), value: tlOn)
         .frame(width: W, height: 38)
         .offset(y: 60)
     }
@@ -142,7 +147,7 @@ struct StarChrome: View {
     // MARK: the panel under the dial
 
     private var detail: some View {
-        let away = ui.talking || ui.typing || ui.panelOpen || ui.tuning
+        let away = ui.talking || ui.typing || ui.panelOpen || ui.tuning || HomeModule.shared.isTimeline        // the timeline takes its place the way a talk does
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .bottom, spacing: 12) {
                 Text(ui.hm).font(serif(ui.view == "day" ? 80 : 68)).foregroundStyle(ink).lineLimit(1).fixedSize()
@@ -218,7 +223,7 @@ struct StarChrome: View {
     // MARK: the grabber: pull the talk panel up over the dial
 
     private var grabber: some View {
-        let hide = ui.typing || ui.panelOpen || ui.view == "month"
+        let hide = ui.typing || ui.panelOpen || ui.view == "month" || HomeModule.shared.isTimeline
         return Capsule().fill(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.28)).frame(width: 36, height: 5)
             .frame(width: 120, height: 36)
             .contentShape(Rectangle())

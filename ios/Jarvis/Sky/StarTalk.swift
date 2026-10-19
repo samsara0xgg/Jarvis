@@ -200,7 +200,9 @@ extension StarEngine {
 // MARK: the panel's second height: the whole conversation, over the dial
 
 extension StarEngine {
-    static let panelHome = 540.0, panelOpen = 104.0
+    static let panelOpen = 104.0
+    /// where the panel's top edge rests: under the dial's time, or at the top of the timeline's list
+    static var panelHome: Double { HomeModule.shared.isTimeline ? TLLayout.listTop : 540 }
     /// The stream lists this many rows at a time, however long the conversation: every change to the talk (her caption grows 30 times a second) lays out
     /// and compares what is listed, so the cost has to stay the same with 50 rows held or 5000.
     static let streamPage = 60
@@ -226,7 +228,7 @@ extension StarEngine {
     }
     /// the live rows are taller than the talk's place under the dial: the panel opens by itself, once per talk
     func measureLive(_ h: Double) {
-        if ui.talking && !ui.panelOpen && !autoOpenSpent && h > 280 { openPanel(auto: true) }
+        if ui.talking && !ui.panelOpen && !autoOpenSpent && h > 836 - Self.panelHome - 16 { openPanel(auto: true) }
     }
     /// A talk star's `全部 ›`: the panel, at the first row of the talk (or the nearest after it).
     func showTalk(_ startMs: Int64) {
@@ -255,7 +257,7 @@ extension StarEngine {
         return true
     }
     /// the app came back after a long time away: the star chart as it was first opened, on now
-    func comeBack() { setLevel(0); goBack() }
+    func comeBack() { setLevel(0); goBack(); if HomeModule.shared.isTimeline { ui.tl.goToday() } }
 
     /// what the app is in, for a stall line: counts and states, no words
     func stallContext() -> String {
