@@ -465,6 +465,9 @@ final class DayTimelineRowsTests: XCTestCase {
         // a place, a pause and the line for now are never cut short
         let m = build(TimelineFixture.today(cal))
         for e in m.entries where e.kind == .stay || e.kind == .now || e.kind == .pause { XCTAssertFalse(e.cutShort, e.id) }
+        // the words are measured once, when the day is built: a row's flag is what measuring it now says, and a row that opens for nothing else opens by it
+        for e in m.entries { XCTAssertEqual(e.cut, e.cutShort, e.id) }
+        XCTAssertTrue(cut.cut && !fits.cut && wait.cut && !known.cut)
         // the measure: ten wide characters at 15 pt are 150
         XCTAssertEqual(tlWidth(String(repeating: "字", count: 10), size: 15), 150, accuracy: 1.5)
         XCTAssertGreaterThan(tlWidth("Hillside Centre", size: 12), 60)

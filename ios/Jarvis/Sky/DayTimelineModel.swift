@@ -219,6 +219,7 @@ struct TLEntry: Identifiable, Equatable {
     var sleep: TLSleep?             // a night: its stages
     var sessions: [TLSession] = []  // Claude Code: its session, or, for one row that stands for several, each of them
     var spans: [TLMark] = []        // where it is on the bar when that is not one span
+    var cut = false                 // its own words are cut short at the right of the columns (`cutShort`, measured once when the day is built, not whenever a row asks)
 
     /// the height of the row without the gap above it
     var base: Double {
@@ -235,7 +236,7 @@ struct TLEntry: Identifiable, Equatable {
     var opens: Bool {
         switch kind {
         case .now, .pause: false
-        default: kind == .talk || kind == .picture || !more.isEmpty || !actions.isEmpty || place != nil || work != nil || sleep != nil || holdsSessions || cutShort
+        default: kind == .talk || kind == .picture || !more.isEmpty || !actions.isEmpty || place != nil || work != nil || sleep != nil || holdsSessions || cut
         }
     }
 }
@@ -530,7 +531,7 @@ struct DayTimelineModel: Equatable {
             entries.insert(line, at: entries.firstIndex { $0.t0 > now } ?? entries.count)
         }
         space(&entries)
-        for k in entries.indices { entries[k].actions = actions(of: entries[k]) }
+        for k in entries.indices { entries[k].actions = actions(of: entries[k]); entries[k].cut = entries[k].cutShort }
 
         // the night that ended on this day says when he woke; what began before the bar's start brings it back
         let wake = items.compactMap { $0.kind == "sleep" ? $0.end_ms.map(m) : nil }.filter { $0 >= 0 && $0 < DAY }.min()
