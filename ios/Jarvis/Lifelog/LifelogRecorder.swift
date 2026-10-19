@@ -14,6 +14,7 @@ import os
 // During a conversation the voice's engine owns the microphone (voice processing, mono) and feeds the same writer from its tap, so
 // a piece spans conversations. Each hand-over costs a gap in the audio (the old engine stops before the new one is built): short for
 // the recorder's own engine, up to a second or so while the voice settles its input.
+// At home, while the Mac records him, the writer keeps nothing (LifelogGate, LifelogCoverage.swift, ADR 0292); the engine and the session run as ever.
 
 enum LifelogClock {
     /// The first 10-minute mark of the local clock (:00, :10, :20 ...) after `ms`, in UTC milliseconds.
@@ -59,6 +60,18 @@ final class LifelogWriter: @unchecked Sendable {
     private let accepting = OSAllocatedUnfairLock(initialState: false)
     func setAccepting(_ on: Bool) { accepting.withLock { $0 = on } }
 
+    /// Nothing is kept until this moment (UTC ms), 0 for no such moment (ADR 0292: the Mac records where he is). A decision not renewed
+    /// lapses by itself, so a gate that stopped asking never leaves the day unrecorded.
+    private let dropUntilMs = OSAllocatedUnfairLock<Int64>(initialState: 0)
+    var dropping: Bool { dropUntilMs.withLock { $0 } > LifelogClock.nowMs() }
+    /// Stops keeping audio until `until` (nil: keeps it). The piece being written is closed at once when the audio stops being kept, so a piece never
+    /// mixes kept and dropped time.
+    func setDropping(until: Int64?) {
+        let was = dropping
+        dropUntilMs.withLock { $0 = until ?? 0 }
+        if !was && dropping { close() }
+    }
+
     private let queue = DispatchQueue(label: "jarvis.lifelog.writer", qos: .userInitiated)
     // everything below on `queue` only
     private var sink: LifelogSink?
@@ -71,7 +84,7 @@ final class LifelogWriter: @unchecked Sendable {
 
     /// Called on the audio thread: copies the buffer and returns; the rest happens on the writer's queue.
     func feed(_ b: AVAudioPCMBuffer) {
-        guard accepting.withLock({ $0 }), let src = b.floatChannelData,
+        guard accepting.withLock({ $0 }), !dropping, let src = b.floatChannelData,
               let c = AVAudioPCMBuffer(pcmFormat: b.format, frameCapacity: b.frameLength) else { return }
         c.frameLength = b.frameLength
         for ch in 0..<Int(b.format.channelCount) { c.floatChannelData![ch].update(from: src[ch], count: Int(b.frameLength)) }
@@ -84,7 +97,7 @@ final class LifelogWriter: @unchecked Sendable {
     func closeSync() { queue.sync { closeNow() } }
 
     private func write(_ b: AVAudioPCMBuffer) {
-        guard accepting.withLock({ $0 }) else { return }
+        guard accepting.withLock({ $0 }), !dropping else { return }
         let now = LifelogClock.nowMs()
         if sink != nil, now >= boundaryMs { closeNow() }
         if sink == nil {
@@ -399,7 +412,7 @@ final class LifelogRecorder {
         LifelogWriter.shared.onPiece = { d in
             Task { @MainActor in
                 LifelogRecorder.shared.pieceStartedAt = d
-                if d == nil { LifelogUploader.shared.kick() }
+                if d == nil { LifelogUploader.shared.kick(); LifelogGate.shared.refresh() }
             }
         }
         let nc = NotificationCenter.default
@@ -477,6 +490,7 @@ final class LifelogRecorder {
         LifelogWriter.shared.setAccepting(live)
         if !live { LifelogWriter.shared.close() }
         LifelogMic.shared.set(on: on, interrupted: paused)
+        LifelogGate.shared.run(on)
         let changed = live != recording
         recording = live
         if changed { ControlCenter.shared.reloadControls(ofKind: LifelogSwitch.controlKind) }   // the control shows the switch as it is now

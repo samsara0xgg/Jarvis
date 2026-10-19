@@ -83,6 +83,8 @@ final class SettingsModel {
         if u.needsRepair { parts.append("需要重新配对才能上传") } else if u.waiting > 0 { parts.append("\(u.waiting) 段待传") }
         return parts.joined(separator: " · ")
     }
+    /// 在家，Mac 在录，手机暂不留音频: why the phone does or does not keep the audio now (ADR 0292); empty while the switch is off
+    @MainActor var lifelogReason: String { LifelogGate.shared.line }
     static func recordedText(ms: Int64) -> String {
         let m = Int(ms / 60_000)
         if m < 1 { return "今天还没录" }
