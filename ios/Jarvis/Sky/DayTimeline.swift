@@ -531,14 +531,14 @@ private struct TLRowView: View {
         Image(systemName: symbolName).font(.system(size: 15)).foregroundStyle(e.later ? iconColor.opacity(0.6) : iconColor).frame(width: 22, height: 18)
     }
 
-    /// a trip is a dashed rail through the symbol's column, with the vehicle on it
+    /// a trip is a dashed rail through the symbol's column, with the vehicle on it (level with the title, the rail running on to the foot of a taller row)
     private var rail: some View {
-        VStack(spacing: 0) { dashes; symbol; dashes }
+        VStack(spacing: 0) { dashes(9); symbol; dashes(e.height - 27) }
     }
-    private var dashes: some View {
-        Path { p in p.move(to: .zero); p.addLine(to: CGPoint(x: 0, y: 9)) }
+    private func dashes(_ h: Double) -> some View {
+        Path { p in p.move(to: .zero); p.addLine(to: CGPoint(x: 0, y: h)) }
             .stroke(Color(red: 196 / 255, green: 208 / 255, blue: 255 / 255).opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [2, 3]))
-            .frame(width: 1, height: 9)
+            .frame(width: 1, height: h)
     }
 
     /// what opening it shows: the first exchange of a talk, the picture, or the lines in full

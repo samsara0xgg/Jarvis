@@ -40,7 +40,7 @@ struct TLEntry: Identifiable, Equatable {
         switch kind {
         case .sleep: TLMetrics.sleep
         case .stay: TLMetrics.stay
-        case .trip: TLMetrics.trip
+        case .trip: detail == nil ? TLMetrics.trip : TLMetrics.rowDetail
         case .now: TLMetrics.now
         default: detail == nil ? TLMetrics.row : TLMetrics.rowDetail
         }
@@ -165,9 +165,9 @@ struct DayTimelineModel: Equatable {
                 if i.kind == "ride" {
                     e.symbol = "bus.fill"
                     let stops = [text(i.board_stop), text(i.alight_stop)]
-                    let route = text(i.route).map { "\($0) 路" } ?? "公交"
                     let trail = stops.compactMap { $0 }.joined(separator: " → ")
-                    e.title = trail.isEmpty ? route : route + " · " + trail
+                    e.title = text(i.route).map { "\($0) 路" } ?? "公交"
+                    e.detail = trail.isEmpty ? nil : trail          // one stop is that stop alone, none no line at all
                     e.more = [stops[0].map { "上车 " + $0 }, stops[1].map { "下车 " + $0 }].compactMap { $0 }
                 } else {
                     let (word, symbol) = Self.moves[i.activity ?? ""] ?? ("移动", "arrow.right")

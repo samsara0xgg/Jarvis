@@ -97,16 +97,27 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(build(r, now: nil).entries.map(\.symbol), ["figure.run", "bicycle"])
     }
 
-    func testABusRideNamesTheRouteAndBothStops() throws {
+    func testABusRideIsNamedForItsRouteAndItsStopsAreTheMutedLineUnderIt() throws {
         let m = build(TimelineFixture.today(cal))
         let ride = try entry(m, "ride-8")
-        XCTAssertEqual(ride.title, "27 路 · Hillside Centre → UVic Exchange")
+        XCTAssertEqual(ride.title, "27 路")
+        XCTAssertEqual(ride.detail, "Hillside Centre → UVic Exchange")
+        XCTAssertEqual(ride.height, TLMetrics.rowDetail, "the stops have a line of their own, so they are not cut off")
         XCTAssertEqual(ride.symbol, "bus.fill")
         XCTAssertEqual(ride.right, "29 分")
         XCTAssertEqual(ride.more, ["上车 Hillside Centre", "下车 UVic Exchange"], "the stops in full when it is opened")
-        // a ride whose stop is not known yet says what it knows
-        let r = try reply(#"{"id": "r", "lane": "you", "kind": "ride", "state": "now", "start_ms": \#(at(1280)), "end_ms": null, "route": "12", "board_stop": "Stop A"}"#)
-        XCTAssertEqual(build(r).entries[0].title, "12 路 · Stop A")
+        // a ride whose other stop is not known yet gives the one it knows; one that knows no stop has no second line
+        let one = try reply(#"{"id": "r", "lane": "you", "kind": "ride", "state": "now", "start_ms": \#(at(1280)), "end_ms": null, "route": "12", "board_stop": "Stop A"}"#)
+        let a = build(one).entries[0]
+        XCTAssertEqual([a.title, a.detail], ["12 路", "Stop A"])
+        XCTAssertEqual(a.height, TLMetrics.rowDetail)
+        XCTAssertEqual(a.more, ["上车 Stop A"])
+        let none = try reply(#"{"id": "r", "lane": "you", "kind": "ride", "state": "now", "start_ms": \#(at(1280)), "end_ms": null, "route": "12"}, {"id": "q", "lane": "you", "kind": "ride", "state": "done", "start_ms": \#(at(100)), "end_ms": \#(at(120))}"#)
+        let b = build(none).entries.filter { $0.kind == .trip }
+        XCTAssertEqual(b.map(\.title), ["公交", "12 路"], "no route is just a bus")
+        XCTAssertEqual(b.map(\.detail), [nil, nil])
+        XCTAssertEqual(b.map(\.height), [TLMetrics.trip, TLMetrics.trip], "no second line, no taller row")
+        XCTAssertTrue(b.allSatisfy { !$0.opens })
     }
 
     func testTheNightIsARowWithItsHoursAndHowLongHeSlept() throws {
@@ -221,6 +232,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(m.offsets.last! + heights.last!, m.entries.reduce(0) { $0 + $1.height })
         XCTAssertEqual(try entry(m, "stay-1").height, TLMetrics.stay)
         XCTAssertEqual(try entry(m, "move-3").height, TLMetrics.trip)
+        XCTAssertEqual(try entry(m, "ride-8").height, TLMetrics.rowDetail, "a ride has its stops under it")
         XCTAssertEqual(try entry(m, "talk-1").height, TLMetrics.rowDetail, "a row with a muted line is taller")
         XCTAssertEqual(try entry(m, "call-demo-1").height, TLMetrics.rowDetail)
         XCTAssertEqual(m.top(of: "talk-1"), m.offsets[2])
