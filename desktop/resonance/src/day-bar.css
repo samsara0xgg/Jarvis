@@ -92,8 +92,35 @@
 .notch .dt-cbtn { height:26px; padding:0 12px; border-radius:var(--radius-control); background:var(--p-ink); font-size:12px; font-weight:600; color:#10131d; }
 .notch .dt-cbtn:hover { background:#fff; }
 
+/* a number's card (CardView.tsx): under the numbers, the pane's width, over the list (the pointer's card, one up, can lie across it). Its parts are labelled
+   figures, lists, bars, the night and thumbnails, each only if it has something to say; at most about 170 px, what does not fit scrolls inside it. It comes in
+   over 180 ms (DayBar.tsx) and a change of number is a fade through of 120. */
+.notch .dt-card.is-num { top:calc(100% + 6px); right:0; z-index:5; width:auto; pointer-events:auto; }
+.notch .dt-card.is-num .dt-card-in { max-height:176px; overflow-x:hidden; overflow-y:auto; transform:none; transition:none; scrollbar-width:thin; scrollbar-color:var(--p-line) transparent; }
+.notch .dt-card.is-num .dt-slot.is-cur { transition:opacity 60ms linear 60ms, transform 60ms var(--ease-out) 60ms; }
+.notch .dt-nb { display:flex; flex-direction:column; gap:8px; margin-top:9px; padding-top:9px; border-top:1px solid rgb(255 255 255 / .06); }
+.notch .dt-ncs { display:flex; flex-wrap:wrap; gap:3px 16px; }
+.notch .dt-nc { display:inline-flex; align-items:baseline; gap:6px; min-width:0; max-width:100%; font-size:12.5px; line-height:18px; white-space:nowrap; }
+.notch .dt-nc small { flex:none; font-size:11.5px; color:var(--p-faint); }
+.notch .dt-nc b { min-width:0; overflow:hidden; text-overflow:ellipsis; font:500 12px/18px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; color:var(--p-ink); }
+.notch .dt-nes { display:flex; flex-direction:column; gap:4px; margin:0; padding:0; list-style:none; }
+.notch .dt-nes li { display:flex; flex-wrap:wrap; align-items:baseline; gap:1px 10px; min-width:0; font-size:12.5px; line-height:18px; }
+.notch .dt-nic { display:inline-grid; place-items:center; align-self:center; width:20px; height:18px; margin-right:-4px; color:var(--p-muted); }
+.notch .dt-nes b { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; color:var(--p-ink); }
+.notch .dt-nes em { font:11.5px/18px "JetBrains Mono", Menlo, monospace; font-style:normal; font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--p-muted); }
+.notch .dt-nmore { font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-style:normal; color:var(--p-faint); }
+.notch .dt-nbars { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:6px 20px; align-items:start; }
+.notch .dt-nbars .dt-bars { grid-template-columns:minmax(0, 72px) minmax(0, 1fr) max-content; gap:4px 8px; }
+.notch .dt-nbars .dt-bar-row em { min-width:0; }
+.notch .dt-npics { display:flex; flex-wrap:wrap; align-items:flex-start; gap:8px; }
+.notch .dt-npic { display:flex; flex-direction:column; align-items:center; gap:3px; padding:0; cursor:zoom-in; }
+.notch .dt-npic img,.notch .dt-npic-no { display:block; width:56px; height:56px; border-radius:8px; object-fit:cover; background:rgb(255 255 255 / .06); }
+.notch .dt-npic-no { display:grid; place-items:center; color:var(--p-faint); }
+.notch .dt-npic time { font:10.5px/12px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; color:var(--p-faint); }
+.notch .dt-npic:hover img { filter:brightness(1.12); }
+
 /* the day's numbers: each is a lens, previewed under the pointer and pinned by a click */
-.notch .dt-numbers { display:flex; flex-wrap:wrap; gap:6px; }
+.notch .dt-numbers { position:relative; display:flex; flex-wrap:wrap; gap:6px; }
 .notch .dt-num { display:inline-flex; align-items:center; gap:5px; height:24px; padding:0 9px; border-radius:12px; background:rgb(255 255 255 / .06); font-size:11.5px; white-space:nowrap; color:rgb(var(--ink) / .86); transition:background 120ms,box-shadow 120ms; }
 .notch .dt-num svg { flex:none; color:rgb(var(--k)); }
 .notch .dt-num em { font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-style:normal; font-variant-numeric:tabular-nums; color:var(--p-ink); }
@@ -124,4 +151,5 @@
   .notch .dt-card.is-on { transition:opacity 120ms linear !important; }
   .notch .dt-slot.is-cur { transition:opacity 120ms linear 60ms !important; }
   .notch .dt-slot:not(.is-cur) { transform:none; transition:opacity 60ms linear !important; }
+  .notch .dt-card.is-num .dt-slot.is-cur { transition:opacity 60ms linear 60ms !important; }
 }
