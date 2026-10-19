@@ -212,13 +212,15 @@ const CONDITIONS: Record<string, [Sky, L]> = {
   snow: SNOW, heavysnow: SNOW, flurries: SNOW, sunflurries: SNOW, sleet: SNOW, wintrymix: SNOW, blizzard: SNOW, blowingsnow: SNOW, hail: SNOW,
   foggy: FOG, haze: FOG, smoky: FOG, blowingdust: FOG, breezy: WIND, windy: WIND,
 };
-// `sky` is null for a condition this does not know (its word is then empty); `temps` is `14° / 8°` (high, low), or what of it there is.
-export type WeatherLook = { sky: Sky | null; word: string; temps: string };
-export function weatherOf(w: Weather | null | undefined, t: Say): WeatherLook | null {
+// `sky` is null for a condition this does not know (its word is then empty); `temps` is `14° / 8°` (high, low), or what of it there is; `sun` is
+// what a rest on the weather says (`日出 07:12 · 日落 18:21`, in the zone the day was cut in), empty when the brain sent neither time.
+export type WeatherLook = { sky: Sky | null; word: string; temps: string; sun: string };
+export function weatherOf(w: Weather | null | undefined, t: Say, tz = ''): WeatherLook | null {
   if (!w) return null;
   const hit = CONDITIONS[clean(w.condition).toLowerCase().replace(/[^a-z]/g, '')];
   const temps = [w.high, w.low].filter((x): x is number => x != null).map(x => `${Math.round(x) || 0}°`).join(' / ');
-  return hit || temps ? { sky: hit?.[0] ?? null, word: hit ? t(hit[1]) : '', temps } : null;
+  const sun = [w.sunrise_ms != null && t([`Sunrise ${clock(w.sunrise_ms, tz)}`, `日出 ${clock(w.sunrise_ms, tz)}`]), w.sunset_ms != null && t([`Sunset ${clock(w.sunset_ms, tz)}`, `日落 ${clock(w.sunset_ms, tz)}`])].filter((x): x is string => !!x).join(' · ');
+  return hit || temps ? { sky: hit?.[0] ?? null, word: hit ? t(hit[1]) : '', temps, sun } : null;
 }
 // The body's numbers for the day, as quiet values (`8,240 步`, `静息 58`, `HRV 42`): only the ones that were reported.
 export type Vital = { key: string; before: string; value: string; after: string };
@@ -230,8 +232,9 @@ export function vitalsOf(v: Vitals | null | undefined, t: Say): Vital[] {
   return out;
 }
 
-const SOURCES: Record<string, L> = { phone: ['The phone', '手机'], reminders: ['Reminders', '提醒'], mac: ['Mac time', 'Mac 的时间'], talks: ['Conversations', '对话'], rides: ['Bus rides', '公交乘车'],
-  pictures: ['Pictures', '图片'], calendar: ['The calendar', '日历'], departures: ['Pinned buses', '钉着的公交'], commitments: ['What he has to go to', '要去的事'] };
+// What a source gives the day, named as the phone names it (`还没读到：Mac 的时间`).
+const SOURCES: Record<string, L> = { phone: ['The phone’s records', '手机的记录'], reminders: ['Reminders', '提醒'], mac: ['Mac time', 'Mac 的时间'], talks: ['Conversations', '对话'], rides: ['Bus rides', '公交乘车'],
+  pictures: ['Pictures', '图片'], calendar: ['The calendar', '日历'], departures: ['Buses', '公交'], commitments: ['What he has to go to', '要去的事'] };
 const PAYERS: Record<string, L> = { wechat_pay: ['WeChat Pay', '微信'], alipay: ['Alipay', '支付宝'], boc: ['Bank of China', '中国银行'] };
 const SYMBOLS: Record<string, string> = { CAD: '$', USD: 'US$', CNY: '¥', EUR: '€', GBP: '£', JPY: 'JP¥' };
 // `$12.40`, `¥68.00`; a currency with no sign of its own is written after the number (`12.40 CHF`).
@@ -449,14 +452,14 @@ export function buildDay(input: DayReply, now: number, t: Say): DayModel {
   const chips = (reply.labels ?? []).map(l => l.private ? t(['Private', '私事']) : clean(l.title)).filter(Boolean).map(text => ({ text, more: false }));
   if (chips.length > 2) chips.splice(2, chips.length, { text: `+${chips.length - 2}`, more: true });
   const down = (reply.missing ?? []).map(k => t(SOURCES[k] ?? [k, k]));
-  const foot = down.length ? t([`${down.join(', ')} ${down.length === 1 ? "hasn't" : "haven't"} come in yet`, `${down.join('、')}还没进来`]) : '';
+  const foot = down.length ? t([`Not read yet: ${down.join(' · ')}`, `还没读到：${down.join(' · ')}`]) : '';
   const line = clean(reply.line?.text) ? { text: clean(reply.line!.text), draft: !!reply.line!.draft } : null;
   // Every row and stay header in the order the list shows them (a stay before what began with it), for "which row is at this minute".
   const index = [...span.values()].sort((a, b) => a.t0 - b.t0 || +(b.kind === 'stay') - +(a.kind === 'stay') || (a.key < b.key ? -1 : 1));
   // What waits on him, in the order the list shows it.
   const waiting: string[] = [], walk = (list: Block[]) => { for (const b of list) { if (b.type === 'row') { if (b.row.wait) waiting.push(b.row.key); } else if (b.type === 'stay') walk(b.items); } };
   walk(blocks);
-  return { title: dateTitle(reply.date, t), today, now, tz, reply, items, chips, line, blocks, foot, empty: !items.length && !line && !chips.length, span, index, stars, waiting, weather: weatherOf(reply.weather, t), vitals: vitalsOf(reply.summary, t) };
+  return { title: dateTitle(reply.date, t), today, now, tz, reply, items, chips, line, blocks, foot, empty: !items.length && !line && !chips.length, span, index, stars, waiting, weather: weatherOf(reply.weather, t, tz), vitals: vitalsOf(reply.summary, t) };
 }
 
 // The list with only what overlaps [a, b]: a stay stays while it does, with only the rows inside it that do; the now line when now is in.

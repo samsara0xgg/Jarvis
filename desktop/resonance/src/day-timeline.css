@@ -7,8 +7,13 @@
 .notch .dt-head { display:flex; align-items:center; gap:8px; min-height:26px; }
 .notch .dt-date { flex:none; font-size:15px; font-weight:600; line-height:24px; white-space:nowrap; }
 .notch .dt-today,.notch .dt-back { flex:none; padding:0 6px; border-radius:var(--radius-tag); font-style:normal; font-size:var(--text-label); font-weight:600; line-height:17px; color:var(--p-muted); background:rgb(255 255 255 / .08); }
-.notch .dt-wx { display:flex; flex:none; align-items:center; gap:5px; font-size:12px; line-height:17px; white-space:nowrap; color:var(--p-muted); }
+.notch .dt-wx { position:relative; display:flex; flex:none; align-items:center; gap:5px; font-size:12px; line-height:17px; white-space:nowrap; color:var(--p-muted); }
 .notch .dt-wx svg { flex:none; color:rgb(var(--ink) / .72); }
+/* a rest on the weather says when the sun comes up and goes down */
+.notch .dt-wx-tip { position:absolute; left:0; top:calc(100% + 6px); z-index:6; padding:5px 10px; border:1px solid rgb(255 255 255 / .08); border-radius:8px; background:rgb(16 18 30); box-shadow:0 8px 20px rgb(0 0 0 / .5);
+  font-style:normal; font-size:11.5px; line-height:16px; white-space:nowrap; color:var(--p-muted); opacity:0; visibility:hidden; transform:translateY(-2px); pointer-events:none;
+  transition:opacity 120ms linear, transform 120ms var(--ease-out), visibility 0s linear 120ms; }
+.notch .dt-wx:hover .dt-wx-tip { opacity:1; visibility:visible; transform:none; transition-delay:250ms, 250ms, 0s; }
 .notch .dt-wx em { margin-left:2px; font:11.5px/17px "JetBrains Mono", Menlo, monospace; font-style:normal; font-variant-numeric:tabular-nums; }
 .notch .dt-back { cursor:pointer; transition:background var(--motion-fast),color var(--motion-fast); }
 .notch .dt-back:hover { background:rgb(255 255 255 / .14); color:var(--p-ink); }
