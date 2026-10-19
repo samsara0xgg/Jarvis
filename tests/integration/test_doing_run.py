@@ -37,6 +37,7 @@ import yaml
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.doing_run import (
     MAX_QUESTIONS,
+    MAX_SPAN_CLUES,
     TITLE_MAX_CHARS,
     Brief,
     build_messages,
@@ -886,6 +887,21 @@ def test_a_good_answer_is_stored_as_the_spans_a_run_holds(brief: Brief) -> None:
     assert got[4]["end_ms"] == _ms(_at(14, 45))
 
 
+def test_a_span_keeps_the_first_clues_it_cites_up_to_the_cap(brief: Brief) -> None:
+    """Citing more clues than a span keeps is not wrong; the first ones are kept."""
+    extra = [Clue("words", _ms(_at(12, 30)), f"he: 第{n}口面") for n in range(MAX_SPAN_CLUES)]
+    many = replace(brief, clues=[*brief.clues, *extra])
+    prompt = build_messages(many)[0]["content"]
+    answer = _good(prompt)
+    given = re.findall(r"^(c\d+) \|", prompt, re.MULTILINE)
+    assert len(given) > MAX_SPAN_CLUES
+    answer["spans"][3]["clues"] = [*given, *given]  # every one, and every one again
+    got = read_run(json.dumps(answer, ensure_ascii=False), "stop", many)
+    assert not isinstance(got, str), got
+    kept = [many.clues[int(label[1:]) - 1] for label in given[:MAX_SPAN_CLUES]]
+    assert got[3]["clues"] == [{"kind": c.kind, "at_ms": c.at_ms, "text": c.text} for c in kept]
+
+
 def test_a_fenced_answer_is_still_the_answer(brief: Brief) -> None:
     """A fenced answer is still the answer."""
     text = "```json\n" + json.dumps(_answer(brief), ensure_ascii=False) + "\n```"
@@ -956,9 +972,9 @@ REJECTIONS: dict[str, tuple[Callable[[dict[str, Any], str], None], str]] = {
     "stated on a picture alone": (_set(1, clues=["c4"]), "stated span cites none"),
     "observed with no fact under it": (_set(2, basis="observed"), "no fact under it"),
     "a clue that does not exist": (_set(3, clues=["c99"]), "is not one of the clues given"),
-    "clues that are not a list": (_set(3, clues="c1"), "not a list of at most"),
-    "more clues than a span may cite": (
-        _set(3, clues=["c1", "c2", "c3", "c4"] * 3), "not a list of at most",
+    "clues that are not a list": (_set(3, clues="c1"), "clues are not a list"),
+    "stated on her words alone": (
+        lambda a, p: _spans(a)[1].update(clues=[_clue(p, "好的，加油")]), "stated span cites none",
     ),
     "a question with no text": (_set(2, question={"text": " ", "options": []}), "no text"),
     "a question with five options": (

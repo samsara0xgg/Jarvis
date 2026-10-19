@@ -27,6 +27,7 @@ from jarvis.state.doing import (
     coverage,
     primary_place,
 )
+from jarvis.state.doing_clues import HIS_WORDS
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -46,7 +47,8 @@ MAX_QUESTIONS: Final = 5
 MAX_SPAN_CLUES: Final = 8
 
 _WORDS_CLUES: Final = ("words", "answer", "away_note")
-"""The clues that make a span ``stated``: he said it, in a conversation, an answer or a note."""
+"""The clues that can make a span ``stated``: he said it, in a conversation, an answer or a note;
+a conversation's line counts only when it is his."""
 _LEADING: Final = ("at ", "in ", "@", "在")
 _PUNCTUATION: Final = " .,:;!?\u3002\uff0c\u3001"
 """Spaces and the stops of either language, which a title may be wrapped in."""
@@ -271,9 +273,12 @@ def _question(raw: object, span_id: str) -> dict[str, Any] | None:
 
 
 def _cited(raw: object, known: Mapping[str, Clue]) -> list[dict[str, Any]]:
-    """The clues a span cites, in the shape a run stores; ``_Rejected`` for one not given."""
-    if not isinstance(raw, list) or len(raw) > MAX_SPAN_CLUES:
-        msg = f"a span's clues are not a list of at most {MAX_SPAN_CLUES}"
+    """The first :data:`MAX_SPAN_CLUES` clues a span cites, as a run stores them.
+
+    ``_Rejected`` when they are not a list or one is not given.
+    """
+    if not isinstance(raw, list):
+        msg = "a span's clues are not a list"
         raise _Rejected(msg)
     chosen: dict[str, Clue] = {}
     for label in raw:
@@ -281,7 +286,17 @@ def _cited(raw: object, known: Mapping[str, Clue]) -> list[dict[str, Any]]:
             msg = f"clue {label!r} is not one of the clues given"
             raise _Rejected(msg)
         chosen[label] = known[label]
-    return [{"kind": c.kind, "at_ms": c.at_ms, "text": c.text} for c in chosen.values()]
+    return [
+        {"kind": c.kind, "at_ms": c.at_ms, "text": c.text}
+        for c in list(chosen.values())[:MAX_SPAN_CLUES]
+    ]
+
+
+def _his(clue: Mapping[str, Any]) -> bool:
+    """Whether a cited clue is his own words: his line, an answer of his, a note he wrote."""
+    if clue["kind"] == "words":
+        return str(clue["text"]).startswith(HIS_WORDS)
+    return clue["kind"] in _WORDS_CLUES
 
 
 def _check_vocabulary(raw: Mapping[str, Any]) -> None:
@@ -305,7 +320,7 @@ def _check_words(
         (not unknown and title is None, "a span of something he did has no title"),
         (title is not None and _bare(title, bare), f"title {title!r} says where, not what"),
         (
-            raw["basis"] == "stated" and not any(c["kind"] in _WORDS_CLUES for c in cited),
+            raw["basis"] == "stated" and not any(_his(c) for c in cited),
             "a stated span cites none of his words or answers",
         ),
     )
