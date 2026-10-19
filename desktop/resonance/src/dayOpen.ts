@@ -26,8 +26,9 @@ export type Part =
   | { type: 'titles'; list: string[] };
 // `rename`: the kept place under a stay, and the name it has; `ack`: the reminder that rang and waits for a `知道了`; `summarize`: a work block
 // can be handed to her at one tap; `star`: the item can be marked as what mattered (every item with an id the brain takes; a folded row of
-// sessions is no one item); `commit`: the hex of a commitment mail noted that is not his yet, which he can say is his or is not.
-export type Open = { key: string; kind: string; parts: Part[]; rename: { id: string; name: string } | null; ack: string | null; summarize: boolean; star: boolean; commit: string | null };
+// sessions is no one item); `commit`: the hex of a commitment mail noted that is not his yet, which he can say is his or is not;
+// `name`: where a stay was that is no place he keeps, which he can give a name (and so keep).
+export type Open = { key: string; kind: string; parts: Part[]; rename: { id: string; name: string } | null; name: { lat: number; lng: number } | null; ack: string | null; summarize: boolean; star: boolean; commit: string | null };
 // What a turn about a row carries (ADR 0214): exactly these four, the brain refuses a turn whose `about` has more or a bad id.
 export type About = { kind: string; id: string; title: string; start_ms: number };
 export type Ask = { about: About; icon: Icon; at: string };
@@ -79,7 +80,7 @@ export function openOf(m: DayModel, key: string, t: Say): Open | null {
   const sessions = m.folds.get(key), it = sessions ? sessions[0] : m.items.find(x => x.id === key);
   if (!it) return null;
   const parts: Part[] = [];
-  let rename: Open['rename'] = null, ack: string | null = null, summarize = false, commit: string | null = null;
+  let rename: Open['rename'] = null, name: Open['name'] = null, ack: string | null = null, summarize = false, commit: string | null = null;
   switch (sessions ? 'fold' : it.kind) {
     case 'fold': parts.push({ type: 'sessions', list: [...sessions!].sort((a, b) => a.start_ms - b.start_ms).map(x => session(x, m, t)) }); break;
     case 'code': parts.push({ type: 'sessions', list: [session(it, m, t)] }); break;
@@ -87,6 +88,7 @@ export function openOf(m: DayModel, key: string, t: Say): Open | null {
       const look = stayLook(it, t), place = clean(it.place);
       parts.push(lines(place && say(place), look.kept && say(t([`A place you keep · ${look.name}`, `常去的地方 · ${look.name}`]))));
       if (it.kept_place && clean(it.kept_place.name)) rename = { id: it.kept_place.id, name: clean(it.kept_place.name) };
+      else if (m.heads.has(key) && it.lat !== undefined && it.lng !== undefined && Math.abs(it.lat) <= 90 && Math.abs(it.lng) <= 180) name = { lat: it.lat, lng: it.lng };
       break;
     }
     case 'move': {
@@ -165,7 +167,7 @@ export function openOf(m: DayModel, key: string, t: Say): Open | null {
   // What the open row says first is in ink, the rest is muted.
   const shown = parts.filter(p => p.type !== 'lines' || p.lines.length > 0), top = shown[0];
   if (top?.type === 'lines') top.lines[0] = { ...top.lines[0], tone: 'ink' };
-  return { key, kind: sessions ? 'code' : it.kind, parts: shown, rename, ack, summarize, star: !sessions && starrable(it.id), commit };
+  return { key, kind: sessions ? 'code' : it.kind, parts: shown, rename, name, ack, summarize, star: !sessions && starrable(it.id), commit };
 }
 
 // One line of the day's conversation as GET /inherent/memory/day/{day}/records gives it (ts read to ms), and what a talk row shows of its span:
@@ -180,7 +182,7 @@ export function talkLines(list: Rec[], from: number, to: number): { you: string;
 }
 
 // Whether opening the row shows anything: a part, or a button that works (so a row never opens to nothing).
-export const hasBody = (o: Open, canAsk: boolean) => o.parts.length > 0 || !!o.rename || !!o.ack || o.summarize || o.star || !!o.commit || canAsk;
+export const hasBody = (o: Open, canAsk: boolean) => o.parts.length > 0 || !!o.rename || !!o.name || !!o.ack || o.summarize || o.star || !!o.commit || canAsk;
 
 // What a turn about this row carries and what the input row shows of it: null when the brain would refuse it (a kind it does not take, an id
 // of the wrong shape, a folded row that is no one item).

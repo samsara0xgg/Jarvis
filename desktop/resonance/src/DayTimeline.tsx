@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { CaretLeft, CaretRight, Star } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { postRoute, useRoute, type Route } from './homeData';
-import { askable, buildDay, changeId, dateTitle, marksOf, report, shiftDate, starrable, within, type Block, type DayItem, type DayModel, type DayReply, type Highlight, type Row, type WeatherLook } from './dayView';
+import { askable, buildDay, changeId, dateTitle, keptOf, marksOf, report, shiftDate, starrable, within, type Block, type DayItem, type DayModel, type DayReply, type Highlight, type Row, type WeatherLook } from './dayView';
 import { askOf, hasBody, openOf, type About, type Ask, type Rec } from './dayOpen';
 import { AskDock, type DockState } from './AskDock';
 import { DayBar, useBarState } from './DayBar';
@@ -232,6 +232,7 @@ async function readRecords(port: string, day: string): Promise<Rec[]> {
 
 type Renaming = { key: string; place: string; from: string; draft: string; state: 'edit' | 'busy' | 'failed' };
 type Note = { place: string; from: string; change: string | null; state: 'done' | 'failed' };
+type Naming = { key: string; draft: string; role: string | null; state: 'edit' | 'busy' | 'failed' };
 type Docked = { ask: Ask | null; state: DockState; nonce: number };
 
 export function DayTimeline({ port, feed, open, ask, hold }: { port: string | null; feed: Route<DayReply>; open: boolean; ask?: (text: string, about?: About) => Promise<void>; hold?: (on: boolean) => void }) {
@@ -270,25 +271,28 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     return () => clearInterval(id);
   }, [over]);
   // What he has just done that the daemon has not said back yet, laid over what was read so the whole pane (the bar, the list, the count)
-  // shows it at once while the day is read again: a reminder acknowledged, a kept place renamed, a commitment he confirmed (`sure`) or dropped (`dropping`
-  // while it collapses out, then `gone`), a star. His marks are the day's highlights as he made them (`base` null: the brain has not answered yet) and
+  // shows it at once while the day is read again: a reminder acknowledged, a kept place renamed, a place he has just named (`keeps`, until the day is read again), a commitment he confirmed (`sure`) or
+  // dropped (`dropping` while it collapses out, then `gone`), a star. His marks are the day's highlights as he made them (`base` null: the brain has not answered yet) and
   // then as the brain answered, which stand until the next read of the day.
   const [acks, setAcks] = useState<ReadonlySet<string>>(() => new Set()), [names, setNames] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [sure, setSure] = useState<ReadonlySet<string>>(() => new Set()), [dropping, setDropping] = useState<ReadonlySet<string>>(() => new Set()), [gone, setGone] = useState<ReadonlySet<string>>(() => new Set());
+  const [keeps, setKeeps] = useState<ReadonlyMap<string, { kept: NonNullable<DayItem['kept_place']>; base: DayReply | null }>>(() => new Map());
   const [marked, setMarked] = useState<{ date: string; list: Highlight[]; base: DayReply | null } | null>(null), shownNow = useRef(shown);
   shownNow.current = shown;
   const laid = useMemo(() => {
     const stars = shown && marked && marked.date === shown.date && (!marked.base || marked.base === shown) ? marked.list : null;
-    if (!shown || !acks.size && !names.size && !sure.size && !gone.size && !stars) return shown;
+    if (!shown || !acks.size && !names.size && !keeps.size && !sure.size && !gone.size && !stars) return shown;
     const lay = (x: DayItem): DayItem[] => {
       if (gone.has(x.id)) return [];
       if (acks.has(x.id)) x = { ...x, acknowledged: true };
       if (sure.has(x.id)) x = { ...x, confirmed: true };
+      const mine = keeps.get(x.id);
+      if (!x.kept_place && mine?.base === shown) x = { ...x, kept_place: mine.kept };
       if (x.kept_place && names.has(x.kept_place.id)) x = { ...x, kept_place: { ...x.kept_place, name: names.get(x.kept_place.id)! } };
       return [x];
     };
     return { ...shown, ...stars && { highlights: stars }, items: shown.items.flatMap(lay) };
-  }, [shown, acks, names, sure, gone, marked]);
+  }, [shown, acks, names, keeps, sure, gone, marked]);
   // A day that cannot be built (no usable bounds) says so in a line; a day that builds but fails to draw falls to the guards below.
   const built = useMemo(() => {
     if (!laid) return { model: null, failed: false };
@@ -459,6 +463,21 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     catch { setNote({ ...n, state: 'failed' }); }
   };
   useEffect(() => { if (!note) return; const timer = setTimeout(() => setNote(null), 5000); return () => clearTimeout(timer); }, [note]);
+  // 起个名字: a place that has no name is kept under the one he types, at the stay's own point, and as the kind of place he picked (none picked: the brain's `other`).
+  // Enter keeps it; the place the brain answers is laid over the stay at once (the bar and the rows take its name and hue) and the day is read again.
+  const [naming, setNaming] = useState<Naming | null>(null);
+  const startNaming = (key: string) => { const o = model && openOf(model, key, t); if (o?.name) { setLeft(false); setNaming({ key, draft: '', role: null, state: 'edit' }); } };
+  const saveNaming = async () => {
+    const n = naming, name = n?.draft.trim(), at = n && model && openOf(model, n.key, t)?.name;
+    if (!n || !name || !at || n.state === 'busy' || !port) return;
+    setNaming({ ...n, state: 'busy' });
+    try {
+      const out = await postRoute(port, '/inherent/memory/places', { name, lat: at.lat, lng: at.lng, ...n.role && { role: n.role } }) as { place?: unknown };
+      const kept = keptOf(out.place);
+      if (kept) setKeeps(m => new Map(m).set(n.key, { kept, base: shownNow.current }));
+      setNaming(null); again();
+    } catch { setNaming(x => x && { ...x, state: 'failed' }); }
+  };
   // 问她: an input slides up at the pane's foot with what it is about as a chip; Enter hands the turn over; 已发给她 for 1.5 s and it slides away.
   const [dock, setDock] = useState<Docked | null>(null), [draft, setDraft] = useState(''), lastDock = useRef(dock);
   if (dock) lastDock.current = dock;
@@ -497,13 +516,14 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   // While a field has the text cursor or the picture is up the pane is held open (Notch.tsx takes the keys too), whatever the pointer does;
   // a field he has left (clicked away, or the window lost the keys) no longer holds it.
   const [left, setLeft] = useState(false);
-  const holding = !!viewer || (!!dock || !!rename) && !left;
+  const holding = !!viewer || (!!dock || !!rename || !!naming) && !left;
   useEffect(() => { hold?.(holding); return () => hold?.(false); }, [holding]);
   // The open row, the field, the input and the picture are the day's: they go with it, and with the pane.
   useEffect(() => { setPick(null); setHot(null); setOpened(null); }, [date, shown?.date, ui.filter]);
   useEffect(() => { if (opened && model && !model.rows.has(opened) && !model.heads.has(opened)) setOpened(null); }, [model]);
   useEffect(() => { if (rename && opened !== rename.key) setRename(null); }, [opened]);
-  useEffect(() => { if (!open) { setOpened(null); setRename(null); setDock(null); setDraft(''); setViewer(null); setNote(null); } }, [open]);
+  useEffect(() => { if (naming && opened !== naming.key) setNaming(null); }, [opened]);
+  useEffect(() => { if (!open) { setOpened(null); setRename(null); setNaming(null); setDock(null); setDraft(''); setViewer(null); setNote(null); } }, [open]);
   // The body of an open row: what dayOpen made of it, and the buttons that work for it, each with what it is doing.
   const body = (key: string): ReactNode => {
     const o = model && openOf(model, key, t);
@@ -513,6 +533,8 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
       port, t, records: readDay, picture: (id, text) => setViewer({ id, note: text }),
       ask: canAsk(key) ? () => openAsk(key) : null,
       rename: o.rename ? { state: rename?.key === key ? rename.state === 'failed' ? 'failed' : 'editing' : 'idle', start: () => startRename(key) } : null,
+      name: o.name ? { state: naming?.key === key ? naming.state === 'edit' ? 'editing' : naming.state : 'idle', draft: naming?.key === key ? naming.draft : '', role: naming?.key === key ? naming.role : null, start: () => startNaming(key),
+        set: text => setNaming(n => n && { ...n, draft: text, state: n.state === 'failed' ? 'edit' : n.state }), pick: role => setNaming(n => n && { ...n, role }), save: () => void saveNaming(), field: on => setLeft(!on) } : null,
       ack: o.ack ? { state: acking === 'busy' ? 'busy' : acking === 'failed' ? 'failed' : 'idle', press: () => void acknowledge(o.ack!) } : null,
       commit: o.commit ? { state: saying === 'busy' ? 'busy' : saying === 'failed' ? 'failed' : 'idle', confirm: () => void settle(key, o.commit!, 'confirm'), cancel: () => void settle(key, o.commit!, 'cancel') } : null,
       summarize: o.summarize && canAsk(key) ? { state: sum ?? 'idle', press: () => void summarize(key) } : null,
@@ -524,7 +546,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   const cx: Cx = { opened, click, body, tick: edges, fit, asks, opens, ask: ask ? openAsk : null, line, star: { can: starrables, marks, refused, press: key => void star(key) },
     rename: rename && { key: rename.key, draft: rename.draft, busy: rename.state === 'busy', set: text => setRename(r => r && { ...r, draft: text, state: r.state === 'failed' ? 'edit' : r.state }), save: () => void saveRename(), field: on => setLeft(!on) } };
 
-  // Esc lets go of one thing at a time, nearest first: the picture, the input, the name being changed, the open row, the bar's lens, its range and
+  // Esc lets go of one thing at a time, nearest first: the picture, the input, the name being changed or given, the open row, the bar's lens, its range and
   // the list's cut to a range, and then the pane itself (the pane's own Esc listener was added after this one, so this one answers first). A folded
   // pane, which stays mounted, answers nothing.
   const back = useRef<() => boolean>(() => false);
@@ -533,6 +555,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     if (viewer) setViewer(null);
     else if (dock) { setDock(null); setDraft(''); }
     else if (rename) setRename(null);
+    else if (naming) setNaming(null);
     else if (opened) setOpened(null);
     else return uiRef.current.escape();
     return true;

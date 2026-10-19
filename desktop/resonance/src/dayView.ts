@@ -17,6 +17,8 @@ export type DayItem = {
   you?: boolean; leaving?: boolean;
   stages?: Stage[]; energy_kcal?: number; distance_m?: number; avg_hr?: number; project?: string; account?: string;
   credit?: string; ended_reason?: string; detail?: string;
+  // Where a stay was, as the phone has it.
+  lat?: number; lng?: number;
 };
 // One stretch of a night as the watch told it; they may overlap (a phone's `in_bed` under the watch's stages).
 export type Stage = { stage: string; start_ms: number; end_ms: number };
@@ -53,8 +55,12 @@ const MAX_MS = 8.64e15, time = (v: unknown): v is number => typeof v === 'number
 const own = <T>(table: Record<string, T>, key: string): T | undefined => Object.hasOwn(table, key) ? table[key] : undefined;
 const bool = (v: unknown) => typeof v === 'boolean' ? v : undefined;
 const STRINGS = ['place', 'activity', 'text', 'app', 'route', 'board_stop', 'alight_stop', 'note', 'title', 'source', 'to', 'attachment', 'currency', 'direction', 'counterparty', 'project', 'account', 'credit', 'ended_reason', 'detail'] as const;
-const NUMBERS = ['minutes', 'active_s', 'turns', 'messages', 'chats', 'energy_kcal', 'distance_m', 'avg_hr'] as const;
+const NUMBERS = ['minutes', 'active_s', 'turns', 'messages', 'chats', 'energy_kcal', 'distance_m', 'avg_hr', 'lat', 'lng'] as const;
 const FLAGS = ['confirmed', 'private', 'fired', 'acknowledged'] as const;
+// A place he keeps, as the day carries it under a stay and as the brain answers a write of one (an id and a name are needed).
+export function keptOf(raw: unknown): NonNullable<DayItem['kept_place']> | null {
+  return isObj(raw) && typeof raw.id === 'string' && typeof raw.name === 'string' ? { id: raw.id, name: raw.name, role: str(raw.role) ?? '' } : null;
+}
 // The id of the change a place write made, to take it back: the brain says it as a string (`place-change:<hex>`), or null when nothing changed.
 export const changeId = (raw: unknown) => typeof raw === 'string' && raw ? raw : isObj(raw) && typeof raw.id === 'string' ? raw.id : null;
 export function tidy(raw: unknown): DayItem | null {
@@ -67,8 +73,8 @@ export function tidy(raw: unknown): DayItem | null {
   if (time(raw.leave_at_ms)) out.leave_at_ms = raw.leave_at_ms;
   for (const k of FLAGS) { const v = bool(raw[k]); if (v !== undefined) out[k] = v; }
   if (typeof raw.amount === 'string' || fin(raw.amount) !== undefined) out.amount = raw.amount;
-  const kept = raw.kept_place;
-  if (isObj(kept) && typeof kept.id === 'string' && typeof kept.name === 'string') out.kept_place = { id: kept.id, name: kept.name, role: str(kept.role) ?? '' };
+  const kept = keptOf(raw.kept_place);
+  if (kept) out.kept_place = kept;
   if (Array.isArray(raw.stages)) out.stages = raw.stages.flatMap(x => isObj(x) && typeof x.stage === 'string' && time(x.start_ms) && time(x.end_ms) ? [{ stage: x.stage, start_ms: x.start_ms as number, end_ms: x.end_ms as number }] : []);
   for (const k of ['projects', 'apps'] as const) {
     const v = raw[k];
