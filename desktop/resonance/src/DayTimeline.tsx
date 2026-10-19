@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { CaretLeft, CaretRight, Star } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { useRoute, type Route } from './homeData';
-import { buildDay, dateTitle, report, shiftDate, within, type Block, type DayReply, type Row } from './dayView';
+import { askable, buildDay, dateTitle, report, shiftDate, within, type Block, type DayReply, type Row } from './dayView';
 import { DayBar, useBarState } from './DayBar';
 import { Ic } from './dayIcons';
 import { TimelineGuard } from './TimelineGuard';
@@ -16,16 +16,21 @@ const rgb = (c: readonly number[]) => c.join(' ');
 // Where `el` is inside the scrolling `list`.
 const offsetIn = (el: HTMLElement, list: HTMLElement) => el.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
 
-type Hover = { hot: string | null; onHot: (key: string | null) => void; t: (l: L) => string };
+// Handing a row to her is B2's: the button is written and waits behind this.
+const ASK_HER = false;
+// hot: what the pointer is on; pick: what the keys chose. Both are bracketed on the bar; the pointer's wins while it is on something.
+type Hover = { hot: string | null; onHot: (key: string | null) => void; pick: string | null; t: (l: L) => string };
 
 // A row: the time it began, its glyph (a lit star on it when it mattered), its words (an amber badge when it waits on him), and at the
 // right its length, how long until it, or its value. The glyphs of one stay or one trip hang on a rail.
-function RowView({ row, hot, onHot, t, how }: { row: Row; how: string } & Hover) {
-  return <div className={`dt-row${row.detail ? ' has-detail' : ''}${row.future ? ' is-future' : ''}${row.connector ? ' is-leg' : ''}${how}${hot === row.key ? ' is-hot' : ''}`} data-key={row.key} data-kind={row.kind} data-lk={row.lens ?? undefined}
-    onPointerEnter={() => onHot(row.key)} onPointerLeave={() => onHot(null)}>
+// The pointer lights a row by moving on it, not by arriving: a list that scrolls under a resting pointer (the keys, the wheel) leaves what the keys chose alone.
+function RowView({ row, hot, onHot, pick, t, how }: { row: Row; how: string } & Hover) {
+  return <div className={`dt-row${row.detail ? ' has-detail' : ''}${row.future ? ' is-future' : ''}${row.connector ? ' is-leg' : ''}${how}${hot === row.key ? ' is-hot' : ''}${pick === row.key ? ' is-pick' : ''}`} data-key={row.key} data-kind={row.kind} data-lk={row.lens ?? undefined}
+    aria-current={pick === row.key ? 'true' : undefined} onPointerMove={() => onHot(row.key)} onPointerLeave={() => onHot(null)}>
     <time className="dt-at">{row.ago && <small>{row.ago}</small>}{row.at}</time>
     <i className="dt-ic">{row.icon === 'dot' ? <span className="dt-pip"/> : <Ic icon={row.icon}/>}{row.star && <Star size={10} weight="fill" className="dt-badge" aria-label="★"/>}</i>
     <span className="dt-tx"><span className="dt-ttl"><b>{row.title}</b>{row.wait && <i className="dt-wait">{t(['Waiting', '等你'])}</i>}</span>{row.detail && <em>{row.detail}</em>}</span>
+    {ASK_HER && askable(row.kind, row.key) && <button type="button" className="dt-ask" tabIndex={-1}>{t(['Ask her', '问她'])}</button>}
     <span className={`dt-tm${row.value ? ' is-value' : ''}`}>{row.right}</span>
   </div>;
 }
@@ -33,7 +38,7 @@ const onWay = (b?: Block) => b?.type === 'row' && (b.row.connector || b.row.onWa
 // The blocks of one level, told apart in units: a stay with what is in it, a trip (the ways he went and what happened on them), and the
 // rest. A unit starts 12 px under the one before it; the now line stays with the unit it follows. A trip's rail is dashed, from its first
 // glyph to its last; what is in a stay hangs on that stay's own, from its dot to the last row.
-function Blocks({ blocks, hot, onHot, t, inside }: { blocks: Block[]; inside?: boolean } & Hover) {
+function Blocks({ blocks, hot, onHot, pick, t, inside }: { blocks: Block[]; inside?: boolean } & Hover) {
   let last = '';
   const end = blocks.map(b => b.type).lastIndexOf('row');
   return <>{blocks.map((b, i) => {
@@ -44,15 +49,15 @@ function Blocks({ blocks, hot, onHot, t, inside }: { blocks: Block[]; inside?: b
     if (b.type === 'now') return <div key={b.key} className={`dt-now${gap}${(inside ? i < end : onWay(prev) && onWay(next)) ? ` is-rail${inside ? '' : ' is-trip'}` : ''}`}><span>{b.label}</span></div>;
     if (b.type === 'row') {
       const how = inside ? ` is-rail${i === end ? ' is-end' : ''}` : onWay(b) ? ` is-rail is-trip${onWay(prev) ? '' : ' is-top'}${onWay(next) ? '' : ' is-end'}` : '';
-      return <RowView key={b.row.key} row={b.row} hot={hot} onHot={onHot} t={t} how={gap + how}/>;
+      return <RowView key={b.row.key} row={b.row} hot={hot} onHot={onHot} pick={pick} t={t} how={gap + how}/>;
     }
     return <section key={b.key} className={`dt-stay${gap}`} style={{ '--c': rgb(b.head.rgb) } as CSSProperties}>
-      <header className={`dt-sh${b.head.unnamed ? ' is-plain' : ''}${b.items.length ? ' has-rows' : ''}${hot === b.key ? ' is-hot' : ''}`} data-key={b.key} onPointerEnter={() => onHot(b.key)} onPointerLeave={() => onHot(null)}>
+      <header className={`dt-sh${b.head.unnamed ? ' is-plain' : ''}${b.items.length ? ' has-rows' : ''}${hot === b.key ? ' is-hot' : ''}${pick === b.key ? ' is-pick' : ''}`} data-key={b.key} aria-current={pick === b.key ? 'true' : undefined} onPointerMove={() => onHot(b.key)} onPointerLeave={() => onHot(null)}>
         <span className="dt-at"/><i className="dt-dot"/>
         <span className="dt-tx"><span className="dt-ttl"><b>{b.head.name}</b>{b.head.star !== null && <Star size={10} weight="fill" className="dt-star" aria-label="★"/>}</span>{b.head.star && <em>{b.head.star}</em>}</span>
         <span className="dt-tm">{b.head.when}<small> · {b.head.dur}</small></span>
       </header>
-      {b.items.length > 0 && <div className="dt-in"><Blocks blocks={b.items} hot={hot} onHot={onHot} t={t} inside/></div>}
+      {b.items.length > 0 && <div className="dt-in"><Blocks blocks={b.items} hot={hot} onHot={onHot} pick={pick} t={t} inside/></div>}
     </section>;
   })}</>;
 }
@@ -95,7 +100,7 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
   const [slow, setSlow] = useState(false);
   useEffect(() => { setSlow(false); if (reply) return; const timer = setTimeout(() => setSlow(true), 6000); return () => clearTimeout(timer); }, [!!reply, date]);
 
-  const [hot, setHot] = useState<string | null>(null), list = useRef<HTMLDivElement>(null), placed = useRef(''), ui = useBarState(), uiRef = useRef(ui);
+  const [hot, setHot] = useState<string | null>(null), [pick, setPick] = useState<string | null>(null), list = useRef<HTMLDivElement>(null), placed = useRef(''), ui = useBarState(), uiRef = useRef(ui);
   uiRef.current = ui;
   const edges = () => { const l = list.current; if (!l) return; l.classList.toggle('more-below', l.scrollTop + l.clientHeight < l.scrollHeight - 2); l.classList.toggle('more-above', l.scrollTop > 2); };
   // A day opens where it matters: today at its now line, another day from the top; so does the list cut to a range, and the whole day again.
@@ -108,17 +113,23 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
     }
     edges();
   });
-  // A click on the bar, or on a piece of it, takes the row there to the top of the list in 300 ms, and the row flashes.
+  // The list scrolls to `to` in `ms`, easing out (at once under reduced motion); a new one takes over from wherever the last had got to.
   const glide = useRef(0);
+  const slide = (to: number, ms: number) => {
+    const l = list.current;
+    if (!l) return;
+    const from = l.scrollTop, end = Math.max(0, Math.min(l.scrollHeight - l.clientHeight, to)), began = performance.now();
+    cancelAnimationFrame(glide.current);
+    if (reduced.matches || Math.abs(end - from) < 1) { l.scrollTop = end; return; }
+    const tick = (at: number) => { const k = Math.min(1, (at - began) / ms); l.scrollTop = from + (end - from) * (1 - (1 - k) ** 3); if (k < 1) glide.current = requestAnimationFrame(tick); };
+    glide.current = requestAnimationFrame(tick);
+  };
+  // A click on the bar, or on a piece of it, takes the row there to the top of the list in 300 ms, and the row flashes.
   const jump = (key: string) => {
     const l = list.current, el = l?.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`);
     if (!l || !el) return;
-    const from = l.scrollTop, to = Math.max(0, Math.min(l.scrollHeight - l.clientHeight, offsetIn(el, l) - 12)), began = performance.now();
-    cancelAnimationFrame(glide.current);
     el.classList.remove('is-flash'); void el.offsetWidth; el.classList.add('is-flash');
-    if (reduced.matches || Math.abs(to - from) < 1) { l.scrollTop = to; return; }
-    const tick = (at: number) => { const k = Math.min(1, (at - began) / 300); l.scrollTop = from + (to - from) * (1 - (1 - k) ** 3); if (k < 1) glide.current = requestAnimationFrame(tick); };
-    glide.current = requestAnimationFrame(tick);
+    slide(offsetIn(el, l) - 12, 300);
   };
   // The waiting pill takes the first row that waits on him to the top of the list (the whole day again when the list is cut).
   const waitFirst = (key: string) => { if (ui.filter) { ui.setFilter(null); requestAnimationFrame(() => jump(key)); } else jump(key); };
@@ -130,6 +141,43 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
     return () => { window.removeEventListener('keydown', key, true); cancelAnimationFrame(glide.current); };
   }, []);
   useEffect(() => { ui.setSel(null); ui.setFilter(null); }, [date]);
+  // What the keys chose goes with the day, and with a cut that may have taken its row out of the list.
+  useEffect(() => { setPick(null); setHot(null); }, [date, ui.filter]);
+
+  // The keys of an open day (the window has key focus only after a click pinned it: Notch.tsx): ← → the day before and after, ↑ ↓ the row
+  // before and after, which the bar brackets and the list keeps in view. With nothing chosen they start from where he is looking: ↓ at the
+  // first row under the now line (else the top of the list), ↑ at the last row above it (else the bottom).
+  const go = (days: number) => { if (at && !(days > 0 && date === null)) step(days); };
+  const walk = (dir: 1 | -1) => {
+    const l = list.current, rows = l ? [...l.querySelectorAll<HTMLElement>('[data-key]')] : [];
+    if (!l || !rows.length) return;
+    let next = pick ? rows.findIndex(r => r.dataset.key === pick) : -1;
+    if (next >= 0) next = Math.max(0, Math.min(rows.length - 1, next + dir));
+    else {
+      const view = l.getBoundingClientRect(), line = l.querySelector('.dt-now')?.getBoundingClientRect(), seen = !!line && line.top >= view.top && line.bottom <= view.bottom;
+      const from = dir > 0 ? seen ? line!.bottom : view.top : seen ? line!.top : view.bottom;
+      next = dir > 0 ? rows.findIndex(r => r.getBoundingClientRect().top >= from - 1) : rows.reduce((last, r, i) => r.getBoundingClientRect().bottom <= from + 1 ? i : last, -1);
+      if (next < 0) next = dir > 0 ? rows.length - 1 : 0;
+    }
+    const el = rows[next], top = offsetIn(el, l), margin = 24;
+    setPick(el.dataset.key!); setHot(null);
+    if (top < l.scrollTop + margin) slide(top - margin, 180);
+    else if (top + el.offsetHeight > l.scrollTop + l.clientHeight - margin) slide(top + el.offsetHeight - l.clientHeight + margin, 180);
+  };
+  const keys = useRef({ open, go, walk });
+  keys.current = { open, go, walk };
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      const k = keys.current;
+      if (!k.open || e.isComposing || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || (e.target as Element | null)?.closest?.('input,textarea,select,[contenteditable]')) return;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { if (!e.repeat) k.go(e.key === 'ArrowLeft' ? -1 : 1); }
+      else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') k.walk(e.key === 'ArrowDown' ? 1 : -1);
+      else return;
+      e.preventDefault(); e.stopPropagation();
+    };
+    window.addEventListener('keydown', key, true);
+    return () => window.removeEventListener('keydown', key, true);
+  }, []);
   const rows = model && ui.filter ? within(model.blocks, model.span, Math.min(ui.filter.a, ui.filter.b), Math.max(ui.filter.a, ui.filter.b)) : model?.blocks ?? [];
 
   const title = at ? dateTitle(at, t) : model?.title ?? '';
@@ -149,8 +197,8 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
     {built.failed ? <p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p> : !model ? <p className="dt-say">{say}</p> : <TimelineGuard where="the pane" reset={shown} fallback={<p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p>}>
       {model.line && <p className={`dt-line${model.line.draft ? ' is-draft' : ''}`}>{model.line.text}</p>}
       {model.empty ? <p className="dt-say">{t(['Nothing recorded for this day yet', '这一天还没有记下什么'])}</p> : <>
-        <DayBar model={model} port={port} ui={ui} hot={hot} onHot={setHot} onJump={jump}/>
-        {rows.length > 0 ? <div ref={list} className="dt-list" onScroll={edges} onWheel={() => cancelAnimationFrame(glide.current)}><Blocks blocks={rows} hot={hot} onHot={setHot} t={t}/></div>
+        <DayBar model={model} port={port} ui={ui} hot={hot ?? pick} onHot={setHot} onJump={jump}/>
+        {rows.length > 0 ? <div ref={list} className="dt-list" onScroll={edges} onWheel={() => cancelAnimationFrame(glide.current)}><Blocks blocks={rows} hot={hot} onHot={setHot} pick={pick} t={t}/></div>
           : ui.filter && <p className="dt-say">{t(['Nothing was recorded in this stretch', '这一段没有记下什么'])}</p>}
       </>}
       {model.foot && <p className="dt-foot">{model.foot}</p>}

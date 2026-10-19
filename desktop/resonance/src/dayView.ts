@@ -164,6 +164,11 @@ function plainPlace(day: DayReply | null, now: number) {
 }
 
 // ---------- the pane ----------
+// What can be handed to her (ADR 0214): a kind the brain's `about` takes, with an id of the shape it accepts. A bad one refuses the whole
+// turn, and a commitment's id has an @ in it, so it never fits.
+const ABOUT_KINDS = new Set(['reminder', 'event', 'todo', 'stay', 'move', 'sleep', 'work', 'call', 'talk', 'picture']), ABOUT_ID = /^[A-Za-z0-9_\-=+/.|:]{1,256}$/;
+export const askable = (kind: string, id: string) => ABOUT_KINDS.has(kind) && ABOUT_ID.test(id);
+
 // A row of the list. The time column is `at` (when it began; `ago` marks one that began the day before), the right column `right` (its length, how
 // long until it, or its value, which `value` says to write in ink). `kind` and `lens`: what the row is, and which of the day's numbers it is
 // counted in (a lens on the bar dims the rows that are not). A `connector` is a way he went (a move, a ride, a short stop) and `onWay` is
