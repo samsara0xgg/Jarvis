@@ -231,6 +231,29 @@ final class DayTimelineActionsTests: XCTestCase {
         XCTAssertNil(tl.openRow)
     }
 
+    func testAtMidnightTheDayThatEndedMovesToTheNewTodayAndWhatItHeldIsLetGo() async throws {
+        let tl = state()
+        XCTAssertFalse(tl.rollOver(), "the same day: nothing to do")
+        // the day on show is the one that ended: the tick of the minute finds a new day
+        tl.dayStamp = tl.today - 1; tl.day = tl.today - 1
+        tl.openRow = "stay-1"; tl.renaming = "stay-1"; tl.scrub = 600
+        var drawnAgain = false
+        withObservationTracking { _ = tl.today } onChange: { drawnAgain = true }
+        XCTAssertTrue(tl.rollOver())
+        XCTAssertTrue(drawnAgain, "what shows today is drawn again at midnight")
+        XCTAssertEqual(tl.dayStamp, tl.today)
+        XCTAssertNil(tl.openRow)
+        XCTAssertNil(tl.renaming)
+        XCTAssertNil(tl.scrub)
+        await until("it is the new today") { tl.day == tl.today }
+        XCTAssertFalse(tl.rollOver(), "and once")
+        // he was looking at another day: it stays, with what was open on it
+        tl.dayStamp = tl.today - 1; tl.day = tl.today - 3; tl.openRow = "stay-1"
+        XCTAssertTrue(tl.rollOver())
+        XCTAssertEqual(tl.day, tl.today - 3)
+        XCTAssertEqual(tl.openRow, "stay-1")
+    }
+
     // MARK: what waits
 
     func testTheWaitingCountGoesToTheFirstRowThatWaitsAndFlashesIt() async throws {

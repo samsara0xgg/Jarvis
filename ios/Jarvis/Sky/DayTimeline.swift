@@ -69,7 +69,9 @@ final class TimelineState {
     var fixture: Fixture?               // made-up days and a fixed now (Sky/StarTimelineScene.swift)
     #endif
 
-    var today: Int { floorDay(NOW1) }                   // the engine's own now: the phone's today, or the sample world's Thursday
+    /// the day number of today as of the last tick of the minute (`rollOver`): what shows today reads it through `today`, so that midnight draws it again
+    var dayStamp = floorDay(NOW1)
+    var today: Int { _ = dayStamp; return floorDay(NOW1) }       // the engine's own now: the phone's today, or the sample world's Thursday
     /// the minute of now in the brain's day `r`, if now is in it
     func nowMinute(in r: DayReply) -> Double? {
         #if DEBUG
@@ -138,6 +140,24 @@ final class TimelineState {
     }
     func swipe(_ delta: Int) { setDay((pending ?? day) + delta) }
 
+    /// The tick of the minute asks whether a new day has begun (midnight, or the phone was asleep past it). If so, and the day on show was the one that ended, it moves to the new today;
+    /// what was held on it is let go, and the days are asked for again (the one that ended is final now, and the new today is not yet in).
+    @discardableResult func rollOver() -> Bool {
+        let now = floorDay(NOW1)
+        guard now != dayStamp else { return false }
+        let ended = dayStamp
+        dayStamp = now
+        #if DEBUG
+        let madeUp = fixture != nil
+        #else
+        let madeUp = false
+        #endif
+        if !madeUp { BrainLink.shared.opened() }
+        guard (pending ?? day) == ended else { return true }
+        setDay(now)
+        return true
+    }
+
     /// back to now: today with the line for now in view
     func goToday() {
         openRow = nil
@@ -162,7 +182,7 @@ struct DayTimelineView: View {
         let on = HomeModule.shared.isTimeline
         let away = ui.talking || ui.typing || ui.panelOpen || ui.tuning
         _ = tl.version
-        return TimelineView(.everyMinute) { _ in
+        return TimelineView(.everyMinute) { context in
             let shown = shownNow()
             let model: DayTimelineModel? = { if case .model(let m) = shown { return m } else { return nil } }()
             ZStack(alignment: .topLeading) {
@@ -178,6 +198,7 @@ struct DayTimelineView: View {
                 pill(show: tl.day == tl.today && !nowInView && !away)
             }
             .frame(width: W, height: H, alignment: .topLeading)
+            .onChange(of: context.date) { _, _ in tl.rollOver() }          // the day may have turned
             .onChange(of: isReady(shown), initial: true) { _, ready in release(ready) }
             .onChange(of: tl.enter) { _, _ in release(isReady(shown)) }
             .onChange(of: ui.tlHome) { _, _ in release(isReady(shown)) }
