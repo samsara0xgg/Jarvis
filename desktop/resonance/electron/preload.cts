@@ -88,6 +88,7 @@ contextBridge.exposeInMainWorld('jarvis', {
   plugins: (operation: string, data: Record<string, unknown> = {}) => ipcRenderer.invoke('plugins', operation, data),
   drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => ipcRenderer.send('drag', { phase, point }),
   passthrough: (enabled: boolean) => ipcRenderer.send('passthrough', enabled),
+  awake: (on: boolean) => ipcRenderer.send('awake', on),
   material: (rects: unknown[], strength: number) => ipcRenderer.send('material', { rects, strength }),
   // The companion window's size: what the page shows (src/fitWindow.ts).
   fit: (width: number, height: number) => ipcRenderer.send('window-fit', { width, height }),

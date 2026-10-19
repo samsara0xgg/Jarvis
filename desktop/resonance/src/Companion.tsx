@@ -387,6 +387,11 @@ export function Companion() {
   const stowed = !detached && !geo.lobe.notched && !near && place === 'home' && !dashboard && !timelineOpen && !menu && !notice && !nightShown && !carded && !moving;
   live.current = { geo, dashboard, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu, stowed };
   const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 }), notchWake = useRef<(() => void) | null>(null);
+  // Anything on show or under way: the main process then sends the pointer at every change wherever it is, for she follows it at any
+  // distance and what is open acts on where it is. At rest a far pointer is sent at most 8 times a second (electron/cursorFeed.ts): at home
+  // she follows it only within 260 pt, and nothing else of hers is within its reach.
+  const awake = !detached && (place !== 'home' || busy || dashboard || remoteOpen || dashboardJoined || notchJoined || docking || timelineOpen || !!menu || !!notice || nightShown || carded || moving || keysOn);
+  useEffect(() => { if (!detached) window.jarvis?.awake?.(awake); }, [awake]);
   const input = useRef<HTMLTextAreaElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
   useEffect(() => {
     if (detached || !window.jarvis?.fit) return;

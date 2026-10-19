@@ -54,7 +54,7 @@ declare global { interface Window { jarvis?: {
   usageBalance: (service: 'openai' | 'anthropic', usd: number) => Promise<{ recorded: boolean }>;
   tokenUsage?: (refresh?: boolean) => Promise<TokenUsage>;
   plugins: (operation: string, data?: Record<string, unknown>) => Promise<PluginSnapshot>;
-  layout: (mode: string, height: number, surface?: { x: number; y: number; width: number; height: number }) => void; focus: (enabled: boolean) => Promise<void>; hide: () => void; quit?: () => void; passthrough: (enabled: boolean) => void;
+  layout: (mode: string, height: number, surface?: { x: number; y: number; width: number; height: number }) => void; focus: (enabled: boolean) => Promise<void>; hide: () => void; quit?: () => void; passthrough: (enabled: boolean) => void; awake?: (on: boolean) => void;
   material: (rects: {x:number;y:number;width:number;height:number;radius:number;opacity:number;occlusion?:GlassOcclusion}[], strength: number) => void;
   onCommand: (cb: (value: string) => void) => () => void;
   dashboard?: (action: 'state' | 'open' | 'detach' | 'attach' | 'close', options?: { height?: number; dragging?: boolean }) => Promise<{ detached: boolean }>;
