@@ -148,7 +148,7 @@ struct TLEntry: Identifiable, Equatable {
     var time = ""                   // the fixed column at the left, `HH:mm`
     var title: String
     var detail: String?             // the one muted line under the title
-    var more: [String] = []         // what opening the row says in full, a line each
+    var more: [String] = []         // what opening the row says that its own title and line do not, a line each
     var symbol = ""                 // an SF Symbol, drawn filled once it has happened and as an outline while it has not
     var right = ""                  // the mono text at the right: how long, a point's value, or how long until it
     var color: RGB?                 // a stay: the colour of its place
@@ -192,11 +192,11 @@ struct TLEntry: Identifiable, Equatable {
     var height: Double { base + gap }
     /// one row that stands for several Claude Code sessions
     var holdsSessions: Bool { kind == .code && sessions.count > 1 }
-    /// a tap on it opens something: what it says in full, the first exchange of a talk, the picture, a map, or what can be done with it
+    /// a tap on it opens something: what its line does not say, the first exchange of a talk, the picture, a map, what can be done with it, or its own words whole where the row cuts them short
     var opens: Bool {
         switch kind {
         case .now, .pause: false
-        default: kind == .talk || kind == .picture || !more.isEmpty || !actions.isEmpty || place != nil || work != nil || sleep != nil || holdsSessions
+        default: kind == .talk || kind == .picture || !more.isEmpty || !actions.isEmpty || place != nil || work != nil || sleep != nil || holdsSessions || cutShort
         }
     }
 }
@@ -606,7 +606,7 @@ struct DayTimelineModel: Equatable {
             }
             let from = named(Array(out.indices.prefix(k).reversed())), to = named(Array(out.indices.dropFirst(k + 1)))
             let line = from != nil && to != nil ? "\(from ?? "") → \(to ?? "")" : from.map { "从 \($0) 出发" } ?? to.map { "到 \($0)" }
-            out[k].more = line.map { [out[k].right.isEmpty ? out[k].title : out[k].title + " · " + out[k].right, $0] } ?? []
+            out[k].more = line.map { [$0] } ?? []
         }
         // what is still to come within two hours says how long it is until it (a point with a value of its own keeps it)
         if let now {

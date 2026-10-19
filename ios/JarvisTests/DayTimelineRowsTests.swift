@@ -143,8 +143,8 @@ final class DayTimelineRowsTests: XCTestCase {
                            item("w2", "move", 700, 715, walk), item("r", "ride", 715, 740, #""route": "27""#), item("x", "stay", 740, 800),
                            item("w3", "move", 800, 812, walk)].joined(separator: ","))
         let m = build(r, now: nil)
-        XCTAssertEqual(try entry(m, "w").more, ["步行 · 10 分", "家 → School"])
-        XCTAssertEqual(try entry(m, "w2").more, ["步行 · 15 分", "从 School 出发"], "the next leg of the run is where the bus is")
+        XCTAssertEqual(try entry(m, "w").more, ["家 → School"], "where it went: its length is already at the right")
+        XCTAssertEqual(try entry(m, "w2").more, ["从 School 出发"], "the next leg of the run is where the bus is")
         XCTAssertEqual(try entry(m, "w3").more, [], "no name on the place before it, and no place after: nothing more to say")
         XCTAssertEqual(try entry(m, "r").more, [], "a ride says its own stops, and this one has none")
     }
@@ -218,11 +218,13 @@ final class DayTimelineRowsTests: XCTestCase {
 
     func testARowOpensWhenThereIsSomethingToShowAndNeverOtherwise() throws {
         let m = build(TimelineFixture.today(cal))
-        for id in ["stay-1", "move-3", "ride-8", "talk-1", "picture-pic-demo-1", "event-demo-1", "reminder-demo-1", "departure-demo-1", "work-demo-1", "call-demo-1", "payment-demo-1", "claude-demo-1",
-                   "sleep-0", "workout-demo-1", "code-group-stay-1", "code-s1"] {
+        for id in ["stay-1", "move-3", "ride-8", "talk-1", "picture-pic-demo-1", "event-demo-1", "reminder-demo-1", "departure-demo-1", "work-demo-1", "call-demo-1", "payment-demo-1",
+                   "sleep-0", "code-group-stay-1", "code-s1"] {
             if let e = m.entries.first(where: { $0.id == id }) { XCTAssertTrue(e.opens, id) }
         }
         XCTAssertFalse(try entry(m, "now").opens)
+        // a workout and a chat with Claude say everything in their line, so there is nothing to open to
+        for id in ["workout-demo-1", "claude-demo-1"] { XCTAssertFalse(try entry(m, id).opens, id) }
         let bare = try reply([item("s", "stay", 600, 700), item("pi", "picture", 700, 700, #""id": "x""#), item("c", "call", 710, 720), item("w", "work", 725, 740)].joined(separator: ","))
         let b = build(bare, now: nil)
         XCTAssertEqual(try entry(b, "s").actions, [.ask], "a place with no name, no map and nothing kept has only her to be handed to")
@@ -397,7 +399,7 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(w.glance, "跑步 · 3.2 公里")
         XCTAssertEqual(w.lens, .workout)
         XCTAssertEqual(w.group, "stay-9", "the school's, as he was there")
-        XCTAssertEqual(w.more, ["3.2 公里", "240 千卡", "平均心率 142"])
+        XCTAssertEqual(w.more, [], "its facts are its line")
         let names: [(String, String)] = [("running", "跑步"), ("Outdoor Run", "跑步"), ("walking", "步行"), ("cycling", "骑车"), ("biking", "骑车"), ("hiking", "徒步"), ("swimming", "游泳"),
                                          ("functional_strength_training", "力量训练"), ("yoga", "瑜伽"), ("rowing", "运动"), ("", "运动")]
         for (activity, title) in names { XCTAssertEqual(DayTimelineModel.workoutWords(activity).0, title, activity) }
@@ -412,9 +414,35 @@ final class DayTimelineRowsTests: XCTestCase {
                           item("b", "ride", 700, 730, #""route": "7", "ended_reason": "something new""#) + "," + item("c", "ride", 800, 830, #""route": "9", "credit": " ", "ended_reason": "replaced""#))
         let m = build(r, now: nil)
         XCTAssertEqual(try entry(m, "a").title, "27→14 路", "the arrow without its spaces, as the Mac writes it")
-        XCTAssertEqual(try entry(m, "a").more, ["上车 A", "下车 B", "实时：BC Transit", "你说了下车"])
+        XCTAssertEqual(try entry(m, "a").more, ["实时：BC Transit", "你说了下车"], "both stops are in its line")
         XCTAssertEqual(try entry(m, "b").more, [], "an ending it has no words for is not guessed at")
         XCTAssertEqual(try entry(m, "c").more, ["换了另一趟车"], "a credit of blanks is none")
+    }
+
+    func testARowWhoseWordsAreCutShortOpensToSayThemWholeAndOneWhoseWordsFitDoesNot() throws {
+        func chat(_ text: String, _ more: String = #""messages": 14"#) throws -> TLEntry {
+            try entry(build(try reply(item("c", "claude_chat", 600, 640, #""text": "\#(text)", "# + more)), now: nil), "c")
+        }
+        let fits = try chat("积分换元的符号问题")
+        XCTAssertFalse(fits.cutShort)
+        XCTAssertFalse(fits.opens, "it has nothing to say that its line does not")
+        XCTAssertEqual(fits.more, [])
+        let cut = try chat(String(repeating: "积分换元的符号问题", count: 3))
+        XCTAssertTrue(cut.cutShort)
+        XCTAssertTrue(cut.opens, "it opens to say its title whole")
+        XCTAssertEqual(cut.more, [], "and has nothing to add to it")
+        // the amber 等你 takes room from the title: what fits alone is cut beside it
+        let edge = String(repeating: "字", count: 17)                       // 255 pt at 15: under the 288 a reminder has, over what is left beside the badge
+        func reminder(_ more: String) throws -> TLEntry { try entry(build(try reply(item("r", "reminder", 600, nil, #""text": "\#(edge)", "fired": true, "# + more)), now: nil), "r") }
+        let known = try reminder(#""acknowledged": true"#), wait = try reminder(#""acknowledged": false"#)
+        XCTAssertFalse(known.waiting || known.cutShort)
+        XCTAssertTrue(wait.waiting && wait.cutShort, "beside the badge it no longer fits")
+        // a place, a pause and the line for now are never cut short
+        let m = build(TimelineFixture.today(cal))
+        for e in m.entries where e.kind == .stay || e.kind == .now || e.kind == .pause { XCTAssertFalse(e.cutShort, e.id) }
+        // the measure: ten wide characters at 15 pt are 150
+        XCTAssertEqual(tlWidth(String(repeating: "字", count: 10), size: 15), 150, accuracy: 1.5)
+        XCTAssertGreaterThan(tlWidth("Hillside Centre", size: 12), 60)
     }
 
     // MARK: the words of the other rows
@@ -425,10 +453,9 @@ final class DayTimelineRowsTests: XCTestCase {
                            item("e5", "event", 1000, 1060, #""title": "E", "source": "elsewhere""#), item("e6", "event", 1100, 1160, #""title": "F", "place": "Clinic", "private": true, "source": "mail", "confirmed": false"#)].joined(separator: ","))
         let m = build(r, now: nil)
         XCTAssertEqual(m.entries.map(\.detail), ["日历 · Room 1", "邮件", "你说的", "计划", nil, nil])
-        XCTAssertEqual(try entry(m, "e1").more, ["10:00–11:00", "Room 1", "来自日历"])
-        XCTAssertEqual(try entry(m, "e2").more.suffix(2), ["来自邮件", "你确认过了"])
+        // opened, the hours (the row has when it began) and that he has said it is his; where it came from and where are in its line, a private one's is not
+        XCTAssertEqual(m.entries.map(\.more), [["10:00–11:00"], ["11:40–12:40", "你确认过了"], ["13:20–14:20"], ["15:00–16:00"], ["16:40–17:40"], ["18:20–19:20", "来自邮件"]])
         XCTAssertEqual(try entry(m, "e6").title, "私事")
-        XCTAssertEqual(try entry(m, "e6").more, ["18:20–19:20", "来自邮件", "还没确认"], "no place, though it has one")
     }
 
     func testRemindersAndDeparturesAndCallsAndWorkSayTheirWordsInFull() throws {
@@ -436,11 +463,11 @@ final class DayTimelineRowsTests: XCTestCase {
                            item("d1", "departure", 1400, 1400, #""title": "12 · Hillside", "route": "12", "board_stop": "Hillside", "to": "UVic", "leave_at_ms": \#(at(1390))"#),
                            item("c1", "call", 600, 618, #""app": "FaceTime""#), item("w1", "work", 650, 780, #""active_s": 7800, "projects": [{"name": "Jarvis", "seconds": 6000}, {"name": "论文", "seconds": 1800}], "apps": [{"name": "Xcode", "seconds": 4000}]"#)].joined(separator: ","))
         let m = build(r)
-        XCTAssertEqual(try entry(m, "r1").more, ["给 Mia 回电话", "还没到点"])
-        XCTAssertEqual(try entry(m, "r2").more, ["吃药", "响过了"])
-        XCTAssertEqual(try entry(m, "d1").more, ["路线 12", "在 Hillside 上车", "去 UVic", "23:10 出门"])
+        XCTAssertEqual(try entry(m, "r1").more, [], "a reminder's text and state are its title and line")
+        XCTAssertEqual(try entry(m, "r2").more, [])
+        XCTAssertEqual(try entry(m, "d1").more, ["路线 12", "在 Hillside 上车"], "where to and when to leave are its line and its value")
         XCTAssertEqual(try entry(m, "c1").title, "通话 · FaceTime")
-        XCTAssertEqual(try entry(m, "c1").more, ["用 FaceTime", "通话 18 分"])
+        XCTAssertEqual(try entry(m, "c1").more, [], "the app is its title and the length its value")
         let w = try entry(m, "w1")
         XCTAssertEqual(w.work?.projects, [TLTop(name: "Jarvis", minutes: 100, share: 1), TLTop(name: "论文", minutes: 30, share: 0.3)])
         XCTAssertEqual(w.work?.apps, [TLTop(name: "Xcode", minutes: 67, share: 1)])

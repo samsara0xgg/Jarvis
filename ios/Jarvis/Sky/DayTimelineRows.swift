@@ -50,7 +50,6 @@ extension DayTimelineModel {
             let asleep = i.minutes ?? span
             e.right = asleep.map { tlDur(tlInt($0)) } ?? ""
             e.barName = asleep.map { tlHM(tlInt($0)) }; e.barIcon = "moon.fill"
-            e.more = i.minutes.map { ["睡着 " + tlDur(tlInt($0))] } ?? []
             e.sleep = sleepInfo(i, t0: t0, end: end, f)
             e.glance = e.sleep?.short
         case "stay":
@@ -87,7 +86,9 @@ extension DayTimelineModel {
                 e.title = route.map { "\($0) 路" } ?? "公交"
                 e.barName = route; e.barIcon = "bus.fill"
                 e.detail = trail.isEmpty ? nil : trail          // one stop is that stop alone, none no line at all
-                e.more = [stops[0].map { "上车 " + $0 }, stops[1].map { "下车 " + $0 }, tlText(i.credit).map { "实时：" + $0 },
+                // opened it says what the line does not: with two stops the line says both, with one it is only that stop, so which one it was is said here
+                let one = stops.compactMap { $0 }.count == 1
+                e.more = [one ? stops[0].map { "上车 " + $0 } : nil, one ? stops[1].map { "下车 " + $0 } : nil, tlText(i.credit).map { "实时：" + $0 },
                           tlText(i.ended_reason).flatMap { endings[$0] }].compactMap { $0 }
             } else {
                 let (word, symbol) = moves[i.activity ?? ""] ?? ("移动", "arrow.right")
@@ -110,7 +111,7 @@ extension DayTimelineModel {
             e.symbol = "photo.fill"
             let lines = (i.note ?? "").split(whereSeparator: \.isNewline).compactMap { tlText(String($0)) }
             e.detail = lines.first
-            e.more = lines
+            e.more = Array(lines.dropFirst())           // the line says the first, so opened it says the rest
             e.glance = ["照片", e.detail].compactMap { $0 }.joined(separator: " · ")
             e.attachment = tlText(i.attachment) ?? (i.id.hasPrefix("picture-") ? String(i.id.dropFirst("picture-".count)) : i.id)
         case "event":
@@ -125,9 +126,9 @@ extension DayTimelineModel {
             let word = i.source.map { eventSources[$0] } ?? "日历"
             let parts = hidden ? [] : [word, unconfirmed ? "还没确认" : nil, tlText(i.place)].compactMap { $0 }
             e.detail = parts.isEmpty ? nil : parts.joined(separator: " · ")
-            let state = i.source == "mail" ? (i.confirmed == false ? "还没确认" : i.confirmed == true ? "你确认过了" : nil) : nil
-            e.more = [t1 != nil && (span ?? 0) >= 1 ? rangeText(t0, t1, running: false) : nil, hidden ? nil : tlText(i.place),
-                      "来自" + (eventSources[tlText(i.source) ?? ""] ?? "日历"), state].compactMap { $0 }
+            // opened it says what the line does not: the hours (the row has when it began), that he has said it is his, and for a private one where it came from
+            e.more = [t1 != nil && (span ?? 0) >= 1 ? rangeText(t0, t1, running: false) : nil, hidden ? "来自" + (eventSources[tlText(i.source) ?? ""] ?? "日历") : nil,
+                      i.source == "mail" && i.confirmed == true ? "你确认过了" : nil].compactMap { $0 }
             e.right = dur ?? ""
             e.waiting = unconfirmed && (now.map { (t1 ?? t0) > $0 } ?? false)
         case "reminder":
@@ -136,7 +137,6 @@ extension DayTimelineModel {
             e.glance = "提醒 · " + e.title
             e.symbol = "bell.fill"
             e.detail = i.fired == true ? (i.acknowledged == true || f.acked.contains(i.id) ? "你知道了" : "响过了") : later ? "还没到点" : nil
-            e.more = [e.title, e.detail].compactMap { $0 }
             e.waiting = i.fired == true && i.acknowledged == false && !f.acked.contains(i.id)
         case "departure":
             e.kind = .departure
@@ -149,7 +149,7 @@ extension DayTimelineModel {
             e.detail = tlText(i.to).map { "去 " + $0 }
             e.right = leave ?? ""
             e.strongRight = leave != nil
-            e.more = [route.map { "路线 " + $0 }, tlText(i.board_stop).map { "在 " + $0 + " 上车" }, tlText(i.to).map { "去 " + $0 }, leave].compactMap { $0 }
+            e.more = [route.map { "路线 " + $0 }, tlText(i.board_stop).map { "在 " + $0 + " 上车" }].compactMap { $0 }
         case "work":
             e.kind = .work
             e.symbol = "laptopcomputer"
@@ -170,7 +170,6 @@ extension DayTimelineModel {
             e.symbol = "phone.fill"
             e.glance = e.title
             e.right = dur ?? ""
-            e.more = [app.map { "用 " + $0 }, dur.map { "通话 " + $0 }].compactMap { $0 }
         case "payment":
             e.kind = .payment
             e.symbol = "creditcard.fill"
@@ -186,7 +185,7 @@ extension DayTimelineModel {
             // opened: which way, the amount (with its currency's code where the mark alone does not say it: a `$` or a `¥`), and where the import came from
             let way = i.direction == "in" ? "收入" : "支出", code = tlText(i.currency)?.uppercased()
             let both = sum.map { s in way + " " + s + (code.flatMap { c in s.hasPrefix("$") || s.hasPrefix("¥") ? " " + c : nil } ?? "") }
-            e.more = [both, tlText(i.source).map { "来自" + (sources[$0] ?? $0) }].compactMap { $0 }
+            e.more = [both, via == nil ? tlText(i.source).map { "来自" + $0 } : nil].compactMap { $0 }
         case "claude_chat":
             e.kind = .claude
             e.symbol = "sparkles"
@@ -196,7 +195,6 @@ extension DayTimelineModel {
             e.detail = "和 Claude"
             let said = i.messages.flatMap { $0 > 0 ? "\($0) 条" : nil }
             e.right = said ?? dur ?? ""
-            e.more = [e.title, i.messages.flatMap { $0 > 0 ? "\($0) 条消息" : nil }].compactMap { $0 }
         case "claude_day":
             e.kind = .claude
             e.symbol = "sparkles"
@@ -213,7 +211,6 @@ extension DayTimelineModel {
             let facts = [i.distance_m.flatMap(tlDistance), i.energy_kcal.flatMap { $0.isFinite && $0 > 0 ? "\(tlInt($0)) 千卡" : nil },
                          i.avg_hr.flatMap { $0.isFinite && $0 > 0 ? "平均心率 \(tlInt($0))" : nil }].compactMap { $0 }
             e.detail = facts.isEmpty ? nil : facts.joined(separator: " · ")
-            e.more = facts
             e.right = dur ?? ""
             e.glance = [word, i.distance_m.flatMap(tlDistance)].compactMap { $0 }.joined(separator: " · ")
         case "code":

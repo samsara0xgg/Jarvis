@@ -106,7 +106,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(ride.base, TLMetrics.rowDetail, "the stops have a line of their own, so they are not cut off")
         XCTAssertEqual(ride.symbol, "bus.fill")
         XCTAssertEqual(ride.right, "29 分")
-        XCTAssertEqual(ride.more, ["上车 Hillside Centre", "下车 UVic Exchange", "实时：BC Transit", "下车了"], "the stops, that the bus was followed live, and how it ended, in full when it is opened")
+        XCTAssertEqual(ride.more, ["实时：BC Transit", "下车了"], "that the bus was followed live and how it ended, when it is opened: the stops are in its line")
         XCTAssertEqual(try entry(m, "ride-12").more.last, "过了要下的站，就算到了")
         // a ride whose other stop is not known yet gives the one it knows; one that knows no stop has no second line
         let one = try reply(#"{"id": "r", "lane": "you", "kind": "ride", "state": "now", "start_ms": \#(at(1280)), "end_ms": null, "route": "12", "board_stop": "Stop A"}"#)
@@ -145,7 +145,7 @@ final class DayTimelineTests: XCTestCase {
         let p = try entry(build(TimelineFixture.today(cal)), "picture-pic-demo-1")
         XCTAssertEqual(p.title, "照片")
         XCTAssertEqual(p.detail, "黑板上写着积分公式，下面一行是作业要求。")
-        XCTAssertEqual(p.more.count, 2, "both lines when it is opened")
+        XCTAssertEqual(p.more, ["第三题的符号有些看不清。"], "its line is the first line of the note, so opened it says the rest")
         XCTAssertEqual(p.attachment, "pic-demo-1")
         // no note yet: a picture and nothing more
         let r = try reply(#"{"id": "picture-x", "lane": "you", "kind": "picture", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(600)), "attachment": "x"}"#)
@@ -183,7 +183,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(d.title, "12 · Stop A", "the brain's own title for it")
         XCTAssertEqual([d.detail, d.right], ["去 Downtown", "23:10 出门"], "where it goes under its name, and when to leave where a length would be")
         XCTAssertTrue(d.strongRight)
-        XCTAssertEqual(d.more, ["路线 12", "在 Stop A 上车", "去 Downtown", "23:10 出门"])
+        XCTAssertEqual(d.more, ["路线 12", "在 Stop A 上车"], "where to and when to leave are its line and its value")
         XCTAssertEqual(d.time, "23:20")
     }
 
@@ -205,7 +205,7 @@ final class DayTimelineTests: XCTestCase {
         let m = build(TimelineFixture.today(cal))
         let p = try entry(m, "payment-demo-1")
         XCTAssertEqual([p.title, p.detail, p.right, p.time], ["A&W", "Teen Burger Combo · 支付宝", "$12.40", "13:20"], "who, what, and through which app: the Mac's line")
-        XCTAssertEqual(p.more, ["支出 $12.40 CAD", "来自支付宝"])
+        XCTAssertEqual(p.more, ["支出 $12.40 CAD"], "which way and in what money; who, what and through which app are its line")
         XCTAssertEqual(p.symbol, "creditcard.fill")
         XCTAssertTrue(p.strongRight && p.opens)
         XCTAssertNil(p.about, "the host does not take a payment yet")
@@ -214,7 +214,7 @@ final class DayTimelineTests: XCTestCase {
         let rows = build(r, now: nil).entries
         XCTAssertEqual(rows.map(\.title), ["转账", "Cafe", "付款"])
         XCTAssertEqual(rows.map(\.right), ["+¥1,234.50", "5.00 AUD", ""])
-        XCTAssertEqual(rows.map(\.more), [["收入 ¥1,234.50 CNY", "来自微信"], ["支出 5.00 AUD", "来自venmo"], []])
+        XCTAssertEqual(rows.map(\.more), [["收入 ¥1,234.50 CNY"], ["支出 5.00 AUD", "来自venmo"], []], "the source is said opened only where the line has no word for it")
         XCTAssertEqual(rows.map(\.detail), ["微信", nil, nil], "an app the Mac has a word for is said; one it has not is only in the opened row")
     }
 
