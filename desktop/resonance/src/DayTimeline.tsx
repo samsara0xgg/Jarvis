@@ -228,6 +228,15 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     if (dir) enter(root.current, dir);
   }, [shown]);
   useEffect(() => { feed.reload(); }, []);
+  // Left open past midnight, the pane is on a day that has ended: today is read at once, not at the next poll, and again every 5 s for as long as
+  // the brain still answers with the old day.
+  const ends = feed.data?.end_ms, over = open && typeof ends === 'number' && now >= ends;
+  useEffect(() => {
+    if (!over) return;
+    feed.reload();
+    const id = setInterval(feed.reload, 5000);
+    return () => clearInterval(id);
+  }, [over]);
   // What he has just done that the daemon has not said back yet, laid over what was read so the whole pane (the bar, the list, the count)
   // shows it at once while the day is read again: a reminder acknowledged, a kept place renamed.
   const [acks, setAcks] = useState<ReadonlySet<string>>(() => new Set()), [names, setNames] = useState<ReadonlyMap<string, string>>(() => new Map());
@@ -398,7 +407,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   const holding = !!viewer || (!!dock || !!rename) && !left;
   useEffect(() => { hold?.(holding); return () => hold?.(false); }, [holding]);
   // The open row, the field, the input and the picture are the day's: they go with it, and with the pane.
-  useEffect(() => { setPick(null); setHot(null); setOpened(null); }, [date, ui.filter]);
+  useEffect(() => { setPick(null); setHot(null); setOpened(null); }, [date, shown?.date, ui.filter]);
   useEffect(() => { if (opened && model && !model.rows.has(opened) && !model.heads.has(opened)) setOpened(null); }, [model]);
   useEffect(() => { if (rename && opened !== rename.key) setRename(null); }, [opened]);
   useEffect(() => { if (!open) { setOpened(null); setRename(null); setDock(null); setDraft(''); setViewer(null); setNote(null); } }, [open]);
@@ -437,7 +446,9 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     window.addEventListener('keydown', key, true);
     return () => { window.removeEventListener('keydown', key, true); cancelAnimationFrame(glide.current); };
   }, []);
-  useEffect(() => { ui.setSel(null); ui.setFilter(null); ui.setPreview(null); }, [date]);
+  // His range, the cut and the lens in the hand belong to the day they were made on: they go when another day is asked for and again when it is
+  // drawn (a day that rolls over at midnight is a new day with nobody asking), before it is painted so the new day never shows the old cut.
+  useLayoutEffect(() => { ui.setSel(null); ui.setFilter(null); ui.setPreview(null); }, [date, shown?.date]);
 
   // The keys of an open day (the window has key focus only after a click pinned it: Notch.tsx): ← → the day before and after, ↑ ↓ the row
   // before and after, which the bar brackets and the list keeps in view, Enter or Space opens the one chosen (or closes it). With nothing
