@@ -208,11 +208,9 @@ struct DayTimelineView: View {
                 .frame(width: bw, height: TLLayout.barH)
                 .opacity(reduce && !tl.reveal ? 0 : 1)
                 .animation(reduce ? .easeOut(duration: 0.25) : .easeOut(duration: 0.6), value: tl.reveal)
-            ForEach([6, 12, 18, 24], id: \.self) { h in
-                if Double(h * 60) >= lo {
-                    Text(String(format: "%02d", h)).font(AT.mono(10)).foregroundStyle(muted).fixedSize()
-                        .offset(x: x(Double(h * 60)) - (h == 24 ? 12 : 6), y: TLLayout.barH + 4)
-                }
+            ForEach(m.ticks, id: \.self) { h in
+                Text(String(format: "%02d", h)).font(AT.mono(10)).foregroundStyle(muted).frame(width: 12)
+                    .offset(x: x(Double(h * 60)) - (h == 24 ? 12 : 6), y: TLLayout.barH + 4)          // the last one ends where the bar ends
             }
             if let n = m.now, n >= lo {
                 RoundedRectangle(cornerRadius: 0.75).fill(warm).frame(width: 1.5, height: TLLayout.barH + 6)

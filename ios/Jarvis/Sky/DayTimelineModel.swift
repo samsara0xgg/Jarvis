@@ -87,9 +87,12 @@ struct DayTimelineModel: Equatable {
     var line: String?               // her sentence about the day
     var entries: [TLEntry]
     var segs: [TLSeg]
-    var span: ClosedRange<Double>   // what the overview bar covers: from the first thing of the day (or 06:00) to 24:00
+    var span: ClosedRange<Double>   // what the overview bar covers: from its start (`axisStart`) to 24:00
     var now: Double?                // the minute of now, on today only
     var missing: String?            // "还没读到：Mac 的时间"
+
+    /// the hours the bar is ticked at: every third hour inside its span (06 09 12 15 18 21 24)
+    var ticks: [Int] { stride(from: Int((span.lowerBound / 180).rounded(.up)) * 3, through: 24, by: 3).map { $0 } }
 
     var isEmpty: Bool { entries.allSatisfy { $0.kind == .now } }
     /// where the line for now stands in the list
@@ -291,9 +294,23 @@ struct DayTimelineModel: Equatable {
             line.time = clock(now)
             entries.insert(line, at: entries.firstIndex { $0.t0 > now } ?? entries.count)
         }
-        let first = entries.first { $0.kind != .now }?.t0 ?? 360
+        // the night that ended on this day says when he woke; what began before the bar's start brings it back
+        let wake = r.items.filter { $0.kind == "sleep" }.compactMap { $0.end_ms.map(m) }.filter { $0 >= 0 && $0 < DAY }.min()
+        let early = r.items.filter { Self.axisKinds.contains($0.kind) }.map { m($0.start_ms) }
         return DayTimelineModel(date: r.date, line: text(r.line?.text), entries: entries, segs: segs,
-                                span: max(0, min(first, 360))...DAY, now: now, missing: missingText(r.missing))
+                                span: axisStart(wake: wake, early: early)...DAY, now: now, missing: missingText(r.missing))
+    }
+
+    /// what, starting before the bar's start, brings the start back: where he went and what he did, never a stay alone
+    private static let axisKinds: Set<String> = ["move", "ride", "talk", "picture", "event", "work", "call", "payment"]
+
+    /// Where the bar starts, in minutes: the earlier of 06:00 and the hour before he woke (`wake`, the end of the night that ended on this day: none is 06:00),
+    /// never before 00:00. Something in `early` (when the things of the day began) before that moves it back to its hour.
+    static func axisStart(wake: Double?, early: [Double]) -> Double {
+        var lo = 360.0
+        if let wake { lo = min(lo, max(0, ((wake - 60) / 60).rounded(.down) * 60)) }
+        if let first = early.filter({ $0 >= 0 && $0 < lo }).min() { lo = (first / 60).rounded(.down) * 60 }
+        return lo
     }
 
     /// the footnote under the list: what has not been read, named by what it gives the day (the dial words it its own way: `BrainLink.missingText`)

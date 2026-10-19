@@ -284,15 +284,48 @@ final class DayTimelineTests: XCTestCase {
 
     // MARK: the overview bar
 
-    func testTheBarRunsFromTheFirstThingOfTheDayOrSixToMidnight() throws {
-        XCTAssertEqual(build(TimelineFixture.today(cal)).span, 55...DAY, "the night began at 00:55")
-        let r = try reply(#"{"id": "s1", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(500)), "end_ms": \#(at(700))}"#)
-        XCTAssertEqual(build(r).span, 360...DAY, "nothing before 06:00: it starts there")
+    func testTheBarStartsAtSixOrAtTheHourBeforeHeWokeWhicheverIsEarlier() throws {
+        // the night that ended at 09:05 would start it at 08:00, but it is never later than 06:00
+        XCTAssertEqual(build(TimelineFixture.today(cal)).span, 360...DAY)
+        XCTAssertEqual(DayTimelineModel.axisStart(wake: 545, early: []), 360)
+        XCTAssertEqual(DayTimelineModel.axisStart(wake: 320, early: []), 240, "05:20: the hour before is 04:20, which is 04:00")
+        XCTAssertEqual(DayTimelineModel.axisStart(wake: 360, early: []), 300, "06:00: 05:00")
+        XCTAssertEqual(DayTimelineModel.axisStart(wake: 30, early: []), 0, "never before midnight")
+        XCTAssertEqual(DayTimelineModel.axisStart(wake: nil, early: []), 360, "no night that ended on this day: 06:00")
+        let r = try reply(#"{"id": "n", "lane": "you", "kind": "sleep", "state": "done", "start_ms": \#(at(-60)), "end_ms": \#(at(320))}, {"id": "s", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(320)), "end_ms": \#(at(700)), "place": "Home"}"#)
+        XCTAssertEqual(build(r).span, 240...DAY)
         XCTAssertEqual(build(try reply("")).span, 360...DAY)
+        // a night still going, or one that ends tomorrow, tells nothing
+        let on = try reply(#"{"id": "n", "lane": "you", "kind": "sleep", "state": "now", "start_ms": \#(at(-60)), "end_ms": null}, {"id": "t", "lane": "you", "kind": "sleep", "state": "next", "start_ms": \#(at(1380)), "end_ms": \#(at(1900))}"#)
+        XCTAssertEqual(build(on).span, 360...DAY)
         // the evening before is cut at the day's start
-        let before = try reply(#"{"id": "s1", "lane": "you", "kind": "sleep", "state": "done", "start_ms": \#(at(-30)), "end_ms": \#(at(400))}"#)
+        let before = try reply(#"{"id": "s1", "lane": "you", "kind": "sleep", "state": "done", "start_ms": \#(at(-30)), "end_ms": \#(at(20))}"#)
         XCTAssertEqual(build(before).span, 0...DAY)
         XCTAssertEqual(build(before).segs[0].t0, 0)
+    }
+
+    func testSomethingThatBeganBeforeTheStartBringsItBackToItsHourButAStayAloneDoesNot() throws {
+        XCTAssertEqual(DayTimelineModel.axisStart(wake: 480, early: [280]), 240, "04:40 is in the hour of 04:00")
+        XCTAssertEqual(DayTimelineModel.axisStart(wake: 480, early: [359]), 300)
+        XCTAssertEqual(DayTimelineModel.axisStart(wake: 480, early: [130, 280]), 120, "the earliest of them")
+        XCTAssertEqual(DayTimelineModel.axisStart(wake: 480, early: [-30, 360, 400]), 360, "what began the evening before, or at the start, or later, moves nothing")
+        func day(_ kind: String, _ extra: String = "") throws -> DayTimelineModel {
+            build(try reply(#"{"id": "n", "lane": "you", "kind": "sleep", "state": "done", "start_ms": \#(at(-60)), "end_ms": \#(at(480))}, {"id": "x", "lane": "you", "kind": "\#(kind)", "state": "done", "start_ms": \#(at(280)), "end_ms": \#(at(300))\#(extra)}"#))
+        }
+        for kind in ["move", "ride", "talk", "picture", "work", "call"] { XCTAssertEqual(try day(kind).span.lowerBound, 240, kind) }
+        XCTAssertEqual(try day("event", #", "title": "x""#).span.lowerBound, 240)
+        XCTAssertEqual(try day("payment", #", "amount": "1.00", "direction": "out""#).span.lowerBound, 240)
+        for kind in ["stay", "reminder", "departure"] { XCTAssertEqual(try day(kind).span.lowerBound, 360, "\(kind) does not") }
+    }
+
+    func testTheBarIsTickedEveryThreeHoursInsideItsSpan() throws {
+        func ticks(_ lo: Double) -> [Int] { DayTimelineModel(date: "", entries: [], segs: [], span: lo...DAY).ticks }
+        XCTAssertEqual(ticks(360), [6, 9, 12, 15, 18, 21, 24])
+        XCTAssertEqual(ticks(240), [6, 9, 12, 15, 18, 21, 24], "03 is before the start")
+        XCTAssertEqual(ticks(0), [0, 3, 6, 9, 12, 15, 18, 21, 24])
+        XCTAssertEqual(ticks(181), [6, 9, 12, 15, 18, 21, 24])
+        XCTAssertEqual(ticks(180), [3, 6, 9, 12, 15, 18, 21, 24], "a tick on the start is kept")
+        XCTAssertEqual(build(TimelineFixture.today(cal)).ticks, [6, 9, 12, 15, 18, 21, 24])
     }
 
     func testTheBarColoursThePlaceTheTripTheNightAndLeavesWhatWasNotRecordedAsTrack() throws {
@@ -300,7 +333,7 @@ final class DayTimelineTests: XCTestCase {
         let m = build(r, now: nil)
         let n = 1440, cells = m.cells(n)
         func cell(_ minute: Double) -> TLCell { cells[Int((minute - m.span.lowerBound) / (m.span.upperBound - m.span.lowerBound) * Double(n))] }
-        XCTAssertEqual(cell(120), TLCell(r: 112, g: 120, b: 205, a: 0.9), "the night, indigo")
+        XCTAssertEqual(cell(330), TLCell(r: 112, g: 120, b: 205, a: 0.9), "the night, indigo (the bar starts at 05:00, the hour before he woke)")
         XCTAssertEqual(cell(500), TLCell(r: 255, g: 168, b: 150, a: 0.85), "home, in the colour of home")
         XCTAssertEqual(cell(720), TLCell(r: 196, g: 208, b: 255, a: 0.35), "the walk")
         XCTAssertEqual(cell(850), TLCell(r: 196, g: 204, b: 238, a: 0.28), "a place he does not keep, faint")
