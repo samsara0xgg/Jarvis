@@ -4,9 +4,12 @@
 #   scripts/pi_brain_backup.sh             back up now
 #   scripts/pi_brain_backup.sh --install   run it daily at 04:00 from a LaunchAgent (a missed run fires at wake)
 #
-# Each *.db under the Pi's ~/.jarvis is copied with SQLite's online backup API into the Pi's RAM
-# (/dev/shm, never the SD card), pulled to ~/.jarvis/backups/pi-brain/<date>/, then removed there.
-# Only *.db files travel: env, tokens and every other file stay on the Pi. The newest 7 days are kept.
+# Each *.db under the Pi's ~/.jarvis is copied, one database at a time, with SQLite's online backup
+# API into the Pi's RAM (/dev/shm), pulled to ~/.jarvis/backups/pi-brain/<date>/, checked here with
+# quick_check, and removed on the Pi before the next one starts. A database bigger than half of
+# /dev/shm's free space is staged on the Pi's disk beside ~/.jarvis (~/.jarvis-backup-stage-<date>)
+# instead of in RAM, and removed right after the pull. Only *.db files travel: env, tokens and every
+# other file stay on the Pi. The newest 7 days are kept.
 set -euo pipefail
 
 HOST="${JARVIS_PI_HOST:-allen@jarvis}"
@@ -38,29 +41,54 @@ EOF
 fi
 
 day="$(date +%Y-%m-%d)"
-stage="/dev/shm/jarvis-backup-$day"
+shm_stage="/dev/shm/jarvis-backup-$day"
+disk_stage="\$HOME/.jarvis-backup-stage-$day"
 dest="$DEST_ROOT/$day"
 mkdir -p "$dest"
 echo "$(date '+%F %T') backup start -> $dest"
 
-ssh -o BatchMode=yes -o ConnectTimeout=20 "$HOST" "python3 - '$stage'" <<'PY'
-import pathlib, sqlite3, sys
-stage = pathlib.Path(sys.argv[1]); stage.mkdir(parents=True, exist_ok=True)
+# Runs on the Pi: "list" prints each database's path under ~/.jarvis; "stage DAY PATH" backs one
+# database up into RAM, or onto the Pi's disk when it is more than half of /dev/shm's free space,
+# and prints where the copy is.
+read -r -d '' PI_PY <<'PY' || true
+import pathlib, shutil, sqlite3, sys
 root = pathlib.Path.home() / ".jarvis"
-for db in sorted(p for p in root.rglob("*.db") if p.is_file() and len(p.relative_to(root).parts) <= 3):
+if sys.argv[1] == "list":
+    for db in sorted(p for p in root.rglob("*.db") if p.is_file() and len(p.relative_to(root).parts) <= 4):
+        print(db.relative_to(root).as_posix())
+else:
+    day, db = sys.argv[2], root / sys.argv[3]
+    wal = db.with_name(db.name + "-wal")
+    size = db.stat().st_size + (wal.stat().st_size if wal.exists() else 0)
+    shm = pathlib.Path("/dev/shm")
+    in_ram = shm.is_dir() and size * 2 <= shutil.disk_usage(shm).free
+    stage = shm / f"jarvis-backup-{day}" if in_ram else pathlib.Path.home() / f".jarvis-backup-stage-{day}"
+    stage.mkdir(parents=True, exist_ok=True)
     out = stage / "__".join(db.relative_to(root).parts)
     src, dst = sqlite3.connect(f"file:{db}?mode=ro", uri=True), sqlite3.connect(out)
     src.backup(dst)
     dst.execute("pragma journal_mode=delete")  # one self-contained file, no -wal beside it
     dst.close(); src.close()
-    print(out.name)
+    print(out)
 PY
-scp -q -o BatchMode=yes "$HOST:$stage/*.db" "$dest/"
-ssh -o BatchMode=yes "$HOST" "rm -rf '$stage'"
 
-for f in "$dest"/*.db; do
+pi() { ssh -o BatchMode=yes -o ConnectTimeout=20 "$HOST" python3 - "$@" <<<"$PI_PY"; }
+# Whatever happens, nothing of ours stays on the Pi.
+cleanup() { ssh -o BatchMode=yes -o ConnectTimeout=20 "$HOST" "rm -rf '$shm_stage' \"$disk_stage\"" || true; }
+trap cleanup EXIT
+
+list="$(pi list)"
+[ -n "$list" ] || { echo "no databases found on $HOST" >&2; exit 1; }
+count=0
+while IFS= read -r rel; do
+    staged="$(pi stage "$day" "$rel")"
+    scp -q -o BatchMode=yes "$HOST:$staged" "$dest/"
+    ssh -o BatchMode=yes "$HOST" "rm -f '$staged'"
+    f="$dest/$(basename "$staged")"
     [ "$(sqlite3 -readonly "$f" 'pragma quick_check;')" = ok ] || { echo "quick_check failed: $f" >&2; exit 1; }
-done
+    echo "$(date '+%F %T') $rel ok ($(du -h "$f" | cut -f1))"
+    count=$((count + 1))
+done <<<"$list"
 # Keep the newest $KEEP days.
 ls -1d "$DEST_ROOT"/????-??-?? | sort -r | tail -n +"$((KEEP + 1))" | while read -r old; do rm -rf "$old"; done
-echo "$(date '+%F %T') backup done: $(ls "$dest" | wc -l | tr -d ' ') file(s), $(du -sh "$dest" | cut -f1)"
+echo "$(date '+%F %T') backup done: $count file(s), $(du -sh "$dest" | cut -f1)"
