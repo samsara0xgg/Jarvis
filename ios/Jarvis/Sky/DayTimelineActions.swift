@@ -1,7 +1,8 @@
 import SwiftUI
 
 // What a row of the day does when it is opened, each only where it works today: hand it to her, open the conversation at its time, rename a place he keeps (and take that back), say he
-// knows a reminder that rang, have her sum up a stretch of Mac work. The model says which of them a row offers (`TLEntry.actions`); this is what each one does.
+// knows a reminder that rang, have her sum up a stretch of Mac work, star it or take its star off (Sky/DayTimelineMarks.swift). The model says which of them a row offers
+// (`TLEntry.actions`); this is what each one does.
 
 /// a rename he can take back for a few seconds
 struct PlaceUndo: Equatable {
@@ -46,6 +47,10 @@ extension TimelineState {
             engine.aboutDropped = nil
             engine.setAbout(about)
             engine.sendToBrain(Self.summarizeWords)
+        case .mark:
+            setMark(e, on: true)
+        case .unmark:
+            setMark(e, on: false)
         }
     }
 

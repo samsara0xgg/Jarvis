@@ -160,7 +160,7 @@ final class DayTimelineRowsTests: XCTestCase {
         let done = build(TimelineFixture.today(cal), acked: ["reminder-demo-2"])
         XCTAssertEqual(done.waiting, ["event-demo-1"])
         XCTAssertEqual(try entry(done, "reminder-demo-2").detail, "你知道了")
-        XCTAssertEqual(try entry(done, "reminder-demo-2").actions, [.ask], "and offers nothing more to answer")
+        XCTAssertEqual(try entry(done, "reminder-demo-2").actions, [.ask, .mark], "and offers nothing more to answer")
         // an event: from mail, not confirmed, and not over (an event with no end is over when it began)
         func waits(_ more: String, from: Double = 1320, to: Double? = 1350, now: Double? = TimelineFixture.now) throws -> Bool {
             let r = try reply(item("e", "event", from, to, #""title": "X", "# + more))
@@ -190,34 +190,35 @@ final class DayTimelineRowsTests: XCTestCase {
     func testOpeningARowOffersOnlyWhatWorksToday() throws {
         let m = build(TimelineFixture.today(cal))
         func actions(_ id: String) throws -> [TLAction] { try entry(m, id).actions }
-        XCTAssertEqual(try actions("talk-1"), [.openTalk, .ask])
-        XCTAssertEqual(try actions("stay-1"), [.rename, .ask], "a place he keeps")
-        XCTAssertEqual(try actions("stay-5"), [.ask], "a place he does not keep cannot be renamed")
-        XCTAssertEqual(try actions("reminder-demo-2"), [.acknowledge, .ask], "rang, and not answered")
-        XCTAssertEqual(try actions("reminder-demo-1"), [.ask], "not yet")
-        XCTAssertEqual(try actions("reminder-demo-3"), [.ask], "answered")
-        XCTAssertEqual(try actions("work-demo-2"), [.summarize, .ask])
-        XCTAssertEqual(try actions("event-demo-1"), [.ask])
-        XCTAssertEqual(try actions("call-demo-1"), [.ask])
-        XCTAssertEqual(try actions("picture-pic-demo-1"), [.ask])
-        XCTAssertEqual(try actions("sleep-0"), [.ask])
-        XCTAssertEqual(try actions("move-3"), [.ask])
+        XCTAssertEqual(try actions("talk-1"), [.openTalk, .ask, .mark])
+        XCTAssertEqual(try actions("stay-1"), [.rename, .ask, .mark], "a place he keeps")
+        XCTAssertEqual(try actions("stay-5"), [.ask, .mark], "a place he does not keep cannot be renamed")
+        XCTAssertEqual(try actions("reminder-demo-2"), [.acknowledge, .ask, .mark], "rang, and not answered")
+        XCTAssertEqual(try actions("reminder-demo-1"), [.ask, .mark], "not yet")
+        XCTAssertEqual(try actions("reminder-demo-3"), [.ask, .mark], "answered")
+        XCTAssertEqual(try actions("work-demo-2"), [.summarize, .ask, .mark])
+        XCTAssertEqual(try actions("event-demo-1"), [.ask, .mark])
+        XCTAssertEqual(try actions("call-demo-1"), [.ask, .mark, .unmark], "she picked it: he can make it his or put it away")
+        XCTAssertEqual(try actions("picture-pic-demo-1"), [.ask, .mark])
+        XCTAssertEqual(try actions("sleep-0"), [.ask, .mark])
+        XCTAssertEqual(try actions("move-3"), [.ask, .mark])
         // the host takes a ride, a bus, a payment and a chat with Claude as what a turn is about too
         for id in ["ride-8", "payment-demo-1", "payment-demo-2", "claude-demo-1", "departure-demo-1"] {
-            XCTAssertEqual(try actions(id), [.ask], id)
+            XCTAssertEqual(try actions(id), [.ask, .mark], id)
         }
-        // and does not take these
-        for id in ["workout-demo-1", "code-group-stay-1", "code-group-stay-13", "now"] {
+        // and does not take a run, but it can be starred; the row for several sessions and the line for now are not items the brain has
+        XCTAssertEqual(try actions("workout-demo-1"), [.mark])
+        for id in ["code-group-stay-1", "code-group-stay-13", "now"] {
             XCTAssertEqual(try actions(id), [], id)
         }
         // a place whose id could not stand in a path is not renamed, though he keeps it
         let odd = try reply(item("s", "stay", 600, 700, #""place": "X", "kept_place": {"id": "a/b", "name": "家", "role": "home"}"#))
-        XCTAssertEqual(try entry(build(odd, now: nil), "s").actions, [.ask])
+        XCTAssertEqual(try entry(build(odd, now: nil), "s").actions, [.ask, .mark])
         let route = try reply(item("s", "stay", 600, 700, #""place": "X", "kept_place": {"id": "undo", "name": "家", "role": "home"}"#))
-        XCTAssertEqual(try entry(build(route, now: nil), "s").actions, [.ask], "its id is the brain's own route")
+        XCTAssertEqual(try entry(build(route, now: nil), "s").actions, [.ask, .mark], "its id is the brain's own route")
         // an event from his mail has an @ in its id (`commitment-<hex>@<day>`), which the host takes
         let mail = try reply(item("commitment-ab12@2026-10-08", "event", 1320, 1350, #""title": "X", "source": "mail", "confirmed": false"#))
-        XCTAssertEqual(try entry(build(mail), "commitment-ab12@2026-10-08").actions, [.ask])
+        XCTAssertEqual(try entry(build(mail), "commitment-ab12@2026-10-08").actions, [.ask, .mark])
         XCTAssertEqual(try entry(build(mail), "commitment-ab12@2026-10-08").about?.id, "commitment-ab12@2026-10-08")
         XCTAssertTrue(try entry(build(mail), "commitment-ab12@2026-10-08").waiting, "and it waits on him")
     }
@@ -229,12 +230,12 @@ final class DayTimelineRowsTests: XCTestCase {
             if let e = m.entries.first(where: { $0.id == id }) { XCTAssertTrue(e.opens, id) }
         }
         XCTAssertFalse(try entry(m, "now").opens)
-        // a workout says everything in its line, so there is nothing to open to; a chat with Claude opens to be handed to her
-        XCTAssertFalse(try entry(m, "workout-demo-1").opens)
+        // a workout says everything in its line, and still opens: to its star, which every item of the brain's day has
+        XCTAssertTrue(try entry(m, "workout-demo-1").opens)
         XCTAssertTrue(try entry(m, "claude-demo-1").opens)
         let bare = try reply([item("s", "stay", 600, 700), item("pi", "picture", 700, 700, #""id": "x""#), item("c", "call", 710, 720), item("w", "work", 725, 740)].joined(separator: ","))
         let b = build(bare, now: nil)
-        XCTAssertEqual(try entry(b, "s").actions, [.ask], "a place with no name, no map and nothing kept has only her to be handed to")
+        XCTAssertEqual(try entry(b, "s").actions, [.ask, .mark], "a place with no name, no map and nothing kept has only her to be handed to, and its star")
         let bareStay = try entry(b, "s")
         XCTAssertTrue(bareStay.opens)
         XCTAssertTrue(bareStay.more.isEmpty)
@@ -456,7 +457,7 @@ final class DayTimelineRowsTests: XCTestCase {
         let fits = try chat("积分换元的符号问题")
         XCTAssertFalse(fits.cutShort)
         XCTAssertEqual(fits.more, [], "it has nothing to say that its line does not")
-        XCTAssertEqual(fits.actions, [.ask], "it opens only to be handed to her")
+        XCTAssertEqual(fits.actions, [.ask, .mark], "it opens only to be handed to her and to be starred")
         let cut = try chat(String(repeating: "积分换元的符号问题", count: 3))
         XCTAssertTrue(cut.cutShort)
         XCTAssertTrue(cut.opens, "it opens to say its title whole")
@@ -597,7 +598,7 @@ final class DayTimelineRowsTests: XCTestCase {
         let m = build(r, now: nil)
         func e(_ id: String) throws -> TLEntry { try entry(m, id) }
         XCTAssertEqual([try e("odd-stay").title, try e("odd-stay").place == nil ? "none" : "some"], ["没名字的地方", "none"])
-        XCTAssertEqual(try e("odd-stay").actions, [.ask], "nothing to show of it: only her")
+        XCTAssertEqual(try e("odd-stay").actions, [.ask, .mark], "nothing to show of it: only her, and its star")
         XCTAssertEqual([try e("odd-work").title, try e("odd-work").detail], ["在 Mac 上工作", "Xcode"])
         XCTAssertEqual(try e("odd-work").work?.apps, [TLTop(name: "Xcode", minutes: 1, share: 0)])
         XCTAssertEqual(try e("odd-sleep").right, "1 时 30 分", "no minutes: the span")

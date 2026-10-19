@@ -315,12 +315,14 @@ struct TLBarView: View {
         .allowsHitTesting(false)
     }
 
+    /// what mattered: his mark a filled star and her pick an outlined one, standing on the top edge so that it is seen over any fill; one comes and goes with a fade
     private var stars: some View {
         ForEach(scene.stars) { s in
-            Star4().fill(TLPaint.warm.color).frame(width: 7, height: 7)
-                .shadow(color: RGB(255, 226, 186).color(0.9), radius: 2.5)
-                .offset(x: x(s.t) - 3.5, y: -8)                 // standing on the top edge, so it is seen over any fill
+            TLBarStar(hers: s.hers, reduce: reduce)
+                .offset(x: x(s.t) - 3.5, y: -8)
+                .transition(.opacity)
         }
+        .animation(tlStarFade(reduce: reduce), value: scene.stars)
         .allowsHitTesting(false)
     }
 
@@ -428,20 +430,6 @@ private struct GrowMask: View {
                        startPoint: .leading, endPoint: .trailing)
             .frame(width: w + edge, height: TLLayout.barH + 40)          // taller than the bar: the stars and the line for now stand outside it
             .offset(x: shown ? 0 : -(w + edge))
-    }
-}
-
-/// the four-pointed star the dial draws for what mattered, a little fuller (the curves bow out) so that at 7 pt it still reads as a star
-private struct Star4: Shape {
-    func path(in rect: CGRect) -> Path {
-        let c = CGPoint(x: rect.midX, y: rect.midY), r = min(rect.width, rect.height) / 2, k = 0.3 * r
-        var p = Path()
-        p.move(to: CGPoint(x: c.x, y: c.y - r))
-        p.addQuadCurve(to: CGPoint(x: c.x + r, y: c.y), control: CGPoint(x: c.x + k, y: c.y - k))
-        p.addQuadCurve(to: CGPoint(x: c.x, y: c.y + r), control: CGPoint(x: c.x + k, y: c.y + k))
-        p.addQuadCurve(to: CGPoint(x: c.x - r, y: c.y), control: CGPoint(x: c.x - k, y: c.y + k))
-        p.addQuadCurve(to: CGPoint(x: c.x, y: c.y - r), control: CGPoint(x: c.x - k, y: c.y - k))
-        return p
     }
 }
 

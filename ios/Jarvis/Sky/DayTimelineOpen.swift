@@ -17,12 +17,14 @@ struct TLOpenView: View {
     @State private var session: String? // the session of Claude Code opened to its recap
     @State private var draft = ""
     @FocusState private var typing: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduce
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if interactive, tl.renaming == e.id { renameField }         // first, so that it is up under the place's name whatever else the place has to show, clear of the keyboard
             content
             if interactive, tl.renaming != e.id { buttons }
+            if interactive, let note = tl.notes[e.id] { Text(note).font(.system(size: 12.5)).foregroundStyle(SetColor.red.opacity(0.92)).fixedSize(horizontal: false, vertical: true).transition(.opacity) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -188,7 +190,7 @@ struct TLOpenView: View {
     @ViewBuilder private var buttons: some View {
         if !e.actions.isEmpty {
             HStack(spacing: 8) {
-                ForEach(e.actions.sorted { rank($0) < rank($1) }, id: \.self) { a in
+                ForEach(e.actions.filter { $0 != .mark && $0 != .unmark }.sorted { rank($0) < rank($1) }, id: \.self) { a in
                     Button { tl.perform(a, on: e, engine: engine) } label: {
                         Text(a.title).font(.system(size: 14, weight: .semibold)).lineLimit(1).fixedSize()
                             .foregroundStyle(strong(a) ? AT.navy : ink)
@@ -198,6 +200,8 @@ struct TLOpenView: View {
                     }
                     .buttonStyle(PressScale())
                 }
+                Spacer(minLength: 0)
+                if e.starrable { TLStarButton(on: e.lit && !e.hers, hers: e.hers, pop: tl.pop[e.id] ?? 0, reduce: reduce) { tl.toggleStar(e) } }
             }
         }
     }

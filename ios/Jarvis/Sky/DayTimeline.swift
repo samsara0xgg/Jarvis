@@ -62,6 +62,12 @@ final class TimelineState {
     var renameNote: String?                         // why it did not go
     var undo: PlaceUndo?                            // the rename he can take back for a few seconds
     @ObservationIgnored var undoBusy = false        // taking it back is on its way to the brain
+    // what he marks (Sky/DayTimelineMarks.swift)
+    var highlights: [String: TLHeld<[Highlight]>] = [:]     // the day's highlights as they stand after his mark, by the day's date, until the brain's own say the same (`markHolds`)
+    var markBusy = false                            // his word on a mark is on its way to the brain: another waits for it
+    var notes: [String: String] = [:]               // why what he did to a row did not go, by row: said under the row while it is open
+    var pop: [String: Int] = [:]                    // bumps when a row has just been starred: its star in the open row bursts
+    @ObservationIgnored var brain = TLBrain.live    // where his words go (a test or a debug scene gives another)
     var flash: String?                              // the row just scrolled to: it flashes
     var sunSaid = false                             // the weather in the header was just tapped: it says when the sun rose and set, in its place
     @ObservationIgnored var sunHide: Task<Void, Never>?
@@ -95,7 +101,8 @@ final class TimelineState {
     func model(_ r: DayReply) -> DayTimelineModel {
         let now = Date()
         return DayTimelineModel.build(r, now: nowMinute(in: r), topic: { TalkTopics.shared.topic($0) }, acked: Set(acked.filter { $0.value > now }.keys),
-                                      renamed: renamed.compactMapValues { $0.until > now ? $0.name : nil })
+                                      renamed: renamed.compactMapValues { $0.until > now ? $0.name : nil },
+                                      done: TLDone(highlights: highlights[r.date].flatMap { $0.until > now ? $0.value : nil }))
     }
 
     func scroll(to y: Double, animated: Bool) { request = ScrollRequest(y: y, animated: animated, n: request.n + 1) }

@@ -4,6 +4,11 @@ import Foundation
 // Mac's (desktop/resonance/src/dayView.ts) except where the phone has the room to say more. Plain values only, so each row can be tested without a screen.
 // A field that is not there makes a row without it; a kind this phone does not know has no row (`row` answers nil).
 
+/// What he has just done that the brain's next answer will say too, and the day shows before it does.
+struct TLDone: Equatable {
+    var highlights: [Highlight]?                // the day's highlights as they stand after his mark; none: the brain's own
+}
+
 /// what a row needs to know of the day it is in
 struct TLFrame {
     let now: Double?                            // the minute of now, on today only
@@ -11,6 +16,7 @@ struct TLFrame {
     let before: (Int) -> String                 // how a day that many days before this one is said: 昨天, 前天, 10月15日
     let topic: (String) -> String?              // what a talk was about
     let marks: [String: String]                 // the labels of what mattered, by item (an empty one is a star with no words of its own)
+    var hers: Set<String> = []                  // and which of them are her picks and not his marks
     var acked: Set<String> = []                 // the reminders he has just said he knows, before the brain's next answer says it
     var renamed: [String: String] = [:]         // the places he has just given another name (by their id), likewise
 }
@@ -237,7 +243,7 @@ extension DayTimelineModel {
         }
         // what mattered: its label is its name (the brain writes `kind HH:MM` when nobody did, which says less than the row does: a star and no new name)
         if let label = f.marks[i.id] {
-            e.lit = true
+            e.lit = true; e.hers = f.hers.contains(i.id)
             if e.kind != .stay, !label.isEmpty {
                 e.detail = [e.title, e.detail].compactMap { $0 }.joined(separator: " · ")
                 e.title = label; e.glance = label

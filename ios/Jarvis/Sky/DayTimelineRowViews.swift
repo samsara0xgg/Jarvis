@@ -21,6 +21,8 @@ extension TLAction {
         case .rename: "改名字"
         case .acknowledge: "知道了"
         case .summarize: "让她总结这段"
+        case .mark: "标为重要"
+        case .unmark: "取消重要"
         }
     }
     var symbol: String {
@@ -30,10 +32,12 @@ extension TLAction {
         case .rename: "pencil"
         case .acknowledge: "checkmark.circle"
         case .summarize: "sparkles"
+        case .mark: "star"
+        case .unmark: "star.slash"
         }
     }
     /// what the menu of a long press offers, in this order: summing up a stretch of work sends a turn at once, so it is a button he sees and not a line of a menu
-    static let menu: [TLAction] = [.ask, .openTalk, .rename, .acknowledge]
+    static let menu: [TLAction] = [.ask, .openTalk, .rename, .acknowledge, .mark, .unmark]
 }
 
 struct TLRowView: View, Equatable {
@@ -100,10 +104,11 @@ struct TLRowView: View, Equatable {
                 .padding(.leading, TLColumns.centre - 4)
             Text(e.title).font(.system(size: 15.5, weight: .semibold)).foregroundStyle(ink).lineLimit(1)
                 .padding(.leading, TLColumns.text - TLColumns.centre - 4)
-            if e.lit { MarkShape(kd: .lit).frame(width: 13, height: 13).padding(.leading, 6) }
+            if e.lit { TLRowStar(hers: e.hers).frame(width: 13, height: 13).padding(.leading, 6).transition(.opacity) }
             Spacer(minLength: 10)
             Text(e.right).font(AT.mono(11.5)).foregroundStyle(muted).lineLimit(1).fixedSize().layoutPriority(1)
         }
+        .animation(tlStarFade(reduce: reduce), value: e.lit)
         .frame(height: e.base)
     }
 
@@ -152,7 +157,8 @@ struct TLRowView: View, Equatable {
                 Image(systemName: e.later ? e.symbol.replacingOccurrences(of: ".fill", with: "") : e.symbol).font(.system(size: 14)).foregroundStyle(iconColor)
             }
             .frame(width: TLColumns.bead, height: TLColumns.bead)
-            .overlay(alignment: .topTrailing) { if e.lit { MarkShape(kd: .lit).frame(width: 12, height: 12).offset(x: 3, y: -3) } }
+            .overlay(alignment: .topTrailing) { if e.lit { TLRowStar(hers: e.hers).frame(width: 12, height: 12).offset(x: 3, y: -3).transition(.opacity) } }
+            .animation(tlStarFade(reduce: reduce), value: e.lit)
         }
     }
 

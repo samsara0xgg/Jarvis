@@ -119,7 +119,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(b.map(\.title), ["公交", "12 路"], "no route is just a bus")
         XCTAssertEqual(b.map(\.detail), [nil, nil])
         XCTAssertEqual(b.map(\.base), [TLMetrics.row, TLMetrics.row], "no second line, no taller row")
-        XCTAssertTrue(b.allSatisfy { $0.more.isEmpty && $0.actions == [.ask] }, "nothing to say, but she can be asked about it")
+        XCTAssertTrue(b.allSatisfy { $0.more.isEmpty && $0.actions == [.ask, .mark] }, "nothing to say, but she can be asked about it and it can be starred")
     }
 
     func testTheNightIsARowWithItsHoursAndHowLongHeSlept() throws {
@@ -485,10 +485,10 @@ final class DayTimelineTests: XCTestCase {
     }
 
     func testWhatMatteredIsAStarAtItsTimeOnTheBarEvenForAStayAndOnlyOnce() throws {
-        XCTAssertEqual(build(TimelineFixture.today(cal)).scene.stars, [TLStar(id: "call-demo-1", t: 1000)])
+        XCTAssertEqual(build(TimelineFixture.today(cal)).scene.stars, [TLStar(id: "call-demo-1", t: 1000, hers: true)], "she picked it")
         let r = try reply(#"{"id": "s1", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(700)), "end_ms": \#(at(800)), "place": "Cafe"}, {"id": "t", "lane": "her", "kind": "talk", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(610)), "turns": 2}"#,
                           #", "highlights": [{"id": "s1", "label": "Coffee", "by": "him"}, {"id": "t", "label": "x", "by": "her"}, {"id": "s1", "label": "again", "by": "her"}, {"id": "gone", "label": "y", "by": "her"}]"#)
-        XCTAssertEqual(build(r, now: nil).scene.stars, [TLStar(id: "t", t: 600), TLStar(id: "s1", t: 700)], "in the order of the day, the item that is not there left out")
+        XCTAssertEqual(build(r, now: nil).scene.stars, [TLStar(id: "t", t: 600, hers: true), TLStar(id: "s1", t: 700)], "in the order of the day, the item that is not there left out; his mark first wins")
     }
 
     func testTheGapBetweenPiecesIsAHairAndAPieceIsNeverNarrowerThanTwoPoints() {

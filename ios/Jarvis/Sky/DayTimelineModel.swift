@@ -78,6 +78,8 @@ enum TLAction: Hashable {
     case rename             // a place he keeps, under another name
     case acknowledge        // a reminder that rang: he knows
     case summarize          // what he did on the Mac, put to her at once
+    case mark               // it mattered: his star on it
+    case unmark             // it did not: the star, his or hers, taken off
 }
 
 /// how the rail on the left of the list runs through a row: a place's, as a line in its hue, or a trip's, dashed
@@ -193,7 +195,8 @@ struct TLEntry: Identifiable, Equatable {
     var color: RGB?                 // a stay: the colour of its place
     var kept = false                // a stay in a place he keeps (a stay in none is a neutral haze)
     var strongRight = false         // the mono text at the right is the point of the row (what a payment came to), so it is not muted
-    var lit = false                 // marked as what mattered: a lit star on its icon
+    var lit = false                 // marked as what mattered, by him or by her: a lit star on its icon
+    var hers = false                // lit, and it is her pick and not his mark: the star is outlined
     var later = false               // not yet: after the line for now
     var soon = false                // later, and within two hours: the text at the right is the time left
     var going = false               // today, begun, no end yet: it goes on, and its end is now
@@ -221,6 +224,10 @@ struct TLEntry: Identifiable, Equatable {
     var spans: [TLMark] = []        // where it is on the bar when that is not one span
     var cut = false                 // its own words are cut short at the right of the columns (`cutShort`, measured once when the day is built, not whenever a row asks)
 
+    /// It is an item of the brain's day that his mark can go on: not the line for now, not a stop on the way, not the one row that stands for several sessions of Claude Code, and an id
+    /// the brain would take.
+    var starrable: Bool { kind != .now && kind != .pause && !id.hasPrefix("code-group-") && About.fits(id: id) }
+
     /// the height of the row without the gap above it
     var base: Double {
         switch kind {
@@ -245,6 +252,7 @@ struct TLEntry: Identifiable, Equatable {
 struct TLStar: Equatable, Identifiable {
     let id: String
     let t: Double
+    var hers = false                // her pick, not his mark: outlined
 }
 
 /// A kind of thing the day's numbers bring forward: pressing its chip dims the rest of the bar and the list.
@@ -464,20 +472,23 @@ struct DayTimelineModel: Equatable {
 
     // MARK: building
 
-    /// `now` is the minute of now when this is today (`TimelineState.nowMinute`). `topic` names a talk by what it was about. `acked` and `renamed` are what he has just done to a reminder
-    /// and to a place he keeps, which the brain's next answer will say too. An item that cannot be placed (a time that is not one, an end before its start, an id taken already) is left
-    /// out, and so is one of a kind this phone does not know. The minutes are those of the brain's day (`TLClock`).
+    /// `now` is the minute of now when this is today (`TimelineState.nowMinute`). `topic` names a talk by what it was about. `acked`, `renamed` and `done` are what he has just done to a
+    /// reminder, to a place he keeps and to the day's marks, which the brain's next answer will say too. An item that cannot be placed (a time that is not one, an end before its start, an
+    /// id taken already) is left out, and so is one of a kind this phone does not know. The minutes are those of the brain's day (`TLClock`).
     static func build(_ r: DayReply, now: Double?, topic: @escaping (String) -> String? = { _ in nil },
-                      acked: Set<String> = [], renamed: [String: String] = [:]) -> DayTimelineModel {
+                      acked: Set<String> = [], renamed: [String: String] = [:], done: TLDone = TLDone()) -> DayTimelineModel {
         let wall = TLClock(r)
         func m(_ ms: Int64) -> Double { wall.minute(ms: ms) }
         // what mattered, by item: the label of the owner or hers, or none (the brain writes `kind HH:MM` when nobody did, which says less than the row does)
+        let highlights = done.highlights ?? r.highlights
         var marks: [String: String] = [:]
-        for h in r.highlights where marks[h.id] == nil {
+        var hers: Set<String> = []
+        for h in highlights where marks[h.id] == nil {
             let label = tlText(h.label) ?? ""
             marks[h.id] = label.range(of: #"^[a-z_]+ \d{1,2}:\d{2}$"#, options: [.regularExpression, .caseInsensitive]) == nil ? label : ""
+            if h.by == "her" { hers.insert(h.id) }
         }
-        let frame = TLFrame(now: now, m: m, before: wall.before, topic: topic, marks: marks, acked: acked, renamed: renamed)
+        let frame = TLFrame(now: now, m: m, before: wall.before, topic: topic, marks: marks, hers: hers, acked: acked, renamed: renamed)
         // what a day can hold, with a month either side: a time beyond it is not a time of this day's list
         let reach = 30 * DAY, window = 31.0 * 86_400_000
         var taken: Set<String> = ["now"]
@@ -542,7 +553,7 @@ struct DayTimelineModel: Equatable {
         let early = zip(items, rows).filter { axisKinds.contains($0.0.kind) }.map { $0.1.t0 }
         // what mattered, at the time of each item that did
         var starred = Set<String>()
-        let stars = r.highlights.compactMap { h in entries.first { $0.id == h.id }.flatMap { starred.insert(h.id).inserted ? TLStar(id: h.id, t: $0.t0) : nil } }.sorted { $0.t < $1.t }
+        let stars = highlights.compactMap { h in entries.first { $0.id == h.id }.flatMap { starred.insert(h.id).inserted ? TLStar(id: h.id, t: $0.t0, hers: hers.contains(h.id)) : nil } }.sorted { $0.t < $1.t }
         var chips: [TLChip] = []
         for l in TLLens.allCases {
             switch l {
@@ -691,6 +702,8 @@ struct DayTimelineModel: Equatable {
         default: break
         }
         if e.about != nil { a.append(.ask) }
+        // his star: on a row nobody marked, or that only she picked; off a row with a star, whose it is (a pick of hers can be adopted as well as put away)
+        if e.starrable { a += e.lit ? (e.hers ? [.mark, .unmark] : [.unmark]) : [.mark] }
         return a
     }
 
