@@ -409,14 +409,14 @@ private struct TLList: View {
                               tap: { toggle(e) }, opened: { ensureVisible(e, height: $0) })
                         .equatable()
                         .modifier(Rise(rank: ranks[e.id], on: tl.reveal, reduce: reduce))
-                        .transition(reduce ? .opacity : .asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)), removal: .opacity))
+                        .transition(reduce ? .opacity : .asymmetric(insertion: TLGrow.transition, removal: .opacity))
                 }
                 if let n = model.missing {
                     Text(n).font(.system(size: 12.5)).foregroundStyle(faint).frame(maxWidth: .infinity, minHeight: TLMetrics.note, alignment: .leading)
                 }
             }
             .padding(.horizontal, 30)
-            .animation(.easeOut(duration: 0.35), value: model.entries.map(\.id))
+            .animation(TLMotion.listChange(reduce: reduce), value: model.entries.map(\.id))
         }
         // room under the last row, so the line for now can be brought up to 60% of the way down on any day
         .contentMargins(.bottom, 0.4 * room + 40, for: .scrollContent)

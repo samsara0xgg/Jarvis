@@ -21,6 +21,17 @@ final class TLMotionTests: XCTestCase {
         XCTAssertEqual(TLMotion.listChange(reduce: true), fade)
     }
 
+    func testWhatIsNewGrowsFromNoHeightToAllOfItAtItsWidth() {
+        func size(_ k: Double) -> CGSize {
+            UIHostingController(rootView: TLGrownLayout(k: k) { Color.red.frame(width: 120, height: 80) }).sizeThatFits(in: CGSize(width: 300, height: 600))
+        }
+        XCTAssertEqual(size(0), CGSize(width: 120, height: 0), "no height at first")
+        XCTAssertEqual(size(0.25).height, 20, accuracy: 0.5)
+        XCTAssertEqual(size(1), CGSize(width: 120, height: 80), "and all of it at the end")
+        XCTAssertEqual(size(1.5).height, 80, "never more")
+        XCTAssertEqual(size(-1).height, 0, "nor less")
+    }
+
     func testTheMotionsAreTheDesignsOtherwise() {
         XCTAssertEqual(TLMotion.barGrowth(reduce: false), .easeOut(duration: 0.45))
         XCTAssertEqual(TLMotion.rise(rank: 4, reduce: false), .easeOut(duration: 0.22).delay(0.1), "the fifth row waits for four")

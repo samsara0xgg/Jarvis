@@ -28,3 +28,37 @@ enum TLMotion {
     /// what is new in the list, and the rows that make room for it
     static func listChange(reduce: Bool) -> Animation { .easeOut(duration: reduce ? reducedFade : grow) }
 }
+
+// MARK: - what is new grows
+
+/// What is new in the list grows from no height at its place while it fades in (240 ms), and the rows under it move down as its height comes.
+enum TLGrow {
+    static var transition: AnyTransition { .modifier(active: Grown(k: 0), identity: Grown(k: 1)) }
+
+    /// the modifier that is animated: how much of its height it has and how much it shows
+    struct Grown: ViewModifier, Animatable {
+        var k: Double
+        var animatableData: Double {
+            get { k }
+            set { k = newValue }
+        }
+        func body(content: Content) -> some View {
+            TLGrownLayout(k: k) { content.opacity(k) }.clipped()
+        }
+    }
+}
+
+/// a layout that is `k` of the height of the one view in it and all of its width, with the view put at its top
+struct TLGrownLayout: Layout {
+    var k: Double
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let v = subviews.first else { return .zero }
+        let s = v.sizeThatFits(proposal)
+        return CGSize(width: s.width, height: s.height * max(0, min(1, k)))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: CGPoint(x: bounds.minX, y: bounds.minY), anchor: .topLeading, proposal: ProposedViewSize(width: bounds.width, height: nil))
+    }
+}
