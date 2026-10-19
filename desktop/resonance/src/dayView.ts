@@ -196,8 +196,8 @@ function plainPlace(day: DayReply | null, now: number) {
 
 // ---------- the pane ----------
 // What can be handed to her (ADR 0214): a kind the brain's `about` takes, with an id of the shape it accepts (a commitment's has an @ in it). A
-// bad one refuses the whole turn. A run and a Claude Code session are not kinds it takes.
-const ABOUT_KINDS = new Set(['reminder', 'event', 'todo', 'stay', 'move', 'sleep', 'work', 'call', 'talk', 'picture', 'ride', 'departure', 'payment', 'claude_chat', 'claude_day']), ITEM_ID = /^[A-Za-z0-9_\-=+/.|:@]{1,256}$/;
+// bad one refuses the whole turn. A run and a Claude Code session are kinds it takes; the folded row of sessions is no one item, so its key has no id to hand over (askOf).
+const ABOUT_KINDS = new Set(['reminder', 'event', 'todo', 'stay', 'move', 'sleep', 'work', 'call', 'talk', 'picture', 'ride', 'departure', 'payment', 'claude_chat', 'claude_day', 'workout', 'code']), ITEM_ID = /^[A-Za-z0-9_\-=+/.|:@]{1,256}$/;
 export const askable = (kind: string, id: string) => ABOUT_KINDS.has(kind) && ITEM_ID.test(id);
 // What can be marked as what mattered (ADR 0296): any item of the day with an id the brain takes (the same set).
 export const starrable = (id: string) => ITEM_ID.test(id);

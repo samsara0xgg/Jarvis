@@ -394,10 +394,10 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
     && r('27 · Shelbourne at Pear').right === '22:33 出门' && r('27 · Shelbourne at Pear').value && r('27 · Shelbourne at Pear').detail === '去 UVic');
   check('beyond two hours a row says its own length, and what is over has no countdown', flat(buildDay(day, T(19, 0), zh).blocks).find(x => x.title === '私事').right === '15 分' && !/还有/.test(rs.filter(x => !x.future).map(x => x.right).join()));
   check('a payment is plain when it is money out and has a + when it is money in', flat(buildDay(small([it('p', 'payment', T(10, 0), T(10, 0), { source: 'alipay', amount: '12.40', currency: 'CAD', direction: 'out', counterparty: 'X' }), it('q', 'payment', T(11, 0), T(11, 0), { source: 'alipay', amount: '50.00', currency: 'CAD', direction: 'in', counterparty: 'Y' })]), NOW, zh).blocks).filter(x => x.as === 'row').map(x => x.right).join() === '$12.40,+$50.00');
-    check('only what the brain\'s about takes can be handed to her: a kind it knows (a ride, a bus, a payment, a Claude chat and day among them; not a run or a session) with an id of its shape (1 to 256 characters of its set, an @ among them: a commitment\'s)',
+    check('only what the brain\'s about takes can be handed to her: a kind it knows (a ride, a bus, a payment, a Claude chat and day, a run and a session among them) with an id of its shape (1 to 256 characters of its set, an @ among them: a commitment\'s)',
     askable('stay', 'stay-home-1') && askable('talk', 'talk-1') && askable('picture', 'a'.repeat(32)) && askable('event', 'cal|2026-10-19:1/x=y+z.w') && askable('todo', 'T_1-2')
     && askable('ride', 'ride-1') && askable('departure', 'departure-1') && askable('payment', 'pay-1') && askable('claude_chat', 'chat-1') && askable('claude_day', 'claude-day-1') && askable('event', `commitment-${'ab'.repeat(16)}@2026-10-19`) && askable('event', 'cal-1@example.com')
-    && !askable('workout', 'workout-1') && !askable('code', 'code-1') && !askable('weather', 'w-1') && !askable('event', 'a b@c') && !askable('event', 'a#b') && !askable('talk', '') && !askable('talk', 'x'.repeat(257)) && askable('talk', 'x'.repeat(256)) && !askable('stay', 'a b'));
+    && askable('workout', 'workout-1') && askable('code', 'code-1') && !askable('weather', 'w-1') && !askable('event', 'a b@c') && !askable('event', 'a#b') && !askable('talk', '') && !askable('talk', 'x'.repeat(257)) && askable('talk', 'x'.repeat(256)) && !askable('stay', 'a b'));
   check('a row that began the day before says so beside its time', (x => x.at === '23:20' && x.ago === '昨')(flat(buildDay(small([it('sl', 'sleep', T(23, 20, 18), T(7, 0), { minutes: 400 })]), NOW, zh).blocks).find(y => y.as === 'row')));
 
   const fm = buildDay(fragmentedDay(), NOW, zh), fr = flat(fm.blocks), stops = fr.filter(x => x.icon === 'dot');
@@ -635,9 +635,9 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
     JSON.stringify(ask('talk-1')) === JSON.stringify({ about: { kind: 'talk', id: 'talk-1', title: '和她说话', start_ms: T(10, 2) }, icon: 'talk', at: '10:02' }) && JSON.stringify(ask('stay-home-1').about) === JSON.stringify({ kind: 'stay', id: 'stay-home-1', title: '家', start_ms: T(7, 0) })
     && ask('stay-home-1').icon === 'home' && ask('reminder-2').about.title === '给银行打电话' && ask('sleep-1').about.title === '睡觉'
     && Number.isInteger(ask('picture-1').about.start_ms) && Object.keys(ask('event-1').about).join() === 'kind,id,title,start_ms', JSON.stringify(ask('talk-1')));
-  const refused = ['workout-1', 'code:stay-home-1', 'now', 'nope'], fits = ['stay-home-1', 'stay-aw', 'move-1', 'sleep-1', 'work-1', 'call-1', 'talk-1', 'picture-1', 'event-1', 'reminder-1', 'ride-1', 'departure-1', 'pay-1', 'chat-1', 'claude-day-1'];
+  const refused = ['code:stay-home-1', 'now', 'nope'], fits = ['stay-home-1', 'stay-aw', 'move-1', 'sleep-1', 'work-1', 'call-1', 'talk-1', 'picture-1', 'event-1', 'reminder-1', 'ride-1', 'departure-1', 'pay-1', 'chat-1', 'claude-day-1', 'workout-1'];
   const COMMIT = `commitment-${'ab12'.repeat(8)}@${DATE}`, cm = buildDay(small([it(COMMIT, 'event', T(22, 0), T(23, 0), { title: '导师见面', source: 'mail', confirmed: false })]), NOW, zh);
-  check('a row whose kind the brain does not take, or whose id it would refuse, has nothing to hand over: runs, sessions, and an id of the wrong shape; every other kind does, a ride, a bus, money, Claude and a commitment (its id has an @) among them',
+  check('a row that is no one item (the folded row of sessions), a key that is no row, or an id the brain would refuse has nothing to hand over; every kind it takes does, a run, a ride, a bus, money, Claude and a commitment (its id has an @) among them',
     refused.every(k => ask(k) === null) && fits.every(k => ask(k)?.about.id === k) && askOf(buildDay(small([it('x'.repeat(257), 'talk', T(10, 0), T(10, 5), { turns: 1 })]), NOW, zh), 'x'.repeat(257), zh) === null
     && askOf(buildDay(small([it('a b', 'talk', T(10, 0), T(10, 5), { turns: 1 })]), NOW, zh), 'a b', zh) === null && askOf(cm, COMMIT, zh)?.about.id === COMMIT, refused.filter(k => ask(k) !== null).join());
   const handed = key => JSON.stringify(ask(key)?.about);
@@ -647,6 +647,13 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
     && handed('claude-day-1') === JSON.stringify({ kind: 'claude_day', id: 'claude-day-1', title: 'Claude 日报', start_ms: T(9, 40) }) && JSON.stringify(askOf(cm, COMMIT, zh).about) === JSON.stringify({ kind: 'event', id: COMMIT, title: '导师见面', start_ms: T(22, 0) })
     && ask('pay-1').icon === 'payment' && ask('chat-1').at === '20:10', [handed('ride-1'), handed('departure-1'), handed('pay-1')].join(' '));
   check('in English the input says Ask her about the row it holds, with its own title', ask('talk-1', me).about.title === 'Talked with her' && ask('stay-home-1', me).about.title === '家');
+  // the brain takes a run and a Claude Code session (main a8ebde17): an opened run and a session alone hand over their own kind and id; the folded row of sessions is no one item
+  const stayX = it('h', 'stay', T(8, 0), T(12, 0), { place: 'X' }), c1 = it('c1', 'code', T(9, 0), T(9, 45), { title: '周报草稿', project: 'notes', account: 'b' });
+  const oneC = buildDay(small([stayX, c1]), NOW, zh), manyC = buildDay(small([stayX, c1, it('c2', 'code', T(9, 30), T(10, 0), { title: '第二个' })]), NOW, zh);
+  check('an opened run hands her {workout, its id}, a session alone {code, its id} titled as its row says it; the folded row of sessions (code:<stay>) hands over nothing',
+    JSON.stringify(ask('workout-1').about) === JSON.stringify({ kind: 'workout', id: 'workout-1', title: '跑步', start_ms: T(7, 20) }) && hasBody(open('workout-1'), true)
+    && JSON.stringify(askOf(oneC, 'c1', zh).about) === JSON.stringify({ kind: 'code', id: 'c1', title: 'Claude Code · 周报草稿', start_ms: T(9, 0) }) && hasBody(openOf(oneC, 'c1', zh), true)
+    && manyC.rows.has('code:h') && !manyC.rows.has('c1') && askOf(manyC, 'code:h', zh) === null, [ask('workout-1'), askOf(oneC, 'c1', zh), askOf(manyC, 'code:h', zh)].map(x => JSON.stringify(x?.about)).join(' '));
 }
 
 // ---------- the star, in node (ADR 0296): who chose it, and what can be marked ----------
@@ -1726,7 +1733,8 @@ try {
     const under = await a.page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-key]')?.dataset.key ?? null, [rest.x, rest.y]);
     check('and a list scrolling under a pointer at rest does not take the choice or the bracket from the keys', m.pick.length === 1 && m.hot.length === 0 && under !== null && under !== m.pick[0] && sameSpan(m.bracket, m.pick[0]), JSON.stringify({ m, under }));
     check('through all of it no key focus was asked for but the pinning click\'s', await focusCalls() === 'true', await focusCalls());
-    check('the quick 问她 is only on rows the brain takes a turn about: none on a workout or the sessions', await a.page.evaluate(() => { const no = ['workout', 'code'], rows = [...document.querySelectorAll('.dt-ask')].map(b => b.closest('.dt-row, .dt-sh')); return rows.length > 0 && rows.every(r => !no.includes(r.dataset.kind)); }));
+    const quickAsk = await a.page.evaluate(() => [...document.querySelectorAll('.dt-row, .dt-sh')].map(el => [el.dataset.key, !!el.querySelector(':scope > .dt-quick > .dt-ask')]));
+    check('the quick 问她 is on exactly the rows the brain takes a turn about: those with an item to hand over (askOf), and not a row that is no one item', quickAsk.length > 10 && quickAsk.some(([, has]) => has) && quickAsk.every(([key, has]) => has === (askOf(rich, key, zh) !== null)), JSON.stringify(quickAsk.filter(([key, has]) => has !== (askOf(rich, key, zh) !== null))));
     await a.page.keyboard.press('Escape');
     r = await settle(a, '', 2000);
     check('Esc folds the day and gives the key focus back', r.tl === '' && await focusCalls() === 'true,false', await focusCalls());
@@ -2310,7 +2318,7 @@ try {
       ['event-1', 'open-05-event-mail', '22:30–23:30 · 1 时 · 还没开始|问她'],
       ['event-2', 'open-22-event-said', '23:40–23:55 · 15 分 · 还没开始|问她'],
       ['reminder-2', 'open-06-reminder-waiting', '知道了|问她'],
-      ['workout-1', 'open-24-workout', '07:20–07:55 · 35 分'],
+      ['workout-1', 'open-24-workout', '07:20–07:55 · 35 分|问她'],
       ['call-1', 'open-25-call', '16:40–16:58 · 18 分|问她'],
       ['pay-1', 'open-08-payment', '支出 · $12.40 · CAD|问她'],
       ['chat-1', 'open-26-claude-chat', '20:10–20:42 · 32 分|问她'],
@@ -2325,7 +2333,7 @@ try {
       if (got !== want) bad.push(`${key}: ${got}`);
       if (name) await shotRow(a, name, key);
     }
-    check('each kind says what it has when opened, in lines of its own, with only the buttons that work for it (a run has none to ask)', bad.length === 0, bad.join('\n'));
+    check('each kind says what it has when opened, in lines of its own, with only the buttons that work for it', bad.length === 0, bad.join('\n'));
     // what the row says in its two lines is not said again
     const lit = await a.page.evaluate(() => { const r = document.querySelector('[data-key="event-1"]'); return { cursor: getComputedStyle(r).cursor, expanded: r.getAttribute('aria-expanded') }; });
     await tap(a, 'event-1'); await rest(a, 480);
@@ -2523,8 +2531,8 @@ try {
     const a = await boot({ served: bigDay() });
     await hoverDay(a);
     const marks = await a.page.evaluate(() => { const by = {}; for (const el of document.querySelectorAll('.dt-row, .dt-sh')) { const k = el.classList.contains('dt-sh') ? 'stay' : el.dataset.kind; by[k] ??= { rows: 0, asks: 0 }; by[k].rows++; if (el.querySelector(':scope > .dt-quick > .dt-ask')) by[k].asks++; } return by; });
-    const yes = ['stay', 'move', 'sleep', 'talk', 'picture', 'reminder', 'event', 'work', 'call', 'ride', 'departure', 'payment', 'claude_chat', 'claude_day'], no = ['workout', 'code'];
-    check('only what the brain takes a turn about has 问她 (stays, moves, sleep, talks, pictures, reminders, events, work, calls, rides, buses, payments, Claude chats and days); a workout and the sessions have none', yes.every(k => marks[k]?.rows > 0 && marks[k].asks === marks[k].rows) && no.every(k => marks[k]?.rows > 0 && marks[k].asks === 0), JSON.stringify(marks));
+    const yes = ['stay', 'move', 'sleep', 'talk', 'picture', 'reminder', 'event', 'work', 'call', 'ride', 'departure', 'payment', 'claude_chat', 'claude_day', 'workout'], no = ['code'];
+    check('only what the brain takes a turn about has 问她 (stays, moves, sleep, talks, pictures, reminders, events, work, calls, rides, buses, payments, Claude chats and days, runs); the folded rows of sessions, no one item, have none', yes.every(k => marks[k]?.rows > 0 && marks[k].asks === marks[k].rows) && no.every(k => marks[k]?.rows > 0 && marks[k].asks === 0), JSON.stringify(marks));
     await orow(a, 'talk-1').scrollIntoViewIfNeeded();
     await orow(a, 'talk-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 300);
     const lit = await a.page.evaluate(() => { const r = document.querySelector('[data-key="talk-1"]'), q = r.querySelector(':scope > .dt-quick'), tm = r.querySelector(':scope > .dt-tm'); return { ask: getComputedStyle(q).opacity, tm: getComputedStyle(tm).opacity, text: q.querySelector('.dt-ask').textContent }; });
@@ -2591,6 +2599,27 @@ try {
     await tap(a, 'move-1'); await rest(a, 480);
     await orow(a, 'move-1').getByRole('button', { name: '问她' }).click(); await rest(a, 500);
     check('and the words left in a closed input are gone', (await dockOf(a)).draft === '');
+    await a.ctx.close();
+  }
+
+  // ---- 问她 on a run and on a Claude Code session, kinds the brain takes (main a8ebde17); the folded row of sessions is no one item ----
+  if (all || only === 'open') {
+    const a = await boot({ served: small([it('w1', 'workout', T(7, 0), T(7, 30), { activity: 'running', distance_m: 3200 }), it('sa', 'stay', T(8, 0), T(9, 30), { place: 'X' }), it('c1', 'code', T(8, 10), T(8, 40), { title: '周报草稿', project: 'notes', account: 'b' }),
+      it('sb', 'stay', T(10, 0), T(12, 0), { place: 'Y' }), it('c2', 'code', T(10, 10), T(10, 40), { title: '第二个' }), it('c3', 'code', T(10, 50), T(11, 20), { title: '第三个' })]) });
+    await hoverDay(a);
+    const btns = key => orow(a, key).locator('.dt-acts .dt-btn, .dt-acts .dt-sent').allInnerTexts();
+    for (const [key, kind, title, start] of [['w1', 'workout', '跑步', T(7, 0)], ['c1', 'code', 'Claude Code · 周报草稿', T(8, 10)]]) {
+      await tap(a, key); await rest(a, 480);
+      check(`an opened ${kind} row offers 问她`, (await btns(key)).includes('问她'), (await btns(key)).join('|'));
+      await orow(a, key).getByRole('button', { name: '问她' }).click(); await rest(a, 500);
+      const d = await dockOf(a);
+      check(`its input holds ${key} as the chip: the row's own title and time`, d && d.chip.title === title && d.chip.at === clock(start, TZ), JSON.stringify(d));
+      await a.page.keyboard.type('怎么样'); await a.page.keyboard.press('Enter'); await rest(a, 400);
+      check(`and the turn carries {kind: ${kind}, id: ${key}} with its title and start`, JSON.stringify(turns(a).at(-1)?.body) === JSON.stringify({ text: '怎么样', about: { kind, id: key, title, start_ms: start } }), JSON.stringify(turns(a)));
+      await noDock(a); await tap(a, key); await rest(a, 480);
+    }
+    await tap(a, 'code:sb'); await rest(a, 480);
+    check('the folded row of two sessions opens to its list and offers no 问她, in the row or on the hover', await a.page.locator('[data-key="code:sb"] .dt-sess li').count() === 2 && !(await btns('code:sb')).includes('问她') && await orow(a, 'code:sb').locator(':scope > .dt-quick > .dt-ask').count() === 0, (await btns('code:sb')).join('|'));
     await a.ctx.close();
   }
 
@@ -2731,8 +2760,8 @@ try {
     await openDay(a);
     // ---- the hover's actions: the star, then 问她 ----
     const quick = await a.page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.dt-row, .dt-sh')].map(el => [el.dataset.key, [...(el.querySelector(':scope > .dt-quick')?.children ?? [])].map(c => c.classList.contains('dt-starbtn') ? 'star' : 'ask').join('+')])));
-    check('every item has the star in its hover actions, before 问她 where it has that (a talk, a ride, a payment, a bus, a stay); a run and a session have the star alone; the folded row of sessions, which is no one item, has neither',
-      quick['talk-1'] === 'star+ask' && quick['ride-1'] === 'star+ask' && quick['pay-1'] === 'star+ask' && quick['departure-1'] === 'star+ask' && quick['stay-uvic'] === 'star+ask' && quick['workout-1'] === 'star' && quick['code:stay-home-1'] === ''
+    check('every item has the star in its hover actions, before 问她 where it has that (a talk, a ride, a payment, a bus, a stay, a run); the folded row of sessions, which is no one item, has neither',
+      quick['talk-1'] === 'star+ask' && quick['ride-1'] === 'star+ask' && quick['pay-1'] === 'star+ask' && quick['departure-1'] === 'star+ask' && quick['stay-uvic'] === 'star+ask' && quick['workout-1'] === 'star+ask' && quick['code:stay-home-1'] === ''
       && Object.entries(quick).every(([k, v]) => k.startsWith('code:') ? v === '' : v === 'star' || v === 'star+ask'), JSON.stringify(quick));
     await hoverOn(a, 'pay-1'); const his = await starOf(a, quickStar(a, 'pay-1'));
     await hoverOn(a, 'stay-uvic'); const hers = await starOf(a, quickStar(a, 'stay-uvic'));
