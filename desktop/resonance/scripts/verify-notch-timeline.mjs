@@ -9,9 +9,10 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { askable, buildDay, changeId, clock, covered, dateTitle, fnv, keptOf, lensOf, moneyText, shiftDate, stageLook, stageMinutes, stageSlices, tidy, tidyReply, weatherOf, wingText, within } from '../src/dayView.ts';
-import { axisOf, buildBar, fit, fOf, hm, msOf, numbers, peek, pieceAt, rowAt, summarize, toneOn } from '../src/barView.ts';
-import { askOf, hasBody, openOf, talkLines } from '../src/dayOpen.ts';
+import { askable, buildDay, changeId, clock, covered, dateTitle, fnv, keptOf, lensOf, moneyText, shiftDate, stageLook, stageMinutes, stageSlices, tidy, tidyReply, weatherOf, wingText, within, workoutOf } from '../src/dayView.ts';
+import { axisOf, buildBar, counted, fit, fOf, hm, msOf, numbers, peek, pieceAt, rowAt, summarize, toneOn } from '../src/barView.ts';
+import { askOf, fromTo, hasBody, openOf, talkLines } from '../src/dayOpen.ts';
+import { cardOf } from '../src/numberCard.ts';
 import { deflateSync, crc32 } from 'node:zlib';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -654,6 +655,86 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
     JSON.stringify(ask('workout-1').about) === JSON.stringify({ kind: 'workout', id: 'workout-1', title: '跑步', start_ms: T(7, 20) }) && hasBody(open('workout-1'), true)
     && JSON.stringify(askOf(oneC, 'c1', zh).about) === JSON.stringify({ kind: 'code', id: 'c1', title: 'Claude Code · 周报草稿', start_ms: T(9, 0) }) && hasBody(openOf(oneC, 'c1', zh), true)
     && manyC.rows.has('code:h') && !manyC.rows.has('c1') && askOf(manyC, 'code:h', zh) === null, [ask('workout-1'), askOf(oneC, 'c1', zh), askOf(manyC, 'code:h', zh)].map(x => JSON.stringify(x?.about)).join(' '));
+}
+
+// ---------- a number's card, in node (ADR 0296): what is behind each number of the day ----------
+// A card as lines: the head, then each part (cells split by /, the entries of a list and the groups of bars by //, a hypnogram by its two ends).
+const cardLines = card => card === null ? null : [`${card.label}|${card.value}`, ...card.parts.map(p => p.type === 'cells' ? p.cells.map(c => `${c.label} ${c.value}`).join('/')
+  : p.type === 'entries' ? p.entries.map(e => `${e.lead}: ${e.facts.join(' · ')}`).join('//') + (p.more ? ` +${p.more}` : '')
+  : p.type === 'bars' ? p.groups.map(g => `${g.heading}: ${g.bars.map(b => `${b.name} ${b.text}`).join(', ')}`).join('//')
+  : p.type === 'night' ? `night ${p.night.at.join('-')}` : `pictures ${p.list.map(x => `${x.id[0]}@${x.at}`).join(',')}${p.more ? ` +${p.more}` : ''}`)];
+{
+  const fz = buildDay(fullDay(), NOW, zh), fe = buildDay(fullDay(), NOW, en), same = (got, want, detail = '') => JSON.stringify(got) === JSON.stringify(want) || (console.log(JSON.stringify(got)), false);
+  const lines = (model, kind, t = zh) => cardLines(cardOf(model, kind, t));
+  check('the sleep card: the head is the number; in bed, asleep, woke up as clocks, how long it took, the share of the time in bed (the phone\'s in_bed 23:00 to 07:10), deep, core and REM, the times he woke between sleeps (2: the last awake stretch is the end of the night), the night, and the day\'s own heart rate and HRV',
+    same(lines(fz, 'sleep'), ['睡|7 时 20 分', '上床 23:00/入睡 23:10/醒来 07:00/入睡用时 10 分/睡眠效率 90%', '深睡 1:10/核心 4:30/REM 1:40/夜醒 2 次', 'night 23:10-07:00', '当天静息心率 58/当天 HRV 42']));
+  check('and in English', same(lines(fe, 'sleep', en), ['Sleep|7 h 20 min', 'In bed 23:00/Asleep 23:10/Woke up 07:00/To fall asleep 10 min/Sleep efficiency 90%', 'Deep 1:10/Core 4:30/REM 1:40/Wake-ups 2×', 'night 23:10-07:00', "Day's resting HR 58/Day's HRV 42"]));
+  check('on the way: the total, the time in each way (the most first; none he did not go), how many, the longest with where it went from and to as its open row words it, and the day\'s steps',
+    same(lines(fz, 'trip'), ['路上|3 时 4 分', '开车 1 时 40 分/公交 1 时 4 分/步行 20 分', '共 5 段/最长 开车 · 1 时 40 分 · 家 → A&W/步数 8,240']));
+  check('a workout is one line: what, when it began, how long, how far, how fast (min per km, since it is a run), the energy and the heart',
+    same(lines(fz, 'workout'), ['运动|35 分', `跑步: 07:20 · 35 分 · 3.2 公里 · 10'56"/公里 · 240 千卡 · 平均心率 142`]));
+  check('the Mac: when it began and ended, the active time, the time in all; the projects and the apps of the day as bars (the biggest first, summed over the blocks); the Claude Code sessions and their projects (not in the Mac\'s number)',
+    same(lines(fz, 'work'), ['Mac|10:30–21:40 · 活跃 2 时 37 分 · 共 2 时 55 分', '项目: Jarvis 2 时 15 分//应用: Ghostty 1 时 30 分, Claude 30 分, Xcode 25 分', 'Claude Code: 6 个会话 · jarvis ×3 · jarvis-ios · notes · thesis']));
+  check('and in English', same(lines(fe, 'work', en), ['Mac|10:30–21:40 · active 2 h 37 min · 2 h 55 min in all', 'Projects: Jarvis 2 h 15 min//Apps: Ghostty 1 h 30 min, Claude 30 min, Xcode 25 min', 'Claude Code: 6 sessions · jarvis ×3 · jarvis-ios · notes · thesis']));
+  check('calls: how many and the longest with its clock, then each app with its calls and its time; with her: the lines in all and when he talked first and last; money: out and how many payments, then who it went to; photos: a thumbnail each',
+    same(lines(fz, 'call'), ['通话|18 分', '通话 1 次/最长 18 分 · 16:40', 'FaceTime: 1 次 · 18 分']) && same(lines(fz, 'talk'), ['和她|3 次', '共 11 句/时段 10:02–19:36'])
+    && same(lines(fz, 'payment'), ['花|$12.40', '支出 $12.40/笔数 1 笔', 'A&W: $12.40']) && same(lines(fz, 'picture'), ['照片|1', 'pictures a@13:30']));
+  check('the head of every card is its chip: the label and the value the chip says (the Mac\'s says more, with it)', numbers(fz, zh).length === 8 && numbers(fz, zh).every(n => { const c = cardOf(fz, n.kind, zh); return c && c.kind === n.kind && c.label === n.label && (n.kind === 'work' ? c.value.includes(n.long) : c.value === n.long); })
+    && numbers(fe, en).every(n => { const c = cardOf(fe, n.kind, en); return c && c.label === n.label; }));
+  check('a kind the day has no number for has no card (nothing counted: no photo, a Claude Code session is not Mac time)', ['workout', 'work', 'call', 'payment'].every(k => cardOf(buildDay(makeDay(), NOW, zh), k, zh) === null)
+    && cardOf(buildDay(small([it('c1', 'code', T(9, 0), T(9, 45), { title: 'a', project: 'x' })]), NOW, zh), 'work', zh) === null && cardOf(buildDay(small([]), NOW, zh), 'sleep', zh) === null);
+
+  // sleep: what is left out when its inputs are not there
+  const night = (stages, over = {}, mins = 440, end = T(7, 0)) => lines(buildDay(small([it('sleep-1', 'sleep', T(23, 10, 18), end, { minutes: mins, stages })], over), NOW, zh), 'sleep');
+  const inBed = (a, b) => ({ stage: 'in_bed', start_ms: a, end_ms: b });
+  check('time in bed, how long it took and the share of it are only with a stage before sleep (in_bed or awake) and, for the share, an in_bed stage: a night without the phone\'s in_bed has neither the time in bed nor the share',
+    same(night(NIGHT).slice(0, 2), ['睡|7 时 20 分', '入睡 23:10/醒来 07:00']));
+  check('an awake stretch before the first sleep is the time he went to bed and how long it took (10 min), but not a share: that wants the in_bed',
+    same(night([{ stage: 'awake', start_ms: T(23, 0, 18), end_ms: T(23, 10, 18) }, ...NIGHT]).slice(1, 3), ['上床 23:00/入睡 23:10/醒来 07:00/入睡用时 10 分', '深睡 1:10/核心 4:30/REM 1:40/夜醒 2 次']));
+  check('an in_bed that begins with the first sleep has the share (440 of 480 min: 92%) and no time in bed or time it took; one shorter than the sleep has none',
+    same(night([inBed(T(23, 10, 18), T(7, 10)), ...NIGHT])[1], '入睡 23:10/醒来 07:00/睡眠效率 92%') && same(night([inBed(T(23, 10, 18), T(1, 0)), ...NIGHT])[1], '入睡 23:10/醒来 07:00'));
+  check('a night with no stages is the clocks of its row and nothing else: no stage, no hypnogram, no time it took; the heart rate and HRV only where the day has them (one of them alone is alone)',
+    same(lines(buildDay(makeDay(), NOW, zh), 'sleep'), ['睡|7 时 50 分', '入睡 00:55/醒来 09:05']) && same(night(NIGHT, { summary: { steps: 9, resting_hr: null, hrv: 42 } }).at(-1), '当天 HRV 42') && same(night(NIGHT, { summary: { steps: 9, resting_hr: null, hrv: null } }).at(-1), 'night 23:10-07:00'));
+  check('a night still going has the clocks it has (no woke up), the stages to now, and no time he woke between sleeps',
+    same(night(NIGHT.slice(0, 4), {}, 100, null), ['睡|1 时 40 分', '入睡 23:10', '深睡 0:40/核心 1:55', 'night 23:10-21:50']));
+  check('the times he woke are the awake stretches with sleep on both sides (the open row counts every awake stretch: 3)', cardOf(fz, 'sleep', zh).parts[1].cells.at(-1).value === '2 次' && openOf(fz, 'sleep-1', zh).parts.find(p => p.type === 'night').night.totals.endsWith('醒 3 次'));
+
+  // on the way, workouts, the Mac and the rest
+  const day = (items, over) => buildDay(small(items, over), NOW, zh);
+  check('on the way: each way he went with its time (a bus is 公交, one the brain has no word for is 移动), the longest of them (a ride by its route and stops), and no steps where the day has none',
+    same(lines(day([it('m1', 'move', T(8, 0), T(8, 30), { activity: 'running' }), it('m2', 'move', T(9, 0), T(10, 0), { activity: 'cycling' }), it('m3', 'move', T(11, 0), T(11, 20), { activity: 'scooter' }), it('r1', 'ride', T(12, 0), T(12, 45), { route: '14', board_stop: 'A St', alight_stop: 'B St' })]), 'trip'),
+      ['路上|2 时 35 分', '骑车 1 时/公交 45 分/跑步 30 分/移动 20 分', '共 4 段/最长 骑车 · 1 时'])
+    && same(lines(day([it('r1', 'ride', T(12, 0), T(12, 45), { route: '14', board_stop: 'A St', alight_stop: 'B St' })]), 'trip').at(-1), '共 1 段/最长 14 路 · 45 分 · A St → B St')
+    && same(lines(buildDay(small([it('r1', 'ride', T(12, 0), T(12, 45), { route: '14', board_stop: 'A St', alight_stop: 'B St' })]), NOW, en), 'trip', en).at(-1), 'In all 1 trip/Longest Bus 14 · 45 min · A St → B St'));
+  check('the run\'s pace is minutes per km walking or running and km per hour cycling, only with a distance and a length: none for swimming or a hike, for no distance, or for one that has not ended',
+    (w => w('walking', 2000, 30).pace === `15'00"/公里` && w('running', 5000, 25).pace === `5'00"/公里` && w('cycling', 20000, 60).pace === '20.0 公里/时' && w('swimming', 800, 30).pace === '' && w('hiking', 4000, 90).pace === '' && w('running', 0, 30).pace === '' && w('running', undefined, 30).pace === ''
+      && w('running', 5000, null).pace === '' && w('running', 5000, 0.5).pace === '' && workoutOf({ ...day([it('w', 'workout', T(7, 0), T(7, 35), { activity: 'running', distance_m: 3200 })]).items[0] }, en).pace === `10'56"/km` && w('cycling', 20000, 60, en).pace === '20.0 km/h'
+      && w('running', 3200, 35).facts.join() === '3.2 公里,240 千卡,平均心率 142')((a, m, min, t = zh) => workoutOf({ id: 'w', lane: 'you', kind: 'workout', state: 'done', start_ms: T(7, 0), end_ms: min === null ? null : T(7, 0) + min * 60_000, activity: a, distance_m: m, energy_kcal: 240, avg_hr: 142 }, t)));
+  const runs = [it('w1', 'workout', T(7, 0), T(7, 30), { activity: 'walking', distance_m: 2000 }), it('w2', 'workout', T(18, 0), T(19, 0), { activity: 'cycling', distance_m: 20000, energy_kcal: 500 }), it('w3', 'workout', T(20, 0), T(20, 30), { activity: 'swimming', distance_m: 800 }), it('w4', 'workout', T(21, 0), T(21, 10), { activity: 'elliptical', text: 'Elliptical\nsecond' }), it('w5', 'workout', T(5, 0), T(5, 20), { activity: 'yoga' })];
+  check('a workout line has only what was counted (the phone\'s words for one it does not know), at most four are listed and the rest are counted, and the steps are said here only when the day has no way he went',
+    same(lines(day(runs, { summary: { steps: 4321, resting_hr: null, hrv: null } }), 'workout'), ['运动|2 时 30 分', `瑜伽: 05:00 · 20 分//步行: 07:00 · 30 分 · 2.0 公里 · 15'00"/公里//骑车: 18:00 · 1 时 · 20.0 公里 · 20.0 公里/时 · 500 千卡//游泳: 20:00 · 30 分 · 800 米 +1`, '步数 4,321'])
+    && same(lines(day([runs[4], it('m1', 'move', T(8, 0), T(8, 30), { activity: 'walking' })], { summary: { steps: 4321, resting_hr: null, hrv: null } }), 'workout'), ['运动|20 分', '瑜伽: 05:00 · 20 分']));
+  const many = day([it('w', 'work', T(10, 0), T(14, 0), { active_s: 12000, projects: Array.from({ length: 7 }, (_, i) => ({ name: `P${i}`, seconds: 1000 + i * 100 })), apps: [{ name: '', seconds: 5 }, { name: 'Z', seconds: 0 }] }), it('w2', 'work', T(15, 0), T(16, 0), { projects: [{ name: 'P0', seconds: 600 }] })]);
+  check('the Mac: at most five projects (the biggest first, the same name in two blocks is one), no list for apps there are none of, and no line for sessions where there are none',
+    (c => c.parts.length === 1 && c.parts[0].groups.length === 1 && c.parts[0].groups[0].bars.map(b => b.name).join() === 'P0,P6,P5,P4,P3' && c.value === '10:00–16:00 · 活跃 4 时 20 分 · 共 5 时')(cardOf(many, 'work', zh)));
+  const calls = day([it('c1', 'call', T(10, 0), T(10, 20), { app: 'FaceTime' }), it('c2', 'call', T(11, 0), T(11, 5), { app: 'WeChat' }), it('c3', 'call', T(12, 0), T(12, 40)), it('c4', 'call', T(13, 0), T(13, 10), { app: 'FaceTime' })]);
+  check('calls by app, the longest first; one with no app is 其他', same(lines(calls, 'call'), ['通话|1 时 15 分', '通话 4 次/最长 40 分 · 12:00', '其他: 1 次 · 40 分//FaceTime: 2 次 · 30 分//WeChat: 1 次 · 5 分']));
+  check('with her: a talk has a topic where it was marked with words (the brain\'s own "talk 15:00" is not words); the lines in all only where the talks say how many',
+    same(lines(day([it('t1', 'talk', T(9, 0), T(9, 5), { turns: 3 }, 'her'), it('t2', 'talk', T(15, 0), T(15, 5), {}, 'her')], { highlights: [{ id: 't1', label: '周末去哪', by: 'him' }, { id: 't2', label: 'talk 15:00', by: 'him' }] }), 'talk'), ['和她|2 次', '共 3 句/时段 09:00–15:05', '周末去哪: 09:00 · 3 句'])
+    && same(lines(day([it('t2', 'talk', T(15, 0), T(15, 5), {}, 'her')]), 'talk'), ['和她|1 次', '时段 15:00–15:05']));
+  const pay = (id, h, amount, currency, direction, who, text) => it(id, 'payment', T(h, 0), T(h, 0), { amount, currency, direction, ...who && { counterparty: who }, ...text && { text } });
+  check('money: what went out and what came in in each currency (the currency he paid in most first), how many payments there were, and the three it went to most (a payment with no amount is counted, not added)',
+    same(lines(day([pay('p1', 9, '12.4', 'CAD', 'out', 'A&W'), pay('p2', 10, 88, 'CNY', 'out', '', '午饭'), pay('p3', 11, '30', 'CAD', 'in', 'Sam'), pay('p4', 12, '5', 'CAD', 'out', 'A&W'), pay('p5', 13, '7', 'CAD', 'out', 'Cafe'), pay('p6', 14, '1', 'CAD', 'out', 'Kiosk'), pay('p7', 15, 'x', 'CAD', 'out', 'Bad')]), 'payment'),
+      ['花|$25.40…', '支出 $25.40 · ¥88.00/收入 $30.00/笔数 7 笔', '午饭: ¥88.00//A&W: $17.40//Cafe: $7.00']));
+  const pics = Array.from({ length: 8 }, (_, i) => it(`pic${i}`, 'picture', T(9 + i, 0), T(9 + i, 0), { attachment: i === 2 ? 'zz' : String(i).repeat(32), note: `n${i}` }));
+  check('photos: the first six that can be shown, with the rest counted (one whose picture is not kept is counted, not shown); with none that can be shown the card is only its head',
+    same(lines(day(pics), 'picture'), ['照片|8', 'pictures 0@09:00,1@10:00,3@12:00,4@13:00,5@14:00,6@15:00 +1']) && same(lines(day([it('pic1', 'picture', T(9, 0), T(9, 0), { attachment: 'zz' })]), 'picture'), ['照片|1']));
+  check('where a move went and a ride is where its row words it', fromTo(fz, fz.items.find(x => x.id === 'move-1'), zh) === '家 → A&W' && fromTo(fz, fz.items.find(x => x.id === 'move-2'), zh) === '去 A&W' && fromTo(fz, fz.items.find(x => x.id === 'ride-1'), zh) === 'Shelbourne at Pear → UVic Exchange'
+    && fromTo(fe, fe.items.find(x => x.id === 'move-2'), en) === 'To A&W' && fromTo(fz, { ...fz.items.find(x => x.id === 'ride-1'), board_stop: '', alight_stop: null }, zh) === '');
+  const win = { a: T(10, 0), b: T(14, 0) }, by = counted(fz, win);
+  check('what the chips, a range and a card count is counted once (counted): the range of 10:00 to 14:00 has the Mac block at 10:30 and not the one at 19:35, the talk at 10:02, the drive and the walks, the last of them only up to 14:00',
+    by.work.map(x => x.it.id).join() === 'work-1' && by.talk.map(x => x.it.id).join() === 'talk-1' && by.trip.map(x => x.it.id).join() === 'move-1,move-2,move-3' && by.picture.map(x => x.it.id).join() === 'picture-1' && by.payment.map(x => x.it.id).join() === 'pay-1' && by.sleep.length === 0
+    && by.trip.find(x => x.it.id === 'move-3').lap === 5 * 60_000 && by.trip.find(x => x.it.id === 'move-1').lap === 100 * 60_000 && numbers(fz, zh, win).map(n => `${n.label} ${n.value}`).join() === '路上 1:55,Mac 0:42,和她 1 次,花 $12.40,照片 1');
 }
 
 // ---------- the star, in node (ADR 0296): who chose it, and what can be marked ----------
