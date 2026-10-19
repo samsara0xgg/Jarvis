@@ -288,20 +288,20 @@ extension DayTimelineModel {
         return table.first { a.contains($0.0) }.map { ($0.1, $0.2) } ?? ("运动", "figure.mixed.cardio")
     }
 
-    /// the day's weather as words and a symbol: WeatherKit's condition as the brain words it (`mostly cloudy`), in the few the Mac has; one it does not know is left unsaid
+    /// the day's weather as words and a symbol: WeatherKit's condition as the brain words it (`mostly cloudy`), read without case or separators, in the few the Mac has (`frigid` and
+    /// `hot` it has no word for either: only the temperatures are said)
     static func weatherWords(_ condition: String?) -> (word: String, symbol: String)? {
-        let c = (condition ?? "").lowercased().filter { $0.isLetter }
-        let table: [(String, String, String)] = [
-            ("thunder", "雷雨", "cloud.bolt.rain.fill"), ("strongstorms", "雷雨", "cloud.bolt.rain.fill"),
-            ("drizzle", "小雨", "cloud.drizzle.fill"), ("showers", "小雨", "cloud.drizzle.fill"), ("rain", "雨", "cloud.rain.fill"),
-            ("snow", "雪", "cloud.snow.fill"), ("flurries", "雪", "cloud.snow.fill"), ("sleet", "雪", "cloud.sleet.fill"), ("blizzard", "雪", "cloud.snow.fill"), ("wintry", "雪", "cloud.snow.fill"),
-            ("fog", "雾", "cloud.fog.fill"), ("haze", "雾", "cloud.fog.fill"), ("smok", "雾", "cloud.fog.fill"),
-            ("wind", "风", "wind"), ("breez", "风", "wind"),
-            ("mostlyclear", "少云", "cloud.sun.fill"), ("partlycloudy", "多云", "cloud.sun.fill"), ("mostlycloudy", "多云", "cloud.fill"), ("cloudy", "阴", "cloud.fill"),
-            ("clear", "晴", "sun.max.fill"), ("sunny", "晴", "sun.max.fill"), ("hot", "晴", "sun.max.fill"),
-        ]
-        return table.first { c.contains($0.0) }.map { ($0.1, $0.2) }
+        weatherTable[(condition ?? "").lowercased().filter { $0 >= "a" && $0 <= "z" }]
     }
+    private static let weatherTable: [String: (word: String, symbol: String)] = {
+        let drizzle = ("小雨", "cloud.drizzle.fill"), rain = ("雨", "cloud.rain.fill"), storm = ("雷雨", "cloud.bolt.rain.fill"), snow = ("雪", "cloud.snow.fill")
+        let fog = ("雾", "cloud.fog.fill"), wind = ("风", "wind")
+        return ["clear": ("晴", "sun.max.fill"), "mostlyclear": ("少云", "cloud.sun.fill"), "partlycloudy": ("多云", "cloud.sun.fill"), "mostlycloudy": ("多云", "cloud.fill"), "cloudy": ("阴", "cloud.fill"),
+                "drizzle": drizzle, "sunshowers": drizzle, "freezingdrizzle": drizzle, "rain": rain, "heavyrain": rain, "freezingrain": rain,
+                "isolatedthunderstorms": storm, "scatteredthunderstorms": storm, "thunderstorms": storm, "strongstorms": storm, "tropicalstorm": storm, "hurricane": storm,
+                "snow": snow, "heavysnow": snow, "flurries": snow, "sunflurries": snow, "sleet": snow, "wintrymix": snow, "blizzard": snow, "blowingsnow": snow, "hail": snow,
+                "foggy": fog, "haze": fog, "smoky": fog, "blowingdust": fog, "breezy": wind, "windy": wind]
+    }()
 
     /// where an imported payment came from, in the words the Mac uses
     private static let sources = ["alipay": "支付宝", "wechat_pay": "微信", "boc": "中国银行"]

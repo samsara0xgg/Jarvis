@@ -328,14 +328,16 @@ final class DayTimelineRowsTests: XCTestCase {
     // MARK: the new data
 
     func testTheWeatherIsWordedAndAnUnknownNameIsLeftUnsaidWithTheTemperatures() throws {
-        let words: [(String?, String?)] = [("mostly cloudy", "多云"), ("partly cloudy", "多云"), ("cloudy", "阴"), ("mostly clear", "少云"), ("clear", "晴"), ("Sunny", "晴"), ("rain", "雨"),
-                                           ("heavy rain", "雨"), ("drizzle", "小雨"), ("showers", "小雨"), ("snow", "雪"), ("flurries", "雪"), ("foggy", "雾"), ("haze", "雾"), ("windy", "风"),
-                                           ("thunderstorms", "雷雨"), ("strong storms", "雷雨"), ("mystery weather", nil), ("", nil), (nil, nil)]
+        // the Mac's table: a name is read without case or separators, and a condition it has no word for (`frigid`, `hot`) leaves only the temperatures
+        let words: [(String?, String?)] = [("mostly cloudy", "多云"), ("partly cloudy", "多云"), ("cloudy", "阴"), ("mostly clear", "少云"), ("clear", "晴"), ("rain", "雨"),
+                                           ("heavy rain", "雨"), ("drizzle", "小雨"), ("sunShowers", "小雨"), ("snow", "雪"), ("flurries", "雪"), ("hail", "雪"), ("foggy", "雾"), ("haze", "雾"),
+                                           ("blowing_dust", "雾"), ("windy", "风"), ("thunderstorms", "雷雨"), ("strong storms", "雷雨"), ("hurricane", "雷雨"), ("Tropical Storm", "雷雨"),
+                                           ("hot", nil), ("frigid", nil), ("Sunny", nil), ("showers", nil), ("mystery weather", nil), ("", nil), (nil, nil)]
         for (c, w) in words { XCTAssertEqual(DayTimelineModel.weatherWords(c)?.word, w, c ?? "nil") }
         func weather(_ json: String) throws -> TLWeather? { build(try reply("", ", \"weather\": " + json)).weather }
         XCTAssertEqual(try weather(#"{"condition": "mostly cloudy", "high": 14.4, "low": 8, "sunrise_ms": 1, "sunset_ms": 2}"#)?.text, "多云 14° / 8°")
         XCTAssertEqual(try weather(#"{"condition": "mostly cloudy", "high": 14.4, "low": 8}"#)?.symbol, "cloud.fill")
-        XCTAssertEqual(try weather(#"{"condition": "hurricane", "high": 14, "low": 8}"#)?.text, "14° / 8°", "no word for it: only the temperatures")
+        XCTAssertEqual(try weather(#"{"condition": "frigid", "high": 14, "low": 8}"#)?.text, "14° / 8°", "no word for it: only the temperatures")
         XCTAssertEqual(try weather(#"{"condition": "clear", "high": 21}"#)?.text, "晴 21°")
         XCTAssertEqual(try weather(#"{"condition": "clear"}"#)?.text, "晴")
         XCTAssertEqual(try weather(#"{"high": -3.6, "low": -9}"#)?.text, "-4° / -9°")
