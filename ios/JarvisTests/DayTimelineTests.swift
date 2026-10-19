@@ -204,17 +204,26 @@ final class DayTimelineTests: XCTestCase {
         let r = try reply(#"{"id": "pay-2", "lane": "you", "kind": "payment", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(600)), "source": "wechat_pay", "amount": "1234.50", "currency": "CNY", "direction": "in", "text": "转账"}, {"id": "pay-3", "lane": "you", "kind": "payment", "state": "done", "start_ms": \#(at(700)), "end_ms": \#(at(700)), "source": "venmo", "amount": "5.00", "currency": "AUD", "direction": "out", "counterparty": "Cafe"}, {"id": "pay-4", "lane": "you", "kind": "payment", "state": "done", "start_ms": \#(at(800)), "end_ms": \#(at(800))}"#)
         let rows = build(r, now: nil).entries
         XCTAssertEqual(rows.map(\.title), ["转账", "Cafe", "付款"])
-        XCTAssertEqual(rows.map(\.right), ["+¥1,234.50", "AUD 5.00", ""])
-        XCTAssertEqual(rows.map(\.more), [["收入 ¥1,234.50 CNY", "来自微信"], ["支出 AUD 5.00", "来自venmo"], []])
+        XCTAssertEqual(rows.map(\.right), ["+¥1,234.50", "5.00 AUD", ""])
+        XCTAssertEqual(rows.map(\.more), [["收入 ¥1,234.50 CNY", "来自微信"], ["支出 5.00 AUD", "来自venmo"], []])
         XCTAssertEqual(rows.map(\.detail), [nil, nil, nil])
+    }
+
+    func testMoneyOutIsPlainWhateverSignTheBrainGaveItAndMoneyInHasAPlus() throws {
+        func pay(_ id: String, _ amount: String, _ way: String) -> String {
+            #"{"id": "\#(id)", "lane": "you", "kind": "payment", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(600)), "amount": "\#(amount)", "currency": "USD", "direction": "\#(way)"}"#
+        }
+        let r = try reply([pay("a", "12.40", "out"), pay("b", "-3.00", "out"), pay("c", "50.00", "in"), pay("d", "-8.00", "in")].joined(separator: ","))
+        XCTAssertEqual(build(r, now: nil).entries.map(\.right), ["US$12.40", "US$3.00", "+US$50.00", "+US$8.00"])
     }
 
     func testMoneyIsWrittenWithTheMarkOfItsCurrency() {
         XCTAssertEqual(tlMoney(1240, "CAD"), "$12.40")
-        XCTAssertEqual(tlMoney(1240, "usd"), "$12.40")
+        XCTAssertEqual(tlMoney(1240, "usd"), "US$12.40", "the Mac writes US dollars apart from Canadian ones")
+        XCTAssertEqual(tlMoney(1240, "JPY"), "JP¥12.40")
         XCTAssertEqual(tlMoney(123450, "CNY"), "¥1,234.50")
         XCTAssertEqual(tlMoney(5, "EUR"), "€0.05")
-        XCTAssertEqual(tlMoney(500, "AUD"), "AUD 5.00")
+        XCTAssertEqual(tlMoney(500, "AUD"), "5.00 AUD", "a currency with no mark of its own is written after the number")
         XCTAssertEqual(tlMoney(500, nil), "5.00")
         XCTAssertEqual(tlMoney(-1240, "CAD"), "-$12.40")
         XCTAssertEqual(tlMoney(100_000_000, "CAD"), "$1,000,000.00")

@@ -136,7 +136,8 @@ struct Amount: Decodable, Equatable {
     init(cents: Int) { self.cents = cents }
     init(from d: Decoder) throws {
         let c = try d.singleValueContainer()
-        if let s = try? c.decode(String.self), let v = Decimal(string: s.trimmingCharacters(in: .whitespaces)) {
+        // an amount of ten billion or more is not a payment: it is a field that is not what it says
+        if let s = try? c.decode(String.self), let v = Decimal(string: s.trimmingCharacters(in: .whitespaces)), v.magnitude < 10_000_000_000 {
             var x = v * 100, r = Decimal()
             NSDecimalRound(&r, &x, 0, .plain)
             cents = Int(truncating: NSDecimalNumber(decimal: r))

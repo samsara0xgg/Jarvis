@@ -23,16 +23,21 @@ func tlHM(_ minutes: Int) -> String {
     return m < 60 ? "\(m) 分" : "\(m / 60):" + String(format: "%02d", m % 60)
 }
 
-/// $12.40, ¥68.00, `AUD 5.00`: an amount with the mark of its currency (a currency this phone has no mark for is written by its code)
+/// 12,345: a whole number with its thousands told
+func tlGroup(_ n: Int) -> String {
+    var out = ""
+    for (k, ch) in String(n.magnitude).reversed().enumerated() { if k > 0, k % 3 == 0 { out.append(",") }; out.append(ch) }
+    return (n < 0 ? "-" : "") + String(out.reversed())
+}
+
+/// $12.40, US$5.00, ¥68.00, `12.40 CHF`: an amount with the mark of its currency as the Mac writes it (CAD $, USD US$, CNY ¥, EUR €, GBP £, JPY JP¥); a currency this phone has
+/// no mark for is written after the number by its code
 func tlMoney(_ cents: Int, _ currency: String?) -> String {
-    let whole = String(abs(cents) / 100), frac = String(format: "%02d", abs(cents) % 100)
-    var grouped = ""
-    for (k, ch) in whole.reversed().enumerated() { if k > 0, k % 3 == 0 { grouped.append(",") }; grouped.append(ch) }
-    let num = String(grouped.reversed()) + "." + frac, sign = cents < 0 ? "-" : ""
+    let c = cents.magnitude, num = tlGroup(Int(c / 100)) + "." + String(format: "%02d", Int(c % 100)), sign = cents < 0 ? "-" : ""
     let code = (currency ?? "").trimmingCharacters(in: .whitespaces).uppercased()
-    let marks = ["CAD": "$", "USD": "$", "CNY": "¥", "EUR": "€", "GBP": "£", "JPY": "JP¥", "HKD": "HK$"]
+    let marks = ["CAD": "$", "USD": "US$", "CNY": "¥", "EUR": "€", "GBP": "£", "JPY": "JP¥"]
     if code.isEmpty { return sign + num }
-    return sign + (marks[code] ?? code + " ") + num
+    return marks[code].map { sign + $0 + num } ?? sign + num + " " + code
 }
 
 /// one line of the list
@@ -383,12 +388,12 @@ struct DayTimelineModel: Equatable {
                 e.title = shop ?? item ?? "付款"
                 e.detail = shop == nil ? nil : item
                 // what it came to: money out is the plain amount, money in has a plus
-                e.right = cents.map { (i.direction == "in" ? "+" : "") + tlMoney($0, i.currency) } ?? ""
+                e.right = cents.map { (i.direction == "in" ? "+" : "") + tlMoney(abs($0), i.currency) } ?? ""
                 e.strongRight = true
                 e.glance = [e.title, e.right.isEmpty ? nil : e.right].compactMap { $0 }.joined(separator: " · ")
                 // opened: which way, the amount (with its currency's code when the mark alone does not say it), and where the import came from
                 let way = i.direction == "in" ? "收入" : "支出", code = text(i.currency)?.uppercased()
-                let sum = cents.map { tlMoney($0, i.currency) }
+                let sum = cents.map { tlMoney(abs($0), i.currency) }
                 e.more = [sum.map { way + " " + $0 + (code.map { $0.isEmpty || sum!.contains($0) ? "" : " " + $0 } ?? "") }, text(i.source).map { "来自" + (Self.sources[$0] ?? $0) }].compactMap { $0 }
             case "claude_chat":
                 e.kind = .claude
@@ -418,7 +423,7 @@ struct DayTimelineModel: Equatable {
             case .picture: e.lens = .picture; counts[.picture, default: 0] += 1
             case .payment where i.direction == "out":
                 e.lens = .payment
-                if let c = i.amount?.cents { let k = text(i.currency)?.uppercased() ?? ""; spent[k] = ((spent[k]?.cents ?? 0) + c, (spent[k]?.n ?? 0) + 1) }
+                if let c = i.amount?.cents { let k = text(i.currency)?.uppercased() ?? ""; spent[k] = ((spent[k]?.cents ?? 0) + abs(c), (spent[k]?.n ?? 0) + 1) }
             default: break
             }
             switch e.kind {
