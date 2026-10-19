@@ -279,14 +279,14 @@ struct TLBarView: View {
                 .mask(alignment: .leading) { GrowMask(shown: reduce || reveal) }          // grows in from the left, in the order of time, its leading edge soft
                 .opacity(reduce && !reveal ? 0 : 1)
                 .animation(TLMotion.barGrowth(reduce: reduce), value: reveal)
-                stars.opacity(reveal ? 1 : 0).animation(.easeOut(duration: 0.2).delay(reveal && !reduce ? 0.7 * TLMotion.barGrow : 0), value: reveal)      // once the bar has grown to them
+                stars.opacity(reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.7, reveal: reveal, reduce: reduce), value: reveal)      // once the bar has grown to them
             }
             .opacity(lens ? 0.25 : 1).animation(.easeOut(duration: 0.15), value: lens)
             lensLayer
             lensBracket
-            hours
-            sunMarks
-            if let n = scene.now { nowMarker(n) }
+            hours.opacity(reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.25, reveal: reveal, reduce: reduce), value: reveal)
+            sunMarks.opacity(reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.25, reveal: reveal, reduce: reduce), value: reveal)
+            if let n = scene.now { nowMarker(n).opacity(reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.7, reveal: reveal, reduce: reduce), value: reveal) }      // when the growth reaches it
             if let t = scrub { scrubMark(t) }
         }
         .frame(width: bw, height: bh, alignment: .topLeading)

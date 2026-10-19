@@ -23,6 +23,11 @@ enum TLMotion {
     static func rise(rank: Int, reduce: Bool) -> Animation {
         reduce ? .easeOut(duration: reducedFade) : .easeOut(duration: riseDuration).delay(Double(rank) * riseStagger)
     }
+    /// what stands beside the bar's stretches (the hours, the sun, the stars, the line for now) comes in as they grow: a fade of 200 ms that begins once the growth has gone `after` of its way
+    static func arrival(after: Double, reveal: Bool, reduce: Bool) -> Animation {
+        let fade = Animation.easeOut(duration: reduce ? reducedFade : 0.2)
+        return reveal && !reduce ? fade.delay(after * barGrow) : fade
+    }
     /// a change of day
     static func dayChange(reduce: Bool) -> Animation { .easeOut(duration: reduce ? reducedFade : dayDuration) }
     /// what is new in the list, and the rows that make room for it

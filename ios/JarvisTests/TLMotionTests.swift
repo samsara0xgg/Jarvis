@@ -21,6 +21,13 @@ final class TLMotionTests: XCTestCase {
         XCTAssertEqual(TLMotion.listChange(reduce: true), fade)
     }
 
+    func testWhatStandsBesideTheBarComesInOnceTheGrowthHasGonePartOfItsWayAndNotWhenItGoes() {
+        XCTAssertEqual(TLMotion.arrival(after: 0.7, reveal: true, reduce: false), Animation.easeOut(duration: 0.2).delay(0.7 * 0.45))
+        XCTAssertEqual(TLMotion.arrival(after: 0.25, reveal: true, reduce: false), Animation.easeOut(duration: 0.2).delay(0.25 * 0.45))
+        XCTAssertEqual(TLMotion.arrival(after: 0.7, reveal: false, reduce: false), Animation.easeOut(duration: 0.2), "put back, it does not wait")
+        XCTAssertEqual(TLMotion.arrival(after: 0.7, reveal: true, reduce: true), Animation.easeOut(duration: 0.12), "and under Reduce Motion it is a fade of 120 ms with no wait")
+    }
+
     func testWhatIsNewGrowsFromNoHeightToAllOfItAtItsWidth() {
         func size(_ k: Double) -> CGSize {
             UIHostingController(rootView: TLGrownLayout(k: k) { Color.red.frame(width: 120, height: 80) }).sizeThatFits(in: CGSize(width: 300, height: 600))
