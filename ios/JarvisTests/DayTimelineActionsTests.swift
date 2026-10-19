@@ -284,10 +284,10 @@ final class DayTimelineActionsTests: XCTestCase {
         // the day on show is the one that ended: the tick of the minute finds a new day
         tl.dayStamp = tl.today - 1; tl.day = tl.today - 1
         tl.openRow = "stay-1"; tl.renaming = "stay-1"; tl.scrub = 600
-        var drawnAgain = false
-        withObservationTracking { _ = tl.today } onChange: { drawnAgain = true }
+        let drawnAgain = expectation(description: "what shows today is drawn again at midnight")
+        withObservationTracking { _ = tl.today } onChange: { drawnAgain.fulfill() }
         XCTAssertTrue(tl.rollOver())
-        XCTAssertTrue(drawnAgain, "what shows today is drawn again at midnight")
+        await fulfillment(of: [drawnAgain], timeout: 1)
         XCTAssertEqual(tl.dayStamp, tl.today)
         XCTAssertNil(tl.openRow)
         XCTAssertNil(tl.renaming)
