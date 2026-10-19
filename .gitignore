@@ -47,3 +47,4 @@ AGENTS.md
 native/voice_out/.build/
 native/ambient_sounds/.build/
 native/where/.build/
+native/screen_time/.build/

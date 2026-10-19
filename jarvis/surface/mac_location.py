@@ -37,19 +37,19 @@ class MacLocation:
     place: str | None
 
 
-def ensure_where_app(source_dir: Path = _DIR) -> Path:
+def ensure_app_bundle(source_dir: Path, app_name: str, executable: str, identifier: str) -> Path:
     """Return the helper .app, building and ad-hoc signing it when missing or older than source.
 
-    A rebuilt app has a new code signature, so macOS may ask for location permission again.
+    A rebuilt app has a new code signature, so macOS may ask for its permission again.
     A bare binary never gets that prompt; only an app bundle does, hence the bundle.
     """
     sources = [source_dir / "main.swift", source_dir / "Info.plist"]
-    app = source_dir / ".build" / _APP_NAME
-    binary = app / "Contents" / "MacOS" / "jarvis-where"
+    app = source_dir / ".build" / app_name
+    binary = app / "Contents" / "MacOS" / executable
     if binary.exists() and binary.stat().st_mtime >= max(s.stat().st_mtime for s in sources):
         return app
     swiftc = shutil.which("swiftc") or "/usr/bin/swiftc"
-    scratch = source_dir / ".build" / f"{_APP_NAME}.{os.getpid()}.tmp"
+    scratch = source_dir / ".build" / f"{app_name}.{os.getpid()}.tmp"
     shutil.rmtree(scratch, ignore_errors=True)
     try:
         (scratch / "Contents" / "MacOS").mkdir(parents=True)
@@ -59,10 +59,10 @@ def ensure_where_app(source_dir: Path = _DIR) -> Path:
                 swiftc,
                 "-O",
                 "-o",
-                str(scratch / "Contents" / "MacOS" / "jarvis-where"),
+                str(scratch / "Contents" / "MacOS" / executable),
                 str(source_dir / "main.swift"),
             ],
-            ["/usr/bin/codesign", "-s", "-", "-f", "--deep", "-i", _IDENTIFIER, str(scratch)],
+            ["/usr/bin/codesign", "-s", "-", "-f", "--deep", "-i", identifier, str(scratch)],
         ):
             subprocess.run(  # noqa: S603 - fixed argv, repo-owned source
                 argv, check=True, capture_output=True, timeout=_BUILD_TIMEOUT_S
@@ -70,12 +70,17 @@ def ensure_where_app(source_dir: Path = _DIR) -> Path:
         shutil.rmtree(app, ignore_errors=True)
         scratch.replace(app)
     except subprocess.CalledProcessError as exc:
-        LOGGER.warning("where build failed: %s", exc.stderr.decode(errors="replace")[-400:])
+        LOGGER.warning("%s build failed: %s", app_name, exc.stderr.decode(errors="replace")[-400:])
         raise
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     LOGGER.info("built %s", app)
     return app
+
+
+def ensure_where_app(source_dir: Path = _DIR) -> Path:
+    """The location helper .app, built when missing or stale."""
+    return ensure_app_bundle(source_dir, _APP_NAME, "jarvis-where", _IDENTIFIER)
 
 
 def parse_helper_output(text: str) -> MacLocation:
