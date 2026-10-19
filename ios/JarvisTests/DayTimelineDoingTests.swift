@@ -69,8 +69,8 @@ final class DayTimelineDoingTests: XCTestCase {
             span(740, nil, "歇会儿", "rest", "inferred"),                            // no end
         ])
         let m = DayTimelineModel.build(r, now: 800)
-        XCTAssertEqual(m.doing, [TLDoing(t0: 600, t1: 660, words: "做 Jarvis"), TLDoing(t0: 740, t1: 800, words: "歇会儿")], "the endless one is still going: its end is now")
-        XCTAssertEqual(DayTimelineModel.build(r, now: nil).doing.last, TLDoing(t0: 740, t1: DAY, words: "歇会儿"), "on another day it goes on to midnight")
+        XCTAssertEqual(m.doing, [TLDoing(t0: 600, t1: 660, words: "做 Jarvis", when: "10:00–11:00 · 1 时"), TLDoing(t0: 740, t1: 800, words: "歇会儿", when: "12:20 起 · 1 时")], "the endless one is still going: its end is now")
+        XCTAssertEqual(DayTimelineModel.build(r, now: nil).doing.last, TLDoing(t0: 740, t1: DAY, words: "歇会儿", when: "12:20 起 · 11 时 40 分"), "on another day it goes on to midnight")
     }
 
     func testAReplyWithoutSpansBuildsTheDayAsBefore() throws {
@@ -164,20 +164,20 @@ final class DayTimelineDoingTests: XCTestCase {
         let m = try day(spans: true), plain = try day(spans: false)
         func head(_ t: Double) -> String { m.readout(at: t).head }
         func was(_ t: Double) -> String { plain.readout(at: t).head }
-        XCTAssertEqual(head(650), "做 Jarvis · " + was(650))
-        XCTAssertTrue(head(650).hasPrefix("做 Jarvis · 家 · 10:00–12:00"), head(650))
+        XCTAssertEqual(head(650), "做 Jarvis · 家 · 10:00–11:40 · 1 时 40 分", "in a stay, the hours are those of what he was doing, not the stay's 10:00–12:00")
+        XCTAssertTrue(was(650).hasPrefix("家 · 10:00–12:00"), was(650))
         XCTAssertEqual(m.readout(at: 650).name, "做 Jarvis")
         XCTAssertTrue(m.readout(at: 650).tail.hasPrefix(" · 家 · "))
         XCTAssertEqual(head(710), was(710), "a span with no words: as before")
         XCTAssertEqual(head(760), "去咖啡馆 · " + was(760), "on the way too")
         XCTAssertTrue(head(760).hasPrefix("去咖啡馆 · 步行 · "), head(760))
-        XCTAssertEqual(head(840), "吃饭 · " + was(840))
+        XCTAssertEqual(head(840), "吃饭 · 没名字的地方 · 13:20–14:30 · 1 时 10 分")
         XCTAssertEqual(head(1415), was(1415), "the ride is 27 路 and so are the words: said once")
         XCTAssertTrue(head(1415).hasPrefix("27 路 · "), head(1415))
-        XCTAssertEqual(head(1015), "聊天 · " + was(1015))
+        XCTAssertEqual(head(1015), "聊天 · Cafe · 16:40–17:20 · 40 分")
         XCTAssertEqual(head(1070), was(1070), "no words at that minute, though the stay has some earlier")
-        XCTAssertEqual(head(500), "起床吃早饭 · " + was(500), "where nothing was recorded the words are still his")
-        XCTAssertTrue(head(500).hasPrefix("起床吃早饭 · 没有记录 · "), head(500))
+        XCTAssertEqual(head(500), "起床吃早饭 · 07:00–10:00 · 3 时", "where nothing was recorded, what was said of it, with its own hours")
+        XCTAssertTrue(was(500).hasPrefix("没有记录 · "), was(500))
         XCTAssertEqual(head(150), "睡了 · " + was(150))
     }
 
@@ -192,7 +192,7 @@ final class DayTimelineDoingTests: XCTestCase {
             XCTAssertEqual(a.strong, b.strong)
         }
         XCTAssertFalse(withSpans.readout(at: 650).elsewhere.isEmpty)
-        XCTAssertEqual(withSpans.readout(at: 750).head, "歇会儿 · " + plain.readout(at: 750).head, "a span that goes on, at a minute before now")
+        XCTAssertEqual(withSpans.readout(at: 750).head, "歇会儿 · 家 · 11:40 起 · 1 时 40 分", "a span that goes on, at a minute before now")
         XCTAssertEqual(withSpans.readout(at: 930).head, "还没到", "what has not happened has no words, and a plan is not what he did")
     }
 }

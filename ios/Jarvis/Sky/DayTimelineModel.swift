@@ -365,6 +365,7 @@ struct TLTold: Equatable {
 struct TLDoing: Equatable {
     var t0: Double, t1: Double
     var words: String
+    var when: String                // its own hours and length, as a stretch says them: `09:30–11:20 · 1 时 50 分`, `19:35 起 · 1 时 05 分`
 }
 
 /// What a finger on the bar reads out: the stretch of the day under it, and what else was going on there.
@@ -457,9 +458,9 @@ struct DayTimelineModel: Equatable {
     }
     /// its id, or none
     func stretch(at t: Double) -> String { seg(at: t)?.id ?? "" }
-    /// the words of what he was doing at minute `t` (the one at the end of the last span, when `t` is that end, as for a stretch)
-    func wasDoing(at t: Double) -> String? {
-        (doing.first { $0.t0 <= t && t < $0.t1 } ?? doing.first { $0.t0 <= t.nextDown && t.nextDown < $0.t1 })?.words
+    /// what he was doing at minute `t` (the one at the end of the last span, when `t` is that end, as for a stretch)
+    func wasDoing(at t: Double) -> TLDoing? {
+        doing.first { $0.t0 <= t && t < $0.t1 } ?? doing.first { $0.t0 <= t.nextDown && t.nextDown < $0.t1 }
     }
     /// the words of the one span that covers at least half of `a`..`b`, if any
     func wasDoing(over a: Double, _ b: Double) -> String? {
@@ -480,7 +481,7 @@ struct DayTimelineModel: Equatable {
     func readout(at minute: Double) -> TLReadout {
         let t = onBar(minute)
         var hue: RGB?, strong = true, head: String
-        let ahead = now.map { t > $0 } ?? false
+        let ahead = now.map { t > $0 } ?? false, d = ahead ? nil : wasDoing(at: t)
         if ahead {
             head = "还没到"
         } else if let s = seg(at: t) ?? seg(at: t.nextDown), let e = entries.first(where: { $0.id == s.id }) {          // the end of a stretch with nothing after it (a stay up to now) is still in it
@@ -490,13 +491,16 @@ struct DayTimelineModel: Equatable {
             case .sleep: hue = TLPaint.sleep
             }
             head = e.head ?? e.title
+            // what he was doing leads: in a stay with its own hours and the place after it, on a way or in the night before them unless it says the same
+            if let d, case .place = s.kind { head = [d.words, d.words == e.title ? nil : e.title, d.when].compactMap { $0 }.joined(separator: " · ") }
+            else if let d, head.components(separatedBy: " · ").first != d.words { head = d.words + " · " + head }
+        } else if let d {
+            head = d.words + " · " + d.when          // nothing was recorded, but he said (or a model wrote) what he was doing
         } else {
             let lo = segs.filter { $0.t1 <= t }.map(\.t1).max() ?? span.lowerBound
             let hi = max(lo, min(segs.filter { $0.t0 > t }.map(\.t0).min() ?? DAY, now ?? DAY))          // a hole ends no earlier than it begins
             head = "没有记录 · \(clock(lo))–\(tlEnd(hi)) · \(tlDur(tlInt(hi - lo)))"
         }
-        // what he was doing leads; the stretch (the place) follows unless it says the same
-        if !ahead, let words = wasDoing(at: t), head.components(separatedBy: " · ").first != words { head = words + " · " + head }
         func gap(_ x: TLTold) -> Double { t < x.t0 ? x.t0 - t : t > x.t1 ? t - x.t1 : 0 }
         var near = told.filter { gap($0) == 0 }
         if near.isEmpty { near = told.filter { gap($0) <= 10 } }
@@ -628,7 +632,8 @@ struct DayTimelineModel: Equatable {
         model.doing = r.spans.compactMap { s in
             guard s.lane == "doing", s.kind != "planned", let words = doingWords(s) else { return nil }
             let a = m(s.start_ms), b = s.end_ms.map(m) ?? now ?? DAY
-            return a.isFinite && b.isFinite && b > a ? TLDoing(t0: a, t1: b, words: words) : nil
+            guard a.isFinite, b.isFinite, b > a else { return nil }
+            return TLDoing(t0: a, t1: b, words: words, when: [s.end_ms == nil ? "\(clockDay(a, frame)) 起" : rangeText(a, b, running: false, frame), tlDur(tlInt(b - a))].joined(separator: " · "))
         }.sorted { $0.t0 < $1.t0 }
         return model
     }
