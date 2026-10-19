@@ -27,7 +27,7 @@
 .notch .dt-nav button { display:grid; place-items:center; width:24px; height:24px; border-radius:var(--radius-control); color:var(--p-muted); transition:background var(--motion-fast),color var(--motion-fast); }
 .notch .dt-nav button:hover:not(:disabled) { background:rgb(255 255 255 / .08); color:var(--p-ink); }
 .notch .dt-nav button:disabled { opacity:.3; cursor:default; }
-.notch .dt-line { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; margin:0; padding-inline:2px; font:14.5px/1.55 "Songti SC","Noto Serif SC",ui-serif,serif; color:var(--p-ink); }
+.notch .dt-line { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; margin:0; padding-inline:2px; font-size:14.5px; font-weight:500; line-height:1.5; color:var(--p-ink); }
 .notch .dt-line.is-draft { color:var(--p-muted); }
 .notch .dt-say { margin:0; padding:10px 2px 14px; font-size:var(--text-detail); color:var(--p-muted); }
 .notch .dt-foot { margin:0; padding-inline:2px; font-size:var(--text-label); line-height:16px; color:var(--p-faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
