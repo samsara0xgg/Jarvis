@@ -129,7 +129,7 @@ try {
       S.places = S.places.filter(x => x.id !== c.place_id); if (c.before) S.places.push({ ...c.snap });
       S.pchanges.forEach(x => { if (x.place_id === c.place_id) x.undoable = false; });
       S.pchanges.unshift({ id: `c${++S.seq}`, ts: new Date().toISOString(), origin: 'page', op: 'undo', place_id: c.place_id, name: (c.before ?? c.after).name, before: c.after, after: c.before, undoable: true });
-      return reply({ ok: true, place: c.snap, change: S.pchanges[0] });
+      return reply({ ok: true, place: c.snap, change: S.pchanges[0].id });      // the brain names the change by its id alone
     }
     if (method === 'POST' && (m = rest.match(/^\/places\/(\w+)$/))) {
       const p = S.places.find(x => x.id === m[1]); if (!p) return reply({ detail: 'no such place' }, 404);
@@ -138,7 +138,7 @@ try {
       if (body.forget) S.places = S.places.filter(x => x !== p); else Object.assign(p, { name: body.name ?? p.name, role: body.role ?? p.role });
       S.pchanges.forEach(x => { if (x.place_id === p.id) x.undoable = false; });
       S.pchanges.unshift({ id: `c${++S.seq}`, ts: new Date().toISOString(), origin: 'page', op: body.forget ? 'forget' : 'rename', place_id: p.id, name: p.name, before, after: body.forget ? null : { name: p.name, role: p.role }, undoable: true, snap });
-      return reply({ ok: true, place: p, change: S.pchanges[0] });
+      return reply({ ok: true, place: p, change: S.pchanges[0].id });
     }
     if (rest === '/days') return reply(dayCards());
     if (rest === '/day/edit') { DAYS[body.day] = { ...DAYS[body.day], kind: 'user', sections: Object.fromEntries(Object.entries(body.sections).map(([k, v]) => [k, v.filter(Boolean)])) }; return reply({ ok: true }); }
