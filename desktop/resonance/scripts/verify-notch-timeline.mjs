@@ -3564,7 +3564,9 @@ try {
       const { a, g, y, x } = await barOf(day());
       await a.move(x(T(15, 0)), y); await a.page.mouse.down(); await a.move(x(T(17, 0)), y); await a.move(x(T(19, 0)), y); await a.page.waitForTimeout(100);
       const before = await band(a);
-      if (how === 'the capture lost') await a.page.evaluate(() => document.querySelector('.dt-track').releasePointerCapture(1));
+      // Chrome hands a released capture over with the next pointer input; with none it waits for a hover update, which only a change of the
+      // page under the pointer brings (a quiet page does not). The button is still down, so a move of one pixel is that input.
+      if (how === 'the capture lost') { await a.page.evaluate(() => document.querySelector('.dt-track').releasePointerCapture(1)); await a.move(x(T(19, 0)) + 1, y); }
       else await a.page.evaluate(([cx, cy]) => document.querySelector('.dt-track').dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: cx, clientY: cy, pointerId: 1, buttons: 0 })), [x(T(20, 0)), y]);
       await a.page.waitForTimeout(100);
       const after = await band(a);

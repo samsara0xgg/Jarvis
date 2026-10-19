@@ -386,7 +386,7 @@ export function Companion() {
   // The day's pane hanging is something going on, as the Dashboard is: it folds by itself once the pointer has left it.
   const stowed = !detached && !geo.lobe.notched && !near && place === 'home' && !dashboard && !timelineOpen && !menu && !notice && !nightShown && !carded && !moving;
   live.current = { geo, dashboard, composer, place, wardrobe, noticeLook, openBy: companion.openBy, menu: !!menu, stowed };
-  const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 });
+  const ball = useRef<BallHandle | null>(null), look = useRef<Point | null>(null), cursor = useRef<Point>({ x: -1e4, y: -1e4 }), notchWake = useRef<(() => void) | null>(null);
   const input = useRef<HTMLTextAreaElement>(null), root = useRef<HTMLElement>(null), pressing = useRef(false);
   useEffect(() => {
     if (detached || !window.jarvis?.fit) return;
@@ -734,6 +734,7 @@ export function Companion() {
       cursor.current = point;
       intent.sample(point, performance.now());
       if (!composer) { look.current = live.current.noticeLook ?? point; ball.current?.look(); }
+      notchWake.current?.();
       // The pill comes into sight once the pointer is about as near as the old approach that brought her out, or is on what hangs from
       // it (the wing beside it, a pane below it), and goes after it has left.
       if (!geo.lobe.notched) {
@@ -924,7 +925,7 @@ export function Companion() {
         {dashboardContent}
       </DuskDashboard>
       <DockingDrop near={docking} width={geo.width} top={placement.topInset} center={geo.center}/>
-      <Notch look={wardrobe.marks} wing={wardrobe.wing} agents={frozen.current?.agents ?? (agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents)} unread={frozen.current?.unread ?? notices.unread} parked={frozen.current?.parked ?? notices.parked} archived={frozen.current?.archived ?? notices.archived} cursor={cursor} quiet={agentsFront || dashboard || moving} aside={dashboard ? { hover: setMarkHover, open: group => setAgentsFocus({ group, key: Date.now() }) } : undefined} edge={dashboardJoined ? geo.center + PANEL / 2 : null}
+      <Notch look={wardrobe.marks} wing={wardrobe.wing} agents={frozen.current?.agents ?? (agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents)} unread={frozen.current?.unread ?? notices.unread} parked={frozen.current?.parked ?? notices.parked} archived={frozen.current?.archived ?? notices.archived} cursor={cursor} wake={notchWake} quiet={agentsFront || dashboard || moving} aside={dashboard ? { hover: setMarkHover, open: group => setAgentsFocus({ group, key: Date.now() }) } : undefined} edge={dashboardJoined ? geo.center + PANEL / 2 : null}
         pin={{ item: notices.departure, open: busCards.open }} timeline={{ day: frozen.current ? { ...day, data: frozen.current.day } : day, openBy: companion.openBy, onOpenChange: open => { setTimelineOpen(open); if (open) fold('the timeline'); }, ask: port ? askAbout : undefined }} glow={{ items: frozen.current?.glows ?? notices.glows, open: g => { if (g.card) notices.focus(g.id); else { showJobs(); notices.leaveGlow(g.id, true); } }, clear: g => { if (g.card) { notices.focus(g.id); notices.dismiss(); } else notices.leaveGlow(g.id, false); } }} onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
         act={{ jump, answer: notices.focus, read: ids => { notices.acted(ids); notices.read(ids); }, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
         port={port} keys={keysPress} onViewing={setViewing} onJoinedChange={setNotchJoined} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>
