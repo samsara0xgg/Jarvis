@@ -2581,6 +2581,18 @@ try {
     await a.ctx.close();
   }
 
+  // the card's rise (4 px over 120 ms) is a CSS transition of the card's own; the bookkeeping of its height cancelled every animation on it, so it never played
+  if (all || only === 'review') {
+    const { a, y, x } = await barOf(small([it('ha', 'stay', T(9, 5), T(13, 0), { place: 'Home', kept_place: home }), it('ht', 'talk', T(10, 0), T(10, 5), { turns: 2 }, 'her'), it('hb', 'stay', T(13, 0), null, { place: 'Library', kept_place: uvic })]));
+    await a.page.evaluate(() => { window.__tx = []; for (const type of ['transitionend', 'transitioncancel']) document.addEventListener(type, e => { if (e.target.classList?.contains('dt-card-in') && e.propertyName === 'transform') window.__tx.push(type); }, true); });
+    await a.move(x(T(10, 30)), y); await a.page.waitForTimeout(450);
+    // the pointer goes on along the bar through a stretch of another height: the card's rise is not what it ends
+    await a.move(x(T(12, 0)), y); await a.page.waitForTimeout(250); await a.move(x(T(15, 0)), y); await a.page.waitForTimeout(450);
+    const tx = await a.page.evaluate(() => window.__tx);
+    check('the card rises as it comes: its transform transition runs to its end and nothing cancels it, the pointer moving on', tx[0] === 'transitionend' && !tx.includes('transitioncancel'), tx.join());
+    await a.ctx.close();
+  }
+
   console.log(`\n${checks.length} checks passed; screenshots in ${dir}`);
 } finally {
   await browser.close();
