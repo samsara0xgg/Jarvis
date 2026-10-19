@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.decision.core_memory import date_stale
 from jarvis.decision.llm import ChatResult
 from jarvis.decision.surrogate_route import KEY_ENV, JevLog, SurrogateRoute
 from jarvis.runtime.core_memory import CoreMemorySettings
@@ -30,6 +29,7 @@ from jarvis.state.memory_db import (
     brief_note,
     core_memory_pending_days,
     current_core_memory,
+    due_items,
     open_memory_db,
     remember_fact,
     render_context,
@@ -93,10 +93,10 @@ def test_the_first_read_migrates_profile_and_prompts_render_core_memory(tmp_path
     assert render_context(path, exclude_id="").profile == f"[About the user]\n{rendered}"
 
     # A tight Live brief drops whole items, never leaving a heading with nothing under it.
-    remember_fact(path, "晨跑", "每天 6 点", "承诺和待办")
+    remember_fact(path, "晨跑", "每天 6 点", "生活里的几件事")
     full = brief_note(path, max_chars=10_000)
     tight = brief_note(path, max_chars=len(full) - 1).splitlines()
-    assert "### 承诺和待办" not in tight
+    assert "### 生活里的几件事" not in tight
     assert "- (2026-09-01, set) 送餐地址: 1 Test St" in tight
 
 
@@ -286,7 +286,7 @@ def test_the_schedule_consolidates_each_day_in_order_after_the_summaries(tmp_pat
 
     assert model.asked == [d4, d3, d2]  # oldest first; day 1 has no summary; today is not past
     assert "[1] 城市: Victoria" in model.inputs[d4]
-    expected = "### 兴趣和品味 (6/2000)\n[2] 喜欢咖啡\n### 生活里的几件事 (5/7000)\n[3] 写论文"
+    expected = "### 兴趣和品味 (6/2000)\n[2] 喜欢咖啡\n### 生活里的几件事 (5/10000)\n[3] 写论文"
     assert expected in model.inputs[d3]
     assert f"[Summary of {d3}]\n## {d3} (the whole day, word for word)" in model.inputs[d3]
     assert f"r1 | {_stamp(3, 9)} | allen | 第3天说的话" in model.inputs[d3]
@@ -427,13 +427,13 @@ def test_a_second_attempt_that_passes_lands(tmp_path: Path) -> None:
         "nope",
         "```json\n"
         + _changes(
-            {"op": "add", "section": "承诺和待办", "text": "周五交稿", "sources": ["r1"]},
+            {"op": "add", "section": "生活里的几件事", "text": "写完论文", "sources": ["r1"]},
         )
         + "\n```",
     ]
     _schedule(tmp_path, model).write(TODAY)
     assert model.asked == [d3, d3]
-    assert _items(path) == {"承诺和待办": ["周五交稿"]}
+    assert _items(path) == {"生活里的几件事": ["写完论文"]}
 
 
 def test_a_failing_day_stops_the_chain_and_the_next_run_resumes_from_it(tmp_path: Path) -> None:
@@ -776,113 +776,13 @@ def test_review_is_off_without_review_min_confidence(tmp_path: Path, jev: _Jev) 
     assert on.review_min_confidence == 0.8
 
 
-def _doc_with(*texts: str, pinned: tuple[str, ...] = ()) -> core_memory.Doc:
-    doc = core_memory.empty_doc()
-    doc["承诺和待办"] = [{"text": t, "topic": None, "sources": [], "since": "x"} for t in texts]
-    for item in doc["承诺和待办"]:
-        item["pinned"] = item["text"] in pinned
-    return doc
-
-
-@pytest.mark.parametrize(
-    ("text", "day", "stale_items"),
-    [
-        ("计划于 2026-10-03 和朋友吃饭,2026-10-04 看电影。", "2026-10-03", []),
-        ("计划于 2026-10-03 和朋友吃饭,2026-10-04 看电影。", "2026-10-04", [1]),
-        ("Reliable Controls 线上面试 2026-10-08 13:00–14:00", "2026-10-07", []),  # noqa: RUF001
-        ("Reliable Controls 线上面试 2026-10-08 13:00–14:00", "2026-10-08", [1]),  # noqa: RUF001
-        ("2026年10月8日交表", "2026-10-07", []),
-        ("2026年10月8日交表", "2026-10-08", [1]),
-        ("10月8日开会", "2026-10-08", [1]),
-        ("10月8号开会", "2026-10-09", [1]),
-        ("10月8日开会", "2026-10-07", []),
-        ("10/8 取快递", "2026-10-08", [1]),
-        ("10/8 取快递", "2026-10-07", []),
-        ("2026/10/8 取快递", "2026-10-07", []),  # a slashed ISO date is not M/D
-        ("完成 3/4 的进度", "2026-03-07", [1]),  # any M/D reads as a date, a ratio too
-        ("3/4 取快递", "2026-10-07", []),  # >6 months past, nearest year is 2027: upcoming
-        ("记得买牛奶", "2026-10-08", []),  # no date: never touched
-        ("2026-13-45 不是日期", "2026-10-08", []),
-        ("1月5日交表", "2026-12-30", []),  # year-less: the year nearest the day, so Jan 2027
-        ("12月30日交表", "2027-01-02", [1]),  # ... and Dec 2026
-        ("2月29日交表", "2028-03-01", [1]),  # leap day found in 2028
-    ],
-)
-def test_a_to_do_goes_stale_by_code_when_its_latest_date_is_not_after_the_day(
-    text: str, day: str, stale_items: list[int]
-) -> None:
-    """Each date form, the latest-date rule, the year rule and an item with no date."""
-    changes = date_stale(_doc_with(text), day, None)
-    assert [c["item"] for c in changes] == stale_items
-
-
-def test_date_stale_touches_only_the_to_do_section_and_pins_remind_once() -> None:
-    """Only 承诺和待办 is swept; a pinned item is reminded only on the night it passes."""
-    doc = _doc_with("交表 2026-10-03", "交稿 2026-10-03", pinned=("交稿 2026-10-03",))
-    doc["生活里的几件事"] = [{"text": "写论文,截至 2026-10-01", "topic": None, "sources": []}]
-    assert [c["item"] for c in date_stale(doc, "2026-10-03", None)] == [1, 2]  # [3]: 生活里的几件事
-    assert [c["item"] for c in date_stale(doc, "2026-10-03", "2026-10-02")] == [1, 2]
-    assert [c["item"] for c in date_stale(doc, "2026-10-04", "2026-10-03")] == [1]  # 2: no reminder
-    assert date_stale(doc, "2026-10-03", None)[0]["reason"] == "date passed (2026-10-03)"
-
-
-def test_the_night_marks_past_dated_to_dos_stale_with_no_model_call_and_never_twice(
+def test_a_version_with_the_old_six_names_loads_into_the_ten_without_losing_an_item(
     tmp_path: Path,
 ) -> None:
-    """One nightly version per day: stale ops for unpinned, a reminder for pinned, nothing else."""
-    path = tmp_path / "memory.db"
-    d1, d0 = _day(1), _day(0)
-    when = f"{d1.month}月{d1.day}日"
-    for topic, fact in {
-        "过去": f"{d1 - timedelta(days=1)} 吃饭,{d1} 看电影",
-        "之后": f"{d1} 吃饭,{d0} 看电影",
-        "中文": f"{d1.year}年{when}交稿",
-        "斜杠": f"{d1.month}/{d1.day} 取快递",
-        "无日期": "买牛奶",
-        "已钉": f"{d1} 交表",
-    }.items():
-        remember_fact(path, topic, fact, "承诺和待办")
-    remember_fact(path, "论文", f"截至 {d1 - timedelta(days=1)} 写完", "生活里的几件事")
-    with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
-        base = core_memory.current(conn, "2026-01-01T00:00:00-07:00")
-        pin = core_memory.copy.deepcopy(base.doc)
-        next(i for i in pin["承诺和待办"] if i["topic"] == "已钉")["pinned"] = True
-        core_memory.append_version(
-            conn, base=base, doc=pin, origin="user", upto_day=None, changes=[], now=LEGACY_TS
-        )
-    _days(path, 1, 0, -1)
-    model = _Consolidator()  # answers "no changes" every day: every stale below is code's
-    schedule = _schedule(tmp_path, model)
+    """ADR 0258, 0299: four sections are renamed, 定下来的规矩 stays, 承诺和待办 loads as none.
 
-    schedule.write(TODAY)  # day 1 lands
-    assert _items(path)["承诺和待办"] == [  # the pinned one ranks first
-        "已钉: " + f"{d1} 交表",
-        "之后: " + f"{d1} 吃饭,{d0} 看电影",
-        "无日期: 买牛奶",
-    ]
-    assert _items(path)["生活里的几件事"] == [f"论文: 截至 {d1 - timedelta(days=1)} 写完"]
-    nightly = [v for v in _versions(path) if v[0] == "nightly"]
-    assert [v[1] for v in nightly] == [d1.isoformat()]  # one version, upto_day intact
-    ops = [(c["op"], c.get("reason")) for c in nightly[0][2]]
-    assert ops == [("stale", f"date passed ({d1})")] * 3 + [("suggest_stale", None)]
-
-    schedule.write(
-        TODAY + timedelta(days=1)
-    )  # day 0: the 之后 item's date arrives; 已钉 is not re-reminded
-    nightly = [v for v in _versions(path) if v[0] == "nightly"]
-    assert [c["op"] for c in nightly[-1][2]] == ["stale"]
-    assert "之后" not in str(_items(path))
-
-    schedule.write(TODAY + timedelta(days=2))  # nothing due: the day's version has no changes
-    nightly = [v for v in _versions(path) if v[0] == "nightly"]
-    assert nightly[-1][2] == []
-    assert len(model.asked) == 3  # the model was asked for each day, never for a stale
-
-
-def test_a_version_with_the_old_six_names_loads_into_the_eleven_without_losing_an_item(
-    tmp_path: Path,
-) -> None:
-    """ADR 0258: the four renamed sections map one to one, the other two keep their names."""
+    The retired section's item is still readable raw, for the carry-in.
+    """
     path = tmp_path / "memory.db"
     old = {
         "关于你": ["a"], "偏好": ["b"], "常提到的人": ["c"], "正在做的事": ["d"],
@@ -902,8 +802,9 @@ def test_a_version_with_the_old_six_names_loads_into_the_eleven_without_losing_a
         )
     assert _items(path) == {
         "经历": ["a"], "兴趣和品味": ["b"], "身边的人": ["c"], "生活里的几件事": ["d"],
-        "定下来的规矩": ["e"], "承诺和待办": ["f"],
+        "定下来的规矩": ["e"],
     }
+    assert [item["text"] for item in due_items(path)] == ["f"]
 
 
 def test_a_section_lists_pinned_items_first_then_the_newest_and_numbers_follow() -> None:

@@ -8311,6 +8311,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             watchers.append(asyncio.create_task(runtime.mail_codes.run(), name="mail_codes"))
         if runtime.commitments is not None:
             watchers.append(asyncio.create_task(runtime.commitments.run(), name="commitments"))
+        if runtime.things is not None:
+            # ADR 0299: the rings of his things for the next seven days, now and every 15 minutes.
+            watchers.append(asyncio.create_task(runtime.things.run(), name="things"))
         if runtime.claude_daily is not None:
             watchers.append(asyncio.create_task(runtime.claude_daily.run(), name="claude_daily"))
         if spend is not None and runtime.memory is not None:

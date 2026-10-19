@@ -534,6 +534,38 @@ def current_core_memory(path: Path) -> core_memory.Version:
         return core_memory.current(conn, iso_seconds(local_now()))
 
 
+def due_items(path: Path) -> list[core_memory.Item]:
+    """The items the latest core memory version still holds under 承诺和待办 (ADR 0299).
+
+    Read raw: the section is no longer one, so :func:`current_core_memory` leaves them out. The
+    one-time carry-in into the ledger reads them here. Nothing is written.
+    """
+    with closing(open_memory_db(path)) as conn:
+        row = conn.execute("SELECT doc FROM core_memory ORDER BY rowid DESC LIMIT 1").fetchone()
+    return [] if row is None else core_memory.retired_items(row[0])
+
+
+def drop_due_section(path: Path) -> bool:
+    """Write a version without 承诺和待办 if the latest still has it; whether one was written.
+
+    The carry-in has taken its items into the ledger (ADR 0299); every other section is kept as
+    it was. Once the latest version lacks the section this writes nothing.
+    """
+    now = iso_seconds(local_now())
+    with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
+        base = core_memory.latest(conn)
+        if base is None:
+            return False
+        (raw,) = conn.execute("SELECT doc FROM core_memory WHERE id = ?", (base.id,)).fetchone()
+        if core_memory.DUE_SECTION not in json.loads(raw)["sections"]:
+            return False
+        core_memory.append_version(
+            conn, base=base, doc=base.doc, origin="migration", upto_day=base.upto_day,
+            changes=[], now=now,
+        )
+    return True
+
+
 def user_name(path: Path) -> str | None:
     """The name first-run setup saved, or ``None``."""
     if not path.is_file():
@@ -1894,6 +1926,8 @@ __all__ = [
     "day_records",
     "doing_answers",
     "doing_answers_near",
+    "drop_due_section",
+    "due_items",
     "experience_days",
     "iso_seconds",
     "keep_fact",

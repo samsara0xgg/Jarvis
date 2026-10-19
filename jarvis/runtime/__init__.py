@@ -230,6 +230,7 @@ from jarvis.runtime.settings import REPLY_LINES, SETUP_VOICES, Settings, apply_s
 from jarvis.runtime.settings_owner import SettingsDrift, check_own, page_keys
 from jarvis.runtime.setup import write_setting
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
+from jarvis.runtime.things_ledger import ThingsLedger
 from jarvis.runtime.weatherkit import WeatherKit
 from jarvis.runtime.whereabouts import Whereabouts
 from jarvis.runtime.work_state import WorkStateService, build_analyst
@@ -754,6 +755,8 @@ class JarvisRuntime:
     mail_codes: MailCodes | None = None
     # ADR 0274: the poller that reads his mail for things he has to go to. None = off.
     commitments: CommitmentIntake | None = None
+    # ADR 0299: the ledger of his things: its carry-in and its rings pass. None = hand-assembled.
+    things: ThingsLedger | None = None
     # ADR 0295, 0303: the poller of the nightly letter on his Claude chats (Gmail part off unless
     # enabled) and reader of the Mac's day report on his Claude Code work. None = hand-assembled.
     claude_daily: ClaudeDailyIntake | None = None
@@ -1936,6 +1939,30 @@ def _commitments(  # noqa: PLR0913 - the config and the poller's collaborators
         settings, connections, db_path, event_log,
         mail_summarizer(analyst_for(settings.preset), event_log),
     )
+
+
+_DAY_MINUTES: Final[int] = 24 * 60
+
+
+def _things_ledger(
+    config: Mapping[str, Any], event_log: Path, db_path: Path, zone: tzinfo,
+) -> ThingsLedger:
+    """The ledger of his things (ADR 0299), carried in once now; it runs with the poller off too.
+
+    A carried-in commitment rings ``commitments.remind_before_min`` ahead, else 60 minutes. A
+    carry-in that fails is logged and tried again by the daemon's rings pass.
+    """
+    block = config.get("commitments")
+    before = block.get("remind_before_min") if isinstance(block, Mapping) else None
+    minutes = 60
+    if isinstance(before, int | float) and not isinstance(before, bool):
+        minutes = int(before) if 1 <= before <= _DAY_MINUTES else minutes
+    ledger = ThingsLedger(event_log, db_path, zone, minutes)
+    try:
+        ledger.carry_in()
+    except Exception:
+        LOGGER.exception("things: the carry-in failed; the daemon tries it again")
+    return ledger
 
 
 def _claude_daily(
@@ -3389,6 +3416,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     claude_daily = _claude_daily(
         full_config, config_path, plugin_connections, memory.db_path, paths.root,
     )
+    things_ledger = _things_ledger(full_config, paths.event_log, memory.db_path, local_zone)
     reminders = Reminders(
         paths.event_log,
         moment=moment,
@@ -3531,6 +3559,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         mail_codes=mail_codes,
         commitments=commitments,
         claude_daily=claude_daily,
+        things=things_ledger,
         moment=moment,
         push=Push.from_config(full_config, paths.root, paths.event_log),
         whereabouts=Whereabouts(

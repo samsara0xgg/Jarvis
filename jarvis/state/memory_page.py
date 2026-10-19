@@ -254,7 +254,7 @@ def overview(
     path: Path, *, max_chars: int, booted_max_chars: int,
     section_caps: Mapping[str, int] = core_memory.SECTION_CAPS,
 ) -> dict[str, Any]:
-    """The 记着的 screen: the eleven sections, last night's changes, the counts the tabs show."""
+    """The 记着的 screen: the ten sections, last night's changes, the counts the tabs show."""
     with closing(open_memory_db(path)) as conn:
         rows = _rows(conn)
         days = int(conn.execute("SELECT COUNT(DISTINCT day) FROM day_summaries").fetchone()[0])
@@ -384,7 +384,7 @@ def edit_item(  # noqa: PLR0913 — the item, its new words and section, and the
         msg = f"an item is at most {ITEM_CHARS} characters"
         raise ValueError(msg)
     if section is not None and section not in core_memory.SECTIONS:
-        msg = f"section {section!r} is not one of the eleven"
+        msg = f"section {section!r} is not one of the ten"
         raise ValueError(msg)
     day = local_now().date().isoformat()
 

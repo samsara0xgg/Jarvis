@@ -1,6 +1,6 @@
 """L2 core memory: the append-only versioned note about the user (ADR 0146).
 
-One ``core_memory`` row is one version of a document with eleven fixed sections; the
+One ``core_memory`` row is one version of a document with ten fixed sections; the
 latest row is current and every older row stays as history. This module owns the
 document (render, number, apply typed changes) and the row reads and writes on an
 open connection. ``memory_db`` wraps them with a path and the clock.
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Iterator, Mapping, Sequence
 
-# ADR 0258: section name -> default cap in characters; the caps sum to the 40,000 ceiling.
+# ADR 0258, 0299: section name -> default cap in characters; the caps sum to the 40,000 ceiling.
 SECTION_CAPS: Final[dict[str, int]] = {
     "经历": 4000,
     "性格和价值观": 3000,
@@ -33,12 +33,14 @@ SECTION_CAPS: Final[dict[str, int]] = {
     "你希望被怎么对待": 3000,
     "定下来的规矩": 3000,
     "证件和硬期限": 1000,
-    "承诺和待办": 3000,
     "身边的人": 10000,
-    "生活里的几件事": 7000,
+    "生活里的几件事": 10000,
 }
 SECTIONS: Final[tuple[str, ...]] = tuple(SECTION_CAPS)
 DEFAULT_SECTION: Final[str] = "经历"
+# Not a section any more (ADR 0299): his to-dos are the ledger's. A stored version may still hold
+# the section; :func:`load` leaves it out and the one-time carry-in reads it with
+# :func:`retired_items` before :func:`memory_db.drop_due_section` writes a version without it.
 DUE_SECTION: Final[str] = "承诺和待办"
 ID_FREE_SECTION: Final[str] = "证件和硬期限"
 GOALS_SECTION: Final[str] = "生活里的几件事"
@@ -70,7 +72,7 @@ class Version(NamedTuple):
 
 
 def empty_doc() -> Doc:
-    """A document with the six sections and no items."""
+    """A document with every section and no items."""
     return {section: [] for section in SECTIONS}
 
 
@@ -382,13 +384,21 @@ def undo(current: Doc, base: Doc, version: Doc) -> Doc:
 
 
 def load(raw: str) -> Doc:
-    """A stored ``doc`` column as a document."""
+    """A stored ``doc`` column as a document.
+
+    A name that is no section (the retired 承诺和待办, ADR 0299) is left out.
+    """
     stored = json.loads(raw)["sections"]
     sections: Doc = {section: [] for section in SECTIONS}
     for name, items in stored.items():  # an older version's names map one to one (ADR 0258)
         if (target := _LEGACY.get(name, name)) in sections:
             sections[target].extend(items)
     return sections
+
+
+def retired_items(raw: str) -> list[Item]:
+    """The items a stored ``doc`` column still holds under the retired 承诺和待办 (ADR 0299)."""
+    return list(json.loads(raw)["sections"].get(DUE_SECTION) or [])
 
 
 def latest(conn: sqlite3.Connection) -> Version | None:
@@ -517,6 +527,7 @@ __all__ = [
     "remember",
     "render",
     "restore",
+    "retired_items",
     "section_chars",
     "stamp_ids",
     "states",

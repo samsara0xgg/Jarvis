@@ -118,7 +118,7 @@ def world(tmp_path: Path) -> World:
     ]
     model.script[d2] = [
         _changes(
-            {"op": "add", "section": "承诺和待办", "text": "周五交稿", "sources": ["r1"]},
+            {"op": "add", "section": "定下来的规矩", "text": "周五交稿", "sources": ["r1"]},
             {"op": "stale", "item": 2, "sources": ["r2"]},
             {"op": "rewrite", "item": 3, "text": "写论文: 第二章", "sources": ["r2"]},
         ),
@@ -128,8 +128,9 @@ def world(tmp_path: Path) -> World:
     return made
 
 
-def test_the_page_lists_eleven_sections_and_what_the_night_did(world: World) -> None:
-    """Counts, the eleven sections in order, one entry per nightly change, each with its source."""
+def test_the_page_lists_ten_sections_and_what_the_night_did(world: World) -> None:
+    """Counts, the ten sections in order, one entry per nightly change, each with its source."""
+    assert len(core_memory.SECTIONS) == 10
     page = world.overview()
     assert [s["name"] for s in page["sections"]] == list(core_memory.SECTIONS)
     assert page["items"] == 3
@@ -198,13 +199,13 @@ def test_edit_and_move_append_user_versions_pin_the_item_and_never_touch_older_r
     first = world.items()["写论文: 第二章"]
     snapshot = world.rows()
     world.post(
-        "/item/edit", {"id": first["id"], "text": "  写论文: 第三章 \n", "section": "承诺和待办"}
+        "/item/edit", {"id": first["id"], "text": "  写论文: 第三章 \n", "section": "定下来的规矩"}
     )
     after = world.rows()
     assert after[:-1] == snapshot  # append-only
     assert after[-1][1] == "user"
     moved = world.items()["写论文: 第三章"]
-    assert (moved["section"], moved["pinned"], moved["id"]) == ("承诺和待办", True, first["id"])
+    assert (moved["section"], moved["pinned"], moved["id"]) == ("定下来的规矩", True, first["id"])
     # Moving to a section is the same call with the same text: still one more row.
     world.post("/item/edit", {"id": first["id"], "text": "写论文: 第三章", "section": "兴趣和品味"})
     assert world.items()["写论文: 第三章"]["section"] == "兴趣和品味"
@@ -267,23 +268,6 @@ def test_the_night_leaves_a_pinned_item_alone_and_keeps_a_stale_proposal_as_a_re
     world.post("/item/confirm", {"id": pinned["id"]})
     assert all(e["kind"] != "suggest_stale" for e in world.overview()["new"]["entries"])
     assert world.items()["城市: Victoria (BC)"]["pinned"] is True
-
-
-def test_the_page_shows_a_date_stale_and_a_pinned_reminder_with_no_quote(world: World) -> None:
-    """The night's by-date stale is an entry without a source quote; a pinned one a reminder."""
-    d1 = _day(1).isoformat()
-    for topic in ("交表", "交稿"):
-        remember_fact(world.path, topic, d1, "承诺和待办")
-    pinned = world.items()[f"交稿: {d1}"]
-    world.post("/item/edit", {"id": pinned["id"], "text": f"交稿: {d1}", "section": None})
-    _insert(world.path, [(_rid(1, 1), _stamp(1, 21), "allen", "今天没什么事")])
-    _nightly(world, _Consolidator())
-    kinds = {e["kind"]: e for e in world.overview()["new"]["entries"]}
-    assert (kinds["stale"]["text"], kinds["stale"]["quote"]) == (f"交表: {d1}", None)
-    assert kinds["suggest_stale"]["id"] == pinned["id"]
-    assert f"交表: {d1}" not in world.items()
-    assert world.items()[f"交稿: {d1}"]["pinned"] is True
-    assert world.get(f"/item/{pinned['id']}")["reminder"] is True
 
 
 def _consolidation_input(world: World, model: _Consolidator, day: str) -> str:

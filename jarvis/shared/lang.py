@@ -1124,6 +1124,30 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     },
     "commitment.rem.day": {"zh": "明天 {title}{place}", "en": "Tomorrow: {title}{place}"},
     "commitment.rem.line": {"zh": "{time} {title}{place}", "en": "{time} {title}{place}"},
+    # ADR 0299: the ring before a thing in the ledger. ``line``/``private`` for a timed thing rung
+    # the same day, ``line_on``/``private_on`` when the ring is an earlier day; for a thing with no
+    # hour, ``today``, ``day`` (the evening before) and ``on_day`` (earlier still). A private
+    # thing says only that something is on.
+    "thing.rem.line": {"zh": "{time} {title}{place}", "en": "{time} {title}{place}"},
+    "thing.rem.private": {"zh": "{time} 有一件事", "en": "{time} you have something on"},
+    "thing.rem.line_on": {
+        "zh": "{date} {time} {title}{place}", "en": "{date} {time} {title}{place}",
+    },
+    "thing.rem.private_on": {
+        "zh": "{date} {time} 有一件事", "en": "{date} {time} you have something on",
+    },
+    "thing.rem.today": {"zh": "今天 {title}{place}", "en": "Today: {title}{place}"},
+    "thing.rem.private_today": {
+        "zh": "今天有一件事要办", "en": "you have something to do today",
+    },
+    "thing.rem.day": {"zh": "明天 {title}{place}", "en": "Tomorrow: {title}{place}"},
+    "thing.rem.private_day": {
+        "zh": "明天有一件事要办", "en": "you have something to do tomorrow",
+    },
+    "thing.rem.on_day": {"zh": "{date} {title}{place}", "en": "{date}: {title}{place}"},
+    "thing.rem.private_on_day": {
+        "zh": "{date} 有一件事要办", "en": "you have something to do on {date}",
+    },
     # ADR 0186: the two interview reminders and the Outlook event written for an interview time.
     "job.rem.evening": {
         "zh": "明天{time} {company} 面试{where}。",

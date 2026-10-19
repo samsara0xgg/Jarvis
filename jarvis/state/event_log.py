@@ -1350,6 +1350,64 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    # His things (ADR 0299): the ledger is a fold over these six types (`jarvis.state.things`). An
+    # `added` carries the whole thing; `changed`, `moved`, `closed` and `reopened` each carry
+    # who wrote them (`by`), the words or record that proved it (`evidence`, `ref`) and only what
+    # they change. `carried_in` marks the one-time carry-in of the older stores.
+    EventTypeSchema(
+        event_type="thing.added",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("thing_id", "title", "kind", "by", "evidence", "ref"),
+        optional_payload=(
+            "start_at", "end_at", "on_day", "due", "weekly_until", "skip_dates", "place", "link",
+            "note", "rings", "private", "life_line", "confirmed", "source", "source_ref",
+            "sender", "outlook_id",
+        ),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="thing.changed",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("thing_id", "fields", "by", "evidence", "ref"),
+        optional_payload=(),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="thing.moved",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=(
+            "thing_id", "start_at", "end_at", "on_day", "due", "by", "evidence", "ref",
+        ),
+        optional_payload=("date", "was_start_at", "was_end_at"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="thing.closed",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("thing_id", "state", "by", "evidence", "ref"),
+        optional_payload=("date", "why"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="thing.reopened",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("thing_id", "by", "evidence", "ref"),
+        optional_payload=("date",),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="thing.carried_in",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("version", "counts"),
+        optional_payload=(),
+        schema_version=1,
+    ),
     # The day's plan (ADR 0288): one plan per local date, a fold over these five types
     # (`jarvis.state.plan`). A `drafted` or `revised` carries the whole item list, so the last of
     # the two per date wins; `settled` and `opened` mark it; `draft_failed` says no draft came.

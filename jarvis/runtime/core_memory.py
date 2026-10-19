@@ -157,7 +157,6 @@ def consolidate_day(  # noqa: PLR0913 — the day, the store, the knobs, the cli
         max_chars=settings.max_chars,
         section_caps=settings.section_caps,
         day=day,
-        since=base.upto_day,
     )
     if changes is None or notes is None:
         LOGGER.warning("core_memory: %s rejected (%s); nothing stored", day, reason)
