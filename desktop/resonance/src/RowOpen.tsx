@@ -60,6 +60,8 @@ export type Acts = {
   picture: (id: string, note: string) => void;
   ask: (() => void) | null;
   rename: { state: 'idle' | 'editing' | 'failed'; start: () => void } | null;
+  // Naming a place that has no name: the field (what is typed, the kind of place picked) is there from `start` until the name is kept or `cancel`.
+  name: { state: 'idle' | 'editing' | 'busy' | 'failed'; draft: string; role: string | null; start: () => void; set: (text: string) => void; pick: (role: string | null) => void; save: () => void; field: (on: boolean) => void } | null;
   ack: { state: 'idle' | 'busy' | 'failed'; press: () => void } | null;
   commit: { state: 'idle' | 'busy' | 'failed'; confirm: () => void; cancel: () => void } | null;
   summarize: { state: 'idle' | 'busy' | 'sent' | 'failed'; press: () => void } | null;
@@ -148,12 +150,30 @@ function PartView({ part, acts }: { part: Part; acts: Acts }) {
   }
 }
 
+// The kinds of place the brain keeps (jarvis/state/places.py ROLES); none picked is `other` there.
+const ROLES: [string, L][] = [['home', ['Home', '家']], ['school', ['School', '学校']], ['other', ['Other', '其他']]];
+// A name for a place that has none, in the open row: the cursor is in the field, the kind of place is picked from the chips under it (picking one again
+// puts it down), Enter keeps it and Esc lets go (DayTimeline.tsx hears the key). The chips take no focus, so the cursor stays in the field.
+function NameField({ name, t }: { name: NonNullable<Acts['name']>; t: (l: L) => string }) {
+  const box = useRef<HTMLInputElement>(null);
+  useEffect(() => { box.current?.focus({ preventScroll: true }); }, []);
+  return <div className="dt-name">
+    <input ref={box} className="dt-name-in" type="text" autoComplete="off" spellCheck={false} maxLength={40} aria-label={t(['A name for this place', '给这个地方起个名字'])} placeholder={t(['A name for this place', '给这个地方起个名字'])}
+      value={name.draft} readOnly={name.state === 'busy'} onChange={e => name.set(e.target.value)} onFocus={() => name.field(true)} onBlur={() => name.field(false)}
+      onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); name.save(); } }}/>
+    <div className="dt-roles" role="group" aria-label={t(['What kind of place', '是什么地方'])}>
+      {ROLES.map(([role, label]) => <button key={role} type="button" className={`dt-role${name.role === role ? ' is-on' : ''}`} aria-pressed={name.role === role} onMouseDown={e => e.preventDefault()} onClick={() => name.pick(name.role === role ? null : role)}>{t(label)}</button>)}
+    </div>
+  </div>;
+}
+
 // The buttons: what can be done from the row, only where the route to do it works today; under them a line when there is something to say.
 function Buttons({ acts, say }: { acts: Acts; say: string }) {
-  const { t, rename, ack, commit, summarize, star } = acts, any = !!(acts.ask || rename?.state === 'idle' || ack || commit || summarize || star);
+  const { t, rename, name, ack, commit, summarize, star } = acts, any = !!(acts.ask || rename?.state === 'idle' || name?.state === 'idle' || ack || commit || summarize || star);
   return <>
     {any && <div className="dt-acts">
       {rename?.state === 'idle' && <button type="button" className="dt-btn" onClick={rename.start}>{t(['Rename', '改名字'])}</button>}
+      {name?.state === 'idle' && <button type="button" className="dt-btn" onClick={name.start}>{t(['Name this place', '起个名字'])}</button>}
       {ack && <button type="button" className="dt-btn is-amber" disabled={ack.state === 'busy'} onClick={ack.press}>{t(['Got it', '知道了'])}</button>}
       {commit && <>
         <button type="button" className="dt-btn is-amber" disabled={commit.state === 'busy'} onClick={commit.confirm}>{t(['Mine', '是我的'])}</button>
@@ -165,13 +185,14 @@ function Buttons({ acts, say }: { acts: Acts; say: string }) {
       {star}
       {acts.ask && <button type="button" className="dt-btn" onClick={acts.ask}>{t(['Ask her', '问她'])}</button>}
     </div>}
+    {name && name.state !== 'idle' && <NameField name={name} t={t}/>}
     {say && <p className="dt-hint" role="status">{say}</p>}
   </>;
 }
 
 export function OpenBody({ open, acts }: { open: Open; acts: Acts }) {
   const { t } = acts;
-  const say = acts.rename?.state === 'editing' ? t(['Enter saves · Esc cancels', '回车保存 · Esc 取消']) : acts.rename?.state === 'failed' ? t(["Couldn't rename it. Try again.", '没改成，再试一次']) : acts.ack?.state === 'failed' || acts.commit?.state === 'failed' ? t(["That didn't go through. Try again.", '没成功，再试一次']) : acts.line;
+  const say = acts.rename?.state === 'editing' || acts.name?.state === 'editing' ? t(['Enter saves · Esc cancels', '回车保存 · Esc 取消']) : acts.name?.state === 'failed' ? t(["Couldn't keep it. Try again.", '没记下，再试一次']) : acts.rename?.state === 'failed' ? t(["Couldn't rename it. Try again.", '没改成，再试一次']) : acts.ack?.state === 'failed' || acts.commit?.state === 'failed' ? t(["That didn't go through. Try again.", '没成功，再试一次']) : acts.line;
   return <>
     {open.parts.map((p, i) => <PartView key={`${p.type}${i}`} part={p} acts={acts}/>)}
     <Buttons acts={acts} say={say}/>

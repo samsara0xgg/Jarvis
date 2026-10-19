@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { askable, buildDay, changeId, clock, covered, dateTitle, fnv, lensOf, moneyText, shiftDate, stageLook, stageMinutes, stageSlices, tidy, tidyReply, weatherOf, wingText, within } from '../src/dayView.ts';
+import { askable, buildDay, changeId, clock, covered, dateTitle, fnv, keptOf, lensOf, moneyText, shiftDate, stageLook, stageMinutes, stageSlices, tidy, tidyReply, weatherOf, wingText, within } from '../src/dayView.ts';
 import { axisOf, buildBar, fit, fOf, hm, msOf, numbers, peek, pieceAt, rowAt, summarize, toneOn } from '../src/barView.ts';
 import { askOf, hasBody, openOf, talkLines } from '../src/dayOpen.ts';
 import { deflateSync, crc32 } from 'node:zlib';
@@ -175,6 +175,17 @@ const commitDay = (over = {}) => fullDay({
   ],
   ...over,
 });
+// Stays he has not named, with the point the phone had (ADR 0296): an address the phone knew (A&W), a spot it had no address for, one with no point at all, a
+// kept school beside them, and a stop on the way (5 minutes between two walks), which is no place.
+const nameDay = (over = {}) => small([
+  it('stay-uvic', 'stay', T(9, 0), T(12, 0), { place: 'University of Victoria, Victoria', kept_place: uvic, lat: 48.4634, lng: -123.3117 }),
+  it('move-a', 'move', T(12, 0), T(12, 10), { activity: 'walking' }),
+  it('stay-stop', 'stay', T(12, 10), T(12, 15), { place: 'Finnerty Rd, Victoria', lat: 48.4668, lng: -123.3135 }),
+  it('move-b', 'move', T(12, 15), T(12, 25), { activity: 'walking' }),
+  it('stay-aw', 'stay', T(13, 15), T(13, 55), { place: 'A&W, 1234 Douglas St, Victoria', lat: 48.4284, lng: -123.3656 }),
+  it('stay-spot', 'stay', T(15, 0), T(18, 30), { lat: 48.4631, lng: -123.3123 }),
+  it('stay-bare', 'stay', T(19, 0), T(20, 0), { place: 'Parkade, Victoria' }),
+], over);
 // A picture the fake daemon serves for an attachment id: 96 x 96, a warm gradient with a plate on it.
 const PICTURE = (() => {
   const w = 96, h = 96, raw = Buffer.alloc((w * 3 + 1) * h);
@@ -679,6 +690,19 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
 check('the change a place write answers is read as the string it is (an id inside an object is read too), and none when nothing changed',
   changeId('place-change:ab') === 'place-change:ab' && changeId({ id: 'chg-1' }) === 'chg-1' && changeId(null) === null && changeId('') === null && changeId({ id: 3 }) === null);
 
+// ---------- naming a place, in node (ADR 0296): where the offer is, and what the brain's answers are read as ----------
+{
+  const m = buildDay(nameDay(), NOW, zh), o = id => openOf(m, id, zh);
+  check('a stay that is no place he keeps, with the point the phone had, opens to the naming at that point; a kept place opens to the rename instead; a stay with no point and a stop on the way have neither',
+    JSON.stringify(o('stay-aw').name) === '{"lat":48.4284,"lng":-123.3656}' && o('stay-aw').rename === null && JSON.stringify(o('stay-spot').name) === '{"lat":48.4631,"lng":-123.3123}' && o('stay-uvic').name === null && o('stay-uvic').rename.name === 'UVic'
+    && o('stay-bare').name === null && m.rows.has('stay-stop') && !m.heads.has('stay-stop') && o('stay-stop').name === null, JSON.stringify(['stay-aw', 'stay-spot', 'stay-uvic', 'stay-bare', 'stay-stop'].map(k => o(k).name)));
+  check('the offer is what opens a stay that has no address to say (a spot the phone had no words for): without it that row would open to nothing', o('stay-spot').parts.length === 0 && hasBody({ ...o('stay-spot'), star: false }, false) && !hasBody({ ...o('stay-spot'), star: false, name: null }, false));
+  check('a point off the globe is not offered, and lat and lng are read like the other numbers (a text is none)',
+    openOf(buildDay(small([it('s', 'stay', T(9), T(11), { lat: 91, lng: 0 })]), NOW, zh), 's', zh).name === null && tidy({ id: 's', kind: 'stay', start_ms: T(9), end_ms: T(10), lat: '48.4', lng: null }).lat === undefined && tidy({ id: 's', kind: 'stay', start_ms: T(9), end_ms: T(10), lat: -33.9, lng: 151.2 }).lng === 151.2);
+  check('what the brain answers to a place write is read: the place by its id and name (a role it does not say is none)',
+    JSON.stringify(keptOf({ id: 'place:ab', name: 'A&W', role: 'other', radius_m: 100 })) === '{"id":"place:ab","name":"A&W","role":"other"}' && keptOf({ id: 'p', name: 'x' }).role === '' && keptOf({ name: 'x' }) === null && keptOf(null) === null);
+}
+
 // ---------- the built page ----------
 const server = spawn(path.join(root, 'node_modules/.bin/vite'), ['preview', '--port', String(web), '--strictPort'], { cwd: root, stdio: 'ignore' });
 const browser = await chromium.launch({ headless: true, channel: 'chrome', args: ['--disable-web-security', '--mute-audio'] });
@@ -743,6 +767,17 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
       const was = s.changes.get(body?.change_id);
       if (s.refuse.has('undo') || !was) return refused('no such change', 404);
       rename(was.place, was.from); return json({ ok: true });
+    }
+    // ADR 0296: a place kept at a point he gives. As the brain does it: a name of 1 to 40 characters (spaces collapsed), a role of home, school or other (none is other), a point
+    // on the globe; a name that is kept already is refused (400). The answer is the place and the change as the string it is; every stay within 100 m of the point is in the place from then on.
+    if (post && url.pathname === '/inherent/memory/places') {
+      const body = sent(); s.posts.push({ path: url.pathname, body });
+      const name = String(body?.name ?? '').split(/\s+/).filter(Boolean).join(' ');
+      if (s.refuse.has('place') || !name || name.length > 40 || body.role != null && !['home', 'school', 'other'].includes(body.role) || !(Math.abs(body.lat) <= 90 && Math.abs(body.lng) <= 180)) return refused('refused', 400);
+      if (s.served.items.some(x => x.kept_place?.name.toLowerCase() === name.toLowerCase())) return refused('that name is kept already', 400);
+      const made = (s.made = (s.made ?? 0) + 1).toString(16).padStart(12, '0'), place = { id: `place:${made}`, name, role: body.role ?? 'other', radius_m: 100, has_centre: true, address: null, origin: 'page' };
+      for (const x of s.served.items) if (x.kind === 'stay' && !x.kept_place && Math.hypot((x.lat - body.lat) * 111_000, (x.lng - body.lng) * 74_000) <= 100) x.kept_place = { id: place.id, name, role: place.role };
+      return json({ ok: true, place, change: `place-change:${made}` });
     }
     if (post && url.pathname.startsWith('/inherent/memory/places/')) {
       const body = sent(), place = decodeURIComponent(url.pathname.split('/').pop()); s.posts.push({ path: url.pathname, body });
@@ -2922,6 +2957,85 @@ try {
     await btn(a, CM.b, 'Not mine').click();
     const w = await watching, fade = (await anims(a)).filter(x => x.key === CM.b && x.opt.duration === 120 && x.kf.some(k => k.opacity === 0));
     check('with reduced motion the dropped row only fades (120 ms, no height) and the bar\'s box fades over 120 ms too; both are gone', fade.length === 1 && fade[0].kf.every(k => k.height === undefined) && w.boxTransition === '0.12s' && w.gone && w.boxGone, JSON.stringify({ fade, w: { ...w, heights: undefined } }));
+    await a.ctx.close();
+  }
+
+  // ---- 起个名字: a place that has no name is kept under the one he types, at the stay's own point (ADR 0234, 0296) ----
+  const kept = a => a.s.posts.filter(p => p.path === '/inherent/memory/places').map(p => JSON.stringify(p.body));
+  const hueOf = (a, key) => orow(a, key).evaluate(el => getComputedStyle(el.closest('.dt-stay')).getPropertyValue('--c').trim());
+  const field = a => a.page.evaluate(() => { const i = document.querySelector('.dt-name-in'); return i && { value: i.value, focused: document.activeElement === i, placeholder: i.placeholder, chips: [...document.querySelectorAll('.dt-role')].map(c => `${c.textContent}${c.getAttribute('aria-pressed') === 'true' ? '*' : ''}`).join('|') }; });
+  const chip = (a, key, name) => orow(a, key).locator('.dt-role', { hasText: name });
+  const barNames = a => a.page.evaluate(() => [...document.querySelectorAll('.dt-seg.is-stay .dt-sl b')].map(b => b.textContent));
+  if (all || only === 'write') {
+    const a = await boot({ served: nameDay(), init: record });
+    await openDay(a);
+    const before = { spot: await hueOf(a, 'stay-spot'), school: await hueOf(a, 'stay-uvic'), bar: await barNames(a) };
+    await tap(a, 'stay-spot'); await rest(a, 520);
+    const btns = await orow(a, 'stay-spot').locator('.dt-acts').first().evaluate(el => [...el.children].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
+    check('the open row of a stay that is no place he keeps says 起个名字 among its buttons (before the star and 问她), and a spot the phone had no words for says nothing else', btns === '起个名字|star|问她' && (await said(a, 'stay-spot')).length === 2, `${btns} ${(await said(a, 'stay-spot')).join('|')}`);
+    await orow(a, 'stay-spot').getByRole('button', { name: '起个名字' }).click(); await rest(a, 450);
+    const f0 = await field(a);
+    check('it opens a field with the cursor in it and the kinds of place under it (home, school, other: the brain\'s own three), none picked, and the line says Enter saves and Esc cancels; the button is gone',
+      f0 && f0.value === '' && f0.focused && f0.placeholder === '给这个地方起个名字' && f0.chips === '家|学校|其他' && await orow(a, 'stay-spot').locator('.dt-body .dt-hint').innerText() === '回车保存 · Esc 取消' && await orow(a, 'stay-spot').getByRole('button', { name: '起个名字' }).count() === 0, JSON.stringify(f0));
+    await a.page.keyboard.type('图书馆');
+    await chip(a, 'stay-spot', '学校').click(); await rest(a, 200);
+    const f1 = await field(a);
+    check('typing fills it and a chip picks a kind (pressed), with the cursor still in the field', f1.value === '图书馆' && f1.focused && f1.chips === '家|学校*|其他', JSON.stringify(f1));
+    await shotRow(a, 'd-06-naming-field', 'stay-spot');
+    const reads = a.s.hits.length;
+    await a.page.keyboard.press('Enter');
+    await a.until(() => document.querySelector('[data-key="stay-spot"] .dt-tx b')?.textContent === '图书馆', undefined, 8000); await rest(a, 300);
+    check('Enter keeps it: the one route the brain has, with exactly the name, the stay\'s own lat and lng, and the kind he picked', kept(a).join('|') === '{"name":"图书馆","lat":48.4631,"lng":-123.3123,"role":"school"}', kept(a).join('|'));
+    const after = { head: await orow(a, 'stay-spot').locator('.dt-tx b').first().innerText(), spot: await hueOf(a, 'stay-spot'), bar: await barNames(a) };
+    check('the stay is named in the list and on the bar, and it has the hue of a school (the same as UVic\'s) where it had the neutral one; the day was read again and the brain keeps it',
+      after.head === '图书馆' && after.spot === before.school && before.spot !== before.school && after.bar.includes('图书馆') && !before.bar.includes('图书馆') && a.s.hits.length > reads && a.s.served.items.find(x => x.id === 'stay-spot').kept_place.name === '图书馆', JSON.stringify({ before, after }));
+    check('the field is gone, and the open row has the rename now (it is a place he keeps)', await a.page.locator('.dt-name').count() === 0 && await orow(a, 'stay-spot').getByRole('button', { name: '改名字' }).count() === 1 && await orow(a, 'stay-spot').getByRole('button', { name: '起个名字' }).count() === 0 && await expanded(a, 'stay-spot') === 'true');
+    await sheetRow(a, 'd-07-named', 'stay-spot', [['.dt-bar', 'the bar after the name was kept: 图书馆 in the school\'s blue', 1.4]], 'the row: the name, the hue, and 改名字 where 起个名字 was');
+    await a.ctx.close();
+  }
+  if (all || only === 'write') {
+    // no kind picked: the body has no role; a kind picked again is put down; Esc lets go of the field first and then of the row; an empty name asks nothing; the brain refusing keeps the field and what is typed
+    const a = await boot({ served: nameDay(), init: record });
+    await openDay(a);
+    await tap(a, 'stay-aw'); await rest(a, 520);
+    await orow(a, 'stay-aw').getByRole('button', { name: '起个名字' }).click(); await rest(a, 450);
+    await a.page.keyboard.press('Enter'); await rest(a, 200);
+    check('Enter on an empty name asks the brain nothing', kept(a).length === 0 && (await field(a)).focused);
+    await a.page.keyboard.type('  快餐  店 ');
+    await chip(a, 'stay-aw', '其他').click(); await chip(a, 'stay-aw', '其他').click(); await rest(a, 150);
+    check('a kind pressed twice is put down again', (await field(a)).chips === '家|学校|其他');
+    a.s.refuse.add('place');
+    await a.page.keyboard.press('Enter');
+    await a.until(() => document.querySelector('[data-key="stay-aw"] .dt-body .dt-hint')?.textContent === '没记下，再试一次', undefined, 8000);
+    const failed = await field(a);
+    check('a brain that refuses (a 400) leaves the field with what was typed, the cursor in it, and says it did not keep it; nothing changed on the list', failed.value === '  快餐  店 ' && failed.focused && await orow(a, 'stay-aw').locator('.dt-body .dt-hint').innerText() === '没记下，再试一次' && await orow(a, 'stay-aw').locator('.dt-tx b').first().innerText() === 'A&W' && kept(a).length === 1, JSON.stringify(failed));
+    a.s.refuse.delete('place');
+    await a.page.keyboard.press('Enter');
+    await a.until(() => document.querySelector('[data-key="stay-aw"] .dt-tx b')?.textContent === '快餐 店', undefined, 8000); await rest(a, 200);
+    check('and the next time it is kept: the name trimmed (the brain makes the spaces inside one), no role in the body (none was picked), and the row shows the name the brain kept', kept(a).at(-1) === '{"name":"快餐  店","lat":48.4284,"lng":-123.3656}' && await orow(a, 'stay-aw').locator('.dt-tx b').first().innerText() === '快餐 店', kept(a).join('|'));
+    // Esc, then Esc
+    await tap(a, 'stay-spot'); await rest(a, 520);
+    await orow(a, 'stay-spot').getByRole('button', { name: '起个名字' }).click(); await rest(a, 450);
+    await a.page.keyboard.type('x');
+    await a.page.keyboard.press('Escape'); await rest(a, 350);
+    check('Esc lets go of the field (what was typed with it, nothing asked) and the row stays open; the button is back', await a.page.locator('.dt-name').count() === 0 && await expanded(a, 'stay-spot') === 'true' && await orow(a, 'stay-spot').getByRole('button', { name: '起个名字' }).count() === 1 && kept(a).length === 2);
+    await a.page.keyboard.press('Escape'); await rest(a, 350);
+    check('and the next Esc closes the row', await expanded(a, 'stay-spot') === 'false');
+    await a.ctx.close();
+  }
+  if (all || only === 'write') {
+    // what has nothing to name: a stay with no point, a stop on the way, a place he keeps; and in English
+    const a = await boot({ served: nameDay(), init: record, lang: 'en' });
+    await openDay(a);
+    const offered = {};
+    for (const key of ['stay-bare', 'stay-uvic', 'stay-aw']) { await tap(a, key); await rest(a, 520); offered[key] = await orow(a, key).locator('.dt-acts').first().evaluate(el => [...el.children].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|')); await tap(a, key); await rest(a, 300); }
+    const stop = await a.page.evaluate(() => { const r = document.querySelector('[data-key="stay-stop"]'); return { kind: r.dataset.kind, open: r.getAttribute('aria-expanded') }; });
+    check('no offer on a stay with no point (the phone gave none) nor on a place he keeps (it has Rename); in English it says Name this place', offered['stay-bare'] === 'star|Ask her' && offered['stay-uvic'] === 'Rename|star|Ask her' && offered['stay-aw'] === 'Name this place|star|Ask her', JSON.stringify(offered));
+    await tap(a, 'stay-aw'); await rest(a, 520);
+    await orow(a, 'stay-aw').getByRole('button', { name: 'Name this place' }).click(); await rest(a, 450);
+    const f = await a.page.evaluate(() => ({ placeholder: document.querySelector('.dt-name-in').placeholder, chips: [...document.querySelectorAll('.dt-role')].map(c => c.textContent).join('|'), hint: document.querySelector('.dt-body .dt-hint').textContent }));
+    check('in English the field and its kinds read A name for this place, Home, School, Other, and Enter saves · Esc cancels', f.placeholder === 'A name for this place' && f.chips === 'Home|School|Other' && f.hint === 'Enter saves · Esc cancels', JSON.stringify(f));
+    check('a stop on the way (five minutes between two walks) is no place: it is a row of the trip, which opens to its star alone', stop.kind === 'stay' && await orow(a, 'stay-stop').locator('.dt-acts, .dt-name').count() === 0);
     await a.ctx.close();
   }
 

@@ -88,6 +88,16 @@
 /* the notch's own ring on a focused field (notices.css) is for its buttons and plain fields; these two show the cursor with a ring of their own */
 .notch input.dt-rename:focus-visible,.notch input.dt-ask-in:focus-visible { outline:none; }
 
+/* naming a place that has no name: the field, and the kinds of place under it (picking one again puts it down) */
+.notch .dt-name { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
+.notch .dt-name-in { box-sizing:border-box; width:100%; height:28px; padding:0 9px; border:0; border-radius:8px; background:rgb(255 255 255 / .1); box-shadow:inset 0 0 0 1px rgb(var(--ink) / .32); font-size:13.5px; color:var(--p-ink); caret-color:rgb(var(--ink)); outline:none; }
+.notch .dt-name-in::placeholder { color:var(--p-faint); }
+.notch input.dt-name-in:focus-visible { outline:none; }
+.notch .dt-roles { display:flex; gap:6px; }
+.notch .dt-role { height:22px; padding:0 10px; border-radius:11px; background:rgb(255 255 255 / .08); font-size:12px; font-weight:600; line-height:22px; color:var(--p-muted); transition:background var(--motion-fast),color var(--motion-fast),box-shadow var(--motion-fast); }
+.notch .dt-role:hover { background:rgb(255 255 255 / .16); color:var(--p-ink); }
+.notch .dt-role.is-on { background:rgb(var(--ink) / .22); color:var(--p-ink); box-shadow:inset 0 0 0 1px rgb(var(--ink) / .5); }
+
 /* the hover's actions on a stay's header too; where the row is open its own buttons are there */
 .notch .dt-sh.is-hot .dt-quick,.notch .dt-sh.is-pick .dt-quick { opacity:1; pointer-events:auto; }
 .notch .dt-sh.is-hot .dt-quick + .dt-tm,.notch .dt-sh.is-pick .dt-quick + .dt-tm { opacity:0; }
@@ -142,5 +152,5 @@
 .dt-viewer p { margin:0; max-width:min(88vw, 640px); font:13px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; text-align:center; white-space:pre-line; color:rgb(238 240 251 / .92); }
 @keyframes dt-viewer-in { from { opacity:0; } }
 @media (prefers-reduced-motion:reduce) {
-  .notch .dt-wait,.notch .dt-waits { transition:none; }
+  .notch .dt-wait,.notch .dt-waits,.notch .dt-role { transition:none; }
 }
