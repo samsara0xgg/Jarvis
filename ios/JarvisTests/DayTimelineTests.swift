@@ -320,6 +320,22 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertNil(try reply(#"{"id": "d", "lane": "you", "kind": "stay", "state": "done", "start_ms": 1}"#).items[0].alight_stop, "an old brain has neither")
     }
 
+    func testPaymentsAndClaudeChatsAreReadAndOneThatCannotBeReadCostsOnlyItself() throws {
+        let r = try reply(#"{"id": "payment-1", "lane": "you", "kind": "payment", "state": "done", "start_ms": 1, "end_ms": 1, "source": "alipay", "amount": "12.40", "currency": "CAD", "direction": "out", "counterparty": "A&W", "text": "Burger"}, {"id": "payment-2", "lane": "you", "kind": "payment", "state": "done", "start_ms": 1, "end_ms": 1, "amount": 7.5, "currency": 5, "direction": ["x"]}, {"id": "payment-3", "lane": "you", "kind": "payment", "state": "done", "start_ms": 1, "end_ms": 1, "amount": "twelve"}, {"id": "claude-1", "lane": "you", "kind": "claude_chat", "state": "done", "start_ms": 1, "end_ms": 2, "source": "claude", "text": "Limits", "messages": 14}, {"id": "claude-day-1", "lane": "you", "kind": "claude_day", "state": "done", "start_ms": 1, "end_ms": 2, "source": "claude_daily", "text": "a; b", "chats": "three"}"#)
+        XCTAssertEqual(r.items.count, 5, "no item is lost")
+        let p = r.items[0]
+        XCTAssertEqual(p.amount, Amount(cents: 1240))
+        XCTAssertEqual([p.currency, p.direction, p.counterparty, p.text, p.source], ["CAD", "out", "A&W", "Burger", "alipay"])
+        XCTAssertEqual(r.items[1].amount, Amount(cents: 750), "a number is read too")
+        XCTAssertNil(r.items[1].currency)
+        XCTAssertNil(r.items[1].direction)
+        XCTAssertNil(r.items[2].amount, "an amount that is no number is no amount")
+        XCTAssertEqual(r.items[3].messages, 14)
+        XCTAssertNil(r.items[4].chats)
+        XCTAssertEqual(r.items[4].text, "a; b")
+        XCTAssertNil(try reply(#"{"id": "d", "lane": "you", "kind": "stay", "state": "done", "start_ms": 1}"#).items[0].amount, "an old brain has none of them")
+    }
+
     func testTheSourcesSaidMissingAreNamedTheWayTheDialNamesThem() {
         XCTAssertEqual(BrainLink.missingText(["mac", "calendar"]), "Mac、日历 没连上")
         XCTAssertNil(BrainLink.missingText([]))

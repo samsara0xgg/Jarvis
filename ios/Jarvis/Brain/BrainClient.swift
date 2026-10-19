@@ -121,6 +121,31 @@ struct DayItem: Decodable {
     /// what a picture says (kind `picture`) and the stop a bus ride ended at (kind `ride`). Newer than the rest: one that cannot be read costs only itself, not the item.
     @Soft var note: String?
     @Soft var alight_stop: String?
+    /// what he handed over: a payment (`amount`, `currency`, `direction` out or in, `counterparty`; `text` is what it was for) and the Claude chats (`messages` in a chat, `chats` in a day's letter)
+    @Soft var amount: Amount?
+    @Soft var currency: String?
+    @Soft var direction: String?
+    @Soft var counterparty: String?
+    @Soft var messages: Int?
+    @Soft var chats: Int?
+}
+
+/// An amount of money: the brain writes `"12.40"` (a string, two decimals); a number is read too. Kept in hundredths, so a sum stays exact.
+struct Amount: Decodable, Equatable {
+    let cents: Int
+    init(cents: Int) { self.cents = cents }
+    init(from d: Decoder) throws {
+        let c = try d.singleValueContainer()
+        if let s = try? c.decode(String.self), let v = Decimal(string: s.trimmingCharacters(in: .whitespaces)) {
+            var x = v * 100, r = Decimal()
+            NSDecimalRound(&r, &x, 0, .plain)
+            cents = Int(truncating: NSDecimalNumber(decimal: r))
+        } else if let x = try? c.decode(Double.self), x.isFinite, abs(x) < 1e10 {
+            cents = Int((x * 100).rounded())
+        } else {
+            throw DecodingError.dataCorruptedError(in: c, debugDescription: "not an amount")
+        }
+    }
 }
 
 /// A field that is read when it can be and is nil when it is missing or has a shape this phone does not know.
