@@ -92,6 +92,49 @@ class DoingAnswers:
             served = read_doing(memory_db, day, items, start_ms, end_ms, now_ms).served
             return next(s for s in served if s["id"] == span_id)
 
+    def answer_stretch(self, on_day: date, stretch: tuple[int, int], text: str) -> dict[str, Any]:
+        """Keep his ``text`` for a stretch he names himself; the span that now holds it.
+
+        The answer is kept by that time and carved into the lane over it, and carries where he
+        was when a stay holds most of it.
+
+        Raises:
+            ValueError: the stretch ends before it starts, leaves the day, or touches no
+                served, unplanned span of the doing lane.
+            RuntimeError: there is no memory store to keep it in.
+        """
+        sources = self._sources
+        memory_db = sources.memory_db
+        if memory_db is None:
+            msg = "answers cannot be kept right now (no memory store)"
+            raise RuntimeError(msg)
+        day = on_day.isoformat()
+        start_ms, end_ms = day_window(on_day, sources.zone)
+        first, last = stretch
+        if not start_ms <= first < last <= end_ms:
+            msg = f"the stretch is not inside {day}"
+            raise ValueError(msg)
+        with self._lock:
+            now_ms = int(self._clock() * 1000)
+            with closing(open_runtime_event_log(self._event_log)) as conn:
+                items = fold_day(conn, start_ms, end_ms, now_ms, sources).items
+            doing = read_doing(memory_db, day, items, start_ms, end_ms, now_ms)
+            touched = [
+                s for s in doing.served
+                if s["kind"] in DOING_KINDS and s["start_ms"] < last and s["end_ms"] > first
+            ]
+            if not touched:
+                msg = f"nothing on {day} between those times is a span of what he was doing"
+                raise ValueError(msg)
+            place = _stay_of(items, doing, {"start_ms": first, "end_ms": last})
+            append_doing_answer(
+                memory_db, day=day, span_id="", start_ms=first, end_ms=last, choice=None,
+                text=text, lat=place[0], lng=place[1], place_id=place[2], origin=ORIGIN,
+            )
+            held = max(first, touched[0]["start_ms"])  # where his words begin inside the lane
+            served = read_doing(memory_db, day, items, start_ms, end_ms, now_ms).served
+            return next(s for s in served if s["confirmed"] and s["start_ms"] <= held < s["end_ms"])
+
 
 def _stay_of(
     items: list[dict[str, Any]], doing: Doing, span: dict[str, Any],

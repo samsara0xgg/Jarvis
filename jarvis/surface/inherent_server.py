@@ -111,6 +111,7 @@ from pydantic import (
     BaseModel,
     Field,
     StrictBool,
+    StrictInt,
     ValidationError,
     field_validator,
     model_validator,
@@ -816,11 +817,15 @@ class InherentDeps:
     highlight_set: (
         Callable[[date, str, bool, str | None], Awaitable[list[dict[str, str]]]] | None
     ) = None
-    # ADR 0302: ``(day, span id, choice, text)`` -> the span as now served, off the loop thread.
-    # LookupError (no such span on that day) is 404, a ValueError (a choice the span's question
-    # does not offer) 422; ``None`` leaves ``POST /inherent/day/answer`` unregistered.
+    # ADR 0302: ``(day, span id, choice, text, (start, end))`` -> the span as now served, off the
+    # loop thread; a span id or a stretch, not both. LookupError (no such span on that day) is
+    # 404, a ValueError (a choice the span's question does not offer, a stretch outside the day or
+    # touching none of the lane) 422; ``None`` leaves ``POST /inherent/day/answer`` unregistered.
     doing_answer: (
-        Callable[[date, str, str | None, str | None], Awaitable[dict[str, Any]]] | None
+        Callable[
+            [date, str | None, str | None, str | None, tuple[int, int] | None],
+            Awaitable[dict[str, Any]],
+        ] | None
     ) = None
     # ADR 0296: ``(commitment hex, "confirm" | "cancel")`` -> whether anything changed, off the
     # loop thread. LookupError (none such, or dropped) is 404 and a False is 409; ``None`` leaves
@@ -1844,10 +1849,16 @@ class HighlightRequest(BaseModel):
 
 
 class DoingAnswerRequest(BaseModel):
-    """Body of ``POST /inherent/day/answer`` (ADR 0302): his answer about a span of a day."""
+    """Body of ``POST /inherent/day/answer`` (ADR 0302): his answer about a stretch of a day.
+
+    Either a served span (``span_id`` with ``choice`` or ``text``) or a stretch he names
+    himself (``start_ms`` and ``end_ms`` with ``text``).
+    """
 
     day: str = Field(min_length=10, max_length=10, pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
-    span_id: str = Field(pattern=_ITEM_ID)
+    span_id: str | None = Field(default=None, pattern=_ITEM_ID)
+    start_ms: StrictInt | None = None
+    end_ms: StrictInt | None = None
     choice: str | None = Field(default=None, min_length=1, max_length=ANSWER_TEXT_MAX_CHARS)
     text: str | None = None
 
@@ -1864,6 +1875,21 @@ class DoingAnswerRequest(BaseModel):
 
     @model_validator(mode="after")
     def _one_answer(self) -> DoingAnswerRequest:
+        ranged = self.start_ms is not None or self.end_ms is not None
+        if ranged:
+            if self.span_id is not None or self.choice is not None:
+                msg = "a stretch by start_ms and end_ms takes text, not span_id or choice"
+                raise ValueError(msg)
+            if self.start_ms is None or self.end_ms is None or self.end_ms <= self.start_ms:
+                msg = "give start_ms and end_ms, the end after the start"
+                raise ValueError(msg)
+            if self.text is None:
+                msg = "a stretch by start_ms and end_ms takes text"
+                raise ValueError(msg)
+            return self
+        if self.span_id is None:
+            msg = "give span_id, or start_ms and end_ms"
+            raise ValueError(msg)
         if (self.choice is None) == (self.text is None):
             msg = "give exactly one of choice and text"
             raise ValueError(msg)
@@ -1922,14 +1948,19 @@ def _register_doing_answer_route(app: FastAPI, deps: InherentDeps) -> None:
         422 for a day that is not one, an id of the wrong shape, neither or both of ``choice``
         and ``text``, a ``text`` that is empty or over 200 characters once trimmed, or a
         ``choice`` the span's question does not offer (or a span with no question); 404 when the
-        id is not a served, unplanned span of what he was doing on that day.
+        id is not a served, unplanned span of what he was doing on that day. A stretch he names
+        (``start_ms``, ``end_ms``, ``text``) is 422 when it mixes with ``span_id`` or ``choice``,
+        ends before it starts, leaves the day or touches none of the lane; it is never 404.
         """
         try:
             on_day = parse_day(req.day)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)[:200]) from None
         try:
-            span = await doing_answer(on_day, req.span_id, req.choice, req.text)
+            stretch = (
+                None if req.start_ms is None or req.end_ms is None else (req.start_ms, req.end_ms)
+            )
+            span = await doing_answer(on_day, req.span_id, req.choice, req.text, stretch)
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)[:200]) from None
         except ValueError as exc:

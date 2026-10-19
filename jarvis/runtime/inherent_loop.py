@@ -5732,10 +5732,16 @@ async def _set_highlight(
     return await asyncio.to_thread(marks.set_item, day, item_id, on, label)
 
 
-async def _answer_doing(
-    answers: DoingAnswers, day: date, span_id: str, choice: str | None, text: str | None,
+async def _answer_doing(  # noqa: PLR0913 — the route's day, span or stretch, and his words.
+    answers: DoingAnswers, day: date, span_id: str | None, choice: str | None, text: str | None,
+    stretch: tuple[int, int] | None,
 ) -> dict[str, Any]:
     """``POST /inherent/day/answer`` (ADR 0302): his answer, written off the loop thread."""
+    if stretch is not None and text is not None:
+        return await asyncio.to_thread(answers.answer_stretch, day, stretch, text)
+    if span_id is None:
+        msg = "give span_id, or start_ms and end_ms with text"
+        raise ValueError(msg)
     return await asyncio.to_thread(answers.answer, day, span_id, choice, text)
 
 

@@ -982,6 +982,50 @@ def test_an_answer_about_a_stretch_with_no_stay_writes_no_place(world: tuple[Any
     assert reply.json()["span"]["kind"] == "doing"
 
 
+def test_a_stretch_he_names_is_carved_in_and_the_rest_of_the_span_stays(
+    world: tuple[Any, Any],
+) -> None:
+    """``start_ms``, ``end_ms`` and ``text``: 200 with the span that now holds his words."""
+    src, peers = world
+    span = _span_at(src, 9)
+    first, last = span["start_ms"], span["start_ms"] + 20 * MIN
+    assert span["end_ms"] - last >= 10 * MIN  # the rest is long enough to stay its own
+    said = {"day": DAY_KEY, "start_ms": first, "end_ms": last, "text": " Lay down "}
+    reply = peers.local.post(ANSWER, json=said)
+    assert reply.status_code == 200
+    held = reply.json()["span"]
+    assert (held["id"], held["start_ms"], held["end_ms"], held["title"]) == (
+        span["id"], first, last, "Lay down",
+    )
+    assert (held["basis"], held["confirmed"]) == ("stated", True)
+    rest = next(s for s in _served(src)["spans"] if s["id"] == f"doing-{last}")
+    assert (rest["end_ms"], rest["confirmed"], rest["title"]) == (span["end_ms"], False, None)
+    assert _rows(src) == [
+        (DAY_KEY, "", first, last, None, "Lay down", 1.0, 2.0, None, "timeline"),
+    ]
+
+
+def test_a_stretch_that_is_not_one_is_422_and_nothing_is_kept(world: tuple[Any, Any]) -> None:
+    """Mixed with a span or a choice, reversed, half given, outside the day, or after now."""
+    src, peers = world
+    span = _span_at(src, 9)
+    first, last = span["start_ms"], span["end_ms"]
+    day_start, day_end = day_window(DAY, VANCOUVER)
+    for body in (
+        {"start_ms": first, "end_ms": last, "text": "x", "span_id": span["id"]},
+        {"start_ms": first, "end_ms": last, "choice": "x"},
+        {"start_ms": last, "end_ms": first, "text": "x"},
+        {"start_ms": first, "text": "x"},
+        {"start_ms": first, "end_ms": last},
+        {"start_ms": day_start - 60 * MIN, "end_ms": day_start + 60 * MIN, "text": "x"},
+        {"start_ms": NOW_MS + 60 * MIN, "end_ms": day_end, "text": "x"},
+        {"start_ms": "1", "end_ms": last, "text": "x"},
+    ):
+        reply = peers.local.post(ANSWER, json={"day": DAY_KEY, **body})
+        assert reply.status_code == 422, body
+    assert _rows(src) == []
+
+
 def test_a_choice_must_be_an_option_of_the_spans_question(world: tuple[Any, Any]) -> None:
     """A run's question with its options: a listed one is kept as ``choice``, others are 422."""
     src, peers = world
