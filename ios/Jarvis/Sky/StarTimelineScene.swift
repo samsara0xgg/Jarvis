@@ -80,7 +80,7 @@ enum TimelineFixture {
 
 extension StarEngine {
     /// `-scene 时间线` puts the timeline on the made-up day (now 21:50), whatever the setting was; the words after a colon go further:
-    /// `:早上` the list at the morning, `:对话` a talk opened, `:照片` the picture opened, `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
+    /// `:早上` the list at the morning, `:对话` a talk opened, `:照片` the picture opened, `:工作` the evening's Mac work opened (its span is bracketed on the bar), `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
     /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:新增` a talk coming in a moment later, `:走时` the clock moving on a minute a moment later, `:昨天` the day before, `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
     func runTimelineScene(_ name: String) {
         RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
@@ -126,6 +126,7 @@ extension StarEngine {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.6) { [self] in openPanel(quiet: true) }
         case "照片": show("picture-pic-demo-1", open: true)
+        case "工作": show("work-demo-2", open: true)
         case "昨天": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.setDay(ui.tl.today - 1) }
         case "新增": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in ui.tl.fixture?.replies[0] = TimelineFixture.today(cal, late: true) }
         case "走时": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in ui.tl.fixture?.now += 1 }

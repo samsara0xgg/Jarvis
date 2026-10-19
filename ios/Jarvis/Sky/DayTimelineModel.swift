@@ -17,6 +17,12 @@ func tlDur(_ minutes: Int) -> String {
     return m % 60 == 0 ? "\(m / 60) 时" : "\(m / 60) 时 \(m % 60) 分"
 }
 
+/// 7:50, 1:05, and under an hour 18 分: a length as the chips and the bar write it
+func tlHM(_ minutes: Int) -> String {
+    let m = max(0, minutes)
+    return m < 60 ? "\(m) 分" : "\(m / 60):" + String(format: "%02d", m % 60)
+}
+
 /// $12.40, ¥68.00, `AUD 5.00`: an amount with the mark of its currency (a currency this phone has no mark for is written by its code)
 func tlMoney(_ cents: Int, _ currency: String?) -> String {
     let whole = String(abs(cents) / 100), frac = String(format: "%02d", abs(cents) % 100)
@@ -35,6 +41,7 @@ struct TLEntry: Identifiable, Equatable {
     let id: String
     var kind: Kind
     var t0: Double
+    var t1: Double?                 // when it ended, or now while it goes on; none for a moment (and for what has no end yet)
     var time = ""                   // the fixed column at the left, `HH:mm`
     var title: String
     var detail: String?             // the one muted line under the title
@@ -49,6 +56,8 @@ struct TLEntry: Identifiable, Equatable {
     var talkStart: Int64?           // a talk: when it began, for 全部 ›
     var attachment: String?         // a picture: the brain's name for it
     var about: About?               // the chip it gives a talk while it is the row opened (ADR 0214): only an item of a kind the brain's host knows
+    var barName: String?            // the word it wears inside the overview bar when there is room: the place, the route, the way he moved, how long he slept, the event
+    var barIcon: String?            // and the symbol, for when the word does not fit
 
     var height: Double {
         switch kind {
@@ -63,6 +72,12 @@ struct TLEntry: Identifiable, Equatable {
     var opens: Bool { kind == .talk || kind == .picture || !more.isEmpty }
 }
 
+/// an item that mattered (a highlight of the day) and when it was
+struct TLStar: Equatable, Identifiable {
+    let id: String
+    let t: Double
+}
+
 /// a span of the day on the overview bar
 struct TLSeg: Equatable {
     enum Kind: Equatable { case place(RGB, kept: Bool), move, sleep }
@@ -73,15 +88,6 @@ struct TLSeg: Equatable {
     var priority: Int { switch kind { case .sleep: 3; case .move: 2; case .place: 1 } }
 }
 
-/// one column of the overview bar
-struct TLCell: Equatable {
-    var r: Double, g: Double, b: Double, a: Double
-    static let track = TLCell(r: 255, g: 255, b: 255, a: 0.06)         // nothing recorded
-    static func mix(_ x: TLCell, _ y: TLCell, _ k: Double) -> TLCell {
-        TLCell(r: lerp(x.r, y.r, k), g: lerp(x.g, y.g, k), b: lerp(x.b, y.b, k), a: lerp(x.a, y.a, k))
-    }
-}
-
 struct DayTimelineModel: Equatable {
     var date: String
     var line: String?               // her sentence about the day
@@ -90,6 +96,7 @@ struct DayTimelineModel: Equatable {
     var span: ClosedRange<Double>   // what the overview bar covers: from its start (`axisStart`) to 24:00
     var now: Double?                // the minute of now, on today only
     var missing: String?            // "还没读到：Mac 的时间"
+    var stars: [TLStar] = []        // what mattered, in the order of the day: a lit star on the bar for each
 
     /// the hours the bar is ticked at: every third hour inside its span (06 09 12 15 18 21 24)
     var ticks: [Int] { stride(from: Int((span.lowerBound / 180).rounded(.up)) * 3, through: 24, by: 3).map { $0 } }
@@ -113,29 +120,14 @@ struct DayTimelineModel: Equatable {
         let list = entries.filter { $0.kind != .now }
         return list.last { $0.t0 <= t } ?? list.first
     }
-    /// which stretch (a stay, a trip, the night, or none) minute `t` is in
-    func stretch(at t: Double) -> String {
+    /// the stretch (a stay, a trip, the night) minute `t` is in: the night is on top of a trip, a trip of a stay
+    func seg(at t: Double) -> TLSeg? {
         var best: TLSeg?
         for s in segs where s.t0 <= t && t < s.t1 && s.priority > (best?.priority ?? 0) { best = s }
-        return best?.id ?? ""
+        return best
     }
-
-    // MARK: the overview bar
-
-    func cells(_ n: Int) -> [TLCell] {
-        let lo = span.lowerBound, w = span.upperBound - lo
-        return (0..<n).map { c in
-            let t = lo + (Double(c) + 0.5) / Double(n) * w
-            var best: TLSeg?
-            for s in segs where s.t0 <= t && t < s.t1 && s.priority > (best?.priority ?? 0) { best = s }
-            guard let s = best else { return .track }
-            switch s.kind {
-            case .place(let col, let kept): return TLCell(r: col.r, g: col.g, b: col.b, a: kept ? 0.85 : 0.28)
-            case .move: return TLCell(r: 196, g: 208, b: 255, a: 0.35)
-            case .sleep: return TLCell(r: 112, g: 120, b: 205, a: 0.9)
-            }
-        }
-    }
+    /// its id, or none
+    func stretch(at t: Double) -> String { seg(at: t)?.id ?? "" }
 
     // MARK: building
 
@@ -157,7 +149,7 @@ struct DayTimelineModel: Equatable {
             let span = end.map { max(0, $0 - t0) }
             let dur = span.flatMap { $0 >= 1 ? tlDur(Int($0.rounded())) : nil }
             var e = TLEntry(id: i.id, kind: .work, t0: t0, title: "")
-            e.time = clock(t0); e.later = later
+            e.time = clock(t0); e.t1 = end; e.later = later
             switch i.kind {
             case "sleep":
                 e.kind = .sleep
@@ -165,6 +157,7 @@ struct DayTimelineModel: Equatable {
                 e.symbol = "moon.fill"
                 e.detail = rangeText(t0, t1, running: running)
                 e.right = i.minutes.map { tlDur(Int($0.rounded())) } ?? dur ?? ""
+                e.barName = (i.minutes ?? span).map { tlHM(Int($0.rounded())) }; e.barIcon = "moon.fill"
                 if let end { segs.append(TLSeg(id: i.id, t0: max(0, t0), t1: min(DAY, end), kind: .sleep)) }
             case "stay":
                 e.kind = .stay
@@ -172,6 +165,8 @@ struct DayTimelineModel: Equatable {
                 if let k = i.kept_place {
                     e.color = PlaceTint.line(role: k.role, id: k.id); e.kept = true
                 } else { e.color = PlaceTint.lineNeutral }
+                e.barName = i.ringName?.name
+                e.barIcon = ["home": "house.fill", "school": "graduationcap.fill"][i.kept_place?.role ?? ""] ?? "mappin"
                 // a stay still on has its start and how long it has gone; one that ended, its hours and its length
                 e.right = [t1 == nil ? "\(clockDay(t0)) 起" : rangeText(t0, t1, running: false), dur].compactMap { $0 }.joined(separator: " · ")
                 // on another day a stay with no end goes on to that day's midnight
@@ -184,11 +179,13 @@ struct DayTimelineModel: Equatable {
                     let stops = [text(i.board_stop), text(i.alight_stop)]
                     let trail = stops.compactMap { $0 }.joined(separator: " → ")
                     e.title = text(i.route).map { "\($0) 路" } ?? "公交"
+                    e.barName = text(i.route); e.barIcon = "bus.fill"
                     e.detail = trail.isEmpty ? nil : trail          // one stop is that stop alone, none no line at all
                     e.more = [stops[0].map { "上车 " + $0 }, stops[1].map { "下车 " + $0 }].compactMap { $0 }
                 } else {
                     let (word, symbol) = Self.moves[i.activity ?? ""] ?? ("移动", "arrow.right")
                     e.title = word; e.symbol = symbol
+                    e.barName = word; e.barIcon = symbol
                 }
                 if let end { segs.append(TLSeg(id: i.id, t0: max(0, t0), t1: min(DAY, end), kind: .move)) }
             case "talk":
@@ -211,6 +208,7 @@ struct DayTimelineModel: Equatable {
                 let hidden = i.private == true
                 e.title = hidden ? "私事" : text(i.title) ?? "日程"
                 e.symbol = "calendar.circle.fill"
+                e.barName = e.title; e.barIcon = "calendar"
                 // a mail made it and he has not said it is his: say so, and where (a private one names no place)
                 let parts = [i.confirmed == false && i.source != "plan" ? "从邮件里收的，还没确认" : nil, hidden ? nil : text(i.place)].compactMap { $0 }
                 e.detail = parts.isEmpty ? nil : parts.joined(separator: " · ")
@@ -297,8 +295,11 @@ struct DayTimelineModel: Equatable {
         // the night that ended on this day says when he woke; what began before the bar's start brings it back
         let wake = r.items.filter { $0.kind == "sleep" }.compactMap { $0.end_ms.map(m) }.filter { $0 >= 0 && $0 < DAY }.min()
         let early = r.items.filter { Self.axisKinds.contains($0.kind) }.map { m($0.start_ms) }
+        // what mattered, at the time of each item that did
+        var starred = Set<String>()
+        let stars = r.highlights.compactMap { h in entries.first { $0.id == h.id }.flatMap { starred.insert(h.id).inserted ? TLStar(id: h.id, t: $0.t0) : nil } }.sorted { $0.t < $1.t }
         return DayTimelineModel(date: r.date, line: text(r.line?.text), entries: entries, segs: segs,
-                                span: axisStart(wake: wake, early: early)...DAY, now: now, missing: missingText(r.missing))
+                                span: axisStart(wake: wake, early: early)...DAY, now: now, missing: missingText(r.missing), stars: stars)
     }
 
     /// what, starting before the bar's start, brings the start back: where he went and what he did, never a stay alone

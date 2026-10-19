@@ -18,9 +18,9 @@ enum TLLayout {
     static let herScale = 15.0 / R_PS
     static let dateShift = 39.0                        // the date starts this far further right, beside her: its first stroke 8 pt clear of her disc, which ends at 62 (47 + 15)
     static let lineY = 108.0, lineH = 40.0             // her sentence: two lines of 15 pt
-    static let barY = 156.0, barW = 380.0, barH = 16.0
-    static let grabberY = 187.0                        // the top of the grabber's 36 pt hit area: its bar sits half way between the hour labels under the overview bar and the list
-    static let listTop = 222.0, listBottom = 836.0, fade = 24.0
+    static let barY = 176.0, barW = 380.0, barH = 22.0, barRadius = 6.0       // 28 pt over it for now's time (and, under a finger, the time in its chip), 12 pt under it for the hours
+    static let grabberY = 216.0, grabberH = 30.0       // the top of the grabber's hit area: its bar sits half way between the hour labels under the overview bar and the list
+    static let listTop = 240.0, listBottom = 836.0, fade = 24.0
     static var viewport: Double { listBottom - listTop }
     /// what is left of the list's height under `pinned` points of cards (and the gap under them)
     static func room(pinned: Double) -> Double { viewport - (pinned > 0 ? pinned + 4 : 0) }
@@ -112,13 +112,9 @@ struct DayTimelineView: View {
     let ui: StarUI
     @Binding var pull: Double?
     @Environment(\.accessibilityReduceMotion) private var reduce
-    @State private var from = DayTimelineView.empty                                  // the bar as it was before it last changed, for it to morph from
-    @State private var morph = 1.0
     @State private var scrub: Double?                                                // the minute under his finger on the overview bar
     @State private var lastStretch: String?
     @State private var nowInView = true
-    static let columns = 380
-    static let empty = [TLCell](repeating: .track, count: columns)
 
     private var tl: TimelineState { ui.tl }
 
@@ -129,20 +125,16 @@ struct DayTimelineView: View {
         return TimelineView(.everyMinute) { _ in
             let shown = shownNow()
             let model: DayTimelineModel? = { if case .model(let m) = shown { return m } else { return nil } }()
-            let cells = model?.cells(Self.columns) ?? Self.empty
             ZStack(alignment: .topLeading) {
-                header(model, cells: cells)
+                scrim(away: away)
+                header(model)
                     .opacity(ui.panelOpen ? 0 : 1).allowsHitTesting(!ui.panelOpen)
                     .animation(.easeOut(duration: ui.panelOpen ? 0.2 : 0.35), value: ui.panelOpen)
+                listArea(shown, away: away)
                 grabber
                 pill(show: (tl.day != tl.today || !nowInView) && !away)
-                listArea(shown, away: away)
             }
             .frame(width: W, height: H, alignment: .topLeading)
-            .onChange(of: cells) { old, new in
-                from = old; morph = 0
-                withAnimation(.easeOut(duration: 0.35)) { morph = 1 }
-            }
             .onChange(of: isReady(shown), initial: true) { _, ready in release(ready) }
             .onChange(of: tl.enter) { _, _ in release(isReady(shown)) }
             .onChange(of: ui.tlHome) { _, _ in release(isReady(shown)) }
@@ -182,7 +174,7 @@ struct DayTimelineView: View {
 
     // MARK: her sentence and the overview bar
 
-    private func header(_ m: DayTimelineModel?, cells: [TLCell]) -> some View {
+    private func header(_ m: DayTimelineModel?) -> some View {
         ZStack(alignment: .topLeading) {
             if let line = m?.line {
                 Text(line).font(.system(size: 15)).lineSpacing(3).foregroundStyle(ink.opacity(0.9)).lineLimit(2)
@@ -192,7 +184,13 @@ struct DayTimelineView: View {
                     .id(line).transition(.opacity)
                     .offset(x: 30, y: TLLayout.lineY)
             }
-            if let m { bar(m, cells: cells).offset(x: 30, y: TLLayout.barY) }
+            if let m {
+                TLBarView(scene: m.scene, bracket: bracket(m), scrub: scrub, reveal: tl.reveal, reduce: reduce)
+                    .gesture(scrubGesture(m))
+                    .accessibilityElement().accessibilityLabel("一天的概览，拖动可以翻到那个时间")
+                    .id(tl.day).transition(barTransition)
+                    .offset(x: 30, y: TLLayout.barY)
+            }
         }
         .animation(.easeOut(duration: 0.35), value: m?.line)
         // only once she is in her corner, and gone as soon as she leaves it: she glides across where they stand
@@ -200,36 +198,18 @@ struct DayTimelineView: View {
         .animation(.easeOut(duration: ui.tlHome ? (reduce ? 0.2 : 0.3) : 0.06), value: ui.tlHome)
     }
 
-    private func bar(_ m: DayTimelineModel, cells: [TLCell]) -> some View {
-        let lo = m.span.lowerBound, w = m.span.upperBound - lo, bw = TLLayout.barW
-        func x(_ t: Double) -> Double { (t - lo) / w * bw }
-        return ZStack(alignment: .topLeading) {
-            OverviewBar(from: from, to: cells, morph: morph, sweep: reduce || tl.reveal ? 1 : 0)
-                .frame(width: bw, height: TLLayout.barH)
-                .opacity(reduce && !tl.reveal ? 0 : 1)
-                .animation(reduce ? .easeOut(duration: 0.25) : .easeOut(duration: 0.6), value: tl.reveal)
-            ForEach(m.ticks, id: \.self) { h in
-                Text(String(format: "%02d", h)).font(AT.mono(10)).foregroundStyle(muted).frame(width: 12)
-                    .offset(x: x(Double(h * 60)) - (h == 24 ? 12 : 6), y: TLLayout.barH + 4)          // the last one ends where the bar ends
-            }
-            if let n = m.now, n >= lo {
-                RoundedRectangle(cornerRadius: 0.75).fill(warm).frame(width: 1.5, height: TLLayout.barH + 6)
-                    .shadow(color: warm.opacity(0.85), radius: 3)
-                    .offset(x: x(n) - 0.75, y: -3)
-            }
-            if let t = scrub {
-                Rectangle().fill(Color.white.opacity(0.85)).frame(width: 1, height: TLLayout.barH + 12).offset(x: x(t) - 0.5, y: -6)
-                Text(clock(t)).font(AT.mono(11)).foregroundStyle(ink).padding(.horizontal, 8).frame(height: 20)
-                    .background(Capsule().fill(Color(red: 28 / 255, green: 31 / 255, blue: 58 / 255)))
-                    .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.5))
-                    .fixedSize().offset(x: clamp(x(t) - 22, 0, bw - 44), y: -30)
-            }
-        }
-        .frame(width: bw, height: TLLayout.barH + 22, alignment: .topLeading)
-        .contentShape(Rectangle().inset(by: -10))
-        .gesture(DragGesture(minimumDistance: 0)
+    /// the span of the row he has open, on the bar
+    private func bracket(_ m: DayTimelineModel) -> ClosedRange<Double>? {
+        guard scrub == nil, let id = tl.openRow, let e = m.entries.first(where: { $0.id == id }), e.kind != .now else { return nil }
+        return e.t0...max(e.t0, e.t1 ?? e.t0)
+    }
+
+    /// a finger on the bar: the list follows it, with a tick of the phone for each stretch it crosses
+    private func scrubGesture(_ m: DayTimelineModel) -> some Gesture {
+        let lo = m.span.lowerBound, w = m.span.upperBound - lo
+        return DragGesture(minimumDistance: 0)
             .onChanged { v in
-                let t = lo + clamp(v.location.x / bw, 0, 1) * w
+                let t = lo + clamp(v.location.x / TLLayout.barW, 0, 1) * w
                 scrub = t
                 if tl.openRow != nil { tl.openRow = nil }
                 let s = m.stretch(at: t)
@@ -239,8 +219,25 @@ struct DayTimelineView: View {
             .onEnded { _ in
                 lastStretch = nil
                 withAnimation(.easeOut(duration: 0.2)) { scrub = nil }
-            })
-        .accessibilityElement().accessibilityLabel("一天的概览，拖动可以翻到那个时间")
+            }
+    }
+
+    /// another day's bar comes in from the way time goes, a hair, as the list does
+    private var barTransition: AnyTransition {
+        if reduce { return .opacity }
+        let d = 8.0 * Double(tl.slide)
+        return .asymmetric(insertion: .opacity.combined(with: .offset(x: -d)), removal: .opacity.combined(with: .offset(x: d)))
+    }
+
+    /// From the bar down the sky is covered by black, none at the bar and 0.55 over 40 pt, so the list sits on near-black as it does on the Mac; it is as faint as the list at the foot.
+    private func scrim(away: Bool) -> some View {
+        let top = TLLayout.barY, h = TLLayout.listBottom + TLLayout.fade - top
+        return LinearGradient(stops: [.init(color: .black.opacity(0), location: 0), .init(color: .black.opacity(0.55), location: 40 / h),
+                                      .init(color: .black.opacity(0.55), location: 1 - TLLayout.fade / h), .init(color: .black.opacity(0), location: 1)],
+                              startPoint: .top, endPoint: .bottom)
+            .frame(width: W, height: h).offset(y: top)
+            .opacity(away ? 0 : 1).animation(.easeOut(duration: away ? 0.2 : 0.35), value: away)
+            .allowsHitTesting(false)
     }
 
     // MARK: the grabber and the way back
@@ -249,7 +246,7 @@ struct DayTimelineView: View {
     private var grabber: some View {
         let hide = ui.typing || ui.panelOpen
         return Capsule().fill(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.28)).frame(width: 36, height: 5)
-            .frame(width: 120, height: 36)
+            .frame(width: 120, height: TLLayout.grabberH)
             .contentShape(Rectangle())
             .gesture(panelDrag(engine, $pull, opens: true, tap: true))
             .opacity(hide ? 0 : 1)
@@ -273,7 +270,7 @@ struct DayTimelineView: View {
         .frame(width: W - 60, alignment: .trailing)
         .opacity(show ? 1 : 0).scaleEffect(show || reduce ? 1 : 0.92).allowsHitTesting(show)
         .animation(.easeOut(duration: 0.25), value: show)
-        .offset(x: 30, y: TLLayout.grabberY + 5)
+        .offset(x: 30, y: TLLayout.grabberY + 2)
     }
 
     // MARK: the list, and what waits above it
@@ -342,39 +339,6 @@ struct DayTimelineView: View {
             .overlay(alignment: .bottom) { Rectangle().fill(hair).frame(height: 0.5) }
             .padding(.bottom, 4)
         }
-    }
-}
-
-// MARK: - the overview bar
-
-/// The day's bar: one cell per column, the colour of what he was doing then. It grows in from the left (`sweep`) and morphs from the bar it was (`morph`).
-private struct OverviewBar: View, Animatable {
-    var from: [TLCell], to: [TLCell]
-    var morph: Double, sweep: Double
-    var animatableData: AnimatablePair<Double, Double> {
-        get { AnimatablePair(morph, sweep) }
-        set { morph = newValue.first; sweep = newValue.second }
-    }
-
-    var body: some View {
-        Canvas { ctx, size in
-            let n = to.count, cw = size.width / Double(n), front = sweep * size.width
-            func cell(_ c: Int) -> TLCell {
-                if Double(c) * cw >= front { return .track }
-                return from.count == n ? .mix(from[c], to[c], morph) : to[c]
-            }
-            // runs of one colour are one rectangle, so there is no seam between neighbours
-            var c = 0
-            while c < n {
-                let v = cell(c)
-                var e = c + 1
-                while e < n && cell(e) == v { e += 1 }
-                ctx.fill(Path(CGRect(x: Double(c) * cw, y: 0, width: Double(e - c) * cw, height: size.height)),
-                         with: .color(Color(.sRGB, red: v.r / 255, green: v.g / 255, blue: v.b / 255, opacity: v.a)))
-                c = e
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 }
 

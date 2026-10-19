@@ -328,18 +328,126 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(build(TimelineFixture.today(cal)).ticks, [6, 9, 12, 15, 18, 21, 24])
     }
 
-    func testTheBarColoursThePlaceTheTripTheNightAndLeavesWhatWasNotRecordedAsTrack() throws {
-        let r = try reply(#"{"id": "n", "lane": "you", "kind": "sleep", "state": "done", "start_ms": \#(at(0)), "end_ms": \#(at(360))}, {"id": "s", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(400)), "end_ms": \#(at(700)), "place": "Home", "kept_place": {"id": "h", "name": "Home", "role": "home"}}, {"id": "u", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(800)), "end_ms": \#(at(900)), "place": "Some Cafe"}, {"id": "m", "lane": "you", "kind": "move", "state": "done", "start_ms": \#(at(700)), "end_ms": \#(at(740)), "activity": "walking"}"#)
-        let m = build(r, now: nil)
-        let n = 1440, cells = m.cells(n)
-        func cell(_ minute: Double) -> TLCell { cells[Int((minute - m.span.lowerBound) / (m.span.upperBound - m.span.lowerBound) * Double(n))] }
-        XCTAssertEqual(cell(330), TLCell(r: 112, g: 120, b: 205, a: 0.9), "the night, indigo (the bar starts at 05:00, the hour before he woke)")
-        XCTAssertEqual(cell(500), TLCell(r: 255, g: 168, b: 150, a: 0.85), "home, in the colour of home")
-        XCTAssertEqual(cell(720), TLCell(r: 196, g: 208, b: 255, a: 0.35), "the walk")
-        XCTAssertEqual(cell(850), TLCell(r: 196, g: 204, b: 238, a: 0.28), "a place he does not keep, faint")
-        XCTAssertEqual(cell(1000), .track, "nothing recorded")
-        XCTAssertEqual(m.stretch(at: 500), "s")
-        XCTAssertEqual(m.stretch(at: 1000), "")
+    func testTheBarIsPiecesOfTheDayFromItsStartToMidnightEachWithItsFillAndTheWordItMayWear() throws {
+        let sc = build(TimelineFixture.today(cal)).scene
+        XCTAssertEqual(sc.pieces.first?.t0, 360)
+        XCTAssertEqual(sc.pieces.last?.t1, DAY)
+        XCTAssertEqual(zip(sc.pieces, sc.pieces.dropFirst()).filter { $0.t1 != $1.t0 }.count, 0, "one after the other, none missing, none over")
+        func piece(_ id: String) throws -> TLPiece { try XCTUnwrap(sc.pieces.first { $0.id == id }, id) }
+        let night = try piece("sleep-0")
+        XCTAssertEqual([night.t0, night.t1], [360, 545], "the night's tail, from where the bar begins")
+        XCTAssertEqual(night.fill, .sleep)
+        XCTAssertEqual([night.name, night.icon], ["8:05", "moon.fill"], "its whole length, not the part the bar shows")
+        let home = try piece("stay-1")
+        XCTAssertEqual(home.fill, .place(RGB(255, 168, 150), kept: true))
+        XCTAssertEqual([home.name, home.icon], ["家", "house.fill"])
+        XCTAssertEqual([try piece("stay-9").name, try piece("stay-9").icon], ["UVic", "graduationcap.fill"])
+        XCTAssertEqual(try piece("stay-5").fill, .place(RGB(196, 204, 238), kept: false), "a place he does not keep")
+        XCTAssertEqual([try piece("stay-5").name, try piece("stay-5").icon], ["A&W", "mappin"])
+        XCTAssertEqual([try piece("move-3").fill, try piece("move-4").fill], [.trip, .trip])
+        XCTAssertEqual([try piece("move-3").name, try piece("move-3").icon], ["开车", "car.fill"])
+        XCTAssertEqual([try piece("ride-8").name, try piece("ride-8").icon], ["27", "bus.fill"], "a ride is its route")
+        let ahead = try XCTUnwrap(sc.pieces.last)
+        XCTAssertEqual(ahead.t0, TimelineFixture.now, "after now: what has not happened")
+        XCTAssertEqual(ahead.fill, .ahead)
+        XCTAssertEqual(sc.pieces.filter { $0.fill == .blank }.count, 0, "this day has no hole in it")
+    }
+
+    func testWhereNothingWasRecordedThereIsABlankPieceAndTheNightIsOnTopAndCutAtTheStart() throws {
+        let r = try reply(#"{"id": "s0", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(0)), "end_ms": \#(at(900)), "place": "Home"}, {"id": "n", "lane": "you", "kind": "sleep", "state": "done", "start_ms": \#(at(60)), "end_ms": \#(at(400))}, {"id": "s1", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(1000)), "end_ms": \#(at(1100)), "place": "Cafe"}, {"id": "m", "lane": "you", "kind": "move", "state": "done", "start_ms": \#(at(1100)), "end_ms": \#(at(1110)), "activity": "walking"}"#)
+        let sc = build(r, now: nil).scene
+        XCTAssertEqual(sc.span, 300...DAY)
+        XCTAssertEqual(sc.pieces.map(\.id), ["n", "s0", "blank-900", "s1", "m", "blank-1110"])
+        XCTAssertEqual(sc.pieces.map(\.t0), [300, 400, 900, 1000, 1100, 1110])
+        XCTAssertEqual(sc.pieces.map(\.fill), [.sleep, .place(RGB(196, 204, 238), kept: false), .blank, .place(RGB(196, 204, 238), kept: false), .trip, .blank])
+        XCTAssertTrue(sc.ahead.isEmpty && sc.pieces.allSatisfy { $0.fill != .ahead }, "another day has no after")
+        // one stay that the night cuts in two is two pieces; one the night covers is none of its own
+        let cut = try reply(#"{"id": "s0", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(400)), "end_ms": \#(at(900)), "place": "Home"}, {"id": "n", "lane": "you", "kind": "sleep", "state": "done", "start_ms": \#(at(500)), "end_ms": \#(at(600))}, {"id": "x", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(520)), "end_ms": \#(at(580)), "place": "Hidden"}"#)
+        XCTAssertEqual(build(cut, now: nil).scene.pieces.map(\.id), ["blank-360", "s0", "n", "s0", "blank-900"])
+    }
+
+    func testWhatIsPlannedIsDrawnOnTheBarAfterNowAndNothingThatIsOver() throws {
+        let sc = build(TimelineFixture.today(cal)).scene
+        XCTAssertEqual(sc.ahead.map(\.id), ["event-demo-1", "reminder-demo-1", "departure-demo-1"])
+        XCTAssertEqual(sc.ahead.map(\.shape), [.box, .tick, .tick])
+        XCTAssertEqual([sc.ahead[0].t0, sc.ahead[0].t1, sc.ahead[1].t0], [1320, 1350, 1380])
+        XCTAssertEqual([sc.ahead[0].name, sc.ahead[0].icon], ["陶艺课", "calendar"], "an event wears its title in its box")
+        let r = try reply(#"{"id": "over", "lane": "you", "kind": "event", "state": "done", "start_ms": \#(at(1200)), "end_ms": \#(at(1250)), "title": "A"}, {"id": "on", "lane": "you", "kind": "event", "state": "now", "start_ms": \#(at(1290)), "end_ms": \#(at(1330)), "title": "B"}, {"id": "open", "lane": "you", "kind": "event", "state": "next", "start_ms": \#(at(1400)), "end_ms": null, "title": "C"}, {"id": "rang", "lane": "her", "kind": "reminder", "state": "done", "start_ms": \#(at(1300)), "fired": true}, {"id": "next", "lane": "her", "kind": "reminder", "state": "next", "start_ms": \#(at(1320))}"#)
+        let a = build(r).scene.ahead
+        XCTAssertEqual(a.map(\.id), ["on", "next", "open"], "an event that is on is still ahead of its end; one that is over, and a reminder that has rung, are not")
+        XCTAssertEqual(a.map(\.shape), [.box, .tick, .tick], "an event with no end is a moment")
+        XCTAssertTrue(build(r, now: nil).scene.ahead.isEmpty)
+    }
+
+    func testWhatMatteredIsAStarAtItsTimeOnTheBarEvenForAStayAndOnlyOnce() throws {
+        XCTAssertEqual(build(TimelineFixture.today(cal)).scene.stars, [TLStar(id: "call-demo-1", t: 1000)])
+        let r = try reply(#"{"id": "s1", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(700)), "end_ms": \#(at(800)), "place": "Cafe"}, {"id": "t", "lane": "her", "kind": "talk", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(610)), "turns": 2}"#,
+                          #", "highlights": [{"id": "s1", "label": "Coffee", "by": "him"}, {"id": "t", "label": "x", "by": "her"}, {"id": "s1", "label": "again", "by": "her"}, {"id": "gone", "label": "y", "by": "her"}]"#)
+        XCTAssertEqual(build(r, now: nil).scene.stars, [TLStar(id: "t", t: 600), TLStar(id: "s1", t: 700)], "in the order of the day, the item that is not there left out")
+    }
+
+    func testTheGapBetweenPiecesIsAHairAndAPieceIsNeverNarrowerThanTwoPoints() {
+        let pieces = [TLPiece(id: "a", t0: 360, t1: 720, fill: .sleep), TLPiece(id: "b", t0: 720, t1: 721, fill: .trip), TLPiece(id: "c", t0: 721, t1: DAY, fill: .blank)]
+        let r = TLGeo.rects(pieces, span: 360...DAY, width: 1080, height: 22)
+        XCTAssertEqual([r[0].minX, r[0].maxX], [0, 359.5], "the first begins where the bar does and leaves half a point to the next")
+        XCTAssertEqual(r[1].width, 2, "a minute of a 1080-point bar is a point; it is given two")
+        XCTAssertEqual(r[2].maxX, 1080, "the last ends where the bar ends")
+        XCTAssertEqual(r.map(\.height), [22, 22, 22])
+        XCTAssertEqual(TLGeo.x(DAY + 100, 360...DAY, 380), 380, "nothing is drawn past the bar")
+    }
+
+    // MARK: what a piece says
+
+    /// six points a Latin letter and eleven a Chinese character: nothing here depends on the font of the machine that runs the test
+    private func measure(_ s: String) -> Double { s.unicodeScalars.reduce(0) { $0 + ($1.value > 0x2E80 ? 11.0 : 6.0) } }
+
+    func testAPieceWearsTheRichestOfIconAndNameNameIconNothingThatFits() {
+        func fit(_ name: String?, _ icon: Bool, _ w: Double) -> TLBarLabel.Fit { TLBarLabel.fit(name: name, icon: icon, width: w, measure: measure) }
+        // UVic is 24 wide: icon (12) + 4 + 24 + 6 each side is 52, the name alone 36, the icon alone 24
+        XCTAssertEqual(fit("UVic", true, 60), .iconName)
+        XCTAssertEqual(fit("UVic", true, 52), .iconName)
+        XCTAssertEqual(fit("UVic", true, 51.9), .name)
+        XCTAssertEqual(fit("UVic", true, 36), .name)
+        XCTAssertEqual(fit("UVic", true, 35.9), .icon)
+        XCTAssertEqual(fit("UVic", true, 24), .icon)
+        XCTAssertEqual(fit("UVic", true, 23.9), .none)
+        XCTAssertEqual(fit("UVic", false, 60), .name, "no symbol: the word")
+        XCTAssertEqual(fit("UVic", false, 30), .none)
+        XCTAssertEqual(fit(nil, true, 30), .icon, "no word: the symbol")
+        XCTAssertEqual(fit(nil, true, 20), .none)
+        XCTAssertEqual(fit(nil, false, 400), .none)
+        XCTAssertEqual(fit("开车", true, 50), .iconName)
+        XCTAssertEqual(fit("开车", true, 49), .name)
+    }
+
+    func testTheMadeUpDaysPiecesWearWhatFitsThemAtTheBarsWidth() throws {
+        let sc = build(TimelineFixture.today(cal)).scene
+        let words = Dictionary(uniqueKeysWithValues: TLBarLabel.placed(sc, width: TLLayout.barW, measure: measure).map { ($0.id, $0) })
+        XCTAssertEqual(words["sleep-0"]?.fit, .iconName, "65 points for a moon and 8:05")
+        XCTAssertEqual(words["stay-1"]?.fit, .iconName)
+        XCTAssertEqual(words["stay-9"]?.fit, .iconName, "UVic")
+        XCTAssertEqual(words["stay-13"]?.fit, .iconName)
+        for id in ["move-4", "stay-5", "move-6", "ride-8", "ride-12", "event-demo-1"] { XCTAssertNil(words[id], "\(id) is too narrow to say anything") }
+        XCTAssertEqual(words["sleep-0"]?.x, TLBarLabel.pad, "the word begins 6 points inside its piece")
+        XCTAssertEqual(words["sleep-0"]?.dark, false, "light text on the night's indigo")
+        XCTAssertEqual(words["stay-1"]?.dark, true, "dark ink on the pale hue of home")
+        XCTAssertEqual(words["stay-9"]?.dark, true)
+    }
+
+    func testTextIsDarkOnALightFillAndLightOnADarkOne() {
+        for hue in [RGB(255, 168, 150), RGB(100, 200, 255), RGB(240, 132, 218), RGB(132, 152, 255), RGB(172, 124, 255), RGB(111, 224, 180)] {
+            XCTAssertTrue(TLPaint.textIsDark(.place(hue, kept: true)), "\(hue)")
+        }
+        XCTAssertFalse(TLPaint.textIsDark(.place(RGB(196, 204, 238), kept: false)), "a place he does not keep is a faint haze")
+        XCTAssertFalse(TLPaint.textIsDark(.place(RGB(255, 168, 150), kept: false)), "a faint fill is dark, whatever its hue")
+        XCTAssertFalse(TLPaint.textIsDark(.sleep))
+        XCTAssertFalse(TLPaint.textIsDark(.trip))
+        XCTAssertFalse(TLPaint.textIsDark(.blank))
+        XCTAssertGreaterThan(TLPaint.luminance(RGB(255, 168, 150), alpha: 0.9), TLPaint.luminance(RGB(112, 120, 205), alpha: 0.9))
+    }
+
+    func testTheHoursAreTickedUnderTheScene() {
+        XCTAssertEqual(build(TimelineFixture.today(cal)).scene.ticks, [6, 9, 12, 15, 18, 21, 24])
     }
 
     func testAStayWithNoEndOnAnotherDayGoesOnToMidnightOnTheBar() {
