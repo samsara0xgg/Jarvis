@@ -617,7 +617,7 @@ def test_through_http_a_refused_batch_is_sent_again_and_a_kept_one_never_twice(
     with closing(imports.open_shipped(brain.root / imports.IMPORTS_DIRNAME)) as conn:
         assert len(imports.newest(conn, "timesink")) == 4
         assert [e.kind for e in imports.newest(conn, "claude-code")] == ["session"]
-    assert imports.SHIPPED_SOURCES == ("timesink", "claude-code")
+    assert imports.SHIPPED_SOURCES == ("timesink", "claude-code", "device-apps")
 
 
 def test_shipping_is_off_in_the_shipped_config_and_the_switch_reads_its_parts(

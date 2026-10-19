@@ -23,6 +23,7 @@ _READ_TIMEOUT_S: Final = 60.0
 # An "in" with no matching "out" is cut at the next event or this long, whichever is first.
 _UNPAIRED_CAP_MS: Final = 30 * 60 * 1000
 _TOP_APPS: Final = 15
+_SHOWN: Final = 8
 
 
 class ScreenTimeUnavailable(RuntimeError):  # noqa: N818 - reads as the reason it is raised for
@@ -108,11 +109,13 @@ def read_screen_time(since_ms: int | None = None) -> dict[str, Any]:
     return parse_helper_output(text, app)
 
 
-def pair_intervals(events: list[dict[str, Any]]) -> list[tuple[str, int, int, bool]]:
-    """One device's events as ``(bundle_id, start_ms, end_ms, paired)``, oldest first.
+def closed_intervals(
+    events: list[dict[str, Any]],
+) -> tuple[list[tuple[str, int, int, bool]], tuple[str, int] | None]:
+    """``(intervals, tail)``: the intervals that ended, and the last "in" nothing has followed.
 
-    An "in" closed by its own "out" is paired. Otherwise (the next event is another app, or none
-    follows) it is cut at that next event or 30 minutes and ``paired`` is False.
+    That ``(bundle_id, start_ms)`` may only be waiting for its "out" to sync, so it is not an
+    interval yet; :func:`pair_intervals` cuts it at 30 minutes instead.
     """
     out: list[tuple[str, int, int, bool]] = []
     open_: tuple[str, int] | None = None
@@ -130,8 +133,18 @@ def pair_intervals(events: list[dict[str, Any]]) -> list[tuple[str, int, int, bo
             open_ = None
         if ev["focus"] == "in":
             open_ = (ev["bundle_id"], at)
-    if open_ is not None:
-        out.append((open_[0], open_[1], open_[1] + _UNPAIRED_CAP_MS, False))
+    return out, open_
+
+
+def pair_intervals(events: list[dict[str, Any]]) -> list[tuple[str, int, int, bool]]:
+    """One device's events as ``(bundle_id, start_ms, end_ms, paired)``, oldest first.
+
+    An "in" closed by its own "out" is paired. Otherwise (the next event is another app, or none
+    follows) it is cut at that next event or 30 minutes and ``paired`` is False.
+    """
+    out, tail = closed_intervals(events)
+    if tail is not None:
+        out.append((tail[0], tail[1], tail[1] + _UNPAIRED_CAP_MS, False))
     return out
 
 
@@ -173,13 +186,37 @@ def summarize(data: dict[str, Any], tz: tzinfo | None = None) -> str:
     return "\n".join(lines) if lines else "no synced devices"
 
 
+def _print_entries(hours: float) -> int:
+    """Counts per device and the first entries of :func:`mac_ship_devices.dry_run`."""
+    from jarvis.surface import mac_ship_devices  # noqa: PLC0415 - it imports this module
+
+    try:
+        built, data = mac_ship_devices.dry_run(hours, int(time.time() * 1000))
+    except ScreenTimeUnavailable as exc:
+        sys.stderr.write(f"screen time unavailable: {exc}\n")
+        return 1
+    counts: dict[str, int] = defaultdict(int)
+    for entry in built.entries:
+        counts[f"{entry['fields']['device']} {entry['kind']}"] += 1
+    sys.stdout.write(f"{len(data['events'])} events read, {len(built.entries)} entries\n")
+    sys.stdout.writelines(f"  {name}: {n}\n" for name, n in sorted(counts.items()))
+    for entry in built.entries[:_SHOWN]:
+        sys.stdout.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    """``probe [--hours N]``: print the summary of the last N hours (default 48)."""
+    """``probe`` or ``entries --dry-run``, each over the last ``--hours`` (default 48)."""
     parser = argparse.ArgumentParser(prog="python -m jarvis.surface.mac_screen_time")
     sub = parser.add_subparsers(dest="cmd", required=True)
     probe = sub.add_parser("probe", help="summarise synced iPhone/iPad app use")
     probe.add_argument("--hours", type=float, default=48.0)
+    entries = sub.add_parser("entries", help="what the shipper would send, without sending it")
+    entries.add_argument("--hours", type=float, default=48.0)
+    entries.add_argument("--dry-run", action="store_true", required=True)
     args = parser.parse_args(argv)
+    if args.cmd == "entries":
+        return _print_entries(args.hours)
     since_ms = int((time.time() - args.hours * 3600) * 1000)
     try:
         data = read_screen_time(since_ms)
@@ -192,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
 
 __all__ = [
     "ScreenTimeUnavailable",
+    "closed_intervals",
     "ensure_screen_time_app",
     "pair_intervals",
     "parse_helper_output",

@@ -311,6 +311,12 @@ mac_ship:
   # mac_ship 开着时默认开；关掉写 enabled: false。
   claude_code_days:
     enabled: true
+  # ADR 0304 — 把这台 Mac 上 Screen Time「跨设备共享」同步来的 iPhone/iPad 前台应用，每 15 分钟一次
+  # 按「一次一个应用」发给大脑（来源 device-apps）；需要给 JarvisScreenTime.app 完全磁盘访问权限，
+  # 没给就只记一条日志、什么也不做。应用名从 Apple 公开的 lookup 查，缓存在运行目录 mac-ship/app-names.json。
+  # mac_ship 开着时默认开；关掉写 enabled: false。
+  device_apps:
+    enabled: true
 
 # ADR 0294 — 大脑收下终端抄来的数据后，磁盘剩余低于这个数就回 507，终端留着稍后重发。
 imports:
