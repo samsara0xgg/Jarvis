@@ -7,6 +7,8 @@ import Foundation
 /// What he has just done that the brain's next answer will say too, and the day shows before it does.
 struct TLDone: Equatable {
     var highlights: [Highlight]?                // the day's highlights as they stand after his mark; none: the brain's own
+    var confirmed: Set<String> = []             // the events his mail made that he has said are his (by the item's id)
+    var dropped: Set<String> = []               // and those he has said are not: the day has no row for them
 }
 
 /// what a row needs to know of the day it is in
@@ -19,6 +21,7 @@ struct TLFrame {
     var hers: Set<String> = []                  // and which of them are her picks and not his marks
     var acked: Set<String> = []                 // the reminders he has just said he knows, before the brain's next answer says it
     var renamed: [String: String] = [:]         // the places he has just given another name (by their id), likewise
+    var confirmed: Set<String> = []             // the events his mail made that he has just said are his
 }
 
 /// the text of an optional string, or nil when it is empty
@@ -36,6 +39,14 @@ func tlDistance(_ meters: Double) -> String? {
 }
 
 extension DayTimelineModel {
+    /// The hex of a commitment's id (`commitment-<hex>@<day>`), which is what the brain's route is asked with: hex digits and nothing else, so that it can stand in a path.
+    static func commitmentHex(_ id: String) -> String? {
+        let head = "commitment-"
+        guard id.hasPrefix(head), let at = id.firstIndex(of: "@") else { return nil }
+        let hex = id[id.index(id.startIndex, offsetBy: head.count)..<at]
+        return !hex.isEmpty && hex.utf8.count <= 64 && hex.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) } ? String(hex) : nil
+    }
+
     /// One item as a row, or nil for a kind this phone does not know. `t0` and `t1` are its times in minutes from the day's midnight (`t1` nil: it has no end yet).
     static func row(_ i: DayItem, t0: Double, t1: Double?, _ f: TLFrame) -> TLEntry? {
         let now = f.now
@@ -127,17 +138,20 @@ extension DayTimelineModel {
             e.title = hidden ? "私事" : tlText(i.title) ?? "日程"
             e.symbol = "calendar.circle.fill"
             e.barName = e.title; e.barIcon = "calendar"; e.glance = e.title
-            // a mail made it and he has not said it is his: say so, and where (a private one names no place)
-            let unconfirmed = i.source == "mail" && i.confirmed == false
-            // where it came from (none: his calendar), that it is not his yet, and where; a private one says no more
+            // a mail made it and he has not said it is his (the brain's answer says so, and so does he, before the brain does): say so, and where (a private one names no place)
+            let mine = i.source == "mail" && (i.confirmed == true || f.confirmed.contains(i.id))
+            let unconfirmed = i.source == "mail" && i.confirmed == false && !f.confirmed.contains(i.id)
+            let said = mine ? "你确认了" : nil
+            // where it came from (none: his calendar), that it is not his yet or that he said it is, and where; a private one says no more
             let word = i.source.map { eventSources[$0] } ?? "日历"
-            let parts = hidden ? [] : [word, unconfirmed ? "还没确认" : nil, tlText(i.place)].compactMap { $0 }
+            let parts = hidden ? [] : [word, unconfirmed ? "还没确认" : said, tlText(i.place)].compactMap { $0 }
             e.detail = parts.isEmpty ? nil : parts.joined(separator: " · ")
-            // opened it says what the line does not: the hours (the row has when it began), that he has said it is his, and for a private one where it came from
+            // opened it says what the line does not: the hours (the row has when it began), and for a private one, whose line says nothing, where it came from and that he has said it is his
             e.more = [t1 != nil && (span ?? 0) >= 1 ? rangeText(t0, t1, running: false, f) : nil, hidden ? "来自" + (eventSources[tlText(i.source) ?? ""] ?? "日历") : nil,
-                      i.source == "mail" && i.confirmed == true ? "你确认过了" : nil].compactMap { $0 }
+                      hidden ? said : nil].compactMap { $0 }
             e.right = dur ?? ""
             e.waiting = unconfirmed && (now.map { (t1 ?? t0) > $0 } ?? false)
+            e.commitment = unconfirmed ? commitmentHex(i.id) : nil
         case "reminder":
             e.kind = .reminder
             e.title = tlText(i.text) ?? "提醒"

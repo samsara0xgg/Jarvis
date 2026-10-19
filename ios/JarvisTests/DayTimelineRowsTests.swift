@@ -216,9 +216,9 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(try entry(build(odd, now: nil), "s").actions, [.ask, .mark])
         let route = try reply(item("s", "stay", 600, 700, #""place": "X", "kept_place": {"id": "undo", "name": "家", "role": "home"}"#))
         XCTAssertEqual(try entry(build(route, now: nil), "s").actions, [.ask, .mark], "its id is the brain's own route")
-        // an event from his mail has an @ in its id (`commitment-<hex>@<day>`), which the host takes
+        // an event from his mail has an @ in its id (`commitment-<hex>@<day>`), which the host takes; it is his to say it is his or is not
         let mail = try reply(item("commitment-ab12@2026-10-08", "event", 1320, 1350, #""title": "X", "source": "mail", "confirmed": false"#))
-        XCTAssertEqual(try entry(build(mail), "commitment-ab12@2026-10-08").actions, [.ask, .mark])
+        XCTAssertEqual(try entry(build(mail), "commitment-ab12@2026-10-08").actions, [.confirm, .deny, .ask, .mark])
         XCTAssertEqual(try entry(build(mail), "commitment-ab12@2026-10-08").about?.id, "commitment-ab12@2026-10-08")
         XCTAssertTrue(try entry(build(mail), "commitment-ab12@2026-10-08").waiting, "and it waits on him")
     }
@@ -484,11 +484,12 @@ final class DayTimelineRowsTests: XCTestCase {
     func testEventsSayWhereTheyCameFromAndPrivateOnesSayNoMoreThanThat() throws {
         let r = try reply([item("e1", "event", 600, 660, #""title": "A", "place": "Room 1""#), item("e2", "event", 700, 760, #""title": "B", "source": "mail", "confirmed": true"#),
                            item("e3", "event", 800, 860, #""title": "C", "source": "said""#), item("e4", "event", 900, 960, #""title": "D", "source": "plan""#),
-                           item("e5", "event", 1000, 1060, #""title": "E", "source": "elsewhere""#), item("e6", "event", 1100, 1160, #""title": "F", "place": "Clinic", "private": true, "source": "mail", "confirmed": false"#)].joined(separator: ","))
+                           item("e5", "event", 1000, 1060, #""title": "E", "source": "elsewhere""#), item("e6", "event", 1100, 1160, #""title": "F", "place": "Clinic", "private": true, "source": "mail", "confirmed": false"#),
+                           item("e7", "event", 1200, 1260, #""title": "G", "place": "Clinic", "private": true, "source": "mail", "confirmed": true"#)].joined(separator: ","))
         let m = build(r, now: nil)
-        XCTAssertEqual(m.entries.map(\.detail), ["日历 · Room 1", "邮件", "你说的", "计划", nil, nil])
-        // opened, the hours (the row has when it began) and that he has said it is his; where it came from and where are in its line, a private one's is not
-        XCTAssertEqual(m.entries.map(\.more), [["10:00–11:00"], ["11:40–12:40", "你确认过了"], ["13:20–14:20"], ["15:00–16:00"], ["16:40–17:40"], ["18:20–19:20", "来自邮件"]])
+        XCTAssertEqual(m.entries.map(\.detail), ["日历 · Room 1", "邮件 · 你确认了", "你说的", "计划", nil, nil, nil], "that he has said it is his is in the line")
+        // opened, the hours (the row has when it began); where it came from and whether it is his are in its line, a private one's has none, so it says them here
+        XCTAssertEqual(m.entries.map(\.more), [["10:00–11:00"], ["11:40–12:40"], ["13:20–14:20"], ["15:00–16:00"], ["16:40–17:40"], ["18:20–19:20", "来自邮件"], ["20:00–21:00", "来自邮件", "你确认了"]])
         XCTAssertEqual(try entry(m, "e6").title, "私事")
     }
 

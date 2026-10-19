@@ -62,6 +62,9 @@ final class TimelineState {
     var renameNote: String?                         // why it did not go
     var undo: PlaceUndo?                            // the rename he can take back for a few seconds
     @ObservationIgnored var undoBusy = false        // taking it back is on its way to the brain
+    // what he says of what his mail made (Sky/DayTimelineCommit.swift)
+    var confirmed: [String: Date] = [:]             // the events he has just said are his, until when the row says so before the brain's next answer does (`commitHolds`)
+    var dropped: [String: Date] = [:]               // and those he has just said are not: the day has no row for them for as long
     // what he marks (Sky/DayTimelineMarks.swift)
     var highlights: [String: TLHeld<[Highlight]>] = [:]     // the day's highlights as they stand after his mark, by the day's date, until the brain's own say the same (`markHolds`)
     var markBusy = false                            // his word on a mark is on its way to the brain: another waits for it
@@ -102,7 +105,8 @@ final class TimelineState {
         let now = Date()
         return DayTimelineModel.build(r, now: nowMinute(in: r), topic: { TalkTopics.shared.topic($0) }, acked: Set(acked.filter { $0.value > now }.keys),
                                       renamed: renamed.compactMapValues { $0.until > now ? $0.name : nil },
-                                      done: TLDone(highlights: highlights[r.date].flatMap { $0.until > now ? $0.value : nil }))
+                                      done: TLDone(highlights: highlights[r.date].flatMap { $0.until > now ? $0.value : nil },
+                                                   confirmed: Set(confirmed.filter { $0.value > now }.keys), dropped: Set(dropped.filter { $0.value > now }.keys)))
     }
 
     func scroll(to y: Double, animated: Bool) { request = ScrollRequest(y: y, animated: animated, n: request.n + 1) }
@@ -419,7 +423,7 @@ private struct TLList: View {
                               tap: { toggle(e) }, opened: { ensureVisible(e, height: $0) })
                         .equatable()
                         .modifier(Rise(rank: ranks[e.id], on: tl.reveal, reduce: reduce))
-                        .transition(reduce ? .opacity : .asymmetric(insertion: TLGrow.transition, removal: .opacity))
+                        .transition(reduce ? .opacity : TLGrow.transition)          // what is new grows in, and what he says is not his collapses out the same way
                 }
                 if let n = model.missing {
                     Text(n).font(.system(size: 12.5)).foregroundStyle(faint).frame(maxWidth: .infinity, minHeight: TLMetrics.note, alignment: .leading)

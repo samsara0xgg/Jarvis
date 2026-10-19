@@ -50,7 +50,8 @@ enum TLMotion {
 
 // MARK: - what is new grows
 
-/// What is new in the list grows from no height at its place while it fades in (240 ms), and the rows under it move down as its height comes.
+/// What is new in the list grows from no height at its place while it fades in (240 ms), and the rows under it move down as its height comes; what goes (an event he says is not his) does it
+/// the other way, and the rows under it come up as its height goes.
 enum TLGrow {
     static var transition: AnyTransition { .modifier(active: Grown(k: 0), identity: Grown(k: 1)) }
 

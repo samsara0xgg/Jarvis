@@ -2,29 +2,12 @@ import XCTest
 @testable import Jarvis
 
 /// His star on a row (Sky/DayTimelineMarks.swift): which rows can have one, whose it is, that it is on the row before the brain has said anything, that the brain's list of the day's highlights
-/// replaces the phone's own when it comes, and that a refusal or no answer puts the star back and says why under the row. The brain is a stub that records what it was asked.
+/// replaces the phone's own when it comes, and that a refusal or no answer puts the star back and says why under the row. The brain is a stub that records what it was asked (TLStubBrain).
 @MainActor
 final class DayTimelineMarksTests: XCTestCase {
     private var cal: Cal { Cal.cur }
 
-    /// the brain, as far as marks go: what it is asked, what it answers, and (with `hold`) when
-    @MainActor private final class Stub {
-        var asked: [(day: String, id: String, on: Bool)] = []
-        var answer: HighlightAnswer = .done(nil)
-        var refetches = 0
-        var hold = false
-        private var waiting: CheckedContinuation<Void, Never>?
-        var brain: TLBrain {
-            TLBrain(mark: { [self] day, id, on in
-                asked.append((day, id, on))
-                if hold { await withCheckedContinuation { waiting = $0 } }
-                return answer
-            }, refetch: { [self] in refetches += 1 })
-        }
-        func release() { waiting?.resume(); waiting = nil }
-    }
-
-    private func state(_ stub: Stub) -> TimelineState {
+    private func state(_ stub: TLStubBrain) -> TimelineState {
         let tl = TimelineState()
         tl.day = tl.today
         tl.fixture = .init(replies: [0: TimelineFixture.today(cal)], now: TimelineFixture.now)
@@ -43,7 +26,7 @@ final class DayTimelineMarksTests: XCTestCase {
     // MARK: which rows, and whose star
 
     func testEveryItemOfTheDayCanBeStarredAndNothingElse() throws {
-        let tl = state(Stub())
+        let tl = state(TLStubBrain())
         let m = try model(tl)
         for e in m.entries { XCTAssertEqual(e.starrable, e.kind != .now && e.kind != .pause && !e.id.hasPrefix("code-group-"), e.id) }
         XCTAssertTrue(try entry(tl, "workout-demo-1").starrable, "though the host does not take a run as what a turn is about")
@@ -59,7 +42,7 @@ final class DayTimelineMarksTests: XCTestCase {
     }
 
     func testHisMarkIsAFilledStarAndHerPickIsAnOutlinedOneAndAMarkOfHisOnItsOwnWinsOverHerPick() throws {
-        let tl = state(Stub())
+        let tl = state(TLStubBrain())
         XCTAssertEqual(try entry(tl, "call-demo-1").lit, true)
         XCTAssertEqual(try entry(tl, "call-demo-1").hers, true, "she picked it")
         XCTAssertEqual(try model(tl).stars, [TLStar(id: "call-demo-1", t: 1000, hers: true)])
@@ -73,7 +56,7 @@ final class DayTimelineMarksTests: XCTestCase {
     }
 
     func testWhatOffersWhatByWhoseStarItWears() throws {
-        let tl = state(Stub())
+        let tl = state(TLStubBrain())
         XCTAssertEqual(try entry(tl, "talk-1").actions.filter { $0 == .mark || $0 == .unmark }, [.mark], "no star: put one on")
         XCTAssertEqual(try entry(tl, "call-demo-1").actions.filter { $0 == .mark || $0 == .unmark }, [.mark, .unmark], "hers: he can make it his, or put it away")
         tl.highlights[try date(tl)] = TLHeld(value: his("talk-1"), until: Date().addingTimeInterval(60))
@@ -82,7 +65,7 @@ final class DayTimelineMarksTests: XCTestCase {
     }
 
     func testWhatTheBrainSaysTakesOverWhenTheHoldIsUp() throws {
-        let tl = state(Stub())
+        let tl = state(TLStubBrain())
         let day = try date(tl)
         tl.highlights[day] = TLHeld(value: his("talk-1"), until: Date().addingTimeInterval(-1))
         XCTAssertEqual(try model(tl).stars.map(\.id), ["call-demo-1"], "the hold is over: the brain's own list")
@@ -113,7 +96,7 @@ final class DayTimelineMarksTests: XCTestCase {
     // MARK: his word, at once, and the brain's answer
 
     func testStarringIsOnTheRowAtOnceAndTheBrainIsToldTheDayTheItemAndTheSwitchOnce() async throws {
-        let stub = Stub(); stub.hold = true
+        let stub = TLStubBrain(); stub.hold = true
         let tl = state(stub)
         let talk = try entry(tl, "talk-1")
         tl.toggleStar(talk)
@@ -122,20 +105,20 @@ final class DayTimelineMarksTests: XCTestCase {
         XCTAssertEqual(try model(tl).stars, [TLStar(id: "talk-1", t: 612), TLStar(id: "call-demo-1", t: 1000, hers: true)], "and on the bar beside hers")
         XCTAssertEqual(tl.pop["talk-1"], 1, "the star in the open row bursts")
         XCTAssertTrue(tl.markBusy)
-        await until("the brain was asked") { stub.asked.count == 1 }
-        XCTAssertEqual(stub.asked.first?.day, try date(tl))
-        XCTAssertEqual(stub.asked.first?.id, "talk-1")
-        XCTAssertEqual(stub.asked.first?.on, true)
+        await until("the brain was asked") { stub.marked.count == 1 }
+        XCTAssertEqual(stub.marked.first?.day, try date(tl))
+        XCTAssertEqual(stub.marked.first?.id, "talk-1")
+        XCTAssertEqual(stub.marked.first?.on, true)
         stub.release()
         await until("the answer was taken") { !tl.markBusy }
-        XCTAssertEqual(stub.asked.count, 1)
+        XCTAssertEqual(stub.marked.count, 1)
         XCTAssertTrue(try entry(tl, "talk-1").lit)
         XCTAssertNil(tl.notes["talk-1"])
     }
 
     func testTheListTheBrainAnswersWithReplacesTheOneThePhoneMadeUp() async throws {
-        let stub = Stub()
-        stub.answer = .done([Highlight(id: "talk-1", label: "", by: "him"), Highlight(id: "stay-1", label: "家", by: "her")])
+        let stub = TLStubBrain()
+        stub.markAnswer = .done([Highlight(id: "talk-1", label: "", by: "him"), Highlight(id: "stay-1", label: "家", by: "her")])
         let tl = state(stub)
         tl.setMark(try entry(tl, "talk-1"), on: true)
         await until("the answer was taken") { !tl.markBusy }
@@ -147,8 +130,8 @@ final class DayTimelineMarksTests: XCTestCase {
     }
 
     func testAnAnswerThatCannotBeReadLeavesTheStarWhereItIs() async throws {
-        let stub = Stub()
-        stub.answer = .done(nil)
+        let stub = TLStubBrain()
+        stub.markAnswer = .done(nil)
         let tl = state(stub)
         tl.setMark(try entry(tl, "talk-1"), on: true)
         await until("the answer was taken") { !tl.markBusy }
@@ -157,7 +140,7 @@ final class DayTimelineMarksTests: XCTestCase {
     }
 
     func testAMarkTheBrainRefusesBecauseFiveStandGoesBackWithAWarningAndTheRowSaysWhy() async throws {
-        let stub = Stub(); stub.answer = .full
+        let stub = TLStubBrain(); stub.markAnswer = .full
         let tl = state(stub)
         tl.openRow = "talk-1"
         let before = try model(tl)
@@ -173,7 +156,7 @@ final class DayTimelineMarksTests: XCTestCase {
 
     func testAMarkThatDidNotGoGoesBackAndSaysSoAndOneThatHasNoItemAsksForTheDayAgain() async throws {
         for (answer, refetches) in [(HighlightAnswer.failed, 0), (.gone, 1)] {
-            let stub = Stub(); stub.answer = answer
+            let stub = TLStubBrain(); stub.markAnswer = answer
             let tl = state(stub)
             tl.openRow = "talk-1"
             tl.setMark(try entry(tl, "talk-1"), on: true)
@@ -185,18 +168,18 @@ final class DayTimelineMarksTests: XCTestCase {
     }
 
     func testAStarTakenOffHerPickGoesBackToHerPickWhenTheBrainWillNot() async throws {
-        let stub = Stub(); stub.answer = .failed
+        let stub = TLStubBrain(); stub.markAnswer = .failed
         let tl = state(stub)
         tl.setMark(try entry(tl, "call-demo-1"), on: false)
         XCTAssertFalse(try entry(tl, "call-demo-1").lit, "put away at once")
-        XCTAssertEqual(stub.asked.count, 0, "the brain is told from a task")
+        XCTAssertEqual(stub.marked.count, 0, "the brain is told from a task")
         await until("the answer was taken") { !tl.markBusy }
-        XCTAssertEqual(stub.asked.map(\.on), [false])
+        XCTAssertEqual(stub.marked.map(\.on), [false])
         XCTAssertTrue(try entry(tl, "call-demo-1").lit && (try entry(tl, "call-demo-1")).hers, "hers again")
     }
 
     func testTheStarButtonTurnsHisMarkOnAndOffAndHerPickIntoHis() async throws {
-        let stub = Stub()
+        let stub = TLStubBrain()
         let tl = state(stub)
         tl.toggleStar(try entry(tl, "call-demo-1"))
         XCTAssertTrue(try entry(tl, "call-demo-1").lit && !(try entry(tl, "call-demo-1")).hers, "hers made his")
@@ -204,28 +187,28 @@ final class DayTimelineMarksTests: XCTestCase {
         tl.toggleStar(try entry(tl, "call-demo-1"))
         XCTAssertFalse(try entry(tl, "call-demo-1").lit, "his taken off")
         await until("the answer was taken") { !tl.markBusy }
-        XCTAssertEqual(stub.asked.map(\.on), [true, false])
+        XCTAssertEqual(stub.marked.map(\.on), [true, false])
         XCTAssertEqual(tl.pop["call-demo-1"], 1, "only turning it on bursts")
     }
 
     func testWhileOneWordIsOnItsWayAnotherWaitsForIt() async throws {
-        let stub = Stub(); stub.hold = true
+        let stub = TLStubBrain(); stub.hold = true
         let tl = state(stub)
         tl.setMark(try entry(tl, "talk-1"), on: true)
         tl.setMark(try entry(tl, "stay-1"), on: true)
         XCTAssertFalse(try entry(tl, "stay-1").lit, "ignored, not queued")
-        await until("the brain was asked") { stub.asked.count == 1 }
+        await until("the brain was asked") { stub.marked.count == 1 }
         stub.release()
         await until("the answer was taken") { !tl.markBusy }
         tl.setMark(try entry(tl, "stay-1"), on: true)
-        await until("the second was asked") { stub.asked.count == 2 }
-        XCTAssertEqual(stub.asked.map(\.id), ["talk-1", "stay-1"])
+        await until("the second was asked") { stub.marked.count == 2 }
+        XCTAssertEqual(stub.marked.map(\.id), ["talk-1", "stay-1"])
         stub.release()
         await until("the second was taken") { !tl.markBusy }
     }
 
     func testAWordFromTheMenuOpensTheRowToSayWhyItDidNotGoAndANoteGoesAfterAWhile() async throws {
-        let stub = Stub(); stub.answer = .full
+        let stub = TLStubBrain(); stub.markAnswer = .full
         let tl = state(stub), engine = StarEngine()
         XCTAssertNil(tl.openRow)
         tl.perform(.mark, on: try entry(tl, "talk-1"), engine: engine)
@@ -237,16 +220,16 @@ final class DayTimelineMarksTests: XCTestCase {
         XCTAssertEqual(tl.notes["talk-1"], "y", "one line at a time")
         // what a row does not offer does nothing
         tl.perform(.unmark, on: try entry(tl, "talk-1"), engine: engine)
-        XCTAssertEqual(stub.asked.count, 1, "nobody starred it, so there is no star to take off")
+        XCTAssertEqual(stub.marked.count, 1, "nobody starred it, so there is no star to take off")
     }
 
     func testWhatIsNotAnItemIsNeverStarred() throws {
-        let stub = Stub()
+        let stub = TLStubBrain()
         let tl = state(stub)
         tl.setMark(try entry(tl, "now"), on: true)
         tl.setMark(try entry(tl, "code-group-stay-1"), on: true)
         XCTAssertFalse(tl.markBusy)
-        XCTAssertTrue(stub.asked.isEmpty)
+        XCTAssertTrue(stub.marked.isEmpty)
         XCTAssertTrue(tl.highlights.isEmpty)
     }
 }

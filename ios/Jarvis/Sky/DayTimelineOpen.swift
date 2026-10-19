@@ -1,8 +1,8 @@
 import SwiftUI
 
 // What a row of the day opens to, in place under it: a place's map and words, what a trip, a ride, an event or a payment says that its line does not, the first lines of a talk, the picture,
-// how a stretch of Mac work was spent, a night's stages, the sessions of Claude Code, and the buttons of what can be done with it (only those the row offers: `TLEntry.actions`). The row's
-// own title and line are not said again: they wrap, in the row, while it is open.
+// how a stretch of Mac work was spent, a night's stages, the sessions of Claude Code, and the buttons of what can be done with it (only those the row offers: `TLEntry.actions`) with the
+// star at their right. The row's own title and line are not said again: they wrap, in the row, while it is open.
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
@@ -203,11 +203,12 @@ struct TLOpenView: View {
                 Spacer(minLength: 0)
                 if e.starrable { TLStarButton(on: e.lit && !e.hers, hers: e.hers, pop: tl.pop[e.id] ?? 0, reduce: reduce) { tl.toggleStar(e) } }
             }
+            .animation(.easeOut(duration: reduce ? TLMotion.reducedFade : 0.2), value: e.actions)          // 是我的 and 不是 go when one of them is said
         }
     }
     /// what the row opened is for comes first, and in the light fill; asking her is always there and quieter
-    private func strong(_ a: TLAction) -> Bool { a == .acknowledge || a == .openTalk || a == .summarize }
-    private func rank(_ a: TLAction) -> Int { strong(a) ? 0 : a == .rename ? 1 : 2 }
+    private func strong(_ a: TLAction) -> Bool { a == .acknowledge || a == .openTalk || a == .summarize || a == .confirm }
+    private func rank(_ a: TLAction) -> Int { strong(a) ? 0 : a == .rename || a == .deny ? 1 : 2 }
 
     /// the name of a place he keeps, typed in the row: done sends it, the keyboard's return too; what the brain refuses says why under it
     private var renameField: some View {

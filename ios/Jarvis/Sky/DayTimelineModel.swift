@@ -77,6 +77,8 @@ enum TLAction: Hashable {
     case openTalk           // the conversation, at the time of the talk
     case rename             // a place he keeps, under another name
     case acknowledge        // a reminder that rang: he knows
+    case confirm            // an event his mail made: it is his
+    case deny               // an event his mail made: it is not
     case summarize          // what he did on the Mac, put to her at once
     case mark               // it mattered: his star on it
     case unmark             // it did not: the star, his or hers, taken off
@@ -202,6 +204,7 @@ struct TLEntry: Identifiable, Equatable {
     var going = false               // today, begun, no end yet: it goes on, and its end is now
     var ride = false                // a trip on a bus
     var waiting = false             // waits on him (a reminder that rang, an event from his mail he has not confirmed): the amber `等你`
+    var commitment: String?         // an event his mail made that he has not said is his: its hex, which is what the brain's route takes
     var talkStart: Int64?           // a talk: when it began, for opening the conversation there
     var turns: Int?                 // a talk: how many lines it had
     var attachment: String?         // a picture: the brain's name for it
@@ -473,8 +476,9 @@ struct DayTimelineModel: Equatable {
     // MARK: building
 
     /// `now` is the minute of now when this is today (`TimelineState.nowMinute`). `topic` names a talk by what it was about. `acked`, `renamed` and `done` are what he has just done to a
-    /// reminder, to a place he keeps and to the day's marks, which the brain's next answer will say too. An item that cannot be placed (a time that is not one, an end before its start, an
-    /// id taken already) is left out, and so is one of a kind this phone does not know. The minutes are those of the brain's day (`TLClock`).
+    /// reminder, to a place he keeps, to the day's marks and to what his mail made, which the brain's next answer will say too (an event he said is not his is left out). An item that cannot be
+    /// placed (a time that is not one, an end before its start, an id taken already) is left out, and so is one of a kind this phone does not know. The minutes are those of the brain's day
+    /// (`TLClock`).
     static func build(_ r: DayReply, now: Double?, topic: @escaping (String) -> String? = { _ in nil },
                       acked: Set<String> = [], renamed: [String: String] = [:], done: TLDone = TLDone()) -> DayTimelineModel {
         let wall = TLClock(r)
@@ -488,13 +492,13 @@ struct DayTimelineModel: Equatable {
             marks[h.id] = label.range(of: #"^[a-z_]+ \d{1,2}:\d{2}$"#, options: [.regularExpression, .caseInsensitive]) == nil ? label : ""
             if h.by == "her" { hers.insert(h.id) }
         }
-        let frame = TLFrame(now: now, m: m, before: wall.before, topic: topic, marks: marks, hers: hers, acked: acked, renamed: renamed)
+        let frame = TLFrame(now: now, m: m, before: wall.before, topic: topic, marks: marks, hers: hers, acked: acked, renamed: renamed, confirmed: done.confirmed)
         // what a day can hold, with a month either side: a time beyond it is not a time of this day's list
         let reach = 30 * DAY, window = 31.0 * 86_400_000
         var taken: Set<String> = ["now"]
         var items: [DayItem] = [], rows: [TLEntry] = []
         for i in r.items {
-            guard !i.id.isEmpty, abs(Double(i.start_ms) - Double(r.start_ms)) <= window, i.end_ms.map({ abs(Double($0) - Double(r.start_ms)) <= window }) ?? true,
+            guard !i.id.isEmpty, !done.dropped.contains(i.id), abs(Double(i.start_ms) - Double(r.start_ms)) <= window, i.end_ms.map({ abs(Double($0) - Double(r.start_ms)) <= window }) ?? true,
                   taken.insert(i.id).inserted else { continue }
             let t0 = m(i.start_ms), t1 = i.end_ms.map(m)
             guard t0.isFinite, abs(t0) <= reach, t1.map({ $0.isFinite && abs($0) <= reach && $0 >= t0 }) ?? true, let e = row(i, t0: t0, t1: t1, frame) else { continue }
@@ -697,6 +701,7 @@ struct DayTimelineModel: Equatable {
         switch e.kind {
         case .talk: if e.talkStart != nil { a.append(.openTalk) }
         case .stay: if e.place?.canRename == true { a.append(.rename) }
+        case .event: if e.commitment != nil { a += [.confirm, .deny] }
         case .reminder: if e.waiting { a.append(.acknowledge) }
         case .work: if e.about != nil { a.append(.summarize) }
         default: break

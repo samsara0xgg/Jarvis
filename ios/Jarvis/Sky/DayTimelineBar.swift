@@ -271,6 +271,7 @@ struct TLBarView: View {
                 ZStack(alignment: .topLeading) {
                     TLTrack()
                     BarCanvas(scene: scene, rects: rects)
+                    planned
                     if let b = bracket { bracketView(b).transition(.opacity) }      // under the words, so a line never runs through a symbol
                     labels
                 }
@@ -298,8 +299,9 @@ struct TLBarView: View {
     // MARK: words and stars
 
     private var labels: some View {
-        ZStack(alignment: .topLeading) {
-            ForEach(TLBarLabel.placed(scene, width: bw)) { l in
+        let placed = TLBarLabel.placed(scene, width: bw)
+        return ZStack(alignment: .topLeading) {
+            ForEach(placed) { l in
                 HStack(spacing: TLBarLabel.gap) {
                     if l.fit != .name, let icon = l.icon {
                         Image(systemName: icon).font(.system(size: 10.5, weight: .semibold)).frame(width: TLBarLabel.icon)
@@ -309,9 +311,25 @@ struct TLBarView: View {
                 .font(.system(size: 11, weight: .semibold)).fixedSize()
                 .foregroundStyle(l.dark ? TLPaint.darkInk.color(0.9) : TLPaint.ink.color)
                 .frame(height: bh).offset(x: l.x)
+                .transition(.opacity)
             }
         }
         .frame(width: bw, height: bh, alignment: .topLeading)
+        .animation(tlStarFade(reduce: reduce), value: placed)          // a word goes with what it was on, as that fades
+        .allowsHitTesting(false)
+    }
+
+    /// what is planned, on the part of the bar that has not happened: an event is a dashed box over its time, a reminder or a bus a tick. They are views and not paint, so that one he says
+    /// is not his goes with a fade.
+    private var planned: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(scene.ahead) { a in
+                TLAheadMark(a: a, x0: x(a.t0), x1: x(a.t1), height: bh).transition(.opacity)
+            }
+        }
+        .frame(width: bw, height: bh, alignment: .topLeading)
+        .clipShape(RoundedRectangle(cornerRadius: TLLayout.barRadius))
+        .animation(tlStarFade(reduce: reduce), value: scene.ahead.map(\.id))
         .allowsHitTesting(false)
     }
 
@@ -433,7 +451,26 @@ private struct GrowMask: View {
     }
 }
 
-/// the pieces, the hatch on the trips, and what is planned
+/// one thing planned, on the bar: a dashed box 4 pt wide at least, inset half a point, or a tick 2 pt wide with a 4 pt dot on its head
+private struct TLAheadMark: View {
+    let a: TLAhead
+    let x0: Double, x1: Double, height: Double
+
+    var body: some View {
+        switch a.shape {
+        case .box:
+            RoundedRectangle(cornerRadius: 3).stroke(TLPaint.ink.color(0.45), style: StrokeStyle(lineWidth: 1, dash: [3, 2.5]))
+                .frame(width: max(x1 - x0, 4) - 1, height: height - 1).offset(x: x0 + 0.5, y: 0.5)
+        case .tick:
+            ZStack(alignment: .topLeading) {
+                Rectangle().fill(TLPaint.ink.color(0.55)).frame(width: 2, height: height - 4).offset(x: x0 - 1, y: 2)
+                Circle().fill(TLPaint.ink.color(0.95)).frame(width: 4, height: 4).offset(x: x0 - 2, y: 2)
+            }
+        }
+    }
+}
+
+/// the pieces and the hatch on the trips
 private struct BarCanvas: View {
     let scene: TLBarScene
     let rects: [CGRect]
@@ -455,17 +492,6 @@ private struct BarCanvas: View {
                     if p.fill == .trip { hatch(ctx, r) }
                 } else {
                     ctx.fill(Path(r), with: .color(Color.white.opacity(p.fill == .blank ? 0.06 : 0.035)))
-                }
-            }
-            for a in scene.ahead {
-                let x0 = TLGeo.x(a.t0, scene.span, size.width), x1 = TLGeo.x(a.t1, scene.span, size.width)
-                switch a.shape {
-                case .box:
-                    let r = CGRect(x: x0, y: 0, width: max(x1 - x0, 4), height: size.height).insetBy(dx: 0.5, dy: 0.5)
-                    ctx.stroke(Path(roundedRect: r, cornerRadius: 3), with: .color(TLPaint.ink.color(0.45)), style: StrokeStyle(lineWidth: 1, dash: [3, 2.5]))
-                case .tick:
-                    ctx.fill(Path(CGRect(x: x0 - 1, y: 2, width: 2, height: size.height - 4)), with: .color(TLPaint.ink.color(0.55)))
-                    ctx.fill(Path(ellipseIn: CGRect(x: x0 - 2, y: 2, width: 4, height: 4)), with: .color(TLPaint.ink.color(0.95)))
                 }
             }
         }

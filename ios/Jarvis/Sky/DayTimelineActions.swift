@@ -1,8 +1,8 @@
 import SwiftUI
 
 // What a row of the day does when it is opened, each only where it works today: hand it to her, open the conversation at its time, rename a place he keeps (and take that back), say he
-// knows a reminder that rang, have her sum up a stretch of Mac work, star it or take its star off (Sky/DayTimelineMarks.swift). The model says which of them a row offers
-// (`TLEntry.actions`); this is what each one does.
+// knows a reminder that rang, have her sum up a stretch of Mac work, star it or take its star off (Sky/DayTimelineMarks.swift), say that an event his mail made is his or is not
+// (Sky/DayTimelineCommit.swift). The model says which of them a row offers (`TLEntry.actions`); this is what each one does.
 
 /// a rename he can take back for a few seconds
 struct PlaceUndo: Equatable {
@@ -40,6 +40,10 @@ extension TimelineState {
             beginRename(e)
         case .acknowledge:
             acknowledge(e)
+        case .confirm:
+            confirm(e)
+        case .deny:
+            deny(e)
         case .summarize:
             guard let about = e.about else { return }
             // a turn still on its way would take no second one, and the chip put on for this row would be left for whatever he says next: wait for it, and say so
