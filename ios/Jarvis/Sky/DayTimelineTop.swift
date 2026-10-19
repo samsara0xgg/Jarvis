@@ -37,7 +37,7 @@ struct TLTopView: View {
             if let m = model {
                 let lens = tl.activeLens(in: m)
                 TLBarView(scene: scene, bracket: bracket(m), scrub: tl.scrub, lens: lens != nil, lensColor: (lens ?? lastLens).color, lensMarks: m.marks(of: lens ?? lastLens),
-                          reveal: tl.reveal, reduce: reduce)
+                          reveal: tl.reveal, reduce: reduce, breathe: ui.tlHeaderShown)
                     .animation(holding ? .easeOut(duration: 0.08) : .easeInOut(duration: 0.15), value: holding)       // the hairline and its time come and go with the finger
                     .gesture(scrubGesture(m))
                     .accessibilityElement().accessibilityLabel("一天的概览，拖动可以翻到那个时间")
@@ -113,6 +113,12 @@ struct TLTopView: View {
         let d = 8.0 * Double(tl.slide)
         return .asymmetric(insertion: .opacity.combined(with: .offset(x: -d)), removal: .opacity.combined(with: .offset(x: d)))
     }
+}
+
+extension StarUI {
+    /// the top of the timeline (her sentence, the bar, the day's numbers) is on show: she is in her corner and no panel covers it. Whatever moves in it (the warm line for now breathes at
+    /// 30 frames a second) is still while it is not.
+    var tlHeaderShown: Bool { tlHome && !panelOpen }
 }
 
 // MARK: - the day's numbers

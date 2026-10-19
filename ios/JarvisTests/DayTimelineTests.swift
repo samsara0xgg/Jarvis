@@ -724,6 +724,16 @@ final class DayTimelineTests: XCTestCase {
 
     // MARK: the setting
 
+    func testTheTopOfTheTimelineIsOnShowOnlyWhenSheIsInHerCornerAndNoPanelCoversIt() {
+        let ui = StarEngine().ui
+        ui.tlHome = true; ui.panelOpen = false
+        XCTAssertTrue(ui.tlHeaderShown)
+        ui.panelOpen = true
+        XCTAssertFalse(ui.tlHeaderShown, "under the panel nothing of it moves")
+        ui.panelOpen = false; ui.tlHome = false
+        XCTAssertFalse(ui.tlHeaderShown, "with the dial on show, or while she is on her way, nor does it")
+    }
+
     func testASwipeAlongTheDayIsADayBeforeOrAfterAndADragUpAndDownIsTheListsOwn() {
         XCTAssertEqual(TimelineState.swipe(dx: 80, dy: 10), -1, "dragged right: the day before")
         XCTAssertEqual(TimelineState.swipe(dx: -80, dy: -10), 1, "dragged left: the day after")
