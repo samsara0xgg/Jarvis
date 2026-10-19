@@ -1,0 +1,79 @@
+/* The timeline pane (DayTimeline.tsx, ADR 0296): the notch's drop pane with the day in it. Black like the notch it grows out of;
+   a place's colour is its own (home warm, school blue, the rest a fixed hue each), the day's now is a warm white, and amber is
+   never used here: it is the turn mark's, for "waiting on you". */
+.notch .dt { --now:255 240 220; display:flex; flex-direction:column; gap:9px; max-height:584px; padding-inline:4px; }
+.notch .dt > :not(.dt-list) { flex:none; }
+.notch .dt.is-loading > :not(.dt-head) { opacity:.45; transition:opacity var(--motion-fast); }
+.notch .dt-head { display:flex; align-items:center; gap:8px; min-height:26px; }
+.notch .dt-date { flex:none; font-size:14.5px; font-weight:600; line-height:24px; white-space:nowrap; }
+.notch .dt-today { flex:none; padding:0 6px; border-radius:var(--radius-tag); font-style:normal; font-size:var(--text-label); font-weight:600; line-height:17px; color:var(--p-muted); background:rgb(255 255 255 / .08); }
+.notch .dt-chips { display:flex; flex:1; gap:4px; min-width:0; overflow:hidden; }
+.notch .dt-chip { flex:0 1 auto; min-width:0; max-width:140px; padding:0 6px; border-radius:var(--radius-tag); font-style:normal; font-size:var(--text-label); line-height:17px; color:var(--p-muted); background:rgb(255 255 255 / .06);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.notch .dt-chip.is-more { flex:none; }
+.notch .dt-nav { display:flex; flex:none; gap:2px; margin-left:auto; }
+.notch .dt-nav button { display:grid; place-items:center; width:24px; height:24px; border-radius:var(--radius-control); color:var(--p-muted); transition:background var(--motion-fast),color var(--motion-fast); }
+.notch .dt-nav button:hover:not(:disabled) { background:rgb(255 255 255 / .08); color:var(--p-ink); }
+.notch .dt-nav button:disabled { opacity:.3; cursor:default; }
+.notch .dt-line { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; margin:0; padding-inline:2px; font:14px/1.55 "Songti SC","Noto Serif SC",ui-serif,serif; color:var(--p-ink); }
+.notch .dt-line.is-draft { color:var(--p-muted); }
+.notch .dt-say { margin:0; padding:10px 2px 14px; font-size:var(--text-detail); color:var(--p-muted); }
+.notch .dt-foot { margin:0; padding-inline:2px; font-size:var(--text-label); line-height:16px; color:var(--p-faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+/* the day in one bar: what each piece is, above it; the hours, under it */
+.notch .dt-bar { position:relative; display:flex; flex-direction:column; padding-inline:2px; }
+.notch .dt-notes { position:relative; height:18px; }
+.notch .dt-note { position:absolute; top:0; display:flex; align-items:center; box-sizing:border-box; height:16px; gap:3px; font-size:10.5px; font-weight:600; line-height:16px; white-space:nowrap; color:rgb(var(--c) / .95); }
+.notch .dt-note.is-label { justify-content:flex-start; padding-inline:4px; overflow:hidden; }
+.notch .dt-note.is-label > span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.notch .dt-note.is-icon { justify-content:center; }
+.notch .dt-note svg { flex:none; }
+.notch .dt-more { position:absolute; right:0; top:0; height:16px; padding:0 6px; border-radius:var(--radius-tag); font:600 10px/16px "JetBrains Mono", Menlo, monospace; color:var(--p-muted); background:rgb(255 255 255 / .09); }
+.notch .dt-more:hover { background:rgb(255 255 255 / .16); color:var(--p-ink); }
+.notch .dt-scale { position:relative; }
+.notch .dt-track { position:relative; height:10px; border-radius:5px; overflow:hidden; background:rgb(255 255 255 / .06); }
+.notch .dt-seg { position:absolute; top:0; bottom:0; background:rgb(var(--c) / var(--a)); box-shadow:inset -1px 0 0 rgb(0 0 0 / .55); cursor:pointer; transition:filter var(--motion-fast); }
+.notch .dt-seg.is-hot { filter:brightness(1.45); }
+.notch .dt-nowtick { position:absolute; top:-3px; bottom:-3px; width:1px; margin-left:-.5px; background:rgb(var(--now)); box-shadow:0 0 6px rgb(var(--now) / .75); pointer-events:none; }
+.notch .dt-hours { position:relative; height:14px; margin-top:3px; font:10px/14px "JetBrains Mono", Menlo, monospace; color:var(--p-faint); }
+.notch .dt-hours span { position:absolute; top:0; transform:translateX(-50%); }
+.notch .dt-hours span.is-start { transform:none; } .notch .dt-hours span.is-end { transform:translateX(-100%); }
+
+/* the day: stays as groups, the ways between them as connectors, the now line, what is still to come muted */
+.notch .dt-list { position:relative; display:flex; flex:0 1 auto; flex-direction:column; min-height:0; margin-inline:-4px; padding-inline:4px; overflow-y:auto; overscroll-behavior:contain;
+  scrollbar-width:thin; scrollbar-color:var(--p-line) transparent; }
+.notch .dt-list.more-below { -webkit-mask-image:linear-gradient(#000 calc(100% - 30px),transparent); mask-image:linear-gradient(#000 calc(100% - 30px),transparent); }
+.notch .dt-list.more-above { -webkit-mask-image:linear-gradient(transparent,#000 24px); mask-image:linear-gradient(transparent,#000 24px); }
+.notch .dt-list.more-above.more-below { -webkit-mask-image:linear-gradient(transparent,#000 24px,#000 calc(100% - 30px),transparent); mask-image:linear-gradient(transparent,#000 24px,#000 calc(100% - 30px),transparent); }
+.notch .dt-row,.notch .dt-sh { position:relative; display:grid; grid-template-columns:22px minmax(0,1fr) auto; gap:0 10px; align-items:center; min-height:32px; padding:3px 6px; border-radius:var(--radius-control);
+  font-size:var(--text-detail); line-height:17px; transition:background var(--motion-fast); }
+.notch .dt-row.is-hot,.notch .dt-sh.is-hot { background:rgb(255 255 255 / .07); }
+.notch .dt-ic { position:relative; z-index:1; display:grid; place-items:center; box-sizing:border-box; width:22px; height:22px; border:1px solid transparent; border-radius:50%; font-style:normal; color:var(--p-muted); background:rgb(255 255 255 / .07); }
+.notch .dt-tx { display:flex; flex-direction:column; min-width:0; }
+.notch .dt-tx b { overflow:hidden; font-size:12.5px; font-weight:500; white-space:nowrap; text-overflow:ellipsis; color:var(--p-ink); }
+.notch .dt-tx em { overflow:hidden; font-style:normal; font-size:11px; line-height:15px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-faint); }
+.notch .dt-star { margin-left:5px; vertical-align:-1px; color:var(--data); }
+.notch .dt-tm { font:var(--text-mono)/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; color:var(--p-muted); }
+.notch .dt-tm small { margin-left:8px; font-size:inherit; color:var(--p-faint); }
+.notch .dt-stay { display:flex; flex-direction:column; margin-top:5px; }
+.notch .dt-stay:first-child { margin-top:0; }
+.notch .dt-dot { justify-self:center; width:10px; height:10px; border-radius:50%; background:rgb(var(--c)); box-shadow:0 0 8px rgb(var(--c) / .5); }
+.notch .dt-sh.is-plain .dt-dot { background:rgb(var(--c) / .55); box-shadow:none; }
+.notch .dt-sh .dt-tx b { font-size:13px; font-weight:600; }
+.notch .dt-sh.is-plain .dt-tx b { font-weight:500; color:var(--p-muted); }
+.notch .dt-in { margin-left:16px; padding-left:5px; border-left:1.5px solid rgb(var(--c) / .32); }
+.notch .dt-in .dt-row { min-height:30px; }
+/* the ways between stays hang on a dotted line through the icon column */
+.notch .dt-row.is-way::before { content:''; position:absolute; left:16px; top:-8px; bottom:-8px; border-left:1.5px dotted rgb(214 222 250 / .4); }
+.notch .dt-row.is-way .dt-ic { background:#000; border-color:rgb(214 222 250 / .28); }
+.notch .dt-row.is-way .dt-tx b { font-weight:400; color:var(--p-muted); }
+.notch .dt-row.is-future { opacity:.62; }
+.notch .dt-row.is-future .dt-ic { background:transparent; border:1px dashed rgb(214 222 250 / .5); }
+.notch .dt-now { display:flex; align-items:center; gap:8px; height:22px; padding-inline:6px; font:600 var(--text-mono)/1 "JetBrains Mono", Menlo, monospace; color:rgb(var(--now)); }
+.notch .dt-now::after { content:''; flex:1; height:1px; background:rgb(var(--now) / .85); box-shadow:0 0 6px rgb(var(--now) / .55); }
+.notch .is-flash { animation:dt-flash .9s var(--ease-out); }
+@keyframes dt-flash { from { background:rgb(255 255 255 / .22); } to { background:transparent; } }
+@media (prefers-reduced-motion:reduce) {
+  .notch .dt.is-loading > :not(.dt-head),.notch .dt-nav button,.notch .dt-row,.notch .dt-sh,.notch .dt-seg { transition:none; }
+  .notch .is-flash { animation:none; }
+}
