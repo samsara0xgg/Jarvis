@@ -53,9 +53,10 @@ never in memory.db: a few hundred megabytes of screen text must not slow the dat
 turn reads."""
 DEVICE_SOURCE: Final = "device-apps"
 """His iPhone and iPad (ADR 0304): ``DEVICE_APP`` is one stretch of one app, ``DEVICE_HORIZON`` the
-time of a device's newest record the Mac holds."""
+time of a device's newest record the Mac holds, ``DEVICE_NAME`` what a bundle id is called."""
 DEVICE_APP: Final = "device_app"
 DEVICE_HORIZON: Final = "device_horizon"
+DEVICE_NAME: Final = "app_name"
 SHIPPED_DB: Final = "shipped.db"
 """Under the imports directory; the same ``import_entries`` table as memory.db's."""
 IMPORT_ENTRIES_DDL: Final = """CREATE TABLE IF NOT EXISTS import_entries (

@@ -191,17 +191,20 @@ def _print_entries(hours: float) -> int:
     from jarvis.surface import mac_ship_devices  # noqa: PLC0415 - it imports this module
 
     try:
-        built, data = mac_ship_devices.dry_run(hours, int(time.time() * 1000))
+        built, data, names = mac_ship_devices.dry_run(hours, int(time.time() * 1000))
     except ScreenTimeUnavailable as exc:
         sys.stderr.write(f"screen time unavailable: {exc}\n")
         return 1
     counts: dict[str, int] = defaultdict(int)
     for entry in built.entries:
         counts[f"{entry['fields']['device']} {entry['kind']}"] += 1
+    bundles = {e["fields"]["bundle_id"] for e in built.entries if e["kind"] == "device_app"}
     sys.stdout.write(f"{len(data['events'])} events read, {len(built.entries)} entries\n")
     sys.stdout.writelines(f"  {name}: {n}\n" for name, n in sorted(counts.items()))
+    sys.stdout.write(f"  app names: {len(bundles & names.keys())} of {len(bundles)} bundles\n")
     for entry in built.entries[:_SHOWN]:
-        sys.stdout.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        shown = {**entry["fields"], "app": names.get(entry["fields"].get("bundle_id"), (None,))[0]}
+        sys.stdout.write(json.dumps(shown, ensure_ascii=False) + "\n")
     return 0
 
 

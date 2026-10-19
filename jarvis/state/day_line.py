@@ -60,12 +60,12 @@ Each source folds on its own and a source that raises leaves its items out (:fun
   stretches of any app joined when the gap between them is at most five minutes, blocks with
   less than five minutes of foreground time dropped. ``device`` is "iPhone" or "iPad",
   ``active_s`` the foreground seconds inside the block (not end minus start), ``apps`` the five
-  with the most time, each ``{name, bundle, minutes, category}`` (name the store's, else the
-  bundle id; category the store's genre or ``None``). The devices' records reach the Mac late, so
-  :attr:`DayLine.synced` names, for each device that is behind the end of the window (or now),
-  the time its newest record is from: past it the device is not known, which is not the same as
-  not used. With a shipped store but no device record at all, ``screen`` is in ``missing``;
-  with no shipped store it says nothing;
+  with the most time, each ``{name, bundle, minutes, category}`` (name and category from the
+  newest ``app_name`` row of the bundle, else the bundle id and ``None``). The devices' records
+  reach the Mac late, so :attr:`DayLine.synced` names, for each device that is behind the end of
+  the window (or now), the time its newest record is from: past it the device is not known, which
+  is not the same as not used. With a shipped store but no device record at all, ``screen`` is in
+  ``missing``; with no shipped store it says nothing;
 - ``departures``: the bus trips he pinned (ADR 0204), each a point at its departure time, from the
   pin as the log held it at the end of the day; the reminder that rings for a trip on the line is
   left out, the departure stands for it.
@@ -867,6 +867,12 @@ def _screen_items(
             conn, imports.DEVICE_SOURCE, start_ms=window_start - BLOCK_REACH_MS, end_ms=window_end,
             kinds=(imports.DEVICE_APP,), by_prefix=True,
         )
+        names = {
+            str(row.fields["bundle_id"]): row.fields
+            for row in imports.newest(
+                conn, imports.DEVICE_SOURCE, kinds=(imports.DEVICE_NAME,), by_prefix=True,
+            )
+        }
     by_device: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_device[str(row.fields["device_id"])].append(row.fields)
@@ -884,13 +890,14 @@ def _screen_items(
                 reach = one["end_ms"]
         items.extend(
             item for block in blocks
-            if (item := _screen_block(block, window_start, window_end, now_ms)) is not None
+            if (item := _screen_block(block, names, window_start, window_end, now_ms)) is not None
         )
     return items
 
 
 def _screen_block(
-    block: list[dict[str, Any]], window_start: int, window_end: int, now_ms: int,
+    block: list[dict[str, Any]], names: dict[str, dict[str, Any]],
+    window_start: int, window_end: int, now_ms: int,
 ) -> dict[str, Any] | None:
     """One block of a device's stretches as a ``screen`` item, or ``None`` if it is too short."""
     start, end = block[0]["start_ms"], max(f["end_ms"] for f in block)
@@ -900,7 +907,6 @@ def _screen_block(
     seconds: dict[str, float] = defaultdict(float)
     for f in block:
         seconds[f["bundle_id"]] += (f["end_ms"] - f["start_ms"]) / 1000
-    named = {f["bundle_id"]: f for f in block}
     top = sorted(seconds, key=lambda bundle: (-seconds[bundle], bundle))[:SCREEN_TOP]
     device = block[0]["device"]
     return {
@@ -914,10 +920,10 @@ def _screen_block(
         "active_s": round(active),
         "apps": [
             {
-                "name": named[bundle].get("app") or bundle,
+                "name": names.get(bundle, {}).get("app") or bundle,
                 "bundle": bundle,
                 "minutes": max(1, round(seconds[bundle] / 60)),
-                "category": named[bundle].get("category"),
+                "category": names.get(bundle, {}).get("category"),
             }
             for bundle in top
         ],

@@ -119,6 +119,13 @@ class Mac:
             lookup=self.lookup,
         )
 
+    def held_names(self) -> dict[str, tuple[str, str | None]]:
+        """The names the brain holds, by bundle id."""
+        return {
+            r.fields["bundle_id"]: (r.fields["app"], r.fields["category"])
+            for r in self.rows(imports.DEVICE_NAME)
+        }
+
     def rows(self, kind: str) -> list[imports.Entry]:
         """The newest revision of each shipped row of one kind."""
         with closing(imports.open_shipped(self.directory)) as conn:
@@ -146,20 +153,23 @@ def test_pairs_per_device_ships_closed_stretches_and_holds_the_open_one(mac: Mac
     mac.pass_(at(700))
 
     apps = mac.rows(imports.DEVICE_APP)
-    assert [(r.fields["device"], r.fields["app"], r.fields["category"]) for r in apps] == [
-        ("iPhone", "抖音", "Entertainment"),
-        ("iPad", "Safari", "Utilities"),
+    assert [(r.fields["device"], r.fields["bundle_id"]) for r in apps] == [
+        ("iPhone", "com.ss.iphone.ugc.Aweme"),
+        ("iPad", "com.apple.mobilesafari"),
     ]
     first = apps[0]
     assert first.fields == {
         "device_id": PHONE,
         "device": "iPhone",
         "bundle_id": "com.ss.iphone.ugc.Aweme",
-        "app": "抖音",
-        "category": "Entertainment",
         "start_ms": at(600),
         "end_ms": at(610),
         "unpaired": False,
+    }
+    # names are rows of their own: the store's, the table's; WeChat is a miss, so no row
+    assert mac.held_names() == {
+        "com.ss.iphone.ugc.Aweme": ("抖音", "Entertainment"),
+        "com.apple.mobilesafari": ("Safari", "Utilities"),
     }
     assert first.at_ms == at(600)
     assert first.zone == "UTC"
@@ -201,7 +211,7 @@ def test_a_send_again_adds_nothing_and_a_stretch_never_ships_twice(mac: Mac) -> 
         ]
     )  # as if never kept
     mac.pass_(at(700) + 16 * MIN)
-    assert mac.intake.added == [2, 0]  # the stretch and the horizon, then the same keys: held
+    assert mac.intake.added == [3, 0]  # the stretch, horizon and name, then the same keys: held
 
 
 def test_an_open_stretch_older_than_a_day_is_given_up_cut_and_unpaired(mac: Mac) -> None:
@@ -219,8 +229,10 @@ def test_an_open_stretch_older_than_a_day_is_given_up_cut_and_unpaired(mac: Mac)
     )
 
 
-def test_names_come_from_the_table_then_the_cache_then_the_store_once_each(mac: Mac) -> None:
-    """Names come from the table then the cache then the store once each."""
+def test_names_are_rows_of_their_own_sent_once_and_a_miss_is_asked_again_after_a_week(
+    mac: Mac,
+) -> None:
+    """Names are rows of their own, sent once, and a miss is asked again after a week."""
     mac.store = {"com.new.app": ("New App", "Games"), "com.unlisted.app": (None, None)}
     mac.events = [
         *stretch(PHONE, "com.apple.Preferences", at(600), at(601)),
@@ -229,29 +241,51 @@ def test_names_come_from_the_table_then_the_cache_then_the_store_once_each(mac: 
         *stretch(PHONE, "com.new.app", at(606), at(607)),
     ]
     mac.pass_(at(700))
-    assert mac.looked_up == ["com.new.app", "com.unlisted.app"]  # the table's Apple app: no lookup
-    assert [(r.fields["app"], r.fields["category"]) for r in mac.rows(imports.DEVICE_APP)] == [
-        ("设置", "Utilities"),
-        ("New App", "Games"),
-        (None, None),
-        ("New App", "Games"),
-    ]
+    assert mac.looked_up == ["com.new.app", "com.unlisted.app"]  # the table's app: no lookup
+    assert mac.held_names() == {
+        "com.apple.Preferences": ("设置", "Utilities"),
+        "com.new.app": ("New App", "Games"),
+    }
+    assert len(mac.rows(imports.DEVICE_APP)) == 4
+
     mac.events += stretch(PHONE, "com.unlisted.app", at(608), at(609))
     mac.pass_(at(700) + 16 * MIN)
     assert mac.looked_up == ["com.new.app", "com.unlisted.app"]  # misses are cached too
+    assert mac.intake.added[1] == 2  # the new stretch and the moved horizon, no name again
+
+    mac.store["com.unlisted.app"] = ("Unlisted", None)
+    mac.pass_(at(700) + 8 * 24 * H)
+    assert mac.looked_up[2:] == ["com.unlisted.app"]  # a week on, only the miss is asked
+    assert mac.held_names()["com.unlisted.app"] == ("Unlisted", None)
 
 
-def test_a_store_that_cannot_be_asked_holds_the_whole_pass_until_it_can(mac: Mac) -> None:
-    """A store that cannot be asked holds the whole pass until it can."""
+def test_a_store_that_cannot_be_asked_never_holds_the_stretches_back(mac: Mac) -> None:
+    """A store that cannot be asked never holds the stretches back."""
     mac.store = {"com.new.app": None}  # the store did not answer
     mac.events = stretch(PHONE, "com.new.app", at(600), at(610))
     mac.pass_(at(700))
-    assert mac.rows(imports.DEVICE_APP) == []
-    assert mac.rows(imports.DEVICE_HORIZON) == []
-    assert mac.state.meta(f"{devices.CURSOR_PREFIX}{PHONE}") is None
+    assert [r.fields["bundle_id"] for r in mac.rows(imports.DEVICE_APP)] == ["com.new.app"]
+    assert mac.state.meta_int(f"{devices.CURSOR_PREFIX}{PHONE}") == at(610) + 1
+    assert mac.held_names() == {}
     mac.store = {"com.new.app": ("New App", None)}
+    mac.pass_(at(700) + 16 * MIN)  # asked again at the next pass, though not used again
+    assert mac.held_names() == {"com.new.app": ("New App", None)}
+
+
+def test_a_pass_asks_the_store_for_at_most_twenty_bundles_this_pass_first(mac: Mac) -> None:
+    """A pass asks the store for at most twenty bundles, this pass's first."""
+    mac.store = {f"com.app.n{n}": (f"App {n}", None) for n in range(25)}
+    mac.events = [
+        e
+        for n in range(25)
+        for e in stretch(PHONE, f"com.app.n{n}", at(600 + 2 * n), at(601 + 2 * n))
+    ]
+    mac.pass_(at(700))
+    assert len(mac.looked_up) == devices.LOOKUPS_PER_PASS
+    assert len(mac.rows(imports.DEVICE_APP)) == 25
     mac.pass_(at(700) + 16 * MIN)
-    assert [r.fields["app"] for r in mac.rows(imports.DEVICE_APP)] == ["New App"]
+    assert len(mac.held_names()) == 25
+    assert len(mac.looked_up) == 25
 
 
 def test_a_helper_with_no_access_logs_once_and_does_nothing(

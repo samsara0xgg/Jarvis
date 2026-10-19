@@ -42,7 +42,7 @@ The Mac terminal's shipper (ADR 0294) gets a step for a new shipped source, `dev
 runs at most every 15 minutes and sends two kinds of entry:
 
 - `device_app`, one per **closed** stretch of one app on one device: `{device_id, device
-  ("iPhone"/"iPad", from the model), bundle_id, app, category, start_ms, end_ms, unpaired}`, key
+  ("iPhone"/"iPad", from the model), bundle_id, start_ms, end_ms, unpaired}`, key
   `device_app:<device id>:<bundle id>:<start_ms>:<12 hex of the fields>`, so a send again is the
   same row. A stretch whose "out" has not synced yet is not sent; the device's cursor stays at
   its start (else just past the device's newest event) and the next read starts there, 10 minutes
@@ -53,15 +53,18 @@ runs at most every 15 minutes and sends two kinds of entry:
   synced_ms}`. Records reach the Mac hours late, so this is how far each device is known; what
   lies after it is unknown, not "not used". It is a lower bound: a device nobody touched looks as
   if it were behind, because the records say when he used it, not when it last synced.
-- App names and genres come from Apple's public lookup (`itunes.apple.com/lookup`, China store,
-  then US) on the Mac, cached with the misses beside the shipper's state, plus a table of
-  Apple's own apps. If the store cannot be asked, the pass sends nothing and keeps its cursors, so
-  no stretch is stored without the name the store would give it.
+- `app_name`, once a bundle id is resolved: `{bundle_id, app, category}`, key
+  `app_name:<bundle id>:<12 hex>`, sent again only if the resolved value changes. Names are
+  separate rows so that a failing lookup never holds back the stretches. They come from a table
+  of Apple's own apps, else Apple's public lookup (`itunes.apple.com/lookup`, China store, then
+  US) on the Mac, at most 20 lookups a pass (3 seconds apart, this pass's bundles first), cached
+  beside the shipper's state. A miss is asked again after 7 days; a bundle the store could not be
+  asked about (network error, 403, 429, 5xx, or no lookups left) is asked again next pass.
 
 The day line (ADR 0199) folds these into kind `screen`, in his lane: one item per block of
 foreground use on one device, stretches of any app joined when the gap is at most 5 minutes,
 blocks under 5 minutes of foreground time dropped. Fields `device`, `active_s` (foreground
-seconds, not end minus start) and `apps` (top five by time: `{name, bundle, minutes, category}`);
+seconds, not end minus start) and `apps` (top five by time: `{name, bundle, minutes, category}`, name and category joined by bundle id from the newest `app_name` row, else the bundle id and null);
 id `screen-<device>-<start_ms>`. The day's answer also carries `screen_synced_ms`, the devices
 whose newest record is before the end of the window (or now), so a stretch not yet synced reads
 as unknown. With a shipped store but no device record at all, `screen` is in `missing`. `screen`
@@ -83,8 +86,7 @@ is a kind the phone may have open (ADR 0214, 0298).
 - He must turn on Share Across Devices on each device and grant Full Disk Access to
   `JarvisScreenTime.app` once.
 - Signed with the Mac's Apple Development identity, the helper keeps one designated requirement, so the grant survives rebuilds; with no such identity it is signed ad hoc and a rebuild may need the grant again.
-- Names are fixed when a stretch is sent; an app the store cannot name stays `null` and the day
-  line shows its bundle id.
+- An app with no `app_name` row yet (store down, not listed) shows as its bundle id.
 - Data lags by the sync delay, and macOS drops it after about four weeks, so it has to be read
   regularly or the older days are lost.
 - The stored CRC32 of a SEGB record is not checked; a malformed protobuf is skipped instead.
