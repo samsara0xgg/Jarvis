@@ -4268,6 +4268,25 @@ try {
       check('and it still takes its time: the height is not the end\'s in the first frames', frames[0].pane < end.pane * .6 && frames.filter(f => f.pane < end.pane - 1).length >= 8);
       await a.ctx.close();
     }
+
+    // 5. a value with words in it (a length, a range with a length) is in the pane's face with tabular digits; a clock stays in the mono one
+    {
+      const a = await boot({ served: fullDay() });
+      await openDay(a);
+      await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; });
+      const faces = await a.page.evaluate(() => {
+        const face = el => { const c = getComputedStyle(el); return { text: el.textContent, family: c.fontFamily, nums: c.fontVariantNumeric }; };
+        const row = document.querySelector('[data-key="move-1"] .dt-tm'), stay = document.querySelector('[data-key="stay-home-1"] .dt-tm'), clock = document.querySelector('[data-key="move-1"] .dt-at'), chip = [...document.querySelectorAll('.dt-num em')].find(e => /[分时]/.test(e.textContent));
+        return { row: face(row), stay: face(stay), clock: face(clock), chip: chip && face(chip) };
+      });
+      const mono = f => /JetBrains|Menlo|monospace/.test(f.family), tab = f => f.nums.includes('tabular-nums');
+      check('a length in a row\'s right column (1 时 40 分) is not in the mono face and has tabular digits', /分/.test(faces.row.text) && !mono(faces.row) && tab(faces.row), JSON.stringify(faces.row));
+      check('so is a stay\'s range with its length (07:00–11:25 · 4 时 25 分)', /–.*分/.test(faces.stay.text) && !mono(faces.stay) && tab(faces.stay), JSON.stringify(faces.stay));
+      check('and a chip\'s value with words in it', faces.chip && !mono(faces.chip) && tab(faces.chip), JSON.stringify(faces.chip));
+      check('while the clock column on the left stays in the mono face', mono(faces.clock), JSON.stringify(faces.clock));
+      await a.shot('polish-durations', { x: 40, y: 30, width: 560, height: 640 });
+      await a.ctx.close();
+    }
   }
 
   console.log(`\n${checks.length} checks passed; screenshots in ${dir}`);
