@@ -67,6 +67,8 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
   ADR 0294; a paired terminal's scheduled copy of TimeSink and Claude Code sessions, kept raw
 - ``POST /inherent/day/highlight`` — ADR 0296; body ``{"day", "id", "on", "label"?}`` marks or
   unmarks one item of a day as a highlight for him; ``{"ok", "highlights"}``
+- ``POST /inherent/day/answer`` — ADR 0302; body ``{"day", "span_id", "choice"?, "text"?}`` is
+  his answer about a span of what he was doing; ``{"ok", "span"}``
 - ``POST /inherent/commitments/{hex}`` — ADR 0274, 0296; body ``{"action": "confirm"|"cancel"}``
   does what ``keep(confirm=)`` / ``keep(cancel=)`` does to that commitment; ``{"ok": true}``
 - ``POST /inherent/memory/places`` — ADR 0234, 0296; body ``{"name", "lat", "lng", "role"?}``
@@ -132,6 +134,7 @@ from jarvis.state.attachments import (
 )
 from jarvis.state.day_highlights import LABEL_MAX_CHARS, HighlightCapReached
 from jarvis.state.day_line import parse_day
+from jarvis.state.doing import ANSWER_TEXT_MAX_CHARS
 from jarvis.state.event_log import MAC_NODE
 from jarvis.state.lifelog import MAX_PIECE_BYTES, Lifelog, PieceRefused
 from jarvis.state.memory_page import Conflict
@@ -812,6 +815,12 @@ class InherentDeps:
     # ValueError 422; ``None`` leaves ``POST /inherent/day/highlight`` unregistered.
     highlight_set: (
         Callable[[date, str, bool, str | None], Awaitable[list[dict[str, str]]]] | None
+    ) = None
+    # ADR 0302: ``(day, span id, choice, text)`` -> the span as now served, off the loop thread.
+    # LookupError (no such span on that day) is 404, a ValueError (a choice the span's question
+    # does not offer) 422; ``None`` leaves ``POST /inherent/day/answer`` unregistered.
+    doing_answer: (
+        Callable[[date, str, str | None, str | None], Awaitable[dict[str, Any]]] | None
     ) = None
     # ADR 0296: ``(commitment hex, "confirm" | "cancel")`` -> whether anything changed, off the
     # loop thread. LookupError (none such, or dropped) is 404 and a False is 409; ``None`` leaves
@@ -1801,7 +1810,10 @@ def _register_day_route(app: FastAPI, deps: InherentDeps) -> None:
 
     @app.get("/inherent/day")
     async def day(on: Annotated[str | None, Query(alias="date")] = None) -> dict[str, Any]:
-        """``{date, tz, start_ms, end_ms, now_ms, items, labels, missing, line, highlights}``."""
+        """``{date, tz, start_ms, end_ms, now_ms, items, labels, missing, line, highlights, ...}``.
+
+        ``spans`` and ``coverage`` (ADR 0302) are the day's fact spans and what he was doing.
+        """
         try:
             wanted = None if on is None else parse_day(on)
         except ValueError as exc:
@@ -1829,6 +1841,33 @@ class HighlightRequest(BaseModel):
             msg = f"label is at most {LABEL_MAX_CHARS} characters"
             raise ValueError(msg)
         return label
+
+
+class DoingAnswerRequest(BaseModel):
+    """Body of ``POST /inherent/day/answer`` (ADR 0302): his answer about a span of a day."""
+
+    day: str = Field(min_length=10, max_length=10, pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+    span_id: str = Field(pattern=_ITEM_ID)
+    choice: str | None = Field(default=None, min_length=1, max_length=ANSWER_TEXT_MAX_CHARS)
+    text: str | None = None
+
+    @field_validator("text")
+    @classmethod
+    def _text_fits(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        if not 1 <= len(text) <= ANSWER_TEXT_MAX_CHARS:
+            msg = f"text is 1 to {ANSWER_TEXT_MAX_CHARS} characters"
+            raise ValueError(msg)
+        return text
+
+    @model_validator(mode="after")
+    def _one_answer(self) -> DoingAnswerRequest:
+        if (self.choice is None) == (self.text is None):
+            msg = "give exactly one of choice and text"
+            raise ValueError(msg)
+        return self
 
 
 class CommitmentActRequest(BaseModel):
@@ -1868,6 +1907,37 @@ def _register_highlight_route(app: FastAPI, deps: InherentDeps) -> None:
             LOGGER.warning("highlight route failed: %s: %s", type(exc).__name__, exc)
             raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
         return {"ok": True, "highlights": highlights}
+
+
+def _register_doing_answer_route(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0302: he says what a stretch of a day was, or picks from the span's question."""
+    if deps.doing_answer is None:
+        return
+    doing_answer = deps.doing_answer
+
+    @app.post("/inherent/day/answer", status_code=200)
+    async def day_answer(req: DoingAnswerRequest) -> dict[str, Any]:
+        """``{ok, span}``: the span as now served, with his words and ``confirmed``.
+
+        422 for a day that is not one, an id of the wrong shape, neither or both of ``choice``
+        and ``text``, a ``text`` that is empty or over 200 characters once trimmed, or a
+        ``choice`` the span's question does not offer (or a span with no question); 404 when the
+        id is not a served, unplanned span of what he was doing on that day.
+        """
+        try:
+            on_day = parse_day(req.day)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)[:200]) from None
+        try:
+            span = await doing_answer(on_day, req.span_id, req.choice, req.text)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)[:200]) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)[:200]) from None
+        except Exception as exc:  # noqa: BLE001 — a store that cannot be written is the page's 502.
+            LOGGER.warning("answer route failed: %s: %s", type(exc).__name__, exc)
+            raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+        return {"ok": True, "span": span}
 
 
 def _register_commitment_route(app: FastAPI, deps: InherentDeps) -> None:
@@ -3275,6 +3345,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
     _register_turn_timings_route(app, deps)
     _register_day_route(app, deps)
     _register_highlight_route(app, deps)
+    _register_doing_answer_route(app, deps)
     _register_commitment_route(app, deps)
     _register_home_routes(app, deps)
     _register_mail_page_routes(app, deps)

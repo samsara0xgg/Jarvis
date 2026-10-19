@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from jarvis.shared import lang
+from jarvis.shared.geo import metres
 from jarvis.shared.html_tags import strip_html
 from jarvis.state import NewerDataError, core_memory, imports
 
@@ -112,6 +113,32 @@ CREATE TABLE IF NOT EXISTS day_highlight_marks (
     kind       TEXT NOT NULL,
     start_ms   INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS doing_runs (
+    id              TEXT PRIMARY KEY,
+    day             TEXT NOT NULL,
+    draft           INTEGER NOT NULL,
+    written_at      TEXT NOT NULL,
+    covers_until_ms INTEGER NOT NULL,
+    model           TEXT,
+    inputs_digest   TEXT NOT NULL,
+    spans           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS doing_runs_day ON doing_runs (day);
+CREATE TABLE IF NOT EXISTS doing_answers (
+    id       TEXT PRIMARY KEY,
+    day      TEXT NOT NULL,
+    span_id  TEXT NOT NULL,
+    start_ms INTEGER NOT NULL,
+    end_ms   INTEGER NOT NULL,
+    choice   TEXT,
+    text     TEXT,
+    lat      REAL,
+    lng      REAL,
+    place_id TEXT,
+    origin   TEXT NOT NULL,
+    ts       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS doing_answers_day ON doing_answers (day);
 CREATE TABLE IF NOT EXISTS core_memory (
     id       TEXT PRIMARY KEY,
     ts       TEXT NOT NULL,
@@ -176,7 +203,8 @@ CREATE INDEX IF NOT EXISTS voiceprints_mic ON voiceprints (device, mic, id);
 # ``PRAGMA user_version`` (ADR 0068). 0 is a file from before the stamp, same
 # schema as 1; a file above this was written by a newer Jarvis and is refused.
 # ``sent``, ``record_attachments`` (ADR 0255), ``day_summaries``, ``day_experience`` (ADR 0280),
-# ``core_memory``, ``day_highlight_marks``, the places tables (ADR 0234), ``import_entries``
+# ``core_memory``, ``day_highlight_marks``, ``doing_runs`` and ``doing_answers`` (ADR 0302), the
+# places tables (ADR 0234), ``import_entries``
 # (ADR 0259), ``meaning_vectors`` (ADR 0260) and ``voiceprints`` (ADR 0286) are additive: an
 # older opener ignores them, so they need no new version. So are the
 # ``day_prose`` columns ``line``, ``highlights`` and ``draft`` (ADR 0235), which
@@ -1563,6 +1591,155 @@ def latest_highlight_marks(
     return marks
 
 
+class DoingRun(NamedTuple):
+    """One run of a day's doing lane (ADR 0302): its whole list of spans, and how far it speaks.
+
+    ``spans`` are ``{id, start_ms, end_ms, kind, title, detail, category, basis, confidence,
+    clues, question, place_id}``; ``covers_until_ms`` is the time past which the program's own
+    segments are served instead.
+    """
+
+    id: str
+    day: str
+    draft: bool
+    written_at: str
+    covers_until_ms: int
+    model: str | None
+    inputs_digest: str
+    spans: list[dict[str, Any]]
+
+
+def append_doing_run(  # noqa: PLR0913 — the row's columns, all required.
+    path: Path,
+    *,
+    day: str,
+    draft: bool,
+    covers_until_ms: int,
+    model: str | None,
+    inputs_digest: str,
+    spans: Sequence[Mapping[str, object]],
+) -> str:
+    """Append one run of ``day``'s doing lane, whole; the latest run of a day is the one served."""
+    run_id = f"doing-run:{day}:{uuid.uuid4().hex}"
+    with closing(open_memory_db(path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO doing_runs "
+            "(id, day, draft, written_at, covers_until_ms, model, inputs_digest, spans) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id, day, int(draft), iso_seconds(local_now()), covers_until_ms, model,
+                inputs_digest, json.dumps(list(spans), ensure_ascii=False),
+            ),
+        )
+    return run_id
+
+
+def latest_doing_run(conn: sqlite3.Connection, day: str) -> DoingRun | None:
+    """The newest run of ``day`` (older ones stay as history), else None."""
+    row = conn.execute(
+        "SELECT id, day, draft, written_at, covers_until_ms, model, inputs_digest, spans "
+        "FROM doing_runs WHERE day = ? ORDER BY rowid DESC LIMIT 1",
+        (day,),
+    ).fetchone()
+    if row is None:
+        return None
+    return DoingRun(
+        str(row[0]), str(row[1]), bool(row[2]), str(row[3]), int(row[4]),
+        None if row[5] is None else str(row[5]), str(row[6]), json.loads(row[7]),
+    )
+
+
+class DoingAnswer(NamedTuple):
+    """What he said a stretch of time was (ADR 0302): by time, not by the span's id.
+
+    Exactly one of ``choice`` (an option of the span's question) and ``text`` is set. ``lat``,
+    ``lng`` and ``place_id`` are where he was when the span was a stay.
+    """
+
+    id: str
+    day: str
+    span_id: str
+    start_ms: int
+    end_ms: int
+    choice: str | None
+    text: str | None
+    lat: float | None
+    lng: float | None
+    place_id: str | None
+    origin: str
+    ts: str
+
+
+def append_doing_answer(  # noqa: PLR0913 — the row's columns, all required.
+    path: Path,
+    *,
+    day: str,
+    span_id: str,
+    start_ms: int,
+    end_ms: int,
+    choice: str | None,
+    text: str | None,
+    lat: float | None,
+    lng: float | None,
+    place_id: str | None,
+    origin: str,
+) -> str:
+    """Append his answer about ``[start_ms, end_ms)`` of ``day``; never rewritten or removed."""
+    answer_id = f"doing-answer:{day}:{uuid.uuid4().hex}"
+    with closing(open_memory_db(path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO doing_answers "
+            "(id, day, span_id, start_ms, end_ms, choice, text, lat, lng, place_id, origin, ts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                answer_id, day, span_id, start_ms, end_ms, choice, text, lat, lng, place_id,
+                origin, iso_seconds(local_now()),
+            ),
+        )
+    return answer_id
+
+
+def _doing_answer(row: Sequence[Any]) -> DoingAnswer:
+    return DoingAnswer(
+        str(row[0]), str(row[1]), str(row[2]), int(row[3]), int(row[4]),
+        None if row[5] is None else str(row[5]), None if row[6] is None else str(row[6]),
+        None if row[7] is None else float(row[7]), None if row[8] is None else float(row[8]),
+        None if row[9] is None else str(row[9]), str(row[10]), str(row[11]),
+    )
+
+
+def doing_answers(conn: sqlite3.Connection, day: str) -> list[DoingAnswer]:
+    """Every answer given about ``day``, the oldest first (a later answer wins over an earlier)."""
+    rows = conn.execute(
+        "SELECT id, day, span_id, start_ms, end_ms, choice, text, lat, lng, place_id, origin, ts "
+        "FROM doing_answers WHERE day = ? ORDER BY rowid",
+        (day,),
+    ).fetchall()
+    return [_doing_answer(row) for row in rows]
+
+
+def doing_answers_near(
+    conn: sqlite3.Connection, at: tuple[float, float], radius_m: float, before_ms: int,
+    limit: int = 20,
+) -> list[DoingAnswer]:
+    """The newest ``limit`` answers given within ``radius_m`` of ``at`` (lat, lng).
+
+    Only answers about a stretch that began before ``before_ms`` count; newest first.
+    """
+    reach = radius_m / 111_000.0  # a degree of latitude is about 111 km: a box, then the exact test
+    rows = conn.execute(
+        "SELECT id, day, span_id, start_ms, end_ms, choice, text, lat, lng, place_id, origin, ts "
+        "FROM doing_answers WHERE lat IS NOT NULL AND lng IS NOT NULL AND start_ms < ? "
+        "AND lat BETWEEN ? AND ? ORDER BY rowid DESC",
+        (before_ms, at[0] - reach, at[0] + reach),
+    ).fetchall()
+    near = [
+        _doing_answer(row) for row in rows
+        if metres(at, (float(row[7]), float(row[8]))) <= radius_m
+    ]
+    return near[:limit]
+
+
 def latest_day_summaries(
     conn: sqlite3.Connection, first_day: str, last_day: str,
 ) -> list[tuple[str, str]]:
@@ -1662,6 +1839,8 @@ __all__ = [
     "DEFAULT_SEARCH_LIMIT",
     "CompactionRange",
     "DayLineRow",
+    "DoingAnswer",
+    "DoingRun",
     "HighlightMark",
     "Ledger",
     "MemoryContext",
@@ -1673,6 +1852,8 @@ __all__ = [
     "append_day_draft",
     "append_day_prose",
     "append_day_summary",
+    "append_doing_answer",
+    "append_doing_run",
     "append_highlight_mark",
     "append_nightly_core_memory",
     "append_record",
@@ -1682,6 +1863,8 @@ __all__ = [
     "core_memory_pending_days",
     "current_core_memory",
     "day_records",
+    "doing_answers",
+    "doing_answers_near",
     "experience_days",
     "iso_seconds",
     "keep_fact",
@@ -1689,6 +1872,7 @@ __all__ = [
     "latest_day_experience",
     "latest_day_lines",
     "latest_day_summaries",
+    "latest_doing_run",
     "latest_highlight_marks",
     "local_now",
     "messages_since",

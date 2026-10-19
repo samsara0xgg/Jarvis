@@ -191,6 +191,7 @@ from jarvis.runtime.dictation import (
     local_polisher,
     whisper_ears,
 )
+from jarvis.runtime.doing_answers import DoingAnswers
 from jarvis.runtime.highlight_marks import HighlightMarks
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.job_mail import served_notices, settle_notice
@@ -230,6 +231,7 @@ from jarvis.state.day_highlights import day_notes
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.departures import ID_PREFIX as PIN_PREFIX
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
+from jarvis.state.doing import read_doing
 from jarvis.state.event_log import (
     MAC_NODE,
     PHONE_VOICE_CHANNEL,
@@ -5671,8 +5673,10 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
     brain ``terminal`` is his Mac's TimeSink. ``calendar`` reads his Outlook through Graph
     (``Home.calendar``, ADR 0230) and holds this worker thread while it waits. ``line`` and
     ``highlights`` (ADR 0235) are the day's line to him and its marked items, read from
-    ``memory_db``. ``shipped`` is the imports directory (ADR 0294): what his Mac copied to it fills
-    in his Mac's lane when TimeSink cannot be read live, and gives his Claude Code sessions.
+    ``memory_db``. ``spans`` and ``coverage`` (ADR 0302) are the day's fact spans and what he was
+    doing, cut from the items and worded by the day's latest stored run and his answers.
+    ``shipped`` is the imports directory (ADR 0294): what his Mac copied to it fills in his Mac's
+    lane when TimeSink cannot be read live, and gives his Claude Code sessions.
     ``summary`` is the day's steps, resting heart rate and heart rate variability from the phone
     (``None`` if the log cannot be read); ``weather`` is the day's weather card
     (``Home.day_weather_card``, kept per day), ``None`` when it has none.
@@ -5689,6 +5693,7 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
             LOGGER.exception("day: the day's body numbers could not be read")
             summary = None
     told, highlights = day_notes(memory_db, on.isoformat(), line.items, zone)
+    doing = read_doing(memory_db, on.isoformat(), line.items, start_ms, end_ms, now_ms)
     return {
         "date": on.isoformat(),
         "tz": zone_name,
@@ -5700,6 +5705,8 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
         "missing": line.missing,
         "line": told,
         "highlights": highlights,
+        "spans": doing.spans,
+        "coverage": doing.coverage,
         "summary": summary,
         "weather": None if weather is None else weather(on),
     }
@@ -5723,6 +5730,29 @@ async def _set_highlight(
 ) -> list[dict[str, str]]:
     """``POST /inherent/day/highlight`` (ADR 0297): his mark, written off the loop thread."""
     return await asyncio.to_thread(marks.set_item, day, item_id, on, label)
+
+
+async def _answer_doing(
+    answers: DoingAnswers, day: date, span_id: str, choice: str | None, text: str | None,
+) -> dict[str, Any]:
+    """``POST /inherent/day/answer`` (ADR 0302): his answer, written off the loop thread."""
+    return await asyncio.to_thread(answers.answer, day, span_id, choice, text)
+
+
+def _day_sources(runtime: JarvisRuntime, memory_db: Path) -> DaySources:
+    """The stores a day is folded from, as the routes that write about a day's items read them."""
+    return DaySources(
+        resolve_zone(None, _work_state_timezone(runtime.config))[1],
+        _timesink_db_path(runtime.config),
+        memory_db,
+        (
+            None if runtime.terminal_hub is None
+            else TerminalScreen(runtime.terminal_hub.call, wait_s=TURN_WAIT_S)
+        ),
+        None if runtime.attachments is None else runtime.attachments.directory,
+        None if runtime.home is None else runtime.home.calendar,
+        shipped=runtime.runtime_paths.root / IMPORTS_DIRNAME,
+    )
 
 
 def _commit_act(event_log_path: Path, commitment_hex: str, action: str) -> bool:
@@ -7912,21 +7942,17 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     _set_highlight,
                     HighlightMarks(
                         runtime.runtime_paths.event_log,
-                        DaySources(
-                            resolve_zone(None, _work_state_timezone(runtime.config))[1],
-                            _timesink_db_path(runtime.config),
-                            runtime.memory.db_path,
-                            (
-                                None if runtime.terminal_hub is None
-                                else TerminalScreen(runtime.terminal_hub.call, wait_s=TURN_WAIT_S)
-                            ),
-                            (
-                                None if runtime.attachments is None
-                                else runtime.attachments.directory
-                            ),
-                            None if runtime.home is None else runtime.home.calendar,
-                            shipped=runtime.runtime_paths.root / IMPORTS_DIRNAME,
-                        ),
+                        _day_sources(runtime, runtime.memory.db_path),
+                    ),
+                )
+            ),
+            doing_answer=(
+                None if runtime.memory is None
+                else functools.partial(
+                    _answer_doing,
+                    DoingAnswers(
+                        runtime.runtime_paths.event_log,
+                        _day_sources(runtime, runtime.memory.db_path),
                     ),
                 )
             ),

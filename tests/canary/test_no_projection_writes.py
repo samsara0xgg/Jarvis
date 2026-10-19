@@ -66,10 +66,12 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # ADR 0255: record_attachments link his record to the files that came with it.
     # ADR 0280: day_experience is the nightly count of a day, a row per local date that no read
     # of the log depends on; the log stays the source and a row can be dropped and refolded.
+    # ADR 0302: doing_runs are a model's whole account of a day's doing lane, and doing_answers
+    # his answers about it; both append-only, neither a projection of events.
     "jarvis/state/memory_db.py": frozenset(
         {
             "records", "summaries", "sent", "day_summaries", "day_prose", "day_highlight_marks",
-            "record_attachments", "day_experience",
+            "record_attachments", "day_experience", "doing_runs", "doing_answers",
         },
     ),
     # ADR 0146: the versions of the user's core memory, derived from records and
