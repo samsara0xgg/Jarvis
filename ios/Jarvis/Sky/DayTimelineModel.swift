@@ -587,11 +587,11 @@ struct DayTimelineModel: Equatable {
             guard let s = stays.last(where: { list[$0].t0 <= list[k].t0 && list[k].t0 < (list[$0].going ? .infinity : list[$0].t1 ?? .infinity) }) else { continue }
             holder[k] = s; members[s, default: []].append(k)
         }
-        // the sessions of Claude Code in one place are one row, which opens to them
+        // the sessions of Claude Code in one place are one row, which opens to them; one that mattered stays a row of its own, with its star
         var stands: [Int: TLEntry] = [:]
         var gone: Set<Int> = []
         for s in stays {
-            let codes = (members[s] ?? []).filter { list[$0].kind == .code }
+            let codes = (members[s] ?? []).filter { list[$0].kind == .code && !list[$0].lit }
             guard codes.count > 1 else { continue }
             let sessions = codes.flatMap { list[$0].sessions }
             var g = TLEntry(id: "code-group-" + list[s].id, kind: .code, t0: sessions.map(\.t0).min() ?? list[codes[0]].t0, title: "Claude Code · \(codes.count) 个会话")

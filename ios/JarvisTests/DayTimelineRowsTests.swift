@@ -327,6 +327,26 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(try entry(build(try reply(code(9, 610, 620, recap: "R")), now: nil), "code-s9").more, ["R"])
     }
 
+    func testASessionThatMatteredStaysARowOfItsOwnWithItsStarWhileTheOthersAreOneRow() throws {
+        func code(_ n: Int, _ from: Double, _ to: Double) -> String {
+            item("code-s\(n)", "code", from, to, #""title": "T\#(n)", "project": "Jarvis", "account": "a", "session_id": "s\#(n)""#)
+        }
+        let rows = [item("s1", "stay", 600, 700, home), code(1, 610, 640), code(2, 630, 660), code(3, 670, 690), code(4, 680, 695)].joined(separator: ",")
+        let m = build(try reply(rows, #", "highlights": [{"id": "code-s2", "label": "Fixed the bug", "by": "him"}]"#), now: nil)
+        XCTAssertEqual(m.entries.map(\.id), ["s1", "code-group-s1", "code-s2"])
+        XCTAssertEqual(try entry(m, "code-group-s1").sessions.map(\.title), ["T1", "T3", "T4"], "the marked one is not folded into the group")
+        let marked = try entry(m, "code-s2")
+        XCTAssertTrue(marked.lit)
+        XCTAssertEqual(marked.title, "Fixed the bug")
+        XCTAssertFalse(marked.holdsSessions)
+        XCTAssertEqual(marked.group, "s1", "still in its place")
+        XCTAssertEqual(m.stars, [TLStar(id: "code-s2", t: 630)], "and its star is on the bar")
+        // two sessions where one mattered: neither is folded; with none marked they are one row
+        let two = [item("s1", "stay", 600, 700, home), code(1, 610, 640), code(2, 630, 660)].joined(separator: ",")
+        XCTAssertEqual(build(try reply(two, #", "highlights": [{"id": "code-s1", "label": "", "by": "her"}]"#), now: nil).entries.map(\.id), ["s1", "code-s1", "code-s2"])
+        XCTAssertEqual(build(try reply(two), now: nil).entries.map(\.id), ["s1", "code-group-s1"])
+    }
+
     // MARK: the new data
 
     func testTheWeatherIsWordedAndAnUnknownNameIsLeftUnsaidWithTheTemperatures() throws {
