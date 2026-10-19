@@ -12,6 +12,7 @@ entries, a day-line item and an archive answer, a rewrite standing for the day.
 from __future__ import annotations
 
 import json
+import shutil
 from contextlib import closing
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
@@ -26,7 +27,13 @@ from jarvis.state import imports
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.event_log import open_event_log
 from jarvis.state.memory_db import open_memory_db
-from jarvis.state.shipments import CODE_DAY_SOURCE, MAX_REPORT_BYTES, Shipments, ShipRefused
+from jarvis.state.shipments import (
+    CODE_DAY_SOURCE,
+    MAX_DIALOGUE_BYTES,
+    MAX_REPORT_BYTES,
+    Shipments,
+    ShipRefused,
+)
 from jarvis.surface import claude_code_day
 from jarvis.surface.mac_ship_core import Report, State
 from jarvis.surface.mac_ship_days import QUIET_MS, ship
@@ -149,6 +156,22 @@ def test_the_material_is_cut_by_his_sleep_and_holds_only_what_was_said(
     assert claude_code_day.main(["material", "--days", "6", "--out", str(out), "--config", str(config), "--runtime-root", str(tmp_path / "rt")]) == 0
     assert day.isoformat() not in json.loads(capsys.readouterr().out)["dates"]
 
+    # the kept dialogue: the day's session files one after another, in index order
+    kept = (out / "dialogue" / f"{day.isoformat()}.md").read_text(encoding="utf-8")
+    assert kept.startswith(f"jarvis-claude-code-dialogue: 1\ndate: {day.isoformat()}\ntimezone: America/Vancouver\n")
+    assert kept.index("# Session sess-1\n") < kept.index("# Session sess-2\n")
+    assert "- title: Alpha parser" in kept and "[09:14] User: and one more thing" in kept
+    assert "SECRET-THOUGHT" not in kept and "OWN-RUN-REPLY" not in kept
+
+    # the report task deletes material/; with a report and no dialogue yet only the dialogue returns
+    shutil.rmtree(out / "material")
+    (out / "dialogue" / f"{day.isoformat()}.md").unlink()
+    capsys.readouterr()
+    assert claude_code_day.main(["material", "--days", "6", "--out", str(out), "--config", str(config), "--runtime-root", str(tmp_path / "rt")]) == 0
+    assert json.loads(capsys.readouterr().out)["dates"][day.isoformat()]["sessions"] == 2
+    assert (out / "dialogue" / f"{day.isoformat()}.md").read_text(encoding="utf-8") == kept
+    assert not (out / "material" / day.isoformat()).exists()
+
 
 def test_without_a_sleep_a_day_ends_at_five_and_the_longest_sleep_wins() -> None:
     """The rule of the cut: 05:00 when no sleep begins in [18:00, next 14:00); else the longest."""
@@ -236,6 +259,20 @@ def test_the_shipper_sends_a_changed_report_once_and_leaves_material_at_home(tmp
     state.close()
 
 
+def test_the_shipper_sends_the_kept_dialogue_under_its_own_path(tmp_path: Path) -> None:
+    """``dialogue/<date>.md`` goes as ``dialogue/<date>.md``, once per change, up to 8 MiB."""
+    folder = tmp_path / "claude-code-days"
+    (folder / "dialogue").mkdir(parents=True)
+    (folder / "dialogue" / "2026-10-18.md").write_text("# Session x\n" * 40_000, encoding="utf-8")  # over 256 KiB
+    brain, state, report = _Brain(tmp_path / "imports"), State(tmp_path / "state.db"), Report()
+    late = (folder / "dialogue" / "2026-10-18.md").stat().st_mtime_ns // 1_000_000 + 10 * QUIET_MS
+    ship(folder, state, brain, report, late)
+    ship(folder, state, brain, report, late + QUIET_MS)
+    assert brain.sent == ["dialogue/2026-10-18.md"]
+    assert (tmp_path / "imports" / CODE_DAY_SOURCE / "files" / "dialogue" / "2026-10-18.md").is_file()
+    state.close()
+
+
 def test_the_file_intake_takes_markdown_for_its_one_source_only(tmp_path: Path) -> None:
     """.md, UTF-8, 256 KiB at most, for claude-code-daily; pictures still only for timesink."""
     intake = Shipments(tmp_path, free_bytes=lambda _p: 10**12)
@@ -254,6 +291,12 @@ def test_the_file_intake_takes_markdown_for_its_one_source_only(tmp_path: Path) 
     assert refused("claude-code", "2026-10-18.md", data) == 404
     assert refused(CODE_DAY_SOURCE, "2026-10-18.txt", data) == 422
     assert refused(CODE_DAY_SOURCE, "sub/2026-10-18.md", data) == 422
+    assert refused(CODE_DAY_SOURCE, "notes.md", data) == 422
+    assert refused(CODE_DAY_SOURCE, "dialogue/notes.md", data) == 422
+    assert refused(CODE_DAY_SOURCE, "dialogue/dialogue/2026-10-18.md", data) == 422
+    big = b"x" * (MAX_REPORT_BYTES + 1)
+    assert intake.receive_file(CODE_DAY_SOURCE, "dialogue/2026-10-18.md", big).created  # 8 MiB for dialogue
+    assert refused(CODE_DAY_SOURCE, "dialogue/2026-10-19.md", b"x" * (MAX_DIALOGUE_BYTES + 1)) == 413
     assert refused(CODE_DAY_SOURCE, "2026-10-19.md", b"") == 400
     assert refused(CODE_DAY_SOURCE, "2026-10-19.md", b"\xff\xfe\x00bad") == 415
     assert refused(CODE_DAY_SOURCE, "2026-10-19.md", b"x" * (MAX_REPORT_BYTES + 1)) == 413
@@ -311,3 +354,70 @@ def test_the_brain_reads_a_shipped_report_into_entries_and_the_newest_stands(tmp
     tool: Tool = build_archive_tool(db, VANCOUVER, lambda: datetime(2026, 10, 20, 9, 0, tzinfo=UTC))[0]
     found = cast("dict[str, Any]", tool.handler({"source": "claude_code_daily", "query": ["material command"]}, cast("ToolContext", None)))
     assert found["entries"] and all(e["source"] == "claude_code_daily" for e in found["entries"])
+
+
+def test_the_brain_reads_the_kept_dialogue_per_session_and_searches_it(tmp_path: Path) -> None:
+    """One entry per session (no day-line item); a rewrite adds only the changed session; clipped."""
+    imports_dir, db = tmp_path / imports.IMPORTS_DIRNAME, tmp_path / "memory.db"
+    open_memory_db(db).close()
+    day = date(2026, 10, 18)
+    start = _ms(datetime(2026, 10, 18, 5, tzinfo=VANCOUVER))
+    window = claude_code_day.Window(day, start, start + 24 * 3_600_000)
+
+    def dialogue(second: str) -> bytes:
+        long = "filler words " * 200 + "the quarterly pottery kiln schedule " + "more filler " * 200
+        sessions = [
+            claude_code_day.Session("a", "s-one", "/work/alpha", {"ai-title": "Kiln planning"}, [
+                (start + 4 * 3_600_000, "User", "plan the kiln"), (start + 5 * 3_600_000, "Claude", long),
+            ]),
+            claude_code_day.Session("b", "s-two", "/work/beta", {"ai-title": "Beta"}, [
+                (start + 20 * 3_600_000, "User", second),
+            ]),
+        ]
+        out = tmp_path / "mac"
+        claude_code_day.write_material(sessions, [window], out, VANCOUVER, {})
+        return (out / "dialogue" / "2026-10-18.md").read_bytes()
+
+    brain = _Brain(imports_dir)
+    brain.intake.receive_file(CODE_DAY_SOURCE, "dialogue/2026-10-18.md", dialogue("first"))
+    intake = ClaudeDailyIntake.code_reports_only(_NoGmail(), db, imports_dir)  # type: ignore[arg-type]
+    assert intake.read_code_reports() == 1 and intake.read_code_reports() == 0
+
+    def entries() -> list[imports.Entry]:
+        with closing(open_memory_db(db)) as conn:
+            return sorted(imports.entries(conn, source="claude_code_dialogue"), key=lambda e: e.at_ms)
+
+    one, two = entries()
+    assert (one.kind, one.zone, one.pos) == ("session_dialogue", "America/Vancouver", "session 1")
+    assert one.fields["session"] == "s-one" and one.fields["account"] == "a" and one.fields["title"] == "Kiln planning"
+    assert one.fields["folder"] == "/work/alpha" and one.fields["time"] == "09:00-10:00"  # 04:00/05:00 after 05:00 start
+    assert one.fields["start_ms"] == start + 4 * 3_600_000 and one.fields["end_ms"] == start + 5 * 3_600_000
+    assert one.text.startswith("# Session s-one") and "pottery kiln schedule" in one.text
+    assert two.fields["start_ms"] == start + 20 * 3_600_000 and two.fields["date"] == "2026-10-18"
+    raws = [p.name for p in (imports_dir / "claude_code_dialogue").iterdir()]
+    assert len(raws) == 1 and raws[0].endswith("-2026-10-18.md")
+
+    # a rewrite of one session adds that session only
+    brain.intake.receive_file(CODE_DAY_SOURCE, "dialogue/2026-10-18.md", dialogue("second"))
+    assert intake.read_code_reports() == 1 and len(entries()) == 3
+
+    # not on the day line
+    conn = open_event_log(tmp_path / "events.db")
+    first, last = day_window(day, VANCOUVER)
+    line = fold_day(conn, first, last, _ms(datetime(2026, 10, 19, 20, tzinfo=UTC)), DaySources(VANCOUVER, memory_db=db))
+    conn.close()
+    assert [i for i in line.items if i["kind"] == "claude_day"] == []
+
+    tool: Tool = build_archive_tool(db, VANCOUVER, lambda: datetime(2026, 10, 20, 9, 0, tzinfo=UTC))[0]
+
+    def call(**args: object) -> dict[str, Any]:
+        return cast("dict[str, Any]", tool.handler(args, cast("ToolContext", None)))
+
+    found = call(source="claude_code_dialogue", query=["kiln schedule"])
+    (hit,) = found["entries"]  # only the session that holds the words
+    assert "pottery kiln schedule" in hit["text"] and hit["text"].startswith("Kiln planning … ")
+    assert len(hit["text"]) < 260  # a stretch around the match, not the whole session
+    assert [e["text"] for e in call(source="claude_code_dialogue", date="2026-10-18")["entries"]] != []
+    opened = call(open=hit["id"])["entry"]
+    assert opened["text"].startswith("# Session s-one") and "more characters)" in opened["text"]  # clipped
+    assert opened["fields"]["session"] == "s-one"

@@ -306,7 +306,8 @@ mac_ship:
       - {account: b, dir: "~/.claude-b/projects"}
     # desktop_titles: "~/Library/Application Support/Claude/claude-code-sessions"
   # ADR 0299 — 把 <运行目录>/claude-code-days/*.md（只取这一层，material/ 不发）里 Claude 每天写的
-  # 「Claude Code 日报」整份发给大脑（来源 claude-code-daily，内容变了才重发，单份不超过 256 KiB）。
+  # 「Claude Code 日报」整份发给大脑（来源 claude-code-daily，内容变了才重发，单份不超过 256 KiB）；
+  # 同目录 dialogue/<日期>.md（当天切出来的对话原文，留在大脑当档案，单份不超过 8 MiB）也一起发。
   # mac_ship 开着时默认开；关掉写 enabled: false。
   claude_code_days:
     enabled: true

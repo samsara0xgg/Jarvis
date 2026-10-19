@@ -42,6 +42,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
 USER: Final = "User"
+DIALOGUE_DIR: Final = "dialogue"
+DIALOGUE_HEADER: Final = "jarvis-claude-code-dialogue: 1"
 MARKER: Final = "jarvis-claude-code-daily-run"
 """A session in which he (or the task's prompt) typed this is the report task's own: left out."""
 DEFAULT_BRAIN: Final = "http://jarvis:8006"
@@ -276,21 +278,59 @@ class Window:
     day: date
     start: int
     end: int
+    material: bool = True
+    """No report yet: write ``material/<date>/``."""
+    dialogue: bool = True
+    """No ``dialogue/<date>.md`` yet: write it (it is kept, the report task never deletes it)."""
 
 
 def _title(session: Session, desktop: Mapping[str, tuple[str, str]]) -> str:
     found = desktop.get(session.session_id)
-    return (
-        (found[0] if found else "")
-        or session.titles.get("custom-title")
-        or session.titles.get("ai-title")
-        or session.titles.get("agent-name")
-        or "-"
+    return " ".join(
+        (
+            (found[0] if found else "")
+            or session.titles.get("custom-title")
+            or session.titles.get("ai-title")
+            or session.titles.get("agent-name")
+            or "-"
+        ).split()
     )
 
 
 def _clock(ms: int, zone: tzinfo) -> str:
     return datetime.fromtimestamp(ms / 1000, zone).strftime("%H:%M")
+
+
+def _by_day(
+    sessions: list[Session], windows: list[Window]
+) -> dict[date, dict[int, list[tuple[int, str, str]]]]:
+    """Each window's messages, per session (by its place in ``sessions``)."""
+    starts = [w.start for w in windows]
+    per_day: dict[date, dict[int, list[tuple[int, str, str]]]] = {w.day: {} for w in windows}
+    for number, session in enumerate(sessions):
+        for message in session.messages:
+            at = bisect_right(starts, message[0]) - 1
+            if at >= 0 and message[0] < windows[at].end:
+                per_day[windows[at].day].setdefault(number, []).append(message)
+    return per_day
+
+
+def _index(window: Window, zone: tzinfo, rows: list[dict[str, Any]]) -> str:
+    """``index.md`` of one day's material."""
+    lines = [
+        f"# Claude Code dialogue of {window.day.isoformat()}",
+        "",
+        f"Window: {datetime.fromtimestamp(window.start / 1000, zone).isoformat()} to "
+        f"{datetime.fromtimestamp(window.end / 1000, zone).isoformat()}",
+        f"Sessions: {len(rows)}",
+        "",
+        *(
+            f"- {r['file']} | {r['title']} | {r['folder']} | account {r['account']} | "
+            f"{r['time']} | {r['messages']} messages | {r['chars']} chars"
+            for r in rows
+        ),
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def write_material(
@@ -300,23 +340,18 @@ def write_material(
     zone: tzinfo,
     desktop: Mapping[str, tuple[str, str]],
 ) -> dict[str, list[dict[str, Any]]]:
-    """Write ``<out>/material/<date>/`` for each window that has messages; what each holds."""
-    starts = [w.start for w in windows]
-    per_day: dict[date, dict[int, list[tuple[int, str, str]]]] = {w.day: {} for w in windows}
-    for number, session in enumerate(sessions):
-        for message in session.messages:
-            at = bisect_right(starts, message[0]) - 1
-            if at >= 0 and message[0] < windows[at].end:
-                per_day[windows[at].day].setdefault(number, []).append(message)
+    """Write ``material/<date>/`` and ``dialogue/<date>.md`` as each window asks; the rows."""
+    per_day = _by_day(sessions, windows)
     made: dict[str, list[dict[str, Any]]] = {}
     for window in windows:
         held = per_day[window.day]
         folder = out / "material" / window.day.isoformat()
-        shutil.rmtree(folder, ignore_errors=True)  # rerun = rewrite
+        if window.material:
+            shutil.rmtree(folder, ignore_errors=True)  # rerun = rewrite
         if not held:
             continue
-        folder.mkdir(parents=True)
         rows: list[dict[str, Any]] = []
+        whole: list[str] = []
         for number, messages in sorted(held.items(), key=lambda one: min(m[0] for m in one[1])):
             session = sessions[number]
             first, last = (
@@ -334,7 +369,7 @@ def write_material(
                 f"- title: {title}\n"
                 f"- project folder: {session.cwd or '-'}\n- first-last message: {first}-{last}\n\n"
             )
-            (folder / name).write_text(head + body + "\n", encoding="utf-8")
+            whole.append(head + body + "\n")
             rows.append(
                 {
                     "file": name,
@@ -346,23 +381,32 @@ def write_material(
                     "chars": sum(len(m[2]) for m in messages),
                 }
             )
-        lines = [
-            f"# Claude Code dialogue of {window.day.isoformat()}",
-            "",
-            f"Window: {datetime.fromtimestamp(window.start / 1000, zone).isoformat()} to "
-            f"{datetime.fromtimestamp(window.end / 1000, zone).isoformat()}",
-            f"Sessions: {len(rows)}",
-            "",
-            *(
-                f"- {r['file']} | {r['title']} | {r['folder']} | account {r['account']} | "
-                f"{r['time']} | "
-                f"{r['messages']} messages | {r['chars']} chars"
-                for r in rows
-            ),
-        ]
-        (folder / "index.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
         made[window.day.isoformat()] = rows
+        if window.dialogue:
+            _write_dialogue(out, window, zone, whole)
+        if window.material:
+            folder.mkdir(parents=True)
+            for row, text in zip(rows, whole, strict=True):
+                (folder / row["file"]).write_text(text, encoding="utf-8")
+            (folder / "index.md").write_text(_index(window, zone, rows), encoding="utf-8")
     return made
+
+
+def _write_dialogue(out: Path, window: Window, zone: tzinfo, sessions: list[str]) -> None:
+    """``<out>/dialogue/<date>.md``: the day's session files in index order, after a preface.
+
+    The preface carries the zone and the window so the brain can read the ``HH:MM`` stamps back
+    into instants (ADR 0299). Kept: unlike ``material/`` nothing deletes it.
+    """
+    preface = (
+        f"{DIALOGUE_HEADER}\ndate: {window.day.isoformat()}\ntimezone: {zone}\n"
+        f"window_start_ms: {window.start}\nwindow_end_ms: {window.end}\n\n"
+    )
+    folder = out / DIALOGUE_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{window.day.isoformat()}.md").write_text(
+        preface + "\n".join(sessions), encoding="utf-8"
+    )
 
 
 # --- the command ---------------------------------------------------------------------------
@@ -404,13 +448,15 @@ def _windows(
             day_end(day - timedelta(days=1), held, zone, now_ms),
             day_end(day, held, zone, now_ms),
         )
-        if end <= now_ms and not (out / f"{day.isoformat()}.md").exists():
-            windows.append(Window(day, start, end))
+        material = not (out / f"{day.isoformat()}.md").exists()
+        dialogue = not (out / DIALOGUE_DIR / f"{day.isoformat()}.md").exists()
+        if end <= now_ms and (material or dialogue):
+            windows.append(Window(day, start, end, material, dialogue))
     return windows
 
 
 def main(argv: list[str] | None = None) -> int:
-    """``material``: write the material of every closed day without a report; one JSON line out."""
+    """``material`` for closed days without a report, ``dialogue`` for those without one."""
     parser = argparse.ArgumentParser(prog="python -m jarvis.surface.claude_code_day")
     parser.add_argument("command", choices=["material"])
     parser.add_argument("--days", type=int, default=7)
