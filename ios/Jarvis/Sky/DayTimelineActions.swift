@@ -118,15 +118,18 @@ extension TimelineState {
         }
     }
 
-    /// 撤销: the brain takes the change back and the place has its old name again; when it cannot, the toast says why for a moment
+    /// 撤销: the toast goes at the tap, so a second tap has nothing to take back (the brain would be asked twice), and the brain takes the change back and the place has its old name
+    /// again; when it cannot, the toast comes back for a moment and says why
     func undoRename() {
-        guard let u = undo, u.note == nil else { return }
+        guard let u = undo, u.note == nil, !undoBusy else { return }
+        undoBusy = true
+        withAnimation(.easeOut(duration: 0.2)) { undo = nil }
         Task { @MainActor in
             let result = madeUp ? PlaceChange.done(change: nil) : await sendUndo(u.change)
+            undoBusy = false
             switch result {
             case .done:
                 renamed[u.place] = Renamed(name: u.was, until: Date().addingTimeInterval(Self.renameHolds))
-                withAnimation(.easeOut(duration: 0.2)) { undo = nil }
                 Haptic.selection()
                 if !madeUp { BrainLink.shared.opened() }
             case .refused(let why):

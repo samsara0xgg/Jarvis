@@ -180,8 +180,26 @@ final class DayTimelineActionsTests: XCTestCase {
         XCTAssertEqual([u.place, u.was], ["p-home", "家"])
         XCTAssertNil(u.note)
         tl.undoRename()
-        await until("it has its old name again") { tl.undo == nil }
+        XCTAssertNil(tl.undo, "the toast goes at the tap")
+        await until("it has its old name again") { tl.renamed["p-home"]?.name == "家" }
         XCTAssertEqual(try entry(tl, "stay-1").title, "家")
+    }
+
+    func testATapOnUndoTakesTheToastAtOnceSoASecondTapHasNothingToTakeBack() async throws {
+        let tl = state()
+        let home = try entry(tl, "stay-1")
+        tl.beginRename(home)
+        tl.rename(home, to: "新家")
+        await until("there is something to take back") { tl.undo != nil }
+        tl.undoRename()
+        XCTAssertNil(tl.undo, "the toast goes at the tap, before the brain has answered")
+        XCTAssertTrue(tl.undoBusy)
+        tl.undoRename()                         // a second tap before the answer: nothing to take back, nothing sent
+        await until("the place has its old name") { tl.renamed["p-home"]?.name == "家" }
+        XCTAssertFalse(tl.undoBusy)
+        XCTAssertNil(tl.undo)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertNil(tl.undo, "and it is not put back")
     }
 
     func testARenameHeldOnThePhoneEndsWhenItsTimeIsUp() throws {

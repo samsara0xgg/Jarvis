@@ -59,6 +59,7 @@ final class TimelineState {
     var renameBusy = false
     var renameNote: String?                         // why it did not go
     var undo: PlaceUndo?                            // the rename he can take back for a few seconds
+    @ObservationIgnored var undoBusy = false        // taking it back is on its way to the brain
     var flash: String?                              // the row just scrolled to: it flashes
     var sunSaid = false                             // the weather in the header was just tapped: it says when the sun rose and set, in its place
     @ObservationIgnored var sunHide: Task<Void, Never>?
