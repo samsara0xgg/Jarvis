@@ -47,6 +47,15 @@ day's report from it, and the brain reads the report like the Claude chats lette
   file with the letter's parser into `import_entries` as source `claude_code_daily`; a rewrite is
   a new revision and the newest stands for the day. The day line draws it as kind `claude_day`
   with id `claude-code-day-<date>`; the archive tool takes the source.
+- **The dialogue is kept.** The same command writes `dialogue/<date>.md` beside the material: the
+  day's session files one after another, each under its `# Session <id>` header, after a preface
+  with the day, zone and window. Unlike `material/`, which the report task deletes, it stays on
+  the Mac, and the terminal ships it (at most 8 MiB) as `dialogue/<date>.md` under the same source.
+  The brain reads it into `import_entries` as source `claude_code_dialogue`, one `session_dialogue`
+  entry per session (key: day, session, hash of the section, so a rewrite adds only changed
+  sessions), keeps each version raw, and does not put it on the day line or in the semantic
+  index. The `archive` tool finds it by words and shows a short stretch around the match; it is
+  read only on demand, never put into her context.
 
 ## Alternatives rejected
 
@@ -64,4 +73,6 @@ day's report from it, and the brain reads the report like the Claude chats lette
 
 A day's report exists only after the Mac app has run the task; a closed laptop delays it, and
 a day whose sleep has not reached the brain is cut at 05:00. The report is a model's reading:
-what it leaves out is not in the archive, though the transcripts stay on the Mac.
+what it leaves out is not in the report, though the cut dialogue is in the archive and the
+transcripts stay on the Mac. The dialogue archive grows by about 0.1 to 0.6 MB a day (measured
+2026-10-19: 0.04 to 0.3 MB for six days) in `memory.db` and the same again raw.
