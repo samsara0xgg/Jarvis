@@ -257,14 +257,16 @@ extension DayTimelineModel {
             let a = f.m(s.start_ms), b = f.m(s.end_ms)
             guard a.isFinite, b.isFinite, abs(a) <= 30 * DAY, abs(b) <= 30 * DAY, b > a else { return nil }
             return TLStage(kind: k, t0: a, t1: b)
-        }.sorted { $0.t0 < $1.t0 }
+        }
         guard !stages.isEmpty else { return nil }
-        // the stages that overlap the block are given uncut: only the part inside it is counted
+        // The night is flattened once, inside the block: each instant takes one stage (`TLStage.blocks`), so two sources that both saw the same hour do not count it twice. What he slept,
+        // how often he woke, the hypnogram and the shading of the bar all read these blocks.
         let hi = end ?? stages.map(\.t1).max() ?? t0
-        func asleep(_ k: TLStage.Kind) -> Int { tlInt(stages.filter { $0.kind == k }.reduce(0) { $0 + max(0, min($1.t1, hi) - max($1.t0, t0)) }) }
-        var s = TLSleep(stages: stages)
+        let night = TLStage.blocks(stages, in: t0, hi)
+        func asleep(_ k: TLStage.Kind) -> Int { tlInt(night.filter { $0.kind == k }.reduce(0) { $0 + ($1.t1 - $1.t0) }) }
+        var s = TLSleep(stages: night)
         s.deep = asleep(.deep); s.core = asleep(.core); s.rem = asleep(.rem)
-        s.awake = stages.filter { $0.kind == .awake && $0.t1 > t0 && $0.t0 < hi }.count
+        s.awake = night.filter { $0.kind == .awake }.count
         let parts = [s.deep > 0 ? "深睡 " + tlHM(s.deep) : nil, s.core > 0 ? "核心 " + tlHM(s.core) : nil, s.rem > 0 ? "REM " + tlHM(s.rem) : nil,
                      s.awake > 0 ? "醒 \(s.awake) 次" : nil].compactMap { $0 }
         s.summary = parts.isEmpty ? nil : parts.joined(separator: " · ")

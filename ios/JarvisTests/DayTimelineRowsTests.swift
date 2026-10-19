@@ -380,14 +380,15 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(sleep.summary, "深睡 1:55 · 核心 3:52 · REM 2:00 · 醒 2 次")
         XCTAssertEqual(sleep.short, "深睡 1:55 · REM 2:00")
         XCTAssertEqual(try entry(m, "sleep-0").glance, "深睡 1:55 · REM 2:00")
-        XCTAssertEqual(sleep.stages.count, 13)
-        XCTAssertEqual(sleep.stages.first, TLStage(kind: .inBed, t0: 40, t1: 55), "a stage uncut: it begins before the night does")
+        XCTAssertEqual(sleep.stages.count, 12)
+        XCTAssertEqual(sleep.stages.first, TLStage(kind: .core, t0: 55, t1: 100), "the night's own stretch: the time in bed before it is cut")
+        XCTAssertEqual(sleep.stages.last, TLStage(kind: .awake, t0: 530, t1: 545))
         // a stage that runs past the night's two ends counts only inside it; a stage this phone does not know is not drawn
         let r = try reply(item("n", "sleep", 100, 200, #""stages": [{"stage": "deep", "start_ms": \#(at(60)), "end_ms": \#(at(130))}, {"stage": "rem", "start_ms": \#(at(190)), "end_ms": \#(at(260))}, {"stage": "levitating", "start_ms": \#(at(130)), "end_ms": \#(at(140))}, {"stage": "awake", "start_ms": \#(at(250)), "end_ms": \#(at(260))}]"#))
         let n = try XCTUnwrap(try entry(build(r, now: nil), "n").sleep)
         XCTAssertEqual([n.deep, n.rem, n.awake], [30, 10, 0])
         XCTAssertEqual(n.summary, "深睡 30 分 · REM 10 分")
-        XCTAssertEqual(n.stages.count, 3)
+        XCTAssertEqual(n.stages, [TLStage(kind: .deep, t0: 100, t1: 130), TLStage(kind: .unspecified, t0: 130, t1: 190), TLStage(kind: .rem, t0: 190, t1: 200)], "cut to the night, and what no stage covers said so")
         // no stages: no hypnogram and nothing to add to the readout
         let none = try entry(build(try reply(item("n", "sleep", 100, 200)), now: nil), "n")
         XCTAssertNil(none.sleep)
@@ -668,17 +669,43 @@ final class DayTimelineRowsTests: XCTestCase {
 
     // MARK: the bar: the night's stages and the sun
 
-    func testTheNightIsShadedByBlocksThatDoNotOverlapAndWhatNoStageCoversIsUnspecified() {
+    func testTheNightIsShadedByBlocksThatDoNotOverlapWhereTwoStagesMeetTheHigherRankingOneShowsAndWhatNoStageCoversIsUnspecified() {
         func st(_ k: TLStage.Kind, _ a: Double, _ b: Double) -> TLStage { TLStage(kind: k, t0: a, t1: b) }
-        // two sources overlap from 30 to 50: the one that began later shows; nothing covers 90 to 120
+        // two sources overlap from 30 to 50: deep outranks core; nothing covers 90 to 120
         XCTAssertEqual(TLStage.blocks([st(.core, 0, 50), st(.deep, 30, 70), st(.rem, 70, 90)], in: 10, 120),
                        [st(.core, 10, 30), st(.deep, 30, 70), st(.rem, 70, 90), st(.unspecified, 90, 120)])
+        // it is the rank that decides and not which began later: awake > rem > deep > core > unspecified > in bed
+        XCTAssertEqual(TLStage.blocks([st(.rem, 0, 60), st(.deep, 30, 70)], in: 0, 80), [st(.rem, 0, 60), st(.deep, 60, 70), st(.unspecified, 70, 80)])
+        XCTAssertEqual(TLStage.blocks([st(.deep, 0, 50), st(.core, 20, 70)], in: 0, 70), [st(.deep, 0, 50), st(.core, 50, 70)])
+        XCTAssertEqual(TLStage.blocks([st(.core, 0, 100), st(.awake, 40, 50)], in: 0, 100), [st(.core, 0, 40), st(.awake, 40, 50), st(.core, 50, 100)])
+        XCTAssertEqual(TLStage.blocks([st(.inBed, 0, 100), st(.core, 20, 60)], in: 0, 100), [st(.inBed, 0, 20), st(.core, 20, 60), st(.inBed, 60, 100)], "the time in bed shows only where nothing else does")
+        XCTAssertEqual(TLStage.blocks([st(.inBed, 0, 100), st(.unspecified, 0, 50)], in: 0, 100), [st(.unspecified, 0, 50), st(.inBed, 50, 100)])
+        XCTAssertEqual(TLStage.blocks([st(.core, 0, 30), st(.core, 20, 60)], in: 0, 60), [st(.core, 0, 60)], "two of a kind are one block")
         XCTAssertEqual(TLStage.blocks([st(.deep, 0, 10), st(.deep, 10, 20)], in: 0, 20), [st(.deep, 0, 20)], "neighbours of a kind are one block")
         XCTAssertEqual(TLStage.blocks([], in: 0, 20), [st(.unspecified, 0, 20)])
         XCTAssertEqual(TLStage.blocks([st(.deep, 100, 200)], in: 0, 20), [st(.unspecified, 0, 20)], "a stage outside is not in it")
         XCTAssertEqual(TLStage.blocks([st(.deep, 0, 20)], in: 5, 5), [])
         XCTAssertEqual(TLStage.blocks([st(.deep, 0, 20)], in: .nan, 5), [])
         XCTAssertEqual(TLStage.blocks([st(.deep, 0, 20)], in: 0, .infinity), [])
+    }
+
+    func testTwoSourcesOfOneNightAreCountedOnceAndTheTotalsAndTheBarReadOneTimeline() throws {
+        func st(_ k: String, _ a: Double, _ b: Double) -> String { #"{"stage": "\#(k)", "start_ms": \#(at(a)), "end_ms": \#(at(b))}"# }
+        // an early night with no stages (so the bar begins at 06:00), and an afternoon sleep 840 to 1040 that the watch and a bedside app both saw, with the time in bed under all of it
+        let stages = [st("in_bed", 830, 1050), st("core", 840, 900), st("core", 870, 930), st("deep", 890, 910), st("rem", 960, 1000), st("rem", 980, 1020), st("awake", 935, 940), st("awake", 937, 945)]
+        let r = try reply([item("n0", "sleep", 0, 300), item("n", "sleep", 840, 1040, #""stages": [\#(stages.joined(separator: ","))]"#)].joined(separator: ","))
+        let m = build(r, now: nil)
+        let sleep = try XCTUnwrap(try entry(m, "n").sleep)
+        XCTAssertEqual([sleep.deep, sleep.core, sleep.rem, sleep.awake], [20, 70, 60, 1], "an hour seen twice is an hour, and two awake stages that overlap are one time awake")
+        XCTAssertEqual(sleep.summary, "深睡 20 分 · 核心 1:10 · REM 1:00 · 醒 1 次")
+        XCTAssertEqual(sleep.stages, [TLStage(kind: .core, t0: 840, t1: 890), TLStage(kind: .deep, t0: 890, t1: 910), TLStage(kind: .core, t0: 910, t1: 930), TLStage(kind: .inBed, t0: 930, t1: 935),
+                                      TLStage(kind: .awake, t0: 935, t1: 945), TLStage(kind: .inBed, t0: 945, t1: 960), TLStage(kind: .rem, t0: 960, t1: 1020), TLStage(kind: .inBed, t0: 1020, t1: 1040)])
+        // the bar shades the same blocks that the totals add up
+        let piece = try XCTUnwrap(m.scene.pieces.first { $0.id == "n" })
+        let shaded = TLStage.blocks(piece.stages, in: piece.t0, piece.t1)
+        XCTAssertEqual(shaded, sleep.stages)
+        func minutes(_ k: TLStage.Kind) -> Int { Int(shaded.filter { $0.kind == k }.reduce(0) { $0 + $1.t1 - $1.t0 }) }
+        XCTAssertEqual([minutes(.deep), minutes(.core), minutes(.rem)], [sleep.deep, sleep.core, sleep.rem])
     }
 
     func testTheNightStagesAreDrawnAsTheSpecSays() {
@@ -694,7 +721,7 @@ final class DayTimelineRowsTests: XCTestCase {
         let m = build(TimelineFixture.today(cal))
         let pieces = m.scene.pieces
         let night = try XCTUnwrap(pieces.first { $0.fill == .sleep })
-        XCTAssertEqual(night.stages.count, 13)
+        XCTAssertEqual(night.stages.count, 12)
         XCTAssertEqual(night.stages, try XCTUnwrap(try entry(m, "sleep-0").sleep).stages)
         XCTAssertTrue(pieces.filter { $0.fill != .sleep }.allSatisfy { $0.stages.isEmpty })
         XCTAssertEqual(m.scene.sun, TLSun(rise: 454, set: 1091))

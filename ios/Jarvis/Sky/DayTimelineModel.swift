@@ -117,12 +117,24 @@ struct TLStage: Equatable {
             default: return nil         // a stage this phone does not know: not drawn
             }
         }
+        /// which of two stages that cover one instant (two sources) the night shows: awake, then REM, deep, core, a stage with no name, and the time in bed last
+        var rank: Int {
+            switch self {
+            case .awake: 5
+            case .rem: 4
+            case .deep: 3
+            case .core: 2
+            case .unspecified: 1
+            case .inBed: 0
+            }
+        }
     }
     var kind: Kind
     var t0: Double, t1: Double
 }
 extension TLStage {
-    /// The night's stages as blocks that do not overlap inside `lo...hi`: where two overlap (two sources) the one that began later is shown, and what no stage covers is `unspecified`.
+    /// The night's stages as one timeline of blocks that do not overlap inside `lo...hi`: an instant that two stages cover (two sources) takes the one that ranks higher (`Kind.rank`), and
+    /// what no stage covers is `unspecified`. What the night adds up to, the hypnogram and the bar's shading all read this, so they never disagree.
     static func blocks(_ stages: [TLStage], in lo: Double, _ hi: Double) -> [TLStage] {
         guard lo.isFinite, hi.isFinite, hi > lo else { return [] }
         var cuts: Set<Double> = [lo, hi]
@@ -131,14 +143,14 @@ extension TLStage {
         var out: [TLStage] = []
         for (a, b) in zip(edges, edges.dropFirst()) {
             let mid = (a + b) / 2
-            let kind = stages.filter { $0.t0 <= mid && mid < $0.t1 }.max { $0.t0 < $1.t0 }?.kind ?? .unspecified
+            let kind = stages.filter { $0.t0 <= mid && mid < $0.t1 }.max { $0.kind.rank < $1.kind.rank }?.kind ?? .unspecified
             if let last = out.last, last.kind == kind { out[out.count - 1].t1 = b } else { out.append(TLStage(kind: kind, t0: a, t1: b)) }
         }
         return out
     }
 }
 struct TLSleep: Equatable {
-    var stages: [TLStage]
+    var stages: [TLStage]                   // the night as one timeline of blocks that do not overlap, cut to the night (`TLStage.blocks`)
     var deep = 0, core = 0, rem = 0         // minutes in each, inside the night
     var awake = 0                           // how many times he was awake
     var summary: String?                    // `深睡 1:10 · 核心 4:30 · REM 1:40 · 醒 3 次`

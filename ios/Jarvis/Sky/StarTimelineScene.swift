@@ -8,7 +8,7 @@ enum TimelineFixture {
 
     /// today: the night, home, a drive, a bite, home again, the bus to school, school, the bus home, and the evening still going, with his Mac work, what he spent and a chat with Claude along the way (`late`: a talk that has just ended is there too)
     static func today(_ cal: Cal, late: Bool = false) -> DayReply { build(cal, day: 0) { b in
-        // the night as Health recorded it (every stage uncut: the first starts before the block does)
+        // the night as Health recorded it (the first stage starts before the night does: only what lies inside it is the night's)
         b.add("sleep", 55, 545, ["minutes": 485, "stages": b.stages([(40, 55, "in_bed"), (55, 100, "core"), (100, 170, "deep"), (170, 215, "core"), (215, 245, "rem"), (245, 290, "core"), (290, 335, "deep"),
                                                                   (335, 380, "core"), (380, 430, "rem"), (430, 438, "awake"), (438, 490, "core"), (490, 530, "rem"), (530, 545, "awake")])])
         b.add("stay", 545, 685, ["place": "12 Example St, Town", "kept_place": b.kept("p-home", "家", "home"), "lat": 48.4516, "lng": -123.3489, "accuracy_m": 18])
