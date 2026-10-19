@@ -66,8 +66,9 @@
 .notch .dt-slot.is-cur { transition:opacity 90ms linear 60ms, transform 90ms var(--ease-out) 60ms; }
 .notch .dt-slot:not(.is-cur) { position:absolute; top:10px; left:12px; right:12px; opacity:0; transform:translateY(2px); pointer-events:none; transition:opacity 60ms linear, transform 0s linear 60ms; }
 .notch .dt-ch { display:flex; align-items:center; gap:7px; min-width:0; }
-.notch .dt-ch b { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:600; color:var(--p-ink); }
-.notch .dt-ch span { flex:none; font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; color:var(--p-faint); }
+.notch .dt-ch b { flex:1; min-width:3em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:600; color:var(--p-ink); }
+/* the range is whole where it fits; where it is long (English: `yesterday 23:10–07:00 · 7 h 20 min`) it gives way with an ellipsis, and the name keeps 3 em */
+.notch .dt-ch span { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; color:var(--p-faint); }
 .notch .dt-cdot { flex:none; box-sizing:border-box; width:8px; height:8px; border-radius:50%; background:rgb(var(--c) / var(--a)); }
 .notch .dt-cdot.is-hollow { border:1px dashed rgb(var(--ink) / .5); background:transparent; }
 .notch .dt-cnote { margin:3px 0 0 15px; font-size:12px; line-height:16px; color:var(--p-muted); }

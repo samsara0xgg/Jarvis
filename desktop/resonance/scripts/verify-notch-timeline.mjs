@@ -2621,6 +2621,25 @@ try {
     await a.ctx.close();
   }
 
+  // in English the range of a night from yesterday is long (`yesterday 23:10–07:00 · 7 h 20 min`); the card's name kept no room beside it
+  if (all || only === 'review') {
+    const read = a => a.page.evaluate(() => {
+      const row = document.querySelector('.dt-card.is-on:not(.is-range) .dt-slot.is-cur .dt-ch'), b = row.querySelector('b'), sp = row.querySelector('span');
+      return { name: b.innerText, bw: b.clientWidth, cut: b.scrollWidth > b.clientWidth, range: sp.innerText, spw: sp.getBoundingClientRect().width, spCut: sp.scrollWidth > sp.clientWidth, row: row.clientWidth, overflow: getComputedStyle(sp).textOverflow };
+    });
+    const en = await barOf(fullDay(), { lang: 'en' });
+    await en.a.move(en.x(T(6, 30)), en.y); await en.a.page.waitForTimeout(350);
+    const ch = await read(en.a);
+    check('English, the night from yesterday: the card\'s name keeps its room (Sleep, whole, 39 px or more) and the range gives way with an ellipsis', ch.name === 'Sleep' && ch.bw >= 39 && !ch.cut && ch.range.startsWith('yesterday 23:10–07:00') && ch.overflow === 'ellipsis' && ch.spCut && ch.spw + ch.bw <= ch.row, JSON.stringify(ch));
+    await en.a.shot('review-card-english-night', { x: 40, y: 0, width: 560, height: 520 });
+    await en.a.ctx.close();
+    const zhc = await barOf(fullDay());
+    await zhc.a.move(zhc.x(T(6, 30)), zhc.y); await zhc.a.page.waitForTimeout(350);
+    const cz = await read(zhc.a);
+    check('and in Chinese, where it fits, nothing is cut: 睡觉 and 昨天 23:10–07:00 · 7 时 20 分 whole', cz.name === '睡觉' && !cz.cut && !cz.spCut && cz.range === '昨天 23:10–07:00 · 7 时 20 分', JSON.stringify(cz));
+    await zhc.a.ctx.close();
+  }
+
   console.log(`\n${checks.length} checks passed; screenshots in ${dir}`);
 } finally {
   await browser.close();
