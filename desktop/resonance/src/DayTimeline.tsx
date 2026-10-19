@@ -60,7 +60,7 @@ const enter = (root: HTMLElement | null, dir: number) => parts(root).forEach(el 
 // What the rows and the stays' headers share: which one is open, what a click on one does, what an open one holds, which can be asked about and
 // which marked, the quiet line under a row, and the name being changed in a stay's header.
 type Cx = {
-  opened: string | null; click: (e: MouseEvent, key: string) => void; body: (key: string) => ReactNode; tick: () => void; fit: (key: string, grow: number) => void;
+  opened: string | null; click: (e: MouseEvent, key: string) => void; body: (key: string) => ReactNode; tick: () => void;
   asks: ReadonlySet<string>; opens: ReadonlySet<string>; ask: ((key: string) => void) | null;
   star: { can: ReadonlySet<string>; marks: ReadonlyMap<string, StarMark>; refused: Readonly<Record<string, number>>; press: (key: string) => void };
   line: { key: string; text: string; on: boolean };
@@ -109,7 +109,7 @@ function Lit({ on, hers, className }: { on: boolean; hers: boolean; className: s
 function Under({ keyed, open, cx }: { keyed: string; open: boolean; cx: Cx }) {
   const lined = cx.line.on && cx.line.key === keyed && !open, shows = useRef<'body' | 'line'>('body');
   if (open) shows.current = 'body'; else if (lined) shows.current = 'line';
-  return <Unfold open={open || lined} className={shows.current === 'line' ? 'dt-fold is-line' : 'dt-fold'} tick={cx.tick} onOpen={grow => cx.fit(keyed, grow)} onSettle={() => cx.fit(keyed, 0)}
+  return <Unfold open={open || lined} className={shows.current === 'line' ? 'dt-fold is-line' : 'dt-fold'} tick={cx.tick} onSettle={cx.tick}
     render={() => shows.current === 'line' ? <p className="dt-hint" role="status">{cx.line.text}</p> : cx.body(keyed)}/>;
 }
 
@@ -320,7 +320,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   useLayoutEffect(() => {
     const l = list.current, spot = `${shown?.date}:${date}:${ui.filter ? 'cut' : ''}`;
     if (l && model && shown && placed.current !== spot) {
-      placed.current = spot;
+      placed.current = spot; release();
       const line = l.querySelector<HTMLElement>('.dt-now');
       l.scrollTop = line ? Math.max(0, offsetIn(line, l) - l.clientHeight * .6) : 0;
       if (!rose.current) { rose.current = true; stopRise.current = rise(l); }
@@ -338,13 +338,12 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     fresh.filter(el => !fresh.some(o => o !== el && o.contains(el))).forEach(grow);
   }, [model]);
   // The list scrolls to `to` in `ms`, easing out (at once under reduced motion); a new one takes over from wherever the last had got to.
-  // `more`: how much taller the list is about to be (a row that is opening), so the end is not cut to what is there now.
-  const glide = useRef(0);
-  const slide = (to: number, ms: number, more = 0) => {
+  const glide = useRef(0), still = useRef<{ key: string; y: number; scroll: boolean; armed: boolean } | null>(null);
+  const slide = (to: number, ms: number) => {
     const l = list.current;
     if (!l) return;
-    const from = l.scrollTop, end = Math.max(0, Math.min(l.scrollHeight + more - l.clientHeight, to)), began = performance.now();
-    cancelAnimationFrame(glide.current);
+    const from = l.scrollTop, end = Math.max(0, Math.min(l.scrollHeight - l.clientHeight, to)), began = performance.now();
+    cancelAnimationFrame(glide.current); still.current = null;
     if (reduced.matches || Math.abs(end - from) < 1) { l.scrollTop = end; return; }
     const tick = (at: number) => { const k = Math.min(1, (at - began) / ms); l.scrollTop = from + (end - from) * (1 - (1 - k) ** 3); if (k < 1) glide.current = requestAnimationFrame(tick); };
     glide.current = requestAnimationFrame(tick);
@@ -356,16 +355,46 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     el.classList.remove('is-flash'); void el.offsetWidth; el.classList.add('is-flash');
     slide(offsetIn(el, l) - 12, 300);
   };
-  // A row that opens is kept whole in view: if it would end under the list's foot the list moves to bring it up (its top stays in view when it is
-  // taller than the list). It is asked once as the row starts to grow (with how much it will; a row that is closing above it gives its height back
-  // meanwhile) and once more when it has finished, and again when what it holds changes.
-  const fit = (key: string, more: number) => {
+  // The row he presses stays where his hand is. Each frame while rows open and close (and once after), the list scrolls to put that row back where its
+  // top was, whatever changes above it; an open row (or one with a line under it) that would end under the list's foot, or under an input that
+  // comes up there, is brought up to 24 px clear of it (its top stays in view when it is taller than the list), together with its opening. Where
+  // the list has no scroll left to give (the last row opening, the one above the pressed row closing at the top) it is given room, above its first row or
+  // below its last, which stays only while it is in view (trim), and never more than a third of the list: so nothing moves under the pointer, and the foot is not flush.
+  const follow = () => {
+    const l = list.current, hold = still.current;
+    if (!l) return;
+    const el = hold ? l.querySelector<HTMLElement>(`[data-key="${CSS.escape(hold.key)}"]`) : l.querySelector<HTMLElement>('[aria-expanded="true"]') ?? l.querySelector<HTMLElement>(':has(> .dt-fold.is-line)');
+    if (!el) { still.current = null; return; }
+    if (hold ? hold.scroll : l.scrollHeight > l.clientHeight) {
+      const view = l.getBoundingClientRect(), box = el.getBoundingClientRect(), top = box.top - view.top, y = hold?.y ?? top, margin = 24;
+      const shown = el.getAttribute('aria-expanded') === 'true' || !!el.querySelector(':scope > .dt-fold.is-line'), want = shown ? Math.min(y, Math.max(margin, view.height - margin - box.height)) : y;
+      if (Math.abs(top - want) >= .5) {
+        const to = l.scrollTop + top - want, room = (side: 'paddingTop' | 'paddingBottom') => parseFloat(l.style[side]) || 0, grant = (side: 'paddingTop' | 'paddingBottom', more: number) => { l.style[side] = `${Math.min(room(side) + more, Math.max(room(side), view.height / 3))}px`; };
+        if (to < 0) grant('paddingTop', -to);
+        else if (to > l.scrollHeight - l.clientHeight) grant('paddingBottom', to - (l.scrollHeight - l.clientHeight));
+        l.scrollTop = Math.max(0, to);
+      }
+    }
+    if (hold?.armed && !l.getAnimations({ subtree: true }).some(a => a.playState === 'running' && (a.effect as KeyframeEffect | null)?.target?.classList.contains('dt-fold'))) { still.current = null; trim(); }
+  };
+  const trim = () => {
+    const l = list.current;
+    if (!l || still.current || !l.style.paddingTop && !l.style.paddingBottom) return;
+    const head = Math.min(parseFloat(l.style.paddingTop) || 0, l.scrollTop), foot = Math.min(parseFloat(l.style.paddingBottom) || 0, l.scrollHeight - l.clientHeight - l.scrollTop);
+    if (head > 0) { l.style.paddingTop = `${(parseFloat(l.style.paddingTop) || 0) - head}px`; l.scrollTop -= head; }
+    if (foot > 0) l.style.paddingBottom = `${(parseFloat(l.style.paddingBottom) || 0) - foot}px`;
+  };
+  const release = () => { const l = list.current; if (l) { l.style.paddingTop = l.style.paddingBottom = ''; } still.current = null; };
+  // A row that is pressed to open or close (the click, the keys, Esc): where its top is in the list's view now. It is held there until the rows have stopped
+  // moving (the first frame after the change, which is all there is under reduced motion, arms the end of it).
+  const press = (key: string, then: () => void) => {
     const l = list.current, el = l?.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`);
-    if (!l || !el) return;
-    const mine = el.querySelector(':scope > .dt-fold'), closing = more > 0 ? [...l.querySelectorAll<HTMLElement>('.dt-fold')].filter(f => f !== mine && !el.contains(f) && el.compareDocumentPosition(f) & Node.DOCUMENT_POSITION_PRECEDING).reduce((n, f) => n + f.offsetHeight, 0) : 0;
-    const top = offsetIn(el, l) - closing, full = el.offsetHeight + more, margin = 24;
-    if (top < l.scrollTop + margin) slide(top - margin, 260, more);
-    else if (top + full > l.scrollTop + l.clientHeight - margin) slide(Math.min(top - margin, top + full - l.clientHeight + margin), 260, more);
+    if (l && el) {
+      cancelAnimationFrame(glide.current);
+      const hold = still.current = { key, y: el.getBoundingClientRect().top - l.getBoundingClientRect().top, scroll: l.scrollHeight > l.clientHeight, armed: false as boolean };
+      requestAnimationFrame(() => { follow(); hold.armed = true; follow(); });
+    }
+    then();
   };
   // The waiting pill takes the first row that waits on him to the top of the list (the whole day again when the list is cut).
   const waitFirst = (key: string) => { if (ui.filter) { ui.setFilter(null); requestAnimationFrame(() => jump(key)); } else jump(key); };
@@ -381,7 +410,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   const marks = useMemo<ReadonlyMap<string, StarMark>>(() => new Map([...model?.stars ?? []].map(([k, m]) => [k, m.by === 'her' ? 'her' : 'him'])), [model]);
   // Which rows open to something (a part, or a button that works): a row never opens to nothing, and one that does not is drawn as it is.
   const opens = useMemo<ReadonlySet<string>>(() => new Set(model ? [...model.rows.keys(), ...model.heads.keys()].filter(k => { const o = openOf(model, k, t); return !!o && hasBody(o, !!ask && asks.has(k)); }) : []), [model, asks, !!ask]);
-  const toggle = (key: string) => { if (opened === key) setOpened(null); else if (opens.has(key)) setOpened(key); };
+  const toggle = (key: string) => { if (opened === key) press(key, () => setOpened(null)); else if (opens.has(key)) press(key, () => setOpened(key)); };
   const click = (e: MouseEvent, key: string) => {
     if ((e.target as Element).closest('.dt-fold, button, input, a')) return;
     setPick(key); toggle(key);
@@ -540,7 +569,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   useEffect(() => { if (opened && model && !model.rows.has(opened) && !model.heads.has(opened)) setOpened(null); }, [model]);
   useEffect(() => { if (rename && opened !== rename.key) setRename(null); }, [opened]);
   useEffect(() => { if (naming && opened !== naming.key) setNaming(null); }, [opened]);
-  useEffect(() => { if (!open) { setOpened(null); setRename(null); setNaming(null); setDock(null); setDraft(''); setViewer(null); setNote(null); } }, [open]);
+  useEffect(() => { if (!open) { release(); setOpened(null); setRename(null); setNaming(null); setDock(null); setDraft(''); setViewer(null); setNote(null); } }, [open]);
   // The body of an open row: what dayOpen made of it, and the buttons that work for it, each with what it is doing.
   const body = (key: string): ReactNode => {
     const o = model && openOf(model, key, t);
@@ -561,7 +590,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     };
     return <OpenBody open={o} acts={acts}/>;
   };
-  const cx: Cx = { opened, click, body, tick: edges, fit, asks, opens, ask: ask ? openAsk : null, line, star: { can: starrables, marks, refused, press: key => void star(key) },
+  const cx: Cx = { opened, click, body, tick: () => { follow(); edges(); }, asks, opens, ask: ask ? openAsk : null, line, star: { can: starrables, marks, refused, press: key => void star(key) },
     rename: rename && { key: rename.key, draft: rename.draft, busy: rename.state === 'busy', set: text => setRename(r => r && { ...r, draft: text, state: r.state === 'failed' ? 'edit' : r.state }), save: () => void saveRename(), field: on => setLeft(!on) } };
 
   // Esc lets go of one thing at a time, nearest first: the picture, the input, the name being changed or given, the open row, the bar's lens, its range and
@@ -574,7 +603,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     else if (dock) { setDock(null); setDraft(''); }
     else if (rename) setRename(null);
     else if (naming) setNaming(null);
-    else if (opened) setOpened(null);
+    else if (opened) press(opened, () => setOpened(null));
     else return uiRef.current.escape();
     return true;
   };
@@ -646,13 +675,13 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
       {model.line && <p className={`dt-line${model.line.draft ? ' is-draft' : ''}`}>{model.line.text}</p>}
       {model.empty ? <p className="dt-say">{t(['Nothing recorded for this day yet', '这一天还没有记下什么'])}</p> : <>
         <DayBar model={model} port={port} ui={ui} hot={hot ?? pick ?? opened} onHot={setHot} onJump={reveal} onPicture={(id, note) => setViewer({ id, note })} onSay={openSay}/>
-        {rows.length > 0 ? <div ref={list} className="dt-list" onScroll={edges} onWheel={() => cancelAnimationFrame(glide.current)}><Blocks blocks={rows} hot={hot} onHot={setHot} pick={pick} t={t} cx={cx}/></div>
+        {rows.length > 0 ? <div ref={list} className="dt-list" onScroll={() => { trim(); edges(); }} onWheel={() => { cancelAnimationFrame(glide.current); still.current = null; }}><Blocks blocks={rows} hot={hot} onHot={setHot} pick={pick} t={t} cx={cx}/></div>
           : ui.filter && <p className="dt-say">{t(['Nothing was recorded in this stretch', '这一段没有记下什么'])}</p>}
       </>}
       {model.foot && <p className="dt-foot">{model.foot}</p>}
-      <Unfold className="dt-fold is-dock" open={!!note} tick={edges} render={() => kept && <div className="dt-note" role="status"><span>{kept.state === 'failed' ? t(["Couldn't undo it", '没撤销成功']) : t(['Renamed', '改好了'])}</span>
+      <Unfold className="dt-fold is-dock" open={!!note} tick={cx.tick} onSettle={cx.tick} render={() => kept && <div className="dt-note" role="status"><span>{kept.state === 'failed' ? t(["Couldn't undo it", '没撤销成功']) : t(['Renamed', '改好了'])}</span>
         {kept.state === 'done' && kept.change && <>{' · '}<button type="button" onClick={() => void undo()}>{t(['Undo', '撤销'])}</button></>}</div>}/>
-      <Unfold className="dt-fold is-dock" open={!!dock} tick={edges} render={() => shownDock && <AskDock about={shownDock.ask} say={shownDock.say?.range ?? null} draft={draft} state={shownDock.state} nonce={shownDock.nonce} onDraft={text => { setDraft(text); setDock(d => d && d.state === 'failed' ? { ...d, state: 'idle' } : d); }}
+      <Unfold className="dt-fold is-dock" open={!!dock} tick={cx.tick} onSettle={cx.tick} render={() => shownDock && <AskDock about={shownDock.ask} say={shownDock.say?.range ?? null} draft={draft} state={shownDock.state} nonce={shownDock.nonce} onDraft={text => { setDraft(text); setDock(d => d && d.state === 'failed' ? { ...d, state: 'idle' } : d); }}
         onSend={() => void (dock?.say ? sendSay() : sendAsk())} onDrop={() => setDock(d => d && { ...d, ask: null })} onField={on => setLeft(!on)} t={t}/>}/>
     </TimelineGuard>}
     {viewer && port && <Viewer port={port} id={viewer.id} note={viewer.note} t={t} onClose={() => setViewer(null)}/>}

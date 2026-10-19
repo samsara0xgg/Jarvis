@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { CaretRight, Check } from '@phosphor-icons/react';
+import { CaretRight, Check, PencilSimpleLine } from '@phosphor-icons/react';
 import type { L } from './companionSettings';
 import { stageLook } from './dayView';
 import { talkLines, type Bar, type Night, type Open, type Part, type Rec, type Session, type Words } from './dayOpen';
@@ -14,12 +14,12 @@ export const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 // fading in after 60 ms; closing is the same backwards in 200 ms; and while it is open a change in what it holds (the talk's lines coming, a
 // recap unfolding, a picture loading) is a 180 ms glide of the height, not a jump. Reduced motion: nothing moves, what appears fades in
 // over 120 ms. The content is drawn only while it is open or closing (`render`), so a closed row costs nothing.
-export function Unfold({ open, render, tick, onOpen, onSettle, className = 'dt-fold' }: { open: boolean; render: () => ReactNode; tick?: () => void; onOpen?: (grow: number) => void; onSettle?: () => void; className?: string }) {
+export function Unfold({ open, render, tick, onSettle, className = 'dt-fold' }: { open: boolean; render: () => ReactNode; tick?: () => void; onSettle?: () => void; className?: string }) {
   const [here, setHere] = useState(open);
   if (open && !here) setHere(true);
-  const fold = useRef<HTMLDivElement>(null), body = useRef<HTMLDivElement>(null), run = useRef<Animation | null>(null), fade = useRef<Animation | null>(null), rest = useRef(0), raf = useRef(0);
-  const live = useRef({ open, tick, onOpen, onSettle });
-  live.current = { open, tick, onOpen, onSettle };
+  const fold = useRef<HTMLDivElement>(null), body = useRef<HTMLDivElement>(null), run = useRef<Animation | null>(null), fade = useRef<Animation | null>(null), rest = useRef(0);
+  const live = useRef({ open, tick, onSettle });
+  live.current = { open, tick, onSettle };
   // `quick`: the content changed while it was open (not an opening); the height glides to it and nothing else moves.
   const go = (quick: boolean) => {
     const f = fold.current, b = body.current;
@@ -36,19 +36,19 @@ export function Unfold({ open, render, tick, onOpen, onSettle, className = 'dt-f
     if (up && !quick) fade.current = b.animate([{ opacity: alpha }, { opacity: 1 }], { duration: 200, delay: from === 0 ? 60 : 0, easing: 'ease-out', fill: 'backwards' });
     else if (!up) fade.current = b.animate([{ opacity: alpha }, { opacity: 0 }], { duration: 120, easing: 'ease-in', fill: 'forwards' });
     a.onfinish = () => { if (run.current !== a) return; run.current = null; if (!live.current.open) setHere(false); else live.current.onSettle?.(); live.current.tick?.(); };
-    const loop = () => { live.current.tick?.(); if (run.current) raf.current = requestAnimationFrame(loop); };
-    cancelAnimationFrame(raf.current); raf.current = requestAnimationFrame(loop);
-    if (up && !quick) live.current.onOpen?.(to - from);
   };
   useLayoutEffect(() => go(false), [open, here]);
   useEffect(() => {
-    const b = body.current;
-    if (!b || !here) return;
+    const f = fold.current, b = body.current;
+    if (!f || !b || !here) return;
     const watch = new ResizeObserver(() => { if (live.current.open && Math.abs(b.offsetHeight - rest.current) >= 1) go(true); });
-    watch.observe(b);
-    return () => watch.disconnect();
+    // `tick` once for each frame the fold's height changes, after that frame's animations have been applied (a frame callback sees the frame before),
+    // so what the pane does about it (DayTimeline.tsx scrolls the list) is painted in the same frame
+    const frames = new ResizeObserver(() => live.current.tick?.());
+    watch.observe(b); frames.observe(f);
+    return () => { watch.disconnect(); frames.disconnect(); };
   }, [here]);
-  useEffect(() => () => { run.current?.cancel(); fade.current?.cancel(); cancelAnimationFrame(raf.current); }, []);
+  useEffect(() => () => { run.current?.cancel(); fade.current?.cancel(); }, []);
   return here ? <div ref={fold} className={className}><div ref={body} className="dt-body">{render()}</div></div> : null;
 }
 
@@ -65,7 +65,7 @@ export type Acts = {
   ack: { state: 'idle' | 'busy' | 'failed'; press: () => void } | null;
   commit: { state: 'idle' | 'busy' | 'failed'; confirm: () => void; cancel: () => void } | null;
   summarize: { state: 'idle' | 'busy' | 'sent' | 'failed'; press: () => void } | null;
-  // 这段在干嘛: only on a stretch (dayOpen.sayOf), the last and quietest of the buttons.
+  // 这段在干嘛: only on a stretch (dayOpen.sayOf), a faint line under the buttons.
   say: (() => void) | null;
   star: ReactNode;
   line: string;
@@ -169,9 +169,14 @@ function NameField({ name, t }: { name: NonNullable<Acts['name']>; t: (l: L) => 
   </div>;
 }
 
-// The buttons: what can be done from the row, only where the route to do it works today; under them a line when there is something to say.
+// 这段在干嘛, the way the phone has it: a faint line of its own with a pencil, not a button among the buttons. The same on the bar's range card.
+export function SayWhat({ press, t }: { press: () => void; t: (l: L) => string }) {
+  return <button type="button" className="dt-sayhow" onClick={press}><PencilSimpleLine size={12} aria-hidden="true"/>{t(['What was this', '这段在干嘛'])}</button>;
+}
+
+// The buttons: what can be done from the row, only where the route to do it works today; under them 这段在干嘛, and a line when there is something to say.
 function Buttons({ acts, say }: { acts: Acts; say: string }) {
-  const { t, rename, name, ack, commit, summarize, star } = acts, any = !!(acts.ask || acts.say || rename?.state === 'idle' || name?.state === 'idle' || ack || commit || summarize || star);
+  const { t, rename, name, ack, commit, summarize, star } = acts, any = !!(acts.ask || rename?.state === 'idle' || name?.state === 'idle' || ack || commit || summarize || star);
   return <>
     {any && <div className="dt-acts">
       {rename?.state === 'idle' && <button type="button" className="dt-btn" onClick={rename.start}>{t(['Rename', '改名字'])}</button>}
@@ -186,8 +191,8 @@ function Buttons({ acts, say }: { acts: Acts; say: string }) {
         : <button type="button" className="dt-btn" disabled={summarize.state === 'busy'} onClick={summarize.press}>{summarize.state === 'failed' ? t(["Didn't send. Try again", '没发出去，再试一次']) : t(['Have her sum this up', '让她总结这段'])}</button>)}
       {star}
       {acts.ask && <button type="button" className="dt-btn" onClick={acts.ask}>{t(['Ask her', '问她'])}</button>}
-      {acts.say && <button type="button" className="dt-btn" onClick={acts.say}>{t(['What was this', '这段在干嘛'])}</button>}
     </div>}
+    {acts.say && <SayWhat press={acts.say} t={t}/>}
     {name && name.state !== 'idle' && <NameField name={name} t={t}/>}
     {say && <p className="dt-hint" role="status">{say}</p>}
   </>;
