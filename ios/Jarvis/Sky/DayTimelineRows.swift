@@ -103,7 +103,7 @@ extension DayTimelineModel {
                 e.symbol = "bus.fill"
                 let stops = [tlText(i.board_stop), tlText(i.alight_stop)]
                 let trail = stops.compactMap { $0 }.joined(separator: " → ")
-                let route = tlText(i.route).map { $0.replacingOccurrences(of: #"\s*→\s*"#, with: "→", options: .regularExpression) }
+                let route = routeText(i.route)
                 e.title = route.map { "\($0) 路" } ?? "公交"
                 e.barName = route; e.barIcon = "bus.fill"
                 e.detail = trail.isEmpty ? nil : trail          // one stop is that stop alone, none no line at all
@@ -309,10 +309,35 @@ extension DayTimelineModel {
 
     /// what a workout is called and drawn as, from the name the phone gave it
     static func workoutWords(_ activity: String?) -> (String, String) {
+        knownWorkout(activity) ?? ("运动", "figure.mixed.cardio")
+    }
+    /// the same for a workout whose name the table has a word for, else none
+    private static func knownWorkout(_ activity: String?) -> (String, String)? {
         let a = (activity ?? "").lowercased()
         let table: [(String, String, String)] = [("run", "跑步", "figure.run"), ("walk", "步行", "figure.walk"), ("cycl", "骑车", "bicycle"), ("bik", "骑车", "bicycle"),
                                                  ("hik", "徒步", "figure.hiking"), ("swim", "游泳", "figure.pool.swim"), ("strength", "力量训练", "dumbbell.fill"), ("yoga", "瑜伽", "figure.yoga")]
-        return table.first { a.contains($0.0) }.map { ($0.1, $0.2) } ?? ("运动", "figure.mixed.cardio")
+        return table.first { a.contains($0.0) }.map { ($0.1, $0.2) }
+    }
+
+    /// a bus route as the rows write it: `27`, `14→7` (the arrow without spaces)
+    static func routeText(_ raw: String?) -> String? {
+        tlText(raw).map { $0.replacingOccurrences(of: #"\s*→\s*"#, with: "→", options: .regularExpression) }
+    }
+
+    /// What a span of the doing lane says he was doing, in the words the Mac uses too, or none (no title, or a blank one). A model's phrase or his own answer (`inferred`, `stated`) is shown
+    /// as given. The program (`observed`) titles a span from the facts under it, never from the place, so its title is the project or session (做 …), the route (`27 路`), the app of a call
+    /// (… 通话, the one fact whose span has no category of its own), the workout (跑步), or the night (睡觉).
+    static func doingWords(_ s: DaySpan) -> String? {
+        guard let title = tlText(s.title) else { return nil }
+        guard s.basis == "observed" else { return title }
+        switch s.category {
+        case "work": return "做 " + title
+        case "commute": return (routeText(title) ?? title) + " 路"
+        case "exercise": return knownWorkout(title)?.0 ?? title
+        case "sleep": return "睡觉"
+        case "unknown": return title + " 通话"
+        default: return title
+        }
     }
 
     /// the day's weather as words and a symbol: WeatherKit's condition as the brain words it (`mostly cloudy`), read without case or separators, in the few the Mac has (`frigid` and

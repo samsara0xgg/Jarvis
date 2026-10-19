@@ -79,6 +79,8 @@ extension DayTimelineModel {
             }
             if let last = pieces.last, last.id == p.id || (last.fill == .blank && p.fill == .blank) { pieces[pieces.count - 1].t1 = b } else { pieces.append(p) }
         }
+        // a stay wears what he was doing when one span of it covers half of the piece; its colour and icon stay the place's
+        for k in pieces.indices { if case .place = pieces[k].fill, let words = wasDoing(over: pieces[k].t0, pieces[k].t1) { pieces[k].name = words } }
         var ahead: [TLAhead] = []
         if let now {
             for e in entries where e.kind == .event || e.kind == .reminder || e.kind == .departure {

@@ -62,6 +62,9 @@ struct DayReply: Decodable {
     /// the day's weather and what Health reported for it (null from a brain that does not serve them, or when it could not read them)
     let weather: DayWeather?
     let summary: DaySummary?
+    /// what he was doing, as spans of the day's doing lane, and how much of his waking time they explain (ADR 0302); absent from a brain that does not serve them yet
+    let spans: [DaySpan]
+    let coverage: DayCoverage?
 
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: Keys.self)
@@ -79,8 +82,10 @@ struct DayReply: Decodable {
         highlights = ((try? c.decodeIfPresent([Lossy<Highlight>].self, forKey: .highlights)) ?? nil)?.compactMap(\.value) ?? []
         weather = (try? c.decodeIfPresent(DayWeather.self, forKey: .weather)) ?? nil
         summary = (try? c.decodeIfPresent(DaySummary.self, forKey: .summary)) ?? nil
+        spans = ((try? c.decodeIfPresent([Lossy<DaySpan>].self, forKey: .spans)) ?? nil)?.compactMap(\.value) ?? []
+        coverage = (try? c.decodeIfPresent(DayCoverage.self, forKey: .coverage)) ?? nil
     }
-    private enum Keys: String, CodingKey { case date, tz, start_ms, end_ms, now_ms, items, missing, line, highlights, labels, weather, summary }
+    private enum Keys: String, CodingKey { case date, tz, start_ms, end_ms, now_ms, items, missing, line, highlights, labels, weather, summary, spans, coverage }
 }
 
 /// A value that is read when it can be and is nil when it cannot: one element of a list that has a shape this phone does not know costs that element only.
@@ -97,6 +102,25 @@ struct DayWeather: Decodable {
     @Soft var low: Double?
     @Soft var sunrise_ms: Int64?
     @Soft var sunset_ms: Int64?
+}
+
+/// One span of the doing lane (`spans` of `GET /inherent/day`): what he was doing for a stretch of the day. Only what the phone reads is here. `title` may be nil; `basis` says who wrote it
+/// (`observed` the program, from facts; `inferred` a model; `stated` his own answer); `end_ms` nil is still going. One that is not this shape costs only itself.
+struct DaySpan: Decodable {
+    let id: String, lane: String, kind: String
+    let start_ms: Int64
+    let end_ms: Int64?
+    @Soft var title: String?
+    @Soft var category: String?
+    @Soft var basis: String?
+}
+
+/// How much of his waking time the doing lane explains (`coverage`), in epoch milliseconds
+struct DayCoverage: Decodable {
+    @Soft var waking_start_ms: Int64?
+    @Soft var waking_end_ms: Int64?
+    @Soft var waking_ms: Int64?
+    @Soft var filled_ms: Int64?
 }
 
 /// What Health reported for the day (`summary`); a value it did not have is nil.
