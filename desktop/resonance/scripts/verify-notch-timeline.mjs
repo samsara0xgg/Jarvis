@@ -2593,6 +2593,19 @@ try {
     await a.ctx.close();
   }
 
+  // Esc lets go of a lens pinned from a chip the pointer is still on (the chip's own preview held the lens on)
+  if (all || only === 'review') {
+    const a = await boot({ served: fullDay() });
+    await openDay(a);
+    const lens = () => a.page.evaluate(() => document.querySelector('.dt').dataset.lens ?? null);
+    const chip = a.page.locator('.dt-num', { hasText: 'Mac' });
+    await chip.click(); await a.page.waitForTimeout(150);
+    check('a click on a chip pins its lens (the pointer is on it)', await lens() === 'work' && await chip.getAttribute('aria-pressed') === 'true');
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(150);
+    check('Esc lets the lens go though the pointer is still on the chip, and the pane stays', await lens() === null && await chip.getAttribute('aria-pressed') === 'false' && (await a.read()).tl === 'pinned', String(await lens()));
+    await a.ctx.close();
+  }
+
   console.log(`\n${checks.length} checks passed; screenshots in ${dir}`);
 } finally {
   await browser.close();
