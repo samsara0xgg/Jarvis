@@ -206,8 +206,10 @@ final class DayTimelineRowsTests: XCTestCase {
         for id in ["ride-8", "payment-demo-1", "payment-demo-2", "claude-demo-1", "departure-demo-1"] {
             XCTAssertEqual(try actions(id), [.ask, .mark], id)
         }
-        // and does not take a run, but it can be starred; the row for several sessions and the line for now are not items the brain has
-        XCTAssertEqual(try actions("workout-demo-1"), [.mark])
+        // and a run, and a session of Claude Code alone; the row for several sessions and the line for now are not items the brain has
+        XCTAssertEqual(try actions("workout-demo-1"), [.ask, .mark])
+        let lone = build(try reply(item("code-s1", "code", 610, 640, #""title": "T1", "project": "Jarvis", "session_id": "s1""#)), now: nil)
+        XCTAssertEqual(try entry(lone, "code-s1").about?.kind, "code", "one session alone is one item")
         for id in ["code-group-stay-1", "code-group-stay-13", "now"] {
             XCTAssertEqual(try actions(id), [], id)
         }
@@ -277,14 +279,12 @@ final class DayTimelineRowsTests: XCTestCase {
     // MARK: what is handed to her
 
     func testAnAboutIsOnlyForAKindTheHostKnowsAndAnIdItWouldAccept() throws {
-        let kinds = ["reminder", "event", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day"]
+        let kinds = ["reminder", "event", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day", "workout", "code"]
         let r = try reply(kinds.map { item("ok-\($0)", $0, 600, 610, #""text": "x", "title": "x""#) }.joined(separator: ","))
         XCTAssertEqual(Set(build(r, now: nil).entries.compactMap { $0.about?.kind }), Set(kinds))
-        let no = ["workout", "code"]
-        let r2 = try reply(no.map { item("no-\($0)", $0, 600, 610, #""text": "x", "title": "x""#) }.joined(separator: ","))
-        let m2 = build(r2, now: nil)
-        XCTAssertEqual(m2.entries.count, no.count, "every one of them is a row")
-        XCTAssertTrue(m2.entries.allSatisfy { $0.about == nil })
+        // sessions of Claude Code folded into one row: that row is no one item
+        let two = try reply([item("s1", "stay", 600, 700, home), item("c1", "code", 610, 620, #""title": "A""#), item("c2", "code", 630, 640, #""title": "B""#)].joined(separator: ","))
+        XCTAssertNil(try entry(build(two, now: nil), "code-group-s1").about)
         for id in ["a b", "é", String(repeating: "a", count: 257), "a#b", "a?b"] {
             XCTAssertNil(try entry(build(try reply(item(id, "talk", 600, 610)), now: nil), id).about, id)
         }

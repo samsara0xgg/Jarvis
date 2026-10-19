@@ -46,10 +46,8 @@ final class AboutTests: XCTestCase {
         XCTAssertNil(About.of(star(live: false)), "a prototype star")
         XCTAssertNil(About.of(star(kind: nil)))
         XCTAssertNil(About.of(star(kind: "flight")), "a kind the host does not know")
-        XCTAssertNil(About.of(star(kind: "workout")), "nor a run or a walk")
-        XCTAssertNil(About.of(star(kind: "code")), "nor a session of Claude Code")
         XCTAssertNil(About.of(star(ms: nil)))
-        for k in ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day"] {
+        for k in ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day", "workout", "code"] {
             XCTAssertNotNil(About.of(star(kind: k)), k)
         }
     }

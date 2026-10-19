@@ -77,7 +77,7 @@ final class DayTimelineActionsTests: XCTestCase {
         e.deliver = { u, t, i, a in await brain.deliver(u, t, i, a) }
         var began = 0
         e.beginEditing = { began += 1 }
-        let home = try entry(tl, "stay-1"), bare = try entry(tl, "stay-5"), talk = try entry(tl, "talk-1"), workout = try entry(tl, "workout-demo-1")
+        let home = try entry(tl, "stay-1"), bare = try entry(tl, "stay-5"), talk = try entry(tl, "talk-1"), sessions = try entry(tl, "code-group-stay-1")
         tl.perform(.acknowledge, on: home, engine: e)
         XCTAssertTrue(tl.acked.isEmpty, "a place is not a reminder")
         tl.perform(.openTalk, on: home, engine: e)
@@ -85,8 +85,8 @@ final class DayTimelineActionsTests: XCTestCase {
         tl.perform(.rename, on: bare, engine: e)
         XCTAssertNil(tl.renaming, "a place he does not keep cannot be renamed")
         tl.perform(.summarize, on: talk, engine: e)
-        tl.perform(.ask, on: workout, engine: e)
-        XCTAssertNil(e.ui.about, "the host does not take a run as what a turn is about")
+        tl.perform(.ask, on: sessions, engine: e)
+        XCTAssertNil(e.ui.about, "a row for several sessions of Claude Code is no one item a turn can be about")
         XCTAssertEqual(began, 0)
         XCTAssertTrue(brain.turns.isEmpty)
     }

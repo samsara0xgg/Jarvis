@@ -20,8 +20,8 @@ struct About: Equatable {
     /// the wire object: `{kind, id, title, start_ms}`. The id goes whole; a cut id names another item.
     var json: [String: Any] { ["kind": kind, "id": id, "title": title, "start_ms": startMs] }
 
-    /// what the phone may have open: the kinds of the day line (jarvis/shared/about.py `ABOUT_KINDS`; a workout and a Claude Code session are not among them)
-    static let kinds: Set<String> = ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day"]
+    /// what the phone may have open: the kinds of the day line (jarvis/shared/about.py `ABOUT_KINDS`). A run of Claude Code sessions folded into one row is no one item, and has none.
+    static let kinds: Set<String> = ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day", "workout", "code"]
 
     /// the id shape the host accepts: 1-256 of `[A-Za-z0-9_-=+/.|:@]` (the `@` is a commitment's: `commitment-<hex>@<day>`)
     static func fits(id: String) -> Bool {

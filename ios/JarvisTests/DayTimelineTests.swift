@@ -881,8 +881,8 @@ final class DayTimelineTests: XCTestCase {
 
     func testARowOfAKindTheHostDoesNotKnowOrWithAnIdItWouldRefuseGivesNoChip() throws {
         let m = build(TimelineFixture.today(cal))
-        for id in ["workout-demo-1", "now"] { XCTAssertNil(try entry(m, id).about, id) }
-        for id in ["ride-8", "payment-demo-1", "claude-demo-1", "departure-demo-1"] { XCTAssertNotNil(try entry(m, id).about, id) }
+        for id in ["code-group-stay-1", "now"] { XCTAssertNil(try entry(m, id).about, id) }
+        for id in ["ride-8", "payment-demo-1", "claude-demo-1", "departure-demo-1", "workout-demo-1"] { XCTAssertNotNil(try entry(m, id).about, id) }
         let dep = try reply(#"{"id": "departure-1", "lane": "you", "kind": "departure", "state": "next", "start_ms": \#(at(1400)), "end_ms": \#(at(1400)), "route": "12"}"#)
         XCTAssertEqual(build(dep, now: nil).entries[0].about?.kind, "departure")
         let odd = try reply(#"{"id": "event a", "lane": "you", "kind": "event", "state": "next", "start_ms": \#(at(1400)), "end_ms": \#(at(1430)), "title": "x"}"#)
@@ -909,11 +909,11 @@ final class DayTimelineTests: XCTestCase {
             e.captureAbout()
             XCTAssertEqual(e.ui.about, About(kind: "event", id: "event-demo-1", title: "陶艺课", startMs: at(1320), mark: .next))
             MainActor.assumeIsolated { XCTAssertEqual(AboutNow.current?.id, "event-demo-1", "the voice says it too") }
-            // another row opened is another item; one of a kind the host does not know leaves the chip as it is
+            // another row opened is another item; a row that is no one item (sessions folded together) leaves the chip as it is
             e.ui.tl.openRow = "talk-1"
             e.captureAbout()
             XCTAssertEqual(e.ui.about?.id, "talk-1")
-            e.ui.tl.openRow = "workout-demo-1"
+            e.ui.tl.openRow = "code-group-stay-1"
             e.captureAbout()
             XCTAssertEqual(e.ui.about?.id, "talk-1")
             e.ui.tl.openRow = "ride-8"
