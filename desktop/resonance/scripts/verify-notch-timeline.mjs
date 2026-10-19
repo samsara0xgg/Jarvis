@@ -2533,6 +2533,20 @@ try {
     await a.ctx.close();
   }
 
+  // a range that ends with the day says 24:00 on the bar's edge, as its card does (the edge said 00:00)
+  if (all || only === 'review') {
+    const { a, g, y, x } = await barOf(small([it('ha', 'stay', T(9, 5), T(13, 0), { place: 'Home', kept_place: home }), it('ht', 'talk', T(10, 0), T(10, 5), { turns: 2 }, 'her'), it('hb', 'stay', T(13, 0), null, { place: 'Library', kept_place: uvic })]));
+    const edges = () => a.page.evaluate(() => [...document.querySelectorAll('.dt-scrub .dt-time')].map(e => e.innerText));
+    await a.move(x(T(20, 0)), y); await a.page.mouse.down(); await a.move(x(T(22, 0)), y); await a.move(g.left + g.width + 30, y); await a.page.waitForTimeout(150);
+    let labels = await edges();
+    check('dragging to the end of the day, the right edge of the band says 24:00', labels.length === 2 && /^(19:5\d|20:0\d)$/.test(labels[0]) && labels[1] === '24:00', labels.join());
+    await a.page.mouse.up(); await a.page.waitForTimeout(300);
+    labels = await edges();
+    const card = await a.page.locator('.dt-card.is-range .dt-ch b').innerText();
+    check('and so does the range once it is chosen, as its card does (20:00–24:00)', labels.length === 2 && labels[1] === '24:00' && /–24:00$/.test(card) && card.slice(0, 5) === labels[0], JSON.stringify({ labels, card }));
+    await a.ctx.close();
+  }
+
   console.log(`\n${checks.length} checks passed; screenshots in ${dir}`);
 } finally {
   await browser.close();
