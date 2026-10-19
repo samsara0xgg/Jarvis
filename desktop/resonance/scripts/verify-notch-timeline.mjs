@@ -2269,6 +2269,14 @@ try {
     await a.shot('open-14-rename-note', { x: 40, y: 0, width: 560, height: 760 });
     await a.page.waitForTimeout(900);
     await a.shot('open-14b-wing-after-rename', { x: 200, y: 0, width: 300, height: 60 });
+    // the wing's line is the open pane's too: a longer name for the place pushes the wing's edge out; the words do not run past it and lose a digit
+    const wing = await a.page.evaluate(() => {
+      const n = document.querySelector('.notch'), [x0, x1] = n.dataset.lineAt.split('-').map(Number), words = n.dataset.line, cut = words.lastIndexOf(' · '), ctx = document.createElement('canvas').getContext('2d');
+      ctx.font = '600 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif'; const head = ctx.measureText(`${words.slice(0, cut)} · `).width;
+      ctx.font = '600 10.5px "JetBrains Mono", Menlo, monospace'; const tail = ctx.measureText(words.slice(cut + 3)).width;
+      return { words, x0, x1, drawn: Math.round((head + tail) * 10) / 10, right: Math.round(n.querySelector('.notch-hit').getBoundingClientRect().right * 10) / 10 };
+    });
+    check('the wing says the new name whole and in its room: the slot holds the words as drawn, and the wing reaches past it', wing.words.startsWith('新家 · ') && wing.x0 + wing.drawn <= wing.x1 + 1 && wing.right - wing.x1 >= 3, JSON.stringify(wing));
     await a.page.getByRole('button', { name: '撤销' }).click(); await a.page.waitForTimeout(500);
     const undone = await names();
     check('撤销 asks the brain to undo that change by its id, and the name comes back everywhere', sent(a).at(-1) === '/inherent/memory/places/undo {"change_id":"chg-1"}' && undone.heads.filter(x => x === '家').length === 3 && undone.bar.includes('家') && await a.page.locator('.dt-note').count() === 0, `${sent(a).at(-1)} ${JSON.stringify(undone)}`);
