@@ -16,7 +16,7 @@ private let iconColor = Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255)
 enum TLLayout {
     static let her = CGPoint(x: 47, y: 79)             // where she stands on the top row, and how big (34 → 15)
     static let herScale = 15.0 / R_PS
-    static let dateShift = 34.0                        // the date starts this far further right, beside her
+    static let dateShift = 39.0                        // the date starts this far further right, beside her: its first stroke 8 pt clear of her disc, which ends at 62 (47 + 15)
     static let lineY = 108.0, lineH = 40.0             // her sentence: two lines of 15 pt
     static let barY = 156.0, barW = 380.0, barH = 16.0
     static let grabberY = 187.0                        // the top of the grabber's 36 pt hit area: its bar sits half way between the hour labels under the overview bar and the list
