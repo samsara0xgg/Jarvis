@@ -57,14 +57,16 @@ final class TimelineState {
     var acked: [String: Date] = [:]                 // the reminders he has just said he knows, until when the row says so before the brain's next answer does (`ackHolds`)
     var renamed: [String: Renamed] = [:]            // the places he keeps that he has just renamed, by the place's id
     struct Renamed: Equatable { var name: String; var until: Date }
-    var renaming: String?                           // the row whose place is being renamed: its field is open
+    var renaming: String?                           // the row whose place is being renamed (or named for the first time): its field is open
     var renameBusy = false
     var renameNote: String?                         // why it did not go
+    var nameRole = TLRole.other                     // the kind of place he is naming, which the chips under its field say
     var undo: PlaceUndo?                            // the rename he can take back for a few seconds
     @ObservationIgnored var undoBusy = false        // taking it back is on its way to the brain
-    // what he says of what his mail made (Sky/DayTimelineCommit.swift)
+    // what he says of what his mail made, and of a place he names (Sky/DayTimelineCommit.swift, Sky/DayTimelineActions.swift)
     var confirmed: [String: Date] = [:]             // the events he has just said are his, until when the row says so before the brain's next answer does (`commitHolds`)
     var dropped: [String: Date] = [:]               // and those he has just said are not: the day has no row for them for as long
+    var named: [String: TLHeld<KeptPlace>] = [:]    // the stays he has just named a place at, by the stay's id, as the brain keeps the place
     // what he marks (Sky/DayTimelineMarks.swift)
     var highlights: [String: TLHeld<[Highlight]>] = [:]     // the day's highlights as they stand after his mark, by the day's date, until the brain's own say the same (`markHolds`)
     var markBusy = false                            // his word on a mark is on its way to the brain: another waits for it
@@ -106,7 +108,8 @@ final class TimelineState {
         return DayTimelineModel.build(r, now: nowMinute(in: r), topic: { TalkTopics.shared.topic($0) }, acked: Set(acked.filter { $0.value > now }.keys),
                                       renamed: renamed.compactMapValues { $0.until > now ? $0.name : nil },
                                       done: TLDone(highlights: highlights[r.date].flatMap { $0.until > now ? $0.value : nil },
-                                                   confirmed: Set(confirmed.filter { $0.value > now }.keys), dropped: Set(dropped.filter { $0.value > now }.keys)))
+                                                   confirmed: Set(confirmed.filter { $0.value > now }.keys), dropped: Set(dropped.filter { $0.value > now }.keys),
+                                                   named: named.compactMapValues { $0.until > now ? $0.value : nil }))
     }
 
     func scroll(to y: Double, animated: Bool) { request = ScrollRequest(y: y, animated: animated, n: request.n + 1) }

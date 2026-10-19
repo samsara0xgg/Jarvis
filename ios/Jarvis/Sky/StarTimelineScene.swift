@@ -150,8 +150,8 @@ enum TimelineFixture {
 }
 
 extension TLBrain {
-    /// A brain for the made-up day, which keeps his marks the way the real one does (at most five of his, hers in the slots he leaves, a sixth of his refused) and takes what he says of a
-    /// commitment, so that the screen can be seen answering without one; `fail`: it takes no word of his on a commitment.
+    /// A brain for the made-up day, which keeps his marks the way the real one does (at most five of his, hers in the slots he leaves, a sixth of his refused), takes what he says of a
+    /// commitment and keeps a place he names under the id `p-demo-new`, so that the screen can be seen answering without one; `fail`: it takes neither of the last two.
     static func demo(marks start: [Highlight], fail: Bool = false) -> TLBrain {
         final class Kept { var list: [Highlight]; init(_ list: [Highlight]) { self.list = list } }
         let kept = Kept(start)
@@ -159,13 +159,15 @@ extension TLBrain {
             if on, !kept.list.contains(where: { $0.id == id && $0.by != "her" }), kept.list.filter({ $0.by != "her" }).count >= TLMarks.cap { return .full }
             kept.list = TLMarks.toggled(kept.list, id: id, on: on)
             return .done(kept.list)
-        }, commit: { _, _ in fail ? .failed : .done }, refetch: {})
+        }, commit: { _, _ in fail ? .failed : .done },
+        name: { name, _, _, role in fail ? .refused("这个名字或这个地方已经记过了") : .done(KeptPlace(id: "p-demo-new", name: name, role: role), change: "change-demo") },
+        refetch: {})
     }
 }
 
 extension StarEngine {
     /// `-scene 时间线` puts the timeline on the made-up day (now 21:50), whatever the setting was; the words after a colon go further:
-    /// `:早上` the list at the morning, `:开:<id>` any row opened (`:开:ride-8`; a fourth word, `:开:stay-1:有对话` or `:有长对话`, with talk before it), `:改名` the place he keeps opened with the field for its new name, `:日出` the weather tapped (the sun's times in the header), `:碎片` the day with fifteen places, `:只有对话` the day of talks alone, `:对话` a talk opened, `:照片` the picture opened, `:工作` the evening's Mac work opened (its span is bracketed on the bar), `:透镜:路上` (or 睡, 运动, Mac, 通话, 和她, 花, 照片) that chip pressed, `:拖:1015` a finger held on the bar at that time (a fourth word after it lifts the finger again), `:星:talk-1` that row opened (a fourth word: `:点` with its star tapped once it is open, `:满` with five of his marks standing and the star of a sixth tapped, `:二` with his mark on one row and hers on the one opened), `:确认` the class his mail made, opened with 是我的 and 不是 (a third word: `:点是` with 是我的 tapped once it is open, `:点否` with 不是; a last word `:败` and the brain will not take it), `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
+    /// `:早上` the list at the morning, `:开:<id>` any row opened (`:开:ride-8`; a fourth word, `:开:stay-1:有对话` or `:有长对话`, with talk before it), `:改名` the place he keeps opened with the field for its new name, `:日出` the weather tapped (the sun's times in the header), `:碎片` the day with fifteen places, `:只有对话` the day of talks alone, `:对话` a talk opened, `:照片` the picture opened, `:工作` the evening's Mac work opened (its span is bracketed on the bar), `:透镜:路上` (or 睡, 运动, Mac, 通话, 和她, 花, 照片) that chip pressed, `:拖:1015` a finger held on the bar at that time (a fourth word after it lifts the finger again), `:星:talk-1` that row opened (a fourth word: `:点` with its star tapped once it is open, `:满` with five of his marks standing and the star of a sixth tapped, `:二` with his mark on one row and hers on the one opened), `:确认` the class his mail made, opened with 是我的 and 不是 (a third word: `:点是` with 是我的 tapped once it is open, `:点否` with 不是; a last word `:败` and the brain will not take it), `:命名` the stay no place he keeps is at, opened with the field for its first name and the kinds of place (a third word: `:点` with it named as 其他 once it is open, `:点学校` or `:点家` as that kind; a last word `:败` and the brain will not keep it), `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
     /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:加载` the day still being asked for (the bar's empty track shimmers) until it arrives three seconds later, `:新增` a talk coming in a moment later, `:测帧` the frame times of the motion (Sky/StarTimelineProbe.swift; `:测帧:拖`, `:甩` or `:换日` runs that kind alone, over and over), `:走时` the clock moving on a minute a moment later, `:昨天` the day before (`:昨天:1630` with a finger held on its bar), `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
     func runTimelineScene(_ name: String) {
         RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
@@ -235,6 +237,16 @@ extension StarEngine {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [self] in
                     guard let r = ui.tl.reply, let e = ui.tl.model(r).entries.first(where: { $0.id == id }) else { return }
                     if how.hasPrefix("点是") { ui.tl.confirm(e) } else { ui.tl.deny(e) }
+                }
+            }
+        case "命名":                                                               // the stay no place he keeps is at, opened with the field for its first name and the kinds of place; `:点` names it (`:败`: the brain will not)
+            guard let stay = model.entries.first(where: { $0.place?.canName == true }) else { break }
+            show(stay.id, open: false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in ui.tl.beginRename(stay) }
+            if parts.count > 2, parts[2].hasPrefix("点") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [self] in
+                    ui.tl.nameRole = parts[2].hasSuffix("家") ? .home : parts[2].hasSuffix("学校") ? .school : .other
+                    ui.tl.rename(stay, to: "A&W 汉堡")
                 }
             }
         case "照片": show("picture-pic-demo-1", open: true)

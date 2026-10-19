@@ -188,8 +188,10 @@ final class DayTimelineActionsTests: XCTestCase {
         XCTAssertNil(tl.renaming, "the name it has: nothing to send, and the field goes")
         XCTAssertNil(tl.renameNote)
         XCTAssertTrue(tl.renamed.isEmpty)
-        // a place he does not keep has no field
-        tl.beginRename(try entry(tl, "stay-5"))
+        // a place he does not keep and the phone has no point for has no field (one with a point is named: DayTimelineNameTests)
+        var nowhere = TLEntry(id: "stay-x", kind: .stay, t0: 600, title: "X")
+        nowhere.place = TLPlace(text: "Somewhere")
+        tl.beginRename(nowhere)
         XCTAssertNil(tl.renaming)
     }
 

@@ -9,6 +9,7 @@ struct TLDone: Equatable {
     var highlights: [Highlight]?                // the day's highlights as they stand after his mark; none: the brain's own
     var confirmed: Set<String> = []             // the events his mail made that he has said are his (by the item's id)
     var dropped: Set<String> = []               // and those he has said are not: the day has no row for them
+    var named: [String: KeptPlace] = [:]        // the stays he has just given a place's first name, by the stay's id
 }
 
 /// what a row needs to know of the day it is in
@@ -22,6 +23,7 @@ struct TLFrame {
     var acked: Set<String> = []                 // the reminders he has just said he knows, before the brain's next answer says it
     var renamed: [String: String] = [:]         // the places he has just given another name (by their id), likewise
     var confirmed: Set<String> = []             // the events his mail made that he has just said are his
+    var named: [String: KeptPlace] = [:]        // the stays he has just named a place at, by the stay's id
 }
 
 /// the text of an optional string, or nil when it is empty
@@ -72,25 +74,26 @@ extension DayTimelineModel {
             e.glance = e.sleep?.short
         case "stay":
             e.kind = .stay
-            // the name he gave the place, which a rename he has just made changes before the brain's next answer does
-            let given = i.kept_place.flatMap { f.renamed[$0.id] }.flatMap(tlText) ?? tlText(i.kept_place?.name)
-            let ring = (i.kept_place != nil ? given.map { (name: $0, kept: true) } : nil) ?? i.ringName
+            // the place he keeps it in (or has just named it as: the brain's next answer will say the same), and the name he gave it, which a rename he has just made changes before the brain's next answer does
+            let kept = i.kept_place ?? f.named[i.id]
+            let given = kept.flatMap { f.renamed[$0.id] }.flatMap(tlText) ?? tlText(kept?.name)
+            let ring = (kept != nil ? given.map { (name: $0, kept: true) } : nil) ?? i.ringName
             e.title = ring?.name ?? "没名字的地方"
             let hue: RGB
-            if let k = i.kept_place {
+            if let k = kept {
                 hue = PlaceTint.line(role: k.role, id: k.id); e.kept = true
             } else { hue = PlaceTint.lineNeutral }
             e.color = hue
             e.barName = ring?.name
-            e.barIcon = ["home": "house.fill", "school": "graduationcap.fill"][i.kept_place?.role ?? ""] ?? "mappin"
+            e.barIcon = ["home": "house.fill", "school": "graduationcap.fill"][kept?.role ?? ""] ?? "mappin"
             // a stay still on has its start and how long it has gone; one that ended, its hours and its length
             e.right = [t1 == nil ? "\(clockDay(t0, f)) 起" : rangeText(t0, t1, running: false, f), dur].compactMap { $0 }.joined(separator: " · ")
             let where_ = tlText(i.place)
             e.more = [where_, e.kept ? "常去的地方 · " + (given ?? e.title) : nil].compactMap { $0 }
             // where it was: coordinates that are not on the earth are not coordinates
             let onEarth = i.lat.flatMap { la in i.lng.map { lo in la.isFinite && lo.isFinite && (-90...90).contains(la) && (-180...180).contains(lo) } } ?? false
-            if onEarth || where_ != nil || i.kept_place != nil {
-                e.place = TLPlace(lat: onEarth ? i.lat : nil, lng: onEarth ? i.lng : nil, text: where_, keptId: i.kept_place?.id, keptName: given)
+            if onEarth || where_ != nil || kept != nil {
+                e.place = TLPlace(lat: onEarth ? i.lat : nil, lng: onEarth ? i.lng : nil, text: where_, keptId: kept?.id, keptName: given)
             }
         case "move", "ride":
             e.kind = .trip

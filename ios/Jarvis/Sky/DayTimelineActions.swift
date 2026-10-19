@@ -1,8 +1,8 @@
 import SwiftUI
 
-// What a row of the day does when it is opened, each only where it works today: hand it to her, open the conversation at its time, rename a place he keeps (and take that back), say he
-// knows a reminder that rang, have her sum up a stretch of Mac work, star it or take its star off (Sky/DayTimelineMarks.swift), say that an event his mail made is his or is not
-// (Sky/DayTimelineCommit.swift). The model says which of them a row offers (`TLEntry.actions`); this is what each one does.
+// What a row of the day does when it is opened, each only where it works today: hand it to her, open the conversation at its time, rename a place he keeps (and take that back) or name
+// one he keeps none at, say he knows a reminder that rang, have her sum up a stretch of Mac work, star it or take its star off (Sky/DayTimelineMarks.swift), say that an event his mail made
+// is his or is not (Sky/DayTimelineCommit.swift). The model says which of them a row offers (`TLEntry.actions`); this is what each one does.
 
 /// a rename he can take back for a few seconds
 struct PlaceUndo: Equatable {
@@ -36,7 +36,7 @@ extension TimelineState {
             if let about = e.about { engine.askAbout(about) }
         case .openTalk:
             if let start = e.talkStart { engine.showTalk(start) }
-        case .rename:
+        case .rename, .name:
             beginRename(e)
         case .acknowledge:
             acknowledge(e)
@@ -79,12 +79,12 @@ extension TimelineState {
         }
     }
 
-    // MARK: a place he keeps
+    // MARK: a place he keeps, and one he has no name for
 
-    /// the field opens in the row, which is opened
+    /// the field opens in the row, which is opened (for a place he keeps none at it has the kinds of place to choose from under it, and starts as `其他`)
     func beginRename(_ e: TLEntry) {
-        guard e.place?.canRename == true else { return }
-        renameNote = nil
+        guard let p = e.place, p.canRename || p.canName else { return }
+        renameNote = nil; nameRole = .other
         withAnimation(.smooth(duration: 0.26)) { openRow = e.id; renaming = e.id }
     }
     func cancelRename() {
@@ -93,12 +93,14 @@ extension TimelineState {
     }
 
     /// The name he typed: blanks collapsed as the brain does, and nothing sent when it is empty, too long or the one it has. On success the place wears it at once, the days are asked for
-    /// again, and taking it back is on offer for a few seconds.
+    /// again, and taking it back is on offer for a few seconds. A place he keeps none at is kept under it, at the stay's point, as the kind the chips say (`name`).
     func rename(_ e: TLEntry, to raw: String) {
-        guard let p = e.place, p.canRename, let id = p.keptId, !renameBusy else { return }
+        guard let p = e.place, p.canRename || p.canName, !renameBusy else { return }
         let name = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         if name.isEmpty { renameNote = "名字不能是空的"; Haptic.notify(.warning); return }
         if name.count > 80 { renameNote = "名字最多 80 个字"; Haptic.notify(.warning); return }
+        if p.canName { keep(e, p, as: name); return }
+        guard let id = p.keptId else { return }
         if name == (p.keptName ?? e.title) { cancelRename(); return }
         let was = p.keptName ?? e.title
         renameBusy = true; renameNote = nil
@@ -114,6 +116,29 @@ extension TimelineState {
                 if !madeUp { BrainLink.shared.opened() }
             case .refused(let why):
                 renameNote = "没改成：" + why
+                Haptic.notify(.warning)
+            }
+        }
+    }
+
+    /// A stay he has no place for, kept under the name he typed (`POST /inherent/memory/places`). The stay wears the place the brain answers with at once, its name and its hue, the field
+    /// closes, and the days are asked for again (the stays at the same point come with them). When the brain will not, the field stays and says why.
+    private func keep(_ e: TLEntry, _ p: TLPlace, as name: String) {
+        guard let lat = p.lat, let lng = p.lng else { return }
+        renameBusy = true; renameNote = nil
+        let role = nameRole
+        Task { @MainActor [self] in
+            defer { renameBusy = false }
+            switch await brain.name(name, lat, lng, role.rawValue) {
+            case .done(let place, _):
+                withAnimation(.smooth(duration: 0.26)) {
+                    if let place { named[e.id] = TLHeld(value: place, until: Date().addingTimeInterval(Self.renameHolds)) }
+                    renaming = nil
+                }
+                Haptic.notify(.success)
+                brain.refetch()
+            case .refused(let why):
+                renameNote = "没起成：" + why
                 Haptic.notify(.warning)
             }
         }

@@ -208,9 +208,10 @@ struct TLOpenView: View {
     }
     /// what the row opened is for comes first, and in the light fill; asking her is always there and quieter
     private func strong(_ a: TLAction) -> Bool { a == .acknowledge || a == .openTalk || a == .summarize || a == .confirm }
-    private func rank(_ a: TLAction) -> Int { strong(a) ? 0 : a == .rename || a == .deny ? 1 : 2 }
+    private func rank(_ a: TLAction) -> Int { strong(a) ? 0 : a == .rename || a == .name || a == .deny ? 1 : 2 }
 
-    /// the name of a place he keeps, typed in the row: done sends it, the keyboard's return too; what the brain refuses says why under it
+    /// the name of a place he keeps, typed in the row (or the first name of one he keeps none at, with the kind of place to choose under it): done sends it, the keyboard's return too; what
+    /// the brain refuses says why under it
     private var renameField: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
@@ -226,6 +227,7 @@ struct TLOpenView: View {
                 }
                 .buttonStyle(PressScale()).disabled(tl.renameBusy)
             }
+            if e.place?.canName == true { roleChips }
             HStack(spacing: 12) {
                 Button { tl.cancelRename() } label: { Text("取消").font(.system(size: 13)).foregroundStyle(muted).frame(minWidth: 44, minHeight: 32, alignment: .leading).contentShape(Rectangle()) }
                     .buttonStyle(.plain)
@@ -235,8 +237,28 @@ struct TLOpenView: View {
         .onAppear { begin() }
     }
 
+    /// 家, 学校 or 其他: the one chosen is in the light fill
+    private var roleChips: some View {
+        HStack(spacing: 8) {
+            ForEach(TLRole.allCases, id: \.self) { r in
+                let on = tl.nameRole == r
+                Button { tl.nameRole = r; Haptic.selection() } label: {
+                    Text(r.word).font(.system(size: 13.5, weight: .semibold)).lineLimit(1).fixedSize()
+                        .foregroundStyle(on ? AT.navy : ink)
+                        .padding(.horizontal, 15).frame(height: 32)
+                        .background(on ? AT.pale : Color.white.opacity(0.1), in: Capsule())
+                        .contentShape(Capsule().inset(by: -6))
+                }
+                .buttonStyle(PressScale())
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: tl.nameRole)
+    }
+
+    /// a place he keeps starts as the name it has; one he keeps none at starts as what the phone called it, if it did
     private func begin() {
-        draft = e.place?.keptName ?? e.title
+        draft = e.place?.canName == true ? e.barName ?? "" : e.place?.keptName ?? e.title
         DispatchQueue.main.async { typing = true }
     }
 }

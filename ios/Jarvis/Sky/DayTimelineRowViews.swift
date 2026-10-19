@@ -19,6 +19,7 @@ extension TLAction {
         case .ask: "问她"
         case .openTalk: "打开对话"
         case .rename: "改名字"
+        case .name: "起个名字"
         case .acknowledge: "知道了"
         case .confirm: "是我的"
         case .deny: "不是"
@@ -32,6 +33,7 @@ extension TLAction {
         case .ask: "text.bubble"
         case .openTalk: "bubble.left.and.bubble.right"
         case .rename: "pencil"
+        case .name: "mappin.and.ellipse"
         case .acknowledge: "checkmark.circle"
         case .confirm: "checkmark.circle"
         case .deny: "xmark.circle"
@@ -41,7 +43,7 @@ extension TLAction {
         }
     }
     /// what the menu of a long press offers, in this order: summing up a stretch of work sends a turn at once, so it is a button he sees and not a line of a menu
-    static let menu: [TLAction] = [.ask, .openTalk, .rename, .acknowledge, .confirm, .deny, .mark, .unmark]
+    static let menu: [TLAction] = [.ask, .openTalk, .rename, .name, .acknowledge, .confirm, .deny, .mark, .unmark]
 }
 
 struct TLRowView: View, Equatable {
@@ -202,7 +204,7 @@ private struct DashedRail: Shape {
 
 // MARK: - the menu of a long press
 
-/// A long press on a row lifts the row opened as its preview and offers what the row can do, each only where it works: 问她, 打开对话, 改名字, 知道了, 是我的, 不是, 标为重要, 取消重要. A row that
+/// A long press on a row lifts the row opened as its preview and offers what the row can do, each only where it works: 问她, 打开对话, 改名字, 起个名字, 知道了, 是我的, 不是, 标为重要, 取消重要. A row that
 /// offers none has no menu.
 private struct TLMenu: ViewModifier {
     let e: TLEntry

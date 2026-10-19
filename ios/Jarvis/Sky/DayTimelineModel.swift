@@ -76,12 +76,26 @@ enum TLAction: Hashable {
     case ask                // hand it to her: the row becomes the chip of the next turn, and the composer opens
     case openTalk           // the conversation, at the time of the talk
     case rename             // a place he keeps, under another name
+    case name               // a place he has no name for yet: the first one
     case acknowledge        // a reminder that rang: he knows
     case confirm            // an event his mail made: it is his
     case deny               // an event his mail made: it is not
     case summarize          // what he did on the Mac, put to her at once
     case mark               // it mattered: his star on it
     case unmark             // it did not: the star, his or hers, taken off
+}
+
+/// the kinds of place he can name a place as: the brain's own roles (jarvis/state/places.py), which are three
+enum TLRole: String, CaseIterable {
+    case home, school, other
+
+    var word: String {
+        switch self {
+        case .home: "家"
+        case .school: "学校"
+        case .other: "其他"
+        }
+    }
 }
 
 /// how the rail on the left of the list runs through a row: a place's, as a line in its hue, or a trip's, dashed
@@ -98,6 +112,8 @@ struct TLPlace: Equatable {
     var keptId: String?             // the place he keeps it is in, and the name he gave it
     var keptName: String?
     var onMap: Bool { lat != nil && lng != nil }
+    /// the place can be given its first name: he keeps none here, and the stay has the point the brain keeps a place at
+    var canName: Bool { keptId == nil && onMap }
     /// the place can be renamed: he keeps it, and its id is one that can stand in a path (the brain's are slugs; one with a slash or a space is not offered, not guessed at, and `undo` is
     /// the brain's own route there)
     var canRename: Bool { keptId.map { $0 != "undo" && !$0.isEmpty && $0.count <= 128 && $0.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "-_.:".unicodeScalars.contains($0)) } } ?? false }
@@ -476,9 +492,9 @@ struct DayTimelineModel: Equatable {
     // MARK: building
 
     /// `now` is the minute of now when this is today (`TimelineState.nowMinute`). `topic` names a talk by what it was about. `acked`, `renamed` and `done` are what he has just done to a
-    /// reminder, to a place he keeps, to the day's marks and to what his mail made, which the brain's next answer will say too (an event he said is not his is left out). An item that cannot be
-    /// placed (a time that is not one, an end before its start, an id taken already) is left out, and so is one of a kind this phone does not know. The minutes are those of the brain's day
-    /// (`TLClock`).
+    /// reminder, to a place he keeps, to the day's marks, to what his mail made and to a place he named, which the brain's next answer will say too (an event he said is not his is left
+    /// out). An item that cannot be placed (a time that is not one, an end before its start, an id taken already) is left out, and so is one of a kind this phone does not know. The
+    /// minutes are those of the brain's day (`TLClock`).
     static func build(_ r: DayReply, now: Double?, topic: @escaping (String) -> String? = { _ in nil },
                       acked: Set<String> = [], renamed: [String: String] = [:], done: TLDone = TLDone()) -> DayTimelineModel {
         let wall = TLClock(r)
@@ -492,7 +508,7 @@ struct DayTimelineModel: Equatable {
             marks[h.id] = label.range(of: #"^[a-z_]+ \d{1,2}:\d{2}$"#, options: [.regularExpression, .caseInsensitive]) == nil ? label : ""
             if h.by == "her" { hers.insert(h.id) }
         }
-        let frame = TLFrame(now: now, m: m, before: wall.before, topic: topic, marks: marks, hers: hers, acked: acked, renamed: renamed, confirmed: done.confirmed)
+        let frame = TLFrame(now: now, m: m, before: wall.before, topic: topic, marks: marks, hers: hers, acked: acked, renamed: renamed, confirmed: done.confirmed, named: done.named)
         // what a day can hold, with a month either side: a time beyond it is not a time of this day's list
         let reach = 30 * DAY, window = 31.0 * 86_400_000
         var taken: Set<String> = ["now"]
@@ -700,7 +716,7 @@ struct DayTimelineModel: Equatable {
         var a: [TLAction] = []
         switch e.kind {
         case .talk: if e.talkStart != nil { a.append(.openTalk) }
-        case .stay: if e.place?.canRename == true { a.append(.rename) }
+        case .stay: if e.place?.canRename == true { a.append(.rename) } else if e.place?.canName == true { a.append(.name) }
         case .event: if e.commitment != nil { a += [.confirm, .deny] }
         case .reminder: if e.waiting { a.append(.acknowledge) }
         case .work: if e.about != nil { a.append(.summarize) }

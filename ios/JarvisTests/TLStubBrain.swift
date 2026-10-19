@@ -1,13 +1,15 @@
 import Foundation
 @testable import Jarvis
 
-/// The brain the timeline asks (`TLBrain`), as far as a test cares: what it was asked of each kind, what it answers, and (with `hold`) when. One stub serves marks and commitments.
+/// The brain the timeline asks (`TLBrain`), as far as a test cares: what it was asked of each kind, what it answers, and (with `hold`) when. One stub serves marks, commitments and places.
 @MainActor
 final class TLStubBrain {
     var marked: [(day: String, id: String, on: Bool)] = []
     var committed: [(hex: String, action: CommitAction)] = []
+    var named: [(name: String, lat: Double, lng: Double, role: String)] = []
     var markAnswer: HighlightAnswer = .done(nil)
     var commitAnswer: CommitAnswer = .done
+    var nameAnswer: PlaceAdd = .done(nil, change: nil)
     var refetches = 0
     /// when set, an answer waits for `release()`
     var hold = false
@@ -17,6 +19,7 @@ final class TLStubBrain {
         TLBrain(
             mark: { [self] day, id, on in marked.append((day, id, on)); await pause(); return markAnswer },
             commit: { [self] hex, action in committed.append((hex, action)); await pause(); return commitAnswer },
+            name: { [self] name, lat, lng, role in named.append((name, lat, lng, role)); await pause(); return nameAnswer },
             refetch: { [self] in refetches += 1 })
     }
 

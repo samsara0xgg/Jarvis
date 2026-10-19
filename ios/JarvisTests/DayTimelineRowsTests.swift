@@ -192,7 +192,7 @@ final class DayTimelineRowsTests: XCTestCase {
         func actions(_ id: String) throws -> [TLAction] { try entry(m, id).actions }
         XCTAssertEqual(try actions("talk-1"), [.openTalk, .ask, .mark])
         XCTAssertEqual(try actions("stay-1"), [.rename, .ask, .mark], "a place he keeps")
-        XCTAssertEqual(try actions("stay-5"), [.ask, .mark], "a place he does not keep cannot be renamed")
+        XCTAssertEqual(try actions("stay-5"), [.name, .ask, .mark], "a place he does not keep is named, not renamed")
         XCTAssertEqual(try actions("reminder-demo-2"), [.acknowledge, .ask, .mark], "rang, and not answered")
         XCTAssertEqual(try actions("reminder-demo-1"), [.ask, .mark], "not yet")
         XCTAssertEqual(try actions("reminder-demo-3"), [.ask, .mark], "answered")
