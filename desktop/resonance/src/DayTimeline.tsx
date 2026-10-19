@@ -3,7 +3,7 @@ import { CaretLeft, CaretRight, Star } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { postRoute, useRoute, type Route } from './homeData';
 import { askable, buildDay, changeId, dateTitle, keptOf, marksOf, report, shiftDate, starrable, within, type Block, type DayItem, type DayModel, type DayReply, type Highlight, type Row, type WeatherLook } from './dayView';
-import { askOf, hasBody, openOf, type About, type Ask, type Rec } from './dayOpen';
+import { answerOf, askOf, hasBody, openOf, sayOf, type About, type Ask, type Rec, type Said } from './dayOpen';
 import { AskDock, type DockState } from './AskDock';
 import { DayBar, useBarState } from './DayBar';
 import { numbers } from './barView';
@@ -233,7 +233,7 @@ async function readRecords(port: string, day: string): Promise<Rec[]> {
 type Renaming = { key: string; place: string; from: string; draft: string; state: 'edit' | 'busy' | 'failed' };
 type Note = { place: string; from: string; change: string | null; state: 'done' | 'failed' };
 type Naming = { key: string; draft: string; role: string | null; state: 'edit' | 'busy' | 'failed' };
-type Docked = { ask: Ask | null; state: DockState; nonce: number };
+type Docked = { ask: Ask | null; say: Said | null; state: DockState; nonce: number };
 
 export function DayTimeline({ port, feed, open, ask, hold }: { port: string | null; feed: Route<DayReply>; open: boolean; ask?: (text: string, about?: About) => Promise<void>; hold?: (on: boolean) => void }) {
   const [{ lang }] = useCompanionSettings(), t = (l: L) => tr(lang, l);
@@ -483,7 +483,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   if (dock) lastDock.current = dock;
   const openAsk = (key: string) => {
     const a = model && ask ? askOf(model, key, t) : null;
-    if (a) { setLeft(false); setDock(d => ({ ask: a, state: d?.state === 'busy' ? 'busy' : 'idle', nonce: (d?.nonce ?? 0) + 1 })); }
+    if (a) { if (dock?.say) setDraft(''); setLeft(false); setDock(d => ({ ask: a, say: null, state: d?.state === 'busy' ? 'busy' : 'idle', nonce: (d?.nonce ?? 0) + 1 })); }
   };
   const sendAsk = async () => {
     const d = dock, text = draft.trim();
@@ -493,6 +493,22 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     catch { setDock(x => x && { ...x, state: 'failed' }); }
   };
   useEffect(() => { if (dock?.state !== 'sent') return; const timer = setTimeout(() => setDock(null), 1500); return () => clearTimeout(timer); }, [dock?.state]);
+  // 这段在干嘛: the same input for a range of the day (an open stretch, or the range dragged on the bar), with the range as its chip. Enter hands his words to the
+  // brain's one route for them (ADR 0302); 记下了 for 1.5 s, then the day is read again. What he wrote shows through the doing words the brain serves, never laid on here.
+  // A failure stays under the input until he edits. The input goes with the day it was opened on.
+  const openSay = (said: Said) => {
+    if (dock?.state === 'busy') return;
+    if (dock && !dock.say) setDraft('');
+    setLeft(false); setDock(d => ({ ask: null, say: said, state: 'idle', nonce: (d?.nonce ?? 0) + 1 }));
+  };
+  const sendSay = async () => {
+    const d = dock, body = d?.say && answerOf(d.say, draft);
+    if (!d || !body || d.state === 'busy' || !port) return;
+    setDock({ ...d, state: 'busy' });
+    try { await postRoute(port, '/inherent/day/answer', body); }
+    catch { setDock(x => x && { ...x, state: 'failed' }); return; }
+    setDraft(''); setDock(x => x && { ...x, state: 'sent' }); again();
+  };
   // 让她总结这段: one turn at once, about the work block.
   const summarize = async (key: string) => {
     const a = model && ask ? askOf(model, key, t) : null;
@@ -520,6 +536,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   useEffect(() => { hold?.(holding); return () => hold?.(false); }, [holding]);
   // The open row, the field, the input and the picture are the day's: they go with it, and with the pane.
   useEffect(() => { setPick(null); setHot(null); setOpened(null); }, [date, shown?.date, ui.filter]);
+  useEffect(() => { if (dock?.say) { setDock(null); setDraft(''); } }, [date, shown?.date]);
   useEffect(() => { if (opened && model && !model.rows.has(opened) && !model.heads.has(opened)) setOpened(null); }, [model]);
   useEffect(() => { if (rename && opened !== rename.key) setRename(null); }, [opened]);
   useEffect(() => { if (naming && opened !== naming.key) setNaming(null); }, [opened]);
@@ -528,7 +545,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   const body = (key: string): ReactNode => {
     const o = model && openOf(model, key, t);
     if (!o) return null;
-    const sum = work[`sum:${key}`] as 'busy' | 'sent' | 'failed' | undefined, acking = o.ack ? work[`ack:${o.ack}`] : '', saying = work[`commit:${key}`];
+    const said = model && sayOf(model, key), sum = work[`sum:${key}`] as 'busy' | 'sent' | 'failed' | undefined, acking = o.ack ? work[`ack:${o.ack}`] : '', saying = work[`commit:${key}`];
     const acts: Acts = {
       port, t, records: readDay, picture: (id, text) => setViewer({ id, note: text }),
       ask: canAsk(key) ? () => openAsk(key) : null,
@@ -538,6 +555,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
       ack: o.ack ? { state: acking === 'busy' ? 'busy' : acking === 'failed' ? 'failed' : 'idle', press: () => void acknowledge(o.ack!) } : null,
       commit: o.commit ? { state: saying === 'busy' ? 'busy' : saying === 'failed' ? 'failed' : 'idle', confirm: () => void settle(key, o.commit!, 'confirm'), cancel: () => void settle(key, o.commit!, 'cancel') } : null,
       summarize: o.summarize && canAsk(key) ? { state: sum ?? 'idle', press: () => void summarize(key) } : null,
+      say: said ? () => openSay(said) : null,
       star: o.star ? <StarToggle mark={marks.get(key) ?? null} nth={refused[key] ?? 0} press={() => void star(key)} t={t}/> : null,
       line: line.on && line.key === key ? line.text : '',
     };
@@ -627,15 +645,15 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     {built.failed ? <p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p> : !model || lost ? <p className="dt-say">{say}</p> : <TimelineGuard where="the pane" reset={shown} fallback={<p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p>}>
       {model.line && <p className={`dt-line${model.line.draft ? ' is-draft' : ''}`}>{model.line.text}</p>}
       {model.empty ? <p className="dt-say">{t(['Nothing recorded for this day yet', '这一天还没有记下什么'])}</p> : <>
-        <DayBar model={model} port={port} ui={ui} hot={hot ?? pick ?? opened} onHot={setHot} onJump={reveal} onPicture={(id, note) => setViewer({ id, note })}/>
+        <DayBar model={model} port={port} ui={ui} hot={hot ?? pick ?? opened} onHot={setHot} onJump={reveal} onPicture={(id, note) => setViewer({ id, note })} onSay={openSay}/>
         {rows.length > 0 ? <div ref={list} className="dt-list" onScroll={edges} onWheel={() => cancelAnimationFrame(glide.current)}><Blocks blocks={rows} hot={hot} onHot={setHot} pick={pick} t={t} cx={cx}/></div>
           : ui.filter && <p className="dt-say">{t(['Nothing was recorded in this stretch', '这一段没有记下什么'])}</p>}
       </>}
       {model.foot && <p className="dt-foot">{model.foot}</p>}
       <Unfold className="dt-fold is-dock" open={!!note} tick={edges} render={() => kept && <div className="dt-note" role="status"><span>{kept.state === 'failed' ? t(["Couldn't undo it", '没撤销成功']) : t(['Renamed', '改好了'])}</span>
         {kept.state === 'done' && kept.change && <>{' · '}<button type="button" onClick={() => void undo()}>{t(['Undo', '撤销'])}</button></>}</div>}/>
-      <Unfold className="dt-fold is-dock" open={!!dock} tick={edges} render={() => shownDock && <AskDock about={shownDock.ask} draft={draft} state={shownDock.state} nonce={shownDock.nonce} onDraft={text => { setDraft(text); setDock(d => d && d.state === 'failed' ? { ...d, state: 'idle' } : d); }}
-        onSend={() => void sendAsk()} onDrop={() => setDock(d => d && { ...d, ask: null })} onField={on => setLeft(!on)} t={t}/>}/>
+      <Unfold className="dt-fold is-dock" open={!!dock} tick={edges} render={() => shownDock && <AskDock about={shownDock.ask} say={shownDock.say?.range ?? null} draft={draft} state={shownDock.state} nonce={shownDock.nonce} onDraft={text => { setDraft(text); setDock(d => d && d.state === 'failed' ? { ...d, state: 'idle' } : d); }}
+        onSend={() => void (dock?.say ? sendSay() : sendAsk())} onDrop={() => setDock(d => d && { ...d, ask: null })} onField={on => setLeft(!on)} t={t}/>}/>
     </TimelineGuard>}
     {viewer && port && <Viewer port={port} id={viewer.id} note={viewer.note} t={t} onClose={() => setViewer(null)}/>}
   </div>;

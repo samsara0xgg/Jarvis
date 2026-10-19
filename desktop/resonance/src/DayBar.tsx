@@ -7,6 +7,7 @@ import { clock, type DayModel, type Icon, type LensKind, type Rgb } from './dayV
 import { cardOf } from './numberCard';
 import { CardBody, Swap } from './CardView';
 import { EASE } from './RowOpen';
+import { sayRange, type Said } from './dayOpen';
 import { Ic } from './dayIcons';
 import './day-bar.css';
 
@@ -68,14 +69,15 @@ function PeekBody({ p, port, t }: { p: Peek; port: string | null; t: (l: L) => s
     <p className="dt-cfoot">{t(['Click to jump here · drag to pick a range', '点一下跳到这里 · 拖动框一段'])}</p>
   </>;
 }
-function RangeBody({ s, onOnly, t }: { s: Summary; onOnly: () => void; t: (l: L) => string }) {
+function RangeBody({ s, say, onSay, onOnly, t }: { s: Summary; say: Said | null; onSay: (said: Said) => void; onOnly: () => void; t: (l: L) => string }) {
   return <>
     <div className="dt-ch"><b>{s.range}</b><span>{s.length}</span></div>
     {s.places.length + s.nums.length ? <ul className="dt-cl is-range">
       {s.places.map(p => <li key={p.name} className="dt-cline"><span className="dt-cic"><i className="dt-cdot" style={{ '--c': rgb(p.rgb), '--a': 1 } as CSSProperties}/></span><span className="dt-ctx">{p.name}</span><span className="dt-cside">{p.length}</span></li>)}
       {s.nums.map(n => { const Glyph = KIND_ICON[n.kind]; return <li key={n.kind} className="dt-cline"><span className="dt-cic" style={{ color: `rgb(${rgb(KIND[n.kind])})` }}><Glyph size={13} aria-hidden="true"/></span><span className="dt-ctx">{n.label}</span><span className="dt-cside">{n.long}</span></li>; })}
     </ul> : <p className="dt-cnone">{t(['Nothing was recorded in this stretch', '这一段没有记下什么'])}</p>}
-    <div className="dt-cbtns"><button type="button" className="dt-cbtn" onClick={onOnly}>{t(['Show only this', '只看这段'])}</button></div>
+    <div className="dt-cbtns"><button type="button" className="dt-cbtn" onClick={onOnly}>{t(['Show only this', '只看这段'])}</button>
+      {say && <button type="button" className="dt-cquiet" onClick={() => onSay(say)}>{t(['What was this', '这段在干嘛'])}</button>}</div>
   </>;
 }
 
@@ -95,7 +97,7 @@ function Stars({ stars }: { stars: BarStar[] }) {
   return <>{stars.map(s => one(s, false))}{gone.map(s => one(s, true))}</>;
 }
 
-export function DayBar({ model, port, ui, hot, onHot, onJump, onPicture }: { model: DayModel; port: string | null; ui: BarState; hot: string | null; onHot: (key: string | null) => void; onJump: (key: string) => void; onPicture: (id: string, note: string) => void }) {
+export function DayBar({ model, port, ui, hot, onHot, onJump, onPicture, onSay }: { model: DayModel; port: string | null; ui: BarState; hot: string | null; onHot: (key: string | null) => void; onJump: (key: string) => void; onPicture: (id: string, note: string) => void; onSay: (said: Said) => void }) {
   const [{ lang }] = useCompanionSettings(), t = (l: L) => tr(lang, l);
   const bar = useMemo(() => buildBar(model, t), [model, lang]), nums = useMemo(() => numbers(model, t), [model, lang]);
   const box = useRef<HTMLDivElement>(null), track = useRef<HTMLDivElement>(null), card = useRef<HTMLDivElement>(null), rcard = useRef<HTMLDivElement>(null), ncard = useRef<HTMLDivElement>(null), nIn = useRef<HTMLDivElement>(null), [width, setWidth] = useState(0);
@@ -264,7 +266,7 @@ export function DayBar({ model, port, ui, hot, onHot, onJump, onPicture }: { mod
         <div ref={cardIn} className="dt-card-in">{slots.current.at.map((p, i) => <div key={i} className={`dt-slot${i === slots.current.cur ? ' is-cur' : ''}`}>{p && <PeekBody p={p} port={port} t={t}/>}</div>)}</div>
       </div>
       {summary && <div ref={rcard} className="dt-card is-range is-on" style={{ transform: `translateX(${left((fOf(bar, summary.a) + fOf(bar, summary.b)) / 2 * width)}px)` }}>
-        <div className="dt-card-in"><div className="dt-slot is-cur"><RangeBody s={summary} t={t} onOnly={() => { ui.setFilter({ a: summary.a, b: summary.b }); ui.setSel(null); }}/></div></div>
+        <div className="dt-card-in"><div className="dt-slot is-cur"><RangeBody s={summary} say={sayRange(model, summary.a, summary.b)} onSay={onSay} t={t} onOnly={() => { ui.setFilter({ a: summary.a, b: summary.b }); ui.setSel(null); }}/></div></div>
       </div>}
     </div>
     {nums.length + model.vitals.length > 0 && <div className="dt-numbers" role="group" aria-label={t(['The day in numbers', '这一天的数字'])}>

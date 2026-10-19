@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { askable, buildDay, changeId, clock, covered, dateTitle, doingAt, doingOf, doingWords, fnv, keptOf, lensOf, moneyText, shiftDate, stageLook, stageMinutes, stageSlices, tidy, tidyReply, weatherOf, wingText, within, workoutOf } from '../src/dayView.ts';
 import { axisOf, buildBar, counted, fit, fOf, hm, msOf, numbers, peek, pieceAt, rowAt, summarize, toneOn } from '../src/barView.ts';
-import { askOf, fromTo, hasBody, openOf, talkLines } from '../src/dayOpen.ts';
+import { answerOf, askOf, fromTo, hasBody, openOf, sayOf, sayRange, talkLines } from '../src/dayOpen.ts';
 import { cardOf } from '../src/numberCard.ts';
 import { deflateSync, crc32 } from 'node:zlib';
 
@@ -891,6 +891,36 @@ check('the change a place write answers is read as the string it is (an id insid
     JSON.stringify(keptOf({ id: 'place:ab', name: 'A&W', role: 'other', radius_m: 100 })) === '{"id":"place:ab","name":"A&W","role":"other"}' && keptOf({ id: 'p', name: 'x' }).role === '' && keptOf({ name: 'x' }) === null && keptOf(null) === null);
 }
 
+// ---------- saying what a stretch was, in node (ADR 0302): which rows offer it, the range it holds, and the body that is sent ----------
+{
+  const m = buildDay(fullDay(), NOW, zh), held = key => { const x = sayOf(m, key); return x && `${x.range}|${x.a}|${x.b}`; }, want = (a, b) => `${clock(a, TZ)}–${b === T(24) ? '24:00' : clock(b, TZ)}|${a}|${b}`;
+  const alone = (list, key) => sayOf(buildDay(small(list), NOW, zh), key);
+  check('a stay, a way he went, the night, work, a call, a run, a Claude chat and a session each hold the range they cover, its own start and end (the night is cut to the day: 00:00 to 07:00)',
+    held('stay-home-1') === want(T(7, 0), T(11, 25)) && held('move-1') === want(T(11, 25), T(13, 5)) && held('ride-2') === want(T(18, 15), T(18, 50)) && held('sleep-1') === want(T(0), T(7, 0))
+    && held('work-2') === want(T(19, 35), T(21, 40)) && held('call-1') === want(T(16, 40), T(16, 58)) && held('workout-1') === want(T(7, 20), T(7, 55)) && held('chat-1') === want(T(20, 10), T(20, 42)) && held('code-s5') === want(at4(1540), at4(1630)),
+    ['stay-home-1', 'move-1', 'ride-2', 'sleep-1', 'work-2', 'call-1', 'workout-1', 'chat-1', 'code-s5'].map(held).join('  '));
+  check('one still going ends at now (the stay since 18:50 holds 18:50 to 21:50) and one that is set to end later than now is cut to it; the day it is for is the shown day\'s date',
+    held('stay-home-3') === want(T(18, 50), NOW) && sayOf(m, 'stay-home-3').day === DATE && alone([it('w', 'work', T(21, 0), T(22, 30))], 'w').range === '21:00–21:50');
+  check('not her rows (a reminder, a talk, or any row of hers), not a point (a picture, a payment, a bus to catch), not an event (mail\'s or his own), not the letter on his Claude chats, not the folded row of sessions (no one item), not a row that is not there',
+    ['reminder-1', 'reminder-2', 'talk-1', 'talk-2', 'picture-1', 'pay-1', 'departure-1', 'event-1', 'event-2', 'claude-day-1', 'code:stay-home-1', 'nothing'].every(k => sayOf(m, k) === null)
+    && alone([it('h', 'move', T(10, 0), T(11, 0), { activity: 'walking' }, 'her')], 'h') === null);
+  check('nothing still to come and nothing under a minute: a stay that begins after now, a walk that began 30 s ago, a stay of 59 s are none; a stay of a minute is one',
+    alone([it('a', 'stay', T(22, 30), null, { place: 'X' })], 'a') === null && alone([it('b', 'move', NOW - 30_000, null, { activity: 'walking' })], 'b') === null && alone([it('c', 'stay', T(10, 0), T(10, 0) + 59_000, { place: 'X' })], 'c') === null
+    && alone([it('d', 'stay', T(10, 0), T(10, 1), { place: 'X' })], 'd').range === '10:00–10:01');
+  const past = buildDay(small([it('n', 'sleep', T(23, 0), T(7, 0, 20)), it('r', 'stay', T(9, 0), T(10, 0), { place: 'X' })]), T(8, 0, 20), zh);
+  check('on a day that has ended the range is cut to the day, not to now: a night that goes on past midnight ends at 24:00, still that day\'s date',
+    sayOf(past, 'n').range === '23:00–24:00' && sayOf(past, 'n').b === T(24) && sayOf(past, 'n').day === DATE && sayOf(past, 'r').range === '09:00–10:00');
+  check('a dragged range is cut the same way, to the day and to now; one that is all still to come, or under a minute, holds none',
+    sayRange(m, T(14, 0), T(18, 0)).range === '14:00–18:00' && sayRange(m, T(14, 0), T(23, 0)).range === '14:00–21:50' && sayRange(m, T(14, 0), T(23, 0)).b === NOW && sayRange(m, T(14, 0), T(23, 0)).day === DATE
+    && sayRange(m, T(0), T(24)).range === '00:00–21:50' && sayRange(m, T(22, 0), T(23, 0)) === null && sayRange(m, T(14, 0), T(14, 0)) === null && sayRange(m, T(14, 0), T(14, 0) + 59_000) === null);
+  const said = sayRange(m, T(14, 10), T(14, 50)), body = text => answerOf(said, text);
+  check('the body is the day\'s date, the range in whole ms and his words trimmed, in that order and nothing else', JSON.stringify(body('  躺着休息 \n')) === `{"day":"${DATE}","start_ms":${T(14, 10)},"end_ms":${T(14, 50)},"text":"躺着休息"}`, JSON.stringify(body('  躺着休息 ')));
+  check('nothing is sent for nothing (empty, blanks, a line break) or for more than 200 characters; 200 is fine, counted by character as the brain counts (200 emoji are 200), 201 is not',
+    [body(''), body('   '), body('\n\t'), body('字'.repeat(201)), body('😀'.repeat(201))].every(x => x === null) && body('字'.repeat(200)).text.length === 200 && body('😀'.repeat(200)).text === '😀'.repeat(200) && body(` ${'字'.repeat(200)} `).text === '字'.repeat(200));
+  const odd = sayOf(buildDay(small([it('o', 'stay', T(10, 0) + 400.4, T(11, 0) + 999.6, { place: 'X' })]), NOW, zh), 'o');
+  check('times are whole ms (a fraction is rounded), as the route takes them', Number.isInteger(odd.a) && Number.isInteger(odd.b) && odd.a === T(10, 0) + 400 && odd.b === T(11, 0) + 1000, JSON.stringify(odd));
+}
+
 // ---------- the built page ----------
 const server = spawn(path.join(root, 'node_modules/.bin/vite'), ['preview', '--port', String(web), '--strictPort'], { cwd: root, stdio: 'ignore' });
 const browser = await chromium.launch({ headless: true, channel: 'chrome', args: ['--disable-web-security', '--mute-audio'] });
@@ -1004,6 +1034,18 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
       const at = id => s.served.items.find(x => x.id === id)?.start_ms ?? 0;
       s.served.highlights = [...mine, ...hers].sort((x, y) => at(x.id) - at(y.id));
       return json({ ok: true, highlights: s.served.highlights });
+    }
+    // ADR 0302: his words for a range of a day. As the brain does it: the shown day's date, whole ms with the end after the start, the range inside the day and up to now,
+    // touching an item the day serves, his words trimmed to 1 to 200 characters (else a 422); `answer` refuses the route (a 502, it cannot write). The answer is the
+    // span written (basis stated, his words as its title); the day is served with it from then on.
+    if (post && url.pathname === '/inherent/day/answer') {
+      const body = sent(), day = s.served, text = String(body?.text ?? '').trim(); s.posts.push({ path: url.pathname, body });
+      if (s.refuse.has('answer')) return refused('it cannot be written', 502);
+      if (body?.day !== day.date || !Number.isInteger(body.start_ms) || !Number.isInteger(body.end_ms) || body.end_ms <= body.start_ms || body.start_ms < day.start_ms || body.end_ms > day.end_ms || body.end_ms > at
+        || !day.items.some(x => x.start_ms < body.end_ms && (x.end_ms ?? at) > body.start_ms) || !text || [...text].length > 200) return refused('not a range of that day', 422);
+      const span = { ...sp(`d-said-${s.posts.length}`, 0, null), start_ms: body.start_ms, end_ms: body.end_ms, title: text, category: 'unknown', basis: 'stated' };
+      (day.spans ??= []).push(span);
+      return json({ ok: true, span });
     }
     if (post && url.pathname === '/inherent/submit') {
       s.posts.push({ path: url.pathname, body: sent() });
@@ -2245,7 +2287,7 @@ try {
       const norm = el => el.innerText.replace(/\s*\n\s*/g, ' ').trim(), band = document.querySelector('.dt-band');
       return { head: norm(c.querySelector('.dt-ch')), lines: [...c.querySelectorAll('.dt-cline')].map(norm), buttons: [...c.querySelectorAll('button')].map(norm), rect: c.getBoundingClientRect().toJSON(), band: band.getBoundingClientRect().toJSON(), on: document.querySelectorAll('.dt-card.is-on').length };
     });
-    check('a range says its span and length, the places in it with their lengths (most first), then the other numbers; one button, 只看这段', rc && rc.head === `${ranged.range} ${ranged.length}` && rc.head === '14:00–18:00 4 时' && rc.lines.join('|') === [...ranged.places.map(p => `${p.name} ${p.length}`), ...ranged.nums.map(n => `${n.label} ${n.long}`)].join('|') && rc.lines.length >= 4 && rc.buttons.join() === '只看这段' && rc.on === 1, JSON.stringify(rc));
+    check('a range says its span and length, the places in it with their lengths (most first), then the other numbers; two buttons, 只看这段 and the quiet 这段在干嘛', rc && rc.head === `${ranged.range} ${ranged.length}` && rc.head === '14:00–18:00 4 时' && rc.lines.join('|') === [...ranged.places.map(p => `${p.name} ${p.length}`), ...ranged.nums.map(n => `${n.label} ${n.long}`)].join('|') && rc.lines.length >= 4 && rc.buttons.join() === '只看这段,这段在干嘛' && rc.on === 1, JSON.stringify(rc));
     check('the range card sits where the hover card does, 280 wide, centred on the range, inside the pane; the band stays', rc && rc.rect.width === 280 && same(rc.rect.top, g.top + 24 + 23, 1) && same(rc.rect.left + 140, (x14 + x18) / 2, 2) && rc.rect.left >= g.pane.left && rc.rect.right <= g.pane.right && Math.abs(rc.band.left - x14) < 2 && Math.abs(rc.band.right - x18) < 2, JSON.stringify(rc));
     await a.shot('bar-05-range-card', { x: 40, y: 0, width: 560, height: 700 });
     await a.page.locator('.dt-cbtn').click(); await a.page.waitForTimeout(350);
@@ -2535,20 +2577,20 @@ try {
     const a = await boot({ served: bigDay() });
     await openDay(a);
     const kinds = [
-      ['stay-home-1', 'open-01-stay-kept', '12 Example St, Victoria|常去的地方 · 家|改名字|问她'],
-      ['stay-aw', 'open-20-stay-plain', 'A&W, 1234 Douglas St, Victoria|问她'],
-      ['move-1', 'open-21-move', '家 → A&W|问她'],
-      ['ride-1', 'open-02-ride', '你下车了|问她'],
+      ['stay-home-1', 'open-01-stay-kept', '12 Example St, Victoria|常去的地方 · 家|改名字|问她|这段在干嘛'],
+      ['stay-aw', 'open-20-stay-plain', 'A&W, 1234 Douglas St, Victoria|问她|这段在干嘛'],
+      ['move-1', 'open-21-move', '家 → A&W|问她|这段在干嘛'],
+      ['ride-1', 'open-02-ride', '你下车了|问她|这段在干嘛'],
       ['event-1', 'open-05-event-mail', '22:30–23:30 · 1 时 · 还没开始|问她'],
       ['event-2', 'open-22-event-said', '23:40–23:55 · 15 分 · 还没开始|问她'],
       ['reminder-2', 'open-06-reminder-waiting', '知道了|问她'],
-      ['workout-1', 'open-24-workout', `07:20–07:55 · 35 分 · 10'56"/公里|问她`],
-      ['call-1', 'open-25-call', '16:40–16:58 · 18 分 · FaceTime|问她'],
+      ['workout-1', 'open-24-workout', `07:20–07:55 · 35 分 · 10'56"/公里|问她|这段在干嘛`],
+      ['call-1', 'open-25-call', '16:40–16:58 · 18 分 · FaceTime|问她|这段在干嘛'],
       ['pay-1', 'open-08-payment', '支出 · $12.40 · CAD|问她'],
-      ['chat-1', 'open-26-claude-chat', '20:10–20:42 · 32 分 · 14 条|问她'],
+      ['chat-1', 'open-26-claude-chat', '20:10–20:42 · 32 分 · 14 条|问她|这段在干嘛'],
       ['claude-day-1', 'open-27-claude-day', 'The bar for the day|A tool exam|问她'],
-      ['work-2', 'open-07-work', '活跃 1 时 55 分 · 共 2 时 5 分|项目|Jarvis|1 时 40 分|应用|Ghostty|1 时 10 分|Claude|30 分|让她总结这段|问她'],
-      ['sleep-1', 'open-09-sleep', '清醒|REM|核心|深睡|23:10|07:00|深睡 1:10 · 核心 4:30 · REM 1:40 · 醒 3 次|问她'],
+      ['work-2', 'open-07-work', '活跃 1 时 55 分 · 共 2 时 5 分|项目|Jarvis|1 时 40 分|应用|Ghostty|1 时 10 分|Claude|30 分|让她总结这段|问她|这段在干嘛'],
+      ['sleep-1', 'open-09-sleep', '清醒|REM|核心|深睡|23:10|07:00|深睡 1:10 · 核心 4:30 · REM 1:40 · 醒 3 次|问她|这段在干嘛'],
     ];
     const bad = [];
     for (const [key, name, want] of kinds) {
@@ -2652,7 +2694,7 @@ try {
     check('a hover-opened pane has no key focus, and opening a row asks for none', await focusLog(a) === '' && (await a.read()).tl === 'open', await focusLog(a));
     await orow(a, 'stay-home-1').getByRole('button', { name: '改名字' }).click(); await rest(a, 400);
     const field = await a.page.evaluate(() => { const f = document.querySelector('.dt-rename'), q = f.getBoundingClientRect(), b = f.closest('.dt-sh').querySelector('.dt-dot').getBoundingClientRect(); return { value: f.value, sel: [f.selectionStart, f.selectionEnd], focused: document.activeElement === f, h: Math.round(q.height), font: getComputedStyle(f).fontSize + '/' + getComputedStyle(f).fontWeight, outline: getComputedStyle(f).outlineStyle, hint: document.querySelector('.dt-hint')?.textContent, buttons: [...document.querySelectorAll('[data-key="stay-home-1"] .dt-acts .dt-btn')].map(x => x.textContent) }; });
-    check('改名字 turns the name in the stay\'s header into a field with the cursor in it and the name selected, in the header\'s own type, and says Enter saves and Esc cancels', field.value === '家' && field.sel.join() === '0,1' && field.focused && field.h === 26 && field.font === '15px/600' && field.outline === 'none' && field.hint === '回车保存 · Esc 取消' && field.buttons.join() === '问她', JSON.stringify(field));
+    check('改名字 turns the name in the stay\'s header into a field with the cursor in it and the name selected, in the header\'s own type, and says Enter saves and Esc cancels', field.value === '家' && field.sel.join() === '0,1' && field.focused && field.h === 26 && field.font === '15px/600' && field.outline === 'none' && field.hint === '回车保存 · Esc 取消' && field.buttons.join() === '问她,这段在干嘛', JSON.stringify(field));
     check('the field takes the window\'s key focus (it was a pane opened by a rest, with none)', (await focusLog(a)).endsWith('true'), await focusLog(a));
     await shotRow(a, 'open-13-rename-field', 'stay-home-1');
     // the pane is held while the field is there, wherever the pointer goes
@@ -2854,14 +2896,14 @@ try {
     await hoverDay(a);
     await tap(a, 'work-2'); await rest(a, 520);
     const buttons = () => orow(a, 'work-2').locator('.dt-acts').first().innerText().then(x => x.split('\n').map(y => y.trim()).filter(Boolean).join('|'));
-    check('a work block offers 让她总结这段, and 问她 after it', await buttons() === '让她总结这段|问她', await buttons());
+    check('a work block offers 让她总结这段, and 问她 and the quiet 这段在干嘛 after it', await buttons() === '让她总结这段|问她|这段在干嘛', await buttons());
     a.s.refuse.add('submit');
     await orow(a, 'work-2').getByRole('button', { name: '让她总结这段' }).click(); await rest(a, 450);
-    check('one tap is one submit; the daemon refusing it leaves the button, which says 没发出去，再试一次', turns(a).length === 1 && await buttons() === '没发出去，再试一次|问她', `${turns(a).length} ${await buttons()}`);
+    check('one tap is one submit; the daemon refusing it leaves the button, which says 没发出去，再试一次', turns(a).length === 1 && await buttons() === '没发出去，再试一次|问她|这段在干嘛', `${turns(a).length} ${await buttons()}`);
     a.s.refuse.delete('submit');
     await orow(a, 'work-2').getByRole('button', { name: '没发出去，再试一次' }).click(); await rest(a, 450);
     check('and the next tap sends the same: the words and the block as `about` (work, its id, its title, its start), without any input opening', turns(a).length === 2 && turns(a).every(x => JSON.stringify(x.body) === want) && (await dockOf(a)) === null, JSON.stringify(turns(a)));
-    check('then 已发给她 stands where the button was; 问她 stays', await buttons() === '已发给她|问她', await buttons());
+    check('then 已发给她 stands where the button was; 问她 stays', await buttons() === '已发给她|问她|这段在干嘛', await buttons());
     await shotRow(a, 'open-12-work-sent', 'work-2');
     await a.ctx.close();
   }
@@ -2891,7 +2933,7 @@ try {
     await hoverDay(a);
     const btns = key => orow(a, key).locator('.dt-acts .dt-btn, .dt-acts .dt-sent').allInnerTexts();
     await tap(a, 'stay-home-1'); await rest(a, 480);
-    check('in English a kept place (named as he named it) says Rename and Ask her', (await btns('stay-home-1')).join() === 'Rename,Ask her' && (await said(a, 'stay-home-1')).includes('A place you keep · 家'), (await said(a, 'stay-home-1')).join('|'));
+    check('in English a kept place (named as he named it) says Rename and Ask her', (await btns('stay-home-1')).join() === 'Rename,Ask her,What was this' && (await said(a, 'stay-home-1')).includes('A place you keep · 家'), (await said(a, 'stay-home-1')).join('|'));
     await orow(a, 'stay-home-1').getByRole('button', { name: 'Rename' }).click(); await rest(a, 350);
     check('and Rename says how it ends', await orow(a, 'stay-home-1').locator('.dt-hint').innerText() === 'Enter saves · Esc cancels');
     await a.page.keyboard.type('My place'); await a.page.keyboard.press('Enter'); await rest(a, 500);
@@ -2902,15 +2944,181 @@ try {
     const talk = await a.page.evaluate(() => { const r = document.querySelector('[data-key="talk-1"]'); return { who: [...r.querySelectorAll('.dt-said small')].map(x => x.textContent), text: r.querySelector('.dt-body').innerText }; });
     check('a talk labels the two lines You and Her and counts its lines', talk.who.join() === 'You,Her' && /6 lines in all/.test(talk.text), JSON.stringify(talk));
     await tap(a, 'work-2'); await rest(a, 520);
-    check('a work block offers Have her sum this up', (await btns('work-2')).join() === 'Have her sum this up,Ask her' && (await said(a, 'work-2')).includes('Active 1 h 55 min · 2 h 5 min in all'), (await said(a, 'work-2')).join('|'));
+    check('a work block offers Have her sum this up', (await btns('work-2')).join() === 'Have her sum this up,Ask her,What was this' && (await said(a, 'work-2')).includes('Active 1 h 55 min · 2 h 5 min in all'), (await said(a, 'work-2')).join('|'));
     await orow(a, 'work-2').getByRole('button', { name: 'Have her sum this up' }).click(); await rest(a, 450);
-    check('it hands her the words in English, with the block as about; then Sent to her', turns(a).length === 1 && JSON.stringify(turns(a)[0].body) === JSON.stringify({ text: 'Summarize this stretch', about: askOf(m, 'work-2', en).about }) && (await btns('work-2')).join() === 'Sent to her,Ask her', `${JSON.stringify(turns(a))} ${(await btns('work-2')).join()}`);
+    check('it hands her the words in English, with the block as about; then Sent to her', turns(a).length === 1 && JSON.stringify(turns(a)[0].body) === JSON.stringify({ text: 'Summarize this stretch', about: askOf(m, 'work-2', en).about }) && (await btns('work-2')).join() === 'Sent to her,Ask her,What was this', `${JSON.stringify(turns(a))} ${(await btns('work-2')).join()}`);
     await orow(a, 'work-2').getByRole('button', { name: 'Ask her' }).click(); await rest(a, 500);
     const d = await dockOf(a);
     check('the input is Ask her about this…, with the chip in English', d && d.placeholder === 'Ask her about this…' && d.chip.title === askOf(m, 'work-2', en).about.title && d.chip.x === 'Take it off', JSON.stringify(d));
     a.s.refuse.add('submit');
     await a.page.keyboard.type('hi'); await a.page.keyboard.press('Enter'); await rest(a, 450);
     check('and a refusal says Press Enter to try again', await a.page.locator('.dt-dock + .dt-hint').innerText() === "Didn't send. Press Enter to try again.");
+    await a.ctx.close();
+  }
+
+  // ---- 这段在干嘛 (ADR 0302): one quiet entry, in an opened stretch and in the bar's range card; nothing else invites it ----
+  const SAY = '这段在干嘛';
+  const sayDock = a => a.page.evaluate(() => {
+    const d = document.querySelector('.dt-dock'), c = d?.querySelector('.dt-about'), f = d?.querySelector('.dt-ask-in'), go = d?.querySelector('.dt-send');
+    return d && { sent: d.classList.contains('is-sent'), text: d.textContent.trim(), chip: c ? c.textContent.trim() : null, drop: !!c?.querySelector('button'), draft: f ? f.value : null, focused: !!f && document.activeElement === f,
+      placeholder: f?.placeholder ?? null, max: f?.maxLength ?? null, readOnly: f?.readOnly ?? null, canSend: go ? !go.disabled : null };
+  });
+  const answers = a => a.s.posts.filter(p => p.path === '/inherent/day/answer');
+  const bad = a => a.page.locator('.dt-dock + .dt-hint').innerText().catch(() => null);
+  const gone = a => a.page.waitForFunction(() => !document.querySelector('.dt-dock'), null, { timeout: 4000 });
+  const savedAs = a => a.page.waitForFunction(() => document.querySelector('.dt-dock.is-sent'), null, { timeout: 4000 });
+  const lastOf = async (a, key) => { const acts = orow(a, key).locator('.dt-acts').first(); await acts.waitFor({ state: 'attached', timeout: 1500 }).catch(() => {}); return await acts.count() ? acts.evaluate(el => ({ text: el.lastElementChild?.textContent, cls: el.lastElementChild?.className, all: el.innerText })) : { text: null, cls: null, all: '' }; };
+  if (all || only === 'say') {
+    const sm = buildDay(bigDay(), NOW, zh), sbar = buildBar(sm, zh), t0 = sbar.t0, t1 = T(24);
+    const a = await boot({ served: bigDay() });
+    await openDay(a);
+    const g = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width }; });
+    const xAt = (h, m = 0) => g.left + (T(h, m) - t0) / (t1 - t0) * g.width, y = g.top + 12;
+    const whole = () => a.page.locator('.notch').innerText();
+
+    // nothing invites: not on the wing, the list, a row under the pointer, the bar or its hover card
+    const invited = [];
+    for (const key of ['stay-home-2', 'move-1', 'ride-1', 'work-2', 'sleep-1', 'call-1']) {
+      await orow(a, key).scrollIntoViewIfNeeded(); await orow(a, key).hover({ position: { x: 170, y: 14 } }); await rest(a, 260);
+      if ((await whole()).includes(SAY)) invited.push(key);
+    }
+    await a.move(xAt(14, 30), y); await rest(a, 300);
+    if ((await whole()).includes(SAY) || await a.page.locator('.dt-card.is-on').count() !== 1) invited.push('bar');
+    check('nothing invites it: not the list, not a row under the pointer, not the bar and its hover card, and no input is up', invited.length === 0 && !await sayDock(a), invited.join());
+
+    // which rows offer it once opened: the stretches; and where, last among the buttons in the same look
+    const offered = {};
+    const stretches = ['stay-home-1', 'stay-home-2', 'stay-uvic', 'move-1', 'ride-1', 'sleep-1', 'work-1', 'work-2', 'call-1', 'workout-1', 'chat-1'], others = ['reminder-1', 'reminder-2', 'talk-1', 'talk-3', 'picture-1', 'pay-1', 'departure-1', 'event-1', 'event-2', 'claude-day-1', 'code:stay-home-1'];
+    for (const key of [...stretches, ...others]) {
+      if (!await orow(a, key).count()) { offered[key] = 'missing'; continue; }
+      await tap(a, key); await rest(a, 420);
+      const l = await lastOf(a, key);
+      offered[key] = l.text === SAY ? (l.cls === 'dt-btn' ? 'last' : l.cls) : l.all.includes(SAY) ? 'inside' : 'no';
+    }
+    check('an opened stay, move, ride, night, Mac block, call, run and Claude chat offer it, last among their buttons, in the buttons\' own look', stretches.every(k => offered[k] === 'last'), JSON.stringify(offered));
+    check('her rows (a reminder, a talk), a picture, a payment, a bus to catch, an event, the letter on his chats and the folded row of sessions do not', others.every(k => offered[k] === 'no'), JSON.stringify(offered));
+
+    // the entry, the input and the save
+    await tap(a, 'stay-home-2'); await rest(a, 480);
+    await shotRow(a, 'say-01-open-row', 'stay-home-2');
+    await orow(a, 'stay-home-2').getByRole('button', { name: SAY }).click(); await rest(a, 520);
+    const d1 = await sayDock(a);
+    check('it slides an input up at the pane\'s foot: the stretch\'s range as its chip (14:05–14:50, nothing to take off), the cursor in the field, the placeholder, the field held to 200, send greyed; the row stays open',
+      d1 && d1.chip === '14:05–14:50' && !d1.drop && d1.focused && d1.placeholder === '这段在干嘛？比如：躺着休息' && d1.max === 200 && d1.canSend === false && await expanded(a, 'stay-home-2') === 'true', JSON.stringify(d1));
+    await a.shot('say-02-input', { x: 40, y: 0, width: 560, height: 760 });
+    await a.page.keyboard.insertText('字'.repeat(205)); await rest(a, 100);
+    check('the field takes 200 characters and no more', (await sayDock(a)).draft === '字'.repeat(200), String((await sayDock(a)).draft?.length));
+    await a.page.locator('.dt-ask-in').fill('  躺着休息 '); await rest(a, 100);
+    check('typing enables send', (await sayDock(a)).canSend === true && (await sayDock(a)).draft === '  躺着休息 ');
+    const h0 = a.s.hits.length;
+    a.s.lag = 600;
+    await a.page.keyboard.press('Enter'); await rest(a, 250);
+    const busy = await sayDock(a);
+    check('while it is saving the field is read-only and send greyed; the words and the chip stay', busy && busy.readOnly === true && busy.canSend === false && busy.draft === '  躺着休息 ' && busy.chip === '14:05–14:50' && !busy.sent, JSON.stringify(busy));
+    await savedAs(a); const t0s = Date.now();
+    const done = await sayDock(a);
+    check('on 200 it says 记下了 where the input was (the field and the chip are gone)', done.sent && done.text === '记下了' && done.chip === null && done.draft === null, JSON.stringify(done));
+    check('one request, to the one route, with exactly the shown day, the row\'s range in whole ms and his words trimmed', answers(a).length === 1 && JSON.stringify(answers(a)[0].body) === JSON.stringify({ day: DATE, start_ms: T(14, 5), end_ms: T(14, 50), text: '躺着休息' }), JSON.stringify(answers(a)));
+    await gone(a); const slid = Date.now() - t0s;
+    check('1.5 s after it was saved the line slides away', slid >= 1350 && slid < 2600, String(slid));
+    a.s.lag = 0; await rest(a, 300);
+    check('the day was read again once, the way every change is', a.s.hits.length - h0 === 1, String(a.s.hits.length - h0));
+    await a.move(xAt(14, 30), y); await rest(a, 320);
+    const card = () => a.page.evaluate(() => {
+      const c = document.querySelector('.dt-card.is-on:not(.is-range)');
+      if (!c) return null;
+      const cur = c.querySelector('.dt-slot.is-cur'), norm = el => el.innerText.replace(/\s*\n\s*/g, ' ').trim();
+      return { head: norm(cur.querySelector('.dt-ch')), place: cur.querySelector('.dt-cnote.is-place')?.innerText ?? null };
+    });
+    const c1 = await card();
+    check('what he wrote shows through the doing words the brain serves: on the bar, 14:30 is 躺着休息 with its own time, and the place 家 under it', c1 && c1.head === '躺着休息 14:05–14:50 · 45 分' && c1.place === '家', JSON.stringify(c1));
+
+    // a save that fails stays under the input until he edits it; the same words go again
+    await tap(a, 'move-1'); await rest(a, 480);
+    await orow(a, 'move-1').getByRole('button', { name: SAY }).click(); await rest(a, 500);
+    a.s.refuse.add('answer');
+    const h1 = a.s.hits.length;
+    await a.page.keyboard.type('开车去 A&W'); await a.page.keyboard.press('Enter'); await rest(a, 450);
+    const d2 = await sayDock(a);
+    check('a 502 says 没存上，稍后再试 under the input and keeps the chip (11:25–13:05) and the words; nothing was read again', await bad(a) === '没存上，稍后再试' && d2.chip === '11:25–13:05' && d2.draft === '开车去 A&W' && !d2.sent && d2.readOnly === false && a.s.hits.length === h1 && answers(a).length === 2, JSON.stringify({ d2, line: await bad(a) }));
+    await rest(a, 2200);
+    check('and it stays (it has no timer)', await bad(a) === '没存上，稍后再试' && !!await sayDock(a));
+    await a.page.keyboard.type('!'); await rest(a, 150);
+    check('the next key takes it away', await bad(a) === null);
+    a.s.refuse.delete('answer');
+    await a.page.keyboard.press('Enter'); await rest(a, 450);
+    check('and Enter again, when it can, sends the same words and the same range', answers(a).length === 3 && JSON.stringify(answers(a)[2].body) === JSON.stringify({ day: DATE, start_ms: T(11, 25), end_ms: T(13, 5), text: '开车去 A&W!' }) && (await sayDock(a)).sent, JSON.stringify(answers(a).slice(1)));
+    await gone(a);
+
+    // the two inputs share the foot: the words of one are not carried into the other; Esc lets go of it first, the row and the pane stay
+    await orow(a, 'move-1').getByRole('button', { name: SAY }).click(); await rest(a, 500);
+    check('the words that were saved do not come back into the next input', (await sayDock(a)).draft === '');
+    await a.page.keyboard.type('abc');
+    await orow(a, 'move-1').getByRole('button', { name: '问她' }).click(); await rest(a, 480);
+    const d3 = await dockOf(a), about = askOf(sm, 'move-1', zh);
+    check('asking her from the same row swaps the input for hers: its chip, its placeholder, and not the words typed for the other', d3 && d3.chip && d3.chip.title === about.about.title && d3.chip.at === '11:25' && d3.draft === '' && d3.placeholder === '问她这一条…', JSON.stringify(d3));
+    await a.page.keyboard.type('xyz');
+    await orow(a, 'move-1').getByRole('button', { name: SAY }).click(); await rest(a, 480);
+    const d4 = await sayDock(a);
+    check('and back: the range chip, and not the words typed for her', d4 && d4.chip === '11:25–13:05' && d4.draft === '' && d4.placeholder === '这段在干嘛？比如：躺着休息', JSON.stringify(d4));
+    await a.page.keyboard.type('half'); await a.page.keyboard.press('Escape'); await rest(a, 450);
+    check('Esc lets go of the input first (and what was typed in it); the open row and the pane stay, and nothing was sent', await a.page.locator('.dt-dock').count() === 0 && await expanded(a, 'move-1') === 'true' && (await a.read()).tl === 'pinned' && answers(a).length === 3 && turns(a).length === 0, JSON.stringify(await a.read()));
+    await a.page.keyboard.press('Escape'); await rest(a, 450);
+    check('and the next Esc closes the row', await folds(a) === 0);
+    await a.ctx.close();
+  }
+  if (all || only === 'say') {
+    // the bar's range card: the quiet button there holds exactly the dragged range, cut to now
+    const sm = buildDay(bigDay(), NOW, zh), sbar = buildBar(sm, zh), t0 = sbar.t0, t1 = T(24);
+    const a = await boot({ served: bigDay() });
+    await openDay(a);
+    const g = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width }; });
+    const xAt = (h, m = 0) => g.left + (T(h, m) - t0) / (t1 - t0) * g.width, y = g.top + 12;
+    const drag = async (x0, x1) => { await a.move(x0, y); await a.page.mouse.down(); await a.move((x0 + x1) / 2, y); await a.move(x1, y); await a.page.mouse.up(); await a.page.waitForTimeout(280); };
+    const buttons = () => a.page.locator('.dt-card.is-range button').allInnerTexts();
+    await drag(xAt(14) + .1, xAt(18) + .1);
+    const look = await a.page.locator('.dt-card.is-range .dt-cquiet').evaluate(el => ({ bg: getComputedStyle(el).backgroundColor, h: el.getBoundingClientRect().height }));
+    check('the range card has 只看这段 and, after it, 这段在干嘛 in the quiet look of the row buttons (not the white of the first)', (await buttons()).join() === `只看这段,${SAY}` && look.bg === 'rgba(255, 255, 255, 0.1)' && look.h === 26, JSON.stringify(look));
+    await a.shot('say-03-range-card', { x: 40, y: 0, width: 560, height: 700 });
+    await a.page.locator('.dt-card.is-range .dt-cquiet').click(); await rest(a, 520);
+    const r1 = await sayDock(a);
+    check('it opens the same input with the dragged range as the chip (14:00–18:00)', r1 && r1.chip === '14:00–18:00' && !r1.drop && r1.focused, JSON.stringify(r1));
+    await a.page.keyboard.type('在学校'); await a.page.keyboard.press('Enter'); await rest(a, 450);
+    check('and Enter sends exactly that range: the day, 14:00 and 18:00 in ms, his words', answers(a).length === 1 && JSON.stringify(answers(a)[0].body) === JSON.stringify({ day: DATE, start_ms: T(14), end_ms: T(18), text: '在学校' }) && (await sayDock(a)).text === '记下了', JSON.stringify(answers(a)));
+    await gone(a);
+    await drag(xAt(20) + .1, xAt(23, 30) + .1);
+    check('a range dragged past now is cut to now in the chip (20:00–21:50)', (await buttons()).includes(SAY));
+    await a.page.locator('.dt-card.is-range .dt-cquiet').click(); await rest(a, 520);
+    check('the chip says 20:00–21:50', (await sayDock(a)).chip === '20:00–21:50');
+    await a.page.keyboard.type('写作业'); await a.page.keyboard.press('Enter'); await rest(a, 450);
+    check('and the range sent ends at now, to the ms', answers(a).length === 2 && JSON.stringify(answers(a)[1].body) === JSON.stringify({ day: DATE, start_ms: T(20), end_ms: NOW, text: '写作业' }), JSON.stringify(answers(a).slice(1)));
+    await gone(a);
+    await drag(xAt(22, 30) + .1, xAt(23, 30) + .1);
+    check('a range that is all still to come has no such button', (await buttons()).join() === '只看这段' && await a.page.locator('.dt-cquiet').count() === 0, (await buttons()).join());
+    // a 422 (the day the brain holds has nothing there) says the same line
+    await drag(xAt(14) + .1, xAt(18) + .1);
+    await a.page.locator('.dt-card.is-range .dt-cquiet').click(); await rest(a, 520);
+    a.s.served = { ...a.s.served, items: [] };
+    await a.page.keyboard.type('z'); await a.page.keyboard.press('Enter'); await rest(a, 450);
+    check('a 422 says 没存上，稍后再试 too, and keeps the words', answers(a).length === 3 && await bad(a) === '没存上，稍后再试' && (await sayDock(a)).draft === 'z', JSON.stringify(answers(a).slice(2)));
+    await a.page.getByRole('button', { name: '前一天' }).click(); await rest(a, 400);
+    check('the input is the day\'s: another day takes it away, with nothing sent', await a.page.locator('.dt-dock').count() === 0 && answers(a).length === 3);
+    await a.ctx.close();
+  }
+  if (all || only === 'say') {
+    const a = await boot({ served: bigDay(), lang: 'en' });
+    await openDay(a);
+    await tap(a, 'stay-home-2'); await rest(a, 480);
+    check('in English the button is What was this', (await lastOf(a, 'stay-home-2')).text === 'What was this');
+    await orow(a, 'stay-home-2').getByRole('button', { name: 'What was this' }).click(); await rest(a, 500);
+    const e1 = await sayDock(a);
+    check('the input says What were you doing? e.g. lying down', e1 && e1.placeholder === 'What were you doing? e.g. lying down' && e1.chip === '14:05–14:50', JSON.stringify(e1));
+    a.s.refuse.add('answer');
+    await a.page.keyboard.type('lying down'); await a.page.keyboard.press('Enter'); await rest(a, 450);
+    check('a failure says Not saved, try again later', await bad(a) === 'Not saved, try again later', await bad(a));
+    a.s.refuse.delete('answer');
+    await a.page.keyboard.press('Enter'); await rest(a, 450);
+    check('and a save says Noted', (await sayDock(a)).text === 'Noted' && JSON.stringify(answers(a).at(-1).body) === JSON.stringify({ day: DATE, start_ms: T(14, 5), end_ms: T(14, 50), text: 'lying down' }));
     await a.ctx.close();
   }
 
@@ -3450,7 +3658,7 @@ try {
     const before = { spot: await hueOf(a, 'stay-spot'), school: await hueOf(a, 'stay-uvic'), bar: await barNames(a) };
     await tap(a, 'stay-spot'); await rest(a, 520);
     const btns = await orow(a, 'stay-spot').locator('.dt-acts').first().evaluate(el => [...el.children].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
-    check('the open row of a stay that is no place he keeps says 起个名字 among its buttons (before the star and 问她), and a spot the phone had no words for says nothing else', btns === '起个名字|star|问她' && (await said(a, 'stay-spot')).length === 2, `${btns} ${(await said(a, 'stay-spot')).join('|')}`);
+    check('the open row of a stay that is no place he keeps says 起个名字 among its buttons (before the star, 问她 and 这段在干嘛), and a spot the phone had no words for says nothing else', btns === '起个名字|star|问她|这段在干嘛' && (await said(a, 'stay-spot')).length === 3, `${btns} ${(await said(a, 'stay-spot')).join('|')}`);
     await orow(a, 'stay-spot').getByRole('button', { name: '起个名字' }).click(); await rest(a, 450);
     const f0 = await field(a);
     check('it opens a field with the cursor in it and the kinds of place under it (home, school, other: the brain\'s own three), none picked, and the line says Enter saves and Esc cancels; the button is gone',
@@ -3508,7 +3716,7 @@ try {
     const offered = {};
     for (const key of ['stay-bare', 'stay-uvic', 'stay-aw']) { await tap(a, key); await rest(a, 520); offered[key] = await orow(a, key).locator('.dt-acts').first().evaluate(el => [...el.children].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|')); await tap(a, key); await rest(a, 300); }
     const stop = await a.page.evaluate(() => { const r = document.querySelector('[data-key="stay-stop"]'); return { kind: r.dataset.kind, open: r.getAttribute('aria-expanded') }; });
-    check('no offer on a stay with no point (the phone gave none) nor on a place he keeps (it has Rename); in English it says Name this place', offered['stay-bare'] === 'star|Ask her' && offered['stay-uvic'] === 'Rename|star|Ask her' && offered['stay-aw'] === 'Name this place|star|Ask her', JSON.stringify(offered));
+    check('no offer on a stay with no point (the phone gave none) nor on a place he keeps (it has Rename); in English it says Name this place', offered['stay-bare'] === 'star|Ask her|What was this' && offered['stay-uvic'] === 'Rename|star|Ask her|What was this' && offered['stay-aw'] === 'Name this place|star|Ask her|What was this', JSON.stringify(offered));
     await tap(a, 'stay-aw'); await rest(a, 520);
     await orow(a, 'stay-aw').getByRole('button', { name: 'Name this place' }).click(); await rest(a, 450);
     const f = await a.page.evaluate(() => ({ placeholder: document.querySelector('.dt-name-in').placeholder, chips: [...document.querySelectorAll('.dt-role')].map(c => c.textContent).join('|'), hint: document.querySelector('.dt-body .dt-hint').textContent }));
