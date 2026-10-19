@@ -45,6 +45,7 @@ final class TimelineState {
     var lens: TLLens?                   // the day's number he pressed: the bar and the list bring that kind forward
     var scrub: Double?                  // the minute under his finger on the overview bar
     var hot: String?                    // the row that covers it, lit in the list
+    @ObservationIgnored private var seen: String?       // the row the list was last sent to while the finger is down
     var openCard: String?               // the waiting card opened over the list
     var focus: String?                  // a waiting card the engine asks to bring up
     var version = 0                     // bumps when the brain's days were adopted again: talk topics may have come
@@ -84,10 +85,11 @@ final class TimelineState {
     /// A finger on the overview bar at minute `t` (none: it has lifted): the list goes to the row that covers it and lights it, and a row he had open is closed.
     func follow(_ t: Double?, in m: DayTimelineModel?) {
         scrub = t
-        guard let t, let m else { hot = nil; return }
+        guard let t, let m else { hot = nil; seen = nil; return }
         if openRow != nil { openRow = nil }
-        guard let e = m.entry(at: t) else { hot = nil; return }
-        hot = e.id
+        hot = m.lit(at: t)?.id
+        guard let e = m.entry(at: t), e.id != seen else { return }        // the same row as a moment ago: the list is already there
+        seen = e.id
         if let y = m.top(of: e.id) { scroll(to: y, animated: false) }
     }
 
@@ -126,6 +128,7 @@ struct DayTimelineView: View {
     let ui: StarUI
     @Binding var pull: Double?
     @Environment(\.accessibilityReduceMotion) private var reduce
+    @GestureState private var touching = false                                       // a finger is on the bar
     @State private var lastScrub = 0.0                                               // where his finger was last: what the readout shows while it fades out
     @State private var lastStretch: String?
     @State private var lastLens = TLLens.trip                                        // the lens that was on last: what fades out when it goes
@@ -203,7 +206,7 @@ struct DayTimelineView: View {
             if let m {
                 readout(m.readout(at: tl.scrub ?? lastScrub)).opacity(holding ? 1 : 0)
                     .offset(x: 30, y: TLLayout.lineY)
-                    .allowsHitTesting(false)
+                    .allowsHitTesting(false).accessibilityHidden(!holding)
             }
             if let m {
                 let lens = activeLens(m)
@@ -226,6 +229,11 @@ struct DayTimelineView: View {
         .animation(holding ? .easeOut(duration: 0.08) : .easeInOut(duration: 0.15), value: holding)
         .onChange(of: tl.lens) { _, l in if let l { lastLens = l } }
         .onChange(of: tl.scrub) { _, t in if let t { lastScrub = t } }
+        .onChange(of: touching) { _, on in
+            guard !on else { return }
+            lastStretch = nil
+            withAnimation(.easeOut(duration: 0.2)) { tl.follow(nil, in: nil) }
+        }
         .animation(.easeOut(duration: 0.35), value: m?.line)
         // only once she is in her corner, and gone as soon as she leaves it: she glides across where they stand
         .opacity(ui.tlHome ? 1 : 0).allowsHitTesting(ui.tlHome)
@@ -238,7 +246,11 @@ struct DayTimelineView: View {
             HStack(spacing: 7) {
                 Circle().fill((r.hue ?? RGB(196, 204, 238)).color(r.hue == nil ? 0 : r.strong ? 1 : 0.5)).frame(width: 8, height: 8)
                     .overlay(Circle().stroke(ink.opacity(r.hue == nil ? 0.4 : 0), lineWidth: 1))
-                Text(r.head).font(.system(size: 15, weight: .semibold)).foregroundStyle(ink).lineLimit(1)
+                HStack(spacing: 0) {
+                    Text(r.name).lineLimit(1)
+                    Text(r.tail).fixedSize().layoutPriority(1)
+                }
+                .font(.system(size: 15, weight: .semibold)).foregroundStyle(ink)
             }
             .frame(height: 19, alignment: .leading)
             Text(r.second).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).frame(height: 15, alignment: .leading)
@@ -262,15 +274,12 @@ struct DayTimelineView: View {
     private func scrubGesture(_ m: DayTimelineModel) -> some Gesture {
         let lo = m.span.lowerBound, w = m.span.upperBound - lo
         return DragGesture(minimumDistance: 0)
+            .updating($touching) { _, on, _ in on = true }          // goes back to false when the touch ends or is taken away (a call, the app leaving), which lets the readout go
             .onChanged { v in
                 let t = lo + clamp(v.location.x / TLLayout.barW, 0, 1) * w
                 tl.follow(t, in: m)
                 let s = m.stretch(at: t)
                 if lastStretch != s { lastStretch = s; Haptic.selection() }
-            }
-            .onEnded { _ in
-                lastStretch = nil
-                withAnimation(.easeOut(duration: 0.2)) { tl.follow(nil, in: nil) }
             }
     }
 

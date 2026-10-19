@@ -579,6 +579,26 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(night.second, "这段时间没有别的记录")
     }
 
+    func testTheHeadGivesWayAtItsNameAndNeverAtItsHours() {
+        let m = build(TimelineFixture.today(cal))
+        XCTAssertEqual(m.readout(at: 615).name, "家")
+        XCTAssertEqual(m.readout(at: 615).tail, " · 09:05–11:25 · 2 时 20 分")
+        XCTAssertEqual(m.readout(at: 1335).name, "还没到")
+        XCTAssertEqual(m.readout(at: 1335).tail, "")
+    }
+
+    func testYesterdaysAfternoonHasAHoleAndTheFingerReadsHowLongNothingWasRecorded() {
+        let m = DayTimelineModel.build(TimelineFixture.yesterday(cal), day: -1, now: nil)
+        XCTAssertNil(m.seg(at: 1000))
+        let r = m.readout(at: 1000)
+        XCTAssertEqual(r.head, "没有记录 · 16:20–17:30 · 1 时 10 分")
+        XCTAssertNil(r.hue)
+        XCTAssertEqual(m.readout(at: 900).head, "UVic · 08:55–16:20 · 7 时 25 分")
+        XCTAssertNil(m.lit(at: 1000), "nothing is lit in a hole: the stay before it is over")
+        XCTAssertEqual(m.entry(at: 1000)?.title, "UVic", "though the list rests on it")
+        XCTAssertEqual(m.lit(at: 900)?.title, "UVic")
+    }
+
     func testAFingerOnATripReadsTheTripAndSaysWhenNothingElseWasThere() {
         let r = build(TimelineFixture.today(cal)).readout(at: 720)
         XCTAssertEqual(r.head, "开车 · 11:25–13:05 · 1 时 40 分")
@@ -646,8 +666,17 @@ final class DayTimelineTests: XCTestCase {
             XCTAssertEqual(e.ui.tl.request.y, m.top(of: "move-3"))
             XCTAssertFalse(e.ui.tl.request.animated)
             XCTAssertEqual(e.ui.tl.request.n, n + 1)
+            e.ui.tl.follow(705, in: m)
+            XCTAssertEqual(e.ui.tl.request.n, n + 1, "still the drive: the list is not asked again")
             e.ui.tl.follow(1000, in: m)
             XCTAssertEqual(e.ui.tl.hot, "call-demo-1")
+            XCTAssertEqual(e.ui.tl.request.n, n + 2)
+            // past now, before what was planned: the list goes to the last row there is, but nothing is lit as if it were then
+            e.ui.tl.follow(1315, in: m)
+            XCTAssertNil(e.ui.tl.hot)
+            XCTAssertEqual(e.ui.tl.request.y, m.top(of: "talk-2"))
+            e.ui.tl.follow(1335, in: m)
+            XCTAssertEqual(e.ui.tl.hot, "event-demo-1", "the class planned for 22:00 covers 22:15")
             e.ui.tl.follow(nil, in: nil)
             XCTAssertNil(e.ui.tl.scrub)
             XCTAssertNil(e.ui.tl.hot)

@@ -211,6 +211,7 @@ struct TLBarView: View {
             }
             .opacity(lens ? 0.25 : 1).animation(.easeOut(duration: 0.15), value: lens)
             lensLayer
+            lensBracket
             hours
             if let n = scene.now { nowMarker(n) }
             if let t = scrub { scrubMark(t) }
@@ -274,6 +275,15 @@ struct TLBarView: View {
     }
 
     // MARK: the row he has open, now, and his finger
+
+    /// with a lens on, the bar under the words is quiet and so is its bracket: this one stands over the lens's spans, whole
+    private var lensBracket: some View {
+        ZStack(alignment: .topLeading) {
+            if lens, let b = bracket { bracketView(b).transition(.opacity) }
+        }
+        .frame(width: bw, height: bh, alignment: .topLeading)
+        .animation(.easeOut(duration: 0.12), value: bracket != nil)
+    }
 
     /// the span of the open row: its fill lifts and a 1.5 pt line goes round it (a moment is given 5 pt to be seen)
     private func bracketView(_ b: ClosedRange<Double>) -> some View {

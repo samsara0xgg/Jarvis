@@ -137,6 +137,9 @@ struct TLReadout: Equatable {
     var head: String                // `家 · 09:05–11:25 · 2 时 20 分`
     var elsewhere: [String]         // up to four things that were going on, the most telling first
     var ahead = false               // it has not happened yet
+    /// the head split where the words that never change begin (` · 09:05–11:25 · 2 时 20 分`), so that when it is too long it is the name that gives way
+    var name: String { head.components(separatedBy: " · ").first ?? head }
+    var tail: String { String(head.dropFirst(name.count)) }
     /// the line under it on a phone: the first two things, or that there was nothing
     var second: String { elsewhere.isEmpty ? (ahead ? "这段时间没有安排" : "这段时间没有别的记录") : elsewhere.prefix(2).joined(separator: " · ") }
 }
@@ -205,6 +208,14 @@ struct DayTimelineModel: Equatable {
     }
     /// its id, or none
     func stretch(at t: Double) -> String { seg(at: t)?.id ?? "" }
+    /// the row to light for a finger at minute `t`: the one that covers it. Past now only what was planned is lit (what began before now is not what goes on then),
+    /// and where nothing was recorded only what goes on through the hole.
+    func lit(at t: Double) -> TLEntry? {
+        guard let e = entry(at: t) else { return nil }
+        if let n = now, t > n, e.t0 <= n { return nil }
+        if seg(at: t) == nil, t > max(e.t1 ?? e.t0, e.t0) { return nil }
+        return e
+    }
 
     /// What a finger on the bar at minute `t` reads out. The stretch there (a place, a trip, the night) opens it, or how long nothing was recorded, or that it has not happened;
     /// then what else was going on: what covers `t`, else what is within 10 minutes of it, the most telling first (work, a call, a talk, a picture, a payment, an event, Claude, a reminder, a bus).

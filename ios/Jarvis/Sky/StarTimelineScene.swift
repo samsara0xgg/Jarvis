@@ -38,12 +38,12 @@ enum TimelineFixture {
         b.extra["missing"] = ["calendar"]
     } }
 
-    /// the day before: a quieter one, with the night that began the evening before and a stay that is still going
+    /// the day before: a quieter one, with the night that began the evening before, a stretch of the afternoon nothing was recorded for, and a stay that is still going
     static func yesterday(_ cal: Cal) -> DayReply { build(cal, day: -1) { b in
         b.add("sleep", -40, 425, ["minutes": 440])
         b.add("stay", 425, 520, ["place": "12 Example St, Town", "kept_place": b.kept("p-home", "家", "home")])
         b.add("move", 520, 535, ["activity": "walking"])
-        b.add("stay", 535, 1050, ["place": "Engineering Lab Wing, Finnerty Rd", "kept_place": b.kept("p-uvic", "UVic", "school")])
+        b.add("stay", 535, 980, ["place": "Engineering Lab Wing, Finnerty Rd", "kept_place": b.kept("p-uvic", "UVic", "school")])      // then nothing was recorded for an hour and ten minutes
         b.add("move", 1050, 1065, ["activity": "walking"])
         b.add("stay", 1065, nil, ["place": "12 Example St, Town", "kept_place": b.kept("p-home", "家", "home")])
         b.add("talk", 1325, 1330, ["id": "talk-y1", "lane": "her", "turns": 3])
@@ -82,7 +82,7 @@ enum TimelineFixture {
 extension StarEngine {
     /// `-scene 时间线` puts the timeline on the made-up day (now 21:50), whatever the setting was; the words after a colon go further:
     /// `:早上` the list at the morning, `:对话` a talk opened, `:照片` the picture opened, `:工作` the evening's Mac work opened (its span is bracketed on the bar), `:透镜:路上` (or 睡, Mac, 通话, 和她, 花, 照片) that chip pressed, `:拖:1015` a finger held on the bar at that time (a fourth word after it lifts the finger again), `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
-    /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:新增` a talk coming in a moment later, `:走时` the clock moving on a minute a moment later, `:昨天` the day before, `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
+    /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:新增` a talk coming in a moment later, `:走时` the clock moving on a minute a moment later, `:昨天` the day before (`:昨天:1630` with a finger held on its bar), `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
     func runTimelineScene(_ name: String) {
         RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
         switchWorld(real: true)
@@ -135,7 +135,12 @@ extension StarEngine {
             let n = Int(parts.count > 2 ? parts[2] : "") ?? 0, t = Double(n / 100 * 60 + n % 100)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.follow(t, in: model) }
             if parts.count > 3 { DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { [self] in withAnimation(.easeOut(duration: 0.2)) { ui.tl.follow(nil, in: nil) } } }
-        case "昨天": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.setDay(ui.tl.today - 1) }
+        case "昨天":
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.setDay(ui.tl.today - 1) }
+            if parts.count > 2 {                // `:昨天:1630` with a finger held on the bar at that time, once the day is there
+                let n = Int(parts[2]) ?? 0, past = DayTimelineModel.build(yesterday, day: ui.tl.today - 1, now: nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { [self] in ui.tl.follow(Double(n / 100 * 60 + n % 100), in: past) }
+            }
         case "新增": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in ui.tl.fixture?.replies[0] = TimelineFixture.today(cal, late: true) }
         case "走时": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in ui.tl.fixture?.now += 1 }
         case "切换": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { HomeModule.shared.kind = .timeline }
