@@ -51,14 +51,15 @@ function measure(root: HTMLElement, full: Box): Box {
 }
 
 // `stage`: the whole stage's size now. `send`: asks the main process for a window of this size.
-// Returns `reset` (the main process put the whole stage back: shrink again once settled) and a stop function.
+// It looks when the page may have changed, never on a timer of its own: after any change to the page (a style or a class set to the value it
+// already had is not one), a resize, a transition or an animation (then every frame until the last one that ends has ended), a hover, a focus,
+// a scroll, an image or a font. Returns `reset` (the main process put the whole stage back: shrink again once settled) and a stop function.
 export function fitWindow(root: HTMLElement, stage: () => Box, send: (size: Box) => void) {
   let cur: Box = { w: Infinity, h: Infinity }, key = '', timer: ReturnType<typeof setTimeout> | undefined, frame = 0;
   // What asks for the viewport's height (the Dashboard's room, the notch canvas) still gets the stage's, not the window's.
   const real = Object.getOwnPropertyDescriptor(window, 'innerHeight');
   Object.defineProperty(window, 'innerHeight', { configurable: true, get: () => stage().h });
-  const tick = () => {
-    frame = requestAnimationFrame(tick);
+  const look = () => {
     const full = stage(), need = measure(root, full);
     if (need.w > cur.w || need.h > cur.h) {
       clearTimeout(timer); timer = undefined; key = '';
@@ -71,15 +72,32 @@ export function fitWindow(root: HTMLElement, stage: () => Box, send: (size: Box)
     key = now; clearTimeout(timer); timer = undefined;
     if (cur.w - need.w >= SAVING || cur.h - need.h >= SAVING) timer = setTimeout(() => { timer = undefined; cur = need; send(need); }, SETTLE_MS);
   };
-  frame = requestAnimationFrame(tick);
+  // Endless animations (a pulse) are not waited for: they stay where they were measured.
+  const moving = () => root.getAnimations({ subtree: true }).some(a => a.playState === 'running' && a.effect?.getComputedTiming().endTime !== Infinity);
+  const tick = () => { frame = 0; look(); if (moving()) schedule(); };
+  const schedule = () => { if (!frame) frame = requestAnimationFrame(tick); };
+  // Her goo (the stage's SVG) is drawn every frame she moves and sizes nothing.
+  const changed = (records: MutationRecord[]) => {
+    const matters = (r: MutationRecord) => r.type !== 'attributes' ? true : (r.target as Element).getAttribute(r.attributeName!) !== r.oldValue && !(r.target as Element).closest('.companion-stage');
+    if (records.some(matters)) schedule();
+  };
+  const watch = new MutationObserver(changed);
+  watch.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeOldValue: true });
+  const events = ['transitionrun', 'transitionend', 'transitioncancel', 'animationstart', 'animationiteration', 'animationend', 'animationcancel', 'pointerover', 'pointerout', 'focusin', 'focusout', 'scroll', 'load', 'error'];
+  for (const name of events) root.addEventListener(name, schedule, true);
+  window.addEventListener('resize', schedule); document.fonts?.addEventListener('loadingdone', schedule);
+  schedule();
   // The stage is taller than a fitted window, so a scrollIntoView anywhere could scroll the stage's own box (or the page) and lift the whole
   // stage under the notch (live 2026-10-07, the Memory page). The stage never scrolls.
   const pin = () => { if (root.scrollTop || root.scrollLeft) root.scrollTo(0, 0); if (window.scrollX || window.scrollY) window.scrollTo(0, 0); };
   root.addEventListener('scroll', pin); window.addEventListener('scroll', pin);
   return {
-    reset: () => { cur = { w: Infinity, h: Infinity }; key = ''; },
+    reset: () => { cur = { w: Infinity, h: Infinity }; key = ''; schedule(); },
     stop: () => {
-      cancelAnimationFrame(frame); clearTimeout(timer); root.removeEventListener('scroll', pin); window.removeEventListener('scroll', pin);
+      cancelAnimationFrame(frame); frame = 0; clearTimeout(timer); watch.disconnect();
+      for (const name of events) root.removeEventListener(name, schedule, true);
+      window.removeEventListener('resize', schedule); document.fonts?.removeEventListener('loadingdone', schedule);
+      root.removeEventListener('scroll', pin); window.removeEventListener('scroll', pin);
       if (real) Object.defineProperty(window, 'innerHeight', real); else delete (window as { innerHeight?: number }).innerHeight;
     },
   };
