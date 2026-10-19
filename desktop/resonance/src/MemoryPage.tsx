@@ -466,8 +466,9 @@ function PlaceRow({ p, open, toggle, a }: { p: Place; open: boolean; toggle: () 
   const send = async (body: object, say: L) => {
     setErr(''); setWorking(true);
     try {
-      const r = await api<{ change: { id: string } | null }>(a.port, `/places/${encodeURIComponent(p.id)}`, body);
-      a.refresh(); a.notify(t(say), r.change ? () => void a.undoPlace(r.change!.id) : undefined);
+      const r = await api<{ change: string | null }>(a.port, `/places/${encodeURIComponent(p.id)}`, body);
+      const change = r.change;
+      a.refresh(); a.notify(t(say), change ? () => void a.undoPlace(change) : undefined);
     } catch (e) { setErr(e instanceof Refused && e.status !== 502 ? e.message : t(['That didn’t go through. Try again.', '没成功，请再试一次。'])); }
     finally { setWorking(false); }
   };
