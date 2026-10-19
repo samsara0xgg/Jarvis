@@ -1,4 +1,4 @@
-import { clean, clock, dur, endText, lensOf, moneyText, moveIcon, moveWords, names, rideWords, SLEEP, stayLook, TRANSIT, type DayItem, type DayModel, type Icon, type LensKind, type Rgb, type Say } from './dayView.ts';
+import { clean, clock, covered, dur, endText, lensOf, moneyText, moveIcon, moveWords, names, rideWords, SLEEP, stageLook, stageMinutes, stageSlices, stayLook, TRANSIT, workoutOf, type DayItem, type DayModel, type Icon, type LensKind, type Rgb, type Say } from './dayView.ts';
 
 // The day in one bar (ADR 0296): the axis, the pieces the bar is made of, what the pointer finds at a minute (the stretch it is in and
 // what else was going on), a range of the bar, and the day's numbers. Pure (no DOM), so scripts/verify-notch-timeline.mjs runs it in
@@ -24,7 +24,7 @@ export function wakeOf(model: DayModel): number | null {
   return best?.end_ms ?? null;
 }
 // What takes the bar's start back to its hour: a stay alone never does (it is a place he was, not a thing he did).
-const REACH = new Set(['move', 'ride', 'talk', 'picture', 'event', 'work', 'call', 'payment']);
+const REACH = new Set(['move', 'ride', 'talk', 'picture', 'event', 'work', 'call', 'payment', 'workout', 'code']);
 // The bar starts at 06:00, or at the hour before he woke when that is later (a long sleep is not worth a third of the bar); what he did
 // before that takes it back to the hour it began in, and it always holds now. It ends at 24:00.
 export function axisOf(model: DayModel) {
@@ -37,13 +37,15 @@ export function axisOf(model: DayModel) {
 }
 
 // ---------- the pieces ----------
-export type BarSeg = { key: string; row: string; kind: 'stay' | 'trip' | 'sleep'; s: number; e: number; f0: number; f1: number; rgb: Rgb; a: number; tone: 'dark' | 'light'; icon: Icon; name: string; short: string; mono: boolean };
+// `shade`: a night with stages is painted by stage, each slice the share of the piece it covers (f0 to f1, 0 to 1) in its own colour.
+export type BarSeg = { key: string; row: string; kind: 'stay' | 'trip' | 'sleep'; s: number; e: number; f0: number; f1: number; rgb: Rgb; a: number; tone: 'dark' | 'light'; icon: Icon; name: string; short: string; mono: boolean;
+  shade?: { f0: number; f1: number; rgb: Rgb; a: number }[] };
 // What is still to come on today: an event as a dashed box over its time, a reminder or a departure as a tick.
 export type Sched = { key: string; kind: 'event' | 'reminder' | 'departure'; s: number; e: number; f0: number; f1: number; short: string };
 export type BarStar = { id: string; f: number; label: string };
 export type BarModel = {
   t0: number; t1: number; segs: BarSeg[]; sched: Sched[]; stars: BarStar[]; ticks: { label: string; f: number }[]; nowF: number | null;
-  lens: Partial<Record<LensKind, { f0: number; f1: number }[]>>;
+  lens: Partial<Record<LensKind, { f0: number; f1: number }[]>>; sun: { kind: 'rise' | 'set'; f: number }[];
 };
 export const fOf = (bar: { t0: number; t1: number }, ms: number) => (ms - bar.t0) / (bar.t1 - bar.t0);
 export const msOf = (bar: { t0: number; t1: number }, f: number) => bar.t0 + f * (bar.t1 - bar.t0);
@@ -93,7 +95,8 @@ export function buildBar(model: DayModel, t: Say): BarModel | null {
     }
     if (it.kind === 'sleep') {
       const minutes = it.minutes ?? ((it.end_ms ?? limit) - it.start_ms) / MIN;
-      return { ...base, kind: 'sleep', rgb: SLEEP, a: .9, tone: toneOn(SLEEP, .9), icon: 'moon', name: t(['Sleep', '睡觉']), short: hm(minutes), mono: true };
+      const shade = it.stages?.length ? stageSlices(it, s, e).map(x => ({ f0: (x.s - s) / (e - s), f1: (x.e - s) / (e - s), rgb: stageLook(x.stage).rgb, a: stageLook(x.stage).a })) : undefined;
+      return { ...base, kind: 'sleep', rgb: SLEEP, a: .9, tone: toneOn(SLEEP, .9), icon: 'moon', name: t(['Sleep', '睡觉']), short: hm(minutes), mono: true, shade };
     }
     // A way he went is a light haze with a hatch over it (drawn by the style), so it reads as dark ground.
     const ride = it.kind === 'ride', route = clean(it.route).replace(/\s*→\s*/g, '→');
@@ -125,7 +128,10 @@ export function buildBar(model: DayModel, t: Say): BarModel | null {
   }
   const ticks: BarModel['ticks'] = [];
   for (let h = 0; h <= 24; h += 3) { const ms = hourAt(reply, model.tz, h); if (ms >= t0 && ms <= t1) ticks.push({ label: String(h).padStart(2, '0'), f: f(ms) }); }
-  return { t0, t1, segs, sched, stars, ticks, nowF: today ? clamp(f(now), 0, 1) : null, lens };
+  // Where the sun comes up and goes down, when the day has them on its bar.
+  const sun: BarModel['sun'] = [];
+  for (const [kind, ms] of [['rise', reply.weather?.sunrise_ms], ['set', reply.weather?.sunset_ms]] as const) if (ms != null && f(ms) >= 0 && f(ms) <= 1) sun.push({ kind, f: f(ms) });
+  return { t0, t1, segs, sched, stars, ticks, nowF: today ? clamp(f(now), 0, 1) : null, lens, sun };
 }
 
 // ---------- what the pointer finds ----------
@@ -137,7 +143,7 @@ const when = (it: DayItem, m: DayModel, t: Say) => {
 };
 export type Line = { key: string; kind: string; icon: Icon; text: string; side: string; star: boolean; picture: string | null };
 // In the order they are worth a glance; a moment (a photo, a payment) is "at" a minute within two of it.
-const ORDER = ['work', 'call', 'talk', 'picture', 'payment', 'event', 'claude_chat', 'reminder', 'departure'], POINT = new Set(['picture', 'payment', 'reminder', 'departure']);
+const ORDER = ['work', 'code', 'call', 'talk', 'workout', 'picture', 'payment', 'event', 'claude_chat', 'reminder', 'departure'], POINT = new Set(['picture', 'payment', 'reminder', 'departure']);
 export const NEAR_MIN = 10, AT_MIN = 2;
 function lineOf(it: DayItem, m: DayModel, t: Say): Line {
   const span = when(it, m, t), time = clock(it.start_ms, m.tz), mark = m.stars.get(it.id), base = { key: it.id, kind: it.kind, star: !!mark, picture: null as string | null };
@@ -147,6 +153,8 @@ function lineOf(it: DayItem, m: DayModel, t: Say): Line {
       const top = [names(it.projects)[0], names(it.apps)[0]].filter(Boolean).join(' · '), active = it.active_s ? dur(it.active_s / 60, t) : '';
       return put('work', top || t(['Working on the Mac', '在 Mac 上工作']), active ? t([`${active} active`, `活跃 ${active}`]) : span.length);
     }
+    case 'code': return put('code', [t(['Claude Code', 'Claude Code']), clean(it.title)].filter(Boolean).join(' · '), span.length);
+    case 'workout': { const w = workoutOf(it, t); return put(w.icon, [w.word, w.facts[0]].filter(Boolean).join(' · '), span.length); }
     case 'call': return put('call', clean(it.app) ? t([`Call · ${it.app}`, `通话 · ${it.app}`]) : t(['Call', '通话']), span.length);
     case 'talk': return put('talk', it.turns ? t([`Talked with her · ${it.turns} ${it.turns === 1 ? 'line' : 'lines'}`, `和她说话 · ${it.turns} 句`]) : t(['Talked with her', '和她说话']), span.length || time);
     case 'picture': return { ...put('picture', clean(it.note).split('\n')[0] || t(['Photo', '照片']), time), picture: clean(it.attachment) || null };
@@ -162,8 +170,14 @@ function lineOf(it: DayItem, m: DayModel, t: Say): Line {
 }
 export type Peek = {
   ms: number; at: string; id: string; row: string | null; lines: Line[]; star: { label: string; by: string } | null;
-  stretch: { name: string; rgb: Rgb | null; a: number; range: string; length: string };
+  stretch: { name: string; rgb: Rgb | null; a: number; range: string; length: string; note?: string };
 };
+// A night with stages says its deep sleep and its REM on the card (`深睡 1:10 · REM 1:40`), whichever of them it had.
+function stageNote(it: DayItem, t: Say) {
+  if (!it.stages?.length) return undefined;
+  const mins = stageMinutes(it);
+  return ([['deep', t(['Deep', '深睡'])], ['rem', 'REM']] as const).filter(([k]) => (mins[k] ?? 0) >= 1).map(([k, word]) => `${word} ${hm(mins[k])}`).join(' · ') || undefined;
+}
 // The list row that covers a minute: the piece of the bar there, an event still to come, else the next row after it (or the last).
 export function rowAt(model: DayModel, bar: BarModel, ms: number): string | null {
   const seg = bar.segs.find(x => x.s <= ms && ms < x.e), event = seg ? undefined : bar.sched.find(x => x.kind === 'event' && x.s <= ms && ms <= x.e);
@@ -174,7 +188,7 @@ export function peek(model: DayModel, bar: BarModel, ms: number, t: Say): Peek {
   const seg = bar.segs.find(x => x.s <= ms && ms < x.e), event = seg ? undefined : bar.sched.find(x => x.kind === 'event' && x.s <= ms && ms <= x.e);
   const item = items.find(x => x.id === (seg?.row ?? event?.key));
   let id: string, stretch: Peek['stretch'];
-  if (seg && item) { id = seg.key; stretch = { name: seg.name, rgb: seg.rgb, a: seg.kind === 'stay' ? Math.max(.6, seg.a) : 1, ...when(item, model, t) }; }
+  if (seg && item) { id = seg.key; stretch = { name: seg.name, rgb: seg.rgb, a: seg.kind === 'stay' ? Math.max(.6, seg.a) : 1, ...when(item, model, t), note: seg.kind === 'sleep' ? stageNote(item, t) : undefined }; }
   else if (event && item) { id = event.key; stretch = { name: event.short, rgb: null, a: 1, ...when(item, model, t) }; }
   else if (ms > limit) { id = 'later'; stretch = { name: t(['Not yet', '还没到']), rgb: null, a: 1, range: '', length: '' }; }
   else {
@@ -191,25 +205,29 @@ export function peek(model: DayModel, bar: BarModel, ms: number, t: Say): Peek {
     if (d <= NEAR_MIN * MIN) near.push({ it, rank, d, at: d <= (POINT.has(it.kind) ? AT_MIN * MIN : 0) });
   }
   near.sort((x, y) => +!x.at - +!y.at || x.rank - y.rank || x.d - y.d || x.it.start_ms - y.it.start_ms);
+  // Sessions of Claude Code run side by side: more than one near is one line (how many, how long together), so they cannot fill the card.
+  const codes = near.filter(x => x.it.kind === 'code' && !model.stars.has(x.it.id)), lead = codes.length > 1 ? codes[0] : null;
+  const lines = near.filter(x => !lead || x === lead || !codes.includes(x)).slice(0, 4).map(x => x !== lead ? lineOf(x.it, model, t)
+    : { key: `code:${x.it.id}`, kind: 'code', icon: 'code' as Icon, text: t([`Claude Code · ${codes.length} sessions`, `Claude Code · ${codes.length} 个会话`]), side: dur(Math.max(1, covered(codes.map(c => c.it), limit)), t), star: false, picture: null });
   const mark = item ? model.stars.get(item.id) ?? null : null;
-  return { ms, at: clock(ms, model.tz), id, row: rowAt(model, bar, ms), lines: near.slice(0, 4).map(x => lineOf(x.it, model, t)), star: mark, stretch };
+  return { ms, at: clock(ms, model.tz), id, row: rowAt(model, bar, ms), lines, star: mark, stretch };
 }
 
 // ---------- the day's numbers, and a range of the bar ----------
 export type Num = { kind: LensKind; label: string; value: string; long: string };
-const LABELS: Record<LensKind, [string, string]> = { sleep: ['Sleep', '睡'], trip: ['On the way', '路上'], work: ['Mac', 'Mac'], call: ['Calls', '通话'], talk: ['With her', '和她'], payment: ['Spent', '花'], picture: ['Photos', '照片'] };
+const LABELS: Record<LensKind, [string, string]> = { sleep: ['Sleep', '睡'], trip: ['On the way', '路上'], workout: ['Workout', '运动'], work: ['Mac', 'Mac'], call: ['Calls', '通话'], talk: ['With her', '和她'], payment: ['Spent', '花'], picture: ['Photos', '照片'] };
 // What the day, or a window of it, adds up to: only what is not nothing. Sleep is counted whole by the day it ends on; in a window,
 // by the share of it inside (as is Mac time: a block's active seconds are spread over its length).
 export function numbers(model: DayModel, t: Say, win?: { a: number; b: number }): Num[] {
   const { reply, today, now } = model, a = win?.a ?? reply.start_ms, b = win?.b ?? reply.end_ms, limit = today ? Math.min(now, b) : b;
-  const sum: Record<LensKind, number> = { sleep: 0, trip: 0, work: 0, call: 0, talk: 0, payment: 0, picture: 0 };
+  const sum: Record<LensKind, number> = { sleep: 0, trip: 0, workout: 0, work: 0, call: 0, talk: 0, payment: 0, picture: 0 };
   const out = new Map<string, { n: number; sum: number }>();
   for (const it of model.items) {
     const k = lensOf(it.kind);
-    if (!k) continue;
+    if (!k || it.kind === 'code') continue;
     const s = it.start_ms, e = it.end_ms ?? limit, lap = Math.max(0, Math.min(e, b) - Math.max(s, a)), share = e > s ? lap / (e - s) : 1;
     if (k === 'sleep') { if (win ? lap > 0 : e > a && e <= b) sum.sleep += (it.minutes ?? (e - s) / MIN) * (win ? share : 1); }
-    else if (k === 'trip' || k === 'call') sum[k] += lap / MIN;
+    else if (k === 'trip' || k === 'call' || k === 'workout') sum[k] += lap / MIN;
     else if (k === 'work') sum.work += (it.active_s ?? (e - s) / 1000) / 60 * share;
     else if (k === 'talk') { if (e >= a && s <= b) sum.talk++; }
     else if (s >= a && s <= b) {
@@ -223,7 +241,7 @@ export function numbers(model: DayModel, t: Say, win?: { a: number; b: number })
     const label = t(LABELS[kind]), n = sum[kind];
     let value = '', long = '';
     if (kind === 'sleep' || kind === 'trip' || kind === 'work') { if (Math.round(n) > 0) { value = hm(n); long = dur(n, t); } }
-    else if (kind === 'call') { if (Math.round(n) > 0) value = long = dur(n, t); }
+    else if (kind === 'call' || kind === 'workout') { if (Math.round(n) > 0) value = long = dur(n, t); }
     else if (kind === 'talk') { if (n > 0) value = long = t([`${n}×`, `${n} 次`]); }
     else if (kind === 'picture') { if (n > 0) value = long = String(n); }
     else if (out.size) {
