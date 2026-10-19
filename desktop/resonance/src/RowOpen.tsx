@@ -61,6 +61,7 @@ export type Acts = {
   ask: (() => void) | null;
   rename: { state: 'idle' | 'editing' | 'failed'; start: () => void } | null;
   ack: { state: 'idle' | 'busy' | 'failed'; press: () => void } | null;
+  commit: { state: 'idle' | 'busy' | 'failed'; confirm: () => void; cancel: () => void } | null;
   summarize: { state: 'idle' | 'busy' | 'sent' | 'failed'; press: () => void } | null;
   star: ReactNode;
   line: string;
@@ -149,11 +150,15 @@ function PartView({ part, acts }: { part: Part; acts: Acts }) {
 
 // The buttons: what can be done from the row, only where the route to do it works today; under them a line when there is something to say.
 function Buttons({ acts, say }: { acts: Acts; say: string }) {
-  const { t, rename, ack, summarize, star } = acts, any = !!(acts.ask || rename?.state === 'idle' || ack || summarize || star);
+  const { t, rename, ack, commit, summarize, star } = acts, any = !!(acts.ask || rename?.state === 'idle' || ack || commit || summarize || star);
   return <>
     {any && <div className="dt-acts">
       {rename?.state === 'idle' && <button type="button" className="dt-btn" onClick={rename.start}>{t(['Rename', '改名字'])}</button>}
       {ack && <button type="button" className="dt-btn is-amber" disabled={ack.state === 'busy'} onClick={ack.press}>{t(['Got it', '知道了'])}</button>}
+      {commit && <>
+        <button type="button" className="dt-btn is-amber" disabled={commit.state === 'busy'} onClick={commit.confirm}>{t(['Mine', '是我的'])}</button>
+        <button type="button" className="dt-btn" disabled={commit.state === 'busy'} onClick={commit.cancel}>{t(['Not mine', '不是'])}</button>
+      </>}
       {summarize && (summarize.state === 'sent'
         ? <span className="dt-sent"><Check size={12} weight="bold" aria-hidden="true"/>{t(['Sent to her', '已发给她'])}</span>
         : <button type="button" className="dt-btn" disabled={summarize.state === 'busy'} onClick={summarize.press}>{summarize.state === 'failed' ? t(["Didn't send. Try again", '没发出去，再试一次']) : t(['Have her sum this up', '让她总结这段'])}</button>)}
@@ -166,7 +171,7 @@ function Buttons({ acts, say }: { acts: Acts; say: string }) {
 
 export function OpenBody({ open, acts }: { open: Open; acts: Acts }) {
   const { t } = acts;
-  const say = acts.rename?.state === 'editing' ? t(['Enter saves · Esc cancels', '回车保存 · Esc 取消']) : acts.rename?.state === 'failed' ? t(["Couldn't rename it. Try again.", '没改成，再试一次']) : acts.ack?.state === 'failed' ? t(["That didn't go through. Try again.", '没成功，再试一次']) : acts.line;
+  const say = acts.rename?.state === 'editing' ? t(['Enter saves · Esc cancels', '回车保存 · Esc 取消']) : acts.rename?.state === 'failed' ? t(["Couldn't rename it. Try again.", '没改成，再试一次']) : acts.ack?.state === 'failed' || acts.commit?.state === 'failed' ? t(["That didn't go through. Try again.", '没成功，再试一次']) : acts.line;
   return <>
     {open.parts.map((p, i) => <PartView key={`${p.type}${i}`} part={p} acts={acts}/>)}
     <Buttons acts={acts} say={say}/>

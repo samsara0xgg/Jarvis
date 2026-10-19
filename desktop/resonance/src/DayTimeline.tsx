@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { CaretLeft, CaretRight, Star } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { postRoute, useRoute, type Route } from './homeData';
-import { askable, buildDay, dateTitle, marksOf, report, shiftDate, starrable, within, type Block, type DayModel, type DayReply, type Highlight, type Row, type WeatherLook } from './dayView';
+import { askable, buildDay, dateTitle, marksOf, report, shiftDate, starrable, within, type Block, type DayItem, type DayModel, type DayReply, type Highlight, type Row, type WeatherLook } from './dayView';
 import { askOf, hasBody, openOf, type About, type Ask, type Rec } from './dayOpen';
 import { AskDock, type DockState } from './AskDock';
 import { DayBar, useBarState } from './DayBar';
@@ -42,6 +42,13 @@ function rise(list: HTMLElement) {
 function grow(el: HTMLElement) {
   const style = getComputedStyle(el), full = { height: `${el.offsetHeight}px`, marginTop: style.marginTop, opacity: style.opacity };
   el.animate(reduced.matches ? [{ opacity: 0 }, {}] : [{ height: '0px', marginTop: '0px', opacity: 0, overflow: 'hidden' }, { ...full, overflow: 'hidden' }], { duration: reduced.matches ? 120 : 240, easing: EASE });
+}
+// An item he has just said is not his collapses out of the list: its height to nothing and a fade, 240 ms (reduced motion: a 120 ms fade). It stays as it
+// ended until the day drops it.
+function away(el: HTMLElement) {
+  const style = getComputedStyle(el);
+  el.animate(reduced.matches ? [{ opacity: 1 }, { opacity: 0 }] : [{ height: `${el.offsetHeight}px`, marginTop: style.marginTop, opacity: 1, overflow: 'hidden' }, { height: '0px', marginTop: '0px', opacity: 0, overflow: 'hidden' }],
+    { duration: reduced.matches ? 120 : 240, easing: EASE, fill: 'forwards' });
 }
 // A day change is a shared axis: the day that was slides away the way time came from, fading (80 ms), and the day that is slides in from the
 // other side (140 ms). Never both at once, so two days' words are never on top of each other. The list moves 16 px, the rest of the pane 8.
@@ -110,8 +117,9 @@ function Under({ keyed, open, cx }: { keyed: string; open: boolean; cx: Cx }) {
 // right its length, how long until it, or its value. The glyphs of one stay or one trip hang on a rail. A click opens it in place.
 // The pointer lights a row by moving on it, not by arriving: a list that scrolls under a resting pointer (the keys, the wheel) leaves what the keys chose alone.
 function RowView({ row, hot, onHot, pick, t, how, cx }: { row: Row; how: string } & Hover) {
-  const open = cx.opened === row.key, badge = useFade(row.wait), plain = !cx.opens.has(row.key);
-  return <div className={`dt-row${row.detail ? ' has-detail' : ''}${row.future ? ' is-future' : ''}${row.connector ? ' is-leg' : ''}${how}${hot === row.key ? ' is-hot' : ''}${pick === row.key ? ' is-pick' : ''}${open ? ' is-open' : ''}${plain ? ' is-still' : ''}`} data-key={row.key} data-kind={row.kind} data-lk={row.lens ?? undefined}
+  const open = cx.opened === row.key, badge = useFade(row.wait), plain = !cx.opens.has(row.key), box = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => { if (row.leaving && box.current) away(box.current); }, [row.leaving]);
+  return <div ref={box} className={`dt-row${row.detail ? ' has-detail' : ''}${row.future ? ' is-future' : ''}${row.connector ? ' is-leg' : ''}${how}${hot === row.key ? ' is-hot' : ''}${pick === row.key ? ' is-pick' : ''}${open ? ' is-open' : ''}${plain ? ' is-still' : ''}${row.leaving ? ' is-leaving' : ''}`} data-key={row.key} data-kind={row.kind} data-lk={row.lens ?? undefined}
     aria-current={pick === row.key ? 'true' : undefined} aria-expanded={plain ? undefined : open} onPointerMove={() => onHot(row.key)} onPointerLeave={() => onHot(null)} onClick={e => cx.click(e, row.key)}>
     <time className="dt-at">{row.ago && <small>{row.ago}</small>}{row.at}</time>
     <i className="dt-ic">{row.icon === 'dot' ? <span className="dt-pip"/> : <Ic icon={row.icon}/>}<Lit on={row.star} hers={row.hers} className="dt-badge"/></i>
@@ -262,22 +270,31 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     return () => clearInterval(id);
   }, [over]);
   // What he has just done that the daemon has not said back yet, laid over what was read so the whole pane (the bar, the list, the count)
-  // shows it at once while the day is read again: a reminder acknowledged, a kept place renamed, a star. His marks are the day's highlights as
-  // he made them (`base` null: the brain has not answered yet) and then as the brain answered, which stand until the next read of the day.
+  // shows it at once while the day is read again: a reminder acknowledged, a kept place renamed, a commitment he confirmed (`sure`) or dropped (`dropping`
+  // while it collapses out, then `gone`), a star. His marks are the day's highlights as he made them (`base` null: the brain has not answered yet) and
+  // then as the brain answered, which stand until the next read of the day.
   const [acks, setAcks] = useState<ReadonlySet<string>>(() => new Set()), [names, setNames] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const [sure, setSure] = useState<ReadonlySet<string>>(() => new Set()), [dropping, setDropping] = useState<ReadonlySet<string>>(() => new Set()), [gone, setGone] = useState<ReadonlySet<string>>(() => new Set());
   const [marked, setMarked] = useState<{ date: string; list: Highlight[]; base: DayReply | null } | null>(null), shownNow = useRef(shown);
   shownNow.current = shown;
   const laid = useMemo(() => {
     const stars = shown && marked && marked.date === shown.date && (!marked.base || marked.base === shown) ? marked.list : null;
-    return !shown || !acks.size && !names.size && !stars ? shown : { ...shown, ...stars && { highlights: stars }, items: shown.items.map(x => acks.has(x.id) ? { ...x, acknowledged: true }
-      : x.kept_place && names.has(x.kept_place.id) ? { ...x, kept_place: { ...x.kept_place, name: names.get(x.kept_place.id)! } } : x) };
-  }, [shown, acks, names, marked]);
+    if (!shown || !acks.size && !names.size && !sure.size && !gone.size && !stars) return shown;
+    const lay = (x: DayItem): DayItem[] => {
+      if (gone.has(x.id)) return [];
+      if (acks.has(x.id)) x = { ...x, acknowledged: true };
+      if (sure.has(x.id)) x = { ...x, confirmed: true };
+      if (x.kept_place && names.has(x.kept_place.id)) x = { ...x, kept_place: { ...x.kept_place, name: names.get(x.kept_place.id)! } };
+      return [x];
+    };
+    return { ...shown, ...stars && { highlights: stars }, items: shown.items.flatMap(lay) };
+  }, [shown, acks, names, sure, gone, marked]);
   // A day that cannot be built (no usable bounds) says so in a line; a day that builds but fails to draw falls to the guards below.
   const built = useMemo(() => {
     if (!laid) return { model: null, failed: false };
-    try { return { model: buildDay(laid, now, t), failed: false }; }
+    try { return { model: buildDay(laid, now, t, { you: sure, leaving: dropping }), failed: false }; }
     catch (error) { report('the day', error); return { model: null, failed: true }; }
-  }, [laid, now, lang]);
+  }, [laid, now, lang, sure, dropping]);
   const model = built.model;
   // The kinds the day has a number for: a lens that is not one of them (its chip is not there) lights nothing.
   const lensKinds = useMemo(() => new Set(model ? numbers(model, t).map(n => n.kind) : []), [model, lang]);
@@ -378,6 +395,23 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     catch { put('ack', id, 'failed'); }
     again();
   };
+  // 是我的 / 不是: what mail said he has to go to (ADR 0274), confirmed or dropped on the brain. The brain answers first, so one that did not go through stays as
+  // it was and says so; then the pane shows it and reads the day again. Confirmed: the badge fades, the count rolls down and the row says he confirmed it.
+  // Dropped: the row collapses out and the bar's box fades (the day is read again once it has gone). Already confirmed (409) is what he asked for; a
+  // commitment she no longer has (404) goes the way of one he dropped.
+  const settle = async (key: string, hex: string, action: 'confirm' | 'cancel') => {
+    if (!port) return;
+    put('commit', key, 'busy');
+    let status = 0;
+    try { await postRoute(port, `/inherent/commitments/${hex}`, { action }); }
+    catch (error) { status = (error as { status?: number }).status ?? -1; }
+    const mine = action === 'confirm' && (status === 0 || status === 409), out = status === 404 || action === 'cancel' && status === 0;
+    if (!mine && !out) { put('commit', key, 'failed'); return; }
+    put('commit', key, '');
+    if (mine) { setSure(s => new Set(s).add(key)); again(); return; }
+    setDropping(s => new Set(s).add(key));
+    setTimeout(() => { setGone(s => new Set(s).add(key)); setPick(p => p === key ? null : p); again(); }, reduced.matches ? 120 : 240);
+  };
   // A quiet line under a row for 4 s: what did not go through, or why (`on` goes false when it is time; the words stay while it closes).
   const [line, setLine] = useState({ key: '', text: '', on: false });
   const tell = (key: string, text: string) => setLine({ key, text, on: true });
@@ -474,12 +508,13 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   const body = (key: string): ReactNode => {
     const o = model && openOf(model, key, t);
     if (!o) return null;
-    const sum = work[`sum:${key}`] as 'busy' | 'sent' | 'failed' | undefined, acking = o.ack ? work[`ack:${o.ack}`] : '';
+    const sum = work[`sum:${key}`] as 'busy' | 'sent' | 'failed' | undefined, acking = o.ack ? work[`ack:${o.ack}`] : '', saying = work[`commit:${key}`];
     const acts: Acts = {
       port, t, records: readDay, picture: (id, text) => setViewer({ id, note: text }),
       ask: canAsk(key) ? () => openAsk(key) : null,
       rename: o.rename ? { state: rename?.key === key ? rename.state === 'failed' ? 'failed' : 'editing' : 'idle', start: () => startRename(key) } : null,
       ack: o.ack ? { state: acking === 'busy' ? 'busy' : acking === 'failed' ? 'failed' : 'idle', press: () => void acknowledge(o.ack!) } : null,
+      commit: o.commit ? { state: saying === 'busy' ? 'busy' : saying === 'failed' ? 'failed' : 'idle', confirm: () => void settle(key, o.commit!, 'confirm'), cancel: () => void settle(key, o.commit!, 'cancel') } : null,
       summarize: o.summarize && canAsk(key) ? { state: sum ?? 'idle', press: () => void summarize(key) } : null,
       star: o.star ? <StarToggle mark={marks.get(key) ?? null} nth={refused[key] ?? 0} press={() => void star(key)} t={t}/> : null,
       line: line.on && line.key === key ? line.text : '',

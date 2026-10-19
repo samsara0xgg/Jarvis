@@ -48,6 +48,7 @@
 .notch .dt-row.has-detail { --head:52px; }
 .notch .is-gap { margin-top:12px; }
 .notch .dt-row.is-hot,.notch .dt-sh.is-hot { background:rgb(255 255 255 / .04); }
+.notch .dt-row.is-leaving { pointer-events:none; }
 /* what the keys chose: a little more than the pointer's, and a ring, so it reads with the pointer far away */
 .notch .dt-row.is-pick,.notch .dt-sh.is-pick { background:rgb(255 255 255 / .07); box-shadow:inset 0 0 0 1px rgb(var(--ink) / .24); }
 /* what the hover offers, the star and 问她: they fade in over the length when the row is lit */

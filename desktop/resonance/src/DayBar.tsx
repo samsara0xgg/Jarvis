@@ -229,7 +229,7 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
             {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}>{how !== 'name' && <Ic icon={s.icon} size={12}/>}{how !== 'icon' && <b className={s.mono ? 'is-mono' : ''}>{s.short}</b>}</span>}
           </i>)}
           {showVoid && <i className="dt-void" style={{ width: bx(bar.nowF ?? 1) }}>{voidText}</i>}
-          {boxes.map(({ x, how }) => <i key={x.key} data-sched={x.key} className={`dt-sched is-event${spanned && hot === x.key ? ' is-hot' : ''}`} style={{ left: `${x.f0 * 100}%`, width: `${(x.f1 - x.f0) * 100}%` }}>
+          {boxes.map(({ x, how }) => <i key={x.key} data-sched={x.key} className={`dt-sched is-event${spanned && hot === x.key ? ' is-hot' : ''}${x.leaving ? ' is-leaving' : ''}`} style={{ left: `${x.f0 * 100}%`, width: `${(x.f1 - x.f0) * 100}%` }}>
             {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}>{how !== 'name' && <Ic icon="event" size={12}/>}{how !== 'icon' && <b>{x.short}</b>}</span>}
           </i>)}
           {bar.sched.filter(x => x.kind !== 'event').map(x => <i key={x.key} className="dt-sched is-tick" style={{ left: `${x.f0 * 100}%` }}><u/></i>)}

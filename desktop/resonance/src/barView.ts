@@ -41,7 +41,8 @@ export function axisOf(model: DayModel) {
 export type BarSeg = { key: string; row: string; kind: 'stay' | 'trip' | 'sleep'; s: number; e: number; f0: number; f1: number; rgb: Rgb; a: number; tone: 'dark' | 'light'; icon: Icon; name: string; short: string; mono: boolean;
   shade?: { f0: number; f1: number; rgb: Rgb; a: number }[] };
 // What is still to come on today: an event as a dashed box over its time, a reminder or a departure as a tick.
-export type Sched = { key: string; kind: 'event' | 'reminder' | 'departure'; s: number; e: number; f0: number; f1: number; short: string };
+// `leaving`: an event he has just said is not his, on its way out.
+export type Sched = { key: string; kind: 'event' | 'reminder' | 'departure'; s: number; e: number; f0: number; f1: number; short: string; leaving: boolean };
 export type BarStar = { id: string; f: number; label: string; hers: boolean };
 export type BarModel = {
   t0: number; t1: number; segs: BarSeg[]; sched: Sched[]; stars: BarStar[]; ticks: { label: string; f: number }[]; nowF: number | null;
@@ -109,8 +110,8 @@ export function buildBar(model: DayModel, t: Say): BarModel | null {
     const title = it.private ? t(['Private', '私事']) : clean(it.title) || t(['Event', '日程']);
     if (it.kind === 'event' && (it.end_ms ?? it.start_ms) > now) {
       const s = Math.max(it.start_ms, now, t0), e = Math.min(it.end_ms ?? it.start_ms, t1);
-      if (e > s) sched.push({ key: it.id, kind: 'event', s, e, f0: f(s), f1: f(e), short: title });
-    } else if ((it.kind === 'reminder' || it.kind === 'departure') && it.start_ms > now && it.start_ms < t1) sched.push({ key: it.id, kind: it.kind, s: it.start_ms, e: it.start_ms, f0: f(it.start_ms), f1: f(it.start_ms), short: '' });
+      if (e > s) sched.push({ key: it.id, kind: 'event', s, e, f0: f(s), f1: f(e), short: title, leaving: it.leaving === true });
+    } else if ((it.kind === 'reminder' || it.kind === 'departure') && it.start_ms > now && it.start_ms < t1) sched.push({ key: it.id, kind: it.kind, s: it.start_ms, e: it.start_ms, f0: f(it.start_ms), f1: f(it.start_ms), short: '', leaving: false });
   }
   // What mattered: a lit star at the start of each highlighted item that is on the bar.
   const stars: BarStar[] = [];
