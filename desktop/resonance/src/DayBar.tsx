@@ -125,8 +125,11 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
     e.currentTarget.setPointerCapture(e.pointerId);
     ui.setSel(null);
   };
+  // A press whose release was never heard (the capture was taken, the button came up elsewhere) lets go, and the pointer is a hover again.
+  const release = () => { press.current = null; setBand(null); };
   const move = (e: ReactPointerEvent) => {
     if (!bar) return;
+    if (press.current && e.buttons === 0) release();
     const x = at(e), p = press.current;
     if (p && !p.drag && Math.abs(x - p.x0) > TAP_PX) { p.drag = true; setHover(null); onHot(null); }
     if (p?.drag) setBand({ a: snap(ms(p.x0)), b: snap(ms(x)) });
@@ -197,7 +200,7 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
           : sel && a !== null && b !== null && <><span className="dt-time" style={edge(fOf(bar, a) * width)}>{clock(a, model.tz)}</span><span className="dt-time" style={edge(fOf(bar, b) * width)}>{endClock(b, model.reply, model.tz)}</span></>}
       </div>
       <div className="dt-trackbox">
-        <div ref={track} className="dt-track" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { press.current = null; setBand(null); }} onPointerLeave={leave}>
+        <div ref={track} className="dt-track" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={release} onLostPointerCapture={release} onPointerLeave={leave}>
           <i className="dt-ground" style={{ width: bar.nowF === null ? '100%' : bx(bar.nowF) }}/>
           {bar.nowF !== null && <i className="dt-ground is-future" style={{ left: bx(bar.nowF) }}/>}
           {laid.map(({ s, w, how }) => <i key={s.key} className={`dt-seg is-${s.kind} is-${s.tone}${s.shade ? ' has-shade' : ''}${lifted === s.row ? ' is-lift' : ''}${spanned && hot === s.row ? ' is-hot' : ''}`}

@@ -2547,6 +2547,27 @@ try {
     await a.ctx.close();
   }
 
+  // a press whose release the bar never heard (the button came up elsewhere; the capture was taken away) lets go: the band does not stay on the bar
+  if (all || only === 'review') {
+    const day = () => small([it('ha', 'stay', T(9, 5), T(13, 0), { place: 'Home', kept_place: home }), it('ht', 'talk', T(10, 0), T(10, 5), { turns: 2 }, 'her'), it('hb', 'stay', T(13, 0), null, { place: 'Library', kept_place: uvic })]);
+    const band = a => a.page.locator('.dt-band').count();
+    for (const how of ['a move with no button down', 'the capture lost']) {
+      const { a, g, y, x } = await barOf(day());
+      await a.move(x(T(15, 0)), y); await a.page.mouse.down(); await a.move(x(T(17, 0)), y); await a.move(x(T(19, 0)), y); await a.page.waitForTimeout(100);
+      const before = await band(a);
+      if (how === 'the capture lost') await a.page.evaluate(() => document.querySelector('.dt-track').releasePointerCapture(1));
+      else await a.page.evaluate(([cx, cy]) => document.querySelector('.dt-track').dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: cx, clientY: cy, pointerId: 1, buttons: 0 })), [x(T(20, 0)), y]);
+      await a.page.waitForTimeout(100);
+      const after = await band(a);
+      // the real button is still down here; moving on must not draw the band again
+      await a.move(x(T(21, 0)), y); await a.page.waitForTimeout(100);
+      const later = await band(a);
+      await a.page.mouse.up(); await a.page.waitForTimeout(150);
+      check(`${how}: the band on the bar goes, and the pointer is a hover again (no band, no range card after the button comes up)`, before === 1 && after === 0 && later === 0 && await band(a) === 0 && await a.page.locator('.dt-card.is-range').count() === 0, JSON.stringify({ before, after, later }));
+      await a.ctx.close();
+    }
+  }
+
   console.log(`\n${checks.length} checks passed; screenshots in ${dir}`);
 } finally {
   await browser.close();
