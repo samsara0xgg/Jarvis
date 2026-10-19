@@ -118,6 +118,19 @@ struct DayItem: Decodable {
     let leave_at_ms: Int64?
     /// an event he has to go to, from his mail or his own words (ADR 0274): where it came from (`mail`, `said` or `plan`, none for a calendar event), whether he confirmed it, whether it is private (counselling, legal, health), and `place` as above
     let source: String?, confirmed: Bool?, `private`: Bool?
+    /// what a picture says (kind `picture`) and the stop a bus ride ended at (kind `ride`). Newer than the rest: one that cannot be read costs only itself, not the item.
+    @Soft var note: String?
+    @Soft var alight_stop: String?
+}
+
+/// A field that is read when it can be and is nil when it is missing or has a shape this phone does not know.
+@propertyWrapper struct Soft<T: Decodable>: Decodable {
+    var wrappedValue: T?
+    init(wrappedValue: T?) { self.wrappedValue = wrappedValue }
+    init(from d: Decoder) throws { wrappedValue = try? T(from: d) }
+}
+extension KeyedDecodingContainer {
+    func decode<T>(_ type: Soft<T>.Type, forKey key: Key) throws -> Soft<T> { (try? decodeIfPresent(type, forKey: key)) ?? Soft(wrappedValue: nil) }
 }
 
 struct KeptPlace: Decodable, Equatable {
