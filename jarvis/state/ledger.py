@@ -504,12 +504,13 @@ class _Phone:
             if place and moment(stay.start) < left:
                 for day, begin, stop in _slices(moment(stay.start), left, zone):
                     self.stayed[day][_trim(place, _PLACE_CHARS)].append((begin, stop))
-        for metric, into in (("steps", self.steps), ("workout_min", self.workout_min)):
+        # a workout's value is its length in seconds (ADR 0293); the ledger counts minutes
+        for metric, per, into in (("steps", 1, self.steps), ("workout", 60, self.workout_min)):
             for first, last, value in _health_totals(rows.health, metric):
                 whole = last - first
                 for day, begin, stop in _slices(moment(first), moment(last), zone):
                     share = (stop - begin).total_seconds() * 1000 / whole if whole else 1.0
-                    into[day] += value * share
+                    into[day] += value * share / per
 
     def day(self, day: date) -> _PhoneDay:
         """The day's sleep (by wake-up), steps, workout minutes and longest named stays."""

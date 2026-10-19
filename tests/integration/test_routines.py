@@ -63,10 +63,11 @@ def _ride(conn: sqlite3.Connection, ride_id: str, route: str, day: date, start: 
 def _sleep(conn: sqlite3.Connection, uid: str, night: date, bed: str, minutes: int) -> None:
     start = at(night, bed) if bed >= "12:00" else at(night + timedelta(days=1), bed)
     payload = {
-        "metric": "sleep_min",
+        "metric": "sleep",
         "start_ms": start,
         "end_ms": start + minutes * 60_000,
-        "value": minutes,
+        "value": 3,
+        "detail": "core",
     }
     emit_event(
         conn,

@@ -2,7 +2,7 @@
 
 Acceptance checks, each against the real code and a real event log:
 
-- the strict payload check of the five phone types, as a table of input to verdict;
+- the strict payload check of the six phone types, as a table of input to verdict;
 - ``POST /inherent/device/events``: a batch of mixed good and bad frames is answered with one ack
   per frame in order and stores exactly the good ones, a resend writes nothing twice, the
   ``ingestion_node`` is the paired device's name, a frame whose append fails with a database error
@@ -72,6 +72,7 @@ if TYPE_CHECKING:
 NOW = int(time.time() * 1000)
 MINUTE = 60_000
 HOUR = 60 * MINUTE
+UUID = "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
 LOOPBACK = "127.0.0.1"
 
 GOOD: dict[str, dict[str, Any]] = {
@@ -88,19 +89,30 @@ GOOD: dict[str, dict[str, Any]] = {
         "ended_at_ms": NOW - MINUTE,
     },
     "phone.health_observed": {
-        "metric": "steps", "start_ms": NOW - 2 * HOUR, "end_ms": NOW - HOUR, "value": 4231,
-        "detail": "walking",
+        "metric": "workout", "start_ms": NOW - 2 * HOUR, "end_ms": NOW - HOUR, "value": 3600,
+        "detail": "running", "unit": "s", "source": "Allen's Apple Watch",
+        "device": "Watch7,1", "sample_uuid": UUID,
+        "meta": {"indoor": False, "avg_heart_rate": 151.5, "time_zone": "America/Vancouver"},
     },
     "phone.state_observed": {"signal": "focus", "value": "on", "detail": "Work"},
+    "phone.measure_observed": {
+        "metric": "heart_rate", "start_ms": NOW - 3 * MINUTE, "end_ms": NOW - 3 * MINUTE,
+        "value": 64.0, "unit": "count/min", "sample_uuid": UUID, "source": "Allen's Apple Watch",
+        "device": "Watch7,1", "meta": {"motion_context": "sedentary"},
+    },
 }
 MINIMAL: dict[str, dict[str, Any]] = {
     "phone.visit_observed": {"lat": 0, "lng": 0, "accuracy_m": 0, "arrived_at_ms": NOW},
     "phone.location_observed": {"lat": 0, "lng": 0, "accuracy_m": 0},
     "phone.motion_observed": {"activity": "unknown", "confidence": "low", "started_at_ms": NOW},
     "phone.health_observed": {
-        "metric": "sleep_min", "start_ms": NOW - HOUR, "end_ms": NOW, "value": 0,
+        "metric": "steps", "start_ms": NOW - HOUR, "end_ms": NOW, "value": 0,
     },
     "phone.state_observed": {"signal": "call", "value": "ended"},
+    "phone.measure_observed": {
+        "metric": "vo2_max", "start_ms": NOW, "end_ms": NOW, "value": 0, "unit": "mL/(kg*min)",
+        "sample_uuid": UUID,
+    },
 }
 
 
@@ -125,11 +137,17 @@ def _without(kind: str, key: str) -> dict[str, Any]:
     return {k: v for k, v in GOOD[kind].items() if k != key}
 
 
+def _span(metric: str, value: float, detail: str | None = None) -> dict[str, Any]:
+    """A health span of the last hour; ``detail`` is its stage or state when given."""
+    span: dict[str, Any] = {"metric": metric, "start_ms": NOW - HOUR, "end_ms": NOW, "value": value}
+    return span if detail is None else {**span, "detail": detail}
+
+
 # --- the payload check, as a table --------------------------------------------------------------
 
-VISIT, LOCATION, MOTION, HEALTH, STATE = (
+VISIT, LOCATION, MOTION, HEALTH, STATE, MEASURE = (
     "phone.visit_observed", "phone.location_observed", "phone.motion_observed",
-    "phone.health_observed", "phone.state_observed",
+    "phone.health_observed", "phone.state_observed", "phone.measure_observed",
 )
 VALID: list[tuple[str, dict[str, Any]]] = [
     *((kind, payload) for kind, payload in GOOD.items()),
@@ -139,6 +157,11 @@ VALID: list[tuple[str, dict[str, Any]]] = [
     (VISIT, _changed(VISIT, departed_at_ms=GOOD[VISIT]["arrived_at_ms"])),
     (VISIT, _changed(VISIT, arrived_at_ms=NOW + 4 * MINUTE, departed_at_ms=NOW + 4 * MINUTE)),
     (HEALTH, _changed(HEALTH, detail="d" * 64)),
+    (HEALTH, _changed(HEALTH, source="s" * 128, device="d" * 128, unit="u" * 16)),
+    (HEALTH, _changed(HEALTH, sample_uuid=UUID.lower())),
+    (HEALTH, _changed(HEALTH, meta={})),
+    (HEALTH, _changed(HEALTH, meta={f"k{i}": i for i in range(12)})),
+    (HEALTH, _changed(HEALTH, meta={"indoor": True, "x": -2.5, "z": "z" * 128})),
     (STATE, {"signal": "alarm", "value": "snoozed"}),
     (STATE, {"signal": "alarm", "value": "stopped"}),
     (STATE, {"signal": "power", "value": "connected"}),
@@ -155,9 +178,31 @@ VALID: list[tuple[str, dict[str, Any]]] = [
       for a in ("stationary", "walking", "running", "cycling", "automotive", "unknown")),
     *((MOTION, _changed(MOTION, confidence=c)) for c in ("low", "medium", "high")),
     *((HEALTH, _changed(HEALTH, metric=m)) for m in (
-        "steps", "distance_m", "active_kcal", "exercise_min", "sleep_min", "workout_min")),
+        "steps", "active_energy", "basal_energy", "exercise_time", "stand_time",
+        "distance_walking_running", "flights_climbed", "time_in_daylight", "workout",
+        "mindful_session")),
+    *((HEALTH, _span("sleep", 3, d))
+      for d in ("in_bed", "awake", "unspecified", "core", "deep", "rem")),
+    *((HEALTH, _span("stand_hour", 0, d)) for d in ("stood", "idle")),
+    # a measure: every metric, any sign (a temperature may be below zero), a point in time
+    *((MEASURE, _changed(MEASURE, metric=m)) for m in (
+        "heart_rate", "resting_heart_rate", "walking_heart_rate_average",
+        "heart_rate_variability_sdnn", "oxygen_saturation", "respiratory_rate",
+        "sleeping_wrist_temperature", "vo2_max", "environmental_audio_exposure",
+        "headphone_audio_exposure")),
+    (MEASURE, _changed(MEASURE, value=-0.4)),
+    (MEASURE, _changed(MEASURE, sample_uuid=UUID.lower(), source="s" * 128, unit="u" * 16)),
+    # a heartbeat series: its beats are [offset ms, preceded by a gap], and value counts them
+    (MEASURE, _changed(
+        MEASURE, metric="heartbeat_series", value=3, beats=[[0, 1], [850, 0], [1710, 0]], part=0,
+    )),
+    (MEASURE, _changed(
+        MEASURE, metric="heartbeat_series", value=4000, beats=[[i * 800, 0] for i in range(4000)],
+    )),
 ]
 NAN, INF = float("nan"), float("inf")
+
+
 INVALID: list[tuple[str, dict[str, Any]]] = [
     # an unknown key, in every type
     *((kind, {**payload, "extra": 1}) for kind, payload in GOOD.items()),
@@ -167,6 +212,34 @@ INVALID: list[tuple[str, dict[str, Any]]] = [
     (LOCATION, _without(LOCATION, "lng")),
     (MOTION, _without(MOTION, "confidence")),
     (HEALTH, _without(HEALTH, "value")),
+    (MEASURE, _without(MEASURE, "unit")),
+    (MEASURE, _without(MEASURE, "sample_uuid")),
+    # a sleep span says its stage, a stand hour its state
+    (HEALTH, _span("sleep", 3)),
+    (HEALTH, _span("sleep", 3, "light")),
+    (HEALTH, _span("sleep", 3, "REM")),
+    (HEALTH, _span("stand_hour", 0)),
+    (HEALTH, _span("stand_hour", 0, "sat")),
+    # a heartbeat series carries its beats and nothing else does; value counts them
+    (MEASURE, _changed(MEASURE, metric="heartbeat_series")),
+    (MEASURE, _changed(MEASURE, metric="heartbeat_series", value=2, beats=[[0, 1]])),
+    (MEASURE, _changed(MEASURE, metric="heartbeat_series", value=0, beats=[])),
+    (MEASURE, _changed(MEASURE, metric="heartbeat_series", value=1, beats=[[0, 2]])),
+    (MEASURE, _changed(MEASURE, metric="heartbeat_series", value=1, beats=[[-1, 0]])),
+    (MEASURE, _changed(MEASURE, metric="heartbeat_series", value=1, beats=[[0.5, 0]])),
+    (MEASURE, _changed(MEASURE, metric="heartbeat_series", value=1, beats=[[True, 0]])),
+    (MEASURE, _changed(MEASURE, metric="heartbeat_series", value=1, beats=[[0, 0, 0]])),
+    (MEASURE, _changed(MEASURE, metric="heartbeat_series", value=1, beats=[0])),
+    (MEASURE, _changed(MEASURE, metric="heartbeat_series", value=1, beats=[[0, True]])),
+    (MEASURE, _changed(
+        MEASURE, metric="heartbeat_series", value=4001, beats=[[i, 0] for i in range(4001)],
+    )),
+    (MEASURE, _changed(
+        MEASURE, metric="heartbeat_series", value=1, beats=[[0, 0]], part=1000,
+    )),
+    (MEASURE, _changed(MEASURE, metric="heartbeat_series", value=1, beats=[[0, 0]], part=-1)),
+    (MEASURE, _changed(MEASURE, beats=[[0, 0]])),  # heart_rate has no beats
+    (MEASURE, _changed(MEASURE, part=0)),
     (STATE, _without(STATE, "signal")),
     # coordinates and accuracy
     (LOCATION, _changed(LOCATION, lat=90.0001)),
@@ -187,6 +260,20 @@ INVALID: list[tuple[str, dict[str, Any]]] = [
     (HEALTH, _changed(HEALTH, value=True)),
     (HEALTH, _changed(HEALTH, value="4231")),
     (HEALTH, _changed(HEALTH, detail=3)),
+    (HEALTH, _changed(HEALTH, unit=3)),
+    (HEALTH, _changed(HEALTH, sample_uuid=3)),
+    (HEALTH, _changed(HEALTH, meta=None)),
+    (HEALTH, _changed(HEALTH, meta=[])),
+    (HEALTH, _changed(HEALTH, meta={"indoor": None})),  # null is not absent
+    (HEALTH, _changed(HEALTH, meta={"nested": {"a": 1}})),
+    (HEALTH, _changed(HEALTH, meta={"list": [1]})),
+    (HEALTH, _changed(HEALTH, meta={"Upper": 1})),  # keys are lowercase words
+    (HEALTH, _changed(HEALTH, meta={"": 1})),
+    (HEALTH, _changed(HEALTH, meta={"k" * 65: 1})),
+    (MEASURE, _changed(MEASURE, value=True)),
+    (MEASURE, _changed(MEASURE, value="64")),
+    (MEASURE, _changed(MEASURE, sample_uuid="not-a-uuid")),
+    (MEASURE, _changed(MEASURE, unit=None)),
     (VISIT, _changed(VISIT, arrived_at_ms=True)),
     (VISIT, _changed(VISIT, arrived_at_ms=float(NOW - HOUR))),
     (MOTION, _changed(MOTION, started_at_ms=str(NOW))),
@@ -197,6 +284,10 @@ INVALID: list[tuple[str, dict[str, Any]]] = [
     (LOCATION, _changed(LOCATION, accuracy_m=INF)),
     (LOCATION, _changed(LOCATION, speed_mps=NAN)),
     (HEALTH, _changed(HEALTH, value=NAN)),
+    (MEASURE, _changed(MEASURE, value=NAN)),
+    (MEASURE, _changed(MEASURE, value=-INF)),
+    (HEALTH, _changed(HEALTH, meta={"avg": NAN})),
+    (HEALTH, _changed(HEALTH, meta={"avg": INF})),
     (HEALTH, _changed(HEALTH, value=INF)),
     # a speed or total below zero (CoreLocation's -1 means "unknown": the phone leaves it out)
     (LOCATION, _changed(LOCATION, speed_mps=-1)),
@@ -207,6 +298,11 @@ INVALID: list[tuple[str, dict[str, Any]]] = [
     (MOTION, _changed(MOTION, confidence="certain")),
     (MOTION, _changed(MOTION, confidence=2)),
     (HEALTH, _changed(HEALTH, metric="calories")),
+    (HEALTH, _changed(HEALTH, metric="sleep_min")),  # the merged block is not sent any more
+    (HEALTH, _changed(HEALTH, metric="workout_min")),
+    (HEALTH, _changed(HEALTH, metric="heart_rate")),  # a measure, not a total
+    (MEASURE, _changed(MEASURE, metric="steps")),
+    (MEASURE, _changed(MEASURE, metric="sleep")),
     (STATE, {"signal": "wifi", "value": "on"}),
     (STATE, {"signal": ["focus"], "value": "on"}),
     (STATE, {"signal": "focus", "value": ["on"]}),
@@ -221,7 +317,7 @@ INVALID: list[tuple[str, dict[str, Any]]] = [
     (STATE, {"signal": "battery", "value": "57.5"}),
     (STATE, {"signal": "battery", "value": "057"}),
     (STATE, {"signal": "battery", "value": ""}),
-    (STATE, {"signal": "battery", "value": "٥٧"}),  # Arabic-Indic digits
+    (STATE, {"signal": "battery", "value": "\u0665\u0667"}),  # Arabic-Indic digits
     (STATE, {"signal": "battery", "value": 57}),
     (STATE, {"signal": "battery", "value": "connected"}),
     (STATE, {"signal": "battery", "value": "57", "detail": "Work"}),
@@ -230,17 +326,25 @@ INVALID: list[tuple[str, dict[str, Any]]] = [
     (LOCATION, _changed(LOCATION, place="p" * 201)),
     (VISIT, _changed(VISIT, place="é" * 201)),
     (HEALTH, _changed(HEALTH, detail="d" * 65)),
+    (HEALTH, _changed(HEALTH, source="s" * 129)),
+    (HEALTH, _changed(HEALTH, device="d" * 129)),
+    (HEALTH, _changed(HEALTH, unit="u" * 17)),
+    (HEALTH, _changed(HEALTH, meta={f"k{i}": i for i in range(13)})),
+    (HEALTH, _changed(HEALTH, meta={"z": "z" * 129})),
+    (MEASURE, _changed(MEASURE, source="s" * 129)),
     (STATE, {"signal": "focus", "value": "on", "detail": "d" * 65}),
     # a span that ends before it starts
     (VISIT, _changed(VISIT, departed_at_ms=GOOD[VISIT]["arrived_at_ms"] - 1)),
     (MOTION, _changed(MOTION, ended_at_ms=GOOD[MOTION]["started_at_ms"] - 1)),
     (HEALTH, _changed(HEALTH, end_ms=GOOD[HEALTH]["start_ms"] - 1)),
+    (MEASURE, _changed(MEASURE, end_ms=GOOD[MEASURE]["start_ms"] - 1)),
     # a time that is negative or later than the brain's clock by more than five minutes
     (VISIT, _changed(VISIT, arrived_at_ms=-1)),
     (VISIT, _changed(VISIT, arrived_at_ms=NOW + 6 * MINUTE, departed_at_ms=NOW + 6 * MINUTE)),
     (VISIT, _changed(VISIT, departed_at_ms=64_092_211_200_000)),  # CLVisit's "distantFuture"
     (MOTION, _changed(MOTION, ended_at_ms=NOW + 10 * MINUTE)),
     (HEALTH, _changed(HEALTH, end_ms=NOW + HOUR)),
+    (MEASURE, _changed(MEASURE, start_ms=NOW + HOUR, end_ms=NOW + HOUR)),
 ]
 
 
@@ -248,7 +352,7 @@ INVALID: list[tuple[str, dict[str, Any]]] = [
 def test_a_payload_that_is_exactly_what_the_phone_type_carries_is_valid(
     kind: str, payload: dict[str, Any],
 ) -> None:
-    """Every field and enum of the five types, at its edges."""
+    """Every field and enum of the six types, at its edges."""
     assert payload_valid(kind, payload, NOW)
 
 
@@ -260,7 +364,7 @@ def test_a_payload_the_phone_type_does_not_carry_is_refused(
     assert not payload_valid(kind, payload, NOW)
 
 
-def test_only_the_five_phone_types_have_a_check_and_the_registry_names_the_same_fields() -> None:
+def test_only_the_six_phone_types_have_a_check_and_the_registry_names_the_same_fields() -> None:
     """The check knows each registered field and no other, and a non-phone type is not valid."""
     assert set(GOOD) == PHONE_EVENT_TYPES
     for kind in PHONE_EVENT_TYPES:
@@ -305,6 +409,25 @@ def _ok(n: int) -> dict[str, Any]:
 
 def _refused(uid: str | None, code: str) -> dict[str, Any]:
     return {"type": "ack", "event_uid": uid, "ok": False, "code": code}
+
+
+def test_a_heartbeat_series_at_the_largest_size_is_stored_whole_and_a_larger_one_is_refused(
+    tmp_path: Path,
+) -> None:
+    """4000 beats of the longest offsets fit one frame's 64 KiB; more is a ``bad_event``."""
+    token = pair_device(tmp_path, "phone")
+    client, _hub, log = _brain_client(tmp_path, speaks=False)
+    beats = [[86_399_000 + i, i % 2] for i in range(4000)]
+    series = {**GOOD[MEASURE], "metric": "heartbeat_series", "value": 4000, "beats": beats,
+              "part": 0}
+    too_many = {**series, "value": 4001, "beats": [*beats, [86_400_000, 0]]}
+
+    reply = _post(client, token, [_frame(1, MEASURE, series), _frame(2, MEASURE, too_many)])
+
+    assert reply.json() == {"acks": [_ok(1), _refused(_uid(2), "bad_event")]}
+    [(uid, kind, _ts, stored, actor, _node)] = _rows(log)
+    assert (uid, kind, actor) == (_uid(1), MEASURE, "observer")
+    assert stored == series
 
 
 def test_a_mixed_batch_is_answered_one_ack_per_frame_in_order_and_stores_only_the_good_ones(

@@ -9,7 +9,7 @@ under its device token. A frame has the shape of the ``/terminal/ws`` event fram
      "ts_epoch_ms": 1700000000000, "payload": {...}}
 
 The brain appends a frame through :meth:`BrainEvents.record_phone_batch`, which holds the
-dedupe, the clock clamp and the append; this module holds what is the phone's own: the five
+dedupe, the clock clamp and the append; this module holds what is the phone's own: the six
 types, the fields and ranges of their payloads, and the shape of a frame. The registry in
 :mod:`jarvis.state.event_log` holds which fields each type requires.
 
@@ -21,6 +21,7 @@ that ends before it starts, or a time later than the brain's clock by more than 
 from __future__ import annotations
 
 import math
+import re
 from typing import TYPE_CHECKING, Final
 
 from jarvis.state.attachments import valid_id
@@ -37,9 +38,10 @@ if TYPE_CHECKING:
 PHONE_EVENTS_PATH: Final = "/inherent/device/events"
 
 STATE_EVENT: Final = "phone.state_observed"
+MEASURE_EVENT: Final = "phone.measure_observed"
 
 PHONE_EVENT_TYPES: Final = frozenset(
-    {VISIT_EVENT, LOCATION_EVENT, MOTION_EVENT, HEALTH_EVENT, STATE_EVENT},
+    {VISIT_EVENT, LOCATION_EVENT, MOTION_EVENT, HEALTH_EVENT, STATE_EVENT, MEASURE_EVENT},
 )
 """Every type a phone may write, and nothing else: no confirmation, no utterance, no tool
 result, and none of the types a terminal sends over its link."""
@@ -52,8 +54,29 @@ MAX_DETAIL_CHARS: Final = 64
 ACTIVITIES: Final = ("stationary", "walking", "running", "cycling", "automotive", "unknown")
 CONFIDENCES: Final = ("low", "medium", "high")
 METRICS: Final = (
-    "steps", "distance_m", "active_kcal", "exercise_min", "sleep_min", "workout_min",
+    # hourly totals of cumulative quantities (Health merges iPhone and Watch only in statistics)
+    "steps", "active_energy", "basal_energy", "exercise_time", "stand_time",
+    "distance_walking_running", "flights_climbed", "time_in_daylight",
+    # spans as the source recorded them: one event per Health sample
+    "sleep", "workout", "mindful_session", "stand_hour",
 )
+SLEEP_STAGES: Final = ("in_bed", "awake", "unspecified", "core", "deep", "rem")
+STAND_STATES: Final = ("stood", "idle")
+MEASURES: Final = (
+    "heart_rate", "resting_heart_rate", "walking_heart_rate_average",
+    "heart_rate_variability_sdnn", "heartbeat_series", "oxygen_saturation", "respiratory_rate",
+    "sleeping_wrist_temperature", "vo2_max", "environmental_audio_exposure",
+    "headphone_audio_exposure",
+)
+HEARTBEAT_SERIES: Final = "heartbeat_series"
+MAX_BEATS: Final = 4000
+"""Beats one event carries: [offset_ms, gap] is about ten characters, and a frame stays under
+64 KiB. A longer series is sent as several events, told apart by ``part``."""
+MAX_PARTS: Final = 1000
+MAX_UNIT_CHARS: Final = 16
+MAX_SOURCE_CHARS: Final = 128
+MAX_META_KEYS: Final = 12
+MAX_META_CHARS: Final = 128
 SIGNAL_VALUES: Final[Mapping[str, tuple[str, ...]]] = {
     "focus": ("on", "off"),
     "alarm": ("stopped", "snoozed"),
@@ -112,10 +135,52 @@ def _one_of(options: tuple[str, ...]) -> Check:
     return check
 
 
+def _finite(value: object, _now_ms: int) -> bool:
+    return _number(value) is not None
+
+
+_UUID: Final = re.compile(r"[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")
+_META_KEY: Final = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+
+def _uuid(value: object, _now_ms: int) -> bool:
+    return isinstance(value, str) and _UUID.fullmatch(value) is not None
+
+
+def _meta(value: object, _now_ms: int) -> bool:
+    """A small object of the source's own words: text, finite numbers and booleans by name."""
+    if not isinstance(value, dict) or len(value) > MAX_META_KEYS:
+        return False
+    return all(
+        isinstance(key, str) and _META_KEY.fullmatch(key) is not None
+        and (isinstance(item, bool) or _number(item) is not None
+             or (isinstance(item, str) and len(item) <= MAX_META_CHARS))
+        for key, item in value.items()
+    )
+
+
+def _beats(value: object, _now_ms: int) -> bool:
+    """``[[offset_ms, preceded_by_gap], ...]``: offsets from the series start, gap 0 or 1."""
+    return (
+        isinstance(value, list) and 0 < len(value) <= MAX_BEATS
+        and all(
+            isinstance(beat, list) and len(beat) == 2  # noqa: PLR2004 — a pair
+            and type(beat[0]) is int and beat[0] >= 0 and type(beat[1]) is int and beat[1] in (0, 1)
+            for beat in value
+        )
+    )
+
+
+def _part(value: object, _now_ms: int) -> bool:
+    return type(value) is int and 0 <= value < MAX_PARTS
+
+
 _LAT: Final = _within(-90, 90)
 _LNG: Final = _within(-180, 180)
 _PLACE: Final = _text(MAX_PLACE_CHARS)
 _DETAIL: Final = _text(MAX_DETAIL_CHARS)
+_UNIT: Final = _text(MAX_UNIT_CHARS)
+_SOURCE: Final = _text(MAX_SOURCE_CHARS)
 
 _CHECKS: Final[Mapping[str, Mapping[str, Check]]] = {
     VISIT_EVENT: {
@@ -133,7 +198,13 @@ _CHECKS: Final[Mapping[str, Mapping[str, Check]]] = {
     },
     HEALTH_EVENT: {
         "metric": _one_of(METRICS), "start_ms": _time, "end_ms": _time,
-        "value": _non_negative, "detail": _DETAIL,
+        "value": _non_negative, "detail": _DETAIL, "unit": _UNIT, "source": _SOURCE,
+        "device": _SOURCE, "sample_uuid": _uuid, "meta": _meta,
+    },
+    MEASURE_EVENT: {
+        "metric": _one_of(MEASURES), "start_ms": _time, "end_ms": _time, "value": _finite,
+        "unit": _UNIT, "sample_uuid": _uuid, "source": _SOURCE, "device": _SOURCE,
+        "meta": _meta, "beats": _beats, "part": _part,
     },
     STATE_EVENT: {
         "signal": _one_of((*SIGNAL_VALUES, BATTERY_SIGNAL)),
@@ -147,6 +218,7 @@ _WINDOWS: Final[Mapping[str, tuple[str, str]]] = {
     VISIT_EVENT: ("arrived_at_ms", "departed_at_ms"),
     MOTION_EVENT: ("started_at_ms", "ended_at_ms"),
     HEALTH_EVENT: ("start_ms", "end_ms"),
+    MEASURE_EVENT: ("start_ms", "end_ms"),
 }
 """The (start, end) fields of the types that cover a span; the end may not precede the start."""
 
@@ -169,13 +241,31 @@ def payload_valid(event_type: str, payload: Mapping[str, object], now_ms: int) -
         start, end = payload[window[0]], payload[window[1]]
         if not (isinstance(start, int) and isinstance(end, int) and end >= start):
             return False
-    if event_type == STATE_EVENT:
-        return _state_valid(str(payload["signal"]), payload["value"], payload.get("detail"))
+    rule = _RULES.get(event_type)
+    return rule is None or rule(payload)
+
+
+def _health_valid(payload: Mapping[str, object]) -> bool:
+    """A sleep span names its stage and a stand hour its state; the rest need no detail."""
+    metric, detail = payload["metric"], payload.get("detail")
+    if metric == "sleep":
+        return detail in SLEEP_STAGES
+    if metric == "stand_hour":
+        return detail in STAND_STATES
     return True
 
 
-def _state_valid(signal: str, value: object, detail: object) -> bool:
+def _measure_valid(payload: Mapping[str, object]) -> bool:
+    """A heartbeat series carries its beats (``value`` counts them); no other measure does."""
+    beats = payload.get("beats")
+    if payload["metric"] != HEARTBEAT_SERIES:
+        return beats is None and "part" not in payload
+    return isinstance(beats, list) and payload["value"] == len(beats)
+
+
+def _state_valid(payload: Mapping[str, object]) -> bool:
     """Whether ``value`` (and ``detail``) is what ``signal`` carries."""
+    signal, value, detail = str(payload["signal"]), payload["value"], payload.get("detail")
     if signal == BATTERY_SIGNAL:
         return (
             isinstance(value, str)
@@ -186,6 +276,12 @@ def _state_valid(signal: str, value: object, detail: object) -> bool:
             and (detail is None or detail in BATTERY_DETAILS)
         )
     return value in SIGNAL_VALUES[signal]
+
+
+_RULES: Final[Mapping[str, Callable[[Mapping[str, object]], bool]]] = {
+    HEALTH_EVENT: _health_valid, MEASURE_EVENT: _measure_valid, STATE_EVENT: _state_valid,
+}
+"""What a type's fields must also satisfy together, beyond each field's own check."""
 
 
 def frame_shaped(frame: Mapping[str, object]) -> bool:

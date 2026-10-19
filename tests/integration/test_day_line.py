@@ -123,11 +123,14 @@ def motion(
     return _phone(MOTION, uid, payload, None)
 
 
-def health(
-    uid: str, start: float, end: float, value: float, metric: str = "sleep_min",
+def health(  # noqa: PLR0913 — a row's every part, each defaulted
+    uid: str, start: float, end: float, value: float, metric: str = "sleep",
+    stage: str = "core",
 ) -> Row:
-    """A ``phone.health_observed`` row; sleep unless said otherwise."""
-    payload = {"metric": metric, "start_ms": start, "end_ms": end, "value": value}
+    """A ``phone.health_observed`` row; a span of sleep in ``stage`` unless said otherwise."""
+    payload: dict[str, Any] = {"metric": metric, "start_ms": start, "end_ms": end, "value": value}
+    if metric == "sleep":
+        payload["detail"] = stage
     return _phone(HEALTH, uid, payload, None)
 
 
@@ -401,15 +404,27 @@ CASES: list[Case] = [
         [
             health("s1", -50, 40, 90), health("s2", 45, 180, 135), health("s3", 185, 390, 205),
             health("s4", 410, 430, 20), health("s5", 480, 510, 30),
-            health("s6", 540, 560, 15),  # exactly thirty minutes after s5
+            health("s6", 540, 560, 2, stage="deep"),  # exactly thirty minutes after s5
             health("steps", 100, 200, 3000, "steps"),
         ],
-        [slept("s1", -50, 430, "done", 450), slept("s5", 480, 560, "done", 45)],
+        [slept("s1", -50, 430, "done", 450), slept("s5", 480, 560, "done", 50)],
     ),
     Case(
-        "overlapping sleep spans are one block and their values add up",
-        [health("x1", 600, 700, 100), health("x2", 650, 660, 10.5), health("x3", 1000, 1100, 7)],
-        [slept("x1", 600, 700, "done", 110.5), slept("x3", 1000, 1100, "next", 7)],
+        "overlapping sleep spans are one block and the time two sources both recorded counts once",
+        [
+            health("x1", 600, 700, 1, stage="unspecified"), health("x2", 650, 660, 4, stage="rem"),
+            health("x3", 680, 720, 4, stage="core"), health("x4", 1000, 1100, 4),
+        ],
+        [slept("x1", 600, 720, "done", 120), slept("x4", 1000, 1100, "next", 100)],
+    ),
+    Case(
+        "in bed and awake are not asleep: they do not count, and the stages around them do",
+        [
+            health("b1", 580, 780, 0, stage="in_bed"), health("b2", 600, 640, 3, stage="core"),
+            health("b3", 640, 650, 2, stage="awake"), health("b4", 650, 700, 4, stage="rem"),
+            health("b5", 900, 960, 2, stage="awake"),
+        ],
+        [slept("b2", 600, 700, "done", 90)],
     ),
     Case(
         "a sleep block in progress is now",
@@ -1261,7 +1276,7 @@ def test_ids_are_the_same_on_every_call_and_when_the_log_grows(tmp_path: Path) -
     assert (by_id["m1"]["start_ms"], by_id["m1"]["end_ms"]) == (
         _ms(start_ms, 396), _ms(start_ms, 410),
     )
-    assert (by_id["s1"]["end_ms"], by_id["s1"]["minutes"]) == (_ms(start_ms, 300), 180)
+    assert (by_id["s1"]["end_ms"], by_id["s1"]["minutes"]) == (_ms(start_ms, 300), 190)
 
 
 # --- a source that cannot be read ----------------------------------------------------------------
@@ -1500,10 +1515,10 @@ def test_a_phones_batch_posted_to_the_brain_comes_back_as_the_day(tmp_path: Path
                           "ended_at_ms": 615}, 616),
         frame(4, MOTION, {"activity": "walking", "confidence": "high", "started_at_ms": 616,
                           "ended_at_ms": 630}, 631),
-        frame(5, HEALTH, {"metric": "sleep_min", "start_ms": -60, "end_ms": 200, "value": 200},
-              201),
-        frame(6, HEALTH, {"metric": "sleep_min", "start_ms": 205, "end_ms": 400, "value": 190},
-              401),
+        frame(5, HEALTH, {"metric": "sleep", "start_ms": -60, "end_ms": 200, "value": 3,
+                          "detail": "core"}, 201),
+        frame(6, HEALTH, {"metric": "sleep", "start_ms": 205, "end_ms": 400, "value": 4,
+                          "detail": "deep"}, 401),
     ]
     posted = client.post(PHONE_EVENTS_PATH, json={"events": frames}, headers=_bearer(token))
     assert [ack["ok"] for ack in posted.json()["acks"]] == [True] * 6
@@ -1516,7 +1531,7 @@ def test_a_phones_batch_posted_to_the_brain_comes_back_as_the_day(tmp_path: Path
         ("stay", f"{1:032x}", _ms(start_ms, 540), _ms(start_ms, 600), "done"),
         ("move", f"{3:032x}", _ms(start_ms, 600), _ms(start_ms, 630), "done"),
     ]
-    assert body["items"][0]["minutes"] == 390
+    assert body["items"][0]["minutes"] == 455  # 260 + 195 asleep, the five between not counted
     assert body["items"][1]["place"] == "Cafe"
     assert (body["start_ms"], body["end_ms"]) == (start_ms, end_ms)
 

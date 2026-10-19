@@ -38,6 +38,8 @@ MOVE_MIN_MS: Final = 3 * _MINUTE_MS
 """A merged move shorter than this is dropped; one with no end yet is measured to now."""
 SLEEP_MERGE_GAP_MS: Final = 30 * _MINUTE_MS
 """Sleep spans that overlap or are this close are one block."""
+ASLEEP_STAGES: Final = frozenset({"unspecified", "core", "deep", "rem"})
+"""The ``detail`` of a ``sleep`` span that counts as asleep (the others are in bed and awake)."""
 
 
 class PhoneRows(NamedTuple):
@@ -185,28 +187,37 @@ def moves(events: list[Event], held: list[Span], now_ms: int) -> list[Span]:
 
 
 def sleeps(events: Iterable[Event]) -> list[Span]:
-    """Sleep as blocks: spans that overlap or sit within :data:`SLEEP_MERGE_GAP_MS` are one."""
+    """Sleep as blocks, from the stages the source recorded (ADR 0293).
+
+    Only the asleep stages count (``unspecified``, ``core``, ``deep``, ``rem``); in bed and awake
+    do not. Spans from every source are joined where they overlap, so time two sources both
+    recorded counts once; the joined spans within :data:`SLEEP_MERGE_GAP_MS` of each other are one
+    block, whose ``minutes`` are the time asleep in it (the gaps are not counted).
+    """
     spans = sorted(
-        (int(event.payload["start_ms"]), int(event.payload["end_ms"]), place, event)
+        (int(event.payload["start_ms"]), int(event.payload["end_ms"]), (place, event.event_uid))
         for place, event in enumerate(
-            e for e in events if e.payload["metric"] == "sleep_min"
+            e for e in events
+            if e.payload["metric"] == "sleep" and e.payload.get("detail") in ASLEEP_STAGES
         )
     )
-    blocks: list[Span] = []
-    for start, end, place, event in spans:
-        origin = (place, event.event_uid)
-        last = blocks[-1] if blocks else None
-        if last is not None and last.end is not None and start <= last.end + SLEEP_MERGE_GAP_MS:
-            blocks[-1] = replace(
-                last,
-                origin=min(last.origin, origin),
-                end=max(last.end, end),
-                fields={"minutes": last.fields["minutes"] + event.payload["value"]},
-            )
+    joined: list[tuple[int, int, tuple[int, str]]] = []
+    for start, end, origin in spans:
+        if joined and start <= joined[-1][1]:
+            first, last, held = joined[-1]
+            joined[-1] = (first, max(last, end), min(held, origin))
         else:
-            blocks.append(Span(origin, "sleep", start, end, {"minutes": event.payload["value"]}))
+            joined.append((start, end, origin))
+    blocks: list[tuple[int, int, int, tuple[int, str]]] = []  # start, end, asleep ms, origin
+    for start, end, origin in joined:
+        if blocks and start <= blocks[-1][1] + SLEEP_MERGE_GAP_MS:
+            first, _last, asleep, held = blocks[-1]
+            blocks[-1] = (first, end, asleep + end - start, min(held, origin))
+        else:
+            blocks.append((start, end, end - start, origin))
     return [
-        replace(block, fields={"minutes": _tidy(block.fields["minutes"])}) for block in blocks
+        Span(origin, "sleep", start, end, {"minutes": _tidy(asleep / _MINUTE_MS)})
+        for start, end, asleep, origin in blocks
     ]
 
 

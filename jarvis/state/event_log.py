@@ -1106,12 +1106,23 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("ended_at_ms",),
         schema_version=1,
     ),
+    # ADR 0293: v2 of `phone.health_observed` adds the source's own record to a span or a total
+    # (unit, source, device, sample_uuid, meta); v1 rows (steps and workouts without them) stay
+    # valid. `phone.measure_observed` holds the dense measurements of the body.
     EventTypeSchema(
         event_type="phone.health_observed",
         owner_layer="L5",
         actor="observer",
         required_payload=("metric", "start_ms", "end_ms", "value"),
-        optional_payload=("detail",),
+        optional_payload=("detail", "unit", "source", "device", "sample_uuid", "meta"),
+        schema_version=2,
+    ),
+    EventTypeSchema(
+        event_type="phone.measure_observed",
+        owner_layer="L5",
+        actor="observer",
+        required_payload=("metric", "start_ms", "end_ms", "value", "unit", "sample_uuid"),
+        optional_payload=("source", "device", "meta", "beats", "part"),
         schema_version=1,
     ),
     EventTypeSchema(

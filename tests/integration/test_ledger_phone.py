@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     import pytest
 
 ORIGIN = int(datetime(2026, 10, 4, tzinfo=ZONE).timestamp() * 1000)  # Sunday 00:00
-STEPS, WORKOUT = "steps", "workout_min"
+STEPS, WORKOUT = "steps", "workout"
 
 
 def at(day: int, hour: int, minute: int = 0) -> float:
@@ -55,7 +55,8 @@ def phone_rows() -> list[Row]:
     The compact stretch (more than seven days back) has one day, Wed 09-30.
     """
     return [
-        # Sunday night to Monday morning, in three stages with awake gaps: 390 minutes asleep.
+        # Sunday night to Monday morning, in three stages with awake gaps: 390 minutes asleep (a
+        # span's `value` is not read; the minutes asleep are the length of the spans).
         health("sl1", at(4, 23, 30), at(5, 1), 90),
         health("sl2", at(5, 1, 10), at(5, 3), 110),
         health("sl3", at(5, 3, 20), at(5, 6, 30), 190),
@@ -64,7 +65,7 @@ def phone_rows() -> list[Row]:
         health("st1b", at(5, 8), at(5, 9), 1250, STEPS),
         health("st2", at(5, 12), at(5, 13), 3000.5, STEPS),
         health("st3", at(5, 18), at(5, 19), 2219.5, STEPS),
-        health("wo1", at(5, 17), at(5, 17, 45), 45, WORKOUT),
+        health("wo1", at(5, 17), at(5, 17, 45), 45 * 60, WORKOUT),
         # Monday places: Home before dawn (arrived Sunday), the library, a short coffee, an
         # unnamed stay, Home again until 23:00. Arrivals are reported first, then with departures.
         visit("v0", at(4, 22), at(5, 8, 10), "Home"),
@@ -74,15 +75,15 @@ def phone_rows() -> list[Row]:
         visit("v3", at(5, 13), at(5, 14)),
         visit("v4", at(5, 14, 30), at(5, 23), "Home"),
         # Tuesday night to Wednesday morning: the sleep belongs to Wednesday.
-        health("sl4", at(6, 23, 45), at(7, 3), 200),
-        health("sl5", at(7, 3, 10), at(7, 7, 15), 230),
+        health("sl4", at(6, 23, 45), at(7, 3), 195),
+        health("sl5", at(7, 3, 10), at(7, 7, 15), 245),
         # Wednesday steps (the last window runs past midnight: half is Wednesday's) and places.
         health("st4", at(7, 9), at(7, 10), 6000, STEPS),
         health("st5", at(7, 23, 30), at(8, 0, 30), 1000, STEPS),
         visit("v5", at(7, 18), at(7, 19), "Gym"),
         visit("v6", at(7, 19, 30), None, "Home"),  # still there when the day ends
         # Wednesday night to Thursday morning, and Thursday so far.
-        health("sl6", at(7, 23, 50), at(8, 7, 20), 440),
+        health("sl6", at(7, 23, 50), at(8, 7, 20), 450),
         health("st6", at(8, 7, 30), at(8, 8, 30), 800, STEPS),
         health("st7", at(8, 10), at(8, 11), 1500, STEPS),
         # The compact stretch (day 0 of October is Wednesday 09-30): woke at 06:00, 420 minutes.
@@ -127,7 +128,7 @@ def test_recent_days_carry_the_phone_lines_exactly(tmp_path: Path) -> None:
     # Wednesday: the sleep from Tuesday 23:45 to 07:15 is his Wednesday; half of the window
     # that spans midnight is his; the open stay is cut at the midnight.
     wednesday = day_block(text, "2026-10-07 Wed")
-    assert "  Health (phone): sleep 7h10m (23:45 the evening before to 07:15), steps 6500" in (
+    assert "  Health (phone): sleep 7h20m (23:45 the evening before to 07:15), steps 6500" in (
         wednesday
     )
     assert "  Places (phone): Home 4h30m, Gym 1h00m" in wednesday
@@ -145,7 +146,7 @@ def test_today_so_far_carries_the_phone_up_to_now(tmp_path: Path) -> None:
     """Last night's sleep is today's; steps split at midnight; the open stay runs to now."""
     today = today_text(sources(tmp_path), NOW)
     assert (
-        "  Health (phone): sleep 7h20m (23:50 the evening before to 07:20), steps 2800" in today
+        "  Health (phone): sleep 7h30m (23:50 the evening before to 07:20), steps 2800" in today
     )
     # Home since Wednesday 19:30 is open: today it is 00:00 to 15:00.
     assert "  Places (phone): Home 15h00m" in today
