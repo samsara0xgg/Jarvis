@@ -16,7 +16,8 @@ import { answerRequest, type Agent, type ShownAgent } from './agents';
 import { answerStartrail, markStartrail, useStartrail } from './startrail';
 import { CardRate, DigestCard, JobsDigestCard, MailNotice, NoticeCard, RateRow, SettingsCard, cardTell, ended, noticeCue, useNotices, type Glow, type MomentHold } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
-import { Notch, type Kind as MarkGroup, type NotchNote } from './Notch';
+import { Notch, isWing, type Kind as MarkGroup, type NotchNote } from './Notch';
+import type { DayReply } from './dayView';
 import { TripCard, tripLink, useTripNote } from './TripCards';
 import { fitWindow } from './fitWindow';
 import { NightCard, isNightLook, markNightSeen, morningOf, seenNight, type NightAction, type NightSession, type NightState } from './NightCard';
@@ -65,8 +66,8 @@ function loadWardrobe(): Look {
     const value = JSON.parse(localStorage.getItem(WARDROBE) ?? '{}');
     return { skin: isSkin(value.skin) ? value.skin : 'glass', auto: value.auto !== false, home: value.home === 'eyes' ? 'eyes' : 'dark',
       homeFinish: value.homeFinish === 'original' ? 'original' : 'refined', marks: isMarkLook(value.marks) ? value.marks : 'dot',
-      night: isNightLook(value.night) ? value.night : 'list' };
-  } catch { return { skin: 'glass', auto: true, home: 'dark', homeFinish: 'refined', marks: 'dot', night: 'list' }; }
+      night: isNightLook(value.night) ? value.night : 'list', wing: isWing(value.wing) ? value.wing : 'timeline' };
+  } catch { return { skin: 'glass', auto: true, home: 'dark', homeFinish: 'refined', marks: 'dot', night: 'list', wing: 'timeline' }; }
 }
 // Ghostty's title for a session is its name, sometimes behind a status mark; the board folds long names with "…".
 const bare = (text: string) => text.replace(/\s+/g, ' ').replace(/^[^\p{L}\p{N}]+/u, '').trim();
@@ -267,6 +268,9 @@ export function Companion() {
   const answerSecs = thoughts.at(-1)?.turn === s.turnId ? thoughts.at(-1)!.secs : 0;
   const [pressed, setPressed] = useState(false);
   const [wardrobe, setWardrobe] = useState(loadWardrobe);
+  // ADR 0296: right of the notch is the stars or the day's timeline. Today is read for the wing's line; the pane open below the island holds the notices back.
+  const day = useRoute<DayReply>(port, '/inherent/day', wardrobe.wing === 'timeline' && !detached, 30_000);
+  const [timelineOpen, setTimelineOpen] = useState(false);
   // A skin change brings her out of the island for a moment.
   const [outing, setOuting] = useState(false);
   const [menu, setMenu] = useState<Point | null>(null), [settingsFocus, setSettingsFocus] = useState(0), [jobsFocus, setJobsFocus] = useState(0);
@@ -334,7 +338,7 @@ export function Companion() {
   // ADR 0155: the daemon says whether the output is private (headphones); on speakers nothing unprompted sounds.
   // Unknown output counts as not private until the first poll answers (a 404 there means the feature is off).
   const audioPrivate = useRef<boolean | undefined>(port && !detached ? false : undefined);
-  const notices = useNotices({ port, poll: !detached, agents, moment: momentHold, onMoment: setMomentHold, quiet: s.quiet, inClaude, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu, watched, viewing, agentsFront, audio: audioPrivate,
+  const notices = useNotices({ port, poll: !detached, agents, moment: momentHold, onMoment: setMomentHold, quiet: s.quiet, inClaude, hold: agentsFront || busy || dashboard || remoteOpen || detached || moving || carded || nightShown || !!nightRun || keysOn || !!menu || timelineOpen, watched, viewing, agentsFront, audio: audioPrivate,
     cue: (name, gain, always) => { const on = preferences.feedbackEnabled && !s.soundMuted && (always || s.quiet === 'off' && audioPrivate.current !== false); if (on) noticeCue(name, preferences.feedbackVolume, gain); return on; },
     answer: (req, body, id) => agents.find(a => a.id === id)?.host ? answerStartrail(id, req, body) : port ? answerRequest(port, req.id, body) : Promise.resolve(true), mark: markStartrail });
   const notice = notices.current;
@@ -350,9 +354,9 @@ export function Companion() {
   };
   useEffect(() => window.jarvis?.onMouseDown?.(() => { away.current(); outside.current(); }), []);
   // ADR 0153: at dnd the marks beside the notch stay as they were when it began; nothing outside shows there. A glow is one of them (ADR 0187).
-  const frozen = useRef<{ agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; glows: Glow[] } | null>(null);
+  const frozen = useRef<{ agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; glows: Glow[]; day: DayReply | null } | null>(null);
   if (s.quiet !== 'dnd') frozen.current = null;
-  else frozen.current ??= { agents: agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents, unread: new Set(notices.unread), parked: new Map(notices.parked), archived: new Set(notices.archived), glows: notices.glows };
+  else frozen.current ??= { agents: agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents, unread: new Set(notices.unread), parked: new Map(notices.parked), archived: new Set(notices.archived), glows: notices.glows, day: day.data };
   // Going to a session reads it: Startrail's window on it, its Codex thread, or its Ghostty terminal (a new tab attaches
   // a background one).
   const jump = (a: Agent) => {
@@ -909,8 +913,8 @@ export function Companion() {
         {dashboardContent}
       </DuskDashboard>
       <DockingDrop near={docking} width={geo.width} top={placement.topInset} center={geo.center}/>
-      <Notch look={wardrobe.marks} agents={frozen.current?.agents ?? (agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents)} unread={frozen.current?.unread ?? notices.unread} parked={frozen.current?.parked ?? notices.parked} archived={frozen.current?.archived ?? notices.archived} cursor={cursor} quiet={agentsFront || dashboard || moving} aside={dashboard ? { hover: setMarkHover, open: group => setAgentsFocus({ group, key: Date.now() }) } : undefined} edge={dashboardJoined ? geo.center + PANEL / 2 : null}
-        pin={{ item: notices.departure, open: busCards.open }} glow={{ items: frozen.current?.glows ?? notices.glows, open: g => { if (g.card) notices.focus(g.id); else { showJobs(); notices.leaveGlow(g.id, true); } }, clear: g => { if (g.card) { notices.focus(g.id); notices.dismiss(); } else notices.leaveGlow(g.id, false); } }} onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
+      <Notch look={wardrobe.marks} wing={wardrobe.wing} agents={frozen.current?.agents ?? (agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents)} unread={frozen.current?.unread ?? notices.unread} parked={frozen.current?.parked ?? notices.parked} archived={frozen.current?.archived ?? notices.archived} cursor={cursor} quiet={agentsFront || dashboard || moving} aside={dashboard ? { hover: setMarkHover, open: group => setAgentsFocus({ group, key: Date.now() }) } : undefined} edge={dashboardJoined ? geo.center + PANEL / 2 : null}
+        pin={{ item: notices.departure, open: busCards.open }} timeline={{ day: frozen.current ? { ...day, data: frozen.current.day } : day, openBy: companion.openBy, onOpenChange: open => { setTimelineOpen(open); if (open) fold('the timeline'); } }} glow={{ items: frozen.current?.glows ?? notices.glows, open: g => { if (g.card) notices.focus(g.id); else { showJobs(); notices.leaveGlow(g.id, true); } }, clear: g => { if (g.card) { notices.focus(g.id); notices.dismiss(); } else notices.leaveGlow(g.id, false); } }} onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
         act={{ jump, answer: notices.focus, read: ids => { notices.acted(ids); notices.read(ids); }, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
         port={port} keys={keysPress} onViewing={setViewing} onJoinedChange={setNotchJoined} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}

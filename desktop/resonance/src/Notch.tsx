@@ -8,10 +8,13 @@ import { ended, NoticeFlightContext, openTip, type Glow } from './Notices';
 import { useT, type L } from './companionSettings';
 import { readStartrail } from './startrail';
 import { spring, step } from './starCore';
-import { HOVER_DWELL_MS, HOVER_EXIT_MS, HOVER_SPEED, PointerIntent } from './pointerIntent';
+import { DASHBOARD_DWELL_MS, DASHBOARD_EXIT_MS, HOVER_DWELL_MS, HOVER_EXIT_MS, HOVER_SPEED, PointerIntent } from './pointerIntent';
 import { MOTION, SPRINGS } from './motion';
 import { skyline, type IslandRect as Rect } from './islandShape';
 import { pinLabel, pinTrip, pinWidest, type Departure } from './pin';
+import { DayTimeline } from './DayTimeline';
+import { wingText, type DayReply } from './dayView';
+import type { Route } from './homeData';
 
 // Beside the notch, after the notch lab (ADR 0069, 0070). Right of the camera, one mark per group with its count:
 // your turn (the beacon), working, finished, parked (the moon). Only working moves; the beacon sends out its rings
@@ -25,6 +28,10 @@ import { pinLabel, pinTrip, pinWidest, type Departure } from './pin';
 // A pinned bus trip (ADR 0200) is a pill after the marks: `🚌 28 · 12 分` counts down to when he must leave, amber from 5 min and
 // 该走了 until the bus goes; resting on it shows the whole trip, a click opens its card (ADR 0203). It never opens the panel,
 // and where the Dashboard leaves no room for it beside the marks it steps aside before they do.
+// The wing is a module (ADR 0296): the stars above, or the day's timeline. The timeline wing is the turn mark alone (it still
+// opens the sessions panel on a click), then one line, the stay he is in and how long (`家 · 3:12`) or the way he is going
+// (`27 路 · 12 分`), then the pinned trip. Resting on the line, or a click on it, drops the day from the island as one more
+// pane of the drop; it summons and dismisses as the Dashboard does, and the two never hang together.
 type Point = { x: number; y: number };
 export type Kind = 'turn' | 'work' | 'done' | 'moon';
 // While the Dashboard hangs below, the wing opens nothing of its own: the pointer on a mark tells the Dashboard which group,
@@ -42,6 +49,12 @@ export type NotchAct = {
 export type NotchGlow = { items: Glow[]; open: (g: Glow) => void; clear: (g: Glow) => void };
 // The pinned bus trip, and what the pill's ✕ does.
 export type NotchPin = { item: Departure | null; open: (d: Departure) => void };
+// What sits right of the notch: the stars, or the day's timeline (the default).
+export type Wing = 'marks' | 'timeline';
+export const isWing = (value: unknown): value is Wing => value === 'marks' || value === 'timeline';
+// With the timeline on the wing: today as the daemon serves it, the companion's way of opening the Dashboard (a rest on the line
+// opens nothing when it is `click`), and what the pane opening or folding tells her (the Dashboard folds; notices wait).
+export type NotchTimeline = { day: Route<DayReply>; openBy: 'both' | 'click' | 'hover'; onOpenChange: (open: boolean) => void };
 // A pop names sessions; a card is a needs-you card the companion builds, for session `id` when it has one.
 // A pop carries its 合适吗 row in `rate` (ADR 0160).
 export type NotchNote = { key: string; id?: string; pop?: string[]; card?: ReactNode; rate?: ReactNode; onClose: () => void };
@@ -50,6 +63,10 @@ export type NotchNote = { key: string; id?: string; pop?: string[]; card?: React
 const TURN_ORDER: AgentState[] = ['wait', 'err', 'done'];
 const PAD = 4, DONE_FADE_MS = 10 * 60_000, GCELL = 26, GCX = 6, WING_W = 112, DOT_WING_W = 64, DOT_R = 2.6, DOT_COUNT_X = 7.5, DOT_GAP = 5, DIGIT_W = 6.1, POP_W = 360, ALL_W = 440, PAGE_W = 560, CARD_W = 440, DRAG_OUT = 30, DWELL_MS = 1500, PIN_H = 16, PIN_PAD = 6, PIN_GAP = 5, PIN_TIP_MS = 250;
 const PIN_FONT = '600 10px "JetBrains Mono", Menlo, monospace';
+// The timeline's line: the place or the way in the sans face, how long in the mono face, dimmer. At most SEG_MAX wide; the place gives way.
+const TL_W = 520, SEG_MAX = 112, TL_GAP = 7, SEP = ' · ';
+const SEG_FONT = '600 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif', SEG_MONO = '600 10.5px "JetBrains Mono", Menlo, monospace';
+const KINDS: readonly Kind[] = ['turn', 'work', 'done', 'moon'];
 const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const countPulse = (progress: number) => reduced.matches ? 1 : 1 + .45 * Math.sin(Math.PI * progress);
@@ -64,6 +81,20 @@ const pinWidth = (d: Departure, say: T) => {
   const ctx = measuring ??= document.createElement('canvas').getContext('2d')!;
   ctx.font = PIN_FONT;
   return Math.ceil(Math.max(...pinWidest(d, say).map(w => ctx.measureText(w).width))) + 2 * PIN_PAD;
+};
+const textWidth = (font: string, text: string) => { const ctx = measuring ??= document.createElement('canvas').getContext('2d')!; ctx.font = font; return ctx.measureText(text).width; };
+// The place, cut with … to `room` px.
+const fitText = (text: string, room: number) => {
+  if (textWidth(SEG_FONT, text) <= room) return text;
+  let cut = text;
+  while (cut.length > 1 && textWidth(SEG_FONT, `${cut}…`) > room) cut = cut.slice(0, -1);
+  return `${cut}…`;
+};
+// The timeline line's width is that of its widest words (every digit as wide as an 8), so it does not shift when the minutes change.
+const segWidth = (head: string, tail: string, max: number) => {
+  const sep = tail ? Math.ceil(textWidth(SEG_FONT, SEP)) : 0, tw = tail ? Math.ceil(textWidth(SEG_MONO, tail.replace(/\d/g, '8'))) : 0;
+  const room = Math.max(24, max - sep - tw), hw = Math.ceil(Math.min(room, textWidth(SEG_FONT, head)));
+  return { room, sep, tw, w: hw + sep + tw };
 };
 
 // ---------- what the panels show ----------
@@ -229,13 +260,13 @@ function Pop({ agents, look, act, rate, onClose }: { agents: Agent[]; look: Mark
     <div className="u-list">{agents.map(a => <PopRow key={a.id} a={a} look={look} act={act} tag={a.state === 'err' && !all ? <em> {t(['stopped', '出错停了'])}</em> : null}/>)}</div>{rate}</div>;
 }
 
-export function Notch({ look, agents, unread, parked, archived, geo, cursor, note, quiet, edge, aside, act, glow, pin, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
-  look: MarkLook; agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; geo: NotchGeo;
-  cursor: RefObject<Point>; note: NotchNote | null; quiet: boolean; edge: number | null; aside?: NotchAside; act: NotchAct; glow?: NotchGlow; pin?: NotchPin; onNoteHover: (on: boolean) => void;
+export function Notch({ look, wing = 'marks', agents, unread, parked, archived, geo, cursor, note, quiet, edge, aside, act, glow, pin, timeline, onNoteHover, port, keys, onKeys, onViewing, onJoinedChange }: {
+  look: MarkLook; wing?: Wing; agents: Agent[]; unread: ReadonlySet<string>; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; geo: NotchGeo;
+  cursor: RefObject<Point>; note: NotchNote | null; quiet: boolean; edge: number | null; aside?: NotchAside; act: NotchAct; glow?: NotchGlow; pin?: NotchPin; timeline?: NotchTimeline; onNoteHover: (on: boolean) => void;
   port: string | null; keys: number; onKeys: (on: boolean) => void; onViewing: (id: string | null) => void;
   onJoinedChange?: (joined: boolean) => void;
 }) {
-  const t = useT(), out = (a: Agent) => !parked.has(a.id);
+  const t = useT(), out = (a: Agent) => !parked.has(a.id), tlMode = wing === 'timeline' && !!timeline;
   const turn = agents.filter(a => out(a) && (a.state === 'wait' || ended(a.state) && unread.has(a.id))).sort((a, b) => TURN_ORDER.indexOf(a.state) - TURN_ORDER.indexOf(b.state));
   const work = agents.filter(a => out(a) && working(a.state));
   const fin = agents.filter(a => out(a) && ended(a.state) && !unread.has(a.id) && !archived.has(a.id));
@@ -244,7 +275,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
   const secs = ([{ key: 'turn', label: t(['Your turn', '轮到你']), ts: turn, gs: glows }, { key: 'work', label: t(['Working', '在干活']), ts: work }, { key: 'done', label: t(['Finished', '做完了']), ts: fin },
     { key: 'moon', label: t(['Parked', '先放着']), ts: moon }] as Sec[]).filter(s => s.ts.length || s.gs?.length);
   const order = secs.flatMap(s => s.ts.map(a => a.id));
-  const [open, setOpen] = useState(false), [hot, setHot] = useState(''), [dragging, setDragging] = useState(false);
+  const [open, setOpen] = useState(false), [hot, setHot] = useState(''), [dragging, setDragging] = useState(false), [tlOpen, setTlOpen] = useState(false), [tlKey, setTlKey] = useState(0);
   const [kb, setKb] = useState<Keys | null>(null), [kbCard, setKbCard] = useState(''), [drafts] = useState(() => new Map<string, string>()), [, redraw] = useState(0);
   // The row under the keys can leave (parked, archived, answered elsewhere): the keys stay at the same height.
   if (kb && kb.view === 'list' && order.length && !order.includes(kb.id)) { kb.i = Math.min(kb.i, order.length - 1); kb.id = order[kb.i]; }
@@ -263,14 +294,40 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     flights: [] as { id: string; to: Kind; st: AgentState; x: number; y: number; at: number }[],
     bumpAt: { turn: -1e9, work: -1e9, done: -1e9, moon: -1e9 }, parkedIds: new Set<string>(),
     pin: null as { x0: number; x1: number } | null, pinOn: -1e9, pinId: '', pinLabel: '',
+    // The timeline wing's line (where it is drawn, and how its words are cut), the wing the layout was made for, and the day's pane:
+    // `closedHere` is the day just closed under a pointer still on the line (a rest does not open it again), `leftAt` since when the pointer has been away.
+    seg: null as { x0: number; x1: number; room: number } | null, laid: '' as '' | Wing,
+    tl: { open: false, pinned: false, closedHere: false, enterAt: -1, leftAt: -1, press: false },
     popOrigins: new Map<string, Point>(), intent: new PointerIntent(), resolvedNote: '', workLandingUntil: 0, joined: false, asideKey: null as Kind | null,
   }).current;
-  const L = useRef({ look, turn, work, fin, moon, glows, pin, geo, note, quiet, edge, aside, onNoteHover, onJoinedChange, held: false, pageW: false, say: t });
-  L.current = { look, turn, work, fin, moon, glows, pin, geo, note, quiet, edge, aside, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged, say: t };
+  const mode: Wing = tlMode ? 'timeline' : 'marks';
+  const L = useRef({ look, turn, work, fin, moon, glows, pin, geo, note, quiet, edge, aside, timeline, mode, onNoteHover, onJoinedChange, held: false, pageW: false, say: t });
+  L.current = { look, turn, work, fin, moon, glows, pin, geo, note, quiet, edge, aside, timeline, mode, onNoteHover, onJoinedChange, held: !!kb && !kbCard, pageW: !!paged, say: t };
   const members = (key: Kind) => ({ turn: L.current.turn, work: L.current.work, done: L.current.fin, moon: L.current.moon })[key];
   // What a group's mark counts: its sessions, and for the turn its glows too.
   const size = (key: Kind) => members(key).length + (key === 'turn' ? L.current.glows.length : 0);
-  const setPanel = (on: boolean) => { if (on === st.open) return; st.open = on; st.dirty = true; setOpen(on); };
+  const setPanel = (on: boolean) => { if (on === st.open) return; if (on) closeTl(); st.open = on; st.dirty = true; setOpen(on); };
+  // The day's pane (ADR 0296) is the drop pane's other content: the sessions or the day hang from the island, never both, and it tells
+  // her when it opens or folds (the Dashboard folds, notices wait).
+  const closeTl = () => {
+    const T = st.tl;
+    if (!T.open) return;
+    T.open = false; T.pinned = false; T.closedHere = true; st.dirty = true; setTlOpen(false); L.current.timeline?.onOpenChange(false);
+  };
+  const openTl = (pinned: boolean) => {
+    const T = st.tl;
+    setPanel(false);
+    if (!T.open) { T.open = true; T.leftAt = -1; setTlKey(k => k + 1); setTlOpen(true); L.current.timeline?.onOpenChange(true); }
+    T.pinned = pinned; st.dirty = true;
+  };
+  // Where a point on the timeline wing is: the pinned trip, the turn mark (and the edge before it), or the line.
+  const zoneAt = (x: number) => st.pin && x >= st.pin.x0 && x < st.pin.x1 ? 'pin' : st.boxes[0] && x < st.boxes[0].x1 ? 'turn' : 'line';
+  const clickLine = () => {
+    const T = st.tl;
+    if (note || quiet && !aside) return;
+    if (kb) kbClose();
+    if (T.open && T.pinned) closeTl(); else openTl(true);
+  };
   const setHotKey = (key: string) => { if (key === st.hot) return; st.hot = key; setHot(key); };
   const returnApproval = (id: string, point: Point) => {
     if (!note || st.resolvedNote === note.key) return;
@@ -353,6 +410,22 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     window.addEventListener('keydown', key, true); window.addEventListener('blur', blur);
     return () => { window.removeEventListener('keydown', key, true); window.removeEventListener('blur', blur); };
   });
+  // The day folds on Esc, when the Dashboard comes up, and when the setting goes back to the stars. A press that began in it (a drag on
+  // its scroll bar) keeps it up until it ends.
+  useEffect(() => {
+    if (!tlOpen) return;
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); closeTl(); } };
+    window.addEventListener('keydown', key, true);
+    return () => window.removeEventListener('keydown', key, true);
+  }, [tlOpen]);
+  useEffect(() => { if (aside) closeTl(); }, [!!aside]);
+  useEffect(() => { if (!tlMode) closeTl(); }, [tlMode]);
+  useEffect(() => {
+    const down = (e: PointerEvent) => { st.tl.press = st.tl.open && !!(e.target as Element | null)?.closest?.('.notch-drop'); };
+    const up = () => { st.tl.press = false; };
+    window.addEventListener('pointerdown', down, true); window.addEventListener('pointerup', up, true); window.addEventListener('pointercancel', up, true);
+    return () => { window.removeEventListener('pointerdown', down, true); window.removeEventListener('pointerup', up, true); window.removeEventListener('pointercancel', up, true); };
+  }, []);
   useLayoutEffect(() => { st.dirty = true; });
   useEffect(() => {
     const ro = new ResizeObserver(() => { st.dirty = true; });
@@ -371,11 +444,12 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
     const span = (w: number) => { const ww = Math.min(w, L.current.geo.width - 16); return { l: (L.current.geo.width - ww) / 2, w: ww }; };
     // The marks and the panes, laid out and drawn. True while something is still moving.
     const frame = (now: number, dt: number) => {
-      const { look, geo: g, note, quiet, onNoteHover, held, pageW } = L.current, s = st.s, top = g.top;
+      const { look, geo: g, note, quiet, onNoteHover, held, pageW, timeline: tl } = L.current, s = st.s, top = g.top, tlOn = L.current.mode === 'timeline', mode = L.current.mode;
       const firm = reduced.matches, go = (sp: typeof s.ww, goal: number, hz: number, damp: number) => step(sp, goal, hz, firm ? 1 : damp, dt);
       const p = cursor.current, ww = Math.max(0, s.ww.value);
       const speed = st.intent.sample(p, now);
       const inWing = !!p && p.y <= top + 2 && p.x >= g.notchR && p.x <= g.notchR + ww + 2;
+      const zone = tlOn && inWing ? zoneAt(p!.x) : '', was = st.open || st.tl.open;
       // The pinned trip (ADR 0200): the pointer on its pill shows the trip in one line; it never opens the panel.
       const pinNow = L.current.pin?.item ?? null, onPin = !!p && inWing && !!pinNow && !!st.pin && p.x >= st.pin.x0 && p.x < st.pin.x1;
       if (onPin) { if (st.pinOn < 0) st.pinOn = now; } else st.pinOn = -1;
@@ -391,13 +465,27 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       }
       // One mark per group, so the row is at most four marks. Nothing moves while the pointer is on the row or the
       // panel is open; the counts follow along, and the row catches up once you leave.
-      if (st.drag || !st.boxes.length || !(st.open || inWing) || now < st.workLandingUntil && !st.boxes.some(b => b.key === 'work')) {
-        const kinds = (['turn', 'work', 'done', 'moon'] as const).filter(key => size(key) || key === 'work' && now < st.workLandingUntil);
+      if (st.laid !== mode || st.drag || !tlOn && !st.boxes.length || !(was || inWing) || !tlOn && now < st.workLandingUntil && !st.boxes.some(b => b.key === 'work')) {
+        st.laid = mode;
+        const pool: readonly Kind[] = tlOn ? ['turn'] : KINDS;
+        const kinds = pool.filter(key => size(key) || key === 'work' && now < st.workLandingUntil);
         // The pinned trip (ADR 0200) is a pill after the marks. Where the Dashboard leaves no room for it beside the marks it steps aside, the marks stay.
         const pinned = L.current.pin?.item ?? null, pinW = pinned ? pinWidth(pinned, L.current.say) : 0;
         const lay = (withPin: boolean) => {
           const pw = withPin ? pinW : 0, lead = kinds.length ? PIN_GAP : 0;
-          if (look === 'dot') {
+          st.seg = null;
+          if (tlOn) {
+            // The timeline wing (ADR 0296): the turn mark alone, when something is on your turn; its line; the pinned trip. Centred in the wing like 点线环.
+            const dot = look === 'dot', mw = kinds.length ? dot ? DOT_COUNT_X + DIGIT_W * Math.min(3, String(size('turn')).length) : GCELL : 0;
+            const words = wingText(tl!.day.data, Date.now(), L.current.say), line = segWidth(words.head, words.tail, SEG_MAX);
+            const used = (mw ? mw + TL_GAP : 0) + line.w + (pw ? PIN_GAP + pw : 0);
+            st.wingTarget = Math.max(DOT_WING_W, Math.ceil(used + 2 * PAD));
+            let x = g.notchR + (st.wingTarget - used) / 2;
+            st.boxes = mw ? [dot ? { key: 'turn', x0: x - DOT_GAP / 2, x1: x + mw + DOT_GAP / 2, cx: x + DOT_R } : { key: 'turn', x0: x, x1: x + mw, cx: x + GCX }] : [];
+            if (mw) x += mw + TL_GAP;
+            st.seg = { x0: x, x1: x + line.w, room: line.room };
+            st.pin = pw ? { x0: x + line.w + PIN_GAP, x1: x + line.w + PIN_GAP + pw } : null;
+          } else if (look === 'dot') {
             // 点线环 matches her lobe on the notch's other side, 64 pt, and only grows when the counts need the room.
             const widths = kinds.map(key => DOT_COUNT_X + DIGIT_W * Math.min(3, String(size(key)).length));
             const marksW = widths.reduce((sum, w) => sum + w, 0) + DOT_GAP * Math.max(0, kinds.length - 1), used = marksW + (pw ? lead + pw : 0);
@@ -422,32 +510,49 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         const e = L.current.edge;
         if (pinned && e !== null && g.notchR + st.wingTarget > e) lay(false);
         // What the row shows, for the checks: `turn2 work4 done3 moon1`.
-        const marks = [...st.boxes.map(b => `${b.key}${size(b.key)}`), ...st.pin ? ['pin'] : []].join(' ');
+        const marks = [...st.boxes.map(b => `${b.key}${size(b.key)}`), ...st.seg ? ['line'] : [], ...st.pin ? ['pin'] : []].join(' ');
         if (root.current!.dataset.marks !== marks) root.current!.dataset.marks = marks;
       }
       // A slow 140 ms dwell signals intent. The exit grace bridges the growing
       // panel; a pointer travelling into it keeps it open. Clicks act immediately.
       if (!st.drag) {
-        const inDrop = !!p && st.open && p.x >= s.dx.value && p.x <= s.dx.value + s.dw.value && p.y >= top - 2 && p.y <= s.dd.value;
+        const rect = { left: s.dx.value, right: s.dx.value + s.dw.value, top, bottom: s.dd.value };
+        const inPane = !!p && was && p.x >= rect.left && p.x <= rect.right && p.y >= top - 2 && p.y <= rect.bottom, inDrop = inPane && st.open;
         const slot = inWing ? st.boxes.find(b => p!.x >= b.x0 && p!.x < b.x1) : undefined;
-        const approaching = st.open && st.intent.headingTo({ left: s.dx.value, right: s.dx.value + s.dw.value, top, bottom: s.dd.value });
-        const want = held || (!note && !quiet && (inWing && !onPin || inDrop || approaching));
+        const approaching = st.open && st.intent.headingTo(rect);
+        // Beside the timeline only the turn mark (and the edge before it) is the sessions': a rest there opens nothing, a click does.
+        const onSessions = tlOn ? zone === 'turn' : inWing && !onPin;
+        const want = held || (!note && !quiet && (onSessions || inDrop || approaching));
         if (!held && slot) setHotKey(slot.key);
         const ak = L.current.aside && slot ? slot.key : null;
         if (ak !== st.asideKey) { st.asideKey = ak; L.current.aside?.hover(ak); }
-        if (want && (inWing || inDrop || approaching)) st.lastIn = now;
+        if (want && ((tlOn ? onSessions : inWing) || inDrop || approaching)) st.lastIn = now;
         if (want !== st.want) { st.want = want; st.wantAt = now; }
-        if (want && !st.open && (held || now - st.wantAt >= HOVER_DWELL_MS && speed < HOVER_SPEED)) setPanel(true);
+        if (want && !st.open && (held || !tlOn && now - st.wantAt >= HOVER_DWELL_MS && speed < HOVER_SPEED)) setPanel(true);
         else if (!want && st.open && (note || quiet || now - st.lastIn > HOVER_EXIT_MS)) setPanel(false);
-        if (st.open && !held && !st.boxes.some(b => size(b.key))) setPanel(false);
+        if (st.open && !held && !(tlOn ? KINDS.some(size) : st.boxes.some(b => size(b.key)))) setPanel(false);
+        if (tlOn) {
+          // The day's pane summons and dismisses as the Dashboard does (Companion.tsx): a rest on the line opens it, unless the Dashboard
+          // hangs, a click just closed it or the Dashboard is set to open on a click; once the pointer has been in it, leaving the line and
+          // the pane closes it after the same grace, unless a press that began in it is still held or the pointer is heading back to it.
+          const T = st.tl, dash = !!L.current.aside, blocked = !!note || held || quiet && !dash, onLine = zone === 'line';
+          if (!onLine) { T.closedHere = false; T.enterAt = -1; } else if (T.enterAt < 0) T.enterAt = now;
+          if (T.open) {
+            if (blocked) closeTl();
+            else if (onLine || inPane || T.press) T.leftAt = -1;
+            else if (T.leftAt < 0 || st.intent.headingTo(rect)) T.leftAt = now;
+            if (T.open && T.leftAt >= 0 && now - T.leftAt >= DASHBOARD_EXIT_MS) closeTl();
+          } else if (onLine && !blocked && !dash && tl!.openBy !== 'click' && !T.closedHere && now - T.enterAt >= DASHBOARD_DWELL_MS && speed < HOVER_SPEED) openTl(false);
+        }
       }
       // The page opens with the marks already out, not grown in from nothing.
       if (!st.opened) { st.opened = true; s.ww.value = wingGoal(); }
+      const on = st.open || st.tl.open;
       let moving = go(s.ww, wingGoal(), SPRINGS.control.frequency, SPRINGS.control.damping);
       const dIn = dropIn.current!, nIn = noteIn.current!;
       if (st.dirty) {
         st.dirty = false;
-        if (st.open) { const sp = span(pageW ? PAGE_W : ALL_W); dIn.style.width = `${sp.w}px`; st.dropGoal = { w: sp.w, d: top + dIn.offsetHeight + 2 }; }
+        if (on) { const sp = span(st.tl.open ? TL_W : pageW ? PAGE_W : ALL_W); dIn.style.width = `${sp.w}px`; st.dropGoal = { w: sp.w, d: top + dIn.offsetHeight + 2 }; }
         if (note) {
           const sp = span(note.pop ? POP_W : CARD_W);
           nIn.style.width = `${sp.w}px`; st.noteL = sp.l;
@@ -456,12 +561,12 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       }
       // Closed, both panes rest inside the island, so they grow out of it and fold back into it.
       const isl = island(), rest = { l: isl.l, w: isl.w, d: top * .6 }, dw = st.dropGoal.w;
-      const dg = st.open ? { l: span(dw).l, w: dw, d: st.dropGoal.d } : rest;
-      if (st.open && s.dd.value < top) { s.dx.value = isl.l; s.dw.value = isl.w; }
-      if (!st.open) for (const [sp, goal] of [[s.dx, dg.l], [s.dw, dg.w], [s.dd, dg.d]] as const) {
+      const dg = on ? { l: span(dw).l, w: dw, d: st.dropGoal.d } : rest;
+      if (on && s.dd.value < top) { s.dx.value = isl.l; s.dw.value = isl.w; }
+      if (!on) for (const [sp, goal] of [[s.dx, dg.l], [s.dw, dg.w], [s.dd, dg.d]] as const) {
         if (sp.velocity * (goal - sp.value) < 0) sp.velocity = 0;
       }
-      const panelHz = SPRINGS.panel.frequency / (st.open ? 1 : MOTION.exit);
+      const panelHz = SPRINGS.panel.frequency / (on ? 1 : MOTION.exit);
       moving = go(s.dx, dg.l, panelHz, SPRINGS.panel.damping) || moving; moving = go(s.dw, dg.w, panelHz, SPRINGS.panel.damping) || moving; moving = go(s.dd, dg.d, panelHz, SPRINGS.panel.damping) || moving;
       const noteOpen = !!note && !held && note.key !== st.resolvedNote;
       const ng = noteOpen ? { l: st.noteL, w: st.noteGoal.w, d: st.noteGoal.d } : rest;
@@ -478,7 +583,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       const onNote = noteOpen && !!p && p.x >= s.nx.value && p.x <= s.nx.value + s.nw.value && p.y >= top && p.y <= s.nd.value;
       if (onNote !== st.onNote) { st.onNote = onNote; onNoteHover(onNote); }
       // One black piece: her island, the notch, the marks, and whatever hangs from them.
-      const wingR = g.notchR + Math.max(0, s.ww.value), dropOut = st.open || s.dd.value > top + 1, noteOut = noteOpen || s.nd.value > top + 1, rects: Rect[] = [];
+      const wingR = g.notchR + Math.max(0, s.ww.value), dropOut = on || s.dd.value > top + 1, noteOut = noteOpen || s.nd.value > top + 1, rects: Rect[] = [];
       // The home shares this surface until the last pane has folded inside it,
       // including list/page/card handoffs and the visible tail of closing.
       const joined = dropOut || noteOut;
@@ -487,11 +592,14 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       if (dropOut) rects.push({ l: s.dx.value, r: s.dx.value + s.dw.value, d: s.dd.value });
       if (noteOut) rects.push({ l: s.nx.value, r: s.nx.value + s.nw.value, d: s.nd.value });
       shape.current!.setAttribute('d', skyline(rects));
-      if (st.open) st.innerL = dg.l;
-      place(drop.current!, dIn, s.dx.value, s.dw.value, s.dd.value, st.innerL, st.dropGoal.d, st.open, top);
+      if (on) st.innerL = dg.l;
+      place(drop.current!, dIn, s.dx.value, s.dw.value, s.dd.value, st.innerL, st.dropGoal.d, on, top);
       place(noteP.current!, nIn, s.nx.value, s.nw.value, s.nd.value, st.noteL, st.noteGoal.d, noteOpen, top);
       Object.assign(hit.current!.style, { left: `${g.notchR}px`, width: `${Math.max(0, s.ww.value)}px`, height: `${top}px` });
       draw(now, top, look);
+      if (root.current!.dataset.wing !== mode) root.current!.dataset.wing = mode;
+      const tlState = st.tl.open ? st.tl.pinned ? 'pinned' : 'open' : '';
+      if (root.current!.dataset.tl !== tlState) root.current!.dataset.tl = tlState;
       return moving || !!st.drag || st.puffs.length > 0 || st.flights.length > 0 || Object.values(st.bumpAt).some(at => now - at < MOTION.medium);
     };
     const place = (pane: HTMLElement, inner: HTMLElement, left: number, w: number, d: number, goalL: number, goalD: number, open: boolean, top: number) => {
@@ -548,6 +656,23 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
           ctx.beginPath(); ctx.roundRect(b.cx - 5, top - 3.5, 10, 1.6, .8); ctx.fill(); ctx.shadowBlur = 0;
         }
       }
+      // The timeline wing's line: where he is and for how long (the length dimmer, in the mono face), or the way he is going.
+      const lineTl = L.current.mode === 'timeline' && st.seg ? L.current.timeline : undefined;
+      if (lineTl && st.seg) {
+        const { head, tail } = wingText(lineTl.day.data, Date.now(), say), shown = fitText(head, st.seg.room), y = top / 2 + .5;
+        ctx.save(); ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+        ctx.font = SEG_FONT; ctx.fillStyle = 'rgba(214,222,250,.82)'; ctx.fillText(shown, st.seg.x0, y);
+        if (tail) {
+          const x = st.seg.x0 + textWidth(SEG_FONT, shown);
+          ctx.fillStyle = 'rgba(214,222,250,.42)'; ctx.fillText(SEP, x, y);
+          ctx.font = SEG_MONO; ctx.fillStyle = 'rgba(214,222,250,.55)'; ctx.fillText(tail, x + textWidth(SEG_FONT, SEP), y);
+        }
+        ctx.restore();
+        // What the line says and where it is, for the checks: `家 · 3:12`, `437-483`.
+        const words = tail ? `${shown}${SEP}${tail}` : shown, at = `${Math.round(st.seg.x0)}-${Math.round(st.seg.x1)}`;
+        if (root.current!.dataset.line !== words) root.current!.dataset.line = words;
+        if (root.current!.dataset.lineAt !== at) root.current!.dataset.lineAt = at;
+      } else if (root.current!.dataset.line) root.current!.dataset.line = root.current!.dataset.lineAt = '';
       // The pinned trip: a pill in the wing's own mark colours, amber from 5 min, its countdown read from the clock each frame.
       const trip = L.current.pin?.item;
       if (st.pin && trip) {
@@ -569,6 +694,7 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
       const ty = top / 2;
       st.flights = st.flights.filter(f => {
         const k = reduced.matches ? 1 : (now - f.at) / MOTION.slow;
+        if (L.current.mode === 'timeline' && !st.boxes.some(b => b.key === f.to)) return false;
         const tx = st.boxes.find(b => b.key === f.to)?.cx ?? g.notchR + Math.max(0, st.s.ww.value) - 10;
         if (k >= 1) { st.bumpAt[f.to] = now; return false; }
         const e = 1 - (1 - k) ** 3, u = 1 - e, x = u * u * f.x + 2 * u * e * tx + e * e * tx, y = u * u * f.y + 2 * u * e * f.y + e * e * ty;
@@ -631,9 +757,13 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
   const lastPopAgents = useRef<Agent[]>([]);
   if (note?.pop) lastPopAgents.current = popAgents;
   // The panes keep what they showed while they fold away.
-  const lastNote = useRef<NotchNote | null>(null), lastPanel = useRef<ReactNode>(null);
+  const lastNote = useRef<NotchNote | null>(null), lastPanel = useRef<ReactNode>(null), lastDrop = useRef<'sessions' | 'timeline'>('sessions');
   if (note) lastNote.current = note;
   if (open && panel) lastPanel.current = panel;
+  // The drop holds the sessions or the day, never both; the day is mounted afresh at each opening (it starts on today).
+  const dayPane = timeline && <DayTimeline key={tlKey} port={port} feed={timeline.day} open={tlOpen}/>;
+  if (tlOpen) lastDrop.current = 'timeline'; else if (open) lastDrop.current = 'sessions';
+  const dropBody = tlOpen ? dayPane : open ? panel : lastDrop.current === 'timeline' ? dayPane : lastPanel.current;
   const shownNote = note ?? lastNote.current;
   return <div ref={root} className="notch">
     <svg className="notch-shape" aria-hidden="true"><path ref={shape}/></svg>
@@ -647,6 +777,8 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
           L.current.pin!.open(trip);
           return;
         }
+        // The timeline wing's line: a click opens the day, pinned; on a day that is pinned it closes it. While the Dashboard hangs it folds.
+        if (tlMode && zoneAt(e.clientX) === 'line') { clickLine(); return; }
         const b = st.boxes.find(x => e.clientX >= x.x0 && e.clientX < x.x1);
         if (L.current.aside) { if (b) L.current.aside.open(b.key); return; }
         if (b) setHotKey(b.key);
@@ -662,8 +794,8 @@ export function Notch({ look, agents, unread, parked, archived, geo, cursor, not
         if (st.drag) Object.assign(st.drag, q);
       }}
       onPointerUp={() => letGo(true)} onPointerCancel={() => letGo(false)}/>
-    <div ref={drop} className="notch-pane notch-drop" data-hit={open ? true : undefined} role="dialog" aria-label={t(['Sessions', '会话'])}>
-      <div ref={dropIn} className="notch-pane-in">{open ? panel : lastPanel.current}</div></div>
+    <div ref={drop} className="notch-pane notch-drop" data-hit={open || tlOpen ? true : undefined} role="dialog" aria-label={tlOpen || !open && lastDrop.current === 'timeline' ? t(['Day timeline', '一天的时间线']) : t(['Sessions', '会话'])}>
+      <div ref={dropIn} className="notch-pane-in">{dropBody}</div></div>
     <div ref={noteP} className="notch-pane notch-note" data-hit={note && !(kb && !kbCard) ? true : undefined} role="alertdialog" aria-label={t(['Notification', '通知'])}>
       <div ref={noteIn} className="notch-pane-in" onWheel={e => {
         // A sideways swipe on a notice puts it away; a slow drift or a vertical scroll does not.

@@ -8,10 +8,11 @@ import type { HomeLook } from './CompanionBall';
 import type { HomeFinish } from './homeFinish';
 import type { MarkLook } from './AgentMarks';
 import type { NightLook } from './NightCard';
+import type { Wing } from './Notch';
 
 // Settings as a page in her panel: quick switches on top, then one list per category. Her own settings save
 // in this profile and apply at once; Jarvis's own save through the daemon and are greyed out until it serves them.
-export type Look = { skin: Skin; auto: boolean; home: HomeLook; homeFinish: HomeFinish; marks: MarkLook; night: NightLook };
+export type Look = { skin: Skin; auto: boolean; home: HomeLook; homeFinish: HomeFinish; marks: MarkLook; night: NightLook; wing: Wing };
 export type Cues = { on: boolean; volume: number };
 export type Controls = {
   micMuted: boolean; speechMuted: boolean; handsFree: boolean;
@@ -245,6 +246,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, pairAsk = 0, ctl, a
       { id: 'auto', name: ['Change outfit on her own', '自己换装'], note: ['Every 6–14 min while resting', '在家时每 6–14 分钟一次'], ctl: { k: 'switch', on: ctl.look.auto, set: on => ctl.setLook({ auto: on }) } },
       { id: 'home', name: ['Resting look', '在家的样子'], ctl: { k: 'seg', value: ctl.look.home, opts: [['dark', ['Dark glass', '暗玻璃']], ['eyes', ['Just her eyes', '只有两只眼']]], set: value => ctl.setLook({ home: value as HomeLook }) } },
       { id: 'home-finish', name: ['Notch finish', '刘海里的家'], ctl: { k: 'seg', value: ctl.look.homeFinish, opts: [['original', ['Original', '原设计']], ['refined', ['Refined notch', '精修刘海']]], set: value => ctl.setLook({ homeFinish: value as HomeFinish }) } },
+      { id: 'wing', name: ['Right of the notch', '刘海右边'], note: ['What sits beside the notch', '刘海右边放什么'], ctl: { k: 'seg', value: ctl.look.wing, opts: [['marks', ['Stars', '星星']], ['timeline', ['Timeline', '时间线']]], set: value => ctl.setLook({ wing: value as Wing }) } },
       { id: 'marks', name: ['Agent marks', '状态点'], note: ['The session marks beside the notch', '刘海旁边的会话标记'], ctl: { k: 'seg', value: ctl.look.marks, opts: [['dot', ['Dots', '点线环']], ['spark', ['Spark', '星芒']], ['pixel', ['Pixel', '像素']]], set: value => ctl.setLook({ marks: value as MarkLook }) } },
       { id: 'night', name: ['Night run cards', '挂机卡片'], note: ['Bedtime, in the night and the morning after', '睡前、半夜和早上的卡片'], ctl: { k: 'seg', value: ctl.look.night, opts: [['list', ['List', '列表']], ['trail', ['Star trail', '星轨']]], set: value => ctl.setLook({ night: value as NightLook }) } },
       { id: 'faces', name: ['Her expressions', '她的表情'], ctl: { k: 'act', label: ['Play all', '全部看一遍'], run: ctl.playFaces } },
