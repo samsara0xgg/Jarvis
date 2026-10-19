@@ -400,6 +400,9 @@ struct DayTimelineModel: Equatable {
         return max(0, (offsets.min { abs($0 - want) < abs($1 - want) } ?? 0) - 8)
     }
 
+    /// the minute `t` as the bar has it: no earlier than its start and no later than 24:00
+    func onBar(_ t: Double) -> Double { clamp(t, span.lowerBound, span.upperBound) }
+
     /// the entry that covers minute `t`: the last one begun by then (of those begun together, the later in the list), else the first
     func entry(at t: Double) -> TLEntry? {
         let list = entries.filter { $0.kind != .now }
@@ -427,12 +430,13 @@ struct DayTimelineModel: Equatable {
     /// What a finger on the bar at minute `t` reads out. The stretch there (a place, a trip, the night) opens it, or how long nothing was recorded, or that it has not happened;
     /// then what else was going on: what covers `t`, else what is within 10 minutes of it, the most telling first (work, Claude Code, a call, a talk, a workout, a picture, a payment,
     /// an event, Claude, a reminder, a bus, the night's stages).
-    func readout(at t: Double) -> TLReadout {
+    func readout(at minute: Double) -> TLReadout {
+        let t = onBar(minute)
         var hue: RGB?, strong = true, head: String
         let ahead = now.map { t > $0 } ?? false
         if ahead {
             head = "还没到"
-        } else if let s = seg(at: t), let e = entries.first(where: { $0.id == s.id }) {
+        } else if let s = seg(at: t) ?? seg(at: t.nextDown), let e = entries.first(where: { $0.id == s.id }) {          // the end of a stretch with nothing after it (a stay up to now) is still in it
             switch s.kind {
             case .place(let c, let kept): hue = c; strong = kept
             case .move: hue = TLPaint.trip
@@ -441,7 +445,7 @@ struct DayTimelineModel: Equatable {
             head = e.head ?? e.title
         } else {
             let lo = segs.filter { $0.t1 <= t }.map(\.t1).max() ?? span.lowerBound
-            let hi = min(segs.filter { $0.t0 > t }.map(\.t0).min() ?? DAY, now ?? DAY)
+            let hi = max(lo, min(segs.filter { $0.t0 > t }.map(\.t0).min() ?? DAY, now ?? DAY))          // a hole ends no earlier than it begins
             head = "没有记录 · \(clock(lo))–\(tlEnd(hi)) · \(tlDur(tlInt(hi - lo)))"
         }
         func gap(_ x: TLTold) -> Double { t < x.t0 ? x.t0 - t : t > x.t1 ? t - x.t1 : 0 }

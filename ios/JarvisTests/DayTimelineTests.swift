@@ -693,6 +693,32 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(m.readout(at: 400).head, "没有记录 · 06:00–10:00 · 4 时", "before the first stretch: from the bar's start")
     }
 
+    func testAMinuteOffTheBarIsTheStartOrTheEndOfItAndNoHoleEndsBeforeItBegins() throws {
+        let m = build(TimelineFixture.today(cal))
+        XCTAssertEqual(m.span.lowerBound, 480, "the made-up day's bar starts at 08:00, though its night began at 00:55")
+        XCTAssertEqual([m.onBar(30), m.onBar(480), m.onBar(900), m.onBar(1440), m.onBar(1500), m.onBar(.infinity), m.onBar(-.infinity)], [480, 480, 900, 1440, 1440, 1440, 480])
+        XCTAssertEqual(m.readout(at: 30), m.readout(at: 480), "00:30 is not on the bar: a finger there reads where the bar starts")
+        XCTAssertEqual(m.readout(at: 30).head, "睡觉 · 00:55–09:05 · 8 时 5 分", "and not a hole from 08:00 back to 00:55")
+        XCTAssertEqual(m.readout(at: 1500), m.readout(at: 1440))
+        // every minute from before the bar to after it, on every made-up day, with and without a now: a hole's hours run forward
+        func clock(_ s: Substring) -> Int { (Int(s.prefix(2)) ?? -1) * 60 + (Int(s.suffix(2)) ?? -1) }
+        var holes = 0
+        for r in [TimelineFixture.today(cal), TimelineFixture.yesterday(cal), TimelineFixture.fragmented(cal), TimelineFixture.talkOnly(cal)] {
+            for now in [nil, TimelineFixture.now] as [Double?] {
+                let day = DayTimelineModel.build(r, now: now)
+                for t in stride(from: -90.0, through: 1530.0, by: 1.0) + [day.span.upperBound, day.span.lowerBound, now ?? 0] {
+                    let head = day.readout(at: t).head, parts = head.components(separatedBy: " · ")
+                    guard parts.first == "没有记录" else { continue }
+                    let ends = parts[1].split(separator: "–")
+                    XCTAssertEqual(ends.count, 2, head)
+                    if ends.count == 2 { XCTAssertLessThan(clock(ends[0]), clock(ends[1]), "\(r.date) now \(now.map { "\($0)" } ?? "none") at \(t): \(head)") }
+                    holes += 1
+                }
+            }
+        }
+        XCTAssertGreaterThan(holes, 100, "the scan did meet holes")
+    }
+
     func testAFingerOnTheBarLightsTheRowThereAndClosesTheOpenOneAndLettingGoClearsBoth() {
         withTimeline { e in
             let m = build(TimelineFixture.today(cal))
@@ -719,6 +745,21 @@ final class DayTimelineTests: XCTestCase {
             e.ui.tl.follow(nil, in: nil)
             XCTAssertNil(e.ui.tl.scrub)
             XCTAssertNil(e.ui.tl.hot)
+        }
+    }
+
+    func testAFingerOffTheBarIsHeldAtTheStartOrTheEndOfIt() {
+        withTimeline { e in
+            let m = build(TimelineFixture.today(cal))
+            e.ui.tl.follow(30, in: m)
+            XCTAssertEqual(e.ui.tl.scrub, 480, "00:30 is before the bar starts (08:00)")
+            XCTAssertEqual(e.ui.tl.hot, m.lit(at: 480)?.id)
+            e.ui.tl.follow(2000, in: m)
+            XCTAssertEqual(e.ui.tl.scrub, 1440)
+            e.ui.tl.follow(900, in: nil)
+            XCTAssertEqual(e.ui.tl.scrub, 900, "with no day to measure against there is nothing to clamp to")
+            e.ui.tl.follow(nil, in: nil)
+            XCTAssertNil(e.ui.tl.scrub)
         }
     }
 

@@ -100,8 +100,10 @@ final class TimelineState {
 
     func scroll(to y: Double, animated: Bool) { request = ScrollRequest(y: y, animated: animated, n: request.n + 1) }
 
-    /// A finger on the overview bar at minute `t` (none: it has lifted): the list goes to the row that covers it and lights it, and a row he had open is closed.
-    func follow(_ t: Double?, in m: DayTimelineModel?) {
+    /// A finger on the overview bar at minute `t` (none: it has lifted): the list goes to the row that covers it and lights it, and a row he had open is closed. A minute off the bar is the
+    /// bar's start or end.
+    func follow(_ minute: Double?, in m: DayTimelineModel?) {
+        let t = minute.map { m?.onBar($0) ?? $0 }
         scrub = t
         if t == nil { finger = nil }
         guard let t, let m else { hot = nil; seen = nil; return }

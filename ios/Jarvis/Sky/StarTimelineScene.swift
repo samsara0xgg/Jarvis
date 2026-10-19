@@ -203,7 +203,7 @@ extension StarEngine {
             let lens = [("睡", TLLens.sleep), ("路上", .trip), ("运动", .workout), ("Mac", .work), ("通话", .call), ("和她", .talk), ("花", .payment), ("照片", .picture)].first { $0.0 == (parts.count > 2 ? parts[2] : "") }?.1
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in withAnimation(.easeOut(duration: 0.15)) { ui.tl.lens = lens } }
         case "拖":
-            let n = Int(parts.count > 2 ? parts[2] : "") ?? 0, t = Double(n / 100 * 60 + n % 100), lo = model.span.lowerBound, hi = model.span.upperBound
+            let n = Int(parts.count > 2 ? parts[2] : "") ?? 0, t = model.onBar(Double(n / 100 * 60 + n % 100)), lo = model.span.lowerBound, hi = model.span.upperBound
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in
                 ui.tl.follow(t, in: model)
                 ui.tl.finger = TLGaze.bar(x: (t - lo) / (hi - lo) * TLLayout.barW)
