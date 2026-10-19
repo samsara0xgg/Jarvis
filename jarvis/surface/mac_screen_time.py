@@ -29,12 +29,28 @@ class ScreenTimeUnavailable(RuntimeError):  # noqa: N818 - reads as the reason i
     """The synced device usage could not be read; the message is the short reason."""
 
 
-def ensure_screen_time_app(source_dir: Path = _DIR) -> Path:
-    """The Screen Time helper .app, built when missing or stale.
+def _signer() -> str:
+    """This Mac's first Apple Development identity, else "-" (ad-hoc).
 
-    A rebuilt app has a new ad-hoc signature, so Full Disk Access may have to be granted again.
+    Signed by a certificate, the app keeps one designated requirement across rebuilds, so Full
+    Disk Access is granted once; ad-hoc, every rebuild needs the grant again.
     """
-    return ensure_app_bundle(source_dir, _APP_NAME, "jarvis-screen-time", _IDENTIFIER)
+    found = subprocess.run(
+        ["/usr/bin/security", "find-identity", "-v", "-p", "codesigning"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout
+    names = [line.split('"')[1] for line in found.splitlines() if '"Apple Development:' in line]
+    return names[0] if names else "-"
+
+
+def ensure_screen_time_app(source_dir: Path = _DIR) -> Path:
+    """The Screen Time helper .app, built when missing or stale."""
+    return ensure_app_bundle(
+        source_dir, _APP_NAME, "jarvis-screen-time", _IDENTIFIER, signer=_signer()
+    )
 
 
 def parse_helper_output(text: str, app: Path | None = None) -> dict[str, Any]:

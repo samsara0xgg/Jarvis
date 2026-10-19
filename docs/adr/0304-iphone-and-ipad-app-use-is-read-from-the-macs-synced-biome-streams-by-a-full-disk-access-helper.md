@@ -52,7 +52,7 @@ it write one JSON object of devices and focus events.
 
 - He must turn on Share Across Devices on each device and grant Full Disk Access to
   `JarvisScreenTime.app` once.
-- A rebuild of the helper gets a new ad-hoc signature, so the grant may have to be given again.
+- Signed with the Mac's Apple Development identity, the helper keeps one designated requirement, so the grant survives rebuilds; with no such identity it is signed ad hoc and a rebuild may need the grant again.
 - Data lags by the sync delay, and macOS drops it after about four weeks, so it has to be read
   regularly or the older days are lost.
 - The stored CRC32 of a SEGB record is not checked; a malformed protobuf is skipped instead.

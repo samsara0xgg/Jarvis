@@ -37,10 +37,13 @@ class MacLocation:
     place: str | None
 
 
-def ensure_app_bundle(source_dir: Path, app_name: str, executable: str, identifier: str) -> Path:
-    """Return the helper .app, building and ad-hoc signing it when missing or older than source.
+def ensure_app_bundle(
+    source_dir: Path, app_name: str, executable: str, identifier: str, *, signer: str = "-"
+) -> Path:
+    """Return the helper .app, building and signing it when missing or older than source.
 
-    A rebuilt app has a new code signature, so macOS may ask for its permission again.
+    Ad-hoc signed (``signer`` "-"), a rebuilt app has a new code signature, so macOS may ask
+    for its permission again; a certificate ``signer`` keeps the grant across rebuilds.
     A bare binary never gets that prompt; only an app bundle does, hence the bundle.
     """
     sources = [source_dir / "main.swift", source_dir / "Info.plist"]
@@ -62,7 +65,7 @@ def ensure_app_bundle(source_dir: Path, app_name: str, executable: str, identifi
                 str(scratch / "Contents" / "MacOS" / executable),
                 str(source_dir / "main.swift"),
             ],
-            ["/usr/bin/codesign", "-s", "-", "-f", "--deep", "-i", identifier, str(scratch)],
+            ["/usr/bin/codesign", "-s", signer, "-f", "--deep", "-i", identifier, str(scratch)],
         ):
             subprocess.run(  # noqa: S603 - fixed argv, repo-owned source
                 argv, check=True, capture_output=True, timeout=_BUILD_TIMEOUT_S
