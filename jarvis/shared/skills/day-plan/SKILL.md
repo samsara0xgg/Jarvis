@@ -19,7 +19,7 @@ around it, no code fence. The program reads your answer and drops what it cannot
   plan by the program whatever you write, and nothing you place may overlap them. Do not repeat
   them; you may only add to them by listing, under the same `source`, what to prepare.
 - `upcoming`: commitments of the next days, so you can prepare for them or leave room.
-- `calendar_all_day`, `todo`: all-day labels and open To Do items with their due dates.
+- `calendar_all_day`, `things`: all-day labels and open To Do items with their due dates.
 - `goals`: his long-term goals, each with what he said about it. `deadlines`: his hard dates.
 - `routines`: what he usually does on this weekday.
 - `weather`: the day's forecast, or absent.

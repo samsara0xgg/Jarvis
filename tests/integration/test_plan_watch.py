@@ -30,7 +30,7 @@ from jarvis.decision.day_plan import (
 )
 from jarvis.decision.plan_watch import budget, notice
 from jarvis.runtime.now_block import plan_line
-from jarvis.state import commitments, plan
+from jarvis.state import plan, things
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.places import Place
@@ -40,7 +40,7 @@ from jarvis.state.plan_facts import (
     DayFacts,
     Here,
     Move,
-    NotedCommitment,
+    NotedThing,
     Stay,
     Wake,
     evidence,
@@ -65,7 +65,7 @@ def _ms(clock: str) -> int:
 
 def _item(item_id: str = "p1", **fields: Any) -> plan.PlanItem:  # noqa: ANN401
     base: dict[str, Any] = {
-        "item_id": item_id, "title": "Write the report", "firmness": "movable", "source": "todo",
+        "item_id": item_id, "title": "Write the report", "firmness": "movable", "source": "goal",
         "start": "09:00", "minutes": 60,
     }
     return plan.PlanItem(**(base | fields))
@@ -81,7 +81,7 @@ def _plan(*items: plan.PlanItem) -> plan.Plan:
 def test_apply_changes_adds_edits_and_drops_and_a_fixed_item_may_change() -> None:
     """Each op does its part; a new id is made; moving or re-placing an item clears its leg."""
     leg = {"from": "Home", "leave_at": "08:20"}
-    items = [_item("p1", firmness="fixed", source="commitment:c1", route=leg), _item("p2")]
+    items = [_item("p1", firmness="fixed", source="item:thing-c1", route=leg), _item("p2")]
     new, notes = plan.apply_changes(items, [
         {"op": "add", "item": {"title": "Walk", "start": "08:00", "minutes": 30}},
         {"op": "edit", "id": "p2", "title": "Write", "private": True},
@@ -213,15 +213,25 @@ def test_item_due_asks_only_of_a_movable_item_and_carries_what_he_is_doing() -> 
     assert (one.key, one.facts["doing"]) == ("item_due:p1", ["reviewing a PR"])
 
 
-def test_woke_and_new_commitment_and_no_wake_before_noon() -> None:
-    """A wake is noticed; a commitment already in the plan is not new; a late first item is not."""
-    mine = NotedCommitment("c1", "Dentist", "14:00", "", private=False, noted_at_ms=1)
-    other = NotedCommitment("c2", "Call mum", "18:00", "", private=False, noted_at_ms=1)
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("item:thing-c1", id="item"),
+        pytest.param("commitment:commitment-c1", id="item-of-a-plan-before-the-ledger"),
+    ],
+)
+def test_woke_and_new_thing_and_no_wake_before_noon(source: str) -> None:
+    """A wake is noticed; a thing already in the plan is not new; a late first item is not."""
+    mine = NotedThing("thing-c1", "Dentist", "14:00", "", private=False, noted_at_ms=1)
+    other = NotedThing("thing-c2", "Call mum", "18:00", "", private=False, noted_at_ms=1)
     facts = DayFacts(0, Wake("mac_active", _ms("07:10")), None, (), (), (), (mine, other))
-    held = _plan(_item("p1", source="commitment:c1", firmness="fixed", start="14:00"))
+    held = _plan(_item("p1", source=source, firmness="fixed", start="14:00"))
     got = {n.key: n for n in notice(held, facts, _at("07:30"), set())}
-    assert set(got) == {"woke", "new_commitment:c2"}
+    assert set(got) == {"woke", "new_commitment:thing-c2"}
     assert got["woke"].facts == {"signal": "mac_active", "at": "07:10"}
+    assert got["new_commitment:thing-c2"].facts == {
+        "title": "Call mum", "start": "18:00", "place": "", "private": False,
+    }
     late = _plan(_item("p1", start="13:00"))
     assert notice(late, DayFacts(0, None, None, (), (), (), ()), _at("15:00"), set()) == []
 
@@ -492,7 +502,7 @@ def _log(path: Path) -> Any:  # noqa: ANN401
 
 
 def test_facts_at_reads_only_what_the_log_held_at_that_minute(tmp_path: Path) -> None:
-    """Replaying 08:05, 08:20 and 09:00 of one day sees the stay, the wake and the commitment."""
+    """Replaying 08:05, 08:20 and 09:00 of one day sees the stay, the wake and the thing."""
     with closing(_log(tmp_path / "events.db")) as conn:
         emit_event(
             conn, type="phone.visit_observed", ts_epoch_ms=_ms("07:50"), ingestion_node="phone",
@@ -511,12 +521,9 @@ def test_facts_at_reads_only_what_the_log_held_at_that_minute(tmp_path: Path) ->
             conn, type="utterance.received", ts_epoch_ms=_ms("08:30"),
             payload={"transcript": "morning", "turn_id": "t1"},
         )
-        dentist = commitments.Commitment(
-            "c1", "Dentist", _at("14:00").isoformat(), "said", confirmed=True, private=False,
-        )
-        emit_event(
-            conn, type="commitment.noted", payload=dentist.payload(), ts_epoch_ms=_ms("06:00"),
-            actor="jarvis_runtime",
+        things.add(
+            conn, things.Thing(things.new_id(), "Dentist", "go", start_at=_at("14:00").isoformat()),
+            by="her", evidence="said so", zone=ZONE, now=_at("06:00"),
         )
         before = facts_at(conn, DAY, _ms("08:05"), ZONE, [HOME])
         woke = facts_at(conn, DAY, _ms("08:20"), ZONE, [HOME])
@@ -526,8 +533,59 @@ def test_facts_at_reads_only_what_the_log_held_at_that_minute(tmp_path: Path) ->
     assert (before.here.place, before.here.since_ms) == ("Home", _ms("07:45"))
     assert woke.wake == Wake("focus_off", _ms("08:10"))
     assert later.wake == woke.wake  # the earliest stays the first
-    assert [c.title for c in later.commitments] == ["Dentist"]
+    assert [c.title for c in later.things] == ["Dentist"]
     assert before.payload(ZONE)["here"]["since"] == "07:45"
+
+
+def _on(days: int, clock: str) -> str:
+    return (_at(clock) + timedelta(days=days)).isoformat()
+
+
+def test_the_things_noted_today_are_those_added_for_today_that_still_stand(
+    tmp_path: Path,
+) -> None:
+    """ADR 0299: a thing added today for today, by anyone but the carry-in, unless it left."""
+    stamp: dict[str, Any] = {"evidence": "said so", "zone": ZONE}
+    with closing(_log(tmp_path / "events.db")) as conn:
+        def add(
+            title: str, at: str, kind: str = "go", by: str = "her", **fields: Any,  # noqa: ANN401
+        ) -> str:
+            one = things.Thing(things.new_id(), title, kind, **fields)
+            return things.add(conn, one, by=by, now=_at(at), **stamp)[0].thing_id
+
+        add("Dentist", "06:00", start_at=_on(0, "14:00"), place="Main St")
+        add("Holiday", "06:05", on_day=DAY.isoformat())
+        add("Send form", "06:10", "do", "mail", due=DAY.isoformat())
+        klass = add("Class", "06:15", start_at=_on(0, "19:00"), weekly_until=_on(7, "19:00")[:10])
+        add("Seminar", "06:20", start_at=_on(1, "10:00"))
+        add("Old news", "06:25", by="carry_in", start_at=_on(0, "15:00"))
+        gone = add("Cancelled", "06:30", start_at=_on(0, "15:30"))
+        paid = add("Paid", "06:35", "do", due=DAY.isoformat())
+        away = add("Moved away", "06:40", start_at=_on(0, "16:00"))
+        here = add("Moved here", "06:45", start_at=_on(1, "09:00"))
+        things.close(conn, gone, "cancelled", by="her", now=_at("07:00"), **stamp)
+        things.close(conn, paid, "paid", by="her", now=_at("07:05"), **stamp)
+        things.move(conn, away, start_at=_on(1, "16:00"), by="her", now=_at("07:30"), **stamp)
+        things.move(conn, here, start_at=_on(0, "17:00"), by="her", now=_at("07:35"), **stamp)
+        # Next week's class is off; today's is not.
+        things.close(
+            conn, klass, "cancelled", occurrence=_on(7, "19:00")[:10], by="her", now=_at("08:00"),
+            **stamp,
+        )
+        early = facts_at(conn, DAY, _ms("06:50"), ZONE, [HOME])
+        late = facts_at(conn, DAY, _ms("09:00"), ZONE, [HOME])
+    assert [(t.title, t.start) for t in early.things] == [
+        ("Dentist", "14:00"), ("Holiday", ""), ("Send form", ""), ("Class", "19:00"),
+        ("Cancelled", "15:30"), ("Paid", ""), ("Moved away", "16:00"),
+    ]
+    assert [(t.title, t.start) for t in late.things] == [
+        ("Dentist", "14:00"), ("Holiday", ""), ("Send form", ""), ("Class", "19:00"),
+        ("Moved here", "17:00"),
+    ]
+    assert late.payload(ZONE)["things_noted_today"][:2] == [
+        {"title": "Dentist", "start": "14:00", "place": "Main St", "noted_at": "06:00"},
+        {"title": "Holiday", "start": None, "place": "", "noted_at": "06:05"},
+    ]
 
 
 def _mac_state(kind: str, at: str) -> dict[str, Any]:
@@ -622,23 +680,32 @@ def test_the_plan_line_names_the_next_task_the_time_left_and_the_next_fixed_item
 # --- the day line --------------------------------------------------------------------------
 
 
-def test_a_day_with_a_plan_draws_its_items_except_the_commitments_drawn_already(
+def test_a_day_with_a_plan_draws_its_items_except_the_things_drawn_already(
     tmp_path: Path,
 ) -> None:
-    """Plan items are `event` rows with source plan; a commitment's stands for itself."""
+    """Plan items are `event` rows with source plan; a timed thing's stands for itself."""
     held = [
         _item("p1", place="Library", private=True),
         _item("p2", start=None, window_from="15:30", window_to="17:30", minutes=45),
         _item("p3", start=None),
-        _item("p4", source="commitment:c1", firmness="fixed", start="14:00"),
+        _item("p4", source="item:thing-c1", firmness="fixed", start="14:00"),
+        _item("p5", source="commitment:commitment-c1", firmness="fixed", start="14:00"),
+        _item("p6", source="item:thing-d1", title="Pay rent", start="16:00"),
     ]
     with closing(_log(tmp_path / "events.db")) as conn:
+        for noted in (
+            things.Thing("thing-c1", "Dentist", "go", start_at=_at("14:00").isoformat()),
+            things.Thing("thing-d1", "Pay rent", "do", due=DAY.isoformat()),
+        ):
+            things.add(conn, noted, by="her", evidence="said so", zone=ZONE, now=_at("06:00"))
         plan.draft(conn, DAY, held, "d", "m")
         first, last = day_window(DAY, ZONE)
         line = fold_day(conn, first, last, _ms("09:30"), DaySources(ZONE))
         other = fold_day(conn, *day_window(DAY + timedelta(days=1), ZONE), 0, DaySources(ZONE))
     rows = {r["id"]: r for r in line.items if r.get("source") == "plan"}
-    assert set(rows) == {"plan-2026-10-16-p1", "plan-2026-10-16-p2"}
+    # The dentist stands for p4 and for p5 (a plan from before the ledger); a thing with only a
+    # due date has no row of its own, so its plan item is drawn.
+    assert set(rows) == {"plan-2026-10-16-p1", "plan-2026-10-16-p2", "plan-2026-10-16-p6"}
     one = rows["plan-2026-10-16-p1"]
     assert (one["kind"], one["lane"], one["place"], one["private"], one["state"]) == (
         "event", "you", "Library", True, "now",

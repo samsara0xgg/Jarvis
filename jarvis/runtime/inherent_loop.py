@@ -8366,11 +8366,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         if runtime.rides is not None:
             # ADR 0224: the bus ride follower; it fetches a feed only while there is a reason.
             watchers.append(asyncio.create_task(runtime.rides.run(), name="rides"))
-        if runtime.calendar_next is not None:
-            # ADR 0249: his next calendar items for the state block, read here, never in a turn.
-            watchers.append(
-                asyncio.create_task(runtime.calendar_next.run(), name="calendar_next"),
-            )
         if runtime.push is not None and runtime.push.enabled:
             # ADR 0210: a fired reminder pushes at any quiet level; waiting cards follow the level.
             push = runtime.push
@@ -8479,8 +8474,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     else runtime.attachments.directory,
                     None if home is None else home.calendar,
                 ),
-                calendar=None if home is None else home.calendar,
-                todos=None if home is None else home.open_todos,
                 weather=None if home is None else home.day_weather,
             )
             open_leg = (

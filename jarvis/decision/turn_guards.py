@@ -117,7 +117,7 @@ _LOOKED_ACT: Final = re.compile(_ACT, re.IGNORECASE)
 _LOOKED: Final = re.compile(f"{_ACT}|{_CONTENT}", re.IGNORECASE)
 CALENDAR_LINE: Final = "Next on his calendar"
 """How the state block's calendar line begins (ADR 0249); its producer is in the runtime layer."""
-_CALENDAR_LINE: Final = re.compile(rf"^{CALENDAR_LINE} \(", re.MULTILINE)
+_CALENDAR_LINE: Final = re.compile(rf"^{CALENDAR_LINE}(?: \([^)]*\))?: ", re.MULTILINE)
 
 
 def calendar_in_view(state: str) -> bool:

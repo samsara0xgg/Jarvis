@@ -37,9 +37,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 from urllib.parse import parse_qsl, urlsplit
 
-from jarvis.state import device_reads, imports, phone_day, places, reminders, timesink
+from jarvis.state import device_reads, imports, phone_day, places, reminders, things, timesink
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
+from jarvis.state.things_late import due_is_day, late, when_ms
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -1535,9 +1536,56 @@ def _work_state(src: LedgerSources, as_of: datetime) -> str | None:
     return f"  Latest work-state summary (analysed {analysed}): " + " | ".join(acts)
 
 
+_OVERDUE_SHOWN: Final = 8
+
+
+def _thing_name(one: things.Thing) -> str:
+    """A thing as the block names it: a private one only as such, an unconfirmed one says so."""
+    title = "something private" if one.private else one.title
+    return f'"{title}"' if one.confirmed else f'"{title}" (not confirmed)'
+
+
+def _things_today(src: LedgerSources, day: date) -> list[str]:
+    """The day's open things from the ledger of his things (ADR 0299), and the overdue ones.
+
+    Today: the timed things on the day, the ones due on it. Overdue: a ``do`` whose time went by
+    before the day began. A thing's ring is a reminder, but the thing stands for it (see
+    :func:`_reminders`).
+    """
+    lo, hi = (_ms(datetime.combine(day + timedelta(days=n), time.min, src.zone)) for n in (0, 1))
+    with closing(open_runtime_event_log(src.event_log)) as conn:
+        on_day = things.occurrences(conn, lo, hi, zone=src.zone)
+        open_now = things.open_things(conn)
+    today = [
+        (o.start_ms, f"all day {_thing_name(o.thing)}" if o.all_day
+         else f"{_at(o.start_ms, src.zone):%H:%M} {_thing_name(o.thing)}")
+        for o in on_day
+    ]
+    for one in open_now:
+        if one.due and lo <= (at := things.due_ms(one, src.zone)) < hi:
+            clock = "today" if due_is_day(one) else f"{_at(at, src.zone):%H:%M}"
+            today.append((at, f"due {clock} {_thing_name(one)}"))
+    lines = []
+    if today:
+        lines.append(
+            f"  Open things today ({len(today)}): " + "; ".join(text for _, text in sorted(today)),
+        )
+    behind = late(open_now, lo, src.zone)
+    if behind:
+        shown = [
+            f"{_thing_name(one)} (was {_at(when_ms(one, src.zone) or lo, src.zone):%a %m-%d})"
+            for one in behind[:_OVERDUE_SHOWN]
+        ]
+        more = f"; and {len(behind) - len(shown)} more" if len(behind) > len(shown) else ""
+        lines.append(f"  Overdue things ({len(behind)}): " + "; ".join(shown) + more)
+    return lines
+
+
 def _reminders(src: LedgerSources, as_of: datetime, day: date) -> list[str]:
     with closing(open_runtime_event_log(src.event_log)) as conn:
         found = reminders.fold(conn, until_ms=int(as_of.timestamp() * 1000))
+    # A ring stands for its thing, which _things_today lists: not twice.
+    found = {k: r for k, r in found.items() if not k.startswith(things.RING_PREFIX)}
     pending = sorted((r for r in found.values() if r.pending), key=lambda r: r.due_at_ms)
 
     def due(r: reminders.Reminder) -> datetime:
@@ -1630,6 +1678,7 @@ def today_text(src: LedgerSources, now: datetime) -> str:
                 out.append(_cancel_line(m))
     seen = sum(1 for at, _ in data.seen if midnight <= at < now)
     out.append(f"  Mail screened today: {seen}")
+    out += _things_today(src, today)
     out += _reminders(src, now, today)
     return "\n".join(out)
 

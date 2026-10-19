@@ -28,15 +28,17 @@ Each source folds on its own and a source that raises leaves its items out (:fun
 - ``calendar``: his Outlook events, read through the reader the runtime injects
   (:attr:`DaySources.calendar`), in his lane with state ``next`` until they start (ADR 0230); an
   all-day event is a label of the day (:attr:`DayLine.labels`), not an item;
-- ``commitments``: what he has to go to (ADR 0274), folded from the event log, one item per
-  occurrence in his lane as kind ``event`` (every build of the phone draws it), with ``source``
-  (``mail`` or ``said``), ``confirmed``, ``private`` and ``place`` besides the calendar's fields;
-  its id is ``<commitment_id>@<day>``; an all-day one (a deadline with a date and no hour) is a
-  label of the day instead of an item, with the same extra fields;
+- ``commitments``: what he has to go to or do at a time (ADR 0274, 0299), the occurrences of the
+  ledger of his things in the event log, one item per occurrence in his lane as kind ``event``
+  (every build of the phone draws it), with ``source`` (where the ledger had it from),
+  ``confirmed``, ``private`` and ``place`` besides the calendar's fields; its id is
+  ``commitment-<hex>@<day>``, ``<hex>`` being the hex of the thing's id; an all-day one (a date
+  and no hour) is a label of the day instead of an item, with the same extra fields;
 - ``plan``: a day with a plan (ADR 0288) draws its items in his lane as kind ``event`` with
   ``source`` ``plan``, id ``plan-<date>-<item id>``, from its start (or its window's start) for
   its minutes, with ``place`` and ``private``; an item with no time is left out, and so is one
-  that stands for a commitment (``source`` ``commitment:*``), which is drawn once, as itself;
+  that stands for a thing drawn above (``source`` ``item:*``, or ``commitment:*`` in a plan from
+  before ADR 0299), which is drawn once, as the thing;
 - ``imports``: what he handed over (ADR 0259), in his lane: each payment that moved money as a
   point (amount, direction, counterparty, item), and each conversation with Claude as a span from
   its first to its last message of the window (the title as text), and each day's nightly letter
@@ -105,6 +107,7 @@ from jarvis.state import (
     places,
     plan,
     reminders,
+    things,
     timesink,
 )
 from jarvis.state import rides as ride_state
@@ -320,8 +323,8 @@ def _reminder_items(
     for one in reminders.fold(conn).values():
         if one.cancelled or not window_start <= one.due_at_ms < window_end:
             continue
-        if one.reminder_id.startswith(commitments.REMINDER_PREFIX):
-            continue  # the commitment's ring: the commitment stands for it
+        if one.reminder_id.startswith((things.RING_PREFIX, commitments.REMINDER_PREFIX)):
+            continue  # a thing's ring (or a commitment's, before ADR 0299): the thing stands for it
         fired = one.fired_at_ms is not None
         items.append({
             "id": one.reminder_id,
@@ -424,22 +427,28 @@ def _calendar_items(
 def _commitment_items(
     conn: sqlite3.Connection, sources: DaySources, window_start: int, window_end: int, now_ms: int,
 ) -> list[dict[str, Any]]:
-    """Each occurrence of a live commitment in the window: an ``event``, a ``label`` if all-day."""
+    """Each occurrence of a thing in the window: an ``event``, a ``label`` if all-day (ADR 0299).
+
+    The id keeps the shape the phone has: ``commitment-<hex>@<day>`` for ``thing-<hex>``.
+    """
     return [
         {
-            "id": f"{occ.commitment.commitment_id}@{occ.day}",
+            "id": f"{commitments.ID_PREFIX}{occ.thing.thing_id.removeprefix(things.ID_PREFIX)}"
+            f"@{occ.day}",
             "lane": "you",
-            "kind": "label" if occ.commitment.all_day else "event",
+            "kind": "label" if occ.all_day else "event",
             "start_ms": occ.start_ms,
             "end_ms": occ.end_ms,
             "state": _state(occ.start_ms, occ.end_ms, now_ms),
-            "title": occ.commitment.title,
-            "source": occ.commitment.source,
-            "confirmed": occ.commitment.confirmed,
-            "private": occ.commitment.private,
-            "place": occ.commitment.place,
+            "title": occ.thing.title,
+            "source": occ.thing.source,
+            "confirmed": occ.thing.confirmed,
+            "private": occ.thing.private,
+            "place": occ.thing.place,
         }
-        for occ in commitments.occurrences(conn, window_start, window_end, zone=sources.zone)
+        for occ in things.occurrences(
+            conn, window_start, window_end, zone=sources.zone, closed=True,
+        )
     ]
 
 
@@ -450,12 +459,15 @@ def _plan_items(
     first = datetime.fromtimestamp(window_start / 1000, sources.zone).date() - timedelta(days=1)
     last = datetime.fromtimestamp(window_end / 1000, sources.zone).date()
     rows: list[dict[str, Any]] = []
+    timed = {
+        one.thing_id for one in things.fold(conn).values() if one.start_at or one.on_day
+    }
     for held in plan.fold(conn).values():
         if not first <= held.day <= last:
             continue
         for item in held.items:
             clock = item.start or item.window_from
-            if clock is None or item.source.startswith("commitment:"):
+            if clock is None or plan.thing_of(item.source) in timed:
                 continue
             begin = datetime.combine(held.day, time.fromisoformat(clock), tzinfo=sources.zone)
             start, end = _ms(begin), _ms(begin + timedelta(minutes=item.minutes))

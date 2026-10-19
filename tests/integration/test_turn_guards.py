@@ -175,7 +175,7 @@ def test_a_long_answer_that_mentions_a_lookup_is_an_answer() -> None:
     assert unbacked_said(text, []) is None
 
 
-CAL_LINE = 'Next on his calendar (read 4 minutes ago): 3:30 pm "Dentist".'
+CAL_LINE = 'Next on his calendar: 3:30 pm "Dentist".'
 
 
 @pytest.mark.parametrize(
@@ -220,17 +220,20 @@ def test_the_calendar_line_backs_what_his_calendar_holds_and_nothing_else(
     ("state", "expected"),
     [
         (CAL_LINE, True),
+        ('Next on his calendar (2 not confirmed): 3:30 pm "Dentist".', True),
+        ('Next on his calendar (read 4 minutes ago): 3:30 pm "Dentist".', True),  # an older block
         (f"Time: 2026-10-12T09:00-07:00 Monday\nDoing now (as of 5 min ago): X.\n{CAL_LINE}", True),
         ("Doing now (as of 5 minutes ago, at 9:00 am): Writing.", False),
         ("", False),
         # Only the line itself: his calendar named in another line is not it.
         ('Dashboard: he has "Next on his calendar (x)" open.', False),
         ("Pending reminders (1): call about Next on his calendar (later)", False),
-        ("Next on his calendar", False),  # no reading in brackets: not the producer's line
+        ("Next on his calendar", False),  # no colon: not the producer's line
+        ("Next on his calendar (later) he has a dentist", False),
     ],
 )
 def test_the_calendar_line_is_found_only_as_a_line_of_its_own(state: str, expected: bool) -> None:  # noqa: FBT001
-    """The state block's own line starts with the heading and the age bracket."""
+    """The state block's own line starts with the heading, its bracket if any, and a colon."""
     assert calendar_in_view(state) is expected
 
 

@@ -150,7 +150,7 @@ def test_a_claimed_lookup_with_no_call_gets_the_note_in_responses_shape(
     assert line["calls"] == [{"name": "job_ledger", "args": {}}]
 
 
-CAL_LINE = 'Next on his calendar (read 4 minutes ago): 3:30 pm "Dentist".'
+CAL_LINE = 'Next on his calendar: 3:30 pm "Dentist".'
 STATE = "[Current state | from the program, not the user's words]"
 SENT = "[State when this was said | from the program, not the user's words]"
 

@@ -1,14 +1,15 @@
 """ADR 0288: the day's plan state, the nightly draft, its parser and its schedule.
 
-Data-driven checks over a real event log and memory.db with a fake model, a fake calendar, fake
-To Do and weather readers (no key, no network, no provider). The examples are invented.
+Data-driven checks over a real event log and memory.db with a fake model and a fake weather reader
+(no key, no network, no provider). The examples are invented.
 
 - the fold: a draft, a revision that wins, settle, open, a failed draft, the revisions he made;
 - the writers refuse an item that could not be read back;
-- the parser: bad JSON, a collision with a fixed item, an unknown source, a commitment the model
-  left out, an item that repeats a commitment;
-- the inputs: commitments, calendar, goals, missing sources noted, and his earlier changes to
-  plans (and how each plan settled) as preferences, in the prompt too;
+- the parser: bad JSON, a collision with a fixed item, an unknown source, a fixed item the model
+  left out, an item that repeats a fixed item;
+- the inputs: the ledger's things (ADR 0299) as fixed items, upcoming ones, all-day labels and
+  open tasks, goals, missing sources noted, and his earlier changes to plans (and how each plan
+  settled) as preferences, in the prompt too; a past plan with the old sources still loads;
 - the draft: success, every failure writes ``plan.draft_failed``, a day he changed is kept;
 - the schedule: once at ``at``, and a catch-up on start.
 """
@@ -27,10 +28,11 @@ import pytest
 from jarvis.decision import day_plan as decide
 from jarvis.runtime import day_plan as runtime
 from jarvis.shared.skills import load_skill
-from jarvis.state import commitments, core_memory, plan
+from jarvis.state import core_memory, plan, things
 from jarvis.state.day_line import DaySources
 from jarvis.state.event_log import open_event_log, open_runtime_event_log
 from jarvis.state.memory_db import open_memory_db, remember_fact
+from jarvis.state.things_late import late
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -45,7 +47,7 @@ SETTINGS = runtime.DayPlanSettings(at=time(4, 0))
 
 def _item(item_id: str = "p1", **fields: Any) -> plan.PlanItem:  # noqa: ANN401
     base: dict[str, Any] = {
-        "item_id": item_id, "title": "Write the report", "firmness": "movable", "source": "todo",
+        "item_id": item_id, "title": "Write the report", "firmness": "movable", "source": "goal",
         "start": "09:00", "minutes": 60,
     }
     return plan.PlanItem(**(base | fields))
@@ -71,15 +73,17 @@ class Env:
             self.log, self.memory, ZONE, DaySources(ZONE, None, self.memory), **readers,
         )
 
-    def commit(self, title: str, at: datetime, *, place: str = "", minutes: int = 60) -> str:
-        """Note one confirmed commitment; its id."""
-        record = commitments.Commitment(
-            commitments.new_id(), title, at.isoformat(), "said", confirmed=True, private=False,
-            end_at=(at + timedelta(minutes=minutes)).isoformat(), place=place,
-        )
+    def add(self, title: str, kind: str = "go", **fields: Any) -> str:  # noqa: ANN401
+        """Note one thing in the ledger; its id."""
+        one = things.Thing(things.new_id(), title, kind, **fields)
         with closing(self.conn()) as conn:
-            commitments.note(conn, record)
-        return record.commitment_id
+            things.add(conn, one, by="her", evidence="said so", zone=ZONE, now=NOW)
+        return one.thing_id
+
+    def commit(self, title: str, at: datetime, *, place: str = "", minutes: int = 60) -> str:
+        """Note one thing he goes to at ``at``; its id."""
+        end = (at + timedelta(minutes=minutes)).isoformat()
+        return self.add(title, start_at=at.isoformat(), end_at=end, place=place)
 
 
 @pytest.fixture
@@ -94,7 +98,7 @@ def _answer(*items: Any) -> str:  # noqa: ANN401
 
 def _model(title: str = "Write the report", **fields: Any) -> dict[str, Any]:  # noqa: ANN401
     base = {
-        "title": title, "start": "10:00", "minutes": 60, "firmness": "movable", "source": "todo",
+        "title": title, "start": "10:00", "minutes": 60, "firmness": "movable", "source": "goal",
         "why": "due soon", "prepare": [],
     }
     return base | fields
@@ -174,7 +178,7 @@ def test_revisions_by_him_come_newest_first_with_what_changed(stores: Env) -> No
         {"start": "9:00"}, {"start": "24:00"}, {"start": "09:60"}, {"window_from": "noon"},
         {"window_to": "25:00"}, {"firmness": "soft"}, {"minutes": 0}, {"minutes": 1441},
         {"title": ""}, {"title": "   "}, {"title": "x" * 121}, {"source": "mail"},
-        {"source": "commitment:"}, {"item_id": ""},
+        {"source": "commitment:"}, {"source": "item:"}, {"item_id": ""},
     ],
 )
 def test_a_bad_item_is_refused_and_nothing_is_written(stores: Env, fields: dict[str, Any]) -> None:
@@ -189,7 +193,7 @@ def test_a_valid_item_with_every_field_round_trips_and_other_writers_refuse(stor
     """Every field round-trips; the other writers refuse a bad value."""
     full = _item(
         "p1", start=None, window_from="14:00", window_to="17:00", place="Library", why="due",
-        goal="read", prepare=("book", "charger"), source="commitment:abc", private=True,
+        goal="read", prepare=("book", "charger"), source="item:thing-abc", private=True,
         route={"leave_at": "13:20", "line": "99"}, firmness="fixed", minutes=1440,
     )
     with closing(stores.conn()) as conn:
@@ -211,10 +215,10 @@ def test_a_valid_item_with_every_field_round_trips_and_other_writers_refuse(stor
 # --- the parser ----------------------------------------------------------------------------
 
 FIXED = (
-    _item("c1", title="Dentist", firmness="fixed", source="commitment:c1", start="14:00",
+    _item("c1", title="Dentist", firmness="fixed", source="item:thing-c1", start="14:00",
           minutes=60, place="Main St"),
 )
-KNOWN = {"todo", "goal", "his", "commitment:c1"}
+KNOWN = {"goal", "his", "item:thing-c1"}
 
 
 @pytest.mark.parametrize(
@@ -242,14 +246,22 @@ KNOWN = {"todo", "goal", "his", "commitment:c1"}
             id="source",
         ),
         pytest.param(
+            _answer(_model(source="todo")), ["Dentist"], ["unknown source todo"],
+            id="todo-is-no-source-any-more",
+        ),
+        pytest.param(
+            _answer(_model(source="commitment:c1")), ["Dentist"], ["unknown source commitment:c1"],
+            id="commitment-is-no-source-any-more",
+        ),
+        pytest.param(
             _answer(_model(start="9am"), _model("Walk"), {"title": "no firmness"}, "text"),
             ["Walk", "Dentist"], ["item 1", "item 3", "item 4"], id="unreadable-items",
         ),
-        pytest.param(_answer(), ["Dentist"], [], id="commitment-added-back"),
+        pytest.param(_answer(), ["Dentist"], [], id="fixed-item-added-back"),
         pytest.param(
-            _answer(_model(title="Go to the dentist", source="commitment:c1", start="14:00",
+            _answer(_model(title="Go to the dentist", source="item:thing-c1", start="14:00",
                            prepare=["insurance card"], why="six month check")),
-            ["Dentist"], [], id="repeated-commitment-lends-prepare",
+            ["Dentist"], [], id="repeated-fixed-item-lends-prepare",
         ),
         pytest.param(
             _answer(_model(start=None, window_from="15:00", window_to="18:00")),
@@ -267,14 +279,14 @@ def test_the_parser_keeps_what_reads_and_adds_back_what_is_fixed(
     for part in notes_with:
         assert any(part in note for note in notes), (part, notes)
     if "Dentist" in titles:
-        dentist = next(i for i in items if i.source == "commitment:c1")
+        dentist = next(i for i in items if i.source == "item:thing-c1")
         assert (dentist.firmness, dentist.start, dentist.place) == ("fixed", "14:00", "Main St")
 
 
-def test_a_repeated_commitment_keeps_the_fixed_item_and_lends_why_and_prepare() -> None:
-    """A model item for a commitment keeps the fixed item and lends it why and prepare."""
+def test_a_repeated_fixed_item_keeps_the_fixed_item_and_lends_why_and_prepare() -> None:
+    """A model item for a thing already fixed keeps the fixed item and lends it why and prepare."""
     items, _ = decide.parse_items(
-        _answer(_model(title="Other name", source="commitment:c1", start="09:00",
+        _answer(_model(title="Other name", source="item:thing-c1", start="09:00",
                        prepare=["insurance card"], why="six month check")),
         known_sources=KNOWN, fixed=FIXED,
     )
@@ -299,7 +311,7 @@ def test_the_models_order_is_the_plans_order_and_a_listed_fixed_item_keeps_its_p
     items, _ = decide.parse_items(
         _answer(
             _model("Last task", start=None),
-            _model("Dentist", source="commitment:c1", start="14:00"),
+            _model("Dentist", source="item:thing-c1", start="14:00"),
             _model("First task", start=None, source="goal"),
         ),
         known_sources=KNOWN, fixed=FIXED,
@@ -343,54 +355,184 @@ def test_a_lived_item_reads_as_one_line_with_its_projects_and_place() -> None:
 # --- the inputs ----------------------------------------------------------------------------
 
 
-def _calendar(first: int, last: int, now: int) -> list[dict[str, Any]]:
-    del first, last, now
-    return [
-        {"id": "e1", "title": "Team sync", "start": "2026-10-16T17:00:00+00:00",
-         "end": "2026-10-16T17:30:00+00:00"},
-        {"id": "e2", "title": "Holiday", "start": "2026-10-16T07:00:00-07:00", "all_day": True},
-    ]
-
-
-def test_the_inputs_hold_the_days_commitments_calendar_goals_and_say_what_is_missing(
-    stores: Env,
-) -> None:
-    """Commitments, calendar, To Do, goals and deadlines are in; the missing source is noted."""
+def test_the_inputs_hold_the_days_things_goals_and_say_what_is_missing(stores: Env) -> None:
+    """ADR 0299: fixed, upcoming, all-day and open tasks come from the ledger; goals; the gaps."""
     cid = stores.commit("Dentist", datetime(2026, 10, 16, 14, 0, tzinfo=ZONE), place="Main St")
     later = stores.commit("Passport office", datetime(2026, 10, 18, 9, 30, tzinfo=ZONE))
     stores.commit("Far away", datetime(2026, 10, 30, 9, 30, tzinfo=ZONE))
+    stores.add("Holiday", on_day="2026-10-16")
+    rent = stores.add("Pay rent", "do", due="2026-10-17")
+    stores.add("Later", "do", due="2026-12-01")
     remember_fact(stores.memory, "Spanish", "twenty minutes a day", core_memory.GOALS_SECTION)
     remember_fact(stores.memory, "Visa", "expires 2026-12-01", core_memory.ID_FREE_SECTION)
-    todos = [{"title": "Pay rent", "due": "2026-10-17T23:59:00-07:00"}, {"title": "Someday"},
-             {"title": "Later", "due": "2026-12-01T23:59:00-07:00"}]
-    inputs = runtime.gather(
-        stores.sources(calendar=_calendar, todos=lambda: todos), SETTINGS, DAY, NOW,
-    )
-    assert [(i.title, i.start, i.source) for i in inputs.fixed] == [
-        ("Dentist", "14:00", f"commitment:{cid}"), ("Team sync", "10:00", "his"),
+    inputs = runtime.gather(stores.sources(), SETTINGS, DAY, NOW)
+    assert [(i.title, i.start, i.minutes, i.place, i.source) for i in inputs.fixed] == [
+        ("Dentist", "14:00", 60, "Main St", f"item:{cid}"),
     ]
     assert [(u["title"], u["date"], u["start"]) for u in inputs.upcoming] == [
         ("Passport office", "2026-10-18", "09:30"),
     ]
     assert inputs.calendar_all_day == ("Holiday",)
-    assert [t["title"] for t in inputs.todo] == ["Pay rent"]
+    assert [(t["title"], t["due"], t["source"]) for t in inputs.things] == [
+        ("Pay rent", "2026-10-17", f"item:{rent}"),
+    ]
     assert any("Spanish" in g for g in inputs.goals)
     assert any("Visa" in d for d in inputs.deadlines)
     assert inputs.notes == ("weather",)
-    assert f"commitment:{later}" in inputs.sources
-    assert {"todo", "goal", "his"} <= set(inputs.sources)
+    assert {f"item:{cid}", f"item:{later}", f"item:{rent}", "goal", "his"} <= set(inputs.sources)
+    assert "todo" not in inputs.sources
     assert len(inputs.recent_days) == runtime.RECENT_DAYS
 
 
+def test_the_open_things_offered_to_the_draft_are_late_due_by_the_horizon_or_untimed(
+    stores: Env,
+) -> None:
+    """Late, due by the horizon, to do today, or with no time, in that order; no more."""
+    stores.add("Old bill", "do", due="2026-10-01")
+    stores.add("Call mum", "do", start_at="2026-10-12T10:00:00-07:00")
+    stores.add("Cleaning", "do", on_day="2026-10-16")
+    stores.add("Private form", "do", due="2026-10-16T17:00:00-07:00", private=True)
+    stores.add("Pay rent", "do", due="2026-10-17")
+    stores.add("Fix the bike", "do")
+    stores.add("Seminar", "go", start_at="2026-10-12T10:00:00-07:00")  # he went, or he did not
+    stores.add("Far off", "do", due="2026-12-01")  # past the horizon
+    stores.add(
+        "Water plants", "do", start_at="2026-10-02T08:00:00-07:00", weekly_until="2026-12-01",
+    )
+    paid = stores.add("Paid already", "do", due="2026-10-16")
+    with closing(stores.conn()) as conn:
+        things.close(conn, paid, "paid", by="her", evidence="said so", zone=ZONE, now=NOW)
+    inputs = runtime.gather(stores.sources(), SETTINGS, DAY, NOW)
+    assert [(t["title"], t["due"], t["late"], t["private"]) for t in inputs.things] == [
+        ("Old bill", "2026-10-01", True, False),
+        ("Call mum", "2026-10-12", True, False),
+        ("Cleaning", "2026-10-16", False, False),
+        ("Private form", "2026-10-16", False, True),
+        ("Pay rent", "2026-10-17", False, False),
+        ("Fix the bike", None, False, False),
+    ]
+    # The week's repeat that falls today is a fixed item, not a task.
+    assert [(i.title, i.start) for i in inputs.fixed] == [("Water plants", "08:00")]
+
+
+def test_the_open_things_offered_to_the_draft_are_capped(stores: Env) -> None:
+    """More open things than fit are cut at the cap, oldest first."""
+    for n in range(runtime.MAX_THINGS + 5):
+        stores.add(f"Task {n}", "do")
+    inputs = runtime.gather(stores.sources(), SETTINGS, DAY, NOW)
+    assert len(inputs.things) == runtime.MAX_THINGS
+    assert inputs.things[0]["title"] == "Task 0"
+
+
+def test_a_memo_like_untimed_thing_reaches_the_draft_and_can_be_planned(stores: Env) -> None:
+    """A thing with no time (what a memo was) is in the prompt, a known source and a plan item."""
+    bike = stores.add("Fix the bike", "do", note="the chain slips")
+    inputs = runtime.gather(stores.sources(), SETTINGS, DAY, NOW)
+    assert [(t["title"], t["due"], t["late"]) for t in inputs.things] == [
+        ("Fix the bike", None, False),
+    ]
+    _, user = decide.build_prompt(inputs, zone=ZONE, today=DAY)
+    body = json.loads(user)
+    assert body["things"] == list(inputs.things)
+    assert "todo" not in body
+
+    def ask(*_: str) -> str:
+        return _answer(_model(
+            "Fix the bike", source=f"item:{bike}", start=None, window_from="15:00",
+            window_to="17:00",
+        ))
+
+    assert runtime.draft_day(stores.sources(), SETTINGS, ask, DAY, NOW) == "drafted"
+    held = _drafted(stores)
+    assert held is not None
+    assert [(i.title, i.source, i.start) for i in held.items] == [
+        ("Fix the bike", f"item:{bike}", None),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "fields", "expected"),
+    [
+        pytest.param("do", {"due": "2026-10-15"}, True, id="due-a-day-before"),
+        pytest.param("do", {"due": "2026-10-15T23:00:00-07:00"}, True, id="due-an-hour-before"),
+        pytest.param("do", {"due": "2026-10-16"}, False, id="due-the-day-itself"),
+        pytest.param("do", {"start_at": "2026-10-15T10:00:00-07:00"}, True, id="to-start-before"),
+        pytest.param("do", {"on_day": "2026-10-15"}, True, id="to-do-on-a-day-before"),
+        pytest.param("do", {"on_day": "2026-10-16"}, False, id="to-do-on-the-day"),
+        pytest.param("do", {}, False, id="no-time-to-miss"),
+        pytest.param("go", {"start_at": "2026-10-15T10:00:00-07:00"}, False, id="a-go-is-not-late"),
+        pytest.param(
+            "do", {"start_at": "2026-10-01T10:00:00-07:00", "weekly_until": "2026-12-01"}, False,
+            id="a-week-closes-a-date-at-a-time",
+        ),
+        pytest.param("do", {"due": "2026-10-15", "state": "done"}, False, id="closed"),
+    ],
+)
+def test_late_means_an_open_do_whose_time_went_by_before_the_day(
+    kind: str, fields: dict[str, Any], *, expected: bool,
+) -> None:
+    """ADR 0299: the one rule the ledger block and the draft share for what is behind."""
+    one = things.Thing("thing-a", "Task", kind, **fields)
+    first = int(datetime.combine(DAY, time.min, ZONE).timestamp() * 1000)
+    assert bool(late([one], first, ZONE)) is expected
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param("item:thing-0a1b", "thing-0a1b", id="item"),
+        pytest.param("commitment:commitment-0a1b", "thing-0a1b", id="old-commitment"),
+        pytest.param("commitment:", "", id="old-commitment-without-id"),
+        pytest.param("todo", "", id="old-todo"),
+        pytest.param("goal", "", id="goal"),
+        pytest.param("his", "", id="his"),
+        pytest.param("routine:r1", "", id="routine"),
+    ],
+)
+def test_the_thing_a_plan_item_stands_for_is_named_by_its_source(
+    source: str, expected: str,
+) -> None:
+    """``item:<id>`` names its thing; an old ``commitment:`` source maps to the carried-in id."""
+    assert plan.thing_of(source) == expected
+
+
+def test_a_past_plan_with_the_old_sources_still_loads_and_can_be_revised(stores: Env) -> None:
+    """Plans drafted before ADR 0299 name `todo` and `commitment:<id>`; they fold and revise."""
+    day = DAY - timedelta(days=30)
+    old = (
+        _item("p1", source="todo"),
+        _item("p2", title="Dentist", firmness="fixed", start="14:00",
+              source="commitment:commitment-0a1b2c"),
+    )
+    with closing(stores.conn()) as conn:
+        plan.draft(conn, day, old, "d", "m")
+        held = plan.for_day(conn, day)
+        assert held is not None
+        assert held.items == old
+        plan.revise(conn, day, [replace(old[0], start="10:30"), old[1]], "him", "later please")
+        revised = plan.for_day(conn, day)
+    assert revised is not None
+    assert [(i.source, i.start) for i in revised.items] == [
+        ("todo", "10:30"), ("commitment:commitment-0a1b2c", "14:00"),
+    ]
+    assert [plan.thing_of(i.source) for i in revised.items] == ["", "thing-0a1b2c"]
+    assert plan.SOURCE_NAMES == ("goal", "his")
+
+
 def test_a_reader_that_fails_or_is_absent_is_noted_and_the_inputs_still_come(stores: Env) -> None:
-    """A failing or absent reader is noted and the inputs still come."""
+    """A failing, absent or empty weather reader is noted and the inputs still come."""
     def broken(*_: Any) -> Any:  # noqa: ANN401
         msg = "not connected"
         raise LookupError(msg)
 
-    inputs = runtime.gather(stores.sources(calendar=broken, todos=broken), SETTINGS, DAY, NOW)
-    assert inputs.notes == ("calendar", "todo", "weather")
-    assert inputs.fixed == ()
+    for weather, notes in (
+        (broken, ("weather",)), (None, ("weather",)), (lambda _day: None, ("weather",)),
+        (lambda _day: {"summary": "rain"}, ()),
+    ):
+        inputs = runtime.gather(stores.sources(weather=weather), SETTINGS, DAY, NOW)
+        assert inputs.notes == notes
+        assert inputs.fixed == ()
+        assert inputs.things == ()
 
 
 def test_his_changes_to_past_plans_and_how_they_settled_are_in_the_inputs_and_the_prompt(
@@ -650,7 +792,7 @@ def test_the_replay_prints_sizes_without_a_model_and_writes_files_only_with_one(
     assert not out.exists()
     assert dry[0]["asked"] is False
     assert dry[0]["fixed"] == 1
-    assert dry[0]["missing"] == ["calendar", "todo", "weather"]
+    assert dry[0]["missing"] == ["weather"]
     assert dry[0]["est_cost_usd"] == pytest.approx(
         (dry[0]["est_input_tokens"] * 3.0 + script.OUTPUT_TOKENS * 15.0) / 1_000_000,
     )

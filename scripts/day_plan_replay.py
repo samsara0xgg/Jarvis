@@ -7,10 +7,10 @@ r"""Replay the day-plan draft (ADR 0288) for past days, offline.
 For each ``--date`` it builds the inputs as the runtime would at that day's ``day_plan.at``,
 reading the event log and memory.db (by default the runtime root's ``mac_events.db`` and
 ``memory.db``; nothing is written to either), and prints the input sizes and an estimated cost
-from ``data/pricing.json``. The calendar, To Do and weather need the daemon's live connections,
-so a replay notes them as missing. Without ``--live`` no model is called and no file is written.
-With ``--live`` the day's prompt goes to the ``day_plan.preset`` model (the key comes from the
-environment) and ``<out>/<date>.json`` (the parsed items, the dropped notes) and
+from ``data/pricing.json``. The things come from the log; the weather needs the daemon's live
+connection, so a replay notes it as missing. Without ``--live`` no model is called and no file is
+written. With ``--live`` the day's prompt goes to the ``day_plan.preset`` model (the key comes from
+the environment) and ``<out>/<date>.json`` (the parsed items, the dropped notes) and
 ``<out>/<date>.md`` (a readable day list) are written. Nothing else is written anywhere.
 """
 

@@ -10,7 +10,7 @@ fake model (no key, no network, no provider). The examples are invented.
   neither, a reminder mail moves or changes the thing it is about and does not duplicate, a cancel
   closes it, one unreadable mail does not stop the cycle, a backfill is paged and read oldest
   first; the rings are the ledger's and nothing arms ``reminder-cm*``;
-- the readers: ``my_schedule``, the state block, ``GET /inherent/day``'s fold and ``keep``.
+- the readers: ``my_schedule`` and ``keep``.
 """
 
 # ruff: noqa: RUF001 - the letters under test include Chinese, with fullwidth punctuation
@@ -30,12 +30,10 @@ from jarvis.execution.keep_tool import build_keep_tools
 from jarvis.execution.schedule_tool import build_schedule_tool
 from jarvis.execution.tools import ActionLifecycle, ToolError, ToolRegistry
 from jarvis.runtime.commitment_intake import CommitmentIntake, CommitmentSettings
-from jarvis.runtime.now_block import calendar_line, next_appointments
 from jarvis.shared import ActionRequest, CallerPrincipal, lang
 from jarvis.state import commitments, things
 from jarvis.state import job_ledger as ledger
 from jarvis.state import reminders as reminder_state
-from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.memory_db import open_memory_db
 
@@ -647,42 +645,6 @@ def test_my_schedule_lists_appointments_with_where_they_came_from_and_if_confirm
     assert "appointments" in out["read"] or "reminders" in out["read"]
 
 
-def test_the_state_block_names_the_next_appointments_without_a_calendar(log: _Log) -> None:
-    """The state block names the next appointments without a calendar."""
-    commitments.note(log.conn, _record(_at(10, 14, 18, 30)))
-    group = _record(_at(10, 14, 20), title="Group", private=True, confirmed=True)
-    commitments.note(log.conn, group)
-    line = calendar_line(
-        None, ZONE, lambda: NOW.astimezone(UTC),
-        lambda now: next_appointments(log.paths.event_log, ZONE, now),
-    )
-    assert line == (
-        'Next on his calendar (read just now): 6:30 pm "Pottery class (not confirmed)";'
-        ' 8:00 pm "something private".'
-    )
-    # with a broken calendar the same line; with no appointments and no calendar, none
-    assert calendar_line(None, ZONE, lambda: NOW.astimezone(UTC)) is None
-
-
-def test_the_day_gets_each_occurrence_as_an_event_with_its_source(log: _Log) -> None:
-    """The day gets each occurrence as an event with its source."""
-    one = _record(_at(10, 14, 18, 30), weekly_until="2026-10-21", place="Studio 4", private=True)
-    commitments.note(log.conn, one)
-    first, last = day_window(date(2026, 10, 14), ZONE)
-    day = fold_day(log.conn, first, last, _ms(NOW), DaySources(ZONE))
-    (item,) = [i for i in day.items if i["kind"] == "event"]
-    assert item == {
-        "id": f"{one.commitment_id}@2026-10-14", "lane": "you", "kind": "event",
-        "start_ms": _ms(_at(10, 14, 18, 30)), "end_ms": _ms(_at(10, 14, 19, 30)), "state": "next",
-        "title": "Pottery class", "source": "mail", "confirmed": False, "private": True,
-        "place": "Studio 4",
-    }
-    assert "commitments" not in day.missing
-    nxt, _ = day_window(date(2026, 10, 21), ZONE)
-    week = fold_day(log.conn, nxt, nxt + 86_400_000, _ms(NOW), DaySources(ZONE))
-    assert [i["id"] for i in week.items] == [f"{one.commitment_id}@2026-10-21"]
-
-
 # --- keep and kept -------------------------------------------------------------------------
 
 
@@ -923,7 +885,7 @@ def _old_ring(log: _Log) -> None:
 
 
 def test_the_readers_show_an_all_day_item_as_due_and_leave_its_ring_out(log: _Log) -> None:
-    """my_schedule says due; the day has a label, not an item; the state block lists it."""
+    """my_schedule says due, and kept can still list the rings."""
     one = _record(_at(10, 15, 0), title="Enable 2FA", all_day=True, place="bank.example")
     timed = _record(_at(10, 15, 10), title="Dentist", confirmed=True)
     for rec in (one, timed):
@@ -932,36 +894,9 @@ def test_the_readers_show_an_all_day_item_as_due_and_leave_its_ring_out(log: _Lo
     rows = {r["id"]: r for r in _schedule(log)["items"] if "id" in r}
     assert rows[one.commitment_id]["when"] == "due tomorrow (Thu), all day"
     assert not [r for r in _schedule(log)["items"] if r["source"] == "reminder"]
-    first, last = day_window(date(2026, 10, 15), ZONE)
-    day = fold_day(log.conn, first, last, _ms(NOW), DaySources(ZONE))
-    assert [i["kind"] for i in day.items] == ["event"]  # the dentist; no ring, no all-day item
-    assert day.labels == [{
-        "title": "Enable 2FA", "source": "mail", "confirmed": False, "private": False,
-        "place": "bank.example", "id": f"{one.commitment_id}@2026-10-15",
-    }]
-    line = calendar_line(
-        None, ZONE, lambda: NOW.astimezone(UTC),
-        lambda now: next_appointments(log.paths.event_log, ZONE, now),
-    )
-    assert line == (
-        'Next on his calendar (read just now): due tomorrow (Thu) "Enable 2FA (not confirmed)";'
-        ' tomorrow (Thu) 10:00 am "Dentist".'
-    )
-    # kept can still list the ring
+    # kept can still list the rings
     kept = _Keep(log).call("kept", kind="reminder")
     assert kept["items"]
-
-
-def test_the_state_block_lists_a_deadline_due_today(log: _Log) -> None:
-    """An all-day item of today is still ahead at noon."""
-    commitments.note(log.conn, _record(_at(10, 14, 0), title="Hand in form", all_day=True))
-    now = _at(10, 14, 12).astimezone(UTC)
-    line = calendar_line(
-        None, ZONE, lambda: now, lambda at: next_appointments(log.paths.event_log, ZONE, at),
-    )
-    assert line == (
-        'Next on his calendar (read just now): due today "Hand in form (not confirmed)".'
-    )
 
 
 def _mail_at(key: str, subject: str, when: datetime) -> dict[str, Any]:

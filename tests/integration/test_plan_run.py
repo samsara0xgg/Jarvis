@@ -32,7 +32,7 @@ from jarvis.execution.plan_tool import build_plan_tool
 from jarvis.execution.tools import ToolContext, ToolError
 from jarvis.runtime import day_plan as runtime
 from jarvis.runtime.plan_run import Hooks, PlanWatch, make_route_legs
-from jarvis.state import memory_db, plan
+from jarvis.state import memory_db, plan, things
 from jarvis.state.day_line import DaySources
 from jarvis.state.event_log import emit_event, open_event_log, open_runtime_event_log
 from jarvis.state.memory_db import append_record, open_memory_db
@@ -55,14 +55,14 @@ def _at(clock: str) -> datetime:
 
 def _item(item_id: str = "p1", **fields: Any) -> plan.PlanItem:  # noqa: ANN401
     base: dict[str, Any] = {
-        "item_id": item_id, "title": "Write the report", "firmness": "movable", "source": "todo",
+        "item_id": item_id, "title": "Write the report", "firmness": "movable", "source": "goal",
         "start": "09:00", "minutes": 60,
     }
     return plan.PlanItem(**(base | fields))
 
 
 DENTIST = _item(
-    "p9", title="Dentist", firmness="fixed", source="commitment:c1", start="14:00", place="Clinic",
+    "p9", title="Dentist", firmness="fixed", source="item:thing-c1", start="14:00", place="Clinic",
     route=LEG,
 )
 
@@ -186,6 +186,39 @@ def test_a_day_whose_draft_failed_is_opened_with_that_fact_and_asked_once(rig: R
     rig.watch.tick(_at("07:06"))
     assert rig.record(f"plan-open-{DAY}") == "Good morning."
     assert [json.loads(u)["draft_failed"] for u in rig.opened] == [True]
+
+
+def test_the_opening_lists_the_things_he_has_not_confirmed(rig: Rig) -> None:
+    """ADR 0299: unconfirmed things of the next days, due ones and untimed ones; no others."""
+    def add(title: str, kind: str = "go", *, confirmed: bool = False, **fields: Any) -> str:  # noqa: ANN401
+        one = things.Thing(things.new_id(), title, kind, confirmed=confirmed, **fields)
+        with closing(rig.conn()) as conn:
+            return things.add(
+                conn, one, by="mail", evidence="a mail", zone=ZONE, now=_at("06:00"),
+            )[0].thing_id
+
+    def on(days: int, clock: str) -> str:
+        return (_at(clock) + timedelta(days=days)).isoformat()
+
+    add("Visa interview", start_at=on(2, "10:00"), place="Consulate", private=True)
+    add("Parent meeting", start_at=on(1, "17:00"))
+    add("Send form", "do", due=(DAY + timedelta(days=1)).isoformat())
+    add("Fix the bike", "do")
+    add("Class", start_at=on(1, "09:00"), confirmed=True)  # he has said yes
+    add("Reunion", start_at=on(9, "12:00"))  # past the horizon
+    add("Tax return", "do", due=(DAY + timedelta(days=40)).isoformat())  # so is its date
+    dropped = add("Dropped", start_at=on(1, "11:00"))
+    with closing(rig.conn()) as conn:
+        things.close(conn, dropped, "cancelled", by="her", evidence="said so", zone=ZONE)
+    rig.drafted(_item())
+    rig.watch.tick(_at("07:05"))
+    rows = json.loads(rig.opened[0])["unconfirmed"]
+    assert [(r["date"], r["title"], r["place"], r["private"]) for r in rows] == [
+        ("2026-10-17", "Parent meeting", "", False),
+        ("2026-10-18", "Visa interview", "Consulate", True),
+        ("2026-10-17", "Send form", "", False),
+        (None, "Fix the bike", "", False),
+    ]
 
 
 def test_a_day_with_no_plan_and_no_failure_is_left_alone(rig: Rig) -> None:

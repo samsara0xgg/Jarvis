@@ -23,6 +23,7 @@ from dataclasses import dataclass, replace
 from datetime import date
 from typing import TYPE_CHECKING, Any, Final
 
+from jarvis.state import commitments, things
 from jarvis.state.event_log import emit_event, iter_events_of_types
 
 if TYPE_CHECKING:
@@ -42,8 +43,11 @@ ACTOR: Final[str] = "jarvis_runtime"
 FIRMNESS: Final[tuple[str, ...]] = ("fixed", "movable", "droppable")
 BY: Final[tuple[str, ...]] = ("him", "her", "program")
 SETTLED_BY: Final[tuple[str, ...]] = ("him", "first_item")
-SOURCE_NAMES: Final[tuple[str, ...]] = ("todo", "goal", "his")
-SOURCE_PREFIXES: Final[tuple[str, ...]] = ("commitment:", "routine:")
+SOURCE_NAMES: Final[tuple[str, ...]] = ("goal", "his")
+LEGACY_SOURCES: Final[tuple[str, ...]] = ("todo",)
+"""Plans drafted before ADR 0299 carry it; a revision writes them again, a draft never names it."""
+ITEM_PREFIX: Final[str] = "item:"
+SOURCE_PREFIXES: Final[tuple[str, ...]] = (ITEM_PREFIX, "commitment:", "routine:")
 TITLE_CHARS: Final[int] = 120
 MAX_ITEMS: Final[int] = 40
 ERROR_CHARS: Final[int] = 200
@@ -58,8 +62,9 @@ class PlanItem:
     """One thing in a day.
 
     ``start`` is ``HH:MM`` local, or None for an item with only a window or no time at all.
-    ``source`` says where it came from: ``commitment:<id>``, ``todo``, ``goal``, ``routine:<id>``
-    or ``his``. ``route`` is the computed leg to the place (leave at, line, stops, arrive at, a
+    ``source`` says where it came from: ``item:<id>`` (a thing of his ledger, ADR 0299), ``goal``,
+    ``routine:<id>`` or ``his``; a plan drafted before ADR 0299 also holds ``commitment:<id>`` and
+    ``todo``. ``route`` is the computed leg to the place (leave at, line, stops, arrive at, a
     backup), filled in by the program, never by the model.
     """
 
@@ -160,11 +165,25 @@ def check_item(item: PlanItem) -> None:
         if value is not None and not (isinstance(value, str) and _HM.fullmatch(value)):
             msg = f"plan item {name} must be HH:MM or None, not {value!r}"
             raise ValueError(msg)
-    if item.source not in SOURCE_NAMES and not (
+    if item.source not in (*SOURCE_NAMES, *LEGACY_SOURCES) and not (
         item.source.startswith(SOURCE_PREFIXES) and item.source.partition(":")[2]
     ):
         msg = f"plan item source must be one of {SOURCE_NAMES} or {SOURCE_PREFIXES}<id>"
         raise ValueError(msg)
+
+
+def thing_of(source: str) -> str:
+    """The id of the thing a plan item stands for, or "" when its source is not a thing's.
+
+    ``item:<id>`` names it; a plan drafted before ADR 0299 says ``commitment:commitment-<hex>``,
+    and the carry-in kept that hex as ``thing-<hex>``.
+    """
+    kind, _, ref = source.partition(":")
+    if source.startswith(ITEM_PREFIX):
+        return ref
+    if kind == "commitment" and ref:
+        return things.ID_PREFIX + ref.removeprefix(commitments.ID_PREFIX)
+    return ""
 
 
 def _items_payload(items: Iterable[PlanItem]) -> list[dict[str, Any]]:

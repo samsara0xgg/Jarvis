@@ -56,7 +56,7 @@ from jarvis.execution.tools import ToolContext
 from jarvis.runtime.day_plan import DayPlanSettings, DayPlanSources, make_ask
 from jarvis.runtime.work_state import build_analyst
 from jarvis.shared import lang
-from jarvis.state import commitments, places, plan
+from jarvis.state import places, plan, things
 from jarvis.state.day_line import day_window
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import append_record, message_record, messages_since
@@ -386,15 +386,27 @@ class PlanWatch:
             self._push(text, sound=level == "off", urgent=False)
 
     def _unconfirmed(self, run: _Run) -> list[dict[str, Any]]:
-        """Commitments of the next days that came from mail and are not confirmed yet."""
+        """Open things he has not confirmed that fall in the horizon, and the ones with no time."""
         first = day_window(run.day, self._zone)[0]
         last = day_window(run.day + timedelta(days=self._settings.horizon_days), self._zone)[0]
-        return [
-            {"date": o.day, "title": o.commitment.title, "place": o.commitment.place,
-             "private": o.commitment.private}
-            for o in commitments.occurrences(run.conn, first, last, zone=self._zone)
-            if not o.commitment.confirmed
+        found: list[dict[str, Any]] = [
+            {"date": datetime.fromtimestamp(o.start_ms / 1000, self._zone).date().isoformat(),
+             "title": o.thing.title, "place": o.thing.place, "private": o.thing.private}
+            for o in things.occurrences(run.conn, first, last, zone=self._zone)
+            if not o.thing.confirmed
         ]
+        for one in things.open_things(run.conn):
+            if one.confirmed or one.start_at or one.on_day:
+                continue
+            due = things.due_ms(one, self._zone) if one.due else None
+            if due is not None and due >= last:
+                continue
+            found.append({
+                "date": None if due is None
+                else datetime.fromtimestamp(due / 1000, self._zone).date().isoformat(),
+                "title": one.title, "place": one.place, "private": one.private,
+            })
+        return found
 
     # --- a notice ---------------------------------------------------------------------
 

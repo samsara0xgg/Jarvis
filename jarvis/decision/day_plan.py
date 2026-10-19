@@ -3,7 +3,7 @@
 The nightly draft, the morning opening and the judgement of a notice (ADR 0291) all use the
 ``day-plan`` skill. The model's answer is untrusted JSON: :func:`parse_items` keeps only the items
 that read, do not collide with a fixed item and name a known source, and adds back any fixed item
-the model left out; the program, not the model, owns the commitments of the day.
+the model left out; the program, not the model, owns the timed things of the day.
 :func:`parse_decision` turns anything malformed in a notice's answer into silence.
 """
 
@@ -13,24 +13,34 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from functools import cache
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.decision.plan_watch import budget_facts
 from jarvis.shared import lang
 from jarvis.shared.skills import load_skill
-from jarvis.state.plan import ACTS, MAX_ITEMS, Plan, PlanItem, apply_changes, check_item
+from jarvis.state import things
+from jarvis.state.plan import (
+    ACTS,
+    ITEM_PREFIX,
+    MAX_ITEMS,
+    Plan,
+    PlanItem,
+    apply_changes,
+    check_item,
+)
 from jarvis.state.plan_budget import budget, is_task
+from jarvis.state.things_late import due_is_day, late, when_ms
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
     from datetime import tzinfo
 
     from jarvis.decision.plan_watch import Notice
-    from jarvis.state.commitments import Occurrence
     from jarvis.state.plan import Decided
     from jarvis.state.plan_facts import DayFacts
+    from jarvis.state.things import Occurrence, Thing
 
 OPENING_CHARS: Final[int] = 600
 """Longest opening the parser accepts; a longer one is not the short message asked for."""
@@ -49,7 +59,7 @@ class DayPlanInputs:
     fixed: tuple[PlanItem, ...] = ()
     upcoming: tuple[Mapping[str, Any], ...] = ()
     calendar_all_day: tuple[str, ...] = ()
-    todo: tuple[Mapping[str, Any], ...] = ()
+    things: tuple[Mapping[str, Any], ...] = ()
     goals: tuple[str, ...] = ()
     deadlines: tuple[str, ...] = ()
     routines: tuple[Mapping[str, Any], ...] = ()
@@ -71,7 +81,7 @@ class DayPlanInputs:
             "fixed": [_public(item) for item in self.fixed],
             "upcoming": list(self.upcoming),
             "calendar_all_day": list(self.calendar_all_day),
-            "todo": list(self.todo),
+            "things": list(self.things),
             "goals": list(self.goals),
             "deadlines": list(self.deadlines),
             "routines": list(self.routines),
@@ -492,7 +502,7 @@ def parse_items(
     if len(raw_items) > MAX_ITEMS:
         notes.append(f"{len(raw_items) - MAX_ITEMS} items past the first {MAX_ITEMS} dropped")
         raw_items = raw_items[:MAX_ITEMS]
-    by_source = {item.source: item for item in fixed if item.source.startswith("commitment:")}
+    by_source = {item.source: item for item in fixed if item.source.startswith(ITEM_PREFIX)}
     kept: list[PlanItem] = []
     lent: dict[str, PlanItem] = {}
     for index, raw in enumerate(raw_items, 1):
@@ -523,63 +533,77 @@ def _hm(moment: datetime) -> str:
     return moment.strftime("%H:%M")
 
 
-def commitment_items(
+def _local_day(ms: int, zone: tzinfo) -> date:
+    return datetime.fromtimestamp(ms / 1000, zone).date()
+
+
+def fixed_items(
     occurrences: Sequence[Occurrence], day: date, zone: tzinfo,
 ) -> list[PlanItem]:
-    """The fixed items of ``day`` from commitment occurrences (starting that local day).
+    """The fixed items of ``day`` from the ledger's timed occurrences (starting that local day).
 
-    An all-day commitment has no start and lasts the day; a timed one that runs past midnight is
-    cut at midnight.
+    A timed one that runs past midnight is cut at midnight. An all-day one is no item: it is the
+    day's label or a task (:func:`day_labels`, :func:`candidate_things`).
     """
     items: list[PlanItem] = []
     for occ in occurrences:
-        if occ.day != day.isoformat():
+        if occ.all_day or _local_day(occ.start_ms, zone) != day:
             continue
-        c = occ.commitment
-        begin = datetime.fromtimestamp(occ.start_ms / 1000, zone)
-        if c.all_day:
-            start, minutes = None, _DAY_MINUTES
-        else:
-            start = _hm(begin)
-            until_midnight = _DAY_MINUTES - _minute(start)
-            minutes = max(1, min(c.minutes, until_midnight))
+        one = occ.thing
+        start = _hm(datetime.fromtimestamp(occ.start_ms / 1000, zone))
+        until_midnight = _DAY_MINUTES - _minute(start)
+        minutes = max(1, min(round((occ.end_ms - occ.start_ms) / 60_000), until_midnight))
         items.append(PlanItem(
-            item_id=c.commitment_id, title=c.title[:120], firmness="fixed",
-            source=f"commitment:{c.commitment_id}", start=start, minutes=minutes,
-            place=c.place, private=c.private,
+            item_id=one.thing_id, title=one.title[:120], firmness="fixed",
+            source=f"{ITEM_PREFIX}{one.thing_id}", start=start, minutes=minutes,
+            place=one.place, private=one.private,
         ))
     return items
 
 
-def calendar_items(
-    events: Sequence[Mapping[str, Any]], day: date, zone: tzinfo, taken: Sequence[PlanItem],
-) -> tuple[list[PlanItem], list[str]]:
-    """``(fixed items, all-day labels)`` from the day's calendar events (``Home.calendar`` rows).
+def day_labels(occurrences: Sequence[Occurrence], day: date, zone: tzinfo) -> list[str]:
+    """The titles of what he goes to on ``day`` that has a day and no hour (a trip, a holiday)."""
+    return [
+        occ.thing.title[:120] for occ in occurrences
+        if occ.all_day and occ.thing.kind == "go"
+        and _local_day(occ.start_ms, zone) == day
+    ]
 
-    A timed event whose start and title a commitment already holds is left out: the same event
-    twice. Events that cannot be read are skipped.
+
+def candidate_things(  # noqa: PLR0913 - what is open, what is on, the day, the zone and how far
+    open_things: Sequence[Thing], occurrences: Sequence[Occurrence], day: date, zone: tzinfo,
+    horizon_end: date, limit: int,
+) -> list[dict[str, Any]]:
+    """The open things that may become tasks of ``day``, in the program's order, at most ``limit``.
+
+    Late ones (a ``do`` whose time went by before the day), the ones due by ``horizon_end``, the
+    ``do`` things on the day itself, and the untimed ones: ``open_things`` already puts timed
+    things soonest first and untimed ones oldest first, so a due thing comes before one with no
+    time. A ``go`` thing is a fixed item or a label, not a task.
     """
-    items: list[PlanItem] = []
-    labels: list[str] = []
-    held = {(item.start, item.title.casefold()) for item in taken}
-    for event in events:
-        try:
-            title = str(event.get("title") or "").strip()[:120]
-            if not title:
+    first = int(datetime.combine(day, time.min, zone).timestamp() * 1000)
+    on_day = {
+        occ.thing.thing_id for occ in occurrences
+        if occ.all_day and occ.thing.kind == "do"
+        and _local_day(occ.start_ms, zone) == day
+    }
+    behind = {one.thing_id for one in late(open_things, first, zone)}
+    rows: list[dict[str, Any]] = []
+    for one in open_things:
+        by = None
+        if one.due:
+            at = _local_day(things.due_ms(one, zone), zone)
+            if at > horizon_end:
                 continue
-            if event.get("all_day"):
-                labels.append(title)
-                continue
-            begin = datetime.fromisoformat(str(event["start"])).astimezone(zone)
-            end = datetime.fromisoformat(str(event["end"])).astimezone(zone)
-            if begin.date() != day or (begin.strftime("%H:%M"), title.casefold()) in held:
-                continue
-            minutes = max(1, min(int((end - begin) / timedelta(minutes=1)),
-                                 _DAY_MINUTES - _minute(_hm(begin))))
-            items.append(PlanItem(
-                item_id=f"calendar-{len(items)}", title=title, firmness="fixed", source="his",
-                start=_hm(begin), minutes=minutes,
-            ))
-        except (KeyError, ValueError, TypeError):
+            by = one.due if due_is_day(one) else at.isoformat()
+        elif one.thing_id in behind:
+            by = _local_day(when_ms(one, zone) or first, zone).isoformat()
+        elif one.thing_id in on_day:
+            by = day.isoformat()
+        elif one.start_at or one.on_day:
             continue
-    return items, labels
+        rows.append({
+            "title": one.title, "due": by, "late": one.thing_id in behind,
+            "private": one.private, "source": f"{ITEM_PREFIX}{one.thing_id}",
+        })
+    return rows[:limit]

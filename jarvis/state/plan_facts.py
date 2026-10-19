@@ -22,7 +22,7 @@ from jarvis.state.phone_location import LOCATION_EVENT
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from datetime import tzinfo
 
     from jarvis.shared import Event
@@ -54,6 +54,8 @@ _WATCHED: Final[tuple[str, ...]] = (
     "surface.user_intent", rides.STARTED,
 )
 _SPOKEN: Final[tuple[str, ...]] = ("utterance.received", "surface.user_intent")
+_THING_EVENTS: Final[tuple[str, ...]] = ("thing.added", "thing.moved", "thing.closed")
+_TIME_KEYS: Final[tuple[str, ...]] = ("start_at", "on_day", "due")
 
 
 @dataclass(frozen=True)
@@ -107,10 +109,10 @@ class Move:
 
 
 @dataclass(frozen=True)
-class NotedCommitment:
-    """A commitment noted today for today. ``start`` is ``HH:MM`` local, empty when all day."""
+class NotedThing:
+    """A thing added today for today. ``start`` is ``HH:MM`` local, empty when it has no hour."""
 
-    commitment_id: str
+    thing_id: str
     title: str
     start: str
     place: str
@@ -137,7 +139,7 @@ class DayFacts:
     stays: tuple[Stay, ...]
     moves: tuple[Move, ...]
     doing: tuple[str, ...]
-    commitments: tuple[NotedCommitment, ...]
+    things: tuple[NotedThing, ...]
     commits: tuple[Commit, ...] = ()
 
     def moves_since(self, since_ms: int) -> tuple[Move, ...]:
@@ -166,10 +168,10 @@ class DayFacts:
                 for m in self.moves
             ],
             "doing": list(self.doing),
-            "commitments_noted_today": [
+            "things_noted_today": [
                 {"title": c.title, "start": c.start or None, "place": c.place,
                  "noted_at": clock(c.noted_at_ms)}
-                for c in self.commitments
+                for c in self.things
             ],
         }
 
@@ -309,31 +311,60 @@ def evidence(conn: sqlite3.Connection, since_ms: int, now_ms: int, zone: tzinfo)
     }
 
 
+def _hour_on(fields: Mapping[str, Any], day: date, zone: tzinfo) -> str | None:
+    """``HH:MM`` local (empty for a whole day) when the time in ``fields`` falls on ``day``.
+
+    ``fields`` hold a thing's ``start_at``, ``on_day`` and ``due``; None when it falls on another
+    day or has no time.
+    """
+    if fields["start_at"]:
+        at = datetime.fromisoformat(fields["start_at"]).astimezone(zone)
+        return f"{at:%H:%M}" if at.date() == day else None
+    if fields["on_day"]:
+        return "" if fields["on_day"] == day.isoformat() else None
+    due = fields["due"]
+    if len(due) == len(day.isoformat()):  # a date alone: by the end of that day
+        return "" if due == day.isoformat() else None
+    if due:
+        at = datetime.fromisoformat(due).astimezone(zone)
+        return f"{at:%H:%M}" if at.date() == day else None
+    return None
+
+
 def _noted(  # noqa: PLR0913 - the day, its bounds, the moment and the zone.
     conn: sqlite3.Connection, day: date, first_ms: int, last_ms: int, now_ms: int, zone: tzinfo,
-) -> tuple[NotedCommitment, ...]:
-    """Commitments noted during ``day`` (up to ``now_ms``) that fall on ``day`` and still stand."""
-    dropped: set[str] = set()
-    noted: dict[str, NotedCommitment] = {}
-    for event in iter_events_of_types(
-        conn, ("commitment.noted", "commitment.dropped"), since_epoch_ms=first_ms,
-    ):
+) -> tuple[NotedThing, ...]:
+    """Things added during ``day`` (up to ``now_ms``) that fall on ``day`` and still stand.
+
+    One the carry-in wrote is not new. A move today counts where it lands; a thing closed today
+    (cancelled, done or paid, or that date of a weekly one) no longer stands.
+    """
+    held: dict[str, dict[str, Any]] = {}
+    for event in iter_events_of_types(conn, _THING_EVENTS, since_epoch_ms=first_ms):
         if event.ts_epoch_ms > min(now_ms, last_ms - 1):
             continue
         payload = event.payload
-        cid = str(payload["commitment_id"])
-        if event.type == "commitment.dropped":
-            dropped.add(cid)
-            continue
-        start = datetime.fromisoformat(str(payload["start_at"])).astimezone(zone)
-        if start.date() != day:
-            continue
-        all_day = bool(payload.get("all_day"))
-        noted[cid] = NotedCommitment(
-            cid, str(payload["title"]), "" if all_day else f"{start:%H:%M}",
-            str(payload.get("place") or ""), bool(payload["private"]), event.ts_epoch_ms,
-        )
-    return tuple(c for cid, c in noted.items() if cid not in dropped)
+        thing_id = str(payload["thing_id"])
+        if event.type == "thing.added":
+            if payload["by"] != "carry_in":
+                held[thing_id] = {
+                    **{k: str(payload.get(k) or "") for k in _TIME_KEYS},
+                    "title": str(payload["title"]), "place": str(payload.get("place") or ""),
+                    "private": bool(payload.get("private")), "at": event.ts_epoch_ms,
+                }
+        elif thing_id in held and event.type == "thing.moved" and not payload.get("date"):
+            held[thing_id].update({k: str(payload[k]) for k in _TIME_KEYS})
+        elif thing_id in held and event.type == "thing.closed" and (
+            not payload.get("date") or payload["date"] == day.isoformat()
+        ):
+            del held[thing_id]
+    found = []
+    for thing_id, one in held.items():
+        if (hour := _hour_on(one, day, zone)) is not None:
+            found.append(NotedThing(
+                thing_id, one["title"], hour, one["place"], one["private"], one["at"],
+            ))
+    return tuple(found)
 
 
 def facts_at(
@@ -392,7 +423,7 @@ def facts_at(
         stays=all_stays,
         moves=drive,
         doing=_doing(conn, morning, now_ms),
-        commitments=_noted(conn, day, first_ms, last_ms, now_ms, zone),
+        things=_noted(conn, day, first_ms, last_ms, now_ms, zone),
         commits=_commits(conn, first_ms, now_ms),
     )
 

@@ -154,7 +154,7 @@ from jarvis.execution.path_resolver import (
 )
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.places_api import turn_places
-from jarvis.execution.schedule_tool import build_schedule_tool, upcoming_events
+from jarvis.execution.schedule_tool import build_schedule_tool
 from jarvis.execution.tools import (
     DEFAULT_SCREEN_MAX_WIDTH_PX,
     DEFAULT_WEB_FETCH_MAX_BYTES,
@@ -210,14 +210,7 @@ from jarvis.runtime.locate import PUSH_WAIT_S, SOCKET_WAIT_S, Locator
 from jarvis.runtime.mail_codes import MailCodes, MailCodesSettings
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.runtime.night_run import NightRun, night_settings
-from jarvis.runtime.now_block import (
-    KEPT,
-    CalendarCache,
-    calendar_line,
-    doing_now_line,
-    next_appointments,
-    plan_line,
-)
+from jarvis.runtime.now_block import calendar_line, doing_now_line, plan_line
 from jarvis.runtime.picture_files import PictureFiles
 from jarvis.runtime.picture_notes import PictureNotes
 from jarvis.runtime.plugin_connections import PluginConnections
@@ -730,8 +723,6 @@ class JarvisRuntime:
     projects: ProjectsService | None = None
     # ADR 0051: the companion home's Today, mail and brief reads. None = hand-assembled.
     home: Home | None = None
-    # ADR 0249: the state block's calendar line reads this; its loop refreshes it. None = no line.
-    calendar_next: CalendarCache | None = None
     # ADR 0176: what the Dashboard shows (``dashboard.view.enabled``). None = off.
     view: ViewState | None = None
     # ADR 0147: the Dashboard's mail page's reply drafts (``dashboard.mail.enabled``, which
@@ -3459,10 +3450,6 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     attachments = Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME)
     picture_files = PictureFiles(attachments, memory_db=memory.db_path)
     set_stale_files_handler(picture_files.stale)  # ADR 0255
-    # ADR 0249: his next calendar items, read in the background through ``my_schedule``'s read.
-    calendar_next = CalendarCache(
-        partial(upcoming_events, home.graph, local_zone, limit=KEPT), speakable.now,
-    )
     runtime = JarvisRuntime(
         config=full_config,
         runtime_paths=paths,
@@ -3531,7 +3518,6 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         work_state_auto=_work_state_auto(full_config, config_path),
         projects=projects,
         home=home,
-        calendar_next=calendar_next,
         view=view,
         mail_drafts=mail_drafts,
         ambient=ambient,
@@ -3542,12 +3528,10 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             voice_cues.line,
             *(() if ambient is None else (ambient.line,)),
             partial(_shares_line, paths.event_log),
-            # ADR 0249: what he is doing now, then his next calendar items, each with its age.
+            # ADR 0249: what he is doing now, with its age, then his next things, read from the
+            # ledger of his things (ADR 0299).
             partial(doing_now_line, paths.event_log, local_zone, speakable.now),
-            partial(
-                calendar_line, calendar_next, local_zone, speakable.now,
-                partial(next_appointments, paths.event_log, local_zone),
-            ),
+            partial(calendar_line, paths.event_log, local_zone, speakable.now),
             # ADR 0291: today's plan, settled or not, with its next item.
             partial(
                 plan_line, paths.event_log, local_zone, speakable.now,

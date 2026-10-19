@@ -2,14 +2,14 @@
 
 Real Event Log, the real producers and ``_live_lines``, then the one-turn request builder with a
 stub model (no provider is called). Each check is an input and the exact line or request it
-gives: what he is doing with its age, the stale warning, the calendar slot left empty or read,
-every line present and absent, the size cap, and the order of the block.
+gives: what he is doing with its age, the stale warning, the next things read from the ledger of
+his things (ADR 0299) and how many wait on his word, every line present and absent, the size
+cap, and the order of the block.
 """
 
 from __future__ import annotations
 
 from contextlib import closing
-from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -20,16 +20,16 @@ from jarvis.runtime.now_block import (
     CALENDAR_PREFIX,
     DOING_PREFIX,
     LINE_CHARS,
-    CalendarGlance,
-    CalendarItem,
     calendar_line,
     doing_now_line,
 )
+from jarvis.state import things
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.integration.test_backend_prompt_assembly import HISTORY, LINE, STATUS, _drive_one_turn
 from tests.integration.test_ledger import NOW, ZONE, _at
 
 if TYPE_CHECKING:
+    from datetime import datetime
     from pathlib import Path
 
 NOTE = " Note: this analysis is old and may not describe the present."
@@ -121,81 +121,136 @@ def test_a_long_claim_is_cut_so_the_line_and_its_warning_fit(
     assert line.startswith(f"{DOING_PREFIX} (as of ")
 
 
-def _glance(read_at: datetime, *items: tuple[datetime, str]) -> CalendarGlance:
-    return CalendarGlance(read_at, [CalendarItem(start, title) for start, title in items])
+def _iso(day: int, hour: int, minute: int = 0) -> str:
+    return _at(day, hour, minute).isoformat()
 
 
-def _calendar(glance: CalendarGlance | None) -> str | None:
-    return calendar_line(lambda: glance, ZONE, _clock)
+Row = tuple[str, str, dict[str, Any]]
+WRITE: dict[str, Any] = {"by": "her", "evidence": "said so", "zone": ZONE, "now": NOW}
+
+
+def _ledger(path: Path, *rows: Row) -> Path:
+    """Add these ``(title, kind, fields)`` to the ledger in the Event Log at ``path``."""
+    with closing(open_event_log(path)) as conn:
+        for title, kind, fields in rows:
+            things.add(conn, things.Thing(things.new_id(), title, kind, **fields), **WRITE)
+    return path
+
+
+def _calendar(tmp_path: Path, *rows: Row) -> str | None:
+    return calendar_line(_ledger(_world(tmp_path, []), *rows), ZONE, _clock)
+
+
+def _go(title: str, start: str, **fields: Any) -> Row:  # noqa: ANN401 - the thing's fields
+    return title, "go", {"start_at": start, **fields}
 
 
 @pytest.mark.parametrize(
-    ("glance", "expected"),
+    ("rows", "expected"),
     [
-        # Today's items by clock, tomorrow's by name; the read's age after the heading.
+        # Today's by clock, tomorrow's by name; nothing says when it was read.
         (
-            _glance(_at(8, 14, 56), (_at(8, 15, 30), "Dentist"), (_at(8, 17), "Standup")),
-            f'{CALENDAR_PREFIX} (read 4 minutes ago): 3:30 pm "Dentist"; 5:00 pm "Standup".',
+            [_go("Dentist", _iso(8, 15, 30)), _go("Standup", _iso(8, 17))],
+            f'{CALENDAR_PREFIX}: 3:30 pm "Dentist"; 5:00 pm "Standup".',
         ),
         (
-            _glance(_at(8, 13), (_at(9, 9, 30), "Interview")),
-            f'{CALENDAR_PREFIX} (read 2 hours ago): tomorrow (Fri) 9:30 am "Interview".',
+            [_go("Interview", _iso(9, 9, 30))],
+            f'{CALENDAR_PREFIX}: tomorrow (Fri) 9:30 am "Interview".',
+        ),
+        # Two at most, soonest first, whatever order they were written in.
+        (
+            [_go("C", _iso(8, 18)), _go("A", _iso(8, 16)), _go("B", _iso(8, 17))],
+            f'{CALENDAR_PREFIX}: 4:00 pm "A"; 5:00 pm "B".',
+        ),
+        # An item that has begun is never offered as the next one; two days out is not next.
+        (
+            [_go("Done", _iso(8, 14)), _go("Gym", _iso(8, 16)), _go("Planning", _iso(12, 14))],
+            f'{CALENDAR_PREFIX}: 4:00 pm "Gym".',
+        ),
+        # A title is his words: one line, no double quotes, cut at 40.
+        (
+            [_go('Lunch with "Sam"\nroom 3', _iso(8, 16))],
+            f"{CALENDAR_PREFIX}: 4:00 pm \"Lunch with 'Sam' room 3\".",
+        ),
+        ([_go("x" * 100, _iso(8, 16))], f'{CALENDAR_PREFIX}: 4:00 pm "{"x" * 39}…".'),
+        # A private one is named only as such, an unconfirmed one says so and is counted.
+        (
+            [_go("Therapy", _iso(8, 16), private=True), _go("Class", _iso(8, 17), confirmed=False)],
+            f'{CALENDAR_PREFIX} (1 not confirmed): 4:00 pm "something private"; '
+            '5:00 pm "Class (not confirmed)".',
+        ),
+        # A whole day is not a clock time; a thing to do by a day or an hour says it is due.
+        (
+            [("Holiday", "go", {"on_day": "2026-10-08"}), _go("Dentist", _iso(8, 16))],
+            f'{CALENDAR_PREFIX}: all day today "Holiday"; 4:00 pm "Dentist".',
         ),
         (
-            _glance(_at(8, 14, 59), (_at(12, 14), "Planning")),
-            f'{CALENDAR_PREFIX} (read 1 minute ago): Mon Oct 12, 2:00 pm "Planning".',
+            [("Pay rent", "do", {"due": "2026-10-08"}), ("Send form", "do", {"due": _iso(9, 17)})],
+            f'{CALENDAR_PREFIX}: due today "Pay rent"; due tomorrow (Fri) 5:00 pm "Send form".',
         ),
-        # Two at most, soonest first, whatever order the reader gave.
+        # A week's repeat that falls tomorrow; one that does not; another offset, said in his zone.
         (
-            _glance(
-                _at(8, 14, 59), (_at(8, 18), "C"), (_at(8, 16), "A"), (_at(8, 17), "B"),
-            ),
-            f'{CALENDAR_PREFIX} (read 1 minute ago): 4:00 pm "A"; 5:00 pm "B".',
+            [_go("Pottery", _iso(2, 9), weekly_until="2026-10-30")],
+            f'{CALENDAR_PREFIX}: tomorrow (Fri) 9:00 am "Pottery".',
         ),
-        # An item that has begun is never offered as the next one.
-        (
-            _glance(_at(8, 13), (_at(8, 14), "Done"), (_at(8, 16), "Gym")),
-            f'{CALENDAR_PREFIX} (read 2 hours ago): 4:00 pm "Gym".',
-        ),
-        # A title is his calendar's words: one line, no double quotes, cut at 40.
-        (
-            _glance(_at(8, 14, 59), (_at(8, 16), 'Lunch with "Sam"\nroom 3')),
-            f"{CALENDAR_PREFIX} (read 1 minute ago): 4:00 pm \"Lunch with 'Sam' room 3\".",
-        ),
-        (
-            _glance(_at(8, 14, 59), (_at(8, 16), "x" * 100)),
-            f'{CALENDAR_PREFIX} (read 1 minute ago): 4:00 pm "{"x" * 39}…".',
-        ),
-        # Nothing ahead, nothing held, no reading.
-        (_glance(_at(8, 13), (_at(8, 14), "Done")), None),
-        (_glance(_at(8, 13)), None),
-        (None, None),
+        ([_go("Pottery", _iso(3, 19), weekly_until="2026-10-30")], None),
+        ([_go("Dentist", "2026-10-08T22:30:00+00:00")], f'{CALENDAR_PREFIX}: 3:30 pm "Dentist".'),
+        # Nothing ahead, nothing timed, nothing in the ledger.
+        ([_go("Past", _iso(8, 14))], None),
+        ([("Buy milk", "do", {})], None),
+        ([], None),
     ],
 )
-def test_the_calendar_line_table(glance: CalendarGlance | None, expected: str | None) -> None:
-    """Each reading of the injected reader gives the line or nothing; none past the cap."""
-    line = _calendar(glance)
+def test_the_calendar_line_table(rows: list[Row], expected: str | None, tmp_path: Path) -> None:
+    """Each ledger gives the line or nothing; none past the cap."""
+    line = _calendar(tmp_path, *rows)
     assert line == expected
     assert line is None or len(line) <= LINE_CHARS
 
 
-def test_without_a_calendar_reader_the_line_is_left_out() -> None:
-    """The default: nothing is wired, so the block has no calendar line."""
-    assert calendar_line(None, ZONE, _clock) is None
-
-
-def test_an_item_is_said_in_his_zone_not_the_readers() -> None:
-    """22:30 UTC is 3:30 pm at UTC-7."""
-    utc_item = (datetime(2026, 10, 8, 22, 30, tzinfo=UTC), "Dentist")
-    assert _calendar(_glance(_at(8, 14, 59), utc_item)) == (
-        f'{CALENDAR_PREFIX} (read 1 minute ago): 3:30 pm "Dentist".'
+def test_what_is_closed_or_cancelled_is_not_next(tmp_path: Path) -> None:
+    """Done and cancelled things, and a cancelled date of a week, are left out."""
+    log = _ledger(
+        _world(tmp_path, []),
+        _go("Gym", _iso(8, 16)), _go("Dentist", _iso(8, 17)), _go("Class", _iso(8, 18)),
+        _go("Pottery", _iso(2, 9), weekly_until="2026-10-30"),
     )
+    with closing(open_event_log(log)) as conn:
+        by_title = {t.title: t for t in things.fold(conn).values()}
+        things.close(conn, by_title["Gym"].thing_id, "done", **WRITE)
+        things.close(conn, by_title["Dentist"].thing_id, "cancelled", **WRITE)
+        things.close(
+            conn, by_title["Pottery"].thing_id, "cancelled", occurrence="2026-10-09", **WRITE,
+        )
+    assert calendar_line(log, ZONE, _clock) == f'{CALENDAR_PREFIX}: 6:00 pm "Class".'
+
+
+def test_the_count_of_unconfirmed_things_counts_every_open_one(tmp_path: Path) -> None:
+    """Far off or with no time, an open thing he has not confirmed is counted; a closed one not."""
+    log = _ledger(
+        _world(tmp_path, []),
+        _go("Gym", _iso(8, 16)),
+        _go("Visa interview", _iso(20, 10), confirmed=False),
+        ("Fix the bike", "do", {"confirmed": False}),
+        _go("Old", _iso(1, 10), confirmed=False),
+    )
+    with closing(open_event_log(log)) as conn:
+        old = next(t for t in things.fold(conn).values() if t.title == "Old")
+        things.close(conn, old.thing_id, "cancelled", **WRITE)
+    assert calendar_line(log, ZONE, _clock) == (
+        f'{CALENDAR_PREFIX} (2 not confirmed): 4:00 pm "Gym".'
+    )
+
+
+def test_a_ledger_that_cannot_be_read_leaves_the_line_out(tmp_path: Path) -> None:
+    """No Event Log there: no line and no error."""
+    assert calendar_line(tmp_path / "missing" / "events.db", ZONE, _clock) is None
 
 
 def test_the_two_lines_together_stay_near_400_characters(tmp_path: Path) -> None:
     """The worst case: a stale long claim and two long titles."""
     doing = _doing(tmp_path, [_claim(_at(8, 11), LONG)])
-    calendar = _calendar(_glance(_at(8, 13), (_at(8, 16), "t" * 90), (_at(9, 9), "u" * 90)))
+    calendar = _calendar(tmp_path, _go("t" * 90, _iso(8, 16)), _go("u" * 90, _iso(9, 9)))
     assert doing is not None
     assert calendar is not None
     assert len(doing) + len(calendar) <= 2 * LINE_CHARS == 400
@@ -210,12 +265,11 @@ def test_each_line_is_present_only_when_it_has_content(
     """Through ``_live_lines``: the state line and the calendar line come and go separately."""
     rows = [_claim(_at(8, 14, 30), "Writing the my_day tool tests")] if "doing" in expected else []
     log = _world(tmp_path, rows)
-    glance = (
-        _glance(_at(8, 14, 56), (_at(8, 15, 30), "Dentist")) if "calendar" in expected else None
-    )
+    if "calendar" in expected:
+        _ledger(log, _go("Dentist", _iso(8, 15, 30)))
     lines = _live_lines((
         lambda: doing_now_line(log, ZONE, _clock),
-        lambda: calendar_line(lambda: glance, ZONE, _clock),
+        lambda: calendar_line(log, ZONE, _clock),
     ))
     kinds = tuple(
         "doing" if one.startswith(DOING_PREFIX) else "calendar" for one in lines
@@ -234,14 +288,14 @@ def test_the_lines_ride_the_end_of_the_block_and_leave_the_cached_prefix_alone(
 ) -> None:
     """After the ride and the Dashboard line, ahead of his words; system and history unchanged."""
     log = _world(tmp_path, [_claim(_at(8, 14, 30), "Writing the my_day tool tests")])
-    glance = _glance(_at(8, 14, 56), (_at(8, 15, 30), "Dentist"))
+    _ledger(log, _go("Dentist", _iso(8, 15, 30)))
     dashboard = "Dashboard: Allen is on the Mail page."
     old = _live_lines((lambda: RIDE, lambda: dashboard))
     new = _live_lines((
         lambda: RIDE,
         lambda: dashboard,
         lambda: doing_now_line(log, ZONE, _clock),
-        lambda: calendar_line(lambda: glance, ZONE, _clock),
+        lambda: calendar_line(log, ZONE, _clock),
     ))
     assert new[:2] == old
     plain_system, plain = _request(tmp_path, old)
@@ -253,7 +307,7 @@ def test_the_lines_ride_the_end_of_the_block_and_leave_the_cached_prefix_alone(
     assert block == (
         f"{RIDE}\n{dashboard}\n"
         f"{DOING_PREFIX} (as of 30 minutes ago, at 2:30 pm): Writing the my_day tool tests.\n"
-        f'{CALENDAR_PREFIX} (read 4 minutes ago): 3:30 pm "Dentist".'
+        f'{CALENDAR_PREFIX}: 3:30 pm "Dentist".'
     )
     assert messages[2]["content"] == f"{STATUS}{block}\n\n后天呢\n\n{LINE}"
     assert len(new[2]) + len(new[3]) <= 400
@@ -261,14 +315,15 @@ def test_the_lines_ride_the_end_of_the_block_and_leave_the_cached_prefix_alone(
 
 def test_the_order_is_the_same_whatever_the_ages(tmp_path: Path) -> None:
     """Ages change the words inside a line, never which line comes first."""
-    log = _world(tmp_path, [_claim(_at(8, 11), "Reading a paper")])
     orders = set()
-    for read_at in (_at(8, 14, 59), _at(8, 9)):
-        read = partial(_glance, read_at, (_at(8, 16), "Gym"))
+    for n, analysed in enumerate((_at(8, 14, 59), _at(8, 9))):
+        (tmp_path / str(n)).mkdir()
+        log = _world(tmp_path / str(n), [_claim(analysed, "Reading a paper")])
+        _ledger(log, _go("Gym", _iso(8, 16)))
         lines = _live_lines((
             lambda: RIDE,
-            lambda: doing_now_line(log, ZONE, _clock),
-            partial(calendar_line, read, ZONE, _clock),
+            partial(doing_now_line, log, ZONE, _clock),
+            partial(calendar_line, log, ZONE, _clock),
         ))
         orders.add(tuple(one.split(" ")[0] for one in lines))
     assert orders == {("Bus", "Doing", "Next")}

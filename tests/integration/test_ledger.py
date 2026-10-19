@@ -27,7 +27,7 @@ from jarvis.execution.tools import ToolError
 from jarvis.runtime import terminal as terminal_runtime
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings, ProseSettings, run_day_prose
 from jarvis.shared.device_link import DeviceCallError
-from jarvis.state import core_memory
+from jarvis.state import core_memory, reminders, things
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.job_ledger import add_application, list_applications, record_seen, upsert_mail
 from jarvis.state.ledger import (
@@ -236,6 +236,67 @@ def test_today_and_since_text(tmp_path: Path) -> None:
     earlier = since_text(src, NOW, _at(8, 10))
     assert "Mail 10-08 11:30: interview mail (Beta Labs, from Pat Lee)" in earlier
     assert "Nothing new" not in earlier
+
+
+def test_today_lists_his_open_things_the_overdue_ones_and_each_ring_once(tmp_path: Path) -> None:
+    """ADR 0299: the day's open things come from the ledger; a ring stands for its thing."""
+    src = _world(tmp_path)
+    write: dict[str, Any] = {"by": "her", "evidence": "said so", "zone": ZONE, "now": _at(8, 7)}
+    with closing(open_event_log(src.event_log)) as conn:
+        for title, kind, fields in (
+            ("Dentist", "go", {"start_at": _at(8, 16, 30).isoformat(), "rings": ("-30m",)}),
+            ("Stand-up", "go", {"start_at": _at(8, 9).isoformat(), "rings": ("-30m",)}),
+            ("Holiday", "go", {"on_day": "2026-10-08"}),
+            ("Therapy", "go", {"start_at": _at(8, 18).isoformat(), "private": True}),
+            ("Pay rent", "do", {"due": "2026-10-08"}),
+            ("Send form", "do", {"due": _at(8, 17).isoformat(), "confirmed": False}),
+            ("Pottery", "go", {"start_at": _at(1, 19).isoformat(), "weekly_until": "2026-10-29"}),
+            ("Call mum", "do", {"start_at": _at(6, 10).isoformat()}),
+            ("Old bill", "do", {"due": "2026-10-01"}),
+            ("Seminar", "go", {"start_at": _at(5, 10).isoformat()}),
+            ("Fix the bike", "do", {}),
+            ("Done already", "do", {"due": "2026-10-08"}),
+            ("Dropped", "go", {"start_at": _at(8, 20).isoformat()}),
+            ("Tomorrow", "go", {"start_at": _at(9, 10).isoformat()}),
+        ):
+            things.add(conn, things.Thing(things.new_id(), title, kind, **fields), **write)
+        held = {t.title: t for t in things.fold(conn).values()}
+        things.close(conn, held["Done already"].thing_id, "done", **write)
+        things.close(conn, held["Dropped"].thing_id, "cancelled", **write)
+        # The stand-up's ring (08:30) rang this morning, and so did a reminder he set himself.
+        (ring,) = [
+            r.reminder_id for r in reminders.fold(conn).values()
+            if r.reminder_id.startswith(things.RING_PREFIX) and r.text.endswith("Stand-up")
+        ]
+        own = _at(8, 10)
+        emit_event(
+            conn, type="reminder.scheduled", ts_epoch_ms=int(_at(8, 7).timestamp() * 1000),
+            payload={
+                "reminder_id": "reminder-own", "due_at_epoch_ms": int(own.timestamp() * 1000),
+                "due_at_local": own.isoformat(), "text": "stretch", "action_id": "a2",
+            },
+        )
+        for rid, at in ((ring, _at(8, 8, 31)), ("reminder-own", _at(8, 10, 1))):
+            emit_event(
+                conn, type="reminder.fired", ts_epoch_ms=int(at.timestamp() * 1000),
+                payload={
+                    "reminder_id": rid, "fired_at": int(at.timestamp() * 1000), "late_ms": 0,
+                    "delivered": "speak",
+                },
+            )
+    today = today_text(src, NOW).splitlines()
+    assert (
+        '  Open things today (7): all day "Holiday"; 09:00 "Stand-up"; 16:30 "Dentist"; '
+        'due 17:00 "Send form" (not confirmed); 18:00 "something private"; 19:00 "Pottery"; '
+        'due today "Pay rent"'
+    ) in today
+    assert '  Overdue things (2): "Old bill" (was Thu 10-01); "Call mum" (was Tue 10-06)' in today
+    # The rings (16:00 for the dentist, 08:30 for the stand-up) are the things' own, listed with
+    # them: only the reminder he set himself is a reminder here, pending or fired.
+    (pending,) = [line for line in today if line.startswith("  Pending reminders")]
+    assert pending.startswith("  Pending reminders (1;")
+    assert pending.endswith('Fri 10-09 09:00 "call the dentist"')
+    assert "  Fired earlier today: 10:00 stretch" in today
 
 
 def test_render_context_places_the_blocks_and_dates_the_core_memory(tmp_path: Path) -> None:

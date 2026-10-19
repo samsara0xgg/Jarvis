@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
+from jarvis.state.plan import thing_of
 from jarvis.state.plan_budget import DAY_ENDS, budget, is_task, span_of
 from jarvis.state.plan_budget import at as _at
 
@@ -345,14 +346,14 @@ def _left_early(plan: Plan, facts: DayFacts, now: datetime) -> list[Notice]:
 
 
 def _new_commitments(plan: Plan, facts: DayFacts) -> list[Notice]:
-    held = {item.source for item in plan.items}
+    held = {thing_of(item.source) for item in plan.items}
     return [
         Notice(
-            _key("new_commitment", c.commitment_id), "new_commitment", c.commitment_id,
+            _key("new_commitment", c.thing_id), "new_commitment", c.thing_id,
             {"title": c.title, "start": c.start or None, "place": c.place, "private": c.private},
         )
-        for c in facts.commitments
-        if f"commitment:{c.commitment_id}" not in held
+        for c in facts.things
+        if c.thing_id not in held
     ]
 
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -23,12 +23,13 @@ from typing import TYPE_CHECKING, Any, Final
 from jarvis.decision.day_plan import (
     DayPlanInputs,
     build_prompt,
-    calendar_items,
-    commitment_items,
+    candidate_things,
+    day_labels,
+    fixed_items,
     parse_items,
 )
 from jarvis.runtime.work_state import build_analyst
-from jarvis.state import commitments, core_memory, places, plan, routines, work_state
+from jarvis.state import core_memory, places, plan, routines, things, work_state
 from jarvis.state.day_line import day_window, fold_day
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
 from jarvis.state.memory_db import current_core_memory, local_now
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.runtime.work_state import LLMAnalyst
-    from jarvis.state.day_line import CalendarRead, DaySources
+    from jarvis.state.day_line import DaySources
 
 LOGGER = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ RECENT_DAYS: Final[int] = 7
 """A week of lived days, so weekday rhythm shows."""
 MAX_MEMORY_ITEMS: Final[int] = 30
 MAX_UPCOMING: Final[int] = 20
-MAX_TODO: Final[int] = 30
+MAX_THINGS: Final[int] = 30
 MAX_LINES_PER_DAY: Final[int] = 200
 MAX_TOPS: Final[int] = 4
 HOUR_MS: Final[int] = 3_600_000
@@ -140,8 +141,6 @@ class DayPlanSources:
     memory_db: Path
     zone: tzinfo
     day_sources: DaySources
-    calendar: CalendarRead | None = None
-    todos: Callable[[], list[dict[str, Any]]] | None = None
     weather: Callable[[date], dict[str, Any] | None] | None = None
 
 
@@ -332,29 +331,20 @@ def gather(
     """The draft's inputs for ``day``; a source that cannot be read is noted, never fatal."""
     zone = sources.zone
     notes: list[str] = []
-    first, last = day_window(day, zone)
+    first = day_window(day, zone)[0]
     horizon_end = day_window(day + timedelta(days=settings.horizon_days), zone)[0]
     with closing(open_runtime_event_log(sources.event_log_path)) as conn:
-        occurrences = commitments.occurrences(conn, first, horizon_end, zone=zone)
-        fixed = commitment_items(occurrences, day, zone)
-        upcoming = tuple(
-            {
-                "date": o.day, "title": o.commitment.title, "place": o.commitment.place,
-                "start": None if o.commitment.all_day
-                else datetime.fromtimestamp(o.start_ms / 1000, zone).strftime("%H:%M"),
-                "confirmed": o.commitment.confirmed,
-                "source": f"commitment:{o.commitment.commitment_id}",
-            }
-            for o in occurrences if o.day != day.isoformat()
-        )[:MAX_UPCOMING]
+        occurrences = things.occurrences(conn, first, horizon_end, zone=zone)
+        open_now = things.open_things(conn)
+        fixed = fixed_items(occurrences, day, zone)
+        upcoming = _upcoming(occurrences, day, zone)
         held = _read(partial(_routines, conn, sources, day), "routines", notes) or []
         recent = _read(partial(_recent, conn, sources, day, now), "recent_days", notes) or ()
         changes, past = _preferences(conn, day)
-    now_ms = int(now.timestamp() * 1000)
-    read_calendar = sources.calendar and partial(sources.calendar, first, last, now_ms)
-    events = _read(read_calendar, "calendar", notes)
-    extra, labels = calendar_items(events or [], day, zone, fixed)
-    todo = _todos(sources, day, settings, notes)
+    labels = day_labels(occurrences, day, zone)
+    ahead = candidate_things(
+        open_now, occurrences, day, zone, day + timedelta(days=settings.horizon_days), MAX_THINGS,
+    )
     weather = _read(sources.weather and partial(sources.weather, day), "weather", notes)
     try:
         doc = current_core_memory(sources.memory_db).doc
@@ -362,13 +352,12 @@ def gather(
         LOGGER.warning("day_plan: core memory unreadable: %s: %s", type(exc).__name__, exc)
         doc = {}
         notes.append("memory")
-    all_fixed = (*fixed, *extra)
     return DayPlanInputs(
         day=day,
-        fixed=all_fixed,
+        fixed=tuple(fixed),
         upcoming=upcoming,
         calendar_all_day=tuple(labels),
-        todo=todo,
+        things=tuple(ahead),
         goals=_memory_texts(doc, core_memory.GOALS_SECTION),
         deadlines=_memory_texts(doc, core_memory.ID_FREE_SECTION),
         routines=tuple(
@@ -381,8 +370,25 @@ def gather(
         his_changes=changes,
         past_plans=past,
         notes=tuple(notes),
-        sources=_sources(all_fixed, upcoming, held),
+        sources=_sources(tuple(fixed), upcoming, ahead, held),
     )
+
+
+def _upcoming(
+    occurrences: Sequence[things.Occurrence], day: date, zone: tzinfo,
+) -> tuple[Mapping[str, Any], ...]:
+    """What he goes to or does on the days after ``day`` within the horizon, soonest first."""
+    rows: list[Mapping[str, Any]] = []
+    for occ in occurrences:
+        local = datetime.fromtimestamp(occ.start_ms / 1000, zone)
+        if local.date() > day:
+            one = occ.thing
+            rows.append({
+                "date": local.date().isoformat(), "title": one.title, "place": one.place,
+                "start": None if occ.all_day else f"{local:%H:%M}",
+                "confirmed": one.confirmed, "source": f"{plan.ITEM_PREFIX}{one.thing_id}",
+            })
+    return tuple(rows[:MAX_UPCOMING])
 
 
 def _read[T](read: Callable[[], T] | None, name: str, notes: list[str]) -> T | None:
@@ -399,32 +405,12 @@ def _read[T](read: Callable[[], T] | None, name: str, notes: list[str]) -> T | N
     return None
 
 
-def _todos(
-    sources: DayPlanSources, day: date, settings: DayPlanSettings, notes: list[str],
-) -> tuple[Mapping[str, Any], ...]:
-    """Open To Do tasks due by the end of the horizon (overdue ones included)."""
-    if sources.todos is None:
-        notes.append("todo")
-        return ()
-    try:
-        rows = sources.todos()
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.info("day_plan: To Do unreadable: %s: %s", type(exc).__name__, exc)
-        notes.append("todo")
-        return ()
-    limit = (day + timedelta(days=settings.horizon_days)).isoformat()
-    due = [
-        {"title": _clip(str(r.get("title") or "")), "due": str(r["due"])[:10]}
-        for r in rows if r.get("due") and str(r["due"])[:10] <= limit
-    ]
-    return tuple(sorted(due, key=lambda r: r["due"])[:MAX_TODO])
-
-
 def _sources(
     fixed: tuple[plan.PlanItem, ...], upcoming: tuple[Mapping[str, Any], ...],
-    held: list[routines.Routine],
+    ahead: list[dict[str, Any]], held: list[routines.Routine],
 ) -> tuple[str, ...]:
     names = {*plan.SOURCE_NAMES, *(i.source for i in fixed), *(str(u["source"]) for u in upcoming)}
+    names |= {str(a["source"]) for a in ahead}
     names |= {f"routine:{r.routine_id}" for r in held}
     return tuple(sorted(names))
 

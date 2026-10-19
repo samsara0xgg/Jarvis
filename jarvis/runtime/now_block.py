@@ -4,15 +4,14 @@ The block already holds the bus ride, the Dashboard view, the phone's last place
 and, in the ledger's "Today so far", every pending reminder. What a present-tense question
 still sent to a tool was what he is doing now, and what is next on his calendar. Each
 function is a ``Runtime.live_context`` producer: one line, or None when it has nothing, never a
-tool call, and each fact says how old it is.
+tool call. What he is doing says how old it is; what is next is read from the ledger of his
+things (ADR 0299) as the line is made.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import sqlite3
-from collections.abc import Callable, Sequence
 from contextlib import closing
 from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Final, NamedTuple
@@ -20,13 +19,14 @@ from typing import TYPE_CHECKING, Final, NamedTuple
 from jarvis.decision.turn_guards import CALENDAR_LINE
 from jarvis.execution import speakable
 from jarvis.execution.my_day_tool import work_state_now
-from jarvis.execution.tools import ToolError
 from jarvis.shared.about import prompt_title
-from jarvis.state import commitments, plan
+from jarvis.state import plan, things
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.plan_budget import DAY_ENDS, budget
+from jarvis.state.things_late import due_is_day
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import tzinfo
     from pathlib import Path
 
@@ -40,81 +40,22 @@ OLDEST_ANALYSIS: Final = timedelta(hours=12)
 _TITLE_CHARS: Final = 40
 _ITEMS: Final = 2
 LOGGER = logging.getLogger(__name__)
-KEPT: Final = 3
-"""Items a reading holds: the line shows two, so one that begins before the next read leaves two."""
-REFRESH_S: Final = 900.0
-"""How often the calendar is read; a turn never waits on it."""
-RETRY_S: Final = 120.0
-"""How soon a read that failed (or found Microsoft not connected) is tried again."""
 
 
 class CalendarItem(NamedTuple):
-    """One thing on his calendar: when it starts and its title (his calendar's words)."""
+    """One thing ahead of him: when it starts and its title (his words for it)."""
 
     start: datetime
     title: str
-    all_day: bool = False  # a date with no hour: shown as "due <day>"
+    all_day: bool = False  # a date with no hour
+    due: bool = False  # a thing to do by then, not one to go to
 
 
-class CalendarGlance(NamedTuple):
-    """The next items a calendar reader holds, and when it last read the calendar."""
+class Ahead(NamedTuple):
+    """The next things (soonest first) and the open things he has not confirmed, counted."""
 
-    read_at: datetime
-    items: Sequence[CalendarItem]
-
-
-CalendarRead = Callable[[], CalendarGlance | None]
-"""Injected by the composition root; it must not wait on the network (a turn calls it)."""
-
-
-class CalendarCache:
-    """The calendar reader the composition root injects: reads in the background, holds the last.
-
-    ``fetch(now)`` is the one network read (``schedule_tool.upcoming_events`` over ``Home.graph``)
-    and returns ``(start, title)`` pairs. A turn calls the cache and gets the last reading or
-    None; a read that failed, or found Microsoft not connected, leaves None, so the block says
-    nothing of his calendar rather than that it is clear.
-    """
-
-    def __init__(
-        self,
-        fetch: Callable[[datetime], Sequence[tuple[datetime, str]]],
-        clock: Callable[[], datetime],
-    ) -> None:
-        """``fetch`` reads the calendar as of ``clock()``; neither is called by a turn."""
-        self._fetch = fetch
-        self._clock = clock
-        self._glance: CalendarGlance | None = None
-        self._failing = False
-
-    def __call__(self) -> CalendarGlance | None:
-        """The last reading; no I/O."""
-        return self._glance
-
-    def refresh(self) -> bool:
-        """Read the calendar now; False (and no reading held) when it could not be read."""
-        read_at = self._clock()
-        try:
-            items = [CalendarItem(start, title) for start, title in self._fetch(read_at)]
-        except (LookupError, ToolError, ValueError, TypeError, AttributeError) as exc:
-            self._glance = None
-            if not self._failing:  # once per outage, not every retry
-                LOGGER.warning("calendar glance: not read (%s: %s)", type(exc).__name__, exc)
-            self._failing = True
-            return False
-        self._glance, self._failing = CalendarGlance(read_at, items[:KEPT]), False
-        return True
-
-    async def run(self) -> None:
-        """Read at once, then every :data:`REFRESH_S` (every :data:`RETRY_S` while failing)."""
-        LOGGER.info("calendar glance started (every %.0f s)", REFRESH_S)
-        try:
-            while True:
-                read = await asyncio.to_thread(self.refresh)
-                await asyncio.sleep(REFRESH_S if read else RETRY_S)
-        except asyncio.CancelledError:
-            LOGGER.info("calendar glance cancelled")
-            raise
+    items: list[CalendarItem]
+    unconfirmed: int
 
 
 def doing_now_line(
@@ -181,85 +122,82 @@ def plan_line(
     return f"{PLAN_PREFIX} ({state}): " + "; ".join(parts) + "."
 
 
-Appointments = Callable[[datetime], Sequence[CalendarItem]]
-"""The things he has to go to (ADR 0274) from now to the end of tomorrow; a local read."""
+def _name(one: things.Thing) -> str:
+    """How the line names a thing: a private one only as such, an unconfirmed one says so."""
+    title = "something private" if one.private else one.title
+    return title if one.confirmed else f"{title} (not confirmed)"
 
 
-def next_appointments(
-    event_log: Path, zone: tzinfo, now: datetime,
-) -> list[CalendarItem]:
-    """The occurrences of his commitments from ``now`` to the end of tomorrow, soonest first.
+def next_appointments(event_log: Path, zone: tzinfo, now: datetime) -> Ahead:
+    """The ledger's open occurrences and things due from ``now`` to the end of tomorrow.
 
-    A private one is named only as such and an unconfirmed one says so. The event log is local,
-    so this still answers when Microsoft does not.
+    Soonest first, and with them the count of open things he has not confirmed. A private one is
+    named only as such and an unconfirmed one says so. The event log is local, so this answers
+    whatever Microsoft does; the mirror brought his calendar into it (ADR 0299).
     """
     local = now.astimezone(zone)
-    end = datetime.combine(local.date() + timedelta(days=2), time(), zone)
+    first = int(now.timestamp() * 1000)
+    end_day = datetime.combine(local.date() + timedelta(days=2), time(), zone)
+    last = int(end_day.timestamp() * 1000)
     try:
         with closing(open_runtime_event_log(event_log)) as conn:
-            found = commitments.occurrences(
-                conn, int(now.timestamp() * 1000), int(end.timestamp() * 1000), zone=zone,
-            )
+            found = things.occurrences(conn, first, last, zone=zone)
+            open_now = things.open_things(conn)
     except sqlite3.Error as exc:
         LOGGER.warning("appointments: not read (%s)", exc)
-        return []
-    items = []
-    for occ in found:
-        one = occ.commitment
-        title = "something private" if one.private else one.title
-        if not one.confirmed:
-            title += " (not confirmed)"
-        items.append(
-            CalendarItem(datetime.fromtimestamp(occ.start_ms / 1000, UTC), title, one.all_day),
+        return Ahead([], 0)
+    items = [
+        CalendarItem(
+            datetime.fromtimestamp(occ.start_ms / 1000, UTC), _name(occ.thing), occ.all_day,
         )
-    return items
+        for occ in found
+    ]
+    items.extend(
+        CalendarItem(
+            datetime.fromtimestamp(things.due_ms(one, zone) / 1000, UTC), _name(one),
+            due_is_day(one), due=True,
+        )
+        for one in open_now
+        if one.due and first <= things.due_ms(one, zone) < last
+    )
+    items.sort(key=lambda i: i.start)
+    return Ahead(items, sum(1 for one in open_now if not one.confirmed))
 
 
-def calendar_line(
-    read: CalendarRead | None, zone: tzinfo, clock: Callable[[], datetime],
-    appointments: Appointments | None = None,
-) -> str | None:
-    """His next one or two items still ahead, calendar and appointments, with the calendar's age.
+def calendar_line(event_log: Path, zone: tzinfo, clock: Callable[[], datetime]) -> str | None:
+    """His next one or two things still ahead, from the ledger, and how many wait on his word.
 
-    None when there is neither a reading nor an appointment, or when nothing in them is still
-    ahead: a reading from an hour ago never offers an item that has begun as the next one. A
-    calendar that could not be read leaves the appointments, which are read here, just now.
+    None when nothing is ahead: one that has begun is never offered as the next. The count of
+    open things he has not confirmed, when it is not zero, stands in the heading.
     """
-    glance = None if read is None else read()
     now = clock()
-    held = [] if appointments is None else list(appointments(now))
-    if glance is None and not held:
-        return None
-    items = [*(() if glance is None else glance.items), *held]
+    ahead = next_appointments(event_log, zone, now)
     today = now.astimezone(zone).date()
-    ahead = sorted(
-        (
-            i for i in items
-            if i.start > now or (i.all_day and i.start.astimezone(zone).date() >= today)
-        ),
-        key=lambda i: i.start,
-    )[:_ITEMS]
-    if not ahead:
+    soon = [
+        i for i in ahead.items
+        if i.start > now or (i.all_day and i.start.astimezone(zone).date() >= today)
+    ][:_ITEMS]
+    if not soon:
         return None
 
     def said(item: CalendarItem) -> str:
         local = item.start.astimezone(zone)
         days = (local.date() - today).days
         if item.all_day:
-            when = "due today" if days == 0 else (
-                f"due tomorrow ({local:%a})" if days == 1 else f"due {local:%a %b} {local.day}"
+            day = "today" if days == 0 else (
+                f"tomorrow ({local:%a})" if days == 1 else f"{local:%a %b} {local.day}"
             )
-        elif days == 0:
-            when = speakable.clock(local)
-        elif days == 1:
-            when = f"tomorrow ({local:%a}) {speakable.clock(local)}"
+            when = f"due {day}" if item.due else f"all day {day}"
         else:
-            when = speakable.when(item.start, now, zone)
+            if days == 0:
+                when = speakable.clock(local)
+            elif days == 1:
+                when = f"tomorrow ({local:%a}) {speakable.clock(local)}"
+            else:
+                when = speakable.when(item.start, now, zone)
+            when = f"due {when}" if item.due else when
         return f'{when} "{speakable.cut(prompt_title(item.title), _TITLE_CHARS)}"'
 
-    read_at = now if glance is None else glance.read_at
-    line = (
-        f"{CALENDAR_PREFIX} (read {speakable.age(read_at, now)}): "
-        + "; ".join(said(i) for i in ahead) + "."
-    )
+    waiting = f" ({ahead.unconfirmed} not confirmed)" if ahead.unconfirmed else ""
+    line = f"{CALENDAR_PREFIX}{waiting}: " + "; ".join(said(i) for i in soon) + "."
     return speakable.cut(line, LINE_CHARS)
