@@ -65,6 +65,7 @@ _INJECTED: Final = (
 _REMINDER: Final = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
 _REPLAY_MS: Final = 10 * 60 * 1000
 _SKIP_LINE: Final = (b'"type":"tool_result"', b'"isSidechain":true')
+_SAID_BY_TOOL: Final = frozenset({"mcp__hearthbot__reply", "mcp__hearthbot__post_message"})
 _TITLES: Final = {"custom-title": "customTitle", "ai-title": "aiTitle", "agent-name": "agentName"}
 
 
@@ -185,7 +186,7 @@ def _stamp(entry: dict[str, Any]) -> int | None:
         return None
 
 
-def _take(session: Session, entry: dict[str, Any]) -> None:  # noqa: C901 - one switch over the log's line types
+def _take(session: Session, entry: dict[str, Any]) -> None:
     kind = entry.get("type")
     session.cwd = session.cwd or str(entry.get("cwd") or "")
     if kind in _TITLES and entry.get(_TITLES[str(kind)]):
@@ -222,10 +223,21 @@ def _take(session: Session, entry: dict[str, Any]) -> None:  # noqa: C901 - one 
         content = message.get("content")
         blocks = [{"type": "text", "text": content}] if isinstance(content, str) else content
         for block in blocks if isinstance(blocks, list) else []:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = str(block.get("text") or "").strip()
-                if text:
-                    session.messages.append((at, "Claude", text))
+            if text := _said(block):
+                session.messages.append((at, "Claude", text))
+
+
+def _said(block: object) -> str:
+    """The words of one assistant block he could read: text, or a project thread's reply."""
+    if not isinstance(block, dict):
+        return ""
+    if block.get("type") == "text":
+        return str(block.get("text") or "").strip()
+    if block.get("type") == "tool_use" and block.get("name") in _SAID_BY_TOOL:
+        # a project thread answers him through a tool: its text is what he read
+        said = block.get("input")
+        return str(said.get("text") or "").strip() if isinstance(said, dict) else ""
+    return ""
 
 
 def read_session(path: Path, account: str) -> Session:

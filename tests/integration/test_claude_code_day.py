@@ -94,6 +94,7 @@ def test_the_material_is_cut_by_his_sleep_and_holds_only_what_was_said(
         _user(at(0, 9, 10), "<system-reminder>REMINDER-INSIDE</system-reminder>keep going please"),
         _user(at(0, 9, 11), "meta line", isMeta=True),
         _claude(at(0, 9, 12), _text("Done: parser fixed.")),
+        _claude(at(0, 9, 13), {"type": "tool_use", "name": "mcp__hearthbot__reply", "input": {"text": "Replied in the thread."}}),
         {**_claude(at(0, 9, 13), _text("SIDECHAIN-TEXT")), "isSidechain": True},
         {"type": "attachment", "timestamp": _iso(at(0, 9, 14)), "attachment": {"type": "queued_command", "origin": {"kind": "human"}, "prompt": "and one more thing"}},
         {"type": "attachment", "timestamp": _iso(at(0, 9, 15)), "attachment": {"type": "queued_command", "origin": {"kind": "task-notification"}, "prompt": "NOTIFICATION"}},
@@ -119,7 +120,7 @@ def test_the_material_is_cut_by_his_sleep_and_holds_only_what_was_said(
     out = tmp_path / "out"
     assert claude_code_day.main(["material", "--days", "6", "--out", str(out), "--config", str(config), "--runtime-root", str(tmp_path / "rt")]) == 0
     summary = json.loads(capsys.readouterr().out)
-    assert summary["dates"][day.isoformat()] == {"sessions": 2, "messages": 9}
+    assert summary["dates"][day.isoformat()] == {"sessions": 2, "messages": 10}
 
     folder = out / "material" / day.isoformat()
     assert sorted(p.name for p in folder.iterdir()) == ["a-sess-1.md", "b-sess-2.md", "index.md"]
@@ -128,7 +129,7 @@ def test_the_material_is_cut_by_his_sleep_and_holds_only_what_was_said(
     assert "- first-last message: 09:05-01:30" in alpha
     for kept in (
         "[09:05] User: fix the parser", "[09:06] Claude: I will look at it.", "[09:10] User: keep going please",
-        "[09:12] Claude: Done: parser fixed.", "[09:14] User: and one more thing", "[23:30] User: late evening question",
+        "[09:12] Claude: Done: parser fixed.", "[09:13] Claude: Replied in the thread.", "[09:14] User: and one more thing", "[23:30] User: late evening question",
         "[01:30] Claude: answered after midnight, before sleep",
     ):
         assert kept in alpha
