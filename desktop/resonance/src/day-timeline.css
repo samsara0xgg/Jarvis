@@ -31,9 +31,10 @@
 .notch .dt { --tcol:50px; }
 .notch .dt-list { position:relative; display:flex; flex:0 1 auto; flex-direction:column; min-height:0; margin-inline:-4px; padding-inline:4px; overflow-y:auto; overscroll-behavior:contain;
   scrollbar-width:thin; scrollbar-color:var(--p-line) transparent; }
-.notch .dt-list.more-below { -webkit-mask-image:linear-gradient(#000 calc(100% - 30px),transparent); mask-image:linear-gradient(#000 calc(100% - 30px),transparent); }
-.notch .dt-list.more-above { -webkit-mask-image:linear-gradient(transparent,#000 14px); mask-image:linear-gradient(transparent,#000 14px); }
-.notch .dt-list.more-above.more-below { -webkit-mask-image:linear-gradient(transparent,#000 14px,#000 calc(100% - 30px),transparent); mask-image:linear-gradient(transparent,#000 14px,#000 calc(100% - 30px),transparent); }
+/* the list's edges fade over 16 px where there is more past them, so a row half under the chips reads as scrolling, not as cut words */
+.notch .dt-list.more-below { -webkit-mask-image:linear-gradient(#000 calc(100% - 16px),transparent); mask-image:linear-gradient(#000 calc(100% - 16px),transparent); }
+.notch .dt-list.more-above { -webkit-mask-image:linear-gradient(transparent,#000 16px); mask-image:linear-gradient(transparent,#000 16px); }
+.notch .dt-list.more-above.more-below { -webkit-mask-image:linear-gradient(transparent,#000 16px,#000 calc(100% - 16px),transparent); mask-image:linear-gradient(transparent,#000 16px,#000 calc(100% - 16px),transparent); }
 .notch .dt-list > *,.notch .dt-stay > * { flex:none; }
 /* a row is 40 px tall, 52 with a second line; a stay's header is 40; a unit (a stay, a trip) starts 12 px under the one before it */
 .notch .dt-row,.notch .dt-sh { position:relative; display:grid; grid-template-columns:var(--tcol) 28px minmax(0,1fr) auto; gap:0 8px; align-items:center; box-sizing:border-box; height:40px; padding:0 6px; border-radius:10px;

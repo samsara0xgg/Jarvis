@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { Coins, ChatCircleDots, Image as PictureIcon, Laptop, Moon, Path, PersonSimpleRun, Phone, Star, SunHorizon, X, type Icon as PhosphorIcon } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { spring, step } from './starCore';
-import { buildBar, fit, fOf, msOf, numbers, peek, rowAt, snap, summarize, type BarSeg, type Line, type Peek, type Summary } from './barView';
+import { buildBar, fit, fOf, msOf, numbers, PAD_PX, peek, rowAt, snap, summarize, type BarSeg, type Line, type Peek, type Summary } from './barView';
 import { clock, type DayModel, type Icon, type LensKind, type Rgb } from './dayView';
 import { Ic } from './dayIcons';
 import './day-bar.css';
@@ -162,14 +162,26 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
   }, [target, !!hover]);
   useEffect(() => () => cancelAnimationFrame(follow.current.raf), []);
 
-  // What the card says is two layers that swap when the stretch changes, so the words cross-fade (80 ms) rather than blink.
+  // What the card says is two layers that swap when the stretch changes: the words that were fade out, then the new ones fade in (the style
+  // does that), never both at once; and the card's height goes to the new words' meanwhile (150 ms, from where it is if it was on its way).
   const live = hover && bar ? peek(model, bar, ms(hover.x), t) : null;
   const slots = useRef<{ cur: 0 | 1; at: [Peek | null, Peek | null] }>({ cur: 0, at: [null, null] });
   if (live) { const s = slots.current; if (s.at[s.cur]?.id !== live.id) s.cur = s.cur ? 0 : 1; s.at[s.cur] = live; }
+  const cardIn = useRef<HTMLDivElement>(null), needed = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const el = cardIn.current, before = needed.current;
+    if (!el || !live) { needed.current = null; return; }
+    const moving = el.getAnimations().length > 0, from = moving ? el.getBoundingClientRect().height : before;
+    el.getAnimations().forEach(a => a.cancel());
+    const to = needed.current = el.getBoundingClientRect().height;
+    if (from != null && Math.abs(from - to) > .5 && !reduced.matches) el.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: 150, easing: 'cubic-bezier(.16, 1, .3, 1)' });
+  });
 
   if (!bar) return null;
   const sel = band ?? ui.sel, shown = sel ?? ui.filter, a = shown && Math.min(shown.a, shown.b), b = shown && Math.max(shown.a, shown.b);
   const summary = ui.sel ? summarize(model, bar, ui.sel.a, ui.sel.b, t) : null, lens = ui.lens && nums.some(n => n.kind === ui.lens) ? ui.lens : null;
+  // A day with no place in it (talks and no location) says so in the empty past, if the words fit there.
+  const voidText = t(['No location recorded', '没有位置记录']), voidW = (bar.nowF ?? 1) * width, showVoid = bar.segs.length === 0 && voidW >= textWidth(voidText, false) + 2 * PAD_PX;
   // The sun's marks sit in the hours row; an hour's number that would sit on one leaves room for it.
   const suns = bar.sun.map(x => ({ ...x, px: clamp(x.f * width, 6, Math.max(6, width - 6)) }));
   const hours = bar.ticks.map(k => { const px = k.f < .02 ? 6 : k.f > .98 ? width - 6 : k.f * width; return { k, hide: suns.some(x => Math.abs(x.px - px) < 14) }; });
@@ -192,6 +204,7 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
             style={{ left: `calc(${s.f0 * 100}% + .5px)`, width: `max(1px, calc(${(s.f1 - s.f0) * 100}% - 1px))`, '--c': rgb(s.rgb), '--a': s.a, '--shade': s.shade && shading(s.shade) } as CSSProperties}>
             {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}>{how !== 'name' && <Ic icon={s.icon} size={12}/>}{how !== 'icon' && <b className={s.mono ? 'is-mono' : ''}>{s.short}</b>}</span>}
           </i>)}
+          {showVoid && <i className="dt-void" style={{ width: bx(bar.nowF ?? 1) }}>{voidText}</i>}
           {boxes.map(({ x, how }) => <i key={x.key} className={`dt-sched is-event${spanned && hot === x.key ? ' is-hot' : ''}`} style={{ left: `${x.f0 * 100}%`, width: `${(x.f1 - x.f0) * 100}%` }}>
             {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}>{how !== 'name' && <Ic icon="event" size={12}/>}{how !== 'icon' && <b>{x.short}</b>}</span>}
           </i>)}
@@ -212,7 +225,7 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
         {suns.map(x => <span key={x.kind} className="dt-sun" data-sun={x.kind} style={{ left: x.px }}><SunHorizon size={11}/></span>)}
       </div>
       <div ref={card} className={`dt-card${on && !ui.sel && !band ? ' is-on' : ''}`} aria-hidden="true">
-        <div className="dt-card-in">{slots.current.at.map((p, i) => <div key={i} className={`dt-slot${i === slots.current.cur ? ' is-cur' : ''}`}>{p && <PeekBody p={p} port={port} t={t}/>}</div>)}</div>
+        <div ref={cardIn} className="dt-card-in">{slots.current.at.map((p, i) => <div key={i} className={`dt-slot${i === slots.current.cur ? ' is-cur' : ''}`}>{p && <PeekBody p={p} port={port} t={t}/>}</div>)}</div>
       </div>
       {summary && <div ref={rcard} className="dt-card is-range is-on" style={{ transform: `translateX(${left((fOf(bar, summary.a) + fOf(bar, summary.b)) / 2 * width)}px)` }}>
         <div className="dt-card-in"><div className="dt-slot is-cur"><RangeBody s={summary} t={t} onOnly={() => { ui.setFilter({ a: summary.a, b: summary.b }); ui.setSel(null); }}/></div></div>
