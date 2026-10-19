@@ -31,6 +31,7 @@ from jarvis.runtime.interview_reminders import InterviewReminders, InterviewSett
 from jarvis.shared import lang
 from jarvis.state import device_reads, job_time
 from jarvis.state import job_ledger as ledger
+from jarvis.state.import_parsers import is_daily_subject
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -68,6 +69,8 @@ _LEVEL_PREFIX: Final[str] = "level:"
 LINKEDIN_ALERTS: Final[tuple[str, ...]] = ("ledger_only", "card_sound")
 # The judge name logged for a header held back by a local rule rather than by Jev.
 _RULE_JUDGE: Final[str] = "local-rule/social-v1"
+# The same, for his own Claude daily letter (ADR 0295).
+_DAILY_JUDGE: Final[str] = "local-rule/claude-daily-v1"
 # The same, for a header whose sender domain is in ``exclude_domains`` (ADR 0171).
 _EXCLUDE_JUDGE: Final[str] = "local-rule/exclude-v1"
 # How much of each scanned mail's plain-text body the local decision snapshot keeps (ADR 0162).
@@ -402,7 +405,10 @@ class JobMail:
         """
         left = []
         for head in heads:
-            if triage.is_excluded(
+            if is_daily_subject(head.subject):  # his own Claude daily letter (ADR 0295)
+                snap(head.message_id, "rule", "not_job", head, judge=_DAILY_JUDGE)
+                verdicts[head.message_id] = "not_job"
+            elif triage.is_excluded(
                 head.domain, self._settings.exclude_domains
             ) and not triage.is_application_sent(head.domain, head.subject):
                 snap(head.message_id, "rule", "not_job", head, judge=_EXCLUDE_JUDGE)
@@ -493,8 +499,14 @@ class JobMail:
         return heads
 
     def _bodies(self, servers: McpServers, heads: list[triage.Head]) -> dict[str, str | None]:
-        """The plain-text body of every letter, read once; ``None`` where the read failed."""
-        return {head.message_id: self._read_body(servers, head.message_id) for head in heads}
+        """The plain-text body of every letter, read once; ``None`` where the read failed.
+
+        His own Claude daily letter (ADR 0295) is not read: its words are his chats, not mail.
+        """
+        return {
+            head.message_id: self._read_body(servers, head.message_id)
+            for head in heads if not is_daily_subject(head.subject)
+        }
 
     @staticmethod
     def _read_body(servers: McpServers, message_id: str) -> str | None:

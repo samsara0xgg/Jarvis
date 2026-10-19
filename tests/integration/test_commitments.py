@@ -396,6 +396,21 @@ def test_a_cycle_reads_each_mail_by_its_own_rule_and_a_reminder_mail_updates(log
     assert {tool for tool, _ in gmail.calls} == {"gmail_search", "gmail_get"}
 
 
+def test_his_claude_daily_letter_is_filtered_before_the_model(log: _Log) -> None:
+    """ADR 0295: a letter naming a time (his chat said "Friday 2 PM") is not read as a mail."""
+    daily = _mail(
+        "m6", "Allen <me@example.com>", "Jarvis Claude 日报 2026-10-18",
+        "## Job chat\n- summary: interview Friday 2 PM", 6,
+    )
+    gmail = _Gmail([daily])
+    model = _Model({})
+    _intake(log, gmail, model).poll_once()
+
+    assert model.asked == []
+    assert _verdicts(log) == {"m6": "filtered"}
+    assert not any(tool == "gmail_get" and a["format"] == "full" for tool, a in gmail.calls)
+
+
 def test_a_new_that_repeats_a_held_time_is_not_a_second_commitment(log: _Log) -> None:
     """A new that repeats a held time is not a second commitment."""
     gmail = _Gmail([

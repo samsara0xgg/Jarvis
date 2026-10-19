@@ -1368,6 +1368,29 @@ def test_excluded_domains_never_reach_jev_the_ledger_or_an_alert(tmp_path: Path,
     assert jobs["rules"][-1] == {"id": "exclude_domains", "value": "linkedin.com"}
 
 
+def test_his_claude_daily_letter_is_not_mail_to_triage_and_its_body_is_not_read(
+    tmp_path: Path, jev: _Jev,
+) -> None:
+    """ADR 0295: the nightly letter on his chats never reaches Jev, the ledger or a body read."""
+    daily = _mail(
+        "daily", "Allen <me@example.com>", "Jarvis Claude 日报 2026-10-18",
+        "## Job hunt chat\n- summary: applied to Northwind, interview Friday 2 PM",
+    )
+    h = _harness(tmp_path, jev, [daily, MAILS[1]])
+    h.job.poll_once()
+
+    assert {one["state"].split("Subject: ", 1)[1].split("\n", 1)[0] for one in jev.requests} == {
+        "Interview invitation: Software Developer Co-op",
+    }
+    assert h.sql("SELECT message_id FROM job_mail") == [("m-interview",)]
+    assert h.sql("SELECT verdict FROM job_seen WHERE message_id = 'm-daily'") == [("not_job",)]
+    decision = "SELECT stage, verdict, judge, body_status FROM job_decision WHERE message_id = ?"
+    assert h.sql(decision.replace("?", "'m-daily'")) == [
+        ("rule", "not_job", "local-rule/claude-daily-v1", "not_read"),
+    ]
+    assert h.gmail.full_read_count("m-daily") == 0
+
+
 def test_the_repair_pass_hides_an_existing_excluded_row_and_respects_a_flag(
     tmp_path: Path, jev: _Jev
 ) -> None:

@@ -37,6 +37,7 @@ from jarvis.state import commitments
 from jarvis.state import job_ledger as ledger
 from jarvis.state import reminders as reminder_state
 from jarvis.state.event_log import emit_event, open_runtime_event_log
+from jarvis.state.import_parsers import is_daily_subject
 
 if TYPE_CHECKING:
     import sqlite3
@@ -196,6 +197,8 @@ class CommitmentIntake:
         args = {"messageId": message_id, "format": "metadata"}
         head = _letter(gmail_read(servers, "gmail_get", args))
         domain = head["address"].rpartition("@")[2].lower()
+        if is_daily_subject(head["subject"]):
+            return "filtered", "", ""  # his own Claude daily letter (ADR 0295), not mail to read
         if ledger.is_interview_mail(self._db, message_id):
             return "interview", "", ""  # ADR 0186 has its reminders
         sent = datetime.fromisoformat(head["received"]) if head["received"] else None
