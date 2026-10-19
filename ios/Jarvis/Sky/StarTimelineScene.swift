@@ -242,9 +242,12 @@ extension StarEngine {
         let fling: (Double) -> Double = { (1 - exp(-4 * $0)) / (1 - exp(-4)) }          // a fast fling that slows as it goes
         let launch = [FrameProbe.Step(label: "launch: the bar grows and the rows rise", seconds: 1.3), pause(0.8)]
         let idle = [FrameProbe.Step(label: "idle: nothing moves", seconds: 1.5)]
-        let bare = [FrameProbe.Step(label: "the finger alone: the bar's hairline and the readout, no list", seconds: 2, frame: { p in tl.scrub = lo + (p < 0.5 ? 2 * p : 2 - 2 * p) * (hi - lo) }),
-                    pause(0.6, start: { tl.scrub = nil })]
-        let scrub = [FrameProbe.Step(label: "scrub across the bar and back (2 s)", seconds: 2, frame: { p in tl.follow(lo + (p < 0.5 ? 2 * p : 2 - 2 * p) * (hi - lo), in: model) }),
+        let there: (Double) -> Double = { p in p < 0.5 ? 2 * p : 2 - 2 * p }          // across and back
+        let bare = [FrameProbe.Step(label: "the finger alone: the bar's hairline and the readout, no list", seconds: 2, frame: { p in
+                        tl.scrub = lo + there(p) * (hi - lo); tl.finger = TLGaze.bar(x: there(p) * TLLayout.barW) }),
+                    pause(0.6, start: { tl.scrub = nil; tl.finger = nil })]
+        let scrub = [FrameProbe.Step(label: "scrub across the bar and back (2 s)", seconds: 2, frame: { p in
+                         tl.follow(lo + there(p) * (hi - lo), in: model); tl.finger = TLGaze.bar(x: there(p) * TLLayout.barW) }),
                      pause(0.6, start: { withAnimation(.easeOut(duration: 0.2)) { tl.follow(nil, in: nil) } })]
         let flings = [FrameProbe.Step(label: "list fling down (1 s)", seconds: 1, frame: { p in tl.scroll(to: ymax * fling(p), animated: false) }), pause(0.4),
                       FrameProbe.Step(label: "list fling up (1 s)", seconds: 1, frame: { p in tl.scroll(to: ymax * (1 - fling(p)), animated: false) }), pause(0.8)]
