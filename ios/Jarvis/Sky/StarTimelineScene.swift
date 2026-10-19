@@ -149,7 +149,7 @@ enum TimelineFixture {
 extension StarEngine {
     /// `-scene 时间线` puts the timeline on the made-up day (now 21:50), whatever the setting was; the words after a colon go further:
     /// `:早上` the list at the morning, `:开:<id>` any row opened (`:开:ride-8`; a fourth word, `:开:stay-1:有对话` or `:有长对话`, with talk before it), `:改名` the place he keeps opened with the field for its new name, `:日出` the weather tapped (the sun's times in the header), `:碎片` the day with fifteen places, `:只有对话` the day of talks alone, `:对话` a talk opened, `:照片` the picture opened, `:工作` the evening's Mac work opened (its span is bracketed on the bar), `:透镜:路上` (or 睡, 运动, Mac, 通话, 和她, 花, 照片) that chip pressed, `:拖:1015` a finger held on the bar at that time (a fourth word after it lifts the finger again), `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
-    /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:新增` a talk coming in a moment later, `:测帧` the frame times of the motion (Sky/StarTimelineProbe.swift; `:测帧:拖`, `:甩` or `:换日` runs that kind alone, over and over), `:走时` the clock moving on a minute a moment later, `:昨天` the day before (`:昨天:1630` with a finger held on its bar), `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
+    /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:加载` the day still being asked for (the bar's empty track shimmers) until it arrives three seconds later, `:新增` a talk coming in a moment later, `:测帧` the frame times of the motion (Sky/StarTimelineProbe.swift; `:测帧:拖`, `:甩` or `:换日` runs that kind alone, over and over), `:走时` the clock moving on a minute a moment later, `:昨天` the day before (`:昨天:1630` with a finger held on its bar), `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
     func runTimelineScene(_ name: String) {
         RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
         switchWorld(real: true)
@@ -212,6 +212,9 @@ extension StarEngine {
                 let n = Int(parts[2]) ?? 0, past = DayTimelineModel.build(yesterday, now: nil)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { [self] in ui.tl.follow(Double(n / 100 * 60 + n % 100), in: past) }
             }
+        case "加载":                                                               // the day still being asked for: the bar's empty track shimmers, and the day arrives after three seconds
+            ui.tl.fixture?.loading = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in ui.tl.fixture?.loading = false }
         case "新增": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in ui.tl.fixture?.replies[0] = TimelineFixture.today(cal, late: true) }
         case "测帧": runProbe(today, model, cal, only: parts.count > 2 ? parts[2] : "")
         case "走时": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in ui.tl.fixture?.now += 1 }

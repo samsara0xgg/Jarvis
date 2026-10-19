@@ -10,6 +10,7 @@ struct TLTopView: View {
     let ui: StarUI
     let model: DayTimelineModel?
     let scene: TLBarScene                       // the model's bar, made once with the model and not on every frame of a finger
+    var loading = false                         // the day is being asked for: its bar is an empty track with a soft light going along it
     @Environment(\.accessibilityReduceMotion) private var reduce
     @GestureState private var touching = false                                       // a finger is on the bar
     @State private var lastScrub = 0.0                                               // where his finger was last: what the readout shows while it fades out
@@ -33,6 +34,9 @@ struct TLTopView: View {
                 readout(m.readout(at: tl.scrub ?? lastScrub)).fadeThrough(on: holding, reduce: reduce)
                     .offset(x: 30, y: TLLayout.lineY)
                     .allowsHitTesting(false).accessibilityHidden(!holding)
+            }
+            if model == nil && loading {
+                TLTrack(loading: true, reduce: reduce).id(tl.day).transition(.opacity).offset(x: 30, y: TLLayout.barY)
             }
             if let m = model {
                 let lens = tl.activeLens(in: m)

@@ -67,7 +67,7 @@ final class TimelineState {
     struct ScrollRequest: Equatable { var y = 0.0, animated = false, n = 0 }
     @ObservationIgnored private var pending: Int?
     #if DEBUG
-    struct Fixture { var replies: [Int: DayReply]; var now: Double }       // by days from today
+    struct Fixture { var replies: [Int: DayReply]; var now: Double; var loading = false }       // by days from today; `loading`: the day is still being asked for
     var fixture: Fixture?               // made-up days and a fixed now (Sky/StarTimelineScene.swift)
     #endif
 
@@ -204,7 +204,7 @@ struct DayTimelineView: View {
             let model: DayTimelineModel? = { if case .model(let m) = shown { return m } else { return nil } }()
             ZStack(alignment: .topLeading) {
                 scrim(away: away)
-                TLTopView(ui: ui, model: model, scene: model?.scene ?? .empty)
+                TLTopView(ui: ui, model: model, scene: model?.scene ?? .empty, loading: !isReady(shown))
                     .opacity(ui.panelOpen ? 0 : 1).allowsHitTesting(!ui.panelOpen)
                     .animation(.easeOut(duration: ui.panelOpen ? 0.2 : 0.35), value: ui.panelOpen)
                 listArea(shown, away: away)
@@ -231,6 +231,7 @@ struct DayTimelineView: View {
     private func shownNow() -> Shown {
         #if DEBUG
         if tl.fixture != nil {
+            if tl.fixture?.loading == true { return .loading }
             guard let r = tl.reply else { return .sentence("这一天没有记下什么。") }
             return .model(tl.model(r))
         }

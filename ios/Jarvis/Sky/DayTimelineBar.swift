@@ -212,6 +212,43 @@ enum TLGeo {
     }
 }
 
+// MARK: - the track
+
+/// The soft band of light that goes along the empty track while the day is being asked for: where its left edge is `time` seconds in, for a track `width` wide and a band `band` wide.
+/// A pass takes 1.4 s, easing in and out, and the track rests for 0.4 s before the next.
+enum TLShimmer {
+    static let period = 1.8, sweep = 1.4
+
+    static func x(at time: Double, width: Double, band: Double) -> Double {
+        let k = min(1, max(0, time.truncatingRemainder(dividingBy: period) / sweep))
+        let e = k < 0.5 ? 2 * k * k : 1 - pow(-2 * k + 2, 2) / 2
+        return -band + e * (width + band)
+    }
+}
+
+/// The ground the bar's stretches lie on. While the day is being asked for it is all there is, and a soft band of light goes along it (it is still under Reduce Motion); nothing spins.
+struct TLTrack: View {
+    var loading = false
+    var reduce = false
+    private let band = 96.0
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: TLLayout.barRadius).fill(Color.white.opacity(0.035))
+            .overlay(alignment: .leading) {
+                if loading && !reduce {
+                    TimelineView(.animation(minimumInterval: 1 / 30)) { tl in
+                        LinearGradient(colors: [.clear, Color.white.opacity(0.07), .clear], startPoint: .leading, endPoint: .trailing)
+                            .frame(width: band)
+                            .offset(x: TLShimmer.x(at: tl.date.timeIntervalSinceReferenceDate, width: TLLayout.barW, band: band))
+                    }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: TLLayout.barRadius))
+            .frame(width: TLLayout.barW, height: TLLayout.barH)
+            .allowsHitTesting(false)
+    }
+}
+
 // MARK: - the bar on screen
 
 struct TLBarView: View {
@@ -232,7 +269,7 @@ struct TLBarView: View {
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .topLeading) {
                 ZStack(alignment: .topLeading) {
-                    RoundedRectangle(cornerRadius: TLLayout.barRadius).fill(Color.white.opacity(0.035))
+                    TLTrack()
                     BarCanvas(scene: scene, rects: rects)
                     if let b = bracket { bracketView(b).transition(.opacity) }      // under the words, so a line never runs through a symbol
                     labels

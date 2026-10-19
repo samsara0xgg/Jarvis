@@ -32,6 +32,19 @@ final class TLMotionTests: XCTestCase {
         XCTAssertEqual(size(-1).height, 0, "nor less")
     }
 
+    func testTheLoadingTrackHasASoftBandGoingAlongItThatRestsBetweenPasses() {
+        let w = 380.0, band = 96.0
+        func x(_ t: Double) -> Double { TLShimmer.x(at: t, width: w, band: band) }
+        XCTAssertEqual(x(0), -band, "it starts off the track's left end")
+        XCTAssertEqual(x(TLShimmer.sweep), w, accuracy: 0.001, "and ends off its right end")
+        XCTAssertEqual(x(TLShimmer.sweep + 0.2), w, "then the track rests")
+        XCTAssertEqual(x(TLShimmer.period), -band, accuracy: 0.001, "and it goes again")
+        let along = stride(from: 0.0, through: TLShimmer.sweep, by: 0.05).map(x)
+        XCTAssertEqual(along, along.sorted(), "it only goes one way")
+        XCTAssertLessThan(x(0.1) + band, 0.1 * (w + band), "slowly at first")
+        XCTAssertEqual(x(TLShimmer.sweep / 2), (w - band) / 2, accuracy: 0.001, "and half way at half the time")
+    }
+
     func testTheMotionsAreTheDesignsOtherwise() {
         XCTAssertEqual(TLMotion.barGrowth(reduce: false), .easeOut(duration: 0.45))
         XCTAssertEqual(TLMotion.rise(rank: 4, reduce: false), .easeOut(duration: 0.22).delay(0.1), "the fifth row waits for four")
