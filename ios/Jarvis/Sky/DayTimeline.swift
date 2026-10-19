@@ -46,6 +46,7 @@ final class TimelineState {
     var scrub: Double?                  // the minute under his finger on the overview bar
     var hot: String?                    // the row that covers it, lit in the list
     @ObservationIgnored private var seen: String?       // the row the list was last sent to while the finger is down
+    @ObservationIgnored private var scrubHold: Task<Void, Never>?
     var openCard: String?               // the waiting card opened over the list
     var focus: String?                  // a waiting card the engine asks to bring up
     var version = 0                     // bumps when the brain's days were adopted again: talk topics may have come
@@ -107,6 +108,15 @@ final class TimelineState {
         guard let e = m.entry(at: t), e.id != seen else { return }        // the same row as a moment ago: the list is already there
         seen = e.id
         if let y = m.top(of: e.id) { scroll(to: y, animated: false) }
+    }
+
+    /// VoiceOver's step holds a minute on the bar the way a finger would, and lets it go after a pause (each step starts the pause again)
+    func holdThenRelease(for seconds: Double = 3) {
+        scrubHold?.cancel()
+        scrubHold = Task { @MainActor [self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1e9))
+            if !Task.isCancelled { withAnimation(.easeOut(duration: 0.2)) { follow(nil, in: nil) } }
+        }
     }
 
     /// The timeline opens afresh: the bar and the rows are put back to before their entry, with no motion, and run it when the day is there.

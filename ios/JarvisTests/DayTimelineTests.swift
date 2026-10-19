@@ -724,6 +724,27 @@ final class DayTimelineTests: XCTestCase {
 
     // MARK: the setting
 
+    func testVoiceOversStepsGoFromStretchToStretchAndStayAtTheEnds() {
+        let sc = build(TimelineFixture.today(cal)).scene
+        let starts = sc.stretchStarts
+        XCTAssertGreaterThan(starts.count, 3)
+        XCTAssertEqual(starts, starts.sorted())
+        XCTAssertEqual(starts.first, sc.span.lowerBound)
+        XCTAssertEqual(sc.pieces.last?.fill, .ahead)
+        XCTAssertFalse(starts.contains(sc.pieces.last?.t0 ?? -1), "what has not happened yet is not a stretch")
+        XCTAssertEqual(sc.step(from: nil, forward: true), starts.first)
+        XCTAssertEqual(sc.step(from: nil, forward: false), starts.last)
+        XCTAssertEqual(sc.step(from: starts[0], forward: true), starts[1])
+        XCTAssertEqual(sc.step(from: starts[1], forward: false), starts[0])
+        XCTAssertEqual(sc.step(from: starts.last, forward: true), starts.last, "past the last it stays")
+        XCTAssertEqual(sc.step(from: starts[0], forward: false), starts[0], "and before the first")
+        // where a finger left it, in the middle of a stretch: forward is the next one, back the start of this one
+        let mid = (starts[1] + starts[2]) / 2
+        XCTAssertEqual(sc.step(from: mid, forward: true), starts[2])
+        XCTAssertEqual(sc.step(from: mid, forward: false), starts[1])
+        XCTAssertNil(TLBarScene.empty.step(from: nil, forward: true))
+    }
+
     func testTheTopOfTheTimelineIsOnShowOnlyWhenSheIsInHerCornerAndNoPanelCoversIt() {
         let ui = StarEngine().ui
         ui.tlHome = true; ui.panelOpen = false

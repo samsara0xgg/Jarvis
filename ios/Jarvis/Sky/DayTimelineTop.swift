@@ -40,7 +40,10 @@ struct TLTopView: View {
                           reveal: tl.reveal, reduce: reduce, breathe: ui.tlHeaderShown)
                     .animation(holding ? .easeOut(duration: 0.08) : .easeInOut(duration: 0.15), value: holding)       // the hairline and its time come and go with the finger
                     .gesture(scrubGesture(m))
-                    .accessibilityElement().accessibilityLabel("一天的概览，拖动可以翻到那个时间")
+                    .accessibilityElement().accessibilityLabel("一天的概览")
+                    .accessibilityHint("拖动可以翻到那个时间，上下滑动一段一段地看")
+                    .accessibilityValue(tl.scrub.map { spoken(m.readout(at: $0)) } ?? "")
+                    .accessibilityAdjustableAction { nudge($0, m) }
                     .id(tl.day).transition(barTransition)
                     .offset(x: 30, y: TLLayout.barY)
                 if !m.chips.isEmpty || !m.body.isEmpty {
@@ -85,6 +88,22 @@ struct TLTopView: View {
         }
         .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
         .contentTransition(.identity)           // the words follow the finger at once: a change of them is not a fade of its own, which would show the last stretch's words through the new ones
+    }
+
+    /// the minute under VoiceOver's step as it is said: the stretch, and what else was going on
+    private func spoken(_ r: TLReadout) -> String { r.head + "，" + r.second }
+
+    /// VoiceOver's up and down on the bar: the next stretch or the one before it, held the way a finger holds a minute and let go after a pause
+    private func nudge(_ direction: AccessibilityAdjustmentDirection, _ m: DayTimelineModel) {
+        let forward: Bool
+        switch direction {
+        case .increment: forward = true
+        case .decrement: forward = false
+        @unknown default: return
+        }
+        guard let t = scene.step(from: tl.scrub, forward: forward) else { return }
+        tl.follow(t, in: m)
+        tl.holdThenRelease()
     }
 
     /// the stretch under his finger, else the span of the row he has open, on the bar

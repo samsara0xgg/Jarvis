@@ -301,6 +301,17 @@ final class DayTimelineActionsTests: XCTestCase {
         XCTAssertEqual(tl.openRow, "stay-1")
     }
 
+    func testAMinuteHeldByVoiceOversStepIsLetGoAfterAPause() async throws {
+        let tl = state()
+        let m = try model(tl)
+        tl.follow(600, in: m)
+        tl.holdThenRelease(for: 0.2)
+        XCTAssertEqual(tl.scrub, 600)
+        tl.holdThenRelease(for: 0.2)            // another step starts the pause again
+        await until("the minute is let go") { tl.scrub == nil }
+        XCTAssertNil(tl.hot)
+    }
+
     // MARK: what waits
 
     func testTheWaitingCountGoesToTheFirstRowThatWaitsAndFlashesIt() async throws {

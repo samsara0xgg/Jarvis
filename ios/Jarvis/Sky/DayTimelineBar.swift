@@ -38,6 +38,18 @@ struct TLBarScene: Equatable {
     static let empty = TLBarScene(span: 360...DAY, now: nil, pieces: [], ahead: [], stars: [], ticks: [])
 }
 
+extension TLBarScene {
+    /// where each stretch of the bar begins, in time order (what has not happened yet is not one): what VoiceOver's up and down on the bar steps through
+    var stretchStarts: [Double] { pieces.filter { $0.fill != .ahead }.map(\.t0) }
+
+    /// The start of the next stretch after minute `t`, or of the one before it going back; with no minute yet the first (the last, going back); at either end it stays.
+    func step(from t: Double?, forward: Bool) -> Double? {
+        let starts = stretchStarts
+        guard let t else { return forward ? starts.first : starts.last }
+        return forward ? starts.first { $0 > t + 0.5 } ?? starts.last : starts.last { $0 < t - 0.5 } ?? starts.first
+    }
+}
+
 extension DayTimelineModel {
     /// The bar as pieces. The night is on top of a trip and a trip of a stay (`seg(at:)`); where nothing was recorded there is a blank piece, and on today everything after now
     /// is one piece that has not happened. A piece that goes on across a cut (the night under a stay, a long stay split by nothing) is one piece.

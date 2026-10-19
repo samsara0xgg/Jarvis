@@ -107,7 +107,7 @@ struct TLWaitPill: View {
             .contentShape(Rectangle().inset(by: -9))
         }
         .buttonStyle(PressScale())
-        .opacity(on ? 1 : 0).scaleEffect(on ? 1 : 0.92).allowsHitTesting(on)
+        .opacity(on ? 1 : 0).scaleEffect(on ? 1 : 0.92).allowsHitTesting(on).accessibilityHidden(!on)
         .animation(.easeOut(duration: 0.25), value: count)
         .onChange(of: count, initial: true) { _, c in if c > 0 { last = c } }
         .accessibilityLabel("\(on ? count : last) 件事等你")
