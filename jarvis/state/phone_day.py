@@ -9,6 +9,7 @@ rules. Nothing is stored and nothing here calls a model.
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 
 MOTION_EVENT: Final = "phone.motion_observed"
 HEALTH_EVENT: Final = "phone.health_observed"
+MEASURE_EVENT: Final = "phone.measure_observed"
 
 _MINUTE_MS: Final = 60_000
 
@@ -192,33 +194,117 @@ def sleeps(events: Iterable[Event]) -> list[Span]:
     Only the asleep stages count (``unspecified``, ``core``, ``deep``, ``rem``); in bed and awake
     do not. Spans from every source are joined where they overlap, so time two sources both
     recorded counts once; the joined spans within :data:`SLEEP_MERGE_GAP_MS` of each other are one
-    block, whose ``minutes`` are the time asleep in it (the gaps are not counted).
+    block, whose ``minutes`` are the time asleep in it (the gaps are not counted). A block also
+    carries its ``stages``: every stage sample, asleep or not, that overlaps it, as the sources
+    recorded it (``{stage, start_ms, end_ms}``, by start, two identical samples once).
     """
+    held = [e for e in events if e.payload["metric"] == "sleep"]
     spans = sorted(
         (int(event.payload["start_ms"]), int(event.payload["end_ms"]), (place, event.event_uid))
-        for place, event in enumerate(
-            e for e in events
-            if e.payload["metric"] == "sleep" and e.payload.get("detail") in ASLEEP_STAGES
-        )
+        for place, event in enumerate(e for e in held if e.payload.get("detail") in ASLEEP_STAGES)
     )
     joined: list[tuple[int, int, tuple[int, str]]] = []
     for start, end, origin in spans:
         if joined and start <= joined[-1][1]:
-            first, last, held = joined[-1]
-            joined[-1] = (first, max(last, end), min(held, origin))
+            first, last, held_origin = joined[-1]
+            joined[-1] = (first, max(last, end), min(held_origin, origin))
         else:
             joined.append((start, end, origin))
     blocks: list[tuple[int, int, int, tuple[int, str]]] = []  # start, end, asleep ms, origin
     for start, end, origin in joined:
         if blocks and start <= blocks[-1][1] + SLEEP_MERGE_GAP_MS:
-            first, _last, asleep, held = blocks[-1]
-            blocks[-1] = (first, end, asleep + end - start, min(held, origin))
+            first, _last, asleep, held_origin = blocks[-1]
+            blocks[-1] = (first, end, asleep + end - start, min(held_origin, origin))
         else:
             blocks.append((start, end, end - start, origin))
+    samples = sorted({
+        (int(e.payload["start_ms"]), int(e.payload["end_ms"]), str(e.payload.get("detail")))
+        for e in held
+    })
     return [
-        Span(origin, "sleep", start, end, {"minutes": _tidy(asleep / _MINUTE_MS)})
+        Span(origin, "sleep", start, end, {
+            "minutes": _tidy(asleep / _MINUTE_MS),
+            "stages": [
+                {"stage": stage, "start_ms": begin, "end_ms": stop}
+                for begin, stop, stage in samples if begin < end and stop > start
+            ],
+        })
         for start, end, asleep, origin in blocks
     ]
+
+
+def workouts(events: Iterable[Event]) -> list[Span]:
+    """The workouts Health recorded (ADR 0293), one per start time, as ``workout`` spans.
+
+    ``activity`` is the name the phone gave it; ``energy_kcal``, ``distance_m`` and ``avg_hr``
+    are what Health knew of it and are left out when it did not know them.
+    """
+    found: list[Span] = []
+    held = [e for e in events if e.payload["metric"] == "workout"]
+    for fact in settle(held, "start_ms", "end_ms"):
+        meta = fact.payload.get("meta") or {}
+        activity = str(fact.payload.get("detail") or "workout")
+        fields: dict[str, Any] = {"activity": activity, "text": activity}
+        for name, key in (
+            ("energy_kcal", "total_energy_kcal"), ("distance_m", "distance_m"),
+            ("avg_hr", "avg_heart_rate"),
+        ):
+            if isinstance(meta.get(key), (int, float)):
+                fields[name] = _tidy(float(meta[key]))
+        found.append(Span(fact.origin, "workout", fact.start, fact.end, fields))
+    return found
+
+
+def health_totals(events: Iterable[Event], metric: str) -> list[tuple[int, int, float]]:
+    """The totals of one metric as (start_ms, end_ms, value); a span reported again is the later."""
+    latest: dict[tuple[int, int], float] = {}
+    for event in events:
+        if event.payload["metric"] == metric:
+            span = (int(event.payload["start_ms"]), int(event.payload["end_ms"]))
+            latest[span] = float(event.payload["value"])
+    return [(start, end, value) for (start, end), value in latest.items()]
+
+
+def _payloads(
+    conn: sqlite3.Connection, event_type: str, metric: str, since_ms: int, until_ms: int,
+) -> list[dict[str, Any]]:
+    """The payloads of one metric of one phone type reported in ``[since_ms, until_ms)``."""
+    return [
+        json.loads(raw) for (raw,) in conn.execute(
+            "SELECT payload_json FROM events WHERE type = ? AND ts_epoch_ms >= ? "
+            "AND ts_epoch_ms < ? AND json_extract(payload_json, '$.metric') = ? ORDER BY id",
+            (event_type, since_ms, until_ms, metric),
+        )
+    ]
+
+
+def day_summary(conn: sqlite3.Connection, start_ms: int, end_ms: int) -> dict[str, Any]:
+    """The day's body in three numbers: ``{steps, resting_hr, hrv}``, each ``None`` unreported.
+
+    A sample belongs to the day it starts in. ``steps`` is the sum of the day's hourly totals
+    (a total reported again counts as the later), ``resting_hr`` the day's latest resting heart
+    rate sample (beats a minute) and ``hrv`` the mean of its SDNN samples (milliseconds). The
+    rows are read up to :data:`LOOKBACK_MS` after the day, as the phone may report late.
+    """
+    until = end_ms + LOOKBACK_MS
+
+    def inside(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [row for row in rows if start_ms <= int(row["start_ms"]) < end_ms]
+
+    steps: dict[tuple[int, int], float] = {}
+    for row in inside(_payloads(conn, HEALTH_EVENT, "steps", start_ms, until)):
+        steps[(int(row["start_ms"]), int(row["end_ms"]))] = float(row["value"])
+    resting = inside(_payloads(conn, MEASURE_EVENT, "resting_heart_rate", start_ms, until))
+    rows = _payloads(conn, MEASURE_EVENT, "heart_rate_variability_sdnn", start_ms, until)
+    sdnn = [float(row["value"]) for row in inside(rows)]
+    return {
+        "steps": round(sum(steps.values())) if steps else None,
+        "resting_hr": (
+            round(float(max(resting, key=lambda row: int(row["start_ms"]))["value"]), 1)
+            if resting else None
+        ),
+        "hrv": round(sum(sdnn) / len(sdnn), 1) if sdnn else None,
+    }
 
 
 def _tidy(total: float) -> float:

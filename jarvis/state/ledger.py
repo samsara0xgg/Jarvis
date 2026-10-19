@@ -44,7 +44,6 @@ from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
-    from jarvis.shared import Event
     from jarvis.shared.device_link import DeviceLink
 
 LOGGER = logging.getLogger(__name__)
@@ -440,16 +439,6 @@ def _slices(
         day += timedelta(days=1)
 
 
-def _health_totals(events: Iterable[Event], metric: str) -> list[tuple[int, int, float]]:
-    """The totals of one metric as (start_ms, end_ms, value); a span reported again is the later."""
-    latest: dict[tuple[int, int], float] = {}
-    for event in events:
-        if event.payload["metric"] == metric:
-            span = (int(event.payload["start_ms"]), int(event.payload["end_ms"]))
-            latest[span] = float(event.payload["value"])
-    return [(start, end, value) for (start, end), value in latest.items()]
-
-
 def _stay_name(fields: dict[str, Any], held: list[places.Place]) -> str:
     """The place a stay is named by: the one he keeps that holds it (ADR 0234), else the phone's."""
     kept = places.containing(held, fields["lat"], fields["lng"])
@@ -506,7 +495,7 @@ class _Phone:
                     self.stayed[day][_trim(place, _PLACE_CHARS)].append((begin, stop))
         # a workout's value is its length in seconds (ADR 0293); the ledger counts minutes
         for metric, per, into in (("steps", 1, self.steps), ("workout", 60, self.workout_min)):
-            for first, last, value in _health_totals(rows.health, metric):
+            for first, last, value in phone_day.health_totals(rows.health, metric):
                 whole = last - first
                 for day, begin, stop in _slices(moment(first), moment(last), zone):
                     share = (stop - begin).total_seconds() * 1000 / whole if whole else 1.0

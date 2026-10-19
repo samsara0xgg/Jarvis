@@ -183,9 +183,12 @@ def move(uid: str, activity: str, start: float, end: float | None, state: str) -
     return Item(uid, "move", start, end, state, {"activity": activity})
 
 
-def slept(uid: str, start: float, end: float, state: str, minutes: float) -> Item:
-    """An expected ``sleep`` block."""
-    return Item(uid, "sleep", start, end, state, {"minutes": minutes})
+def slept(  # noqa: PLR0913 — a block's uid, span, state, minutes and stages
+    uid: str, start: float, end: float, state: str, minutes: float,
+    stages: list[tuple[str, float, float]],
+) -> Item:
+    """An expected ``sleep`` block with its ``(stage, start, end)`` samples, in minutes."""
+    return Item(uid, "sleep", start, end, state, {"minutes": minutes, "stages": stages})
 
 
 def due(rid: str, at: float, state: str, text: str = "stand up", fate: str = "") -> Item:
@@ -208,6 +211,13 @@ def _load(conn: sqlite3.Connection, rows: list[Row], origin: int) -> None:
         )
 
 
+def _stages(stages: list[tuple[str, float, float]], origin: int) -> list[dict[str, Any]]:
+    return [
+        {"stage": stage, "start_ms": _ms(origin, begin), "end_ms": _ms(origin, stop)}
+        for stage, begin, stop in stages
+    ]
+
+
 def _expected(items: list[Item], origin: int) -> list[dict[str, Any]]:
     """The items as the route words them; an ``@`` in a uid stands for the item's start in ms."""
     return [
@@ -217,6 +227,7 @@ def _expected(items: list[Item], origin: int) -> list[dict[str, Any]]:
             "start_ms": _ms(origin, item.start),
             "end_ms": None if item.end is None else _ms(origin, item.end),
             "state": item.state, **item.extra,
+            **({"stages": _stages(item.extra["stages"], origin)} if "stages" in item.extra else {}),
         }
         for item in items
     ]
@@ -407,7 +418,12 @@ CASES: list[Case] = [
             health("s6", 540, 560, 2, stage="deep"),  # exactly thirty minutes after s5
             health("steps", 100, 200, 3000, "steps"),
         ],
-        [slept("s1", -50, 430, "done", 450), slept("s5", 480, 560, "done", 50)],
+        [
+            slept("s1", -50, 430, "done", 450, [
+                ("core", -50, 40), ("core", 45, 180), ("core", 185, 390), ("core", 410, 430),
+            ]),
+            slept("s5", 480, 560, "done", 50, [("core", 480, 510), ("deep", 540, 560)]),
+        ],
     ),
     Case(
         "overlapping sleep spans are one block and the time two sources both recorded counts once",
@@ -415,7 +431,12 @@ CASES: list[Case] = [
             health("x1", 600, 700, 1, stage="unspecified"), health("x2", 650, 660, 4, stage="rem"),
             health("x3", 680, 720, 4, stage="core"), health("x4", 1000, 1100, 4),
         ],
-        [slept("x1", 600, 720, "done", 120), slept("x4", 1000, 1100, "next", 100)],
+        [
+            slept("x1", 600, 720, "done", 120, [
+                ("unspecified", 600, 700), ("rem", 650, 660), ("core", 680, 720),
+            ]),
+            slept("x4", 1000, 1100, "next", 100, [("core", 1000, 1100)]),
+        ],
     ),
     Case(
         "in bed and awake are not asleep: they do not count, and the stages around them do",
@@ -424,12 +445,16 @@ CASES: list[Case] = [
             health("b3", 640, 650, 2, stage="awake"), health("b4", 650, 700, 4, stage="rem"),
             health("b5", 900, 960, 2, stage="awake"),
         ],
-        [slept("b2", 600, 700, "done", 90)],
+        [
+            slept("b2", 600, 700, "done", 90, [
+                ("in_bed", 580, 780), ("core", 600, 640), ("awake", 640, 650), ("rem", 650, 700),
+            ]),
+        ],
     ),
     Case(
         "a sleep block in progress is now",
         [health("z1", 700, 760, 60)],
-        [slept("z1", 700, 760, "now", 60)],
+        [slept("z1", 700, 760, "now", 60, [("core", 700, 760)])],
     ),
     # --- reminders -----------------------------------------------------------------------------
     Case(
@@ -462,7 +487,7 @@ CASES: list[Case] = [
             fired("reminder-x", 541),
         ],
         [
-            slept("mm", 540, 600, "done", 60),
+            slept("mm", 540, 600, "done", 60, [("core", 540, 600)]),
             due("reminder-x", 540, "done", fate="fired"),
             stay("zz", 540, 560, "done"),
         ],
@@ -1615,6 +1640,9 @@ def test_today_is_where_the_owner_is_not_where_the_server_clock_is(tmp_path: Pat
     assert (body["start_ms"], body["end_ms"]) == day_window(date(2026, 10, 9), ZoneInfo(VANCOUVER))
     assert set(body) == {
         "date", "tz", "start_ms", "end_ms", "now_ms", "items", "labels", "missing", "line",
-        "highlights",
+        "highlights", "summary", "weather",
     }
     assert (body["items"], body["missing"]) == ([], ["mac", "talks"])  # no store was given
+    assert (body["summary"], body["weather"]) == (
+        {"steps": None, "resting_hr": None, "hrv": None}, None,
+    )

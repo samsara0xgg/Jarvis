@@ -15,6 +15,7 @@ import logging
 import math
 import re
 import threading
+import time as _clock
 import urllib.request
 from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta, timezone
@@ -64,6 +65,11 @@ CALENDAR_TTL_TODAY_MS: Final = 5 * 60_000
 CALENDAR_TTL_OTHER_MS: Final = 30 * 60_000
 """How long it keeps any other day's read: those days move slowly, and a phone scrubbing the ring
 back and forth should not ask Graph for each swipe."""
+WEATHER_CARD_TTL_S: Final = 6 * 3600
+"""How long the day line keeps a day's weather (ADR 0285): one WeatherKit read per day, a few
+times a day at most, however often a phone scrubs back and forth."""
+WEATHER_CARD_RETRY_S: Final = 600
+"""How long a day whose weather could not be read is left alone before it is asked for again."""
 _ID_SEP = "|"
 """A to-do's id is ``<list id>|<task id>``; Graph ids are base64 and never hold a bar."""
 MAIL_SERVER = "gmail"
@@ -421,6 +427,7 @@ class Home:
         self._letters: dict[str, dict[str, str]] = {}
         self._calendar_lock = threading.Lock()
         self._calendar: dict[tuple[int, int], tuple[int, list[dict[str, Any]]]] = {}
+        self._cards: dict[date, tuple[float, dict[str, Any] | None]] = {}
 
     def _servers(self, server: str = PLAN_SERVER) -> McpServers:
         """The live client of ``server``; LookupError (the routes' 404) when it is not connected."""
@@ -476,6 +483,51 @@ class Home:
         )
         row: dict[str, Any] = answer["days"][0]
         return row
+
+    def day_weather_card(self, day: date) -> dict[str, Any] | None:
+        """The weather of ``day`` for the day line.
+
+        ``{condition, high, low, sunrise_ms, sunset_ms}``.
+
+        ``high`` and ``low`` are degrees Celsius and the two times epoch milliseconds (to the
+        minute, as WeatherKit's daily row words them); any of them is None where it has none.
+        Built from :meth:`day_weather`, and kept per day (:data:`WEATHER_CARD_TTL_S`, or
+        :data:`WEATHER_CARD_RETRY_S` after a failure), so the day route waits on WeatherKit about
+        once a day. A day WeatherKit does not cover, no key, no place and any failure are all None:
+        never an error.
+        """
+        now = _clock.time()
+        with self._calendar_lock:
+            held = self._cards.get(day)
+        if held is not None and now - held[0] < (
+            WEATHER_CARD_TTL_S if held[1] is not None else WEATHER_CARD_RETRY_S
+        ):
+            return held[1]
+        today = datetime.fromtimestamp(now, self._zone).date()
+        card: dict[str, Any] | None = None
+        if today - timedelta(days=DAYS_BACK) <= day <= today + timedelta(days=DAYS_AHEAD):
+            try:
+                row = self.day_weather(day)
+            except Exception as exc:  # noqa: BLE001 - WeatherKit or the key failed: no weather
+                LOGGER.warning("day weather: %s not read (%s)", day, type(exc).__name__)
+                row = None
+            if row is not None:
+                card = {
+                    "condition": row["condition"], "high": row["high_c"], "low": row["low_c"],
+                    "sunrise_ms": self._clock_ms(day, row["sunrise"]),
+                    "sunset_ms": self._clock_ms(day, row["sunset"]),
+                }
+        with self._calendar_lock:
+            self._cards = {d: h for d, h in self._cards.items() if now - h[0] < WEATHER_CARD_TTL_S}
+            self._cards[day] = (now, card)
+        return card
+
+    def _clock_ms(self, day: date, text: str | None) -> int | None:
+        """``HH:MM`` on ``day`` in the home's zone as epoch milliseconds."""
+        if not text:
+            return None
+        moment = datetime.combine(day, time.fromisoformat(text), self._zone)
+        return int(moment.timestamp() * 1000)
 
     def calendar(self, start_ms: int, end_ms: int, now_ms: int) -> list[dict[str, Any]]:
         """The calendar's events of ``[start_ms, end_ms)`` as ``today()`` words them (ADR 0230).

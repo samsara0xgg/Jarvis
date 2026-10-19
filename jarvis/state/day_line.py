@@ -8,9 +8,11 @@ going, so it overlaps every window after its start.
 Each source folds on its own and a source that raises leaves its items out (:func:`fold_day`):
 
 - ``phone``: stays from ``phone.visit_observed``, moves from ``phone.motion_observed`` and sleep
-  from ``phone.health_observed`` (ADR 0197), read in one query from two days before the window and
-  folded by :mod:`jarvis.state.phone_day`, whose rules the ledger counts by too; a stay inside a
-  place he keeps (ADR 0234) also carries it as ``kept_place``;
+  and workouts from ``phone.health_observed`` (ADR 0197, 0293), read in one query from two days
+  before the window and folded by :mod:`jarvis.state.phone_day`, whose rules the ledger counts by
+  too; a stay inside a place he keeps (ADR 0234) also carries it as ``kept_place``, a sleep block
+  its ``stages`` and a workout its ``activity``, ``energy_kcal``, ``distance_m`` and ``avg_hr``
+  where Health knew them;
 - ``reminders``: the fold of ADR 0179;
 - ``rides``: the bus rides he was on (ADR 0224); one replaces the phone's generic automotive
   ``move`` for the span it covers;
@@ -82,7 +84,7 @@ from jarvis.state import rides as ride_state
 from jarvis.state.attachments import Attachments
 from jarvis.state.import_parsers import money
 from jarvis.state.ledger import CALL_FLOOR_S, TOP_FLOOR_S, shipped_activity, window_activity
-from jarvis.state.phone_day import LOOKBACK_MS, read_rows, sleeps, stays
+from jarvis.state.phone_day import LOOKBACK_MS, read_rows, sleeps, stays, workouts
 from jarvis.state.phone_day import moves as phone_moves
 
 if TYPE_CHECKING:
@@ -803,14 +805,18 @@ def _picture_items(
 def _phone_items(
     conn: sqlite3.Connection, sources: DaySources, window_start: int, window_end: int, now_ms: int,
 ) -> list[dict[str, Any]]:
-    """Stays, moves and sleep: one read of the phone's rows, folded by kind.
+    """Stays, moves, sleep and workouts: one read of the phone's rows, folded by kind.
 
-    A stay inside a place he keeps carries it as ``kept_place`` (ADR 0234).
+    A stay inside a place he keeps carries it as ``kept_place`` (ADR 0234); a sleep block carries
+    its ``stages`` and a workout its ``activity`` and what Health knew of it (ADR 0293).
     """
     rows = read_rows(conn, window_start - LOOKBACK_MS)
     held = stays(rows.visits)
     kept = [] if sources.memory_db is None else places.read_kept(sources.memory_db)
-    spans = [*held, *phone_moves(rows.motions, held, now_ms), *sleeps(rows.health)]
+    spans = [
+        *held, *phone_moves(rows.motions, held, now_ms), *sleeps(rows.health),
+        *workouts(rows.health),
+    ]
     items: list[dict[str, Any]] = []
     for span in spans:
         if not _overlaps(span.start, span.end, window_start, window_end):

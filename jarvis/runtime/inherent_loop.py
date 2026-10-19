@@ -268,6 +268,7 @@ from jarvis.state.memory_db import (
     remember_fact,
     retention_days,
 )
+from jarvis.state.phone_day import day_summary
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.projections import (
     CLARIFICATION_EVENT_TYPES,
@@ -5650,7 +5651,7 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
     event_log: Path, configured: tzinfo | None, memory_db: Path | None, timesink: Path | None,
     day: date | None, now_ms: int, terminal: TerminalScreen | None = None,
     attachments: Path | None = None, calendar: CalendarRead | None = None,
-    shipped: Path | None = None,
+    shipped: Path | None = None, weather: Callable[[date], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """``GET /inherent/day`` (ADR 0199): the day asked for, or today in the owner's zone.
 
@@ -5663,6 +5664,9 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
     ``highlights`` (ADR 0235) are the day's line to him and its marked items, read from
     ``memory_db``. ``shipped`` is the imports directory (ADR 0294): what his Mac copied to it fills
     in his Mac's lane when TimeSink cannot be read live, and gives his Claude Code sessions.
+    ``summary`` is the day's steps, resting heart rate and heart rate variability from the phone
+    (``None`` if the log cannot be read); ``weather`` is the day's weather card
+    (``Home.day_weather_card``, kept per day), ``None`` when it has none.
     """
     zone_name, zone = resolve_zone(None, configured)
     on = datetime.fromtimestamp(now_ms / 1000, zone).date() if day is None else day
@@ -5670,6 +5674,11 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
     with contextlib.closing(open_runtime_event_log(event_log)) as conn:
         sources = DaySources(zone, timesink, memory_db, terminal, attachments, calendar, shipped)
         line = fold_day(conn, start_ms, end_ms, now_ms, sources)
+        try:
+            summary: dict[str, Any] | None = day_summary(conn, start_ms, end_ms)
+        except Exception:
+            LOGGER.exception("day: the day's body numbers could not be read")
+            summary = None
     told, highlights = day_notes(memory_db, on.isoformat(), line.items, zone)
     return {
         "date": on.isoformat(),
@@ -5682,6 +5691,8 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
         "missing": line.missing,
         "line": told,
         "highlights": highlights,
+        "summary": summary,
+        "weather": None if weather is None else weather(on),
     }
 
 
@@ -5689,11 +5700,12 @@ async def _serve_day(  # noqa: PLR0913 — the route's stores, its zone, the ter
     event_log: Path, configured: tzinfo | None, memory_db: Path | None, timesink: Path | None,
     day: date | None, *, terminal: TerminalScreen | None = None, attachments: Path | None = None,
     calendar: CalendarRead | None = None, shipped: Path | None = None,
+    weather: Callable[[date], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """:func:`_read_day` off the loop thread, at the brain's clock."""
     return await asyncio.to_thread(
         _read_day, event_log, configured, memory_db, timesink, day, int(time.time() * 1000),
-        terminal, attachments, calendar, shipped,
+        terminal, attachments, calendar, shipped, weather,
     )
 
 
@@ -7853,6 +7865,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 attachments=None if runtime.attachments is None else runtime.attachments.directory,
                 calendar=None if runtime.home is None else runtime.home.calendar,
                 shipped=runtime.runtime_paths.root / IMPORTS_DIRNAME,
+                weather=None if runtime.home is None else runtime.home.day_weather_card,
             ),
             today_read=(
                 None if runtime.home is None

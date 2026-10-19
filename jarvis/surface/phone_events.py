@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Final
 from jarvis.state.attachments import valid_id
 from jarvis.state.event_log import EventTypeRegistry
 from jarvis.state.locate_wait import valid_request_id
-from jarvis.state.phone_day import HEALTH_EVENT, MOTION_EVENT
+from jarvis.state.phone_day import HEALTH_EVENT, MEASURE_EVENT, MOTION_EVENT
 from jarvis.state.phone_location import LOCATION_EVENT, VISIT_EVENT
 
 if TYPE_CHECKING:
@@ -38,7 +38,6 @@ if TYPE_CHECKING:
 PHONE_EVENTS_PATH: Final = "/inherent/device/events"
 
 STATE_EVENT: Final = "phone.state_observed"
-MEASURE_EVENT: Final = "phone.measure_observed"
 
 PHONE_EVENT_TYPES: Final = frozenset(
     {VISIT_EVENT, LOCATION_EVENT, MOTION_EVENT, HEALTH_EVENT, STATE_EVENT, MEASURE_EVENT},
