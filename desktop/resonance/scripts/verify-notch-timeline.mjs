@@ -1374,7 +1374,7 @@ try {
     await a.page.waitForTimeout(700);
     const text = sel => a.page.locator(sel).allInnerTexts();
     check('the header: the date, the day\'s tag, her label', (await text('.dt-date'))[0] === '10月19日 周一' && (await text('.dt-today'))[0] === '今天' && (await text('.dt-chip'))[0] === '期中周');
-    check('her sentence, in the serif', (await text('.dt-line'))[0].startsWith('今天一半在路上') && await a.page.locator('.dt-line').evaluate(el => /Songti|Serif|serif/.test(getComputedStyle(el).fontFamily)));
+    check('her sentence, in the pane\'s own sans face at 500 (yilun 10-19: the serif read faint)', (await text('.dt-line'))[0].startsWith('今天一半在路上') && await a.page.locator('.dt-line').evaluate(el => { const c = getComputedStyle(el), p = getComputedStyle(el.parentElement); return !/Songti|Serif/.test(c.fontFamily) && c.fontFamily === p.fontFamily && c.fontWeight === '500'; }));
     check('the footnote names what has not been read, as the phone words it: 还没读到：Mac 的时间', (await text('.dt-foot'))[0] === '还没读到：Mac 的时间');
     const heads = (await text('.dt-sh .dt-tx b')).map(x => x.trim());
     check('stay headers, in order, by name', heads.join() === '家,A&W,家,UVic,家');
