@@ -680,6 +680,13 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
       const lineTl = L.current.mode === 'timeline' && st.seg ? L.current.timeline : undefined;
       if (lineTl && st.seg) {
         const { head, tail } = wingText(lineTl.day.data, Date.now(), say), shown = fitText(head, st.seg.room), y = top / 2 + .5;
+        // The row holds still while the pointer is on it or a pane is open, but a line that has grown since (a place renamed, a digit more) pushes
+        // the wing's edge out instead of running past it; where the wing may not reach further (`edge`) it stays as it was.
+        const grow = Math.ceil(segWidth(head, tail, SEG_MAX).w) - (st.seg.x1 - st.seg.x0), edge = L.current.edge;
+        if (grow > 0 && (edge === null || g.notchR + st.wingTarget + grow <= edge)) {
+          st.seg.x1 += grow; st.wingTarget += grow;
+          if (st.pin) { st.pin.x0 += grow; st.pin.x1 += grow; }
+        }
         ctx.save(); ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
         ctx.font = SEG_FONT; ctx.fillStyle = 'rgba(214,222,250,.82)'; ctx.fillText(shown, st.seg.x0, y);
         if (tail) {
