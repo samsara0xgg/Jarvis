@@ -16,6 +16,35 @@ const rgb = (c: readonly number[]) => c.join(' ');
 // Where `el` is inside the scrolling `list`.
 const offsetIn = (el: HTMLElement, list: HTMLElement) => el.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
 
+// Motion (reduced: nothing moves, what appears fades in over 120 ms). These are Web Animations on the elements themselves: React keeps the
+// classes, and a row that is hovered while it comes up is not interrupted.
+const EASE = 'cubic-bezier(.16, 1, .3, 1)';
+// On open the rows in view come up one after another: 6 px and a fade, 220 ms each, 25 ms apart, the first ten. The pane's own contents show
+// once it is mostly down (the sessions' rows rise then too), so they start then.
+function rise(list: HTMLElement) {
+  const go = () => {
+    const view = list.getBoundingClientRect();
+    [...list.querySelectorAll<HTMLElement>('.dt-row, .dt-sh, .dt-now')].filter(el => { const r = el.getBoundingClientRect(); return r.bottom > view.top && r.top < view.bottom; }).slice(0, 10)
+      .forEach((el, i) => el.animate(reduced.matches ? [{ opacity: 0 }, {}] : [{ opacity: 0, transform: 'translateY(6px)' }, {}], { duration: reduced.matches ? 120 : 220, delay: reduced.matches ? 0 : i * 25, easing: EASE, fill: 'backwards' }));
+  };
+  const pane = list.closest('.notch-pane');
+  if (!pane || pane.classList.contains('is-open')) { go(); return () => {}; }
+  const watch = new MutationObserver(() => { if (pane.classList.contains('is-open')) { watch.disconnect(); go(); } });
+  watch.observe(pane, { attributes: true, attributeFilter: ['class'] });
+  return () => watch.disconnect();
+}
+// An item that arrives while the day is open grows out of nothing: its height from 0 and a fade, 240 ms.
+function grow(el: HTMLElement) {
+  const style = getComputedStyle(el), full = { height: `${el.offsetHeight}px`, marginTop: style.marginTop, opacity: style.opacity };
+  el.animate(reduced.matches ? [{ opacity: 0 }, {}] : [{ height: '0px', marginTop: '0px', opacity: 0, overflow: 'hidden' }, { ...full, overflow: 'hidden' }], { duration: reduced.matches ? 120 : 240, easing: EASE });
+}
+// A day change is a shared axis: the day that was slides away the way time came from, fading (80 ms), and the day that is slides in from the
+// other side (140 ms). Never both at once, so two days' words are never on top of each other. The list moves 16 px, the rest of the pane 8.
+const parts = (root: HTMLElement | null) => [...(root?.children ?? [])].filter((el): el is HTMLElement => el instanceof HTMLElement && !el.classList.contains('dt-head'));
+const reach = (el: HTMLElement) => el.classList.contains('dt-list') ? 16 : 8;
+const leave = (root: HTMLElement | null, dir: number) => parts(root).map(el => el.animate([{ opacity: 0, transform: `translateX(${-dir * reach(el)}px)` }], { duration: 80, easing: 'ease-in', fill: 'forwards' }));
+const enter = (root: HTMLElement | null, dir: number) => parts(root).forEach(el => el.animate(reduced.matches ? [{ opacity: 0 }, {}] : [{ opacity: 0, transform: `translateX(${dir * reach(el)}px)` }, {}], { duration: reduced.matches ? 120 : 140, easing: EASE, fill: 'backwards' }));
+
 // Handing a row to her is B2's: the button is written and waits behind this.
 const ASK_HER = false;
 // hot: what the pointer is on; pick: what the keys chose. Both are bracketed on the bar; the pointer's wins while it is on something.
@@ -82,10 +111,24 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
   const other = useRoute<DayReply>(port, `/inherent/day?date=${date ?? ''}`, open && date !== null, 60_000);
   const route = date === null ? feed : other;
   const reply = route.data && (date === null || route.data.date === date) ? route.data : null;
-  // While the next day is on its way the last one stays, dimmed, so the pane does not jump.
-  const last = useRef<DayReply | null>(null);
-  if (reply) last.current = reply;
-  const shown = reply ?? last.current, now = useMinute(open);
+  // What is drawn is the last reply that came. While the next day is on its way it stays, dimmed, so the pane does not jump; when it has come
+  // the day that was leaves and the new one enters. An update of the day already drawn is drawn at once.
+  const [shown, setShown] = useState<DayReply | null>(reply), now = useMinute(open), root = useRef<HTMLDivElement>(null), entering = useRef(0), leaving = useRef<Animation[]>([]);
+  useEffect(() => {
+    if (!reply || reply === shown) return;
+    const dir = shown && shown.date !== reply.date ? reply.date > shown.date ? 1 : -1 : 0;
+    if (!dir || reduced.matches) { entering.current = dir; setShown(reply); return; }
+    let live = true;
+    leaving.current = leave(root.current, dir);
+    void Promise.all(leaving.current.map(a => a.finished)).then(() => { if (live) { entering.current = dir; setShown(reply); } }, () => {});
+    return () => { live = false; leaving.current.forEach(a => a.cancel()); leaving.current = []; };
+  }, [reply]);
+  useLayoutEffect(() => {
+    const dir = entering.current;
+    entering.current = 0;
+    leaving.current.forEach(a => a.cancel()); leaving.current = [];
+    if (dir) enter(root.current, dir);
+  }, [shown]);
   useEffect(() => { feed.reload(); }, []);
   // A day that cannot be built (no usable bounds) says so in a line; a day that builds but fails to draw falls to the guards below.
   const built = useMemo(() => {
@@ -104,15 +147,29 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
   uiRef.current = ui;
   const edges = () => { const l = list.current; if (!l) return; l.classList.toggle('more-below', l.scrollTop + l.clientHeight < l.scrollHeight - 2); l.classList.toggle('more-above', l.scrollTop > 2); };
   // A day opens where it matters: today at its now line, another day from the top; so does the list cut to a range, and the whole day again.
+  // The first time the list is there its rows in view come up.
+  const rose = useRef(false), stopRise = useRef(() => {});
+  useEffect(() => () => stopRise.current(), []);
   useLayoutEffect(() => {
     const l = list.current, spot = `${shown?.date}:${date}:${ui.filter ? 'cut' : ''}`;
     if (l && model && shown && placed.current !== spot) {
       placed.current = spot;
       const line = l.querySelector<HTMLElement>('.dt-now');
       l.scrollTop = line ? Math.max(0, offsetIn(line, l) - l.clientHeight * .6) : 0;
+      if (!rose.current) { rose.current = true; stopRise.current = rise(l); }
     }
     edges();
   });
+  // What the day had when it was last drawn: an item that was not there then, on the same day, grows in (a new stay with all that is in it as one).
+  const seen = useRef<{ date: string; keys: Set<string> } | null>(null);
+  useLayoutEffect(() => {
+    if (!model) return;
+    const keys = new Set(model.index.map(x => x.key)), before = seen.current, l = list.current;
+    seen.current = { date: model.reply.date, keys };
+    if (!before || before.date !== model.reply.date || !l) return;
+    const fresh = [...keys].filter(k => !before.keys.has(k)).flatMap(k => { const el = l.querySelector<HTMLElement>(`[data-key="${CSS.escape(k)}"]`); return el ? [el.classList.contains('dt-sh') ? el.parentElement! : el] : []; });
+    fresh.filter(el => !fresh.some(o => o !== el && o.contains(el))).forEach(grow);
+  }, [model]);
   // The list scrolls to `to` in `ms`, easing out (at once under reduced motion); a new one takes over from wherever the last had got to.
   const glide = useRef(0);
   const slide = (to: number, ms: number) => {
@@ -182,7 +239,7 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
 
   const title = at ? dateTitle(at, t) : model?.title ?? '';
   const say = !port ? t(['Not connected to Jarvis yet', '还没连上 Jarvis']) : route.missing ? t(["This Jarvis can't give a day yet", '这台 Jarvis 还不会给出一天']) : slow || route.failed ? t(["Couldn't read this day. Trying again.", '没读到这一天，会再试一次']) : t(['Reading the day…', '读着这一天…']);
-  return <div className={`dt${shown && !reply ? ' is-loading' : ''}`} data-lens={ui.lens ?? undefined} role="region" aria-label={t(['Day timeline', '一天的时间线'])}>
+  return <div ref={root} className={`dt${shown && at && shown.date !== at ? ' is-loading' : ''}`} data-lens={ui.lens ?? undefined} role="region" aria-label={t(['Day timeline', '一天的时间线'])}>
     <div className="dt-head">
       <b className="dt-date">{title}</b>{date === null ? <em className="dt-today">{t(['Today', '今天'])}</em> : <button type="button" className="dt-back" onClick={() => setDate(null)}>{t(['Back to today', '回到今天'])}</button>}
       <TimelineGuard where="the header" reset={shown} fallback={null}>
