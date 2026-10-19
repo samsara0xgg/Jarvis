@@ -218,9 +218,9 @@ struct DayTimelineView: View {
             }
             .frame(width: W, height: H, alignment: .topLeading)
             .onChange(of: context.date) { _, _ in tl.rollOver() }          // the day may have turned
-            .onChange(of: isReady(shown), initial: true) { _, ready in release(ready) }
-            .onChange(of: tl.enter) { _, _ in release(isReady(shown)) }
-            .onChange(of: ui.tlHome) { _, _ in release(isReady(shown)) }
+            .onChange(of: hasDay(shown), initial: true) { _, has in release(has) }
+            .onChange(of: tl.enter) { _, _ in release(hasDay(shown)) }
+            .onChange(of: ui.tlHome) { _, _ in release(hasDay(shown)) }
             .onChange(of: tl.focus) { _, id in if let id { tl.openCard = id; tl.focus = nil } }
         }
         .opacity(on ? 1 : 0)
@@ -245,6 +245,8 @@ struct DayTimelineView: View {
         return m.isEmpty ? .sentence("这一天没有记下什么。") : .model(m)
     }
     private func isReady(_ s: Shown) -> Bool { if case .loading = s { return false }; return true }
+    /// the day is there with a bar to grow: a sentence in its place (no brain yet, nothing recorded) has none, and the day that comes after it grows in as the first one does
+    private func hasDay(_ s: Shown) -> Bool { if case .model = s { return true }; return false }
     /// once the day is there and she is in her corner, the bar grows in and the first rows rise (on the next turn, so they have been drawn as they were before)
     private func release(_ ready: Bool) {
         guard ready, ui.tlHome, !tl.reveal else { return }
