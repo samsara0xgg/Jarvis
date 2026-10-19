@@ -202,11 +202,10 @@ final class Reporter {
     /// The network came back while the app runs (it runs all day while he records): what waited for it goes now, not at the next wake.
     private func watchNetwork() {
         let monitor = NWPathMonitor()
-        var satisfied: Bool?
+        let satisfied = OSAllocatedUnfairLock<Bool?>(initialState: nil)
         monitor.pathUpdateHandler = { path in
             let now = path.status == .satisfied
-            let back = now && satisfied == false
-            satisfied = now
+            let back = satisfied.withLock { was in defer { was = now }; return now && was == false }
             if back { Task { @MainActor in Reporter.shared.networkBack() } }
         }
         monitor.start(queue: DispatchQueue(label: "jarvis.report.path"))

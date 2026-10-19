@@ -20,7 +20,7 @@ final class ReportUploads: ReportUploading {
     /// how long iOS keeps a task waiting for the network; the brain takes events up to a week old at their own time
     nonisolated static let patience: TimeInterval = 3 * 24 * 3600
 
-    static let directory: URL = URL.applicationSupportDirectory.appending(path: "Report/uploads", directoryHint: .isDirectory)
+    nonisolated static let directory: URL = URL.applicationSupportDirectory.appending(path: "Report/uploads", directoryHint: .isDirectory)
 
     private var _session: URLSession?
     private let delegate = Delegate()
