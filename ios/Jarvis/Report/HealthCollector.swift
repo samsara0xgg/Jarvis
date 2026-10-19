@@ -66,6 +66,9 @@ final class HealthCollector: Collector {
         Stream(id: "stand_hour", type: HKCategoryType(.appleStandHour), shape: .standHour, delivery: .hourly),
     ]
 
+    /// the authorization request made last, by any collector; the next one waits for it
+    private static var asking: Task<Void, Never>?
+
     private let kind: Kind
     private let store = HKHealthStore()
     private var observers: [HKObserverQuery] = []
@@ -97,12 +100,20 @@ final class HealthCollector: Collector {
         // The observers are registered at once: a background launch for a Health delivery needs them in place
         // before the launch settles, not after the authorization question has been asked.
         for s in streams { register(s) }
-        Task {
+        let before = Self.asking
+        let ask = Task {
+            // iOS shows one Health sheet at a time; a second request made while one is up fails silently
+            // (10-19: the totals sheet showed, the records one never did), so the collectors ask in turn
+            await before?.value
             // all the types at once: one sheet lists whatever was not asked yet
             let types = Set(streams.map(\.type) as [HKObjectType])
             if (try? await store.statusForAuthorizationRequest(toShare: [], read: types)) == .shouldRequest {
                 try? await store.requestAuthorization(toShare: [], read: types)
             }
+        }
+        Self.asking = ask
+        Task {
+            await ask.value
             requested = true
             for s in streams { try? await store.enableBackgroundDelivery(for: s.type, frequency: s.delivery) }
             await wake()
