@@ -2701,6 +2701,41 @@ try {
     await a.ctx.close();
   }
 
+  // midnight with the pane left open on today: the cut and the range he had belong to the day that ended, and today is read at once, not at the next poll
+  if (all || only === 'review') {
+    const before = () => small([it('m-home', 'stay', T(9, 5), T(14, 0), { place: '12 Example St, Victoria', kept_place: home }), it('m-talk', 'talk', T(10, 0), T(10, 5), { turns: 2 }, 'her'),
+      it('m-lib', 'stay', T(14, 0), T(17, 0), { place: 'Library' }), it('m-end', 'stay', T(17, 0), null, { place: '12 Example St, Victoria', kept_place: home, state: 'now' })], { now_ms: T(23, 58) });
+    const nextDay = () => makeDay({ date: '2026-10-20', start_ms: T(0, 0, 20), end_ms: T(24, 0, 20), now_ms: T(0, 1, 20), labels: [], missing: [], line: null, highlights: [],
+      items: [it('n-home', 'stay', T(0, 0, 20), null, { place: '12 Example St, Victoria', kept_place: home, state: 'now' }), it('n-talk', 'talk', T(0, 0, 20), T(0, 1, 20), { turns: 2, state: 'done' }, 'her')] });
+    const seen = a => a.page.evaluate(() => ({ title: document.querySelector('.dt-date')?.innerText, chip: document.querySelectorAll('.dt-filter').length, band: document.querySelectorAll('.dt-band').length,
+      keys: [...document.querySelectorAll('.dt-list [data-key]')].map(e => e.dataset.key).join(), now: document.querySelectorAll('.dt-now').length, say: document.querySelectorAll('.dt-say').length }));
+    const drag = async (a, x, y, from, to) => { await a.move(x(from), y); await a.page.mouse.down(); await a.move(x((from + to) / 2), y); await a.move(x(to), y); await a.page.mouse.up(); await a.page.waitForTimeout(300); };
+    const { a, y, x } = await barOf(before(), { at: T(23, 58) });
+    await drag(a, x, y, T(14, 0), T(17, 0)); await a.page.locator('.dt-cbtn').click(); await a.page.waitForTimeout(400);
+    await drag(a, x, y, T(9, 30), T(11, 0));
+    const was = await seen(a);
+    check('before midnight the list is cut (a chip, the cut\'s bracket and a new range drawn on the bar), on the day that ends at 24:00', was.title === '10月19日 周一' && was.chip === 1 && was.band === 1 && !was.keys.includes('m-talk') && was.keys.includes('m-lib'), JSON.stringify(was));
+    const h0 = a.s.hits.length;
+    a.s.served = nextDay();
+    await a.page.clock.setFixedTime(new Date(T(0, 1, 20)));
+    await a.page.waitForFunction(() => document.querySelector('.dt-date')?.innerText === '10月20日 周二', null, { timeout: 4000 });
+    await a.page.waitForTimeout(500);
+    const after = await seen(a);
+    check('at midnight the new day is read at once (within seconds, not at the poll of 30 s): its rows and its now line are there and nothing is left of the cut or the range',
+      after.chip === 0 && after.band === 0 && after.keys.includes('n-home') && after.keys.includes('n-talk') && after.now === 1 && after.say === 0 && a.s.hits.length - h0 === 1, JSON.stringify({ ...after, hits: a.s.hits.length - h0 }));
+    await a.ctx.close();
+    // a brain that still answers with the old day is asked again every 5 s (not every second), and the new day comes with the next answer
+    const b = await barOf(before(), { at: T(23, 58) });
+    const g0 = b.a.s.hits.length;
+    await b.a.page.clock.setFixedTime(new Date(T(0, 1, 20)));
+    await b.a.page.waitForTimeout(3500);
+    check('a brain that still answers with the old day is asked once in the first seconds, not every second', b.a.s.hits.length - g0 === 1, String(b.a.s.hits.length - g0));
+    b.a.s.served = nextDay();
+    await b.a.page.waitForFunction(() => document.querySelector('.dt-date')?.innerText === '10月20日 周二', null, { timeout: 8000 });
+    check('and the day is drawn with the answer after (the second ask, 5 s on), not 30 s later', b.a.s.hits.length - g0 === 2, String(b.a.s.hits.length - g0));
+    await b.a.ctx.close();
+  }
+
   console.log(`\n${checks.length} checks passed; screenshots in ${dir}`);
 } finally {
   await browser.close();
