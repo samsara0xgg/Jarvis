@@ -95,3 +95,5 @@
   .notch .dt.is-loading > :not(.dt-head),.notch .dt-nav button,.notch .dt-row,.notch .dt-sh { transition:none; }
   .notch .is-flash { animation:none; }
 }
+/* a folded pane is still mounted: nothing in it keeps moving (the now marker's breathing is the one that never ends) */
+.notch .dt.is-folded *,.notch .dt.is-folded *::before,.notch .dt.is-folded *::after { animation-play-state:paused !important; }
