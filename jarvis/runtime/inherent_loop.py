@@ -8446,6 +8446,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         if runtime.things_mirror is not None:
             # ADR 0299: Outlook and To Do read into the ledger, now and every 15 minutes.
             watchers.append(asyncio.create_task(runtime.things_mirror.run(), name="things_mirror"))
+        if runtime.turn_things is not None:
+            # ADR 0300: each record of his, once answered, read into the ledger.
+            watchers.append(asyncio.create_task(runtime.turn_things.run(), name="turn_things"))
         if runtime.claude_daily is not None:
             watchers.append(asyncio.create_task(runtime.claude_daily.run(), name="claude_daily"))
         if spend is not None and runtime.memory is not None:

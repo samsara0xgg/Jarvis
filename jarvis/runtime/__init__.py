@@ -224,6 +224,7 @@ from jarvis.runtime.setup import write_setting
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.things_ledger import ThingsLedger
 from jarvis.runtime.things_mirror import ThingsMirror
+from jarvis.runtime.turn_things import TurnThings, TurnThingsSettings
 from jarvis.runtime.weatherkit import WeatherKit
 from jarvis.runtime.whereabouts import Whereabouts
 from jarvis.runtime.work_state import WorkStateService, build_analyst
@@ -750,6 +751,8 @@ class JarvisRuntime:
     things: ThingsLedger | None = None
     # ADR 0299: Outlook and To Do read into the ledger. None = hand-assembled.
     things_mirror: ThingsMirror | None = None
+    # ADR 0300: the pass that reads each record of his, once answered, into the ledger. None = off.
+    turn_things: TurnThings | None = None
     # ADR 0295, 0303: the poller of the nightly letter on his Claude chats (Gmail part off unless
     # enabled) and reader of the Mac's day report on his Claude Code work. None = hand-assembled.
     claude_daily: ClaudeDailyIntake | None = None
@@ -1931,6 +1934,33 @@ def _commitments(  # noqa: PLR0913 - the config and the poller's collaborators
     return CommitmentIntake(
         settings, connections, db_path, event_log,
         mail_summarizer(analyst_for(settings.preset), event_log),
+    )
+
+
+_BACKFILL_MAX_DAYS: Final[int] = 60
+
+
+def _turn_things(  # noqa: PLR0913 - the config and the pass's collaborators
+    config: Mapping[str, Any], config_path: Path, db_path: Path, event_log: Path, zone: tzinfo,
+    analyst_for: Callable[[str], LLMAnalyst | None],
+) -> TurnThings | None:
+    """``turn_things`` (ADR 0300): off unless enabled; bad values stop boot."""
+    block = config.get("turn_things")
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    where = f"runtime: {config_path} turn_things"
+    days = block.get("backfill_days")
+    if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= _BACKFILL_MAX_DAYS:
+        msg = f"{where}.backfill_days must be a whole number of days from 1 to {_BACKFILL_MAX_DAYS}"
+        raise RuntimeBootstrapError(msg)
+    preset = block.get("preset")
+    if not isinstance(preset, str) or not preset.strip():
+        msg = f"{where}.preset must be the name of an llm preset"
+        raise RuntimeBootstrapError(msg)
+    settings = TurnThingsSettings(days, preset.strip())
+    return TurnThings(
+        settings, db_path, event_log, mail_summarizer(analyst_for(settings.preset), event_log),
+        zone,
     )
 
 
@@ -3409,6 +3439,16 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     )
     things_ledger = _things_ledger(full_config, paths.event_log, memory.db_path, local_zone)
     things_mirror = ThingsMirror(plugin_connections, paths.event_log, local_zone)
+    turn_things = _turn_things(
+        full_config, config_path, memory.db_path, paths.event_log, local_zone,
+        lambda preset: build_analyst(
+            full_config,
+            preset,
+            pricing_path=repo_root / "data" / "pricing.json",
+            account_cost=wave1_features.exactly_once_cost_accounting,
+            kind="turn_things",
+        ),
+    )
     reminders = Reminders(
         paths.event_log,
         moment=moment,
@@ -3545,6 +3585,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         claude_daily=claude_daily,
         things=things_ledger,
         things_mirror=things_mirror,
+        turn_things=turn_things,
         moment=moment,
         push=Push.from_config(full_config, paths.root, paths.event_log),
         whereabouts=Whereabouts(

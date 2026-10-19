@@ -1408,6 +1408,17 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    # What he says he did or is doing (ADR 0300): one set of doings per record of his and extractor
+    # version, as the post-turn pass read it; the latest set per record stands
+    # (`jarvis.state.stated_doings`).
+    EventTypeSchema(
+        event_type="doings.stated",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("record_id", "extractor", "said_ms", "doings"),
+        optional_payload=(),
+        schema_version=1,
+    ),
     # The day's plan (ADR 0288): one plan per local date, a fold over these five types
     # (`jarvis.state.plan`). A `drafted` or `revised` carries the whole item list, so the last of
     # the two per date wins; `settled` and `opened` mark it; `draft_failed` says no draft came.

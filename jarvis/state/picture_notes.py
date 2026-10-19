@@ -114,7 +114,7 @@ def delete_all(path: Path) -> int:
         return conn.execute(DELETE_SQL, (SOURCE,)).rowcount
 
 
-def _words_of(text: str) -> str:
+def words_of(text: str) -> str:
     """A record's text without the attachment marker lines and the program's filler sentences."""
     kept = [
         line for line in text.splitlines()
@@ -159,7 +159,7 @@ def last_words(path: Path, before_record_id: str | None) -> str:
             "CASE WHEN ? IS NULL THEN 9223372036854775807 END) ORDER BY rowid DESC LIMIT ?",
             (before_record_id, before_record_id, _LAST_WORDS_SCAN),
         ).fetchall()
-    return next((words for (text,) in rows if (words := _words_of(str(text)))), "")
+    return next((words for (text,) in rows if (words := words_of(str(text)))), "")
 
 
 def next_words(path: Path, after_record_id: str) -> str | None:
@@ -175,4 +175,4 @@ def next_words(path: Path, after_record_id: str) -> str | None:
             "(SELECT rowid FROM records WHERE id = ?) ORDER BY rowid LIMIT 1",
             (after_record_id,),
         ).fetchone()
-    return None if row is None else _words_of(str(row[0]))
+    return None if row is None else words_of(str(row[0]))
