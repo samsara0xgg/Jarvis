@@ -38,14 +38,20 @@ final class AboutTests: XCTestCase {
         XCTAssertNil(About.of(star(id: "a b")), "a space is not in the id set")
         XCTAssertNil(About.of(star(id: "提醒")))
         XCTAssertNotNil(About.of(star(id: "AAMk-=+/.|:_1")), "a Graph-like id")
+        XCTAssertNotNil(About.of(star(id: "commitment-5f2c9d1e4b7a4c3f8a6d2e9b1c0d7a53@2026-10-08")), "an event his mail made: the host takes the @")
+        XCTAssertNil(About.of(star(id: "a@b c")), "the @ does not let a space in")
     }
 
     func testOnlyAnItemOfTheBrainsDayIsOffered() {
         XCTAssertNil(About.of(star(live: false)), "a prototype star")
         XCTAssertNil(About.of(star(kind: nil)))
         XCTAssertNil(About.of(star(kind: "flight")), "a kind the host does not know")
+        XCTAssertNil(About.of(star(kind: "workout")), "nor a run or a walk")
+        XCTAssertNil(About.of(star(kind: "code")), "nor a session of Claude Code")
         XCTAssertNil(About.of(star(ms: nil)))
-        for k in ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture"] { XCTAssertNotNil(About.of(star(kind: k)), k) }
+        for k in ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day"] {
+            XCTAssertNotNil(About.of(star(kind: k)), k)
+        }
     }
 
     func testTheChipWritesTheDayOnlyOffToday() throws {

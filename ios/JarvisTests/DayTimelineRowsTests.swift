@@ -197,13 +197,17 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(try actions("reminder-demo-1"), [.ask], "not yet")
         XCTAssertEqual(try actions("reminder-demo-3"), [.ask], "answered")
         XCTAssertEqual(try actions("work-demo-2"), [.summarize, .ask])
-        XCTAssertEqual(try actions("event-demo-1"), [.ask], "no 是我的 or 不是: the brain has no route for them yet")
+        XCTAssertEqual(try actions("event-demo-1"), [.ask])
         XCTAssertEqual(try actions("call-demo-1"), [.ask])
         XCTAssertEqual(try actions("picture-pic-demo-1"), [.ask])
         XCTAssertEqual(try actions("sleep-0"), [.ask])
         XCTAssertEqual(try actions("move-3"), [.ask])
-        // the host does not take these as what a turn is about
-        for id in ["ride-8", "payment-demo-1", "payment-demo-2", "claude-demo-1", "departure-demo-1", "workout-demo-1", "code-group-stay-1", "code-group-stay-13", "now"] {
+        // the host takes a ride, a bus, a payment and a chat with Claude as what a turn is about too
+        for id in ["ride-8", "payment-demo-1", "payment-demo-2", "claude-demo-1", "departure-demo-1"] {
+            XCTAssertEqual(try actions(id), [.ask], id)
+        }
+        // and does not take these
+        for id in ["workout-demo-1", "code-group-stay-1", "code-group-stay-13", "now"] {
             XCTAssertEqual(try actions(id), [], id)
         }
         // a place whose id could not stand in a path is not renamed, though he keeps it
@@ -211,11 +215,11 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(try entry(build(odd, now: nil), "s").actions, [.ask])
         let route = try reply(item("s", "stay", 600, 700, #""place": "X", "kept_place": {"id": "undo", "name": "家", "role": "home"}"#))
         XCTAssertEqual(try entry(build(route, now: nil), "s").actions, [.ask], "its id is the brain's own route")
-        // an event from his mail has an id with an @ in it, which the host would refuse: nothing to hand over
+        // an event from his mail has an @ in its id (`commitment-<hex>@<day>`), which the host takes
         let mail = try reply(item("commitment-ab12@2026-10-08", "event", 1320, 1350, #""title": "X", "source": "mail", "confirmed": false"#))
-        XCTAssertEqual(try entry(build(mail), "commitment-ab12@2026-10-08").actions, [])
-        XCTAssertNil(try entry(build(mail), "commitment-ab12@2026-10-08").about)
-        XCTAssertTrue(try entry(build(mail), "commitment-ab12@2026-10-08").waiting, "though it waits on him")
+        XCTAssertEqual(try entry(build(mail), "commitment-ab12@2026-10-08").actions, [.ask])
+        XCTAssertEqual(try entry(build(mail), "commitment-ab12@2026-10-08").about?.id, "commitment-ab12@2026-10-08")
+        XCTAssertTrue(try entry(build(mail), "commitment-ab12@2026-10-08").waiting, "and it waits on him")
     }
 
     func testARowOpensWhenThereIsSomethingToShowAndNeverOtherwise() throws {
@@ -225,8 +229,9 @@ final class DayTimelineRowsTests: XCTestCase {
             if let e = m.entries.first(where: { $0.id == id }) { XCTAssertTrue(e.opens, id) }
         }
         XCTAssertFalse(try entry(m, "now").opens)
-        // a workout and a chat with Claude say everything in their line, so there is nothing to open to
-        for id in ["workout-demo-1", "claude-demo-1"] { XCTAssertFalse(try entry(m, id).opens, id) }
+        // a workout says everything in its line, so there is nothing to open to; a chat with Claude opens to be handed to her
+        XCTAssertFalse(try entry(m, "workout-demo-1").opens)
+        XCTAssertTrue(try entry(m, "claude-demo-1").opens)
         let bare = try reply([item("s", "stay", 600, 700), item("pi", "picture", 700, 700, #""id": "x""#), item("c", "call", 710, 720), item("w", "work", 725, 740)].joined(separator: ","))
         let b = build(bare, now: nil)
         XCTAssertEqual(try entry(b, "s").actions, [.ask], "a place with no name, no map and nothing kept has only her to be handed to")
@@ -271,18 +276,18 @@ final class DayTimelineRowsTests: XCTestCase {
     // MARK: what is handed to her
 
     func testAnAboutIsOnlyForAKindTheHostKnowsAndAnIdItWouldAccept() throws {
-        let kinds = ["reminder", "event", "stay", "move", "sleep", "work", "call", "talk", "picture"]
+        let kinds = ["reminder", "event", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day"]
         let r = try reply(kinds.map { item("ok-\($0)", $0, 600, 610, #""text": "x", "title": "x""#) }.joined(separator: ","))
         XCTAssertEqual(Set(build(r, now: nil).entries.compactMap { $0.about?.kind }), Set(kinds))
-        let no = ["ride", "departure", "payment", "claude_chat", "claude_day", "workout", "code"]
+        let no = ["workout", "code"]
         let r2 = try reply(no.map { item("no-\($0)", $0, 600, 610, #""text": "x", "title": "x""#) }.joined(separator: ","))
         let m2 = build(r2, now: nil)
         XCTAssertEqual(m2.entries.count, no.count, "every one of them is a row")
         XCTAssertTrue(m2.entries.allSatisfy { $0.about == nil })
-        for id in ["a b", "é", "x@y", String(repeating: "a", count: 257), "a#b", "a?b"] {
+        for id in ["a b", "é", String(repeating: "a", count: 257), "a#b", "a?b"] {
             XCTAssertNil(try entry(build(try reply(item(id, "talk", 600, 610)), now: nil), id).about, id)
         }
-        for id in ["a-b_c.d:e=f+g/h|i", String(repeating: "a", count: 256)] {
+        for id in ["a-b_c.d:e=f+g/h|i", "commitment-ab12@2026-10-08", String(repeating: "a", count: 256)] {
             XCTAssertNotNil(try entry(build(try reply(item(id, "talk", 600, 610)), now: nil), id).about, id)
         }
     }
@@ -450,8 +455,8 @@ final class DayTimelineRowsTests: XCTestCase {
         }
         let fits = try chat("积分换元的符号问题")
         XCTAssertFalse(fits.cutShort)
-        XCTAssertFalse(fits.opens, "it has nothing to say that its line does not")
-        XCTAssertEqual(fits.more, [])
+        XCTAssertEqual(fits.more, [], "it has nothing to say that its line does not")
+        XCTAssertEqual(fits.actions, [.ask], "it opens only to be handed to her")
         let cut = try chat(String(repeating: "积分换元的符号问题", count: 3))
         XCTAssertTrue(cut.cutShort)
         XCTAssertTrue(cut.opens, "it opens to say its title whole")

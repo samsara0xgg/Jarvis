@@ -20,14 +20,14 @@ struct About: Equatable {
     /// the wire object: `{kind, id, title, start_ms}`. The id goes whole; a cut id names another item.
     var json: [String: Any] { ["kind": kind, "id": id, "title": title, "start_ms": startMs] }
 
-    /// what the phone may have open: the kinds of the day line (jarvis/shared/about.py `ABOUT_KINDS`)
-    static let kinds: Set<String> = ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture"]
+    /// what the phone may have open: the kinds of the day line (jarvis/shared/about.py `ABOUT_KINDS`; a workout and a Claude Code session are not among them)
+    static let kinds: Set<String> = ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day"]
 
-    /// the id shape the host accepts: 1-256 of `[A-Za-z0-9_-=+/.|:]`
+    /// the id shape the host accepts: 1-256 of `[A-Za-z0-9_-=+/.|:@]` (the `@` is a commitment's: `commitment-<hex>@<day>`)
     static func fits(id: String) -> Bool {
         let n = id.unicodeScalars.count
         guard (1...256).contains(n) else { return false }
-        return id.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "_-=+/.|:".unicodeScalars.contains($0)) }
+        return id.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "_-=+/.|:@".unicodeScalars.contains($0)) }
     }
 
     /// The chip for a star of the brain's day, or nil when it is not an item the host can be told about (a prototype star, a card, an id it would refuse).

@@ -119,7 +119,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(b.map(\.title), ["公交", "12 路"], "no route is just a bus")
         XCTAssertEqual(b.map(\.detail), [nil, nil])
         XCTAssertEqual(b.map(\.base), [TLMetrics.row, TLMetrics.row], "no second line, no taller row")
-        XCTAssertTrue(b.allSatisfy { !$0.opens })
+        XCTAssertTrue(b.allSatisfy { $0.more.isEmpty && $0.actions == [.ask] }, "nothing to say, but she can be asked about it")
     }
 
     func testTheNightIsARowWithItsHoursAndHowLongHeSlept() throws {
@@ -208,7 +208,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(p.more, ["支出 $12.40 CAD"], "which way and in what money; who, what and through which app are its line")
         XCTAssertEqual(p.symbol, "creditcard.fill")
         XCTAssertTrue(p.strongRight && p.opens)
-        XCTAssertNil(p.about, "the host does not take a payment yet")
+        XCTAssertEqual(p.about?.kind, "payment", "the host takes a payment as what a turn is about")
         // money in has a plus; no shop leaves what it was for as the title; a source with no word here is said as it came; no amount is no amount
         let r = try reply(#"{"id": "pay-2", "lane": "you", "kind": "payment", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(600)), "source": "wechat_pay", "amount": "1234.50", "currency": "CNY", "direction": "in", "text": "转账"}, {"id": "pay-3", "lane": "you", "kind": "payment", "state": "done", "start_ms": \#(at(700)), "end_ms": \#(at(700)), "source": "venmo", "amount": "5.00", "currency": "AUD", "direction": "out", "counterparty": "Cafe"}, {"id": "pay-4", "lane": "you", "kind": "payment", "state": "done", "start_ms": \#(at(800)), "end_ms": \#(at(800))}"#)
         let rows = build(r, now: nil).entries
@@ -243,7 +243,7 @@ final class DayTimelineTests: XCTestCase {
         let c = try entry(m, "claude-demo-1")
         XCTAssertEqual([c.title, c.detail, c.right, c.time], ["积分换元的符号问题", "和 Claude", "14 条", "20:10"], "the Mac's: with whom, and how many messages where a length would be")
         XCTAssertEqual(c.symbol, "sparkles")
-        XCTAssertNil(c.about)
+        XCTAssertEqual(c.about?.kind, "claude_chat")
         let r = try reply(#"{"id": "claude-x-1", "lane": "you", "kind": "claude_chat", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(620)), "text": "Claude conversation", "messages": 3}, {"id": "claude-day-2026-10-08", "lane": "you", "kind": "claude_day", "state": "done", "start_ms": \#(at(700)), "end_ms": \#(at(800)), "source": "claude_daily", "text": "微积分; 论文提纲 ;", "chats": 2}"#)
         let rows = build(r, now: nil).entries
         XCTAssertEqual(rows.map(\.title), ["Claude 对话", "Claude 日报"], "a conversation with no name is only one")
@@ -881,9 +881,10 @@ final class DayTimelineTests: XCTestCase {
 
     func testARowOfAKindTheHostDoesNotKnowOrWithAnIdItWouldRefuseGivesNoChip() throws {
         let m = build(TimelineFixture.today(cal))
-        for id in ["ride-8", "now"] { XCTAssertNil(try entry(m, id).about, id) }
+        for id in ["workout-demo-1", "now"] { XCTAssertNil(try entry(m, id).about, id) }
+        for id in ["ride-8", "payment-demo-1", "claude-demo-1", "departure-demo-1"] { XCTAssertNotNil(try entry(m, id).about, id) }
         let dep = try reply(#"{"id": "departure-1", "lane": "you", "kind": "departure", "state": "next", "start_ms": \#(at(1400)), "end_ms": \#(at(1400)), "route": "12"}"#)
-        XCTAssertNil(build(dep, now: nil).entries[0].about)
+        XCTAssertEqual(build(dep, now: nil).entries[0].about?.kind, "departure")
         let odd = try reply(#"{"id": "event a", "lane": "you", "kind": "event", "state": "next", "start_ms": \#(at(1400)), "end_ms": \#(at(1430)), "title": "x"}"#)
         XCTAssertEqual(build(odd).entries.first { $0.id == "event a" }?.title, "x", "the row is there")
         XCTAssertNil(build(odd).entries.first { $0.id == "event a" }?.about, "a space is not in the id set")
@@ -912,9 +913,12 @@ final class DayTimelineTests: XCTestCase {
             e.ui.tl.openRow = "talk-1"
             e.captureAbout()
             XCTAssertEqual(e.ui.about?.id, "talk-1")
-            e.ui.tl.openRow = "ride-8"
+            e.ui.tl.openRow = "workout-demo-1"
             e.captureAbout()
             XCTAssertEqual(e.ui.about?.id, "talk-1")
+            e.ui.tl.openRow = "ride-8"
+            e.captureAbout()
+            XCTAssertEqual(e.ui.about?.id, "ride-8", "a bus ride is one the host takes")
         }
     }
 
