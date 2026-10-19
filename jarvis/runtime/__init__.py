@@ -175,6 +175,7 @@ from jarvis.execution.tools import (
 from jarvis.execution.transit_tool import TransitOffers, build_leg_planner, first_leave_ms
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime import answer_hold, audio_output, device_tools, device_voice
+from jarvis.runtime.about_item import AboutItems
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.claude_daily import ClaudeDailyIntake, ClaudeDailySettings
 from jarvis.runtime.commitment_intake import CommitmentIntake, CommitmentSettings
@@ -233,6 +234,7 @@ from jarvis.runtime.weatherkit import WeatherKit
 from jarvis.runtime.whereabouts import Whereabouts
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event, lang, llm_io_log
+from jarvis.shared.about import clean_about
 from jarvis.shared.action_admission import bind_action_admission
 from jarvis.shared.device_link import DeviceCallError, DeviceLink
 from jarvis.shared.lang import is_filler, language_name
@@ -764,6 +766,8 @@ class JarvisRuntime:
     rides: Rides | None = None
     # ADR 0217: the device each turn came from, the devices there are, where the phone put him.
     whereabouts: Whereabouts | None = None
+    # ADR 0298: the record of the day-line item his phone has open. None = hand-assembled.
+    about_items: AboutItems | None = None
     # ADR 0288: one bus leg for a background job, given the job's own context. None: no maps key.
     leg_planner: Callable[[ToolContext], Callable[..., dict[str, Any]] | None] | None = None
     # ADR 0052: the Settings page's file. None = hand-assembled.
@@ -1394,6 +1398,33 @@ def _highlight_marks(
             shipped=paths.root / imports.IMPORTS_DIRNAME,
         ),
     )
+
+
+def _about_items(
+    full_config: Mapping[str, Any], memory: MemorySettings, paths: RuntimePaths,
+) -> AboutItems:
+    """ADR 0298: the day line `GET /inherent/day` folds, from local stores only."""
+    zone = resolve_zone(None, _work_state_timezone(full_config))[1]
+    return AboutItems(
+        paths.event_log,
+        DaySources(
+            zone, _timesink_db_path(full_config), memory.db_path,
+            attachments=paths.artifacts_root / ATTACHMENTS_DIRNAME,
+            shipped=paths.root / imports.IMPORTS_DIRNAME,
+        ),
+    )
+
+
+def _about_record(runtime: JarvisRuntime, trigger: Event) -> str | None:
+    """ADR 0298: the record of the item this turn's phone has open; never fails the turn."""
+    raw = trigger.payload.get("about")
+    if runtime.about_items is None or raw is None:
+        return None
+    try:
+        return runtime.about_items.record(clean_about(raw))
+    except Exception:  # a producer must never fail a turn.
+        LOGGER.exception("live context: the about record failed, skipped")
+        return None
 
 
 _FALLBACK_TIMESINK_POLL_INTERVAL_S: Final[float] = 300.0
@@ -3498,6 +3529,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             paths.root, terminal_hub, moment, memory_db=memory.db_path, zone=local_zone,
             around=surroundings,
         ),
+        about_items=_about_items(full_config, memory, paths),
         reminders=reminders,
         rides=rides,
         leg_planner=None if not maps_key else partial(
@@ -5133,6 +5165,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             time_note=memory_context.now if memory_context is not None else None,
             connected_apps=connected_apps,
             turn_device=_turn_device(runtime, effective_turn_id),
+            about_record=_about_record(runtime, user_intent_event),
             live_context=(
                 *_live_lines(runtime.live_context),
                 *_whereabouts_lines(runtime),
