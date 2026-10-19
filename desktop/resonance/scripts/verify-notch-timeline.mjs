@@ -326,7 +326,7 @@ const browser = await chromium.launch({ headless: true, channel: 'chrome', args:
 const errors = [];
 const NOTCH_R = 412.5, TOP = 32;
 // A page on a fake daemon: `served` is what /inherent/day answers, `board` the sessions, `departure` the pinned trip, `hits` the day reads it got.
-async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = makeDay(), departure = null, init = null, at = NOW } = {}) {
+async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = makeDay(), departure = null, init = null, at = NOW, fastPolls = false } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 640, height: 900 }, deviceScaleFactor: 2 });
   const page = await ctx.newPage();
   const s = { board, served, departure, hits: [], pictures: [], controls: { mic_muted: false, speech_muted: false, conversation: false, quiet: 'off' } };
@@ -367,6 +367,8 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
   });
   await page.clock.setFixedTime(new Date(at));
+  // The daemon's polls (30 s, 60 s) come every 300 ms, so a change on the daemon reaches an open pane at once (after the clock, which wraps the timers too).
+  if (fastPolls) await page.addInitScript(() => { const timeout = window.setTimeout; window.setTimeout = (fn, ms, ...rest) => timeout(fn, ms === 30000 || ms === 60000 ? 300 : ms, ...rest); });
   await page.goto(`http://127.0.0.1:${web}/?companion=1&port=${daemonPort}`);
   await page.addStyleTag({ content: 'html,body{height:100%}body{background:linear-gradient(160deg,#7f98b8,#5d7898 55%,#4a6484)!important}' });
   const move = async (x, y) => { await page.mouse.move(x, y); await page.evaluate(([x, y]) => window.__cursor({ x, y }), [x, y]); };
@@ -1072,6 +1074,156 @@ try {
     r = await settle(a, '', 2000);
     check('a click on the pinned day closes it and gives the focus back too', r.tl === '' && await focusCalls() === 'true,false,true,false', await focusCalls());
     await a.ctx.close();
+  }
+
+  // ---- motion in the list: the rise on open, the day change, an item that arrives ----
+  if (all || only === 'motion') {
+    // Every Web Animation the page starts is written down (what, on what, with which keyframes and timing), so what was asked for can be read.
+    const record = () => {
+      const animate = Element.prototype.animate;
+      window.__anims = [];
+      Element.prototype.animate = function (kf, opt) {
+        window.__anims.push({ cls: String(this.className), key: this.dataset?.key ?? null, kf: JSON.parse(JSON.stringify(kf)), opt: typeof opt === 'number' ? { duration: opt } : JSON.parse(JSON.stringify(opt ?? {})), at: Math.round(performance.now()) });
+        return animate.call(this, kf, opt);
+      };
+    };
+    const anims = a => a.page.evaluate(() => window.__anims.slice());
+    const openIt = async a => {
+      const seg = await line(a);
+      await a.move(seg.mid, 14); await a.page.mouse.down(); await a.page.mouse.up();
+      await a.until(() => document.querySelector('.notch-drop.is-open .dt-row'), undefined, 8000);
+      return seg;
+    };
+    // The rows the list shows in its window, in order, as the page lays them out (animations finished, so no transform moves them).
+    const inView = a => a.page.evaluate(() => {
+      document.getAnimations().filter(x => x.effect.getComputedTiming().iterations !== Infinity).forEach(x => x.finish());
+      const l = document.querySelector('.dt-list'), v = l.getBoundingClientRect();
+      return [...l.querySelectorAll('.dt-row, .dt-sh, .dt-now')].filter(el => { const r = el.getBoundingClientRect(); return r.bottom > v.top && r.top < v.bottom; }).map(el => el.dataset.key ?? 'now');
+    });
+    // A sheet of the screencast: one tile per wanted moment (the nearest frame), the part of the page in `crop` at `k`. The page was run slowed to
+    // `rate` of its speed, so the moments are in the animation's own milliseconds from `start` (epoch seconds).
+    const sheet = async (a, name, got, start, rate, offsets, label, crop, k) => {
+      const nearest = ms => got.reduce((best, f) => Math.abs(f.at - start - ms / 1000 / rate) < Math.abs(best.at - start - ms / 1000 / rate) ? f : best, got[0]);
+      const tiles = offsets.map(ms => ({ ...nearest(ms), ms })), w = Math.round(crop.w * k), h = Math.round(crop.h * k), cols = 4;
+      const page = await a.ctx.newPage();
+      await page.setViewportSize({ width: cols * (w + 8) + 8, height: Math.ceil(tiles.length / cols) * (h + 8) + 8 });
+      await page.setContent(`<body style="margin:0;padding:8px;background:#222;display:grid;grid-template-columns:repeat(${cols},${w}px);gap:8px;font:11px monospace;color:#fff">${tiles.map(f => {
+        const png = Buffer.from(f.data, 'base64'), scale = 640 * k / png.readUInt32BE(16);
+        return `<div style="position:relative;width:${w}px;height:${h}px;overflow:hidden;border-radius:6px;background:#000 url(data:image/png;base64,${f.data}) ${-crop.x * k}px ${-crop.y * k}px/${png.readUInt32BE(16) * scale}px ${png.readUInt32BE(20) * scale}px no-repeat"><span style="position:absolute;left:6px;bottom:4px;padding:1px 5px;border-radius:3px;background:#000a">${label} +${f.ms} ms</span></div>`;
+      }).join('')}</body>`);
+      await page.screenshot({ path: path.join(dir, `${name}.png`), fullPage: true, scale: 'css' });
+      await page.close();
+      return new Set(tiles.map(f => f.at)).size;
+    };
+    const screencast = async a => {
+      const cdp = await a.ctx.newCDPSession(a.page), got = [];
+      cdp.on('Page.screencastFrame', ev => { got.push({ at: ev.metadata.timestamp, data: ev.data }); cdp.send('Page.screencastFrameAck', { sessionId: ev.sessionId }).catch(() => {}); });
+      await cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 });
+      return { got, stop: async () => { await cdp.send('Page.stopScreencast'); await cdp.detach(); } };
+    };
+
+    {
+      const a = await boot({ served: richDay(), init: record });
+      const seg = await line(a);
+      await a.move(seg.mid, 14); await a.page.mouse.down(); await a.page.mouse.up();
+      await a.until(() => document.querySelector('.notch-drop.is-open .dt-row'), undefined, 8000);
+      await a.page.waitForTimeout(700);
+      const log = (await anims(a)).filter(x => /dt-row|dt-sh|dt-now/.test(x.cls));
+      const shown = await inView(a);
+      const key = x => x.key ?? 'now';
+      check('on open the rows in view come up one after another: at most ten, those in the window in order, 6 px and a fade, 220 ms each, 25 ms apart; none out of view',
+        log.length === Math.min(10, shown.length) && log.map(key).join() === shown.slice(0, 10).join() && log.every((x, i) => x.opt.delay === i * 25 && x.opt.duration === 220 && x.opt.fill === 'backwards' && x.kf[0].opacity === 0 && x.kf[0].transform === 'translateY(6px)'), JSON.stringify({ log: log.map(x => [key(x), x.opt.delay]), shown }));
+      check('nothing is left hidden or moved after it: every row is at its own opacity and in place', await a.page.evaluate(() => [...document.querySelectorAll('.dt-row, .dt-sh, .dt-now')].every(el => { const c = getComputedStyle(el); return (c.opacity === '1' || c.opacity === '0.62') && c.transform === 'none'; }) && document.getAnimations().filter(x => x.effect.getComputedTiming().iterations !== Infinity).length === 0));
+      check('and nothing grew: the day as it opened is not new', (await anims(a)).every(x => x.kf[0]?.height !== '0px'));
+
+      // a day change: the day that was leaves (80 ms) before the new one enters (140 ms); the list moves 16 px, the rest of the pane 8
+      await a.page.evaluate(() => { window.__anims.length = 0; });
+      await a.page.waitForTimeout(150);
+      await a.page.keyboard.press('ArrowLeft');
+      await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
+      await a.page.waitForTimeout(700);
+      let go = await anims(a);
+      const out = go.filter(x => x.opt.duration === 80), inn = go.filter(x => x.opt.duration === 140), cls = x => x.cls.split(' ')[0];
+      check('going to the day before: the day that was leaves first, each part sliding to the right and fading (80 ms): the list 16 px, the bar and the rest 8',
+        out.length >= 4 && out.every(x => x.kf.length === 1 && x.kf[0].opacity === 0 && x.opt.fill === 'forwards' && x.kf[0].transform === `translateX(${cls(x) === 'dt-list' ? 16 : 8}px)`) && ['dt-line', 'dt-bar', 'dt-numbers', 'dt-list'].every(c => out.some(x => cls(x) === c)), JSON.stringify(out.map(x => [cls(x), x.kf[0].transform])));
+      check('then the new day enters from the left (140 ms), after the first has gone: -16 px for the list, -8 for the rest',
+        inn.length >= 2 && inn.every(x => x.kf.length === 2 && x.kf[0].opacity === 0 && x.kf[0].transform === `translateX(-${cls(x) === 'dt-list' ? 16 : 8}px)` && x.opt.fill === 'backwards') && Math.min(...inn.map(x => x.at)) >= Math.max(...out.map(x => x.at)) + 70, JSON.stringify({ out: out.map(x => x.at), inn: inn.map(x => [cls(x), x.at, x.kf[0].transform]) }));
+      check('and when it is over nothing is left faded or shifted', await a.page.evaluate(() => [...document.querySelector('.dt').children].every(el => { const c = getComputedStyle(el); return c.opacity === '1' && c.transform === 'none'; }) && document.getAnimations().filter(x => x.effect.getComputedTiming().iterations !== Infinity && x.effect.target?.closest?.('.dt')).length === 0));
+      await a.page.evaluate(() => { window.__anims.length = 0; });
+      await a.page.keyboard.press('ArrowRight');
+      await a.until(() => document.querySelector('.dt-date')?.textContent === '10月19日 周一' && document.querySelector('.dt-today') && document.querySelector('.dt-now'), undefined, 6000);
+      await a.page.waitForTimeout(500);
+      go = await anims(a);
+      check('going forward the other way: the old day slides left (to -16 px), the new comes in from the right (+16 px)', go.some(x => x.opt.duration === 80 && x.kf[0].transform === 'translateX(-16px)') && go.some(x => x.opt.duration === 140 && x.kf[0].transform === 'translateX(16px)'), JSON.stringify(go.map(x => [x.opt.duration, x.kf[0].transform])));
+      // days pressed faster than they are read: nothing is left half-faded
+      await a.page.keyboard.press('ArrowLeft'); await a.page.waitForTimeout(40); await a.page.keyboard.press('ArrowLeft'); await a.page.waitForTimeout(60); await a.page.keyboard.press('ArrowRight'); await a.page.waitForTimeout(30); await a.page.keyboard.press('ArrowRight');
+      await a.until(() => document.querySelector('.dt-date')?.textContent === '10月19日 周一' && document.querySelector('.dt-today') && !document.querySelector('.dt.is-loading'), undefined, 6000);
+      await a.page.waitForTimeout(600);
+      check('days pressed faster than they are read settle on today, whole: nothing faded, shifted or still moving', await a.page.evaluate(() => [...document.querySelector('.dt').children].every(el => { const c = getComputedStyle(el); return c.opacity === '1' && c.transform === 'none'; }) && document.getAnimations().filter(x => x.effect.getComputedTiming().iterations !== Infinity && x.effect.target?.closest?.('.dt')).length === 0) && await a.page.locator('.dt-list .dt-row').count() > 10);
+      await a.ctx.close();
+    }
+    {
+      // the same two moves at a tenth of their speed, so the screencast catches them frame by frame; the sheets are made once it has stopped (a page
+      // opened for them while it runs changes the size of the frames after)
+      const a = await boot({ served: richDay(), init: record }), rate = .1;
+      const cdp = await a.ctx.newCDPSession(a.page), got = [];
+      cdp.on('Page.screencastFrame', ev => { got.push({ at: ev.metadata.timestamp, data: ev.data }); cdp.send('Page.screencastFrameAck', { sessionId: ev.sessionId }).catch(() => {}); });
+      await cdp.send('Animation.enable'); await cdp.send('Animation.setPlaybackRate', { playbackRate: rate });
+      await cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 });
+      await openIt(a);
+      await a.page.waitForTimeout(5200);
+      const rise = (await anims(a)).filter(x => /dt-row|dt-sh|dt-now/.test(x.cls));
+      await a.page.evaluate(() => { window.__anims.length = 0; });
+      await a.page.keyboard.press('ArrowLeft');
+      await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
+      await a.page.waitForTimeout(3600);
+      await cdp.send('Page.stopScreencast');
+      // the page's clock is fixed to the day's date, so its times are tied to the screencast's (real epoch seconds) by one reading of both
+      const here = await a.page.evaluate(() => performance.now()), wall = Date.now() / 1000, epoch = x => wall - (here - x.at) / 1000;
+      const leaving = (await anims(a)).filter(x => x.opt.duration === 80);
+      await cdp.detach();
+      check('the frame sheets of the rise and of the day change are made from a screencast of both at a tenth of their speed',
+        rise.length > 3 && leaving.length > 0
+        && await sheet(a, 'motion-open-rise', got, epoch(rise[0]), rate, [0, 30, 60, 90, 120, 150, 180, 210, 240, 280, 340, 440], 'rise', { x: 40, y: 230, w: 560, h: 440 }, .56) >= 10
+        && await sheet(a, 'motion-day-change', got, epoch(leaving[0]), rate, [0, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 230], 'day', { x: 40, y: 60, w: 560, h: 520 }, .5) >= 10);
+      await a.ctx.close();
+    }
+    {
+      // reduced motion: a 120 ms fade, nothing moves
+      const a = await boot({ served: richDay(), init: record });
+      await a.page.emulateMedia({ reducedMotion: 'reduce' });
+      await openIt(a);
+      await a.page.waitForTimeout(500);
+      let log = (await anims(a)).filter(x => /dt-row|dt-sh|dt-now/.test(x.cls));
+      check('with reduced motion the rows in view fade in over 120 ms, all together, and nothing moves', log.length >= 6 && log.every(x => x.opt.duration === 120 && !x.opt.delay && x.kf.every(f => f.transform === undefined)), JSON.stringify(log.slice(0, 2)));
+      await a.page.evaluate(() => { window.__anims.length = 0; });
+      await a.page.keyboard.press('ArrowLeft');
+      await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
+      await a.page.waitForTimeout(400);
+      log = await anims(a);
+      check('and a day change swaps at once and fades the new day in over 120 ms, with no sliding out or in', !log.some(x => x.opt.duration === 80) && log.filter(x => x.opt.duration === 120).length >= 2 && log.every(x => x.kf.every(f => f.transform === undefined)), JSON.stringify(log.map(x => [x.opt.duration, x.kf])));
+      await a.ctx.close();
+    }
+    {
+      // an item that arrives while the day is open grows out of nothing
+      const a = await boot({ served: richDay(), init: record, fastPolls: true });
+      await openIt(a);
+      await a.page.waitForTimeout(1200);
+      await a.page.evaluate(() => { window.__anims.length = 0; });
+      const extra = it('talk-new', 'talk', T(21, 20), T(21, 26), { turns: 3 }, 'her');
+      a.s.served = richDay({ items: [...richDay().items, extra] });
+      await a.until(() => document.querySelector('[data-key="talk-new"]'), undefined, 6000);
+      await a.page.waitForTimeout(500);
+      const grew = (await anims(a)).filter(x => x.kf[0]?.height === '0px');
+      check('a talk that arrives on the open day grows in: height from 0 to its 52 and a fade, 240 ms; nothing else on the day moves',
+        grew.length === 1 && grew[0].key === 'talk-new' && grew[0].kf[0].opacity === 0 && grew[0].kf[1].height === '52px' && grew[0].kf[1].opacity === '1' && grew[0].opt.duration === 240, JSON.stringify(grew));
+      const row = await a.page.locator('[data-key="talk-new"]').evaluate(el => ({ h: el.getBoundingClientRect().height, anim: el.getAnimations().length }));
+      check('and when it has grown it is a row like the others, 52 tall', row.h === 52 && row.anim === 0, JSON.stringify(row));
+      await a.page.evaluate(() => { window.__anims.length = 0; });
+      await a.page.waitForTimeout(1200);
+      check('a poll that brings nothing new, and the minute turning, grow nothing', (await anims(a)).every(x => x.kf[0]?.height !== '0px'));
+      await a.ctx.close();
+    }
   }
 
   // ---- the bar: what it draws, what the pointer finds on it, a range of it, a lens ----
