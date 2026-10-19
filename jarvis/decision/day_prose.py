@@ -174,7 +174,7 @@ def _line_part(
     return line, tuple(picks.values())
 
 
-def _read_object(text: str | None, finish_reason: str | None) -> dict[str, Any] | str:
+def read_object(text: str | None, finish_reason: str | None) -> dict[str, Any] | str:
     """The answer's one JSON object (a fenced one is still that), or why it is not."""
     if finish_reason in ("length", "max_tokens"):
         return "cut off by the output limit"
@@ -199,7 +199,7 @@ def parse_day_answer(
     answer. A line or highlight that fails its gates drops the line and the highlights whole: the
     prose still stands for the night (``with_prose``), a draft has nothing else and is rejected.
     """
-    data = _read_object(text, finish_reason)
+    data = read_object(text, finish_reason)
     if isinstance(data, str):
         return data
     prose: str | None = None
@@ -223,4 +223,5 @@ __all__ = [
     "check_day_prose",
     "day_items_text",
     "parse_day_answer",
+    "read_object",
 ]
