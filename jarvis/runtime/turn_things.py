@@ -218,11 +218,12 @@ class TurnThings:
         with contextlib.closing(self._log()) as conn:
             try:
                 folded = things.fold(conn)
-                shown = _unique(things.open_things(conn))
+                day = turn.at.astimezone(self.zone).date()
+                shown = decision.shown(_unique(things.open_things(conn)), day, self.zone)
                 written = self._written(conn, turn, folded, now)
                 system, user = decision.build_prompt(
                     turn, now=now, zone=self.zone, zone_name=_zone_name(self.zone),
-                    plan=plan.for_day(conn, turn.at.astimezone(self.zone).date()),
+                    plan=plan.for_day(conn, day),
                     open_things=shown, written=written,
                 )
                 given = json.dumps({"user": user}, ensure_ascii=False)

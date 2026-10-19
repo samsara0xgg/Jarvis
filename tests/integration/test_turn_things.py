@@ -972,6 +972,45 @@ def test_what_the_model_is_given_is_the_record_the_few_before_it_her_answer_and_
     assert second.endswith("His message:\nNo\n\nThe assistant's answer to it:\nFine.")
 
 
+def test_the_model_is_shown_what_he_could_mean_not_the_outings_that_are_past() -> None:
+    """A past thing to go to stays open in the ledger, but no answer can be about it."""
+    day = SAID.date()
+
+    def go(  # noqa: PLR0913 - the times a thing can have
+        title: str, *, start_at: str = "", end_at: str = "", on_day: str = "",
+        last_day: str = "", weekly_until: str = "",
+    ) -> things.Thing:
+        return things.Thing(
+            things.new_id(), title, "go", start_at=start_at, end_at=end_at, on_day=on_day,
+            last_day=last_day, weekly_until=weekly_until,
+        )
+
+    ended = go("Party", start_at="2026-10-13T20:00:00-07:00", end_at="2026-10-14T01:00:00-07:00")
+    trip = go("Trip", on_day="2026-10-12", last_day="2026-10-14")
+    gone = [
+        go("Dinner", start_at="2026-10-13T19:00:00-07:00"),
+        go("Fair", on_day="2026-10-13"),
+        go("Course", start_at="2026-09-01T10:00:00-07:00", weekly_until="2026-10-13"),
+    ]
+    late = things.Thing(things.new_id(), "Fix the bike", "do", start_at="2026-10-01T09:00:00-07:00")
+    weekly = go("Pottery", start_at="2026-09-02T19:00:00-07:00", weekly_until="2026-11-24")
+    soon = go("Dentist", start_at="2026-10-14T09:00:00-07:00")
+    bill = things.Thing(things.new_id(), "Pay rent", "do", due="2026-10-31")
+    untimed = go("See Sam")
+    held = [*gone, late, weekly, ended, trip, soon, bill, untimed]
+
+    assert decision.shown(held, day, ZONE) == [late, weekly, ended, trip, soon, bill, untimed]
+
+    # Over the limit, the outings furthest ahead give way; every to-do stays.
+    ahead = [
+        go(f"Class {n}", start_at=(SAID + timedelta(days=n)).isoformat()) for n in range(1, 120)
+    ]
+    chores = [things.Thing(things.new_id(), f"Chore {n}", "do") for n in range(5)]
+    picked = decision.shown([*ahead, *chores], day, ZONE)
+    assert len(picked) == decision.MAX_OPEN
+    assert picked == [*ahead[: decision.MAX_OPEN - 5], *chores]
+
+
 def test_a_record_is_read_as_soon_as_she_has_answered_and_after_ten_minutes_without_one(
     log: _Log,
 ) -> None:

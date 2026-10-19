@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 ACTIONS: Final[tuple[str, ...]] = ("new", "move", "done", "paid", "cancelled", "confirmed")
 MAX_OPEN: Final[int] = 100
-"""How many open things the model is shown."""
+"""How many open things the model is shown (:func:`shown`)."""
 _MAX_ITEMS: Final[int] = 10
 """How many actions and how many doings of one answer are read."""
 _TITLE_CHARS: Final[int] = 120
@@ -169,6 +169,31 @@ def _listed(one: things.Thing) -> dict[str, Any]:
     return out
 
 
+def _gone(one: things.Thing, day: date, zone: tzinfo) -> bool:
+    """Whether ``one`` is a thing to go to whose last time was before ``day``, open or not."""
+    if one.kind != "go" or not (one.start_at or one.on_day):
+        return False
+    if one.weekly_until:
+        return date.fromisoformat(one.weekly_until) < day
+    if one.on_day:
+        return date.fromisoformat(one.last_day or one.on_day) < day
+    return datetime.fromisoformat(one.end_at or one.start_at).astimezone(zone).date() < day
+
+
+def shown(open_things: Sequence[things.Thing], day: date, zone: tzinfo) -> list[things.Thing]:
+    """The open things he could mean on ``day``, at most :data:`MAX_OPEN`, in the ledger's order.
+
+    Nobody closes a thing to go to once its time is past, so those are left out; a thing to do
+    stays however late it is. Over the limit, the things to go to furthest ahead give way first,
+    so his to-dos and bills are always there.
+    """
+    current = [one for one in open_things if not _gone(one, day, zone)]
+    outings = [one.thing_id for one in current if one.kind == "go" and (one.start_at or one.on_day)]
+    room = max(MAX_OPEN - (len(current) - len(outings)), 0)
+    cut = set(outings[room:])
+    return [one for one in current if one.thing_id not in cut][:MAX_OPEN]
+
+
 def _planned(plan: Plan | None) -> list[dict[str, Any]]:
     """Today's plan as the model is shown it: what, from when, and whether it is done."""
     if plan is None:
@@ -189,8 +214,8 @@ def build_prompt(  # noqa: PLR0913 - the record, its clock and what the model is
 ) -> tuple[str, str]:
     """``(system, user)``: the instructions, then his record with everything the model reads it by.
 
-    ``now`` is when the question is asked, ``zone_name`` his zone's name; ``open_things`` is cut to
-    :data:`MAX_OPEN`, soonest first as the ledger orders them.
+    ``now`` is when the question is asked, ``zone_name`` his zone's name; ``open_things`` is what
+    :func:`shown` chose.
     """
     sent = turn.at.astimezone(zone)
     user = [
@@ -198,7 +223,7 @@ def build_prompt(  # noqa: PLR0913 - the record, its clock and what the model is
         f"His message was sent at {_local(sent, zone)}, {sent:%A}.",
         "Today's plan: " + json.dumps(_planned(plan), ensure_ascii=False),
         "Open things: "
-        + json.dumps([_listed(one) for one in open_things[:MAX_OPEN]], ensure_ascii=False),
+        + json.dumps([_listed(one) for one in open_things], ensure_ascii=False),
         "What the assistant's tools wrote to the list in this turn: "
         + json.dumps([_wrote(one) for one in written], ensure_ascii=False),
         "",
