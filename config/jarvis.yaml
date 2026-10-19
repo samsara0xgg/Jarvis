@@ -510,12 +510,14 @@ doing:
       of the facts.
     - "confidence" is "high" when several things agree, "medium" when one clue or fact points to
       it, "low" when it is a guess. When unsure, lower the confidence or say unknown, and ask.
+      The hour of the day alone shows nothing he did: noon is not lunch.
     - "detail" is one short sentence on what the title rests on, or null.
     - "clues" are the ids of the clues you used, at most 8, never an id that is not in the input.
     - "question" is null, or {"text": "...", "options": ["...", "..."]}. Ask at most 5 in the
       whole answer, only about the spans most worth his time: the longest or most unclear
-      stretches that you could not word. A question asks what he was doing, never where he was:
-      the place is already known. Each question is short, in the TITLE LANGUAGE, with at
+      stretches that you could not word. A question asks what he was doing in a stretch you are
+      unsure of, never where he was (the place is already known) and never a detail of what the
+      facts already show. Each question is short, in the TITLE LANGUAGE, with at
       most 4 short options (each at most 24 characters). He answers them once, in the evening.
     - What he said himself outweighs what a fact suggests. A clue from another day ("on 10-12 at
       this place he said...") tells what he tends to do at a place, not what he did today.
