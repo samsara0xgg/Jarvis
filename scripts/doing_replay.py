@@ -1,7 +1,7 @@
 r"""Replay the writer of the doing lane (ADR 0302) for past days, against given stores.
 
     .venv/bin/python -m scripts.doing_replay --date 2026-10-17 [--date 2026-10-18 ...]
-        [--from 2026-10-10 --to 2026-10-17] [--dry-run] [--now 2026-10-18T09:00]
+        [--from 2026-10-10 --to 2026-10-17] [--dry-run | --brief-only] [--now 2026-10-18T09:00]
         [--event-log PATH] [--memory-db PATH] [--timesink PATH] [--shipped DIR]
         [--config config/jarvis.yaml] [--zone America/Vancouver]
 
@@ -12,7 +12,8 @@ brain fills it) and prints the gated spans, one per line. Without
 ``--dry-run`` the gated spans are appended to ``memory.db`` as the day's newest run (a final run
 when the day is over as of ``--now``, else a draft), exactly as the daemon's schedule would; with
 it nothing is stored. The event log is only read: the model's cost is accounted in a throwaway
-log that is deleted afterwards. A day with no waking window or no inputs is skipped.
+log that is deleted afterwards. With ``--brief-only`` no model is asked: each day's input to the
+writer is printed as it would be sent. A day with no waking window or no inputs is skipped.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from jarvis.decision.cost_guard import CostRecorder
-from jarvis.decision.doing_run import inputs_digest
+from jarvis.decision.doing_run import build_messages, inputs_digest
 from jarvis.deployment import load_env_file
 from jarvis.deployment.launchd import default_runtime_root
 from jarvis.runtime.doing_run import (
@@ -75,10 +76,13 @@ def readable(spans: Sequence[Mapping[str, Any]], zone: tzinfo) -> list[str]:
 
 def replay(  # noqa: PLR0913 — the days, the stores, the knobs, the model and the clock.
     days: Sequence[date], sources: DaySources, event_log: Path, memory_db: Path,
-    settings: DoingSettings, client: LLMClient, now: datetime, *, dry_run: bool,
+    settings: DoingSettings, client: LLMClient | None, now: datetime, *, dry_run: bool,
     pricing_table: Mapping[str, Mapping[str, float]],
 ) -> list[dict[str, Any]]:
-    """One summary per day, with its gated spans; they are stored unless ``dry_run``."""
+    """One summary per day, with its gated spans; they are stored unless ``dry_run``.
+
+    Without a client no model is asked and each day's summary carries the writer's input instead.
+    """
     done: list[dict[str, Any]] = []
     with (
         tempfile.TemporaryDirectory() as scratch,
@@ -90,6 +94,13 @@ def replay(  # noqa: PLR0913 — the days, the stores, the knobs, the model and 
             line: dict[str, Any] = {"date": day.isoformat()}
             if brief is None or not (brief.facts or brief.clues):
                 done.append(line | {"outcome": "skipped (no waking window or no inputs)"})
+                continue
+            if client is None:
+                done.append(line | {
+                    "outcome": "brief only", "segments": len(brief.segments),
+                    "clues": len(brief.clues), "digest": inputs_digest(brief),
+                    "brief": build_messages(brief)[0]["content"],
+                })
                 continue
             composed = compose_run(brief, settings, client, recorder)
             line |= {
@@ -129,7 +140,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--date", action="append", type=date.fromisoformat)
     parser.add_argument("--from", dest="first", type=date.fromisoformat)
     parser.add_argument("--to", dest="last", type=date.fromisoformat)
-    parser.add_argument("--dry-run", action="store_true", help="print the gated spans, store none")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="print the gated spans, store none")
+    mode.add_argument(
+        "--brief-only", action="store_true", help="print the writer's input, ask no model",
+    )
     parser.add_argument("--now", type=datetime.fromisoformat, help="replay as of this moment")
     root = default_runtime_root()
     parser.add_argument("--event-log", type=Path, default=root / "mac_events.db")
@@ -150,17 +165,22 @@ def main(argv: list[str] | None = None) -> int:
     now = args.now or datetime.now(zone)
     sources = DaySources(zone, args.timesink, args.memory_db, shipped=args.shipped)
     table = load_pricing_table(REPO / "data" / "pricing.json")
-    client = build_compact_client(config.get("llm") or {}, settings.preset)
+    client = None if args.brief_only else build_compact_client(
+        config.get("llm") or {}, settings.preset,
+    )
     for line in replay(
         days, sources, args.event_log, args.memory_db, settings, client,
         now if now.tzinfo else now.replace(tzinfo=zone), dry_run=args.dry_run,
         pricing_table=table,
     ):
         spans = line.pop("spans", [])
+        brief = line.pop("brief", None)
         sys.stdout.write(json.dumps(line, ensure_ascii=False) + "\n")
         for span in spans:
             sys.stdout.write(f"  {span}\n")
-    if args.dry_run:
+        if brief is not None:
+            sys.stdout.write(brief + "\n")
+    if args.dry_run or args.brief_only:
         sys.stdout.write("dry run: nothing was stored\n")
     return 0
 

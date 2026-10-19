@@ -1316,6 +1316,19 @@ def test_a_replay_stores_the_run_unless_it_is_a_dry_run_and_a_rejection_stores_n
     assert len(_rows(world.memory)) == 1
 
 
+def test_a_brief_only_replay_prints_the_writers_input_and_asks_no_model(world: World) -> None:
+    """A brief-only replay prints the writer's input and asks no model."""
+    found, _skipped = doing_replay.replay(
+        [DAY, DAY - timedelta(days=1)], world.sources, world.log, world.memory, SETTINGS, None,
+        NOW, dry_run=True, pricing_table={},
+    )
+    assert (found["outcome"], found["segments"], found["clues"]) == ("brief only", 7, 4)
+    assert found["brief"].startswith(f"DAY: {KEY} ")
+    assert "\nSEGMENTS (the program's cut of the window;" in found["brief"]
+    assert "spans" not in found
+    assert _rows(world.memory) == []
+
+
 def test_the_days_to_replay_are_the_dates_and_the_range_together() -> None:
     """The days to replay are the dates and the range together."""
     import argparse  # noqa: PLC0415 — only this test builds the namespace by hand
