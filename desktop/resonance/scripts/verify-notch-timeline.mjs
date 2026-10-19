@@ -601,9 +601,10 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   check('a talk shows his first line in its span and her first reply to it, one line each (a line break is a space), and nothing of another talk; a span with no line of his shows nothing; a reply that is not there is left out',
     JSON.stringify(said(T(10, 2), T(10, 9))) === JSON.stringify({ you: '帮我看看今天下午有什么安排，顺便提醒我给银行打电话 这件事别忘了', her: records()[3].text }) && said(T(14, 55), T(14, 55)).you === '27 路下一班什么时候' && said(T(14, 55), T(14, 55)).her === '还有 6 分钟。'
     && said(T(8, 31), T(8, 31)).you === '早' && said(T(16, 0), T(16, 5)) === null && said(T(19, 30), T(19, 30)).her === '' && said(T(19, 30), T(19, 30)).you === '今天先到这里');
-  check('a record with nothing in it but its marker is no line, and a row opens to something only when it has a part or a button that works', talkLines([{ id: 'a', ts: 5, who: 'user', text: '  [record_id=abc]  ' }, { id: 'b', ts: 6, who: 'user', text: '嗯' }], 0, 10).you === '嗯'
-    && hasBody(open('stay-aw'), true) && hasBody(open('stay-aw'), false) && !hasBody(openOf(buildDay(small([it('p', 'picture', T(13, 30), T(13, 30), { attachment: 'zz' })]), NOW, zh), 'p', zh), false) && hasBody(openOf(buildDay(small([it('p', 'picture', T(13, 30), T(13, 30), { attachment: 'zz' })]), NOW, zh), 'p', zh), true)
-    && !hasBody(openOf(buildDay(small([it('s', 'stay', T(13, 30), T(14, 30), {})]), NOW, zh), 's', zh), false));
+  const lone = (id, kind, extra = {}) => openOf(buildDay(small([it(id, kind, T(13, 30), T(13, 30), extra)]), NOW, zh), id, zh);
+  check('a record with nothing in it but its marker is no line, and a row opens to something only when it has a part or a button that works (the star is one: every item the brain can mark has it; an id it would refuse has none)', talkLines([{ id: 'a', ts: 5, who: 'user', text: '  [record_id=abc]  ' }, { id: 'b', ts: 6, who: 'user', text: '嗯' }], 0, 10).you === '嗯'
+    && hasBody(open('stay-aw'), true) && hasBody(open('stay-aw'), false) && hasBody(lone('p', 'picture', { attachment: 'zz' }), false) && lone('p', 'picture', { attachment: 'zz' }).parts.length === 0
+    && !hasBody(lone('p q', 'picture', { attachment: 'zz' }), false) && hasBody(lone('p q', 'picture', { attachment: 'zz' }), true) && !hasBody(lone('p q', 'stay', {}), false) && hasBody(lone('s', 'stay', {}), false));
   // what a turn about a row carries
   const ask = (key, model = m) => askOf(model, key, model === me ? en : zh);
   check('what is handed to her is exactly {kind, id, title, start_ms} (the title as the row says it, the time as a whole number), with the icon and time the input shows',
@@ -624,17 +625,45 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   check('in English the input says Ask her about the row it holds, with its own title', ask('talk-1', me).about.title === 'Talked with her' && ask('stay-home-1', me).about.title === '家');
 }
 
+// ---------- the star, in node (ADR 0296): who chose it, and what can be marked ----------
+{
+  const day = (hl, items) => buildDay(small(items ?? [it('s-1', 'stay', T(9, 0), T(11, 0), { place: 'Cafe Fort, Victoria' }), it('t-1', 'talk', T(10, 10), T(10, 20), { turns: 2 }, 'her'), it('w-1', 'workout', T(7, 0), T(7, 40), { activity: 'running' }), it('c-1', 'code', T(8, 0), T(8, 30), { title: 'x', project: 'p' }), it('p q', 'picture', T(10, 30), T(10, 30), { note: 'x' })], { highlights: hl }), NOW, zh);
+  const both = day([{ id: 's-1', label: '一个上午', by: 'her' }, { id: 't-1', label: 'talk 10:10', by: 'him' }, { id: 'w-1', label: '', by: '' }]);
+  const stay = both.heads.get('s-1'), talk = both.rows.get('t-1'), run = both.rows.get('w-1');
+  check('a star says who chose it: by "her" is her pick (an outline), "him" or anything else his mark (filled); a stay\'s header says it too, and a row nobody marked says neither',
+    stay.star === '一个上午' && stay.hers && talk.star && !talk.hers && run.star && !run.hers && !both.rows.get('c-1').star && !both.rows.get('c-1').hers && !both.rows.get('p q').hers && both.stars.get('s-1').by === 'her' && both.stars.get('t-1').by === 'him');
+  const bar = buildBar(both, zh);
+  check('the bar\'s lit star keeps who chose it: his filled, hers outlined', bar.stars.length === 3 && bar.stars.find(x => x.id === 's-1').hers === true && bar.stars.find(x => x.id === 't-1').hers === false && bar.stars.find(x => x.id === 'w-1').hers === false, JSON.stringify(bar.stars));
+  const o = id => openOf(both, id, zh);
+  check('every item the brain can mark opens with a star (a stay, a talk, a run, a session, a commitment with its @ id); one with an id it would refuse (a space) has none; the folded row of sessions is no one item',
+    ['s-1', 't-1', 'w-1', 'c-1'].every(k => o(k).star) && o('p q').star === false && openOf(buildDay(small([it('commitment-ab@2026-10-19', 'event', T(22, 0), T(23, 0), { title: 'x' })]), NOW, zh), 'commitment-ab@2026-10-19', zh).star
+    && Object.values(fullDayOpen()).every(x => x === true), JSON.stringify(fullDayOpen()));
+  function fullDayOpen() { const f = buildDay(fullDay(), NOW, zh); return Object.fromEntries([...f.rows.keys(), ...f.heads.keys()].map(k => [k, k.startsWith('code:') ? !openOf(f, k, zh).star : openOf(f, k, zh).star])); }
+  check('what the brain sends of the highlights is read field by field: an id is needed, a label that is not text is none, a `by` that is not text is none', tidyReply({ ...makeDay(), highlights: [{ id: 'a', label: 7, by: 'her' }, { label: 'x' }, { id: 'b', label: 'y', by: 3 }, null] }).highlights.map(h => `${h.id}:${h.label}:${h.by}`).join() === 'a::her,b:y:');
+}
+
 // ---------- the built page ----------
 const server = spawn(path.join(root, 'node_modules/.bin/vite'), ['preview', '--port', String(web), '--strictPort'], { cwd: root, stdio: 'ignore' });
 const browser = await chromium.launch({ headless: true, channel: 'chrome', args: ['--disable-web-security', '--mute-audio'] });
 const errors = [];
 const NOTCH_R = 412.5, TOP = 32;
+// Every Web Animation the page starts is written down (what, on what, with which keyframes and timing), so what was asked for can be read.
+const record = () => {
+  const animate = Element.prototype.animate;
+  window.__anims = [];
+  Element.prototype.animate = function (kf, opt) {
+    window.__anims.push({ cls: String(this.className?.baseVal ?? this.className), key: this.dataset?.key ?? null, tag: this.tagName, parent: String(this.parentElement?.className?.baseVal ?? this.parentElement?.className ?? ''), kf: JSON.parse(JSON.stringify(kf)), opt: typeof opt === 'number' ? { duration: opt } : JSON.parse(JSON.stringify(opt ?? {})), at: Math.round(performance.now()) });
+    return animate.call(this, kf, opt);
+  };
+};
+const anims = a => a.page.evaluate(() => window.__anims.slice());
 // A page on a fake daemon: `served` is what /inherent/day answers, `board` the sessions, `departure` the pinned trip, `hits` the day reads it got.
 async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = makeDay(), departure = null, init = null, at = NOW, fastPolls = false } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 640, height: 900 }, deviceScaleFactor: 2 });
   const page = await ctx.newPage();
-  // `posts`: what the page sent (path and body); `refuse`: routes that answer with an error; `changes`: place renames the daemon can undo.
-  const s = { board, served, departure, hits: [], pictures: [], posts: [], reads: [], refuse: new Set(), changes: new Map(), records: records(), controls: { mic_muted: false, speech_muted: false, conversation: false, quiet: 'off' } };
+  // `posts`: what the page sent (path and body); `refuse`: routes that answer with an error; `changes`: place renames the daemon can undo; `lag`: how long
+  // the writes take to answer (ms); `hidden`: the picks of hers he has taken off.
+  const s = { board, served, departure, hits: [], pictures: [], posts: [], reads: [], refuse: new Set(), changes: new Map(), lag: 0, hidden: new Set(), records: records(), controls: { mic_muted: false, speech_muted: false, conversation: false, quiet: 'off' } };
   page.on('pageerror', e => errors.push(e.message));
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource|net::ERR/.test(m.text())) errors.push(m.text()); });
   await page.addInitScript(([wardrobe, settings]) => {
@@ -653,7 +682,7 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
     window.__emit = (op, payload) => window.__sockets.at(-1).onmessage({ data: JSON.stringify({ op, payload }) });
   }, [wing || marks ? { ...wing && { wing }, ...marks && { marks } } : null, { lang, ...(openBy ? { openBy } : {}) }]);
   if (init) await page.addInitScript(init, NOW);
-  await page.route(`${daemon}/**`, route => {
+  await page.route(`${daemon}/**`, async route => {
     const url = new URL(route.request().url());
     const json = value => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
     if (url.pathname === '/inherent/day') {
@@ -670,6 +699,7 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
     // what the page writes: the routes the brain has today for a rename, its undo, an acknowledgement and a turn about a row
     const req = route.request(), post = req.method() === 'POST', refused = (why, status = 500) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ detail: why }) });
     const sent = () => { try { return JSON.parse(req.postData() ?? 'null'); } catch { return null; } };
+    if (post && s.lag) await new Promise(r => setTimeout(r, s.lag));
     const rename = (place, name) => { for (const x of s.served.items) if (x.kept_place?.id === place) x.kept_place = { ...x.kept_place, name }; };
     if (post && url.pathname === '/inherent/memory/places/undo') {
       const body = sent(); s.posts.push({ path: url.pathname, body });
@@ -688,6 +718,21 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
       const body = sent(), id = decodeURIComponent(url.pathname.split('/').pop()), item = s.served.items.find(x => x.id === id); s.posts.push({ path: url.pathname, body });
       if (s.refuse.has('notices') || !item?.fired) return refused('not a notice', 404);
       item.acknowledged = true; return json({ ok: true });
+    }
+    // ADR 0296: his mark on an item of a day. As the brain does it: his marks first (five at most, a sixth is a 409; marking what he marked answers 200), her picks
+    // in the room he leaves, one he took off is hidden; an id no item has is a 404. The answer is the day's highlights after it.
+    if (post && url.pathname === '/inherent/day/highlight') {
+      const body = sent(); s.posts.push({ path: url.pathname, body });
+      if (s.refuse.has('highlight')) return refused('refused', 502);
+      const item = s.served.items.find(x => x.id === body?.id), list = s.served.highlights ?? [], his = list.filter(h => h.by !== 'her'), standing = his.find(h => h.id === body?.id);
+      if (!item) return refused('nothing on that day has that id', 404);
+      if (body.on && !standing && his.length >= 5) return refused('5 highlights of that day are marked; unmark one first', 409);
+      const stamp = `${item.kind} ${clock(item.start_ms, TZ)}`, mine = body.on ? [...his.filter(h => h.id !== body.id), { id: body.id, label: body.label ?? standing?.label ?? list.find(h => h.id === body.id)?.label ?? stamp, by: 'him' }] : his.filter(h => h.id !== body.id);
+      if (body.on) s.hidden.delete(body.id); else s.hidden.add(body.id);
+      const hers = list.filter(h => h.by === 'her' && h.id !== body.id && !s.hidden.has(h.id)).slice(0, Math.max(0, 5 - mine.length));
+      const at = id => s.served.items.find(x => x.id === id)?.start_ms ?? 0;
+      s.served.highlights = [...mine, ...hers].sort((x, y) => at(x.id) - at(y.id));
+      return json({ ok: true, highlights: s.served.highlights });
     }
     if (post && url.pathname === '/inherent/submit') {
       s.posts.push({ path: url.pathname, body: sent() });
@@ -1562,7 +1607,7 @@ try {
     const under = await a.page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-key]')?.dataset.key ?? null, [rest.x, rest.y]);
     check('and a list scrolling under a pointer at rest does not take the choice or the bracket from the keys', m.pick.length === 1 && m.hot.length === 0 && under !== null && under !== m.pick[0] && sameSpan(m.bracket, m.pick[0]), JSON.stringify({ m, under }));
     check('through all of it no key focus was asked for but the pinning click\'s', await focusCalls() === 'true', await focusCalls());
-    check('the quick 问她 is only on rows the brain takes a turn about: none on a workout or the sessions', await a.page.evaluate(() => { const no = ['workout', 'code'], rows = [...document.querySelectorAll('.dt-ask')].map(b => b.parentElement); return rows.length > 0 && rows.every(r => !no.includes(r.dataset.kind)); }));
+    check('the quick 问她 is only on rows the brain takes a turn about: none on a workout or the sessions', await a.page.evaluate(() => { const no = ['workout', 'code'], rows = [...document.querySelectorAll('.dt-ask')].map(b => b.closest('.dt-row, .dt-sh')); return rows.length > 0 && rows.every(r => !no.includes(r.dataset.kind)); }));
     await a.page.keyboard.press('Escape');
     r = await settle(a, '', 2000);
     check('Esc folds the day and gives the key focus back', r.tl === '' && await focusCalls() === 'true,false', await focusCalls());
@@ -1577,16 +1622,6 @@ try {
 
   // ---- motion in the list: the rise on open, the day change, an item that arrives ----
   if (all || only === 'motion') {
-    // Every Web Animation the page starts is written down (what, on what, with which keyframes and timing), so what was asked for can be read.
-    const record = () => {
-      const animate = Element.prototype.animate;
-      window.__anims = [];
-      Element.prototype.animate = function (kf, opt) {
-        window.__anims.push({ cls: String(this.className), key: this.dataset?.key ?? null, kf: JSON.parse(JSON.stringify(kf)), opt: typeof opt === 'number' ? { duration: opt } : JSON.parse(JSON.stringify(opt ?? {})), at: Math.round(performance.now()) });
-        return animate.call(this, kf, opt);
-      };
-    };
-    const anims = a => a.page.evaluate(() => window.__anims.slice());
     const openIt = async a => {
       const seg = await line(a);
       await a.move(seg.mid, 14); await a.page.mouse.down(); await a.page.mouse.up();
@@ -2368,14 +2403,14 @@ try {
     const m = buildDay(bigDay(), NOW, zh), about = key => askOf(m, key, zh);
     const a = await boot({ served: bigDay() });
     await hoverDay(a);
-    const marks = await a.page.evaluate(() => { const by = {}; for (const el of document.querySelectorAll('.dt-row, .dt-sh')) { const k = el.classList.contains('dt-sh') ? 'stay' : el.dataset.kind; by[k] ??= { rows: 0, asks: 0 }; by[k].rows++; if (el.querySelector(':scope > .dt-ask')) by[k].asks++; } return by; });
+    const marks = await a.page.evaluate(() => { const by = {}; for (const el of document.querySelectorAll('.dt-row, .dt-sh')) { const k = el.classList.contains('dt-sh') ? 'stay' : el.dataset.kind; by[k] ??= { rows: 0, asks: 0 }; by[k].rows++; if (el.querySelector(':scope > .dt-quick > .dt-ask')) by[k].asks++; } return by; });
     const yes = ['stay', 'move', 'sleep', 'talk', 'picture', 'reminder', 'event', 'work', 'call', 'ride', 'departure', 'payment', 'claude_chat', 'claude_day'], no = ['workout', 'code'];
     check('only what the brain takes a turn about has 问她 (stays, moves, sleep, talks, pictures, reminders, events, work, calls, rides, buses, payments, Claude chats and days); a workout and the sessions have none', yes.every(k => marks[k]?.rows > 0 && marks[k].asks === marks[k].rows) && no.every(k => marks[k]?.rows > 0 && marks[k].asks === 0), JSON.stringify(marks));
     await orow(a, 'talk-1').scrollIntoViewIfNeeded();
     await orow(a, 'talk-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 300);
-    const lit = await a.page.evaluate(() => { const r = document.querySelector('[data-key="talk-1"]'), b = r.querySelector(':scope > .dt-ask'), tm = r.querySelector(':scope > .dt-tm'); return { ask: getComputedStyle(b).opacity, tm: getComputedStyle(tm).opacity, text: b.textContent }; });
-    check('under the pointer a row says 问她 in the place of its length', lit.ask === '1' && lit.tm === '0' && lit.text === '问她', JSON.stringify(lit));
-    await orow(a, 'talk-1').locator(':scope > .dt-ask').click(); await rest(a, 520);
+    const lit = await a.page.evaluate(() => { const r = document.querySelector('[data-key="talk-1"]'), q = r.querySelector(':scope > .dt-quick'), tm = r.querySelector(':scope > .dt-tm'); return { ask: getComputedStyle(q).opacity, tm: getComputedStyle(tm).opacity, text: q.querySelector('.dt-ask').textContent }; });
+    check('under the pointer a row says 问她 (after its star) in the place of its length', lit.ask === '1' && lit.tm === '0' && lit.text === '问她', JSON.stringify(lit));
+    await orow(a, 'talk-1').locator(':scope > .dt-quick .dt-ask').click(); await rest(a, 520);
     const d1 = await dockOf(a);
     check('it slides an input up at the pane\'s foot: what it is about as a chip (the row\'s glyph, its title, its time, a ×), the cursor in the field, send greyed while nothing is typed; the row itself did not open', d1 && d1.chip.title === '和她说话' && d1.chip.at === '10:02' && d1.chip.icon && d1.chip.x === '去掉这一条' && d1.focused && d1.placeholder === '问她这一条…' && d1.canSend === false && await expanded(a, 'talk-1') === 'false' && await folds(a) === 0, JSON.stringify(d1));
     check('the field takes the window\'s key focus (the pane was opened by a rest and had none)', (await focusLog(a)).endsWith('true'), await focusLog(a));
@@ -2404,7 +2439,7 @@ try {
     await a.page.keyboard.type('abc');
     await orow(a, 'event-1').scrollIntoViewIfNeeded();
     await orow(a, 'event-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 250);
-    await orow(a, 'event-1').locator(':scope > .dt-ask').click(); await rest(a, 450);
+    await orow(a, 'event-1').locator(':scope > .dt-quick .dt-ask').click(); await rest(a, 450);
     const d3 = await dockOf(a);
     check('asking about another row swaps the chip and keeps what was typed, the cursor back in the field', d3 && d3.chip.title === about('event-1').about.title && d3.chip.at === about('event-1').at && d3.draft === 'abc' && d3.focused && turns(a).length === 1, JSON.stringify(d3));
     await a.page.locator('.dt-about button').click(); await rest(a, 250);
@@ -2526,9 +2561,205 @@ try {
     await orow(a, 'reminder-2').click({ position: { x: 170, y: 14 } }); await a.page.waitForTimeout(80);
     check('and closing it takes it away at once', await folds(a) === 0 && await expanded(a, 'reminder-2') === 'false');
     await orow(a, 'talk-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 200);
-    await orow(a, 'talk-1').locator(':scope > .dt-ask').click(); await a.page.waitForTimeout(80);
+    await orow(a, 'talk-1').locator(':scope > .dt-quick .dt-ask').click(); await a.page.waitForTimeout(80);
     const dockRun = await a.page.evaluate(() => { const f = document.querySelector('.dt-fold.is-dock .dt-dock')?.closest('.dt-fold'); return f && { anims: f.getAnimations({ subtree: true }).map(x => x.effect.getTiming().duration), h: f.getBoundingClientRect().height, full: f.firstElementChild.getBoundingClientRect().height }; });
     check('the input comes at once too, with a 120 ms fade of its words', dockRun && dockRun.anims.join() === '120' && Math.abs(dockRun.h - dockRun.full) < 1, JSON.stringify(dockRun));
+    await a.ctx.close();
+  }
+
+  // ---- phase D: what he can write to the day (ADR 0296): the star, what mail said, a place with no name of his (ONLY=write) ----
+  // A sheet of labelled tiles (screenshots, or crops of them) in one picture.
+  // (a tile may have its own scale `k`; the label is under it)
+  const sheetOf = async (a, name, tiles, cols, k = 1) => {
+    const page = await a.ctx.newPage(), px = x => x.w * (x.k ?? k);
+    await page.setViewportSize({ width: Math.ceil(cols * (Math.max(...tiles.map(px)) + 8) + 8), height: 100 });
+    await page.setContent(`<!doctype html><body style="margin:0;padding:8px;background:#222;display:grid;grid-template-columns:repeat(${cols},max-content);gap:12px 8px;font:11px monospace;color:#ddd;align-items:start">${tiles.map(x => `<figure style="margin:0"><img style="display:block;width:${px(x)}px;border-radius:6px" src="data:image/png;base64,${x.png.toString('base64')}"><figcaption style="padding:4px 2px 0">${x.label}</figcaption></figure>`).join('')}</body>`);
+    await page.screenshot({ path: path.join(dir, `${name}.png`), fullPage: true });
+    await page.close();
+  };
+  const crop = async (a, label, box, pad = 0) => ({ png: await a.page.screenshot({ clip: { x: Math.max(0, box.x - pad), y: Math.max(0, box.y - pad), width: box.width + 2 * pad, height: box.height + 2 * pad } }), label, w: box.width + 2 * pad, h: box.height + 2 * pad });
+  const writes = a => a.s.posts.filter(p => p.path === '/inherent/day/highlight');
+  const marksOn = a => a.s.served.highlights.map(h => `${h.id}:${h.by}`).sort().join();
+  // the bar's lit stars (each: whose, and whether it is on its way out), and what a row or a stay's header wears
+  const lit = a => a.page.evaluate(() => [...document.querySelectorAll('.dt-lit')].map(el => ({ id: el.dataset.star, gone: el.classList.contains('is-gone'), hers: el.classList.contains('is-hers') })));
+  const litIds = async a => (await lit(a)).filter(x => !x.gone).map(x => x.id).sort().join();
+  const wears = (a, key) => orow(a, key).evaluate(r => { const b = r.querySelector(r.classList.contains('dt-sh') ? '.dt-star' : '.dt-badge'); return b ? { gone: b.classList.contains('is-gone'), hers: b.classList.contains('is-hers') } : null; });
+  const quickStar = (a, key) => orow(a, key).locator(':scope > .dt-quick .dt-starbtn');
+  const starOf = (a, btn) => btn.evaluate(b => ({ on: b.getAttribute('aria-pressed') === 'true', his: b.classList.contains('is-his'), hers: b.classList.contains('is-hers'), label: b.getAttribute('aria-label') }));
+  const hoverOn = async (a, key) => { await orow(a, key).scrollIntoViewIfNeeded(); await orow(a, key).hover({ position: { x: 170, y: 14 } }); await rest(a, 280); };
+  const under = (a, key) => orow(a, key).locator(':scope > .dt-fold .dt-hint').allInnerTexts().then(x => x.join('|'));
+  // The star's own animations, held at each moment in turn, in one sheet (the click starts them; they are paused at once, so each tile is the star at that moment).
+  const frames = async (a, key, name, offsets) => {
+    const mine = `[data-key="${key}"] .dt-starbtn`, box = await orow(a, key).locator(':scope > .dt-quick .dt-starbtn').boundingBox(), tiles = [];
+    await a.page.evaluate(sel => { for (const x of document.getAnimations()) if (x.effect?.target?.closest?.(sel)) x.pause(); }, mine);
+    for (const ms of offsets) {
+      await a.page.evaluate(([sel, ms]) => { for (const x of document.getAnimations()) if (x.effect?.target?.closest?.(sel)) x.currentTime = ms; }, [mine, ms]);
+      tiles.push(await crop(a, `+${ms} ms`, box, 22));
+    }
+    await a.page.evaluate(sel => { for (const x of document.getAnimations()) if (x.effect?.target?.closest?.(sel)) x.finish(); }, mine);
+    await sheetOf(a, name, tiles, 4, 3);
+    return tiles.length;
+  };
+  if (all || only === 'write') {
+    const a = await boot({ served: fullDay(), init: record });
+    await openDay(a);
+    // ---- the hover's actions: the star, then 问她 ----
+    const quick = await a.page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.dt-row, .dt-sh')].map(el => [el.dataset.key, [...(el.querySelector(':scope > .dt-quick')?.children ?? [])].map(c => c.classList.contains('dt-starbtn') ? 'star' : 'ask').join('+')])));
+    check('every item has the star in its hover actions, before 问她 where it has that (a talk, a ride, a payment, a bus, a stay); a run and a session have the star alone; the folded row of sessions, which is no one item, has neither',
+      quick['talk-1'] === 'star+ask' && quick['ride-1'] === 'star+ask' && quick['pay-1'] === 'star+ask' && quick['departure-1'] === 'star+ask' && quick['stay-uvic'] === 'star+ask' && quick['workout-1'] === 'star' && quick['code:stay-home-1'] === ''
+      && Object.entries(quick).every(([k, v]) => k.startsWith('code:') ? v === '' : v === 'star' || v === 'star+ask'), JSON.stringify(quick));
+    await hoverOn(a, 'pay-1'); const his = await starOf(a, quickStar(a, 'pay-1'));
+    await hoverOn(a, 'stay-uvic'); const hers = await starOf(a, quickStar(a, 'stay-uvic'));
+    await hoverOn(a, 'talk-1'); const none = await starOf(a, quickStar(a, 'talk-1'));
+    check('his mark (the payment) is a filled star that says Unmark, her pick (the afternoon at UVic) an outlined one, an item nobody marked a dim outline: the three are told apart, and the two that are not his say Mark as important',
+      his.on && his.his && !his.hers && his.label === '取消标记' && !hers.on && hers.hers && !hers.his && hers.label === '标为重要' && !none.on && !none.his && !none.hers && none.label === '标为重要', JSON.stringify({ his, hers, none }));
+    // her pick beside his mark: the payment (his) and the afternoon at UVic (hers), each row with the pointer on it, and the bar's two lit stars
+    {
+      const tiles = [], stars = await lit(a);
+      for (const [key, label] of [['pay-1', 'his mark: a filled star in the hover, a filled badge'], ['stay-uvic', 'her pick: an outlined star in the hover, an outlined one by the name']]) {
+        await hoverOn(a, key);
+        tiles.push({ ...await crop(a, label, await orow(a, key).boundingBox()), k: 1.4 });
+      }
+      const bar = await a.page.locator('.dt-bar').first().boundingBox();
+      tiles.unshift({ ...await crop(a, 'the bar: her pick outlined, his mark filled', { x: bar.x, y: bar.y - 6, width: bar.width, height: bar.height + 12 }), k: 1.6 });
+      await sheetOf(a, 'd-02-his-and-hers', tiles, 1);
+      check('the sheet of her pick beside his mark is made (the bar and the two rows)', tiles.length === 3 && stars.length === 2);
+    }
+    check('the bar and the rows wear the same two: both lit stars are on the bar, hers drawn outlined; the payment\'s badge is his, the stay\'s beside its name is hers, and a row nobody marked wears none',
+      await litIds(a) === 'pay-1,stay-uvic' && (await lit(a)).find(x => x.id === 'stay-uvic').hers && !(await lit(a)).find(x => x.id === 'pay-1').hers
+      && JSON.stringify(await wears(a, 'pay-1')) === '{"gone":false,"hers":false}' && JSON.stringify(await wears(a, 'stay-uvic')) === '{"gone":false,"hers":true}' && await wears(a, 'talk-1') === null);
+
+    // ---- marking: at once, then the brain's word ----
+    a.s.lag = 900;
+    const hits0 = a.s.hits.length;
+    await hoverOn(a, 'talk-1');
+    await quickStar(a, 'talk-1').click();
+    await a.page.waitForTimeout(90);
+    const mid = { star: await starOf(a, quickStar(a, 'talk-1')), bar: await litIds(a), badge: await wears(a, 'talk-1'), posts: writes(a).length };
+    check('pressing the star shows it at once, before the brain has answered: the star is filled, the bar has its lit star and the row its badge', mid.star.on && mid.star.his && mid.bar === 'pay-1,stay-uvic,talk-1' && JSON.stringify(mid.badge) === '{"gone":false,"hers":false}' && mid.posts === 0, JSON.stringify(mid));
+    check('the frame sheet of the star being set (the star and its four sparks every 40 ms, held from the animations the press started) is made', await frames(a, 'talk-1', 'd-01-star-sparks', [0, 40, 80, 120, 160, 200, 250, 300]) === 8);
+    await a.page.waitForTimeout(900);
+    const after = { star: await starOf(a, quickStar(a, 'talk-1')), bar: await litIds(a), post: writes(a).map(p => JSON.stringify(p.body)).join(), served: marksOn(a), reads: a.s.hits.length - hits0, title: await orow(a, 'talk-1').locator('.dt-tx b').innerText() };
+    check('the brain is told exactly {day, id, on: true}; its answer stands (the day\'s highlights after it); a label that says nothing (talk 10:02) leaves the row\'s title as it was; and the day is read again', after.post === `{"day":"${DATE}","id":"talk-1","on":true}` && after.star.on && after.bar === 'pay-1,stay-uvic,talk-1'
+      && after.served === 'pay-1:him,stay-uvic:her,talk-1:him' && after.reads >= 1 && after.title === '和她说话', JSON.stringify(after));
+    const log = (await anims(a)).filter(x => x.parent.includes('dt-starbtn') || x.cls.includes('dt-spark'));
+    const pop = log.filter(x => x.tag === 'svg' && x.kf.some(k => k.transform === 'scale(.6)')), sparks = log.filter(x => x.cls === 'dt-spark');
+    check('the star scales 0.6, 1.15, 1 over 300 ms and four small sparks fly from it over the same 300 ms; the sparks are gone when they have flown', pop.length === 1 && pop[0].opt.duration === 300 && pop[0].kf.map(k => k.transform).join() === 'scale(.6),scale(1.15),scale(1)' && sparks.length === 4 && sparks.every(x => x.opt.duration === 300) && await a.page.locator('.dt-spark').count() === 0, JSON.stringify(log.map(x => [x.tag, x.cls, x.opt.duration])));
+    a.s.lag = 0;
+    await hoverOn(a, 'talk-1');
+    await quickStar(a, 'talk-1').click();
+    await a.page.waitForTimeout(90);
+    const away = { star: await starOf(a, quickStar(a, 'talk-1')), bar: await lit(a), badge: await wears(a, 'talk-1') };
+    check('pressing it again takes the mark off at once: the star is outlined again, and the bar\'s star and the row\'s badge are on their way out (fading), not gone with a jump', !away.star.on && away.bar.find(x => x.id === 'talk-1')?.gone === true && away.badge?.gone === true, JSON.stringify(away));
+    await a.page.waitForTimeout(500);
+    check('then they are gone; the brain was told {on: false} and has the day it had before', await litIds(a) === 'pay-1,stay-uvic' && (await lit(a)).length === 2 && await wears(a, 'talk-1') === null && writes(a).at(-1).body.on === false && marksOn(a) === 'pay-1:him,stay-uvic:her', marksOn(a));
+
+    // ---- her pick: he can make it his, and take it off (which takes her pick off for him) ----
+    await hoverOn(a, 'stay-uvic');
+    await quickStar(a, 'stay-uvic').click(); await a.page.waitForTimeout(500);
+    const mine = { star: await starOf(a, quickStar(a, 'stay-uvic')), bar: (await lit(a)).find(x => x.id === 'stay-uvic'), badge: await wears(a, 'stay-uvic'), post: JSON.stringify(writes(a).at(-1).body), served: marksOn(a), label: await orow(a, 'stay-uvic').locator('.dt-tx em').innerText() };
+    check('marking her pick makes it his: the star fills, the bar\'s star and the stay\'s are filled, she keeps her words for it, and the brain has it as his', mine.star.on && mine.star.his && mine.bar && !mine.bar.hers && mine.badge && !mine.badge.hers && mine.post === `{"day":"${DATE}","id":"stay-uvic","on":true}` && mine.served === 'pay-1:him,stay-uvic:him' && mine.label === '下午在 UVic', JSON.stringify(mine));
+    await hoverOn(a, 'stay-uvic');
+    await quickStar(a, 'stay-uvic').click(); await a.page.waitForTimeout(700);
+    check('and taking it off leaves nothing of hers either: no star on the bar or by the name, the brain told {on: false}, her pick hidden', await litIds(a) === 'pay-1' && await wears(a, 'stay-uvic') === null && writes(a).at(-1).body.on === false && marksOn(a) === 'pay-1:him' && a.s.hidden.has('stay-uvic'), marksOn(a));
+    await a.ctx.close();
+  }
+  if (all || only === 'write') {
+    // five of his marks stand: a sixth is a 409. The star does not pretend (nothing lit while it asks), shakes once (120 ms), and a quiet line under the row says why
+    const five = ['pay-1', 'move-1', 'call-1', 'work-1', 'sleep-1'].map(id => ({ id, label: '', by: 'him' }));
+    const a = await boot({ served: fullDay({ highlights: five }), init: record });
+    await openDay(a);
+    a.s.lag = 500;
+    await hoverOn(a, 'ride-1');
+    const rows0 = await orow(a, 'talk-3').boundingBox();
+    await quickStar(a, 'ride-1').click();
+    await a.page.waitForTimeout(90);
+    const asking = { star: await starOf(a, quickStar(a, 'ride-1')), bar: await litIds(a), line: await under(a, 'ride-1') };
+    check('with five of his marks standing the star does not pretend: nothing is lit while the brain is asked', !asking.star.on && asking.bar === 'call-1,move-1,pay-1,sleep-1,work-1' && asking.line === '', JSON.stringify(asking));
+    await a.page.waitForTimeout(800);
+    const said = { star: await starOf(a, quickStar(a, 'ride-1')), bar: await litIds(a), line: await under(a, 'ride-1'), post: JSON.stringify(writes(a).at(-1).body), served: marksOn(a) };
+    check('the sixth is a 409: the brain was asked {day, id, on: true}; the star stays off and the day is as it was; the row says 最多标 5 个，先取消一个 under itself', said.post === `{"day":"${DATE}","id":"ride-1","on":true}` && !said.star.on && said.bar === asking.bar && said.line === '最多标 5 个，先取消一个' && said.served === 'call-1:him,move-1:him,pay-1:him,sleep-1:him,work-1:him', JSON.stringify(said));
+    const shook = (await anims(a)).filter(x => x.cls.includes('dt-starbtn') && x.kf.some(k => k.transform === 'translateX(-3px)'));
+    check('the star shook once, in 120 ms', shook.length === 1 && shook[0].opt.duration === 120, JSON.stringify(shook));
+    const grown = await orow(a, 'talk-3').boundingBox();
+    check('the line opens under the row in place (the rows under it move down), the row is not open (no open look, no expanded state, the star is still there to press again)', grown.y > rows0.y + 10 && await orow(a, 'ride-1').getAttribute('aria-expanded') === 'false' && await orow(a, 'ride-1').locator(':scope > .dt-fold.is-line').count() === 1 && await orow(a, 'ride-1').locator(':scope > .dt-quick').evaluate(q => getComputedStyle(q).display !== 'none' && getComputedStyle(q).opacity === '1'), JSON.stringify({ rows0, grown }));
+    await shotRow(a, 'd-03-cap-line', 'ride-1');
+    await a.page.waitForTimeout(4300);
+    check('the line goes by itself after four seconds and the rows come back', await under(a, 'ride-1') === '' && await orow(a, 'ride-1').locator(':scope > .dt-fold').count() === 0 && Math.abs((await orow(a, 'talk-3').boundingBox()).y - rows0.y) < 2);
+    await a.ctx.close();
+  }
+  if (all || only === 'write') {
+    // any other failure: the star comes back and the line says it did not go through
+    const a = await boot({ served: fullDay(), init: record });
+    await openDay(a);
+    a.s.refuse.add('highlight'); a.s.lag = 500;
+    await hoverOn(a, 'move-3');
+    await quickStar(a, 'move-3').click();
+    await a.page.waitForTimeout(90);
+    const trying = { star: await starOf(a, quickStar(a, 'move-3')), bar: await litIds(a) };
+    await a.page.waitForTimeout(800);
+    const failed = { star: await starOf(a, quickStar(a, 'move-3')), bar: await litIds(a), line: await under(a, 'move-3') };
+    check('a mark that fails for any other reason (the brain cannot be reached, a 502): it showed at once, the star comes back off, the bar\'s star goes, and the row says 没标上，稍后再试', trying.star.on && trying.bar.includes('move-3') && !failed.star.on && !failed.bar.includes('move-3') && failed.line === '没标上，稍后再试', JSON.stringify({ trying, failed }));
+    await a.ctx.close();
+  }
+  if (all || only === 'write') {
+    // the keys: S marks the row the keys chose (a second S takes it off); not while a field has the cursor; the open row has the star too, before 问她
+    const a = await boot({ served: fullDay(), init: record });
+    await openDay(a);
+    await a.page.keyboard.press('s'); await a.page.waitForTimeout(300);
+    check('S with no row chosen does nothing', writes(a).length === 0);
+    await a.page.keyboard.press('ArrowDown'); await a.page.waitForTimeout(300);
+    const chosen = await a.page.evaluate(() => document.querySelector('.is-pick')?.dataset.key);
+    await a.page.keyboard.press('s'); await a.page.waitForTimeout(500);
+    check('S marks the row the keys chose', writes(a).length === 1 && writes(a)[0].body.id === chosen && writes(a)[0].body.on === true && (await lit(a)).some(x => x.id === chosen), `${chosen} ${JSON.stringify(writes(a))}`);
+    await a.page.keyboard.press('s'); await a.page.waitForTimeout(500);
+    check('and S again takes the mark off', writes(a).length === 2 && writes(a)[1].body.on === false && writes(a)[1].body.id === chosen && marksOn(a) === 'pay-1:him,stay-uvic:her');
+    await orow(a, 'talk-1').scrollIntoViewIfNeeded(); await orow(a, 'talk-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 250);
+    await orow(a, 'talk-1').locator(':scope > .dt-quick .dt-ask').click(); await rest(a, 520);
+    await a.page.keyboard.type('sss'); await rest(a, 200);
+    check('typed into the input, S is a letter, not a mark', writes(a).length === 2 && await a.page.locator('.dt-ask-in').inputValue() === 'sss');
+    await a.page.keyboard.press('Escape'); await rest(a, 500);
+    // the open row: the star is among its buttons, before 问她, and does the same
+    await tap(a, 'talk-1'); await rest(a, 520);
+    const btns = await orow(a, 'talk-1').locator('.dt-acts').first().evaluate(el => [...el.children].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
+    check('the open row has the star among its buttons, before 问她', btns === 'star|问她', btns);
+    const open = orow(a, 'talk-1').locator('.dt-acts .dt-starbtn');
+    await open.click(); await rest(a, 500);
+    check('pressed there it marks the same item, and the star in the open row is filled', writes(a).at(-1).body.id === 'talk-1' && writes(a).at(-1).body.on === true && (await starOf(a, open)).on && (await starOf(a, open)).his && await orow(a, 'talk-1').locator(':scope > .dt-quick').isHidden());
+    a.s.refuse.add('highlight');
+    await open.click(); await rest(a, 600);
+    check('a refusal says so under the buttons of the open row, in the row\'s own hint (the star is filled again, as it was)', (await starOf(a, open)).on && await orow(a, 'talk-1').locator('.dt-body .dt-hint').innerText() === '没标上，稍后再试', await orow(a, 'talk-1').locator('.dt-body .dt-hint').innerText());
+    await a.ctx.close();
+  }
+  if (all || only === 'write') {
+    // reduced motion: no scale, no sparks, no shake; the star fades in over 120 ms
+    const five = ['pay-1', 'move-1', 'call-1', 'work-1', 'sleep-1'].map(id => ({ id, label: '', by: 'him' }));
+    const a = await boot({ served: fullDay(), init: record });
+    await a.page.emulateMedia({ reducedMotion: 'reduce' });
+    await openDay(a);
+    await hoverOn(a, 'talk-1');
+    await quickStar(a, 'talk-1').click(); await rest(a, 450);
+    const log = (await anims(a)).filter(x => x.parent.includes('dt-starbtn') || x.cls.includes('dt-spark'));
+    check('with reduced motion the star does not scale and no spark flies: it fades in over 120 ms', log.length === 1 && log[0].tag === 'svg' && log[0].opt.duration === 120 && log[0].kf[0].opacity === 0 && log.every(x => x.kf.every(k => k.transform === undefined)) && await a.page.locator('.dt-spark').count() === 0, JSON.stringify(log));
+    await a.ctx.close();
+    const b = await boot({ served: fullDay({ highlights: five }), init: record });
+    await b.page.emulateMedia({ reducedMotion: 'reduce' });
+    await openDay(b);
+    await hoverOn(b, 'ride-1');
+    await quickStar(b, 'ride-1').click(); await rest(b, 500);
+    const shake = (await anims(b)).filter(x => x.cls.includes('dt-starbtn'));
+    check('and a refused mark does not shake the star: it fades once over 120 ms, and the line is there all the same', shake.length === 1 && shake[0].opt.duration === 120 && shake[0].kf.every(k => k.transform === undefined) && await under(b, 'ride-1') === '最多标 5 个，先取消一个', JSON.stringify(shake));
+    await b.ctx.close();
+  }
+  if (all || only === 'write') {
+    // in English
+    const five = ['pay-1', 'move-1', 'call-1', 'work-1', 'sleep-1'].map(id => ({ id, label: '', by: 'him' }));
+    const a = await boot({ served: fullDay({ highlights: five }), lang: 'en' });
+    await openDay(a);
+    await hoverOn(a, 'pay-1'); const his = await starOf(a, quickStar(a, 'pay-1'));
+    await hoverOn(a, 'ride-1'); const no = await starOf(a, quickStar(a, 'ride-1'));
+    await quickStar(a, 'ride-1').click(); await rest(a, 500);
+    check('in English the star says Unmark or Mark as important, and a sixth mark says At most 5 marks. Unmark one first', his.label === 'Unmark' && no.label === 'Mark as important' && await under(a, 'ride-1') === 'At most 5 marks. Unmark one first', `${his.label} ${no.label} ${await under(a, 'ride-1')}`);
     await a.ctx.close();
   }
 

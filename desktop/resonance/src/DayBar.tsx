@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { Coins, ChatCircleDots, Image as PictureIcon, Laptop, Moon, Path, PersonSimpleRun, Phone, Star, SunHorizon, X, type Icon as PhosphorIcon } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { spring, step } from './starCore';
-import { buildBar, endClock, fit, fOf, msOf, numbers, PAD_PX, peek, pieceAt, rowAt, snap, summarize, type BarSeg, type Line, type Peek, type Summary } from './barView';
+import { buildBar, endClock, fit, fOf, msOf, numbers, PAD_PX, peek, pieceAt, rowAt, snap, summarize, type BarSeg, type BarStar, type Line, type Peek, type Summary } from './barView';
 import { clock, type DayModel, type Icon, type LensKind, type Rgb } from './dayView';
 import { Ic } from './dayIcons';
 import './day-bar.css';
@@ -73,6 +73,22 @@ function RangeBody({ s, onOnly, t }: { s: Summary; onOnly: () => void; t: (l: L)
     </ul> : <p className="dt-cnone">{t(['Nothing was recorded in this stretch', '这一段没有记下什么'])}</p>}
     <div className="dt-cbtns"><button type="button" className="dt-cbtn" onClick={onOnly}>{t(['Show only this', '只看这段'])}</button></div>
   </>;
+}
+
+// What mattered: a lit star at the start of each highlighted item, his filled and hers outlined. One that comes fades in (the style does it); one
+// that goes stays 200 ms and fades out (120 under reduced motion). The day's own stars are drawn again for another day (the key), never faded.
+function Stars({ stars }: { stars: BarStar[] }) {
+  const [gone, setGone] = useState<BarStar[]>([]), last = useRef(stars), live = useRef(true);
+  useEffect(() => () => { live.current = false; }, []);
+  useEffect(() => {
+    const now = new Set(stars.map(s => s.id)), left = last.current.filter(s => !now.has(s.id));
+    last.current = stars;
+    if (!left.length && !gone.length) return;
+    setGone(g => [...g.filter(s => !now.has(s.id)), ...left]);
+    if (left.length) setTimeout(() => { if (live.current) setGone(g => g.filter(s => !left.includes(s))); }, reduced.matches ? 120 : 200);
+  }, [stars]);
+  const one = (s: BarStar, away: boolean) => <i key={s.id} className={`dt-lit${s.hers ? ' is-hers' : ''}${away ? ' is-gone' : ''}`} data-star={s.id} style={{ left: `${s.f * 100}%` }}><Star size={9} weight={s.hers ? 'bold' : 'fill'}/></i>;
+  return <>{stars.map(s => one(s, false))}{gone.map(s => one(s, true))}</>;
 }
 
 export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayModel; port: string | null; ui: BarState; hot: string | null; onHot: (key: string | null) => void; onJump: (key: string) => void }) {
@@ -213,7 +229,7 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
             {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}>{how !== 'name' && <Ic icon={s.icon} size={12}/>}{how !== 'icon' && <b className={s.mono ? 'is-mono' : ''}>{s.short}</b>}</span>}
           </i>)}
           {showVoid && <i className="dt-void" style={{ width: bx(bar.nowF ?? 1) }}>{voidText}</i>}
-          {boxes.map(({ x, how }) => <i key={x.key} className={`dt-sched is-event${spanned && hot === x.key ? ' is-hot' : ''}`} style={{ left: `${x.f0 * 100}%`, width: `${(x.f1 - x.f0) * 100}%` }}>
+          {boxes.map(({ x, how }) => <i key={x.key} data-sched={x.key} className={`dt-sched is-event${spanned && hot === x.key ? ' is-hot' : ''}`} style={{ left: `${x.f0 * 100}%`, width: `${(x.f1 - x.f0) * 100}%` }}>
             {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}>{how !== 'name' && <Ic icon="event" size={12}/>}{how !== 'icon' && <b>{x.short}</b>}</span>}
           </i>)}
           {bar.sched.filter(x => x.kind !== 'event').map(x => <i key={x.key} className="dt-sched is-tick" style={{ left: `${x.f0 * 100}%` }}><u/></i>)}
@@ -223,7 +239,7 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
           {sel && a !== null && b !== null && <i className="dt-band" style={{ left: bx(fOf(bar, a)), width: `${(clamp(fOf(bar, b), 0, 1) - clamp(fOf(bar, a), 0, 1)) * 100}%` }}/>}
           {!sel && ui.filter && a !== null && b !== null && <i className="dt-band is-applied" style={{ left: bx(fOf(bar, a)), width: `${(clamp(fOf(bar, b), 0, 1) - clamp(fOf(bar, a), 0, 1)) * 100}%` }}/>}
           {spanned && spanned.t1 >= bar.t0 && spanned.t0 <= bar.t1 && <i className="dt-bracket" style={{ left: bx(fOf(bar, spanned.t0)), width: `max(3px, ${(clamp(fOf(bar, spanned.t1), 0, 1) - clamp(fOf(bar, spanned.t0), 0, 1)) * 100}%)` }}/>}
-          {bar.stars.map(s => <i key={s.id} className="dt-lit" style={{ left: `${s.f * 100}%` }}><Star size={9} weight="fill"/></i>)}
+          <Stars key={model.reply.date} stars={bar.stars}/>
           {bar.nowF !== null && <i className="dt-nowtick" style={{ left: bx(bar.nowF) }}/>}
           {hover && !band && <i className="dt-hair" style={{ left: hover.x }}/>}
         </div>

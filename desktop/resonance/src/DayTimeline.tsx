@@ -2,13 +2,14 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { CaretLeft, CaretRight, Star } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { postRoute, useRoute, type Route } from './homeData';
-import { askable, buildDay, dateTitle, report, shiftDate, within, type Block, type DayModel, type DayReply, type Row, type WeatherLook } from './dayView';
+import { askable, buildDay, dateTitle, marksOf, report, shiftDate, starrable, within, type Block, type DayModel, type DayReply, type Highlight, type Row, type WeatherLook } from './dayView';
 import { askOf, hasBody, openOf, type About, type Ask, type Rec } from './dayOpen';
 import { AskDock, type DockState } from './AskDock';
 import { DayBar, useBarState } from './DayBar';
 import { numbers } from './barView';
 import { Ic, SKIES } from './dayIcons';
 import { EASE, OpenBody, reduced, Unfold, Viewer, type Acts } from './RowOpen';
+import { StarToggle, type StarMark } from './StarToggle';
 import { TimelineGuard } from './TimelineGuard';
 import './day-timeline.css';
 import './day-open.css';
@@ -49,11 +50,13 @@ const reach = (el: HTMLElement) => el.classList.contains('dt-list') ? 16 : 8;
 const leave = (root: HTMLElement | null, dir: number) => parts(root).map(el => el.animate([{ opacity: 0, transform: `translateX(${-dir * reach(el)}px)` }], { duration: 80, easing: 'ease-in', fill: 'forwards' }));
 const enter = (root: HTMLElement | null, dir: number) => parts(root).forEach(el => el.animate(reduced.matches ? [{ opacity: 0 }, {}] : [{ opacity: 0, transform: `translateX(${dir * reach(el)}px)` }, {}], { duration: reduced.matches ? 120 : 140, easing: EASE, fill: 'backwards' }));
 
-// What the rows and the stays' headers share: which one is open, what a click on one does, what an open one holds, which can be asked about,
-// and the name being changed in a stay's header.
+// What the rows and the stays' headers share: which one is open, what a click on one does, what an open one holds, which can be asked about and
+// which marked, the quiet line under a row, and the name being changed in a stay's header.
 type Cx = {
   opened: string | null; click: (e: MouseEvent, key: string) => void; body: (key: string) => ReactNode; tick: () => void; fit: (key: string, grow: number) => void;
   asks: ReadonlySet<string>; opens: ReadonlySet<string>; ask: ((key: string) => void) | null;
+  star: { can: ReadonlySet<string>; marks: ReadonlyMap<string, StarMark>; refused: Readonly<Record<string, number>>; press: (key: string) => void };
+  line: { key: string; text: string; on: boolean };
   rename: { key: string; draft: string; busy: boolean; set: (text: string) => void; save: () => void; field: (on: boolean) => void } | null;
 };
 // hot: what the pointer is on; pick: what the keys chose. Both are bracketed on the bar; the pointer's wins while it is on something.
@@ -81,9 +84,26 @@ function Roll({ n }: { n: number }) {
   }, [was, shown]);
   return <span className="dt-roll">{was !== null && <i key={`o${was}`} className="is-old" aria-hidden="true">{was}</i>}<i key={`n${shown}`} className={was !== null ? 'is-new' : undefined}>{shown}</i></span>;
 }
-// 问她 on a row's hover: it takes the place of the right column while the row is lit (and never opens the row).
-function AskButton({ keyed, cx, t }: { keyed: string; cx: Cx; t: (l: L) => string }) {
-  return cx.ask && cx.asks.has(keyed) ? <button type="button" className="dt-ask" tabIndex={-1} onClick={e => { e.stopPropagation(); cx.ask!(keyed); }}>{t(['Ask her', '问她'])}</button> : null;
+// What a row's hover offers in the place of its right column while the row is lit: the star that marks it as what mattered, then 问她 (neither opens the row).
+function Quick({ keyed, cx, t }: { keyed: string; cx: Cx; t: (l: L) => string }) {
+  const star = cx.star.can.has(keyed), ask = !!cx.ask && cx.asks.has(keyed);
+  return star || ask ? <span className="dt-quick">
+    {star && <StarToggle mark={cx.star.marks.get(keyed) ?? null} nth={cx.star.refused[keyed] ?? 0} press={() => cx.star.press(keyed)} t={t}/>}
+    {ask && <button type="button" className="dt-ask" tabIndex={-1} onClick={e => { e.stopPropagation(); cx.ask!(keyed); }}>{t(['Ask her', '问她'])}</button>}
+  </span> : null;
+}
+// The lit star on a row's glyph or beside a stay's name: his filled, hers outlined; it fades in when the item is marked and out when it is not.
+function Lit({ on, hers, className }: { on: boolean; hers: boolean; className: string }) {
+  const here = useFade(on);
+  return here ? <Star size={10} weight={hers ? 'bold' : 'fill'} className={`${className}${hers ? ' is-hers' : ''}${on ? '' : ' is-gone'}`} aria-label="★"/> : null;
+}
+// What hangs under a row or a stay's header: its open body, or, while it is shut, the quiet line that has something to say about it (4 s); each opens
+// and closes in place, and what it was showing is what it shows while it closes.
+function Under({ keyed, open, cx }: { keyed: string; open: boolean; cx: Cx }) {
+  const lined = cx.line.on && cx.line.key === keyed && !open, shows = useRef<'body' | 'line'>('body');
+  if (open) shows.current = 'body'; else if (lined) shows.current = 'line';
+  return <Unfold open={open || lined} className={shows.current === 'line' ? 'dt-fold is-line' : 'dt-fold'} tick={cx.tick} onOpen={grow => cx.fit(keyed, grow)} onSettle={() => cx.fit(keyed, 0)}
+    render={() => shows.current === 'line' ? <p className="dt-hint" role="status">{cx.line.text}</p> : cx.body(keyed)}/>;
 }
 
 // A row: the time it began, its glyph (a lit star on it when it mattered), its words (an amber badge when it waits on him), and at the
@@ -94,11 +114,11 @@ function RowView({ row, hot, onHot, pick, t, how, cx }: { row: Row; how: string 
   return <div className={`dt-row${row.detail ? ' has-detail' : ''}${row.future ? ' is-future' : ''}${row.connector ? ' is-leg' : ''}${how}${hot === row.key ? ' is-hot' : ''}${pick === row.key ? ' is-pick' : ''}${open ? ' is-open' : ''}${plain ? ' is-still' : ''}`} data-key={row.key} data-kind={row.kind} data-lk={row.lens ?? undefined}
     aria-current={pick === row.key ? 'true' : undefined} aria-expanded={plain ? undefined : open} onPointerMove={() => onHot(row.key)} onPointerLeave={() => onHot(null)} onClick={e => cx.click(e, row.key)}>
     <time className="dt-at">{row.ago && <small>{row.ago}</small>}{row.at}</time>
-    <i className="dt-ic">{row.icon === 'dot' ? <span className="dt-pip"/> : <Ic icon={row.icon}/>}{row.star && <Star size={10} weight="fill" className="dt-badge" aria-label="★"/>}</i>
+    <i className="dt-ic">{row.icon === 'dot' ? <span className="dt-pip"/> : <Ic icon={row.icon}/>}<Lit on={row.star} hers={row.hers} className="dt-badge"/></i>
     <span className="dt-tx"><span className="dt-ttl"><b>{row.title}</b>{badge && <i className={`dt-wait${row.wait ? '' : ' is-gone'}`}>{t(['Waiting', '等你'])}</i>}</span>{row.detail && <em>{row.detail}</em>}</span>
-    <AskButton keyed={row.key} cx={cx} t={t}/>
+    <Quick keyed={row.key} cx={cx} t={t}/>
     <span className={`dt-tm${row.value ? ' is-value' : ''}`}>{row.right}</span>
-    <Unfold open={open} render={() => cx.body(row.key)} tick={cx.tick} onOpen={grow => cx.fit(row.key, grow)} onSettle={() => cx.fit(row.key, 0)}/>
+    <Under keyed={row.key} open={open} cx={cx}/>
   </div>;
 }
 // The name of a kept place being changed, in the stay's own header: the cursor is in it with the name selected; Enter saves, Esc lets go.
@@ -136,6 +156,21 @@ function Waits({ n, first, t }: { n: number; first: () => void; t: (l: L) => str
   return here ? <button type="button" className={`dt-waits${n > 0 ? '' : ' is-gone'}`} tabIndex={n > 0 ? 0 : -1} onClick={first}><Roll n={n || last.current}/>{t([' waiting', ' 件等你'])}</button> : null;
 }
 const onWay = (b?: Block) => b?.type === 'row' && (b.row.connector || b.row.onWay);
+// A stay: its header (the place, how long, a star when it mattered) and what happened in it, hung on the stay's own rail.
+function StayView({ b, gap, hot, onHot, pick, t, cx }: { b: Extract<Block, { type: 'stay' }>; gap: string } & Hover) {
+  const open = cx.opened === b.key, plain = !cx.opens.has(b.key);
+  return <section className={`dt-stay${gap}`} style={{ '--c': rgb(b.head.rgb) } as CSSProperties}>
+    <header className={`dt-sh${b.head.unnamed ? ' is-plain' : ''}${b.items.length ? ' has-rows' : ''}${hot === b.key ? ' is-hot' : ''}${pick === b.key ? ' is-pick' : ''}${open ? ' is-open' : ''}${plain ? ' is-still' : ''}`} data-key={b.key} aria-current={pick === b.key ? 'true' : undefined} aria-expanded={plain ? undefined : open}
+      onPointerMove={() => onHot(b.key)} onPointerLeave={() => onHot(null)} onClick={e => cx.click(e, b.key)}>
+      <span className="dt-at"/><i className="dt-dot"/>
+      <span className="dt-tx"><span className="dt-ttl">{cx.rename?.key === b.key ? <RenameField {...cx.rename} t={t}/> : <b>{b.head.name}</b>}<Lit on={b.head.star !== null} hers={b.head.hers} className="dt-star"/></span>{b.head.star && <em>{b.head.star}</em>}</span>
+      <Quick keyed={b.key} cx={cx} t={t}/>
+      <span className="dt-tm">{b.head.when}<small> · {b.head.dur}</small></span>
+      <Under keyed={b.key} open={open} cx={cx}/>
+    </header>
+    {b.items.length > 0 && <div className="dt-in"><Blocks blocks={b.items} hot={hot} onHot={onHot} pick={pick} t={t} cx={cx} inside/></div>}
+  </section>;
+}
 // The blocks of one level, told apart in units: a stay with what is in it, a trip (the ways he went and what happened on them), and the
 // rest. A unit starts 12 px under the one before it; the now line stays with the unit it follows. A trip's rail is dashed, from its first
 // glyph to its last; what is in a stay hangs on that stay's own, from its dot to the last row.
@@ -152,18 +187,7 @@ function Blocks({ blocks, hot, onHot, pick, t, cx, inside }: { blocks: Block[]; 
       const how = inside ? ` is-rail${i === end ? ' is-end' : ''}` : onWay(b) ? ` is-rail is-trip${onWay(prev) ? '' : ' is-top'}${onWay(next) ? '' : ' is-end'}` : '';
       return <RowView key={b.row.key} row={b.row} hot={hot} onHot={onHot} pick={pick} t={t} cx={cx} how={gap + how}/>;
     }
-    const open = cx.opened === b.key, plain = !cx.opens.has(b.key);
-    return <section key={b.key} className={`dt-stay${gap}`} style={{ '--c': rgb(b.head.rgb) } as CSSProperties}>
-      <header className={`dt-sh${b.head.unnamed ? ' is-plain' : ''}${b.items.length ? ' has-rows' : ''}${hot === b.key ? ' is-hot' : ''}${pick === b.key ? ' is-pick' : ''}${open ? ' is-open' : ''}${plain ? ' is-still' : ''}`} data-key={b.key} aria-current={pick === b.key ? 'true' : undefined} aria-expanded={plain ? undefined : open}
-        onPointerMove={() => onHot(b.key)} onPointerLeave={() => onHot(null)} onClick={e => cx.click(e, b.key)}>
-        <span className="dt-at"/><i className="dt-dot"/>
-        <span className="dt-tx"><span className="dt-ttl">{cx.rename?.key === b.key ? <RenameField {...cx.rename} t={t}/> : <b>{b.head.name}</b>}{b.head.star !== null && <Star size={10} weight="fill" className="dt-star" aria-label="★"/>}</span>{b.head.star && <em>{b.head.star}</em>}</span>
-        <AskButton keyed={b.key} cx={cx} t={t}/>
-        <span className="dt-tm">{b.head.when}<small> · {b.head.dur}</small></span>
-        <Unfold open={open} render={() => cx.body(b.key)} tick={cx.tick} onOpen={grow => cx.fit(b.key, grow)} onSettle={() => cx.fit(b.key, 0)}/>
-      </header>
-      {b.items.length > 0 && <div className="dt-in"><Blocks blocks={b.items} hot={hot} onHot={onHot} pick={pick} t={t} cx={cx} inside/></div>}
-    </section>;
+    return <StayView key={b.key} b={b} gap={gap} hot={hot} onHot={onHot} pick={pick} t={t} cx={cx}/>;
   })}</>;
 }
 
@@ -238,10 +262,16 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     return () => clearInterval(id);
   }, [over]);
   // What he has just done that the daemon has not said back yet, laid over what was read so the whole pane (the bar, the list, the count)
-  // shows it at once while the day is read again: a reminder acknowledged, a kept place renamed.
+  // shows it at once while the day is read again: a reminder acknowledged, a kept place renamed, a star. His marks are the day's highlights as
+  // he made them (`base` null: the brain has not answered yet) and then as the brain answered, which stand until the next read of the day.
   const [acks, setAcks] = useState<ReadonlySet<string>>(() => new Set()), [names, setNames] = useState<ReadonlyMap<string, string>>(() => new Map());
-  const laid = useMemo(() => !shown || !acks.size && !names.size ? shown : { ...shown, items: shown.items.map(x => acks.has(x.id) ? { ...x, acknowledged: true }
-    : x.kept_place && names.has(x.kept_place.id) ? { ...x, kept_place: { ...x.kept_place, name: names.get(x.kept_place.id)! } } : x) }, [shown, acks, names]);
+  const [marked, setMarked] = useState<{ date: string; list: Highlight[]; base: DayReply | null } | null>(null), shownNow = useRef(shown);
+  shownNow.current = shown;
+  const laid = useMemo(() => {
+    const stars = shown && marked && marked.date === shown.date && (!marked.base || marked.base === shown) ? marked.list : null;
+    return !shown || !acks.size && !names.size && !stars ? shown : { ...shown, ...stars && { highlights: stars }, items: shown.items.map(x => acks.has(x.id) ? { ...x, acknowledged: true }
+      : x.kept_place && names.has(x.kept_place.id) ? { ...x, kept_place: { ...x.kept_place, name: names.get(x.kept_place.id)! } } : x) };
+  }, [shown, acks, names, marked]);
   // A day that cannot be built (no usable bounds) says so in a line; a day that builds but fails to draw falls to the guards below.
   const built = useMemo(() => {
     if (!laid) return { model: null, failed: false };
@@ -325,6 +355,9 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   // Which rows can be asked about: those whose kind and id the brain takes (dayOpen.askOf says what is handed over).
   const asks = useMemo<ReadonlySet<string>>(() => new Set((model?.items ?? []).filter(x => askable(x.kind, x.id)).map(x => x.id)), [model]);
   const canAsk = (key: string) => !!ask && asks.has(key);
+  // Which items can be marked as what mattered (every one with an id the brain takes), and who marked those that are: him, or her.
+  const starrables = useMemo<ReadonlySet<string>>(() => new Set((model?.items ?? []).filter(x => starrable(x.id)).map(x => x.id)), [model]);
+  const marks = useMemo<ReadonlyMap<string, StarMark>>(() => new Map([...model?.stars ?? []].map(([k, m]) => [k, m.by === 'her' ? 'her' : 'him'])), [model]);
   // Which rows open to something (a part, or a button that works): a row never opens to nothing, and one that does not is drawn as it is.
   const opens = useMemo<ReadonlySet<string>>(() => new Set(model ? [...model.rows.keys(), ...model.heads.keys()].filter(k => { const o = openOf(model, k, t); return !!o && hasBody(o, !!ask && asks.has(k)); }) : []), [model, asks, !!ask]);
   const toggle = (key: string) => { if (opened === key) setOpened(null); else if (opens.has(key)) setOpened(key); };
@@ -343,6 +376,32 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     put('ack', id, 'busy');
     try { await postRoute(port, `/inherent/notices/${encodeURIComponent(id)}`, { action: 'dismissed' }); setAcks(a => new Set(a).add(id)); put('ack', id, ''); }
     catch { put('ack', id, 'failed'); }
+    again();
+  };
+  // A quiet line under a row for 4 s: what did not go through, or why (`on` goes false when it is time; the words stay while it closes).
+  const [line, setLine] = useState({ key: '', text: '', on: false });
+  const tell = (key: string, text: string) => setLine({ key, text, on: true });
+  useEffect(() => { if (!line.on) return; const timer = setTimeout(() => setLine(l => ({ ...l, on: false })), 4000); return () => clearTimeout(timer); }, [line]);
+  // ★: his mark on an item of the day, or his taking it off (a pick of hers that he marks becomes his; one he takes off is hers no longer). It shows at
+  // once; the brain's answer, the day's highlights after it, replaces what was shown. Five of his marks is the cap: that is a 409, and the star shakes
+  // (when five are already standing the star does not pretend, it only asks).
+  const [refused, setRefused] = useState<Readonly<Record<string, number>>>({}), asked = useRef(0);
+  const star = async (key: string) => {
+    const day = model?.reply.date, was = model?.stars.get(key);
+    if (!port || !model || !day || !starrable(key)) return;
+    const on = !was || was.by === 'her', list = model.reply.highlights ?? [], full = on && [...model.stars.values()].filter(m => m.by !== 'her').length >= 5, turn = ++asked.current;
+    if (!full) setMarked({ date: day, base: null, list: on ? [...list.filter(h => h.id !== key), { id: key, label: was?.label ?? '', by: 'him' }] : list.filter(h => h.id !== key) });
+    try {
+      const out = await postRoute(port, '/inherent/day/highlight', { day, id: key, on }) as { highlights?: unknown };
+      if (turn === asked.current) setMarked({ date: day, base: shownNow.current, list: marksOf(out.highlights) });
+    } catch (error) {
+      if (turn === asked.current) {
+        const capped = (error as { status?: number }).status === 409;
+        setMarked(null);
+        if (capped) setRefused(r => ({ ...r, [key]: (r[key] ?? 0) + 1 }));
+        tell(key, capped ? t(['At most 5 marks. Unmark one first', '最多标 5 个，先取消一个']) : t(["Couldn't mark it. Try again later", '没标上，稍后再试']));
+      }
+    }
     again();
   };
   // 改名字: the name of a kept place, in the stay's header. Enter saves; a quiet line says so for 5 s, with 撤销.
@@ -422,10 +481,12 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
       rename: o.rename ? { state: rename?.key === key ? rename.state === 'failed' ? 'failed' : 'editing' : 'idle', start: () => startRename(key) } : null,
       ack: o.ack ? { state: acking === 'busy' ? 'busy' : acking === 'failed' ? 'failed' : 'idle', press: () => void acknowledge(o.ack!) } : null,
       summarize: o.summarize && canAsk(key) ? { state: sum ?? 'idle', press: () => void summarize(key) } : null,
+      star: o.star ? <StarToggle mark={marks.get(key) ?? null} nth={refused[key] ?? 0} press={() => void star(key)} t={t}/> : null,
+      line: line.on && line.key === key ? line.text : '',
     };
     return <OpenBody open={o} acts={acts}/>;
   };
-  const cx: Cx = { opened, click, body, tick: edges, fit, asks, opens, ask: ask ? openAsk : null,
+  const cx: Cx = { opened, click, body, tick: edges, fit, asks, opens, ask: ask ? openAsk : null, line, star: { can: starrables, marks, refused, press: key => void star(key) },
     rename: rename && { key: rename.key, draft: rename.draft, busy: rename.state === 'busy', set: text => setRename(r => r && { ...r, draft: text, state: r.state === 'failed' ? 'edit' : r.state }), save: () => void saveRename(), field: on => setLeft(!on) } };
 
   // Esc lets go of one thing at a time, nearest first: the picture, the input, the name being changed, the open row, the bar's lens, its range and
@@ -451,7 +512,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   useLayoutEffect(() => { ui.setSel(null); ui.setFilter(null); ui.setPreview(null); }, [date, shown?.date]);
 
   // The keys of an open day (the window has key focus only after a click pinned it: Notch.tsx): ← → the day before and after, ↑ ↓ the row
-  // before and after, which the bar brackets and the list keeps in view, Enter or Space opens the one chosen (or closes it). With nothing
+  // before and after, which the bar brackets and the list keeps in view, Enter or Space opens the one chosen (or closes it), S marks it (or takes the mark off). With nothing
   // chosen they start from where he is looking: ↓ at the first row under the now line (else the top of the list), ↑ at the last row above it
   // (else the bottom).
   const go = (days: number) => { if (at && !(days > 0 && date === null)) step(days); };
@@ -471,8 +532,8 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
     if (top < l.scrollTop + margin) slide(top - margin, 180);
     else if (top + el.offsetHeight > l.scrollTop + l.clientHeight - margin) slide(top + el.offsetHeight - l.clientHeight + margin, 180);
   };
-  const keys = useRef({ open, go, walk, pick, toggle });
-  keys.current = { open, go, walk, pick, toggle };
+  const keys = useRef({ open, go, walk, pick, toggle, star, can: starrables });
+  keys.current = { open, go, walk, pick, toggle, star, can: starrables };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       const k = keys.current, target = e.target as Element | null;
@@ -480,6 +541,7 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { if (!e.repeat) k.go(e.key === 'ArrowLeft' ? -1 : 1); }
       else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') k.walk(e.key === 'ArrowDown' ? 1 : -1);
       else if ((e.key === 'Enter' || e.key === ' ') && k.pick && !target?.closest?.('button,a')) { if (!e.repeat) k.toggle(k.pick); }
+      else if (e.key.toLowerCase() === 's' && k.pick && k.can.has(k.pick)) { if (!e.repeat) void k.star(k.pick); }
       else return;
       e.preventDefault(); e.stopPropagation();
     };

@@ -56,7 +56,7 @@ export function useRoute<T>(port: string | null, path: string, open: boolean, ev
 
 export async function postRoute(port: string, path: string, body: unknown) {
   const r = await fetch(`http://127.0.0.1:${port}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(8000) });
-  if (!r.ok) throw new Error(`${path} ${r.status}`);
+  if (!r.ok) throw Object.assign(new Error(`${path} ${r.status}`), { status: r.status });
   return r.json().catch(() => ({}));
 }
 
