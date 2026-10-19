@@ -60,7 +60,7 @@ _MINUTE_MS: Final = 60_000
 _HOUR_MS: Final = 60 * _MINUTE_MS
 
 CUT_MIN_MS: Final = 10 * _MINUTE_MS
-"""A segment shorter than this is folded into a neighbour; a work, call or Claude Code span cuts
+"""A segment shorter than this is folded into a neighbour; a work block or call cuts
 the day only when it lasts at least this long."""
 WAKING_DEFAULT_START_MS: Final = 6 * _HOUR_MS
 """Where the waking part starts, from the day's start, when no sleep ended in the morning."""
@@ -78,7 +78,10 @@ ANSWER_COVER: Final = 0.5
 _MOVE_KINDS: Final = {
     "walking": "walk", "running": "run", "cycling": "cycle", "automotive": "drive",
 }
-_CUTTING_USE_KINDS: Final = frozenset({"work", "call", "code"})
+_CUTTING_USE_KINDS: Final = frozenset({"work", "call"})
+_UNATTENDED_KINDS: Final = frozenset({"code"})
+"""Use spans that show a program ran, not that he was there: a Claude Code session goes on while
+he rests, so it is a clue of the doing lane, never one of its facts."""
 _PLANNED_SOURCES: Final = frozenset({"plan", *commitments.SOURCES})
 _ROLE_CATEGORY: Final = {"home": "home", "school": "study"}
 
@@ -198,6 +201,11 @@ def fact_spans(items: Iterable[Mapping[str, Any]]) -> list[Span]:
     return sorted(found, key=_order)
 
 
+def his_facts(facts: Iterable[Span]) -> list[Span]:
+    """The fact spans that show him: what the doing lane is cut from and worded by."""
+    return [s for s in facts if s["kind"] not in _UNATTENDED_KINDS]
+
+
 # --- the waking window ---------------------------------------------------------------------
 
 
@@ -279,7 +287,7 @@ def _segment(facts: Sequence[Span], start: int, end: int, horizon: int) -> Segme
 def cut(facts: Sequence[Span], waking: Waking) -> list[Segment]:
     """The waking window cut into segments, none shorter than ten minutes unless alone.
 
-    The boundaries are the edges of every place span, of every work, call and Claude Code span
+    The boundaries are the edges of every place span, of every work block and call
     that lasts at least ten minutes, and of every workout, inside the window. Between two
     boundaries is an interval; an interval shorter than ten minutes is folded into the neighbour
     that shares its primary place span, else the longer neighbour (the earlier on a tie), until
@@ -342,7 +350,7 @@ def _doing_span(  # noqa: PLR0913 — the served shape of a span of the doing la
 
 
 _ACTIVITY_ORDER: Final = (
-    ("work", "code"), ("ride",), ("walk", "run", "cycle", "drive"), ("call",),
+    ("work",), ("ride",), ("walk", "run", "cycle", "drive"), ("call",),
     ("sleep", "workout"),
 )
 """The facts that say what he was doing, strongest first; a stay says only where."""
@@ -352,8 +360,8 @@ def _dominant(segment: Segment, by_id: Mapping[str, Span], horizon: int) -> tupl
     """``(title, category)`` the program can give a segment: what he was doing, never the place.
 
     The first kind of activity in :data:`_ACTIVITY_ORDER` with a fact that covers at least half
-    of the segment gives its title (a project or session, a route, an app, an activity; a walk,
-    run, cycle or drive has none) and its category (``work`` for work and code). With none, the
+    of the segment gives its title (a project, a route, an app, an activity; a walk,
+    run, cycle or drive has none) and its category (``work`` for a work block). With none, the
     segment has no title and the category of its primary place span (a home stay alone is
     ``home``), else of the fact with most of it.
     """
@@ -524,8 +532,9 @@ def read_doing(  # noqa: PLR0913 — the day, its items and window, and the cloc
     day.
     """
     facts = fact_spans(items)
-    waking = waking_window(facts, start_ms, end_ms, now_ms)
-    segments = cut(facts, waking)
+    his = his_facts(facts)
+    waking = waking_window(his, start_ms, end_ms, now_ms)
+    segments = cut(his, waking)
     run, answers = None, []
     if memory_db is not None and memory_db.is_file():
         try:
@@ -534,10 +543,10 @@ def read_doing(  # noqa: PLR0913 — the day, its items and window, and the cloc
         except Exception:
             LOGGER.exception("doing: the run and answers of %s could not be read", day)
     try:
-        served = serve(segments, facts, run, answers, items, now_ms)
+        served = serve(segments, his, run, answers, items, now_ms)
     except Exception:
         LOGGER.exception("doing: the run of %s could not be served; program cut only", day)
-        served = serve(segments, facts, None, answers, items, now_ms)
+        served = serve(segments, his, None, answers, items, now_ms)
     return Doing(facts, served, coverage(served, waking))
 
 

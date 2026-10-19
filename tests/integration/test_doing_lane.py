@@ -47,6 +47,7 @@ from jarvis.state.doing import (
     coverage,
     cut,
     fact_spans,
+    his_facts,
     read_doing,
     serve,
     waking_window,
@@ -474,10 +475,6 @@ DOMINANT_CASES = {
         [HOME_STAY, _item("k", "work", 400, 1200, projects=[], apps=[{"name": "Chrome"}])],
         ("Chrome", "work"),
     ),
-    "code names it by the session": (
-        [HOME_STAY, _item("c", "code", 400, 1200, title="Fix the cut")], ("Fix the cut", "work"),
-    ),
-    "code with no title": ([_item("c", "code", 400, 1200, title="")], (None, "work")),
     "work comes before a ride": ([RIDE, JARVIS], ("jarvis", "work")),
     "a ride comes before a move and a call": ([RIDE, WALK, ZOOM], ("99", "commute")),
     "a walk has no title": ([WALK], (None, "commute")),
@@ -502,7 +499,7 @@ DOMINANT_CASES = {
 
 @pytest.mark.parametrize("name", list(DOMINANT_CASES))
 def test_a_program_segment_is_named_for_what_he_did_never_where(name: str) -> None:
-    """Work and code, then a ride, a move, a call, sleep and workouts; a stay alone is a colour."""
+    """Work, then a ride, a move, a call, sleep and workouts; a stay alone is a colour."""
     facts_in, (title, category) = DOMINANT_CASES[name]
     facts = fact_spans(facts_in)
     window = Waking(480 * MIN, 1080 * MIN)
@@ -510,6 +507,20 @@ def test_a_program_segment_is_named_for_what_he_did_never_where(name: str) -> No
     assert (span["title"], span["category"]) == (title, category)
     assert span["kind"] == ("doing" if facts_in else "unknown")
     assert (span["basis"], span["confidence"]) == ("observed", "low")
+
+
+def test_a_claude_code_session_running_on_its_own_is_not_him() -> None:
+    """A session that goes on while he rests neither cuts the stay nor names it; his work does."""
+    session = _item("c", "code", 400, 1200, title="Fix the cut")
+    work = _item("k", "work", 600, 900, projects=[{"name": "jarvis"}], apps=[])
+    items = [HOME_STAY, session, work]
+    facts = his_facts(fact_spans(items))
+    assert "c" not in {s["id"] for s in facts}
+    window = Waking(480 * MIN, 1080 * MIN)
+    served = serve(cut(facts, window), facts, None, [], items, window.end_ms)
+    assert [(s["title"], s["category"]) for s in served] == [
+        (None, "home"), ("jarvis", "work"), (None, "home"),
+    ]
 
 
 def test_a_long_stay_with_work_in_it_is_named_by_the_work_where_it_is() -> None:
