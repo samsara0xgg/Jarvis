@@ -4,6 +4,7 @@ import { asQuiet, type Action, type Live, type LiveState, type Quiet, type Row }
 import { currentLang, tr } from './companionSettings';
 import type { Card, Question } from './ActionCard';
 import type { NightAction, NightState } from './NightCard';
+import type { About } from './dayOpen';
 
 export interface Controls { mic_muted?: boolean; speech_muted?: boolean; conversation?: boolean; quiet?: Quiet; live?: 'start' | 'stop' }
 const liveStates: LiveState[] = ['idle', 'connecting', 'active', 'closing', 'unavailable'];
@@ -20,7 +21,8 @@ const liveFrom = (p: Record<string, unknown>): Live => ({
   error: typeof p.error === 'string' ? p.error : null,
   notice: typeof p.notice === 'string' ? p.notice : null,
 });
-export interface Runtime { submit: (text: string) => Promise<void>; cancel: (responseId: string | null) => Promise<void>; stopTurn: (turnId: string) => Promise<void>; controls: (patch: Controls) => Promise<void>; conversation: (after: number, limit?: number, before?: number) => Promise<Row[]>; card: () => Promise<Card | null>; decide: (id: string, decision: 'accept' | 'reject', edits?: Record<string, string>) => Promise<void>; question: () => Promise<Question | null>; answer: (id: string, answers: Record<string, string> | null) => Promise<void>; night: () => Promise<NightState>; nightAct: (action: NightAction, hours?: number) => Promise<NightState>; reconnect: () => void; close: () => void }
+// `about`: the row of the day a turn is about (ADR 0214): the brain takes exactly {kind, id, title, start_ms} and refuses a turn whose `about` has more or a bad id.
+export interface Runtime { submit: (text: string, about?: About) => Promise<void>; cancel: (responseId: string | null) => Promise<void>; stopTurn: (turnId: string) => Promise<void>; controls: (patch: Controls) => Promise<void>; conversation: (after: number, limit?: number, before?: number) => Promise<Row[]>; card: () => Promise<Card | null>; decide: (id: string, decision: 'accept' | 'reject', edits?: Record<string, string>) => Promise<void>; question: () => Promise<Question | null>; answer: (id: string, answers: Record<string, string> | null) => Promise<void>; night: () => Promise<NightState>; nightAct: (action: NightAction, hours?: number) => Promise<NightState>; reconnect: () => void; close: () => void }
 
 // Daemon `voice` phases → UI phases. Anything unlisted leaves the phase alone.
 const voicePhase: Record<string, Action> = {
@@ -90,7 +92,7 @@ export function connect(port: string, dispatch: (a: Action) => void): Runtime {
   open();
   return {
     // The answer names the turn this text started; it is the one whose failure releases "processing".
-    submit: async text => { const r = await post('/inherent/submit', { text }); if (typeof r.turn_id === 'string' && r.turn_id) dispatch({ type: 'pending', turnId: r.turn_id, at: Date.now() }); },
+    submit: async (text, about) => { const r = await post('/inherent/submit', about ? { text, about } : { text }); if (typeof r.turn_id === 'string' && r.turn_id) dispatch({ type: 'pending', turnId: r.turn_id, at: Date.now() }); },
     // foreground_output stops what is audible now and lets the run finish (ADR-0008 D10).
     cancel: async responseId => { if (responseId) await post('/inherent/cancel-response', { response_id: responseId, scope: 'foreground_output' }); },
     // A turn still being thought about has no answer to name yet: the daemon stops it by its turn, and it is never said.

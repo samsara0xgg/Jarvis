@@ -17,6 +17,7 @@ import { answerStartrail, markStartrail, useStartrail } from './startrail';
 import { CardRate, DigestCard, JobsDigestCard, MailNotice, NoticeCard, RateRow, SettingsCard, cardTell, ended, noticeCue, useNotices, type Glow, type MomentHold } from './Notices';
 import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { Notch, isWing, type Kind as MarkGroup, type NotchNote } from './Notch';
+import type { About } from './dayOpen';
 import type { DayReply } from './dayView';
 import { TripCard, tripLink, useTripNote } from './TripCards';
 import { fitWindow } from './fitWindow';
@@ -505,6 +506,13 @@ export function Companion() {
   const submit = (text: string) => link.current?.submit(text).catch(() => dispatch({ type: 'phase', phase: 'error' }));
   // Typed in the Dashboard: it is a line of the conversation under her too, above its answer.
   const ask = (text: string) => { dispatch({ type: 'you', text, at: Date.now() }); return submit(text); };
+  // A turn about a row of the day, from the timeline pane (ADR 0214, 0296): the same path with what it is about. A refusal comes back to the pane
+  // that asked (it says so); the link is not blamed for it.
+  const askAbout = async (text: string, about?: About) => {
+    if (!link.current) throw new Error('not connected');
+    dispatch({ type: 'you', text, at: Date.now() });
+    await link.current.submit(text, about);
+  };
   // A heard utterance is a task she takes in, as a typed one is.
   useEffect(() => { if (port && s.heard) receive(); }, [s.heard]);
   // The conversation of record, polled while the Dashboard shows it. The streaming answer rides as a tail on the home row
@@ -914,7 +922,7 @@ export function Companion() {
       </DuskDashboard>
       <DockingDrop near={docking} width={geo.width} top={placement.topInset} center={geo.center}/>
       <Notch look={wardrobe.marks} wing={wardrobe.wing} agents={frozen.current?.agents ?? (agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents)} unread={frozen.current?.unread ?? notices.unread} parked={frozen.current?.parked ?? notices.parked} archived={frozen.current?.archived ?? notices.archived} cursor={cursor} quiet={agentsFront || dashboard || moving} aside={dashboard ? { hover: setMarkHover, open: group => setAgentsFocus({ group, key: Date.now() }) } : undefined} edge={dashboardJoined ? geo.center + PANEL / 2 : null}
-        pin={{ item: notices.departure, open: busCards.open }} timeline={{ day: frozen.current ? { ...day, data: frozen.current.day } : day, openBy: companion.openBy, onOpenChange: open => { setTimelineOpen(open); if (open) fold('the timeline'); } }} glow={{ items: frozen.current?.glows ?? notices.glows, open: g => { if (g.card) notices.focus(g.id); else { showJobs(); notices.leaveGlow(g.id, true); } }, clear: g => { if (g.card) { notices.focus(g.id); notices.dismiss(); } else notices.leaveGlow(g.id, false); } }} onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
+        pin={{ item: notices.departure, open: busCards.open }} timeline={{ day: frozen.current ? { ...day, data: frozen.current.day } : day, openBy: companion.openBy, onOpenChange: open => { setTimelineOpen(open); if (open) fold('the timeline'); }, ask: port ? askAbout : undefined }} glow={{ items: frozen.current?.glows ?? notices.glows, open: g => { if (g.card) notices.focus(g.id); else { showJobs(); notices.leaveGlow(g.id, true); } }, clear: g => { if (g.card) { notices.focus(g.id); notices.dismiss(); } else notices.leaveGlow(g.id, false); } }} onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
         act={{ jump, answer: notices.focus, read: ids => { notices.acted(ids); notices.read(ids); }, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
         port={port} keys={keysPress} onViewing={setViewing} onJoinedChange={setNotchJoined} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}

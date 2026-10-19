@@ -1,11 +1,14 @@
 import type { L } from './companionSettings';
 import { hm } from './barView.ts';
-import { accountOf, askable, clean, clock, dur, endText, EVENT_SOURCES, moneyText, moveWords, PAYERS, rideWords, stageMinutes, stageSlices, stayLook, workoutOf, type DayItem, type DayModel, type Icon, type Say } from './dayView.ts';
+import { accountOf, askable, clean, clock, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, stayLook, type DayItem, type DayModel, type Icon, type Say } from './dayView.ts';
 
 // What a row says when it is opened (ADR 0296, spec-r3 section 8), and what can be done from it. Pure (no DOM), so
 // scripts/verify-notch-timeline.mjs runs it in node. Nothing here is made up: a part exists only where the brain sent what it
 // shows, and an action exists only where its route works today (the rename of a kept place, the acknowledgement of a reminder that
 // rang, a turn that is handed to her). DayTimeline.tsx and RowOpen.tsx draw it.
+// An open row adds to its two lines and its right column, it does not say them again: a move's word and length, a ride's route, a
+// call's app, a payment's who and what are the row's already. What the row may have cut (a title over 20 characters, a second line
+// over 40) is said in full.
 export type Tone = 'ink' | 'muted';
 export type Words = { text: string; tone: Tone };
 export type Bar = { name: string; text: string; share: number };
@@ -16,7 +19,7 @@ export type Night = { from: number; to: number; at: [string, string]; slices: { 
 export type Part =
   | { type: 'lines'; lines: Words[] }
   | { type: 'talk'; day: string; from: number; to: number }
-  | { type: 'picture'; id: string; note: string }
+  | { type: 'picture'; id: string; note: string; show: boolean }
   | { type: 'bars'; heading: string; bars: Bar[] }
   | { type: 'night'; night: Night }
   | { type: 'sessions'; list: Session[] }
@@ -31,6 +34,8 @@ export type Ask = { about: About; icon: Icon; at: string };
 const ATTACHMENT = /^[0-9a-f]{32}$/;
 const say = (text: string, tone: Tone = 'muted'): Words => ({ text, tone });
 const lines = (...list: (Words | false | '' | null | undefined)[]): Part => ({ type: 'lines', lines: list.filter((x): x is Words => !!x) });
+// The words the row already has (its title: 20 characters, its second line: 40) are said again in the open row only when they are long enough that the row's one line may have cut them.
+const LONG = 20, WIDE = 40, again = (text: string, limit = LONG) => text.length > limit ? say(text) : null;
 // How long an item lasted, or has lasted so far; a thing still to come has no length.
 const lengthOf = (it: DayItem, m: DayModel) => it.end_ms == null && it.state === 'next' ? 0 : Math.max(0, ((it.end_ms ?? (m.today ? m.now : m.reply.end_ms)) - it.start_ms) / 60_000);
 // `14:05–14:50 · 45 分`, `18:50 起`, or the time alone for a moment.
@@ -77,49 +82,51 @@ export function openOf(m: DayModel, key: string, t: Say): Open | null {
     case 'code': parts.push({ type: 'sessions', list: [session(it, m, t)] }); break;
     case 'stay': {
       const look = stayLook(it, t), place = clean(it.place);
-      parts.push(lines(place && say(place, 'ink'), look.kept && say(t([`A place you keep · ${look.name}`, `常去的地方 · ${look.name}`]))));
+      parts.push(lines(place && say(place), look.kept && say(t([`A place you keep · ${look.name}`, `常去的地方 · ${look.name}`]))));
       if (it.kept_place && clean(it.kept_place.name)) rename = { id: it.kept_place.id, name: clean(it.kept_place.name) };
       break;
     }
     case 'move': {
       const [from, to] = around(m, it, t);
-      parts.push(lines(say([moveWords(it.activity, t), dur(Math.max(1, lengthOf(it, m)), t)].join(' · '), 'ink'),
-        (from || to) && say(from && to ? `${from} → ${to}` : from ? t([`From ${from}`, `从 ${from} 出发`]) : t([`To ${to}`, `去 ${to}`]))));
+      parts.push(lines((from || to) && say(from && to ? `${from} → ${to}` : from ? t([`From ${from}`, `从 ${from} 出发`]) : t([`To ${to}`, `去 ${to}`]))));
       break;
     }
     case 'ride': {
       const credit = clean(it.credit), ended = it.end_ms == null ? it.state === 'next' ? '' : t(['Still on it', '还在车上']) : ENDED[clean(it.ended_reason)] ? t(ENDED[clean(it.ended_reason)]) : '';
-      parts.push(lines(say([clean(it.board_stop), clean(it.alight_stop)].filter(Boolean).join(' → '), 'ink'), credit && say(t([`Live: ${credit}`, `实时：${credit}`])), ended && say(ended)));
+      parts.push(lines(again([clean(it.board_stop), clean(it.alight_stop)].filter(Boolean).join(' → '), WIDE), credit && say(t([`Live: ${credit}`, `实时：${credit}`])), ended && say(ended)));
       break;
     }
     case 'talk':
       parts.push({ type: 'talk', day: m.reply.date, from: it.start_ms, to: it.end_ms ?? it.start_ms });
       if (it.turns) parts.push(lines(say(t([`${it.turns} ${it.turns === 1 ? 'line' : 'lines'} in all`, `共 ${it.turns} 句`]))));
       break;
-    case 'picture': parts.push({ type: 'picture', id: ATTACHMENT.test(clean(it.attachment)) ? clean(it.attachment) : '', note: clean(it.note) }); break;
+    case 'picture': {
+      // The row already says the first line of the note: the open row says it (all of it) when there is more than that to say.
+      const id = ATTACHMENT.test(clean(it.attachment)) ? clean(it.attachment) : '', note = clean(it.note), show = note.includes('\n') || note.length > LONG;
+      if (id || show) parts.push({ type: 'picture', id, note, show });
+      break;
+    }
     case 'event': {
-      const source = it.source === undefined ? t(['Calendar', '日历']) : EVENT_SOURCES[it.source] ? t(EVENT_SOURCES[it.source]) : '';
-      const unsure = it.source === 'mail' && it.confirmed === false, sure = it.source === 'mail' && it.confirmed === true;
+      // Where it came from, that it is not his yet and the place are the row's second line; the time range, that mail has confirmed it, and its state are new.
+      const sure = it.source === 'mail' && it.confirmed === true;
       const state = it.state === 'now' ? t(['Happening now', '正在进行']) : it.state === 'next' ? t(['Not yet', '还没开始']) : t(['Over', '已结束']);
-      parts.push(lines(say(span(it, m, t), 'ink'), !it.private && clean(it.place) && say(clean(it.place)),
-        say([source && t([`Source: ${source}`, `来源：${source}`]), unsure ? t(['not confirmed yet', '还没确认']) : sure ? t(['confirmed', '已确认']) : '', state].filter(Boolean).join(' · '))));
+      parts.push(lines(say([span(it, m, t), sure ? t(['confirmed', '已确认']) : '', state].filter(Boolean).join(' · ')), !it.private && again(clean(it.place))));
       break;
     }
     case 'reminder': {
-      const state = it.acknowledged ? t(['You know about it', '你知道了']) : it.fired ? t(['It rang', '响过了']) : it.start_ms > m.now ? t(['Not due yet', '还没到点']) : '';
-      parts.push(lines(clean(it.text) && say(clean(it.text), 'ink'), say([`${t(['Due', '提醒时间'])} ${clock(it.start_ms, m.tz)}`, state].filter(Boolean).join(' · '))));
+      parts.push(lines(again(clean(it.text))));
       if (it.fired === true && it.acknowledged === false) ack = it.id;
       break;
     }
     case 'departure': {
-      const stop = clean(it.board_stop), leave = it.leave_at_ms != null ? clock(it.leave_at_ms, m.tz) : '', go = clock(it.start_ms, m.tz);
-      parts.push(lines(say([rideWords(it, t), stop].filter(Boolean).join(' · '), 'ink'), clean(it.to) && say(t([`To ${it.to}`, `去 ${it.to}`])),
-        say(leave ? t([`Leave ${leave} · Departs ${go}`, `${leave} 出门 · ${go} 发车`]) : t([`Departs ${go}`, `${go} 发车`]))));
+      // The row has the route, where to and when to leave; the stop only if its title does not carry it.
+      const stop = clean(it.board_stop);
+      if (stop && !(m.rows.get(key)?.title ?? '').includes(stop)) parts.push(lines(say([rideWords(it, t), stop].join(' · '))));
       break;
     }
     case 'work': {
       const active = it.active_s ? dur(it.active_s / 60, t) : '', total = dur(Math.max(1, lengthOf(it, m)), t);
-      parts.push(lines(say(active ? t([`Active ${active} · ${total} in all`, `活跃 ${active} · 共 ${total}`]) : t([`${total} in all`, `共 ${total}`]), 'ink')));
+      parts.push(lines(say(active ? t([`Active ${active} · ${total} in all`, `活跃 ${active} · 共 ${total}`]) : t([`${total} in all`, `共 ${total}`]))));
       for (const [heading, list] of [[t(['Projects', '项目']), it.projects], [t(['Apps', '应用']), it.apps]] as const) {
         const b = bars(list, it.active_s ?? 0, t);
         if (b.length) parts.push({ type: 'bars', heading, bars: b });
@@ -130,33 +137,46 @@ export function openOf(m: DayModel, key: string, t: Say): Open | null {
     case 'sleep': {
       const n = night(it, m, t);
       if (n) parts.push({ type: 'night', night: n }, lines(n.totals && say(n.totals)));
-      else parts.push(lines(say(span(it, m, t), 'ink')));
+      else parts.push(lines(say(span(it, m, t))));
       break;
     }
-    case 'workout': {
-      const w = workoutOf(it, t);
-      parts.push(lines(say([w.word, dur(Math.max(1, lengthOf(it, m)), t)].join(' · '), 'ink'), (w.facts.length > 0 || w.note) && say(w.facts.join(' · ') || w.note)));
-      break;
-    }
-    case 'call': parts.push(lines(say(span(it, m, t), 'ink'), clean(it.app) && say(clean(it.app)))); break;
+    // What was counted (distance, energy, heart rate) is the row's second line; when it ran, to the minute, is new.
+    case 'workout': case 'call': parts.push(lines(say(span(it, m, t)))); break;
     case 'payment': {
-      const way = it.direction === 'in' ? t(['Received', '收入']) : it.direction === 'out' ? t(['Spent', '支出']) : '', via = PAYERS[clean(it.source)], who = clean(it.counterparty), what = clean(it.text), cur = clean(it.currency).toUpperCase();
-      parts.push(lines(say([way, moneyText(it.amount, it.currency), cur].filter(Boolean).join(' · '), 'ink'), (who || what) && say([who, what && what !== who ? what : ''].filter(Boolean).join(' · ')), via && say(t(via))));
+      // Who, what and through which app are the row's; which way the money went and in what currency are new.
+      const way = it.direction === 'in' ? t(['Received', '收入']) : it.direction === 'out' ? t(['Spent', '支出']) : '', cur = clean(it.currency).toUpperCase();
+      parts.push(lines(say([way, moneyText(it.amount, it.currency), cur].filter(Boolean).join(' · '))));
       break;
     }
     case 'claude_chat':
-      parts.push(lines(clean(it.text) && say(clean(it.text), 'ink'), say([t(['With Claude', '和 Claude']), it.messages ? t([`${it.messages} msgs`, `${it.messages} 条`]) : '', span(it, m, t)].filter(Boolean).join(' · '))));
+      parts.push(lines(again(clean(it.text)), say(span(it, m, t))));
       break;
     case 'claude_day': {
-      const n = it.chats ?? 0, titles = clean(it.text).split(/\s*;\s*/).filter(Boolean);
+      const titles = clean(it.text).split(/\s*;\s*/).filter(Boolean);
       if (titles.length) parts.push({ type: 'titles', list: titles });
-      if (n) parts.push(lines(say(t([`${n} ${n === 1 ? 'chat' : 'chats'}`, `${n} 个对话`]))));
       break;
     }
     default: return null;
   }
-  return { key, kind: sessions ? 'code' : it.kind, parts: parts.filter(p => p.type !== 'lines' || p.lines.length > 0), rename, ack, summarize };
+  // What the open row says first is in ink, the rest is muted.
+  const shown = parts.filter(p => p.type !== 'lines' || p.lines.length > 0), top = shown[0];
+  if (top?.type === 'lines') top.lines[0] = { ...top.lines[0], tone: 'ink' };
+  return { key, kind: sessions ? 'code' : it.kind, parts: shown, rename, ack, summarize };
 }
+
+// One line of the day's conversation as GET /inherent/memory/day/{day}/records gives it (ts read to ms), and what a talk row shows of its span:
+// his first line in it and her first reply to that, each in one line (a record's own line breaks and its record marker are not a line's).
+export type Rec = { id: string; ts: number; who: 'user' | 'jarvis'; text: string };
+const MARKER = /\s*\[record_id=[^\]]*\]/g, oneLine = (s: string) => s.replace(MARKER, '').replace(/\s+/g, ' ').trim();
+export function talkLines(list: Rec[], from: number, to: number): { you: string; her: string } | null {
+  const you = list.find(r => r.who === 'user' && r.ts >= from - 2000 && r.ts <= to + 2000 && oneLine(r.text));
+  if (!you) return null;
+  const her = list.find(r => r.who === 'jarvis' && r.ts >= you.ts && r.ts <= to + 10 * 60_000 && oneLine(r.text));
+  return { you: oneLine(you.text), her: her ? oneLine(her.text) : '' };
+}
+
+// Whether opening the row shows anything: a part, or a button that works (so a row never opens to nothing).
+export const hasBody = (o: Open, canAsk: boolean) => o.parts.length > 0 || !!o.rename || !!o.ack || o.summarize || canAsk;
 
 // What a turn about this row carries and what the input row shows of it: null when the brain would refuse it (a kind it does not take, an id
 // of the wrong shape, a folded row that is no one item).
