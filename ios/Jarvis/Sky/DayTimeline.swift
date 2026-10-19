@@ -195,16 +195,16 @@ struct DayTimelineView: View {
     private func header(_ m: DayTimelineModel?) -> some View {
         let holding = tl.scrub != nil
         return ZStack(alignment: .topLeading) {
-            // her sentence, and in its place while a finger is on the bar the readout of the minute under it; they cross-fade (in 80 ms, back in 150)
+            // her sentence, and in its place while a finger is on the bar the readout of the minute under it: a fade-through, not a cross-fade (the two are never both on show)
             if let line = m?.line {
                 Text(line).font(.system(size: 15)).lineSpacing(3).foregroundStyle(ink.opacity(0.9)).lineLimit(2)
                     .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
-                    .opacity(holding ? 0 : 1)
+                    .fadeThrough(on: !holding, reduce: reduce)
                     .id(line).transition(.opacity)
                     .offset(x: 30, y: TLLayout.lineY)
             }
             if let m {
-                readout(m.readout(at: tl.scrub ?? lastScrub)).opacity(holding ? 1 : 0)
+                readout(m.readout(at: tl.scrub ?? lastScrub)).fadeThrough(on: holding, reduce: reduce)
                     .offset(x: 30, y: TLLayout.lineY)
                     .allowsHitTesting(false).accessibilityHidden(!holding)
             }
@@ -212,6 +212,7 @@ struct DayTimelineView: View {
                 let lens = activeLens(m)
                 TLBarView(scene: m.scene, bracket: bracket(m), scrub: tl.scrub, lens: lens != nil, lensColor: (lens ?? lastLens).color, lensMarks: m.marks(of: lens ?? lastLens),
                           reveal: tl.reveal, reduce: reduce)
+                    .animation(holding ? .easeOut(duration: 0.08) : .easeInOut(duration: 0.15), value: holding)       // the hairline and its time come and go with the finger
                     .gesture(scrubGesture(m))
                     .accessibilityElement().accessibilityLabel("一天的概览，拖动可以翻到那个时间")
                     .id(tl.day).transition(barTransition)
@@ -226,7 +227,6 @@ struct DayTimelineView: View {
                 }
             }
         }
-        .animation(holding ? .easeOut(duration: 0.08) : .easeInOut(duration: 0.15), value: holding)
         .onChange(of: tl.lens) { _, l in if let l { lastLens = l } }
         .onChange(of: tl.scrub) { _, t in if let t { lastScrub = t } }
         .onChange(of: touching) { _, on in
@@ -256,6 +256,7 @@ struct DayTimelineView: View {
             Text(r.second).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).frame(height: 15, alignment: .leading)
         }
         .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
+        .contentTransition(.identity)           // the words follow the finger at once: a change of them is not a fade of its own, which would show the last stretch's words through the new ones
     }
 
     /// the lens that is on, if this day has that kind at all
@@ -401,6 +402,16 @@ struct DayTimelineView: View {
             .overlay(alignment: .bottom) { Rectangle().fill(hair).frame(height: 0.5) }
             .padding(.bottom, 4)
         }
+    }
+}
+
+/// The change of what the header says as a fade-through: what goes out leaves over 50 ms (ease-in) and what comes in arrives over 90 ms from 40 ms on (ease-out, 2 pt up
+/// into its place), so the two are not on show together for more than a frame. With Reduce Motion a plain 120 ms fade.
+private extension View {
+    func fadeThrough(on: Bool, reduce: Bool) -> some View {
+        let enter = reduce ? Animation.easeOut(duration: 0.12) : .easeOut(duration: 0.09).delay(0.04), leave = reduce ? Animation.easeOut(duration: 0.12) : .easeIn(duration: 0.05)
+        return opacity(on ? 1 : 0).animation(on ? enter : leave, value: on)
+            .offset(y: on || reduce ? 0 : 2).animation(on ? enter : nil, value: on)
     }
 }
 
