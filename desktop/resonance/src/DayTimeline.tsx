@@ -66,7 +66,7 @@ function RowView({ row, hot, onHot, pick, t, how }: { row: Row; how: string } & 
 // The day's weather after its date: a glyph, a word, the high and the low. A condition this does not know is just the temperatures.
 function Forecast({ w }: { w: WeatherLook }) {
   const Glyph = w.sky ? SKIES[w.sky] : null;
-  return <span className="dt-wx" data-sky={w.sky ?? undefined}>{Glyph && <Glyph size={14} aria-hidden="true"/>}{w.word && <span>{w.word}</span>}{w.temps && <em>{w.temps}</em>}</span>;
+  return <span className="dt-wx" data-sky={w.sky ?? undefined}>{Glyph && <Glyph size={14} aria-hidden="true"/>}{w.word && <span>{w.word}</span>}{w.temps && <em>{w.temps}</em>}{w.sun && <i className="dt-wx-tip" role="tooltip">{w.sun}</i>}</span>;
 }
 // The day's labels (all-day events) in the room the header leaves them: whole ones, and a +N for those that do not fit (never half a word). The room
 // changes with the day (the pill that comes or goes), so it starts again from all of them when it does; the first label always stays, cut to fit if it must.

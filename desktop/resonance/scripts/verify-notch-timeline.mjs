@@ -202,7 +202,7 @@ check('dates are named from their own digits', dateTitle(DATE, zh) === '10月19�
 const flat = (blocks, out = []) => { for (const b of blocks) { if (b.type === 'row') out.push({ ...b.row, as: 'row' }); else if (b.type === 'now') out.push({ title: b.label, as: 'now' }); else { out.push({ title: b.head.name, detail: b.head.star ?? '', when: b.head.when, dur: b.head.dur, as: 'stay', rgb: b.head.rgb, unnamed: b.head.unnamed }); flat(b.items, out); } } return out; };
 const model = buildDay(day, NOW, zh), rows = flat(model.blocks);
 const row = title => rows.find(r => r.title === title);
-check('the day is titled, with her sentence, the label and the missing source', model.title === '10月19日 周一' && model.today && model.line.text.startsWith('今天一半在路上') && model.chips[0].text === '期中周' && model.foot === 'Mac 的时间还没进来');
+check('the day is titled, with her sentence, the label and the missing source', model.title === '10月19日 周一' && model.today && model.line.text.startsWith('今天一半在路上') && model.chips[0].text === '期中周' && model.foot === '还没读到：Mac 的时间');
 check('stays are named by the kept place, else the phone\'s first part', rows.filter(r => r.as === 'stay').map(r => r.title).join() === '家,A&W,家,UVic,家');
 check('home is warm, school is blue, an unnamed-by-him stay is the neutral haze', row('家').rgb.join() === '255,168,150' && row('UVic').rgb.join() === '100,200,255' && row('A&W').rgb.join() === '196,204,238');
 check('a stay with nothing to call it says so', buildDay(makeDay({ items: [it('s', 'stay', T(20, 0), null, {})] }), NOW, zh).blocks[0].head.name === '没名字的地方');
@@ -338,7 +338,7 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   const stopTalk = flat(buildDay(small([it('a', 'move', T(10, 0), T(10, 10), { activity: 'walking' }), it('s', 'stay', T(10, 10), T(10, 16), { place: 'Bus stop, X' }), it('t', 'talk', T(10, 12), T(10, 14), { turns: 2 }, 'her'), it('b', 'ride', T(10, 16), T(10, 40), { route: '14' })]), NOW, zh).blocks);
   check('what happened during a stop stays in the trip with it, after it', stopTalk.map(x => x.title).join() === '步行,停了 6 分,和她说话,14 路,现在 21:50');
   const tm = buildDay(talkDay(), NOW, zh);
-  check('a day of talks alone: seven rows, no stay, a sentence for the missing Mac', flat(tm.blocks).filter(x => x.title === '和她说话').length === 7 && !flat(tm.blocks).some(x => x.as === 'stay') && tm.foot === 'Mac 的时间还没进来');
+  check('a day of talks alone: seven rows, no stay, a sentence for the missing Mac', flat(tm.blocks).filter(x => x.title === '和她说话').length === 7 && !flat(tm.blocks).some(x => x.as === 'stay') && tm.foot === '还没读到：Mac 的时间');
 }
 
 // ---------- the new data, in node (spec-r3 section 11) ----------
@@ -350,6 +350,14 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   check('the temperatures are the high and the low, rounded; a name it does not know shows only them, and nothing known shows nothing', sky('partlyCloudy', 14.2, 7.6).temps === '14° / 8°' && sky('frigid', -3, -9).temps === '-3° / -9°' && sky('frigid', -3, -9).sky === null && sky('frigid', -3, -9).word === ''
     && sky('clear', 14, null).temps === '14°' && sky('clear', -0.4, null).temps === '0°' && sky('clear', null, null).temps === '' && sky('clear', null, null).word === '晴' && sky('frigid', null, null) === null && weatherOf(null, zh) === null && weatherOf(undefined, zh) === null);
   check('in English the words are English', sky('partlyCloudy', 14, 8, en).word === 'Partly cloudy' && sky('thunderstorms', 14, 8, en).word === 'Thunderstorms' && sky('cloudy', 14, 8, en).word === 'Overcast');
+  const sunny = (rise, set, t = zh) => weatherOf({ condition: 'clear', high: 14, low: 8, sunrise_ms: rise, sunset_ms: set }, t, TZ).sun;
+  check('a rest on the weather says when the sun comes up and goes down, in the day\'s own zone: 日出 07:12 · 日落 18:21; one time alone is one; none is nothing; in English too',
+    sunny(T(7, 12), T(18, 21)) === '日出 07:12 · 日落 18:21' && sunny(T(7, 12), null) === '日出 07:12' && sunny(null, T(18, 21)) === '日落 18:21' && sunny(null, null) === '' && sunny(T(7, 12), T(18, 21), en) === 'Sunrise 07:12 · Sunset 18:21'
+    && buildDay(fullDay({ weather: { condition: 'clear', high: 14, low: 8, sunrise_ms: T(7, 12), sunset_ms: T(18, 21) } }), NOW, zh).weather.sun === '日出 07:12 · 日落 18:21');
+  const lost = missing => buildDay(makeDay({ missing }), NOW, zh).foot;
+  check('what has not been read is worded as the phone words it, several joined with · , and in English the same',
+    lost(['mac']) === '还没读到：Mac 的时间' && lost(['phone', 'reminders', 'mac', 'talks', 'calendar', 'departures']) === '还没读到：手机的记录 · 提醒 · Mac 的时间 · 对话 · 日历 · 公交' && lost([]) === ''
+    && buildDay(makeDay({ missing: ['mac', 'calendar'] }), NOW, en).foot === 'Not read yet: Mac time · The calendar');
 
   const fm = buildDay(fullDay(), NOW, zh), fb = buildBar(fm, zh), fr = flat(fm.blocks), fk = key => fr.find(r => r.key === key);
   check('the body\'s numbers are quiet values in order, steps with its thousands comma; a null value is left out, and so is a day with none', fm.vitals.map(v => `${v.before}|${v.value}|${v.after}`).join() === '|8,240|步,静息|58|,HRV|42|'
@@ -787,7 +795,7 @@ try {
     const text = sel => a.page.locator(sel).allInnerTexts();
     check('the header: the date, the day\'s tag, her label', (await text('.dt-date'))[0] === '10月19日 周一' && (await text('.dt-today'))[0] === '今天' && (await text('.dt-chip'))[0] === '期中周');
     check('her sentence, in the serif', (await text('.dt-line'))[0].startsWith('今天一半在路上') && await a.page.locator('.dt-line').evaluate(el => /Songti|Serif|serif/.test(getComputedStyle(el).fontFamily)));
-    check('the footnote names what has not come in', (await text('.dt-foot'))[0] === 'Mac 的时间还没进来');
+    check('the footnote names what has not been read, as the phone words it: 还没读到：Mac 的时间', (await text('.dt-foot'))[0] === '还没读到：Mac 的时间');
     const heads = (await text('.dt-sh .dt-tx b')).map(x => x.trim());
     check('stay headers, in order, by name', heads.join() === '家,A&W,家,UVic,家');
     const titles = (await text('.dt-row .dt-tx b')).map(x => x.trim());
@@ -1015,7 +1023,7 @@ try {
       check('the fragmented day (15 stays, 11 moves, 2 rides, a stop four times): the same holds, nothing crowds or crosses', au.n === 34 && au.bad.length === 0, au.bad.join('; '));
       const dom = await a.page.evaluate(() => ({ heads: document.querySelectorAll('.dt-sh').length, pips: document.querySelectorAll('.dt-pip').length, trip: [...document.querySelectorAll('.dt-row.is-trip')].map(e => e.dataset.key + (e.classList.contains('is-top') ? '^' : '') + (e.classList.contains('is-end') ? '$' : '')),
         now: (n => ({ gap: n.getBoundingClientRect().top - document.querySelector('[data-key="f-w11"]').getBoundingClientRect().bottom, text: n.innerText.trim() }))(document.querySelector('.dt-now')), foot: document.querySelector('.dt-foot')?.innerText }));
-      check('eleven places with headers and four stops with a small dot in the trip; the trips are one rail each; the now line hangs from the walk he is on', dom.heads === 11 && dom.pips === 4 && dom.trip.slice(0, 5).join() === 'f-w1^,f-s2,f-r1,f-talk-1,f-w2$' && dom.now.gap === 0 && dom.now.text === '现在 21:50' && dom.foot === 'Mac 的时间还没进来', JSON.stringify(dom));
+      check('eleven places with headers and four stops with a small dot in the trip; the trips are one rail each; the now line hangs from the walk he is on', dom.heads === 11 && dom.pips === 4 && dom.trip.slice(0, 5).join() === 'f-w1^,f-s2,f-r1,f-talk-1,f-w2$' && dom.now.gap === 0 && dom.now.text === '现在 21:50' && dom.foot === '还没读到：Mac 的时间', JSON.stringify(dom));
       await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; }); await a.page.waitForTimeout(300);
       await a.shot('list-02-fragmented-top', { x: 40, y: 0, width: 560, height: 700 });
       await a.page.evaluate(() => { const l = document.querySelector('.dt-list'); l.scrollTop = l.scrollHeight; }); await a.page.waitForTimeout(300);
@@ -1123,12 +1131,23 @@ try {
       await a.page.mouse.move(5, 5); await a.page.waitForTimeout(300);
       const sun = await a.page.evaluate(() => {
         const hours = document.querySelector('.dt-hours'), tb = document.querySelector('.dt-track').getBoundingClientRect(), mark = e => { const r = e.getBoundingClientRect(); return r.left + r.width / 2 - tb.left; };
-        const marks = [...hours.querySelectorAll('.dt-sun')];
-        return { kinds: marks.map(e => e.dataset.sun).join(), at: marks.map(e => mark(e) / tb.width), glyph: marks.every(e => e.querySelector('svg')), text: marks.map(e => e.textContent).join(''), tick: getComputedStyle(marks[0], '::before').width, tickColor: getComputedStyle(marks[0], '::before').backgroundColor,
-          labels: [...hours.querySelectorAll('span:not(.dt-sun)')].map(e => e.textContent).join(), clear: marks.every(m => [...hours.querySelectorAll('span:not(.dt-sun)')].every(l => Math.abs(mark(l) - mark(m)) > 11)) };
+        const marks = [...hours.querySelectorAll('.dt-sun')], labels = [...hours.querySelectorAll('span:not(.dt-sun)')], one = e => { const st = getComputedStyle(e); return { kind: e.dataset.sun, at: mark(e) / tb.width, glyph: !!e.querySelector('svg'), w: st.width, h: st.height, bg: st.backgroundColor, top: e.getBoundingClientRect().top - tb.bottom }; };
+        return { marks: marks.map(one), text: marks.map(e => e.textContent).join(''), before: marks.map(e => getComputedStyle(e, '::before').content).join(), labels: labels.map(e => e.textContent).join(),
+          glyphsClear: marks.filter(e => e.querySelector('svg')).every(m => labels.every(l => Math.abs(mark(l) - mark(m)) > 11)), over: marks.map(m => labels.some(l => Math.abs(mark(l) - mark(m)) <= 11)) };
       });
-      const f = ms => (ms - T(6, 0)) / (18 * 3_600_000);
-      check('the sun: a hairline and a little sun on the horizon in the hours row at 07:25 and 18:05, no words; the 18 that would sit on the sunset leaves room for it, the rest stay', sun.kinds === 'rise,set' && Math.abs(sun.at[0] - f(T(7, 25))) < .004 && Math.abs(sun.at[1] - f(T(18, 5))) < .004 && sun.glyph && sun.text === '' && sun.tick === '1px' && sun.labels === '06,09,12,15,21,24' && sun.clear, JSON.stringify(sun));
+      const f = ms => (ms - T(6, 0)) / (18 * 3_600_000), [rise, set] = sun.marks;
+      check('the sun in the hours row, no words: at 07:25 it is a little sun on the horizon with a hairline, where no hour is near; every hour\'s number is written (06 09 12 15 18 21 24)',
+        rise.kind === 'rise' && Math.abs(rise.at - f(T(7, 25))) < .004 && rise.glyph && rise.w === '11px' && sun.labels === '06,09,12,15,18,21,24' && sun.glyphsClear && sun.over.join() === 'false,true' && sun.text === '', JSON.stringify(sun));
+      check('and at 18:05 (the 18 is under it) the hour wins: the sun is only a 1 x 4 px warm tick hanging from the bar, without the glyph and without its hairline',
+        set.kind === 'set' && Math.abs(set.at - f(T(18, 5))) < .004 && !set.glyph && set.w === '1px' && set.h === '4px' && set.bg === 'rgba(255, 224, 186, 0.8)' && set.top >= 0 && set.top <= 3.5 && sun.before.split(',')[1] === 'none', JSON.stringify(sun));
+      // a rest on the weather says when the sun comes up and goes down
+      const tip0 = await a.page.evaluate(() => { const t = document.querySelector('.dt-wx-tip'); return t && { text: t.textContent, op: getComputedStyle(t).opacity, vis: getComputedStyle(t).visibility }; });
+      const wx = await a.page.locator('.dt-wx').boundingBox();
+      await a.page.mouse.move(wx.x + wx.width / 2, wx.y + wx.height / 2); await a.page.waitForTimeout(600);
+      const tip1 = await a.page.evaluate(() => { const t = document.querySelector('.dt-wx-tip'), r = t.getBoundingClientRect(), h = document.querySelector('.dt-wx').getBoundingClientRect(); return { text: t.textContent, op: getComputedStyle(t).opacity, vis: getComputedStyle(t).visibility, below: r.top - h.bottom, size: getComputedStyle(t).fontSize, none: getComputedStyle(t).pointerEvents }; });
+      check('a rest on the weather says 日出 07:25 · 日落 18:05 in a small card under it (nothing before the rest, and the pointer goes through it)', tip0.text === '日出 07:25 · 日落 18:05' && tip0.op === '0' && tip0.vis === 'hidden' && tip1.text === '日出 07:25 · 日落 18:05' && tip1.op === '1' && tip1.vis === 'visible' && tip1.below >= 3 && tip1.below <= 10 && tip1.none === 'none', JSON.stringify({ tip0, tip1 }));
+      await a.shot('data-06-weather-tip', { x: 40, y: 20, width: 560, height: 120 });
+      await a.page.mouse.move(5, 5); await a.page.waitForTimeout(400);
       await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; }); await a.page.waitForTimeout(300);
       await a.shot('data-01-full-day-top', { x: 40, y: 0, width: 560, height: 700 });
       await a.shot('data-03-header-and-bar', { x: 40, y: 20, width: 560, height: 190 });

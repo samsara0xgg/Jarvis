@@ -182,9 +182,9 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
   const summary = ui.sel ? summarize(model, bar, ui.sel.a, ui.sel.b, t) : null, lens = ui.lens && nums.some(n => n.kind === ui.lens) ? ui.lens : null;
   // A day with no place in it (talks and no location) says so in the empty past, if the words fit there.
   const voidText = t(['No location recorded', '没有位置记录']), voidW = (bar.nowF ?? 1) * width, showVoid = bar.segs.length === 0 && voidW >= textWidth(voidText, false) + 2 * PAD_PX;
-  // The sun's marks sit in the hours row; an hour's number that would sit on one leaves room for it.
-  const suns = bar.sun.map(x => ({ ...x, px: clamp(x.f * width, 6, Math.max(6, width - 6)) }));
-  const hours = bar.ticks.map(k => { const px = k.f < .02 ? 6 : k.f > .98 ? width - 6 : k.f * width; return { k, hide: suns.some(x => Math.abs(x.px - px) < 14) }; });
+  // The sun's marks sit in the hours row. An hour's number always wins: a mark that would sit on one is only a tick under the bar.
+  const hours = bar.ticks.map(k => ({ k, px: k.f < .02 ? 6 : k.f > .98 ? width - 6 : k.f * width }));
+  const suns = bar.sun.map(x => { const px = clamp(x.f * width, 6, Math.max(6, width - 6)); return { ...x, px, bare: hours.some(h => Math.abs(h.px - px) < 14) }; });
   const bx = (x: number) => `${clamp(x, 0, 1) * 100}%`, edge = (x: number) => ({ left: `clamp(16px, ${x}px, calc(100% - 16px))` });
   const lifted = live?.row ?? null, spanned = hot && hot !== lifted ? model.span.get(hot) : null;
   return <>
@@ -221,8 +221,8 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
         </div>
       </div>
       <div className="dt-hours" aria-hidden="true">
-        {hours.map(({ k, hide }) => !hide && <span key={k.label} className={k.f < .02 ? 'is-start' : k.f > .98 ? 'is-end' : ''} style={{ left: `${k.f * 100}%` }}>{k.label}</span>)}
-        {suns.map(x => <span key={x.kind} className="dt-sun" data-sun={x.kind} style={{ left: x.px }}><SunHorizon size={11}/></span>)}
+        {hours.map(({ k }) => <span key={k.label} className={k.f < .02 ? 'is-start' : k.f > .98 ? 'is-end' : ''} style={{ left: `${k.f * 100}%` }}>{k.label}</span>)}
+        {suns.map(x => <span key={x.kind} className={`dt-sun${x.bare ? ' is-tick' : ''}`} data-sun={x.kind} style={{ left: x.px }}>{!x.bare && <SunHorizon size={11}/>}</span>)}
       </div>
       <div ref={card} className={`dt-card${on && !ui.sel && !band ? ' is-on' : ''}`} aria-hidden="true">
         <div ref={cardIn} className="dt-card-in">{slots.current.at.map((p, i) => <div key={i} className={`dt-slot${i === slots.current.cur ? ' is-cur' : ''}`}>{p && <PeekBody p={p} port={port} t={t}/>}</div>)}</div>

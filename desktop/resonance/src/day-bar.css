@@ -49,6 +49,9 @@
 .notch .dt-hours span.is-start { transform:none; } .notch .dt-hours span.is-end { transform:translateX(-100%); }
 /* the sun's marks: where it comes up and goes down, a hairline from the bar and a little sun on the horizon (no words) */
 .notch .dt-sun { display:grid; place-items:center; width:11px; height:14px; color:rgb(var(--ink) / .5); }
+/* where an hour's number is on it, the sun is only a warm tick hanging from the bar */
+.notch .dt-sun.is-tick { width:1px; height:4px; top:-3px; background:rgb(255 224 186 / .8); }
+.notch .dt-sun.is-tick::before { content:none; }
 .notch .dt-sun::before { content:''; position:absolute; left:5px; top:-3px; width:1px; height:5px; background:rgb(var(--ink) / .3); }
 
 /* the card: 280 pt at the pointer, under the bar and its hours (it never cuts through their words), over the list (it never pushes anything);
