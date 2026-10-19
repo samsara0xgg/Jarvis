@@ -28,6 +28,7 @@ struct TLBackLabel: View {
 struct TLDayHead: View {
     let tl: TimelineState
     let room: Double
+    @Environment(\.accessibilityReduceMotion) private var reduce
 
     /// how much of the weather `room` holds, after the tag or the way back and its 10 pt: all of it (2), the temperatures (1), none (0)
     static func weatherFit(_ w: TLWeather, today: Bool, room: Double) -> Int {
@@ -45,15 +46,16 @@ struct TLDayHead: View {
         let sun = reply.flatMap { DayTimelineModel.sun(of: $0) }?.text
         let saying = tl.sunSaid && sun != nil
         let fit = weather.map { Self.weatherFit($0, today: today, room: room) } ?? 0
+        let swap = TLMotion.swapWords(reduce: reduce)
         HStack(spacing: 10) {
             if !saying {
                 ZStack(alignment: .leading) {
                     if today {
                         Text("今天").font(.system(size: 12, weight: .semibold)).foregroundStyle(ink.opacity(0.9)).padding(.horizontal, 9).frame(height: 22)
-                            .background(Color.white.opacity(0.1), in: Capsule()).transition(.opacity)
+                            .background(Color.white.opacity(0.1), in: Capsule()).transition(swap)
                     } else {
                         Button { tl.goToday() } label: { TLBackLabel(text: "回到今天").contentShape(Rectangle().inset(by: -9)) }
-                            .buttonStyle(PressScale()).transition(.opacity)
+                            .buttonStyle(PressScale()).transition(swap)
                     }
                 }
                 .fixedSize().transition(.opacity)
@@ -61,7 +63,7 @@ struct TLDayHead: View {
             if saying, let sun {
                 Text(sun).font(AT.mono(11.5)).foregroundStyle(muted).lineLimit(1).minimumScaleFactor(0.8).transition(.opacity)
             } else if let weather, fit > 0 {
-                TLWeatherLine(w: weather, word: fit == 2).transition(.opacity)
+                TLWeatherLine(w: weather, word: fit == 2).id(weather.text).transition(swap)
                     .contentShape(Rectangle().inset(by: -10))
                     .onTapGesture { if sun != nil { tl.saySun() } }
                     .accessibilityAddTraits(sun != nil ? .isButton : [])

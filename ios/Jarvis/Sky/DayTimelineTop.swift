@@ -27,7 +27,7 @@ struct TLTopView: View {
                 Text(line).font(.system(size: 15)).lineSpacing(3).foregroundStyle(ink.opacity(0.9)).lineLimit(2)
                     .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
                     .fadeThrough(on: !holding, reduce: reduce)
-                    .id(line).transition(.opacity)
+                    .id(line).transition(TLMotion.swapWords(reduce: reduce))
                     .offset(x: 30, y: TLLayout.lineY)
             }
             if let m = model {
