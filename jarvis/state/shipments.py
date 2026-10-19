@@ -10,7 +10,9 @@ Two intakes, both append-only and both answered only after the bytes are safe:
   Sending the same bytes again adds nothing and is answered ``already_held``.
 - :meth:`Shipments.receive_file`: one binary file (a TimeSink screenshot) under
   ``imports/<source>/files/<relative path>``, written whole or not at all, answered with its
-  SHA-256 so the Mac keeps its cursor until the digest matches.
+  SHA-256 so the Mac keeps its cursor until the digest matches. The one other file source is
+  ``claude-code-daily`` (ADR 0299): a Markdown day report, at most 256 KiB, which may be sent
+  again with other bytes (the newest stands) and is read by ``ClaudeDailyIntake``.
 
 Both stop at the disk floor, like the lifelog archive (ADR 0238), so the brain's databases never
 run out of room; the refusal is 507 and the Mac keeps what it holds and tries later.
@@ -42,7 +44,10 @@ if TYPE_CHECKING:
 MAX_SHIPMENT_BYTES: Final = 16 * 1024 * 1024
 MAX_FILE_BYTES: Final = 16 * 1024 * 1024
 FILES_DIRNAME: Final = "files"
-FILE_SOURCES: Final = ("timesink",)
+CODE_DAY_SOURCE: Final = "claude-code-daily"
+"""The Mac's day report of his Claude Code work (ADR 0299), shipped as ``<date>.md`` files."""
+FILE_SOURCES: Final = ("timesink", CODE_DAY_SOURCE)
+MAX_REPORT_BYTES: Final = 256 * 1024
 SHIPMENT_NAME: Final = "shipment.jsonl"
 _MAX_KEY: Final = 1024
 _MAX_TEXT: Final = 4 * 1024 * 1024
@@ -183,11 +188,13 @@ class Shipments:
 
         Raises:
             ShipRefused: the source takes no files, the path cannot name a file here, the bytes
-                are not a picture, they are over the cap, the path holds other bytes, or the disk
-                is below its floor.
+                are not a picture (a UTF-8 Markdown report for ``claude-code-daily``), they are
+                over the cap, a picture's path holds other bytes, or the disk is below its floor.
         """
         if source not in FILE_SOURCES:
             raise ShipRefused(404, f"{source!r} ships no files")
+        if source == CODE_DAY_SOURCE:
+            return self._receive_report(relpath, data)
         if not RELPATH.fullmatch(relpath) or relpath.rsplit(".", 1)[-1].lower() not in _IMAGE_EXT:
             raise ShipRefused(422, "the path is not a relative picture path")
         if not data:
@@ -210,6 +217,38 @@ class Shipments:
         finally:
             partial.unlink(missing_ok=True)
         return StoredFile(digest, len(data), created=True)
+
+    def _receive_report(self, relpath: str, data: bytes) -> StoredFile:
+        """Keep a day report at ``claude-code-daily/files/<name>``; other bytes replace the old."""
+        if (refusal := _report_error(relpath, data)) is not None:
+            raise refusal
+        digest = hashlib.sha256(data).hexdigest()
+        target = self.directory / CODE_DAY_SOURCE / FILES_DIRNAME / relpath
+        if target.exists() and hashlib.sha256(target.read_bytes()).hexdigest() == digest:
+            return StoredFile(digest, len(data), created=False)
+        self._room(target.parent, len(data))
+        partial = target.parent / f".{target.name}.{uuid.uuid4().hex}.part"
+        try:
+            _fsync_write(partial, data)
+            partial.replace(target)
+        finally:
+            partial.unlink(missing_ok=True)
+        return StoredFile(digest, len(data), created=True)
+
+
+def _report_error(relpath: str, data: bytes) -> ShipRefused | None:
+    """Why ``data`` is not a day report to keep at ``relpath`` (ADR 0299), or ``None``."""
+    if not re.fullmatch(_PART, relpath) or not relpath.endswith(".md"):
+        return ShipRefused(422, "the path is not a flat .md file name")
+    if not data:
+        return ShipRefused(400, "the file is empty")
+    if len(data) > MAX_REPORT_BYTES:
+        return ShipRefused(413, "the report is larger than 256 KiB")
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return ShipRefused(415, "the report is not UTF-8 text")
+    return None
 
 
 def answer(received: Received) -> dict[str, Any]:

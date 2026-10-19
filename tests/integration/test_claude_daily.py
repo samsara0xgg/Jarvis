@@ -415,7 +415,11 @@ def test_off_by_default_and_bad_values_stop_boot(tmp_path: Path) -> None:
     path, connections = tmp_path / "jarvis.yaml", _Connections(_Gmail([]))
     args: Any = (path, connections, tmp_path / "memory.db", tmp_path)
 
-    assert _claude_daily(shipped, *args) is None and _claude_daily({}, *args) is None
+    # off: no Gmail polling, but the Mac's code report is still read (ADR 0299)
+    offs: list[Mapping[str, Any]] = [shipped, {}]
+    for off in offs:
+        quiet = _claude_daily(off, *args)
+        assert isinstance(quiet, ClaudeDailyIntake) and quiet._settings.gmail is False  # noqa: SLF001
     built = _claude_daily({"claude_daily": {**block, "enabled": True}}, *args)
     assert isinstance(built, ClaudeDailyIntake)
     for key, value in (

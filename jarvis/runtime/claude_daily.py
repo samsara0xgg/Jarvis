@@ -8,6 +8,10 @@ answers raw under ``imports/claude_daily/``. The raw file is written last and na
 message id, so a letter is read again until it is fully kept, never twice. The only Gmail tools
 used are ``gmail_search`` and ``gmail_get`` (the guard of :func:`job_mail.gmail_read`). No model
 is asked; nothing of a letter's content is logged.
+
+The same intake also reads the day report of his Claude Code work (ADR 0299) that his Mac shipped
+to ``imports/claude-code-daily/files/``: no Gmail is involved, so :meth:`read_code_reports` runs
+every cycle whether or not Gmail is connected or ``claude_daily`` is enabled.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Final
@@ -27,6 +32,7 @@ from jarvis.runtime.job_mail import gmail_read
 from jarvis.state import imports
 from jarvis.state.import_parsers import claude_daily, is_daily_subject
 from jarvis.state.memory_db import open_memory_db
+from jarvis.state.shipments import CODE_DAY_SOURCE, FILES_DIRNAME
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -37,6 +43,10 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 SOURCE: Final[str] = "claude_daily"
+CODE_SOURCE: Final[str] = "claude_code_daily"
+"""The entries' source of the Mac's day report (ADR 0299); its shipped files are under
+``imports/claude-code-daily/files/``."""
+_CODE_POLL_S: Final[float] = 300.0
 # Searched twice: as Gmail searches by default (sent and received copies), and in the drafts, which
 # a default search is not relied on to cover. The phrase is only a net: the subject is checked in
 # code, because Gmail's matching of the Chinese part is not something to lean on.
@@ -55,6 +65,8 @@ class ClaudeDailySettings:
     poll_s: float
     backfill_since: date
     max_letters_per_cycle: int
+    gmail: bool = True
+    """False when only the Mac's day report is read (``claude_daily.enabled`` is off)."""
 
 
 class ClaudeDailyIntake:
@@ -72,16 +84,39 @@ class ClaudeDailyIntake:
         self._db, self._dir = db_path, imports_dir
         self._warned = False
 
+    @classmethod
+    def code_reports_only(
+        cls, connections: PluginConnections, db_path: Path, imports_dir: Path,
+    ) -> ClaudeDailyIntake:
+        """An intake that reads the Mac's day report and never touches Gmail (ADR 0299)."""
+        return cls(
+            ClaudeDailySettings(_CODE_POLL_S, date.min, 1, gmail=False),
+            connections, db_path, imports_dir,
+        )
+
     async def run(self) -> None:
-        """Poll every ``poll_s``, first at once; a failed cycle is logged, never ends the loop."""
-        LOGGER.info("claude daily started (every %.0f s)", self._settings.poll_s)
+        """Read the code reports every few minutes and poll Gmail every ``poll_s``, first at once.
+
+        A failed cycle is logged, never ends the loop.
+        """
+        gmail = self._settings.gmail
+        LOGGER.info(
+            "claude daily started (gmail: %s, code reports every %.0f s)", gmail, _CODE_POLL_S,
+        )
+        last_mail = float("-inf")
         try:
             while True:
                 try:
-                    await asyncio.to_thread(self.poll_once)
+                    await asyncio.to_thread(self.read_code_reports)
                 except Exception:
-                    LOGGER.exception("claude daily: cycle failed; trying again next time")
-                await asyncio.sleep(self._settings.poll_s)
+                    LOGGER.exception("claude daily: reading the code reports failed")
+                if gmail and time.monotonic() - last_mail >= self._settings.poll_s:
+                    last_mail = time.monotonic()
+                    try:
+                        await asyncio.to_thread(self.poll_once)
+                    except Exception:
+                        LOGGER.exception("claude daily: cycle failed; trying again next time")
+                await asyncio.sleep(min(_CODE_POLL_S, self._settings.poll_s))
         except asyncio.CancelledError:
             LOGGER.info("claude daily cancelled")
             raise
@@ -103,6 +138,43 @@ class ClaudeDailyIntake:
             except Exception as exc:  # noqa: BLE001 - one letter must not stop the others
                 LOGGER.warning("claude daily: cannot read %s (%s)", message_id, type(exc).__name__)
         return kept
+
+    def read_code_reports(self) -> int:
+        """Read each new or changed day report the Mac shipped; how many were read.
+
+        A report file is read once per content: the entries are committed first, then the bytes
+        are kept under ``imports/claude_code_daily/`` (named by SHA-256), so a crash in between is
+        mended next cycle and a revision is never read twice. Oldest first, so the report written
+        last is the one added last (:func:`imports.latest_daily`: the newest stands for the day).
+        An edit back to an earlier text is not a new revision and does not stand.
+        """
+        shipped = self._dir / CODE_DAY_SOURCE / FILES_DIRNAME
+        read = 0
+        for path in sorted(shipped.glob("*.md"), key=lambda p: (p.stat().st_mtime_ns, p.name)):
+            data = path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            if any((self._dir / CODE_SOURCE).glob(f"{digest[:16]}-*")):
+                continue
+            try:
+                parsed = list(claude_daily(
+                    path.name, data, int(path.stat().st_mtime * 1000), CODE_SOURCE,
+                ))
+            except ValueError as exc:
+                LOGGER.warning(
+                    "claude daily: report %s cannot be read (%s)", digest[:16], type(exc).__name__,
+                )
+                continue
+            counts = imports.Counts()
+            with contextlib.closing(open_memory_db(self._db)) as conn:
+                imports.add_entries(conn, digest, parsed, counts)
+                conn.commit()
+            imports.keep_raw(self._dir, CODE_SOURCE, path.name, data)
+            read += 1
+            LOGGER.info(
+                "claude daily: code report %s read: %d entries added, %d already held",
+                digest[:16], counts.added, counts.held,
+            )
+        return read
 
     def _unkept(self, servers: McpServers) -> list[str]:
         """Listed ids with no raw file yet, oldest first."""

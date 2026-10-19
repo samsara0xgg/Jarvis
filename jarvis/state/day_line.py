@@ -41,8 +41,10 @@ Each source folds on its own and a source that raises leaves its items out (:fun
   point (amount, direction, counterparty, item), and each conversation with Claude as a span from
   its first to its last message of the window (the title as text), and each day's nightly letter
   on his Claude chats (ADR 0295) as kind ``claude_day``, a span over the chats' times with their
-  titles as text and ``chats`` their number; with no memory store it has nothing to read and says
-  nothing in ``missing``;
+  titles as text and ``chats`` their number, and each day's report on his Claude Code work
+  (ADR 0299) the same way, id ``claude-code-day-<date>``, ``source`` ``claude_code_daily``, the
+  projects' titles as text and ``projects`` their number; with no memory store it has nothing to
+  read and says nothing in ``missing``;
 - ``code``: his Claude Code sessions, from what the Mac terminal shipped (ADR 0294), in his lane:
   one item per session, from its first to its last message clipped to the day (a session across
   midnight is on both days under one id), with the best of its titles, its project, its account
@@ -653,6 +655,7 @@ def _import_items(
             conn, start_ms=window_start, end_ms=window_end, kinds=("payment", "message"),
         )
         days = imports.latest_daily(conn, window_start, window_end)
+        code_days = imports.latest_daily(conn, window_start, window_end, "claude_code_daily")
     items: list[dict[str, Any]] = []
     chats: dict[str, list[imports.Entry]] = defaultdict(list)
     for row in rows:
@@ -686,6 +689,19 @@ def _import_items(
             "source": "claude_daily",
             "text": "; ".join(row.fields["titles"]) or row.text[:120],
             "chats": int(row.fields["sections"]),
+        })
+    for row in code_days:  # the day's report on his Claude Code work (ADR 0299), by project
+        first, last = int(row.fields["start_ms"]), int(row.fields["end_ms"])
+        items.append({
+            "id": f"claude-code-day-{row.fields['date']}",
+            "lane": "you",
+            "kind": "claude_day",
+            "start_ms": first,
+            "end_ms": last,
+            "state": _state(first, last, now_ms),
+            "source": "claude_code_daily",
+            "text": "; ".join(row.fields["titles"]) or row.text[:120],
+            "projects": int(row.fields["sections"]),
         })
     for chat, messages in chats.items():
         first, last = min(m.at_ms for m in messages), max(m.at_ms for m in messages)

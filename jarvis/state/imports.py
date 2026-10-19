@@ -304,18 +304,22 @@ def entries(
         raise
 
 
-def latest_daily(conn: sqlite3.Connection, start_ms: int, end_ms: int) -> list[Entry]:
+def latest_daily(
+    conn: sqlite3.Connection, start_ms: int, end_ms: int, source: str = "claude_daily",
+) -> list[Entry]:
     """The day entries of the Claude daily letters (ADR 0295) in ``[start_ms, end_ms)``, one a day.
 
-    A day written again is a new entry; the one added last stands for the day. Oldest day first.
+    ``source`` is ``claude_daily`` (the letter on his chats) or ``claude_code_daily`` (the report
+    on his Claude Code work, ADR 0299). A day written again is a new entry; the one added last
+    stands for the day. Oldest day first.
     """
     sql = (
         f"SELECT {_COLUMNS} FROM import_entries "  # noqa: S608 - fixed clauses, bound values
-        "WHERE source = 'claude_daily' AND kind = 'daily' AND at_ms >= ? AND at_ms < ? "
+        "WHERE source = ? AND kind = 'daily' AND at_ms >= ? AND at_ms < ? "
         "ORDER BY rowid"
     )
     try:
-        rows = map(_entry, conn.execute(sql, (start_ms, end_ms)))
+        rows = map(_entry, conn.execute(sql, (source, start_ms, end_ms)))
         days = {str(one.fields.get("date")): one for one in rows}
     except sqlite3.OperationalError as exc:
         if "no such table" in str(exc):

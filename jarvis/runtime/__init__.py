@@ -754,7 +754,8 @@ class JarvisRuntime:
     mail_codes: MailCodes | None = None
     # ADR 0274: the poller that reads his mail for things he has to go to. None = off.
     commitments: CommitmentIntake | None = None
-    # ADR 0295: the poller that reads the nightly letter on his Claude chats. None = off.
+    # ADR 0295, 0299: the poller of the nightly letter on his Claude chats (Gmail part off unless
+    # enabled) and reader of the Mac's day report on his Claude Code work. None = hand-assembled.
     claude_daily: ClaudeDailyIntake | None = None
     # ADR 0161: the situation TimeSink last recorded, read on demand. None = off.
     moment: Moment | None = None
@@ -1940,11 +1941,18 @@ def _commitments(  # noqa: PLR0913 - the config and the poller's collaborators
 def _claude_daily(
     config: Mapping[str, Any], config_path: Path, connections: PluginConnections, db_path: Path,
     root: Path,
-) -> ClaudeDailyIntake | None:
-    """``claude_daily`` (ADR 0295): off unless enabled; bad values stop boot."""
+) -> ClaudeDailyIntake:
+    """``claude_daily`` (ADR 0295): Gmail letters off unless enabled; bad values stop boot.
+
+    Always built (ADR 0299): the Mac's day report is read whether or not Gmail letters are on.
+    """
     block = config.get("claude_daily")
     if not isinstance(block, Mapping) or block.get("enabled") is not True:
-        return None
+        # Gmail letters are off, but the Mac's day report of his Claude Code work (ADR 0299) is
+        # still read from the imports archive: an intake that never touches Gmail.
+        return ClaudeDailyIntake.code_reports_only(
+            connections, db_path, root / imports.IMPORTS_DIRNAME,
+        )
     where = f"runtime: {config_path} claude_daily"
     numbers = {}
     for key, low, high in (("poll_s", 60, None), ("max_letters_per_cycle", 1, 200)):

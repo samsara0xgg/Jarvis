@@ -498,8 +498,13 @@ def _daily_clock(day: date, hour: str, minute: str, zone: ZoneInfo) -> int | Non
         return None
 
 
-def claude_daily(name: str, data: bytes, fallback_ms: int) -> Iterator[Parsed]:
+def claude_daily(
+    name: str, data: bytes, fallback_ms: int, source: str = "claude_daily",
+) -> Iterator[Parsed]:
     """A day's letter of his Claude chats (ADR 0295): one entry for the day, one per chat section.
+
+    The same shape is the day's report of his Claude Code work (ADR 0299, ``source``
+    ``claude_code_daily``): its sections are projects.
 
     Read leniently: a letter with no header, no sections or neither is still one whole-day entry
     (``parsed`` false). The day comes from the ``date:`` line, else from ``name`` (the subject),
@@ -543,7 +548,7 @@ def claude_daily(name: str, data: bytes, fallback_ms: int) -> Iterator[Parsed]:
                     end = finish if finish >= begin else finish + 86_400_000
         whole = f"{title}\n{body}".strip()
         chats.append(Parsed(
-            "claude_daily", f"chat:{day}:{ident}:{_squash(whole)}", f"section {n}", start,
+            source, f"chat:{day}:{ident}:{_squash(whole)}", f"section {n}", start,
             zone_name, "daily_chat", whole,
             {**fields, "title": title, "date": str(day), "timezone": zone_name, "end_ms": end},
         ))
@@ -551,7 +556,7 @@ def claude_daily(name: str, data: bytes, fallback_ms: int) -> Iterator[Parsed]:
         noon, noon,
     )
     yield Parsed(
-        "claude_daily", f"day:{day}:{_squash(text)}", "day", noon, zone_name, "daily", text,
+        source, f"day:{day}:{_squash(text)}", "day", noon, zone_name, "daily", text,
         {
             **header, "date": str(day), "timezone": zone_name, "parsed": bool(sections),
             "sections": len(chats), "titles": [c.fields["title"] for c in chats],
