@@ -59,6 +59,9 @@ struct DayReply: Decodable {
     let highlights: [Highlight]
     /// the all-day events of the day
     let labels: [DayLabel]
+    /// the day's weather and what Health reported for it (null from a brain that does not serve them, or when it could not read them)
+    let weather: DayWeather?
+    let summary: DaySummary?
 
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: Keys.self)
@@ -74,12 +77,33 @@ struct DayReply: Decodable {
         line = (try? c.decodeIfPresent(DayLine.self, forKey: .line)) ?? nil
         labels = ((try? c.decodeIfPresent([Lossy<DayLabel>].self, forKey: .labels)) ?? nil)?.compactMap(\.value) ?? []
         highlights = ((try? c.decodeIfPresent([Lossy<Highlight>].self, forKey: .highlights)) ?? nil)?.compactMap(\.value) ?? []
+        weather = (try? c.decodeIfPresent(DayWeather.self, forKey: .weather)) ?? nil
+        summary = (try? c.decodeIfPresent(DaySummary.self, forKey: .summary)) ?? nil
     }
-    private enum Keys: String, CodingKey { case date, tz, start_ms, end_ms, now_ms, items, missing, line, highlights, labels }
-    private struct Lossy<T: Decodable>: Decodable {
-        let value: T?
-        init(from d: Decoder) { value = try? T(from: d) }
-    }
+    private enum Keys: String, CodingKey { case date, tz, start_ms, end_ms, now_ms, items, missing, line, highlights, labels, weather, summary }
+}
+
+/// A value that is read when it can be and is nil when it cannot: one element of a list that has a shape this phone does not know costs that element only.
+struct Lossy<T: Decodable>: Decodable {
+    let value: T?
+    init(from d: Decoder) { value = try? T(from: d) }
+}
+
+/// The day's weather in °C (`weather` of `GET /inherent/day`): WeatherKit's condition as the brain words it (`mostly cloudy`), the high and the low, and the sun's rise and set in
+/// epoch milliseconds. Any of them may be missing.
+struct DayWeather: Decodable {
+    @Soft var condition: String?
+    @Soft var high: Double?
+    @Soft var low: Double?
+    @Soft var sunrise_ms: Int64?
+    @Soft var sunset_ms: Int64?
+}
+
+/// What Health reported for the day (`summary`); a value it did not have is nil.
+struct DaySummary: Decodable {
+    @Soft var steps: Double?
+    @Soft var resting_hr: Double?
+    @Soft var hrv: Double?
 }
 
 /// Her sentence to him about the day (`line` of `GET /inherent/day`). `draft` is true while the day is still going; the screen shows both alike.
@@ -101,26 +125,55 @@ struct Highlight: Decodable, Equatable {
     let by: String?
 }
 
-/// One item of a day (docs/spec.html, `GET /inherent/day`): the common fields plus whichever the kind carries.
+/// One item of a day (docs/spec.html, `GET /inherent/day`): the common fields plus whichever the kind carries. A field that is not the shape this phone knows is nil, so an item
+/// with one bad value is still the item; only one without an id, a kind or a start (or with an end that is not a time) is not one, and is left out with the list's others.
 struct DayItem: Decodable {
-    struct Top: Decodable { let name: String; let seconds: Double }
+    struct Top: Decodable {
+        let name: String
+        let seconds: Double
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: Keys.self)
+            name = try c.decode(String.self, forKey: .name)
+            seconds = (try? c.decodeIfPresent(Double.self, forKey: .seconds)) ?? 0
+        }
+        private enum Keys: String, CodingKey { case name, seconds }
+    }
     let id: String, lane: String, kind: String, state: String
     let start_ms: Int64
     let end_ms: Int64?
-    let place: String?, activity: String?, text: String?, app: String?
-    let minutes: Double?, active_s: Double?, turns: Int?
-    let fired: Bool?, acknowledged: Bool?
-    let projects: [Top]?, apps: [Top]?
+    @Soft var place: String?
+    @Soft var activity: String?
+    @Soft var text: String?
+    @Soft var app: String?
+    @Soft var minutes: Double?
+    @Soft var active_s: Double?
+    @Soft var turns: Int?
+    @Soft var fired: Bool?
+    @Soft var acknowledged: Bool?
+    @SoftList var projects: [Top]?
+    @SoftList var apps: [Top]?
     /// a stay inside a place he keeps (spec: `kept_place`); `place` stays the phone's own words
-    let kept_place: KeptPlace?
+    @Soft var kept_place: KeptPlace?
+    /// where a stay was (the picture of a stay carries its covering stay's too)
+    @Soft var lat: Double?
+    @Soft var lng: Double?
+    @Soft var accuracy_m: Double?
     /// an Outlook event or a pinned bus departure (kinds `event` and `departure`): the title ("route · stop" for a bus), and where and when the bus goes
-    let title: String?, route: String?, board_stop: String?, to: String?
-    let leave_at_ms: Int64?
+    @Soft var title: String?
+    @Soft var route: String?
+    @Soft var board_stop: String?
+    @Soft var to: String?
+    @Soft var leave_at_ms: Int64?
     /// an event he has to go to, from his mail or his own words (ADR 0274): where it came from (`mail`, `said` or `plan`, none for a calendar event), whether he confirmed it, whether it is private (counselling, legal, health), and `place` as above
-    let source: String?, confirmed: Bool?, `private`: Bool?
-    /// what a picture says (kind `picture`) and the stop a bus ride ended at (kind `ride`). Newer than the rest: one that cannot be read costs only itself, not the item.
+    @Soft var source: String?
+    @Soft var confirmed: Bool?
+    @Soft var `private`: Bool?
+    /// what a picture says (kind `picture`) and the stop a bus ride ended at (kind `ride`), and how a ride ended and whether its bus is followed live. Newer than the rest.
     @Soft var note: String?
+    @Soft var attachment: String?
     @Soft var alight_stop: String?
+    @Soft var ended_reason: String?
+    @Soft var credit: String?
     /// what he handed over: a payment (`amount`, `currency`, `direction` out or in, `counterparty`; `text` is what it was for) and the Claude chats (`messages` in a chat, `chats` in a day's letter)
     @Soft var amount: Amount?
     @Soft var currency: String?
@@ -128,6 +181,23 @@ struct DayItem: Decodable {
     @Soft var counterparty: String?
     @Soft var messages: Int?
     @Soft var chats: Int?
+    /// what Health knew of a night (every stage sample that overlaps it) and of a workout
+    @SoftList var stages: [SleepStage]?
+    @Soft var energy_kcal: Double?
+    @Soft var distance_m: Double?
+    @Soft var avg_hr: Double?
+    /// a Claude Code session (`title` above, its latest recap as `detail`)
+    @Soft var project: String?
+    @Soft var account: String?
+    @Soft var session_id: String?
+    @Soft var detail: String?
+}
+
+/// One stretch of a night as Health recorded it: `core`, `deep`, `rem`, `awake`, `in_bed` or `unspecified`, from and to in epoch milliseconds
+struct SleepStage: Decodable, Equatable {
+    let stage: String
+    let start_ms: Int64
+    let end_ms: Int64
 }
 
 /// An amount of money: the brain writes `"12.40"` (a string, two decimals); a number is read too. Kept in hundredths, so a sum stays exact.
@@ -155,8 +225,15 @@ struct Amount: Decodable, Equatable {
     init(wrappedValue: T?) { self.wrappedValue = wrappedValue }
     init(from d: Decoder) throws { wrappedValue = try? T(from: d) }
 }
+/// A list that is read element by element, so an element with a shape this phone does not know costs that element only; a value that is not a list at all is nil.
+@propertyWrapper struct SoftList<T: Decodable>: Decodable {
+    var wrappedValue: [T]?
+    init(wrappedValue: [T]?) { self.wrappedValue = wrappedValue }
+    init(from d: Decoder) throws { wrappedValue = (try? [Lossy<T>](from: d))?.compactMap(\.value) }
+}
 extension KeyedDecodingContainer {
     func decode<T>(_ type: Soft<T>.Type, forKey key: Key) throws -> Soft<T> { (try? decodeIfPresent(type, forKey: key)) ?? Soft(wrappedValue: nil) }
+    func decode<T>(_ type: SoftList<T>.Type, forKey key: Key) throws -> SoftList<T> { (try? decodeIfPresent(type, forKey: key)) ?? SoftList(wrappedValue: nil) }
 }
 
 struct KeptPlace: Decodable, Equatable {
