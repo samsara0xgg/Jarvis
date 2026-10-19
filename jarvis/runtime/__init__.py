@@ -154,7 +154,6 @@ from jarvis.execution.path_resolver import (
 )
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.places_api import turn_places
-from jarvis.execution.schedule_tool import build_schedule_tool
 from jarvis.execution.tools import (
     DEFAULT_SCREEN_MAX_WIDTH_PX,
     DEFAULT_WEB_FETCH_MAX_BYTES,
@@ -1938,6 +1937,17 @@ def _commitments(  # noqa: PLR0913 - the config and the poller's collaborators
 _DAY_MINUTES: Final[int] = 24 * 60
 
 
+def _remind_before_min(config: Mapping[str, Any]) -> int:
+    """``commitments.remind_before_min``, how long before it a thing he goes to rings; else 60."""
+    block = config.get("commitments")
+    before = block.get("remind_before_min") if isinstance(block, Mapping) else None
+    if isinstance(before, int | float) and not isinstance(before, bool) and (
+        1 <= before <= _DAY_MINUTES
+    ):
+        return int(before)
+    return 60
+
+
 def _things_ledger(
     config: Mapping[str, Any], event_log: Path, db_path: Path, zone: tzinfo,
 ) -> ThingsLedger:
@@ -1946,12 +1956,7 @@ def _things_ledger(
     A carried-in commitment rings ``commitments.remind_before_min`` ahead, else 60 minutes. A
     carry-in that fails is logged and tried again by the daemon's rings pass.
     """
-    block = config.get("commitments")
-    before = block.get("remind_before_min") if isinstance(block, Mapping) else None
-    minutes = 60
-    if isinstance(before, int | float) and not isinstance(before, bool):
-        minutes = int(before) if 1 <= before <= _DAY_MINUTES else minutes
-    ledger = ThingsLedger(event_log, db_path, zone, minutes)
+    ledger = ThingsLedger(event_log, db_path, zone, _remind_before_min(config))
     try:
         ledger.carry_in()
     except Exception:
@@ -2079,12 +2084,6 @@ def _register_archive(
 def _register_my_day(registry: ToolRegistry, sources: LedgerSources) -> None:
     """``my_day`` (ADR 0244): today and what he does now, a day, a span, one project."""
     for tool in build_my_day_tool(sources):
-        registry.register(tool)
-
-
-def _register_schedule(registry: ToolRegistry, home: Home, zone: tzinfo) -> None:
-    """``my_schedule`` (ADR 0248): the calendar and to-dos Home reads, reminders, a pinned bus."""
-    for tool in build_schedule_tool(home.graph, zone):
         registry.register(tool)
 
 
@@ -3265,6 +3264,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         highlight_marker=_highlight_marks(full_config, memory, paths, device).mark,
         local_zone=local_zone,
         plan_day_ends=day_ends_of(full_config.get("day_plan")),
+        ring_before_min=_remind_before_min(full_config),
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(full_config),
         web_search_max_results=web_search_max_results,
@@ -3445,7 +3445,6 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             paths.artifacts_root / ATTACHMENTS_DIRNAME,
         ),
     )
-    _register_schedule(registry, home, local_zone)
     plugin_connections.refresh_search()  # ADR 0247: every built-in tool is registered now
     attachments = Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME)
     picture_files = PictureFiles(attachments, memory_db=memory.db_path)

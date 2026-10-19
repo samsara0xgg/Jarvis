@@ -166,7 +166,8 @@ def test_one_read_holds_every_card_and_the_answers_stay_on_their_own_routes(
         assert body["clarification"] == CLARIFICATION
         assert body["plugin_request"] == PLUGIN_REQUEST
         (card,) = body["notices"]["notices"]
-        assert (card["title"], card["level"]) == ("stand up", "card")
+        rang = (reminders.start + timedelta(minutes=1)).astimezone(reminders.zone)
+        assert (card["title"], card["level"]) == (f"{rang:%H:%M} stand up", "card")
         assert body["notices"]["departure"] is None
 
         (request,) = body["claude_requests"]

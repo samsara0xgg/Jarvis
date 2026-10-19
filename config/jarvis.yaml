@@ -1060,8 +1060,8 @@ tools:
     # ADR 0127 — 这些工具（mcp__<server>__<tool>）不排在 tool_search 后面，
     # 一开始就在模型的菜单上。名字对不上任何已连接的工具就什么也不做。出厂一个都
     # 不列：邮件的读取是内置的 mail 工具（ADR 0242），日程、待办的读取是内置的
-    # my_schedule 工具（ADR 0248），原来的 MCP 读取留在 tool_search 后面，
-    # tool_search 找到它们时指向这两个内置工具。
+    # schedule 工具（ADR 0299，日历和待办由镜像读进账本），原来的 MCP 读取留在
+    # tool_search 后面，tool_search 找到它们时指向这两个内置工具。
     always_loaded: []
     servers: {}
     # 例：

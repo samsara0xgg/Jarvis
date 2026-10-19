@@ -23,9 +23,11 @@ ALIASES = {
     "mcp__gmail__gmail_get": "mail",
 }
 SCHEDULE = {
-    "mcp__microsoft__get-calendar-view": "my_schedule",
-    "mcp__microsoft__list-todo-task-lists": "my_schedule",
-    "mcp__microsoft__list-todo-tasks": "my_schedule",
+    "mcp__microsoft__get-calendar-view": "schedule",
+    "mcp__microsoft__list-todo-task-lists": "schedule",
+    "mcp__microsoft__list-todo-tasks": "schedule",
+    "my_schedule": "schedule",
+    "create_memo": "schedule",
 }
 REQUEST: dict[str, Any] = {"messages": [{"role": "user", "content": "x"}]}
 
@@ -47,15 +49,18 @@ def _line(name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
          (False, "FAIL(mail)")),
         ({"ok": ["text"], "bad": ["mcp__gmail__gmail_get"]}, ("mail", {"read": "m1"}), None,
          (False, "FAIL(mail)")),
-        # The three Microsoft reads folded into my_schedule (ADR 0248).
-        ({"ok": ["mcp__microsoft__get-calendar-view"]}, ("my_schedule", {"date": "tomorrow"}),
+        # The Microsoft reads, my_schedule and the memo tools folded into schedule (ADR 0299).
+        ({"ok": ["mcp__microsoft__get-calendar-view"]}, ("schedule", {"at": "tomorrow"}),
          SCHEDULE, (True, "pass")),
-        ({"ok": ["mcp__microsoft__list-todo-tasks"]}, ("my_schedule", {}), SCHEDULE,
+        ({"ok": ["mcp__microsoft__list-todo-tasks"]}, ("schedule", {}), SCHEDULE,
          (True, "pass")),
-        ({"ok": ["mcp__microsoft__get-calendar-view"]}, ("my_schedule", {}), None,
-         (False, "FAIL(my_schedule)")),
-        ({"ok": ["text"], "bad": ["mcp__microsoft__get-calendar-view"]}, ("my_schedule", {}),
-         SCHEDULE, (False, "FAIL(my_schedule)")),
+        ({"ok": ["my_schedule"]}, ("schedule", {}), SCHEDULE, (True, "pass")),
+        ({"ok": ["create_memo"]}, ("schedule", {"action": "add", "what": "x"}), SCHEDULE,
+         (True, "pass")),
+        ({"ok": ["mcp__microsoft__get-calendar-view"]}, ("schedule", {}), None,
+         (False, "FAIL(schedule)")),
+        ({"ok": ["text"], "bad": ["mcp__microsoft__get-calendar-view"]}, ("schedule", {}),
+         SCHEDULE, (False, "FAIL(schedule)")),
         # A name the file does not mention is read as it is.
         ({"ok": ["weather"]}, ("weather", {}), ALIASES, (True, "pass")),
         ({"ok": ["weather"]}, ("mail", {}), ALIASES, (False, "FAIL(mail)")),
@@ -91,21 +96,23 @@ def test_two_rules_for_old_names_that_merged_both_apply() -> None:
 
 
 def test_a_repeat_of_a_call_made_under_the_old_name_is_still_a_repeat() -> None:
-    """History holds `create_memo`; the same memo through `keep` is the repeat the case forbids."""
-    saved = {"text": "fix the emoji bug"}
+    """History holds `create_memo`; the same memo through `schedule` is the repeat it forbids."""
+    saved = {"what": "fix the emoji bug"}
     request: dict[str, Any] = {"input": [
         {"type": "function_call", "call_id": "c1", "name": "create_memo",
          "arguments": json.dumps(saved)},
         {"type": "function_call_output", "call_id": "c1", "output": "{}"},
     ]}
     expect = {"ok": ["text"], "no_identical_repeat": True}
-    aliases = {"create_memo": "keep"}
-    assert tool_exam.judge(expect, _line("keep", saved), request, aliases) == (
-        False, "FAIL(keep+repeat:keep)",
+    aliases = {"create_memo": "schedule"}
+    assert tool_exam.judge(expect, _line("schedule", saved), request, aliases) == (
+        False, "FAIL(schedule+repeat:schedule)",
     )
-    assert tool_exam.judge(expect, _line("keep", saved), request, None) == (False, "FAIL(keep)")
-    assert tool_exam.judge(expect, _line("keep", {"text": "other"}), request, aliases) == (
-        False, "FAIL(keep)",
+    assert tool_exam.judge(expect, _line("schedule", saved), request, None) == (
+        False, "FAIL(schedule)",
+    )
+    assert tool_exam.judge(expect, _line("schedule", {"what": "other"}), request, aliases) == (
+        False, "FAIL(schedule)",
     )
 
 

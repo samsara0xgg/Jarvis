@@ -111,7 +111,7 @@ _TOOL_LINES: Final = (
     ("mcp__gmail__", "commentary.tool.mail"),
     ("mail", "commentary.tool.mail"),
     ("mcp__microsoft__", "commentary.tool.calendar"),
-    ("my_schedule", "commentary.tool.calendar"),
+    ("schedule", "commentary.tool.calendar"),
 )
 """Tool name prefix -> the phrase key of what the tool does; any other tool says
 ``commentary.tool.generic``."""

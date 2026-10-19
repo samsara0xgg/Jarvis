@@ -433,7 +433,7 @@ def _batch(
     return result.response_plan.text, conn
 
 
-MEMO = ("keep", {"text": "明天开会"})
+MEMO = ("schedule", {"action": "add", "what": "明天开会"})
 
 
 def test_an_identical_repeat_is_not_run_and_gets_the_note(tmp_path: Path) -> None:
@@ -464,11 +464,11 @@ def test_a_repeat_of_a_call_that_failed_names_the_fix(tmp_path: Path) -> None:
 
 
 def test_the_same_memo_twice_is_saved_once(tmp_path: Path) -> None:
-    """A write repeated unchanged (keep, the same text) is refused too."""
+    """A write repeated unchanged (schedule, the same words) is refused too."""
     model = _ScriptedModel(MEMO, MEMO, "记好了。")
     _, conn = _batch(tmp_path, model)
     try:
-        assert _count(conn, "memo.captured") == 1
+        assert _count(conn, "thing.added") == 1
         assert _tool_texts(model.requests[-1][0])[1] == REPEATED_CALL
         assert _count(conn, "turn.guard_fired") == 1
     finally:
@@ -498,7 +498,7 @@ def test_a_claim_with_no_call_goes_back_once_and_the_call_follows(tmp_path: Path
         (note,) = _notes(second, DID)
         assert note["role"] == "user"
         assert second[second.index(note) - 1] == {"role": "assistant", "content": "记下了。"}
-        assert _count(conn, "memo.captured") == 1
+        assert _count(conn, "thing.added") == 1
         assert _guards(conn) == [{"turn_id": "T_guard", "guard": "unbacked", "said": DID}]
     finally:
         conn.close()
@@ -519,7 +519,7 @@ def test_a_did_line_in_the_history_is_no_backing_for_a_claim_in_this_turn(tmp_pa
         assert history[-1] in model.requests[0][0]
         assert len(_notes(model.requests[1][0], DID)) == 1
         assert _guards(conn) == [{"turn_id": "T_guard", "guard": "unbacked", "said": DID}]
-        assert _count(conn, "memo.captured") == 1
+        assert _count(conn, "thing.added") == 1
     finally:
         conn.close()
 
@@ -777,7 +777,7 @@ def test_the_spoken_route_never_speaks_a_bounced_claim(
         assert _segments(conn) == spoken  # one answer went out, in the chunks and in the plan
         assert len(model.sent) == 3
         assert _notes(model.sent[1], DID)
-        assert _count(conn, "memo.captured") == 1
+        assert _count(conn, "thing.added") == 1
         assert _guards(conn) == [{"turn_id": "T_say", "guard": "unbacked", "said": DID}]
     finally:
         conn.close()

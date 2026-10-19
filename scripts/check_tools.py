@@ -47,8 +47,6 @@ PRE_STANDARD: dict[str, frozenset[str]] = {
         "end_night_run": "the-user",
         "get_briefing": "undescribed",
         "job_ledger": "the-user",
-        "keep": "long not-english",
-        "kept": "undescribed",
         "list_plugins": "the-user",
         "look_at_picture": "the-user",
         "map_search": "long",

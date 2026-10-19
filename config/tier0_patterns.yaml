@@ -76,19 +76,20 @@
     query: "jarvis"
     app: "vscode"
   template: tier0.opening_in_vscode
-# Memo inbox slash commands. Both skip the LLM: `/note` captures the
-# rest of the line verbatim (the Shift+Return voice path arrives already
-# prefixed by the daemon), `/notelist` reads back what `kept` finds (the newest eight, ADR 0245)
-# — its summary IS the answer, so the row raises the spoken-preview cap.
+# Memo inbox slash commands. Both skip the LLM: `/note` adds the rest of the line verbatim
+# (the Shift+Return voice path arrives already prefixed by the daemon) as a thing to do with no
+# time, `/notelist` reads what `schedule` has open (the first eight, ADR 0299) — its summary IS
+# the answer, so the row raises the spoken-preview cap.
 - id: note_capture
   pattern: "^/note\\s+(.+)$"
-  tool: keep
+  tool: schedule
   args:
-    text: "$1"
+    action: add
+    what: "$1"
   template: tier0.note_captured
 - id: note_list
   pattern: "^/notelist$"
-  tool: kept
+  tool: schedule
   template: tier0.note_list
   max_spoken_bytes: 20000
 # ADR 0093: the night run, said the way the owner says it. Any other length or an

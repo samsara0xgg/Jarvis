@@ -171,24 +171,22 @@ def daily(tmp_path: Path) -> Iterator[DailyHarness]:
 
 
 def test_keep_writes_a_fact_and_says_so(daily: DailyHarness) -> None:
-    """kind=fact files a line in core memory; a topic replaces its item, the same text nothing."""
+    """``keep`` files a line in core memory; a topic replaces its item, the same text nothing."""
     tool = next(t for t in daily.tools if t.name == "keep")
-    assert tool.input_schema["properties"]["kind"]["enum"] == [
-        "memo", "reminder", "fact", "appointment",
-    ]
+    assert set(tool.input_schema["properties"]) == {"text", "topic", "section"}
 
-    saved = daily.call("keep", {"kind": "fact", "topic": "老板", "text": "Sam"})
+    saved = daily.call("keep", {"topic": "老板", "text": "Sam"})
     assert saved["summary"] == 'Saved to long-term memory: "老板: Sam".'
-    daily.call("keep", {"kind": "fact", "text": "口味 辣"})  # no topic: the text alone
+    daily.call("keep", {"text": "口味 辣"})  # no topic: the text alone
     assert _items(daily.memory) == {"经历": ["老板: Sam", "口味 辣"]}
 
-    again = daily.call("keep", {"kind": "fact", "topic": "老板", "text": "Sam"})
+    again = daily.call("keep", {"topic": "老板", "text": "Sam"})
     assert again["summary"] == 'Already in long-term memory, nothing new: "老板: Sam".'
     assert len(_versions(daily.memory)) == 3  # migration + two writes
 
-    daily.call("keep", {"kind": "fact", "topic": "老板", "text": "Tom"})  # the topic is replaced
+    daily.call("keep", {"topic": "老板", "text": "Tom"})  # the topic is replaced
     assert _items(daily.memory) == {"经历": ["老板: Tom", "口味 辣"]}
-    too_long = daily.call("keep", {"kind": "fact", "text": "x" * 300})
+    too_long = daily.call("keep", {"text": "x" * 300})
     assert too_long["code"] == "too_long"
     assert len(_versions(daily.memory)) == 4
 

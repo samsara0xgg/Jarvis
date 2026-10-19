@@ -73,11 +73,12 @@ _KIND: Final[dict[str, str]] = {
     "list_memos": "memo",
     "remember": "remember",
     "keep": "remember",
-    "kept": "memo",
+    "kept": "records",
     "search_records": "records",
     "conversation": "records",
     "my_day": "day",
     "my_schedule": "calendar",
+    "schedule": "calendar",
     "search_notes": "records",
     "read_file": "file",
     "write_file": "file",
@@ -98,13 +99,24 @@ _HIDDEN: Final = frozenset(
 """Plumbing and cards: a call to one of these is not a step he would name."""
 
 
+def _by_arguments(tool: str, arguments: object) -> str | None:
+    """The kind a call's own arguments decide, or None when the tool alone does."""
+    given = _arguments(arguments)
+    if tool == "bus" and _RIDE_ARGUMENTS & given.keys():
+        return "ride"
+    if tool == "schedule" and given.get("action") not in (None, "", "read"):
+        return "calendar_edit"
+    return None
+
+
 def kind(tool: str, arguments: object = None) -> str:
     """The language-table kind of a tool: ``step.<kind>`` names it; ``generic`` is no kind.
 
     ``bus`` is a ride when the call pins, rides or sets a stop, else a transit look (ADR 0246).
+    ``schedule`` changes the calendar when its action is not a read (ADR 0299).
     """
-    if tool == "bus" and _RIDE_ARGUMENTS & _arguments(arguments).keys():
-        return "ride"
+    if decided := _by_arguments(tool, arguments):
+        return decided
     if known := _KIND.get(tool):
         return known
     parts = tool.split("__")

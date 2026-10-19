@@ -4008,6 +4008,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     surroundings: Surroundings | None = None,
     local_zone: tzinfo | None = None,
     plan_day_ends: clock_time | None = None,
+    ring_before_min: int = 60,
 ) -> ToolRegistry:
     """Assemble the default ToolRegistry.
 
@@ -4092,6 +4093,8 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             address or `lat,lng`; ADR 0234).
         local_zone: the zone `places` counts days in (`None`: the machine's).
         plan_day_ends: `day_plan.day_ends`, where `plan` counts the day's time left (`None`: 23:30).
+        ring_before_min: `commitments.remind_before_min` — how long before it a thing he goes to
+            rings, when `schedule` adds one and `remind` is left out.
         transit_offers: where `bus` leaves its options, for the chat card (ADR 0205) and `pin`.
         here_location: ADR 0194 — one fresh read of this Mac's location (`lat`, `lng`,
             `accuracy_m`, optional `place`); gives `bus` its `here` and registers
@@ -4271,6 +4274,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     from jarvis.execution.place_tools import build_place_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.places_api import PlaceBook  # noqa: PLC0415 — same cycle.
     from jarvis.execution.plan_tool import build_plan_tool  # noqa: PLC0415 — same cycle.
+    from jarvis.execution.schedule_tool import build_schedule_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.voice_tools import build_voice_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.weather_tool import build_weather_tool  # noqa: PLC0415 — same cycle.
 
@@ -4279,6 +4283,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     found_places = PlaceBook()  # what `map_search` found, so `bus` can name a place_id (ADR 0283)
     for conversation_tool in (
         *build_keep_tools(memory_db_path, local_zone),
+        *build_schedule_tool(local_zone, ring_before_min),
         *build_plan_tool(local_zone, day_ends=plan_day_ends),
         *build_voice_tool(voice_settings),
         *build_weather_tool(weather_lookup, here_location, here_phone),

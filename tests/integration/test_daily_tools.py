@@ -629,7 +629,7 @@ def test_knowledge_search_pages_one_ranked_snapshot(daily: DailyHarness) -> None
 def test_write_tools_say_writes_need_an_explicit_request(daily: DailyHarness) -> None:
     """ADR 0146: during conversation the model files a fact only when he states it or asks."""
     described = {t.name: t for t in daily.tools if isinstance(t, Tool)}
-    kind = described["keep"].input_schema["properties"]["kind"]["description"]
-    assert "he states or asks you to remember" in kind
-    assert "never what he is doing" in kind
+    keep = described["keep"].description
+    assert "he states a lasting fact about himself or asks you to remember one" in keep
+    assert "nor for what he is doing or where he is right now" in keep
     assert "unless the user explicitly asks" in described["save_knowledge"].description

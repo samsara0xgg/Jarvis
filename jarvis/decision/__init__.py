@@ -978,8 +978,8 @@ def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None
 
 _ABOUT_TAILS: Final[Mapping[str, str]] = {
     "reminder": (
-        'kept(kind="reminder") has its full text; to move it, keep the new one first, '
-        "then keep(cancel=<this id>)."
+        "schedule(what=<its words>) finds the thing it rings for; to move or cancel it, call "
+        "schedule with action move or cancel and that thing's id."
     ),
     "event": "read it by this id with the calendar tool before changing it.",
     "picture": (
@@ -1017,7 +1017,8 @@ def _about_line(packet: SituationPacket, record: str | None = None) -> str | Non
         tail = f"Its list is {list_id} and its task is {task_id}."
     elif kind == "event" and item_id.startswith("commitment-"):
         tail = (
-            'kept(kind="appointment") has it; to drop it, call keep(cancel=<the id before "@">).'
+            'schedule(action="cancel", id=<this id>) cancels it; schedule(action="move", '
+            "id=<this id>, at=<new time>) moves it."
         )
     else:
         tail = _ABOUT_TAILS.get(kind, _ABOUT_DAY_TAIL)

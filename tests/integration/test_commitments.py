@@ -10,7 +10,6 @@ fake model (no key, no network, no provider). The examples are invented.
   neither, a reminder mail moves or changes the thing it is about and does not duplicate, a cancel
   closes it, one unreadable mail does not stop the cycle, a backfill is paged and read oldest
   first; the rings are the ledger's and nothing arms ``reminder-cm*``;
-- the readers: ``my_schedule`` and ``keep``.
 """
 
 # ruff: noqa: RUF001 - the letters under test include Chinese, with fullwidth punctuation
@@ -26,15 +25,13 @@ import pytest
 
 from jarvis.decision import commitment_mail as triage
 from jarvis.deployment import bootstrap_runtime
-from jarvis.execution.keep_tool import build_keep_tools
-from jarvis.execution.schedule_tool import build_schedule_tool
-from jarvis.execution.tools import ActionLifecycle, ToolError, ToolRegistry
+from jarvis.execution.tools import ToolError
 from jarvis.runtime.commitment_intake import CommitmentIntake, CommitmentSettings
-from jarvis.shared import ActionRequest, CallerPrincipal, lang
+from jarvis.shared import lang
 from jarvis.state import commitments, things
 from jarvis.state import job_ledger as ledger
 from jarvis.state import reminders as reminder_state
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.event_log import open_event_log
 from jarvis.state.memory_db import open_memory_db
 
 if TYPE_CHECKING:
@@ -599,159 +596,6 @@ def test_an_update_that_gives_a_day_an_hour_swaps_its_ring_for_the_hour_before(l
 # --- the readers ---------------------------------------------------------------------------
 
 
-def _no_microsoft(_tool: str, _args: Mapping[str, Any]) -> list[dict[str, Any]]:
-    msg = "microsoft is not connected"
-    raise LookupError(msg)
-
-
-def _schedule(log: _Log, **args: Any) -> dict[str, Any]:  # noqa: ANN401 - the model's arguments
-    (tool,) = build_schedule_tool(_no_microsoft, ZONE, lambda: NOW)
-    registry = ToolRegistry()
-    registry.register(tool)
-    request = ActionRequest(
-        action_id="S1", tool_name="my_schedule", target_entity_ref=None,
-        caller_principal=CallerPrincipal.JARVIS_LLM, risk_level="L0", arguments=args,
-        authorization_lease=None, run_id=None, turn_id=None,
-    )
-    lifecycle = ActionLifecycle()
-    lifecycle.register("S1")
-    lifecycle.transition("S1", "authorized")
-    slot = registry.dispatch(request, log.conn, log.paths, lifecycle).slots[0]
-    assert slot.tool_output is not None
-    out: dict[str, Any] = json.loads(slot.tool_output)
-    return out
-
-
-def test_my_schedule_lists_appointments_with_where_they_came_from_and_if_confirmed(
-    log: _Log,
-) -> None:
-    """My schedule lists appointments with where they came from and if confirmed."""
-    mail = _record(_at(10, 14, 18, 30), place="Studio 4", link="https://meet.example/a")
-    said = _record(_at(10, 15, 10), title="Dentist", source="said", confirmed=True)
-    for one in (mail, said):
-        commitments.note(log.conn, one)
-    out = _schedule(log)
-    rows = {r["id"]: r for r in out["items"] if r["source"] in {"mail", "said"}}
-    assert rows[mail.commitment_id]["what"] == "Pottery class (from a mail, not confirmed yet)"
-    assert rows[mail.commitment_id]["confirmed"] is False
-    assert rows[mail.commitment_id]["where"] == "Studio 4"
-    assert rows[mail.commitment_id]["link"] == "https://meet.example/a"
-    assert rows[said.commitment_id]["what"] == "Dentist"
-    assert rows[said.commitment_id]["confirmed"] is True
-    assert "2 appointments" in out["summary"]
-    assert [r["what"].split(" (")[0] for r in out["items"]] == ["Pottery class", "Dentist"]
-    # Microsoft is not connected: that is named, and the appointments are still there
-    assert any("calendar" in line for line in out["missing"])
-    assert "appointments" in out["read"] or "reminders" in out["read"]
-
-
-# --- keep and kept -------------------------------------------------------------------------
-
-
-class _Keep:
-    def __init__(self, log: _Log) -> None:
-        self.log = log
-        self.registry = ToolRegistry()
-        for tool in build_keep_tools(None, ZONE, lambda: NOW.astimezone(UTC)):
-            self.registry.register(tool)
-        self.n = 0
-
-    def call(self, name: str, **args: Any) -> dict[str, Any]:  # noqa: ANN401 - the model's arguments
-        self.n += 1
-        action_id = f"K{self.n}"
-        request = ActionRequest(
-            action_id=action_id, tool_name=name, target_entity_ref=None,
-            caller_principal=CallerPrincipal.JARVIS_LLM, risk_level="L1", arguments=args,
-            authorization_lease=None, run_id=None, turn_id=None,
-        )
-        lifecycle = ActionLifecycle()
-        lifecycle.register(action_id)
-        lifecycle.transition(action_id, "authorized")
-        slot = self.registry.dispatch(request, self.log.conn, self.log.paths, lifecycle).slots[0]
-        assert slot.tool_output is not None
-        out: dict[str, Any] = json.loads(slot.tool_output)
-        return out
-
-
-def test_keep_makes_a_confirmed_appointment_and_kept_lists_it(log: _Log) -> None:
-    """Keep makes a confirmed appointment and kept lists it."""
-    keep = _Keep(log)
-    made = keep.call(
-        "keep", kind="appointment", text="Dentist", at="2026-10-15 10:00", place="Smile Clinic",
-    )
-    assert made["summary"].startswith("Appointment kept for tomorrow (Thu) 10:00 am")
-    again = keep.call(
-        "keep", kind="appointment", text="dentist", at="2026-10-15 10:00", place="Smile Clinic",
-    )
-    assert again["id"] == made["id"]
-    assert again["summary"].startswith("Already kept")
-    weekly = keep.call(
-        "keep", kind="appointment", text="Choir", at="2026-10-21 19:00", until="2026-11-11",
-    )
-    assert "every week until 2026-11-11" in weekly["summary"]
-    (dentist, choir) = commitments.live(log.conn)
-    assert (dentist.source, dentist.confirmed, dentist.place) == ("said", True, "Smile Clinic")
-    assert choir.weekly_until == "2026-11-11"
-    listed = keep.call("kept", kind="appointment")
-    assert [(r["text"], r["confirmed"]) for r in listed["items"]] == [
-        ("Dentist (Smile Clinic)", True), ("Choir", True),
-    ]
-    assert "2 appointments" in listed["summary"]
-    assert keep.call("kept")["items"][0]["kind"] == "appointment"
-
-
-@pytest.mark.parametrize(
-    ("args", "words"),
-    [
-        ({"kind": "appointment", "text": "x"}, "an appointment needs at"),
-        ({"kind": "appointment", "text": "x", "at": "2026-10-15 10:00", "until": "later"}, "until"),
-        (
-            {"kind": "appointment", "text": "x", "at": "2026-10-15 10:00", "until": "2026-10-01"},
-            "until",
-        ),
-        ({"kind": "memo", "text": "x", "until": "2026-10-21"}, "goes only with kind=appointment"),
-        ({"kind": "memo", "text": "x", "place": "here"}, "goes only with kind=appointment"),
-        ({"text": "x", "whole_sender": True}, "whole_sender goes only with"),
-        ({"confirm": "commitment-zz"}, "no appointment has the id"),
-        ({"cancel": "commitment-zz"}, "no appointment has the id"),
-        ({"confirm": "commitment-zz", "text": "x"}, "stands alone"),
-    ],
-)
-def test_a_bad_appointment_call_is_refused_with_the_fix(
-    log: _Log, args: dict[str, Any], words: str,
-) -> None:
-    """A bad appointment call is refused with the fix."""
-    refused = _Keep(log).call("keep", **args)
-    assert words in refused["error"]
-    assert commitments.live(log.conn) == []
-
-
-def test_confirm_and_cancel_change_a_mail_made_appointment_and_may_set_the_sender_rule(
-    log: _Log,
-) -> None:
-    """Confirm and cancel change a mail made appointment and may set the sender rule."""
-    keep = _Keep(log)
-    one = _record(_at(10, 20, 19), sender_domain="studio.example")
-    two = _record(_at(10, 21, 19), title="Other", sender_domain="cafe.example")
-    stray = _record(_at(10, 22, 19), title="Stray", source="said", confirmed=True)
-    for rec in (one, two, stray):
-        commitments.note(log.conn, rec)
-    done = keep.call("keep", confirm=one.commitment_id, whole_sender=True)
-    assert done["summary"].startswith('Confirmed the appointment "Pottery class".')
-    assert "studio.example will always count" in done["summary"]
-    held = {c.commitment_id: c for c in commitments.live(log.conn)}
-    assert held[one.commitment_id].confirmed
-    assert commitments.sender_rules(log.conn) == {"studio.example": "always"}
-    assert "Already confirmed" in keep.call("keep", confirm=one.commitment_id)["summary"]
-    gone = keep.call("keep", cancel=two.commitment_id, whole_sender=True)
-    assert gone["summary"].startswith('Dropped the appointment "Other".')
-    assert commitments.fold(log.conn)[two.commitment_id].dropped == "not_his"
-    assert commitments.sender_rules(log.conn)["cafe.example"] == "never"
-    plain = keep.call("keep", cancel=one.commitment_id)
-    assert plain["summary"].startswith("Dropped")
-    assert commitments.fold(log.conn)[one.commitment_id].dropped == "he_dropped"
-    assert "no sender" in keep.call("keep", cancel=stray.commitment_id, whole_sender=True)["error"]
-    assert [c.commitment_id for c in commitments.live(log.conn)] == [stray.commitment_id]
 
 
 # --- the replay script ---------------------------------------------------------------------
@@ -868,35 +712,6 @@ def test_a_private_all_day_ring_says_no_more_than_that_something_is_to_do(log: _
     gmail = _Gmail([_mail("m2", "Bank <a@bank.example>", "Security", "Enable 2FA by Oct 15.", 2)])
     assert _intake(log, gmail, _Model({"Security": [private]})).poll_once() == 1
     assert _rings(log) == {"2026-10-14T20:00:00-07:00": "you have something to do tomorrow"}
-
-
-def _old_ring(log: _Log) -> None:
-    """A ``reminder-cm`` ring as an earlier build armed it: still pending, and not an item."""
-    due = _at(10, 14, 20)
-    action = {"action_id": "commitment-reminders"}
-    emit_event(
-        log.conn, type="reminder.scheduled", correlation=action,
-        payload={
-            "reminder_id": f"{commitments.REMINDER_PREFIX}old-1", "due_at_epoch_ms": _ms(due),
-            "due_at_local": due.isoformat(timespec="seconds"), "text": "Tomorrow: Enable 2FA",
-            **action,
-        },
-    )
-
-
-def test_the_readers_show_an_all_day_item_as_due_and_leave_its_ring_out(log: _Log) -> None:
-    """my_schedule says due, and kept can still list the rings."""
-    one = _record(_at(10, 15, 0), title="Enable 2FA", all_day=True, place="bank.example")
-    timed = _record(_at(10, 15, 10), title="Dentist", confirmed=True)
-    for rec in (one, timed):
-        commitments.note(log.conn, rec)
-    _old_ring(log)
-    rows = {r["id"]: r for r in _schedule(log)["items"] if "id" in r}
-    assert rows[one.commitment_id]["when"] == "due tomorrow (Thu), all day"
-    assert not [r for r in _schedule(log)["items"] if r["source"] == "reminder"]
-    # kept can still list the rings
-    kept = _Keep(log).call("kept", kind="reminder")
-    assert kept["items"]
 
 
 def _mail_at(key: str, subject: str, when: datetime) -> dict[str, Any]:

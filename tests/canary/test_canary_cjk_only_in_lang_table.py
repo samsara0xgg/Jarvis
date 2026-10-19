@@ -71,8 +71,6 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     # `save_place`'s description (ADR 0234) names a Chinese sentence as an example of what Allen
     # says when he names a place.
     "jarvis/execution/place_tools.py": frozenset({"SAVE_DESCRIPTION"}),
-    # `keep`'s description (ADR 0245) names the Chinese phrases Allen says to have something kept.
-    "jarvis/execution/keep_tool.py": frozenset({"_KEEP_DESCRIPTION"}),
     # Typlus's polish prompt (ADR 0058) names the Chinese phantoms the recognizer emits
     # and Chinese dictations that must not be answered, as the words the model will read.
     # Listening sounds stripped at a repeated sentence's edges (ADR 0268).
