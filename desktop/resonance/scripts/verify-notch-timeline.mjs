@@ -2568,6 +2568,19 @@ try {
     }
   }
 
+  // a drag that comes back to where it began is a tap, not a range of no length
+  if (all || only === 'review') {
+    const { a, y, x } = await barOf(small([it('ha', 'stay', T(9, 5), T(13, 0), { place: 'Home', kept_place: home }), it('ht', 'talk', T(10, 0), T(10, 5), { turns: 2 }, 'her'), it('hb', 'stay', T(13, 0), null, { place: 'Library', kept_place: uvic })]));
+    await a.move(x(T(16, 0)), y); await a.page.mouse.down(); await a.move(x(T(18, 0)), y); await a.page.waitForTimeout(100);
+    const during = await a.page.locator('.dt-band').count();
+    await a.move(x(T(16, 0)), y); await a.page.mouse.up(); await a.page.waitForTimeout(300);
+    check('away and back to where it began: no range of no length (no band, no range card), and the tap goes to the row there', during === 1 && await a.page.locator('.dt-band').count() === 0 && await a.page.locator('.dt-card.is-range').count() === 0
+      && await orow(a, 'hb').evaluate(el => el.classList.contains('is-flash')));
+    await a.move(x(T(14, 0)), y); await a.page.mouse.down(); await a.move(x(T(17, 0)), y); await a.page.mouse.up(); await a.page.waitForTimeout(300);
+    check('a drag that ends elsewhere is still a range, with its card', await a.page.locator('.dt-card.is-range').count() === 1 && /^14:0\d|^13:5\d/.test(await a.page.locator('.dt-card.is-range .dt-ch b').innerText()));
+    await a.ctx.close();
+  }
+
   console.log(`\n${checks.length} checks passed; screenshots in ${dir}`);
 } finally {
   await browser.close();

@@ -135,13 +135,16 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
     if (p?.drag) setBand({ a: snap(ms(p.x0)), b: snap(ms(x)) });
     else { setHover({ x, left: left(x) }); onHot(pieceAt(bar, ms(x))); }
   };
+  // A drag that ends where it began (to the minute) is a click: a range of no length is none.
   const up = (e: ReactPointerEvent) => {
     const p = press.current;
     press.current = null;
     if (!p || !bar) return;
-    const x = at(e);
-    if (p.drag) { setBand(null); const [a, b] = [snap(ms(p.x0)), snap(ms(x))]; ui.setSel({ a: Math.min(a, b), b: Math.max(a, b) }); }
-    else { const key = rowAt(model, bar, ms(x)); if (key) onJump(key); }
+    const x = at(e), a = snap(ms(p.x0)), b = snap(ms(x));
+    setBand(null);
+    if (p.drag && a !== b) { ui.setSel({ a: Math.min(a, b), b: Math.max(a, b) }); return; }
+    const key = rowAt(model, bar, ms(x));
+    if (key) onJump(key);
   };
   const leave = () => { if (press.current) return; setHover(null); onHot(null); };
 
