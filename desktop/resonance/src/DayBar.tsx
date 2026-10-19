@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { Coins, ChatCircleDots, Image as PictureIcon, Laptop, Moon, Path, PersonSimpleRun, Phone, Star, SunHorizon, X, type Icon as PhosphorIcon } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { spring, step } from './starCore';
-import { buildBar, fit, fOf, msOf, numbers, PAD_PX, peek, rowAt, snap, summarize, type BarSeg, type Line, type Peek, type Summary } from './barView';
+import { buildBar, fit, fOf, msOf, numbers, PAD_PX, peek, pieceAt, rowAt, snap, summarize, type BarSeg, type Line, type Peek, type Summary } from './barView';
 import { clock, type DayModel, type Icon, type LensKind, type Rgb } from './dayView';
 import { Ic } from './dayIcons';
 import './day-bar.css';
@@ -130,7 +130,7 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
     const x = at(e), p = press.current;
     if (p && !p.drag && Math.abs(x - p.x0) > TAP_PX) { p.drag = true; setHover(null); onHot(null); }
     if (p?.drag) setBand({ a: snap(ms(p.x0)), b: snap(ms(x)) });
-    else { setHover({ x, left: left(x) }); onHot(rowAt(model, bar, ms(x))); }
+    else { setHover({ x, left: left(x) }); onHot(pieceAt(bar, ms(x))); }
   };
   const up = (e: ReactPointerEvent) => {
     const p = press.current;

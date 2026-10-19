@@ -10,7 +10,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { askable, buildDay, clock, covered, dateTitle, fnv, lensOf, moneyText, shiftDate, stageLook, stageMinutes, stageSlices, tidy, tidyReply, weatherOf, wingText, within } from '../src/dayView.ts';
-import { axisOf, buildBar, fit, fOf, hm, msOf, numbers, peek, rowAt, summarize, toneOn } from '../src/barView.ts';
+import { axisOf, buildBar, fit, fOf, hm, msOf, numbers, peek, pieceAt, rowAt, summarize, toneOn } from '../src/barView.ts';
 import { askOf, hasBody, openOf, talkLines } from '../src/dayOpen.ts';
 import { deflateSync, crc32 } from 'node:zlib';
 
@@ -339,10 +339,10 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   p = at(22, 35);
   check('at 22:35, still to come, the stretch is tonight\'s event and the bus is what else', p.stretch.name === '小组讨论' && p.stretch.range === '22:30–23:30' && lines(p).join() === 'departure:27 · Shelbourne at Pear|22:40 发车' && p.row === 'event-1');
   p = at(22, 10);
-  check('at 22:10 nothing is recorded yet, and the reminder 10 min back is what else', p.stretch.name === '还没到' && lines(p).join() === 'reminder:把垃圾拿出去|22:00' && p.row === 'event-1');
+  check('at 22:10 nothing is recorded yet, and the reminder 10 min back is what else', p.stretch.name === '还没到' && lines(p).join() === 'reminder:把垃圾拿出去|22:00' && p.row === null);
   const gap = (() => { const d = buildDay(small([it('a', 'stay', T(9, 0), T(11, 0), { place: 'X' }), it('b', 'stay', T(12, 0), T(13, 0), { place: 'Y' })]), NOW, zh); return peek(d, buildBar(d, zh), T(11, 30), zh); })();
-  check('between two stays: nothing recorded, from where the one ended to where the next began', gap.stretch.name === '没有记录' && gap.stretch.range === '11:00–12:00' && gap.stretch.length === '1 时' && gap.row === 'b');
-  check('the row at a minute: the piece there, else the next row; the morning sleep at 08:30', [rowAt(rm, rbar, T(14, 20)), rowAt(rm, rbar, T(15, 0)), rowAt(rm, rbar, T(8, 30)), rowAt(rm, rbar, T(22, 15))].join() === 'stay-home-2,ride-1,sleep-1,event-1');
+  check('between two stays: nothing recorded, from where the one ended to where the next began', gap.stretch.name === '没有记录' && gap.stretch.range === '11:00–12:00' && gap.stretch.length === '1 时' && gap.row === null);
+  check('the row a click goes to at a minute: the piece there, else the next row; the morning sleep at 08:30; the piece a pointer is on: none in a gap', [rowAt(rm, rbar, T(14, 20)), rowAt(rm, rbar, T(15, 0)), rowAt(rm, rbar, T(8, 30)), rowAt(rm, rbar, T(22, 15))].join() === 'stay-home-2,ride-1,sleep-1,event-1' && pieceAt(rbar, T(22, 15)) === null && pieceAt(rbar, T(14, 20)) === 'stay-home-2' && pieceAt(rbar, T(22, 35)) === 'event-1');
   check('the day\'s numbers, only the ones that are not nothing, in order: sleep, on the way, Mac, calls, her, money, photos',
     numbers(rm, zh).map(n => `${n.label} ${n.value}`).join() === '睡 7:50,路上 3:04,Mac 2:37,通话 18 分,和她 3 次,花 $12.40,照片 1');
   check('with nothing from the Mac there are no Mac or call numbers; in English the words are English', !numbers(buildDay(day, NOW, zh), zh).some(n => n.kind === 'work' || n.kind === 'call') && numbers(rm, en).map(n => n.label).join() === 'Sleep,On the way,Mac,Calls,With her,Spent,Photos');
@@ -2505,6 +2505,31 @@ try {
     await orow(a, 'talk-1').locator(':scope > .dt-ask').click(); await a.page.waitForTimeout(80);
     const dockRun = await a.page.evaluate(() => { const f = document.querySelector('.dt-fold.is-dock .dt-dock')?.closest('.dt-fold'); return f && { anims: f.getAnimations({ subtree: true }).map(x => x.effect.getTiming().duration), h: f.getBoundingClientRect().height, full: f.firstElementChild.getBoundingClientRect().height }; });
     check('the input comes at once too, with a 120 ms fade of its words', dockRun && dockRun.anims.join() === '120' && Math.abs(dockRun.h - dockRun.full) < 1, JSON.stringify(dockRun));
+    await a.ctx.close();
+  }
+
+  // ---- the review of the notch timeline (50df0775..3662cb6e): each fix has its check here (ONLY=review) ----
+  // A day of few items on a pane that is pinned open: the bar runs 06:00 to 24:00 when nothing takes its start back, so `x(ms)` is where a time is on it.
+  const barOf = async (served, opts = {}) => {
+    const a = await boot({ served, ...opts });
+    await openDay(a);
+    const g = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; });
+    return { a, g, y: g.top + g.height / 2, x: ms => g.left + (ms - T(6)) / (T(24) - T(6)) * g.width };
+  };
+
+  // a gap lifts nothing on the bar (it used to light the next piece and its row); a tap there still goes to the next row
+  if (all || only === 'review') {
+    const { a, y, x } = await barOf(small([it('ga', 'stay', T(9, 5), T(11, 0), { place: 'Home', kept_place: home }), it('gt', 'talk', T(10, 0), T(10, 5), { turns: 2 }, 'her'), it('gb', 'stay', T(12, 0), T(13, 0), { place: 'Library', kept_place: uvic })]));
+    const lit = () => a.page.evaluate(() => ({ lift: document.querySelectorAll('.dt-seg.is-lift').length, bracket: document.querySelectorAll('.dt-bracket').length, hot: [...document.querySelectorAll('.dt-row.is-hot, .dt-sh.is-hot')].map(e => e.dataset.key),
+      head: document.querySelector('.dt-card.is-on .dt-slot.is-cur .dt-ch')?.innerText.replace(/\s*\n\s*/g, ' ') }));
+    await a.move(x(T(10, 0)), y); await a.page.waitForTimeout(250);
+    let m = await lit();
+    check('on a piece the bar lifts it and the list lights its row', m.lift === 1 && m.hot.join() === 'ga', JSON.stringify(m));
+    await a.move(x(T(11, 30)), y); await a.page.waitForTimeout(250);
+    m = await lit();
+    check('in a gap nothing is lifted, bracketed or lit, and the card says nothing was recorded', m.lift === 0 && m.bracket === 0 && m.hot.length === 0 && m.head === '没有记录 11:00–12:00 · 1 时', JSON.stringify(m));
+    await a.page.mouse.down(); await a.page.mouse.up(); await a.page.waitForTimeout(150);
+    check('a tap in the gap still takes the list to the next row', await orow(a, 'gb').evaluate(el => el.classList.contains('is-flash')));
     await a.ctx.close();
   }
 
