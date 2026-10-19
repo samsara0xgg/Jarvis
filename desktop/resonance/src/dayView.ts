@@ -12,6 +12,7 @@ export type DayItem = {
   route?: string; board_stop?: string; alight_stop?: string | null; turns?: number; note?: string;
   title?: string; source?: string; confirmed?: boolean; private?: boolean; to?: string; leave_at_ms?: number;
   attachment?: string; amount?: string | number; currency?: string; direction?: string; counterparty?: string; messages?: number; chats?: number;
+  fired?: boolean; acknowledged?: boolean;
 };
 export type DayReply = {
   date: string; tz: string; start_ms: number; end_ms: number; now_ms: number; items: DayItem[];
@@ -36,7 +37,7 @@ const fin = (v: unknown) => typeof v === 'number' && Number.isFinite(v) ? v : un
 const bool = (v: unknown) => typeof v === 'boolean' ? v : undefined;
 const STRINGS = ['place', 'activity', 'text', 'app', 'route', 'board_stop', 'alight_stop', 'note', 'title', 'source', 'to', 'attachment', 'currency', 'direction', 'counterparty'] as const;
 const NUMBERS = ['minutes', 'active_s', 'turns', 'leave_at_ms', 'messages', 'chats'] as const;
-const FLAGS = ['confirmed', 'private'] as const;
+const FLAGS = ['confirmed', 'private', 'fired', 'acknowledged'] as const;
 export function tidy(raw: unknown): DayItem | null {
   if (!isObj(raw)) return null;
   const { id, kind, start_ms: start, end_ms: end } = raw;
@@ -163,8 +164,14 @@ function plainPlace(day: DayReply | null, now: number) {
 }
 
 // ---------- the pane ----------
-// `kind` and `lens`: what the row is, and which of the day's numbers it is counted in (a lens on the bar dims the rows that are not).
-export type Row = { key: string; kind: string; lens: LensKind | null; icon: Icon; title: string; detail: string; when: string; dur: string; future: boolean; star: boolean; connector: boolean };
+// A row of the list. The time column is `at` (when it began; `ago` marks one that began the day before), the right column `right` (its length, how
+// long until it, or its value, which `value` says to write in ink). `kind` and `lens`: what the row is, and which of the day's numbers it is
+// counted in (a lens on the bar dims the rows that are not). A `connector` is a way he went (a move, a ride, a short stop) and `onWay` is
+// something that happened on one: together they are a trip, and the pane draws one rail through them. `wait`: it waits on him.
+export type Row = {
+  key: string; kind: string; lens: LensKind | null; icon: Icon | 'dot'; title: string; detail: string; at: string; ago: string; right: string; value: boolean;
+  future: boolean; star: boolean; wait: boolean; connector: boolean; onWay: boolean;
+};
 // `star`: null when the stay is not one of the day's highlights, else its label (which may be empty).
 export type StayHead = { key: string; name: string; unnamed: boolean; rgb: Rgb; icon: Icon; when: string; dur: string; star: string | null };
 export type Block = { type: 'row'; t: number; row: Row } | { type: 'now'; t: number; key: string; label: string } | { type: 'stay'; t: number; key: string; head: StayHead; items: Block[] };
@@ -173,7 +180,7 @@ export type Span = { key: string; kind: string; t0: number; t1: number };
 export type Mark = { label: string; by: string };
 export type DayModel = {
   title: string; today: boolean; now: number; tz: string; reply: DayReply; items: DayItem[]; chips: { text: string; more: boolean }[]; line: { text: string; draft: boolean } | null;
-  blocks: Block[]; foot: string; empty: boolean; span: Map<string, Span>; index: Span[]; stars: Map<string, Mark>;
+  blocks: Block[]; foot: string; empty: boolean; span: Map<string, Span>; index: Span[]; stars: Map<string, Mark>; waiting: string[];
 };
 
 const SOURCES: Record<string, L> = { phone: ['The phone', '手机'], reminders: ['Reminders', '提醒'], mac: ['Mac time', 'Mac 的时间'], talks: ['Conversations', '对话'], rides: ['Bus rides', '公交乘车'],
@@ -197,59 +204,76 @@ export { clean, moveIcon, moveWords, rideWords };
 // The end of a span: `24:00` at the day's end, `次日 02:10` past it.
 export const endText = (ms: number, reply: DayReply, tz: string, t: Say) => ms === reply.end_ms ? '24:00' : (ms > reply.end_ms ? t(['next day ', '次日 ']) : '') + clock(ms, tz);
 const dayBefore = (it: DayItem, c: Ctx) => it.start_ms < c.reply.start_ms ? c.t(['yesterday ', '昨天 ']) : '';
+const EVENT_SOURCES: Record<string, L> = { mail: ['Mail', '邮件'], said: ['You said', '你说的'], plan: ['Plan', '计划'] };
+const TWO_HOURS = 2 * 3_600_000;
 function rowOf(it: DayItem, c: Ctx): Row | null {
   const { t, tz, reply } = c;
-  let icon: Icon, title: string, detail = '', amount = '';
-  const instant = INSTANT.has(it.kind);
+  let icon: Icon, title: string, detail = '', right = '', value = false, wait = false;
   switch (it.kind) {
     case 'sleep': icon = 'moon'; title = t(['Sleep', '睡觉']); break;
     case 'move': icon = moveIcon(it.activity); title = moveWords(it.activity, t); break;
     case 'ride': icon = 'bus'; title = rideWords(it, t); detail = [clean(it.board_stop), clean(it.alight_stop)].filter(Boolean).join(' → '); break;
     case 'talk': icon = 'talk'; title = t(['Talked with her', '和她说话']); detail = it.turns ? t([`${it.turns} ${it.turns === 1 ? 'line' : 'lines'}`, `${it.turns} 句`]) : ''; break;
     case 'picture': icon = 'picture'; title = t(['Photo', '照片']); detail = clean(it.note).split('\n')[0]; break;
-    case 'event':
+    case 'event': {
+      // Where it came from (no source: his calendar), that it is not his yet (read from mail), and where; a private one says no more.
       icon = 'event'; title = it.private ? t(['Private', '私事']) : clean(it.title) || t(['Event', '日程']);
-      detail = it.private ? '' : [clean(it.place), it.source === 'mail' && it.confirmed === false ? t(['read from mail, not confirmed', '从邮件里读到，还没确认']) : ''].filter(Boolean).join(' · '); break;
-    case 'reminder': icon = 'reminder'; title = clean(it.text) || t(['Reminder', '提醒']); break;
+      const unsure = it.source === 'mail' && it.confirmed === false, word = it.source === undefined ? t(['Calendar', '日历']) : EVENT_SOURCES[it.source] ? t(EVENT_SOURCES[it.source]) : '';
+      wait = unsure && (it.end_ms ?? it.start_ms) > c.now;
+      detail = it.private ? '' : [word, unsure && t(['not confirmed', '还没确认']), clean(it.place)].filter(Boolean).join(' · '); break;
+    }
+    case 'reminder':
+      icon = 'reminder'; title = clean(it.text) || t(['Reminder', '提醒']);
+      wait = it.fired === true && it.acknowledged === false;
+      detail = it.acknowledged ? t(['Acknowledged', '你知道了']) : it.fired ? t(['It rang', '响过了']) : it.start_ms > c.now ? t(['Not due yet', '还没到点']) : ''; break;
     case 'work': {
       icon = 'work'; title = t(['Working on the Mac', '在 Mac 上工作']);
-      const top = [...new Set([...names(it.projects), ...names(it.apps)])].slice(0, 3).join(' · '), active = it.active_s ? dur(it.active_s / 60, t) : '';
-      detail = [top, active && t([`active ${active}`, `活跃 ${active}`])].filter(Boolean).join(' · '); break;
+      detail = [names(it.projects)[0], names(it.apps)[0]].filter(Boolean).join(' · ');
+      const active = it.active_s ? dur(it.active_s / 60, t) : '';
+      right = active && t([`active ${active}`, `活跃 ${active}`]); break;
     }
     case 'call': icon = 'call'; title = clean(it.app) ? t([`Call · ${it.app}`, `通话 · ${it.app}`]) : t(['Call', '通话']); break;
     case 'departure':
-      icon = 'bus'; title = clean(it.title) || rideWords(it, t);
-      detail = [clean(it.to) && t([`to ${it.to}`, `去 ${it.to}`]), it.leave_at_ms != null && t([`leave ${clock(it.leave_at_ms, tz)}`, `${clock(it.leave_at_ms, tz)} 出门`])].filter(Boolean).join(' · '); break;
+      icon = 'bus'; title = clean(it.title) || rideWords(it, t); value = true;
+      detail = clean(it.to) ? t([`to ${it.to}`, `去 ${it.to}`]) : '';
+      right = it.leave_at_ms != null ? t([`leave ${clock(it.leave_at_ms, tz)}`, `${clock(it.leave_at_ms, tz)} 出门`]) : ''; break;
     case 'payment': {
-      // Plain for now: who, what and through which app on the left, the amount (money out reads −, money in +) where a length would be.
-      icon = 'payment'; const who = clean(it.counterparty), what = clean(it.text), via = PAYERS[clean(it.source)];
+      // Who, what and through which app on the left; the amount where a length would be (money out is plain, money in has a +).
+      icon = 'payment'; value = true; const who = clean(it.counterparty), what = clean(it.text), via = PAYERS[clean(it.source)];
       title = who || what || t(['Payment', '付款']);
       detail = [who && what !== who ? what : '', via ? t(via) : ''].filter(Boolean).join(' · ');
-      amount = `${it.direction === 'out' ? '−' : it.direction === 'in' ? '+' : ''}${moneyText(it.amount, it.currency)}`; break;
+      right = `${it.direction === 'in' ? '+' : ''}${moneyText(it.amount, it.currency)}`; break;
     }
     case 'claude_chat':
-      icon = 'chat'; title = clean(it.text) || t(['Claude chat', 'Claude 对话']);
-      detail = [t(['With Claude', '和 Claude']), it.messages ? t([`${it.messages} ${it.messages === 1 ? 'message' : 'messages'}`, `${it.messages} 条消息`]) : ''].filter(Boolean).join(' · '); break;
+      icon = 'chat'; title = clean(it.text) || t(['Claude chat', 'Claude 对话']); detail = t(['With Claude', '和 Claude']);
+      right = it.messages ? t([`${it.messages} msgs`, `${it.messages} 条`]) : ''; break;
     case 'claude_day': {
       icon = 'chat'; const n = it.chats ?? 0;
-      title = n ? t([`Talked with Claude · ${n} ${n === 1 ? 'chat' : 'chats'}`, `和 Claude 聊了 ${n} 个对话`]) : t(['Talked with Claude', '和 Claude 聊过']);
-      detail = clean(it.text).split(/\s*;\s*/).filter(Boolean).join(' · '); break;
+      title = t(['Claude day', 'Claude 日报']);
+      detail = [n ? t([`${n} ${n === 1 ? 'chat' : 'chats'}`, `${n} 个对话`]) : '', ...clean(it.text).split(/\s*;\s*/)].filter(Boolean).join(' · '); break;
     }
     default: return null;
   }
-  const connector = it.kind === 'move' || it.kind === 'ride';
-  // Started and not over: `14:50 起` and the length so far; over: `14:50–15:19`; a moment (a reminder, a photo, a one-line talk): its time.
+  const instant = INSTANT.has(it.kind), future = c.today && it.start_ms > c.now;
+  // Started and not over: the length so far; over: its length; a moment (a reminder, a photo, a one-line talk) has none.
   const going = !instant && it.end_ms == null && it.state !== 'next', span = !instant && it.end_ms != null && it.end_ms - it.start_ms >= 60_000;
-  let when = dayBefore(it, c) + clock(it.start_ms, tz), length = 0;
-  if (going) { when = t([`from ${when}`, `${when} 起`]); length = ((c.today ? c.now : reply.end_ms) - it.start_ms) / 60_000; }
-  else if (span) { when += `–${endText(it.end_ms!, reply, tz, t)}`; length = (it.end_ms! - it.start_ms) / 60_000; }
+  let length = 0;
+  if (going) length = ((c.today ? c.now : reply.end_ms) - it.start_ms) / 60_000;
+  else if (span) length = (it.end_ms! - it.start_ms) / 60_000;
   if (it.kind === 'sleep' && it.minutes != null) length = it.minutes;
-  const long = length > 0 ? dur(Math.max(1, length), t) : '';
-  // A move or a ride says its length in its words (`27 路 · 29 分`); every other span, beside its time.
-  if (connector && long) title = `${title} · ${long}`;
+  if (!right && length > 0 && it.kind !== 'claude_day') right = dur(Math.max(1, length), t);
+  // What is still to come within two hours says how long until it (a departure keeps its own words).
+  if (future && !value && it.start_ms - c.now <= TWO_HOURS) { const left = dur(Math.ceil((it.start_ms - c.now) / 60_000), t); right = t([`in ${left}`, `还有 ${left}`]); }
   const mark = c.marks.get(it.id);
   if (mark) { detail = [title, detail].filter(Boolean).join(' · '); title = mark; }
-  return { key: it.id, kind: it.kind, lens: lensOf(it.kind), icon, title, detail, when, dur: connector ? '' : amount || long, future: c.today && it.start_ms > c.now, star: c.marks.has(it.id), connector };
+  return { key: it.id, kind: it.kind, lens: lensOf(it.kind), icon, title, detail, at: clock(it.start_ms, tz), ago: it.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right, value, future, star: c.marks.has(it.id), wait,
+    connector: it.kind === 'move' || it.kind === 'ride', onWay: false };
+}
+// A short stop on the way is a row of the trip: how long, and the place the phone called it.
+function stopRow(it: DayItem, c: Ctx): Row {
+  const { t } = c, minutes = Math.max(1, (it.end_ms! - it.start_ms) / 60_000), title = t([`Stopped ${dur(minutes, t)}`, `停了 ${dur(minutes, t)}`]), place = clean(it.place).split(/[,，]/)[0].trim(), mark = c.marks.get(it.id);
+  return { key: it.id, kind: 'stay', lens: null, icon: 'dot', title: mark || title, detail: mark ? [title, place].filter(Boolean).join(' · ') : place, at: clock(it.start_ms, c.tz), ago: it.start_ms < c.reply.start_ms ? t(['yd', '昨']) : '', right: '', value: false,
+    future: false, star: c.marks.has(it.id), wait: false, connector: true, onWay: false };
 }
 
 function stayHead(it: DayItem, c: Ctx): StayHead {
@@ -260,9 +284,12 @@ function stayHead(it: DayItem, c: Ctx): StayHead {
 }
 
 const byTime = (a: DayItem, b: DayItem) => a.start_ms - b.start_ms || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-// The day as the pane reads it: each stay as a group with what happened inside it, the ways he went between stays (a move, a bus
-// ride) and whatever fell outside any stay (a sleep before he got home), all in time order; on today a now line, with what is
-// still to come below it.
+const SHORT_STOP = 15 * 60_000;
+const isWay = (it?: DayItem) => it?.kind === 'move' || it?.kind === 'ride';
+const keptName = (it: DayItem) => it.kept_place ? clean(it.kept_place.name) : '';
+// The day as the pane reads it: each stay as a group with what happened inside it, the ways he went between stays (a move, a bus ride,
+// a short stop) and whatever fell outside any stay (a sleep before he got home), all in time order; on today a now line, with what is
+// still to come below it. An unnamed place he stayed at for under 15 minutes between two ways is a stop on the way, not a place.
 export function buildDay(input: DayReply, now: number, t: Say): DayModel {
   const reply = tidyReply(input), tz = reply.tz, today = now >= reply.start_ms && now < reply.end_ms;
   // A highlight's label is the owner's or hers; with neither, the brain writes `kind HH:MM`, which says less than the row does.
@@ -273,13 +300,15 @@ export function buildDay(input: DayReply, now: number, t: Say): DayModel {
   }
   const c: Ctx = { t, tz, reply, now, today, marks };
   const seen = new Set<string>(), items: DayItem[] = [];
-  for (const it of reply.items) if (!seen.has(it.id) && (it.kind === 'stay' || it.kind === 'move' || it.kind === 'ride' || NESTED.has(it.kind))) { seen.add(it.id); items.push(it); }
+  for (const it of reply.items) if (!seen.has(it.id) && (it.kind === 'stay' || isWay(it) || NESTED.has(it.kind))) { seen.add(it.id); items.push(it); }
   items.sort(byTime);
-  const stays = items.filter(it => it.kind === 'stay'), inside = new Map<string, Block[]>(stays.map(s => [s.id, []]));
+  const seq = items.filter(it => it.kind === 'stay' || isWay(it)), stops = new Set<string>();
+  seq.forEach((it, i) => { if (it.kind === 'stay' && !keptName(it) && it.end_ms != null && it.end_ms - it.start_ms < SHORT_STOP && isWay(seq[i - 1]) && isWay(seq[i + 1])) stops.add(it.id); });
+  const stays = items.filter(it => it.kind === 'stay' && !stops.has(it.id)), inside = new Map<string, Block[]>(stays.map(s => [s.id, []]));
   const tops: { rank: number; block: Block }[] = [], span = new Map<string, Span>(), openEnd = today ? now : reply.end_ms;
   const place = (it: DayItem) => span.set(it.id, { key: it.id, kind: it.kind, t0: it.start_ms, t1: INSTANT.has(it.kind) || it.end_ms == null && it.state === 'next' ? it.start_ms : Math.max(it.start_ms, it.end_ms ?? openEnd) });
   for (const it of items) {
-    const row = it.kind === 'stay' ? null : rowOf(it, c);
+    const row = it.kind !== 'stay' ? rowOf(it, c) : stops.has(it.id) ? stopRow(it, c) : null;
     if (!row) continue;
     place(it);
     const block: Block = { type: 'row', t: it.start_ms, row };
@@ -289,6 +318,9 @@ export function buildDay(input: DayReply, now: number, t: Say): DayModel {
   }
   for (const s of stays) { place(s); tops.push({ rank: 1, block: { type: 'stay', t: s.start_ms, key: s.id, head: stayHead(s, c), items: inside.get(s.id)! } }); }
   tops.sort((a, b) => a.block.t - b.block.t || a.rank - b.rank);
+  // What happened while he was on the way belongs to the trip.
+  const legs = tops.flatMap(x => x.block.type === 'row' && x.block.row.connector ? [span.get(x.block.row.key)!] : []);
+  for (const { block } of tops) if (block.type === 'row' && !block.row.connector && block.row.kind !== 'sleep' && legs.some(g => g.t0 <= block.t && block.t < g.t1)) block.row.onWay = true;
   const blocks = tops.map(x => x.block);
   if (today) {
     const holder = stays.find(s => s.start_ms <= now && (s.end_ms == null || now < s.end_ms)), list = holder ? inside.get(holder.id)! : blocks, at = list.findIndex(b => b.t > now);
@@ -301,7 +333,10 @@ export function buildDay(input: DayReply, now: number, t: Say): DayModel {
   const line = clean(reply.line?.text) ? { text: clean(reply.line!.text), draft: !!reply.line!.draft } : null;
   // Every row and stay header in the order the list shows them (a stay before what began with it), for "which row is at this minute".
   const index = [...span.values()].sort((a, b) => a.t0 - b.t0 || +(b.kind === 'stay') - +(a.kind === 'stay') || (a.key < b.key ? -1 : 1));
-  return { title: dateTitle(reply.date, t), today, now, tz, reply, items, chips, line, blocks, foot, empty: !items.length && !line && !chips.length, span, index, stars };
+  // What waits on him, in the order the list shows it.
+  const waiting: string[] = [], walk = (list: Block[]) => { for (const b of list) { if (b.type === 'row') { if (b.row.wait) waiting.push(b.row.key); } else if (b.type === 'stay') walk(b.items); } };
+  walk(blocks);
+  return { title: dateTitle(reply.date, t), today, now, tz, reply, items, chips, line, blocks, foot, empty: !items.length && !line && !chips.length, span, index, stars, waiting };
 }
 
 // The list with only what overlaps [a, b]: a stay stays while it does, with only the rows inside it that do; the now line when now is in.

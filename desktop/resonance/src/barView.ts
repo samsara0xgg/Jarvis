@@ -151,7 +151,7 @@ function lineOf(it: DayItem, m: DayModel, t: Say): Line {
     case 'talk': return put('talk', it.turns ? t([`Talked with her · ${it.turns} ${it.turns === 1 ? 'line' : 'lines'}`, `和她说话 · ${it.turns} 句`]) : t(['Talked with her', '和她说话']), span.length || time);
     case 'picture': return { ...put('picture', clean(it.note).split('\n')[0] || t(['Photo', '照片']), time), picture: clean(it.attachment) || null };
     case 'payment': {
-      const sign = it.direction === 'out' ? '−' : it.direction === 'in' ? '+' : '';
+      const sign = it.direction === 'in' ? '+' : '';
       return put('payment', [clean(it.counterparty) || clean(it.text), `${sign}${moneyText(it.amount, it.currency)}`].filter(Boolean).join(' · '), time);
     }
     case 'event': return put('event', it.private ? t(['Private', '私事']) : clean(it.title) || t(['Event', '日程']), span.range);
