@@ -44,6 +44,7 @@ const errors = [];
 page.on('pageerror', e => errors.push(e.message));
 page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource|net::ERR/.test(m.text())) errors.push(m.text()); });
 await page.addInitScript(() => {
+  localStorage.setItem('companion-wardrobe-v1', JSON.stringify({ wing: 'marks', ...JSON.parse(localStorage.getItem('companion-wardrobe-v1') ?? '{}') })); // the stars: the timeline is the default (ADR 0296)
   const s = window.__state = { opened: [], oks: [] };
   // What each answered card said, however briefly it showed.
   addEventListener('DOMContentLoaded', () => new MutationObserver(() => {

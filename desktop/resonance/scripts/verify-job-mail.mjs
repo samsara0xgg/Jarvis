@@ -51,6 +51,7 @@ try {
       { message_id: 'g-4', kind: 'offer', received_at: at(60 * 5), subject: 'Offer letter: SWE Co-op', event_at: null, event_text: null }] },
   ];
   await page.addInitScript(() => {
+    localStorage.setItem('companion-wardrobe-v1', JSON.stringify({ wing: 'marks', ...JSON.parse(localStorage.getItem('companion-wardrobe-v1') ?? '{}') })); // the stars: the timeline is the default (ADR 0296)
     window.__audio = 0; window.__cues = 0; window.__opened = [];
     const Real = window.AudioContext;
     const resume = Real.prototype.resume;
