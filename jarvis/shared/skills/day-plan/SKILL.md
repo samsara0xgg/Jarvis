@@ -19,7 +19,9 @@ around it, no code fence. The program reads your answer and drops what it cannot
   plan by the program whatever you write, and nothing you place may overlap them. Do not repeat
   them; you may only add to them by listing, under the same `source`, what to prepare.
 - `upcoming`: commitments of the next days, so you can prepare for them or leave room.
-- `calendar_all_day`, `things`: all-day labels and open To Do items with their due dates.
+- `calendar_all_day`: all-day labels. `things`: what he still has to get done with no set
+  time today (to-dos, things due soon, and ones whose time went by, marked `late`), each
+  with its `due` date.
 - `goals`: his long-term goals, each with what he said about it. `deadlines`: his hard dates.
 - `routines`: what he usually does on this weekday.
 - `weather`: the day's forecast, or absent.
@@ -43,7 +45,7 @@ around it, no code fence. The program reads your answer and drops what it cannot
 ```
 {"items": [{"title": "...", "start": "HH:MM" or null, "minutes": 45,
  "window_from": "HH:MM" or null, "window_to": "HH:MM" or null, "place": "",
- "firmness": "movable", "why": "...", "goal": "", "prepare": [], "source": "todo",
+ "firmness": "movable", "why": "...", "goal": "", "prepare": [], "source": "goal",
  "private": false}]}
 ```
 
@@ -55,7 +57,8 @@ around it, no code fence. The program reads your answer and drops what it cannot
 - `firmness`: `fixed` cannot move (a commitment, a time he stated); `movable` should happen but
   its time can shift; `droppable` is dropped first when the day runs over.
 - `source`: one of `sources` exactly. `his` is something he asked for in his own words that is
-  not a commitment, `goal` an item you added to move a goal forward, `todo` a To Do item.
+  not a commitment, `goal` an item you added to move a goal forward; an item for a row of
+  `things` or `upcoming` takes that row's `source`.
 - `why` is one short sentence he can read to see why it is here. `goal` names the goal it serves.
 - `prepare` lists what to bring or do beforehand, as short phrases.
 - Write `title`, `why`, `place` and `prepare` in the language of his own words in the input.
@@ -71,7 +74,7 @@ around it, no code fence. The program reads your answer and drops what it cannot
    differ from the weekend. Estimate each task's `minutes` from what such work took him, and
    do not plan more than his real days hold.
 3. Name the work. A task says which project or thing it is for and what to get done, taken from
-   the projects his lived days show, his To Do and his goals. "Work" with no subject is useless
+   the projects his lived days show, his things and his goals. "Work" with no subject is useless
    to him. Meals and going out are tasks too, in the order his days put them.
 4. What can never move: commitments and anything with a stated time. Plan around them.
 5. When a leg to a fixed item can be missed (a bus, a long trip, a tight change), say in `why`
