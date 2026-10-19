@@ -14,6 +14,7 @@ struct TLPiece: Equatable, Identifiable {
     var fill: Fill
     var name: String?               // the word it may wear: the place, the route, the way he moved, how long he slept
     var icon: String?               // and its symbol
+    var stages: [TLStage] = []      // the night: its stages, which shade it
 }
 
 /// something planned, drawn on the part of the bar that has not happened: an event as a dashed box over its time, a reminder or a bus as a tick
@@ -32,6 +33,7 @@ struct TLBarScene: Equatable {
     var ahead: [TLAhead]
     var stars: [TLStar]
     var ticks: [Int]                // the hours under the bar
+    var sun: TLSun?                 // when the sun rose and set, in the row of the hours
 
     static let empty = TLBarScene(span: 360...DAY, now: nil, pieces: [], ahead: [], stars: [], ticks: [])
 }
@@ -59,7 +61,7 @@ extension DayTimelineModel {
                 case .move: fill = .trip
                 case .sleep: fill = .sleep
                 }
-                p = TLPiece(id: s.id, t0: a, t1: b, fill: fill, name: byId[s.id]?.barName, icon: byId[s.id]?.barIcon)
+                p = TLPiece(id: s.id, t0: a, t1: b, fill: fill, name: byId[s.id]?.barName, icon: byId[s.id]?.barIcon, stages: fill == .sleep ? byId[s.id]?.sleep?.stages ?? [] : [])
             } else {
                 p = TLPiece(id: "blank-\(Int(a))", t0: a, t1: b, fill: .blank)
             }
@@ -75,7 +77,7 @@ extension DayTimelineModel {
                 ahead.append(TLAhead(id: e.id, shape: box ? .box : .tick, t0: e.t0, t1: box ? end : e.t0, name: e.barName, icon: e.barIcon))
             }
         }
-        return TLBarScene(span: span, now: now, pieces: pieces, ahead: ahead, stars: stars, ticks: ticks)
+        return TLBarScene(span: span, now: now, pieces: pieces, ahead: ahead, stars: stars, ticks: ticks, sun: sun)
     }
 }
 
@@ -96,6 +98,19 @@ enum TLPaint {
         case .trip: return (trip, 0.28)
         case .sleep: return (sleep, 0.9)
         case .blank, .ahead: return nil
+        }
+    }
+
+    static let rem = RGB(150, 160, 235)                 // the lighter blue of REM
+
+    /// how a stage of the night is drawn: deep is the sleep hue whole, core a little less, REM the lighter blue, and awake or in bed lets the ground show through
+    static func look(_ k: TLStage.Kind) -> (rgb: RGB, alpha: Double) {
+        switch k {
+        case .deep: (sleep, 1)
+        case .core: (sleep, 0.78)
+        case .rem: (rem, 0.8)
+        case .awake, .inBed: (sleep, 0.25)
+        case .unspecified: (sleep, 0.6)
         }
     }
 
@@ -166,6 +181,15 @@ enum TLGeo {
     static func x(_ t: Double, _ span: ClosedRange<Double>, _ width: Double) -> Double {
         (clamp(t, span.lowerBound, span.upperBound) - span.lowerBound) / (span.upperBound - span.lowerBound) * width
     }
+    /// Where the sun's glyph goes on the row of the hours: under its minute, and moved to stand clear of an hour's label (12 pt each way) when it would be on one, to the side
+    /// the minute is on, or to the other if that leaves the bar. `hours` are the centres of the labels.
+    static func sunX(_ x: Double, hours: [Double], width: Double) -> Double {
+        guard let near = hours.min(by: { abs($0 - x) < abs($1 - x) }), abs(near - x) < 12 else { return x }
+        let side = x >= near ? 12.0 : -12.0
+        let g = near + side
+        return g < 6 || g > width - 6 ? near - side : g
+    }
+
     /// where each piece is drawn: a hair of ground (1 pt) between neighbours, and never narrower than 2 pt, so nothing recorded is lost to the gap
     static func rects(_ pieces: [TLPiece], span: ClosedRange<Double>, width: Double, height: Double) -> [CGRect] {
         pieces.enumerated().map { i, p in
@@ -213,6 +237,7 @@ struct TLBarView: View {
             lensLayer
             lensBracket
             hours
+            sunMarks
             if let n = scene.now { nowMarker(n) }
             if let t = scrub { scrubMark(t) }
         }
@@ -256,6 +281,21 @@ struct TLBarView: View {
         ForEach(scene.ticks, id: \.self) { h in
             Text(String(format: "%02d", h)).font(AT.mono(10)).foregroundStyle(RGB(196, 204, 238).color(0.38)).frame(width: 12)
                 .offset(x: x(Double(h * 60)) - (h == 24 ? 12 : 6), y: bh + 4)
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// the sun rising and setting: a hair of a tick under the bar at its minute and a small sun on the horizon in the row of the hours (no words)
+    private var sunMarks: some View {
+        let centres = scene.ticks.map { x(Double($0 * 60)) - ($0 == 24 ? 6 : 0) }
+        let marks = [scene.sun?.rise.map { ($0, "sunrise.fill") }, scene.sun?.set.map { ($0, "sunset.fill") }].compactMap { $0 }
+            .filter { $0.0 >= scene.span.lowerBound && $0.0 <= scene.span.upperBound }
+        return ZStack(alignment: .topLeading) {
+            ForEach(marks, id: \.1) { t, symbol in
+                Rectangle().fill(TLPaint.ink.color(0.32)).frame(width: 1, height: 3).offset(x: x(t) - 0.5, y: bh + 1)
+                Image(systemName: symbol).font(.system(size: 9)).foregroundStyle(RGB(196, 204, 238).color(0.55)).frame(width: 12, height: 12)
+                    .offset(x: TLGeo.sunX(x(t), hours: centres, width: bw) - 6, y: bh + 4)
+            }
         }
         .allowsHitTesting(false)
     }
@@ -347,7 +387,15 @@ private struct BarCanvas: View {
         Canvas { ctx, size in
             ctx.clip(to: Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: TLLayout.barRadius))
             for (p, r) in zip(scene.pieces, rects) {
-                if let l = TLPaint.look(p.fill) {
+                if p.fill == .sleep, !p.stages.isEmpty {
+                    // the night shaded by stage: each block over the bar's own ground, never over another block
+                    for b in TLStage.blocks(p.stages, in: p.t0, p.t1) {
+                        let x0 = max(r.minX, TLGeo.x(b.t0, scene.span, size.width)), x1 = min(r.maxX, TLGeo.x(b.t1, scene.span, size.width))
+                        guard x1 > x0 else { continue }
+                        let l = TLPaint.look(b.kind)
+                        ctx.fill(Path(CGRect(x: x0, y: r.minY, width: x1 - x0, height: r.height)), with: .color(l.rgb.color(l.alpha)))
+                    }
+                } else if let l = TLPaint.look(p.fill) {
                     ctx.fill(Path(r), with: .color(l.rgb.color(l.alpha)))
                     if p.fill == .trip { hatch(ctx, r) }
                 } else {

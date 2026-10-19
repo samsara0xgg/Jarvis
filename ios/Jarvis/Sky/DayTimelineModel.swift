@@ -103,6 +103,22 @@ struct TLStage: Equatable {
     var kind: Kind
     var t0: Double, t1: Double
 }
+extension TLStage {
+    /// The night's stages as blocks that do not overlap inside `lo...hi`: where two overlap (two sources) the one that began later is shown, and what no stage covers is `unspecified`.
+    static func blocks(_ stages: [TLStage], in lo: Double, _ hi: Double) -> [TLStage] {
+        guard lo.isFinite, hi.isFinite, hi > lo else { return [] }
+        var cuts: Set<Double> = [lo, hi]
+        for s in stages { for t in [s.t0, s.t1] where t > lo && t < hi { cuts.insert(t) } }
+        let edges = cuts.sorted()
+        var out: [TLStage] = []
+        for (a, b) in zip(edges, edges.dropFirst()) {
+            let mid = (a + b) / 2
+            let kind = stages.filter { $0.t0 <= mid && mid < $0.t1 }.max { $0.t0 < $1.t0 }?.kind ?? .unspecified
+            if let last = out.last, last.kind == kind { out[out.count - 1].t1 = b } else { out.append(TLStage(kind: kind, t0: a, t1: b)) }
+        }
+        return out
+    }
+}
 struct TLSleep: Equatable {
     var stages: [TLStage]
     var deep = 0, core = 0, rem = 0         // minutes in each, inside the night

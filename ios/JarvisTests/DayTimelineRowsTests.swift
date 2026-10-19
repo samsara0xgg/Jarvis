@@ -634,4 +634,56 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(r.items[2].projects?.map(\.name), ["A"], "the project with no name is no project")
         XCTAssertEqual(r.items[2].projects?.first?.seconds, 0)
     }
+
+    // MARK: the bar: the night's stages and the sun
+
+    func testTheNightIsShadedByBlocksThatDoNotOverlapAndWhatNoStageCoversIsUnspecified() {
+        func st(_ k: TLStage.Kind, _ a: Double, _ b: Double) -> TLStage { TLStage(kind: k, t0: a, t1: b) }
+        // two sources overlap from 30 to 50: the one that began later shows; nothing covers 90 to 120
+        XCTAssertEqual(TLStage.blocks([st(.core, 0, 50), st(.deep, 30, 70), st(.rem, 70, 90)], in: 10, 120),
+                       [st(.core, 10, 30), st(.deep, 30, 70), st(.rem, 70, 90), st(.unspecified, 90, 120)])
+        XCTAssertEqual(TLStage.blocks([st(.deep, 0, 10), st(.deep, 10, 20)], in: 0, 20), [st(.deep, 0, 20)], "neighbours of a kind are one block")
+        XCTAssertEqual(TLStage.blocks([], in: 0, 20), [st(.unspecified, 0, 20)])
+        XCTAssertEqual(TLStage.blocks([st(.deep, 100, 200)], in: 0, 20), [st(.unspecified, 0, 20)], "a stage outside is not in it")
+        XCTAssertEqual(TLStage.blocks([st(.deep, 0, 20)], in: 5, 5), [])
+        XCTAssertEqual(TLStage.blocks([st(.deep, 0, 20)], in: .nan, 5), [])
+        XCTAssertEqual(TLStage.blocks([st(.deep, 0, 20)], in: 0, .infinity), [])
+    }
+
+    func testTheNightStagesAreDrawnAsTheSpecSays() {
+        let sleep = TLPaint.sleep
+        XCTAssertEqual([TLPaint.look(.deep).alpha, TLPaint.look(.core).alpha, TLPaint.look(.rem).alpha, TLPaint.look(.awake).alpha, TLPaint.look(.inBed).alpha, TLPaint.look(.unspecified).alpha],
+                       [1, 0.78, 0.8, 0.25, 0.25, 0.6])
+        XCTAssertEqual(TLPaint.look(.deep).rgb, sleep)
+        XCTAssertEqual(TLPaint.look(.rem).rgb, RGB(150, 160, 235), "the lighter blue")
+        XCTAssertEqual(TLPaint.look(.awake).rgb, sleep, "the ground shows through it")
+    }
+
+    func testOnlyTheNightsPieceOfTheBarCarriesStagesAndTheSunComesWithTheScene() throws {
+        let m = build(TimelineFixture.today(cal))
+        let pieces = m.scene.pieces
+        let night = try XCTUnwrap(pieces.first { $0.fill == .sleep })
+        XCTAssertEqual(night.stages.count, 13)
+        XCTAssertEqual(night.stages, try XCTUnwrap(try entry(m, "sleep-0").sleep).stages)
+        XCTAssertTrue(pieces.filter { $0.fill != .sleep }.allSatisfy { $0.stages.isEmpty })
+        XCTAssertEqual(m.scene.sun, TLSun(rise: 454, set: 1091))
+        // a night with no stages is one flat piece, and a day with no weather has no sun
+        let r = try reply(item("n", "sleep", 300, 480))
+        XCTAssertTrue(try XCTUnwrap(build(r, now: nil).scene.pieces.first { $0.fill == .sleep }).stages.isEmpty)
+        XCTAssertNil(build(r, now: nil).scene.sun)
+    }
+
+    func testTheSunsGlyphStandsUnderItsMinuteAndClearOfAnHoursLabel() {
+        // the labels of 06 09 12 15 18 21 24 on a bar of 380 pt from 06:00: centres 0, 63.3, 126.7, 190, 253.3, 316.7 and, right-aligned, 374
+        let hours = [0, 63.33, 126.67, 190, 253.33, 316.67, 374]
+        XCTAssertEqual(TLGeo.sunX(33, hours: hours, width: 380), 33, "far from every label: where it is")
+        XCTAssertEqual(TLGeo.sunX(257, hours: hours, width: 380), 265.33, accuracy: 0.01, "just after 18: to its right")
+        XCTAssertEqual(TLGeo.sunX(250, hours: hours, width: 380), 241.33, accuracy: 0.01, "just before it: to its left")
+        XCTAssertEqual(TLGeo.sunX(2, hours: hours, width: 380), 12, "next to the first label: right of it")
+        XCTAssertEqual(TLGeo.sunX(376, hours: hours, width: 380), 362, "at the bar's end the right side is off the bar: the left")
+        XCTAssertEqual(TLGeo.sunX(253.33, hours: hours, width: 380), 265.33, accuracy: 0.01, "on it exactly: the right")
+        XCTAssertEqual(TLGeo.sunX(100, hours: [], width: 380), 100)
+        XCTAssertEqual(TLGeo.sunX(10.9, hours: [0], width: 380), 12, "11 pt away is too close: it is moved to 12")
+        XCTAssertEqual(TLGeo.sunX(12, hours: [0], width: 380), 12, "12 is clear")
+    }
 }
