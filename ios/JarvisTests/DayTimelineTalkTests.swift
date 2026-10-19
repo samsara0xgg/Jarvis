@@ -243,6 +243,21 @@ final class DayTimelineTalkTests: XCTestCase {
         XCTAssertTrue(e.ui.panelOpen)
     }
 
+    // MARK: the black under the list
+
+    func testTheBlackUnderTheListEasesInFromTheBarAndOutAtTheFootWithNoEdge() {
+        let stops = TLLayout.scrim()
+        XCTAssertEqual(stops.first?.y, TLLayout.barY, "it starts at the bar, with nothing")
+        XCTAssertEqual(stops.first?.alpha, 0)
+        XCTAssertEqual(stops.last?.y, TLLayout.listBottom + TLLayout.fade)
+        XCTAssertEqual(stops.last?.alpha ?? 1, 0, accuracy: 1e-9)
+        XCTAssertEqual(stops.map(\.alpha).max() ?? 0, 0.8, accuracy: 1e-9, "about 0.8 under the list")
+        XCTAssertEqual(stops.first { $0.alpha >= 0.8 - 1e-9 }?.y ?? 0, TLLayout.listTop + 24, accuracy: 1e-9, "full by 24 pt into the list")
+        XCTAssertEqual(stops.map(\.y), stops.map(\.y).sorted(), "the stops go down the screen")
+        let steepest = zip(stops, stops.dropFirst()).filter { $1.y > $0.y }.map { abs($1.alpha - $0.alpha) / ($1.y - $0.y) }.max() ?? 0
+        XCTAssertLessThan(steepest, 0.8 / 22, "gentler than the 22 pt ramp it replaces")
+    }
+
     // MARK: the history at her answer
 
     @MainActor func testTheHistoryOpensAtHerAnswer() async {

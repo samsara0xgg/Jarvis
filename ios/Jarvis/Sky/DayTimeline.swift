@@ -28,6 +28,15 @@ enum TLLayout {
     static func room(pinned: Double) -> Double { viewport - (pinned > 0 ? pinned + 4 : 0) }
     /// the pinned cards of what waits on him are never taller than this
     static let waitingMax = 260.0
+    /// The black under the list as (y, opacity): none at the bar, `strength` by 24 pt into the list, and back to none at the foot (48 pt, under the list's own fade). Both ramps are eased (smoothstep)
+    /// in `steps` steps, so that no edge shows where they start or end.
+    static func scrim(strength: Double = 0.8, steps: Int = 12) -> [(y: Double, alpha: Double)] {
+        func eased(_ t: Double) -> Double { t * t * (3 - 2 * t) }
+        let from = barY, full = listTop + 24, end = listBottom + fade, out = end - 48
+        let down = (0...steps).map { i -> (y: Double, alpha: Double) in let t = Double(i) / Double(steps); return (from + t * (full - from), strength * eased(t)) }
+        let up = (0...steps).map { i -> (y: Double, alpha: Double) in let t = Double(i) / Double(steps); return (out + t * (end - out), strength * (1 - eased(t))) }
+        return down + up
+    }
 }
 
 // MARK: - what the timeline remembers
@@ -275,13 +284,11 @@ struct DayTimelineView: View {
     private var room: Double { TLLayout.room(pinned: pinnedHeight) }
     private var pinnedHeight: Double { Waiting.shared.cards.isEmpty ? 0 : min(tl.waitH > 0 ? tl.waitH : Double(Waiting.shared.cards.count) * TLMetrics.rowDetail, TLLayout.waitingMax) }
 
-    /// From the chips row down the sky is covered by black, none under the hours and 0.8 by the middle of the chips, so the record sits on near-black as it does on the Mac
-    /// (the stars nearly gone under the list) while the header, her, the date, her sentence and the bar, keeps the sky; it goes as it came at the foot of the list.
+    /// From the bar down the sky is covered by black, none at the bar and 0.8 by 24 pt into the list, so the record sits on near-black as it does on the Mac (the stars nearly gone
+    /// under the list) while the header, her, the date, her sentence and the bar keep the sky; it goes as it came at the foot of the list.
     private func scrim(away: Bool) -> some View {
-        let top = TLLayout.chipsY - 6, ramp = 22.0, h = TLLayout.listBottom + TLLayout.fade - top
-        return LinearGradient(stops: [.init(color: .black.opacity(0), location: 0), .init(color: .black.opacity(0.8), location: ramp / h),
-                                      .init(color: .black.opacity(0.8), location: 1 - TLLayout.fade / h), .init(color: .black.opacity(0), location: 1)],
-                              startPoint: .top, endPoint: .bottom)
+        let top = TLLayout.barY, h = TLLayout.listBottom + TLLayout.fade - top
+        return LinearGradient(stops: TLLayout.scrim().map { .init(color: .black.opacity($0.alpha), location: ($0.y - top) / h) }, startPoint: .top, endPoint: .bottom)
             .frame(width: W, height: h).offset(y: top)
             .opacity(away ? 0 : 1).animation(.easeOut(duration: away ? 0.2 : 0.35), value: away)
             .allowsHitTesting(false)
