@@ -61,6 +61,8 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
 - ``POST /inherent/share``       — ADR 0211; a link, text or files from another app's share sheet
 - ``POST /inherent/reactions``   — ADR 0257; body ``{"target": <record id>, "emoji": <one emoji>
   or null}`` puts his reaction on a message or takes it off; never starts a turn
+- ``GET /inherent/lifelog/coverage`` — ADR 0292; whether a connected terminal is recording his
+  room now, and his saved home, for the phone to decide by
 - ``PUT /inherent/lifelog/audio/{id}`` — ADR 0238; one piece of the phone's day recording, kept
 """
 
@@ -659,6 +661,10 @@ class InherentDeps:
     # ``PUT /inherent/lifelog/audio/{id}``. Needs ``device_name``; ``None`` leaves the route
     # unregistered (404).
     lifelog: Lifelog | None = None
+    # ADR 0292: ``() -> coverage facts`` behind ``GET /inherent/lifelog/coverage``; a small file
+    # and SQLite read, called off the loop thread. Needs ``lifelog`` and ``device_name``;
+    # ``None`` leaves the route unregistered (404).
+    lifelog_coverage: Callable[[], dict[str, Any]] | None = None
     images_ok: bool = False
     submit_attachments: Callable[[str, Sequence[str]], str] | None = None
     # ADR 0212: ``submit_as_device(device, text, ids, about)`` starts the same turn with the
@@ -2803,6 +2809,23 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
                 {"id": kept.id, "sha256": kept.sha256, "bytes": kept.size},
                 status_code=201 if kept.created else 200,
             )
+
+    if deps.lifelog_coverage is not None and deps.device_name is not None:
+        coverage_name, coverage_read = deps.device_name, deps.lifelog_coverage
+
+        @app.get("/inherent/lifelog/coverage")
+        async def get_lifelog_coverage(request: Request) -> dict[str, Any]:
+            """ADR 0292: what the phone needs to decide whether to keep its own audio.
+
+            Only a paired device's own token opens it, as on ``/inherent/lifelog/audio/{id}``.
+            Facts only: ``{now_ms, mac_recording, terminal, newest_piece_end_ms, home}``.
+            """
+            token = _v2_presented_token(request.headers.get("authorization"))
+            if token is None or coverage_name(token) is None:
+                raise HTTPException(
+                    status_code=403, detail="a paired device's token is required",
+                )
+            return await asyncio.to_thread(coverage_read)
 
     if deps.push_register is not None and deps.device_name is not None:
         push_name, push_register = deps.device_name, deps.push_register

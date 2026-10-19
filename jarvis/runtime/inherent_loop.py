@@ -215,7 +215,7 @@ from jarvis.shared.realtime import (
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.shared.steps import EVENT_TYPES as STEP_EVENT_TYPES
 from jarvis.shared.steps import StepFold
-from jarvis.state import embedding, meaning, picture_notes, quiet_mode, reactions
+from jarvis.state import embedding, meaning, picture_notes, places, quiet_mode, reactions
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_highlights import day_notes
 from jarvis.state.day_line import DaySources, day_window, fold_day
@@ -6066,6 +6066,25 @@ def _lifelog(runtime: JarvisRuntime) -> Lifelog:
     return Lifelog(directory, min_free_bytes=min_free)
 
 
+def _lifelog_coverage(runtime: JarvisRuntime, lifelog: Lifelog) -> Callable[[], dict[str, Any]]:
+    """ADR 0292: the facts the phone decides by, read at each ask from the hub and the places."""
+
+    def read() -> dict[str, Any]:
+        hub = runtime.terminal_hub
+        names = [] if hub is None else [name for name, _tools in hub.connected()]
+        home = None
+        if runtime.memory is not None:
+            homes = [
+                one for one in places.read_kept(runtime.memory.db_path)
+                if one.role == "home" and one.lat is not None and one.lng is not None
+            ]
+            if homes:  # when two share the role, the newer one is the one he means
+                home = {"lat": homes[-1].lat, "lng": homes[-1].lng, "radius_m": homes[-1].radius_m}
+        return lifelog.coverage(names, home, int(time.time() * 1000))
+
+    return read
+
+
 def _media_dirs(runtime: JarvisRuntime) -> dict[Path, int | None]:
     """ADR 0067: the recordings, screenshots and phone attachments, each with its days to keep."""
     tools = runtime.config.get("tools") or {}
@@ -7940,7 +7959,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             live=live_voice,
             terminals=runtime.terminal_hub if runtime.listen_addresses else None,
             phone_events=runtime.phone_events if runtime.listen_addresses else None,
-            lifelog=_lifelog(runtime) if runtime.listen_addresses else None,
+            lifelog=(lifelog_archive := _lifelog(runtime) if runtime.listen_addresses else None),
+            lifelog_coverage=(
+                None if lifelog_archive is None else _lifelog_coverage(runtime, lifelog_archive)
+            ),
             phone=phone_hub,
             push_register=(
                 functools.partial(register_body, runtime.runtime_paths.root)

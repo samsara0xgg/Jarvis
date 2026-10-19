@@ -24,10 +24,10 @@ import shutil
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable, Mapping
     from pathlib import Path
 
 LIFELOG_DIRNAME: Final = "lifelog"
@@ -42,8 +42,14 @@ MAX_STARTED_MS: Final = 4_102_444_800_000  # 2100-01-01T00:00:00Z
 DEFAULT_MIN_FREE_BYTES: Final = 5 * 1024 * 1024 * 1024
 """What a piece may not take the disk below, so the brain's own databases never run it dry."""
 
+COVERAGE_FRESH_MS: Final = 15 * 60 * 1000
+"""A terminal whose newest archived piece ended this recently is recording now (ADR 0292):
+a piece is cut every ten minutes and sent when it closes, so a recording terminal's newest
+kept piece is never much older than that."""
+
 PIECE_ID: Final = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _DEVICE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_PIECE_FILE: Final = re.compile(r"(\d{8}T\d{6}\.\d{3})Z_(\d+)ms_")
 
 
 class PieceRefused(ValueError):  # noqa: N818 — a refusal with a status, not a fault
@@ -144,6 +150,53 @@ class Lifelog:
             partial.unlink(missing_ok=True)
         _fsync_dir(folder)
         return StoredPiece(piece_id, digest, len(data), created=True)
+
+    def newest_end_ms(self, device: str) -> int | None:
+        """When the newest piece kept for ``device`` ended (UTC ms), read from the file names."""
+        if not _DEVICE.fullmatch(device):
+            return None
+        folder = self.directory / AUDIO_DIRNAME / device
+        try:
+            days = sorted((p for p in folder.iterdir() if p.is_dir()), reverse=True)
+        except OSError:
+            return None
+        for day in days:  # the newest day can hold only temporary files
+            ends = [e for p in day.iterdir() if (e := _end_ms(p.name)) is not None]
+            if ends:
+                return max(ends)
+        return None
+
+    def coverage(
+        self, terminals: Iterable[str], home: Mapping[str, float] | None, now_ms: int,
+    ) -> dict[str, Any]:
+        """Facts the phone decides by (ADR 0292): a terminal recording now, and where home is.
+
+        A terminal counts as recording when it is connected and its newest kept piece ended
+        within :data:`COVERAGE_FRESH_MS`. ``terminal`` and ``newest_piece_end_ms`` are those of
+        the connected terminal with the newest piece, recording or not; both are ``None`` when
+        no connected terminal has a piece. ``home`` is passed on as it is (``None`` if unknown).
+        """
+        newest: tuple[int, str] | None = None
+        for name in terminals:
+            end = self.newest_end_ms(name)
+            if end is not None and (newest is None or end > newest[0]):
+                newest = (end, name)
+        return {
+            "now_ms": now_ms,
+            "mac_recording": newest is not None and now_ms - newest[0] <= COVERAGE_FRESH_MS,
+            "terminal": None if newest is None else newest[1],
+            "newest_piece_end_ms": None if newest is None else newest[0],
+            "home": None if home is None else dict(home),
+        }
+
+
+def _end_ms(name: str) -> int | None:
+    """The UTC millisecond a piece's file name says it ended, or ``None`` for any other name."""
+    found = _PIECE_FILE.match(name)
+    if found is None:
+        return None
+    start = datetime.strptime(found[1], "%Y%m%dT%H%M%S.%f").replace(tzinfo=UTC)
+    return round(start.timestamp() * 1000) + int(found[2])
 
 
 def _checked(device: str, piece_id: str, started_ms: int, duration_ms: int, data: bytes) -> str:
