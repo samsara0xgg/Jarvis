@@ -125,6 +125,10 @@ final class PictureTests: XCTestCase {
         XCTAssertEqual(PictureLayout.single(aspect: 0.5), CGSize(width: 140, height: 280), "tall: capped at 280 high")
         XCTAssertEqual(PictureLayout.single(aspect: 0.1).width, 88, "a sliver is not narrower than 88")
         XCTAssertEqual(PictureLayout.single(aspect: nil).width, PictureLayout.single(aspect: nil).height, "a square until the shape is known")
+        // a place that takes less height (the timeline's opened row, 240) keeps the shape too
+        XCTAssertEqual(PictureLayout.single(aspect: 0.5, tall: 240), CGSize(width: 120, height: 240))
+        XCTAssertEqual(PictureLayout.single(aspect: 0.75, tall: 240), CGSize(width: 180, height: 240))
+        XCTAssertEqual(PictureLayout.single(aspect: 1.5, tall: 240), CGSize(width: 220, height: 220 / 1.5), "wide: the width limit, as before")
     }
 
     // MARK: the route

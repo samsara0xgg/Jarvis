@@ -28,9 +28,14 @@ enum MyPlace {
 
 // MARK: the card under the answer
 
-/// A still map of the places (and of him, when he is near), 156 pt high, with how many places it holds. A tap opens the full map.
+/// A still map of the places (and of him, when he is near), 156 pt high, with how many places it holds. A tap opens the full map. A row that is about one place (the timeline's stay)
+/// asks for a smaller one (`height`, `radius`) without its name over it (`named`), which the row says already.
 struct PlaceMapCard: View {
     let places: [AnswerPlace]
+    var height = Self.height
+    var radius = 14.0
+    var named = true
+    var width = Self.snapshotWidth          // what the snapshot is taken at: the card's own width, so the map's corner (Apple's mark) is not cut
     @State private var image: UIImage?
     @State private var me: CLLocationCoordinate2D?
     @Environment(\.displayScale) private var scale
@@ -39,31 +44,36 @@ struct PlaceMapCard: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Color.white.opacity(0.07)
-            if let image {
-                Image(uiImage: image).resizable().scaledToFill().frame(maxWidth: .infinity).frame(height: Self.height).clipped().transition(.opacity)
-            } else {
-                Image(systemName: "map").font(.system(size: 22)).foregroundStyle(SetColor.muted).frame(maxWidth: .infinity, maxHeight: .infinity)
+            // the picture fills the card and is cut to it: laid over the ground, so a snapshot wider than the room it is given widens nothing
+            Color.white.opacity(0.07).overlay {
+                if let image {
+                    Image(uiImage: image).resizable().scaledToFill().transition(.opacity)
+                } else {
+                    Image(systemName: "map").font(.system(size: 22)).foregroundStyle(SetColor.muted)
+                }
             }
-            Text(places.count == 1 ? places[0].name : "\(places.count) 个地方")
-                .font(.system(size: 12, weight: .medium)).foregroundStyle(SetColor.ink.opacity(0.92)).lineLimit(1)
-                .padding(.horizontal, 10).frame(height: 24).background(navy.opacity(0.62), in: Capsule())
-                .padding(10)
+            .clipped()
+            if named {
+                Text(places.count == 1 ? places[0].name : "\(places.count) 个地方")
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(SetColor.ink.opacity(0.92)).lineLimit(1)
+                    .padding(.horizontal, 10).frame(height: 24).background(navy.opacity(0.62), in: Capsule())
+                    .padding(10)
+            }
         }
-        .frame(maxWidth: .infinity).frame(height: Self.height)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+        .frame(maxWidth: .infinity).frame(height: height)
+        .clipShape(RoundedRectangle(cornerRadius: radius))
+        .overlay(RoundedRectangle(cornerRadius: radius).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
         .overlay(alignment: .topTrailing) {
             Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(SetColor.ink.opacity(0.85))
                 .frame(width: 26, height: 26).background(navy.opacity(0.62), in: Circle()).padding(8)
         }
-        .contentShape(RoundedRectangle(cornerRadius: 14))
+        .contentShape(RoundedRectangle(cornerRadius: radius))
         .onTapGesture { PlaceMapViewer.present(places, me: me) }
         .accessibilityElement().accessibilityLabel(places.count == 1 ? "地图，\(places[0].name)" : "地图，\(places.count) 个地方").accessibilityAddTraits(.isButton)
         .animation(.easeOut(duration: 0.2), value: image == nil)
         .task(id: places) {
             me = MyPlace.known()
-            image = await PlaceSnapshots.image(places, me: me, size: CGSize(width: Self.snapshotWidth, height: Self.height), scale: scale)
+            image = await PlaceSnapshots.image(places, me: me, size: CGSize(width: width, height: height), scale: scale)
         }
     }
 }
@@ -78,7 +88,7 @@ enum PlaceSnapshots {
     }
 
     static func image(_ places: [AnswerPlace], me: CLLocationCoordinate2D?, size: CGSize, scale: Double) async -> UIImage? {
-        let k = key(places, me: me) as NSString
+        let k = (key(places, me: me) + "#\(Int(size.width))x\(Int(size.height))") as NSString
         if let hit = cache.object(forKey: k) { return hit }
         let o = MKMapSnapshotter.Options()
         o.region = PlaceFit.region(places, me: me)

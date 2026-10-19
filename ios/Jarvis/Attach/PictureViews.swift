@@ -6,11 +6,11 @@ import SwiftUI
 enum PictureLayout {
     static let wide = 220.0, high = 280.0, square = 110.0, gap = 4.0
 
-    /// the size of a lone picture: as wide as `wide` allows, no higher than `high`, in the picture's own shape; a square while the shape is unknown
-    static func single(aspect: Double?) -> CGSize {
+    /// the size of a lone picture: as wide as `wide` allows, no higher than `high` (or `tall`, when a place asks for less), in the picture's own shape; a square while the shape is unknown
+    static func single(aspect: Double?, tall: Double = high) -> CGSize {
         guard let a = aspect, a > 0 else { return CGSize(width: 120, height: 120) }
-        let w = min(wide, high * a)
-        return CGSize(width: max(88, w), height: min(high, wide / a))
+        let w = min(wide, tall * a)
+        return CGSize(width: max(88, w), height: min(tall, wide / a))
     }
 }
 
@@ -66,23 +66,24 @@ private struct FileChip: View {
 struct PictureCell: View {
     let item: SentItem
     let size: Double?
+    var tall = PictureLayout.high           // how high a lone picture may be (the timeline's opened row takes 240)
     let open: () -> Void
     @State private var image: UIImage?
     @State private var outcome: PictureLoad?
     @Environment(\.displayScale) private var scale
 
-    init(item: SentItem, size: Double?, open: @escaping () -> Void) {
-        self.item = item; self.size = size; self.open = open
-        _image = State(initialValue: item.attachment.flatMap { PictureStore.shared.peek(id: $0, maxPixel: Self.pixels(size, 3)) } ?? item.image)
+    init(item: SentItem, size: Double?, tall: Double = PictureLayout.high, open: @escaping () -> Void) {
+        self.item = item; self.size = size; self.tall = tall; self.open = open
+        _image = State(initialValue: item.attachment.flatMap { PictureStore.shared.peek(id: $0, maxPixel: Self.pixels(size, tall, 3)) } ?? item.image)
     }
 
     /// the long side to decode at, for a display scale
-    private static func pixels(_ size: Double?, _ scale: Double) -> Int { Int(((size ?? PictureLayout.high) * scale).rounded()) }
+    private static func pixels(_ size: Double?, _ tall: Double, _ scale: Double) -> Int { Int(((size ?? tall) * scale).rounded()) }
 
     private var shape: CGSize {
         if let s = size { return CGSize(width: s, height: s) }
         let a = item.image.map { Double($0.size.width / max(1, $0.size.height)) } ?? item.attachment.flatMap { PictureStore.shared.aspect(id: $0) }
-        return PictureLayout.single(aspect: a)
+        return PictureLayout.single(aspect: a, tall: tall)
     }
 
     var body: some View {
@@ -108,7 +109,7 @@ struct PictureCell: View {
         .accessibilityElement().accessibilityLabel(swept ? "图片已过期" : "图片").accessibilityAddTraits(swept ? [] : .isButton)
         .task(id: item.attachment ?? item.id) {
             guard let id = item.attachment else { return }
-            let px = Self.pixels(size, scale)
+            let px = Self.pixels(size, tall, scale)
             if let hit = PictureStore.shared.peek(id: id, maxPixel: px, exact: true) { image = hit; return }
             let got = await PictureStore.shared.image(id: id, gone: item.gone, maxPixel: px)
             outcome = got
