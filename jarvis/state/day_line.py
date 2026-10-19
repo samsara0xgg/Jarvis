@@ -55,6 +55,17 @@ Each source folds on its own and a source that raises leaves its items out (:fun
   day, its words as ``title``. One line for a whole stretch, it is a clue to what he was doing
   (ADR 0302), not his answer for all of it. With no shipped store it says nothing in
   ``missing``;
+- ``screen``: the apps in the foreground of his iPhone and iPad, from what the Mac terminal
+  shipped as ``device-apps`` (ADR 0304), in his lane: one item per block of use on one device,
+  stretches of any app joined when the gap between them is at most five minutes, blocks with
+  less than five minutes of foreground time dropped. ``device`` is "iPhone" or "iPad",
+  ``active_s`` the foreground seconds inside the block (not end minus start), ``apps`` the five
+  with the most time, each ``{name, bundle, minutes, category}`` (name the store's, else the
+  bundle id; category the store's genre or ``None``). The devices' records reach the Mac late, so
+  :attr:`DayLine.synced` names, for each device that is behind the end of the window (or now),
+  the time its newest record is from: past it the device is not known, which is not the same as
+  not used. With a shipped store but no device record at all, ``screen`` is in ``missing``;
+  with no shipped store it says nothing;
 - ``departures``: the bus trips he pinned (ADR 0204), each a point at its departure time, from the
   pin as the log held it at the end of the day; the reminder that rings for a trip on the line is
   left out, the departure stands for it.
@@ -124,6 +135,13 @@ crosses a midnight is found whole; one that runs on longer than this is cut wher
 PICTURE_TURN_EVENTS: Final = ("surface.user_intent", "utterance.received", "user.shared")
 """The rows that name files he sent: the row that opens a turn, or a saved share."""
 
+SCREEN_MERGE_GAP_MS: Final = 5 * _MINUTE_MS
+"""Stretches of use on one device this close (or overlapping) are one block."""
+SCREEN_MIN_S: Final = 5 * 60
+"""A block with less foreground time than this is dropped."""
+SCREEN_TOP: Final = 5
+"""Apps named in a block."""
+
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 _NO_PROJECT: Final = frozenset({"none", ""})
 
@@ -159,12 +177,15 @@ class DayLine:
     """The items of one window, sorted by start then id, and the sources that could not be read.
 
     ``labels`` are what the day carries without a stretch of time: ``{title, source}``, and for
-    an all-day commitment also ``{confirmed, private, place, id}``.
+    an all-day commitment also ``{confirmed, private, place, id}``. ``synced`` maps a device
+    ("iPad") to the time of its newest record when that is before the window's end or now:
+    the ``screen`` items of that device are known only up to it (ADR 0304).
     """
 
     items: list[dict[str, Any]]
     missing: list[str]
     labels: list[dict[str, Any]] = field(default_factory=list)
+    synced: dict[str, int] = field(default_factory=dict)
 
 
 def parse_day(text: str) -> date:
@@ -226,6 +247,7 @@ def fold_day(
         ("imports", lambda _conn, first, last, now: _import_items(sources, first, last, now)),
         ("code", lambda _conn, first, last, now: _code_items(sources, first, last, now)),
         ("away", lambda _conn, first, last, now: _away_items(sources, first, last, now)),
+        ("screen", lambda _conn, first, last, now: _screen_items(sources, first, last, now)),
     )
     items: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -246,7 +268,12 @@ def fold_day(
     items = _without_pin_rings([row for row in items if row["kind"] != "label"])
     items = _without_ridden_moves(items, now_ms)
     items.sort(key=lambda item: (item["start_ms"], item["id"]))
-    return DayLine(items, missing, labels)
+    try:
+        synced = _screen_synced(sources, min(end_ms, now_ms))
+    except Exception:
+        LOGGER.exception("day line: the sync times of his devices could not be read")
+        synced = {}
+    return DayLine(items, missing, labels, synced)
 
 
 def _state(start: int, end: int | None, now_ms: int) -> str:
@@ -809,6 +836,102 @@ def _away_items(
             "title": label,
         })
     return items
+
+
+# --- his iPhone and iPad -------------------------------------------------------------------
+
+
+def _horizons(conn: sqlite3.Connection) -> dict[str, int]:
+    """Each device's newest record time, as the Mac last shipped it (ADR 0304); by device name."""
+    rows = imports.newest(
+        conn, imports.DEVICE_SOURCE, kinds=(imports.DEVICE_HORIZON,), by_prefix=True,
+    )
+    newest: dict[str, int] = {}
+    for row in rows:
+        device = str(row.fields["device"])
+        newest[device] = max(newest.get(device, 0), int(row.fields["synced_ms"]))
+    return newest
+
+
+def _screen_items(
+    sources: DaySources, window_start: int, window_end: int, now_ms: int,
+) -> list[dict[str, Any]]:
+    """Blocks of foreground use on one device, from the app stretches the Mac shipped (0304)."""
+    conn = shipped_conn(sources)
+    if conn is None:
+        return []
+    with closing(conn):
+        if not _horizons(conn):
+            raise _NotConnected
+        rows = imports.newest(
+            conn, imports.DEVICE_SOURCE, start_ms=window_start - BLOCK_REACH_MS, end_ms=window_end,
+            kinds=(imports.DEVICE_APP,), by_prefix=True,
+        )
+    by_device: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_device[str(row.fields["device_id"])].append(row.fields)
+    items: list[dict[str, Any]] = []
+    for stretches in by_device.values():
+        stretches.sort(key=lambda f: f["start_ms"])
+        blocks: list[list[dict[str, Any]]] = []
+        reach = 0
+        for one in stretches:
+            if blocks and one["start_ms"] - reach <= SCREEN_MERGE_GAP_MS:
+                blocks[-1].append(one)
+                reach = max(reach, one["end_ms"])
+            else:
+                blocks.append([one])
+                reach = one["end_ms"]
+        items.extend(
+            item for block in blocks
+            if (item := _screen_block(block, window_start, window_end, now_ms)) is not None
+        )
+    return items
+
+
+def _screen_block(
+    block: list[dict[str, Any]], window_start: int, window_end: int, now_ms: int,
+) -> dict[str, Any] | None:
+    """One block of a device's stretches as a ``screen`` item, or ``None`` if it is too short."""
+    start, end = block[0]["start_ms"], max(f["end_ms"] for f in block)
+    active = sum(f["end_ms"] - f["start_ms"] for f in block) / 1000
+    if active < SCREEN_MIN_S or not _overlaps(start, end, window_start, window_end):
+        return None
+    seconds: dict[str, float] = defaultdict(float)
+    for f in block:
+        seconds[f["bundle_id"]] += (f["end_ms"] - f["start_ms"]) / 1000
+    named = {f["bundle_id"]: f for f in block}
+    top = sorted(seconds, key=lambda bundle: (-seconds[bundle], bundle))[:SCREEN_TOP]
+    device = block[0]["device"]
+    return {
+        "id": f"screen-{device}-{start}",
+        "lane": "you",
+        "kind": "screen",
+        "start_ms": start,
+        "end_ms": end,
+        "state": _state(start, end, now_ms),
+        "device": device,
+        "active_s": round(active),
+        "apps": [
+            {
+                "name": named[bundle].get("app") or bundle,
+                "bundle": bundle,
+                "minutes": max(1, round(seconds[bundle] / 60)),
+                "category": named[bundle].get("category"),
+            }
+            for bundle in top
+        ],
+    }
+
+
+def _screen_synced(sources: DaySources, until_ms: int) -> dict[str, int]:
+    """Each device whose newest record is before ``until_ms``, with that record's time."""
+    conn = shipped_conn(sources)
+    if conn is None:
+        return {}
+    with closing(conn):
+        newest = _horizons(conn)
+    return {device: at for device, at in sorted(newest.items()) if at < until_ms}
 
 
 # --- the pictures he sent ------------------------------------------------------------------

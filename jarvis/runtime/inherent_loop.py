@@ -5704,6 +5704,7 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
         "items": line.items,
         "labels": line.labels,
         "missing": line.missing,
+        "screen_synced_ms": line.synced,
         "line": told,
         "highlights": highlights,
         "spans": doing.spans,

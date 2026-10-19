@@ -115,7 +115,8 @@ def test_the_shipped_mac_lane_is_the_live_lane_item_for_item(
     from_shipped = _fold(shipped, tmp_path, "2026-10-10", now)
 
     assert from_shipped.items == from_live.items == _expected(case.items, start_ms)
-    assert from_shipped.missing == from_live.missing == []
+    assert from_live.missing == []
+    assert from_shipped.missing == ["screen"]  # no iPhone or iPad record was shipped (ADR 0304)
 
 
 def test_a_revised_row_counts_once_with_its_newest_end(tmp_path: Path) -> None:
@@ -186,7 +187,7 @@ def test_an_away_terminal_falls_back_to_the_shipped_rows(tmp_path: Path) -> None
 
     covered = DaySources(ZONE, None, one.memory_db, TerminalScreen(link), shipped=directory)
     line = _fold(covered, tmp_path, "2026-10-10", now)
-    assert line.missing == []
+    assert line.missing == ["screen"]  # a shipped store with no iPhone or iPad record (ADR 0304)
     assert [i["kind"] for i in line.items] == ["work", "call"]
 
 

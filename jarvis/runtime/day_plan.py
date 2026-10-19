@@ -201,8 +201,14 @@ def _work(item: Mapping[str, Any]) -> str:
     return what
 
 
+def _screen(item: Mapping[str, Any]) -> str:
+    apps = ", ".join(f"{one['name']} {one['minutes']}m" for one in item["apps"][:MAX_TOPS])
+    return f"on his {item['device']}, {_minutes(item['active_s'])} active; apps {apps}"
+
+
 _SAID: Final[dict[str, Callable[[Mapping[str, Any]], str]]] = {
     "work": _work,
+    "screen": _screen,
     "stay": lambda item: f"at {_where(item)}",
     "move": lambda item: str(item.get("activity") or "moving"),
     "call": lambda item: f"call ({item.get('app') or 'app unknown'})",
