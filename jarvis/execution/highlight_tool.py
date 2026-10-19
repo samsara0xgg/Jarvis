@@ -3,7 +3,7 @@
 The day line is folded by the runtime, which holds the stores; the tool layer may not import it, so
 the runtime hands in a :data:`HighlightMarker` that finds the item and keeps the mark. The model is
 the only thing that hears "that lunch was the best part" or "the call didn't matter", which is why
-this is a tool and not a button's route.
+this is a tool; a row he taps is marked by its id through its own route (ADR 0296).
 """
 
 from __future__ import annotations

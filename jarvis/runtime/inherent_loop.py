@@ -191,6 +191,7 @@ from jarvis.runtime.dictation import (
     local_polisher,
     whisper_ears,
 )
+from jarvis.runtime.highlight_marks import HighlightMarks
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.job_mail import served_notices, settle_notice
 from jarvis.runtime.memory_page import MemoryPage
@@ -215,7 +216,15 @@ from jarvis.shared.realtime import (
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.shared.steps import EVENT_TYPES as STEP_EVENT_TYPES
 from jarvis.shared.steps import StepFold
-from jarvis.state import embedding, meaning, picture_notes, places, quiet_mode, reactions
+from jarvis.state import (
+    commitments,
+    embedding,
+    meaning,
+    picture_notes,
+    places,
+    quiet_mode,
+    reactions,
+)
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_highlights import day_notes
 from jarvis.state.day_line import DaySources, day_window, fold_day
@@ -5709,6 +5718,36 @@ async def _serve_day(  # noqa: PLR0913 — the route's stores, its zone, the ter
     )
 
 
+async def _set_highlight(
+    marks: HighlightMarks, day: date, item_id: str, on: bool, label: str | None,  # noqa: FBT001 — the route's argument.
+) -> list[dict[str, str]]:
+    """``POST /inherent/day/highlight`` (ADR 0296): his mark, written off the loop thread."""
+    return await asyncio.to_thread(marks.set_item, day, item_id, on, label)
+
+
+def _commit_act(event_log_path: Path, commitment_hex: str, action: str) -> bool:
+    """He confirms or cancels a commitment: what ``keep(confirm=)`` / ``keep(cancel=)`` writes.
+
+    Whether anything was written; ``LookupError`` when no live commitment has the id. The events
+    are the tool's, with ``user`` as the actor.
+    """
+    commitment_id = commitments.ID_PREFIX + commitment_hex
+    conn = open_runtime_event_log(event_log_path)
+    try:
+        if action == "confirm":
+            return commitments.confirm(conn, commitment_id, actor="user")
+        commitments.cancel(conn, commitment_id, actor="user")
+        return True
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+
+async def _act_commitment(event_log_path: Path, commitment_hex: str, action: str) -> bool:
+    """``POST /inherent/commitments/{hex}`` (ADR 0296), off the loop thread."""
+    return await asyncio.to_thread(_commit_act, event_log_path, commitment_hex, action)
+
+
 async def _ride_act(rides: Rides, body: dict[str, Any]) -> dict[str, Any]:
     """``POST /inherent/ride`` (ADR 0224): his answer to the boarding question, off the loop."""
     return await asyncio.to_thread(rides.act, body)
@@ -7867,6 +7906,30 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 shipped=runtime.runtime_paths.root / IMPORTS_DIRNAME,
                 weather=None if runtime.home is None else runtime.home.day_weather_card,
             ),
+            highlight_set=(
+                None if runtime.memory is None
+                else functools.partial(
+                    _set_highlight,
+                    HighlightMarks(
+                        runtime.runtime_paths.event_log,
+                        DaySources(
+                            resolve_zone(None, _work_state_timezone(runtime.config))[1],
+                            _timesink_db_path(runtime.config),
+                            runtime.memory.db_path,
+                            (
+                                None if runtime.terminal_hub is None
+                                else TerminalScreen(runtime.terminal_hub.call, wait_s=TURN_WAIT_S)
+                            ),
+                            (
+                                None if runtime.attachments is None
+                                else runtime.attachments.directory
+                            ),
+                            None if runtime.home is None else runtime.home.calendar,
+                        ),
+                    ),
+                )
+            ),
+            commitment_act=functools.partial(_act_commitment, runtime.runtime_paths.event_log),
             today_read=(
                 None if runtime.home is None
                 else functools.partial(asyncio.to_thread, runtime.home.today)

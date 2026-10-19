@@ -142,6 +142,16 @@ class MemoryPage:
                 seen = places.read_stays(conn, now, self._zone)
         return places.overview(self._path, seen, now, self._zone)
 
+    def place_add(self, name: str, lat: float, lng: float, role: str | None) -> dict[str, Any]:
+        """Keep a place at a point he gives (ADR 0296): ``save_place`` with a spot, origin ``page``.
+
+        ``ValueError`` names a refusal; saving a place that is kept already under that name
+        changes nothing (``change`` is null).
+        """
+        return _written(
+            places.save(self._path, name=name, lat=lat, lng=lng, role=role, origin="page"),
+        )
+
     def place_edit(
         self, place_id: str, name: str | None, role: str | None, *, forget: bool,
     ) -> dict[str, Any]:

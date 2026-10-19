@@ -65,6 +65,12 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
   room now, and his saved home, for the phone to decide by
 - ``POST /inherent/imports/{source}`` and ``PUT /inherent/imports/{source}/files/{path}`` —
   ADR 0294; a paired terminal's scheduled copy of TimeSink and Claude Code sessions, kept raw
+- ``POST /inherent/day/highlight`` — ADR 0296; body ``{"day", "id", "on", "label"?}`` marks or
+  unmarks one item of a day as a highlight for him; ``{"ok", "highlights"}``
+- ``POST /inherent/commitments/{hex}`` — ADR 0274, 0296; body ``{"action": "confirm"|"cancel"}``
+  does what ``keep(confirm=)`` / ``keep(cancel=)`` does to that commitment; ``{"ok": true}``
+- ``POST /inherent/memory/places`` — ADR 0234, 0296; body ``{"name", "lat", "lng", "role"?}``
+  keeps a place at a point, as ``save_place`` does; ``{"ok", "place", "change"}``
 - ``PUT /inherent/lifelog/audio/{id}`` — ADR 0238; one piece of the phone's day recording, kept
 """
 
@@ -99,7 +105,14 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    StrictBool,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from starlette.background import BackgroundTask
 from starlette.datastructures import Address, Headers
 from starlette.datastructures import UploadFile as FormFile
@@ -117,6 +130,7 @@ from jarvis.state.attachments import (
     Attachments,
     valid_id,
 )
+from jarvis.state.day_highlights import LABEL_MAX_CHARS, HighlightCapReached
 from jarvis.state.day_line import parse_day
 from jarvis.state.event_log import MAC_NODE
 from jarvis.state.lifelog import MAX_PIECE_BYTES, Lifelog, PieceRefused
@@ -468,6 +482,9 @@ class MemoryRoutes(Protocol):
     def places(self) -> dict[str, Any]:
         """The places he keeps with their facts, and the latest changes (ADR 0234)."""
 
+    def place_add(self, name: str, lat: float, lng: float, role: str | None) -> dict[str, Any]:
+        """Keep a place at a point (ADR 0296)."""
+
     def place_edit(
         self, place_id: str, name: str | None, role: str | None, *, forget: bool,
     ) -> dict[str, Any]:
@@ -790,6 +807,16 @@ class InherentDeps:
     # for today in the owner's zone, to the response document. Off the loop thread. A ValueError
     # is a 400; ``None`` leaves the route unregistered.
     day_read: Callable[[date | None], Awaitable[dict[str, Any]]] | None = None
+    # ADR 0296: ``(day, item id, on, label)`` -> the day's highlights after his mark, off the loop
+    # thread. LookupError (no such item on that day) is 404, ``HighlightCapReached`` 409, a
+    # ValueError 422; ``None`` leaves ``POST /inherent/day/highlight`` unregistered.
+    highlight_set: (
+        Callable[[date, str, bool, str | None], Awaitable[list[dict[str, str]]]] | None
+    ) = None
+    # ADR 0296: ``(commitment hex, "confirm" | "cancel")`` -> whether anything changed, off the
+    # loop thread. LookupError (none such, or dropped) is 404 and a False is 409; ``None`` leaves
+    # ``POST /inherent/commitments/{hex}`` unregistered.
+    commitment_act: Callable[[str, str], Awaitable[bool]] | None = None
     # ADR 0051: the companion home's reads and its one write, all off the loop
     # thread. A LookupError is "not connected" (404, the home's fallback), any
     # other failure 502. ``None`` leaves the routes unregistered.
@@ -1533,6 +1560,15 @@ class MemoryPlaceRequest(BaseModel):
     forget: bool = False
 
 
+class MemoryPlaceAddRequest(BaseModel):
+    """Body of ``POST /inherent/memory/places`` (ADR 0296): keep a place at a point."""
+
+    name: str = Field(min_length=1, max_length=80)
+    lat: float
+    lng: float
+    role: str | None = Field(default=None, max_length=20)
+
+
 class MemoryPlaceUndoRequest(BaseModel):
     """Body of ``POST /inherent/memory/places/undo``: the change to take back."""
 
@@ -1664,6 +1700,13 @@ def _register_memory_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: 
         """The places he keeps with their facts, and the latest changes (ADR 0234)."""
         return await _memory_call(page.places)
 
+    @app.post("/inherent/memory/places", status_code=200)
+    async def memory_place_add(req: MemoryPlaceAddRequest) -> dict[str, Any]:
+        """Keep a place at a point under his name for it, as ``save_place`` does (ADR 0296)."""
+        return await _memory_call(
+            functools.partial(page.place_add, req.name, req.lat, req.lng, req.role),
+        )
+
     @app.post("/inherent/memory/places/undo", status_code=200)
     async def memory_places_undo(req: MemoryPlaceUndoRequest) -> dict[str, Any]:
         """Take back a place change; 409 when a later one touched the same place."""
@@ -1764,6 +1807,92 @@ def _register_day_route(app: FastAPI, deps: InherentDeps) -> None:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         return await _home_call(day_read(wanted))
+
+
+_ITEM_ID: Final = r"^[A-Za-z0-9_\-=+/.|:@]{1,256}$"
+"""The id of a day-line item: ``jarvis.shared.about``'s id set."""
+
+
+class HighlightRequest(BaseModel):
+    """Body of ``POST /inherent/day/highlight`` (ADR 0296): his mark on one item of a day."""
+
+    day: str = Field(min_length=10, max_length=10, pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+    id: str = Field(pattern=_ITEM_ID)
+    on: StrictBool
+    label: str | None = Field(default=None, max_length=200)
+
+    @field_validator("label")
+    @classmethod
+    def _label_fits(cls, value: str | None) -> str | None:
+        label = (value or "").strip() or None
+        if label is not None and len(label) > LABEL_MAX_CHARS:
+            msg = f"label is at most {LABEL_MAX_CHARS} characters"
+            raise ValueError(msg)
+        return label
+
+
+class CommitmentActRequest(BaseModel):
+    """Body of ``POST /inherent/commitments/{hex}`` (ADR 0296): confirm it, or cancel it."""
+
+    action: Literal["confirm", "cancel"]
+
+
+def _register_highlight_route(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0296: he marks or unmarks an item of a day as one of its highlights."""
+    if deps.highlight_set is None:
+        return
+    highlight_set = deps.highlight_set
+
+    @app.post("/inherent/day/highlight", status_code=200)
+    async def day_highlight(req: HighlightRequest) -> dict[str, Any]:
+        """``{ok, highlights}``: the day's highlights after his mark.
+
+        422 for a day that is not one or an id or label of the wrong shape; 404 when no item has
+        the id on that day; 409 when five of his marks are standing and this would be a sixth
+        (unmark one first; her picks give way to his, his are never dropped). Marking what is
+        marked, or unmarking what is not, changes nothing and answers 200.
+        """
+        try:
+            on_day = parse_day(req.day)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)[:200]) from None
+        try:
+            highlights = await highlight_set(on_day, req.id, req.on, req.label)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)[:200]) from None
+        except HighlightCapReached as exc:
+            raise HTTPException(status_code=409, detail=str(exc)[:200]) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)[:200]) from None
+        except Exception as exc:  # noqa: BLE001 — a store that cannot be written is the page's 502.
+            LOGGER.warning("highlight route failed: %s: %s", type(exc).__name__, exc)
+            raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+        return {"ok": True, "highlights": highlights}
+
+
+def _register_commitment_route(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0296: the day line's buttons on a commitment, the effect of ``keep``'s two paths."""
+    if deps.commitment_act is None:
+        return
+    commitment_act = deps.commitment_act
+
+    @app.post("/inherent/commitments/{commitment_hex}", status_code=200)
+    async def commitment(commitment_hex: str, req: CommitmentActRequest) -> dict[str, bool]:
+        """``{ok: true}``.
+
+        404 for a commitment that is not there or was dropped, 409 for a confirm of one that is
+        confirmed already, 422 for any other action.
+        """
+        try:
+            changed = await commitment_act(commitment_hex, req.action)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)[:200]) from None
+        except Exception as exc:  # noqa: BLE001 — a log that cannot be written is the page's 502.
+            LOGGER.warning("commitment route failed: %s: %s", type(exc).__name__, exc)
+            raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+        if not changed:
+            raise HTTPException(status_code=409, detail="it is confirmed already")
+        return {"ok": True}
 
 
 def _register_departure_route(app: FastAPI, deps: InherentDeps) -> None:
@@ -3145,6 +3274,8 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
 
     _register_turn_timings_route(app, deps)
     _register_day_route(app, deps)
+    _register_highlight_route(app, deps)
+    _register_commitment_route(app, deps)
     _register_home_routes(app, deps)
     _register_mail_page_routes(app, deps)
     _register_job_routes(app, deps)

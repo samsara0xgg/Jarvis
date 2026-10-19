@@ -37,6 +37,10 @@ _MINUTE_MS: Final = 60_000
 _CLOCK: Final = re.compile(r"([01]?[0-9]|2[0-3]):([0-5][0-9])")
 
 
+class HighlightCapReached(Exception):  # noqa: N818 — reads as the fact: the cap is reached.
+    """He already has :data:`MAX_HIGHLIGHTS` marks on a day and asked for one more (ADR 0296)."""
+
+
 class Highlight(NamedTuple):
     """One highlight of a day: an item's id, its label, when it starts, and who chose it."""
 
@@ -175,6 +179,7 @@ __all__ = [
     "LINE_MAX_CHARS",
     "MAX_HIGHLIGHTS",
     "Highlight",
+    "HighlightCapReached",
     "clock_text",
     "covering",
     "day_notes",

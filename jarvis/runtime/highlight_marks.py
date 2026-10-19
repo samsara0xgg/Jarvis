@@ -8,19 +8,29 @@ runtime hands it.
 
 from __future__ import annotations
 
+import threading
 import time as _time
 from contextlib import closing
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from jarvis.execution.tools import ToolError
-from jarvis.state.day_highlights import clock_text, covering, day_notes, parse_clock, resolve_day
+from jarvis.state.day_highlights import (
+    MAX_HIGHLIGHTS,
+    HighlightCapReached,
+    clock_text,
+    covering,
+    day_notes,
+    parse_clock,
+    resolve_day,
+)
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.event_log import open_runtime_event_log
-from jarvis.state.memory_db import append_highlight_mark
+from jarvis.state.memory_db import append_highlight_mark, latest_highlight_marks, open_memory_db
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from datetime import date
     from pathlib import Path
 
 
@@ -37,6 +47,7 @@ class HighlightMarks:
         self._event_log = event_log
         self._sources = sources
         self._clock = clock
+        self._lock = threading.Lock()
 
     def mark(self, day: str, at: str, on: bool, label: str | None) -> dict[str, Any]:  # noqa: FBT001 — the tool's argument.
         """Mark (``on``) or unmark the item of ``day`` that covers the local time ``at``.
@@ -86,6 +97,60 @@ class HighlightMarks:
             _line, shown = day_notes(memory_db, on_day.isoformat(), items, sources.zone)
             found["label"] = next((h["label"] for h in shown if h["id"] == item["id"]), label)
         return found
+
+
+    def set_item(
+        self, on_day: date, item_id: str, on: bool, label: str | None,  # noqa: FBT001 — the route's argument.
+    ) -> list[dict[str, str]]:
+        """Mark (``on``) or unmark the item ``item_id`` of ``on_day`` for him (ADR 0296).
+
+        Writes the same row ``mark`` does, and answers with the day's highlights after it, as
+        ``GET /inherent/day`` serves them. A mark of an item he has marked already, or an unmark
+        of one that is not highlighted, writes nothing. Marking without a label keeps the label
+        his standing mark has.
+
+        Raises:
+            LookupError: no item of ``on_day`` has the id (an all-day label is not an item).
+            HighlightCapReached: he has :data:`MAX_HIGHLIGHTS` marks on the day and this is
+                another; her picks give way to his marks, his are never dropped.
+            ValueError: the day is outside the calendar.
+            RuntimeError: there is no memory store to keep it in.
+        """
+        sources = self._sources
+        memory_db = sources.memory_db
+        if memory_db is None:
+            msg = "marks cannot be kept right now (no memory store)"
+            raise RuntimeError(msg)
+        day = on_day.isoformat()
+        start_ms, end_ms = day_window(on_day, sources.zone)
+        with self._lock:
+            with closing(open_runtime_event_log(self._event_log)) as conn:
+                items = fold_day(conn, start_ms, end_ms, int(self._clock() * 1000), sources).items
+            item = next((one for one in items if str(one["id"]) == item_id), None)
+            if item is None:
+                msg = f"nothing on {day} has the id {item_id!r}"
+                raise LookupError(msg)
+            with closing(open_memory_db(memory_db)) as conn:
+                marks = latest_highlight_marks(conn, day, day).get(day, [])
+            standing = next((m for m in marks if m.item_id == item_id and m.on), None)
+            if on:
+                label = label or (None if standing is None else standing.label)
+                present = {str(one["id"]) for one in items}
+                his = sum(m.on and m.item_id in present for m in marks)
+                if standing is None and his >= MAX_HIGHLIGHTS:
+                    msg = f"{MAX_HIGHLIGHTS} highlights of {day} are marked; unmark one first"
+                    raise HighlightCapReached(msg)
+                write = standing is None or standing.label != label
+            else:
+                label = None
+                shown = day_notes(memory_db, day, items, sources.zone)[1]
+                write = any(h["id"] == item_id for h in shown)
+            if write:
+                append_highlight_mark(
+                    memory_db, day=day, item_id=item_id, on=on, label=label,
+                    kind=str(item["kind"]), start_ms=int(item["start_ms"]),
+                )
+            return day_notes(memory_db, day, items, sources.zone)[1]
 
 
 __all__ = ["HighlightMarks"]
