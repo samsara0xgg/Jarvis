@@ -356,14 +356,16 @@ _ACTIVITY_ORDER: Final = (
 """The facts that say what he was doing, strongest first; a stay says only where."""
 
 
-def _dominant(segment: Segment, by_id: Mapping[str, Span], horizon: int) -> tuple[str | None, str]:
-    """``(title, category)`` the program can give a segment: what he was doing, never the place.
+def _dominant(
+    segment: Segment, by_id: Mapping[str, Span], horizon: int,
+) -> tuple[bool, str | None, str]:
+    """``(known, title, category)`` the program can give a segment: what he did, never the place.
 
     The first kind of activity in :data:`_ACTIVITY_ORDER` with a fact that covers at least half
-    of the segment gives its title (a project, a route, an app, an activity; a walk,
-    run, cycle or drive has none) and its category (``work`` for a work block). With none, the
-    segment has no title and the category of its primary place span (a home stay alone is
-    ``home``), else of the fact with most of it.
+    of the segment says what he was doing (``known``), with its title (a project, a route, an
+    app, an activity; a walk, run, cycle or drive has none) and its category (``work`` for a work
+    block). With none, nothing says what he did: no title, and the category of its primary place
+    span (a home stay alone is ``home``), else of the fact with most of it, as a colour.
     """
     start, end = segment.start_ms, segment.end_ms
     held = [by_id[i] for i in segment.item_ids]
@@ -371,20 +373,23 @@ def _dominant(segment: Segment, by_id: Mapping[str, Span], horizon: int) -> tupl
         found = _best((s for s in held if s["kind"] in kinds), start, end, horizon)
         if found is not None and 2 * _shared(found, start, end, horizon) >= end - start:
             work = found["kind"] in _ACTIVITY_ORDER[0]
-            return found["title"], "work" if work else found["category"]
+            return True, found["title"], "work" if work else found["category"]
     primary = by_id.get(segment.place_span_id or "") or _best(
         held, segment.start_ms, segment.end_ms, horizon,
     )
-    return None, "unknown" if primary is None else primary["category"]
+    return False, None, "unknown" if primary is None else primary["category"]
 
 
 def _program_span(segment: Segment, by_id: Mapping[str, Span], horizon: int) -> Span:
-    """A segment with the words the program has: what the facts say he was doing, low."""
+    """A segment with the words the program has: what the facts say he was doing, low.
+
+    It is ``unknown`` when no fact says what he did, though a place may give it a colour.
+    """
     place = by_id.get(segment.place_span_id or "")
-    title, category = _dominant(segment, by_id, horizon)
+    known, title, category = _dominant(segment, by_id, horizon)
     return _doing_span(
         segment.id, segment.start_ms, segment.end_ms,
-        kind="doing" if segment.item_ids else "unknown",
+        kind="doing" if known else "unknown",
         title=title, detail=None, category=category,
         basis="observed", confidence="low", clues=[], question=None,
         place_id=None if place is None else place["place_id"],
@@ -499,15 +504,14 @@ def serve(  # noqa: PLR0913 — what the lane is made of: cut, facts, run, answe
 def coverage(served: Iterable[Span], waking: Waking) -> dict[str, int]:
     """``waking_start_ms``, ``waking_end_ms``, ``waking_ms`` and ``filled_ms`` of a day.
 
-    ``filled_ms`` is the time of the doing spans that say something (a category other than
-    ``unknown``, or confirmed by him), planned ones excluded, inside the waking window.
+    ``filled_ms`` is the time of the doing spans that say what he was doing (``kind`` ``doing``,
+    which his answer makes any span), planned ones excluded, inside the waking window.
     """
     start, end = waking
     spoken = sorted(
         (max(s["start_ms"], start), min(s["end_ms"], end))
         for s in served
-        if s["kind"] in DOING_KINDS and s["basis"] != "planned"
-        and (s["category"] != "unknown" or s["confirmed"])
+        if s["kind"] == "doing" and s["basis"] != "planned"
     )
     filled, reached = 0, start
     for a, b in spoken:

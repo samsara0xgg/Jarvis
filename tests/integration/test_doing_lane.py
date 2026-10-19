@@ -440,8 +440,8 @@ def test_without_a_run_the_program_cut_speaks_for_the_facts_alone() -> None:
         "basis": "observed", "confidence": "low", "confirmed": False, "clues": [],
         "question": None, "place_id": None, "item_ids": [],
     }
-    assert by_start[540] | {"item_ids": []} == {
-        "id": f"doing-{540 * MIN}", "lane": "doing", "kind": "doing", "start_ms": 540 * MIN,
+    assert by_start[540] | {"item_ids": []} == {  # a place alone colours it, says not what he did
+        "id": f"doing-{540 * MIN}", "lane": "doing", "kind": "unknown", "start_ms": 540 * MIN,
         "end_ms": 600 * MIN, "title": None, "detail": None, "category": "study",
         "basis": "observed", "confidence": "low", "confirmed": False, "clues": [],
         "question": None, "place_id": "place:uvic", "item_ids": [],
@@ -495,6 +495,12 @@ DOMINANT_CASES = {
         [HOME_STAY, _item("t", "talk", 400, 1200, turns=4)], (None, "home"),
     ),
 }
+NOTHING_SAYS_WHAT = frozenset({
+    "nothing", "a stay", "a home stay alone", "a school stay alone",
+    "a stay with a place text is not named for it",
+    "work under half of the segment does not name it", "a talk never names it",
+})
+"""The cases where no fact says what he did: the span is unknown, a place at most its colour."""
 
 
 @pytest.mark.parametrize("name", list(DOMINANT_CASES))
@@ -505,7 +511,7 @@ def test_a_program_segment_is_named_for_what_he_did_never_where(name: str) -> No
     window = Waking(480 * MIN, 1080 * MIN)
     [span] = serve(cut(facts, window), facts, None, [], facts_in, window.end_ms)
     assert (span["title"], span["category"]) == (title, category)
-    assert span["kind"] == ("doing" if facts_in else "unknown")
+    assert span["kind"] == ("unknown" if name in NOTHING_SAYS_WHAT else "doing")
     assert (span["basis"], span["confidence"]) == ("observed", "low")
 
 
@@ -663,18 +669,18 @@ def test_a_run_that_breaks_the_vocabularies_is_not_served(broken: dict[str, Any]
 
 
 def test_coverage_counts_the_waking_time_that_says_something() -> None:
-    """Non-planned spans with a category, or that he confirmed; the rest is not filled."""
+    """Non-planned spans that say what he did, his answer included; a place alone does not."""
     items = _world_items()
     facts = fact_spans(items)
     served = serve(cut(facts, TODAY), facts, None, [], items, NOW * MIN)
-    # only s1 (UVic, study) has a category: 540-720
+    # only the work block (600-660) says what he did; the UVic stay around it is a colour
     assert coverage(served, TODAY) == {
         "waking_start_ms": 480 * MIN, "waking_end_ms": NOW * MIN, "waking_ms": 540 * MIN,
-        "filled_ms": 180 * MIN,
+        "filled_ms": 60 * MIN,
     }
     cafe = [_said(720, 1020, text="Café")]
     answered = serve(cut(facts, TODAY), facts, None, cafe, items, NOW * MIN)
-    assert coverage(answered, TODAY)["filled_ms"] == 180 * MIN + 300 * MIN  # his word fills it too
+    assert coverage(answered, TODAY)["filled_ms"] == 60 * MIN + 300 * MIN  # his word fills it too
     assert coverage(served, Waking(600 * MIN, 660 * MIN))["filled_ms"] == 60 * MIN  # clipped
 
 
@@ -858,8 +864,8 @@ def test_the_day_serves_spans_and_coverage_and_its_items_are_unchanged(tmp_path:
     assert sum(s["end_ms"] - s["start_ms"] for s in doing) == waking
 
 
-def test_kept_places_name_the_stays_and_fill_the_day(tmp_path: Path) -> None:
-    """A kept place names its stays and gives them a category; those minutes count as filled."""
+def test_kept_places_colour_the_stays_but_do_not_fill_the_day(tmp_path: Path) -> None:
+    """A kept place gives its stays a category and itself; where he was is not what he did."""
     src = _world(tmp_path)
     _stays(src)
     places.save(src.memory_db, name="UVic", lat=1.0, lng=2.0, role="school", origin="user")
@@ -870,7 +876,8 @@ def test_kept_places_name_the_stays_and_fill_the_day(tmp_path: Path) -> None:
     assert len({s["place_id"] for s in study}) == 1
     assert study[0]["place_id"] is not None
     assert all(s["title"] is None for s in study)
-    assert day["coverage"]["filled_ms"] == (6 * 30 + 45) * MIN
+    assert all(s["kind"] == "unknown" for s in study)
+    assert day["coverage"]["filled_ms"] == 45 * MIN
 
 
 def test_a_memory_db_made_before_the_tables_gets_them_without_a_version_bump(
