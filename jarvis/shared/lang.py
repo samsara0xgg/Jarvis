@@ -1126,6 +1126,12 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "thing.rem.line_on": {
         "zh": "{date} {time} {title}{place}", "en": "{date} {time} {title}{place}",
     },
+    "thing.rem.line_tomorrow": {
+        "zh": "明天 {time} {title}{place}", "en": "Tomorrow {time} {title}{place}",
+    },
+    "thing.rem.private_tomorrow": {
+        "zh": "明天 {time} 有一件事", "en": "Tomorrow {time} you have something on",
+    },
     "thing.rem.private_on": {
         "zh": "{date} {time} 有一件事", "en": "{date} {time} you have something on",
     },

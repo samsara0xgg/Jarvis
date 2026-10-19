@@ -957,7 +957,8 @@ def _ring_line(one: Thing, slot: _Slot, due: int, zone: tzinfo) -> str:
         key = f"private_{key}" if one.private else key
         return lang.t(f"thing.rem.{key}", date=day, title=title, place=place)
     at = f"{datetime.fromtimestamp(slot.start_ms / 1000, zone):{_CLOCK}}"
-    key = ("private" if one.private else "line") + ("" if ahead <= 0 else "_on")
+    when = "" if ahead <= 0 else "_tomorrow" if ahead == 1 else "_on"
+    key = ("private" if one.private else "line") + when
     return lang.t(f"thing.rem.{key}", date=day, time=at, title=title, place=place)
 
 

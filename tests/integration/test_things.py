@@ -817,11 +817,15 @@ _RING_GRAMMAR: dict[str, tuple[dict[str, Any], str, datetime, str]] = {
         {"start_at": _THU_7PM, "place": "Clinic"}, "-0m", _at(10, 15, 19), "19:00 Dentist · Clinic",
     ),
     "the evening before": (
-        {"start_at": _THU_7PM}, "-1d@20:00", _at(10, 14, 20), "10-15 19:00 Dentist",
+        {"start_at": _THU_7PM}, "-1d@20:00", _at(10, 14, 20), "Tomorrow 19:00 Dentist",
+    ),
+    "two evenings before": (
+        {"start_at": "2026-10-16T19:00:00-07:00"}, "-2d@20:00", _at(10, 14, 20),
+        "10-16 19:00 Dentist",
     ),
     "that morning": ({"start_at": _THU_7PM}, "@09:00", _at(10, 15, 9), "19:00 Dentist"),
     "a day of minutes": (
-        {"start_at": _THU_7PM}, "-1440m", _at(10, 14, 19), "10-15 19:00 Dentist",
+        {"start_at": _THU_7PM}, "-1440m", _at(10, 14, 19), "Tomorrow 19:00 Dentist",
     ),
     "a place too long to say": (
         {"start_at": _THU_7PM, "place": "x" * 41}, "-30m", _at(10, 15, 18, 30), "19:00 Dentist",
@@ -857,7 +861,7 @@ _RING_GRAMMAR: dict[str, tuple[dict[str, Any], str, datetime, str]] = {
     ),
     "private, timed, the evening before": (
         {"start_at": _THU_7PM, "private": True}, "-1d@20:00", _at(10, 14, 20),
-        "10-15 19:00 you have something on",
+        "Tomorrow 19:00 you have something on",
     ),
     "private, a whole day": (
         {"on_day": "2026-10-16", "private": True}, "-1d@20:00", _at(10, 15, 20),

@@ -3295,7 +3295,7 @@ def test_an_interview_time_makes_one_thing_with_two_rings_once(tmp_path: Path, j
     assert evening.due_at_ms == _utc("2026-10-07T20:00:00-07:00")
     assert before.due_at_ms == _utc("2026-10-08T12:30:00-07:00")
     assert evening.due_at_local == "2026-10-07T20:00:00-07:00"
-    assert evening.text == f"10-08 13:00 {title} · Teams"
+    assert evening.text == f"明天 13:00 {title} · Teams"
     assert before.text == f"13:00 {title} · Teams"
     app = _apps(h)[("Reliable Controls", "Firmware QA")]
     assert app["reminders"] == {
@@ -3331,7 +3331,7 @@ def test_an_interview_with_no_end_has_none_and_the_words_are_english_in_english(
     assert (one.start_at, one.end_at) == ("2026-10-08T13:00:00-07:00", "")
     assert one.title == "Interview: Reliable Controls — Firmware QA"
     evening, before = sorted(_rung(h), key=lambda r: r.due_at_ms)
-    assert evening.text == "10-08 13:00 Interview: Reliable Controls — Firmware QA · Teams"
+    assert evening.text == "Tomorrow 13:00 Interview: Reliable Controls — Firmware QA · Teams"
     assert before.text == "13:00 Interview: Reliable Controls — Firmware QA · Teams"
 
 
