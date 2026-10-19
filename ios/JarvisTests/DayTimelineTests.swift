@@ -724,6 +724,14 @@ final class DayTimelineTests: XCTestCase {
 
     // MARK: the setting
 
+    func testASwipeAlongTheDayIsADayBeforeOrAfterAndADragUpAndDownIsTheListsOwn() {
+        XCTAssertEqual(TimelineState.swipe(dx: 80, dy: 10), -1, "dragged right: the day before")
+        XCTAssertEqual(TimelineState.swipe(dx: -80, dy: -10), 1, "dragged left: the day after")
+        XCTAssertNil(TimelineState.swipe(dx: 59, dy: 0), "not far enough")
+        XCTAssertNil(TimelineState.swipe(dx: 100, dy: 60), "not sideways enough")
+        XCTAssertNil(TimelineState.swipe(dx: 10, dy: 200), "the list's own")
+    }
+
     func testTheHomeScreenShowsTheTimelineUntilHeChoosesTheDialAndKeepsWhatHeChose() {
         let name = "test.homeModule.\(UUID().uuidString)"
         let d = UserDefaults(suiteName: name)!

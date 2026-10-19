@@ -140,6 +140,12 @@ final class TimelineState {
     }
     func swipe(_ delta: Int) { setDay((pending ?? day) + delta) }
 
+    /// A drag along the day: far enough and mostly sideways it is a day before (dragged right) or a day after (dragged left); a drag up and down is the list's own.
+    static func swipe(dx: Double, dy: Double) -> Int? {
+        guard abs(dx) > 60, abs(dx) > abs(dy) * 1.8 else { return nil }
+        return dx > 0 ? -1 : 1
+    }
+
     /// The tick of the minute asks whether a new day has begun (midnight, or the phone was asleep past it). If so, and the day on show was the one that ended, it moves to the new today;
     /// what was held on it is let go, and the days are asked for again (the one that ended is final now, and the new today is not yet in).
     @discardableResult func rollOver() -> Bool {
@@ -289,6 +295,11 @@ struct DayTimelineView: View {
                 page(shown).id(tl.day).transition(slideTransition)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            // a swipe along the page is a day before or after, whatever the page is (a list, a sentence, or nothing yet), so no day is a dead end; a drag up and down is the list's own
+            .contentShape(Rectangle())
+            .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { v in
+                if let d = TimelineState.swipe(dx: v.translation.width, dy: v.translation.height) { tl.swipe(d) }
+            })
             .mask(VStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fadeTop)
                 Color.black
@@ -410,12 +421,6 @@ private struct TLList: View {
             guard let id, let y = model.top(of: id), let e = model.entries.first(where: { $0.id == id }) else { return }
             tl.scroll(to: max(0, y + e.gap - TLLayout.fadeTop - 6), animated: true)
         }
-        // a swipe along the list is a day before or after; a drag up and down is the list's own
-        .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { v in
-            let dx = v.translation.width, dy = v.translation.height
-            guard abs(dx) > 60, abs(dx) > abs(dy) * 1.8 else { return }
-            tl.swipe(dx > 0 ? -1 : 1)
-        })
         .onChange(of: model.entries.map(\.id)) { _, ids in tl.keep(only: Set(ids)) }
         .onAppear { nowInView = true }
     }
