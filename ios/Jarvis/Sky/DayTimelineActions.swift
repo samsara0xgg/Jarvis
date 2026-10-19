@@ -144,6 +144,22 @@ extension TimelineState {
         catch { return .refused(BrainError.refused.message) }
     }
 
+    // MARK: the weather
+
+    /// how long the sun's times stay in the header after a tap on the weather
+    static let sunFor = 3.0
+
+    /// A tap on the header's weather: when the sun rose and set, in its place, for a few seconds; another tap puts it away at once.
+    func saySun(for seconds: Double = TimelineState.sunFor) {
+        sunHide?.cancel()
+        if sunSaid { withAnimation(.easeOut(duration: 0.2)) { sunSaid = false }; return }
+        withAnimation(.easeOut(duration: 0.2)) { sunSaid = true }
+        sunHide = Task { @MainActor [self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1e9))
+            if !Task.isCancelled { withAnimation(.easeOut(duration: 0.2)) { sunSaid = false } }
+        }
+    }
+
     // MARK: what waits
 
     /// the first row that waits on him: the list goes to it and it flashes (a row he had open is closed first, so the place it stands at is where the closed list has it)

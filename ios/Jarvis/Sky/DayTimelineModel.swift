@@ -276,6 +276,11 @@ struct TLWeather: Equatable {
 /// when the sun rose and set, in minutes from the day's midnight
 struct TLSun: Equatable {
     var rise: Double?, set: Double?
+    /// what a tap on the weather says: `日出 07:12 · 日落 18:21`, or what of it there is
+    var text: String? {
+        let parts = [rise.map { "日出 " + clock($0) }, set.map { "日落 " + clock($0) }].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 }
 
 /// something that was going on, for the readout to say of the minute under a finger
@@ -657,12 +662,15 @@ struct DayTimelineModel: Equatable {
         return out
     }
 
-    private static func weatherOf(_ w: DayWeather?) -> TLWeather? {
+    static func weatherOf(_ w: DayWeather?) -> TLWeather? {
         guard let w else { return nil }
         let words = weatherWords(w.condition)
         let hi = w.high.flatMap { $0.isFinite ? tlInt($0) : nil }, lo = w.low.flatMap { $0.isFinite ? tlInt($0) : nil }
         return words == nil && hi == nil && lo == nil ? nil : TLWeather(word: words?.word, symbol: words?.symbol, high: hi, low: lo)
     }
+
+    /// when the sun rose and set on `day` (the header's weather says it when it is tapped)
+    static func sun(of r: DayReply, day: Int) -> TLSun? { sunOf(r.weather) { Cal.cur.t(ms: $0) - Double(day) * DAY } }
 
     /// when the sun rose and set, where that is on this day
     private static func sunOf(_ w: DayWeather?, _ m: (Int64) -> Double) -> TLSun? {

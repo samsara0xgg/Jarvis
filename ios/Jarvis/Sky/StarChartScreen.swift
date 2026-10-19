@@ -115,6 +115,12 @@ struct StarChrome: View {
 
     // MARK: the top row: the day you are looking at, the scale, settings
 
+    /// what the top row leaves between the date and the settings button on the timeline (its gaps, and the empty place of the scale, counted)
+    private var headRoom: Double {
+        let date = tlWidth(ui.dateText, size: 15, weight: .semibold) + (ui.talking ? 0 : ui.dateLabel.map { tlWidth(" · " + $0, size: 13) } ?? 0)
+        return W - 30 - 36 - 3 * 8 - (30 + TLLayout.dateShift) - date - 8
+    }
+
     private var topRow: some View {
         let tlOn = HomeModule.shared.isTimeline          // the timeline in the dial's place: she stands in the corner, so the date starts further right, and there is no scale to pick
         return HStack(spacing: 8) {
@@ -123,10 +129,13 @@ struct StarChrome: View {
                 if let l = ui.dateLabel, !ui.talking { Text(" · " + l).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).fixedSize() }      // short enough to fit beside the date; the talk's time takes its place
                 Text("  " + ui.topTime).font(monoF(14)).foregroundStyle(ink).lineLimit(1)
                     .opacity(ui.talking && !tlOn ? 1 : 0).animation(.easeOut(duration: 0.25), value: ui.talking)
+                    .frame(width: tlOn ? 0 : nil, alignment: .leading)
             }
+            if tlOn { TLDayHead(tl: ui.tl, room: headRoom) }        // after the date: 今天 or the way back to it, and the day's weather
             Spacer(minLength: 0)
             SegControl(level: ui.level) { engine.setLevel(Double($0)) }
                 .opacity(tlOn ? 0 : 1).allowsHitTesting(!tlOn)
+                .frame(width: tlOn ? 0 : 148, alignment: .trailing)          // no scale to pick on the timeline: its room is the date's
             Button { ui.settingsOpen = true } label: {
                 Image(systemName: "gearshape").font(.system(size: 18, weight: .regular)).foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.8))
                     .frame(width: 36, height: 36).glass(Circle())

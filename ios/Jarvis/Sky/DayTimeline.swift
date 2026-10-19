@@ -60,6 +60,8 @@ final class TimelineState {
     var renameNote: String?                         // why it did not go
     var undo: PlaceUndo?                            // the rename he can take back for a few seconds
     var flash: String?                              // the row just scrolled to: it flashes
+    var sunSaid = false                             // the weather in the header was just tapped: it says when the sun rose and set, in its place
+    @ObservationIgnored var sunHide: Task<Void, Never>?
     struct ScrollRequest: Equatable { var y = 0.0, animated = false, n = 0 }
     @ObservationIgnored private var pending: Int?
     #if DEBUG
@@ -115,7 +117,7 @@ final class TimelineState {
     func setDay(_ d: Int) {
         let from = pending ?? day
         guard d != from, d <= today else { return }
-        pending = d; slide = d < from ? 1 : -1; openRow = nil
+        pending = d; slide = d < from ? 1 : -1; openRow = nil; sunSaid = false
         DispatchQueue.main.async { [self] in
             pending = nil
             withAnimation(.easeOut(duration: 0.35)) { day = d }
@@ -162,7 +164,9 @@ struct DayTimelineView: View {
                 listArea(shown, away: away)
                 undoToast(away: away)
                 grabber
-                pill(show: (tl.day != tl.today || !nowInView) && !away)
+                TLWaitPill(count: away ? 0 : model?.waiting.count ?? 0) { if let model { tl.revealWaiting(in: model) } }
+                    .frame(width: W - 60, alignment: .leading).offset(x: 30, y: TLLayout.grabberY + 2)
+                pill(show: tl.day == tl.today && !nowInView && !away)
             }
             .frame(width: W, height: H, alignment: .topLeading)
             .onChange(of: isReady(shown), initial: true) { _, ready in release(ready) }
@@ -229,8 +233,8 @@ struct DayTimelineView: View {
                     .accessibilityElement().accessibilityLabel("一天的概览，拖动可以翻到那个时间")
                     .id(tl.day).transition(barTransition)
                     .offset(x: 30, y: TLLayout.barY)
-                if !m.chips.isEmpty {
-                    TLChips(chips: m.chips, active: lens) { l in
+                if !m.chips.isEmpty || !m.body.isEmpty {
+                    TLChips(chips: m.chips, health: m.body, active: lens) { l in
                         Haptic.selection()
                         withAnimation(.easeOut(duration: 0.15)) { tl.lens = tl.lens == l ? nil : l }
                     }
@@ -331,16 +335,9 @@ struct DayTimelineView: View {
             .accessibilityLabel("展开对话")
     }
 
-    /// 回到现在, in the look of the one under the dial, on the grabber's row at the right
+    /// 回到现在, in the look of the one under the dial, on the grabber's row at the right: on today, when the line for now is out of view (another day has its way back in the header)
     private func pill(show: Bool) -> some View {
-        Button { tl.goToday() } label: {
-            HStack(spacing: 6) {
-                Circle().fill(Color(red: 1, green: 243 / 255, blue: 214 / 255)).frame(width: 6, height: 6)
-                    .shadow(color: Color(red: 1, green: 228 / 255, blue: 170 / 255).opacity(0.7), radius: 4)
-                Text("回到现在").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(ink)
-            }
-            .padding(.leading, 10).padding(.trailing, 12).frame(height: 26).background(Color.white.opacity(0.1), in: Capsule())
-        }
+        Button { tl.goToday() } label: { TLBackLabel(text: "回到现在") }
         .buttonStyle(PressScale())
         .frame(width: W - 60, alignment: .trailing)
         .opacity(show ? 1 : 0).scaleEffect(show || reduce ? 1 : 0.92).allowsHitTesting(show)
@@ -441,6 +438,7 @@ private extension View {
 /// The row of the day's numbers under the hours: a chip for each, pressing one brings that kind forward (and pressing it again lets it go). Sideways when there are more than fit.
 private struct TLChips: View {
     let chips: [TLChip]
+    let health: [TLBody]                // what Health reported, after them
     let active: TLLens?
     let toggle: (TLLens) -> Void
 
@@ -448,6 +446,7 @@ private struct TLChips: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(chips) { c in chip(c) }
+                if !health.isEmpty { TLBodyValues(values: health).padding(.leading, chips.isEmpty ? 0 : 8) }        // after the numbers, quiet
             }
             .padding(.horizontal, 30)
             .frame(height: TLLayout.chipsHit)

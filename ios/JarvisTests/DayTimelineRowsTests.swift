@@ -724,4 +724,15 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertFalse(TLGeo.sunGlyphFits(TLGeo.x(1091, m.span, 380), hours: centres, width: 380))
         XCTAssertTrue(TLGeo.sunGlyphFits(TLGeo.x(1000, m.span, 380), hours: centres, width: 380), "16:40 is clear of 15 and 18")
     }
+
+    func testATapOnTheWeatherSaysWhenTheSunRoseAndSet() throws {
+        let m = build(TimelineFixture.today(cal))
+        XCTAssertEqual(m.sun?.text, "日出 07:34 · 日落 18:11")
+        XCTAssertEqual(TLSun(rise: 400, set: nil).text, "日出 06:40", "what of it there is")
+        XCTAssertEqual(TLSun(rise: nil, set: 1100).text, "日落 18:20")
+        XCTAssertNil(TLSun(rise: nil, set: nil).text)
+        // the header asks for it by the day on show
+        XCTAssertEqual(DayTimelineModel.sun(of: TimelineFixture.today(cal), day: 0)?.text, m.sun?.text)
+        XCTAssertNil(DayTimelineModel.sun(of: try reply(""), day: 0), "a brain that serves no weather")
+    }
 }

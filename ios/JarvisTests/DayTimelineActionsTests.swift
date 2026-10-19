@@ -218,4 +218,35 @@ final class DayTimelineActionsTests: XCTestCase {
         tl.revealWaiting(in: calm)
         XCTAssertEqual(tl.request.n, n)
     }
+
+    // MARK: the header
+
+    func testATapOnTheWeatherSaysTheSunForAMomentAndAnotherPutsItAway() async throws {
+        let tl = state()
+        XCTAssertFalse(tl.sunSaid)
+        tl.saySun(for: 0.15)
+        XCTAssertTrue(tl.sunSaid)
+        await until("it goes by itself") { !tl.sunSaid }
+        tl.saySun(for: 30)
+        XCTAssertTrue(tl.sunSaid)
+        tl.saySun()
+        XCTAssertFalse(tl.sunSaid, "a second tap puts it away at once")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(tl.sunSaid, "and the first one's time running out does not bring it back")
+        // another day has its own weather: it does not stay
+        tl.saySun(for: 30)
+        tl.setDay(tl.today - 1)
+        XCTAssertFalse(tl.sunSaid)
+    }
+
+    func testTheWeatherGivesUpItsWordThenItselfBeforeItCrowdsTheTopRow() {
+        let w = TLWeather(word: "多云", symbol: "cloud.fill", high: 14, low: 8)
+        XCTAssertEqual(TLDayHead.weatherFit(w, today: true, room: 175), 2, "all of it")
+        XCTAssertEqual(TLDayHead.weatherFit(w, today: true, room: 140), 1, "the temperatures")
+        XCTAssertEqual(TLDayHead.weatherFit(w, today: false, room: 180), 1, "the way back is wider than the tag, so the word goes first")
+        XCTAssertEqual(TLDayHead.weatherFit(w, today: false, room: 130), 0, "and then all of it")
+        XCTAssertEqual(TLDayHead.weatherFit(w, today: true, room: 0), 0)
+        // no symbol, no word: only what there is
+        XCTAssertEqual(TLDayHead.weatherFit(TLWeather(word: nil, symbol: nil, high: 21, low: nil), today: true, room: 120), 2)
+    }
 }
