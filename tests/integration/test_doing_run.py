@@ -1210,7 +1210,7 @@ def test_the_shipped_block_is_on_on_haiku_and_holds_the_prompt() -> None:
     block = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))["doing"]
     settings = DoingSettings.from_config(block)
     assert settings is not None
-    assert settings.preset == "haiku-bg"
+    assert settings.preset == "haiku-long"
     for needle in ("TITLE LANGUAGE", "never says where", "at most 5", "unknown", "stated"):
         assert needle in settings.prompt
 
