@@ -83,6 +83,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     # A letter is read for a sign of a date or an hour in Chinese or English (ADR 0274).
     "jarvis/decision/commitment_mail.py": frozenset({"_SIGNS"}),
     "jarvis/runtime/daily_report.py": frozenset({"_PAST_DAY", "_YESTERDAY"}),
+    # A deep-search brief written in Chinese opens its list of pages with a 来源 line.
+    "jarvis/runtime/deep_search.py": frozenset({"_SOURCES_LINE"}),
     "jarvis/execution/tool_search.py": frozenset({"_TOKEN"}),
     "jarvis/shared/text.py": frozenset({"is_english"}),
     # The six core-memory section names (ADR 0146) are stored keys and the exact words the
