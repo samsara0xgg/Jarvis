@@ -16,6 +16,7 @@ Acceptance checks, each over a real event log:
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from contextlib import closing
@@ -47,6 +48,7 @@ from tests.integration.test_spoken_streaming import _Peer, _spoken_runtime
 from tests.integration.test_wire_routine_streaming import _drive
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 START = 1_791_619_200_000
@@ -317,10 +319,18 @@ def test_a_resent_say_with_about_writes_one_row_and_gets_the_same_answer(tmp_pat
 
 
 @pytest.fixture(autouse=True)
-def _fixture_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def _fixture_key(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("ROUTINE_STREAM_FIXTURE_KEY", "synthetic")
     monkeypatch.setattr(runtime_module, "_labels_phases", lambda _base_url: True)
+    before = os.environ.get("TZ")
     monkeypatch.setenv("TZ", "America/Vancouver")
+    time.tzset()
+    yield
+    # the C library keeps its zone until told again: give the tests after these their own back
+    if before is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = before
     time.tzset()
 
 
