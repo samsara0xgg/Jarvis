@@ -266,6 +266,14 @@ ALL_DAY_CASES: list[tuple[str, list[dict[str, Any]], list[str]]] = [
         ],
         ["Birthday", "Reading week"],
     ),
+    (
+        "one over several days is a label of each of them",
+        [all_day("a", "Conference", "2026-10-09", "2026-10-12")], ["Conference"],
+    ),
+    (
+        "one over several days that ended the day before is not",
+        [all_day("a", "Trip", "2026-10-07", "2026-10-10")], [],
+    ),
 ]
 
 
@@ -276,11 +284,14 @@ ALL_DAY_CASES: list[tuple[str, list[dict[str, Any]], list[str]]] = [
 def test_an_all_day_event_is_a_label_of_the_day_and_not_an_item(
     tmp_path: Path, graph: list[dict[str, Any]], labels: list[str],
 ) -> None:
-    """Only its own day carries it, with a thing's label fields and the phone's id."""
+    """Only its own days carry it, with a thing's label fields and the phone's id (first day)."""
     with closing(Rig(tmp_path)) as rig:
         rig.mirror(_Microsoft([*graph, STANDUP]))
         line = rig.fold(480)
-        held = {one["subject"]: _phone_id(rig.conn, one) for one in graph}
+        held = {
+            one["subject"]: _phone_id(rig.conn, one, one["start"]["dateTime"][:10])
+            for one in graph
+        }
 
     assert sorted(line.labels, key=lambda label: label["title"]) == [
         {

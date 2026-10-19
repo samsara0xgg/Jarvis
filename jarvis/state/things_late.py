@@ -40,7 +40,8 @@ def when_ms(one: things.Thing, zone: tzinfo) -> int | None:
 def late(open_things: Iterable[things.Thing], before_ms: int, zone: tzinfo) -> list[things.Thing]:
     """The open ``do`` things whose time came before ``before_ms``, in the order given.
 
-    A ``do`` is late when it was due, or was to start or be done on its day, before ``before_ms``.
+    A ``do`` is late when it was due, or was to start or be done on its day (the last of its days),
+    before ``before_ms``.
     A ``go`` is never late (he went, or the time is gone), nor is a weekly thing, whose dates are
     closed one at a time, nor an untimed thing, which has no time to miss.
     """
@@ -48,7 +49,9 @@ def late(open_things: Iterable[things.Thing], before_ms: int, zone: tzinfo) -> l
     for one in open_things:
         if one.state != "open" or one.kind != "do" or one.weekly_until:
             continue
-        at = when_ms(one, zone)
+        at = when_ms(one, zone) if not one.last_day else int(datetime.combine(
+            date.fromisoformat(one.last_day), time.min, tzinfo=zone,
+        ).timestamp() * 1000)
         if at is not None and at < before_ms:
             found.append(one)
     return found

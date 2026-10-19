@@ -4,9 +4,10 @@ When the ``microsoft`` connection answers, at start and every ``PASS_S``: the ca
 yesterday to 60 days ahead and every To Do list's tasks (open and completed) are read, and the
 ledger is made to agree. Each event or task is one thing found by its own id (``things.by_source``,
 ``source`` ``outlook`` or ``todo``), written ``by="mirror"`` and confirmed; an event is a ``go``
-(an all-day one on its ``on_day``), a task a ``do`` due on its date. A new one is added, a changed
-time is a move, a changed subject or place a change, an event deleted or cancelled within the
-window is cancelled, a task completed is done, and a completed task opened again reopens its thing.
+(an all-day one on its ``on_day`` through ``last_day``), a task a ``do`` due on its date. A new
+one is added, a changed time is a move, a changed subject or place a change, an event deleted or
+cancelled within the window is cancelled, a task completed is done, and a completed task opened
+again reopens its thing.
 Only what the mirror closed is reopened by it: a thing closed by Allen or by her stays closed.
 
 An event whose id is some thing's ``outlook_id`` is Jarvis's own (an interview's, ADR 0186) and is
@@ -201,10 +202,13 @@ class ThingsMirror:
         place = _line((event.get("location") or {}).get("displayName"))
         ref = str(event["id"])
         if event.get("isAllDay"):
-            day = str(event["start"]["dateTime"])[:10]
+            # Graph ends an all-day event at the midnight after its last day
+            first = date.fromisoformat(str(event["start"]["dateTime"])[:10])
+            last = date.fromisoformat(str(event["end"]["dateTime"])[:10]) - timedelta(days=1)
             return things.Thing(
-                things.new_id(), title, "go", on_day=day, place=place, source="outlook",
-                source_ref=ref,
+                things.new_id(), title, "go", on_day=first.isoformat(),
+                last_day=last.isoformat() if last > first else "", place=place,
+                source="outlook", source_ref=ref,
             )
         return things.Thing(
             things.new_id(), title, "go", start_at=self._local(event["start"]),
@@ -253,7 +257,7 @@ class ThingsMirror:
         if (want.start_at or want.on_day or want.due) and _when(one) != _when(want):
             one = things.move(
                 conn, one.thing_id, start_at=want.start_at, end_at=want.end_at,
-                on_day=want.on_day, due=want.due, **write,
+                on_day=want.on_day, last_day=want.last_day, due=want.due, **write,
             )
             writes += 1
         names = ("title", "place") if want.source == "outlook" else ("title",)
@@ -307,11 +311,12 @@ def _task(task: Mapping[str, Any], ref: str) -> things.Thing:
     return things.Thing(things.new_id(), title, "do", due=due, source="todo", source_ref=ref)
 
 
-def _when(one: things.Thing) -> tuple[datetime | None, datetime | None, str, str]:
+def _when(one: things.Thing) -> tuple[datetime | None, datetime | None, str, str, str]:
     """A thing's time as instants, so two spellings of one moment are the same."""
     return (
         datetime.fromisoformat(one.start_at) if one.start_at else None,
         datetime.fromisoformat(one.end_at) if one.end_at else None,
         one.on_day,
+        one.last_day,
         one.due,
     )

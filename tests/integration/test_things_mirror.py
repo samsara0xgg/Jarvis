@@ -248,6 +248,21 @@ def test_an_all_day_event_is_a_day_and_moves_as_a_day(world: _World) -> None:
     assert one.on_day == "2026-10-27"
     assert [m.on_day for m in one.moves] == ["2026-10-26"]
 
+    longer = _day("ev-day", "Reading week", "2026-10-27")
+    longer["end"]["dateTime"] = "2026-10-31T00:00:00.0000000"
+    server.events = [longer]
+    assert world.sync() == 1
+    one = world.one("outlook", "ev-day")
+    assert (one.on_day, one.last_day) == ("2026-10-27", "2026-10-30")
+    assert [(m.on_day, m.last_day) for m in one.moves] == [("2026-10-26", ""), ("2026-10-27", "")]
+    noon = datetime(2026, 10, 29, 12, tzinfo=ZONE)
+    days = things.occurrences(
+        world.log.conn, int(noon.timestamp() * 1000),
+        int((noon + timedelta(days=2)).timestamp() * 1000), zone=ZONE,
+    )
+    assert [(o.day, o.all_day) for o in days] == [("2026-10-27", True)]
+    assert world.sync() == 0
+
 
 def test_an_event_with_no_subject_is_untitled_and_one_that_cannot_be_read_waits(
     world: _World,

@@ -77,7 +77,7 @@ _CARRY_ACTION: Final[str] = "thing-carry-in"
 _INTERVIEW_ACTION: Final[str] = "job-interview-reminders"
 _CARRY_VERSION: Final[int] = 1
 _CLOSING: Final[tuple[str, ...]] = ("done", "paid", "cancelled")
-_TIME_FIELDS: Final[tuple[str, ...]] = ("start_at", "end_at", "on_day", "due")
+_TIME_FIELDS: Final[tuple[str, ...]] = ("start_at", "end_at", "on_day", "last_day", "due")
 _LISTS: Final[tuple[str, ...]] = ("rings", "skip_dates")
 _DAY: Final[re.Pattern[str]] = re.compile(r"\d{4}-\d{2}-\d{2}")
 _ID: Final[re.Pattern[str]] = re.compile(r"thing-[0-9a-z]{1,64}")
@@ -102,6 +102,7 @@ class Move:
     by: str
     evidence: str
     date: str = ""
+    last_day: str = ""
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,7 @@ class Thing:
     start_at: str = ""
     end_at: str = ""
     on_day: str = ""
+    last_day: str = ""  # an ``on_day`` thing over several days: its last one
     due: str = ""
     weekly_until: str = ""
     skip_dates: tuple[str, ...] = ()
@@ -156,7 +158,7 @@ class Thing:
         return {
             "thing_id": self.thing_id, "title": self.title, "kind": self.kind,
             "start_at": self.start_at, "end_at": self.end_at, "on_day": self.on_day,
-            "due": self.due, "weekly_until": self.weekly_until,
+            "last_day": self.last_day, "due": self.due, "weekly_until": self.weekly_until,
             "skip_dates": list(self.skip_dates), "place": self.place, "link": self.link,
             "note": self.note, "rings": list(self.rings), "private": self.private,
             "life_line": self.life_line, "confirmed": self.confirmed, "source": self.source,
@@ -233,6 +235,7 @@ def _from_payload(payload: Mapping[str, Any]) -> Thing:
         start_at=str(payload.get("start_at") or ""),
         end_at=str(payload.get("end_at") or ""),
         on_day=str(payload.get("on_day") or ""),
+        last_day=str(payload.get("last_day") or ""),
         due=str(payload.get("due") or ""),
         weekly_until=str(payload.get("weekly_until") or ""),
         skip_dates=tuple(str(d) for d in payload.get("skip_dates") or ()),
@@ -281,10 +284,13 @@ def _apply(one: Thing, event_type: str, payload: Mapping[str, Any], at: int) -> 
             one.date_moves[date_key] = (str(payload["start_at"]), str(payload["end_at"]))
         else:
             one.moves += (
-                Move(at, one.start_at, one.end_at, one.on_day, one.due, by, evidence),
+                Move(
+                    at, one.start_at, one.end_at, one.on_day, one.due, by, evidence,
+                    last_day=one.last_day,
+                ),
             )
             for name in _TIME_FIELDS:
-                setattr(one, name, str(payload[name]))
+                setattr(one, name, str(payload.get(name) or ""))
     elif event_type == "thing.closed":
         what = str(payload["state"])
         if date_key:
@@ -396,6 +402,13 @@ def _first_day(one: Thing, zone: tzinfo) -> date:
     return date.fromisoformat(one.on_day)
 
 
+def _extra_days(one: Thing) -> int:
+    """The days an ``on_day`` thing covers after its first one."""
+    if not (one.on_day and one.last_day):
+        return 0
+    return (date.fromisoformat(one.last_day) - date.fromisoformat(one.on_day)).days
+
+
 def _series(one: Thing, zone: tzinfo) -> list[date]:
     """The series dates of a timed thing: one, or every 7 days to ``weekly_until``, less skips."""
     first = _first_day(one, zone)
@@ -454,7 +467,7 @@ def _slots(one: Thing, zone: tzinfo) -> list[_Slot]:
             end, all_day = start + span, False
         else:
             start, all_day = _midnight(day, zone), True
-            end = _midnight(day + timedelta(days=1), zone)
+            end = _midnight(day + timedelta(days=1 + _extra_days(one)), zone)
         anchor_day = datetime.fromtimestamp(start / 1000, zone).date()
         slots.append(_Slot(key, anchor_day, start, start, end, all_day, _state_of(one, key)))
     return slots
@@ -467,10 +480,10 @@ def occurrences(
 
     A weekly one repeats every 7 days from its first date to ``weekly_until`` (inclusive) less
     ``skip_dates``, at the same wall-clock time in ``zone`` across a clock change, with per-date
-    moves applied. An ``on_day`` occurrence is that local day, midnight to midnight, ``all_day``;
-    a ``start_at`` without ``end_at`` lasts an hour. Cancelled things and dates are left out; done
-    and paid ones only with ``closed``. A ``due`` is not an occurrence: see :func:`open_things` and
-    :func:`due_ms`. Soonest first.
+    moves applied. An ``on_day`` occurrence is that local day (through ``last_day``), midnight to
+    midnight, ``all_day``; a ``start_at`` without ``end_at`` lasts an hour. Cancelled things and
+    dates are left out; done and paid ones only with ``closed``. A ``due`` is not an occurrence:
+    see :func:`open_things` and :func:`due_ms`. Soonest first.
     """
     found: list[Occurrence] = []
     for one in fold(conn).values():
@@ -569,6 +582,12 @@ def _check(one: Thing, zone: tzinfo) -> None:  # noqa: C901, PLR0912 - one rule 
             raise ValueError(msg)
     if one.on_day:
         _day(one.on_day, "on_day")
+    if one.last_day and not one.on_day:
+        msg = "last_day needs on_day"
+        raise ValueError(msg)
+    if one.last_day and _day(one.last_day, "last_day") < _day(one.on_day, "on_day"):
+        msg = f"last_day {one.last_day!r} is before on_day {one.on_day!r}"
+        raise ValueError(msg)
     if one.due:
         _day(one.due, "due") if _DAY.fullmatch(one.due) else _aware(one.due, "due")
     if (one.weekly_until or one.skip_dates) and not (one.start_at or one.on_day):
@@ -595,7 +614,8 @@ def _clean(one: Thing) -> Thing:
         life_line=str(one.life_line).strip(), sender=str(one.sender).strip(),
         source_ref=str(one.source_ref).strip(), outlook_id=str(one.outlook_id).strip(),
         start_at=str(one.start_at).strip(), end_at=str(one.end_at).strip(),
-        on_day=str(one.on_day).strip(), due=str(one.due).strip(),
+        on_day=str(one.on_day).strip(), last_day=str(one.last_day).strip(),
+        due=str(one.due).strip(),
         weekly_until=str(one.weekly_until).strip(),
         skip_dates=tuple(str(d).strip() for d in one.skip_dates),
         rings=tuple(str(r).strip() for r in one.rings),
@@ -676,7 +696,7 @@ def _same_time(a: Thing, b: Thing) -> bool:
         if one.start_at:
             return "start", _ms(datetime.fromisoformat(one.start_at))
         if one.on_day:
-            return "day", one.on_day
+            return "day", f"{one.on_day}/{one.last_day}"
         if one.due:
             if _DAY.fullmatch(one.due):
                 return "due", one.due
@@ -795,7 +815,8 @@ def change(  # noqa: PLR0913 - the fields, who wrote them and why, and the clock
 
 def move(  # noqa: PLR0913 - the new time, who moved it and why, and the clock
     conn: sqlite3.Connection, thing_id: str, *, start_at: str = "", end_at: str = "",
-    on_day: str = "", due: str = "", occurrence: str = "", by: str, evidence: str,
+    on_day: str = "", last_day: str = "", due: str = "", occurrence: str = "", by: str,
+    evidence: str,
     ref: str = "", zone: tzinfo, now: datetime | None = None, actor: str = "jarvis_runtime",
 ) -> Thing:
     """Give an open thing a new time; the time it had stays in ``moves``.
@@ -813,7 +834,7 @@ def move(  # noqa: PLR0913 - the new time, who moved it and why, and the clock
             if one.date_states.get(occurrence):
                 msg = f"{occurrence} of {one.title!r} is {one.date_states[occurrence]}; reopen it"
                 raise ValueError(msg)
-            if on_day or due or not start_at:
+            if on_day or last_day or due or not start_at:
                 msg = "one occurrence moves to a new start_at (and end_at) only"
                 raise ValueError(msg)
             begin = _aware(start_at.strip(), "start_at")
@@ -823,7 +844,7 @@ def move(  # noqa: PLR0913 - the new time, who moved it and why, and the clock
             was = next(s for s in _slots(one, zone) if s.key == occurrence)
             extra: dict[str, Any] = {
                 "date": occurrence, "start_at": start_at.strip(), "end_at": end_at.strip(),
-                "on_day": "", "due": "",
+                "on_day": "", "last_day": "", "due": "",
                 "was_start_at": datetime.fromtimestamp(was.start_ms / 1000, zone).isoformat(
                     timespec="seconds",
                 ),
@@ -836,7 +857,7 @@ def move(  # noqa: PLR0913 - the new time, who moved it and why, and the clock
                 msg = "a move needs the new time: start_at, on_day or due"
                 raise ValueError(msg)
             moved = _clean(replace(
-                one, start_at=start_at, end_at=end_at, on_day=on_day, due=due,
+                one, start_at=start_at, end_at=end_at, on_day=on_day, last_day=last_day, due=due,
             ))
             _check(moved, zone)
             extra = {name: getattr(moved, name) for name in _TIME_FIELDS}
