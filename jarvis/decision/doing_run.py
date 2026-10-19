@@ -84,6 +84,16 @@ def _reach(span: Mapping[str, Any], brief: Brief) -> int:
     return brief.waking.end_ms if span["end_ms"] is None else int(span["end_ms"])
 
 
+def _at_mac(segment: Segment, brief: Brief) -> bool:
+    """Whether his Mac shows him working for at least half of the segment."""
+    start, end = segment.start_ms, segment.end_ms
+    worked = sum(
+        max(0, min(_reach(s, brief), end) - max(int(s["start_ms"]), start))
+        for s in brief.facts if s["kind"] == "work"
+    )
+    return 2 * min(worked, end - start) >= end - start
+
+
 def times(brief: Brief) -> list[int]:
     """The moments a span may start or end at, oldest first.
 
@@ -157,6 +167,7 @@ def _segment_line(segment: Segment, labels: Mapping[int, str], brief: Brief) -> 
         f"{labels[segment.start_ms]}-{labels[segment.end_ms]}",
         f"{_clock(segment.start_ms, brief.zone)}-{_clock(segment.end_ms, brief.zone)}",
         where,
+        *(["at his Mac"] if _at_mac(segment, brief) else []),
         f"facts: {held or 'none'}",
     ]
     if segment.start_ms in brief.signals:
@@ -203,7 +214,8 @@ def build_messages(brief: Brief) -> list[dict[str, Any]]:
         f"WAKING WINDOW: {labels[start]} {_clock(start, brief.zone, seconds=True)} to "
         f"{labels[end]} {_clock(end, brief.zone, seconds=True)}",
         "TIMES (local; a span starts and ends only at one of these):\n" + "\n".join(time_lines),
-        "SEGMENTS (the program's cut of the window; times | local | place | facts | signals):\n"
+        "SEGMENTS (the program's cut of the window; times | local | place | at his Mac | facts |"
+        " signals):\n"
         + "\n".join(segment_lines),
         f"PHONE AND TABLET APP USE: {_screen_line(brief)}",
         "CLUES (id | local time | kind | text):\n" + ("\n".join(clue_lines) or "(none)"),
@@ -375,16 +387,6 @@ def _span(  # noqa: PLR0913 — the span, the day, the labels given and what the
         "clues": cited, "question": _question(raw.get("question"), span_id),
         "place_id": None if place is None else place["place_id"],
     }
-
-
-def _at_mac(segment: Segment, brief: Brief) -> bool:
-    """Whether his Mac shows him working for at least half of the segment."""
-    start, end = segment.start_ms, segment.end_ms
-    worked = sum(
-        max(0, min(_reach(s, brief), end) - max(int(s["start_ms"]), start))
-        for s in brief.facts if s["kind"] == "work"
-    )
-    return 2 * min(worked, end - start) >= end - start
 
 
 def _joined(span: Mapping[str, Any], brief: Brief) -> str | None:

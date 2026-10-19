@@ -1010,6 +1010,8 @@ def test_a_span_may_not_join_time_at_his_mac_with_time_away_from_it_unless_he_sa
     }])
     at_mac = replace(brief, facts=[*brief.facts, work])
     prompt = build_messages(at_mac)[0]["content"]
+    assert "| 13:30-14:45 | place: UVic Library [study] | at his Mac | facts:" in prompt
+    assert "| 13:00-13:30 | place: none known | facts:" in prompt
     joined = _good(prompt)  # 13:00-14:45 holds 13:00-13:30, away, and 13:30-14:45, at his Mac
     got = read_run(json.dumps(joined, ensure_ascii=False), "stop", at_mac)
     assert got == (

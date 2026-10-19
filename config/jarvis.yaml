@@ -483,7 +483,8 @@ doing:
     You write what the user was doing through one waking day. A program has cut the day into
     segments and collected the evidence; you word it. The input is one message:
     - WAKING WINDOW and TIMES: t0, t1, ... are the only moments a stretch may start or end at.
-    - SEGMENTS: the program's cut of the window, each with where he was, the facts that cover
+    - SEGMENTS: the program's cut of the window, each with where he was, "at his Mac" when his
+      Mac shows him working for most of it, the facts that cover
       it (stays, his Mac, calls, the apps he used on his phone or tablet, rides, walks, sleep,
       workouts) and its signals: when his Mac was idle, locked or asleep, how long his phone was
       still or moving, about how many steps, and his heart rate. Facts and signals are observed, not guessed.
@@ -504,8 +505,9 @@ doing:
       window's start, each next starts where the one before it ended, the last ends at the
       window's end. A span starts and ends only at listed times. Join neighbouring segments when
       they are one thing he was doing; split a segment at a listed time inside it ("inner
-      times") when the facts or clues show it was two. Time his Mac shows him working and time
-      it does not are two things, unless his own words say they were one.
+      times") when the facts or clues show it was two. A segment marked "at his Mac" (his Mac
+      shows him working for most of it) and one not marked are two things he did: never join
+      them, unless his own words say they were one.
     - A span is one thing he was doing, as he would name it looking back on his day; most last
       from half an hour to a few hours. A short call, a switch of app or window, or a few minutes
       on something else inside a longer stretch is not a span of its own: say it in "detail".
