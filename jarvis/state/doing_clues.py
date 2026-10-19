@@ -13,8 +13,8 @@ did. :func:`gather` reads them, each tagged with one of :data:`jarvis.state.doin
 - ``chat``: a conversation with Claude, or the night's letter on them (ADR 0295);
 - ``code``: a Claude Code session, and the recap Claude Code wrote of it (ADR 0294);
 - ``away_note``: what he wrote in TimeSink for a stretch away from his Mac (ADR 0302);
-- ``screen``: what the work state said the screen showed (ADR 0180), each activity at the moment
-  it first appeared;
+- ``screen``: what the work state said he was doing lately (ADR 0180), at each revision where
+  that changed; its list of the day's activities is a recap, not dated, so it is not a clue;
 - ``answer``: what he answered about a stretch of this day, and about earlier stretches within
   the stay radius of a place he stayed at (ADR 0302).
 
@@ -179,17 +179,19 @@ def _words(conn: sqlite3.Connection, start_ms: int, end_ms: int) -> list[Clue]:
 
 
 def _screen(conn: sqlite3.Connection, start_ms: int, end_ms: int) -> list[Clue]:
-    """Each activity the work state named in the window, once, at the revision that first had it."""
-    first: dict[str, int] = {}
+    """What the work state said he was doing lately, at each revision in the window changing it."""
+    found: list[Clue] = []
+    last: str | None = None
     for event in iter_events_of_types(conn, (_SCREEN_EVENT_TYPE,), since_epoch_ms=start_ms):
         item = event.payload.get("item")
         if event.ts_epoch_ms >= end_ms or not isinstance(item, dict):
             continue
-        for activity in item.get("activities") or []:
-            text = _short(activity.get("text") or "")
-            if text:
-                first.setdefault(text, event.ts_epoch_ms)
-    return [Clue("screen", at, text) for text, at in first.items()]
+        now = item.get("now")
+        text = _short(now.get("text") or "") if isinstance(now, dict) else ""
+        if text and text != last:
+            found.append(Clue("screen", event.ts_epoch_ms, text))
+        last = text or None
+    return found
 
 
 def _interviews(

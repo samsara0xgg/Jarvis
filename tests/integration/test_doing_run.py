@@ -137,13 +137,15 @@ def _say(memory: Path, rid: str, moment: datetime, source: str, text: str) -> No
         )
 
 
-def _screen(log: Path, moment: datetime, *activities: str) -> None:
+def _screen(log: Path, moment: datetime, now: str | None, *activities: str) -> None:
+    item = {
+        "now": None if now is None else {"text": now, "basis": "observed", "refs": []},
+        "activities": [{"text": text} for text in activities],
+    }
     with closing(open_event_log(log)) as conn:
         emit_event(
             conn, type="work_state.revised", ts_epoch_ms=_ms(moment),
-            payload={
-                "trigger": "test", "item": {"activities": [{"text": text} for text in activities]},
-            },
+            payload={"trigger": "test", "item": item},
         )
 
 
@@ -174,7 +176,7 @@ def world(tmp_path: Path) -> World:
     _visit(log, "v3", _at(13, 30), _at(14, 45), "UVic Library")
     _say(memory, "r1", _at(9, 5), "allen", "我在图书馆写论文")
     _say(memory, "r2", _at(9, 6), "jarvis", "好的，加油")
-    _screen(log, _at(10), "Writing the thesis in Overleaf")
+    _screen(log, _at(10), "Writing the thesis in Overleaf")  # what he is doing lately
     world = World(memory, log, DaySources(VANCOUVER, None, memory))
     _picture(world, "noodles", _at(12, 20), "A bowl of noodles on a wooden table")
     return world
@@ -392,14 +394,18 @@ def test_what_was_said_is_a_clue_of_his_and_of_hers_without_markup_or_notes(worl
     assert len(said[2].text) == CLUE_TEXT_MAX_CHARS
 
 
-def test_the_work_states_screen_is_a_clue_at_the_revision_that_first_had_it(world: World) -> None:
-    """The work states screen is a clue at the revision that first had it."""
+def test_what_the_work_state_says_he_is_doing_is_a_clue_where_it_changes(world: World) -> None:
+    """Each revision that changes what he is doing lately is a clue; the day's recap is not."""
     _screen(world.log, _at(5, 30), "Before the window")
-    _screen(world.log, _at(11), "Writing the thesis in Overleaf", "Slack")
+    _screen(world.log, _at(11), "Writing the thesis in Overleaf", "Earlier: Slack")
+    _screen(world.log, _at(11, 30), None)
+    _screen(world.log, _at(12), "Writing the thesis in Overleaf")
+    _screen(world.log, _at(12, 30), "Writing the thesis in Overleaf", "Slack")
     _screen(world.log, _at(15, 30), "After the window")
     screen = [(c.at_ms, c.text) for c in _clues(world) if c.kind == "screen"]
     assert screen == [
-        (_ms(_at(10)), "Writing the thesis in Overleaf"), (_ms(_at(11)), "Slack"),
+        (_ms(_at(10)), "Writing the thesis in Overleaf"),
+        (_ms(_at(12)), "Writing the thesis in Overleaf"),
     ]
 
 
