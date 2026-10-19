@@ -119,6 +119,8 @@ ignore = [
 "tests/integration/test_reminders.py" = ["RUF001"]
 # Matches the night run's Tier 0 rows against the owner's phrases as ASR writes them.
 "tests/integration/test_night_run.py" = ["RUF001"]
+# Asserts on the Chinese question text and his Chinese words the writer is shown (ADR 0302).
+"tests/integration/test_doing_run.py" = ["RUF001"]
 # Tests use bare `assert` (pytest), don't need return-type annotations, and
 # carry magic numbers in assertion targets by design.
 "tests/**/*.py" = [

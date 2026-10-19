@@ -1,0 +1,1130 @@
+"""ADR 0302 — the writer of the doing lane: clues, the prompt, the gates, the run, the schedule.
+
+Real memory.db, Event Log, day-line fold and cut in ``tmp_path``; the model is the only fake, a
+client that answers from a function of the prompt it was shown and records what it was asked.
+The checks, as tables of input to expected output:
+
+- the clues: each kind of day-line item that holds one, his words and hers, the work state's
+  screen, interview mail and his answers (this day's, and earlier ones near a place he stayed at),
+  bounded in count and in length, and a source that fails leaving the rest;
+- what the writer is shown: the times it may name, the segments with their facts, the clues
+  with ids and local times, the language of the titles;
+- the gates, one rejection each, and what an accepted answer is stored as;
+- the run: appended with its draft flag, cover, model and digest, served by the day page up to
+  what it covers, his answers over it; a rejected or failed call stores nothing and the run before
+  it stays;
+- the digest, which the clock does not move;
+- the schedule, on a fake clock: a draft at most hourly and only when the inputs changed, a
+  final run once the day is over, a rewrite when late rows change a past day;
+- the replay script, with and without ``--dry-run``.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from contextlib import closing
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, time, timedelta
+from itertools import pairwise
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
+
+import pytest
+import yaml
+
+from jarvis.decision.cost_guard import CostRecorder
+from jarvis.decision.doing_run import (
+    MAX_QUESTIONS,
+    TITLE_MAX_CHARS,
+    Brief,
+    build_messages,
+    inputs_digest,
+    read_run,
+    times,
+)
+from jarvis.decision.llm import ChatResult
+from jarvis.runtime import doing_run as runtime
+from jarvis.runtime.doing_run import (
+    CHECK_EVERY,
+    DoingSchedule,
+    DoingSettings,
+    compose_run,
+    read_brief,
+    store_run,
+)
+from jarvis.runtime.inherent_loop import _read_day
+from jarvis.state import picture_notes as note_records
+from jarvis.state import places
+from jarvis.state.attachments import AttachmentRef
+from jarvis.state.day_line import DaySources, day_window
+from jarvis.state.doing import CATEGORIES, CLUE_KINDS
+from jarvis.state.doing_clues import (
+    CLUE_TEXT_MAX_CHARS,
+    MAX_CLUES_PER_KIND,
+    MAX_WORDS_CLUES,
+    Clue,
+    gather,
+)
+from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.job_ledger import upsert_mail
+from jarvis.state.memory_db import (
+    append_doing_answer,
+    append_doing_run,
+    latest_doing_run,
+    open_memory_db,
+)
+from scripts import doing_replay
+
+if TYPE_CHECKING:
+    import sqlite3
+    from collections.abc import Callable
+
+VANCOUVER = ZoneInfo("America/Vancouver")
+DAY = date(2026, 10, 7)
+KEY = DAY.isoformat()
+MIN = 60_000
+CONFIG = Path(__file__).resolve().parents[2] / "config" / "jarvis.yaml"
+
+
+def _at(hour: int, minute: int = 0, *, day: date = DAY) -> datetime:
+    return datetime.combine(day, time(hour, minute), VANCOUVER)
+
+
+def _ms(moment: datetime) -> int:
+    return int(moment.timestamp()) * 1000
+
+
+NOW = _at(15)
+
+
+# --- the world ---------------------------------------------------------------------------------
+
+
+@dataclass
+class World:
+    """The stores of one day, and the sources the day is folded from."""
+
+    memory: Path
+    log: Path
+    sources: DaySources
+
+
+def _visit(  # noqa: PLR0913 — a visit is these six things
+    log: Path, uid: str, arrived: datetime, departed: datetime | None, place: str,
+    lat: float = 1.0,
+) -> None:
+    payload: dict[str, Any] = {
+        "lat": lat, "lng": 2.0, "accuracy_m": 30.0, "arrived_at_ms": _ms(arrived), "place": place,
+    }
+    if departed is not None:
+        payload["departed_at_ms"] = _ms(departed)
+    with closing(open_event_log(log)) as conn:
+        emit_event(
+            conn, type="phone.visit_observed", payload=payload, ts_epoch_ms=_ms(arrived),
+            event_uid=uid, ingestion_node="phone",
+        )
+
+
+def _say(memory: Path, rid: str, moment: datetime, source: str, text: str) -> None:
+    with closing(open_memory_db(memory)) as conn, conn:
+        conn.execute(
+            "INSERT INTO records (id, ts, source, text) VALUES (?, ?, ?, ?)",
+            (rid, moment.isoformat(timespec="seconds"), source, text),
+        )
+
+
+def _screen(log: Path, moment: datetime, *activities: str) -> None:
+    with closing(open_event_log(log)) as conn:
+        emit_event(
+            conn, type="work_state.revised", ts_epoch_ms=_ms(moment),
+            payload={
+                "trigger": "test", "item": {"activities": [{"text": text} for text in activities]},
+            },
+        )
+
+
+def _picture(world: World, name: str, moment: datetime, note: str) -> None:
+    with closing(open_event_log(world.log)) as conn:
+        emit_event(
+            conn, type="surface.user_intent", ts_epoch_ms=_ms(moment),
+            correlation={"turn_id": f"T-{name}"},
+            payload={"transcript": "x", "turn_id": f"T-{name}", "attachments": [name]},
+        )
+    ref = AttachmentRef(name, "image", "IMG_1.png", 1, "image/png")
+    note_records.append(world.memory, ref, note)
+
+
+@pytest.fixture
+def world(tmp_path: Path) -> World:
+    """10-07: the library 08:00-11:30, a cafe 12:00-13:00, the library 13:30-14:45; it is 15:00.
+
+    He said what he was doing at 09:05, the work state saw his screen at 10:00, and a picture of
+    noodles came at 12:20.
+    """
+    memory, log = tmp_path / "memory.db", tmp_path / "events.db"
+    open_memory_db(memory).close()
+    open_event_log(log).close()
+    places.save(memory, name="UVic Library", lat=1.0, lng=2.0, role="school", origin="user")
+    _visit(log, "v1", _at(8), _at(11, 30), "UVic Library")
+    _visit(log, "v2", _at(12), _at(13), "Corner Cafe", lat=1.01)
+    _visit(log, "v3", _at(13, 30), _at(14, 45), "UVic Library")
+    _say(memory, "r1", _at(9, 5), "allen", "我在图书馆写论文")
+    _say(memory, "r2", _at(9, 6), "jarvis", "好的，加油")
+    _screen(log, _at(10), "Writing the thesis in Overleaf")
+    world = World(memory, log, DaySources(VANCOUVER, None, memory))
+    _picture(world, "noodles", _at(12, 20), "A bowl of noodles on a wooden table")
+    return world
+
+
+@pytest.fixture
+def brief(world: World) -> Brief:
+    """Brief."""
+    found = read_brief(DAY, world.sources, world.log, NOW)
+    assert found is not None
+    return found
+
+
+# --- the fake model ----------------------------------------------------------------------------
+
+
+class _Writer:
+    """Stands in for the doing preset's client: ``reply`` maps the prompt to its answer."""
+
+    provider = "anthropic"
+    model = "fake-haiku"
+
+    def __init__(self, reply: Callable[[str], str]) -> None:
+        self.reply = reply
+        self.prompts: list[str] = []
+        self.systems: list[str] = []
+
+    def chat(self, *, messages: list[dict[str, Any]], system: str, **_kwargs: object) -> ChatResult:
+        prompt = str(messages[0]["content"])
+        self.prompts.append(prompt)
+        self.systems.append(system)
+        return ChatResult(
+            text=self.reply(prompt), tool_calls=(), finish_reason="stop", input_tokens=100,
+            output_tokens=50, raw={}, model_used=self.model, tokens_in=100, tokens_out=50,
+        )
+
+
+def _labels(prompt: str) -> dict[str, str]:
+    """``"HH:MM:SS"`` to the ``tN`` the prompt gave it."""
+    return {m[2]: m[1] for m in re.finditer(r"^(t\d+) (\d\d:\d\d:\d\d)$", prompt, re.MULTILINE)}
+
+
+def _clue(prompt: str, needle: str) -> str:
+    """The id of the clue whose line holds ``needle``."""
+    return re.search(rf"^(c\d+) \|[^\n]*{re.escape(needle)}", prompt, re.MULTILINE)[1]  # type: ignore[index]
+
+
+def _span(prompt: str, start: str, end: str, **fields: Any) -> dict[str, Any]:  # noqa: ANN401
+    labels = _labels(prompt)
+    return {
+        "from": labels[start], "to": labels[end], "kind": "doing", "title": "Write the thesis",
+        "detail": None, "category": "study", "basis": "inferred", "confidence": "medium",
+        "clues": [], "question": None, **fields,
+    }
+
+
+def _good(prompt: str) -> dict[str, Any]:
+    """An answer for the world at 15:00 that passes every gate."""
+    return {"spans": [
+        _span(prompt, "06:00:00", "08:00:00", kind="unknown", title=None, category="home",
+              confidence="low"),
+        _span(prompt, "08:00:00", "11:30:00", title="写论文", basis="stated", confidence="high",
+              clues=[_clue(prompt, "图书馆写论文"), _clue(prompt, "Overleaf")],
+              detail="He said so at 09:05."),
+        _span(prompt, "11:30:00", "12:00:00", kind="unknown", title=None, category="unknown",
+              confidence="low", question={"text": "11:30 到 12:00 你在做什么？",
+                                          "options": ["走路", "买咖啡"]}),
+        _span(prompt, "12:00:00", "13:00:00", title="吃午饭", category="meal",
+              clues=[_clue(prompt, "noodles")]),
+        _span(prompt, "13:00:00", "14:45:00", basis="observed", title="写论文"),
+        _span(prompt, "14:45:00", "15:00:00", kind="unknown", title=None, category="unknown",
+              confidence="low"),
+    ]}
+
+
+def _tile(prompt: str) -> str:
+    """An answer for any day: one span per segment, said plainly."""
+    spans = [
+        {
+            "from": one[1], "to": one[2], "kind": "doing", "title": "Work on it", "detail": None,
+            "category": "work", "basis": "inferred", "confidence": "low", "clues": [],
+            "question": None,
+        }
+        for one in re.finditer(r"^(t\d+)-(t\d+) \|", prompt, re.MULTILINE)
+    ]
+    return json.dumps({"spans": spans})
+
+
+def _good_text(prompt: str) -> str:
+    return json.dumps(_good(prompt), ensure_ascii=False)
+
+
+def _recorder(tmp_path: Path) -> tuple[CostRecorder, sqlite3.Connection]:
+    conn = open_event_log(tmp_path / "cost.db")
+    return CostRecorder(conn, pricing_table={}), conn
+
+
+SETTINGS = DoingSettings(preset="p", prompt="write what he was doing")
+
+
+# --- the clues ---------------------------------------------------------------------------------
+
+WINDOW = (_ms(_at(6)), _ms(_at(15)))
+ITEM_CASES = {
+    "a picture with its note": (
+        {"kind": "picture", "start_ms": _ms(_at(12, 20)), "end_ms": _ms(_at(12, 20)),
+         "note": "A bowl of noodles"},
+        [Clue("picture", _ms(_at(12, 20)), "A bowl of noodles")],
+    ),
+    "a picture with no note": (
+        {"kind": "picture", "start_ms": _ms(_at(12, 20)), "end_ms": _ms(_at(12, 20))},
+        [Clue("picture", _ms(_at(12, 20)), "sent a picture")],
+    ),
+    "a calendar event": (
+        {"kind": "event", "start_ms": _ms(_at(9)), "end_ms": _ms(_at(10)), "title": "CS lecture"},
+        [Clue("calendar", _ms(_at(9)), "CS lecture (09:00-10:00)")],
+    ),
+    "an item of the plan": (
+        {"kind": "event", "source": "plan", "place": "Gym", "start_ms": _ms(_at(14)),
+         "end_ms": _ms(_at(14, 45)), "title": "Workout"},
+        [Clue("plan", _ms(_at(14)), "Workout at Gym (14:00-14:45)")],
+    ),
+    "a commitment made from mail": (
+        {"kind": "event", "source": "mail", "place": "1150 McKenzie", "start_ms": _ms(_at(13, 30)),
+         "end_ms": _ms(_at(14, 15)), "title": "ICBC knowledge test"},
+        [Clue("mail", _ms(_at(13, 30)), "ICBC knowledge test at 1150 McKenzie (13:30-14:15)")],
+    ),
+    "a commitment he told her of": (
+        {"kind": "event", "source": "said", "start_ms": _ms(_at(14)), "end_ms": None,
+         "title": "Dinner with Pat"},
+        [Clue("words", _ms(_at(14)), "he told her: Dinner with Pat")],
+    ),
+    "a payment": (
+        {"kind": "payment", "start_ms": _ms(_at(10)), "end_ms": _ms(_at(10)), "direction": "out",
+         "amount": "12.50", "currency": "CAD", "counterparty": "Starbucks", "text": "latte"},
+        [Clue("payment", _ms(_at(10)), "out 12.50 CAD Starbucks latte")],
+    ),
+    "a Claude chat": (
+        {"kind": "claude_chat", "start_ms": _ms(_at(10)), "end_ms": _ms(_at(10, 40)),
+         "text": "Thesis outline", "messages": 12},
+        [Clue("chat", _ms(_at(10)), "Claude chat Thesis outline, 12 messages (10:00-10:40)")],
+    ),
+    "the night's letter on his Claude chats": (
+        {"kind": "claude_day", "start_ms": _ms(_at(9)), "end_ms": _ms(_at(11)),
+         "text": "Thesis; Visa"},
+        [Clue("chat", _ms(_at(9)), "Claude chats of the day: Thesis; Visa")],
+    ),
+    "a Claude Code session and its recap": (
+        {"kind": "code", "start_ms": _ms(_at(9)), "end_ms": _ms(_at(11)), "project": "Jarvis",
+         "title": "Doing lane", "detail": "Wrote the gates"},
+        [
+            Clue("code", _ms(_at(9)), "Claude Code session in Jarvis: Doing lane (09:00-11:00)"),
+            Clue("code", _ms(_at(11)), "Wrote the gates"),
+        ],
+    ),
+    "his TimeSink note for a stretch away from his Mac": (
+        {"kind": "away_note", "start_ms": _ms(_at(12)), "end_ms": _ms(_at(13)),
+         "title": "dinner"},
+        [Clue("away_note", _ms(_at(12)), "he wrote in TimeSink: dinner (12:00-13:00)")],
+    ),
+    "a stay is a fact, not a clue": (
+        {"kind": "stay", "start_ms": _ms(_at(8)), "end_ms": None, "lat": 1.0, "lng": 2.0}, [],
+    ),
+    "a work block is a fact": (
+        {"kind": "work", "start_ms": _ms(_at(9)), "end_ms": _ms(_at(10))}, [],
+    ),
+    "a talk says only how many turns": (
+        {"kind": "talk", "start_ms": _ms(_at(9)), "end_ms": _ms(_at(9, 10)), "turns": 4}, [],
+    ),
+    "an item before the window is not of this day's waking part": (
+        {"kind": "event", "start_ms": _ms(_at(5)), "end_ms": _ms(_at(5, 30)), "title": "Early"},
+        [],
+    ),
+}
+
+
+@pytest.mark.parametrize("name", ITEM_CASES)
+def test_an_item_that_holds_a_clue_gives_it_and_a_fact_gives_none(
+    name: str, tmp_path: Path,
+) -> None:
+    """An item that holds a clue gives it and a fact gives none."""
+    item, expected = ITEM_CASES[name]
+    with closing(open_event_log(tmp_path / "e.db")) as conn:
+        found = gather(conn, None, DAY, [item], WINDOW, VANCOUVER)
+    assert found == expected
+
+
+def test_the_clue_kinds_are_the_closed_ones() -> None:
+    """The clue kinds are the closed ones."""
+    assert {c.kind for _, expected in ITEM_CASES.values() for c in expected} <= set(CLUE_KINDS)
+
+
+def _clues(world: World, items: list[dict[str, Any]] | None = None) -> list[Clue]:
+    with closing(open_event_log(world.log)) as conn:
+        return gather(conn, world.memory, DAY, items or [], WINDOW, VANCOUVER)
+
+
+def test_what_was_said_is_a_clue_of_his_and_of_hers_without_markup_or_notes(world: World) -> None:
+    """What was said is a clue of his and of hers without markup or notes."""
+    for rid, moment, source, text in (
+        ("w1", _at(7), "allen", "  early\nbird  "),
+        ("w2", _at(7, 1), "jarvis_live", "morning"),
+        ("w3", _at(7, 2), "picture_note", "[Picture note] a mug"),
+        ("w4", _at(7, 3), "allen_reaction", "liked"),
+        ("w5", _at(7, 4), "allen", "\n[attached: image IMG_1.png]"),
+        ("w6", _at(5, 59), "allen", "before the window"),
+        ("w7", _at(15), "allen", "after the window"),
+        ("w8", _at(7, 5), "allen", "长" * 300),
+    ):
+        _say(world.memory, rid, moment, source, text)
+    said = [c for c in _clues(world) if c.kind == "words" and _ms(_at(7)) <= c.at_ms < _ms(_at(8))]
+    assert [c.text for c in said[:2]] == ["he: early bird", "she: morning"]
+    assert len(said) == 3  # the note, the reaction, a turn of files alone and the outside: none
+    assert said[2].text == "he: " + "长" * (CLUE_TEXT_MAX_CHARS - len("he: ") - 1) + "…"
+    assert len(said[2].text) == CLUE_TEXT_MAX_CHARS
+
+
+def test_the_work_states_screen_is_a_clue_at_the_revision_that_first_had_it(world: World) -> None:
+    """The work states screen is a clue at the revision that first had it."""
+    _screen(world.log, _at(5, 30), "Before the window")
+    _screen(world.log, _at(11), "Writing the thesis in Overleaf", "Slack")
+    _screen(world.log, _at(15, 30), "After the window")
+    screen = [(c.at_ms, c.text) for c in _clues(world) if c.kind == "screen"]
+    assert screen == [
+        (_ms(_at(10)), "Writing the thesis in Overleaf"), (_ms(_at(11)), "Slack"),
+    ]
+
+
+def test_interview_mail_is_a_clue_at_the_time_it_names(world: World) -> None:
+    """Interview mail is a clue at the time it names."""
+    def mail(mid: str, event_at: str | None, **fields: str) -> None:
+        upsert_mail(world.memory, {
+            "message_id": mid, "received_at": _at(8).isoformat(), "kind": "interview",
+            "company": "Delta", "role": "Intern", "event_text": "Wed 11:00 AM",
+            "event_at": event_at, **fields,
+        }, datetime.now(UTC))
+
+    mail("m1", _at(11).isoformat())
+    mail("m2", _at(16).isoformat())  # after the window
+    mail("m3", None)  # no time named
+    mail("m4", _at(12).isoformat(), kind="receipt")  # not an interview
+    assert [(c.at_ms, c.text) for c in _clues(world) if c.kind == "mail"] == [
+        (_ms(_at(11)), "interview mail: Delta, Intern (Wed 11:00 AM)"),
+    ]
+
+
+def test_his_answers_are_clues_this_days_and_earlier_ones_near_where_he_stayed(
+    world: World,
+) -> None:
+    """His answers are clues this days and earlier ones near where he stayed."""
+    def answer(day: str, moment: datetime, lat: float, **words: str) -> None:
+        append_doing_answer(
+            world.memory, day=day, span_id="x", start_ms=_ms(moment), end_ms=_ms(moment) + 30 * MIN,
+            choice=words.get("choice"), text=words.get("text"), lat=lat, lng=2.0, place_id=None,
+            origin="timeline",
+        )
+
+    answer(KEY, _at(9), 1.0, text="写论文")
+    answer("2026-10-01", _at(10, day=date(2026, 10, 1)), 1.0, text="打羽毛球")
+    answer("2026-10-02", _at(10, day=date(2026, 10, 2)), 1.0, choice="Lunch")
+    answer("2026-10-03", _at(10, day=date(2026, 10, 3)), 1.5, text="far away")
+    answer("2026-10-09", _at(10, day=date(2026, 10, 9)), 1.0, text="after this stay began")
+    stay = {"kind": "stay", "id": "v1", "start_ms": _ms(_at(8)), "end_ms": _ms(_at(11, 30)),
+            "lat": 1.0, "lng": 2.0}
+    found = [(c.at_ms, c.text) for c in _clues(world, [stay]) if c.kind == "answer"]
+    assert found == [
+        (_ms(_at(10, day=date(2026, 10, 1))), "on 10-01 at this place he said it was: 打羽毛球"),
+        (_ms(_at(10, day=date(2026, 10, 2))), "on 10-02 at this place he said it was: Lunch"),
+        (_ms(_at(9)), "he said 09:00 was: 写论文"),
+    ]
+
+
+def test_the_clues_are_bounded_in_number_and_thinned_evenly(world: World) -> None:
+    """The clues are bounded in number and thinned evenly."""
+    for n in range(300):
+        _say(world.memory, f"b{n}", _at(7) + timedelta(seconds=n), "allen", f"line {n:03d}")
+    payments = [
+        {"kind": "payment", "start_ms": _ms(_at(7)) + n * MIN, "end_ms": _ms(_at(7)),
+         "direction": "out", "amount": str(n), "currency": "CAD"}
+        for n in range(100)
+    ]
+    found = _clues(world, payments)
+    said = [c for c in found if c.kind == "words" and c.text.startswith("he: line")]
+    paid = [c for c in found if c.kind == "payment"]
+    assert 0 < len(said) <= MAX_WORDS_CLUES
+    assert 0 < len(paid) <= MAX_CLUES_PER_KIND
+    for kept in (said, paid):
+        steps = {b.at_ms - a.at_ms for a, b in pairwise(kept)}
+        assert len(steps) == 1  # every n-th through the day
+    assert said[0].text == "he: line 000"
+
+
+def test_a_source_that_fails_leaves_the_rest(
+    world: World, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A source that fails leaves the rest."""
+    broken = {"kind": "code", "start_ms": _ms(_at(9)), "detail": "no end_ms key"}
+    fine = {"kind": "picture", "start_ms": _ms(_at(12)), "end_ms": _ms(_at(12)), "note": "ok"}
+    found = _clues(world, [broken, fine])
+    assert Clue("picture", _ms(_at(12)), "ok") in found
+    assert any(c.kind == "words" for c in found)
+    assert "could not be read" in caplog.text
+
+
+def test_without_a_memory_store_only_the_day_line_and_the_screen_speak(world: World) -> None:
+    """Without a memory store only the day line and the screen speak."""
+    with closing(open_event_log(world.log)) as conn:
+        found = gather(conn, None, DAY, [], WINDOW, VANCOUVER)
+    assert {c.kind for c in found} == {"screen"}
+
+
+def test_the_brief_holds_the_days_facts_clues_and_the_language_of_his_words(
+    world: World, brief: Brief,
+) -> None:
+    """The brief holds the days facts clues and the language of his words."""
+    assert (brief.day, brief.weekday, brief.final) == (KEY, "Wednesday", False)
+    assert (brief.waking.start_ms, brief.waking.end_ms) == (_ms(_at(6)), _ms(NOW))
+    assert [(s.start_ms, s.end_ms) for s in brief.segments] == [
+        (_ms(_at(*hm)), _ms(_at(*end)))
+        for hm, end in (
+            ((6, 0), (8, 0)), ((8, 0), (11, 30)), ((11, 30), (12, 0)), ((12, 0), (13, 0)),
+            ((13, 0), (13, 30)), ((13, 30), (14, 45)), ((14, 45), (15, 0)),
+        )
+    ]
+    assert [(c.kind, c.text) for c in brief.clues] == [
+        ("words", "he: 我在图书馆写论文"), ("words", "she: 好的，加油"),
+        ("screen", "Writing the thesis in Overleaf"),
+        ("picture", "A bowl of noodles on a wooden table"),
+    ]
+    assert brief.language == "Simplified Chinese"
+    with closing(open_memory_db(world.memory)) as conn, conn:
+        conn.execute("UPDATE records SET text = 'writing at the library' WHERE id = 'r1'")
+    again = read_brief(DAY, world.sources, world.log, NOW)
+    assert again is not None
+    assert again.language == "English"
+
+
+def test_a_day_with_no_waking_window_has_no_brief(world: World) -> None:
+    """A day with no waking window has no brief."""
+    assert read_brief(DAY, world.sources, world.log, _at(5)) is None  # waking starts at 06:00
+
+
+# --- what the writer is shown ------------------------------------------------------------------
+
+
+def test_the_times_are_the_edges_of_the_window_the_segments_and_the_facts(brief: Brief) -> None:
+    """The times are the edges of the window the segments and the facts."""
+    clocks = [datetime.fromtimestamp(t / 1000, VANCOUVER).strftime("%H:%M") for t in times(brief)]
+    assert clocks == [
+        "06:00", "08:00", "09:05", "11:30", "12:00", "13:00", "13:30", "14:45", "15:00",
+    ]  # 09:05 is where his talk with her began and ended: a fact inside a segment
+
+
+def test_the_prompt_gives_the_times_the_segments_with_their_facts_and_the_clues(
+    brief: Brief,
+) -> None:
+    """The prompt gives the times the segments with their facts and the clues."""
+    (message,) = build_messages(brief)
+    lines = message["content"].split("\n")
+    assert lines[0] == (
+        "DAY: 2026-10-07 Wednesday, timezone America/Vancouver; "
+        "the day is under way; it is 15:00 now"
+    )
+    assert "TITLE LANGUAGE: Simplified Chinese" in lines
+    assert "WAKING WINDOW: t0 06:00:00 to t8 15:00:00" in lines
+    assert [line for line in lines if re.fullmatch(r"t\d \d\d:\d\d:\d\d", line)] == [
+        "t0 06:00:00", "t1 08:00:00", "t2 09:05:00", "t3 11:30:00", "t4 12:00:00",
+        "t5 13:00:00", "t6 13:30:00", "t7 14:45:00", "t8 15:00:00",
+    ]
+    assert "t0-t1 | 06:00-08:00 | place: none known | facts: none" in lines
+    assert (
+        "t1-t3 | 08:00-11:30 | place: UVic Library [study] | "
+        "facts: stay UVic Library 08:00-11:30; talk 09:05-09:05 | inner times: t2"
+    ) in lines
+    assert (
+        "t4-t5 | 12:00-13:00 | place: Corner Cafe [unknown] | facts: stay Corner Cafe 12:00-13:00"
+    ) in lines
+    assert "c1 | 09:05 | words | he: 我在图书馆写论文" in lines
+    assert "c4 | 12:20 | picture | A bowl of noodles on a wooden table" in lines
+
+
+def test_a_final_day_says_so_and_offers_the_edge_of_a_short_stay_as_a_time_inside_a_segment(
+    world: World,
+) -> None:
+    """A final day says so and offers the edge of a short stay as a time inside a segment."""
+    _visit(world.log, "v4", _at(16), _at(16, 5), "Corner Cafe", lat=1.01)  # five minutes
+    final = read_brief(DAY, world.sources, world.log, _at(0, 1, day=DAY + timedelta(days=1)))
+    assert final is not None
+    assert final.final
+    lines = build_messages(final)[0]["content"].split("\n")
+    assert any("the day is over; this is its final account" in line for line in lines)
+    # too short to cut the day, the stay is folded into the stretch it sits in
+    held = next(line for line in lines if "| 16:00-00:00 |" in line)
+    assert "inner times: t" in held
+    assert "stay Corner Cafe 16:00-16:05" in held
+
+
+def test_an_unnamed_place_reads_as_unnamed(world: World) -> None:
+    """An unnamed place reads as unnamed."""
+    _visit(world.log, "v5", _at(14, 45), _at(14, 59), "", lat=1.2)
+    found = read_brief(DAY, world.sources, world.log, NOW)
+    assert found is not None
+    assert "place: unnamed [unknown]" in build_messages(found)[0]["content"]
+
+
+# --- the digest --------------------------------------------------------------------------------
+
+
+def test_the_digest_follows_the_facts_and_clues_and_not_the_clock(
+    world: World, brief: Brief,
+) -> None:
+    """The digest follows the facts and clues and not the clock."""
+    later = read_brief(DAY, world.sources, world.log, NOW + timedelta(minutes=7))
+    assert later is not None
+    assert later.waking.end_ms != brief.waking.end_ms
+    assert inputs_digest(later) == inputs_digest(brief)
+    _say(world.memory, "late", _at(14, 50), "allen", "a late row")
+    changed = read_brief(DAY, world.sources, world.log, NOW)
+    assert changed is not None
+    assert inputs_digest(changed) != inputs_digest(brief)
+    _visit(world.log, "v9", _at(14, 55), None, "Corner Cafe", lat=1.01)
+    moved = read_brief(DAY, world.sources, world.log, NOW)
+    assert moved is not None
+    assert inputs_digest(moved) not in (inputs_digest(brief), inputs_digest(changed))
+
+
+# --- the gates ---------------------------------------------------------------------------------
+
+
+def _answer(brief: Brief) -> dict[str, Any]:
+    return _good(build_messages(brief)[0]["content"])
+
+
+def _spans(answer: dict[str, Any]) -> list[dict[str, Any]]:
+    return answer["spans"]  # type: ignore[no-any-return]
+
+
+def test_a_good_answer_is_stored_as_the_spans_a_run_holds(brief: Brief) -> None:
+    """A good answer is stored as the spans a run holds."""
+    got = read_run(json.dumps(_answer(brief), ensure_ascii=False), "stop", brief)
+    assert not isinstance(got, str), got
+    assert [(s["id"], s["kind"], s["title"], s["category"], s["basis"]) for s in got] == [
+        (f"doing-{_ms(_at(6))}", "unknown", None, "home", "inferred"),
+        (f"doing-{_ms(_at(8))}", "doing", "写论文", "study", "stated"),
+        (f"doing-{_ms(_at(11, 30))}", "unknown", None, "unknown", "inferred"),
+        (f"doing-{_ms(_at(12))}", "doing", "吃午饭", "meal", "inferred"),
+        (f"doing-{_ms(_at(13))}", "doing", "写论文", "study", "observed"),
+        (f"doing-{_ms(_at(14, 45))}", "unknown", None, "unknown", "inferred"),
+    ]
+    studied = got[1]
+    assert (studied["start_ms"], studied["end_ms"]) == (_ms(_at(8)), _ms(_at(11, 30)))
+    assert studied["clues"] == [
+        {"kind": "words", "at_ms": _ms(_at(9, 5)), "text": "he: 我在图书馆写论文"},
+        {"kind": "screen", "at_ms": _ms(_at(10)), "text": "Writing the thesis in Overleaf"},
+    ]
+    assert studied["place_id"] is not None  # the kept place the library stays are in
+    assert got[3]["place_id"] is None  # a cafe he keeps no place for
+    assert got[2]["question"] == {
+        "id": f"q:doing-{_ms(_at(11, 30))}", "text": "11:30 到 12:00 你在做什么？",
+        "options": ["走路", "买咖啡"],
+    }
+    assert got[0]["question"] is None
+    assert got[4]["start_ms"] == _ms(_at(13))  # two segments joined into one span
+    assert got[4]["end_ms"] == _ms(_at(14, 45))
+
+
+def test_a_fenced_answer_is_still_the_answer(brief: Brief) -> None:
+    """A fenced answer is still the answer."""
+    text = "```json\n" + json.dumps(_answer(brief), ensure_ascii=False) + "\n```"
+    assert not isinstance(read_run(text, "stop", brief), str)
+
+
+def test_a_span_may_split_a_segment_at_a_fact_edge_inside_it(brief: Brief) -> None:
+    """A span may split a segment at a fact edge inside it."""
+    prompt = build_messages(brief)[0]["content"]
+    answer = _good(prompt)
+    answer["spans"][1:2] = [  # 09:05 is where his talk with her was, inside 08:00-11:30
+        _span(prompt, "08:00:00", "09:05:00", confidence="low"),
+        _span(prompt, "09:05:00", "11:30:00", basis="stated", clues=[_clue(prompt, "图书馆")]),
+    ]
+    got = read_run(json.dumps(answer, ensure_ascii=False), "stop", brief)
+    assert not isinstance(got, str), got
+    assert [(s["start_ms"], s["end_ms"]) for s in got[1:3]] == [
+        (_ms(_at(8)), _ms(_at(9, 5))), (_ms(_at(9, 5)), _ms(_at(11, 30))),
+    ]
+
+
+def _set(index: int, **fields: Any) -> Callable[[dict[str, Any], str], None]:  # noqa: ANN401
+    def change(answer: dict[str, Any], _prompt: str) -> None:
+        _spans(answer)[index].update(fields)
+
+    return change
+
+
+def _drop(index: int) -> Callable[[dict[str, Any], str], None]:
+    def change(answer: dict[str, Any], _prompt: str) -> None:
+        del _spans(answer)[index]
+
+    return change
+
+
+def _questions(count: int) -> Callable[[dict[str, Any], str], None]:
+    def change(answer: dict[str, Any], _prompt: str) -> None:
+        for span in _spans(answer)[:count]:
+            span["question"] = {"text": "What was it?", "options": []}
+
+    return change
+
+
+def _stretch(answer: dict[str, Any], prompt: str) -> None:
+    _spans(answer)[1]["to"] = _labels(prompt)["12:00:00"]  # runs over the next span
+
+
+REJECTIONS: dict[str, tuple[Callable[[dict[str, Any], str], None], str]] = {
+    "a time that is not given": (_set(1, to="t99"), "is not between two times given"),
+    "a time written as a clock": (_set(1, to="11:30:00"), "is not between two times given"),
+    "an end before the start": (_set(1, **{"from": "t5"}), "is not between two times given"),
+    "a kind outside the vocabulary": (_set(1, kind="nap"), "kind must be one of"),
+    "a category outside the vocabulary": (_set(1, category="chores"), "category must be one of"),
+    "a basis the model may not claim": (_set(1, basis="planned"), "basis must be one of"),
+    "a confidence outside the vocabulary": (_set(1, confidence="sure"), "confidence must be"),
+    "an unknown stretch with a title": (_set(0, title="Resting"), "unknown span has a title"),
+    "something he did with no title": (_set(1, title=None), "has no title"),
+    "a title that is a place name": (_set(1, title="UVic Library"), "says where, not what"),
+    "a title that is a place name with at": (_set(1, title="at uvic library"), "says where"),
+    "a title that is a place name with 在": (_set(1, title="在UVic Library"), "says where"),
+    "a title that is the cafe": (_set(3, title="Corner Cafe"), "says where, not what"),
+    "a title that is a role word": (_set(1, title="Home"), "says where, not what"),
+    "a title that is a category word": (_set(1, title="study."), "says where, not what"),
+    "a title over the cap": (_set(1, title="x" * (TITLE_MAX_CHARS + 1)), "title is over"),
+    "a title that is not text": (_set(1, title=7), "title is not text"),
+    "a detail over the cap": (_set(1, detail="x" * 201), "detail is over"),
+    "stated with no words behind it": (_set(1, clues=[]), "stated span cites none"),
+    "stated on a picture alone": (_set(1, clues=["c4"]), "stated span cites none"),
+    "observed with no fact under it": (_set(2, basis="observed"), "no fact under it"),
+    "a clue that does not exist": (_set(3, clues=["c99"]), "is not one of the clues given"),
+    "clues that are not a list": (_set(3, clues="c1"), "not a list of at most"),
+    "more clues than a span may cite": (
+        _set(3, clues=["c1", "c2", "c3", "c4"] * 3), "not a list of at most",
+    ),
+    "a question with no text": (_set(2, question={"text": " ", "options": []}), "no text"),
+    "a question with five options": (
+        _set(2, question={"text": "Which?", "options": list("abcde")}), "no text, or its options",
+    ),
+    "an option over the cap": (
+        _set(2, question={"text": "Which?", "options": ["x" * 25]}), "option is over",
+    ),
+    "a repeated option": (
+        _set(2, question={"text": "Which?", "options": ["a", "a"]}), "empty or repeated",
+    ),
+    "a question that is not an object": (_set(2, question="why?"), "not an object"),
+    f"more than {MAX_QUESTIONS} questions": (
+        _questions(MAX_QUESTIONS + 1), "more than 5 questions",
+    ),
+    "a span that is not an object": (lambda a, _p: _spans(a).append("x"), "span is not an object"),
+    "a span laid over the next": (_stretch, "spans overlap at 11:30:00"),
+    "a hole in the day": (_drop(3), "no span covers 12:00:00"),
+    "a day that does not start with the window": (_drop(0), "no span covers 06:00:00"),
+    "a day that stops short of the window": (_drop(-1), "no span covers 14:45:00"),
+}
+
+
+@pytest.mark.parametrize("name", REJECTIONS)
+def test_each_gate_rejects_its_answer_whole(name: str, brief: Brief) -> None:
+    """Each gate rejects its answer whole."""
+    mutate, reason = REJECTIONS[name]
+    prompt = build_messages(brief)[0]["content"]
+    answer = _good(prompt)
+    mutate(answer, prompt)
+    got = read_run(json.dumps(answer, ensure_ascii=False), "stop", brief)
+    assert isinstance(got, str)
+    assert reason in got
+
+
+def test_an_answer_that_is_not_the_object_asked_for_is_rejected(brief: Brief) -> None:
+    """An answer that is not the object asked for is rejected."""
+    good = json.dumps(_answer(brief), ensure_ascii=False)
+    assert read_run(good, "length", brief) == "cut off by the output limit"
+    assert read_run("{", "stop", brief) == "not valid JSON"
+    assert read_run("[]", "stop", brief) == "not a JSON object"
+    assert read_run(None, "stop", brief) == "not valid JSON"
+    assert read_run("{}", "stop", brief) == 'no "spans" list'
+    assert read_run('{"spans": []}', "stop", brief) == 'no "spans" list'
+
+
+def test_a_title_may_name_a_place_inside_a_phrase(brief: Brief) -> None:
+    """A title may name a place inside a phrase."""
+    prompt = build_messages(brief)[0]["content"]
+    answer = _good(prompt)
+    _spans(answer)[1]["title"] = "Write at UVic Library"
+    assert not isinstance(read_run(json.dumps(answer), "stop", brief), str)
+
+
+def test_no_category_word_is_missing_from_the_gate(brief: Brief) -> None:
+    """No category word is missing from the gate."""
+    prompt = build_messages(brief)[0]["content"]
+    for category in CATEGORIES:
+        answer = _good(prompt)
+        _spans(answer)[1]["title"] = category
+        got = read_run(json.dumps(answer), "stop", brief)
+        assert isinstance(got, str)
+        assert "says where, not what" in got
+
+
+# --- the run: stored, served, and what stays when a call does not land -------------------------
+
+
+def _rows(memory: Path) -> list[tuple[Any, ...]]:
+    with closing(open_memory_db(memory)) as conn:
+        return conn.execute(
+            "SELECT day, draft, covers_until_ms, model, inputs_digest, spans FROM doing_runs "
+            "ORDER BY rowid",
+        ).fetchall()
+
+
+def test_a_run_is_asked_gated_and_appended_with_what_it_rests_on(
+    world: World, brief: Brief, tmp_path: Path,
+) -> None:
+    """A run is asked gated and appended with what it rests on."""
+    writer = _Writer(_good_text)
+    recorder, cost_log = _recorder(tmp_path)
+    with closing(cost_log):
+        composed = compose_run(brief, SETTINGS, writer, recorder)
+        costs = cost_log.execute("SELECT payload_json FROM events WHERE type = 'cost.recorded'")
+        accounted = [json.loads(row[0]) for row in costs]
+    assert composed.spans is not None
+    assert (composed.model, composed.tokens_in, composed.tokens_out) == ("fake-haiku", 100, 50)
+    assert writer.systems == ["write what he was doing"]
+    assert [a["kind"] for a in accounted] == ["doing_run"]
+    store_run(world.memory, brief, composed)
+    ((day, draft, covers, model, digest, spans),) = _rows(world.memory)
+    assert (day, draft, covers, model) == (KEY, 1, _ms(NOW), "fake-haiku")
+    assert digest == inputs_digest(brief)
+    assert json.loads(spans) == composed.spans
+
+
+def test_a_rejected_answer_is_asked_again_once_and_a_second_failure_stores_nothing(
+    world: World, brief: Brief, tmp_path: Path,
+) -> None:
+    """A rejected answer is asked again once and a second failure stores nothing."""
+    asked: list[str] = []
+
+    def second_time_lucky(prompt: str) -> str:
+        asked.append(prompt)
+        return "not json" if len(asked) == 1 else _good_text(prompt)
+
+    writer = _Writer(second_time_lucky)
+    recorder, cost_log = _recorder(tmp_path)
+    with closing(cost_log):
+        composed = compose_run(brief, SETTINGS, writer, recorder)
+        assert composed.spans is not None
+        assert (len(writer.prompts), composed.tokens_in) == (2, 200)
+        always = _Writer(lambda _p: "not json")
+        failed = compose_run(brief, SETTINGS, always, recorder)
+    assert (failed.spans, failed.why, len(always.prompts)) == (None, "not valid JSON", 2)
+    with pytest.raises(ValueError, match="rejected"):
+        store_run(world.memory, brief, failed)
+    assert _rows(world.memory) == []
+
+
+def test_the_day_serves_the_stored_run_up_to_what_it_covers_and_his_words_over_it(
+    world: World, brief: Brief, tmp_path: Path,
+) -> None:
+    """The day serves the stored run up to what it covers and his words over it."""
+    recorder, cost_log = _recorder(tmp_path)
+    with closing(cost_log):
+        composed = compose_run(brief, SETTINGS, _Writer(_good_text), recorder)
+    store_run(world.memory, brief, composed)
+
+    def served(now: datetime) -> list[dict[str, Any]]:
+        day = _read_day(world.log, VANCOUVER, world.memory, None, DAY, _ms(now))
+        return [s for s in day["spans"] if s["lane"] == "doing" and s["basis"] != "planned"]
+
+    spans = served(NOW)
+    assert [(s["title"], s["category"], s["basis"]) for s in spans] == [
+        (None, "home", "inferred"), ("写论文", "study", "stated"), (None, "unknown", "inferred"),
+        ("吃午饭", "meal", "inferred"), ("写论文", "study", "observed"),
+        (None, "unknown", "inferred"),
+    ]
+    assert spans[1]["clues"][0]["kind"] == "words"
+    assert spans[2]["question"]["options"] == ["走路", "买咖啡"]
+    assert spans[1]["place_id"] is not None
+    later = served(_at(16))  # an hour on: the run speaks to 15:00, the program's cut after it
+    assert [s["title"] for s in later[:6]] == [s["title"] for s in spans]
+    assert later[6]["start_ms"] == _ms(NOW)
+    assert (later[6]["basis"], later[6]["confidence"]) == ("observed", "low")
+    append_doing_answer(
+        world.memory, day=KEY, span_id=spans[2]["id"], start_ms=_ms(_at(11, 30)),
+        end_ms=_ms(_at(12)), choice=None, text="买咖啡", lat=None, lng=None, place_id=None,
+        origin="timeline",
+    )
+    answered = served(NOW)[2]
+    assert (answered["title"], answered["basis"], answered["confirmed"], answered["question"]) == (
+        "买咖啡", "stated", True, None,
+    )
+
+
+def test_a_newer_run_replaces_the_older_one_and_the_older_one_stays(
+    world: World, brief: Brief,
+) -> None:
+    """A newer run replaces the older one and the older one stays."""
+    for title in ("First", "Second"):
+        spans = [
+            {"id": s.id, "start_ms": s.start_ms, "end_ms": s.end_ms, "kind": "doing",
+             "title": title, "detail": None, "category": "work", "basis": "inferred",
+             "confidence": "low", "clues": [], "question": None, "place_id": None}
+            for s in brief.segments
+        ]
+        append_doing_run(
+            world.memory, day=KEY, draft=True, covers_until_ms=_ms(NOW), model="m",
+            inputs_digest="x", spans=spans,
+        )
+    with closing(open_memory_db(world.memory)) as conn:
+        newest = latest_doing_run(conn, KEY)
+    assert newest is not None
+    assert newest.spans[0]["title"] == "Second"
+    assert [json.loads(row[5])[0]["title"] for row in _rows(world.memory)] == ["First", "Second"]
+
+
+# --- the settings ------------------------------------------------------------------------------
+
+SETTINGS_CASES = {
+    "no block": (None, None),
+    "not enabled": ({"preset": "p", "prompt": "x"}, None),
+    "disabled": ({"enabled": False, "preset": "p", "prompt": "x"}, None),
+    "enabled without a prompt": ({"enabled": True, "preset": "p"}, None),
+    "enabled with a blank prompt": ({"enabled": True, "prompt": "  "}, None),
+    "a preset and a prompt": (
+        {"enabled": True, "preset": "p", "prompt": " write \n"}, DoingSettings("p", "write"),
+    ),
+    "the default preset": (
+        {"enabled": True, "prompt": "write"}, DoingSettings("haiku-bg", "write"),
+    ),
+}
+
+
+@pytest.mark.parametrize("name", SETTINGS_CASES)
+def test_the_doing_block_of_the_config(name: str) -> None:
+    """The doing block of the config."""
+    raw, expected = SETTINGS_CASES[name]
+    assert DoingSettings.from_config(raw) == expected
+
+
+def test_the_shipped_block_is_off_on_haiku_and_holds_the_prompt() -> None:
+    """The shipped block is off on haiku and holds the prompt."""
+    block = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))["doing"]
+    assert DoingSettings.from_config(block) is None  # off until the live replay is read
+    settings = DoingSettings.from_config({**block, "enabled": True})
+    assert settings is not None
+    assert settings.preset == "haiku-bg"
+    for needle in ("TITLE LANGUAGE", "never says where", "at most 5", "unknown", "stated"):
+        assert needle in settings.prompt
+
+
+# --- the schedule ------------------------------------------------------------------------------
+
+
+@dataclass
+class Clock:
+    """The moment the brain's clock shows; a test moves it."""
+
+    now: datetime
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
+    """The brain's clock, which stamps each run's ``written_at``."""
+    ticking = Clock(NOW)
+    monkeypatch.setattr("jarvis.state.memory_db.local_now", lambda: ticking.now)
+    return ticking
+
+
+def _down(_prompt: str) -> str:
+    msg = "provider down"
+    raise TimeoutError(msg)
+
+
+def _schedule(world: World, writer: _Writer) -> DoingSchedule:
+    return DoingSchedule(
+        settings=SETTINGS, sources=world.sources, memory_db=world.memory, event_log_path=world.log,
+        llm_config={}, pricing_table={}, client=writer,  # type: ignore[arg-type]
+    )
+
+
+def test_the_schedule_drafts_once_an_hour_and_only_when_the_inputs_changed(
+    world: World, clock: Clock,
+) -> None:
+    """The schedule drafts once an hour and only when the inputs changed."""
+    writer = _Writer(_tile)
+    schedule = _schedule(world, writer)
+
+    def tick(now: datetime) -> dict[str, str]:
+        clock.now = now
+        return schedule.tick(now)
+
+    assert tick(NOW) == {KEY: "landed (draft, 7 spans, 0 questions)"}  # the other days: no inputs
+    assert len(writer.prompts) == 1
+    assert tick(NOW + timedelta(minutes=5)) == {}  # looked at a moment ago
+    assert tick(NOW + CHECK_EVERY) == {}  # nothing changed
+    assert len(writer.prompts) == 1
+    _say(world.memory, "n1", _at(15, 10), "allen", "back at the library")
+    assert tick(_at(15, 30)) == {}  # changed, but the last run is not an hour old
+    assert len(writer.prompts) == 1
+    assert tick(_at(16, 5)) == {KEY: "landed (draft, 7 spans, 0 questions)"}
+    assert len(writer.prompts) == 2
+    assert [row[1] for row in _rows(world.memory)] == [1, 1]
+    assert tick(_at(16, 30)) == {}  # unchanged again
+
+
+def test_a_day_that_is_over_gets_a_final_run_even_when_nothing_changed(
+    world: World, clock: Clock,
+) -> None:
+    """A day that is over gets a final run even when nothing changed."""
+    writer = _Writer(_tile)
+    schedule = _schedule(world, writer)
+    clock.now = NOW
+    schedule.tick(NOW)
+    next_morning = _at(8, day=DAY + timedelta(days=1))
+    clock.now = next_morning
+    assert schedule.tick(next_morning) == {KEY: "landed (final, 7 spans, 0 questions)"}
+    assert [row[1] for row in _rows(world.memory)] == [1, 0]
+    final = _rows(world.memory)[-1]
+    assert final[2] == day_window(DAY, VANCOUVER)[1]  # it covers the waking part to midnight
+    clock.now = next_morning + timedelta(minutes=20)
+    assert schedule.tick(clock.now) == {}  # a final run on unchanged inputs stands
+    assert len(writer.prompts) == 2
+
+
+def test_late_rows_rewrite_a_past_day_and_a_failed_call_waits_an_hour(
+    world: World, clock: Clock,
+) -> None:
+    """Late rows rewrite a past day and a failed call waits an hour."""
+    writer = _Writer(_tile)
+    schedule = _schedule(world, writer)
+    morning = _at(8, day=DAY + timedelta(days=1))
+    clock.now = morning
+    assert schedule.tick(morning) == {KEY: "landed (final, 7 spans, 0 questions)"}
+    _say(world.memory, "late", _at(20), "allen", "a row that arrived late")
+    clock.now = morning + timedelta(hours=2)
+    assert schedule.tick(clock.now) == {KEY: "landed (final, 7 spans, 0 questions)"}
+    assert len(_rows(world.memory)) == 2
+    _say(world.memory, "later", _at(21), "allen", "and another")
+    writer.reply = _down
+    clock.now = morning + timedelta(hours=4)
+    assert schedule.tick(clock.now) == {KEY: "failed"}
+    assert len(_rows(world.memory)) == 2  # nothing stored; the run before stands
+    clock.now += CHECK_EVERY
+    assert schedule.tick(clock.now) == {}  # not tried again for an hour
+    writer.reply = lambda _p: "not json"
+    clock.now = morning + timedelta(hours=5, minutes=1)
+    outcome = schedule.tick(clock.now)
+    assert outcome == {KEY: "rejected (not valid JSON)"}
+    assert len(_rows(world.memory)) == 2
+    writer.reply = _tile
+    clock.now = morning + timedelta(hours=6, minutes=2)
+    assert schedule.tick(clock.now) == {KEY: "landed (final, 7 spans, 0 questions)"}
+    assert len(_rows(world.memory)) == 3
+
+
+def test_only_the_last_days_are_looked_at_and_a_day_with_nothing_is_not_asked(
+    world: World, clock: Clock,
+) -> None:
+    """Only the last days are looked at and a day with nothing is not asked."""
+    writer = _Writer(_tile)
+    schedule = _schedule(world, writer)
+    long_after = _at(8, day=DAY + timedelta(days=5))
+    clock.now = long_after
+    assert schedule.tick(long_after) == {}  # 10-07 is more than three days back
+    assert writer.prompts == []
+    assert set(schedule._looked) == {  # noqa: SLF001 — what was looked at
+        (DAY + timedelta(days=n)).isoformat() for n in (2, 3, 4, 5)
+    }
+
+
+def test_the_schedule_builds_its_client_from_the_preset_when_none_is_given(
+    world: World, clock: Clock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The schedule builds its client from the preset when none is given."""
+    built: list[str] = []
+    writer = _Writer(_tile)
+
+    def build(_llm_config: object, preset: str) -> _Writer:
+        built.append(preset)
+        return writer
+
+    monkeypatch.setattr(runtime, "build_compact_client", build)
+    schedule = DoingSchedule(
+        settings=SETTINGS, sources=world.sources, memory_db=world.memory, event_log_path=world.log,
+        llm_config={"presets": {"p": {}}}, pricing_table={},
+    )
+    clock.now = NOW
+    assert schedule.tick(NOW)
+    assert built == ["p"]
+
+
+# --- the replay script -------------------------------------------------------------------------
+
+
+def _replay(world: World, writer: _Writer, *, dry_run: bool) -> list[dict[str, Any]]:
+    return doing_replay.replay(
+        [DAY, DAY - timedelta(days=1)], world.sources, world.log, world.memory, SETTINGS, writer,  # type: ignore[arg-type]
+        NOW, dry_run=dry_run, pricing_table={},
+    )
+
+
+def test_a_dry_run_prints_the_gated_spans_and_stores_nothing(world: World) -> None:
+    """A dry run prints the gated spans and stores nothing."""
+    writer = _Writer(_good_text)
+    found, nothing = _replay(world, writer, dry_run=True)
+    assert nothing == {
+        "date": "2026-10-06", "outcome": "skipped (no waking window or no inputs)",
+    }
+    assert (found["date"], found["final"], found["segments"], found["clues"]) == (KEY, False, 7, 4)
+    assert found["outcome"] == "gated (dry run)"
+    assert found["spans"][1] == "08:00-11:30 写论文 [study/stated/high]"
+    assert found["spans"][2] == (
+        "11:30-12:00 (unknown) [unknown/inferred/low]"
+        " ? 11:30 到 12:00 你在做什么？ ['走路', '买咖啡']"
+    )
+    assert (found["tokens_in"], found["tokens_out"]) == (100, 50)
+    assert _rows(world.memory) == []
+    with closing(open_event_log(world.log)) as conn:  # the day's own log is only read
+        assert conn.execute("SELECT count(*) FROM events WHERE type = 'cost.recorded'").fetchone()[
+            0
+        ] == 0
+
+
+def test_a_replay_stores_the_run_unless_it_is_a_dry_run_and_a_rejection_stores_none(
+    world: World,
+) -> None:
+    """A replay stores the run unless it is a dry run and a rejection stores none."""
+    (found, _skipped) = _replay(world, _Writer(_good_text), dry_run=False)
+    assert found["outcome"].startswith("gated (doing-run:")
+    assert len(_rows(world.memory)) == 1
+    (rejected, _skipped) = _replay(world, _Writer(lambda _p: "nope"), dry_run=False)
+    assert rejected["outcome"] == "rejected (not valid JSON)"
+    assert len(_rows(world.memory)) == 1
+
+
+def test_the_days_to_replay_are_the_dates_and_the_range_together() -> None:
+    """The days to replay are the dates and the range together."""
+    import argparse  # noqa: PLC0415 — only this test builds the namespace by hand
+
+    args = argparse.Namespace(
+        date=[date(2026, 10, 1)], first=date(2026, 10, 5), last=date(2026, 10, 7),
+    )
+    assert doing_replay._days(args) == [  # noqa: SLF001
+        date(2026, 10, 1), date(2026, 10, 5), date(2026, 10, 6), date(2026, 10, 7),
+    ]
+    for bad in (
+        argparse.Namespace(date=None, first=None, last=None),
+        argparse.Namespace(date=None, first=date(2026, 10, 5), last=None),
+    ):
+        with pytest.raises(SystemExit):
+            doing_replay._days(bad)  # noqa: SLF001

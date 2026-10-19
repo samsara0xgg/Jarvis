@@ -42,6 +42,9 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
          "_clip", "_status_of"}
     ),
     "jarvis/decision/pre_route.py": frozenset({"_DEMONSTRATIVE_TASK_RE"}),
+    # A title the model wrote is refused when it is only where he was: it is read after the "at"
+    # or "在" and the stops of either language that wrap it (ADR 0302).
+    "jarvis/decision/doing_run.py": frozenset({"_LEADING", "_PUNCTUATION"}),
     # Jev's dismiss option names Chinese send-offs as examples of what Allen says.
     "jarvis/decision/voice_words.py": frozenset({"_CRITERIA"}),
     # A coding agent's final paragraph asks Allen when it holds a full-width question mark too.
