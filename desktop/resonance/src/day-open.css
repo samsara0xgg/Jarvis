@@ -7,6 +7,10 @@
 .notch .dt-row.is-future.is-open { opacity:1; }
 .notch .dt-row:has(> .dt-fold),.notch .dt-sh:has(> .dt-fold) { height:auto; grid-template-rows:var(--head) auto; }
 .notch .dt-row:has(> .dt-fold:not(.is-line)),.notch .dt-sh:has(> .dt-fold:not(.is-line)) { background:rgb(255 255 255 / .055); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .08); }
+/* the day's rail runs inside an open card, not across its hairline: it stops 1 px short of the edge it would cross (a rail that begins or ends at a glyph is inside already) */
+.notch .dt-row.is-rail:not(.is-top):has(> .dt-fold:not(.is-line))::before { top:1px; }
+.notch .dt-row.is-rail:not(.is-end):has(> .dt-fold:not(.is-line))::before { bottom:1px; }
+.notch .dt-sh.has-rows:has(> .dt-fold:not(.is-line))::after { bottom:1px; }
 /* under a shut row the fold holds only a quiet line, not the open look */
 .notch .dt-fold.is-line > .dt-body { padding-bottom:4px; }
 .notch .dt-fold { grid-column:3 / -1; grid-row:2; min-width:0; overflow:hidden; cursor:default; }
@@ -27,6 +31,10 @@
 .notch .dt-btn.is-amber:hover:not(:disabled) { background:rgb(255 201 143 / .24); }
 .notch .dt-sent { display:inline-flex; align-items:center; gap:5px; height:26px; padding:0 2px; font-size:12px; font-weight:600; color:var(--p-muted); }
 .notch .dt-hint { margin:0; font-size:12px; line-height:16px; color:var(--p-faint); }
+/* 这段在干嘛: a faint line of its own under the buttons, a pencil and the words (the phone's look), not a capsule; brighter when the pointer is on it. The range card has the same. */
+.notch .dt-sayhow { display:inline-flex; align-items:center; gap:5px; height:22px; padding:0; font-size:12px; line-height:22px; white-space:nowrap; color:var(--p-muted); transition:color var(--motion-fast); }
+.notch .dt-sayhow svg { flex:none; }
+.notch .dt-sayhow:hover { color:var(--p-ink); }
 .notch .dt-hint.is-bad { color:var(--p-ink); }
 
 /* his first line and her first reply, one line each; two bars of the same height stand in while they are read */

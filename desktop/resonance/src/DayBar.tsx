@@ -6,7 +6,7 @@ import { buildBar, endClock, fit, fOf, msOf, numbers, PAD_PX, peek, pieceAt, row
 import { clock, type DayModel, type Icon, type LensKind, type Rgb } from './dayView';
 import { cardOf } from './numberCard';
 import { CardBody, Swap } from './CardView';
-import { EASE } from './RowOpen';
+import { EASE, SayWhat } from './RowOpen';
 import { sayRange, type Said } from './dayOpen';
 import { Ic } from './dayIcons';
 import './day-bar.css';
@@ -77,7 +77,7 @@ function RangeBody({ s, say, onSay, onOnly, t }: { s: Summary; say: Said | null;
       {s.nums.map(n => { const Glyph = KIND_ICON[n.kind]; return <li key={n.kind} className="dt-cline"><span className="dt-cic" style={{ color: `rgb(${rgb(KIND[n.kind])})` }}><Glyph size={13} aria-hidden="true"/></span><span className="dt-ctx">{n.label}</span><span className="dt-cside">{n.long}</span></li>; })}
     </ul> : <p className="dt-cnone">{t(['Nothing was recorded in this stretch', '这一段没有记下什么'])}</p>}
     <div className="dt-cbtns"><button type="button" className="dt-cbtn" onClick={onOnly}>{t(['Show only this', '只看这段'])}</button>
-      {say && <button type="button" className="dt-cquiet" onClick={() => onSay(say)}>{t(['What was this', '这段在干嘛'])}</button>}</div>
+      {say && <SayWhat press={() => onSay(say)} t={t}/>}</div>
   </>;
 }
 

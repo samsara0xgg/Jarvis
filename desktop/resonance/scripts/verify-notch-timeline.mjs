@@ -2693,7 +2693,7 @@ try {
     await tap(a, 'stay-home-1'); await rest(a, 480);
     check('a hover-opened pane has no key focus, and opening a row asks for none', await focusLog(a) === '' && (await a.read()).tl === 'open', await focusLog(a));
     await orow(a, 'stay-home-1').getByRole('button', { name: '改名字' }).click(); await rest(a, 400);
-    const field = await a.page.evaluate(() => { const f = document.querySelector('.dt-rename'), q = f.getBoundingClientRect(), b = f.closest('.dt-sh').querySelector('.dt-dot').getBoundingClientRect(); return { value: f.value, sel: [f.selectionStart, f.selectionEnd], focused: document.activeElement === f, h: Math.round(q.height), font: getComputedStyle(f).fontSize + '/' + getComputedStyle(f).fontWeight, outline: getComputedStyle(f).outlineStyle, hint: document.querySelector('.dt-hint')?.textContent, buttons: [...document.querySelectorAll('[data-key="stay-home-1"] .dt-acts .dt-btn')].map(x => x.textContent) }; });
+    const field = await a.page.evaluate(() => { const f = document.querySelector('.dt-rename'), q = f.getBoundingClientRect(), b = f.closest('.dt-sh').querySelector('.dt-dot').getBoundingClientRect(); return { value: f.value, sel: [f.selectionStart, f.selectionEnd], focused: document.activeElement === f, h: Math.round(q.height), font: getComputedStyle(f).fontSize + '/' + getComputedStyle(f).fontWeight, outline: getComputedStyle(f).outlineStyle, hint: document.querySelector('.dt-hint')?.textContent, buttons: [...document.querySelectorAll('[data-key="stay-home-1"] .dt-acts .dt-btn, [data-key="stay-home-1"] .dt-sayhow')].map(x => x.textContent) }; });
     check('改名字 turns the name in the stay\'s header into a field with the cursor in it and the name selected, in the header\'s own type, and says Enter saves and Esc cancels', field.value === '家' && field.sel.join() === '0,1' && field.focused && field.h === 26 && field.font === '15px/600' && field.outline === 'none' && field.hint === '回车保存 · Esc 取消' && field.buttons.join() === '问她,这段在干嘛', JSON.stringify(field));
     check('the field takes the window\'s key focus (it was a pane opened by a rest, with none)', (await focusLog(a)).endsWith('true'), await focusLog(a));
     await shotRow(a, 'open-13-rename-field', 'stay-home-1');
@@ -2873,7 +2873,7 @@ try {
     const a = await boot({ served: small([it('w1', 'workout', T(7, 0), T(7, 30), { activity: 'running', distance_m: 3200 }), it('sa', 'stay', T(8, 0), T(9, 30), { place: 'X' }), it('c1', 'code', T(8, 10), T(8, 40), { title: '周报草稿', project: 'notes', account: 'b' }),
       it('sb', 'stay', T(10, 0), T(12, 0), { place: 'Y' }), it('c2', 'code', T(10, 10), T(10, 40), { title: '第二个' }), it('c3', 'code', T(10, 50), T(11, 20), { title: '第三个' })]) });
     await hoverDay(a);
-    const btns = key => orow(a, key).locator('.dt-acts .dt-btn, .dt-acts .dt-sent').allInnerTexts();
+    const btns = key => orow(a, key).locator('.dt-acts .dt-btn, .dt-acts .dt-sent, .dt-sayhow').allInnerTexts();
     for (const [key, kind, title, start] of [['w1', 'workout', '跑步', T(7, 0)], ['c1', 'code', 'Claude Code · 周报草稿', T(8, 10)]]) {
       await tap(a, key); await rest(a, 480);
       check(`an opened ${kind} row offers 问她`, (await btns(key)).includes('问她'), (await btns(key)).join('|'));
@@ -2895,7 +2895,7 @@ try {
     const a = await boot({ served: bigDay() });
     await hoverDay(a);
     await tap(a, 'work-2'); await rest(a, 520);
-    const buttons = () => orow(a, 'work-2').locator('.dt-acts').first().innerText().then(x => x.split('\n').map(y => y.trim()).filter(Boolean).join('|'));
+    const buttons = () => orow(a, 'work-2').locator('.dt-acts, .dt-sayhow').allInnerTexts().then(x => x.join('\n').split('\n').map(y => y.trim()).filter(Boolean).join('|'));
     check('a work block offers 让她总结这段, and 问她 and the quiet 这段在干嘛 after it', await buttons() === '让她总结这段|问她|这段在干嘛', await buttons());
     a.s.refuse.add('submit');
     await orow(a, 'work-2').getByRole('button', { name: '让她总结这段' }).click(); await rest(a, 450);
@@ -2931,7 +2931,7 @@ try {
     const m = buildDay(bigDay(), NOW, en);
     const a = await boot({ served: bigDay(), lang: 'en' });
     await hoverDay(a);
-    const btns = key => orow(a, key).locator('.dt-acts .dt-btn, .dt-acts .dt-sent').allInnerTexts();
+    const btns = key => orow(a, key).locator('.dt-acts .dt-btn, .dt-acts .dt-sent, .dt-sayhow').allInnerTexts();
     await tap(a, 'stay-home-1'); await rest(a, 480);
     check('in English a kept place (named as he named it) says Rename and Ask her', (await btns('stay-home-1')).join() === 'Rename,Ask her,What was this' && (await said(a, 'stay-home-1')).includes('A place you keep · 家'), (await said(a, 'stay-home-1')).join('|'));
     await orow(a, 'stay-home-1').getByRole('button', { name: 'Rename' }).click(); await rest(a, 350);
@@ -2967,7 +2967,7 @@ try {
   const bad = a => a.page.locator('.dt-dock + .dt-hint').innerText().catch(() => null);
   const gone = a => a.page.waitForFunction(() => !document.querySelector('.dt-dock'), null, { timeout: 4000 });
   const savedAs = a => a.page.waitForFunction(() => document.querySelector('.dt-dock.is-sent'), null, { timeout: 4000 });
-  const lastOf = async (a, key) => { const acts = orow(a, key).locator('.dt-acts').first(); await acts.waitFor({ state: 'attached', timeout: 1500 }).catch(() => {}); return await acts.count() ? acts.evaluate(el => ({ text: el.lastElementChild?.textContent, cls: el.lastElementChild?.className, all: el.innerText })) : { text: null, cls: null, all: '' }; };
+  const lastOf = async (a, key) => { const acts = orow(a, key).locator('.dt-acts').first(); await acts.waitFor({ state: 'attached', timeout: 1500 }).catch(() => {}); return await acts.count() ? acts.evaluate(el => { const say = el.nextElementSibling?.matches('.dt-sayhow') ? el.nextElementSibling : null, last = say ?? el.lastElementChild; return { text: last?.textContent, cls: last?.className, all: el.innerText + (say ? say.innerText : '') }; }) : { text: null, cls: null, all: '' }; };
   if (all || only === 'say') {
     const sm = buildDay(bigDay(), NOW, zh), sbar = buildBar(sm, zh), t0 = sbar.t0, t1 = T(24);
     const a = await boot({ served: bigDay() });
@@ -2993,14 +2993,17 @@ try {
       if (!await orow(a, key).count()) { offered[key] = 'missing'; continue; }
       await tap(a, key); await rest(a, 420);
       const l = await lastOf(a, key);
-      offered[key] = l.text === SAY ? (l.cls === 'dt-btn' ? 'last' : l.cls) : l.all.includes(SAY) ? 'inside' : 'no';
+      offered[key] = l.text === SAY ? (l.cls === 'dt-sayhow' ? 'last' : l.cls) : l.all.includes(SAY) ? 'inside' : 'no';
     }
-    check('an opened stay, move, ride, night, Mac block, call, run and Claude chat offer it, last among their buttons, in the buttons\' own look', stretches.every(k => offered[k] === 'last'), JSON.stringify(offered));
+    check('an opened stay, move, ride, night, Mac block, call, run and Claude chat offer it, a quiet line under their buttons', stretches.every(k => offered[k] === 'last'), JSON.stringify(offered));
     check('her rows (a reminder, a talk), a picture, a payment, a bus to catch, an event, the letter on his chats and the folded row of sessions do not', others.every(k => offered[k] === 'no'), JSON.stringify(offered));
 
     // the entry, the input and the save
     await tap(a, 'stay-home-2'); await rest(a, 480);
     await shotRow(a, 'say-01-open-row', 'stay-home-2');
+    const quiet = async sel => { const e = a.page.locator(sel), read = () => e.evaluate(el => { const c = getComputedStyle(el), r = el.getBoundingClientRect(), p = el.previousElementSibling.getBoundingClientRect(); return { bg: c.backgroundColor, radius: c.borderRadius, color: c.color, svg: !!el.querySelector('svg'), size: c.fontSize, under: r.top >= p.bottom - .5, cls: el.previousElementSibling.className }; }), idle = await read(); await e.hover(); await rest(a, 300); const lit = await read(); await a.page.mouse.move(0, 0); return { idle, lit }; };
+    const ql = await quiet('[data-key="stay-home-2"] .dt-sayhow');
+    check('in an open row 这段在干嘛 is a faint line under the buttons, not a capsule: a pencil glyph and the words, no fill, no rounding, the muted colour, brighter when the pointer is on it', ql.idle.bg === 'rgba(0, 0, 0, 0)' && ql.idle.radius === '0px' && ql.idle.svg && ql.idle.under && ql.idle.cls === 'dt-acts' && ql.idle.size === '12px' && ql.idle.color !== ql.lit.color, JSON.stringify(ql));
     await orow(a, 'stay-home-2').getByRole('button', { name: SAY }).click(); await rest(a, 520);
     const d1 = await sayDock(a);
     check('it slides an input up at the pane\'s foot: the stretch\'s range as its chip (14:05–14:50, nothing to take off), the cursor in the field, the placeholder, the field held to 200, send greyed; the row stays open',
@@ -3077,10 +3080,10 @@ try {
     const drag = async (x0, x1) => { await a.move(x0, y); await a.page.mouse.down(); await a.move((x0 + x1) / 2, y); await a.move(x1, y); await a.page.mouse.up(); await a.page.waitForTimeout(280); };
     const buttons = () => a.page.locator('.dt-card.is-range button').allInnerTexts();
     await drag(xAt(14) + .1, xAt(18) + .1);
-    const look = await a.page.locator('.dt-card.is-range .dt-cquiet').evaluate(el => ({ bg: getComputedStyle(el).backgroundColor, h: el.getBoundingClientRect().height }));
-    check('the range card has 只看这段 and, after it, 这段在干嘛 in the quiet look of the row buttons (not the white of the first)', (await buttons()).join() === `只看这段,${SAY}` && look.bg === 'rgba(255, 255, 255, 0.1)' && look.h === 26, JSON.stringify(look));
+    const look = await a.page.locator('.dt-card.is-range .dt-sayhow').evaluate(el => ({ bg: getComputedStyle(el).backgroundColor, radius: getComputedStyle(el).borderRadius, svg: !!el.querySelector('svg'), size: getComputedStyle(el).fontSize }));
+    check('the range card has 只看这段 and, after it, 这段在干嘛 as the same faint text line (glyph and words, no fill, no rounding)', (await buttons()).join() === `只看这段,${SAY}` && look.bg === 'rgba(0, 0, 0, 0)' && look.radius === '0px' && look.svg && look.size === '12px', JSON.stringify(look));
     await a.shot('say-03-range-card', { x: 40, y: 0, width: 560, height: 700 });
-    await a.page.locator('.dt-card.is-range .dt-cquiet').click(); await rest(a, 520);
+    await a.page.locator('.dt-card.is-range .dt-sayhow').click(); await rest(a, 520);
     const r1 = await sayDock(a);
     check('it opens the same input with the dragged range as the chip (14:00–18:00)', r1 && r1.chip === '14:00–18:00' && !r1.drop && r1.focused, JSON.stringify(r1));
     await a.page.keyboard.type('在学校'); await a.page.keyboard.press('Enter'); await rest(a, 450);
@@ -3088,16 +3091,16 @@ try {
     await gone(a);
     await drag(xAt(20) + .1, xAt(23, 30) + .1);
     check('a range dragged past now is cut to now in the chip (20:00–21:50)', (await buttons()).includes(SAY));
-    await a.page.locator('.dt-card.is-range .dt-cquiet').click(); await rest(a, 520);
+    await a.page.locator('.dt-card.is-range .dt-sayhow').click(); await rest(a, 520);
     check('the chip says 20:00–21:50', (await sayDock(a)).chip === '20:00–21:50');
     await a.page.keyboard.type('写作业'); await a.page.keyboard.press('Enter'); await rest(a, 450);
     check('and the range sent ends at now, to the ms', answers(a).length === 2 && JSON.stringify(answers(a)[1].body) === JSON.stringify({ day: DATE, start_ms: T(20), end_ms: NOW, text: '写作业' }), JSON.stringify(answers(a).slice(1)));
     await gone(a);
     await drag(xAt(22, 30) + .1, xAt(23, 30) + .1);
-    check('a range that is all still to come has no such button', (await buttons()).join() === '只看这段' && await a.page.locator('.dt-cquiet').count() === 0, (await buttons()).join());
+    check('a range that is all still to come has no such button', (await buttons()).join() === '只看这段' && await a.page.locator('.dt-sayhow').count() === 0, (await buttons()).join());
     // a 422 (the day the brain holds has nothing there) says the same line
     await drag(xAt(14) + .1, xAt(18) + .1);
-    await a.page.locator('.dt-card.is-range .dt-cquiet').click(); await rest(a, 520);
+    await a.page.locator('.dt-card.is-range .dt-sayhow').click(); await rest(a, 520);
     a.s.served = { ...a.s.served, items: [] };
     await a.page.keyboard.type('z'); await a.page.keyboard.press('Enter'); await rest(a, 450);
     check('a 422 says 没存上，稍后再试 too, and keeps the words', answers(a).length === 3 && await bad(a) === '没存上，稍后再试' && (await sayDock(a)).draft === 'z', JSON.stringify(answers(a).slice(2)));
@@ -3119,6 +3122,144 @@ try {
     a.s.refuse.delete('answer');
     await a.page.keyboard.press('Enter'); await rest(a, 450);
     check('and a save says Noted', (await sayDock(a)).text === 'Noted' && JSON.stringify(answers(a).at(-1).body) === JSON.stringify({ day: DATE, start_ms: T(14, 5), end_ms: T(14, 50), text: 'lying down' }));
+    await a.ctx.close();
+  }
+
+  // ---- the list holds what he is working on (ONLY=steady): the row he presses stays under his hand, an open row keeps 24 px clear of the foot, an input there does not cover it ----
+  if (all || only === 'steady') {
+    // where a row is in the list's view and how far its foot is above the list's foot, and the room the list was given
+    const spot = (a, key) => a.page.evaluate(k => { const l = document.querySelector('.dt-list'), lr = l.getBoundingClientRect(), r = document.querySelector(`[data-key="${k}"]`)?.getBoundingClientRect();
+      return { top: r ? r.top - lr.top : null, under: r ? lr.bottom - r.bottom : null, st: l.scrollTop, sh: l.scrollHeight, lh: lr.height, head: parseFloat(l.style.paddingTop) || 0, foot: parseFloat(l.style.paddingBottom) || 0 }; }, key);
+    // the frames a change takes, each read as the frame will be painted: a resize observer made in the frame's callback is told after the page's own (resize observers are told in the order they were made;
+    // the pane scrolls the list in its own, DayTimeline.tsx), where a frame callback or a task between frames would read the layout before it
+    const frames = async (a, key, act, ms = 800) => {
+      await a.page.evaluate(k => {
+        const l = document.querySelector('.dt-list'), probe = document.createElement('i'), out = window.__frames = [];
+        probe.style.cssText = 'position:fixed;left:-9px;top:0;width:1px;height:1px;opacity:0;pointer-events:none';
+        document.body.append(probe);
+        const grab = () => { const lr = l.getBoundingClientRect(), r = document.querySelector(`[data-key="${k}"]`)?.getBoundingClientRect(); out.push({ top: r ? r.top - lr.top : null, under: r ? lr.bottom - r.bottom : null, st: l.scrollTop }); };
+        let on = true;
+        const tick = () => { if (!on) return; const look = new ResizeObserver(() => { look.disconnect(); if (on) grab(); }); look.observe(probe); requestAnimationFrame(tick); };
+        grab(); requestAnimationFrame(tick);
+        window.__framesStop = () => { on = false; probe.remove(); };
+      }, key);
+      await act(); await a.page.waitForTimeout(ms);
+      return a.page.evaluate(() => { window.__framesStop(); return window.__frames; });
+    };
+    const dev = fr => Math.max(...fr.map(f => Math.abs(f.top - fr[0].top)));
+    const press = (a, key) => orow(a, key).click({ position: { x: 170, y: 14 } });
+    // the list moved (no animation) so that the row's top is `y` into its view
+    const place = async (a, key, y) => { await a.page.evaluate(([k, y]) => { const l = document.querySelector('.dt-list'); l.scrollTop += document.querySelector(`[data-key="${k}"]`).getBoundingClientRect().top - l.getBoundingClientRect().top - y; }, [key, y]); await rest(a, 300); };
+    const toEnd = async a => { await a.page.evaluate(() => { const l = document.querySelector('.dt-list'); l.scrollTop = l.scrollHeight; }); await rest(a, 300); };
+    // the first row after `key` that opens and lies whole in the view with `room` px to spare under it
+    const below = (a, key, room) => a.page.evaluate(([k, room]) => { const l = document.querySelector('.dt-list'), lr = l.getBoundingClientRect(), rows = [...l.querySelectorAll('[data-key][aria-expanded]')], i = rows.findIndex(e => e.dataset.key === k);
+      return rows.slice(i + 1).find(e => { const r = e.getBoundingClientRect(); return r.top >= document.querySelector(`[data-key="${k}"]`).getBoundingClientRect().bottom - 1 && r.bottom <= lr.bottom - room; })?.dataset.key ?? null; }, [key, room]);
+    const lastRow = a => a.page.evaluate(() => [...document.querySelectorAll('.dt-list [data-key][aria-expanded]')].at(-1).dataset.key);
+    const dockTop = a => a.page.evaluate(() => document.querySelector('.dt-fold.is-dock .dt-dock')?.getBoundingClientRect().top ?? null);
+    const listFoot = a => a.page.evaluate(() => document.querySelector('.dt-list').getBoundingClientRect().bottom);
+
+    const a = await boot({ served: bigDay() });
+    await openDay(a);
+    // 1 and 2: in the middle of the day, with room above: a stay opens where it is (it fits: nothing scrolls) and a second row pressed under it, the stay closing above it, stays where it was
+    await place(a, 'stay-home-2', 24);
+    const x0 = await spot(a, 'stay-home-2');
+    await press(a, 'stay-home-2'); await rest(a, 700);
+    const x1 = await spot(a, 'stay-home-2');
+    check('a row that fits under the foot opens without the list moving a pixel, and its top stays', Math.abs(x1.st - x0.st) <= .5 && Math.abs(x1.top - x0.top) <= .5, JSON.stringify({ x0, x1 }));
+    const Y = await below(a, 'stay-home-2', 120);
+    const y0 = await spot(a, Y), yf = await frames(a, Y, () => press(a, Y)), y1 = await spot(a, Y);
+    check('pressing a row while another is open above it: it stays within 1 px of where it was in every frame of the opening and when it is over, though the rows above give back their height',
+      Y && yf.length > 8 && dev(yf) <= 1 && Math.abs(y1.top - y0.top) <= 1 && y1.under >= 24 && y0.st - y1.st > 30 && await expanded(a, Y) === 'true' && await expanded(a, 'stay-home-2') === 'false', JSON.stringify({ Y, y0, y1, dev: dev(yf), tops: yf.map(f => +f.top.toFixed(1)), sts: yf.map(f => +f.st.toFixed(1)) }));
+    const yc = await frames(a, Y, () => press(a, Y)), y2 = await spot(a, Y);
+    check('and pressing it again, it closes in place: its top does not move in any frame', dev(yc) <= 1 && Math.abs(y2.top - y0.top) <= 1 && await expanded(a, Y) === 'false', JSON.stringify({ dev: dev(yc), y0, y2 }));
+    // Esc closes the open row in place too
+    await press(a, 'stay-home-2'); await rest(a, 600);
+    const e0 = await spot(a, 'stay-home-2'), ef = await frames(a, 'stay-home-2', () => a.page.keyboard.press('Escape'));
+    check('Esc closes the open row where it is', dev(ef) <= 1 && Math.abs((await spot(a, 'stay-home-2')).top - e0.top) <= 1 && await expanded(a, 'stay-home-2') === 'false', JSON.stringify({ dev: dev(ef) }));
+
+    // at the top of the list there is no scroll to give back: the list is given room above its first row, which goes when he scrolls
+    await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; }); await rest(a, 300);
+    await press(a, 'stay-home-1'); await rest(a, 700);
+    const Z = await below(a, 'stay-home-1', 120), z0 = await spot(a, Z), zf = await frames(a, Z, () => press(a, Z)), z1 = await spot(a, Z);
+    check('at the top of the list the pressed row still does not move, the list making room above its first row (no more than a third of the view)',
+      Z && dev(zf) <= 1 && Math.abs(z1.top - z0.top) <= 1 && z1.head > 20 && z1.head <= z1.lh / 3 + 1 && z1.st === 0, JSON.stringify({ Z, z0, z1, dev: dev(zf) }));
+    await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 200; }); await rest(a, 250);
+    const z2 = await spot(a, Z);
+    check('the room goes as he scrolls away from it, and nothing moves for it going: the row is where scrolling 200 px puts it', z2.head === 0 && Math.abs(z2.top - (z1.top - 200)) <= 1, JSON.stringify({ z1, z2 }));
+    await press(a, Z); await rest(a, 500);
+
+    await a.ctx.close();
+    const b = await boot({ served: bigDay() });
+    await openDay(b);
+    // the last row of the list: 24 px under it when it opens, as under any row, the list scrolling with it
+    await toEnd(b);
+    const last = await lastRow(b), l0 = await spot(b, last), lf = await frames(b, last, () => press(b, last)), l1 = await spot(b, last);
+    check('the last row of the list opens with 24 px under it, not flush: the list scrolls with its opening, smoothly and never back',
+      Math.abs(l1.under - 24) <= 1 && l1.foot >= 23 && lf.every((f, i) => i === 0 || f.st >= lf[i - 1].st - .01) && new Set(lf.map(f => f.st)).size >= 5 && l1.st - l0.st > 60, JSON.stringify({ last, l0, l1, steps: new Set(lf.map(f => f.st)).size }));
+    // 问她 from it: the input slides up under it and the row is brought up to 24 px clear of the list's new foot
+    await orow(b, last).locator('.dt-fold .dt-btn', { hasText: '问她' }).click(); await rest(b, 700);
+    const d1 = await spot(b, last), dt1 = await dockTop(b), lb1 = await listFoot(b);
+    check('the input at the pane\'s foot does not cover the open row: it ends 24 px above the list\'s foot, which is above the input', dt1 !== null && Math.abs(d1.under - 24) <= 1 && lb1 <= dt1 + .5 && d1.lh < l1.lh - 30, JSON.stringify({ d1, dt1, lb1 }));
+    await b.page.keyboard.press('Escape'); await rest(b, 500);
+    const lc = await frames(b, last, () => press(b, last)), l2 = await spot(b, last);
+    check('closing the last row leaves it where it was: its top does not move in any frame, the list keeping the room', dev(lc) <= 1 && Math.abs(l2.top - (await spot(b, last)).top) <= 1 && l2.under >= 60, JSON.stringify({ dev: dev(lc), l2 }));
+    await b.page.evaluate(() => { document.querySelector('.dt-list').scrollTop -= 50; }); await rest(b, 250);
+    const l3 = await spot(b, last);
+    check('and the room is given back as he scrolls up out of it, without the row moving for it', Math.abs(l3.top - (l2.top + 50)) <= 1 && l3.foot <= l2.foot - 40, JSON.stringify({ l2, l3 }));
+
+    // b stay near the foot that does not fit opens with the list scrolling just enough, 24 px clear; the input that comes up under it moves it again by as much as it takes
+    await b.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; }); await rest(b, 300);
+    await place(b, 'stay-home-3', (await spot(b, 'stay-home-3')).lh - 60);
+    const s0 = await spot(b, 'stay-home-3'), sf = await frames(b, 'stay-home-3', () => press(b, 'stay-home-3')), s1 = await spot(b, 'stay-home-3');
+    check('a row near the foot that would not fit opens with the list scrolling just enough to leave 24 px under it, together with its opening', Math.abs(s1.under - 24) <= 1 && s1.st - s0.st > 40 && sf.length > 8 && new Set(sf.map(f => f.st)).size >= 5 && sf.every((f, i) => i === 0 || f.st >= sf[i - 1].st - .01), JSON.stringify({ s0, s1, steps: new Set(sf.map(f => f.st)).size }));
+    await orow(b, 'stay-home-3').getByRole('button', { name: SAY }).click(); await rest(b, 700);
+    const s2 = await spot(b, 'stay-home-3'), dt2 = await dockTop(b), lb2 = await listFoot(b);
+    check('the input of 这段在干嘛 does not cover it either: the open stay stays 24 px above the list\'s foot', dt2 !== null && Math.abs(s2.under - 24) <= 1 && lb2 <= dt2 + .5 && s2.st > s1.st + 30, JSON.stringify({ s1, s2, dt2, lb2 }));
+    await b.page.keyboard.press('Escape'); await rest(b, 500); await press(b, 'stay-home-3'); await rest(b, 600);
+    // an open row that still fits above the input's top does not move for it
+    await place(b, 'stay-home-2', 40);
+    await press(b, 'stay-home-2'); await rest(b, 700);
+    const f0 = await spot(b, 'stay-home-2');
+    await orow(b, 'stay-home-2').getByRole('button', { name: '问她' }).click(); await rest(b, 700);
+    const f1 = await spot(b, 'stay-home-2');
+    check('an open row that still has 24 px above the new foot does not scroll when the input comes up', Math.abs(f1.st - f0.st) <= .5 && f1.under >= 23 && f1.lh < f0.lh - 30, JSON.stringify({ f0, f1 }));
+    await b.ctx.close();
+
+    // reduced motion: nothing animates, and the pressed row is where it was when the frame is drawn
+    const r = await boot({ served: bigDay() });
+    await openDay(r);
+    await r.page.emulateMedia({ reducedMotion: 'reduce' }); await rest(r, 150);
+    await place(r, 'stay-home-2', 24);
+    await press(r, 'stay-home-2'); await rest(r, 400);
+    const Yr = await below(r, 'stay-home-2', 120), r0 = await spot(r, Yr), rf = await frames(r, Yr, () => press(r, Yr), 400), r1 = await spot(r, Yr);
+    check('with reduced motion the pressed row is where it was in the first frame after it is pressed, though the row above it closed at once', Yr && dev(rf) <= 1 && Math.abs(r1.top - r0.top) <= 1 && r0.st - r1.st > 30 && await expanded(r, 'stay-home-2') === 'false', JSON.stringify({ Yr, r0, r1, dev: dev(rf) }));
+    await r.ctx.close();
+  }
+
+  // ---- the rail of an opened row stays inside its card (ONLY=rail) ----
+  if (all || only === 'rail') {
+    const a = await boot({ served: bigDay() });
+    await openDay(a);
+    // ::before / ::after are not elements: what a rail is, read from its style against the row's box
+    const rail = (key, which) => a.page.evaluate(([k, which]) => { const e = document.querySelector(`[data-key="${k}"]`), c = getComputedStyle(e, which), r = e.getBoundingClientRect(); return { top: r.top + parseFloat(c.top), bottom: r.bottom - parseFloat(c.bottom), row: [r.top, r.bottom], w: c.width, cls: e.className }; }, [key, which]);
+    const mids = await a.page.evaluate(() => [...document.querySelectorAll('.dt-list .dt-row.is-rail[aria-expanded]')].filter(e => !e.classList.contains('is-top') && !e.classList.contains('is-end')).map(e => e.dataset.key));
+    check('there are rows in the middle of a rail to open', mids.length >= 2, mids.join());
+    const shut = await rail(mids[0], '::before');
+    check('a row that is shut has its rail from edge to edge', shut.top === shut.row[0] && shut.bottom === shut.row[1], JSON.stringify(shut));
+    await tap(a, mids[0]); await rest(a, 600);
+    const mid = await rail(mids[0], '::before');
+    check('an opened row in the middle of a rail has the rail inside its card: it begins and ends 1 px in, so it never crosses the card\'s hairline',
+      mid.top > mid.row[0] && mid.bottom < mid.row[1] && Math.abs(mid.top - mid.row[0] - 1) < .6 && Math.abs(mid.row[1] - mid.bottom - 1) < .6, JSON.stringify(mid));
+    await tap(a, mids[0]); await rest(a, 400);
+    const ends = await a.page.evaluate(() => ({ top: [...document.querySelectorAll('.dt-list .dt-row.is-rail.is-top[aria-expanded]')].map(e => e.dataset.key), end: [...document.querySelectorAll('.dt-list .dt-row.is-rail.is-end[aria-expanded]')].map(e => e.dataset.key) }));
+    if (ends.top[0]) { await tap(a, ends.top[0]); await rest(a, 600); const t = await rail(ends.top[0], '::before'); check('the first row of a rail, opened, still begins at its glyph (inside the card already); its rail ends 1 px in', t.top - t.row[0] > 10 && Math.abs(t.row[1] - t.bottom - 1) < .6, JSON.stringify(t)); await tap(a, ends.top[0]); await rest(a, 400); }
+    if (ends.end[0]) { await tap(a, ends.end[0]); await rest(a, 600); const t = await rail(ends.end[0], '::before'); check('the last row of a rail, opened, still ends at its glyph (inside the card already); its rail begins 1 px in', t.row[1] - t.bottom > 10 && Math.abs(t.top - t.row[0] - 1) < .6, JSON.stringify(t)); await tap(a, ends.end[0]); await rest(a, 400); }
+    const hk = await a.page.evaluate(() => document.querySelector('.dt-list .dt-sh.has-rows[aria-expanded]')?.dataset.key);
+    const head0 = await rail(hk, '::after');
+    await tap(a, hk); await rest(a, 600);
+    const head1 = await rail(hk, '::after');
+    check('a stay\'s rail, from its dot down, stops 1 px inside the bottom of its card when it is opened, and reaches the bottom of its header when it is not', head0.bottom === head0.row[1] && Math.abs(head1.row[1] - head1.bottom - 1) < .6 && head1.top > head1.row[0], JSON.stringify({ head0, head1 }));
+    await shotRow(a, 'steady-01-rail-in-card', mids[0]);
     await a.ctx.close();
   }
 
@@ -3498,7 +3639,7 @@ try {
     await a.page.keyboard.press('Escape'); await rest(a, 500);
     // the open row: the star is among its buttons, before 问她, and does the same
     await tap(a, 'talk-1'); await rest(a, 520);
-    const btns = await orow(a, 'talk-1').locator('.dt-acts').first().evaluate(el => [...el.children].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
+    const btns = await orow(a, 'talk-1').locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
     check('the open row has the star among its buttons, before 问她', btns === 'star|问她', btns);
     const open = orow(a, 'talk-1').locator('.dt-acts .dt-starbtn');
     await open.click(); await rest(a, 500);
@@ -3562,7 +3703,7 @@ try {
     await openDay(a);
     check('three things wait on him at first: the reminder that rang and the two events mail has not confirmed, each with its badge and a dashed box on the bar', await pillOf(a) === '3 件等你' && await a.page.locator('.dt-wait').count() === 3 && await a.page.locator('[data-sched]').count() === 3, await pillOf(a));
     await tap(a, CM.a); await rest(a, 520);
-    const btns = await orow(a, CM.a).locator('.dt-acts').first().evaluate(el => [...el.children].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
+    const btns = await orow(a, CM.a).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
     check('an unconfirmed mail event opens to 是我的 and 不是, before the star and 问她, under its time range and state (its source, that it is not confirmed and its place are the row\'s second line already)', btns === '是我的|不是|star|问她' && (await said(a, CM.a))[0] === '22:10–22:50 · 40 分 · 还没开始' && await orow(a, CM.a).locator('.dt-tx em').innerText() === '邮件 · 还没确认 · Library', `${btns} ${(await said(a, CM.a)).join('|')}`);
     await sheetRow(a, 'd-04-commitment-open', CM.a, [['.dt-head', 'the header: three things wait on him (the reminder that rang and the two events mail has not confirmed)', 1.3]], 'the commitment opened: 是我的 and 不是 before the star and 问她, the amber 等你 badge on the row');
     const reads = a.s.hits.length, watching = watchRow(a, CM.a, 900);
@@ -3635,7 +3776,7 @@ try {
     await a.page.emulateMedia({ reducedMotion: 'reduce' });
     await openDay(a);
     await tap(a, CM.a); await rest(a, 400);
-    const names = await orow(a, CM.a).locator('.dt-acts').first().evaluate(el => [...el.children].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
+    const names = await orow(a, CM.a).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
     await btn(a, CM.a, 'Mine').click(); await rest(a, 400);
     check('in English the buttons say Mine and Not mine, and the row says you confirmed it', names === 'Mine|Not mine|star|Ask her' && await orow(a, CM.a).locator('.dt-tx em').innerText() === 'Mail · you confirmed it · Library', `${names} ${await orow(a, CM.a).locator('.dt-tx em').innerText()}`);
     await tap(a, CM.b); await rest(a, 400);
@@ -3657,7 +3798,7 @@ try {
     await openDay(a);
     const before = { spot: await hueOf(a, 'stay-spot'), school: await hueOf(a, 'stay-uvic'), bar: await barNames(a) };
     await tap(a, 'stay-spot'); await rest(a, 520);
-    const btns = await orow(a, 'stay-spot').locator('.dt-acts').first().evaluate(el => [...el.children].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
+    const btns = await orow(a, 'stay-spot').locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
     check('the open row of a stay that is no place he keeps says 起个名字 among its buttons (before the star, 问她 and 这段在干嘛), and a spot the phone had no words for says nothing else', btns === '起个名字|star|问她|这段在干嘛' && (await said(a, 'stay-spot')).length === 3, `${btns} ${(await said(a, 'stay-spot')).join('|')}`);
     await orow(a, 'stay-spot').getByRole('button', { name: '起个名字' }).click(); await rest(a, 450);
     const f0 = await field(a);
@@ -3714,7 +3855,7 @@ try {
     const a = await boot({ served: nameDay(), init: record, lang: 'en' });
     await openDay(a);
     const offered = {};
-    for (const key of ['stay-bare', 'stay-uvic', 'stay-aw']) { await tap(a, key); await rest(a, 520); offered[key] = await orow(a, key).locator('.dt-acts').first().evaluate(el => [...el.children].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|')); await tap(a, key); await rest(a, 300); }
+    for (const key of ['stay-bare', 'stay-uvic', 'stay-aw']) { await tap(a, key); await rest(a, 520); offered[key] = await orow(a, key).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|')); await tap(a, key); await rest(a, 300); }
     const stop = await a.page.evaluate(() => { const r = document.querySelector('[data-key="stay-stop"]'); return { kind: r.dataset.kind, open: r.getAttribute('aria-expanded') }; });
     check('no offer on a stay with no point (the phone gave none) nor on a place he keeps (it has Rename); in English it says Name this place', offered['stay-bare'] === 'star|Ask her|What was this' && offered['stay-uvic'] === 'Rename|star|Ask her|What was this' && offered['stay-aw'] === 'Name this place|star|Ask her|What was this', JSON.stringify(offered));
     await tap(a, 'stay-aw'); await rest(a, 520);
