@@ -43,22 +43,27 @@ export const lensOf = (kind: string): LensKind | null => LENSES[kind] ?? null;
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const str = (v: unknown) => typeof v === 'string' ? v : undefined;
 const fin = (v: unknown) => typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+// A time is a number a Date can hold (8.64e15 ms either way): one past it cannot be written as a clock, and would take the whole day with it.
+const MAX_MS = 8.64e15, time = (v: unknown): v is number => typeof v === 'number' && Math.abs(v) <= MAX_MS, timeOr = (v: unknown) => time(v) ? v : null;
+// A name the brain sent, looked up in a table: only the table's own keys count (`constructor` is no stage and no weather).
+const own = <T>(table: Record<string, T>, key: string): T | undefined => Object.hasOwn(table, key) ? table[key] : undefined;
 const bool = (v: unknown) => typeof v === 'boolean' ? v : undefined;
 const STRINGS = ['place', 'activity', 'text', 'app', 'route', 'board_stop', 'alight_stop', 'note', 'title', 'source', 'to', 'attachment', 'currency', 'direction', 'counterparty', 'project', 'account', 'credit', 'ended_reason', 'detail'] as const;
-const NUMBERS = ['minutes', 'active_s', 'turns', 'leave_at_ms', 'messages', 'chats', 'energy_kcal', 'distance_m', 'avg_hr'] as const;
+const NUMBERS = ['minutes', 'active_s', 'turns', 'messages', 'chats', 'energy_kcal', 'distance_m', 'avg_hr'] as const;
 const FLAGS = ['confirmed', 'private', 'fired', 'acknowledged'] as const;
 export function tidy(raw: unknown): DayItem | null {
   if (!isObj(raw)) return null;
   const { id, kind, start_ms: start, end_ms: end } = raw;
-  if (typeof id !== 'string' || !id || typeof kind !== 'string' || !Number.isFinite(start) || end != null && !Number.isFinite(end)) return null;
+  if (typeof id !== 'string' || !id || typeof kind !== 'string' || !time(start) || end != null && !time(end)) return null;
   const out: Record<string, unknown> = { id, kind, lane: raw.lane === 'her' ? 'her' : 'you', start_ms: start, end_ms: end ?? null, state: raw.state === 'now' || raw.state === 'next' ? raw.state : 'done' };
   for (const k of STRINGS) { const v = str(raw[k]); if (v !== undefined) out[k] = v; }
   for (const k of NUMBERS) { const v = fin(raw[k]); if (v !== undefined) out[k] = v; }
+  if (time(raw.leave_at_ms)) out.leave_at_ms = raw.leave_at_ms;
   for (const k of FLAGS) { const v = bool(raw[k]); if (v !== undefined) out[k] = v; }
   if (typeof raw.amount === 'string' || fin(raw.amount) !== undefined) out.amount = raw.amount;
   const kept = raw.kept_place;
   if (isObj(kept) && typeof kept.id === 'string' && typeof kept.name === 'string') out.kept_place = { id: kept.id, name: kept.name, role: str(kept.role) ?? '' };
-  if (Array.isArray(raw.stages)) out.stages = raw.stages.flatMap(x => isObj(x) && typeof x.stage === 'string' && Number.isFinite(x.start_ms) && Number.isFinite(x.end_ms) ? [{ stage: x.stage, start_ms: x.start_ms as number, end_ms: x.end_ms as number }] : []);
+  if (Array.isArray(raw.stages)) out.stages = raw.stages.flatMap(x => isObj(x) && typeof x.stage === 'string' && time(x.start_ms) && time(x.end_ms) ? [{ stage: x.stage, start_ms: x.start_ms as number, end_ms: x.end_ms as number }] : []);
   for (const k of ['projects', 'apps'] as const) {
     const v = raw[k];
     if (Array.isArray(v)) out[k] = v.flatMap(x => isObj(x) && typeof x.name === 'string' ? [{ name: x.name, seconds: fin(x.seconds) ?? 0 }] : []);
@@ -66,17 +71,17 @@ export function tidy(raw: unknown): DayItem | null {
   return out as DayItem;
 }
 export function tidyReply(raw: unknown): DayReply {
-  if (!isObj(raw) || typeof raw.date !== 'string' || !Number.isFinite(raw.start_ms) || !Number.isFinite(raw.end_ms) || (raw.end_ms as number) <= (raw.start_ms as number)) throw new Error('the day has no usable bounds');
+  if (!isObj(raw) || typeof raw.date !== 'string' || !time(raw.start_ms) || !time(raw.end_ms) || (raw.end_ms as number) <= (raw.start_ms as number)) throw new Error('the day has no usable bounds');
   const each = <T>(v: unknown, pick: (x: unknown) => T | null): T[] => Array.isArray(v) ? v.flatMap(x => pick(x) ?? []) : [];
   return {
-    date: raw.date, tz: str(raw.tz) ?? '', start_ms: raw.start_ms as number, end_ms: raw.end_ms as number, now_ms: fin(raw.now_ms) ?? (raw.start_ms as number),
+    date: raw.date, tz: str(raw.tz) ?? '', start_ms: raw.start_ms as number, end_ms: raw.end_ms as number, now_ms: timeOr(raw.now_ms) ?? (raw.start_ms as number),
     items: each(raw.items, tidy),
     labels: each(raw.labels, x => isObj(x) && typeof x.title === 'string' ? { title: x.title, source: str(x.source), private: bool(x.private) } : null),
     missing: each(raw.missing, x => typeof x === 'string' ? x : null),
     line: isObj(raw.line) && typeof raw.line.text === 'string' ? { text: raw.line.text, draft: bool(raw.line.draft), written_at: str(raw.line.written_at) } : null,
     highlights: each(raw.highlights, x => isObj(x) && typeof x.id === 'string' ? { id: x.id, label: str(x.label) ?? '', by: str(x.by) ?? '' } : null),
     summary: isObj(raw.summary) ? { steps: fin(raw.summary.steps) ?? null, resting_hr: fin(raw.summary.resting_hr) ?? null, hrv: fin(raw.summary.hrv) ?? null } : null,
-    weather: isObj(raw.weather) ? { condition: str(raw.weather.condition) ?? '', high: fin(raw.weather.high) ?? null, low: fin(raw.weather.low) ?? null, sunrise_ms: fin(raw.weather.sunrise_ms) ?? null, sunset_ms: fin(raw.weather.sunset_ms) ?? null } : null,
+    weather: isObj(raw.weather) ? { condition: str(raw.weather.condition) ?? '', high: fin(raw.weather.high) ?? null, low: fin(raw.weather.low) ?? null, sunrise_ms: timeOr(raw.weather.sunrise_ms), sunset_ms: timeOr(raw.weather.sunset_ms) } : null,
   };
 }
 // A day the pane could not read is said once in the app's log (`[timeline] ...`, which electron/companion.ts passes on), not every frame.
@@ -133,7 +138,7 @@ export function fnv(text: string) {
 }
 const clean = (s?: unknown) => typeof s === 'string' ? s.trim() : '';
 // An item whose times are not numbers is left out: a time that cannot be formatted would take the whole pane down with it.
-const sound = (it: unknown): it is DayItem => isObj(it) && Number.isFinite(it.start_ms) && (it.end_ms == null || Number.isFinite(it.end_ms));
+const sound = (it: unknown): it is DayItem => isObj(it) && time(it.start_ms) && (it.end_ms == null || time(it.end_ms));
 export type StayLook = { name: string; unnamed: boolean; kept: boolean; rgb: Rgb; icon: Icon };
 // The name he gave the place, else the first comma-separated part of what the phone called it, else none.
 export function stayLook(it: DayItem, t: Say): StayLook {
@@ -220,7 +225,7 @@ const CONDITIONS: Record<string, [Sky, L]> = {
 export type WeatherLook = { sky: Sky | null; word: string; temps: string; sun: string };
 export function weatherOf(w: Weather | null | undefined, t: Say, tz = ''): WeatherLook | null {
   if (!w) return null;
-  const hit = CONDITIONS[clean(w.condition).toLowerCase().replace(/[^a-z]/g, '')];
+  const hit = own(CONDITIONS, clean(w.condition).toLowerCase().replace(/[^a-z]/g, ''));
   const temps = [w.high, w.low].filter((x): x is number => x != null).map(x => `${Math.round(x) || 0}°`).join(' / ');
   const sun = [w.sunrise_ms != null && t([`Sunrise ${clock(w.sunrise_ms, tz)}`, `日出 ${clock(w.sunrise_ms, tz)}`]), w.sunset_ms != null && t([`Sunset ${clock(w.sunset_ms, tz)}`, `日落 ${clock(w.sunset_ms, tz)}`])].filter((x): x is string => !!x).join(' · ');
   return hit || temps ? { sky: hit?.[0] ?? null, word: hit ? t(hit[1]) : '', temps, sun } : null;
@@ -259,12 +264,12 @@ const STAGES: Record<string, { rgb: Rgb; a: number; rank: number }> = {
   awake: { rgb: SLEEP, a: .25, rank: 5 }, rem: { rgb: REM, a: .8, rank: 4 }, deep: { rgb: SLEEP, a: 1, rank: 3 }, core: { rgb: SLEEP, a: .78, rank: 2 },
   unspecified: { rgb: SLEEP, a: .6, rank: 1 }, in_bed: { rgb: SLEEP, a: .25, rank: 0 },
 };
-export const stageLook = (stage: string) => STAGES[stage] ?? STAGES.unspecified;
+export const stageLook = (stage: string) => own(STAGES, stage) ?? STAGES.unspecified;
 // The night between `a` and `b` as stretches that do not overlap, each with the stage that wins there (so a night two sources told is counted
 // once); where no stage was reported it is unspecified. Pure and cheap (a night has under a hundred stages), so the bar, the hover card, the open
 // row's totals and its hypnogram all ask.
 export function stageSlices(it: DayItem, a: number, b: number): { stage: string; s: number; e: number }[] {
-  const segs = (it.stages ?? []).flatMap(x => { const s = Math.max(x.start_ms, a), e = Math.min(x.end_ms, b); return e > s ? [{ stage: x.stage in STAGES ? x.stage : 'unspecified', s, e }] : []; });
+  const segs = (it.stages ?? []).flatMap(x => { const s = Math.max(x.start_ms, a), e = Math.min(x.end_ms, b); return e > s ? [{ stage: own(STAGES, x.stage) ? x.stage : 'unspecified', s, e }] : []; });
   const cuts = [...new Set([a, b, ...segs.flatMap(x => [x.s, x.e])])].sort((x, y) => x - y), out: { stage: string; s: number; e: number }[] = [];
   for (let i = 0; i + 1 < cuts.length; i++) {
     let best: (typeof segs)[number] | undefined;
@@ -459,7 +464,7 @@ export function buildDay(input: DayReply, now: number, t: Say): DayModel {
   }
   const chips = (reply.labels ?? []).map(l => l.private ? t(['Private', '私事']) : clean(l.title)).filter(Boolean).map(text => ({ text, more: false }));
   if (chips.length > 2) chips.splice(2, chips.length, { text: `+${chips.length - 2}`, more: true });
-  const down = (reply.missing ?? []).map(k => t(SOURCES[k] ?? [k, k]));
+  const down = (reply.missing ?? []).map(k => t(own(SOURCES, k) ?? [k, k]));
   const foot = down.length ? t([`Not read yet: ${down.join(' · ')}`, `还没读到：${down.join(' · ')}`]) : '';
   const line = clean(reply.line?.text) ? { text: clean(reply.line!.text), draft: !!reply.line!.draft } : null;
   // Every row and stay header in the order the list shows them (a stay before what began with it), for "which row is at this minute".

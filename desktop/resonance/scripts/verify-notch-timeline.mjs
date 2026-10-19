@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { askable, buildDay, clock, covered, dateTitle, fnv, lensOf, moneyText, shiftDate, stageLook, stageMinutes, stageSlices, weatherOf, wingText, within } from '../src/dayView.ts';
+import { askable, buildDay, clock, covered, dateTitle, fnv, lensOf, moneyText, shiftDate, stageLook, stageMinutes, stageSlices, tidy, tidyReply, weatherOf, wingText, within } from '../src/dayView.ts';
 import { axisOf, buildBar, fit, fOf, hm, msOf, numbers, peek, rowAt, summarize, toneOn } from '../src/barView.ts';
 import { askOf, hasBody, openOf, talkLines } from '../src/dayOpen.ts';
 import { deflateSync, crc32 } from 'node:zlib';
@@ -270,6 +270,28 @@ check('the overview bar spans the day from the hour before he woke, and its now 
   check('a day with no usable bounds cannot be built, and says so', true);
   check('the wing never throws: a day it cannot read gives the plain place, or nothing, and the log hears of it once', fallback[0].head === '' && fallback[1].head === '' && told.length === 1 && told[0].startsWith('[timeline] the wing: boom'), JSON.stringify(told));
   check('electron passes the pane\'s [timeline] lines to its log as it does [dashboard] ones', /startsWith\('\[dashboard\]'\) \|\| event\.message\.startsWith\('\[timeline\]'\)/.test(readFileSync(path.join(root, 'electron/companion.ts'), 'utf8')));
+}
+{
+  // Absurd values from the brain skip the item (or the field) they are in; they never fail the day. A time is a number a Date can hold
+  // (8.64e15 ms either way); a name that is a key of every object ('constructor') is no stage, no weather and no source.
+  const MAX = 8.64e15, huge = [1e300, MAX + 2, -MAX - 2, Infinity], kept = flat(buildDay(makeDay(), NOW, zh).blocks).filter(x => x.as !== 'now').length;
+  const withItems = bad => buildDay(makeDay({ items: [...makeDay().items, ...bad] }), NOW, zh), counted = d => flat(d.blocks).filter(x => x.as !== 'now').length;
+  check('an item whose time no Date can hold is left out and the rest of the day stands: a start of 1e300, past 8.64e15, before -8.64e15; an end of 1e300',
+    huge.every(v => counted(withItems([it('x1', 'stay', v, null, { place: 'X' })])) === kept) && counted(withItems([it('x2', 'move', T(21, 0), 1e300, { activity: 'walking' })])) === kept);
+  const departure = extra => flat(withItems([it('x3', 'departure', T(22, 50), T(22, 50), { title: '27', route: '27', board_stop: 'A', ...extra })]).blocks).find(r => r.key === 'x3');
+  check('a time field no Date can hold is dropped from its item: the departure keeps its row without when to leave', departure({ leave_at_ms: 1e300 }).right === '' && departure({ leave_at_ms: T(22, 33) }).right === '22:33 出门');
+  check('and so is a stage whose time none can hold', tidy(it('s1', 'sleep', T(1, 0), T(8, 0), { stages: [{ stage: 'deep', start_ms: -1e300, end_ms: 1e300 }, { stage: 'core', start_ms: T(1, 0), end_ms: T(2, 0) }] })).stages.map(x => x.stage).join() === 'core');
+  check('the day\'s own bounds, now and the sun\'s times are held to the same: bounds fail the day with a line, now falls back to the start, the sun\'s time is left out',
+    huge.every(v => { try { buildDay({ ...makeDay(), start_ms: v }, NOW, zh); return false; } catch (e) { return /no usable bounds/.test(String(e.message)); } }) && tidyReply({ ...makeDay(), now_ms: 1e300 }).now_ms === T(0)
+    && buildDay(makeDay({ weather: { condition: 'clear', high: 14, low: 8, sunrise_ms: 1e300, sunset_ms: T(18, 5) } }), NOW, zh).weather.sun === '日落 18:05');
+  for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+    const night = it('s2', 'sleep', T(1, 0), T(8, 0), { minutes: 420, stages: [{ stage: name, start_ms: T(1, 0), end_ms: T(8, 0) }] }), d = buildDay(small([night, it('s3', 'stay', T(8, 0), null, { place: 'X' })]), NOW, zh);
+    const item = d.items.find(x => x.id === 's2'), piece = buildBar(d, zh).segs.find(x => x.row === 's2');
+    check(`a stage called ${name} is the stage nobody told: unspecified, with a look, on the bar and in the totals`, stageSlices(item, T(1, 0), T(8, 0)).every(x => x.stage === 'unspecified') && piece.shade.length > 0 && piece.shade.every(x => Array.isArray(x.rgb) && x.a === stageLook('unspecified').a)
+      && stageLook(name) === stageLook('unspecified') && Object.keys(stageMinutes(item)).join() === 'unspecified');
+  }
+  check('a weather called constructor is no weather: the temperatures alone, or nothing', weatherOf({ condition: 'constructor', high: 14, low: 8, sunrise_ms: null, sunset_ms: null }, zh)?.sky === null && weatherOf({ condition: 'constructor', high: null, low: null, sunrise_ms: null, sunset_ms: null }, zh) === null);
+  check('and a source called constructor is named as it is told, in the line for what has not been read', buildDay(makeDay({ missing: ['mac', 'constructor'] }), NOW, zh).foot === '还没读到：Mac 的时间 · constructor');
 }
 {
   // A day the clocks cut short or stretch: the bar's hour marks still sit at their local hours.
