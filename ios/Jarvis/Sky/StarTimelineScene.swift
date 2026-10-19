@@ -382,23 +382,25 @@ extension StarEngine {
         earlierRound(cal)
         let t0 = nowMs(), ask = "明天下午三点有什么安排，顺便提醒我晚上给 Mia 回电话"
         let said = "明天下午三点有一个二面，在线上，大概四十五分钟。晚上八点半给 Mia 回电话，我到时候提醒你。"
+        let written = "## 明天\n- 15:00 和 Lumen Labs 的二面，线上，约四十五分钟\n- 20:30 给 Mia 回电话，我到时候提醒你\n\n二面之前我会把你上次面试的笔记整理出来，放在日程里。"
+        let shown = document ? written : said
         let speechEnd = 3.8 + Double(said.count) / 8 + 0.3
         voiceFake = { now in
             var v = VoiceShot()
             let s = (now - t0) / 1000
             if s < 2.6 { v.state = .listening; v.partial = String(ask.prefix(Int(s * 12) + 1)); v.input = 0.3 + 0.7 * voiceLevel(now / 1000 * 1.3) }
             else if s < 3.8 { v.state = .thinking; v.transcript = ask }
-            else if s < speechEnd { v.state = .speaking; v.transcript = ask; v.reply = String(said.prefix(Int((s - 3.8) * 8))); v.full = said; v.output = voiceLevel(now / 1000) }
-            else if s < speechEnd + 10 { v.state = .listening; v.reply = said; v.full = said }          // the window for what he says next is ten seconds
+            else if s < speechEnd { v.state = .speaking; v.transcript = ask; v.reply = String(said.prefix(Int((s - 3.8) * 8))); v.full = shown; v.more = document; v.output = voiceLevel(now / 1000) }
+            else if s < speechEnd + 10 { v.state = .listening; v.reply = shown }          // the window for what he says next is ten seconds; her answer is over, and the session has cleared it
             return v
         }
         // the conversation's rows of this round, which her row takes when the session is over (`adoptWritten`): the voice part alone, or with a document
         let at = Date().addingTimeInterval(-60), stamp = TalkStream.dayId(at, cal.cal) + "T" + TalkStream.clock(at, cal.cal) + ":00"
-        let doc = "<voice>\(said)</voice><document>## 明天\n- 15:00 和 Lumen Labs 的二面，线上，约四十五分钟\n- 20:30 给 Mia 回电话，我到时候提醒你\n\n二面之前我会把你上次面试的笔记整理出来，放在日程里。</document>"
+        let raw = document ? "<voice>\(said)</voice><document>\(written)</document>" : "<voice>\(said)</voice>"
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [self] in
             let base = MainActor.assumeIsolated { Conversation.shared.rows }
             MainActor.assumeIsolated {
-                Conversation.shared.debugSet(base + [ConversationRow(seq: 33, source: "allen", ts: stamp, text: ask), ConversationRow(seq: 34, source: "jarvis", ts: stamp, text: document ? doc : "<voice>\(said)</voice>")])
+                Conversation.shared.debugSet(base + [ConversationRow(seq: 33, source: "allen", ts: stamp, text: ask), ConversationRow(seq: 34, source: "jarvis", ts: stamp, text: raw)])
             }
         }
     }

@@ -3,7 +3,7 @@ import SwiftUI
 // A talk on the timeline home happens in her place, over the day: while it is on show her sentence, the bar and the chips give way to the latest round of it (his words, when he spoke
 // them and he may want to see whether she understood; hers, as she says them), and the day's list stays where it is. The older rounds, the map of the places her answer names, the steps
 // she took, and the whole of an answer too long for the place are the history's, which opens from the bottom (Sky/StarPanel.swift). This file says what the place holds (`TLTalk`, which
-// needs no screen to be checked) and draws it (`TLTalkArea`).
+// needs no screen to be checked, and how long it stays after her last word) and draws it (`TLTalkArea`). The engine keeps the time (`StarEngine.tlUntil`, Sky/StarTalk.swift).
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
@@ -28,6 +28,14 @@ struct TLTalk: Equatable {
     var unsent: LiveTurn?
 
     var isEmpty: Bool { heard == nil && hers.isEmpty && cards == 0 && unsent == nil }
+    /// he spoke the round
+    var spoken: Bool { heard != nil }
+    /// how many characters of her words the round has, as they show
+    var chars: Int { hers.filter { $0.status == nil && !$0.failed }.reduce(0) { $0 + String(AnswerText.linked($1.text).characters).count } }
+
+    /// How long the place stays after her last word, in ms. A round he spoke, and she said whole (what is written is her voice again), stays 4 s after her voice ends: he has heard it. Any other is
+    /// read: 8 s and 0.12 s a character, at most 45 s.
+    static func stay(chars: Int, said: Bool) -> Double { said ? 4000 : min(45_000, 8000 + 120 * Double(chars)) }
 
     /// the round of the live rows of a talk
     static func of(_ turns: [LiveTurn]) -> TLTalk {

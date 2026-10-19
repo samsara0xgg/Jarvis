@@ -201,7 +201,7 @@ extension StarEngine {
         case .spoke: await speaking?.finished(); try ok.check(); finishSay()
         }
         endTalk()
-        if failed { lingerUntil = nowMs() + Self.lingerFailed }
+        if failed { lingerUntil = nowMs() + Self.lingerFailed; tlUntil = lingerUntil }
         await Conversation.shared.refresh()
     }
 

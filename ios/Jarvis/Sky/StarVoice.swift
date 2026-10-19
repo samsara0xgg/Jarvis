@@ -8,6 +8,7 @@ import Observation
 struct VoiceShot {
     var state = VoiceSession.State.idle
     var partial = "", transcript = "", reply = "", full = ""      // `full`: all of her answer, of which `reply` is what she has said
+    var more = false                    // what is written of her answer says more than she says aloud (`AnswerText.saysMore`)
     var input = 0.0, output = 0.0
     var error: String?
     var progress: Double?
@@ -21,7 +22,7 @@ extension StarEngine {
         return MainActor.assumeIsolated {
             let v = VoiceSession.shared
             return VoiceShot(state: v.state, partial: v.partial, transcript: v.transcript, reply: AnswerText.visible(v.reply), full: AnswerText.visible(v.fullReply),
-                             input: v.inputLevel, output: v.outputLevel, error: v.errorText, progress: v.modelProgress)
+                             more: AnswerText.saysMore(v.fullReply), input: v.inputLevel, output: v.outputLevel, error: v.errorText, progress: v.modelProgress)
         }
     }
 
@@ -56,7 +57,10 @@ extension StarEngine {
             if was == .idle && talk != nil { interrupt() }      // a scripted talk in progress is over (voiceState is still idle: the session is left alone)
             voiceState = v.state; voiceAt = now
             if was == .idle { captureAbout(); beginTalk() }
-            if v.state == .listening { dropStatus(); closeHers(); vHis = nil; vHer = nil; vShown = 0; vShownAt = now; Haptic.impact(.light) }     // a new utterance of the session: its words are new rows
+            if v.state == .listening {
+                dropStatus(); closeHers(); vHis = nil; vHer = nil; vShown = 0; vShownAt = now; Haptic.impact(.light)      // a new utterance of the session: its words are new rows
+                if was == .speaking || was == .thinking { tlLinger(now) }       // her voice is done though the microphone stays open for him: the timeline's place for the round starts to go
+            }
             else if v.state == .idle {
                 voiceRows(v, now); closeHers()
                 talk = nil; endTalk()                           // no `end` cue: the microphone may still be open

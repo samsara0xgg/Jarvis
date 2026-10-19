@@ -29,14 +29,16 @@ enum AnswerText {
         return out
     }
 
+    /// the `<voice>` region when there is one, else the whole text
+    private static func voicePart(_ reply: String) -> String {
+        guard let open = reply.range(of: "<voice>") else { return reply }
+        let rest = reply[open.upperBound...]
+        return String(rest[..<(rest.range(of: "</voice>")?.lowerBound ?? rest.endIndex)])
+    }
+
     /// What she says aloud: the `<voice>` region when there is one, else the whole text; plain words, without markdown emphasis and code ticks.
     static func spoken(_ reply: String) -> String {
-        var region = reply
-        if let open = reply.range(of: "<voice>") {
-            let rest = reply[open.upperBound...]
-            region = String(rest[..<(rest.range(of: "</voice>")?.lowerBound ?? rest.endIndex)])
-        }
-        return visible(region)
+        visible(voicePart(reply))
             .replacingOccurrences(of: "\\[([^\\]]*)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)             // a link says its title
             .replacingOccurrences(of: "https?://[!-~]*[A-Za-z0-9/_#=&%~-]", with: "", options: .regularExpression)         // a bare address is not read out
             .replacingOccurrences(of: "\\*\\*|`", with: "", options: .regularExpression)
@@ -85,6 +87,13 @@ enum AnswerText {
     private static func host(_ url: URL) -> String? {
         guard let h = url.host, !h.isEmpty else { return nil }
         return h.hasPrefix("www.") ? String(h.dropFirst(4)) : h
+    }
+
+    /// What is written says more than she says aloud: there is a document, and it is not her voice part again (whitespace aside). An answer with no document, or a line before one, is said whole.
+    static func saysMore(_ reply: String) -> Bool {
+        guard reply.contains("<document>") else { return false }
+        func bare(_ s: String) -> String { s.filter { !$0.isWhitespace } }
+        return bare(visible(voicePart(reply))) != bare(visible(reply))
     }
 
     /// A line before the answer: it has a voice part and no document, so more follows.

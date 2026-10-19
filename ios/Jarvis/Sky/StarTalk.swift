@@ -12,7 +12,7 @@ extension StarEngine {
 
     /// A talk starts, or the next turn joins the one still on screen. `base` is the conversation's newest row before it, when the caller knows; else it is asked for.
     func beginTalk(base: Int? = nil) {
-        lingerUntil = .infinity
+        lingerUntil = .infinity; tlUntil = .infinity
         if ui.talking { return }
         talkId += 1
         ui.liveTurns = []; speakId = nil; vHis = nil; vHer = nil; statusTurn = nil
@@ -61,11 +61,27 @@ extension StarEngine {
         beginEditing?()
     }
 
-    /// The talk is over; its rows stay for `linger`, and a finger on them keeps them longer.
-    func lingerFrom(_ now: Double) { lingerUntil = now + Self.linger }
+    /// The talk is over; its rows stay for `linger`, and a finger on them keeps them longer. The timeline's place for the talk has a time of its own (`tlLinger`), given once for a round.
+    func lingerFrom(_ now: Double) {
+        lingerUntil = now + Self.linger
+        if tlUntil == .infinity { tlLinger(now) }
+    }
     func holdLinger(_ on: Bool) {
         lingerHold = on
-        if !on { lingerFrom(nowMs()) }
+        guard !on else { return }
+        lingerUntil = nowMs() + Self.linger
+        if tlUntil != .infinity { tlLinger(nowMs()) }       // a finger lifted off a place that was waiting to go: it stays as for a new answer (a round still coming keeps its place)
+    }
+    /// The round is all there: the timeline's place for it stays as long as it takes to read (`TLTalk.stay`), and the talk as long as the place.
+    func tlLinger(_ now: Double) {
+        guard HomeModule.shared.isTimeline else { return }
+        let t = TLTalk.of(ui.liveTurns)
+        tlUntil = now + TLTalk.stay(chars: t.chars, said: t.spoken && !vMore)
+        lingerUntil = max(lingerUntil, tlUntil)
+    }
+    /// He scrolled the list or opened a row: the place for the talk goes at once, when her answer is all there (a round still coming keeps it).
+    func releaseTalk() {
+        if tlUntil != .infinity { tlUntil = min(tlUntil, nowMs()) }
     }
 
     @discardableResult func addTurn(his: Bool, _ text: String, reveal: Reveal? = nil, pics: [SentItem] = [], leadIn: Bool = false, growing: Bool = false, heard: Bool = false, steps: StepsInfo? = nil, recordId: String? = nil) -> Int {
@@ -79,6 +95,7 @@ extension StarEngine {
             }
         }
         turnSeq += 1
+        if his { tlUntil = .infinity; vMore = false }       // his words are a new round: the place for the talk on the timeline is his again
         let t = LiveTurn(id: turnSeq, his: his, text: text, reveal: reveal, pics: pics, leadIn: leadIn, growing: growing, heard: heard, steps: steps, recordId: recordId)
         withAnimation(.easeOut(duration: 0.25)) { ui.liveTurns.append(t) }
         if !his { openForWritten(text) }
@@ -118,7 +135,7 @@ extension StarEngine {
     func stepTalk(_ now: Double) {
         if ui.talking && talk == nil && voiceState == .idle && !lingerHold && unsent.isEmpty && now > lingerUntil { ui.talking = false; rowKey = ""; setAbout(nil); aboutDropped = nil }
         put(\.topTime, clock(F))
-        put(\.tlTalk, HomeModule.shared.isTimeline && ui.talking && !TLTalk.of(ui.liveTurns).isEmpty)
+        put(\.tlTalk, HomeModule.shared.isTimeline && ui.talking && (now < tlUntil || lingerHold || !unsent.isEmpty) && !TLTalk.of(ui.liveTurns).isEmpty)
         syncStatus()
         for e in MainActor.assumeIsolated({ PhoneRows.take() }) { phoneEvent(e) }
         updateStream()
@@ -181,6 +198,7 @@ extension StarEngine {
             his = String(his.prefix(Int(vShown)))
         }
         if !his.isEmpty { if let id = vHis { setTurn(id, text: his, growing: listening) } else { vHis = addTurn(his: true, his, growing: listening, heard: true) } }
+        if v.more { vMore = true }
         // he is done and she has not said a word: the typing line, under his
         if v.state == .thinking, v.reply.isEmpty, vHis != nil, vHer == nil { showStatus() }
         if !listening && !v.reply.isEmpty { sayHers(v.reply, of: v.full.isEmpty ? v.reply : v.full) }
@@ -213,7 +231,10 @@ extension StarEngine {
             guard id == talkId, let row = Conversation.shared.rows.last(where: { !$0.isHis && !$0.isLeadIn && $0.seq > talkBase }),
                   let i = ui.liveTurns.lastIndex(where: { !$0.his && !$0.leadIn }) else { return }
             let shown = AnswerText.visible(row.text)
-            if !shown.isEmpty && ui.liveTurns[i].text != shown { ui.liveTurns[i].text = shown; ui.liveTurns[i].reveal = nil }
+            if !shown.isEmpty && ui.liveTurns[i].text != shown {
+                ui.liveTurns[i].text = shown; ui.liveTurns[i].reveal = nil
+                if AnswerText.saysMore(row.text) { vMore = true; tlLinger(nowMs()) }        // new words, after her last: they are read
+            }
             ui.liveTurns[i].steps = row.steps ?? MainActor.assumeIsolated { StatusBoard.shared.info }
             if !row.places.isEmpty { ui.liveTurns[i].places = row.places }
         }

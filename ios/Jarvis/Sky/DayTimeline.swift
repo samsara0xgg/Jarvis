@@ -446,6 +446,7 @@ private struct TLList: View {
             return ny < g.visibleRect.maxY && ny + TLMetrics.now > g.visibleRect.minY
         } action: { _, v in nowInView = v }
         .onScrollGeometryChange(for: Double.self) { Double($0.contentOffset.y) } action: { _, y in at.y = y }
+        .onScrollPhaseChange { _, phase in if phase == .interacting { engine.releaseTalk() } }          // he is at the list: the talk's place has said what it had to
         .modifier(ScrollsOnRequest(tl: tl, model: model, room: room, pos: $pos))
         // the field of a rename needs the keyboard, which covers the foot of the list: the row goes up under the header
         .onChange(of: tl.renaming) { _, id in
@@ -468,6 +469,7 @@ private struct TLList: View {
         let opening = tl.openRow != e.id
         if opening {
             Haptic.impact(.light)
+            engine.releaseTalk()
             if let top = model.top(of: e.id) { engine.glance(at: TLGaze.row(top: top + e.gap, height: e.base, scrolled: at.y)) }        // her eyes go to it once
         }
         withAnimation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .spring(duration: 0.26, bounce: 0.08)) { tl.openRow = opening ? e.id : nil }
