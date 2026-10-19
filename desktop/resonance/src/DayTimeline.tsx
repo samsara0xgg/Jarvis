@@ -243,6 +243,8 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   // The kinds the day has a number for: a lens that is not one of them (its chip is not there) lights nothing.
   const lensKinds = useMemo(() => new Set(model ? numbers(model, t).map(n => n.kind) : []), [model, lang]);
   const todayDate = feed.data?.date ?? null, at = date ?? todayDate;
+  // What is drawn is not the day asked for: it is on its way, or (`lost`) it did not come and the day that is drawn is not to be left under the new date.
+  const stale = !!shown && !!at && shown.date !== at, lost = stale && !reply && (route.failed || route.missing);
   const step = (days: number) => { if (!at) return; const next = shiftDate(at, days); setDate(next === todayDate ? null : next); };
   // A read that does not come says so after a few seconds; the daemon is asked again on its own.
   const [slow, setSlow] = useState(false);
@@ -478,20 +480,20 @@ export function DayTimeline({ port, feed, open, ask, hold }: { port: string | nu
   const title = at ? dateTitle(at, t) : model?.title ?? '';
   const say = !port ? t(['Not connected to Jarvis yet', '还没连上 Jarvis']) : route.missing ? t(["This Jarvis can't give a day yet", '这台 Jarvis 还不会给出一天']) : slow || route.failed ? t(["Couldn't read this day. Trying again.", '没读到这一天，会再试一次']) : t(['Reading the day…', '读着这一天…']);
   const kept = note ?? lastNote.current, shownDock = dock ?? lastDock.current;
-  return <div ref={root} className={`dt${shown && at && shown.date !== at ? ' is-loading' : ''}${open ? '' : ' is-folded'}`} data-lens={ui.lens && lensKinds.has(ui.lens) ? ui.lens : undefined} role="region" aria-label={t(['Day timeline', '一天的时间线'])}>
+  return <div ref={root} className={`dt${stale && !lost ? ' is-loading' : ''}${open ? '' : ' is-folded'}`} data-lens={ui.lens && lensKinds.has(ui.lens) ? ui.lens : undefined} role="region" aria-label={t(['Day timeline', '一天的时间线'])}>
     <div className="dt-head">
       <b className="dt-date">{title}</b>{date === null ? <em className="dt-today">{t(['Today', '今天'])}</em> : <button type="button" className="dt-back" onClick={() => setDate(null)}>{t(['Back to today', '回到今天'])}</button>}
       <TimelineGuard where="the header" reset={shown} fallback={null}>
-        {model?.weather && <Forecast w={model.weather}/>}
-        {model && <Chips key={model.chips.map(c => c.text).join('|')} chips={model.chips}/>}
-        <Waits n={model?.waiting.length ?? 0} first={() => { const k = model?.waiting[0]; if (k) waitFirst(k); }} t={t}/>
+        {!lost && model?.weather && <Forecast w={model.weather}/>}
+        {!lost && model && <Chips key={model.chips.map(c => c.text).join('|')} chips={model.chips}/>}
+        <Waits n={lost ? 0 : model?.waiting.length ?? 0} first={() => { const k = model?.waiting[0]; if (k) waitFirst(k); }} t={t}/>
       </TimelineGuard>
       <span className="dt-nav">
         <button type="button" aria-label={t(['The day before', '前一天'])} disabled={!at} onClick={() => step(-1)}><CaretLeft size={13}/></button>
         <button type="button" aria-label={t(['The day after', '后一天'])} disabled={!at || date === null} onClick={() => step(1)}><CaretRight size={13}/></button>
       </span>
     </div>
-    {built.failed ? <p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p> : !model ? <p className="dt-say">{say}</p> : <TimelineGuard where="the pane" reset={shown} fallback={<p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p>}>
+    {built.failed ? <p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p> : !model || lost ? <p className="dt-say">{say}</p> : <TimelineGuard where="the pane" reset={shown} fallback={<p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p>}>
       {model.line && <p className={`dt-line${model.line.draft ? ' is-draft' : ''}`}>{model.line.text}</p>}
       {model.empty ? <p className="dt-say">{t(['Nothing recorded for this day yet', '这一天还没有记下什么'])}</p> : <>
         <DayBar model={model} port={port} ui={ui} hot={hot ?? pick ?? opened} onHot={setHot} onJump={reveal}/>
