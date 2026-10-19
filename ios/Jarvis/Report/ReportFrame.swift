@@ -8,11 +8,93 @@ import Foundation
 enum Activity: String { case stationary, walking, running, cycling, automotive, unknown }
 enum Confidence: String { case low, medium, high }
 
-/// Only the metrics the app collects; the brain also accepts distance_m, active_kcal and exercise_min.
-enum HealthMetric: String {
+/// What `phone.health_observed` carries (ADR 0293): hourly totals of cumulative quantities, and spans exactly as Health recorded them, one per sample.
+enum HealthMetric: String, CaseIterable {
+    // hourly totals: Health merges iPhone and Watch only in statistics, so the raw samples of these are never summed
     case steps
-    case workoutMin = "workout_min"
-    case sleepMin = "sleep_min"
+    case activeEnergy = "active_energy"
+    case basalEnergy = "basal_energy"
+    case exerciseTime = "exercise_time"
+    case standTime = "stand_time"
+    case distanceWalkingRunning = "distance_walking_running"
+    case flightsClimbed = "flights_climbed"
+    case timeInDaylight = "time_in_daylight"
+    // samples
+    case sleep, workout
+    case mindfulSession = "mindful_session"
+    case standHour = "stand_hour"
+
+    var isTotal: Bool {
+        switch self {
+        case .sleep, .workout, .mindfulSession, .standHour: false
+        default: true
+        }
+    }
+}
+
+/// What `phone.measure_observed` carries: a measurement of the body, one frame per Health sample.
+enum MeasureMetric: String, CaseIterable {
+    case heartRate = "heart_rate"
+    case restingHeartRate = "resting_heart_rate"
+    case walkingHeartRateAverage = "walking_heart_rate_average"
+    case heartRateVariabilitySDNN = "heart_rate_variability_sdnn"
+    case heartbeatSeries = "heartbeat_series"
+    case oxygenSaturation = "oxygen_saturation"
+    case respiratoryRate = "respiratory_rate"
+    case sleepingWristTemperature = "sleeping_wrist_temperature"
+    case vo2Max = "vo2_max"
+    case environmentalAudioExposure = "environmental_audio_exposure"
+    case headphoneAudioExposure = "headphone_audio_exposure"
+}
+
+/// A value of `meta`: the source's own words, as text, a number or a flag. Nothing nested, nothing null.
+enum MetaValue: Equatable, Encodable {
+    case text(String)
+    case number(Double)
+    case flag(Bool)
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .text(let s): try c.encode(s)
+        case .number(let d): try c.encode(d)
+        case .flag(let b): try c.encode(b)
+        }
+    }
+}
+
+/// What the source recorded about a Health sample beyond its span and value. All optional; an hourly total has none of it.
+struct HealthExtra: Equatable {
+    var unit: String?
+    /// the app or device that wrote the sample
+    var source: String?
+    var device: String?
+    /// Health's own UUID of the sample: the identity of the frame
+    var uuid: String?
+    var meta: [String: MetaValue] = [:]
+    static let none = HealthExtra()
+}
+
+/// One beat of a heartbeat series: when it came after the series began, and whether Health marks a gap before it.
+struct HeartBeat: Equatable {
+    var offsetMs: Int64
+    var gap: Bool
+}
+
+struct MeasureRecord: Equatable {
+    var metric: MeasureMetric
+    var start: Date
+    var end: Date
+    var value: Double
+    var unit: String
+    var uuid: String
+    var source: String?
+    var device: String?
+    var meta: [String: MetaValue] = [:]
+    /// a heartbeat series: its beats (`value` is their count); at most `ReportFrame.maxBeats` in one frame
+    var beats: [HeartBeat] = []
+    /// the n-th frame of a series too long for one
+    var part: Int?
 }
 
 /// A state change; `signal` and `value` only come in the pairs the brain accepts.
@@ -52,7 +134,8 @@ enum Sensed {
     /// `requestId`: the brain asked for this fix (a silent push, Map/LocatePush); it comes back on the frame so the brain knows which request it answers
     case location(lat: Double, lng: Double, accuracyM: Double, at: Date, place: String?, speedMps: Double?, requestId: String? = nil)
     case motion(activity: Activity, confidence: Confidence, startedAt: Date, endedAt: Date?)
-    case health(metric: HealthMetric, start: Date, end: Date, value: Double, detail: String?)
+    case health(metric: HealthMetric, start: Date, end: Date, value: Double, detail: String?, extra: HealthExtra = .none)
+    case measure(MeasureRecord)
     case state(StateChange, at: Date, detail: String?)
 }
 
@@ -90,6 +173,19 @@ private struct HealthPayload: Encodable {
     let startMs, endMs: Int64
     let value: Double
     let detail: String?
+    let unit, source, device, sampleUuid: String?
+    let meta: [String: MetaValue]?
+}
+
+private struct MeasurePayload: Encodable {
+    let metric: String
+    let startMs, endMs: Int64
+    let value: Double
+    let unit, sampleUuid: String
+    let source, device: String?
+    let meta: [String: MetaValue]?
+    let beats: [[Int64]]?
+    let part: Int?
 }
 
 private struct StatePayload: Encodable {
@@ -101,6 +197,14 @@ extension ReportFrame {
     static let maxPlaceChars = 200
     static let maxDetailChars = 64
     static let maxRequestIdChars = 64
+    static let maxUnitChars = 16
+    static let maxSourceChars = 128
+    static let maxMetaKeys = 12
+    static let maxMetaChars = 128
+    /// Beats in one frame (the brain's cap); a longer series is cut into parts
+    static let maxBeats = 4000
+    static let sleepStages: Set = ["in_bed", "awake", "unspecified", "core", "deep", "rem"]
+    static let standStates: Set = ["stood", "idle"]
 
     private static let encoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -120,6 +224,25 @@ extension ReportFrame {
     }
 
     private static func coord(_ v: Double) -> String { String(format: "%.6f", v) }
+
+    private static func validUUID(_ s: String?) -> Bool {
+        guard let s else { return true }
+        return s.range(of: "^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$", options: .regularExpression) != nil
+    }
+
+    /// The `meta` the brain takes: lowercase word keys, text, finite numbers and flags, at most `maxMetaKeys` (the first by key); nil when empty.
+    static func meta(_ m: [String: MetaValue]) -> [String: MetaValue]? {
+        var out: [String: MetaValue] = [:]
+        for key in m.keys.sorted() where out.count < maxMetaKeys {
+            guard key.range(of: "^[a-z][a-z0-9_]{0,63}$", options: .regularExpression) != nil else { continue }
+            switch m[key]! {
+            case .text(let t): if let t = text(t, maxMetaChars) { out[key] = .text(t) }
+            case .number(let d): if d.isFinite { out[key] = .number(d) }
+            case .flag(let b): out[key] = .flag(b)
+            }
+        }
+        return out.isEmpty ? nil : out
+    }
 
     /// The frame for an observation, or nil when it is outside what the brain accepts (it would be refused).
     /// `event_uid` is a hash of the observation's own identity, never of the clock at encoding time, so seeing the
@@ -158,16 +281,35 @@ extension ReportFrame {
                 ts = e ?? s
                 payload = try Self.encoder.encode(MotionPayload(
                     activity: activity.rawValue, confidence: confidence.rawValue, startedAtMs: s, endedAtMs: e))
-            case let .health(metric, start, end, value, detail):
-                guard value.isFinite, value >= 0 else { return nil }
+            case let .health(metric, start, end, value, detail, extra):
+                guard value.isFinite, value >= 0, Self.validUUID(extra.uuid) else { return nil }
+                let name = Self.text(detail, Self.maxDetailChars)
+                if metric == .sleep && !Self.sleepStages.contains(name ?? "") { return nil }
+                if metric == .standHour && !Self.standStates.contains(name ?? "") { return nil }
                 let s = Self.at(start, now)
                 let e = max(Self.at(end, now), s)
                 type = "phone.health_observed"
-                key = "\(metric.rawValue),\(s),\(e),\(String(format: "%.2f", value))"
+                // a sample is its Health UUID; an hourly total is its span and value (a corrected total is a new frame for the same span)
+                key = extra.uuid ?? "\(metric.rawValue),\(s),\(e),\(String(format: "%.2f", value))"
                 ts = e  // the end of the sensed span, never the upload time
                 payload = try Self.encoder.encode(HealthPayload(
-                    metric: metric.rawValue, startMs: s, endMs: e, value: value,
-                    detail: Self.text(detail, Self.maxDetailChars)))
+                    metric: metric.rawValue, startMs: s, endMs: e, value: value, detail: name,
+                    unit: Self.text(extra.unit, Self.maxUnitChars), source: Self.text(extra.source, Self.maxSourceChars),
+                    device: Self.text(extra.device, Self.maxSourceChars), sampleUuid: extra.uuid, meta: Self.meta(extra.meta)))
+            case let .measure(m):
+                guard m.value.isFinite, Self.validUUID(m.uuid), let unit = Self.text(m.unit, Self.maxUnitChars) else { return nil }
+                let isSeries = m.metric == .heartbeatSeries
+                guard m.beats.count <= Self.maxBeats, isSeries == !m.beats.isEmpty, isSeries || m.part == nil,
+                      m.part.map({ (0..<1000).contains($0) }) ?? true else { return nil }
+                let s = Self.at(m.start, now)
+                let e = max(Self.at(m.end, now), s)
+                type = "phone.measure_observed"
+                key = m.uuid + (m.part.map { ",\($0)" } ?? "")
+                ts = e
+                payload = try Self.encoder.encode(MeasurePayload(
+                    metric: m.metric.rawValue, startMs: s, endMs: e, value: isSeries ? Double(m.beats.count) : m.value, unit: unit,
+                    sampleUuid: m.uuid, source: Self.text(m.source, Self.maxSourceChars), device: Self.text(m.device, Self.maxSourceChars),
+                    meta: Self.meta(m.meta), beats: isSeries ? m.beats.map { [max($0.offsetMs, 0), $0.gap ? 1 : 0] } : nil, part: m.part))
             case let .state(change, when, detail):
                 if case .battery(let percent) = change, !(0...100).contains(percent) { return nil }
                 let t = Self.at(when, now)

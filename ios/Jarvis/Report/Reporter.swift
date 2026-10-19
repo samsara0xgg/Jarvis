@@ -110,12 +110,14 @@ enum ReportMemory {
     static func forget(_ s: ReportSense) {
         let keys: [ReportSense: [String]] = [
             .location: ["location.firstFix"],
-            .motion: ["motion.cursor", "motion.open", "steps.cursor", "steps.sent"],
-            .health: ["sleep.cursor", "workout.anchor", "workout.since"],
+            .motion: ["motion.cursor", "motion.open"],
             .focusAlarm: ["state.focus", "state.power"],
             .headphonesCalls: ["state.headphones", "state.headphones.name"],
         ]
         for k in keys[s] ?? [] { d.removeObject(forKey: "report.\(k)") }
+        // the Health reads keep one anchor, one start and one sent-list per type
+        let prefix: [ReportSense: String] = [.motion: "report.health.t.", .health: "report.health.r."]
+        if let p = prefix[s] { for k in d.dictionaryRepresentation().keys where k.hasPrefix(p) { d.removeObject(forKey: k) } }
     }
 }
 
@@ -239,8 +241,8 @@ final class Reporter {
     private func startCollectors(_ s: ReportSense) {
         let cs: [Collector] = switch s {
         case .location: [LocationCollector()]
-        case .motion: [MotionCollector(), HealthCollector([.steps])]
-        case .health: [HealthCollector([.workouts, .sleep])]
+        case .motion: [MotionCollector(), HealthCollector(.totals)]
+        case .health: [HealthCollector(.records)]
         case .focusAlarm: [FocusCollector(), PowerCollector()]
         case .headphonesCalls: [HeadphonesCollector(), CallCollector()]
         }
@@ -279,7 +281,8 @@ final class Reporter {
         switch o {
         case .visit, .location: .location
         case .motion: .motion
-        case .health(let metric, _, _, _, _): metric == .steps ? .motion : .health
+        case .health(let metric, _, _, _, _, _): metric.isTotal ? .motion : .health
+        case .measure: .health
         case .state(let change, _, _):
             switch change {
             case .focus, .alarm, .power: .focusAlarm

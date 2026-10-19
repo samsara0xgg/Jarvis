@@ -51,7 +51,7 @@
 	<key>NSFocusStatusUsageDescription</key>
 	<string>知道你开了专注模式，她就不会在这时候打扰你。</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>读取你选的步数、训练或睡眠，只发给你自己的大脑。</string>
+	<string>读取你选的活动量、心率、血氧、睡眠和训练等健康数据，原样只发给你自己的大脑。</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>选「始终」，你到了新地方、或走远了，她才收得到，不用你打开 App。平时只记到达和离开，走路、坐车时才记得密一些，不会一直定位。</string>
 	<key>NSLocationWhenInUseUsageDescription</key>

@@ -3,9 +3,10 @@ import SQLite3
 
 /// The frames waiting for the brain, in the app's own sandbox (Application Support, excluded from backups).
 /// One SQLite table keyed by `event_uid`, so appending the same observation twice stores it once.
-/// Past `cap` frames the oldest are dropped: a phone that cannot reach the brain for days keeps the recent past.
+/// Past `cap` frames the oldest are dropped: a phone that cannot reach the brain for days keeps the recent past. A day of Watch heart rate alone
+/// is a few thousand frames (ADR 0293), so the cap holds several days of everything.
 final class ReportQueue: @unchecked Sendable {
-    static let defaultCap = 5000
+    static let defaultCap = 50_000
 
     /// The queue the app uses.
     static let standard: ReportQueue = {

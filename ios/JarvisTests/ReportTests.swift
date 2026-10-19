@@ -1,4 +1,5 @@
 import CoreLocation
+import HealthKit
 import XCTest
 @testable import Jarvis
 
@@ -9,12 +10,21 @@ private enum Contract {
         "phone.visit_observed": (["lat", "lng", "accuracy_m", "arrived_at_ms"], ["departed_at_ms", "place"]),
         "phone.location_observed": (["lat", "lng", "accuracy_m"], ["place", "speed_mps"]),
         "phone.motion_observed": (["activity", "confidence", "started_at_ms"], ["ended_at_ms"]),
-        "phone.health_observed": (["metric", "start_ms", "end_ms", "value"], ["detail"]),
+        "phone.health_observed": (["metric", "start_ms", "end_ms", "value"], ["detail", "unit", "source", "device", "sample_uuid", "meta"]),
         "phone.state_observed": (["signal", "value"], ["detail"]),
+        "phone.measure_observed": (["metric", "start_ms", "end_ms", "value", "unit", "sample_uuid"], ["source", "device", "meta", "beats", "part"]),
     ]
     static let activities: Set = ["stationary", "walking", "running", "cycling", "automotive", "unknown"]
     static let confidences: Set = ["low", "medium", "high"]
-    static let metrics: Set = ["steps", "distance_m", "active_kcal", "exercise_min", "sleep_min", "workout_min"]
+    static let metrics: Set = [
+        "steps", "active_energy", "basal_energy", "exercise_time", "stand_time", "distance_walking_running", "flights_climbed", "time_in_daylight",
+        "sleep", "workout", "mindful_session", "stand_hour",
+    ]
+    static let measures: Set = [
+        "heart_rate", "resting_heart_rate", "walking_heart_rate_average", "heart_rate_variability_sdnn", "heartbeat_series", "oxygen_saturation",
+        "respiratory_rate", "sleeping_wrist_temperature", "vo2_max", "environmental_audio_exposure", "headphone_audio_exposure",
+    ]
+    static let sleepStages: Set = ["in_bed", "awake", "unspecified", "core", "deep", "rem"]
     static let signals: [String: Set<String>] = [
         "focus": ["on", "off"], "alarm": ["stopped", "snoozed"], "power": ["connected", "disconnected"],
         "headphones": ["connected", "disconnected"], "call": ["started", "ended"],
@@ -47,13 +57,42 @@ private enum Contract {
         }
         if let lat = payload["lat"] as? Double { XCTAssertTrue((-90...90).contains(lat), file: file, line: line) }
         if let lng = payload["lng"] as? Double { XCTAssertTrue((-180...180).contains(lng), file: file, line: line) }
-        for k in ["accuracy_m", "speed_mps", "value"] { if let d = payload[k] as? Double { XCTAssertGreaterThanOrEqual(d, 0, file: file, line: line) } }
+        for k in ["accuracy_m", "speed_mps"] { if let d = payload[k] as? Double { XCTAssertGreaterThanOrEqual(d, 0, file: file, line: line) } }
+        if type != "phone.measure_observed", let d = payload["value"] as? Double { XCTAssertGreaterThanOrEqual(d, 0, file: file, line: line) }
+        if let u = payload["unit"] as? String { XCTAssertLessThanOrEqual(u.count, 16, file: file, line: line) }
+        for k in ["source", "device"] { if let t = payload[k] as? String { XCTAssertLessThanOrEqual(t.count, 128, file: file, line: line) } }
+        if let id = payload["sample_uuid"] as? String {
+            XCTAssertNotNil(id.range(of: "^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$", options: .regularExpression), file: file, line: line)
+        }
+        if let meta = payload["meta"] as? [String: Any] {
+            XCTAssertTrue((1...12).contains(meta.count), file: file, line: line)
+            for (k, v) in meta {
+                XCTAssertNotNil(k.range(of: "^[a-z][a-z0-9_]{0,63}$", options: .regularExpression), "meta key \(k)", file: file, line: line)
+                XCTAssertTrue(v is String || v is NSNumber, "nothing nested or null in meta", file: file, line: line)
+                if let t = v as? String { XCTAssertLessThanOrEqual(t.count, 128, file: file, line: line) }
+            }
+        }
         switch type {
         case "phone.motion_observed":
             XCTAssertTrue(activities.contains(payload["activity"] as! String), file: file, line: line)
             XCTAssertTrue(confidences.contains(payload["confidence"] as! String), file: file, line: line)
         case "phone.health_observed":
-            XCTAssertTrue(metrics.contains(payload["metric"] as! String), file: file, line: line)
+            let metric = payload["metric"] as! String
+            XCTAssertTrue(metrics.contains(metric), file: file, line: line)
+            if metric == "sleep" { XCTAssertTrue(sleepStages.contains(payload["detail"] as? String ?? ""), "a sleep span names its stage", file: file, line: line) }
+            if metric == "stand_hour" { XCTAssertTrue(["stood", "idle"].contains(payload["detail"] as? String ?? ""), file: file, line: line) }
+        case "phone.measure_observed":
+            let metric = payload["metric"] as! String
+            XCTAssertTrue(measures.contains(metric), file: file, line: line)
+            let beats = payload["beats"] as? [[Int]]
+            if metric == "heartbeat_series" {
+                XCTAssertEqual(beats?.count, (payload["value"] as? NSNumber)?.intValue, "value counts the beats", file: file, line: line)
+                XCTAssertTrue((1...4000).contains(beats?.count ?? 0), file: file, line: line)
+                XCTAssertTrue(beats?.allSatisfy { $0.count == 2 && $0[0] >= 0 && [0, 1].contains($0[1]) } ?? false, file: file, line: line)
+            } else {
+                XCTAssertNil(beats, file: file, line: line)
+                XCTAssertNil(payload["part"], file: file, line: line)
+            }
         case "phone.state_observed":
             let signal = payload["signal"] as! String, value = payload["value"] as! String
             if signal == "battery" {
@@ -84,9 +123,22 @@ private func samples() -> [Sensed] {
         .location(lat: 31.2, lng: 121.5, accuracyM: 30, at: t0 + 90, place: "x", speedMps: 4.5),
         .motion(activity: .walking, confidence: .high, startedAt: t0, endedAt: nil),
         .motion(activity: .automotive, confidence: .low, startedAt: t0, endedAt: t0 + 300),
-        .health(metric: .steps, start: t0, end: t0 + 3600, value: 523, detail: nil),
-        .health(metric: .workoutMin, start: t0, end: t0 + 2400, value: 40, detail: "running"),
-        .health(metric: .sleepMin, start: t0, end: t0 + 25_000, value: 410.5, detail: nil),
+        .health(metric: .steps, start: t0, end: t0 + 3600, value: 523, detail: nil, extra: HealthExtra(unit: "count")),
+        .health(metric: .activeEnergy, start: t0, end: t0 + 3600, value: 41.25, detail: nil, extra: HealthExtra(unit: "kcal")),
+        .health(metric: .workout, start: t0, end: t0 + 2400, value: 2400, detail: "running",
+                extra: HealthExtra(unit: "s", source: "Allen's Apple Watch", device: "Watch7,1", uuid: "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F",
+                                   meta: ["indoor": .flag(false), "avg_heart_rate": .number(151.5), "time_zone": .text("America/Vancouver")])),
+        .health(metric: .sleep, start: t0, end: t0 + 3600, value: 3, detail: "core", extra: HealthExtra(unit: "category", uuid: "0A1B2C3D-0000-4000-8000-000000000001")),
+        .health(metric: .sleep, start: t0, end: t0 + 3600, value: 2, detail: "awake", extra: HealthExtra(unit: "category", uuid: "0A1B2C3D-0000-4000-8000-000000000002")),
+        .health(metric: .standHour, start: t0, end: t0 + 3600, value: 0, detail: "stood", extra: HealthExtra(unit: "category", uuid: "0A1B2C3D-0000-4000-8000-000000000003")),
+        .health(metric: .mindfulSession, start: t0, end: t0 + 600, value: 0, detail: nil, extra: HealthExtra(unit: "category", uuid: "0A1B2C3D-0000-4000-8000-000000000004")),
+        .measure(MeasureRecord(metric: .heartRate, start: t0, end: t0, value: 64, unit: "count/min", uuid: "0A1B2C3D-0000-4000-8000-000000000005",
+                               source: "Allen's Apple Watch", device: "Watch7,1", meta: ["motion_context": .text("sedentary")])),
+        .measure(MeasureRecord(metric: .sleepingWristTemperature, start: t0, end: t0 + 60, value: -0.4, unit: "degC", uuid: "0A1B2C3D-0000-4000-8000-000000000006")),
+        .measure(MeasureRecord(metric: .heartbeatSeries, start: t0, end: t0 + 60, value: 3, unit: "count", uuid: "0A1B2C3D-0000-4000-8000-000000000007",
+                               beats: [HeartBeat(offsetMs: 0, gap: true), HeartBeat(offsetMs: 850, gap: false), HeartBeat(offsetMs: 1710, gap: false)])),
+        .measure(MeasureRecord(metric: .heartbeatSeries, start: t0, end: t0 + 60, value: 1, unit: "count", uuid: "0A1B2C3D-0000-4000-8000-000000000007",
+                               beats: [HeartBeat(offsetMs: 2500, gap: false)], part: 1)),
         .state(.focus(on: true), at: t0, detail: nil),
         .state(.alarm(snoozed: true), at: t0, detail: nil),
         .state(.power(connected: false), at: t0, detail: nil),
@@ -135,7 +187,20 @@ final class ReportFrameTests: XCTestCase {
         XCTAssertEqual(h, frame(.health(metric: .steps, start: t0, end: t0 + 3600, value: 100, detail: nil)))
         XCTAssertNotEqual(h.eventUid, frame(.health(metric: .steps, start: t0, end: t0 + 3600, value: 140, detail: nil)).eventUid,
                           "a corrected hourly total is a new frame for the same span, which the brain lets replace the first")
-        XCTAssertNotEqual(h.eventUid, frame(.health(metric: .sleepMin, start: t0, end: t0 + 3600, value: 100, detail: nil)).eventUid)
+        XCTAssertNotEqual(h.eventUid, frame(.health(metric: .activeEnergy, start: t0, end: t0 + 3600, value: 100, detail: nil)).eventUid)
+        // a sample is its Health UUID: the same sample read again is the same frame, whatever else changed
+        let uuid = "0A1B2C3D-0000-4000-8000-0000000000AA"
+        func sample(_ value: Double, source: String? = nil) -> ReportFrame {
+            frame(.health(metric: .workout, start: t0, end: t0 + 60, value: value, detail: "running", extra: HealthExtra(unit: "s", source: source, uuid: uuid)))
+        }
+        XCTAssertEqual(sample(60).eventUid, sample(61, source: "Watch").eventUid)
+        XCTAssertNotEqual(sample(60).eventUid, frame(.health(metric: .workout, start: t0, end: t0 + 60, value: 60, detail: "running",
+                                                              extra: HealthExtra(unit: "s", uuid: "0A1B2C3D-0000-4000-8000-0000000000AB"))).eventUid)
+        func part(_ n: Int?) -> ReportFrame {
+            frame(.measure(MeasureRecord(metric: .heartbeatSeries, start: t0, end: t0 + 60, value: 1, unit: "count", uuid: uuid, beats: [HeartBeat(offsetMs: 1, gap: false)], part: n)))
+        }
+        XCTAssertNotEqual(part(0).eventUid, part(1).eventUid, "the parts of one series are frames of their own")
+        XCTAssertEqual(part(1).eventUid, part(1).eventUid)
         XCTAssertEqual(Set(samples().map { frame($0).eventUid }).count, samples().count, "no two samples share a uid")
     }
 
@@ -146,14 +211,34 @@ final class ReportFrameTests: XCTestCase {
         XCTAssertNil(ReportFrame(.location(lat: .nan, lng: 0, accuracyM: 1, at: t0, place: nil, speedMps: nil), now: now))
         XCTAssertNil(ReportFrame(.health(metric: .steps, start: t0, end: t0, value: -1, detail: nil), now: now))
         XCTAssertNil(ReportFrame(.health(metric: .steps, start: t0, end: t0, value: .infinity, detail: nil), now: now))
+        // a sleep span without its stage, a stand hour without its state, a sample with a UUID that is not one
+        XCTAssertNil(ReportFrame(.health(metric: .sleep, start: t0, end: t0, value: 3, detail: nil), now: now))
+        XCTAssertNil(ReportFrame(.health(metric: .sleep, start: t0, end: t0, value: 3, detail: "light"), now: now))
+        XCTAssertNil(ReportFrame(.health(metric: .standHour, start: t0, end: t0, value: 0, detail: nil), now: now))
+        XCTAssertNil(ReportFrame(.health(metric: .workout, start: t0, end: t0, value: 1, detail: "x", extra: HealthExtra(uuid: "not-a-uuid")), now: now))
+        func measure(_ m: MeasureMetric, value: Double = 1, unit: String = "u", uuid: String = "0A1B2C3D-0000-4000-8000-0000000000AC", beats: [HeartBeat] = [], part: Int? = nil) -> ReportFrame? {
+            ReportFrame(.measure(MeasureRecord(metric: m, start: t0, end: t0, value: value, unit: unit, uuid: uuid, beats: beats, part: part)), now: now)
+        }
+        XCTAssertNotNil(measure(.heartRate))
+        XCTAssertNil(measure(.heartRate, value: .nan))
+        XCTAssertNil(measure(.heartRate, uuid: "nope"))
+        XCTAssertNil(measure(.heartRate, unit: " "), "a measure always has its unit")
+        XCTAssertNil(measure(.heartRate, beats: [HeartBeat(offsetMs: 0, gap: false)]), "only a series has beats")
+        XCTAssertNil(measure(.heartRate, part: 0))
+        XCTAssertNil(measure(.heartbeatSeries), "a series without beats")
+        XCTAssertNil(measure(.heartbeatSeries, beats: (0...4000).map { HeartBeat(offsetMs: Int64($0), gap: false) }), "more than the brain's 4000")
+        XCTAssertNotNil(measure(.heartbeatSeries, beats: (0..<4000).map { HeartBeat(offsetMs: Int64($0), gap: false) }))
     }
 
     func testTextIsCappedAndTimesAreClamped() throws {
         let long = String(repeating: "长", count: 500)
         let v = frame(.visit(lat: 1, lng: 2, accuracyM: 5, arrivedAt: t0, departedAt: nil, place: long))
-        let h = frame(.health(metric: .workoutMin, start: t0, end: t0 + 60, value: 1, detail: long))
+        let h = frame(.health(metric: .workout, start: t0, end: t0 + 60, value: 1, detail: long,
+                              extra: HealthExtra(unit: long, source: long, device: long, meta: ["note": .text(long), "BadKey": .number(1), "nan": .number(.nan)])))
         Contract.check(v)
         Contract.check(h)
+        let payload = try XCTUnwrap((try JSONSerialization.jsonObject(with: h.json) as? [String: Any])?["payload"] as? [String: Any])
+        XCTAssertEqual((payload["meta"] as? [String: Any])?.keys.sorted(), ["note"], "a key that is not a lowercase word and a number that is not finite are left out")
         // An end before the start, and times ahead of the clock, are corrected rather than refused.
         let back = frame(.motion(activity: .walking, confidence: .high, startedAt: t0 + 100, endedAt: t0))
         Contract.check(back)
@@ -700,30 +785,92 @@ final class CollectorLogicTests: XCTestCase {
         XCTAssertEqual(LocationTuning.activityType(for: nil), .otherNavigation)
     }
 
-    func testStepsAreSentAgainOnlyWhenTheHourlyTotalChanges() {
-        func hour(_ h: Double, _ n: Double) -> (start: Date, end: Date, steps: Double) { (t0 + h * 3600, t0 + (h + 1) * 3600, n) }
+    func testATotalIsSentAgainOnlyWhenTheHourlyTotalChanges() {
+        func hour(_ h: Double, _ n: Double) -> (start: Date, end: Date, value: Double) { (t0 + h * 3600, t0 + (h + 1) * 3600, n) }
         var sent: [String: Double] = [:]
-        func steps(_ o: [Sensed]) -> [Double] { o.compactMap { if case let .health(.steps, _, _, v, _) = $0 { return v } else { return nil } } }
-        XCTAssertEqual(steps(HealthCollector.newSteps([hour(0, 120.4), hour(1, 0), hour(2, 800)], sent: &sent)), [120, 800], "zero hours are skipped")
-        XCTAssertEqual(HealthCollector.newSteps([hour(0, 120.4), hour(2, 800)], sent: &sent).count, 0, "unchanged: nothing")
-        XCTAssertEqual(steps(HealthCollector.newSteps([hour(0, 300), hour(2, 800)], sent: &sent)), [300], "the Watch added steps late")
-        XCTAssertEqual(steps(HealthCollector.newSteps([hour(1, 40)], sent: &sent)), [40])
+        func values(_ o: [Sensed]) -> [Double] { o.compactMap { if case let .health(.steps, _, _, v, _, _) = $0 { return v } else { return nil } } }
+        func steps(_ b: [(start: Date, end: Date, value: Double)]) -> [Sensed] { HealthCollector.newTotals(.steps, label: "count", b, sent: &sent) }
+        XCTAssertEqual(values(steps([hour(0, 120.4), hour(1, 0), hour(2, 800)])), [120, 800], "zero hours are skipped")
+        XCTAssertEqual(steps([hour(0, 120.4), hour(2, 800)]).count, 0, "unchanged: nothing")
+        XCTAssertEqual(values(steps([hour(0, 300), hour(2, 800)])), [300], "the Watch added steps late")
+        XCTAssertEqual(values(steps([hour(1, 40)])), [40])
     }
 
-    func testSleepOverlapsCountOnceAndGapsMakeBlocks() {
-        func d(_ h: Double) -> Date { t0 + h * 3600 }
-        let blocks = HealthCollector.sleepBlocks([
-            (d(0), d(2)), (d(1), d(3)),          // Watch and phone overlap: 3 h, not 4
-            (d(3.2), d(4)),                      // a 12 min wake: same block
-            (d(6), d(7)),                        // a later nap: its own block
-        ], now: d(20))
-        guard case let .health(m1, s1, e1, v1, _) = blocks[0], case let .health(_, _, _, v2, _) = blocks[1] else { return XCTFail() }
-        XCTAssertEqual(blocks.count, 2)
-        XCTAssertEqual(m1, .sleepMin); XCTAssertEqual(s1, d(0)); XCTAssertEqual(e1, d(4))
-        XCTAssertEqual(v1, 3 * 60 + 48); XCTAssertEqual(v2, 60)
-        // A block that ended less than 45 minutes ago is not settled and waits.
-        XCTAssertEqual(HealthCollector.sleepBlocks([(d(0), d(1))], now: d(1.5)).count, 0)
-        XCTAssertEqual(HealthCollector.sleepBlocks([(d(0), d(1))], now: d(1.8)).count, 1)
+    func testEnergyKeepsHundredthsAndCarriesItsUnit() throws {
+        var sent: [String: Double] = [:]
+        let out = HealthCollector.newTotals(.activeEnergy, label: "kcal", [(t0, t0 + 3600, 41.2549)], sent: &sent)
+        guard case let .health(.activeEnergy, _, _, v, _, extra)? = out.first else { return XCTFail() }
+        XCTAssertEqual(v, 41.25)
+        XCTAssertEqual(extra.unit, "kcal")
+        XCTAssertNil(extra.uuid, "an hourly total is not a Health sample")
+        XCTAssertEqual(HealthCollector.totals.count, 8)
+        XCTAssertEqual(Set(HealthCollector.totals.map(\.id)).count, 8)
+    }
+
+    func testEveryHealthTypeIsReadAndEveryMetricHasItsStream() {
+        let sent = Set(HealthCollector.totals.compactMap { if case .total(let m, _, _) = $0.shape { m.rawValue } else { nil } })
+        XCTAssertEqual(sent, Set(HealthMetric.allCases.filter(\.isTotal).map(\.rawValue)))
+        var measures: Set<String> = []
+        var spans: Set<String> = []
+        for s in HealthCollector.records {
+            switch s.shape {
+            case .quantity(let m, _, _): measures.insert(m.rawValue)
+            case .heartbeats: measures.insert(MeasureMetric.heartbeatSeries.rawValue)
+            case .sleep: spans.insert("sleep")
+            case .workout: spans.insert("workout")
+            case .mindful: spans.insert("mindful_session")
+            case .standHour: spans.insert("stand_hour")
+            case .total: XCTFail("a total among the samples")
+            }
+        }
+        XCTAssertEqual(measures, Set(MeasureMetric.allCases.map(\.rawValue)))
+        XCTAssertEqual(spans, Set(HealthMetric.allCases.filter { !$0.isTotal }.map(\.rawValue)))
+        let ids = (HealthCollector.totals + HealthCollector.records).map(\.id)
+        XCTAssertEqual(Set(ids).count, ids.count, "an anchor and a start are kept per id")
+    }
+
+    func testSleepStagesAreNamedAsRecordedAndAnUnknownOneIsNotInvented() {
+        XCTAssertEqual([0, 1, 2, 3, 4, 5].map(HealthCollector.sleepStage), ["in_bed", "unspecified", "awake", "core", "deep", "rem"])
+        XCTAssertNil(HealthCollector.sleepStage(9))
+    }
+
+    func testMetadataKeepsWhatMeansSomething() {
+        let md: [String: Any] = [
+            HKMetadataKeyTimeZone: "America/Vancouver", HKMetadataKeyWasUserEntered: true, HKMetadataKeyIndoorWorkout: NSNumber(value: false),
+            HKMetadataKeyHeartRateMotionContext: NSNumber(value: HKHeartRateMotionContext.active.rawValue), "HKSomethingElse": "left behind",
+        ]
+        XCTAssertEqual(HealthCollector.meta(md), ["time_zone": .text("America/Vancouver"), "user_entered": .flag(true), "indoor": .flag(false), "motion_context": .text("active")])
+        XCTAssertEqual(HealthCollector.meta([HKMetadataKeyHeartRateMotionContext: NSNumber(value: 0)])["motion_context"], .text("not_set"))
+        XCTAssertEqual(HealthCollector.meta(nil), [:])
+    }
+
+    func testALongSeriesIsCutIntoPartsThatEachFitAFrame() throws {
+        let beats = (0..<7000).map { HeartBeat(offsetMs: Int64($0) * 800, gap: $0 % 500 == 0) }
+        let frames = HealthCollector.seriesFrames(uuid: "0A1B2C3D-0000-4000-8000-0000000000AD", start: t0, end: t0 + 5600, beats, source: "Watch", device: "Watch7,1", meta: [:])
+        XCTAssertEqual(frames.count, 3)
+        var joined: [HeartBeat] = []
+        var uids: Set<String> = []
+        for (i, f) in frames.enumerated() {
+            guard case let .measure(m) = f else { return XCTFail() }
+            XCTAssertEqual(m.part, i)
+            XCTAssertLessThanOrEqual(m.beats.count, ReportFrame.maxBeats)
+            joined += m.beats
+            let r = try XCTUnwrap(ReportFrame(f, now: now))
+            Contract.check(r)
+            XCTAssertLessThan(r.json.count, 64 * 1024, "a frame is under the brain's 64 KiB")
+            uids.insert(r.eventUid)
+        }
+        XCTAssertEqual(joined, beats, "offsets are from the series' start, in order, nothing lost")
+        XCTAssertEqual(uids.count, 3)
+        let one = HealthCollector.seriesFrames(uuid: "0A1B2C3D-0000-4000-8000-0000000000AE", start: t0, end: t0 + 60, Array(beats.prefix(50)), source: nil, device: nil, meta: [:])
+        guard case let .measure(single)? = one.first else { return XCTFail() }
+        XCTAssertEqual(one.count, 1)
+        XCTAssertNil(single.part)
+        XCTAssertTrue(HealthCollector.seriesFrames(uuid: "0A1B2C3D-0000-4000-8000-0000000000AF", start: t0, end: t0, [], source: nil, device: nil, meta: [:]).isEmpty)
+    }
+
+    func testTheQueueHoldsADaysOfHeartRate() {
+        XCTAssertGreaterThanOrEqual(ReportQueue.defaultCap, 50_000)
     }
 
     func testThinningKeepsAFixEvery30sAnd50m() {
