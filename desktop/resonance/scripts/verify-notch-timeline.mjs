@@ -11,6 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { askable, buildDay, clock, covered, dateTitle, fnv, lensOf, moneyText, shiftDate, stageMinutes, stageSlices, weatherOf, wingText, within } from '../src/dayView.ts';
 import { axisOf, buildBar, fit, fOf, hm, msOf, numbers, peek, rowAt, summarize, toneOn } from '../src/barView.ts';
+import { askOf, openOf } from '../src/dayOpen.ts';
 import { deflateSync, crc32 } from 'node:zlib';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -429,6 +430,65 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   check('the list cut to 08:00–09:00 keeps the folded row and its stay, and not the run before it', ks(cut).join() === 'stay-home-1,code:stay-home-1' && !ks(cut).includes('workout-1'));
   check('the bar\'s sun: sunrise and sunset where they fall on the axis (07:25 and 18:05 from 06:00), none off it', fb.sun.map(x => `${x.kind}@${Math.round(msOf(fb, x.f) / 60_000)}`).join() === `rise@${Math.round(T(7, 25) / 60_000)},set@${Math.round(T(18, 5) / 60_000)}` && buildBar(buildDay(fullDay({ weather: { condition: 'clear', high: 1, low: 0, sunrise_ms: T(4, 0), sunset_ms: null } }), NOW, zh), zh).sun.length === 0
     && buildBar(buildDay(fullDay({ weather: null }), NOW, zh), zh).sun.length === 0);
+}
+
+// ---------- the open rows, in node (spec-r3 section 8) ----------
+{
+  const m = buildDay(fullDay(), NOW, zh), me = buildDay(fullDay(), NOW, en), open = (key, model = m) => openOf(model, key, model === me ? en : zh);
+  const lines = (key, model = m) => open(key, model).parts.filter(p => p.type === 'lines').flatMap(p => p.lines.map(l => l.text)), part = (key, type, model = m) => open(key, model).parts.find(p => p.type === type);
+  const heads = [...m.heads.keys()], keys = [...m.rows.keys(), ...heads];
+  check('every row of the day and every stay opens; a key that is no row opens nothing', keys.length >= 28 && keys.every(k => open(k)?.parts.length > 0) && open('now') === null && open('nope') === null && open('') === null, keys.filter(k => !open(k)?.parts.length).join());
+  check('a stay he keeps: the place text, then 常去的地方 · 家, and the kept place to rename; one he did not name has the place text only and nothing to rename',
+    lines('stay-home-1').join('|') === '12 Example St, Victoria|常去的地方 · 家' && JSON.stringify(open('stay-home-1').rename) === '{"id":"p-home","name":"家"}' && lines('stay-aw').join('|') === 'A&W, 1234 Douglas St, Victoria' && open('stay-aw').rename === null);
+  check('a move: its word and length, and from and to by the names of the stays either side (within half an hour); one side alone says which',
+    lines('move-1').join('|') === '开车 · 1 时 40 分|家 → A&W' && lines('move-2').join('|') === '步行 · 10 分|去 A&W' && lines('move-3').join('|') === '步行 · 10 分|A&W → 家'
+    && lines('f-w11', buildDay(fragmentedDay(), NOW, zh)).join('|') === '步行 · 20 分|从 家 出发' && lines('move-3', me).join('|') === 'Walking · 10 min|A&W → 家');
+  const ride = (reason, over = {}) => lines('r', buildDay(small([it('r', 'ride', T(14, 50), T(15, 19), { route: '27', board_stop: 'A', alight_stop: 'B', ended_reason: reason, credit: null, ...over })]), NOW, zh)).join('|');
+  check('a ride: board → alight, and how it ended in plain words for each reason the brain has; a reason it does not know says nothing; one still going is still on',
+    ride('left_vehicle') === 'A → B|你下车了' && ride('passed_stop') === 'A → B|到了你要下的站' && ride('said') === 'A → B|你说你下车了' && ride('schedule_end') === 'A → B|这趟车跑完了' && ride('replaced') === 'A → B|你换了另一班车' && ride('mystery') === 'A → B'
+    && lines('r', buildDay(small([it('r', 'ride', T(21, 30), null, { route: '27', board_stop: 'A', alight_stop: null })]), NOW, zh)).join('|') === 'A|还在车上');
+  check('and when it is credited, 实时：BC Transit; in English Live: BC Transit, You got off', ride('left_vehicle', { credit: 'BC Transit' }) === 'A → B|实时：BC Transit|你下车了' && lines('ride-1', me).join('|') === 'Shelbourne at Pear → UVic Exchange|You got off');
+  check('a talk is read from the day\'s records between its first and last line (the part says which), and says 共 6 句 under them',
+    JSON.stringify(part('talk-1', 'talk')) === JSON.stringify({ type: 'talk', day: DATE, from: T(10, 2), to: T(10, 9) }) && lines('talk-1').join() === '共 6 句' && lines('talk-3').join() === '共 1 句' && lines('talk-1', me).join() === '6 lines in all');
+  check('a picture: its id and the note in full, lines and all; one with no id kept shows the note', JSON.stringify(part('picture-1', 'picture')) === JSON.stringify({ type: 'picture', id: PIC, note: '汉堡和薯条\n在 A&W 吃的午饭' })
+    && part('p', 'picture', buildDay(small([it('p', 'picture', T(13, 30), T(13, 30), { attachment: 'zz', note: '一张' })]), NOW, zh)).id === '');
+  check('an event: its time, the place, where it came from and its state; from mail it says whether it is yours yet; a private one says no place',
+    lines('event-1').join('|') === '22:30–23:30 · 1 时|Library|来源：邮件 · 还没确认 · 还没开始' && lines('event-2').join('|') === '23:40–23:55 · 15 分|来源：你说的 · 还没开始' && lines('event-1', me).join('|') === '22:30–23:30 · 1 h|Library|Source: Mail · not confirmed yet · Not yet');
+  check('a reminder: its text and when and how it stands; only one that rang and was not acknowledged has a 知道了 to press (and says which)',
+    lines('reminder-2').join('|') === '给银行打电话|提醒时间 09:30 · 响过了' && open('reminder-2').ack === 'reminder-2' && lines('reminder-1').join('|') === '把垃圾拿出去|提醒时间 22:00 · 还没到点' && open('reminder-1').ack === null
+    && open('f-remind', buildDay(fragmentedDay(), NOW, zh)).ack === null && lines('f-remind', buildDay(fragmentedDay(), NOW, zh)).join('|') === '交房租|提醒时间 19:00 · 你知道了');
+  check('a departure: route and stop, where to, and when to leave and when it goes', lines('departure-1').join('|') === '27 路 · Shelbourne at Pear|去 UVic|22:33 出门 · 22:40 发车');
+  const w = part('work-2', 'bars') && m.items.find(x => x.id === 'work-2'), bars = key => open(key).parts.filter(p => p.type === 'bars');
+  check('a work block: active and whole time, then its projects and its apps as bars with their lengths and their share of the active time',
+    lines('work-2').join() === '活跃 1 时 55 分 · 共 2 时 5 分' && bars('work-2').map(b => `${b.heading}:${b.bars.map(x => `${x.name} ${x.text} ${x.share.toFixed(2)}`).join('/')}`).join('|') === '项目:Jarvis 1 时 40 分 0.87|应用:Ghostty 1 时 10 分 0.61/Claude 30 分 0.26' && open('work-2').summarize === true);
+  const many = buildDay(small([it('w', 'work', T(10, 0), T(14, 0), { active_s: 12000, projects: Array.from({ length: 7 }, (_, i) => ({ name: `P${i}`, seconds: 1000 + i * 100 })), apps: [{ name: '', seconds: 5 }, { name: 'Z', seconds: 0 }] })]), NOW, zh);
+  check('at most five of each, the biggest first; a nameless one and one of no time are not listed, and with none of a kind there is no list of it',
+    openOf(many, 'w', zh).parts.filter(p => p.type === 'bars').length === 1 && openOf(many, 'w', zh).parts.find(p => p.type === 'bars').bars.map(x => x.name).join() === 'P6,P5,P4,P3,P2');
+  const night = part('sleep-1', 'night').night;
+  check('a night: the stages on the row\'s own time scale from 23:10 to 07:00, and the totals in the order deep, core, REM, then how many times awake',
+    night.from === T(23, 10, 18) && night.to === T(7, 0) && night.at.join() === '23:10,07:00' && night.totals === '深睡 1:10 · 核心 4:30 · REM 1:40 · 醒 3 次' && night.slices.length > 10 && night.slices.every((x, i, l) => x.e > x.s && (i === 0 || l[i - 1].e <= x.s))
+    && part('sleep-1', 'night', me).night.totals === 'Deep 1:10 · Core 4:30 · REM 1:40 · Awake 3×' && lines('sleep-1').join() === night.totals);
+  check('a night with no stages is only its time and length', lines('sleep-1', buildDay(makeDay(), NOW, zh)).join() === '00:55–09:05 · 8 时 10 分' && !part('sleep-1', 'night', buildDay(makeDay(), NOW, zh)));
+  check('a run: its word and length, and what was counted; a call: when, and its app; a payment: which way, the amount and currency, who and what, and through what',
+    lines('workout-1').join('|') === '跑步 · 35 分|3.2 公里 · 240 千卡 · 平均心率 142' && lines('call-1').join('|') === '16:40–16:58 · 18 分|FaceTime' && lines('pay-1').join('|') === '支出 · $12.40 · CAD|A&W · Teen Burger combo|支付宝'
+    && lines('pay-1', me).join('|') === 'Spent · $12.40 · CAD|A&W · Teen Burger combo|Alipay');
+  check('a Claude chat: its name, then who with, how many messages and when; a Claude day: its titles as a list and how many chats',
+    lines('chat-1').join('|') === 'The bar for the day|和 Claude · 14 条 · 20:10–20:42 · 32 分' && JSON.stringify(part('claude-day-1', 'titles').list) === '["The bar for the day","A tool exam"]' && lines('claude-day-1').join() === '2 个对话');
+  const home = part('code:stay-home-1', 'sessions').list, uv = part('code:stay-uvic', 'sessions').list;
+  check('the sessions folded into a row are listed oldest first, each with when it began, its title, project · account, how long and its recap in full; one alone is its own row and opens to its recap',
+    home.map(x => `${x.at} ${x.meta} ${x.length}`).join() === '08:10 jarvis · A 55 分,08:40 jarvis-ios · B 55 分,09:50 jarvis · A 50 分,10:20 notes · B 45 分' && home[0].title === 'Phase A 的 review 修复' && home[0].recap === 'Phase A 的 review 修复 的小结' && uv.length === 2
+    && JSON.stringify(part('s', 'sessions', buildDay(small([code(1, 'a', 810, 905, 'T', 'jarvis')].map(x => ({ ...x, id: 's' }))), NOW, zh)).list.map(x => [x.title, x.meta, x.recap])) === '[["T","jarvis · A","T 的小结"]]');
+  // what a turn about a row carries
+  const ask = (key, model = m) => askOf(model, key, model === me ? en : zh);
+  check('what is handed to her is exactly {kind, id, title, start_ms} (the title as the row says it, the time as a whole number), with the icon and time the input shows',
+    JSON.stringify(ask('talk-1')) === JSON.stringify({ about: { kind: 'talk', id: 'talk-1', title: '和她说话', start_ms: T(10, 2) }, icon: 'talk', at: '10:02' }) && JSON.stringify(ask('stay-home-1').about) === JSON.stringify({ kind: 'stay', id: 'stay-home-1', title: '家', start_ms: T(7, 0) })
+    && ask('stay-home-1').icon === 'home' && ask('reminder-2').about.title === '给银行打电话' && ask('sleep-1').about.title === '睡觉' && ask('pay-1') === null
+    && Number.isInteger(ask('picture-1').about.start_ms) && Object.keys(ask('event-1').about).join() === 'kind,id,title,start_ms', JSON.stringify(ask('talk-1')));
+  const refused = ['ride-1', 'departure-1', 'pay-1', 'chat-1', 'claude-day-1', 'workout-1', 'code:stay-home-1', 'now', 'nope'], fits = ['stay-home-1', 'stay-aw', 'move-1', 'sleep-1', 'work-1', 'call-1', 'talk-1', 'picture-1', 'event-1', 'reminder-1'];
+  check('a row whose kind the brain does not take, or whose id it would refuse, has nothing to hand over: rides, buses, money, Claude, runs, sessions, and a commitment with an @ in its id; the rest do',
+    refused.every(k => ask(k) === null) && fits.every(k => ask(k)?.about.id === k) && askOf(buildDay(small([it('commitment-ab12@2026-10-19', 'event', T(22, 0), T(23, 0), { title: 'x', source: 'mail', confirmed: false })]), NOW, zh), 'commitment-ab12@2026-10-19', zh) === null
+    && askOf(buildDay(small([it('x'.repeat(257), 'talk', T(10, 0), T(10, 5), { turns: 1 })]), NOW, zh), 'x'.repeat(257), zh) === null, refused.filter(k => ask(k) !== null).join());
+  check('in English the input says Ask her about the row it holds, with its own title', ask('talk-1', me).about.title === 'Talked with her' && ask('stay-home-1', me).about.title === '家');
 }
 
 // ---------- the built page ----------
