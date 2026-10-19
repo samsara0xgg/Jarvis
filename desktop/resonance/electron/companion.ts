@@ -332,9 +332,9 @@ function companion(shown?: () => void) {
     else if (pending?.id !== under.id) pending = { id: under.id, since: Date.now() };
     else if (Date.now() - pending.since > 250) leave();
   }, 16);
-  // ADR 0153: Claude's desktop app in front (a Claude Code terminal is the Ghostty watcher's), checked every second.
+  // ADR 0153: Claude's desktop app in front (a Claude Code terminal is the Ghostty watcher's), checked once at start and once per activation.
   let frontApp = '';
-  const front = setInterval(() => {
+  const checkFront = () => {
     if (win.isDestroyed()) return;
     execFile('/bin/sh', ['-c', 'lsappinfo info -only bundleid "$(lsappinfo front)"'], { timeout: 900 }, (err, out) => {
       const inClaude = !err && out.includes('com.anthropic.claudefordesktop');
@@ -342,8 +342,10 @@ function companion(shown?: () => void) {
       frontApp = String(inClaude);
       win.webContents.send('claude-front', inClaude);
     });
-  }, 1000);
-  win.on('closed', () => { clearInterval(front); clearInterval(cursor); clearTimeout(moving); clearTimeout(untuck); dictation?.close(); });
+  };
+  const activation = systemPreferences.subscribeWorkspaceNotification('NSWorkspaceDidActivateApplicationNotification', checkFront);
+  setTimeout(checkFront, 1000); // once the page is listening (the first check of the old poll)
+  win.on('closed', () => { systemPreferences.unsubscribeWorkspaceNotification(activation); clearInterval(cursor); clearTimeout(moving); clearTimeout(untuck); dictation?.close(); });
   ipcMain.on('display-ready', event => { if (mine(event) === win && moving) move(); });
   ipcMain.handle('placement', event => { const sender = mine(event); return sender === win ? placement(target()) : sender ? dashboard.placement() : null; });
   // Settings › Advanced › Quit, the installed app's only way out (no Dock icon); the daemon stops with it (daemon.ts).
