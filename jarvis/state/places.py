@@ -8,7 +8,7 @@ same place. A place holds the name he gave, a role, a centre and radius that nev
 address alone until its centre is found, from the address once or where he is; ADR 0237) and
 where it came from.
 
-Facts are never stored: :func:`tally` counts them from the phone's stays (ADR 0197) each time.
+Facts are never stored: :func:`tally` counts them from the phone's stays (ADR 0197, 0301) each time.
 Stays within :data:`SPOT_RADIUS_M` of a spot's running centre form that spot, in time order. A
 stay inside a kept place's circle belongs to that place (the smallest circle wins) and to no
 spot, so forgetting a place gives its visits back to the spots. Spots have no identity: a spot
@@ -38,11 +38,9 @@ from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from jarvis.shared.geo import metres
 from jarvis.state import core_memory
-from jarvis.state.event_log import iter_events_of_types
 from jarvis.state.memory_db import iso_seconds, local_now, open_memory_db
 from jarvis.state.memory_page import Conflict
-from jarvis.state.phone_day import LOOKBACK_MS, Span, stays
-from jarvis.state.phone_location import VISIT_EVENT
+from jarvis.state.phone_day import LOOKBACK_MS, Span, read_rows, stays
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -499,11 +497,11 @@ def changes(path: Path) -> list[dict[str, Any]]:
 def read_stays(
     conn: sqlite3.Connection, now_ms: int, zone: tzinfo, days: int = WINDOW_DAYS,
 ) -> list[Span]:
-    """His stays over the last ``days`` days (the facts' window), from the log's visit rows."""
+    """His stays over the last ``days`` days (the facts' window): visits and cut-from-fixes ones."""
     today = _local_day(now_ms - 1, zone)
     first = datetime.combine(today - timedelta(days=days - 1), time.min, zone)
     since = int(first.timestamp() * 1000) - LOOKBACK_MS
-    return stays(list(iter_events_of_types(conn, (VISIT_EVENT,), since_epoch_ms=since)))
+    return stays(read_rows(conn, since), now_ms)
 
 
 def _local_day(ms: int, zone: tzinfo) -> date:

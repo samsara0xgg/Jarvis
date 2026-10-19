@@ -1,21 +1,26 @@
 """The phone's part of a day, folded from the event log (ADR 0197, ADR 0199).
 
 One read of the phone's rows (:func:`read_rows`) and the folds that turn them into stays, moves and
-sleep, with the thresholds that decide them. The day line (ADR 0199, :mod:`jarvis.state.day_line`)
-serves these as timed items and the ledger (ADR 0201, :mod:`jarvis.state.ledger`) counts them into
-the prompt, so the two cannot disagree about where he stayed or when he slept: they share these
-rules. Nothing is stored and nothing here calls a model.
+sleep, with the thresholds that decide them. A stay is a visit iOS reported or, where no visit
+covers the time, a stretch cut from the phone's location fixes (ADR 0301). The day line (ADR 0199,
+:mod:`jarvis.state.day_line`) serves these as timed items and the ledger (ADR 0201,
+:mod:`jarvis.state.ledger`) counts them into the prompt, so the two cannot disagree about where he
+stayed or when he slept: they share these rules. Nothing is stored and nothing here calls a
+model.
 """
 
 from __future__ import annotations
 
 import json
 import math
+from bisect import bisect_left, bisect_right
+from collections import Counter
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
-from jarvis.state.event_log import iter_events_of_types
-from jarvis.state.phone_location import VISIT_EVENT
+from jarvis.shared.geo import metres
+from jarvis.state.event_log import get_event, iter_events_of_types
+from jarvis.state.phone_location import LOCATION_EVENT, VISIT_EVENT
 
 if TYPE_CHECKING:
     import sqlite3
@@ -40,6 +45,17 @@ MOVE_MIN_MS: Final = 3 * _MINUTE_MS
 """A merged move shorter than this is dropped; one with no end yet is measured to now."""
 SLEEP_MERGE_GAP_MS: Final = 30 * _MINUTE_MS
 """Sleep spans that overlap or are this close are one block."""
+FIX_MAX_ACCURACY_M: Final = 100.0
+"""A location fix worse than this (metres) is left out of the stays (ADR 0301)."""
+STAY_RADIUS_M: Final = 150.0
+"""Fixes this close to their run's running centre are one stay: the distance the phone itself uses
+to decide he has not moved."""
+STAY_MIN_MS: Final = 5 * _MINUTE_MS
+"""A stay cut from fixes, or what a visit leaves of one, shorter than this is dropped; one with no
+end yet is measured to now."""
+CUT_FROM_KEY: Final = "cut_from"
+CUT_FROM_FIXES: Final = "fixes"
+"""A stay cut from fixes carries ``cut_from: "fixes"`` in its fields; a visit has no such key."""
 ASLEEP_STAGES: Final = frozenset({"unspecified", "core", "deep", "rem"})
 """The ``detail`` of a ``sleep`` span that counts as asleep (the others are in bed and awake)."""
 
@@ -50,6 +66,7 @@ class PhoneRows(NamedTuple):
     visits: list[Event]
     motions: list[Event]
     health: list[Event]
+    fixes: list[Event]
 
 
 class Fact(NamedTuple):
@@ -73,28 +90,41 @@ class Span:
 
 
 def read_rows(conn: sqlite3.Connection, since_epoch_ms: int) -> PhoneRows:
-    """The phone's visits, motion and Health rows reported at or after ``since_epoch_ms``.
+    """The phone's visits, motion, Health rows and location fixes reported at or after the time.
 
-    One indexed read of the three types. The caller reaches back :data:`LOOKBACK_MS` before the
-    window it folds.
+    One indexed read of the four types. The caller reaches back :data:`LOOKBACK_MS` before the
+    window it folds. The fixes also start with the last fix of accuracy :data:`FIX_MAX_ACCURACY_M`
+    or better from before that time, however long before: a stay that began days earlier, such as
+    a weekend at home, still covers the window (ADR 0301).
     """
-    rows = PhoneRows([], [], [])
-    by_type = {VISIT_EVENT: rows.visits, MOTION_EVENT: rows.motions, HEALTH_EVENT: rows.health}
+    rows = PhoneRows([], [], [], [])
+    by_type = {
+        VISIT_EVENT: rows.visits, MOTION_EVENT: rows.motions, HEALTH_EVENT: rows.health,
+        LOCATION_EVENT: rows.fixes,
+    }
     for event in iter_events_of_types(conn, tuple(by_type), since_epoch_ms=since_epoch_ms):
         by_type[event.type].append(event)
+    last = conn.execute(
+        "SELECT event_uid FROM events WHERE type = ? AND ts_epoch_ms < ? "
+        "AND json_extract(payload_json, '$.accuracy_m') <= ? ORDER BY ts_epoch_ms DESC, id DESC "
+        "LIMIT 1",
+        (LOCATION_EVENT, since_epoch_ms, FIX_MAX_ACCURACY_M),
+    ).fetchone()
+    if last is not None and (before := get_event(conn, str(last[0]))) is not None:
+        rows.fixes.insert(0, before)
     return rows
 
 
 def stamp(conn: sqlite3.Connection, since_epoch_ms: int, until_epoch_ms: int) -> tuple[int, int]:
     """``(count, newest id)`` of the phone rows timed in ``[since, until)``, without decoding any.
 
-    Changes exactly when a row for that stretch of time arrives, so it keys a cache of a text
-    built from those rows.
+    Changes exactly when a row for that stretch of time arrives, a location fix included, so it
+    keys a cache of a text built from those rows.
     """
     row = conn.execute(
-        "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM events WHERE type IN (?, ?, ?) "
+        "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM events WHERE type IN (?, ?, ?, ?) "
         "AND ts_epoch_ms >= ? AND ts_epoch_ms < ?",
-        (VISIT_EVENT, MOTION_EVENT, HEALTH_EVENT, since_epoch_ms, until_epoch_ms),
+        (VISIT_EVENT, MOTION_EVENT, HEALTH_EVENT, LOCATION_EVENT, since_epoch_ms, until_epoch_ms),
     ).fetchone()
     return int(row[0]), int(row[1])
 
@@ -124,8 +154,8 @@ def settle(events: list[Event], start_key: str, end_key: str) -> list[Fact]:
     return facts
 
 
-def stays(events: list[Event]) -> list[Span]:
-    """Where he was: the visits, with an arrival that never got a departure ended by the next."""
+def _visit_stays(events: list[Event]) -> list[Span]:
+    """The visits iOS reported, with an arrival that never got a departure ended by the next."""
     facts = settle(events, "arrived_at_ms", "departed_at_ms")
     found: list[Span] = []
     for index, fact in enumerate(facts):
@@ -143,17 +173,133 @@ def stays(events: list[Event]) -> list[Span]:
     return found
 
 
+class _Fix(NamedTuple):
+    at: int
+    origin: tuple[int, str]
+    lat: float
+    lng: float
+    accuracy_m: float
+    place: str
+
+
+def _centre(run: list[_Fix]) -> tuple[float, float]:
+    return sum(f.lat for f in run) / len(run), sum(f.lng for f in run) / len(run)
+
+
+def _runs(fixes: list[Event]) -> list[list[_Fix]]:
+    """The fixes good enough to place him, in time order, cut into runs.
+
+    A run goes on while the next fix lies within :data:`STAY_RADIUS_M` of the mean of the run's
+    fixes so far; a fix beyond it starts the next run. A fix worse than :data:`FIX_MAX_ACCURACY_M`
+    is passed over and ends nothing.
+    """
+    good = sorted(
+        (
+            _Fix(
+                event.ts_epoch_ms, (place, event.event_uid), float(event.payload["lat"]),
+                float(event.payload["lng"]), float(event.payload["accuracy_m"]),
+                str(event.payload.get("place") or ""),
+            )
+            for place, event in enumerate(fixes)
+            if float(event.payload["accuracy_m"]) <= FIX_MAX_ACCURACY_M
+        ),
+        key=lambda fix: (fix.at, fix.origin[0]),
+    )
+    runs: list[list[_Fix]] = []
+    for fix in good:
+        if runs and metres(_centre(runs[-1]), (fix.lat, fix.lng)) <= STAY_RADIUS_M:
+            runs[-1].append(fix)
+        else:
+            runs.append([fix])
+    return runs
+
+
+def _uncovered(start: int, end: int | None, held: list[Span]) -> list[tuple[int, int | None]]:
+    """``[start, end)`` without the time any of ``held`` covers, as the pieces left in order."""
+    pieces: list[tuple[int, int | None]] = [(start, end)]
+    for visit in held:
+        left: list[tuple[int, int | None]] = []
+        for first, last in pieces:
+            if _reach(visit.end) <= first or visit.start >= _reach(last):
+                left.append((first, last))
+                continue
+            if visit.start > first:
+                left.append((first, visit.start))
+            if visit.end is not None and visit.end < _reach(last):
+                left.append((visit.end, last))
+        pieces = left
+    return pieces
+
+
+def _cut_stays(rows: PhoneRows, held: list[Span], now_ms: int) -> list[Span]:
+    """The stays the fixes show where no visit in ``held`` covers the time (ADR 0301).
+
+    A run of fixes is a stay from its first fix to the moment he left. When a next run exists he
+    left at the start of the last move (as :func:`moves` counts them) that starts after this run's
+    last fix and before the next run's first fix, the move that carried him away, else at that
+    first fix: a short walk about the flat at night does not end the stay. A run with no next run
+    is open, whatever moves follow its last fix. What a visit covers is cut out of it, and a piece
+    left under :data:`STAY_MIN_MS`, or wholly inside one move (a slow walk sends fixes close enough
+    to look like a run), is dropped. The first piece keeps the first fix's ``event_uid``
+    as its id; a later one, which a visit in the middle makes, adds ``@`` and its start.
+    """
+    runs = _runs(rows.fixes)
+    going = _long_moves(rows.motions, now_ms)
+    starts = [move.start for move in going]
+    found: list[Span] = []
+    for index, run in enumerate(runs):
+        left: int | None = None
+        if index + 1 < len(runs):
+            left = runs[index + 1][0].at
+            carried = bisect_left(starts, left)
+            if carried > bisect_right(starts, run[-1].at):
+                left = starts[carried - 1]
+        lat, lng = _centre(run)
+        fields: dict[str, Any] = {
+            "lat": lat,
+            "lng": lng,
+            "accuracy_m": sum(f.accuracy_m for f in run) / len(run),
+        }
+        if named := Counter(f.place for f in run if f.place).most_common(1):
+            fields["place"] = named[0][0]
+        fields[CUT_FROM_KEY] = CUT_FROM_FIXES
+        place, uid = run[0].origin
+        kept = [
+            piece for piece in _uncovered(run[0].at, left, held)
+            if (now_ms if piece[1] is None else piece[1]) - piece[0] >= STAY_MIN_MS
+            and not any(
+                move.start <= piece[0] and _reach(piece[1]) <= _reach(move.end) for move in going
+            )
+        ]
+        for number, (first, last) in enumerate(kept):
+            found.append(Span(
+                (place, uid if number == 0 else f"{uid}@{first}"), "stay", first, last,
+                dict(fields),
+            ))
+    return found
+
+
+def stays(rows: PhoneRows, now_ms: int) -> list[Span]:
+    """Where he was, in start order: the visits and, where no visit covers the time, the fixes.
+
+    The visits are what iOS reported (:func:`_visit_stays`); the rest is cut from the fixes
+    (:func:`_cut_stays`) and carries :data:`CUT_FROM_KEY`. A stay with no end yet is measured to
+    ``now_ms``.
+    """
+    seen = _visit_stays(rows.visits)
+    return sorted([*seen, *_cut_stays(rows, seen, now_ms)], key=lambda stay: stay.start)
+
+
 def _reach(end: int | None) -> float:
     return math.inf if end is None else end
 
 
-def moves(events: list[Event], held: list[Span], now_ms: int) -> list[Span]:
-    """How he got about: walking, running, cycling and driving, de-flickered.
+def _long_moves(events: list[Event], now_ms: int) -> list[Span]:
+    """Walking, running, cycling and driving, de-flickered, before any stay is taken out.
 
     A segment ends where it says, else where the next segment of any activity starts, so a
     stationary or doubtful segment ends the move before it. Segments of one activity that touch
-    within :data:`MOVE_MERGE_GAP_MS` merge; short moves and moves inside one stay (``held``) are
-    dropped.
+    within :data:`MOVE_MERGE_GAP_MS` merge; moves shorter than :data:`MOVE_MIN_MS` are dropped.
     """
     facts = settle(events, "started_at_ms", "ended_at_ms")
     merged: list[Span] = []
@@ -182,7 +328,18 @@ def moves(events: list[Event], held: list[Span], now_ms: int) -> list[Span]:
         move
         for move in merged
         if (now_ms if move.end is None else move.end) - move.start >= MOVE_MIN_MS
-        and not any(
+    ]
+
+
+def moves(events: list[Event], held: list[Span], now_ms: int) -> list[Span]:
+    """How he got about: the moves of :func:`_long_moves` less those wholly inside one stay.
+
+    ``held`` are his stays, visits and cut ones alike; a stay still going counts.
+    """
+    return [
+        move
+        for move in _long_moves(events, now_ms)
+        if not any(
             stay.start <= move.start and _reach(move.end) <= _reach(stay.end) for stay in held
         )
     ]

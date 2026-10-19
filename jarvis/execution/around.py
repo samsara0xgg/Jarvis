@@ -85,7 +85,7 @@ def stay_minutes(
 ) -> int | None:
     """Minutes he has been within a spot's radius of ``point``, as far back as six hours of fixes.
 
-    The unbroken run of the phone's location fixes ending now, and the open visit if it began
+    The unbroken run of the phone's location fixes ending now, and the open stay if it began
     earlier; None when neither puts him there. A phone that stays put sends little, so it is
     at least this long.
     """

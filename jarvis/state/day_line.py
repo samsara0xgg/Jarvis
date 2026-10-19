@@ -7,7 +7,8 @@ going, so it overlaps every window after its start.
 
 Each source folds on its own and a source that raises leaves its items out (:func:`fold_day`):
 
-- ``phone``: stays from ``phone.visit_observed``, moves from ``phone.motion_observed`` and sleep
+- ``phone``: stays from ``phone.visit_observed`` and, where no visit covers the time, cut from
+  ``phone.location_observed`` (ADR 0301), moves from ``phone.motion_observed`` and sleep
   and workouts from ``phone.health_observed`` (ADR 0197, 0293), read in one query from two days
   before the window and folded by :mod:`jarvis.state.phone_day`, whose rules the ledger counts by
   too; a stay inside a place he keeps (ADR 0234) also carries it as ``kept_place``, a sleep block
@@ -84,7 +85,7 @@ from jarvis.state import rides as ride_state
 from jarvis.state.attachments import Attachments
 from jarvis.state.import_parsers import money
 from jarvis.state.ledger import CALL_FLOOR_S, TOP_FLOOR_S, shipped_activity, window_activity
-from jarvis.state.phone_day import LOOKBACK_MS, read_rows, sleeps, stays, workouts
+from jarvis.state.phone_day import CUT_FROM_KEY, LOOKBACK_MS, read_rows, sleeps, stays, workouts
 from jarvis.state.phone_day import moves as phone_moves
 
 if TYPE_CHECKING:
@@ -780,7 +781,7 @@ def _picture_items(
         one: at for one, at in sent.items()
         if one in notes or (store is not None and getattr(store.get(one), "kind", "") == "image")
     }
-    held = stays(read_rows(conn, window_start - LOOKBACK_MS).visits) if shown else []
+    held = stays(read_rows(conn, window_start - LOOKBACK_MS), now_ms) if shown else []
     items: list[dict[str, Any]] = []
     for one, at in shown.items():
         item: dict[str, Any] = {
@@ -796,7 +797,7 @@ def _picture_items(
             item["note"] = notes[one]
         here = next((s for s in held if s.start <= at and (s.end is None or at < s.end)), None)
         if here is not None:
-            item.update(here.fields)
+            item.update({k: v for k, v in here.fields.items() if k != CUT_FROM_KEY})
         items.append(item)
     return items
 
@@ -813,7 +814,7 @@ def _phone_items(
     its ``stages`` and a workout its ``activity`` and what Health knew of it (ADR 0293).
     """
     rows = read_rows(conn, window_start - LOOKBACK_MS)
-    held = stays(rows.visits)
+    held = stays(rows, now_ms)
     kept = [] if sources.memory_db is None else places.read_kept(sources.memory_db)
     spans = [
         *held, *phone_moves(rows.motions, held, now_ms), *sleeps(rows.health),

@@ -245,7 +245,7 @@ def test_the_requests_ask_for_the_cheapest_fields_and_are_priced(
 def test_a_candidate_comes_from_the_stay_the_kept_place_and_his_past_visits(
     world: World,
 ) -> None:
-    """Forty minutes here, a kept place round the point, earlier stays at Shop 1's door."""
+    """Forty minutes here (a cut stay), a kept place round the point, two visits at Shop 1."""
     world.fix(80, at=_east(3000))  # a far fix before the run: it ends the run, not part of it
     for ago in (40, 30, 20, 10, 1):
         world.fix(ago)
@@ -258,9 +258,9 @@ def test_a_candidate_comes_from_the_stay_the_kept_place_and_his_past_visits(
 
     assert here["here_for_min"] == 40
     assert here["kept_place"]["name"] == "Ramen corner"
-    assert here["kept_place"]["days_28"] == 2  # both stays are inside its circle
+    assert here["kept_place"]["days_28"] == 3  # his two visits and today's run of fixes, all inside
     shop = here["candidates"][0]
-    assert (shop["name"], shop["past_stays"]) == ("Shop 1", 2)
+    assert (shop["name"], shop["past_stays"]) == ("Shop 1", 3)
     assert "unkept_spot" not in here
 
 

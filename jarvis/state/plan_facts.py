@@ -349,7 +349,9 @@ def facts_at(
     first_ms, last_ms = _ms(day, time.min, zone), _ms(day + timedelta(days=1), time.min, zone)
     rows = read_rows(conn, first_ms - LOOKBACK_MS)
     visits, motions = _until(rows.visits, now_ms), _until(rows.motions, now_ms)
-    held = stays(visits)
+    held = stays(
+        rows._replace(visits=visits, motions=motions, fixes=_until(rows.fixes, now_ms)), now_ms,
+    )
     all_stays = tuple(
         Stay(s.start, s.end, str(s.fields.get("place") or ""), *_kept_of(
             kept, s.fields["lat"], s.fields["lng"]), s.fields["lat"], s.fields["lng"])

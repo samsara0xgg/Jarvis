@@ -487,7 +487,7 @@ class _Phone:
                 self.sleep[up.date()].append(
                     (moment(block.start), up, float(block.fields["minutes"])),
                 )
-        for stay in phone_day.stays(rows.visits):
+        for stay in phone_day.stays(rows, int(as_of.timestamp() * 1000)):
             place = _stay_name(stay.fields, held)
             left = as_of if stay.end is None else min(moment(stay.end), as_of)
             if place and moment(stay.start) < left:

@@ -1,6 +1,6 @@
 """His routines, counted on read from what he did (ADR 0279).
 
-Nothing is stored: every read folds the phone's visits and sleep, his rides and his kept places
+Nothing is stored: every read folds the phone's stays and sleep, his rides and his kept places
 over the last :data:`WINDOW_DAYS` days, and offers a routine only once it held for
 :data:`MIN_WEEKS` distinct weeks and :data:`MIN_SHARE` of the weeks the source saw. A routine is a
 default for planning a day; a commitment that day wins over it.
@@ -217,7 +217,7 @@ def for_day(
     """
     first = day - timedelta(days=WINDOW_DAYS)
     rows = phone_day.read_rows(conn, _day_ms(first, zone) - phone_day.LOOKBACK_MS)
-    stays = phone_day.stays(rows.visits)
+    stays = phone_day.stays(rows, _day_ms(day, zone))
     ridden = rides.fold(conn, _day_ms(first, zone))
     nights = _nights(phone_day.sleeps(rows.health), zone)
 
