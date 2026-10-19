@@ -252,15 +252,17 @@ const INSTANT = new Set(['reminder', 'picture', 'departure', 'payment']);
 export const SLEEP: Rgb = [112, 120, 205], TRANSIT: Rgb = [196, 208, 255], REM: Rgb = [150, 160, 235];
 
 // ---------- a night's stages ----------
-// What each stage looks like on the bar (the sleep hue at an alpha; REM the lighter hue) and which wins where stages overlap: the watch's
-// own stages over a phone's `in_bed`. A name this does not know is read as unspecified.
+// What each stage looks like on the bar (the sleep hue at an alpha; REM the lighter hue) and which wins where stages overlap, as two sources
+// that recorded the same night leave them: awake over REM over deep over core over unspecified over a phone's `in_bed`. A name this does not
+// know is read as unspecified.
 const STAGES: Record<string, { rgb: Rgb; a: number; rank: number }> = {
-  deep: { rgb: SLEEP, a: 1, rank: 5 }, rem: { rgb: REM, a: .8, rank: 4 }, core: { rgb: SLEEP, a: .78, rank: 3 },
-  awake: { rgb: SLEEP, a: .25, rank: 2 }, unspecified: { rgb: SLEEP, a: .6, rank: 1 }, in_bed: { rgb: SLEEP, a: .25, rank: 0 },
+  awake: { rgb: SLEEP, a: .25, rank: 5 }, rem: { rgb: REM, a: .8, rank: 4 }, deep: { rgb: SLEEP, a: 1, rank: 3 }, core: { rgb: SLEEP, a: .78, rank: 2 },
+  unspecified: { rgb: SLEEP, a: .6, rank: 1 }, in_bed: { rgb: SLEEP, a: .25, rank: 0 },
 };
 export const stageLook = (stage: string) => STAGES[stage] ?? STAGES.unspecified;
-// The night between `a` and `b` as stretches that do not overlap, each with the stage that wins there; where no stage was reported it is
-// unspecified. Pure and cheap (a night has under a hundred stages), so the bar and the hover card both ask.
+// The night between `a` and `b` as stretches that do not overlap, each with the stage that wins there (so a night two sources told is counted
+// once); where no stage was reported it is unspecified. Pure and cheap (a night has under a hundred stages), so the bar, the hover card, the open
+// row's totals and its hypnogram all ask.
 export function stageSlices(it: DayItem, a: number, b: number): { stage: string; s: number; e: number }[] {
   const segs = (it.stages ?? []).flatMap(x => { const s = Math.max(x.start_ms, a), e = Math.min(x.end_ms, b); return e > s ? [{ stage: x.stage in STAGES ? x.stage : 'unspecified', s, e }] : []; });
   const cuts = [...new Set([a, b, ...segs.flatMap(x => [x.s, x.e])])].sort((x, y) => x - y), out: { stage: string; s: number; e: number }[] = [];
