@@ -8163,6 +8163,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             watchers.append(asyncio.create_task(runtime.mail_codes.run(), name="mail_codes"))
         if runtime.commitments is not None:
             watchers.append(asyncio.create_task(runtime.commitments.run(), name="commitments"))
+        if runtime.claude_daily is not None:
+            watchers.append(asyncio.create_task(runtime.claude_daily.run(), name="claude_daily"))
         if spend is not None and runtime.memory is not None:
             # ADR 0185: the card is a job-alert row; _alert_deps serves it with job mail off too.
             watchers.append(asyncio.create_task(

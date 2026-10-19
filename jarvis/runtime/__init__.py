@@ -176,6 +176,7 @@ from jarvis.execution.transit_tool import TransitOffers, build_leg_planner, firs
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime import answer_hold, audio_output, device_tools, device_voice
 from jarvis.runtime.bus_live import BusLive
+from jarvis.runtime.claude_daily import ClaudeDailyIntake, ClaudeDailySettings
 from jarvis.runtime.commitment_intake import CommitmentIntake, CommitmentSettings
 from jarvis.runtime.daily_report import (
     PLAN_SERVER,
@@ -751,6 +752,8 @@ class JarvisRuntime:
     mail_codes: MailCodes | None = None
     # ADR 0274: the poller that reads his mail for things he has to go to. None = off.
     commitments: CommitmentIntake | None = None
+    # ADR 0295: the poller that reads the nightly letter on his Claude chats. None = off.
+    claude_daily: ClaudeDailyIntake | None = None
     # ADR 0161: the situation TimeSink last recorded, read on demand. None = off.
     moment: Moment | None = None
     # ADR 0179: the clock that fires the owner's reminders. None = hand-assembled.
@@ -1900,6 +1903,36 @@ def _commitments(  # noqa: PLR0913 - the config and the poller's collaborators
         settings, connections, db_path, event_log,
         mail_summarizer(analyst_for(settings.preset), event_log),
     )
+
+
+def _claude_daily(
+    config: Mapping[str, Any], config_path: Path, connections: PluginConnections, db_path: Path,
+    root: Path,
+) -> ClaudeDailyIntake | None:
+    """``claude_daily`` (ADR 0295): off unless enabled; bad values stop boot."""
+    block = config.get("claude_daily")
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    where = f"runtime: {config_path} claude_daily"
+    numbers = {}
+    for key, low, high in (("poll_s", 60, None), ("max_letters_per_cycle", 1, 200)):
+        value = block.get(key)
+        if isinstance(value, bool) or not isinstance(value, int | float) or value < low or (
+            high is not None and value > high
+        ):
+            msg = f"{where}.{key} must be a number of at least {low}" + (
+                "" if high is None else f" and at most {high}"
+            )
+            raise RuntimeBootstrapError(msg)
+        numbers[key] = value
+    since = block.get("backfill_since")
+    if not isinstance(since, date) or isinstance(since, datetime):
+        msg = f"{where}.backfill_since must be a date (YYYY-MM-DD)"
+        raise RuntimeBootstrapError(msg)
+    settings = ClaudeDailySettings(
+        float(numbers["poll_s"]), since, int(numbers["max_letters_per_cycle"]),
+    )
+    return ClaudeDailyIntake(settings, connections, db_path, root / imports.IMPORTS_DIRNAME)
 
 
 def _sound_output(
@@ -3313,6 +3346,9 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             kind="commitments",
         ),
     )
+    claude_daily = _claude_daily(
+        full_config, config_path, plugin_connections, memory.db_path, paths.root,
+    )
     reminders = Reminders(
         paths.event_log,
         moment=moment,
@@ -3454,6 +3490,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         job_mail=job_mail,
         mail_codes=mail_codes,
         commitments=commitments,
+        claude_daily=claude_daily,
         moment=moment,
         push=Push.from_config(full_config, paths.root, paths.event_log),
         whereabouts=Whereabouts(

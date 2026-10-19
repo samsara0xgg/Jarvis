@@ -660,6 +660,18 @@ commitments:
   preset: haiku-bg
   remind_before_min: 60
 
+# ADR 0295 — the nightly letter on his claude.ai chats.  A scheduled task in Claude (in the cloud,
+# which cannot reach the tailnet) writes a Gmail draft, or a mail to himself, whose subject
+# starts "Jarvis Claude 日报" and the date.  Every poll_s Jarvis lists his Gmail since
+# backfill_since (gmail_search and gmail_get only: nothing is ever modified or sent), keeps each
+# such letter raw under imports/claude_daily/ and reads it into the archive and the day line.
+# No model is asked.  Drafts and every revision are kept.  Off here; the Pi turns it on.
+claude_daily:
+  enabled: false
+  poll_s: 3600
+  backfill_since: 2026-10-18
+  max_letters_per_cycle: 30
+
 # ADR 0161 — the moment.  When an alert is decided, delivered or shown, Jarvis reads TimeSink's
 # saved spans (read-only, nothing copied, no model) to see what Allen is doing.  In a call or
 # meeting every card and sound waits and nothing is spoken; away (idle, locked, asleep) they wait
