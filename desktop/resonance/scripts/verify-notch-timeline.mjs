@@ -32,7 +32,7 @@ const makeDay = (over = {}) => ({
   items: [
     it('sleep-1', 'sleep', T(0, 55), T(9, 5), { minutes: 470 }),
     it('stay-home-1', 'stay', T(9, 5), T(11, 25), { place: '12 Example St, Victoria', kept_place: home }),
-    it('reminder-2', 'reminder', T(9, 30), null, { text: '给银行打电话', fired: true, acknowledged: true }, 'her'),
+    it('reminder-2', 'reminder', T(9, 30), null, { text: '给银行打电话', fired: true, acknowledged: false }, 'her'),
     it('talk-1', 'talk', T(10, 2), T(10, 9), { turns: 6 }, 'her'),
     it('move-1', 'move', T(11, 25), T(13, 5), { activity: 'automotive' }),
     it('move-2', 'move', T(13, 5), T(13, 15), { activity: 'walking' }),
@@ -48,7 +48,7 @@ const makeDay = (over = {}) => ({
     it('talk-2', 'talk', T(19, 30), T(19, 36), { turns: 4 }, 'her'),
     it('reminder-1', 'reminder', T(22, 0), null, { text: '把垃圾拿出去', fired: false, acknowledged: false }, 'her'),
     it('departure-1', 'departure', T(22, 40), T(22, 40), { title: '27 · Shelbourne at Pear', route: '27', board_stop: 'Shelbourne at Pear', to: 'UVic', leave_at_ms: T(22, 33) }),
-    it('event-1', 'event', T(22, 30), T(23, 30), { title: '小组讨论', place: 'Library', private: false }),
+    it('event-1', 'event', T(22, 30), T(23, 30), { title: '小组讨论', place: 'Library', private: false, source: 'mail', confirmed: false }),
     it('event-2', 'event', T(23, 40), T(23, 55), { title: 'Dr. appointment', source: 'said', confirmed: true, private: true, place: 'Clinic' }),
   ],
   labels: [{ title: '期中周', source: 'calendar' }], missing: ['mac'],
@@ -83,6 +83,63 @@ const brokenItems = () => [
   { id: 'x-ride', lane: 'you', kind: 'ride', start_ms: T(16, 0), end_ms: T(16, 20), state: 'done', route: 27, board_stop: {}, alight_stop: ['x'] },
   null, 'x', 7,
 ];
+// The other days the list has to hold up on, from what real days look like (no sleep item yet, the Mac missing on the brain, a few highlights).
+const at4 = n => T(Math.floor(n / 100), n % 100);
+const ev = (id, kind, from, to, extra = {}, lane = 'you') => it(id, kind, at4(from), to === null ? null : at4(to), extra, lane);
+// A fragmented day, as a phone's GPS makes them: 15 stays (four of them an unnamed few minutes between two ways, a stop and not a place; four more
+// a minute or two beside a place), 11 moves (the last one going on), 2 rides, 3 talks, a reminder, an event, 4 highlights.
+const gym = { id: 'p-gym', name: '健身房', role: 'other' };
+const fragmentedDay = () => makeDay({
+  items: [
+    ev('f-home-1', 'stay', 650, 825, { place: '12 Example St, Victoria', kept_place: home }),
+    ev('f-w1', 'move', 825, 837, { activity: 'walking' }),
+    ev('f-s2', 'stay', 837, 842, { place: 'Shelbourne at Pear, Victoria' }),
+    ev('f-r1', 'ride', 842, 905, { route: '14', board_stop: 'Shelbourne at Pear', alight_stop: 'UVic Exchange', source: 'tapped', ended_reason: 'left_vehicle', credit: null }),
+    ev('f-talk-1', 'talk', 850, 853, { turns: 3 }, 'her'),
+    ev('f-w2', 'move', 905, 912, { activity: 'walking' }),
+    ev('f-uvic-1', 'stay', 912, 1140, { place: 'University of Victoria, Victoria', kept_place: uvic }),
+    ev('f-talk-2', 'talk', 1010, 1018, { turns: 8 }, 'her'),
+    ev('f-s3b', 'stay', 1140, 1144, { place: 'University of Victoria, Victoria' }),
+    ev('f-w3', 'move', 1144, 1148, { activity: 'walking' }),
+    ev('f-sub', 'stay', 1148, 1220, { place: 'Student Union Building, 3800 Finnerty Rd, Victoria' }),
+    ev('f-w4', 'move', 1220, 1228, { activity: 'walking' }),
+    ev('f-s5', 'stay', 1228, 1234, { place: 'McPherson Library, Victoria' }),
+    ev('f-w5', 'move', 1234, 1241, { activity: 'walking' }),
+    ev('f-uvic-2', 'stay', 1241, 1508, { place: 'University of Victoria, Victoria', kept_place: uvic }),
+    ev('f-s6b', 'stay', 1508, 1511, { place: 'University of Victoria, Victoria' }),
+    ev('f-w6', 'move', 1511, 1518, { activity: 'walking' }),
+    ev('f-s7', 'stay', 1518, 1523, { place: 'Finnerty Rd, Victoria' }),
+    ev('f-r2', 'ride', 1523, 1551, { route: '26', board_stop: 'Finnerty at Ring Rd', alight_stop: 'Mayfair Mall', source: 'tapped', ended_reason: 'left_vehicle', credit: null }),
+    ev('f-w7', 'move', 1551, 1555, { activity: 'walking' }),
+    ev('f-mall', 'stay', 1555, 1646, { place: 'Mayfair Mall, 3147 Douglas St, Victoria' }),
+    ev('f-s8b', 'stay', 1646, 1649, { place: 'Mayfair Mall, 3147 Douglas St, Victoria' }),
+    ev('f-w8', 'move', 1649, 1655, { activity: 'walking' }),
+    ev('f-s9', 'stay', 1655, 1701, { place: 'Parking Lot, Victoria' }),
+    ev('f-w9', 'move', 1701, 1720, { activity: 'automotive' }),
+    ev('f-gym', 'stay', 1720, 1834, { place: 'Gym, Victoria', kept_place: gym }),
+    ev('f-s10b', 'stay', 1834, 1838, { place: 'Gym, Victoria' }),
+    ev('f-w10', 'move', 1838, 1852, { activity: 'automotive' }),
+    ev('f-home-2', 'stay', 1852, 2130, { place: '12 Example St, Victoria', kept_place: home }),
+    ev('f-remind', 'reminder', 1900, null, { text: '交房租', fired: true, acknowledged: true }, 'her'),
+    ev('f-talk-3', 'talk', 2030, 2036, { turns: 5 }, 'her'),
+    ev('f-w11', 'move', 2130, null, { activity: 'walking' }),
+    ev('f-event', 'event', 2300, 2330, { title: '电话会议', source: 'plan' }),
+  ],
+  labels: [], missing: ['mac'],
+  line: { text: '今天几乎都在 UVic，下午去了一趟 Mayfair，晚上从健身房回来。', draft: false, written_at: '2026-10-19T21:30:00-07:00' },
+  highlights: [{ id: 'f-uvic-1', label: '上午的课', by: 'her' }, { id: 'f-gym', label: '', by: 'him' }, { id: 'f-r2', label: '去 Mayfair', by: 'her' }, { id: 'f-talk-3', label: 'talk 20:30', by: 'him' }],
+});
+// A day of talks and nothing else: no place was recorded.
+const talkDay = () => makeDay({
+  items: [[810, 818, 4], [940, 944, 2], [1115, 1130, 9], [1330, 1333, 1], [1505, 1512, 6], [1820, 1822, 1], [2045, 2100, 12]].map(([a, b, n], i) => ev(`k-${i + 1}`, 'talk', a, b, { turns: n }, 'her')),
+  labels: [], missing: ['mac'], line: null, highlights: [],
+});
+// Two and a half hours into the day: one stay since midnight, and one event this afternoon.
+const EARLY = T(2, 30);
+const earlyDay = () => makeDay({
+  now_ms: EARLY, labels: [], missing: ['mac'], line: null, highlights: [],
+  items: [ev('e-home', 'stay', 0, null, { place: '12 Example St, Victoria', kept_place: home, state: 'now' }), ev('e-event', 'event', 1500, 1600, { title: '牙医', state: 'next' })],
+});
 // A picture the fake daemon serves for an attachment id: 96 x 96, a warm gradient with a plate on it.
 const PICTURE = (() => {
   const w = 96, h = 96, raw = Buffer.alloc((w * 3 + 1) * h);
@@ -128,11 +185,11 @@ check('the day is titled, with her sentence, the label and the missing source', 
 check('stays are named by the kept place, else the phone\'s first part', rows.filter(r => r.as === 'stay').map(r => r.title).join() === '家,A&W,家,UVic,家');
 check('home is warm, school is blue, an unnamed-by-him stay is the neutral haze', row('家').rgb.join() === '255,168,150' && row('UVic').rgb.join() === '100,200,255' && row('A&W').rgb.join() === '196,204,238');
 check('a stay with nothing to call it says so', buildDay(makeDay({ items: [it('s', 'stay', T(20, 0), null, {})] }), NOW, zh).blocks[0].head.name === '没名字的地方');
-check('durations read 40 分 and 1 时 40 分', row('开车 · 1 时 40 分') && row('步行 · 10 分') && rows.find(r => r.as === 'stay' && r.title === 'UVic').dur === '2 时 56 分' && rows.find(r => r.as === 'stay' && r.title === 'A&W').dur === '40 分');
+check('durations read 40 分 and 1 时 40 分, in the right column', row('开车').right === '1 时 40 分' && row('步行').right === '10 分' && rows.find(r => r.as === 'stay' && r.title === 'UVic').dur === '2 时 56 分' && rows.find(r => r.as === 'stay' && r.title === 'A&W').dur === '40 分');
 check('times are HH:mm in the day\'s zone', rows.find(r => r.as === 'stay' && r.title === 'UVic').when === '15:19–18:15' && rows.find(r => r.as === 'stay' && r.title === '家').when === '09:05–11:25');
-check('a bus ride is a connector with its stops', (r => r.connector && r.detail === 'Shelbourne at Pear → UVic Exchange' && r.icon === 'bus')(row('27 路 · 29 分')));
+check('a bus ride is a connector with its stops and its length', (r => r.connector && r.detail === 'Shelbourne at Pear → UVic Exchange' && r.icon === 'bus' && r.right === '29 分')(row('27 路')));
 check('a talk is 和她说话 with its lines; a photo is 照片 with its first line', row('和她说话').detail === '6 句' && row('照片').detail === '汉堡和薯条');
-check('a private event is 私事 and says no more; a reminder is its text', row('私事').detail === '' && row('小组讨论').detail === 'Library' && row('给银行打电话') && row('把垃圾拿出去').future);
+check('a private event is 私事 and says no more; an event says where it came from and where; a reminder is its text', row('私事').detail === '' && row('小组讨论').detail === '邮件 · 还没确认 · Library' && row('给银行打电话') && row('把垃圾拿出去').future);
 check('her highlight stars the stay and gives her words', row('UVic').detail === '下午在 UVic' && row('家').detail === '');
 check('the now line sits in the stay he is in, after what has begun and before what is to come', (i => i > 0 && rows[i - 1].title === '和她说话' && rows[i + 1].title === '把垃圾拿出去' && rows[i + 1].future)(rows.findIndex(r => r.as === 'now')) && row('现在 21:50'));
 const bar0 = buildBar(model, zh);
@@ -141,7 +198,7 @@ check('the overview bar spans the day from the hour before he woke, and its now 
   // Mac time (a work block, a call) comes with a Mac that has reported, which the realistic day above has not.
   const mac = buildDay(makeDay({ missing: [], items: [it('work-1', 'work', T(15, 30), T(17, 40), { active_s: 7800, projects: [{ name: 'jarvis', seconds: 5000 }], apps: [{ name: 'Ghostty', seconds: 3000 }] }), it('call-1', 'call', T(19, 0), T(19, 25), { app: 'Zoom' })] }), NOW, zh);
   const r = flat(mac.blocks);
-  check('Mac time: a work block says its projects and apps and how long it was active; a call its app', r.find(x => x.title === '在 Mac 上工作')?.detail === 'jarvis · Ghostty · 活跃 2 时 10 分' && r.some(x => x.title === '通话 · Zoom') && mac.foot === '');
+  check('Mac time: a work block says its top project and app and, at the right, how long it was active; a call its app', (w => w?.detail === 'jarvis · Ghostty' && w.right === '活跃 2 时 10 分')(r.find(x => x.title === '在 Mac 上工作')) && r.some(x => x.title === '通话 · Zoom') && mac.foot === '');
 }
 {
   const odd = makeDay({ items: [it('bad-1', 'stay', NaN, null, { place: 'X' }), it('bad-2', 'move', T(21, 0), 'later', { activity: 'walking' }), it('unknown-1', 'weather', T(20, 0), null, {}), it('ok-1', 'stay', T(20, 0), null, { place: 'Y' })] });
@@ -206,7 +263,7 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   p = at(11, 0);
   check('at 11:00 the work block says its top project and app, and how long it was active', lines(p).join() === 'work:Jarvis · Xcode|活跃 42 分' && p.row === 'stay-home-1');
   p = at(13, 22);
-  check('at 13:22 the payment (2 min away) and the photo (8 min away) are what else: the payment as counterparty and amount', p.stretch.name === 'A&W' && lines(p).join() === 'payment:A&W · −$12.40|13:20,picture:汉堡和薯条|13:30');
+  check('at 13:22 the payment (2 min away) and the photo (8 min away) are what else: the payment as counterparty and amount, plain when it is money out', p.stretch.name === 'A&W' && lines(p).join() === 'payment:A&W · $12.40|13:20,picture:汉堡和薯条|13:30');
   p = at(20, 15);
   check('at 20:15 the work block and the Claude chat, in that order; the stay is 18:50 起, 3 时', lines(p).join() === 'work:Jarvis · Ghostty|活跃 1 时 55 分,claude_chat:Claude · The bar for the day|14 条' && p.stretch.range === '18:50 起' && p.stretch.length === '3 时');
   p = at(16, 50);
@@ -230,9 +287,34 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   const cut = within(rm.blocks, rm.span, T(14, 0), T(18, 0)), keys = (bs, out = []) => { for (const b of bs) { out.push(b.type === 'row' ? b.row.key : b.key); if (b.type === 'stay') keys(b.items, out); } return out; };
   check('the list cut to a range keeps what overlaps it: its stays with only the rows inside them that do, and the ways between', keys(cut).join() === 'move-3,stay-home-2,ride-1,talk-3,stay-uvic,call-1');
   const rows2 = flat(rm.blocks);
-  check('the Mac, the imports and the Claude letter are plain rows: the payment (who, what, through which app, the amount), a chat, the letter', (r => r.detail === 'Teen Burger combo · 支付宝' && r.dur === '−$12.40')(rows2.find(r => r.title === 'A&W' && r.as === 'row'))
-    && rows2.some(r => r.title === 'The bar for the day' && r.detail === '和 Claude · 14 条消息') && rows2.some(r => r.title === '和 Claude 聊了 2 个对话' && r.detail === 'The bar for the day · A tool exam'));
+  check('the imports and the Claude letter are plain rows: the payment (who, what, through which app, the amount in ink), a chat, the letter', (r => r.detail === 'Teen Burger combo · 支付宝' && r.right === '$12.40' && r.value)(rows2.find(r => r.title === 'A&W' && r.as === 'row'))
+    && rows2.some(r => r.title === 'The bar for the day' && r.detail === '和 Claude' && r.right === '14 条') && rows2.some(r => r.title === 'Claude 日报' && r.detail === '2 个对话 · The bar for the day · A tool exam'));
   check('a row says what it is for a lens: work is work, a ride is a way, a stay header is none', rm.blocks.length > 0 && flat(rm.blocks).filter(r => r.as === 'row').every(r => r.kind && (r.lens === null) === !['sleep', 'move', 'ride', 'work', 'call', 'talk', 'payment', 'picture'].includes(r.kind)));
+}
+
+// ---------- the list's anatomy, in node ----------
+{
+  const m = buildDay(day, NOW, zh), rs = flat(m.blocks), r = title => rs.find(x => x.title === title);
+  check('what waits on him is counted in list order: the reminder that rang and was not answered, the event read from mail and not confirmed', m.waiting.join() === 'reminder-2,event-1' && r('给银行打电话').wait && r('小组讨论').wait && !r('把垃圾拿出去').wait && !r('私事').wait && r('给银行打电话').detail === '响过了');
+  const ended = buildDay(makeDay({ items: [it('x', 'event', T(9, 0), T(10, 0), { title: 'a', source: 'mail', confirmed: false }), it('y', 'reminder', T(8, 0), null, { text: 'b', fired: true, acknowledged: true }, 'her'), it('z', 'reminder', T(23, 0), null, { text: 'c', fired: false, acknowledged: false }, 'her')] }), NOW, zh);
+  check('an event that is over does not wait; a reminder that was answered says so; one not yet due says that', ended.waiting.length === 0 && flat(ended.blocks).find(x => x.title === 'b').detail === '你知道了' && flat(ended.blocks).find(x => x.title === 'c').detail === '还没到点');
+  check('what is still to come within two hours says how long until it: 还有 10 分, 还有 40 分, 还有 1 时 50 分; the bus keeps its words', r('把垃圾拿出去').right === '还有 10 分' && r('小组讨论').right === '还有 40 分' && r('私事').right === '还有 1 时 50 分'
+    && r('27 · Shelbourne at Pear').right === '22:33 出门' && r('27 · Shelbourne at Pear').value && r('27 · Shelbourne at Pear').detail === '去 UVic');
+  check('beyond two hours a row says its own length, and what is over has no countdown', flat(buildDay(day, T(19, 0), zh).blocks).find(x => x.title === '私事').right === '15 分' && !/还有/.test(rs.filter(x => !x.future).map(x => x.right).join()));
+  check('a payment is plain when it is money out and has a + when it is money in', flat(buildDay(small([it('p', 'payment', T(10, 0), T(10, 0), { source: 'alipay', amount: '12.40', currency: 'CAD', direction: 'out', counterparty: 'X' }), it('q', 'payment', T(11, 0), T(11, 0), { source: 'alipay', amount: '50.00', currency: 'CAD', direction: 'in', counterparty: 'Y' })]), NOW, zh).blocks).filter(x => x.as === 'row').map(x => x.right).join() === '$12.40,+$50.00');
+  check('a row that began the day before says so beside its time', (x => x.at === '23:20' && x.ago === '昨')(flat(buildDay(small([it('sl', 'sleep', T(23, 20, 18), T(7, 0), { minutes: 400 })]), NOW, zh).blocks).find(y => y.as === 'row')));
+
+  const fm = buildDay(fragmentedDay(), NOW, zh), fr = flat(fm.blocks), stops = fr.filter(x => x.icon === 'dot');
+  check('four unnamed stays of a few minutes between two ways are stops on the trip (停了 5 分, the phone\'s place beside), and only they', stops.map(x => `${x.title}|${x.detail}`).join() === '停了 5 分|Shelbourne at Pear,停了 6 分|McPherson Library,停了 5 分|Finnerty Rd,停了 6 分|Parking Lot' && stops.every(x => x.connector && x.right === ''));
+  check('every other stay is a place with a header: the 15 stays less the four stops; a kept place always, an unnamed one for more than 15 minutes, a minute or two beside a place',
+    fr.filter(x => x.as === 'stay').map(x => x.title).join() === '家,UVic,University of Victoria,Student Union Building,UVic,University of Victoria,Mayfair Mall,Mayfair Mall,健身房,Gym,家');
+  const trip = fm.blocks.filter(b => b.type === 'row' && (b.row.connector || b.row.onWay)).map(b => b.row.key);
+  check('what happened on the way belongs to the trip: the talk on the 14 is on it; a talk inside a stay is not', fm.blocks.find(b => b.type === 'row' && b.row.key === 'f-talk-1').row.onWay && !trip.includes('f-talk-2') && trip.slice(0, 5).join() === 'f-w1,f-s2,f-r1,f-talk-1,f-w2');
+  check('the highlight\'s words are the row\'s title and the row says it mattered; the label that says nothing leaves the title', (x => x.title === '去 Mayfair' && x.star && x.detail === '26 路 · Finnerty at Ring Rd → Mayfair Mall')(fr.find(y => y.key === 'f-r2')) && fr.find(y => y.key === 'f-talk-3').title === '和她说话' && fr.find(y => y.key === 'f-talk-3').star);
+  const stopTalk = flat(buildDay(small([it('a', 'move', T(10, 0), T(10, 10), { activity: 'walking' }), it('s', 'stay', T(10, 10), T(10, 16), { place: 'Bus stop, X' }), it('t', 'talk', T(10, 12), T(10, 14), { turns: 2 }, 'her'), it('b', 'ride', T(10, 16), T(10, 40), { route: '14' })]), NOW, zh).blocks);
+  check('what happened during a stop stays in the trip with it, after it', stopTalk.map(x => x.title).join() === '步行,停了 6 分,和她说话,14 路,现在 21:50');
+  const tm = buildDay(talkDay(), NOW, zh);
+  check('a day of talks alone: seven rows, no stay, a sentence for the missing Mac', flat(tm.blocks).filter(x => x.title === '和她说话').length === 7 && !flat(tm.blocks).some(x => x.as === 'stay') && tm.foot === 'Mac 的时间还没进来');
 }
 
 // ---------- the built page ----------
@@ -241,7 +323,7 @@ const browser = await chromium.launch({ headless: true, channel: 'chrome', args:
 const errors = [];
 const NOTCH_R = 412.5, TOP = 32;
 // A page on a fake daemon: `served` is what /inherent/day answers, `board` the sessions, `departure` the pinned trip, `hits` the day reads it got.
-async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = makeDay(), departure = null, init = null } = {}) {
+async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = makeDay(), departure = null, init = null, at = NOW } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 640, height: 900 }, deviceScaleFactor: 2 });
   const page = await ctx.newPage();
   const s = { board, served, departure, hits: [], pictures: [], controls: { mic_muted: false, speech_muted: false, conversation: false, quiet: 'off' } };
@@ -281,7 +363,7 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
     if (url.pathname === '/inherent/agent-marks') return json({ marks: {} });
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"Not Found"}' });
   });
-  await page.clock.setFixedTime(new Date(NOW));
+  await page.clock.setFixedTime(new Date(at));
   await page.goto(`http://127.0.0.1:${web}/?companion=1&port=${daemonPort}`);
   await page.addStyleTag({ content: 'html,body{height:100%}body{background:linear-gradient(160deg,#7f98b8,#5d7898 55%,#4a6484)!important}' });
   const move = async (x, y) => { await page.mouse.move(x, y); await page.evaluate(([x, y]) => window.__cursor({ x, y }), [x, y]); };
@@ -601,7 +683,7 @@ try {
     const heads = (await text('.dt-sh .dt-tx b')).map(x => x.trim());
     check('stay headers, in order, by name', heads.join() === '家,A&W,家,UVic,家');
     const titles = (await text('.dt-row .dt-tx b')).map(x => x.trim());
-    check('rows say what happened, by their words', ['和她说话', '照片', '开车 · 1 时 40 分', '步行 · 10 分', '27 路 · 29 分', '私事', '给银行打电话', '小组讨论'].every(w => titles.includes(w)), titles.join('|'));
+    check('rows say what happened, by their words', ['和她说话', '照片', '开车', '步行', '27 路', '私事', '给银行打电话', '小组讨论'].every(w => titles.includes(w)), titles.join('|'));
     check('a photo shows its first line; a ride its stops', (await text('.dt-row .dt-tx em')).includes('汉堡和薯条') && (await text('.dt-row .dt-tx em')).includes('Shelbourne at Pear → UVic Exchange'));
     check('the now line is at 21:50, with what is still to come below it, muted', (await text('.dt-now'))[0].trim() === '现在 21:50' && await a.page.locator('.dt-now ~ .dt-row.is-future').count() >= 3);
     check('the overview bar draws the day: pieces, a now tick, the hours from the morning (09 for a 09:05 wake)', await a.page.locator('.dt-seg').count() > 5 && await a.page.locator('.dt-nowtick').count() === 1 && (await text('.dt-hours span')).join() === '09,12,15,18,21,24');
@@ -727,6 +809,136 @@ try {
     await a.ctx.close();
   }
 
+
+  // ---- the list: every row has the same anatomy, on any day ----
+  if (all || only === 'list') {
+    // What the list must hold on any day: rows and headers one under another, none crossing another, nothing between them but a gap of 12 or none,
+    // every word inside its row, the heights of the design (40, 52 with a second line, a stay's header 40, the now line 28).
+    const audit = a => a.page.evaluate(() => {
+      const list = document.querySelector('.dt-list'), kids = [...list.querySelectorAll('.dt-row, .dt-sh, .dt-now')], bad = [], box = el => el.getBoundingClientRect();
+      kids.sort((x, y) => box(x).top - box(y).top);
+      kids.forEach((el, i) => {
+        const r = box(el), name = el.dataset.key ?? el.className, want = el.classList.contains('dt-now') ? 28 : el.classList.contains('has-detail') ? 52 : 40;
+        if (Math.abs(r.height - want) > .5) bad.push(`${name} is ${r.height} tall, not ${want}`);
+        if (i) { const gap = r.top - box(kids[i - 1]).bottom; if (Math.abs(gap) > .5 && Math.abs(gap - 12) > .5) bad.push(`${name} is ${gap} under the one before`); }
+        for (const part of el.querySelectorAll('.dt-at, .dt-ttl, .dt-tx > em, .dt-tm')) { const p = box(part); if (p.left < r.left - .5 || p.right > r.right + .5 || p.top < r.top - .5 || p.bottom > r.bottom + .5) bad.push(`${name} ${part.className} is outside its row`); }
+        const tx = el.querySelector('.dt-tx'), tm = el.querySelector('.dt-tm'), at = el.querySelector('.dt-at');
+        if (tx && tm && box(tx).right > box(tm).left + .5) bad.push(`${name}: the words run into the right column`);
+        if (at && at.scrollWidth > at.clientWidth + 1 || tm && tm.scrollWidth > tm.clientWidth + 1) bad.push(`${name}: a time or a length is cut`);
+        const ttl = el.querySelector('.dt-ttl'), em = el.querySelector('.dt-tx > em'); if (ttl && em && box(ttl).bottom > box(em).top + .5) bad.push(`${name}: the title runs into its second line`);
+      });
+      return { n: kids.length, bad };
+    });
+    const openDay = async a => {
+      await a.until(() => document.querySelector('.notch')?.dataset.line);
+      const seg = await a.lineX();
+      await a.move(seg.mid, 14); await a.page.mouse.down(); await a.page.mouse.up();
+      await a.until(() => document.querySelector('.notch-drop.is-open .dt-row, .notch-drop.is-open .dt-say'), undefined, 8000);
+      await a.page.waitForTimeout(800);
+    };
+    const text = (a, sel) => a.page.locator(sel).allInnerTexts();
+    const rect = (a, sel) => a.page.locator(sel).first().evaluate(el => el.getBoundingClientRect().toJSON());
+
+    {
+      const a = await boot({ served: richDay() });
+      await openDay(a);
+      const au = await audit(a);
+      check('the main day: no row crosses another, every word is inside its row, rows are 40 or 52 tall, headers 40, the now line 28, units 12 apart', au.n >= 25 && au.bad.length === 0, au.bad.join('; '));
+      const geo = await a.page.evaluate(() => {
+        const ics = [...document.querySelectorAll('.dt-row .dt-ic')].map(e => e.getBoundingClientRect()), dots = [...document.querySelectorAll('.dt-sh .dt-dot')].map(e => e.getBoundingClientRect());
+        const ats = [...document.querySelectorAll('.dt-row .dt-at')].map(e => e.getBoundingClientRect().right), cx = r => r.left + r.width / 2;
+        const rail = getComputedStyle(document.querySelector('.dt-sh.has-rows'), '::after'), railRow = getComputedStyle(document.querySelector('.dt-in .dt-row'), '::before');
+        const head = document.querySelector('.dt-sh.has-rows').getBoundingClientRect();
+        return { icW: new Set(ics.map(r => r.width)).size === 1 && ics[0].width, icX: new Set(ics.map(r => Math.round(cx(r) * 2))).size, dotX: dots.every(d => Math.abs(cx(d) - cx(ics[0])) < 1), dotW: new Set(dots.map(d => d.width)).size === 1 && dots[0].width,
+          atX: new Set(ats.map(x => Math.round(x * 2))).size, railW: rail.width, railBg: rail.backgroundColor, railRowW: railRow.width, railLeft: head.left + parseFloat(rail.left) + parseFloat(rail.width) / 2 - cx(ics[0]) };
+      });
+      check('the columns line up: the time right-aligned at one edge, every glyph 28 across at one centre, the stay\'s 8 px dot on that centre, its rail 2 px in its hue at .35 on it too', geo.icW === 28 && geo.icX === 1 && geo.dotX && geo.dotW === 8 && geo.atX === 1 && geo.railW === '2px' && geo.railBg === 'rgba(255, 168, 150, 0.35)' && geo.railRowW === '2px' && Math.abs(geo.railLeft) < 1.2, JSON.stringify(geo));
+      const ends = await a.page.evaluate(() => {
+        const q = key => document.querySelector(`[data-key="${key}"]`), pseudo = (el, w = '::before') => getComputedStyle(el, w), half = el => el.getBoundingClientRect().height / 2;
+        const lastIn = q('work-1'), mid = q('reminder-2'), ride = q('ride-1'), after = q('talk-3');
+        return { lastEnd: pseudo(lastIn).bottom === `${half(lastIn)}px`, midFull: pseudo(mid).bottom === '0px' && pseudo(mid).top === '0px', tripTop: pseudo(ride).top === `${half(ride)}px` && pseudo(ride).bottom === '0px', tripEnd: pseudo(after).bottom === `${half(after)}px` && pseudo(after).top === '0px',
+          dashed: /repeating-linear-gradient/.test(pseudo(ride).backgroundImage) && /repeating-linear-gradient/.test(pseudo(after).backgroundImage), cls: [ride.className, after.className] };
+      });
+      check('a rail ends at the last glyph: the stay\'s at its last row, the trip\'s dashed from the ride\'s glyph to the talk on it', ends.lastEnd && ends.midFull && ends.tripTop && ends.tripEnd && ends.dashed, JSON.stringify(ends));
+      const type = await a.page.evaluate(() => {
+        const cs = (q, w) => { const e = document.querySelector(q); return e ? getComputedStyle(e, w) : null; };
+        const b = cs('.dt-row[data-key="talk-1"] .dt-tx b'), em = cs('.dt-row[data-key="talk-1"] .dt-tx > em'), at = cs('.dt-row[data-key="talk-1"] .dt-at'), sh = cs('.dt-sh[data-key="stay-uvic"] .dt-tx b'), now = cs('.dt-now', '::after');
+        return { title: `${b.fontSize}/${b.fontWeight}`, detail: em.fontSize, mono: `${at.fontSize} ${/JetBrains|Menlo|monospace/.test(at.fontFamily)}`, stay: `${sh.fontSize}/${sh.fontWeight}`, rule: `${now.height} ${now.backgroundColor}` };
+      });
+      check('type: a row\'s title 14/500, its detail 12, times mono 11.5, a stay\'s name 15/600, the now rule 1 px warm white', type.title === '14px/500' && type.detail === '12px' && type.mono === '11.5px true' && type.stay === '15px/600' && /^1px rgba?\(255, 240, 220/.test(type.rule), JSON.stringify(type));
+      const fut = await a.page.evaluate(() => { const r = document.querySelector('.dt-row.is-future'), ic = getComputedStyle(r.querySelector('.dt-ic')); return { opacity: getComputedStyle(r).opacity, border: ic.borderTopStyle }; });
+      check('what is still to come is at .62 with a dashed glyph', fut.opacity === '0.62' && fut.border === 'dashed', JSON.stringify(fut));
+      const rightCol = await text(a, '.dt-row .dt-tm');
+      check('the right column: lengths, countdowns (还有 10 分, 还有 40 分), the bus\'s 22:33 出门, the payment\'s amount in ink', ['还有 10 分', '还有 40 分', '22:33 出门', '$12.40', '1 时 40 分', '29 分', '活跃 42 分'].every(x => rightCol.includes(x))
+        && await a.page.locator('.dt-row[data-key="pay-1"] .dt-tm').evaluate(el => getComputedStyle(el).color === 'rgb(238, 240, 251)'), rightCol.join('|'));
+      const stayRight = await text(a, '.dt-sh .dt-tm');
+      check('a stay says its range and its length at the right; the one he is in says since when and how long: 18:50 起 · 3 时', stayRight.includes('09:05–11:25 · 2 时 20 分') && stayRight.includes('18:50 起 · 3 时'), stayRight.join('|'));
+      await a.page.clock.setFixedTime(new Date(NOW + 60_000));
+      await a.until(() => document.querySelector('.dt-now')?.textContent.trim() === '现在 21:51', undefined, 4000);
+      check('and a minute later the now line and the running stay\'s length have turned: 现在 21:51, 18:50 起 · 3 时 1 分', (await text(a, '.dt-sh .dt-tm')).includes('18:50 起 · 3 时 1 分') && (await text(a, '.dt-row .dt-tm')).includes('还有 9 分'));
+      await a.page.clock.setFixedTime(new Date(NOW));
+      await a.until(() => document.querySelector('.dt-now')?.textContent.trim() === '现在 21:50', undefined, 4000);
+
+      // what waits on him
+      const pill = await a.page.locator('.dt-waits').evaluate(el => ({ text: el.innerText, color: getComputedStyle(el).color, bg: getComputedStyle(el).backgroundColor }));
+      const badges = await a.page.locator('.dt-wait').evaluateAll(els => els.map(el => ({ key: el.closest('.dt-row').dataset.key, text: el.innerText, color: getComputedStyle(el).color })));
+      check('the header says 2 件等你 in amber, and the two rows that wait carry an amber 等你 badge after their titles', pill.text === '2 件等你' && pill.color === 'rgb(255, 201, 143)' && badges.map(b => `${b.key}:${b.text}`).join() === 'reminder-2:等你,event-1:等你' && badges.every(b => b.color === 'rgb(255, 201, 143)'), JSON.stringify({ pill, badges }));
+      await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = document.querySelector('.dt-list').scrollHeight; });
+      await a.page.waitForTimeout(150);
+      await a.page.locator('.dt-waits').click(); await a.page.waitForTimeout(80);
+      const flashing = await a.page.evaluate(() => document.querySelector('[data-key="reminder-2"]').classList.contains('is-flash'));
+      await a.page.waitForTimeout(700);
+      const placed = await a.page.evaluate(() => { const l = document.querySelector('.dt-list'), r = document.querySelector('[data-key="reminder-2"]'); return r.getBoundingClientRect().top - l.getBoundingClientRect().top; });
+      check('a click on the pill takes the first row that waits to the top of the list, and it flashes', flashing && Math.abs(placed - 12) <= 2, String(placed));
+      await a.shot('list-01-rest', { x: 40, y: 0, width: 560, height: 700 });
+      await a.ctx.close();
+    }
+    {
+      const a = await boot({ served: fragmentedDay() });
+      await openDay(a);
+      const au = await audit(a);
+      check('the fragmented day (15 stays, 11 moves, 2 rides, a stop four times): the same holds, nothing crowds or crosses', au.n === 34 && au.bad.length === 0, au.bad.join('; '));
+      const dom = await a.page.evaluate(() => ({ heads: document.querySelectorAll('.dt-sh').length, pips: document.querySelectorAll('.dt-pip').length, trip: [...document.querySelectorAll('.dt-row.is-trip')].map(e => e.dataset.key + (e.classList.contains('is-top') ? '^' : '') + (e.classList.contains('is-end') ? '$' : '')),
+        now: (n => ({ gap: n.getBoundingClientRect().top - document.querySelector('[data-key="f-w11"]').getBoundingClientRect().bottom, text: n.innerText.trim() }))(document.querySelector('.dt-now')), foot: document.querySelector('.dt-foot')?.innerText }));
+      check('eleven places with headers and four stops with a small dot in the trip; the trips are one rail each; the now line hangs from the walk he is on', dom.heads === 11 && dom.pips === 4 && dom.trip.slice(0, 5).join() === 'f-w1^,f-s2,f-r1,f-talk-1,f-w2$' && dom.now.gap === 0 && dom.now.text === '现在 21:50' && dom.foot === 'Mac 的时间还没进来', JSON.stringify(dom));
+      await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; }); await a.page.waitForTimeout(300);
+      await a.shot('list-02-fragmented-top', { x: 40, y: 0, width: 560, height: 700 });
+      await a.page.evaluate(() => { const l = document.querySelector('.dt-list'); l.scrollTop = l.scrollHeight; }); await a.page.waitForTimeout(300);
+      await a.shot('list-03-fragmented-bottom', { x: 40, y: 0, width: 560, height: 700 });
+      await a.ctx.close();
+    }
+    {
+      const a = await boot({ served: talkDay() });
+      await openDay(a);
+      const au = await audit(a);
+      check('a day of talks alone: seven rows and the now line one under another, nothing crowds', au.n === 8 && au.bad.length === 0 && await a.page.locator('.dt-sh').count() === 0, au.bad.join('; '));
+      await a.shot('list-04-talks-only', { x: 40, y: 0, width: 560, height: 520 });
+      await a.ctx.close();
+    }
+    {
+      const a = await boot({ served: earlyDay(), at: EARLY });
+      await openDay(a);
+      const au = await audit(a);
+      check('at 02:30 with one stay since midnight and an event this afternoon: the now line inside the stay on its rail, the event below it, nothing crowds', au.bad.length === 0 && await a.page.locator('.dt-sh').count() === 1 && (await text(a, '.dt-now'))[0].trim() === '现在 02:30' && (await text(a, '.dt-sh .dt-tm'))[0] === '00:00 起 · 2 时 30 分' && await a.page.locator('.dt-now ~ .dt-row.is-future').count() === 1 && await a.page.locator('.dt-now.is-rail').count() === 1, au.bad.join('; '));
+      await a.shot('list-05-early-morning', { x: 40, y: 0, width: 560, height: 520 });
+      await a.ctx.close();
+    }
+    {
+      const a = await boot();
+      await openDay(a);
+      await a.page.locator('.dt-nav button').first().click();
+      await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
+      await a.page.waitForTimeout(500);
+      const au = await audit(a);
+      check('yesterday: the same list, no now line, no countdown; the tag is a button that goes back to today', au.bad.length === 0 && await a.page.locator('.dt-now').count() === 0 && await a.page.locator('.dt-today').count() === 0 && (await text(a, '.dt-back'))[0] === '回到今天', au.bad.join('; '));
+      await a.shot('list-06-yesterday', { x: 40, y: 0, width: 560, height: 520 });
+      await a.page.locator('.dt-back').click();
+      await a.until(() => document.querySelector('.dt-date')?.textContent === '10月19日 周一' && document.querySelector('.dt-today'), undefined, 6000);
+      check('and 回到今天 is today again, with its tag', await a.page.locator('.dt-back').count() === 0 && await a.page.locator('.dt-today').count() === 1);
+      await a.ctx.close();
+    }
+  }
+
   // ---- the bar: what it draws, what the pointer finds on it, a range of it, a lens ----
   if (all || only === 'bar') {
     const rich = buildDay(richDay(), NOW, zh), rbar = buildBar(rich, zh), t0 = rbar.t0, t1 = T(24);
@@ -765,7 +977,7 @@ try {
     const stars = await a.page.locator('.dt-lit').evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }));
     check('what mattered is a lit star on the top edge at each starred item\'s start: 15:19 and 13:20', stars.length === 2 && stars.every(s => Math.abs(s.y - g.top) < 1) && Math.abs(stars[0].x - xAt(13, 20)) < 1.5 && Math.abs(stars[1].x - xAt(15, 19)) < 1.5);
     check('the numbers are chips under the bar, each with its words', (await text('.dt-num')).join('|').replace(/\n/g, ' ') === '睡\n7:50|路上\n3:04|Mac\n2:37|通话\n18 分|和她\n3 次|花\n$12.40|照片\n1'.replace(/\n/g, ' '));
-    check('the extra kinds the brain serves are rows: the payment, the Claude chat and the letter', (await text('.dt-row .dt-tx b')).some(x => x.trim() === 'A&W') && (await text('.dt-row .dt-tx em')).some(x => x === 'Teen Burger combo · 支付宝') && (await text('.dt-row .dt-tm')).some(x => /−\$12\.40/.test(x)) && (await text('.dt-row .dt-tx b')).some(x => x.trim() === 'The bar for the day') && (await text('.dt-row .dt-tx b')).some(x => x.trim() === '和 Claude 聊了 2 个对话'));
+    check('the extra kinds the brain serves are rows: the payment, the Claude chat and the letter', (await text('.dt-row .dt-tx b')).some(x => x.trim() === 'A&W') && (await text('.dt-row .dt-tx em')).some(x => x === 'Teen Burger combo · 支付宝') && (await text('.dt-row .dt-tm')).some(x => x === '$12.40') && (await text('.dt-row .dt-tx b')).some(x => x.trim() === 'The bar for the day') && (await text('.dt-row .dt-tx b')).some(x => x.trim() === 'Claude 日报'));
     await a.shot('bar-01-rest', { x: 40, y: 0, width: 560, height: 700 });
 
     // hover: three places on the bar
@@ -794,7 +1006,7 @@ try {
     check('hovering the ride: its words, range and length, and its row is the one lit', c && c.head === '27 路 14:50–15:19 · 29 分' && c.hot.join() === 'ride-1' && c.lines.length === 1 && /^和她说话 · 1 句/.test(c.lines[0]), JSON.stringify(c));
     await a.shot('bar-03-hover-trip', { x: 40, y: 0, width: 560, height: 700 });
     c = await over(13, 26);
-    check('hovering 13:26: the photo (with its picture) and the payment (counterparty and amount), the photo first; the starred payment shows its star', c && c.head === 'A&W 13:15–13:55 · 40 分' && c.lines.length === 2 && /^汉堡和薯条\s+13:30$/.test(c.lines[0]) && /^A&W · −\$12\.40\s+13:20$/.test(c.lines[1]) && c.thumbs === 1, JSON.stringify(c));
+    check('hovering 13:26: the photo (with its picture) and the payment (counterparty and amount), the photo first; the starred payment shows its star', c && c.head === 'A&W 13:15–13:55 · 40 分' && c.lines.length === 2 && /^汉堡和薯条\s+13:30$/.test(c.lines[0]) && /^A&W · \$12\.40\s+13:20$/.test(c.lines[1]) && c.thumbs === 1, JSON.stringify(c));
     check('the picture is read from the daemon by its attachment id, and shows', a.s.pictures.includes(`/inherent/attachments/${PIC}`) && await a.page.locator('.dt-card.is-on img.dt-thumb').evaluate(el => el.naturalWidth === 96 && el.clientWidth === 48 && el.clientHeight === 48));
     await a.shot('bar-04-hover-picture-payment', { x: 40, y: 0, width: 560, height: 700 });
     c = await over(22, 35);

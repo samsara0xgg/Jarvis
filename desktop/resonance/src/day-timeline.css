@@ -1,12 +1,16 @@
 /* The timeline pane (DayTimeline.tsx, ADR 0296): the notch's drop pane with the day in it. Black like the notch it grows out of;
    a place's colour is its own (home warm, school blue, the rest a fixed hue each), the day's now is a warm white, and amber is
-   never used here: it is the turn mark's, for "waiting on you". */
+   the turn mark's: here it says "waiting on you" (the pill in the header, the badge on a row) and nothing else. */
 .notch .dt { --now:255 240 220; display:flex; flex-direction:column; gap:9px; max-height:584px; padding-inline:4px; }
 .notch .dt > :not(.dt-list) { flex:none; }
 .notch .dt.is-loading > :not(.dt-head) { opacity:.45; transition:opacity var(--motion-fast); }
 .notch .dt-head { display:flex; align-items:center; gap:8px; min-height:26px; }
-.notch .dt-date { flex:none; font-size:14.5px; font-weight:600; line-height:24px; white-space:nowrap; }
-.notch .dt-today { flex:none; padding:0 6px; border-radius:var(--radius-tag); font-style:normal; font-size:var(--text-label); font-weight:600; line-height:17px; color:var(--p-muted); background:rgb(255 255 255 / .08); }
+.notch .dt-date { flex:none; font-size:15px; font-weight:600; line-height:24px; white-space:nowrap; }
+.notch .dt-today,.notch .dt-back { flex:none; padding:0 6px; border-radius:var(--radius-tag); font-style:normal; font-size:var(--text-label); font-weight:600; line-height:17px; color:var(--p-muted); background:rgb(255 255 255 / .08); }
+.notch .dt-back { cursor:pointer; transition:background var(--motion-fast),color var(--motion-fast); }
+.notch .dt-back:hover { background:rgb(255 255 255 / .14); color:var(--p-ink); }
+.notch .dt-waits { flex:none; height:20px; padding:0 9px; border-radius:10px; background:rgb(255 201 143 / .14); font-size:11.5px; font-weight:600; line-height:20px; white-space:nowrap; color:rgb(255 201 143); transition:background var(--motion-fast); }
+.notch .dt-waits:hover { background:rgb(255 201 143 / .24); }
 .notch .dt-chips { display:flex; flex:1; gap:4px; min-width:0; overflow:hidden; }
 .notch .dt-chip { flex:0 1 auto; min-width:0; max-width:140px; padding:0 6px; border-radius:var(--radius-tag); font-style:normal; font-size:var(--text-label); line-height:17px; color:var(--p-muted); background:rgb(255 255 255 / .06);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -15,43 +19,57 @@
 .notch .dt-nav button { display:grid; place-items:center; width:24px; height:24px; border-radius:var(--radius-control); color:var(--p-muted); transition:background var(--motion-fast),color var(--motion-fast); }
 .notch .dt-nav button:hover:not(:disabled) { background:rgb(255 255 255 / .08); color:var(--p-ink); }
 .notch .dt-nav button:disabled { opacity:.3; cursor:default; }
-.notch .dt-line { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; margin:0; padding-inline:2px; font:14px/1.55 "Songti SC","Noto Serif SC",ui-serif,serif; color:var(--p-ink); }
+.notch .dt-line { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; margin:0; padding-inline:2px; font:14.5px/1.55 "Songti SC","Noto Serif SC",ui-serif,serif; color:var(--p-ink); }
 .notch .dt-line.is-draft { color:var(--p-muted); }
 .notch .dt-say { margin:0; padding:10px 2px 14px; font-size:var(--text-detail); color:var(--p-muted); }
 .notch .dt-foot { margin:0; padding-inline:2px; font-size:var(--text-label); line-height:16px; color:var(--p-faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
-/* the day: stays as groups, the ways between them as connectors, the now line, what is still to come muted */
+/* the day: stays as groups, the ways between them as trips, the now line, what is still to come muted */
+.notch .dt { --tcol:44px; }
 .notch .dt-list { position:relative; display:flex; flex:0 1 auto; flex-direction:column; min-height:0; margin-inline:-4px; padding-inline:4px; overflow-y:auto; overscroll-behavior:contain;
   scrollbar-width:thin; scrollbar-color:var(--p-line) transparent; }
 .notch .dt-list.more-below { -webkit-mask-image:linear-gradient(#000 calc(100% - 30px),transparent); mask-image:linear-gradient(#000 calc(100% - 30px),transparent); }
 .notch .dt-list.more-above { -webkit-mask-image:linear-gradient(transparent,#000 14px); mask-image:linear-gradient(transparent,#000 14px); }
 .notch .dt-list.more-above.more-below { -webkit-mask-image:linear-gradient(transparent,#000 14px,#000 calc(100% - 30px),transparent); mask-image:linear-gradient(transparent,#000 14px,#000 calc(100% - 30px),transparent); }
-.notch .dt-row,.notch .dt-sh { position:relative; display:grid; grid-template-columns:22px minmax(0,1fr) auto; gap:0 10px; align-items:center; min-height:32px; padding:3px 6px; border-radius:var(--radius-control);
-  font-size:var(--text-detail); line-height:17px; transition:background var(--motion-fast),opacity 150ms; }
-.notch .dt-row.is-hot,.notch .dt-sh.is-hot { background:rgb(255 255 255 / .07); }
-.notch .dt-ic { position:relative; z-index:1; display:grid; place-items:center; box-sizing:border-box; width:22px; height:22px; border:1px solid transparent; border-radius:50%; font-style:normal; color:var(--p-muted); background:rgb(255 255 255 / .07); }
-.notch .dt-tx { display:flex; flex-direction:column; min-width:0; }
-.notch .dt-tx b { overflow:hidden; font-size:12.5px; font-weight:500; white-space:nowrap; text-overflow:ellipsis; color:var(--p-ink); }
-.notch .dt-tx em { overflow:hidden; font-style:normal; font-size:11px; line-height:15px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-faint); }
-.notch .dt-star { margin-left:5px; vertical-align:-1px; color:var(--data); }
-.notch .dt-tm { font:var(--text-mono)/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; color:var(--p-muted); }
-.notch .dt-tm small { margin-left:8px; font-size:inherit; color:var(--p-faint); }
-.notch .dt-stay { display:flex; flex-direction:column; margin-top:5px; }
-.notch .dt-stay:first-child { margin-top:0; }
-.notch .dt-dot { justify-self:center; width:10px; height:10px; border-radius:50%; background:rgb(var(--c)); box-shadow:0 0 8px rgb(var(--c) / .5); }
+.notch .dt-list > *,.notch .dt-stay > * { flex:none; }
+/* a row is 40 px tall, 52 with a second line; a stay's header is 40; a unit (a stay, a trip) starts 12 px under the one before it */
+.notch .dt-row,.notch .dt-sh { position:relative; display:grid; grid-template-columns:var(--tcol) 28px minmax(0,1fr) auto; gap:0 8px; align-items:center; box-sizing:border-box; height:40px; padding:0 6px; border-radius:10px;
+  font-size:14px; line-height:18px; transition:background var(--motion-fast),opacity 150ms; }
+.notch .dt-row.has-detail { height:52px; }
+.notch .is-gap { margin-top:12px; }
+.notch .dt-row.is-hot,.notch .dt-sh.is-hot { background:rgb(255 255 255 / .04); }
+.notch .dt-at { font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; color:var(--p-muted); }
+.notch .dt-at small { margin-right:4px; font:8.5px/1 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; vertical-align:2px; color:var(--p-faint); }
+.notch .dt-ic { position:relative; z-index:1; display:grid; place-items:center; box-sizing:border-box; width:28px; height:28px; border:1px solid transparent; border-radius:50%; font-style:normal; color:rgb(var(--ink) / .82); background:#0f0f0f; }
+.notch .dt-pip { width:6px; height:6px; border-radius:50%; background:rgb(196 204 238 / .55); }
+.notch .dt-badge { position:absolute; top:-3px; right:-3px; z-index:2; color:rgb(var(--now)); filter:drop-shadow(0 0 3px rgb(var(--now) / .7)); }
+.notch .dt-tx { display:flex; flex-direction:column; justify-content:center; min-width:0; margin-left:2px; }
+.notch .dt-ttl { display:flex; align-items:center; gap:6px; min-width:0; }
+.notch .dt-tx b { min-width:0; overflow:hidden; font-size:14px; font-weight:500; line-height:18px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-ink); }
+.notch .dt-tx > em { overflow:hidden; font-style:normal; font-size:12px; line-height:16px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-faint); }
+.notch .dt-wait { flex:none; padding:0 6px; border-radius:var(--radius-tag); background:rgb(255 201 143 / .14); font-style:normal; font-size:10.5px; font-weight:600; line-height:16px; color:rgb(255 201 143); }
+.notch .dt-star { flex:none; color:rgb(var(--now)); filter:drop-shadow(0 0 3px rgb(var(--now) / .6)); }
+.notch .dt-tm { font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; color:var(--p-muted); }
+.notch .dt-tm.is-value { color:var(--p-ink); }
+.notch .dt-tm small { font-size:inherit; color:var(--p-faint); }
+.notch .dt-stay { display:flex; flex-direction:column; }
+.notch .dt-dot { justify-self:center; width:8px; height:8px; border-radius:50%; background:rgb(var(--c)); box-shadow:0 0 8px rgb(var(--c) / .5); }
 .notch .dt-sh.is-plain .dt-dot { background:rgb(var(--c) / .55); box-shadow:none; }
-.notch .dt-sh .dt-tx b { font-size:13px; font-weight:600; }
+.notch .dt-sh .dt-tx b { font-size:15px; font-weight:600; }
 .notch .dt-sh.is-plain .dt-tx b { font-weight:500; color:var(--p-muted); }
-.notch .dt-in { margin-left:16px; padding-left:5px; border-left:1.5px solid rgb(var(--c) / .32); }
-.notch .dt-in .dt-row { min-height:30px; }
-/* the ways between stays hang on a dotted line through the icon column */
-.notch .dt-row.is-way::before { content:''; position:absolute; left:16px; top:-8px; bottom:-8px; border-left:1.5px dotted rgb(214 222 250 / .4); }
-.notch .dt-row.is-way .dt-ic { background:#000; border-color:rgb(214 222 250 / .28); }
-.notch .dt-row.is-way .dt-tx b { font-weight:400; color:var(--p-muted); }
+/* rails: a stay's is 2 px in its hue at .35 from its dot through its rows; a trip's is dashed; each ends at the last glyph */
+.notch .dt-sh.has-rows::after { content:''; position:absolute; z-index:0; left:calc(6px + var(--tcol) + 8px + 13px); width:2px; top:50%; bottom:0; background:rgb(var(--c) / .35); }
+.notch .dt-row.is-rail::before,.notch .dt-now.is-rail::before { content:''; position:absolute; z-index:0; left:calc(6px + var(--tcol) + 8px + 13px); width:2px; top:0; bottom:0; background:rgb(var(--c) / .35); }
+.notch .dt-row.is-trip::before,.notch .dt-now.is-trip::before { background:repeating-linear-gradient(to bottom, rgb(214 222 250 / .42) 0 3px, transparent 3px 7px); }
+.notch .dt-row.is-rail.is-top::before { top:50%; }
+.notch .dt-row.is-rail.is-end::before { bottom:50%; }
+.notch .dt-row.is-leg .dt-ic { border-color:rgb(214 222 250 / .28); background:#000; }
+.notch .dt-row.is-leg .dt-tx b { font-weight:400; color:var(--p-muted); }
 .notch .dt-row.is-future { opacity:.62; }
-.notch .dt-row.is-future .dt-ic { background:transparent; border:1px dashed rgb(214 222 250 / .5); }
-.notch .dt-now { display:flex; align-items:center; gap:8px; height:22px; padding-inline:6px; font:600 var(--text-mono)/1 "JetBrains Mono", Menlo, monospace; color:rgb(var(--now)); }
-.notch .dt-now::after { content:''; flex:1; height:1px; background:rgb(var(--now) / .85); box-shadow:0 0 6px rgb(var(--now) / .55); }
+.notch .dt-row.is-future .dt-ic { background:#000; border:1px dashed rgb(214 222 250 / .5); }
+.notch .dt-now { position:relative; display:flex; align-items:center; gap:8px; height:28px; box-sizing:border-box; padding-inline:6px; font:600 11.5px/1 "JetBrains Mono", Menlo, monospace; color:rgb(var(--now)); }
+.notch .dt-now > span { position:relative; z-index:1; }
+.notch .dt-now::after { content:''; position:relative; z-index:1; flex:1; height:1px; background:rgb(var(--now) / .85); box-shadow:0 0 6px rgb(var(--now) / .55); }
 .notch .is-flash { animation:dt-flash 600ms var(--ease-out); }
 @keyframes dt-flash { from { background:rgb(255 255 255 / .08); } to { background:transparent; } }
 @media (prefers-reduced-motion:reduce) {

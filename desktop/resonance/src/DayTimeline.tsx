@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { CaretLeft, CaretRight, Star } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
-import { useNow, useRoute, type Route } from './homeData';
+import { useRoute, type Route } from './homeData';
 import { buildDay, dateTitle, report, shiftDate, within, type Block, type DayReply, type Row } from './dayView';
 import { DayBar, useBarState } from './DayBar';
 import { Ic } from './dayIcons';
@@ -16,25 +16,58 @@ const rgb = (c: readonly number[]) => c.join(' ');
 // Where `el` is inside the scrolling `list`.
 const offsetIn = (el: HTMLElement, list: HTMLElement) => el.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
 
-type Hover = { hot: string | null; onHot: (key: string | null) => void };
+type Hover = { hot: string | null; onHot: (key: string | null) => void; t: (l: L) => string };
 
-function RowView({ row, hot, onHot }: { row: Row } & Hover) {
-  return <div className={`dt-row${row.future ? ' is-future' : ''}${row.connector ? ' is-way' : ''}${hot === row.key ? ' is-hot' : ''}`} data-key={row.key} data-kind={row.kind} data-lk={row.lens ?? undefined} onPointerEnter={() => onHot(row.key)} onPointerLeave={() => onHot(null)}>
-    <i className="dt-ic"><Ic icon={row.icon}/></i>
-    <span className="dt-tx"><b>{row.title}{row.star && <Star size={10} weight="fill" className="dt-star" aria-label="★"/>}</b>{row.detail && <em>{row.detail}</em>}</span>
-    <span className="dt-tm">{row.when}{row.dur && <small>{row.dur}</small>}</span>
+// A row: the time it began, its glyph (a lit star on it when it mattered), its words (an amber badge when it waits on him), and at the
+// right its length, how long until it, or its value. The glyphs of one stay or one trip hang on a rail.
+function RowView({ row, hot, onHot, t, how }: { row: Row; how: string } & Hover) {
+  return <div className={`dt-row${row.detail ? ' has-detail' : ''}${row.future ? ' is-future' : ''}${row.connector ? ' is-leg' : ''}${how}${hot === row.key ? ' is-hot' : ''}`} data-key={row.key} data-kind={row.kind} data-lk={row.lens ?? undefined}
+    onPointerEnter={() => onHot(row.key)} onPointerLeave={() => onHot(null)}>
+    <time className="dt-at">{row.ago && <small>{row.ago}</small>}{row.at}</time>
+    <i className="dt-ic">{row.icon === 'dot' ? <span className="dt-pip"/> : <Ic icon={row.icon}/>}{row.star && <Star size={10} weight="fill" className="dt-badge" aria-label="★"/>}</i>
+    <span className="dt-tx"><span className="dt-ttl"><b>{row.title}</b>{row.wait && <i className="dt-wait">{t(['Waiting', '等你'])}</i>}</span>{row.detail && <em>{row.detail}</em>}</span>
+    <span className={`dt-tm${row.value ? ' is-value' : ''}`}>{row.right}</span>
   </div>;
 }
-function Blocks({ blocks, hot, onHot }: { blocks: Block[] } & Hover) {
-  return <>{blocks.map(b => b.type === 'row' ? <RowView key={b.row.key} row={b.row} hot={hot} onHot={onHot}/>
-    : b.type === 'now' ? <div key={b.key} className="dt-now"><span>{b.label}</span></div>
-    : <section key={b.key} className="dt-stay" style={{ '--c': rgb(b.head.rgb) } as CSSProperties}>
-      <header className={`dt-sh${b.head.unnamed ? ' is-plain' : ''}${hot === b.key ? ' is-hot' : ''}`} data-key={b.key} onPointerEnter={() => onHot(b.key)} onPointerLeave={() => onHot(null)}>
-        <i className="dt-dot"/><span className="dt-tx"><b>{b.head.name}{b.head.star !== null && <Star size={10} weight="fill" className="dt-star" aria-label="★"/>}</b>{b.head.star && <em>{b.head.star}</em>}</span>
-        <span className="dt-tm">{b.head.when}<small>{b.head.dur}</small></span>
+const onWay = (b?: Block) => b?.type === 'row' && (b.row.connector || b.row.onWay);
+// The blocks of one level, told apart in units: a stay with what is in it, a trip (the ways he went and what happened on them), and the
+// rest. A unit starts 12 px under the one before it; the now line stays with the unit it follows. A trip's rail is dashed, from its first
+// glyph to its last; what is in a stay hangs on that stay's own, from its dot to the last row.
+function Blocks({ blocks, hot, onHot, t, inside }: { blocks: Block[]; inside?: boolean } & Hover) {
+  let last = '';
+  const end = blocks.map(b => b.type).lastIndexOf('row');
+  return <>{blocks.map((b, i) => {
+    const prev = blocks[i - 1], next = blocks[i + 1];
+    const unit = b.type === 'stay' ? `stay ${b.key}` : b.type === 'row' ? onWay(b) ? 'trip' : 'rest' : prev && prev.type !== 'stay' ? last : 'rest';
+    const gap = i > 0 && unit !== last ? ' is-gap' : '';
+    last = unit;
+    if (b.type === 'now') return <div key={b.key} className={`dt-now${gap}${(inside ? i < end : onWay(prev) && onWay(next)) ? ` is-rail${inside ? '' : ' is-trip'}` : ''}`}><span>{b.label}</span></div>;
+    if (b.type === 'row') {
+      const how = inside ? ` is-rail${i === end ? ' is-end' : ''}` : onWay(b) ? ` is-rail is-trip${onWay(prev) ? '' : ' is-top'}${onWay(next) ? '' : ' is-end'}` : '';
+      return <RowView key={b.row.key} row={b.row} hot={hot} onHot={onHot} t={t} how={gap + how}/>;
+    }
+    return <section key={b.key} className={`dt-stay${gap}`} style={{ '--c': rgb(b.head.rgb) } as CSSProperties}>
+      <header className={`dt-sh${b.head.unnamed ? ' is-plain' : ''}${b.items.length ? ' has-rows' : ''}${hot === b.key ? ' is-hot' : ''}`} data-key={b.key} onPointerEnter={() => onHot(b.key)} onPointerLeave={() => onHot(null)}>
+        <span className="dt-at"/><i className="dt-dot"/>
+        <span className="dt-tx"><span className="dt-ttl"><b>{b.head.name}</b>{b.head.star !== null && <Star size={10} weight="fill" className="dt-star" aria-label="★"/>}</span>{b.head.star && <em>{b.head.star}</em>}</span>
+        <span className="dt-tm">{b.head.when}<small> · {b.head.dur}</small></span>
       </header>
-      {b.items.length > 0 && <div className="dt-in"><Blocks blocks={b.items} hot={hot} onHot={onHot}/></div>}
-    </section>)}</>;
+      {b.items.length > 0 && <div className="dt-in"><Blocks blocks={b.items} hot={hot} onHot={onHot} t={t} inside/></div>}
+    </section>;
+  })}</>;
+}
+
+// The minute the pane is drawn for. Lengths, countdowns and the now line count whole minutes, so the pane looks at the clock every second
+// while it is open and draws again when the minute turns.
+function useMinute(fast: boolean) {
+  const [minute, setMinute] = useState(() => Math.floor(Date.now() / 60_000));
+  useEffect(() => {
+    const tick = () => setMinute(Math.floor(Date.now() / 60_000));
+    tick();
+    const id = setInterval(tick, fast ? 1000 : 60_000);
+    return () => clearInterval(id);
+  }, [fast]);
+  return minute * 60_000;
 }
 
 export function DayTimeline({ port, feed, open }: { port: string | null; feed: Route<DayReply>; open: boolean }) {
@@ -47,7 +80,7 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
   // While the next day is on its way the last one stays, dimmed, so the pane does not jump.
   const last = useRef<DayReply | null>(null);
   if (reply) last.current = reply;
-  const shown = reply ?? last.current, now = useNow(open ? 30_000 : 3_600_000);
+  const shown = reply ?? last.current, now = useMinute(open);
   useEffect(() => { feed.reload(); }, []);
   // A day that cannot be built (no usable bounds) says so in a line; a day that builds but fails to draw falls to the guards below.
   const built = useMemo(() => {
@@ -87,6 +120,8 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
     const tick = (at: number) => { const k = Math.min(1, (at - began) / 300); l.scrollTop = from + (to - from) * (1 - (1 - k) ** 3); if (k < 1) glide.current = requestAnimationFrame(tick); };
     glide.current = requestAnimationFrame(tick);
   };
+  // The waiting pill takes the first row that waits on him to the top of the list (the whole day again when the list is cut).
+  const waitFirst = (key: string) => { if (ui.filter) { ui.setFilter(null); requestAnimationFrame(() => jump(key)); } else jump(key); };
   // The bar's lens, its range and the list's cut to a range: Esc lets go of one at a time before the pane itself closes (the pane's own
   // Esc listener was added after this one, so this one answers first).
   useEffect(() => {
@@ -101,9 +136,10 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
   const say = !port ? t(['Not connected to Jarvis yet', '还没连上 Jarvis']) : route.missing ? t(["This Jarvis can't give a day yet", '这台 Jarvis 还不会给出一天']) : slow || route.failed ? t(["Couldn't read this day. Trying again.", '没读到这一天，会再试一次']) : t(['Reading the day…', '读着这一天…']);
   return <div className={`dt${shown && !reply ? ' is-loading' : ''}`} data-lens={ui.lens ?? undefined} role="region" aria-label={t(['Day timeline', '一天的时间线'])}>
     <div className="dt-head">
-      <b className="dt-date">{title}</b>{date === null && <em className="dt-today">{t(['Today', '今天'])}</em>}
+      <b className="dt-date">{title}</b>{date === null ? <em className="dt-today">{t(['Today', '今天'])}</em> : <button type="button" className="dt-back" onClick={() => setDate(null)}>{t(['Back to today', '回到今天'])}</button>}
       <TimelineGuard where="the header" reset={shown} fallback={null}>
         <span className="dt-chips">{model?.chips.map(c => <i key={c.text} className={`dt-chip${c.more ? ' is-more' : ''}`}>{c.text}</i>)}</span>
+        {model && model.waiting.length > 0 && <button type="button" className="dt-waits" onClick={() => waitFirst(model.waiting[0])}>{t([`${model.waiting.length} waiting`, `${model.waiting.length} 件等你`])}</button>}
       </TimelineGuard>
       <span className="dt-nav">
         <button type="button" aria-label={t(['The day before', '前一天'])} disabled={!at} onClick={() => step(-1)}><CaretLeft size={13}/></button>
@@ -114,7 +150,7 @@ export function DayTimeline({ port, feed, open }: { port: string | null; feed: R
       {model.line && <p className={`dt-line${model.line.draft ? ' is-draft' : ''}`}>{model.line.text}</p>}
       {model.empty ? <p className="dt-say">{t(['Nothing recorded for this day yet', '这一天还没有记下什么'])}</p> : <>
         <DayBar model={model} port={port} ui={ui} hot={hot} onHot={setHot} onJump={jump}/>
-        {rows.length > 0 ? <div ref={list} className="dt-list" onScroll={edges} onWheel={() => cancelAnimationFrame(glide.current)}><Blocks blocks={rows} hot={hot} onHot={setHot}/></div>
+        {rows.length > 0 ? <div ref={list} className="dt-list" onScroll={edges} onWheel={() => cancelAnimationFrame(glide.current)}><Blocks blocks={rows} hot={hot} onHot={setHot} t={t}/></div>
           : ui.filter && <p className="dt-say">{t(['Nothing was recorded in this stretch', '这一段没有记下什么'])}</p>}
       </>}
       {model.foot && <p className="dt-foot">{model.foot}</p>}
