@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { Coins, ChatCircleDots, Image as PictureIcon, Laptop, Moon, Path, PersonSimpleRun, Phone, Star, SunHorizon, X, type Icon as PhosphorIcon } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { spring, step } from './starCore';
-import { buildBar, fit, fOf, msOf, numbers, PAD_PX, peek, pieceAt, rowAt, snap, summarize, type BarSeg, type Line, type Peek, type Summary } from './barView';
+import { buildBar, endClock, fit, fOf, msOf, numbers, PAD_PX, peek, pieceAt, rowAt, snap, summarize, type BarSeg, type Line, type Peek, type Summary } from './barView';
 import { clock, type DayModel, type Icon, type LensKind, type Rgb } from './dayView';
 import { Ic } from './dayIcons';
 import './day-bar.css';
@@ -193,8 +193,8 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
         {bar.nowF !== null && !hover && !sel && <span className="dt-time is-now" style={{ left: `clamp(16px, ${bar.nowF * 100}%, calc(100% - 16px))` }}>{clock(model.now, model.tz)}</span>}
         {hover && !band && <span className="dt-time" style={edge(hover.x)}>{live?.at}</span>}
         {sel && a !== null && b !== null && (fOf(bar, b) - fOf(bar, a)) * width < 36
-          ? <span className="dt-time" style={edge((fOf(bar, a) + fOf(bar, b)) / 2 * width)}>{clock(a, model.tz)}–{clock(b, model.tz)}</span>
-          : sel && a !== null && b !== null && <><span className="dt-time" style={edge(fOf(bar, a) * width)}>{clock(a, model.tz)}</span><span className="dt-time" style={edge(fOf(bar, b) * width)}>{clock(b, model.tz)}</span></>}
+          ? <span className="dt-time" style={edge((fOf(bar, a) + fOf(bar, b)) / 2 * width)}>{clock(a, model.tz)}–{endClock(b, model.reply, model.tz)}</span>
+          : sel && a !== null && b !== null && <><span className="dt-time" style={edge(fOf(bar, a) * width)}>{clock(a, model.tz)}</span><span className="dt-time" style={edge(fOf(bar, b) * width)}>{endClock(b, model.reply, model.tz)}</span></>}
       </div>
       <div className="dt-trackbox">
         <div ref={track} className="dt-track" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { press.current = null; setBand(null); }} onPointerLeave={leave}>
@@ -237,7 +237,7 @@ export function DayBar({ model, port, ui, hot, onHot, onJump }: { model: DayMode
         <Glyph size={12} aria-hidden="true"/><span>{n.label}</span><em>{n.value}</em></button>; })}
       {model.vitals.length > 0 && <div className="dt-vitals">{model.vitals.map(v => <span key={v.key} className="dt-vit" data-vital={v.key}>{v.before && <small>{v.before}</small>}<em>{v.value}</em>{v.after && <small>{v.after}</small>}</span>)}</div>}
     </div>}
-    {ui.filter && <div className="dt-filter"><span>{t(['Only ', '只看 '])}<b>{clock(Math.min(ui.filter.a, ui.filter.b), model.tz)}–{Math.max(ui.filter.a, ui.filter.b) >= model.reply.end_ms ? '24:00' : clock(Math.max(ui.filter.a, ui.filter.b), model.tz)}</b></span>
+    {ui.filter && <div className="dt-filter"><span>{t(['Only ', '只看 '])}<b>{clock(Math.min(ui.filter.a, ui.filter.b), model.tz)}–{endClock(Math.max(ui.filter.a, ui.filter.b), model.reply, model.tz)}</b></span>
       <button type="button" aria-label={t(['Show the whole day', '看回整天'])} onClick={() => ui.setFilter(null)}><X size={11} weight="bold"/></button></div>}
   </>;
 }

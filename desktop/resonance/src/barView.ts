@@ -47,6 +47,8 @@ export type BarModel = {
   t0: number; t1: number; segs: BarSeg[]; sched: Sched[]; stars: BarStar[]; ticks: { label: string; f: number }[]; nowF: number | null;
   lens: Partial<Record<LensKind, { f0: number; f1: number }[]>>; sun: { kind: 'rise' | 'set'; f: number }[];
 };
+// The clock an end is written in: the day's end is 24:00, never the next day's 00:00 (the card, the band's edge and the cut all say it so).
+export const endClock = (ms: number, reply: { end_ms: number }, tz: string) => ms >= reply.end_ms ? '24:00' : clock(ms, tz);
 export const fOf = (bar: { t0: number; t1: number }, ms: number) => (ms - bar.t0) / (bar.t1 - bar.t0);
 export const msOf = (bar: { t0: number; t1: number }, f: number) => bar.t0 + f * (bar.t1 - bar.t0);
 
@@ -195,7 +197,7 @@ export function peek(model: DayModel, bar: BarModel, ms: number, t: Say): Peek {
     // Nothing was recorded here: say how long, from the piece before to the piece after.
     const lo = Math.max(bar.t0, ...bar.segs.filter(x => x.e <= ms).map(x => x.e)), hi = Math.min(limit, ...bar.segs.filter(x => x.s > ms).map(x => x.s));
     id = `gap:${lo}`;
-    stretch = { name: t(['Nothing recorded', '没有记录']), rgb: null, a: 1, range: `${clock(lo, model.tz)}–${hi >= reply.end_ms ? '24:00' : clock(hi, model.tz)}`, length: dur(Math.max(1, (hi - lo) / MIN), t) };
+    stretch = { name: t(['Nothing recorded', '没有记录']), rgb: null, a: 1, range: `${clock(lo, model.tz)}–${endClock(hi, reply, model.tz)}`, length: dur(Math.max(1, (hi - lo) / MIN), t) };
   }
   const near: { it: DayItem; rank: number; d: number; at: boolean }[] = [];
   for (const it of items) {
@@ -265,5 +267,5 @@ export function summarize(model: DayModel, bar: BarModel, a: number, b: number, 
     if (x.kind === 'stay' && lap > 0) by.set(x.name, { rgb: x.rgb, min: (by.get(x.name)?.min ?? 0) + lap / MIN });
   }
   const places = [...by].sort((x, y) => y[1].min - x[1].min).slice(0, 3).map(([name, v]) => ({ name, rgb: v.rgb, length: dur(Math.max(1, v.min), t) }));
-  return { a, b, range: `${clock(a, model.tz)}–${b >= model.reply.end_ms ? '24:00' : clock(b, model.tz)}`, length: dur((b - a) / MIN, t), places, nums: numbers(model, t, { a, b }) };
+  return { a, b, range: `${clock(a, model.tz)}–${endClock(b, model.reply, model.tz)}`, length: dur((b - a) / MIN, t), places, nums: numbers(model, t, { a, b }) };
 }
