@@ -87,6 +87,7 @@ enum TLPaint {
     static let ink = RGB(238, 240, 251)
     static let darkInk = RGB(11, 13, 26)                // the text on a light fill
     static let warm = RGB(255, 240, 220)                // now, and what mattered
+    static let sunTick = RGB(255, 226, 186)             // the sun where its glyph has no room: a star's glow
     static let trip = RGB(196, 208, 255)
     static let sleep = RGB(112, 120, 205)
     static let ground = RGB(9, 10, 20)                  // what the bar sits on: the sky under the scrim
@@ -181,13 +182,10 @@ enum TLGeo {
     static func x(_ t: Double, _ span: ClosedRange<Double>, _ width: Double) -> Double {
         (clamp(t, span.lowerBound, span.upperBound) - span.lowerBound) / (span.upperBound - span.lowerBound) * width
     }
-    /// Where the sun's glyph goes on the row of the hours: under its minute, and moved to stand clear of an hour's label (12 pt each way) when it would be on one, to the side
-    /// the minute is on, or to the other if that leaves the bar. `hours` are the centres of the labels.
-    static func sunX(_ x: Double, hours: [Double], width: Double) -> Double {
-        guard let near = hours.min(by: { abs($0 - x) < abs($1 - x) }), abs(near - x) < 12 else { return x }
-        let side = x >= near ? 12.0 : -12.0
-        let g = near + side
-        return g < 6 || g > width - 6 ? near - side : g
+    /// Whether the sun's glyph (12 pt wide, centred under its minute `x`) can be drawn in the row of the hours: it overlaps no hour's label (12 pt wide) and stays on the bar. The hours
+    /// always win; where the glyph does not fit the sun is a tick only. `hours` are the centres of the labels.
+    static func sunGlyphFits(_ x: Double, hours: [Double], width: Double) -> Bool {
+        x >= 6 && x <= width - 6 && hours.allSatisfy { abs($0 - x) >= 12 }
     }
 
     /// where each piece is drawn: a hair of ground (1 pt) between neighbours, and never narrower than 2 pt, so nothing recorded is lost to the gap
@@ -285,16 +283,20 @@ struct TLBarView: View {
         .allowsHitTesting(false)
     }
 
-    /// the sun rising and setting: a hair of a tick under the bar at its minute and a small sun on the horizon in the row of the hours (no words)
+    /// The sun rising and setting, in the row of the hours (no words): where its small glyph overlaps no hour's label, a hair of a tick under the bar at its minute and a sun on the horizon
+    /// under it; where it would, only a warm tick 1 x 4 pt hanging under the bar. The hours always win.
     private var sunMarks: some View {
         let centres = scene.ticks.map { x(Double($0 * 60)) - ($0 == 24 ? 6 : 0) }
         let marks = [scene.sun?.rise.map { ($0, "sunrise.fill") }, scene.sun?.set.map { ($0, "sunset.fill") }].compactMap { $0 }
             .filter { $0.0 >= scene.span.lowerBound && $0.0 <= scene.span.upperBound }
         return ZStack(alignment: .topLeading) {
             ForEach(marks, id: \.1) { t, symbol in
-                Rectangle().fill(TLPaint.ink.color(0.32)).frame(width: 1, height: 3).offset(x: x(t) - 0.5, y: bh + 1)
-                Image(systemName: symbol).font(.system(size: 9)).foregroundStyle(RGB(196, 204, 238).color(0.55)).frame(width: 12, height: 12)
-                    .offset(x: TLGeo.sunX(x(t), hours: centres, width: bw) - 6, y: bh + 4)
+                if TLGeo.sunGlyphFits(x(t), hours: centres, width: bw) {
+                    Rectangle().fill(TLPaint.ink.color(0.32)).frame(width: 1, height: 3).offset(x: x(t) - 0.5, y: bh + 1)
+                    Image(systemName: symbol).font(.system(size: 9)).foregroundStyle(RGB(196, 204, 238).color(0.55)).frame(width: 12, height: 12).offset(x: x(t) - 6, y: bh + 4)
+                } else {
+                    Rectangle().fill(TLPaint.sunTick.color(0.9)).frame(width: 1, height: 4).offset(x: x(t) - 0.5, y: bh)
+                }
             }
         }
         .allowsHitTesting(false)

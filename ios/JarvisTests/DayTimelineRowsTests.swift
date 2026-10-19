@@ -702,17 +702,24 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertNil(build(r, now: nil).scene.sun)
     }
 
-    func testTheSunsGlyphStandsUnderItsMinuteAndClearOfAnHoursLabel() {
-        // the labels of 06 09 12 15 18 21 24 on a bar of 380 pt from 06:00: centres 0, 63.3, 126.7, 190, 253.3, 316.7 and, right-aligned, 374
-        let hours = [0, 63.33, 126.67, 190, 253.33, 316.67, 374]
-        XCTAssertEqual(TLGeo.sunX(33, hours: hours, width: 380), 33, "far from every label: where it is")
-        XCTAssertEqual(TLGeo.sunX(257, hours: hours, width: 380), 265.33, accuracy: 0.01, "just after 18: to its right")
-        XCTAssertEqual(TLGeo.sunX(250, hours: hours, width: 380), 241.33, accuracy: 0.01, "just before it: to its left")
-        XCTAssertEqual(TLGeo.sunX(2, hours: hours, width: 380), 12, "next to the first label: right of it")
-        XCTAssertEqual(TLGeo.sunX(376, hours: hours, width: 380), 362, "at the bar's end the right side is off the bar: the left")
-        XCTAssertEqual(TLGeo.sunX(253.33, hours: hours, width: 380), 265.33, accuracy: 0.01, "on it exactly: the right")
-        XCTAssertEqual(TLGeo.sunX(100, hours: [], width: 380), 100)
-        XCTAssertEqual(TLGeo.sunX(10.9, hours: [0], width: 380), 12, "11 pt away is too close: it is moved to 12")
-        XCTAssertEqual(TLGeo.sunX(12, hours: [0], width: 380), 12, "12 is clear")
+    func testTheSunsGlyphIsDrawnOnlyWhereItOverlapsNoHoursLabelAndOtherwiseItIsATick() throws {
+        // the labels of 06 09 12 15 18 21 24 on a bar of 380 pt from 06:00 (to a whole point here): centres 0, 63, 127, 190, 253, 317 and, right-aligned, 374
+        let hours: [Double] = [0, 63, 127, 190, 253, 317, 374]
+        XCTAssertTrue(TLGeo.sunGlyphFits(33, hours: hours, width: 380), "far from every label: its glyph")
+        XCTAssertFalse(TLGeo.sunGlyphFits(257, hours: hours, width: 380), "just after 18: the hours win, a tick only")
+        XCTAssertFalse(TLGeo.sunGlyphFits(250, hours: hours, width: 380), "just before it")
+        XCTAssertFalse(TLGeo.sunGlyphFits(253, hours: hours, width: 380), "on it exactly")
+        XCTAssertTrue(TLGeo.sunGlyphFits(265, hours: hours, width: 380), "12 pt from a label is clear: the glyph and the label touch and do not overlap")
+        XCTAssertFalse(TLGeo.sunGlyphFits(264.9, hours: hours, width: 380), "a hair closer is not")
+        XCTAssertFalse(TLGeo.sunGlyphFits(2, hours: hours, width: 380), "next to the first label, and at the bar's start")
+        XCTAssertFalse(TLGeo.sunGlyphFits(376, hours: hours, width: 380), "at the bar's end the glyph would hang off it")
+        XCTAssertTrue(TLGeo.sunGlyphFits(100, hours: [], width: 380))
+        XCTAssertTrue(TLGeo.sunGlyphFits(6, hours: [], width: 380), "the edge of the bar is the glyph's own edge")
+        XCTAssertFalse(TLGeo.sunGlyphFits(5.9, hours: [], width: 380))
+        // the fixture's sunset is 11 minutes after 18:00, a few points from that label on its bar: a tick only
+        let m = build(TimelineFixture.today(cal))
+        let centres = m.ticks.map { TLGeo.x(Double($0 * 60), m.span, 380) - ($0 == 24 ? 6 : 0) }
+        XCTAssertFalse(TLGeo.sunGlyphFits(TLGeo.x(1091, m.span, 380), hours: centres, width: 380))
+        XCTAssertTrue(TLGeo.sunGlyphFits(TLGeo.x(1000, m.span, 380), hours: centres, width: 380), "16:40 is clear of 15 and 18")
     }
 }
