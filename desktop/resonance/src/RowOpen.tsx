@@ -2,7 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import { createPortal } from 'react-dom';
 import { CaretRight, Check, PencilSimpleLine } from '@phosphor-icons/react';
 import type { L } from './companionSettings';
-import { stageLook } from './dayView';
+import { stageLook, type Inside as Line1 } from './dayView';
+import { Ic } from './dayIcons';
 import { talkLines, type Bar, type Night, type Open, type Part, type Rec, type Session, type Words } from './dayOpen';
 
 // What an open row holds (ADR 0296, spec-r3 section 8): the parts dayOpen.ts made of it, drawn, and the buttons that work today. The row's
@@ -140,8 +141,23 @@ function Sessions({ list, t }: { list: Session[]; t: (l: L) => string }) {
   })}</ul>;
 }
 
+// What is inside an opened stretch of what he was doing: one compact line each, its glyph (a picture shows its thumbnail, which opens large), its words and its time or length.
+function InsideIcon({ x, acts }: { x: Line1; acts: Acts }) {
+  const [broken, setBroken] = useState(false);
+  return x.picture && acts.port && !broken
+    ? <button type="button" className="dt-tbtn" aria-label={acts.t(['Open the picture', '看大图'])} onClick={() => acts.picture(x.picture, x.note)}>
+      <img className="dt-thumb" alt="" width={48} height={48} decoding="async" src={`http://127.0.0.1:${acts.port}/inherent/attachments/${x.picture}`} onError={() => setBroken(true)}/></button>
+    : <span className="dt-cic"><Ic icon={x.icon} size={13}/></span>;
+}
+function Inside({ list, acts }: { list: Line1[]; acts: Acts }) {
+  return <ul className="dt-ins">{list.map(x => <li key={x.key} className={`dt-cline${x.picture ? ' has-pic' : ''}`}>
+    <InsideIcon x={x} acts={acts}/><span className="dt-ctx">{x.title}{x.detail && <em>{x.detail}</em>}</span><span className="dt-cside">{x.side}</span></li>)}</ul>;
+}
+
 function PartView({ part, acts }: { part: Part; acts: Acts }) {
   switch (part.type) {
+    case 'inside': return <Inside list={part.list} acts={acts}/>;
+    case 'knows': return <p className="dt-knows">{part.text}</p>;
     case 'lines': return <div className="dt-lines">{part.lines.map((w, i) => <Line key={i} w={w}/>)}</div>;
     case 'talk': return <Talk part={part} acts={acts}/>;
     case 'picture': return <Picture part={part} acts={acts}/>;

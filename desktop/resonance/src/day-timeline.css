@@ -89,6 +89,15 @@
 .notch .dt-row.is-rail.is-end::before { bottom:calc(100% - var(--head) / 2); }
 .notch .dt-row.is-leg .dt-ic { border-color:rgb(214 222 250 / .28); background:#000; }
 .notch .dt-row.is-leg .dt-tx b { font-weight:400; color:var(--p-muted); }
+/* a stretch of what he was doing: its category's colour (--c, set on the row) on the glyph, its ring and the rail; one nothing says the words of is muted with a dashed ring, like a hole in the bar;
+   the counts of what is inside sit after the place as small icons with a number each */
+.notch .dt-row.is-seg .dt-ic { color:rgb(var(--c)); border-color:rgb(var(--c) / .4); }
+.notch .dt-row.is-seg { --c:196 204 238; }
+.notch .dt-row.is-unknown .dt-ic { color:var(--p-faint); border:1px dashed rgb(var(--c) / .4); }
+.notch .dt-row.is-unknown .dt-tx b { font-weight:400; color:var(--p-muted); }
+.notch .dt-sub { display:flex; align-items:center; gap:8px; }
+.notch .dt-sub > span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.notch .dt-cn { display:inline-flex; flex:none; align-items:center; gap:3px; font-style:normal; font-variant-numeric:tabular-nums; }
 .notch .dt-row.is-future { opacity:.62; }
 .notch .dt-row.is-future .dt-ic { background:#000; border:1px dashed rgb(214 222 250 / .5); }
 .notch .dt-now { position:relative; display:flex; align-items:center; gap:8px; height:28px; box-sizing:border-box; padding-inline:6px; font:600 11.5px/1 "JetBrains Mono", Menlo, monospace; color:rgb(var(--now)); }

@@ -135,9 +135,9 @@
 .notch .dt-filter button { display:grid; place-items:center; width:16px; height:16px; border-radius:50%; color:var(--p-muted); transition:background 120ms; }
 .notch .dt-filter button:hover { background:rgb(255 255 255 / .14); color:var(--p-ink); }
 /* the list under a lens: what is the kind stays, the rest steps back, stay headers a little */
-.notch .dt[data-lens="sleep"] .dt-row:not([data-lk="sleep"]),.notch .dt[data-lens="trip"] .dt-row:not([data-lk="trip"]),.notch .dt[data-lens="workout"] .dt-row:not([data-lk="workout"]),.notch .dt[data-lens="work"] .dt-row:not([data-lk="work"]),
-.notch .dt[data-lens="call"] .dt-row:not([data-lk="call"]),.notch .dt[data-lens="talk"] .dt-row:not([data-lk="talk"]),.notch .dt[data-lens="payment"] .dt-row:not([data-lk="payment"]),
-.notch .dt[data-lens="picture"] .dt-row:not([data-lk="picture"]) { opacity:.35; }
+.notch .dt[data-lens="sleep"] .dt-row:not([data-lk~="sleep"]),.notch .dt[data-lens="trip"] .dt-row:not([data-lk~="trip"]),.notch .dt[data-lens="workout"] .dt-row:not([data-lk~="workout"]),.notch .dt[data-lens="work"] .dt-row:not([data-lk~="work"]),
+.notch .dt[data-lens="call"] .dt-row:not([data-lk~="call"]),.notch .dt[data-lens="talk"] .dt-row:not([data-lk~="talk"]),.notch .dt[data-lens="payment"] .dt-row:not([data-lk~="payment"]),
+.notch .dt[data-lens="picture"] .dt-row:not([data-lk~="picture"]) { opacity:.35; }
 .notch .dt[data-lens] .dt-sh { opacity:.6; }
 
 /* reduced motion: no slides, glow or follow, only fades */
