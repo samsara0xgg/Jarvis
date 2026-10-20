@@ -289,7 +289,7 @@ struct TLBarView: View {
             ZStack(alignment: .topLeading) {
                 ZStack(alignment: .topLeading) {
                     TLTrack()
-                    BarCanvas(scene: scene, rects: rects)
+                    BarCanvas(scene: scene, rects: rects).equatable()
                     planned
                     dots
                     if let b = bracket { bracketView(b).transition(.opacity) }      // under the words, so a line never runs through a symbol
@@ -318,26 +318,7 @@ struct TLBarView: View {
 
     // MARK: words and stars
 
-    private var labels: some View {
-        let placed = TLBarLabel.placed(scene, width: bw)
-        return ZStack(alignment: .topLeading) {
-            ForEach(placed) { l in
-                HStack(spacing: TLBarLabel.gap) {
-                    if l.fit != .name, let icon = l.icon {
-                        Image(systemName: icon).font(.system(size: 10.5, weight: .semibold)).frame(width: TLBarLabel.icon)
-                    }
-                    if l.fit != .icon, let name = l.name { Text(name).lineLimit(1) }
-                }
-                .font(.system(size: 11, weight: .semibold)).fixedSize()
-                .foregroundStyle(l.dark ? TLPaint.darkInk.color(0.9) : TLPaint.ink.color)
-                .frame(height: bh).offset(x: l.x)
-                .transition(.opacity)
-            }
-        }
-        .frame(width: bw, height: bh, alignment: .topLeading)
-        .animation(tlStarFade(reduce: reduce), value: placed)          // a word goes with what it was on, as that fades
-        .allowsHitTesting(false)
-    }
+    private var labels: some View { TLBarLabels(scene: scene, reduce: reduce).equatable() }
 
     /// what is planned, on the part of the bar that has not happened: an event is a dashed box over its time, a reminder or a bus a tick. They are views and not paint, so that one he says
     /// is not his goes with a fade.
@@ -468,6 +449,35 @@ struct TLBarView: View {
     }
 }
 
+/// The words and icons the pieces wear. They are made from the scene alone, so as a view of their own that is drawn again only when the scene changes they are not measured again on every frame
+/// of a finger moving over the bar.
+private struct TLBarLabels: View, Equatable {
+    let scene: TLBarScene
+    let reduce: Bool
+
+    var body: some View {
+        let bw = TLLayout.barW, bh = TLLayout.barH
+        let placed = TLBarLabel.placed(scene, width: bw)
+        return ZStack(alignment: .topLeading) {
+            ForEach(placed) { l in
+                HStack(spacing: TLBarLabel.gap) {
+                    if l.fit != .name, let icon = l.icon {
+                        Image(systemName: icon).font(.system(size: 10.5, weight: .semibold)).frame(width: TLBarLabel.icon)
+                    }
+                    if l.fit != .icon, let name = l.name { Text(name).lineLimit(1) }
+                }
+                .font(.system(size: 11, weight: .semibold)).fixedSize()
+                .foregroundStyle(l.dark ? TLPaint.darkInk.color(0.9) : TLPaint.ink.color)
+                .frame(height: bh).offset(x: l.x)
+                .transition(.opacity)
+            }
+        }
+        .frame(width: bw, height: bh, alignment: .topLeading)
+        .animation(tlStarFade(reduce: reduce), value: placed)          // a word goes with what it was on, as that fades
+        .allowsHitTesting(false)
+    }
+}
+
 /// What shows of the bar while it grows in: from the left, with a soft leading edge 28 pt wide that sweeps along it, so that the stretches appear in the order of time and none with a hard cut.
 /// It is a fixed gradient that slides, so the sweep costs nothing to draw on every frame.
 private struct GrowMask: View {
@@ -503,7 +513,7 @@ private struct TLAheadMark: View {
 }
 
 /// the pieces and the hatch on the trips
-private struct BarCanvas: View {
+private struct BarCanvas: View, Equatable {
     let scene: TLBarScene
     let rects: [CGRect]
 

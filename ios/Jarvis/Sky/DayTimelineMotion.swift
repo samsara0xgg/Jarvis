@@ -53,6 +53,8 @@ enum TLMotion {
     /// A step to the row before or after: the page's head stays where it is and only its body is pushed, a hand's breadth (`stepShift` pt) up or down, fading; under Reduce Motion a cross-fade
     static let stepShift = 14.0
     static func step(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .smooth(duration: 0.25) }
+    /// the list carried from row to row by a finger on the bar: a short spring that lets the move be seen and takes up the next one where it is
+    static let follow = Animation.interactiveSpring(response: 0.2, dampingFraction: 0.9)
     /// a swipe back let go: the same spring, starting at the finger's speed (`speed`: parts of the way left per second), so the page goes on as it was moving
     static func release(speed: Double) -> Animation { .interpolatingSpring(duration: 0.3, bounce: 0, initialVelocity: speed) }
     /// how much of the list and of the page shows at `back` (0: the page all the way in, 1: the list) while a swipe back moves them: they cross with a dip, so that their words are never

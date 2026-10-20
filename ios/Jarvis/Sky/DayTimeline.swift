@@ -58,6 +58,8 @@ final class TimelineState {
     var hot: String?                    // the row that covers it, lit in the list
     @ObservationIgnored private var seen: String?       // the row the list was last sent to while the finger is down
     @ObservationIgnored private var scrubHold: Task<Void, Never>?
+    @ObservationIgnored private var turning: String?        // the row a finger on the bar has reached that the open page will turn to, and the rest that waits for it
+    @ObservationIgnored private var rest: Task<Void, Never>?
     var openCard: String?               // the waiting card opened over the list
     var focus: String?                  // a waiting card the engine asks to bring up
     var version = 0                     // bumps when the brain's days were adopted again: talk topics may have come
@@ -90,7 +92,7 @@ final class TimelineState {
     var flash: String?                              // the row just scrolled to: it flashes
     var sunSaid = false                             // the weather in the header was just tapped: it says when the sun rose and set, in its place
     @ObservationIgnored var sunHide: Task<Void, Never>?
-    struct ScrollRequest: Equatable { var y = 0.0, animated = false, n = 0 }
+    struct ScrollRequest: Equatable { var y = 0.0, animated = false, glide = false, n = 0 }          // `glide`: a short spring, for a finger carrying the list from row to row
     @ObservationIgnored private var pending: Int?
     #if DEBUG
     struct Fixture { var replies: [Int: DayReply]; var now: Double; var loading = false }       // by days from today; `loading`: the day is still being asked for
@@ -126,24 +128,37 @@ final class TimelineState {
                                                    named: named.compactMapValues { $0.until > now ? $0.value : nil }))
     }
 
-    func scroll(to y: Double, animated: Bool) { request = ScrollRequest(y: y, animated: animated, n: request.n + 1) }
+    func scroll(to y: Double, animated: Bool, glide: Bool = false) { request = ScrollRequest(y: y, animated: animated, glide: glide, n: request.n + 1) }
 
     /// A finger on the overview bar at minute `t` (none: it has lifted): the list goes to the row that covers it and lights it. With a row's page open the list stays where it is, for the way
-    /// back, and the page turns to the row that covers `t` (one that opens to something). A minute off the bar is the bar's start or end.
+    /// back, and the page turns to the row that covers `t` (one that opens to something) once the finger rests on it for 150 ms, or lifts: while it moves only the bar's bracket follows it, so
+    /// that no page is swapped for every row it crosses. A minute off the bar is the bar's start or end.
     func follow(_ minute: Double?, in m: DayTimelineModel?) {
         let t = minute.map { m?.onBar($0) ?? $0 }
         scrub = t
         if t == nil { finger = nil }
-        guard let t, let m else { hot = nil; seen = nil; return }
+        guard let t, let m else { hot = nil; seen = nil; turnPage(to: nil, now: true); return }
         if openRow != nil {
             hot = nil; seen = nil
-            if let e = m.lit(at: t), e.opens, e.id != openRow { openRow = e.id }
+            if let e = m.lit(at: t), e.opens { turnPage(to: e.id == openRow ? nil : e.id) }          // over no row that opens, what it reached last still waits
             return
         }
         hot = m.lit(at: t)?.id
         guard let e = m.entry(at: t), e.id != seen else { return }        // the same row as a moment ago: the list is already there
         seen = e.id
-        if let y = m.top(of: e.id) { scroll(to: y, animated: false) }
+        if let y = m.top(of: e.id) { scroll(to: y, animated: false, glide: true) }
+    }
+
+    /// The page a finger on the bar has reached, turned to after a rest of 150 ms on it, or at once when `now` (the finger lifts); none: the finger is where the page is, or has gone.
+    private func turnPage(to id: String?, now: Bool = false) {
+        if now, let id = turning, openRow != nil { openRow = id }
+        guard id != turning else { return }
+        turning = id; rest?.cancel(); rest = nil
+        guard let id else { return }
+        rest = Task { @MainActor [self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            if !Task.isCancelled, turning == id { turning = nil; if openRow != nil { openRow = id } }
+        }
     }
 
     /// VoiceOver's step holds a minute on the bar the way a finger would, and lets it go after a pause (each step starts the pause again)
@@ -252,10 +267,11 @@ struct DayTimelineView: View {
         return TimelineView(.everyMinute) { context in
             let shown = shownNow()
             let model: DayTimelineModel? = { if case .model(let m) = shown { return m } else { return nil } }()
+            let bar = model.map { byPlace ? $0.byPlace : $0 }          // the day as the bar draws it
             ZStack(alignment: .topLeading) {
                 scrim(away: away)
                 ZStack(alignment: .topLeading) {
-                    TLTopView(ui: ui, model: model, scene: model?.scene(places: byPlace) ?? .empty, byPlace: $byPlace, loading: !isReady(shown))
+                    TLTopView(ui: ui, model: model, bar: bar, scene: bar?.scene ?? .empty, byPlace: $byPlace, loading: !isReady(shown))
                     TLTalkArea(engine: engine, ui: ui, model: model)            // a talk takes the place of her sentence, the bar and the chips
                 }
                 .opacity(ui.panelOpen ? 0 : 1).allowsHitTesting(!ui.panelOpen)
@@ -604,11 +620,14 @@ private struct ScrollsOnRequest: ViewModifier {
     let model: DayTimelineModel
     let room: Double
     @Binding var pos: ScrollPosition
+    @Environment(\.accessibilityReduceMotion) private var reduce
 
     func body(content: Content) -> some View {
         content.onChange(of: tl.request) { _, r in
             let y = r.y < 0 ? model.restY(room: room) : r.y
-            if r.animated || r.y < 0 { withAnimation(.easeOut(duration: 0.45)) { pos.scrollTo(y: y) } } else { pos.scrollTo(y: y) }
+            if r.animated || r.y < 0 { withAnimation(.easeOut(duration: 0.45)) { pos.scrollTo(y: y) } }
+            else if r.glide && !reduce { withAnimation(TLMotion.follow) { pos.scrollTo(y: y) } }
+            else { pos.scrollTo(y: y) }
         }
     }
 }

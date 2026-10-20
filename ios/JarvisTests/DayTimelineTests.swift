@@ -747,16 +747,18 @@ final class DayTimelineTests: XCTestCase {
         }
     }
 
-    func testWithARowsPageOpenAFingerOnTheBarTurnsItToTheRowThereAndTheListStaysWhereItIs() {
+    func testWithARowsPageOpenAFingerOnTheBarTurnsItToTheRowItRestsOnOrLiftsOnAndTheListStaysWhereItIs() {
         withTimeline { e in
             let m = build(TimelineFixture.today(cal))
             e.ui.tl.openRow = "talk-1"
             let n = e.ui.tl.request.n
             e.ui.tl.follow(1000, in: m)
-            XCTAssertEqual(e.ui.tl.openRow, "call-demo-1", "the call covers 16:40: the page is its page")
+            XCTAssertEqual(e.ui.tl.openRow, "talk-1", "the call covers 16:40, but the page waits while the finger moves: only the bar's bracket follows it")
             XCTAssertEqual(e.ui.tl.scrub, 1000)
             XCTAssertNil(e.ui.tl.hot, "the list is under the page: nothing in it is lit")
             XCTAssertEqual(e.ui.tl.request.n, n, "and it is not asked to go anywhere: the way back is to the same place")
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+            XCTAssertEqual(e.ui.tl.openRow, "call-demo-1", "a finger that rests 150 ms on the call turns the page to it")
             e.ui.tl.follow(1315, in: m)
             XCTAssertEqual(e.ui.tl.openRow, "call-demo-1", "past now, before what was planned, no row covers it: the page stays")
             e.ui.tl.follow(nil, in: nil)
@@ -764,6 +766,26 @@ final class DayTimelineTests: XCTestCase {
             XCTAssertEqual(e.ui.tl.openRow, "call-demo-1", "a finger lifted leaves the page open")
             e.ui.tl.letGo()
             XCTAssertNil(e.ui.tl.openRow, "a day gone from or the timeline left lets the page go")
+        }
+    }
+
+    func testAFingerCrossingRowsWithAPageOpenSwapsNoPageUntilItLiftsAndThenTurnsToTheLastOne() {
+        withTimeline { e in
+            let m = build(TimelineFixture.today(cal))
+            e.ui.tl.openRow = "talk-1"
+            e.ui.tl.follow(700, in: m)
+            e.ui.tl.follow(1000, in: m)
+            e.ui.tl.follow(1335, in: m)
+            XCTAssertEqual(e.ui.tl.openRow, "talk-1", "three rows crossed within a moment: the page has not been swapped for any of them")
+            e.ui.tl.follow(nil, in: nil)
+            XCTAssertEqual(e.ui.tl.openRow, "event-demo-1", "and the lift turns it to the last, the class planned for 22:00")
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+            XCTAssertEqual(e.ui.tl.openRow, "event-demo-1", "with nothing left waiting")
+            e.ui.tl.follow(nil, in: nil)
+            e.ui.tl.openRow = nil
+            e.ui.tl.follow(1000, in: m)
+            e.ui.tl.follow(nil, in: nil)
+            XCTAssertNil(e.ui.tl.openRow, "a finger on the bar never opens a page that is not open")
         }
     }
 

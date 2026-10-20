@@ -10,7 +10,8 @@ private let muted = SetColor.muted
 struct TLTopView: View {
     let ui: StarUI
     let model: DayTimelineModel?
-    let scene: TLBarScene                       // the model's bar, made once with the model and not on every frame of a finger
+    let bar: DayTimelineModel?                  // what the bar, its readout and its bracket read (the model, or its other drawing from where he was), made once with the model and not on every frame of a finger
+    let scene: TLBarScene                       // and the bar of it
     @Binding var byPlace: Bool                  // the bar is drawn from where he was and not from what he was doing: the switch at its right end
     var loading = false                         // the day is being asked for: its bar is an empty track with a soft light going along it
     @Environment(\.accessibilityReduceMotion) private var reduce
@@ -23,7 +24,7 @@ struct TLTopView: View {
 
     var body: some View {
         let holding = tl.scrub != nil, talk = ui.tlTalk
-        let bar = model.map { byPlace ? $0.byPlace : $0 }          // what the bar, its readout and its bracket read; the list is the model's own
+        let said = bar.map { $0.readout(at: tl.scrub ?? lastScrub) }          // once for the readout and for VoiceOver's value, on every frame of a finger
         return ZStack(alignment: .topLeading) {
             // her sentence, and in its place while a finger is on the bar the readout of the minute under it: a fade-through, not a cross-fade (the two are never both on show)
             if let line = model?.line {
@@ -34,8 +35,8 @@ struct TLTopView: View {
                     .id(line).transition(TLMotion.swapWords(reduce: reduce))
                     .offset(x: 30, y: TLLayout.lineY)
             }
-            if let bar {
-                readout(bar.readout(at: tl.scrub ?? lastScrub)).fadeThrough(on: holding, reduce: reduce)
+            if let said {
+                readout(said).fadeThrough(on: holding, reduce: reduce)
                     .offset(x: 30, y: TLLayout.lineY)
                     .allowsHitTesting(false).accessibilityHidden(!holding)
             }
@@ -53,7 +54,7 @@ struct TLTopView: View {
                 .gesture(scrubGesture(m, bar))
                 .accessibilityElement().accessibilityLabel("一天的概览")
                 .accessibilityHint("拖动可以翻到那个时间，上下滑动一段一段地看")
-                .accessibilityValue(tl.scrub.map { spoken(bar.readout(at: $0)) } ?? "")
+                .accessibilityValue(tl.scrub != nil ? said.map(spoken) ?? "" : "")
                 .accessibilityAdjustableAction { nudge($0, m) }
                 .fadeThrough(on: !talk, reduce: reduce).allowsHitTesting(!talk).accessibilityHidden(talk)
                 .id(tl.day).transition(barTransition)
