@@ -25,8 +25,6 @@ const textWidth = (text: string, mono: boolean) => { const ctx = measuring ??= d
 // Kind colours belong to a lens and to the numbers' icons only.
 const KIND: Record<LensKind, Rgb> = { sleep: [112, 120, 205], trip: [196, 208, 255], workout: [156, 224, 120], work: [108, 156, 255], call: [111, 224, 180], talk: [172, 124, 255], payment: [240, 132, 218], picture: [255, 240, 220] };
 const KIND_ICON: Record<LensKind, PhosphorIcon> = { sleep: Moon, trip: Path, workout: PersonSimpleRun, work: Laptop, call: Phone, talk: ChatCircleDots, payment: Coins, picture: PictureIcon };
-// A night's stages as one gradient of hard stops, each stage's share of the piece in its own colour.
-const shading = (shade: NonNullable<BarSeg['shade']>) => `linear-gradient(to right, ${shade.map(x => `rgb(${rgb(x.rgb)} / ${x.a}) ${(x.f0 * 100).toFixed(2)}% ${(x.f1 * 100).toFixed(2)}%`).join(', ')})`;
 
 // What the bar's controls hold, kept by the pane: the lens (pinned by a click, or previewed while a chip is under the pointer), the range
 // being chosen, the range the list is cut to. Esc lets go of one at a time.
@@ -238,8 +236,8 @@ export function DayBar({ model, port, ui, cut, hot, onHot, onJump, onPicture, on
         <div ref={track} className="dt-track" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={release} onLostPointerCapture={release} onPointerLeave={leave}>
           <i className="dt-ground" style={{ width: bar.nowF === null ? '100%' : bx(bar.nowF) }}/>
           {bar.nowF !== null && <i className="dt-ground is-future" style={{ left: bx(bar.nowF) }}/>}
-          {laid.map(({ s, w, how }) => <i key={s.key} className={`dt-seg is-${s.kind} is-${s.tone}${s.shade ? ' has-shade' : ''}${lifted === s.row ? ' is-lift' : ''}${spanned && hot === s.row ? ' is-hot' : ''}`}
-            style={{ left: `calc(${s.f0 * 100}% + .5px)`, width: `max(1px, calc(${(s.f1 - s.f0) * 100}% - 1px))`, '--c': rgb(s.rgb), '--a': s.a, '--shade': s.shade && shading(s.shade) } as CSSProperties}>
+          {laid.map(({ s, w, how }) => <i key={s.key} className={`dt-seg is-${s.kind} is-${s.tone}${lifted === s.row ? ' is-lift' : ''}${spanned && hot === s.row ? ' is-hot' : ''}`}
+            style={{ left: `calc(${s.f0 * 100}% + .5px)`, width: `max(1px, calc(${(s.f1 - s.f0) * 100}% - 1px))`, '--c': rgb(s.rgb), '--a': s.a } as CSSProperties}>
             {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}>{how !== 'name' && <Ic icon={s.icon} size={12}/>}{how !== 'icon' && <b className={s.mono ? 'is-mono' : ''}>{s.short}</b>}</span>}
           </i>)}
           {showVoid && <i className="dt-void" style={{ width: bx(bar.nowF ?? 1) }}>{voidText}</i>}
