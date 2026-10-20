@@ -2518,12 +2518,12 @@ try {
   }
 
   if (all || only === 'doing') {
-    // ADR 0302: what he was doing leads. The wing, the bar's pieces and the hover card say it; the place stays the colour, the icon and the list's groups.
-    const dm = buildDay(doingDay(), NOW, zh), dbar = buildBar(dm, zh), t0 = dbar.t0, t1 = T(24);
-    const a = await boot({ served: doingDay() });
+    // ADR 0302, 0307: the list is the stretches of what he was doing. The wing, the bar and the card say it; a row has its words, its place under it with the counts of what is inside, and opens to that.
+    const dm = buildDay(segDay(), NOW, zh), dbar = buildBar(dm, zh), t0 = dbar.t0, t1 = T(24);
+    const a = await boot({ served: segDay() });
     await a.until(() => document.querySelector('.notch')?.dataset.line === '做 Jarvis · 2:15');
     const r = await a.read();
-    check('the wing leads with what he is doing and since when: 做 Jarvis · 2:15, where the place alone said 家 · 3:00', r.wing === 'timeline' && r.line === '做 Jarvis · 2:15', JSON.stringify(r));
+    check('the wing leads with what he is doing and since when: 做 Jarvis · 2:15', r.wing === 'timeline' && r.line === '做 Jarvis · 2:15', JSON.stringify(r));
     await a.shot('doing-01-wing', { x: 330, y: 0, width: 260, height: 60 });
     const seg = await a.lineX();
     await a.move(seg.mid, 14); await a.page.mouse.down(); await a.page.mouse.up();
@@ -2531,33 +2531,81 @@ try {
     await a.page.waitForTimeout(700);
     const g = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width }; });
     const xAt = (h, m = 0) => g.left + (T(h, m) - t0) / (t1 - t0) * g.width, y = g.top + 12;
-    const pieces = await a.page.evaluate(() => [...document.querySelectorAll('.dt-seg.is-stay')].map(el => ({ label: el.querySelector('.dt-sl b')?.textContent ?? null, colour: el.style.getPropertyValue('--c'), icon: !!el.querySelector('.dt-sl svg') })));
-    const named = pieces.filter(x => x.label === '做 Jarvis');
-    check('the bar names the stays he worked in by it, in the place\'s colour (the warm home, with its house where it fits beside the words), and none of the pieces says 家; the school keeps its blue and its icon under his answer',
-      named.length === 2 && named.every(x => x.colour === '255 168 150') && named.some(x => x.icon) && !pieces.some(x => x.label === '家') && pieces.some(x => x.colour === '100 200 255' && x.icon), JSON.stringify(pieces));
-    check('the list keeps its place groups: 家, A&W, 家, UVic, 家', (await a.page.locator('.dt-sh .dt-tx b').allInnerTexts()).map(x => x.trim()).join() === '家,A&W,家,UVic,家');
-    await a.shot('doing-02-bar', { x: 40, y: 0, width: 560, height: 700 });
+    const row = k => a.page.locator(`[data-key="${k}"]`).first(), settle = ms => a.page.waitForTimeout(ms);
+    const dom = await a.page.evaluate(() => [...document.querySelectorAll('.dt-list [data-key]')].map(el => ({ key: el.dataset.key, kind: el.classList.contains('dt-sh') ? 'sh' : el.dataset.kind, title: el.querySelector('.dt-ttl b')?.textContent ?? '',
+      sub: el.querySelector(':scope > .dt-tx > .dt-sub')?.innerText.replace(/\s+/g, ' ').trim() ?? '', counts: el.querySelectorAll(':scope > .dt-tx .dt-cn').length, at: el.querySelector(':scope > .dt-at')?.textContent, tm: el.querySelector(':scope > .dt-tm')?.textContent })));
+    const doing = dom.filter(x => x.kind === 'doing'), by = Object.fromEntries(dom.map(x => [x.key, x]));
+    check('the list is one row per stretch in time order (12), the night first, the reminder that waits between them and what is to come after the now line; there is no place header and no row of a move, a call or a talk',
+      doing.map(x => x.title).join('|') === '在家刷手机|做 Jarvis|不知道在干嘛|在 A&W 吃午饭|在家休息|27 路|在图书馆写作业|FaceTime 通话|在 UVic 学习|27 路|在家休息，听音乐，回消息|做 Jarvis' && !dom.some(x => x.kind === 'sh' || ['move', 'talk', 'call', 'stay'].includes(x.kind))
+      && dom.map(x => x.key).join() === 'sleep-1,doing-1,reminder-2,doing-2,doing-3,doing-4,doing-5,doing-6,doing-7,doing-8,doing-9,doing-10,doing-11,doing-12,reminder-1,event-1,departure-1,event-2', dom.map(x => x.key).join());
+    check('a row says its start time, its length at the right, and under the words the place and 不太确定 with the counts of what is inside as small icons with a number', by['doing-4'].at === '13:15' && by['doing-12'].tm === '2 时 15 分' && by['doing-4'].sub === 'A&W 1 1' && by['doing-4'].counts === 2 && by['doing-5'].sub === '家 · 不太确定'
+      && by['doing-3'].sub === '不太确定' && by['doing-6'].sub === '' && by['doing-11'].sub === '家 1 1' && by['doing-8'].counts === 1 && by['doing-9'].sub === 'UVic 2' && by['doing-12'].counts === 0, JSON.stringify(doing.map(x => x.sub)));
+    const look = await a.page.evaluate(() => { const q = k => document.querySelector(`[data-key="${k}"]`), ic = k => getComputedStyle(q(k).querySelector(':scope > .dt-ic')), ttl = k => getComputedStyle(q(k).querySelector('.dt-ttl b'));
+      return { work: ic('doing-2').color, ring: ic('doing-2').borderTopColor, study: ic('doing-7').color, unk: ic('doing-3').borderTopStyle, unkIc: ic('doing-3').color, unkTitle: ttl('doing-3').color, title: ttl('doing-2').color, question: !!q('doing-3').querySelector(':scope > .dt-ic svg') }; });
+    check('a stretch has its category’s colour on its glyph and ring (work blue, study violet); one nothing says the words of has a dashed ring, a muted glyph and a muted title, with the question mark', look.work === 'rgb(91, 140, 255)' && look.ring === 'rgba(91, 140, 255, 0.4)' && look.study === 'rgb(155, 123, 255)'
+      && look.unk === 'dashed' && look.unkTitle !== look.title && look.question, JSON.stringify(look));
+    const pieces = await a.page.evaluate(() => [...document.querySelectorAll('.dt-seg')].map(el => ({ cls: el.className, c: el.style.getPropertyValue('--c'), a: el.style.getPropertyValue('--a'), label: el.querySelector('.dt-sl b')?.textContent ?? null })));
+    check('the bar is the night and the stretches (13 pieces): the two work stretches in work blue, the long one named, the ride in the haze of a way, and one hole with no words', pieces.length === 13 && pieces.filter(x => x.c === '91 140 255').length === 2 && pieces.some(x => x.label === '做 Jarvis')
+      && pieces.filter(x => x.cls.includes('is-trip')).length === 2 && pieces.filter(x => x.a === '0').length === 1 && pieces.find(x => x.a === '0').label === null && pieces.filter(x => x.cls.includes('is-stay')).length === 0, JSON.stringify(pieces));
+    await a.shot('doing-02-pane', { x: 40, y: 0, width: 560, height: 760 });
     const card = () => a.page.evaluate(() => {
       const c = document.querySelector('.dt-card.is-on:not(.is-range)');
       if (!c) return null;
       const cur = c.querySelector('.dt-slot.is-cur'), norm = el => el.innerText.replace(/\s*\n\s*/g, ' ').trim();
-      return { head: norm(cur.querySelector('.dt-ch')), place: cur.querySelector('.dt-cnote.is-place')?.innerText ?? null, notes: cur.querySelectorAll('.dt-cnote').length };
+      return { head: norm(cur.querySelector('.dt-ch')), place: cur.querySelector('.dt-cnote.is-place')?.innerText ?? null, hollow: !!cur.querySelector('.dt-cdot.is-hollow') };
     });
     const over = async (h, m) => { await a.move(xAt(h, m), y); await a.page.waitForTimeout(260); return card(); };
-    let c = await over(10, 0);
-    check('hovering the work: the title is 做 Jarvis with its own time, and the place 家 under it', c && c.head === '做 Jarvis 09:30–11:20 · 1 时 50 分' && c.place === '家', JSON.stringify(c));
-    await a.shot('doing-03-hover-work', { x: 40, y: 0, width: 560, height: 700 });
-    c = await over(14, 20);
-    check('hovering the home span that has no title: the place as ever, no second line', c && c.head === '家 14:05–14:50 · 45 分' && c.place === null && c.notes === 0, JSON.stringify(c));
-    c = await over(13, 20);
-    check('hovering his answer over A&W: 吃午饭 with A&W under it; a minute later in the stay, past the answer, A&W alone', c && c.head === '吃午饭 13:15–13:35 · 20 分' && c.place === 'A&W' && (await over(13, 45))?.head === 'A&W 13:15–13:55 · 40 分', JSON.stringify(c));
-    c = await over(14, 57);
-    check('hovering the ride: its route once, no second line', c && c.head === '27 路 14:50–15:19 · 29 分' && c.place === null, JSON.stringify(c));
+    let c = await over(10, 45);
+    check('hovering the work: the title is 做 Jarvis with its own time, and the place 家 under it', c && c.head === '做 Jarvis 10:30–11:25 · 55 分' && c.place === '家' && !c.hollow, JSON.stringify(c));
+    c = await over(12, 0);
+    check('hovering the stretch nothing says the words of: 不知道在干嘛 with its own time and a hollow dot', c && c.head === '不知道在干嘛 11:25–13:15 · 1 时 50 分' && c.hollow, JSON.stringify(c));
+    await a.move(g.left + 30, y + 150); await settle(300);
+    // opening: a long work stretch, then a rest, then one with pictures and the session that spans two stretches
+    const inside = k => a.page.evaluate(k => { const q = document.querySelector(`[data-key="${k}"]`); return { open: q.getAttribute('aria-expanded'), lines: [...q.querySelectorAll('.dt-ins .dt-cline')].map(l => [l.querySelector('.dt-ctx').childNodes[0]?.textContent, l.querySelector('.dt-ctx em')?.textContent ?? '', l.querySelector('.dt-cside').textContent].join('|')),
+      thumbs: [...q.querySelectorAll('.dt-ins img.dt-thumb')].map(i => i.getAttribute('src').split('/').pop()[0]), knows: q.querySelector('.dt-knows')?.textContent ?? null, lead: q.querySelector('.dt-lines p')?.textContent ?? null,
+      btns: [...q.querySelectorAll('.dt-acts .dt-btn')].map(b => b.textContent), say: !!q.querySelector('.dt-sayhow'), star: !!q.querySelector('.dt-starbtn') }; }, k);
+    await row('doing-12').scrollIntoViewIfNeeded(); await row('doing-12').click({ position: { x: 170, y: 14 } }); await settle(560);
+    let o = await inside('doing-12');
+    check('opening the long work stretch: the work block (projects and apps, active time), the Claude Code session and the chat inside it in time order, how she knows, and the two buttons it has (问她 and 这段在干嘛), no star',
+      o.open === 'true' && o.lines.join('\n') === '在 Mac 上工作|Jarvis · Ghostty|活跃 1 时 55 分\nClaude Code · Doing rows|jarvis · A|1 时 30 分\nThe bar for the day|和 Claude|14 条' && o.knows === '记录里看到的' && o.btns.join() === '问她' && o.say && !o.star, JSON.stringify(o));
+    await a.shot('doing-03-open-work', { x: 40, y: 0, width: 560, height: 760 });
+    await row('doing-11').scrollIntoViewIfNeeded(); await row('doing-11').click({ position: { x: 170, y: 14 } }); await settle(560);
+    o = await inside('doing-11');
+    check('opening the rest stretch (phone use, music, messages, a call): each in a compact line with its time or length at the right, and her guess; the first stretch closed', o.open === 'true' && (await inside('doing-12')).open === 'false'
+      && o.lines.join('\n') === '音乐|晴天|30 分\n妈妈|发 3 · 收 5|7 分\n妈妈|打进|4 分' && o.knows === '她猜的', JSON.stringify(o));
+    await a.shot('doing-04-open-rest', { x: 40, y: 0, width: 560, height: 760 });
+    await row('doing-9').scrollIntoViewIfNeeded(); await row('doing-9').click({ position: { x: 170, y: 14 } }); await settle(560);
+    o = await inside('doing-9');
+    check('a stretch with pictures shows their thumbnails (the one the daemon has, an icon for the one it has not), and the session that spans two stretches is 25 min here', o.lines.length === 3 && o.thumbs.join() === 'c' && o.lines.at(-1) === 'Claude Code · Verify the day list|jarvis · A|25 分' && o.knows === '她猜的');
+    await row('doing-9').locator('img.dt-thumb').click(); await settle(300);
+    check('a click on a thumbnail opens the picture large with its note', await a.page.locator('.dt-viewer img').getAttribute('src').then(x => x.endsWith(`/inherent/attachments/${'c'.repeat(32)}`)) && await a.page.locator('.dt-viewer p').innerText() === '图书馆的窗边');
+    await a.page.keyboard.press('Escape'); await settle(300);
+    // 问她 about a stretch: the chip has its glyph, words and time; the turn is sent as text with the range and words in front, with no `about`
+    await row('doing-2').scrollIntoViewIfNeeded(); await row('doing-2').click({ position: { x: 170, y: 14 } }); await settle(560);
+    await row('doing-2').locator('.dt-acts .dt-btn', { hasText: '问她' }).click(); await settle(520);
+    const chip = await a.page.evaluate(() => { const c = document.querySelector('.dt-dock .dt-about'); return c && { title: c.querySelector('b').textContent, at: c.querySelector('time').textContent, icon: !!c.querySelector('svg') }; });
+    await a.page.keyboard.type('这段进展怎么样'); await a.page.keyboard.press('Enter'); await settle(500);
+    const turn = a.s.posts.filter(p => p.path === '/inherent/submit').at(-1)?.body;
+    check('问她 on a stretch: the chip is 做 Jarvis at 10:30 with its glyph; Enter sends the range and words with his, and no about (the brain takes none for a stretch)', chip && chip.title === '做 Jarvis' && chip.at === '10:30' && chip.icon && turn?.text === '10:30–11:25 做 Jarvis：这段进展怎么样' && turn.about === undefined, JSON.stringify([chip, turn]));
+    await a.page.waitForTimeout(1700);
+    await row('doing-9').scrollIntoViewIfNeeded(); await row('doing-9').click({ position: { x: 170, y: 14 } }); await settle(560);
+    await row('doing-9').locator('.dt-sayhow').click(); await settle(520);
+    await a.page.keyboard.type('在图书馆看书'); await a.page.keyboard.press('Enter'); await settle(500);
+    const said1 = a.s.posts.filter(p => p.path === '/inherent/day/answer').at(-1)?.body;
+    check('这段在干嘛 on a stretch hands his words for its range to the day’s one route', said1 && said1.text === '在图书馆看书' && said1.start_ms === T(17, 0) && said1.end_ms === T(18, 15), JSON.stringify(said1));
     await a.ctx.close();
-    const b = await boot({ served: doingDay(), lang: 'en' });
+    const b = await boot({ served: segDay(), lang: 'en' });
     const en1 = await seen(b, r => /^On Jarvis · 2:15$/.test(r.line ?? ''), 6000);
-    check('in English the wing reads On Jarvis · 2:15, whole', en1.line === 'On Jarvis · 2:15' && wingText(doingDay(), NOW, en).head === 'On Jarvis', JSON.stringify(en1));
+    check('in English the wing reads On Jarvis · 2:15, whole', en1.line === 'On Jarvis · 2:15' && wingText(segDay(), NOW, en).head === 'On Jarvis', JSON.stringify(en1));
     await b.ctx.close();
+    // a reply with no stretches: the list as it always was (place groups, talk, moves)
+    const n = await boot({ served: richDay() });
+    await n.until(() => document.querySelector('.notch')?.dataset.line === '家 · 3:00');
+    const ns = await n.lineX();
+    await n.move(ns.mid, 14); await n.page.mouse.down(); await n.page.mouse.up();
+    await n.until(() => document.querySelector('.notch-drop.is-open .dt-track') && document.querySelector('.dt-row'), undefined, 8000);
+    check('a reply with no stretches draws the list it always did: place headers, talks and moves as rows, no stretch row', await n.page.locator('.dt-sh').count() === 5 && await n.page.locator('.dt-row[data-kind="talk"]').count() === 3 && await n.page.locator('.dt-row[data-kind="doing"]').count() === 0);
+    await n.ctx.close();
   }
 
   // ---- the open rows (spec-r3 section 8): a click opens a row in place, and what it says and can do depends on what it is ----

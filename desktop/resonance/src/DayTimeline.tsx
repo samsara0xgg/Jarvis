@@ -118,13 +118,14 @@ function Under({ keyed, open, cx }: { keyed: string; open: boolean; cx: Cx }) {
 // right its length, how long until it, or its value. The glyphs of one stay or one trip hang on a rail. A click opens it in place.
 // The pointer lights a row by moving on it, not by arriving: a list that scrolls under a resting pointer (the keys, the wheel) leaves what the keys chose alone.
 function RowView({ row, hot, onHot, pick, t, how, cx }: { row: Row; how: string } & Hover) {
-  const open = cx.opened === row.key, badge = useFade(row.wait), plain = !cx.opens.has(row.key), box = useRef<HTMLDivElement>(null);
+  const open = cx.opened === row.key, badge = useFade(row.wait), plain = !cx.opens.has(row.key), box = useRef<HTMLDivElement>(null), seg = row.seg, sub = !!row.detail || !!seg?.counts.length;
   useLayoutEffect(() => { if (row.leaving && box.current) away(box.current); }, [row.leaving]);
-  return <div ref={box} className={`dt-row${row.detail ? ' has-detail' : ''}${row.future ? ' is-future' : ''}${row.connector ? ' is-leg' : ''}${how}${hot === row.key ? ' is-hot' : ''}${pick === row.key ? ' is-pick' : ''}${open ? ' is-open' : ''}${plain ? ' is-still' : ''}${row.leaving ? ' is-leaving' : ''}`} data-key={row.key} data-kind={row.kind} data-lk={row.lens ?? undefined}
+  return <div ref={box} className={`dt-row${sub ? ' has-detail' : ''}${seg ? ` is-seg${seg.unknown ? ' is-unknown' : ''}` : ''}${row.future ? ' is-future' : ''}${row.connector ? ' is-leg' : ''}${how}${hot === row.key ? ' is-hot' : ''}${pick === row.key ? ' is-pick' : ''}${open ? ' is-open' : ''}${plain ? ' is-still' : ''}${row.leaving ? ' is-leaving' : ''}`} data-key={row.key} data-kind={row.kind} data-lk={seg ? seg.lenses.join(' ') || undefined : row.lens ?? undefined} style={seg?.rgb ? { '--c': rgb(seg.rgb) } as CSSProperties : undefined}
     aria-current={pick === row.key ? 'true' : undefined} aria-expanded={plain ? undefined : open} onPointerMove={() => onHot(row.key)} onPointerLeave={() => onHot(null)} onClick={e => cx.click(e, row.key)}>
     <time className="dt-at">{row.ago && <small>{row.ago}</small>}{row.at}</time>
     <i className="dt-ic">{row.icon === 'dot' ? <span className="dt-pip"/> : <Ic icon={row.icon}/>}<Lit on={row.star} hers={row.hers} className="dt-badge"/></i>
-    <span className="dt-tx"><span className="dt-ttl"><b>{row.title}</b>{badge && <i className={`dt-wait${row.wait ? '' : ' is-gone'}`}>{t(['Waiting', '等你'])}</i>}</span>{row.detail && <em>{row.detail}</em>}</span>
+    <span className="dt-tx"><span className="dt-ttl"><b>{row.title}</b>{badge && <i className={`dt-wait${row.wait ? '' : ' is-gone'}`}>{t(['Waiting', '等你'])}</i>}</span>
+      {seg ? sub && <em className="dt-sub">{row.detail && <span>{row.detail}</span>}{seg.counts.map(c => <i key={c.icon} className="dt-cn"><Ic icon={c.icon} size={11}/>{c.n}</i>)}</em> : row.detail && <em>{row.detail}</em>}</span>
     <Quick keyed={row.key} cx={cx} t={t}/>
     <span className={`dt-tm${row.value ? ' is-value' : ''}`}>{row.right}</span>
     <Under keyed={row.key} open={open} cx={cx}/>
@@ -193,7 +194,7 @@ function Blocks({ blocks, hot, onHot, pick, t, cx, inside }: { blocks: Block[]; 
     last = unit;
     if (b.type === 'now') return <div key={b.key} className={`dt-now${gap}${(inside ? i < end : onWay(prev) && onWay(next)) ? ` is-rail${inside ? '' : ' is-trip'}` : ''}`}><span>{b.label}</span></div>;
     if (b.type === 'row') {
-      const how = inside ? ` is-rail${i === end ? ' is-end' : ''}` : onWay(b) ? ` is-rail is-trip${onWay(prev) ? '' : ' is-top'}${onWay(next) ? '' : ' is-end'}` : '';
+      const how = inside ? ` is-rail${i === end ? ' is-end' : ''}` : b.row.seg ? ` is-rail${prev?.type === 'row' && prev.row.seg ? '' : ' is-top'}${next?.type === 'row' && next.row.seg ? '' : ' is-end'}` : onWay(b) ? ` is-rail is-trip${onWay(prev) ? '' : ' is-top'}${onWay(next) ? '' : ' is-end'}` : '';
       return <RowView key={b.row.key} row={b.row} hot={hot} onHot={onHot} pick={pick} t={t} cx={cx} how={gap + how}/>;
     }
     return <StayView key={b.key} b={b} gap={gap} hot={hot} onHot={onHot} pick={pick} t={t} cx={cx}/>;
@@ -436,7 +437,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
 
   // ---- opening a row, and what can be done from it (RowOpen.tsx, AskDock.tsx) ----
   // Which rows can be asked about: those whose kind and id the brain takes (dayOpen.askOf says what is handed over).
-  const asks = useMemo<ReadonlySet<string>>(() => new Set((model?.items ?? []).filter(x => askable(x.kind, x.id)).map(x => x.id)), [model]);
+  const asks = useMemo<ReadonlySet<string>>(() => new Set([...(model?.items ?? []).filter(x => askable(x.kind, x.id)).map(x => x.id), ...model?.segs.keys() ?? []]), [model]);
   const canAsk = (key: string) => !!ask && asks.has(key);
   // Which items can be marked as what mattered (every one with an id the brain takes), and who marked those that are: him, or her.
   const starrables = useMemo<ReadonlySet<string>>(() => new Set((model?.items ?? []).filter(x => starrable(x.id)).map(x => x.id)), [model]);
@@ -551,7 +552,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     const d = dock, text = draft.trim();
     if (!d || !text || d.state === 'busy' || !ask) return;
     setDock({ ...d, state: 'busy' });
-    try { await ask(text, d.ask?.about); setDraft(''); setDock(x => x && { ...x, state: 'sent' }); }
+    try { await ask(d.ask?.lead ? `${d.ask.lead}${text}` : text, d.ask?.lead ? undefined : d.ask?.about); setDraft(''); setDock(x => x && { ...x, state: 'sent' }); }
     catch { setDock(x => x && { ...x, state: 'failed' }); }
   };
   useEffect(() => { if (dock?.state !== 'sent') return; const timer = setTimeout(() => setDock(null), 1500); return () => clearTimeout(timer); }, [dock?.state]);
