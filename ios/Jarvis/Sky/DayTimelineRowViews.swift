@@ -2,7 +2,7 @@ import SwiftUI
 
 // One line of the day's list: the time, the icon in its circle (dashed for what has not happened, a lit star on what mattered), the title with its one muted line, and at the right how long
 // or the value. A place carries a rail in its hue through what happened there, a trip a dashed one through all of its run. The heights are `TLMetrics` (single 44, with a line 56, a place's
-// header 44, 12 between groups), so nothing crowds and every row is a target of at least 44. Opened, a row says its own title and line whole (they wrap instead of being cut short); what
+// header 44, 12 between groups), so nothing crowds and every row is a target of at least 44. A stretch of what he was doing is a row like any other, its icon in its category's colour. Opened, a row says its own title and line whole (they wrap instead of being cut short); what
 // else opening it shows is in Sky/DayTimelineOpen.swift.
 
 private let ink = SetColor.ink
@@ -69,7 +69,7 @@ struct TLRowView: View, Equatable {
     /// the circle's size: a place's header has a dot, a stop on the way a smaller one
     private var beadSize: Double { e.kind == .stay ? 8 : e.kind == .pause ? 7 : TLColumns.bead }
     /// where the title's line begins: the block of a row is centred in its height
-    private var titleTop: Double { e.detail == nil ? (e.base - 18) / 2 : (e.base - 35) / 2 }
+    private var titleTop: Double { e.hasLine ? (e.base - 35) / 2 : (e.base - 18) / 2 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -135,12 +135,19 @@ struct TLRowView: View, Equatable {
             bead.padding(.leading, TLColumns.centre - TLColumns.bead / 2 - TLColumns.time).padding(.top, (e.base - TLColumns.bead) / 2)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(e.title).font(.system(size: 15)).foregroundStyle(ink).lineLimit(open ? 3 : 1)
+                    Text(e.title).font(.system(size: 15)).foregroundStyle(e.unknown ? muted : ink).lineLimit(open ? 3 : 1)
                     if e.waiting { badge }
                 }
                 .frame(minHeight: 18, alignment: .leading)
                 .animation(.easeOut(duration: 0.25), value: e.waiting)
-                if let d = e.detail { Text(d).font(.system(size: 12)).foregroundStyle(muted).lineLimit(open ? 4 : 1).frame(minHeight: 15, alignment: .leading) }
+                if e.hasLine {
+                    // a stretch's line: where, then the small icons of what is inside it (they keep their room, and the words give way)
+                    HStack(spacing: 8) {
+                        if let d = e.detail { Text(d).font(.system(size: 12)).foregroundStyle(muted).lineLimit(open ? 4 : 1) }
+                        TLCountsView(counts: e.counts)
+                    }
+                    .frame(minHeight: 15, alignment: .leading)
+                }
             }
             .padding(.leading, TLColumns.text - TLColumns.centre - TLColumns.bead / 2).padding(.top, titleTop)
             Spacer(minLength: 8)
@@ -162,7 +169,8 @@ struct TLRowView: View, Equatable {
         } else {
             ZStack {
                 if e.later { Circle().strokeBorder(ink.opacity(0.34), style: StrokeStyle(lineWidth: 1, dash: [2.5, 2.5])) } else { Circle().fill(Color.white.opacity(0.06)) }
-                Image(systemName: e.later ? e.symbol.replacingOccurrences(of: ".fill", with: "") : e.symbol).font(.system(size: 14)).foregroundStyle(iconColor)
+                Image(systemName: e.later ? e.symbol.replacingOccurrences(of: ".fill", with: "") : e.symbol).font(.system(size: 14))
+                    .foregroundStyle(e.kind == .segment ? e.color?.color ?? muted : iconColor)          // a stretch's icon is its category's colour
             }
             .frame(width: TLColumns.bead, height: TLColumns.bead)
             .overlay(alignment: .topTrailing) { if e.lit { TLRowStar(hers: e.hers).frame(width: 12, height: 12).offset(x: 3, y: -3).transition(.opacity) } }
@@ -193,6 +201,25 @@ struct TLRowView: View, Equatable {
         case .trip: DashedRail().stroke(tripRail.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [2, 3])).frame(width: 2)
         case .none: Color.clear
         }
+    }
+}
+
+/// the small icons each followed by its number, under a stretch's title: pictures, payments, calls, messages (only those it has)
+struct TLCountsView: View {
+    let counts: TLCounts
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(counts.shown, id: \.symbol) { c in
+                HStack(spacing: 3) {
+                    Image(systemName: c.symbol).font(.system(size: 10.5))
+                    Text("\(c.n)").font(AT.mono(11))
+                }
+            }
+        }
+        .foregroundStyle(muted).fixedSize().layoutPriority(1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(counts.shown.map { "\($0.word) \($0.n)" }.joined(separator: "，"))
     }
 }
 
@@ -240,9 +267,9 @@ private struct TLPreview: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 Text(e.time).font(AT.mono(11.5)).foregroundStyle(muted)
-                Image(systemName: e.symbol).font(.system(size: 14)).foregroundStyle(iconColor).frame(width: 28, height: 28).background(Color.white.opacity(0.06), in: Circle())
+                Image(systemName: e.symbol).font(.system(size: 14)).foregroundStyle(e.kind == .segment ? e.color?.color ?? muted : iconColor).frame(width: 28, height: 28).background(Color.white.opacity(0.06), in: Circle())
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(e.title).font(.system(size: 15)).foregroundStyle(ink).lineLimit(3)
+                    Text(e.title).font(.system(size: 15)).foregroundStyle(e.unknown ? muted : ink).lineLimit(3)
                     if let d = e.detail { Text(d).font(.system(size: 12)).foregroundStyle(muted).lineLimit(4) }
                 }
                 Spacer(minLength: 6)
