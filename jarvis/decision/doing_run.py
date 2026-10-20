@@ -69,6 +69,8 @@ class Brief:
     far his phone and tablet app use is known: ``None`` when none of it reaches the brain, else
     each device whose records stop before the window does, with where they stop. ``kept`` are the
     spans before the window that a short run keeps as written (ADR 0310, :func:`narrow`).
+    ``foreground`` is what was in front of him at his Mac in each quarter hour of the window, as
+    (start, end, text).
     """
 
     day: str
@@ -85,6 +87,7 @@ class Brief:
     signals: Mapping[int, str]
     screen: Mapping[str, int] | None
     kept: Sequence[Mapping[str, Any]] = ()
+    foreground: Sequence[tuple[int, int, str]] = ()
 
 
 def _reach(span: Mapping[str, Any], brief: Brief) -> int:
@@ -155,6 +158,9 @@ def narrow(brief: Brief, written: Sequence[Mapping[str, Any]]) -> Brief:
     return replace(
         brief, waking=Waking(at, end), segments=segments, signals=signals, kept=kept,
         clues=[c for c in brief.clues if not start <= c.at_ms < at],
+        foreground=[
+            (max(lo, at), hi, text) for lo, hi, text in brief.foreground if hi > at
+        ],
     )
 
 
@@ -175,6 +181,7 @@ def inputs_digest(brief: Brief) -> str:
         "clues": [list(c) for c in brief.clues],
         "signals": sorted(brief.signals.items()),
         "screen": None if brief.screen is None else sorted(brief.screen.items()),
+        "foreground": [list(f) for f in brief.foreground],
     }
     text = json.dumps(body, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -256,6 +263,19 @@ def _kept_lines(brief: Brief) -> list[str]:
     return [f"WRITTEN ALREADY (local | title | category; kept as they are):\n{rows}"]
 
 
+def _foreground_lines(brief: Brief) -> list[str]:
+    if not brief.foreground:
+        return []
+    rows = "\n".join(
+        f"{_clock(lo, brief.zone)}-{_clock(hi, brief.zone)} | {text}"
+        for lo, hi, text in brief.foreground
+    )
+    return [
+        "MAC FOREGROUND (local | what was in front of him, minutes in front, seconds typed):\n"
+        + rows,
+    ]
+
+
 def build_messages(brief: Brief) -> list[dict[str, Any]]:
     """The one user message the writer sees: the day, its times, its segments and its clues.
 
@@ -281,6 +301,7 @@ def build_messages(brief: Brief) -> list[dict[str, Any]]:
         "SEGMENTS (the program's cut of the window; times | local | place | at his Mac | facts |"
         " signals):\n"
         + "\n".join(segment_lines),
+        *_foreground_lines(brief),
         f"PHONE AND TABLET APP USE: {_screen_line(brief)}",
         "CLUES (id | local time | kind | text):\n" + ("\n".join(clue_lines) or "(none)"),
     ))

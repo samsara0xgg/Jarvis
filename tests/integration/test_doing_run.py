@@ -4,6 +4,8 @@ Real memory.db, Event Log, day-line fold and cut in ``tmp_path``; the model is t
 client that answers from a function of the prompt it was shown and records what it was asked.
 The checks, as tables of input to expected output:
 
+- the Mac's foreground: the minutes each app, site or document was in front in each quarter hour,
+  the seconds typed in it, another device's spans left out;
 - the clues: each kind of day-line item that holds one, his words and hers, the work state's
   screen, interview mail and his answers (this day's, and earlier ones near a place he stayed at),
   bounded in count and in length, and a source that fails leaving the rest;
@@ -786,6 +788,59 @@ def test_a_segment_with_no_signals_has_no_signals_part(brief: Brief) -> None:
     assert "signals:" not in build_messages(brief)[0]["content"]
 
 
+def _foreground(directory: Path, spans: list[tuple[datetime, datetime, dict[str, Any]]]) -> None:
+    """TimeSink ``span`` rows (UTC as GRDB writes them), shipped to ``directory``."""
+    lines = [
+        {
+            "key": f"span:{number}:{'b' * 12}", "kind": "span", "zone": "UTC",
+            "at_ms": _ms(start), "text": "",
+            "fields": {
+                "id": number, "deviceID": None, "appName": "Claude", "domain": None,
+                "document": None, "title": None, "keySeconds": 0, **fields,
+                "start": start.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.000"),
+                "end": end.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.000"),
+            },
+        }
+        for number, (start, end, fields) in enumerate(spans, 1)
+    ]
+    Shipments(directory, min_free_bytes=0).receive_entries(
+        "timesink", b"\n".join(json.dumps(line).encode() for line in lines),
+    )
+
+
+def test_the_brief_tells_what_was_in_front_at_his_mac_each_quarter_hour(
+    world: World, tmp_path: Path,
+) -> None:
+    """Minutes and typing per app, site or document; a span over two quarters is shared out."""
+    directory = tmp_path / "imports"
+    second = timedelta(seconds=1)
+    _foreground(directory, [
+        (_at(12, 10), _at(12, 20), {"document": "Jarvis - Claude Code", "keySeconds": 60}),
+        (_at(12, 20), _at(12, 22), {
+            "appName": "Google Chrome", "domain": "olevod.com", "title": "挽救计划",
+        }),
+        # two short visits to one window are summed: 40 s together are worth naming
+        (_at(12, 22), _at(12, 22) + 20 * second, {"appName": "WeChat", "title": "Weixin"}),
+        (_at(12, 23), _at(12, 23) + 20 * second, {"appName": "WeChat", "title": "Weixin"}),
+        (_at(12, 30), _at(12, 40), {"deviceID": "ipad", "appName": "Safari"}),  # not his Mac
+    ])
+    found = read_brief(DAY, replace(world.sources, shipped=directory), world.log, NOW)
+    assert found is not None
+    assert found.foreground == [
+        (_ms(_at(12)), _ms(_at(12, 15)), "Claude Jarvis - Claude Code 5m typed 30s"),
+        (_ms(_at(12, 15)), _ms(_at(12, 30)), (
+            "Claude Jarvis - Claude Code 5m typed 30s, Google Chrome olevod.com (挽救计划) 2m, "
+            "WeChat Weixin 1m"
+        )),
+    ]
+    lines = build_messages(found)[0]["content"].split("\n")
+    at = lines.index(
+        "MAC FOREGROUND (local | what was in front of him, minutes in front, seconds typed):",
+    )
+    assert lines[at + 1] == "12:00-12:15 | Claude Jarvis - Claude Code 5m typed 30s"
+    assert inputs_digest(found) != inputs_digest(replace(found, foreground=[]))
+
+
 def test_a_mac_stretch_is_closed_by_its_mark_or_by_timesinks_own_stop_else_runs_to_the_end(
     world: World, tmp_path: Path,
 ) -> None:
@@ -1147,6 +1202,17 @@ def test_a_short_run_keeps_the_spans_before_the_last_and_writes_from_where_it_st
     got = read_run(_tile(build_messages(short)[0]["content"]), "stop", short)
     assert not isinstance(got, str), got
     assert [(s["start_ms"], s["end_ms"]) for s in got] == [(_ms(_at(14, 45)), _ms(_at(15)))]
+
+
+def test_a_short_run_tells_the_mac_foreground_from_where_its_window_starts(brief: Brief) -> None:
+    """The quarter hours that end by the time the window starts are left out."""
+    quarters = [
+        (_ms(_at(14, 15)), _ms(_at(14, 30)), "Claude 9m"),
+        (_ms(_at(14, 30)), _ms(_at(14, 45)), "WeChat Weixin 4m"),
+        (_ms(_at(14, 45)), _ms(_at(15)), "Claude Jarvis 12m typed 15s"),
+    ]
+    short = narrow(replace(brief, foreground=quarters), _written(brief))
+    assert short.foreground == [quarters[2]]
 
 
 def test_a_run_that_does_not_tile_up_to_its_last_span_leaves_the_whole_day(brief: Brief) -> None:

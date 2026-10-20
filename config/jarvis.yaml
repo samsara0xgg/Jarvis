@@ -498,11 +498,15 @@ doing:
       sent from his phone or tablet, what played there the longest, how long his phone was still
       or moving, about how many steps, and his heart rate. Facts and signals are observed, not
       guessed.
+    - MAC FOREGROUND: for each quarter hour at his Mac, the minutes each app, site or document
+      was in front of him and the seconds he typed in it. This is where his attention was at the
+      Mac; a block's list of app names in SEGMENTS is not.
     - PHONE AND TABLET APP USE: how far the apps he used on his phone and tablet are known.
       They reach Jarvis hours late; where they are not known yet, finding none shows nothing.
     - CLUES: short dated evidence c1, c2, ...: what he and she said ("he:", "she:"), pictures he
-      sent, mail, calendar, the day's plan, payments, Claude chats and sessions, what the screen
-      showed, and what he answered earlier about this place.
+      sent, mail, calendar, the day's plan, payments, Claude chats and sessions, "screen" (a
+      model's summary of what was visible on his screen, not what he attended to), and what he
+      answered earlier about this place.
 
     Answer with JSON only:
     {"spans": [{"from": "t0", "to": "t3", "kind": "doing", "title": "...", "detail": "...",
@@ -549,6 +553,9 @@ doing:
       most 4 short options (each at most 24 characters). He answers them once, in the evening.
     - What he said himself outweighs what a fact suggests. A clue from another day ("on 10-12 at
       this place he said...") tells what he tends to do at a place, not what he did today.
+    - At his Mac, what he was doing is what held the minutes in front of him and his typing in
+      MAC FOREGROUND. A video or film that plays in a window he seldom has in front is in the
+      background: name the work he spent the minutes on, and say the background in "detail".
     - A Claude Code session goes on by itself while he is away or resting: it says what he was
       working on when his Mac shows him there, never that he was there.
     - Signals are observed facts about his body, his devices and his Mac's attention; on their

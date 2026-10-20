@@ -42,6 +42,7 @@ from jarvis.shared import lang
 from jarvis.state.day_line import DayLine, DaySources, day_window, fold_day, shipped_conn
 from jarvis.state.doing import cut, fact_spans, his_facts, waking_window
 from jarvis.state.doing_clues import HIS_WORDS, gather
+from jarvis.state.doing_signals import foreground
 from jarvis.state.doing_signals import gather as gather_signals
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import append_doing_run, latest_doing_run, local_now, open_memory_db
@@ -137,6 +138,7 @@ def read_brief(
         final=waking.end_ms < now_ms, language=_title_language(clues, sources.memory_db),
         waking=waking, segments=segments, facts=facts, items=items, clues=clues, signals=signals,
         screen=_screen_reach(line, sources),
+        foreground=foreground(sources, (waking.start_ms, waking.end_ms)),
     )
 
 

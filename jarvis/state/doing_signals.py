@@ -23,6 +23,11 @@ the source has nothing for the segment:
 - heart rate: the lowest and highest heart rate sampled inside the segment, with the context
   the watch gave most of them, as ``heart 55-68 sedentary``.
 
+:func:`foreground` reads, for each quarter hour of the window, what was in front of him at his
+Mac: the minutes each app, site or document held and the seconds he typed in it, from TimeSink's
+spans as the terminal shipped them. It is where his attention was at the Mac, which a block's
+list of app names does not say.
+
 Nothing is stored and nothing is guessed. A source that cannot be read leaves its part out,
 logged. A phone picked up is not a signal: the phone reports no row for it (its battery and
 location rows also come when the app wakes in the background).
@@ -72,7 +77,16 @@ MAX_STRETCHES: Final = 3
 MAX_ACTIVITIES: Final = 2
 """The most phone activities of a segment, the ones covering most of it."""
 
+FOREGROUND_SLICE_MS: Final = 15 * 60_000
+"""How long each part of the window is whose foreground is told."""
+MAX_FOREGROUND_ITEMS: Final = 5
+"""The most apps, sites or documents a quarter hour names, those in front longest; the rest is
+summed as ``other``."""
+_FOREGROUND_TITLE_MAX_CHARS: Final = 30
+
 _MINUTE_MS: Final = 60_000
+_HALF_MINUTE_MS: Final = 30_000
+_TYPED_MIN_SECONDS: Final = 5
 _MAC_LOOKBACK_MS: Final = 24 * 60 * _MINUTE_MS
 """How far before the first segment the Mac's state marks are read, to find a stretch that began
 earlier and is still going."""
@@ -268,6 +282,101 @@ def _touches(item: Mapping[str, Any], segment: Segment) -> bool:
     return start < segment.end_ms and end >= segment.start_ms
 
 
+# --- the Mac's foreground ------------------------------------------------------------------
+
+
+def _cut(text: object) -> str:
+    line = " ".join(str(text or "").split())
+    cut = len(line) > _FOREGROUND_TITLE_MAX_CHARS
+    return line[: _FOREGROUND_TITLE_MAX_CHARS - 1].rstrip() + "…" if cut else line
+
+
+def _held(fields: Mapping[str, Any]) -> tuple[tuple[str, str], str]:
+    """What a span had in front, as (the key it is summed by, how it is named).
+
+    A site is summed by its domain, named with the first title seen; anything else by its
+    document, else its window title.
+    """
+    app = str(fields.get("appName") or "unknown app")
+    domain = str(fields.get("domain") or "")
+    if domain:
+        title = _cut(fields.get("title"))
+        return (app, domain), f"{app} {domain}" + (f" ({title})" if title else "")
+    what = _cut(fields.get("document") or fields.get("title"))
+    return (app, what), f"{app} {what}" if what and what != app else app
+
+
+def _foreground_spans(
+    shipped: sqlite3.Connection, start_ms: int, end_ms: int,
+) -> list[tuple[int, int, tuple[str, str], str, int]]:
+    """The Mac's spans touching ``[start_ms, end_ms)``: start, end, key, name, seconds typed."""
+    found: list[tuple[int, int, tuple[str, str], str, int]] = []
+    for row in imports.newest(
+        shipped, "timesink", start_ms=start_ms - FOREGROUND_SLICE_MS, end_ms=end_ms,
+        kinds=("span",), by_prefix=True,
+    ):
+        fields = row.fields
+        if fields.get("deviceID") is not None or not fields.get("start") or not fields.get("end"):
+            continue
+        lo, hi = (
+            round(datetime.fromisoformat(timesink.moment(str(fields[edge]))).timestamp() * 1000)
+            for edge in ("start", "end")
+        )
+        if hi > max(lo, start_ms):
+            key, name = _held(fields)
+            found.append((lo, hi, key, name, int(fields.get("keySeconds") or 0)))
+    return found
+
+
+def _quarter(held: Mapping[tuple[str, str], list[Any]]) -> str:
+    """``Claude 一起看 8m typed 40s, WeChat Weixin 6m typed 110s, other 1m``."""
+    ranked = sorted(held.values(), key=lambda one: -one[1])
+    shown = [one for one in ranked[:MAX_FOREGROUND_ITEMS] if one[1] >= _HALF_MINUTE_MS]
+    rest = sum(one[1] for one in ranked) - sum(one[1] for one in shown)
+    parts = [
+        f"{name} {max(1, round(ms / _MINUTE_MS))}m"
+        + (f" typed {round(typed)}s" if typed >= _TYPED_MIN_SECONDS else "")
+        for name, ms, typed in shown
+    ]
+    if rest >= _HALF_MINUTE_MS:
+        parts.append(f"other {max(1, round(rest / _MINUTE_MS))}m")
+    return ", ".join(parts)
+
+
+def foreground(sources: DaySources, window: tuple[int, int]) -> list[tuple[int, int, str]]:
+    """What was in front of him at his Mac in each quarter hour of ``window``, oldest first.
+
+    Each is (start, end, text): the quarter hour, clipped to the window, and the minutes each
+    app, site or document held with the seconds he typed in it (a span's typing shared by the
+    time it spent in each quarter). A quarter with under half a minute in front is left out.
+    """
+    start, end = window
+
+    def read() -> list[tuple[int, int, tuple[str, str], str, int]]:
+        conn = shipped_conn(sources)
+        if conn is None:
+            return []
+        with closing(conn):
+            return _foreground_spans(conn, start, end)
+
+    none: list[tuple[int, int, tuple[str, str], str, int]] = []
+    quarters: dict[int, dict[tuple[str, str], list[Any]]] = {}
+    for lo, hi, key, name, typed in _guarded("Mac foreground", read, none):
+        clipped_lo, clipped_hi = max(lo, start), min(hi, end)
+        at = clipped_lo - clipped_lo % FOREGROUND_SLICE_MS
+        while at < clipped_hi:
+            part = min(clipped_hi, at + FOREGROUND_SLICE_MS) - max(clipped_lo, at)
+            one = quarters.setdefault(at, {}).setdefault(key, [name, 0, 0.0])
+            one[1] += part
+            one[2] += typed * part / (hi - lo)
+            at += FOREGROUND_SLICE_MS
+    found = []
+    for at, held in sorted(quarters.items()):
+        if text := _quarter(held):
+            found.append((max(at, start), min(at + FOREGROUND_SLICE_MS, end), text))
+    return found
+
+
 # --- the segments -------------------------------------------------------------------------
 
 
@@ -340,4 +449,12 @@ def gather(
     return found
 
 
-__all__ = ["MAX_ACTIVITIES", "MAX_STRETCHES", "SIGNALS_MAX_CHARS", "gather"]
+__all__ = [
+    "FOREGROUND_SLICE_MS",
+    "MAX_ACTIVITIES",
+    "MAX_FOREGROUND_ITEMS",
+    "MAX_STRETCHES",
+    "SIGNALS_MAX_CHARS",
+    "foreground",
+    "gather",
+]
