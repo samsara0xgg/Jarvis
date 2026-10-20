@@ -530,12 +530,15 @@ def test_a_day_with_no_waking_window_has_no_brief(world: World) -> None:
 # --- what the writer is shown ------------------------------------------------------------------
 
 
-def test_the_times_are_the_edges_of_the_window_the_segments_and_the_facts(brief: Brief) -> None:
-    """The times are the edges of the window the segments and the facts."""
+def test_the_times_are_the_edges_of_the_window_the_segments_the_facts_and_what_dates_his_doing(
+    brief: Brief,
+) -> None:
+    """The times are the edges of the window, the segments, the facts and what dates his doing."""
     clocks = [datetime.fromtimestamp(t / 1000, VANCOUVER).strftime("%H:%M") for t in times(brief)]
     assert clocks == [
-        "06:00", "08:00", "09:05", "11:30", "12:00", "13:00", "13:30", "14:45", "15:00",
-    ]  # 09:05 is where his talk with her began and ended: a fact inside a segment
+        "06:00", "08:00", "09:05", "10:00", "11:30", "12:00", "12:20", "13:00", "13:30", "14:45",
+        "15:00",
+    ]  # 09:05 his words, 10:00 the screen, 12:20 his picture; her 09:06 reply is not one
 
 
 def test_the_prompt_gives_the_times_the_segments_with_their_facts_and_the_clues(
@@ -549,18 +552,20 @@ def test_the_prompt_gives_the_times_the_segments_with_their_facts_and_the_clues(
         "the day is under way; it is 15:00 now"
     )
     assert "TITLE LANGUAGE: Simplified Chinese" in lines
-    assert "WAKING WINDOW: t0 06:00:00 to t8 15:00:00" in lines
-    assert [line for line in lines if re.fullmatch(r"t\d \d\d:\d\d:\d\d", line)] == [
-        "t0 06:00:00", "t1 08:00:00", "t2 09:05:00", "t3 11:30:00", "t4 12:00:00",
-        "t5 13:00:00", "t6 13:30:00", "t7 14:45:00", "t8 15:00:00",
+    assert "WAKING WINDOW: t0 06:00:00 to t10 15:00:00" in lines
+    assert [line for line in lines if re.fullmatch(r"t\d+ \d\d:\d\d:\d\d", line)] == [
+        "t0 06:00:00", "t1 08:00:00", "t2 09:05:00", "t3 10:00:00", "t4 11:30:00",
+        "t5 12:00:00", "t6 12:20:00", "t7 13:00:00", "t8 13:30:00", "t9 14:45:00",
+        "t10 15:00:00",
     ]
     assert "t0-t1 | 06:00-08:00 | place: none known | facts: none" in lines
     assert (
-        "t1-t3 | 08:00-11:30 | place: UVic Library [study] | "
-        "facts: stay UVic Library 08:00-11:30; talk 09:05-09:05 | inner times: t2"
+        "t1-t4 | 08:00-11:30 | place: UVic Library [study] | "
+        "facts: stay UVic Library 08:00-11:30; talk 09:05-09:05 | inner times: t2 t3"
     ) in lines
     assert (
-        "t4-t5 | 12:00-13:00 | place: Corner Cafe [unknown] | facts: stay Corner Cafe 12:00-13:00"
+        "t5-t7 | 12:00-13:00 | place: Corner Cafe [unknown] | "
+        "facts: stay Corner Cafe 12:00-13:00 | inner times: t6"
     ) in lines
     assert "c1 | 09:05 | words | he: 我在图书馆写论文" in lines
     assert "c4 | 12:20 | picture | A bowl of noodles on a wooden table" in lines

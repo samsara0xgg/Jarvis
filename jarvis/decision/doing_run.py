@@ -49,6 +49,10 @@ MAX_SPAN_CLUES: Final = 8
 _WORDS_CLUES: Final = ("words", "answer", "away_note")
 """The clues that can make a span ``stated``: he said it, in a conversation, an answer or a note;
 a conversation's line counts only when it is his."""
+_DOING_CLUES: Final = frozenset(
+    {"screen", "code", "chat", "picture", "photo", "payment", "calendar", "away_note"},
+)
+"""Clues dated when he was doing what they show, so a span may start or end at them."""
 _LEADING: Final = ("at ", "in ", "@", "在")
 _PUNCTUATION: Final = " .,:;!?\u3002\uff0c\u3001"
 """Spaces and the stops of either language, which a title may be wrapped in."""
@@ -97,8 +101,10 @@ def _at_mac(segment: Segment, brief: Brief) -> bool:
 def times(brief: Brief) -> list[int]:
     """The moments a span may start or end at, oldest first.
 
-    The window's two edges, the edges of every segment and the edges of every fact inside the
-    window.
+    The window's two edges, the edges of every segment, the edges of every fact inside the
+    window, and the time of every clue that shows what he was doing then (:func:`_marks`): a
+    long block at his Mac is one fact, and only such a clue dates the change of what he did
+    inside it.
     """
     start, end = brief.waking
     found = {start, end}
@@ -106,7 +112,15 @@ def times(brief: Brief) -> list[int]:
         found.update((segment.start_ms, segment.end_ms))
     for span in brief.facts:
         found.update(t for t in (span["start_ms"], _reach(span, brief)) if start < t < end)
+    found.update(c.at_ms for c in brief.clues if _marks(c) and start < c.at_ms < end)
     return sorted(found)
+
+
+def _marks(clue: Clue) -> bool:
+    """Whether a clue dates something he did: not her words, a mail, the plan or an old answer."""
+    if clue.kind == "words":
+        return clue.text.startswith(HIS_WORDS)
+    return clue.kind in _DOING_CLUES
 
 
 def inputs_digest(brief: Brief) -> str:
