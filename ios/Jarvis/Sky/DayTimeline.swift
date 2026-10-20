@@ -315,6 +315,13 @@ struct DayTimelineView: View {
                 TLWaitPill(count: away ? 0 : model?.waiting.count ?? 0) { if let model { tl.revealWaiting(in: model) } }
                     .frame(width: W - 60, alignment: .leading).offset(x: 30, y: TLLayout.pillsY + 2)
                 TLNowPill(tl: tl, nowInView: $nowInView, away: away)
+                // while he types to her, a touch anywhere on the day (a tap, or a drag up or down) lets the keyboard go and does nothing else, as in Messages: the sky under it,
+                // which did this before the day covered it, no longer gets the touch
+                if ui.typing {
+                    Color.clear.contentShape(Rectangle())
+                        .gesture(DragGesture(minimumDistance: 0).onEnded { _ in engine.endEditing?() })
+                        .accessibilityHidden(true)
+                }
             }
             .frame(width: W, height: H, alignment: .topLeading)
             .onChange(of: context.date) { _, _ in tl.rollOver() }          // the day may have turned
