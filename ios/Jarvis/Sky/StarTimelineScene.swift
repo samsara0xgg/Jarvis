@@ -9,7 +9,7 @@ enum TimelineFixture {
     /// the id of the event his mail made in `today(mail: true)`, as the brain names a commitment: `commitment-<hex>@<day>`
     static func commitmentId(_ cal: Cal) -> String { "commitment-3f9a1c2e7b4d4a0c9e5f6a7b8c9d0e1f@" + cal.iso(0) }
 
-    /// today: the night, home, a drive, a bite, home again, the bus to school, school, the bus home, and the evening still going, with his Mac work, what he spent and a chat with Claude along the way (`late`: a talk that has just ended is there too; `mail`: the class his mail made is a commitment of the brain's, by its id; `doing`: the brain's doing lane is there too, with what he was doing)
+    /// today: the night, home, a drive, a bite, home again, the bus to school, school, the bus home, and the evening still going, with his Mac work, what he spent and a chat with Claude along the way (`late`: a talk that has just ended is there too; `mail`: the class his mail made is a commitment of the brain's, by its id; `doing`: the brain's doing lane is there too, with what he was doing and the items under each stretch, and the phone's and the Mac's media, messages and calls)
     static func today(_ cal: Cal, late: Bool = false, mail: Bool = false, doing: Bool = false) -> DayReply { build(cal, day: 0) { b in
         // the night as Health recorded it (the first stage starts before the night does: only what lies inside it is the night's)
         b.add("sleep", 55, 545, ["minutes": 485, "stages": b.stages([(40, 55, "in_bed"), (55, 100, "core"), (100, 170, "deep"), (170, 215, "core"), (215, 245, "rem"), (245, 290, "core"), (290, 335, "deep"),
@@ -62,22 +62,32 @@ enum TimelineFixture {
         b.extra["weather"] = ["condition": "mostly cloudy", "high": 14, "low": 8, "sunrise_ms": b.ms(454), "sunset_ms": b.ms(1091)]
         b.extra["summary"] = ["steps": 8240, "resting_hr": 58, "hrv": 42]
         if doing {
-            // what he was doing, as the brain's doing lane would say it: the program's words from the facts (observed), a model's phrase (inferred) and his own answer (stated). The morning and the
-            // evening at home are mostly one span each; the afternoon at UVic is in four, none of them half of it
-            b.doing(545, 570, nil, "home", "observed")
-            b.doing(570, 685, "Jarvis", "work", "observed")
-            b.doing(685, 795, nil, "commute", "observed")
-            b.doing(795, 835, "吃午饭", "meal", "stated")
-            b.doing(835, 845, nil, "commute", "observed")
-            b.doing(845, 890, "歇一会儿", "rest", "inferred")
-            b.doing(890, 919, "27", "commute", "observed")
-            b.doing(919, 1000, "线性代数小测", "study", "inferred")
-            b.doing(1000, 1020, "FaceTime", "unknown", "observed")
-            b.doing(1020, 1055, "running", "exercise", "observed")
-            b.doing(1055, 1095, "写作业", "study", "inferred")
-            b.doing(1095, 1130, "27", "commute", "observed")
-            b.doing(1130, 1175, nil, "home", "observed")
-            b.doing(1175, now, "Jarvis", "work", "observed")
+            // what his phone and the Mac brought that the rest of the day does not have: phone use, music, messages (one in the evening too) and a call on the phone
+            b.add("screen", 850, 885, ["id": "screen-demo-1", "device": "iPhone", "active_s": 1500, "apps": [["name": "微信", "bundle": "com.tencent.xin", "minutes": 14, "category": "social"],
+                                                                                                      ["name": "小红书", "bundle": "com.xingin.discover", "minutes": 8, "category": "social"], ["name": "Safari", "bundle": "com.apple.mobilesafari", "minutes": 3, "category": "browser"]]])
+            b.add("media", 860, 890, ["id": "media-demo-1", "device": "iPhone", "app": "Music", "active_s": 1620, "titles": [["title": "Sunday Morning", "artist": "Maroon 5"]], "route": "AirPods"])
+            b.add("messages", 855, 872, ["id": "messages-demo-1", "device": "iPhone", "app": "WeChat", "conversation": "Mia", "is_group": false, "sent": 4, "received": 6])
+            b.add("messages", 1262, 1270, ["id": "messages-demo-2", "device": "iPhone", "app": "WeChat", "conversation": "论文小组", "is_group": true, "sent": 2, "received": 9])
+            b.add("phone_call", 868, 876, ["id": "phone_call-demo-1", "device": "iPhone", "app": "Phone", "direction": "received", "person": "妈妈", "duration_s": 480])
+            // What he was doing, as the brain's doing lane serves it, with the items under each stretch (ADR 0307: a lasting item in every stretch it overlaps, a point in the one it falls in).
+            // The morning and the evening at home are around one stay each, the afternoon at UVic is a stay under four stretches, a Claude Code session begins in one stretch and ends in the next,
+            // a long drive is in the model's words, a lunch he told her, a rest it is not sure of, a stretch nobody could say anything of, and the evening's work goes on to now.
+            b.doing(545, 575, "起床吃早饭", "meal", "inferred", detail: "起床后在家吃了早饭，没有别的记录", place: "stay-1", items: ["stay-1", "reminder-demo-3", "code-s1"], clues: ["早上九点刚醒", "家里的 Wi-Fi 一直在线"])
+            b.doing(575, 685, "Jarvis", "work", "observed", detail: "一直在改时间线和测试", place: "stay-1", items: ["stay-1", "code-s1", "code-s2", "work-demo-1", "talk-1", "code-s3"],
+                    clues: ["Xcode 在前台", "Claude Code 会话：统一时间线的行高", "你对她说过一次话"])
+            b.doing(685, 795, "开车去 A&W", "commute", "inferred", items: ["move-3", "move-4"], clues: ["先开车，再走了十分钟"])
+            b.doing(795, 835, "吃午饭", "meal", "stated", place: "stay-5", items: ["stay-5", "payment-demo-1"])
+            b.doing(835, 890, "歇一会儿", "rest", "inferred", confidence: "low", detail: "回到家，用了一会儿手机，听着歌", place: "stay-7", items: ["move-6", "stay-7", "screen-demo-1", "messages-demo-1", "media-demo-1", "phone_call-demo-1"],
+                    clues: ["手机上微信用得最多", "耳机里在放歌", "妈妈来了一个电话"])
+            b.doing(890, 919, "27", "commute", "observed", items: ["ride-8"])
+            b.doing(919, 1000, "线性代数小测", "study", "inferred", place: "stay-9", items: ["stay-9", "event-demo-2", "picture-pic-demo-1"], clues: ["日历里有小测", "你发来一张黑板的照片"])
+            b.doing(1000, 1020, "FaceTime", "unknown", "observed", place: "stay-9", items: ["stay-9", "call-demo-1"])
+            b.doing(1020, 1055, "running", "exercise", "observed", place: "stay-9", items: ["stay-9", "workout-demo-1"])
+            b.doing(1055, 1095, "写作业", "study", "inferred", place: "stay-9", items: ["stay-9"], clues: ["还在学校"])
+            b.doing(1095, 1130, "27", "commute", "observed", items: ["ride-12"])
+            b.doing(1130, 1175, nil, "unknown", "observed", confidence: "low", place: "stay-13", items: ["stay-13"])
+            b.doing(1175, nil, "Jarvis", "work", "observed", place: "stay-13",
+                    items: ["stay-13", "code-s4", "work-demo-2", "payment-demo-2", "claude-demo-1", "talk-2", "code-s5", "messages-demo-2", "code-s6", "reminder-demo-2"], clues: ["Xcode 和终端在前台", "Claude Code 会话：论文第三章的数据"])
         }
     } }
 
@@ -146,11 +156,14 @@ enum TimelineFixture {
         func kept(_ id: String, _ name: String, _ role: String) -> [String: Any] { ["id": id, "name": name, "role": role] }
         /// a night's stages: from minute, to minute, which
         func stages(_ list: [(Double, Double, String)]) -> [[String: Any]] { list.map { ["stage": $0.2, "start_ms": ms($0.0), "end_ms": ms($0.1)] } }
-        /// a span of the brain's doing lane (ADR 0302), as it serves one
-        func doing(_ from: Double, _ to: Double, _ title: String?, _ category: String, _ basis: String) {
+        /// a stretch of the brain's doing lane (ADR 0302, ADR 0307), as it serves one: `to` nil is the one that goes on; a stretch with no words and no category is `unknown`
+        func doing(_ from: Double, _ to: Double?, _ title: String?, _ category: String, _ basis: String, confidence: String? = nil, detail: String? = nil, place: String? = nil,
+                   items: [String] = [], clues: [String] = []) {
             let words: Any = title.map { $0 as Any } ?? NSNull()
-            spans.append(["id": "doing-\(ms(from))", "lane": "doing", "kind": "doing", "start_ms": ms(from), "end_ms": ms(to), "title": words, "detail": NSNull(), "category": category, "basis": basis,
-                          "confidence": basis == "observed" ? "low" : "medium", "confirmed": basis == "stated", "clues": [Any](), "question": NSNull(), "place_id": NSNull(), "item_ids": [String]()])
+            spans.append(["id": "doing-\(Int(from))", "lane": "doing", "kind": title == nil && category == "unknown" ? "unknown" : "doing", "start_ms": ms(from), "end_ms": to.map { ms($0) as Any } ?? NSNull(),
+                          "title": words, "detail": detail.map { $0 as Any } ?? NSNull(), "category": category, "basis": basis, "confidence": confidence ?? (basis == "inferred" ? "medium" : "high"),
+                          "confirmed": basis == "stated", "clues": clues.map { ["kind": "words", "at_ms": ms(from), "text": $0] as [String: Any] }, "question": NSNull(),
+                          "place_id": place.map { $0 as Any } ?? NSNull(), "item_ids": items])
         }
         /// a span of the day; `to` nil: it goes on (a stay he is still in, a reminder that has not rung)
         func add(_ kind: String, _ from: Double, _ to: Double?, _ more: [String: Any] = [:]) {
@@ -194,13 +207,13 @@ extension TLBrain {
 
 extension StarEngine {
     /// `-scene 时间线` puts the timeline on the made-up day (now 21:50), whatever the setting was; the words after a colon go further:
-    /// `:早上` the list at the morning, `:开:<id>` any row opened (`:开:ride-8`; a fourth word, `:开:stay-1:有对话` or `:有长对话`, with talk before it), `:改名` the place he keeps opened with the field for its new name, `:日出` the weather tapped (the sun's times in the header), `:碎片` the day with fifteen places, `:只有对话` the day of talks alone, `:对话` a talk opened, `:照片` the picture opened, `:补一段` a stretch opened with the sheet for what he was doing in it (a third word: the row's id; a last word `:败` and the brain will not take it), `:工作` the evening's Mac work opened (its span is bracketed on the bar), `:透镜:路上` (or 睡, 运动, Mac, 通话, 和她, 花, 照片) that chip pressed, `:拖:1015` a finger held on the bar at that time (a fourth word after it lifts the finger again), `:在干嘛` the bar with what he was doing on it and a finger held on the morning's work (`:在干嘛:1530` at that time), `:星:talk-1` that row opened (a fourth word: `:点` with its star tapped once it is open, `:满` with five of his marks standing and the star of a sixth tapped, `:二` with his mark on one row and hers on the one opened), `:确认` the class his mail made, opened with 是我的 and 不是 (a third word: `:点是` with 是我的 tapped once it is open, `:点否` with 不是; a last word `:败` and the brain will not take it), `:命名` the stay no place he keeps is at, opened with the field for its first name and the kinds of place (a third word: `:点` with it named as 其他 once it is open, `:点学校` or `:点家` as that kind; a last word `:败` and the brain will not keep it), `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
+    /// `:早上` the list at the morning, `:开:<id>` any row opened (`:开:ride-8`; a fourth word, `:开:stay-1:有对话` or `:有长对话`, with talk before it), `:改名` the place he keeps opened with the field for its new name, `:日出` the weather tapped (the sun's times in the header), `:碎片` the day with fifteen places, `:只有对话` the day of talks alone, `:对话` a talk opened, `:照片` the picture opened, `:补一段` a stretch opened with the sheet for what he was doing in it (a third word: the row's id; a last word `:败` and the brain will not take it), `:工作` the evening's Mac work opened (its span is bracketed on the bar), `:透镜:路上` (or 睡, 运动, Mac, 通话, 和她, 花, 照片) that chip pressed, `:拖:1015` a finger held on the bar at that time (a fourth word after it lifts the finger again), `:在干嘛` the bar with what he was doing on it and a finger held on the morning's work (`:在干嘛:1530` at that time), `:按在干嘛` the day as a row for each stretch of what he was doing (`:按在干嘛:早上` at the morning, `:按在干嘛:doing-575` a stretch opened), `:星:talk-1` that row opened (a fourth word: `:点` with its star tapped once it is open, `:满` with five of his marks standing and the star of a sixth tapped, `:二` with his mark on one row and hers on the one opened), `:确认` the class his mail made, opened with 是我的 and 不是 (a third word: `:点是` with 是我的 tapped once it is open, `:点否` with 不是; a last word `:败` and the brain will not take it), `:命名` the stay no place he keeps is at, opened with the field for its first name and the kinds of place (a third word: `:点` with it named as 其他 once it is open, `:点学校` or `:点家` as that kind; a last word `:败` and the brain will not keep it), `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
     /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:总结` 总结 sent over the evening's Mac work (`:总结:列表` her answer has a list), `:长答` an answer taller than her place for the talk (`:长答:开` with 全文 › tapped a moment later), `:语音` a round he speaks and she answers aloud (`:语音:文档` her answer has a document that says more), `:卡片` a card she puts up in the round, `:失败` a message that did not go out (`:失败:答` a turn she failed), `:空` a day with nothing recorded, `:打字` the keyboard up with words in the field (the day stays where it is; a keyboard the simulator does not show is made up), `:加载` the day still being asked for (the bar's empty track shimmers) until it arrives three seconds later, `:新增` a talk coming in a moment later, `:测帧` the frame times of the motion (Sky/StarTimelineProbe.swift; `:测帧:拖`, `:甩` or `:换日` runs that kind alone, over and over), `:走时` the clock moving on a minute a moment later, `:昨天` the day before (`:昨天:1630` with a finger held on its bar), `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.
     func runTimelineScene(_ name: String) {
         RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
         switchWorld(real: true)
         let cal = Cal.cur, parts = name.split(separator: ":").map(String.init), mode = parts.count > 1 ? parts[1] : ""
-        let today = TimelineFixture.today(cal, mail: mode == "确认", doing: mode == "在干嘛"), yesterday = TimelineFixture.yesterday(cal), fragmented = TimelineFixture.fragmented(cal), talkOnly = TimelineFixture.talkOnly(cal)
+        let today = TimelineFixture.today(cal, mail: mode == "确认", doing: mode == "在干嘛" || mode == "按在干嘛"), yesterday = TimelineFixture.yesterday(cal), fragmented = TimelineFixture.fragmented(cal), talkOnly = TimelineFixture.talkOnly(cal)
         MainActor.assumeIsolated {
             ui.tl.fixture = .init(replies: [0: today, -1: yesterday, -2: fragmented, -3: talkOnly], now: TimelineFixture.now)
             ui.tl.brain = .demo(marks: today.highlights, fail: parts.last == "败")          // what he does to the made-up day goes to no brain
@@ -357,6 +370,10 @@ extension StarEngine {
         case "透镜":
             let lens = [("睡", TLLens.sleep), ("路上", .trip), ("运动", .workout), ("Mac", .work), ("通话", .call), ("和她", .talk), ("花", .payment), ("照片", .picture)].first { $0.0 == (parts.count > 2 ? parts[2] : "") }?.1
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in withAnimation(.easeOut(duration: 0.15)) { ui.tl.lens = lens } }
+        case "按在干嘛":                                                           // the day as a row for each stretch of what he was doing; `:按在干嘛:<id>` one opened (`doing-575` the long morning's work, `doing-835` the rest with his phone), `:按在干嘛:早上` the list at the morning
+            let id = parts.count > 2 ? parts[2] : ""
+            if id == "早上" { DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in if let e = model.entry(at: 9 * 60 + 5), let y = model.top(of: e.id) { ui.tl.scroll(to: max(0, y - 12), animated: false) } } }
+            else if !id.isEmpty { show(id, open: true) }
         case "拖", "在干嘛":
             let n = Int(parts.count > 2 ? parts[2] : "") ?? (mode == "拖" ? 0 : 1030), t = model.onBar(Double(n / 100 * 60 + n % 100)), lo = model.span.lowerBound, hi = model.span.upperBound
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in
