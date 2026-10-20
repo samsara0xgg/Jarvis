@@ -242,6 +242,31 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         XCTAssertTrue(DayTimelineModel.build(try reply([item("p-in", "payment", 800, 800, money)]), now: 900).scene.dots.isEmpty, "money in is in no chip")
     }
 
+    func testTheBarCanBeDrawnFromWhereHeWasAndTheListIsTheSame() throws {
+        let m = try day()
+        XCTAssertTrue(m.hasPlaces)
+        let by = m.byPlace
+        XCTAssertEqual(by.entries.filter { $0.kind != .stay && $0.kind != .trip }.map(\.id), m.entries.map(\.id), "nothing is added to the list's rows but the places for names")
+        XCTAssertEqual(m.scene(places: false), m.scene, "what he was doing is the day's own bar")
+        let ids = by.scene.pieces.map(\.id)
+        XCTAssertEqual(Array(ids.prefix(3)), ["n", "s-home", "r1"], "the night, the stay, the ride")
+        XCTAssertTrue(ids.contains("s-cafe"))
+        XCTAssertFalse(ids.contains("d2"), "no stretches of what he was doing")
+        let stay = try XCTUnwrap(by.scene.pieces.first { $0.id == "s-home" })
+        XCTAssertEqual([stay.name, stay.icon], ["家", "house.fill"], "the stay wears its place and its symbol")
+        guard case .place(_, let kept) = stay.fill else { return XCTFail("a place colour") }
+        XCTAssertTrue(kept)
+        XCTAssertEqual(by.scene.pieces.first { $0.id == "r1" }?.fill, .trip)
+        XCTAssertEqual(by.readout(at: 450).head, "家 · 07:00–12:40 · 5 时 40 分", "a finger reads the stay, not the stretch of work")
+        XCTAssertEqual(by.stretch(at: 450), "s-home")
+        XCTAssertEqual(m.stretch(at: 450), "d1")
+        XCTAssertEqual(by.scene.dots, m.scene.dots, "the dots are the same either way")
+        // a day of records already is drawn from where he was: nothing to switch
+        let records = DayTimelineModel.build(try reply([item("s", "stay", 420, 760, home)]), now: 900)
+        XCTAssertFalse(records.hasPlaces)
+        XCTAssertEqual(records.byPlace, records)
+    }
+
     func testAFingerOnTheBarReadsWhatHeWasDoingItsHoursAndLength() throws {
         let m = try day()
         let r = m.readout(at: 600)

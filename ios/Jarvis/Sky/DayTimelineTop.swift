@@ -11,6 +11,7 @@ struct TLTopView: View {
     let ui: StarUI
     let model: DayTimelineModel?
     let scene: TLBarScene                       // the model's bar, made once with the model and not on every frame of a finger
+    @Binding var byPlace: Bool                  // the bar is drawn from where he was and not from what he was doing: the switch at its right end
     var loading = false                         // the day is being asked for: its bar is an empty track with a soft light going along it
     @Environment(\.accessibilityReduceMotion) private var reduce
     @GestureState private var touching = false                                       // a finger is on the bar
@@ -22,6 +23,7 @@ struct TLTopView: View {
 
     var body: some View {
         let holding = tl.scrub != nil, talk = ui.tlTalk
+        let bar = model.map { byPlace ? $0.byPlace : $0 }          // what the bar, its readout and its bracket read; the list is the model's own
         return ZStack(alignment: .topLeading) {
             // her sentence, and in its place while a finger is on the bar the readout of the minute under it: a fade-through, not a cross-fade (the two are never both on show)
             if let line = model?.line {
@@ -32,27 +34,37 @@ struct TLTopView: View {
                     .id(line).transition(TLMotion.swapWords(reduce: reduce))
                     .offset(x: 30, y: TLLayout.lineY)
             }
-            if let m = model {
-                readout(m.readout(at: tl.scrub ?? lastScrub)).fadeThrough(on: holding, reduce: reduce)
+            if let bar {
+                readout(bar.readout(at: tl.scrub ?? lastScrub)).fadeThrough(on: holding, reduce: reduce)
                     .offset(x: 30, y: TLLayout.lineY)
                     .allowsHitTesting(false).accessibilityHidden(!holding)
             }
             if model == nil && loading {
                 TLTrack(loading: true, reduce: reduce).id(tl.day).transition(.opacity).offset(x: 30, y: TLLayout.barY)
             }
-            if let m = model {
+            if let m = model, let bar {
                 let lens = tl.activeLens(in: m)
-                TLBarView(scene: scene, bracket: bracket(m), scrub: tl.scrub, lens: lens != nil, lensColor: (lens ?? lastLens).color, lensMarks: m.marks(of: lens ?? lastLens),
-                          reveal: tl.reveal, reduce: reduce, breathe: ui.tlHeaderShown)
-                    .animation(holding ? .easeOut(duration: 0.08) : .easeInOut(duration: 0.15), value: holding)       // the hairline and its time come and go with the finger
-                    .gesture(scrubGesture(m))
-                    .accessibilityElement().accessibilityLabel("一天的概览")
-                    .accessibilityHint("拖动可以翻到那个时间，上下滑动一段一段地看")
-                    .accessibilityValue(tl.scrub.map { spoken(m.readout(at: $0)) } ?? "")
-                    .accessibilityAdjustableAction { nudge($0, m) }
-                    .fadeThrough(on: !talk, reduce: reduce).allowsHitTesting(!talk).accessibilityHidden(talk)
-                    .id(tl.day).transition(barTransition)
-                    .offset(x: 30, y: TLLayout.barY)
+                ZStack(alignment: .topLeading) {
+                    TLBarView(scene: scene, bracket: bracket(bar), scrub: tl.scrub, lens: lens != nil, lensColor: (lens ?? lastLens).color, lensMarks: m.marks(of: lens ?? lastLens),
+                              reveal: tl.reveal, reduce: reduce, breathe: ui.tlHeaderShown)
+                        .id(byPlace).transition(.opacity)          // the other drawing of the day comes in as a cross-fade
+                }
+                .animation(holding ? .easeOut(duration: 0.08) : .easeInOut(duration: 0.15), value: holding)       // the hairline and its time come and go with the finger
+                .gesture(scrubGesture(m, bar))
+                .accessibilityElement().accessibilityLabel("一天的概览")
+                .accessibilityHint("拖动可以翻到那个时间，上下滑动一段一段地看")
+                .accessibilityValue(tl.scrub.map { spoken(bar.readout(at: $0)) } ?? "")
+                .accessibilityAdjustableAction { nudge($0, m) }
+                .fadeThrough(on: !talk, reduce: reduce).allowsHitTesting(!talk).accessibilityHidden(talk)
+                .id(tl.day).transition(barTransition)
+                .offset(x: 30, y: TLLayout.barY)
+                if m.hasPlaces {
+                    TLBarMode(byPlace: $byPlace, reduce: reduce)
+                        .opacity(tl.reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.7, reveal: tl.reveal, reduce: reduce), value: tl.reveal)          // with the bar's growth
+                        .fadeThrough(on: !talk && !holding, reduce: reduce).allowsHitTesting(!talk)
+                        .id(tl.day).transition(barTransition)
+                        .offset(x: 30 + TLLayout.barW + 3, y: TLLayout.barY + (TLLayout.barH - TLBarMode.height) / 2)
+                }
                 if !m.chips.isEmpty || !m.body.isEmpty {
                     TLChips(chips: m.chips, health: m.body, active: lens) { l in
                         Haptic.selection()
@@ -114,15 +126,15 @@ struct TLTopView: View {
         tl.holdThenRelease()
     }
 
-    /// the stretch under his finger, else the span of the row he has open, on the bar
+    /// the stretch under his finger, else the span of the row he has open, on the bar (`m` is the bar's own view of the day)
     private func bracket(_ m: DayTimelineModel) -> ClosedRange<Double>? {
         if let t = tl.scrub { return m.seg(at: t).map { $0.t0...$0.t1 } }
         guard let id = tl.openRow, let e = m.entries.first(where: { $0.id == id }), e.kind != .now else { return nil }
         return e.t0...max(e.t0, e.t1 ?? e.t0)
     }
 
-    /// a finger on the bar: the list follows it, with a tick of the phone for each stretch it crosses
-    private func scrubGesture(_ m: DayTimelineModel) -> some Gesture {
+    /// a finger on the bar: the list follows it, with a tick of the phone for each stretch of the bar (`bar`, the day as the bar draws it) it crosses
+    private func scrubGesture(_ m: DayTimelineModel, _ bar: DayTimelineModel) -> some Gesture {
         let lo = m.span.lowerBound, w = m.span.upperBound - lo
         return DragGesture(minimumDistance: 0)
             .updating($touching) { _, on, _ in on = true }          // goes back to false when the touch ends or is taken away (a call, the app leaving), which lets the readout go
@@ -130,13 +142,50 @@ struct TLTopView: View {
                 let t = lo + clamp(v.location.x / TLLayout.barW, 0, 1) * w
                 tl.follow(t, in: m)
                 tl.finger = TLGaze.bar(x: v.location.x)
-                let s = m.stretch(at: t)
+                let s = bar.stretch(at: t)
                 if lastStretch != s { lastStretch = s; Haptic.selection() }
             }
     }
 
     /// another day's bar comes in from the way time goes, a hair, as the list does
     private var barTransition: AnyTransition { TLMotion.page(slide: TLMotion.barSlide * Double(tl.slide), reduce: reduce) }
+}
+
+/// 在干嘛 | 在哪: what the day bar is drawn from, a small switch in the margin at the bar's right end. 干嘛 is the bar of what he was doing (the default), 在哪 the bar of the places he stayed
+/// in and the trips between them; the list under it is the same either way.
+struct TLBarMode: View {
+    @Binding var byPlace: Bool
+    var reduce = false
+
+    static let width = 24.0, cell = 26.0, height = 2 * cell + 4
+
+    var body: some View {
+        VStack(spacing: 0) {
+            cell("干嘛", spoken: "在干嘛", on: !byPlace) { set(false) }
+            cell("在哪", spoken: "在哪", on: byPlace) { set(true) }
+        }
+        .padding(2)
+        .background(Capsule().fill(Color.white.opacity(0.06)))
+        .frame(width: Self.width, height: Self.height)
+    }
+
+    private func set(_ place: Bool) {
+        guard place != byPlace else { return }
+        Haptic.selection()
+        withAnimation(.easeOut(duration: reduce ? TLMotion.reducedFade : 0.2)) { byPlace = place }
+    }
+
+    private func cell(_ word: String, spoken: String, on: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(word).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(on ? ink : muted).lineLimit(1).fixedSize()
+                .frame(width: Self.width - 4, height: Self.cell)
+                .background(Capsule().fill(Color.white.opacity(on ? 0.16 : 0)))
+                .contentShape(Rectangle().inset(by: -2))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(spoken)
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
 }
 
 extension StarUI {

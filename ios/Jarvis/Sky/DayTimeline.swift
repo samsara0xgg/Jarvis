@@ -233,6 +233,7 @@ struct DayTimelineView: View {
     @Binding var pull: Double?
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var nowInView = true
+    @AppStorage("timeline.barByPlace") private var byPlace = false          // the bar drawn from where he was and not from what he was doing
 
     private var tl: TimelineState { ui.tl }
 
@@ -246,7 +247,7 @@ struct DayTimelineView: View {
             ZStack(alignment: .topLeading) {
                 scrim(away: away)
                 ZStack(alignment: .topLeading) {
-                    TLTopView(ui: ui, model: model, scene: model?.scene ?? .empty, loading: !isReady(shown))
+                    TLTopView(ui: ui, model: model, scene: model?.scene(places: byPlace) ?? .empty, byPlace: $byPlace, loading: !isReady(shown))
                     TLTalkArea(engine: engine, ui: ui, model: model)            // a talk takes the place of her sentence, the bar and the chips
                 }
                 .opacity(ui.panelOpen ? 0 : 1).allowsHitTesting(!ui.panelOpen)
