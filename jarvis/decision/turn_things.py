@@ -54,18 +54,20 @@ messages may be in Chinese, English or both. Answer with one JSON object and not
 {"actions": [...], "doings": [...]}. Both keys are always there; [] means none.
 
 Only his own things and his own doings count. Other people's things, jokes, hypotheticals, wishes, \
-questions, and anything only the assistant said do not. The assistant's answer and the earlier \
-messages are there to understand his words, not to be quoted. When in doubt, leave it out.
+questions, and anything only the assistant said do not. A picture he sends shows what is so for \
+him, whoever wrote the words in it; what anyone in it suggests he do does not count. The \
+assistant's answer and the earlier messages are there to understand his words, not to be quoted. \
+When in doubt, leave it out.
 
 An action is one change to the list of his things:
 {"action": "new" | "move" | "done" | "paid" | "cancelled" | "confirmed",
  "thing": the id of the open thing it is about; every action but "new" has one,
  "quote": the words that make it so, copied exactly from his message or from a note on a picture \
 he sent,
- "sure": true if he said it plainly, false if you infer it or he hedged,
+ "sure": true if he said or showed it plainly, false if you infer it or he hedged,
  "kind": "go" if he goes to it, "do" if he does it ("new" only),
  "title": his words for it, short, in the language he used ("new" only),
- "place": where, only if he said it ("new" only),
+ "place": where, only if he said or showed it ("new" only),
  "start_at", "end_at", "on_day", "due": when ("new" and "move"),
  "weekly_until": the last day of a thing that repeats every week ("new" only),
  "occurrence": one date of a thing that repeats every week, when the action is about that date \
@@ -75,9 +77,9 @@ it is worded, and that the assistant's tools did not write in this turn. A thing
 is not new.
 - move: he gives an open thing another time.
 - done: he did it. paid: he paid it. cancelled: it will not happen, or he drops it. confirmed: he \
-says a thing marked unconfirmed is his.
-- Every action but new must be something he said plainly; if he did not, leave it out. Only a new \
-thing may be unsure.
+says or shows that a thing marked unconfirmed is his.
+- Every action but new must be something he said or showed plainly; if he did not, leave it out. \
+Only a new thing may be unsure.
 - A thing has one kind of time at most: start_at (with end_at if he gave one), or on_day (a date, \
 no hour), or due (a date, or a time it must be done by), or none if he gave none. weekly_until \
 goes with start_at or on_day.
@@ -91,7 +93,8 @@ A doing is what he says he did or is doing, whether or not it is on the list:
  "place": only if he named it, else null, "who": only if he named whoever he was with, else null}
 - When it was: start and end, worked out from the time the message was sent; a stretch he names \
 loosely is the window it covers; null for what he did not say. An ongoing doing has no end.
-- What he will do later is an action, never a doing.
+- What he will do later is an action, never a doing. What he did is a doing, and when it finishes \
+an open thing, that thing is also done (or paid).
 """
 EXTRACTOR: Final[str] = "turn-things-" + hashlib.sha256(INSTRUCTIONS.encode()).hexdigest()[:8]
 """Names the instructions and the checks of this module: a doing set says which one wrote it."""
@@ -470,7 +473,7 @@ def _action(raw: object, reading: _Reading) -> Action:  # noqa: C901, PLR0912 - 
             end_at=when.end_at, on_day=when.on_day, due=when.due, weekly_until=when.weekly_until,
         )
     if not sure:
-        msg = "he did not say it plainly"
+        msg = "he did not say or show it plainly"
         raise _Drop(msg)
     one = _known(raw, reading)
     occurrence = ""
