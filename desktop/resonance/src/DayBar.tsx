@@ -141,7 +141,7 @@ export function DayBar({ model, port, ui, cut, hot, onHot, onJump, onPicture, on
     return () => window.removeEventListener('pointerdown', down, true);
   }, [!!ui.sel]);
 
-  const laid = useMemo(() => bar ? bar.segs.map(s => { const w = (s.f1 - s.f0) * width - 1; return { s, w, how: fit(w, textWidth(s.short, s.mono), s.short) }; }) : [], [bar, width]);
+  const laid = useMemo(() => bar ? bar.segs.map(s => { const w = (s.f1 - s.f0) * width - 1; return { s, w, how: s.hole ? 'none' as const : fit(w, textWidth(s.short, s.mono), s.short) }; }) : [], [bar, width]);
   const boxes = useMemo(() => bar ? bar.sched.filter(x => x.kind === 'event').map(x => { const w = (x.f1 - x.f0) * width; return { x, w, how: fit(w, textWidth(x.short, false), x.short) }; }) : [], [bar, width]);
   const ms = (x: number) => msOf(bar!, width ? x / width : 0);
   const bounds = () => { const el = box.current!, h = el.closest('.dt')!.getBoundingClientRect(), b = el.getBoundingClientRect(); return { min: h.left - b.left + EDGE, max: h.right - b.left - EDGE - CARD_W }; };

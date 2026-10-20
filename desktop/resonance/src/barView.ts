@@ -1,4 +1,4 @@
-import { clean, clock, covered, doingAt, doingWords, dur, endText, lensOf, moneyText, moveIcon, moveWords, names, rideWords, SLEEP, stageLook, stageMinutes, stageSlices, stayLook, TRANSIT, workoutOf, type DayItem, type DayModel, type DoingSpan, type Icon, type LensKind, type Rgb, type Say } from './dayView.ts';
+import { clean, clock, covered, dur, endText, lensOf, moneyText, moveIcon, moveWords, names, rideWords, SLEEP, stageLook, stageMinutes, stageSlices, stayLook, TRANSIT, workoutOf, type DayItem, type DayModel, type Icon, type LensKind, type Rgb, type Segment, type Say } from './dayView.ts';
 
 // The day in one bar (ADR 0296): the axis, the pieces the bar is made of, what the pointer finds at a minute (the stretch it is in and
 // what else was going on), a range of the bar, and the day's numbers. Pure (no DOM), so scripts/verify-notch-timeline.mjs runs it in
@@ -38,9 +38,10 @@ export function axisOf(model: DayModel) {
 
 // ---------- the pieces ----------
 // `shade`: a night with stages is painted by stage, each slice the share of the piece it covers (f0 to f1, 0 to 1) in its own colour.
-// `place`: what the piece is without what he was doing: a stay's `name` is the words of the doing span that covers it (colour and icon stay the place's).
-export type BarSeg = { key: string; row: string; kind: 'stay' | 'trip' | 'sleep'; s: number; e: number; f0: number; f1: number; rgb: Rgb; a: number; tone: 'dark' | 'light'; icon: Icon; name: string; place: string; short: string; mono: boolean;
-  shade?: { f0: number; f1: number; rgb: Rgb; a: number }[] };
+// With stretches of what he was doing (ADR 0302) the waking part is those, each in its category's colour (`doing`; a way he went is `trip`) and its row is the stretch's;
+// one nothing says the words of is a `hole`: drawn as the track's own white, with no words. `place` is the stretch's place (empty when it has none).
+export type BarSeg = { key: string; row: string; kind: 'stay' | 'trip' | 'sleep' | 'doing'; s: number; e: number; f0: number; f1: number; rgb: Rgb; a: number; tone: 'dark' | 'light'; icon: Icon; name: string; place: string; short: string; mono: boolean;
+  shade?: { f0: number; f1: number; rgb: Rgb; a: number }[]; hole?: boolean };
 // What is still to come on today: an event as a dashed box over its time, a reminder or a departure as a tick.
 // `leaving`: an event he has just said is not his, on its way out.
 export type Sched = { key: string; kind: 'event' | 'reminder' | 'departure'; s: number; e: number; f0: number; f1: number; short: string; leaving: boolean };
@@ -70,42 +71,42 @@ export function fit(w: number, textW: number, text: string): Fit {
   return text && ICON_PX + GAP_PX + textW <= room ? 'both' : text && textW <= room ? 'name' : ICON_PX <= room ? 'icon' : 'none';
 }
 
-// The words of the one doing span that covers at least half of [s, e] (the one covering most, if two do), when it has words.
-function doingOver(spans: readonly DoingSpan[] | undefined, s: number, e: number, open: number, t: Say) {
-  let words: string | null = null, most = 0;
-  for (const span of spans ?? []) {
-    const lap = Math.min(span.end_ms ?? open, e) - Math.max(span.start_ms, s), w = lap * 2 >= e - s && lap > most ? doingWords(span, t) : null;
-    if (w) { words = w; most = lap; }
-  }
-  return words;
-}
-
-const BAR = new Set(['stay', 'sleep', 'move', 'ride']);
-// Where things overlap the one that wins is painted (sleep, then a way he went, then a place), so every piece is one thing; the
-// track stays empty where nothing was recorded.
+const BAR = new Set(['stay', 'sleep', 'move', 'ride']), NEUTRAL: Rgb = [196, 204, 238];
+// Where things overlap the one that wins is painted (sleep, then a way he went, then a place or a stretch of what he was doing), so every piece is one
+// thing; the track stays empty where nothing was recorded. With stretches the places and the ways are not pieces: the night is, and the stretches.
 export function buildBar(model: DayModel, t: Say): BarModel | null {
   const { reply, items, now, today } = model;
-  if (!items.length || !Number.isFinite(reply.start_ms) || !Number.isFinite(reply.end_ms) || reply.end_ms <= reply.start_ms) return null;
+  if (!items.length && !model.segs.size || !Number.isFinite(reply.start_ms) || !Number.isFinite(reply.end_ms) || reply.end_ms <= reply.start_ms) return null;
   const { t0, t1 } = axisOf(model), f = (ms: number) => (ms - t0) / (t1 - t0), limit = today ? Math.min(now, t1) : t1;
-  const covers: { it: DayItem; s: number; e: number; pr: number }[] = [];
+  const covers: { it?: DayItem; seg?: Segment; s: number; e: number; pr: number }[] = [];
   for (const it of items) {
-    if (!BAR.has(it.kind)) continue;
+    if (!(model.segs.size ? it.kind === 'sleep' : BAR.has(it.kind))) continue;
     const s = Math.max(it.start_ms, t0), e = Math.min(it.end_ms ?? limit, limit);
     if (e > s) covers.push({ it, s, e, pr: it.kind === 'stay' ? 1 : it.kind === 'sleep' ? 3 : 2 });
   }
-  const cuts = [...new Set(covers.flatMap(x => [x.s, x.e]))].sort((x, y) => x - y), pieces: { it: DayItem; s: number; e: number }[] = [];
+  for (const seg of model.segs.values()) {
+    const s = Math.max(seg.start, t0), e = Math.min(seg.end, limit);
+    if (e > s) covers.push({ seg, s, e, pr: 1 });
+  }
+  const cuts = [...new Set(covers.flatMap(x => [x.s, x.e]))].sort((x, y) => x - y), pieces: { c: (typeof covers)[number]; s: number; e: number }[] = [];
   for (let i = 0; i + 1 < cuts.length; i++) {
     let best: (typeof covers)[number] | undefined;
     for (const x of covers) if (x.s <= cuts[i] && x.e >= cuts[i + 1] && (!best || x.pr > best.pr || x.pr === best.pr && x.s > best.s)) best = x;
     if (!best) continue;
     const last = pieces.at(-1);
-    if (last && last.it === best.it && last.e === cuts[i]) last.e = cuts[i + 1]; else pieces.push({ it: best.it, s: cuts[i], e: cuts[i + 1] });
+    if (last && last.c === best && last.e === cuts[i]) last.e = cuts[i + 1]; else pieces.push({ c: best, s: cuts[i], e: cuts[i + 1] });
   }
-  const segs = pieces.map(({ it, s, e }, i): BarSeg => {
-    const base = { key: `${it.id}#${i}`, row: it.id, s, e, f0: f(s), f1: f(e) };
+  const segs = pieces.map(({ c, s, e }, i): BarSeg => {
+    const sg = c.seg, it = c.it!, base = { key: `${sg ? sg.span.id : it.id}#${i}`, row: sg ? sg.span.id : it.id, s, e, f0: f(s), f1: f(e) };
+    if (sg) {
+      const words = sg.words ?? t(['No idea', '不知道在干嘛']);
+      if (sg.unknown) return { ...base, kind: 'doing', rgb: NEUTRAL, a: 0, tone: 'light', icon: sg.icon, name: words, place: sg.place, short: '', mono: false, hole: true };
+      const way = sg.category === 'commute', rgb = sg.rgb ?? NEUTRAL, a = way ? .28 : .9;
+      return { ...base, kind: way ? 'trip' : 'doing', rgb, a, tone: way ? 'light' : toneOn(rgb, a), icon: sg.icon, name: words, place: sg.place, short: words, mono: false };
+    }
     if (it.kind === 'stay') {
-      const look = stayLook(it, t), a = look.kept ? .9 : .32, doing = doingOver(reply.spans, s, e, limit, t);
-      return { ...base, kind: 'stay', rgb: look.rgb, a, tone: toneOn(look.rgb, a), icon: look.icon, name: doing ?? look.name, place: look.name, short: doing ?? (look.unnamed ? '' : look.name), mono: false };
+      const look = stayLook(it, t), a = look.kept ? .9 : .32;
+      return { ...base, kind: 'stay', rgb: look.rgb, a, tone: toneOn(look.rgb, a), icon: look.icon, name: look.name, place: look.name, short: look.unnamed ? '' : look.name, mono: false };
     }
     if (it.kind === 'sleep') {
       const minutes = it.minutes ?? ((it.end_ms ?? limit) - it.start_ms) / MIN;
@@ -202,24 +203,24 @@ export const rowAt = (model: DayModel, bar: BarModel, ms: number): string | null
 export function peek(model: DayModel, bar: BarModel, ms: number, t: Say): Peek {
   const { items, today, now, reply } = model, limit = today ? now : reply.end_ms;
   const seg = bar.segs.find(x => x.s <= ms && ms < x.e), event = seg ? undefined : bar.sched.find(x => x.kind === 'event' && x.s <= ms && ms <= x.e);
-  const item = items.find(x => x.id === (seg?.row ?? event?.key));
+  const item = items.find(x => x.id === (seg?.row ?? event?.key)), doing = seg && model.segs.get(seg.row);
   let id: string, stretch: Peek['stretch'];
-  if (seg && item) {
-    // The title is what he was doing at this minute when there are words for it, with its own time, and the piece's own name goes under it; else the piece's name, as ever.
-    const doing = doingAt(reply.spans, ms, t);
-    id = doing ? `${seg.key}~${doing.span.id}` : seg.key;
-    const own = doing && seg.kind === 'stay' ? when({ ...doing.span, kind: 'doing' }, model, t) : when(item, model, t);          // in a stay, the time is that of what he was doing
-    stretch = { name: doing?.words ?? seg.place, place: doing && doing.words !== seg.place ? seg.place : undefined, rgb: seg.rgb, a: seg.kind === 'stay' ? Math.max(.6, seg.a) : 1, ...own, note: seg.kind === 'sleep' ? stageNote(item, t) : undefined };
+  if (seg && doing) {
+    // A stretch of what he was doing: its words and its own time, its place under it; one nothing says the words of is not known, with a hollow dot.
+    id = seg.key;
+    stretch = { name: seg.name, place: doing.place && doing.place !== seg.name ? doing.place : undefined, rgb: seg.hole ? null : seg.rgb, a: seg.kind === 'doing' ? Math.max(.6, seg.a) : 1, ...when({ ...doing.span, kind: 'doing' }, model, t) };
+  }
+  else if (seg && item) {
+    id = seg.key;
+    stretch = { name: seg.place, rgb: seg.rgb, a: seg.kind === 'stay' ? Math.max(.6, seg.a) : 1, ...when(item, model, t), note: seg.kind === 'sleep' ? stageNote(item, t) : undefined };
   }
   else if (event && item) { id = event.key; stretch = { name: event.short, rgb: null, a: 1, ...when(item, model, t) }; }
   else if (ms > limit) { id = 'later'; stretch = { name: t(['Not yet', '还没到']), rgb: null, a: 1, range: '', length: '' }; }
   else {
     // Nothing was recorded here: say how long, from the piece before to the piece after.
     const lo = Math.max(bar.t0, ...bar.segs.filter(x => x.e <= ms).map(x => x.e)), hi = Math.min(limit, ...bar.segs.filter(x => x.s > ms).map(x => x.s));
-    const doing = doingAt(reply.spans, ms, t);          // unless he said (or a model wrote) what he was doing then: that, with its own time
-    id = doing ? `gap:${lo}~${doing.span.id}` : `gap:${lo}`;
-    stretch = doing ? { name: doing.words, rgb: null, a: 1, ...when({ ...doing.span, kind: 'doing' }, model, t) }
-      : { name: t(['Nothing recorded', '没有记录']), rgb: null, a: 1, range: `${clock(lo, model.tz)}–${endClock(hi, reply, model.tz)}`, length: dur(Math.max(1, (hi - lo) / MIN), t) };
+    id = `gap:${lo}`;
+    stretch = { name: t(['Nothing recorded', '没有记录']), rgb: null, a: 1, range: `${clock(lo, model.tz)}–${endClock(hi, reply, model.tz)}`, length: dur(Math.max(1, (hi - lo) / MIN), t) };
   }
   const near: { it: DayItem; rank: number; d: number; at: boolean }[] = [];
   for (const it of items) {
@@ -292,8 +293,8 @@ export function summarize(model: DayModel, bar: BarModel, a: number, b: number, 
   [a, b] = [snap(Math.min(a, b)), snap(Math.max(a, b))];
   const by = new Map<string, { rgb: Rgb; min: number }>();
   for (const x of bar.segs) {
-    const lap = Math.min(x.e, b) - Math.max(x.s, a);
-    if (x.kind === 'stay' && lap > 0) by.set(x.place, { rgb: x.rgb, min: (by.get(x.place)?.min ?? 0) + lap / MIN });
+    const lap = Math.min(x.e, b) - Math.max(x.s, a), sg = model.segs.get(x.row), place = sg ? sg.place : x.kind === 'stay' ? x.place : '', rgb = sg ? sg.placeRgb : x.rgb;
+    if (place && rgb && lap > 0) by.set(place, { rgb, min: (by.get(place)?.min ?? 0) + lap / MIN });
   }
   const places = [...by].sort((x, y) => y[1].min - x[1].min).slice(0, 3).map(([name, v]) => ({ name, rgb: v.rgb, length: dur(Math.max(1, v.min), t) }));
   return { a, b, range: `${clock(a, model.tz)}–${endClock(b, model.reply, model.tz)}`, length: dur((b - a) / MIN, t), places, nums: numbers(model, t, { a, b }) };
