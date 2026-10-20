@@ -233,33 +233,21 @@ enum TLGeo {
 
 // MARK: - the track
 
-/// The soft band of light that goes along the empty track while the day is being asked for: where its left edge is `time` seconds in, for a track `width` wide and a band `band` wide.
-/// A pass takes 1.4 s, easing in and out, and the track rests for 0.4 s before the next.
-enum TLShimmer {
-    static let period = 1.8, sweep = 1.4
-
-    static func x(at time: Double, width: Double, band: Double) -> Double {
-        let k = min(1, max(0, time.truncatingRemainder(dividingBy: period) / sweep))
-        let e = k < 0.5 ? 2 * k * k : 1 - pow(-2 * k + 2, 2) / 2
-        return -band + e * (width + band)
-    }
-}
-
 /// The ground the bar's stretches lie on. While the day is being asked for it is all there is, and a soft band of light goes along it (it is still under Reduce Motion); nothing spins.
 struct TLTrack: View {
     var loading = false
     var reduce = false
-    private let band = 96.0
+    @State private var sweeping = false
+    private let band = 96.0, period = 1.8, sweep = 1.4          // a pass takes 1.4 s, easing in and out, and the track rests for 0.4 s before the next: the band goes on past the end for the rest
 
     var body: some View {
         RoundedRectangle(cornerRadius: TLLayout.barRadius).fill(Color.white.opacity(0.035))
             .overlay(alignment: .leading) {
                 if loading && !reduce {
-                    TimelineView(.animation(minimumInterval: 1 / 30)) { tl in
-                        LinearGradient(colors: [.clear, Color.white.opacity(0.07), .clear], startPoint: .leading, endPoint: .trailing)
-                            .frame(width: band)
-                            .offset(x: TLShimmer.x(at: tl.date.timeIntervalSinceReferenceDate, width: TLLayout.barW, band: band))
-                    }
+                    LinearGradient(colors: [.clear, Color.white.opacity(0.07), .clear], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: band)
+                        .offset(x: sweeping ? -band + (TLLayout.barW + band) * period / sweep : -band)
+                        .onAppear { withAnimation(.easeInOut(duration: period).repeatForever(autoreverses: false)) { sweeping = true } }
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: TLLayout.barRadius))
@@ -419,16 +407,12 @@ struct TLBarView: View {
             .allowsHitTesting(false)
     }
 
-    /// 2 pt of warm white, 5 pt longer than the bar each way, with a glow that breathes over 2.4 s; its time above it, kept inside the bar's width
+    /// 2 pt of warm white, 5 pt longer than the bar each way, with a glow that breathes over 2.4 s (`TLNowGlow`); its time above it, kept inside the bar's width
     private func nowMarker(_ n: Double) -> some View {
         let label = clock(n), lw = 30.0
         return ZStack(alignment: .topLeading) {
-            TimelineView(.animation(minimumInterval: 1 / 30, paused: !breathe || reduce)) { tl in
-                let k = breathe && !reduce ? 0.5 + 0.5 * sin(tl.date.timeIntervalSinceReferenceDate * 2 * .pi / 2.4) : 0.5
-                RoundedRectangle(cornerRadius: 1).fill(TLPaint.warm.color).frame(width: 2, height: bh + 10)
-                    .shadow(color: TLPaint.warm.color(0.3 + 0.5 * k), radius: 2.5 + 1.5 * k)
-            }
-            .frame(width: 2, height: bh + 10).offset(x: x(n) - 1, y: -5)
+            TLNowGlow(height: bh + 10, breathe: breathe && !reduce)
+                .frame(width: 2, height: bh + 10).offset(x: x(n) - 1, y: -5)
             Text(label).font(AT.mono(10)).foregroundStyle(TLPaint.warm.color).frame(width: lw)
                 .offset(x: clamp(x(n) - lw / 2, 0, bw - lw), y: -19)
                 .opacity(scrub == nil ? 1 : 0).animation(.easeOut(duration: 0.12), value: scrub == nil)
@@ -475,6 +459,31 @@ private struct TLBarLabels: View, Equatable {
         .frame(width: bw, height: bh, alignment: .topLeading)
         .animation(tlStarFade(reduce: reduce), value: placed)          // a word goes with what it was on, as that fades
         .allowsHitTesting(false)
+    }
+}
+
+/// The line for now: 2 pt of warm white with a glow that breathes over 2.4 s. The glow is a layer of its own, a shadow drawn once whose opacity an animation lifts and lowers (0.3 to 0.8 of the
+/// shadow), and not a shadow redrawn 30 times a second; paused it stands half lit.
+private struct TLNowGlow: View {
+    let height: Double
+    let breathe: Bool
+    @State private var lit = false
+
+    var body: some View {
+        let warm = TLPaint.warm.color
+        ZStack {
+            RoundedRectangle(cornerRadius: 1).fill(warm).frame(width: 2, height: height)
+                .shadow(color: warm.opacity(0.8), radius: 4)
+                .opacity(breathe ? (lit ? 1 : 0.375) : 0.6875)
+            RoundedRectangle(cornerRadius: 1).fill(warm).frame(width: 2, height: height)
+        }
+        .onAppear { sync() }
+        .onChange(of: breathe) { _, _ in sync() }
+    }
+
+    private func sync() {
+        lit = false
+        if breathe { withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { lit = true } }
     }
 }
 
