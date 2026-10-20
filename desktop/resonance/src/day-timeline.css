@@ -44,8 +44,13 @@
 .notch .dt-page { display:flex; flex:0 1 auto; flex-direction:column; min-height:0; box-sizing:border-box; padding-inline:4px; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:var(--p-line) transparent; }
 .notch .dt-pin { flex:none; }
 .notch .dt-ph { display:flex; align-items:center; gap:8px; min-height:32px; }
-.notch .dt-pb { display:grid; place-items:center; flex:none; width:28px; height:28px; border-radius:50%; background:rgb(255 255 255 / .08); color:var(--p-muted); transition:background var(--motion-fast),color var(--motion-fast); }
-.notch .dt-pb:hover { background:rgb(255 255 255 / .16); color:var(--p-ink); }
+.notch .dt-pb,.notch .dt-pn button { display:grid; place-items:center; flex:none; width:28px; height:28px; border-radius:50%; background:rgb(255 255 255 / .08); color:var(--p-muted); transition:background var(--motion-fast),color var(--motion-fast),opacity var(--motion-fast); }
+.notch .dt-pb:hover,.notch .dt-pn button:hover:not(:disabled) { background:rgb(255 255 255 / .16); color:var(--p-ink); }
+/* the row before and after, at the right of the title line; dimmed at either end */
+.notch .dt-pn { display:flex; flex:none; gap:6px; margin-left:auto; }
+.notch .dt-pn button:disabled { opacity:.3; cursor:default; }
+/* the page that is on its way out when the page is turned (a copy, DayTimeline.tsx) */
+.notch .dt-page.is-ghost { position:absolute; inset:0; overflow:hidden; pointer-events:none; }
 .notch .dt-ph b { min-width:0; overflow:hidden; font-size:15px; font-weight:600; line-height:24px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-ink); }
 .notch .dt-ph .dt-rename { margin:0; }
 .notch .dt-pm { margin:0 0 4px 36px; font-size:12px; line-height:16px; font-variant-numeric:tabular-nums; color:var(--p-faint); }

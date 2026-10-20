@@ -2727,8 +2727,9 @@ try {
     check('Enter again goes back', await expanded(a, next) === 'false' && await folds(a) === 0);
     await key(' ');
     check('Space opens it too', await expanded(a, next) === 'true' && await folds(a) === 1);
+    const ord = await a.page.evaluate(() => [...document.querySelectorAll('.dt-list [data-key]')].filter(e => !e.classList.contains('is-still')).map(e => e.dataset.key)), after = ord[ord.indexOf(next) + 1];
     await key('ArrowDown');
-    check('with a page up ↓ is the page\'s, not the list\'s: the choice does not move and the page stays', await expanded(a, next) === 'true' && await chosen() === next && await folds(a) === 1);
+    check('with a page up ↓ turns it to the row after it among the rows that open (the list\'s order), and the choice goes with it', !!after && await expanded(a, after) === 'true' && await chosen() === after && await folds(a) === 1, `${after} ${await chosen()}`);
     await key('Escape');
     // the order of Esc: the open page, then the lens, then the pane
     await a.page.locator('.dt-num').first().click(); await a.page.waitForTimeout(250);
@@ -3171,6 +3172,83 @@ try {
     await openDay(b);
     check('a day with no stretches has no toggle', await b.page.locator('.dt-by').count() === 0);
     await b.ctx.close();
+  }
+
+  // ---- the page's turns (ONLY=paging): the row before and after, at the right of the title line; ↑ ↓ do the same; the new page pushes in vertically ----
+  if (all || only === 'paging') {
+    const a = await boot({ served: bigDay(), init: record });
+    await openDay(a);
+    const ord = await a.page.evaluate(() => [...document.querySelectorAll('.dt-list [data-key]')].filter(e => !e.classList.contains('is-still')).map(e => e.dataset.key));
+    const at = i => ord[i], mid = Math.floor(ord.length / 2);
+    const nav = () => a.page.evaluate(() => { const h = document.querySelector('.dt-ph').getBoundingClientRect(), p = document.querySelector('.dt-pn').getBoundingClientRect(), t = document.querySelector('.dt-ph b').getBoundingClientRect();
+      return { labels: [...document.querySelectorAll('.dt-pn button')].map(b => b.getAttribute('aria-label')), off: [...document.querySelectorAll('.dt-pn button')].map(b => b.disabled), op: [...document.querySelectorAll('.dt-pn button')].map(b => getComputedStyle(b).opacity), right: h.right - p.right, line: p.top >= h.top - 1 && p.bottom <= h.bottom + 1, apart: p.left - t.right }; });
+    await tap(a, at(mid)); await rest(a);
+    const n1 = await nav();
+    check('the page has two chevron buttons at the right end of its title line, Previous and Next (上一段, 下一段), both on in the middle of the list', n1.labels.join() === '上一段,下一段' && n1.off.join() === 'false,false' && n1.right <= 6 && n1.line && n1.apart >= 0, JSON.stringify(n1));
+    await shotRow(a, 'paging-01-page');
+    await tap(a, at(0)); await rest(a);
+    const n2 = await nav();
+    check('on the first row that opens the first is dimmed and off (a third of its look), the second is on', n2.off.join() === 'true,false' && +n2.op[0] < .4 && +n2.op[1] === 1, JSON.stringify(n2));
+    await tap(a, at(ord.length - 1)); await rest(a);
+    const n3 = await nav();
+    check('on the last the second is dimmed and off', n3.off.join() === 'false,true' && +n3.op[1] < .4 && +n3.op[0] === 1, JSON.stringify(n3));
+    // a turn, frame by frame: the new page comes up from below while the old goes up; the page before, the other way
+    const run = (sel, ms = 420) => a.page.evaluate(async ([sel, ms]) => {
+      const st = document.querySelector('.dt-stage'), btn = document.querySelector(sel);
+      window.__anims.length = 0;
+      btn.click();
+      const t0 = performance.now(), out = [];
+      await new Promise(done => { const tick = () => { const sr = st.getBoundingClientRect(), p = st.querySelector(':scope > .dt-page[data-page]'), g = st.querySelector(':scope > .is-ghost');
+        out.push({ t: performance.now() - t0, page: p ? p.getBoundingClientRect().top - sr.top : null, ghost: g ? g.getBoundingClientRect().top - sr.top : null, h: sr.height, key: p?.dataset.page }); if (performance.now() - t0 < ms) requestAnimationFrame(tick); else done(); }; tick(); });
+      return { frames: out, anims: window.__anims.filter(x => /dt-page/.test(x.cls)).map(x => ({ ghost: /is-ghost/.test(x.cls), kf: x.kf, dur: x.opt.duration, easing: x.opt.easing })) };
+    }, [sel, ms]);
+    await tap(a, at(mid)); await rest(a);
+    const down = await run('.dt-pn button:last-child');
+    const both = down.frames.filter(f => f.page !== null && f.ghost !== null), d = both[0] ? both[0].page - both[0].ghost : 0;
+    check('Next pushes the new page up from below while the old goes up, side by side all the way and never back, ending with the new page in place and the old one gone',
+      both.length >= 5 && d > 50 && both.every((f, i) => Math.abs(f.page - f.ghost - d) <= 2 && (i === 0 || f.page <= both[i - 1].page + .5 && f.ghost <= both[i - 1].ghost + .5)) && both[0].page > 20 && both[0].ghost <= 1 && down.frames.at(-1).page === 0 && down.frames.at(-1).ghost === null && down.frames.at(-1).key === at(mid + 1), JSON.stringify({ d, n: both.length, first: both[0], last: down.frames.at(-1) }));
+    check('over 240 ms on the pane\'s ease (the new page, the old copy, and the stage\'s height if it differs), nothing else', down.anims.length >= 2 && down.anims.every(x => x.dur === 240 && x.easing === 'cubic-bezier(.16, 1, .3, 1)') && down.anims.some(x => x.ghost && /translateY\(0px\)/.test(x.kf[0].transform) && /translateY\(-/.test(x.kf[1].transform)) && down.anims.some(x => !x.ghost && /translateY\(\d/.test(x.kf[0].transform) && x.kf[1].transform === 'none'), JSON.stringify(down.anims));
+    await rest(a, 200);
+    const up = await run('.dt-pn button:first-child');
+    const bothUp = up.frames.filter(f => f.page !== null && f.ghost !== null);
+    check('Previous does the same the other way: the new page comes down from above while the old goes down', bothUp.length >= 5 && bothUp[0].page < -20 && bothUp[0].ghost >= -1 && bothUp.every((f, i) => i === 0 || f.page >= bothUp[i - 1].page - .5 && f.ghost >= bothUp[i - 1].ghost - .5) && up.frames.at(-1).page === 0 && up.frames.at(-1).ghost === null && up.frames.at(-1).key === at(mid), JSON.stringify({ first: bothUp[0], last: up.frames.at(-1) }));
+    // the keys
+    await rest(a, 200);
+    await a.page.keyboard.press('ArrowDown'); await rest(a, 420);
+    check('↓ does what Next does: the page and the choice are the row after', await expanded(a, at(mid + 1)) === 'true' && await a.page.locator('.is-pick').first().getAttribute('data-key') === at(mid + 1) && await a.page.locator('.is-ghost').count() === 0);
+    await a.page.keyboard.press('ArrowUp'); await rest(a, 420);
+    check('↑ does what Previous does', await expanded(a, at(mid)) === 'true');
+    await tap(a, at(0)); await rest(a);
+    await a.page.keyboard.press('ArrowUp'); await rest(a, 420);
+    check('↑ on the first row that opens does nothing (the page stays, nothing pushes)', await expanded(a, at(0)) === 'true' && await a.page.locator('.is-ghost').count() === 0 && await folds(a) === 1);
+    // a turn pressed again while it is on its way carries on from where it was, and ends on the row two on, with no copy left behind
+    await a.page.keyboard.press('ArrowDown'); await a.page.waitForTimeout(90); await a.page.keyboard.press('ArrowDown'); await rest(a, 520);
+    const rested = await a.page.evaluate(() => { const p = document.querySelector('.dt-page[data-page]'); return { page: p.dataset.page, tr: getComputedStyle(p).transform, ghosts: document.querySelectorAll('.is-ghost').length, pages: document.querySelectorAll('.dt-stage > .dt-page').length }; });
+    check('two quick turns end on the row two on, at rest, with one page and no copy of the old', rested.page === at(2) && (rested.tr === 'none' || rested.tr === 'matrix(1, 0, 0, 1, 0, 0)') && rested.ghosts === 0 && rested.pages === 1, JSON.stringify(rested));
+    // a turn from the bar stays a cross-fade (no copy, the page fades in over 160 ms), and the page begins at its top
+    await a.page.evaluate(() => { window.__anims.length = 0; });
+    const pm = buildDay(bigDay(), NOW, zh), pbar = buildBar(pm, zh), tr = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; });
+    const px = ms => tr.left + Math.min(1, Math.max(0, fOf(pbar, ms))) * tr.width, target = ['stay-uvic', 'sleep-1'].find(k => ord.includes(k) && k !== at(2));
+    await a.page.mouse.click(px(pm.span.get(target).t0 + 60_000), tr.top + tr.height / 2); await a.page.waitForTimeout(40);
+    const fade = (await anims(a)).filter(x => /dt-pin/.test(x.cls));
+    check('a turn from the bar stays a cross-fade: the new page\'s content fades in over 160 ms, there is no copy of the old and no push', await expanded(a, target) === 'true' && fade.length === 1 && fade[0].opt.duration === 160 && fade[0].kf.some(k => k.opacity === 0) && await a.page.locator('.is-ghost').count() === 0, JSON.stringify(fade));
+    await rest(a, 300);
+    // going back after turns brings the row the page was for into view
+    await a.page.evaluate(() => { document.querySelector('.dt-pb').click(); }); await rest(a, 700);
+    check('going back from a page that was turned to returns the list with that row in view', await a.page.evaluate(k => { const l = document.querySelector('.dt-list').getBoundingClientRect(), r = document.querySelector(`.dt-list [data-key="${k}"]`).getBoundingClientRect(); return r.top >= l.top - 1 && r.bottom <= l.bottom + 1; }, target));
+    await a.ctx.close();
+    // reduced motion: a turn is a cross-fade of 120 ms, no slide, no change of height
+    const r = await boot({ served: bigDay(), init: record });
+    await openDay(r);
+    await r.page.emulateMedia({ reducedMotion: 'reduce' }); await r.page.waitForTimeout(150);
+    await tap(r, at(mid)); await rest(r, 400);
+    await r.page.evaluate(() => { window.__anims.length = 0; document.querySelector('.dt-pn button:last-child').click(); });
+    await r.page.waitForTimeout(30);
+    const quiet = (await anims(r)).filter(x => /dt-page|dt-stage/.test(x.cls)).map(x => ({ ghost: /is-ghost/.test(x.cls), stage: /dt-stage/.test(x.cls), kf: x.kf, dur: x.opt.duration }));
+    check('with reduced motion a turn is a cross-fade of 120 ms (the new page in, the old copy out), no slide and no height', quiet.length === 2 && quiet.every(x => x.dur === 120 && !x.stage && x.kf.every(k => k.transform === undefined && k.opacity !== undefined)) && quiet.some(x => x.ghost), JSON.stringify(quiet));
+    await rest(r, 300);
+    check('and it is over: the new page, no copy', await expanded(r, at(mid + 1)) === 'true' && await r.page.locator('.is-ghost').count() === 0);
+    await r.ctx.close();
   }
 
   const SAY = '这段在干嘛';

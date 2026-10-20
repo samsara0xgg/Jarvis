@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { CaretLeft, CaretRight, Check, PencilSimpleLine } from '@phosphor-icons/react';
+import { CaretDown, CaretLeft, CaretRight, CaretUp, Check, PencilSimpleLine } from '@phosphor-icons/react';
 import type { L } from './companionSettings';
 import { stageLook, type Inside as Line1 } from './dayView';
 import { Ic } from './dayIcons';
@@ -233,12 +233,17 @@ function RenameField({ draft, busy, set, save, field, t }: Rename & { t: (l: L) 
 
 // A row's detail page (it slides over the list: DayTimeline.tsx): a back control with the row's title, when it was and how long, then what the row holds and the
 // buttons that work for it. The title is the field while a kept place is being renamed.
-export function DetailPage({ head, open, acts, rename, back }: { head: Head; open: Open; acts: Acts; rename: Rename | null; back: () => void }) {
+// `prev` and `next` turn it to the row before and after (null at either end: dimmed).
+export function DetailPage({ head, open, acts, rename, back, prev, next }: { head: Head; open: Open; acts: Acts; rename: Rename | null; back: () => void; prev: (() => void) | null; next: (() => void) | null }) {
   const { t } = acts;
   return <div className="dt-pin">
     <header className="dt-ph">
       <button type="button" className="dt-pb" aria-label={t(['Back to the day', '回到这一天'])} onClick={back}><CaretLeft size={14} weight="bold" aria-hidden="true"/></button>
       {rename ? <RenameField {...rename} t={t}/> : <b>{head.title}</b>}
+      <span className="dt-pn">
+        <button type="button" aria-label={t(['Previous', '上一段'])} disabled={!prev} onClick={prev ?? undefined}><CaretUp size={14} weight="bold" aria-hidden="true"/></button>
+        <button type="button" aria-label={t(['Next', '下一段'])} disabled={!next} onClick={next ?? undefined}><CaretDown size={14} weight="bold" aria-hidden="true"/></button>
+      </span>
     </header>
     {head.meta && <p className="dt-pm">{head.meta}</p>}
     <div className="dt-body"><OpenBody open={open} acts={acts}/></div>

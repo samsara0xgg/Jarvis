@@ -20,6 +20,8 @@ import './day-open.css';
 // asked about (AskDock.tsx); going back slides the list in again, where it was.
 // `feed` is today as the wing already reads it; other days are read here.
 const rgb = (c: readonly number[]) => c.join(' ');
+// The keys of the rows and stay headers in the order the list shows them.
+const listed = (blocks: Block[]): string[] => blocks.flatMap(b => b.type === 'row' ? [b.row.key] : b.type === 'stay' ? [b.key, ...listed(b.items)] : []);
 // Where `el` is inside the scrolling `list`.
 const offsetIn = (el: HTMLElement, list: HTMLElement) => el.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
 
@@ -416,7 +418,28 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
   // A row opens to its detail page: the list slides away and the page comes in over it, and going back slides the list in again where it was. `parting` keeps the
   // page there while it slides out; `drop` takes it away at once (another day, a cut list, a row the day no longer has).
   const openRow = (key: string) => { setParting(null); setOpened(key); };
-  const closeRow = () => { if (opened) { setParting(opened); setOpened(null); } };
+  // Going back brings the row the page was for into view, if the pages before and after it took the page to a row the list had out of view. (The list waits at the
+  // height of the page while it is hidden, so what it will have again is what the stage had last time it showed the list: `listH`.)
+  const listH = useRef(0);
+  const closeRow = () => {
+    if (!opened) return;
+    const l = list.current, el = l?.querySelector<HTMLElement>(`[data-key="${CSS.escape(opened)}"]`), view = listH.current || l?.clientHeight || 0;
+    if (l && el) { const top = offsetIn(el, l), margin = 24; if (top < l.scrollTop + margin) slide(top - margin, 240); else if (top + el.offsetHeight > l.scrollTop + view - margin) slide(top + el.offsetHeight - view + margin, 240); }
+    setParting(opened); setOpened(null);
+  };
+  // The page's row before (-1) or after (1) it among the rows that open, in the list's order; null at either end.
+  const aside = (dir: 1 | -1) => { const i = opened ? order.indexOf(opened) : -1; return i < 0 ? null : order[i + dir] ?? null; };
+  // A turn to the row before or after: the page that is up is copied (as it is now, where its own push had got to) to go out while the new one comes in (the effect below).
+  const ghost = useRef<{ el: HTMLElement; dir: 1 | -1; y: number; top: number; from: number } | null>(null);
+  const turn = (dir: 1 | -1) => {
+    const to = aside(dir), s = stage.current, pg = s?.querySelector<HTMLElement>(':scope > .dt-page[data-page]');
+    if (!to || !s || !pg) return;
+    s.querySelectorAll(':scope > .is-ghost').forEach(x => x.remove());
+    const el = pg.cloneNode(true) as HTMLElement;
+    el.classList.add('is-ghost'); el.removeAttribute('data-page'); el.setAttribute('aria-hidden', 'true'); el.setAttribute('inert', '');
+    ghost.current = { el, dir, y: pg.getAnimations().length ? new DOMMatrixReadOnly(getComputedStyle(pg).transform).m42 : 0, top: pg.scrollTop, from: s.getBoundingClientRect().height };
+    setPick(to); setOpened(to);
+  };
   const drop = () => { setOpened(null); setParting(null); };
   const toggle = (key: string) => { if (opened === key) closeRow(); else if (opens.has(key)) openRow(key); };
   const click = (e: MouseEvent, key: string) => {
@@ -435,16 +458,33 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
   }, [parting]);
   // The list and the page are two sides of one stage; the side not shown waits out of the flow, hidden, its scroll place kept (day-timeline.css). Between them they slide
   // (240 ms, the pane's ease-out; under reduced motion a 120 ms cross-fade) and the stage's height goes to the new side's meanwhile, so nothing jumps. A press that comes
-  // mid-slide takes over from the place the slide had got to. A page that changes to another row fades in over 160 ms.
+  // mid-slide takes over from the place the slide had got to. A page that changes to another row because the bar was clicked fades in over 160 ms; one
+  // that is turned to (the row before or after, `turn`) pushes in vertically the same 240 ms.
   const side = useRef({ page: false, key: null as string | null, h: 0 });
   useLayoutEffect(() => {
     const s = stage.current, was = side.current, now = { page: !!opened, key: opened, h: was.h };
     side.current = now;
     if (!s) return;
+    if (!opened && !s.getAnimations().length) listH.current = s.getBoundingClientRect().height;
     const running = s.getAnimations().length > 0, quiet = reduced.matches, opt = { duration: quiet ? 120 : SLIDE, easing: quiet ? 'linear' : EASE };
     if (was.page === now.page) {
+      const g = ghost.current, pg = s.querySelector<HTMLElement>(':scope > .dt-page'), turned = !!(now.page && was.key && opened && was.key !== opened);
+      ghost.current = null;
+      if (turned && pg) pg.scrollTop = 0;
+      if (turned && g && pg) {
+        // the next page comes up from below while the old goes up (the page before, the other way); one that was still on its way carries on from where it was
+        for (const el of [s, pg]) el.getAnimations().forEach(x => x.cancel());
+        const to = now.h = s.getBoundingClientRect().height, d = Math.max(g.from, to);
+        s.querySelectorAll(':scope > .is-ghost').forEach(x => x.remove());
+        s.append(g.el); g.el.scrollTop = g.top;
+        const out = g.el.animate(quiet ? [{ opacity: 1 }, { opacity: 0 }] : [{ transform: `translateY(${g.y}px)` }, { transform: `translateY(${g.y - g.dir * d}px)` }], { ...opt, fill: 'forwards' });
+        out.finished.then(() => g.el.remove(), () => g.el.remove());
+        pg.animate(quiet ? [{ opacity: 0 }, { opacity: 1 }] : [{ transform: `translateY(${g.y + g.dir * d}px)` }, { transform: 'none' }], opt);
+        if (!quiet && g.from > 0 && Math.abs(g.from - to) >= 1) s.animate([{ height: `${g.from}px` }, { height: `${to}px` }], opt);
+        return;
+      }
       if (!running) now.h = s.getBoundingClientRect().height;
-      if (now.page && was.key && opened && was.key !== opened) s.querySelector('.dt-pin')?.animate(quiet ? [{ opacity: 0 }, {}] : [{ opacity: 0, transform: 'translateY(4px)' }, {}], { duration: quiet ? 120 : 160, easing: EASE });
+      if (turned) s.querySelector('.dt-pin')?.animate(quiet ? [{ opacity: 0 }, {}] : [{ opacity: 0, transform: 'translateY(4px)' }, {}], { duration: quiet ? 120 : 160, easing: EASE });
       return;
     }
     const from = running ? s.getBoundingClientRect().height : was.h, ls = s.querySelector<HTMLElement>(':scope > .dt-list'), pg = s.querySelector<HTMLElement>(':scope > .dt-page');
@@ -633,7 +673,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
       line: line.on && line.key === key ? line.text : '',
     };
     const renaming = rename?.key === key ? { draft: rename.draft, busy: rename.state === 'busy', set: (text: string) => setRename(r => r && { ...r, draft: text, state: r.state === 'failed' ? 'edit' : r.state }), save: () => void saveRename(), field: (on: boolean) => setLeft(!on) } : null;
-    return <DetailPage key={key} head={head} open={o} acts={acts} rename={renaming} back={closeRow}/>;
+    return <DetailPage key={key} head={head} open={o} acts={acts} rename={renaming} back={closeRow} prev={key === opened && aside(-1) ? () => turn(-1) : null} next={key === opened && aside(1) ? () => turn(1) : null}/>;
   };
   // A line under a row waits while a page is open: the page says it itself.
   const cx: Cx = { click, tick: () => { follow(); edges(); }, asks, opens, ask: ask ? openAsk : null, line: opened ? { ...line, on: false } : line, star: { can: starrables, marks, refused, press: key => void star(key) } };
@@ -662,7 +702,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
   useLayoutEffect(() => { ui.setSel(null); ui.setFilter(null); ui.setPreview(null); setCut(null); }, [date, shown?.date]);
 
   // The keys of an open day (the window has key focus only after a click pinned it: Notch.tsx): ← → the day before and after, ↑ ↓ the row
-  // before and after, which the bar brackets and the list keeps in view (with a page open they are the page's), Enter or Space opens the one chosen (or goes back), S marks it (or takes the mark off). With nothing
+  // before and after, which the bar brackets and the list keeps in view (with a page open they turn it to the row before or after), Enter or Space opens the one chosen (or goes back), S marks it (or takes the mark off). With nothing
   // chosen they start from where he is looking: ↓ at the first row under the now line (else the top of the list), ↑ at the last row above it
   // (else the bottom).
   const go = (days: number) => { if (at && !(days > 0 && date === null)) step(days); };
@@ -682,14 +722,14 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     if (top < l.scrollTop + margin) slide(top - margin, 180);
     else if (top + el.offsetHeight > l.scrollTop + l.clientHeight - margin) slide(top + el.offsetHeight - l.clientHeight + margin, 180);
   };
-  const keys = useRef({ open, go, walk, pick, toggle, star, can: starrables, paged: !!opened });
-  keys.current = { open, go, walk, pick, toggle, star, can: starrables, paged: !!opened };
+  const keys = useRef({ open, go, walk, pick, toggle, star, can: starrables, paged: !!opened, turn });
+  keys.current = { open, go, walk, pick, toggle, star, can: starrables, paged: !!opened, turn };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       const k = keys.current, target = e.target as Element | null;
       if (!k.open || e.isComposing || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || target?.closest?.('input,textarea,select,[contenteditable]')) return;
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { if (!e.repeat) k.go(e.key === 'ArrowLeft' ? -1 : 1); }
-      else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { if (k.paged) return; k.walk(e.key === 'ArrowDown' ? 1 : -1); }
+      else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { if (k.paged) { if (!e.repeat) k.turn(e.key === 'ArrowDown' ? 1 : -1); } else k.walk(e.key === 'ArrowDown' ? 1 : -1); }
       else if ((e.key === 'Enter' || e.key === ' ') && k.pick && !target?.closest?.('button,a')) { if (!e.repeat) k.toggle(k.pick); }
       else if (e.key.toLowerCase() === 's' && k.pick && k.can.has(k.pick)) { if (!e.repeat) void k.star(k.pick); }
       else return;
@@ -699,6 +739,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     return () => window.removeEventListener('keydown', key, true);
   }, []);
   const rows = model && cut ? within(model.blocks, model.span, Math.min(cut.a, cut.b), Math.max(cut.a, cut.b)) : model?.blocks ?? [];
+  const order = listed(rows).filter(k => opens.has(k));
 
   const title = here ? dateTitle(here, t) : model?.title ?? '';
   const say = !port ? t(['Not connected to Jarvis yet', '还没连上 Jarvis']) : route.missing ? t(["This Jarvis can't give a day yet", '这台 Jarvis 还不会给出一天']) : slow || route.failed ? t(["Couldn't read this day. Trying again.", '没读到这一天，会再试一次']) : t(['Reading the day…', '读着这一天…']);
