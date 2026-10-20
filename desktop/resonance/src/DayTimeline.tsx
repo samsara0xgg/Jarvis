@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
-import { CaretLeft, CaretRight, Star } from '@phosphor-icons/react';
+import { CaretLeft, CaretRight, Sparkle, Star } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { postRoute, useRoute, type Route } from './homeData';
 import { askable, buildDay, changeId, dateTitle, keptOf, marksOf, report, shiftDate, starrable, within, type Block, type DayItem, type DayModel, type DayReply, type Highlight, type Row, type WeatherLook } from './dayView';
@@ -52,7 +52,7 @@ function grow(el: HTMLElement) {
 // ended until the day drops it.
 function away(el: HTMLElement) {
   const style = getComputedStyle(el);
-  el.animate(reduced.matches ? [{ opacity: 1 }, { opacity: 0 }] : [{ height: `${el.offsetHeight}px`, marginTop: style.marginTop, opacity: 1, overflow: 'hidden' }, { height: '0px', marginTop: '0px', opacity: 0, overflow: 'hidden' }],
+  return el.animate(reduced.matches ? [{ opacity: 1 }, { opacity: 0 }] : [{ height: `${el.offsetHeight}px`, marginTop: style.marginTop, opacity: 1, overflow: 'hidden' }, { height: '0px', marginTop: '0px', opacity: 0, overflow: 'hidden' }],
     { duration: reduced.matches ? 120 : 240, easing: EASE, fill: 'forwards' });
 }
 // A day change is a shared axis: the day that was slides away the way time came from, fading (80 ms), and the day that is slides in from the
@@ -137,11 +137,12 @@ function Forecast({ w }: { w: WeatherLook }) {
   return <span className="dt-wx" data-sky={w.sky ?? undefined}>{Glyph && <Glyph size={14} aria-hidden="true"/>}{w.word && <span>{w.word}</span>}{w.temps && <em>{w.temps}</em>}{w.sun && <i className="dt-wx-tip" role="tooltip">{w.sun}</i>}</span>;
 }
 // The day's labels (all-day events) in the room the header leaves them: whole ones, and a +N for those that do not fit (never half a word). The room
-// changes with the day (the pill that comes or goes), so it starts again from all of them when it does; the first label always stays, cut to fit if it must.
-function Chips({ chips }: { chips: DayModel['chips'] }) {
+// changes with the day (the pill that comes or goes), so it starts again from all of them when it does; the first label always stays, cut to fit if it must (`onCut` says so,
+// and the 理一下 pill then gives its words up).
+function Chips({ chips, onCut }: { chips: DayModel['chips']; onCut: () => void }) {
   const box = useRef<HTMLSpanElement>(null), [drop, setDrop] = useState(0);
   const labels = chips.filter(c => !c.more), rest = chips.reduce((n, c) => n + (c.more ? Number(c.text.slice(1)) || 0 : 0), 0) + drop;
-  useLayoutEffect(() => { if (drop < labels.length - 1 && [...box.current?.children ?? []].some(c => c.scrollWidth > c.clientWidth + 1)) setDrop(drop + 1); });
+  useLayoutEffect(() => { if ([...box.current?.children ?? []].some(c => c.scrollWidth > c.clientWidth + 1)) { if (drop < labels.length - 1) setDrop(drop + 1); else onCut(); } });
   useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
@@ -303,6 +304,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
   // What is drawn is not the day asked for: it is on its way, or (`lost`) it did not come and the day that is drawn is not to be left under the new date.
   // The date over the day is that of the day drawn until the one asked for is drawn; one that did not come is said under its own date.
   const stale = !!shown && !!at && shown.date !== at, lost = stale && !reply && (route.failed || route.missing), here = stale && !lost && shown ? shown.date : at;
+  const onToday = date === null && here === todayDate;
   const step = (days: number) => { if (!at) return; const next = shiftDate(at, days); setDate(next === todayDate ? null : next); };
   // A read that does not come says so after a few seconds; the daemon is asked again on its own.
   const [slow, setSlow] = useState(false);
@@ -331,15 +333,28 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     }
     edges();
   });
-  // What the day had when it was last drawn: an item that was not there then, on the same day, grows in (a new stay with all that is in it as one).
-  const seen = useRef<{ date: string; keys: Set<string> } | null>(null);
+  // What the day had when it was last drawn: an item that was not there then, on the same day, grows in (a new stay with all that is in it as one); a row that is not there any
+  // more collapses out where it was (a copy of it as it was drawn, kept with the rest then; a list cut to another range is another list, so nothing collapses across a cut).
+  const seen = useRef<{ date: string; keys: Set<string>; cut: typeof cut; rows: { key: string; copy: HTMLElement | null }[] } | null>(null);
   useLayoutEffect(() => {
     if (!model) return;
     const keys = new Set(model.index.map(x => x.key)), before = seen.current, l = list.current;
-    seen.current = { date: model.reply.date, keys };
+    seen.current = { date: model.reply.date, keys, cut, rows: [...l?.querySelectorAll<HTMLElement>('[data-key]') ?? []].map(el => ({ key: el.dataset.key!, copy: el.classList.contains('dt-row') && !el.classList.contains('is-leaving') ? el.cloneNode(true) as HTMLElement : null })) };
     if (!before || before.date !== model.reply.date || !l) return;
     const fresh = [...keys].filter(k => !before.keys.has(k)).flatMap(k => { const el = l.querySelector<HTMLElement>(`[data-key="${CSS.escape(k)}"]`); return el ? [el.classList.contains('dt-sh') ? el.parentElement! : el] : []; });
     fresh.filter(el => !fresh.some(o => o !== el && o.contains(el))).forEach(grow);
+    if (before.cut !== cut) return;
+    const there = new Map([...l.querySelectorAll<HTMLElement>('[data-key]')].map(el => [el.dataset.key!, el]));
+    let last: Element | null = null;
+    for (const { key, copy } of before.rows) {
+      const el = there.get(key);
+      if (el) { last = el; continue; }
+      if (!copy) continue;
+      copy.removeAttribute('data-key'); copy.setAttribute('aria-hidden', 'true'); copy.setAttribute('inert', '');
+      if (last) last.after(copy); else l.prepend(copy);
+      last = copy;
+      away(copy).finished.then(() => copy.remove(), () => copy.remove());
+    }
   }, [model]);
   // The list scrolls to `to` in `ms`, easing out (at once under reduced motion); a new one takes over from wherever the last had got to.
   const glide = useRef(0);
@@ -499,6 +514,33 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
   });
   // After a change the day is read again at once (today's too when it is another day that is open, for the wing's line).
   const again = () => { route.reload(); if (route !== feed) feed.reload(); };
+  // 理一下 (ADR 0310): today's newest part of the day is written now, which takes the brain up to a minute. `running` for as long as it does (a press in the meantime does
+  // nothing); then what came of it for a moment: a new run (today is read again and the pane takes it as an update of the day), `same` (nothing to change) or `failed`.
+  const [tidy, setTidy] = useState<'idle' | 'running' | 'same' | 'failed'>('idle'), tidying = useRef(false);
+  const tidyUp = async () => {
+    if (!port || tidying.current) return;
+    tidying.current = true; setTidy('running');
+    let done: 'idle' | 'same' | 'failed' = 'failed';
+    try {
+      const out = await postRoute(port, '/inherent/day/tidy', undefined, 90_000) as { ok?: unknown; written?: unknown };
+      if (out.ok === true) { done = out.written === true ? 'idle' : 'same'; if (out.written === true) feed.reload(); }
+    } catch { /* the pill says so */ }
+    tidying.current = false; setTidy(done);
+  };
+  // With no room for the first label whole beside the pill it is only its sparkle (idle: a rest on it says what it is; what it says while it runs or after is always in words). The room is
+  // looked at again from the whole pill when what is in the header changes.
+  const [tight, setTight] = useState(false), head = useRef<HTMLDivElement>(null), shape = `${model?.chips.map(c => c.text).join('|')}/${model?.waiting.length}/${model?.weather ? 1 : 0}/${lang}/${tidy}`;
+  useLayoutEffect(() => setTight(false), [shape]);
+  // The header's own width is not the pill's to change (a pane that was folded has none): when it changes the room is looked at again.
+  useLayoutEffect(() => {
+    const el = head.current;
+    if (!el) return;
+    let width = el.clientWidth;
+    const ro = new ResizeObserver(() => { if (el.clientWidth !== width) { width = el.clientWidth; setTight(false); } });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  useEffect(() => { if (tidy !== 'same' && tidy !== 'failed') return; const timer = setTimeout(() => setTidy('idle'), tidy === 'same' ? 2000 : 3000); return () => clearTimeout(timer); }, [tidy]);
   // What each button is doing, by `what:key`: busy, failed, or (a turn handed over) sent.
   const [work, setWork] = useState<Readonly<Record<string, string>>>({});
   const put = (what: string, key: string, state: string) => setWork(w => ({ ...w, [`${what}:${key}`]: state }));
@@ -745,13 +787,16 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
   const say = !port ? t(['Not connected to Jarvis yet', '还没连上 Jarvis']) : route.missing ? t(["This Jarvis can't give a day yet", '这台 Jarvis 还不会给出一天']) : slow || route.failed ? t(["Couldn't read this day. Trying again.", '没读到这一天，会再试一次']) : t(['Reading the day…', '读着这一天…']);
   const kept = note ?? lastNote.current, shownDock = dock ?? lastDock.current;
   return <div ref={root} className={`dt${stale && !lost ? ' is-loading' : ''}${open ? '' : ' is-folded'}`} data-lens={ui.lens && lensKinds.has(ui.lens) ? ui.lens : undefined} role="region" aria-label={t(['Day timeline', '一天的时间线'])}>
-    <div className="dt-head">
+    <div ref={head} className="dt-head">
       <b className="dt-date">{title}</b>{here === todayDate ? <em className="dt-today">{t(['Today', '今天'])}</em> : <button type="button" className="dt-back" onClick={() => setDate(null)}>{t(['Back to today', '回到今天'])}</button>}
       <TimelineGuard where="the header" reset={shown} fallback={null}>
         {!lost && model?.weather && <Forecast w={model.weather}/>}
-        {!lost && model && <Chips key={model.chips.map(c => c.text).join('|')} chips={model.chips}/>}
+        {!lost && model && <Chips key={model.chips.map(c => c.text).join('|')} chips={model.chips} onCut={() => setTight(true)}/>}
         <Waits n={lost ? 0 : model?.waiting.length ?? 0} first={() => { const k = model?.waiting[0]; if (k) waitFirst(k); }} t={t}/>
       </TimelineGuard>
+      {onToday && model && !lost && <button type="button" className={`dt-tidy${tidy === 'running' ? ' is-running' : ''}${tight && tidy === 'idle' ? ' is-tight' : ''}`} aria-busy={tidy === 'running'} title={tight && tidy === 'idle' ? t(['Tidy', '理一下']) : undefined} aria-label={tight && tidy === 'idle' ? t(['Tidy', '理一下']) : undefined} onClick={() => void tidyUp()}>
+        <Sparkle size={12} weight="fill" aria-hidden="true"/>
+        <span key={tidy}>{tidy === 'running' ? t(['Tidying…', '在理…']) : tidy === 'same' ? t(['No change', '没有要改的']) : tidy === 'failed' ? t(["Didn't work", '没理成，等会儿再试']) : t(['Tidy', '理一下'])}</span></button>}
       <span className="dt-nav">
         <button type="button" aria-label={t(['The day before', '前一天'])} disabled={!at} onClick={() => step(-1)}><CaretLeft size={13}/></button>
         <button type="button" aria-label={t(['The day after', '后一天'])} disabled={!at || date === null} onClick={() => step(1)}><CaretRight size={13}/></button>
@@ -760,7 +805,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     {built.failed ? <p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p> : !model || lost ? <p className="dt-say">{say}</p> : <TimelineGuard where="the pane" reset={shown} fallback={<p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p>}>
       {model.line && <p className={`dt-line${model.line.draft ? ' is-draft' : ''}`}>{model.line.text}</p>}
       {model.empty ? <p className="dt-say">{t(['Nothing recorded for this day yet', '这一天还没有记下什么'])}</p> : <>
-        <DayBar model={model} port={port} ui={ui} cut={cut} hot={hot ?? pick} open={opened} onHot={setHot} onJump={reveal} onPage={onPage} onPicture={(id, note) => setViewer({ id, note })} onSay={openSay}/>
+        <DayBar model={model} port={port} ui={ui} cut={cut} sweep={tidy === 'running' && onToday} hot={hot ?? pick} open={opened} onHot={setHot} onJump={reveal} onPage={onPage} onPicture={(id, note) => setViewer({ id, note })} onSay={openSay}/>
         {rows.length > 0 ? <div ref={stage} className={`dt-stage${opened ? ' is-page' : ''}`}>
           <div ref={list} className="dt-list" onScroll={() => { trim(); edges(); }} onWheel={() => cancelAnimationFrame(glide.current)}><Blocks blocks={rows} hot={hot} onHot={setHot} pick={pick} t={t} cx={cx}/></div>
           {(opened ?? parting) && <div className="dt-page" data-page={opened ?? undefined}>{detail((opened ?? parting)!)}</div>}

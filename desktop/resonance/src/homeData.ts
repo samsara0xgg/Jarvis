@@ -54,8 +54,9 @@ export function useRoute<T>(port: string | null, path: string, open: boolean, ev
   return { data, missing, failed, reload: () => setTick(n => n + 1) };
 }
 
-export async function postRoute(port: string, path: string, body: unknown) {
-  const r = await fetch(`http://127.0.0.1:${port}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(8000) });
+// `body` undefined sends none. `ms`: how long the request may take (8 s; a route that waits for a model is given more).
+export async function postRoute(port: string, path: string, body: unknown, ms = 8000) {
+  const r = await fetch(`http://127.0.0.1:${port}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
   if (!r.ok) throw Object.assign(new Error(`${path} ${r.status}`), { status: r.status });
   return r.json().catch(() => ({}));
 }

@@ -9,6 +9,10 @@
 .notch .dt-time.is-now { bottom:7px; color:rgb(var(--now)); }
 .notch .dt-trackbox { position:relative; flex:none; height:var(--bar); }
 .notch .dt-track { position:absolute; inset:0; overflow:hidden; border-radius:7px; cursor:pointer; touch-action:none; }
+/* the bar as it was, laid over the new one while it fades out (DayBar.tsx); and, while the day is being tidied, a soft band of light that crosses the bar left to right, 1.6 s a pass, clipped by the track */
+.notch .dt-track.is-ghost { pointer-events:none; }
+.notch .dt-sweep { position:absolute; top:0; bottom:0; left:0; width:40%; pointer-events:none; background:linear-gradient(90deg, transparent, rgb(255 255 255 / .2) 50%, transparent); animation:dt-sweep 1.6s ease-in-out infinite; }
+@keyframes dt-sweep { from { transform:translateX(-100%); } to { transform:translateX(250%); } }
 .notch .dt-ground { position:absolute; top:0; bottom:0; left:0; background:rgb(255 255 255 / .06); transition:opacity 150ms; }
 .notch .dt-ground.is-future { right:0; width:auto; background:rgb(255 255 255 / .035); }
 .notch .dt-seg { position:absolute; top:0; bottom:0; background:rgb(var(--c) / var(--a)); transition:filter 120ms,opacity 150ms; }

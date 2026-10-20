@@ -7,7 +7,8 @@
 .notch .dt-head { display:flex; align-items:center; gap:8px; min-height:26px; }
 .notch .dt-date { flex:none; font-size:15px; font-weight:600; line-height:24px; white-space:nowrap; }
 .notch .dt-today,.notch .dt-back { flex:none; padding:0 6px; border-radius:var(--radius-tag); font-style:normal; font-size:var(--text-label); font-weight:600; line-height:17px; color:var(--p-muted); background:rgb(255 255 255 / .08); }
-.notch .dt-wx { position:relative; display:flex; flex:none; align-items:center; gap:5px; font-size:12px; line-height:17px; white-space:nowrap; color:var(--p-muted); }
+.notch .dt-wx { position:relative; display:flex; flex:0 1 auto; min-width:0; align-items:center; gap:5px; font-size:12px; line-height:17px; white-space:nowrap; color:var(--p-muted); }
+.notch .dt-wx > span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
 .notch .dt-wx svg { flex:none; color:rgb(var(--ink) / .72); }
 /* a rest on the weather says when the sun comes up and goes down */
 .notch .dt-wx-tip { position:absolute; left:0; top:calc(100% + 6px); z-index:6; padding:5px 10px; border:1px solid rgb(255 255 255 / .08); border-radius:8px; background:rgb(16 18 30); box-shadow:0 8px 20px rgb(0 0 0 / .5);
@@ -17,6 +18,17 @@
 .notch .dt-wx em { margin-left:2px; font:11.5px/17px "JetBrains Mono", Menlo, monospace; font-style:normal; font-variant-numeric:tabular-nums; }
 .notch .dt-back { cursor:pointer; transition:background var(--motion-fast),color var(--motion-fast); }
 .notch .dt-back:hover { background:rgb(255 255 255 / .14); color:var(--p-ink); }
+/* 理一下 (ADR 0310): the same small pill as the tag beside the date, a sparkle and two words, at the date line's right end; while it runs the sparkle turns slowly (the bar's band of light is day-bar.css) */
+.notch .dt-tidy { display:inline-flex; flex:none; align-items:center; gap:4px; padding:0 7px 0 5px; border-radius:var(--radius-tag); font-size:var(--text-label); font-weight:600; line-height:17px; white-space:nowrap; color:var(--p-muted); background:rgb(255 255 255 / .08); cursor:pointer;
+  transition:background var(--motion-fast),color var(--motion-fast); }
+.notch .dt-tidy.is-tight { padding:0 5px; }
+.notch .dt-tidy.is-tight > span { display:none; }
+.notch .dt-tidy:hover { background:rgb(255 255 255 / .14); color:var(--p-ink); }
+.notch .dt-tidy.is-running { color:var(--p-ink); cursor:default; }
+.notch .dt-tidy.is-running:hover { background:rgb(255 255 255 / .08); }
+.notch .dt-tidy.is-running svg { animation:dt-turn 2.4s linear infinite; }
+.notch .dt-tidy > span { animation:dt-lit-in 120ms linear; }
+@keyframes dt-turn { to { transform:rotate(360deg); } }
 .notch .dt-waits { flex:none; height:20px; padding:0 9px; border-radius:10px; background:rgb(255 201 143 / .14); font-size:11.5px; font-weight:600; line-height:20px; white-space:nowrap; color:rgb(255 201 143); transition:background var(--motion-fast); }
 .notch .dt-waits:hover { background:rgb(255 201 143 / .24); }
 .notch .dt-chips { display:flex; flex:1; gap:4px; min-width:0; overflow:hidden; }
@@ -127,7 +139,7 @@
 @keyframes dt-flash { from { background:rgb(255 255 255 / .08); } to { background:transparent; } }
 @media (prefers-reduced-motion:reduce) {
   .notch .dt.is-loading > :not(.dt-head),.notch .dt-nav button,.notch .dt-row,.notch .dt-sh { transition:none; }
-  .notch .is-flash { animation:none; }
+  .notch .is-flash,.notch .dt-tidy.is-running svg { animation:none; }
   .notch .dt-badge,.notch .dt-star { animation-duration:120ms; transition-duration:120ms; }
 }
 /* a folded pane is still mounted: nothing in it keeps moving (the now marker's breathing is the one that never ends) */

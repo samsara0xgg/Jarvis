@@ -122,8 +122,17 @@ function Stars({ stars }: { stars: BarStar[] }) {
   return <>{stars.map(s => one(s, false))}{gone.map(s => one(s, true))}</>;
 }
 
+// While the day is being tidied (ADR 0310) a soft band of light crosses the bar from left to right, 1.6 s a pass, over and over (the style does it). When the tidy ends the pass it is
+// on is finished first, so it never stops half way. Under reduced motion there is none.
+function Sweep({ on }: { on: boolean }) {
+  const [here, setHere] = useState(on);
+  if (on && !here) setHere(true);
+  return here && !reduced.matches ? <i className="dt-sweep" aria-hidden="true" onAnimationIteration={() => { if (!on) setHere(false); }}/> : null;
+}
+
 // `open`: the row whose detail page is up; its span stays marked, and a click on the bar goes to `onPage` (the piece it is on, or null) instead of `onJump`.
-export function DayBar({ model, port, ui, cut, hot, open, onHot, onJump, onPage, onPicture, onSay }: { model: DayModel; port: string | null; ui: BarState; cut: Range | null; hot: string | null; open: string | null; onHot: (key: string | null) => void; onJump: (key: string) => void; onPage: (piece: string | null) => void; onPicture: (id: string, note: string) => void; onSay: (said: Said) => void }) {
+// `sweep`: the day is being tidied.
+export function DayBar({ model, port, ui, cut, sweep, hot, open, onHot, onJump, onPage, onPicture, onSay }: { model: DayModel; port: string | null; ui: BarState; cut: Range | null; sweep: boolean; hot: string | null; open: string | null; onHot: (key: string | null) => void; onJump: (key: string) => void; onPage: (piece: string | null) => void; onPicture: (id: string, note: string) => void; onSay: (said: Said) => void }) {
   const [{ lang, barBy }, setSettings] = useCompanionSettings(), t = (l: L) => tr(lang, l);
   const bar = useMemo(() => buildBar(model, t, barBy), [model, lang, barBy]), nums = useMemo(() => numbers(model, t), [model, lang]);
   const box = useRef<HTMLDivElement>(null), track = useRef<HTMLDivElement>(null), card = useRef<HTMLDivElement>(null), rcard = useRef<HTMLDivElement>(null), ncard = useRef<HTMLDivElement>(null), nIn = useRef<HTMLDivElement>(null), [width, setWidth] = useState(0);
@@ -137,6 +146,23 @@ export function DayBar({ model, port, ui, cut, hot, open, onHot, onJump, onPage,
     setWidth(el.clientWidth); ro.observe(el);
     return () => ro.disconnect();
   }, [!!bar]);
+  // A bar that is not made of the pieces it was made of, on the same day and drawn the same way (a new run of the day, ADR 0310), crosses over: the bar as it was drawn is laid over the new
+  // one and fades out, 240 ms (a 120 ms fade under reduced motion). The copy is taken each time the bar is drawn, so it is the last one there was.
+  const drawn = useRef<{ day: string; by: BarBy; pieces: string; copy: HTMLElement } | null>(null);
+  useLayoutEffect(() => {
+    const el = track.current;
+    if (!el || !bar) { drawn.current = null; return; }
+    const was = drawn.current, pieces = bar.segs.map(s => s.key).join('|');
+    if (was && was.day === model.reply.date && was.by === barBy && was.pieces !== pieces) {
+      const old = was.copy;
+      old.classList.add('is-ghost'); old.setAttribute('aria-hidden', 'true'); old.setAttribute('inert', '');
+      el.after(old);
+      old.animate([{ opacity: 1 }, { opacity: 0 }], { duration: reduced.matches ? 120 : 240, easing: reduced.matches ? 'linear' : EASE, fill: 'forwards' }).finished.then(() => old.remove(), () => old.remove());
+    }
+    const copy = el.cloneNode(true) as HTMLElement;
+    copy.querySelector('.dt-sweep')?.remove();
+    drawn.current = { day: model.reply.date, by: barBy, pieces, copy };
+  }, [bar]);
   // A lens whose number the day does not have (the day was changed) lets go, pinned or previewed by a chip that is not there to say it has left.
   useEffect(() => { if (ui.pinned && !nums.some(n => n.kind === ui.pinned)) ui.setPinned(null); if (ui.preview && !nums.some(n => n.kind === ui.preview)) ui.setPreview(null); }, [nums]);
 
@@ -277,6 +303,7 @@ export function DayBar({ model, port, ui, cut, hot, open, onHot, onJump, onPage,
             {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}>{how !== 'name' && <Ic icon="event" size={12}/>}{how !== 'icon' && <b>{x.short}</b>}</span>}
           </i>)}
           {bar.sched.filter(x => x.kind !== 'event').map(x => <i key={x.key} className="dt-sched is-tick" style={{ left: `${x.f0 * 100}%` }}><u/></i>)}
+          <Sweep on={sweep}/>
           {lens && (bar.lens[lens] ?? []).map((m, i) => <i key={i} className={`dt-lm${m.f1 - m.f0 < .004 ? ' is-point' : ''}`} style={{ left: `${m.f0 * 100}%`, width: `${Math.max(0, m.f1 - m.f0) * 100}%` }}/>)}
         </div>
         <div className="dt-over" aria-hidden="true">
