@@ -37,7 +37,13 @@ final class DayTimelineTidyTests: XCTestCase {
             (200, #"{"ok": true, "written": true, "outcome": "written"}"#, .written),
             (200, #"{"ok": true, "written": false, "outcome": "unchanged"}"#, .unchanged),
             (200, #"{"ok": true, "outcome": "unchanged"}"#, .unchanged),
-            (200, #"{"ok": false, "written": false, "outcome": "model_failed"}"#, .failed),
+            (200, #"{"ok": true, "written": true, "outcome": "landed (short, 12 spans, 1 questions)"}"#, .written),
+            (200, #"{"ok": true, "written": false, "outcome": "no waking window"}"#, .unchanged),
+            (200, #"{"ok": true, "written": false, "outcome": "no inputs"}"#, .unchanged),
+            (200, #"{"ok": true, "written": false, "outcome": "waiting"}"#, .unchanged),
+            (200, #"{"ok": true, "written": false, "outcome": "failed"}"#, .failed),          // the writer failed: the day is as it was, and the button says it did not go
+            (200, #"{"ok": true, "written": false, "outcome": "rejected (spans overlap)"}"#, .failed),
+            (200, #"{"ok": false, "written": false, "outcome": "unchanged"}"#, .failed),          // not ok is never a run, whatever it says
             (200, #"{"ok": false, "written": true}"#, .failed),          // not ok is not a run
             (200, #"{"written": true}"#, .failed),
             (200, "not json", .failed),

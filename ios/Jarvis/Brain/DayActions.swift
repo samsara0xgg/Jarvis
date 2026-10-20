@@ -77,9 +77,13 @@ enum TidyAnswer: Equatable {
     case unchanged                  // ok and not written: there was nothing in it to change
     case failed                     // not ok, an error status, a brain without the route, no answer in 90 s, or none at all
 
+    /// The brain says `ok` whenever the writer ran, and in `outcome` how it went: `landed (...)` is a run written; `unchanged`, `waiting`, `no waking window` and `no inputs` are nothing to change; the writer's
+    /// own `failed` and `rejected (...)` (a day that did not pass its gates) are a day not tidied, which the button says as a failure.
     static func read(status: Int, data: Data) -> TidyAnswer {
         guard (200...299).contains(status), let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], o["ok"] as? Bool == true else { return .failed }
-        return o["written"] as? Bool == true ? .written : .unchanged
+        if o["written"] as? Bool == true { return .written }
+        let outcome = o["outcome"] as? String ?? ""
+        return outcome == "failed" || outcome.hasPrefix("rejected") ? .failed : .unchanged
     }
 }
 
